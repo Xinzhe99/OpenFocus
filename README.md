@@ -17,7 +17,7 @@ pip install opencv-python pyqt6 numpy imageio dtcwt scipy torch torchvision
 python main.py
 ```
 
-> **Pre-built package (Windows only):** Grab the compact Windows build from the [Releases](https://github.com/your-org/OpenFocus/releases) page; other platforms can run from source.
+> **Pre-built package (Windows only):** Grab the compact Windows build from the [Releases](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.0) page; other platforms can run from source.
 
 ## Table of Contents
 - [⚙️ Environment Setup](#environment-setup)
@@ -76,5 +76,6 @@ This project is released under the [MIT License](./LICENSE). Feel free to use, m
 <p align="center" style="font-size:1.25rem; font-weight:600;">
   If OpenFocus helps you, please consider leaving a ⭐ on the repository!
 </p>
+
 
 
