@@ -1,4 +1,4 @@
-# Open Focus <img src="assets/OpenFocus.png" alt="OpenFocus Logo" width="120"> OpenFocus
+# <img src="assets/OpenFocus.png" alt="OpenFocus Logo" width="120"> OpenFocus
 
 <p align="left">
   <a href="https://www.python.org/downloads/release/python-3100/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" /></a>
@@ -79,4 +79,5 @@ This project is released under the [MIT License](./LICENSE). Feel free to use, m
 <p align="center" style="font-size:1.25rem; font-weight:600;">
   If OpenFocus helps you, please consider leaving a ⭐ on the repository!
 </p>
+
 
