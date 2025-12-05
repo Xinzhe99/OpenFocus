@@ -26,6 +26,7 @@ pip install opencv-python pyqt6 numpy dtcwt torch torchvision
 - [🧪 Fusion & Registration Methods](#fusion--registration-methods)
 - [📚 References](#references)
 - [🤝 Contribution](#contribution)
+- [📄 License](#license)
 
 <a id="overview"></a>
 ## 🔭 Overview
