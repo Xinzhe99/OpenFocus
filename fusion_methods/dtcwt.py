@@ -9,7 +9,29 @@ import cv2
 from fusion_methods.gff import gff_impl
 from fusion_methods.stackmffv4 import _stackmffv4_impl
 
-# 条件导入，避免在不需要时产生错误
+# NumPy 2.0 removed np.asfarray; restore a compatible shim for dtcwt.
+if not hasattr(np, "asfarray"):
+    def _asfarray_compat(arr, dtype=None):
+        target_dtype = dtype or np.float_
+        kind = np.dtype(target_dtype).kind
+        if kind not in ("f", "c"):
+            target_dtype = np.float_
+        return np.asarray(arr, dtype=target_dtype)
+
+    np.asfarray = _asfarray_compat
+
+if not hasattr(np, "issubsctype"):
+    def _issubsctype_compat(arg1, arg2):
+        try:
+            dtype1 = np.dtype(arg1) if not isinstance(arg1, np.dtype) else arg1
+        except TypeError:
+            dtype1 = np.asarray(arg1).dtype
+        dtype2 = np.dtype(arg2) if not isinstance(arg2, np.dtype) else arg2
+        return np.issubdtype(dtype1, dtype2)
+
+    np.issubsctype = _issubsctype_compat
+
+# Conditional imports to avoid errors when optional dependencies are missing.
 # try:
 #     import torch
 #     import torch.nn.functional as F
@@ -51,43 +73,43 @@ cp_maximum_filter = None
 
 def _dtcwt_impl(input_source, img_resize, N, use_gpu):
     """
-    DTCWT融合算法内部实现
-    
-    优先使用 pytorch_wavelets（需要PyTorch），
-    如果PyTorch不可用，则回退到 dtcwt 库（纯NumPy实现）
+    Internal implementation of the DTCWT fusion algorithm.
+
+    Prefers the pytorch_wavelets backend (requires PyTorch).
+    Falls back to the dtcwt library (NumPy implementation) when PyTorch is unavailable.
     """
     # pytorch_available = torch is not None and DTCWTForward is not None and DTCWTInverse is not None
     dtcwt_numpy_available = dtcwt is not None
 
     if not dtcwt_numpy_available:
         raise RuntimeError(
-            "DTCWT融合当前仅支持CPU实现，请安装 dtcwt 库: pip install dtcwt scipy"
+            "DTCWT fusion currently only supports the CPU implementation. Install dtcwt: pip install dtcwt scipy"
         )
 
     if use_gpu:
-        print("提示: DTCWT融合仅支持CPU执行，已强制切换到CPU")
+        print("Notice: DTCWT fusion only runs on the CPU; forcing CPU execution.")
 
     # if pytorch_available:
     #     return _dtcwt_fusion_pytorch(input_source, img_resize, N, use_gpu)
 
-    print("提示: 使用dtcwt库(纯NumPy实现)进行DTCWT融合")
+    print("Using the dtcwt library (NumPy implementation) for DTCWT fusion.")
     return _dtcwt_fusion_numpy(input_source, img_resize, N, False)
 
 
 # def _dtcwt_fusion_pytorch(input_source, img_resize, N, use_gpu):
-#     """使用 pytorch_wavelets 的 DTCWT 融合实现（需要PyTorch）"""
-#     # 原GPU/CuPy实现已注释停用，以确保仅使用CPU版本。
+#     """DTCWT fusion using pytorch_wavelets (requires PyTorch)."""
+#     # Original GPU/CuPy implementation is disabled so we only ship the CPU path.
 
 GPU_DTCWT_IMPLEMENTATION = r"""
 def _dtcwt_fusion_pytorch(input_source, img_resize, N, use_gpu):
     '''
-    使用 pytorch_wavelets 的 DTCWT 融合实现（需要PyTorch）
+    DTCWT fusion using pytorch_wavelets (requires PyTorch)
     '''
     if torch is None or F is None or DTCWTForward is None or DTCWTInverse is None:
         raise ImportError('PyTorch or pytorch_wavelets not installed')
 
     if use_gpu and not torch.cuda.is_available():
-        print('警告: CUDA不可用，自动降级到CPU进行计算')
+        print('Warning: CUDA is unavailable; falling back to CPU execution.')
         use_gpu = False
 
     cupy_available = False
@@ -100,7 +122,7 @@ def _dtcwt_fusion_pytorch(input_source, img_resize, N, use_gpu):
             from cupyx.scipy.ndimage import maximum_filter as cp_maximum_filter
             cupy_available = True
         except ImportError:
-            print('提示: CuPy未安装，将使用PyTorch进行高频融合（速度较慢）')
+            print('Notice: CuPy is not installed; using PyTorch for high-frequency fusion (slower).')
 
     device = torch.device('cuda' if use_gpu else 'cpu')
 
@@ -220,7 +242,7 @@ def _dtcwt_fusion_pytorch(input_source, img_resize, N, use_gpu):
 
     num_images = len(images)
     if num_images < 2:
-        raise ValueError('至少需要2张图像进行融合')
+        raise ValueError('At least two images are required for fusion.')
 
     images_np = np.stack([
         cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
@@ -262,17 +284,17 @@ def _dtcwt_fusion_pytorch(input_source, img_resize, N, use_gpu):
 
 def _dtcwt_fusion_numpy(input_source, img_resize, N, use_gpu):
     """
-    使用 dtcwt 库的 DTCWT 融合实现（纯NumPy，不依赖PyTorch）
-    
-    注意: 此实现不支持GPU加速，use_gpu参数会被忽略
+    DTCWT fusion implementation using the dtcwt library (pure NumPy, no PyTorch dependency).
+
+    Note: GPU acceleration is not supported; the use_gpu flag is ignored.
     """
     if dtcwt is None or maximum_filter is None or convolve is None:
         raise ImportError("dtcwt or scipy not installed")
     
     if use_gpu:
-        print("警告: dtcwt纯NumPy实现不支持GPU加速，将使用CPU")
-    
-    # 加载图像
+        print("Warning: The pure NumPy dtcwt implementation does not support GPU acceleration; using the CPU.")
+
+    # Load images
     if isinstance(input_source, str):
         def get_image_suffix(input_stack_path):
             filenames = os.listdir(input_stack_path)
@@ -302,25 +324,25 @@ def _dtcwt_fusion_numpy(input_source, img_resize, N, use_gpu):
     
     num_images = len(images)
     if num_images < 2:
-        raise ValueError("至少需要2张图像进行融合")
-    
-    # 转换为RGB浮点格式
+        raise ValueError("At least two images are required for fusion.")
+
+    # Convert to float RGB format
     images_rgb = [
         cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         for img in images
     ]
     
-    # 高频系数融合函数（纯NumPy实现）
+    # High-frequency coefficient fusion (pure NumPy implementation)
     def fuse_highfreq_numpy(coeffs_list, window_size=3):
         """
-        融合多张图像的高频系数
-        coeffs_list: 每张图像该层的高频系数，形状为 (height, width, 6) 复数数组
+        Fuse the high-frequency coefficients from multiple images.
+        coeffs_list: high-frequency coefficients for this level, shaped (height, width, 6) as complex arrays.
         """
         num_imgs = len(coeffs_list)
         if num_imgs == 1:
             return coeffs_list[0]
         
-        # 两两融合
+        # Fuse two images at a time if more than two inputs are provided
         if num_imgs > 2:
             fused = coeffs_list[0]
             for i in range(1, num_imgs):
@@ -333,59 +355,59 @@ def _dtcwt_fusion_numpy(input_source, img_resize, N, use_gpu):
         fused = np.zeros_like(coeff1)
         
         for d in range(num_dirs):
-            # 计算幅值
+            # Compute magnitudes
             mag1 = np.abs(coeff1[:, :, d])
             mag2 = np.abs(coeff2[:, :, d])
             
-            # 局部最大幅值
+            # Local maximum magnitudes
             A1 = maximum_filter(mag1, size=window_size, mode='reflect')
             A2 = maximum_filter(mag2, size=window_size, mode='reflect')
             
-            # 初始掩码
+            # Initial mask
             initial_mask = (A1 > A2).astype(np.float32)
             
-            # 一致性验证
+            # Consistency check
             kernel = np.ones((window_size, window_size), dtype=np.float32)
             conv_result = convolve(initial_mask, kernel, mode='constant', cval=0)
             
             threshold = (window_size * window_size) / 2
             W = (conv_result > threshold).astype(np.float32)
             
-            # 融合
+            # Blend using the binary mask
             fused[:, :, d] = W * coeff1[:, :, d] + (1 - W) * coeff2[:, :, d]
         
         return fused
     
-    # 创建DTCWT变换器
+    # Create the DTCWT transformer
     transform = dtcwt.Transform2d()
     
-    # 对每个通道分别进行融合
+    # Fuse each channel independently
     fused_channels = []
     
-    for channel in range(3):  # RGB三通道
-        # 对每张图像的该通道进行DTCWT变换
+    for channel in range(3):  # RGB channels
+        # Perform DTCWT on the current channel
         all_transforms = []
         for img in images_rgb:
             t = transform.forward(img[:, :, channel], nlevels=N)
             all_transforms.append(t)
         
-        # 融合低频系数（取平均）
+        # Fuse low-frequency coefficients by averaging
         lowpass_stack = np.stack([t.lowpass for t in all_transforms], axis=0)
         fused_lowpass = np.mean(lowpass_stack, axis=0)
         
-        # 融合高频系数
+        # Fuse high-frequency coefficients
         fused_highpasses = []
         for level in range(N):
             level_coeffs = [t.highpasses[level] for t in all_transforms]
             fused_level = fuse_highfreq_numpy(level_coeffs)
             fused_highpasses.append(fused_level)
         
-        # 构建融合后的变换结果并逆变换
+        # Reconstruct the fused pyramid and perform the inverse transform
         fused_pyramid = dtcwt.Pyramid(fused_lowpass, tuple(fused_highpasses))
         fused_channel = transform.inverse(fused_pyramid)
         fused_channels.append(fused_channel)
     
-    # 合并通道
+    # Merge the channels back into a single image
     fused_img = np.stack(fused_channels, axis=-1)
     fused_img = np.clip(fused_img * 255.0, 0, 255).astype(np.uint8)
     fused_img = cv2.cvtColor(fused_img, cv2.COLOR_RGB2BGR)

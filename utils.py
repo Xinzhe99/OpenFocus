@@ -1,9 +1,18 @@
+import os
+import sys
+
 from PyQt6.QtWidgets import QMessageBox
 from PyQt6.QtGui import QPixmap, QImage
 import cv2
 import numpy as np
 
 from styles import MESSAGE_BOX_STYLE
+
+
+def resource_path(*relative_parts: str) -> str:
+    """Return an absolute path to a bundled resource (handles PyInstaller)."""
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.normpath(os.path.join(base_dir, *relative_parts))
 
 
 def show_message_box(

@@ -31,8 +31,9 @@ import sys
 import io
 from typing import Union, List, Optional
 
-# Set standard output encoding to utf-8
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# Set standard output encoding to utf-8 when a console stream exists
+if sys.stdout is not None and hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 
 # ========== 缩放对齐算法实现（线性） ==========

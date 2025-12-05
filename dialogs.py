@@ -534,7 +534,7 @@ class BatchProcessingDialog(QDialog):
         
         # 路径输入框（参考demo.py的实现）
         self.path_input = QLineEdit()
-        self.path_input.setPlaceholderText("输入路径后回车刷新浏览区")
+        self.path_input.setPlaceholderText("Type a path and press Enter to refresh")
         folder_layout.addWidget(self.path_input)
         
         # 添加文件夹按钮

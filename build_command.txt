@@ -1,0 +1,44 @@
+no-include torch
+
+pyinstaller --clean --noconfirm --onefile --noconsole `
+  --name OpenFocus `
+  --icon ".\assets\OpenFocus.ico" `
+  --add-data "assets;assets" `
+  --add-data "weights;weights" `
+  --collect-all PyQt6 `
+  --collect-all scipy `
+  --copy-metadata imageio `
+  --collect-data dtcwt `
+  --exclude-module torch `
+  --exclude-module torchvision `
+  main.py
+
+include torch, one file
+
+pyinstaller --clean --noconfirm --onefile --noconsole `
+  --name OpenFocus `
+  --icon ".\assets\OpenFocus.ico" `
+  --add-data "assets;assets" `
+  --add-data "weights;weights" `
+  --collect-all PyQt6 `
+  --collect-all scipy `
+  --copy-metadata imageio `
+  --collect-data dtcwt `
+  --collect-all torch `
+  --collect-all torchvision `
+  main.py
+
+include torch, one dir
+
+pyinstaller --clean --noconfirm --onedir --noconsole `
+  --name OpenFocus `
+  --icon ".\assets\OpenFocus.ico" `
+  --add-data "assets;assets" `
+  --add-data "weights;weights" `
+  --collect-all PyQt6 `
+  --collect-all scipy `
+  --copy-metadata imageio `
+  --collect-data dtcwt `
+  --collect-all torch `
+  --collect-all torchvision `
+  main.py

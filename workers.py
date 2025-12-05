@@ -6,6 +6,7 @@ import numpy as np
 import imageio.v2 as imageio
 from Registration import ImageRegistration
 from multi_focus_fusion import MultiFocusFusion
+from utils import resource_path
 
 
 class RenderWorker(QThread):
@@ -143,8 +144,7 @@ class RenderWorker(QThread):
                         img_resize=None,
                     )
                 elif algorithm == "stackmffv4":
-                    script_dir = os.path.dirname(os.path.abspath(__file__))
-                    model_path = os.path.join(script_dir, "weights", "stackmffv4.pth")
+                    model_path = resource_path("weights", "stackmffv4.pth")
                     fusion_result = fusion.fuse(
                         input_source=processed_images,
                         img_resize=None,
@@ -263,6 +263,9 @@ class BatchWorker(QThread):
         fusion_method = self.processing_settings.get('fusion_method')
         if fusion_method:
             fusion_params = self.processing_settings.get('fusion_params', {})
+            if fusion_method == "stackmffv4" and "model_path" not in fusion_params:
+                fusion_params = dict(fusion_params)
+                fusion_params["model_path"] = resource_path("weights", "stackmffv4.pth")
             
             # 创建相应算法的融合器实例
             fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=True)

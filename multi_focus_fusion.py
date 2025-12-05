@@ -1,10 +1,26 @@
 import importlib
+import os
 import numpy as np
 from typing import Union, List, Tuple, Optional
 from fusion_methods.dct import dct_focus_stack_fusion
 from fusion_methods.gff import gff_impl
 from fusion_methods.stackmffv4 import _stackmffv4_impl
 from fusion_methods.dtcwt import _dtcwt_impl
+from utils import resource_path
+
+
+def is_stackmffv4_available() -> bool:
+    """Return True when PyTorch is importable for the StackMFF-V4 fusion."""
+    torch_spec = importlib.util.find_spec("torch")
+    if not torch_spec:
+        return False
+
+    try:
+        importlib.import_module("torch")
+    except ImportError:
+        return False
+
+    return True
 
 class MultiFocusFusion:
     """
@@ -30,7 +46,7 @@ class MultiFocusFusion:
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
         if use_gpu:
-            print("提示: 当前版本仅支持CPU执行, 已自动切换为CPU模式")
+            print("Note: this build runs on CPU only; switching to CPU mode.")
         self.use_gpu = False
         self._validate_environment()
     
@@ -38,8 +54,8 @@ class MultiFocusFusion:
         """验证算法是否受支持"""
         if algorithm not in self.SUPPORTED_ALGORITHMS:
             raise ValueError(
-                f"不支持的算法: {algorithm}. "
-                f"支持的算法: {', '.join(self.SUPPORTED_ALGORITHMS)}"
+                f"Unsupported algorithm: {algorithm}. "
+                f"Supported algorithms: {', '.join(self.SUPPORTED_ALGORITHMS)}"
             )
 
     def _validate_environment(self):
@@ -57,13 +73,13 @@ class MultiFocusFusion:
         """验证DCT融合依赖"""
         try:
             import cv2  # noqa: F401
-        except ImportError as exc:  # pragma: no cover - 环境依赖
+        except ImportError as exc:  # pragma: no cover - env dependency
             raise RuntimeError(
-                "DCT融合需要安装OpenCV: pip install opencv-python"
+                "DCT fusion requires OpenCV. Install it with: pip install opencv-python"
             ) from exc
 
         if self.use_gpu:
-            print("提示: DCT融合当前仅提供CPU实现, 已自动切换到CPU模式")
+            print("Note: DCT fusion currently runs on CPU only; switching to CPU mode.")
             self.use_gpu = False
 
     def _validate_transform_environment(self) -> None:
@@ -88,30 +104,30 @@ class MultiFocusFusion:
 
         if not dtcwt_available:
             raise RuntimeError(
-                "DTCWT融合当前仅支持CPU实现，请安装 dtcwt 库: pip install dtcwt scipy"
+                "DTCWT fusion is CPU-only. Install the dtcwt package with: pip install dtcwt scipy"
             )
 
         if self.use_gpu:
-            print("提示: DTCWT融合仅支持CPU执行, 已自动切换为CPU模式")
+            print("Note: DTCWT fusion supports CPU only; switching to CPU mode.")
             self.use_gpu = False
 
     def _validate_spatial_environment(self) -> None:
         """验证空间域融合依赖"""
         if self.use_gpu:
-            print("提示: 引导滤波融合当前仅提供CPU实现, 已自动切换到CPU模式")
+            print("Note: Guided-filter fusion runs on CPU only; switching to CPU mode.")
             self.use_gpu = False
 
     def _validate_ai_environment(self) -> None:
         """验证AI融合依赖"""
-        try:
-            import torch
-        except ImportError as exc:
+        if not is_stackmffv4_available():
             raise RuntimeError(
-                "AI融合需要安装PyTorch: pip install torch torchvision"
-            ) from exc
+                "StackMFF-V4 fusion requires PyTorch. Install it with: pip install torch torchvision"
+            )
+
+        import torch
 
         if self.use_gpu and not torch.cuda.is_available():
-            print("警告: CUDA不可用,AI融合将使用CPU (速度较慢)")
+            print("Warning: CUDA is not available. Running StackMFF-V4 on CPU (slower).")
             self.use_gpu = False
     
     def fuse(self, 
@@ -193,7 +209,7 @@ class MultiFocusFusion:
             融合后的图像
         """
         if img_resize is not None:
-            raise ValueError("DCT融合暂不支持动态调整图像尺寸，请在处理前完成缩放。")
+            raise ValueError("DCT fusion does not support dynamic resizing. Resize images before processing.")
 
         return dct_focus_stack_fusion(
             input_source,
@@ -227,7 +243,7 @@ class MultiFocusFusion:
     def _fuse_stackmffv4(self,
                          input_source: Union[str, List[np.ndarray]],
                          img_resize: Optional[Tuple[int, int]] = None,
-                         model_path: str = './weights/stackmffv4.pth') -> np.ndarray:
+                         model_path: Optional[str] = 'weights/stackmffv4.pth') -> np.ndarray:
         """
         StackMFF-V4 融合
         
@@ -239,6 +255,11 @@ class MultiFocusFusion:
         Returns:
             融合后的图像
         """
+        if not model_path:
+            model_path = 'weights/stackmffv4.pth'
+        if not os.path.isabs(model_path):
+            model_path = resource_path(model_path)
+
         return _stackmffv4_impl(
             input_source,
             img_resize,
@@ -266,7 +287,7 @@ class MultiFocusFusion:
             use_gpu (bool): 是否使用GPU
         """
         if use_gpu:
-            print("提示: 当前版本仅支持CPU执行, GPU设置已被忽略")
+            print("Note: GPU execution is unavailable; ignoring the request.")
         self.use_gpu = False
         self._validate_environment()
     

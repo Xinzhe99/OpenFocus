@@ -4,6 +4,7 @@ from typing import Any, List, Optional
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from utils import show_custom_message_box, show_message_box, show_warning_box
+from multi_focus_fusion import is_stackmffv4_available
 from workers import RenderWorker
 
 
@@ -40,6 +41,17 @@ class RenderManager:
             kernel_slider_value = 1
         if kernel_slider_value % 2 == 0:
             kernel_slider_value = max(1, kernel_slider_value - 1)
+
+        if window.rb_d.isChecked() and not is_stackmffv4_available():
+            show_warning_box(
+                window,
+                "StackMFF-V4 Unavailable",
+                "StackMFF-V4 requires torch + torchvision. Please install them or choose another fusion method.",
+            )
+            window.rb_d.setChecked(False)
+            window.btn_render.setEnabled(True)
+            window.btn_render.setText("▶ Start Render")
+            return
 
         self.worker = RenderWorker(
             window.raw_images,

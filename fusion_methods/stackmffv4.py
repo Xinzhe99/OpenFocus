@@ -33,10 +33,10 @@ def _stackmffv4_impl(input_source, img_resize, model_path, use_gpu):
     # 设置设备
     if use_gpu and torch.cuda.is_available():
         device = torch.device('cuda')
-        print("使用 GPU 进行 AI 融合...")
+        print("Running AI fusion on the GPU...")
     else:
         device = torch.device('cpu')
-        print("使用 CPU 进行 AI 融合...")
+        print("Running AI fusion on the CPU...")
     
     # 加载图像
     if isinstance(input_source, str):
@@ -76,9 +76,9 @@ def _stackmffv4_impl(input_source, img_resize, model_path, use_gpu):
     
     num_images = len(color_images)
     if num_images < 2:
-        raise ValueError("至少需要2张图像进行融合")
-    
-    print(f"加载了 {num_images} 张图像")
+        raise ValueError("At least two images are required for fusion")
+
+    print(f"Loaded {num_images} images")
     
     # 堆叠灰度图像张量
     image_stack = torch.stack(gray_tensors)  # [N, H, W]

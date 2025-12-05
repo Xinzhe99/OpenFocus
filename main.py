@@ -22,6 +22,7 @@ from utils import (
     show_error_box,
     show_success_box,
     show_custom_message_box,
+    resource_path,
 )
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
@@ -33,6 +34,7 @@ from controllers.label_manager import LabelManager
 from controllers.export_manager import ExportManager
 from controllers.transform_manager import TransformManager
 from controllers.batch_manager import BatchManager
+from multi_focus_fusion import is_stackmffv4_available
 
 class OpenFocus(QMainWindow):
     def __init__(self):
@@ -42,7 +44,7 @@ class OpenFocus(QMainWindow):
         self.resize(1600, 950)  # 增加默认窗口宽度和高度
         
         # 设置窗口图标
-        icon_path = os.path.join(os.path.dirname(__file__), "./assets/OpenFocus.ico")
+        icon_path = resource_path("assets", "OpenFocus.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         
@@ -154,6 +156,8 @@ class OpenFocus(QMainWindow):
         self.main_splitter.addWidget(right_panel_components.widget)
         bind_right_panel(self, right_panel_components)
 
+        self._configure_fusion_method_availability()
+
         # 确保分割器已经添加了子部件后再设置折叠属性
         # 使用QTimer来延迟设置折叠属性，确保所有子部件都已正确添加
         from PyQt6.QtCore import QTimer
@@ -210,6 +214,16 @@ class OpenFocus(QMainWindow):
         self.lbl_source_img.reset_view()
         self.lbl_result_img.reset_view()
     
+
+
+    def _configure_fusion_method_availability(self) -> None:
+        """Disable fusion methods whose dependencies are not installed."""
+        if not is_stackmffv4_available():
+            self.rb_d.setEnabled(False)
+            self.rb_d.setToolTip("Requires torch + torchvision. Install to enable StackMFF-V4.")
+        else:
+            self.rb_d.setEnabled(True)
+            self.rb_d.setToolTip("")
 
 
     def update_source_view(self, index):

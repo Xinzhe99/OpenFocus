@@ -79,7 +79,7 @@ def gff_impl(input_source, img_resize, kernel_size=31):
 
         img_ext = get_image_suffix(input_source)
         if img_ext is None:
-            raise ValueError("输入目录为空或未找到图像文件")
+            raise ValueError("Input folder is empty or no images were found")
             
         glob_format = '*' + img_ext
         img_stack_path_list = glob.glob(os.path.join(input_source, glob_format))
@@ -94,7 +94,7 @@ def gff_impl(input_source, img_resize, kernel_size=31):
         stack_ori = input_source
     
     if not stack_ori:
-        raise ValueError("没有加载到图像数据")
+        raise ValueError("No image data was loaded")
 
     if img_resize:
         stack_ori = [cv2.resize(img, img_resize) for img in stack_ori]

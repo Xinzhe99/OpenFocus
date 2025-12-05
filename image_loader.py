@@ -33,7 +33,7 @@ class ImageStackLoader:
             (成功标志, 消息, 图像列表, 文件名列表)
         """
         if not os.path.isdir(folder_path):
-            return False, "所选路径不是有效的文件夹", [], []
+            return False, "Selected path is not a valid directory", [], []
         
         # 扫描文件夹中的所有图像文件
         image_files = []
@@ -44,7 +44,7 @@ class ImageStackLoader:
                 image_files.append((filename, full_path))
         
         if not image_files:
-            return False, "文件夹中没有找到支持的图像文件", [], []
+            return False, "No supported image files found in the folder", [], []
         
         # 按文件名排序
         image_files.sort(key=lambda x: x[0])
@@ -70,17 +70,17 @@ class ImageStackLoader:
                     failed_count += 1
             except Exception as e:
                 failed_count += 1
-                print(f"加载图像失败 {filename}: {e}")
+                print(f"Failed to load image {filename}: {e}")
         
         if not loaded_images:
-            return False, "无法加载任何图像文件", [], []
+            return False, "Could not load any image files", [], []
         
         self.images = loaded_images
         self.image_paths = [f[1] for f in image_files[:len(loaded_images)]]
         
-        message = f"成功加载 {len(loaded_images)} 张图像"
+        message = f"Loaded {len(loaded_images)} image(s)"
         if failed_count > 0:
-            message += f" (失败: {failed_count})"
+            message += f" (failed: {failed_count})"
         
         return True, message, loaded_images, filenames
     
