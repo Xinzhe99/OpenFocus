@@ -1,4 +1,4 @@
-# ![OpenFocus Logo](assets/OpenFocus.png) OpenFocus
+# <img src="assets/OpenFocus.png" alt="OpenFocus Logo" width="120"> OpenFocus
 
 OpenFocus is all you need.
 
@@ -58,6 +58,8 @@ Mix and match the built-in algorithms to suit your data:
 - **StackMFF V4 Neural Model**: Pretrained deep model delivering state-of-the-art focus stacking quality.
 - **Hybrid Registration**: Homography, ECC, or combined strategies ensure robust alignment across challenging captures.
 
+> **License Notice:** Every fusion/registration algorithm included comes from open-source research implementations. When using or redistributing them, please follow each algorithm’s original license terms in addition to the OpenFocus MIT license.
+
 <a id="references"></a>
 ## 📚 References
 - M. B. A. Haghighat, A. Aghagolzadeh, and H. Seyedarabi, "Multi-focus image fusion for visual sensor networks in DCT domain," *Computers & Electrical Engineering*, vol. 37, no. 5, pp. 789-797, 2011.
@@ -71,6 +73,8 @@ We welcome community contributions of all kinds:
 2. **Algorithm & Performance Work**: Share new fusion/registration ideas, optimizations, or benchmark results.
 
 Please open an issue to discuss significant changes before submitting pull requests and include validation steps with your patches.
+
+> Bug reports or suggestions? Please open an issue so we can follow up quickly.
 
 <a id="license"></a>
 ## 📄 License
