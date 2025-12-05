@@ -1,5 +1,7 @@
 # <img src="assets/OpenFocus.png" alt="OpenFocus Logo" width="120"> OpenFocus
 
+OpenFocus delivers focus stacking quality that rivals commercial-grade software, while staying fully open source and easy to extend.
+
 <p align="left">
   <a href="https://www.python.org/downloads/release/python-3100/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?logo=open-source-initiative&logoColor=white" alt="License: MIT" /></a>
