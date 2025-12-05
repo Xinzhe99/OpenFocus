@@ -1,4 +1,4 @@
-# OpenFocus <img src="assets/OpenFocus.ico" alt="OpenFocus Icon" width="48" align="right">
+# <img src="assets/OpenFocus.png" alt="OpenFocus Logo" width="360">
 
 OpenFocus is all you need.
 
@@ -19,8 +19,12 @@ OpenFocus is all you need.
 ## <span role="img" aria-label="overview">🔭</span> Overview
 OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that delivers commercial-grade alignment and blending results. The project is fully open source (MIT License) and runs on CPU by default with optional GPU acceleration for the StackMFF V4 neural model.
 
+<p align="center">
+	<img src="assets/ui.jpg" alt="OpenFocus UI" width="720">
+</p>
+
 ## <span role="img" aria-label="highlights">✨</span> Highlights
-- **MIT Licensed & Free Forever**: Ready for commercial, research, and personal use without licensing friction.
+- **Beginner-Friendly**: Plug-and-play workflows with unapologetically simple, guided operations.
 - **Flexible Processing Flows**: Run fusion-only, registration-only, or combined registration + fusion pipelines depending on your workload.
 - **Batch Automation**: Kick off batch jobs across multiple folders with live progress, cancellation, and automatic output organization.
 - **Annotation & Export Toolkit**: Overlay labels, export GIF animations, and save processed stacks in JPG/PNG/BMP/TIFF with consistent metadata handling.
