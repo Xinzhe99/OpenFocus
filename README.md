@@ -51,14 +51,18 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 - **AI-Assisted Fusion**: Ship with StackMFF V4 to unlock deep-learning-quality fusion alongside classic signal-processing methods.
 
 <a id="fusion--registration-methods"></a>
-## 🧪 Fusion & Registration Methods
-Mix and match the built-in algorithms to suit your data:
+## 🧪 Algorithms
+### Fusion Algorithms
+
 - **Guided Filter**: Fast edge-preserving fusion that enhances contrast while suppressing noise.
 - **DCT Multi-Focus Fusion**: Frequency-domain technique optimized for crisp detail recovery.
 - **Dual-Tree Complex Wavelet Transform (DTCWT)**: Multi-scale representation that preserves fine texture structures.
-- **StackMFF V4 Neural Model**: Pretrained deep model delivering state-of-the-art focus stacking quality.
-- **Hybrid Registration**: Homography, ECC, or combined strategies ensure robust alignment across challenging captures.
-
+- **StackMFF V4**: Pretrained deep model delivering state-of-the-art focus stacking quality.
+- 
+### Registration Algorithms
+- **Homography**: Performs feature-based projective alignment using keypoint matching and RANSAC to handle global perspective transformations.
+- **ECC**: Performs intensity-based alignment by maximizing the enhanced correlation coefficient for precise, sub-pixel registration.
+  
 > **License Notice:** Every fusion/registration algorithm included comes from open-source research implementations. When using or redistributing them, please follow each algorithm’s original license terms in addition to the OpenFocus MIT license.
 
 <a id="references"></a>
@@ -82,6 +86,7 @@ This project is released under the [MIT License](./LICENSE). Feel free to use, m
 <p align="center" style="font-size:1.25rem; font-weight:600;">
   If OpenFocus helps you, please consider leaving a ⭐ on the repository!
 </p>
+
 
 
 
