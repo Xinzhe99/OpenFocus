@@ -8,6 +8,13 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
   <a href="https://github.com/your-org/OpenFocus"><img src="https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white" alt="GitHub Repository" /></a>
 </p>
 
+## 📢 News
+
+> [!NOTE]
+> 🎉 **2025.12**: We have fixed some bugs and added configuration options such as block-wise fusion to avoid OOM (Out of Memory) issues.
+
+> 🎉 **2025.12**: OpenFocus officially released — welcome to try it.
+
 <a id="environment-setup"></a>
 ## ⚙️ Environment Setup
 ```bash
@@ -18,7 +25,6 @@ python main.py
 ```
 
 > **Pre-built package (Windows only):** Grab the compact Windows build from the [Releases](https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.0) page; other platforms can run from source.
-
 ## Table of Contents
 - [⚙️ Environment Setup](#environment-setup)
 - [🔭 Overview](#overview)
@@ -76,6 +82,7 @@ This project is released under the [MIT License](./LICENSE). Feel free to use, m
 <p align="center" style="font-size:1.25rem; font-weight:600;">
   If OpenFocus helps you, please consider leaving a ⭐ on the repository!
 </p>
+
 
 
 
