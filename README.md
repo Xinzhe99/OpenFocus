@@ -58,7 +58,7 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 - **DCT Multi-Focus Fusion**: Frequency-domain technique optimized for crisp detail recovery.
 - **Dual-Tree Complex Wavelet Transform (DTCWT)**: Multi-scale representation that preserves fine texture structures.
 - **StackMFF V4**: Pretrained deep model delivering state-of-the-art focus stacking quality.
-- 
+
 ### Registration Algorithms
 - **Homography**: Performs feature-based projective alignment using keypoint matching and RANSAC to handle global perspective transformations.
 - **ECC**: Performs intensity-based alignment by maximizing the enhanced correlation coefficient for precise, sub-pixel registration.
@@ -86,6 +86,7 @@ This project is released under the [MIT License](./LICENSE). Feel free to use, m
 <p align="center" style="font-size:1.25rem; font-weight:600;">
   If OpenFocus helps you, please consider leaving a ⭐ on the repository!
 </p>
+
 
 
 
