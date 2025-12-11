@@ -77,7 +77,7 @@ class MultiFocusFusion:
     - 'stackmffv4': StackMFF-V4 神经网络融合
     """
     
-    SUPPORTED_ALGORITHMS = ['guided_filter', 'dct', 'dtcwt', 'stackmffv4']
+    SUPPORTED_ALGORITHMS = ['guided_filter', 'dct', 'dtcwt', 'gfgfgf', 'stackmffv4']
     
     def __init__(self, algorithm: str = 'guided_filter', use_gpu: bool = False,
                  tile_enabled: bool = True, tile_block_size: int = 1024,
@@ -120,6 +120,34 @@ class MultiFocusFusion:
             self._validate_spatial_environment()
         elif self.algorithm == 'stackmffv4':
             self._validate_ai_environment()
+
+    def _fuse_gfgfgf(self,
+                     input_source: Union[str, List[np.ndarray]],
+                     img_resize: Optional[Tuple[int, int]] = None,
+                     kernel_size: int = 7,
+                     **kwargs) -> np.ndarray:
+        """
+        GFG-FGF 融合接口
+
+        Args:
+            input_source: 图像源
+            img_resize: 目标尺寸
+            kernel_size: 用于初始均值/模糊滤波的核大小（奇数优先），默认7
+
+        Returns:
+            融合后的图像
+        """
+        try:
+            from fusion_methods.gfg_fgf import gfgfgf_impl
+        except Exception as exc:
+            raise RuntimeError("GFG-FGF fusion requires the gfg_fgf module.") from exc
+
+        kernel_size = max(1, int(kernel_size or 31))
+        if kernel_size % 2 == 0:
+            kernel_size = max(1, kernel_size - 1)
+
+        thread_count = kwargs.get('thread_count', None)
+        return gfgfgf_impl(input_source, img_resize, kernel_size=kernel_size, thread_count=thread_count)
 
     def _validate_dct_environment(self) -> None:
         """验证DCT融合依赖"""
@@ -274,13 +302,16 @@ class MultiFocusFusion:
             return self._fuse_dct(input_source, img_resize, **kwargs)
         elif self.algorithm == 'dtcwt':
             return self._fuse_dtcwt(input_source, img_resize, **kwargs)
+        elif self.algorithm == 'gfgfgf':
+            return self._fuse_gfgfgf(input_source, img_resize, **kwargs)
         elif self.algorithm == 'stackmffv4':
             return self._fuse_stackmffv4(input_source, img_resize, **kwargs)
     
     def _fuse_guided_filter(self, 
                             input_source: Union[str, List[np.ndarray]], 
                             img_resize: Optional[Tuple[int, int]] = None,
-                            kernel_size: int = 31) -> np.ndarray:
+                            kernel_size: int = 31,
+                            **kwargs) -> np.ndarray:
         """
         引导滤波融合
         
@@ -296,17 +327,23 @@ class MultiFocusFusion:
         if kernel_size % 2 == 0:
             kernel_size += 1
 
+        # allow optional thread_count forwarded via kwargs in fuse
+        # (handled by fuse caller). Here simply pass through if present in kwargs
+        # Note: _fuse_guided_filter is invoked with explicit kernel_size only
+        thread_count = kwargs.get('thread_count', None)
         return gff_impl(
             input_source,
             img_resize,
-            kernel_size=kernel_size
+            kernel_size=kernel_size,
+            thread_count=thread_count
         )
 
     def _fuse_dct(self,
                   input_source: Union[str, List[np.ndarray]],
                   img_resize: Optional[Tuple[int, int]] = None,
                   block_size: int = 8,
-                  kernel_size: int = 7) -> np.ndarray:
+                  kernel_size: int = 7,
+                  **kwargs) -> np.ndarray:
         """
         DCT 方差融合
 
@@ -322,6 +359,7 @@ class MultiFocusFusion:
         if img_resize is not None:
             raise ValueError("DCT fusion does not support dynamic resizing. Resize images before processing.")
 
+        # thread_count (if passed) is ignored by this implementation
         return dct_focus_stack_fusion(
             input_source,
             output_path=None,
@@ -332,7 +370,8 @@ class MultiFocusFusion:
     def _fuse_dtcwt(self,
                     input_source: Union[str, List[np.ndarray]],
                     img_resize: Optional[Tuple[int, int]] = None,
-                    N: int = 4) -> np.ndarray:
+                    N: int = 4,
+                    **kwargs) -> np.ndarray:
         """
         DTCWT 变换域融合
         
@@ -354,7 +393,8 @@ class MultiFocusFusion:
     def _fuse_stackmffv4(self,
                          input_source: Union[str, List[np.ndarray]],
                          img_resize: Optional[Tuple[int, int]] = None,
-                         model_path: Optional[str] = 'weights/stackmffv4.pth') -> np.ndarray:
+                         model_path: Optional[str] = 'weights/stackmffv4.pth',
+                         **kwargs) -> np.ndarray:
         """
         StackMFF-V4 融合
         
@@ -481,9 +521,16 @@ class MultiFocusFusion:
                 return self._fuse_dct(crops, img_resize, **kwargs)
             elif algorithm == 'dtcwt':
                 return self._fuse_dtcwt(crops, img_resize, **kwargs)
+            elif algorithm == 'gfgfgf':
+                return self._fuse_gfgfgf(crops, img_resize, **kwargs)
             elif algorithm == 'stackmffv4':
                 return self._fuse_stackmffv4(crops, img_resize, **kwargs)
             else:
+                # Fallback: try to call a matching _fuse_<algorithm> method if present
+                method_name = f"_fuse_{algorithm}"
+                method = getattr(self, method_name, None)
+                if callable(method):
+                    return method(crops, img_resize, **kwargs)
                 raise ValueError(f"Unsupported algorithm for tiled fusion: {algorithm}")
 
         # 遍历瓦片

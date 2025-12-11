@@ -27,6 +27,7 @@ class RenderWorker(QThread):
         rb_a_checked,
         rb_b_checked,
         rb_c_checked,
+        rb_gfg_checked,
         rb_d_checked,
         kernel_slider_value,
         tile_enabled=None,
@@ -34,6 +35,7 @@ class RenderWorker(QThread):
         tile_overlap=None,
         tile_threshold=None,
         reg_downscale_width=None,
+        thread_count: int = 4,
     ):
         super().__init__()
         self.raw_images = raw_images
@@ -50,6 +52,7 @@ class RenderWorker(QThread):
         self.rb_a_checked = rb_a_checked
         self.rb_b_checked = rb_b_checked
         self.rb_c_checked = rb_c_checked
+        self.rb_gfg_checked = rb_gfg_checked
         self.rb_d_checked = rb_d_checked
         self.kernel_slider_value = kernel_slider_value
         # Tile params passed from UI (may be None -> use fusion defaults)
@@ -59,6 +62,11 @@ class RenderWorker(QThread):
         self.tile_threshold = tile_threshold
         # Registration downscale width passed from UI (optional)
         self.reg_downscale_width = reg_downscale_width
+        # 用户配置的线程数（用于控制内部 ThreadPool 大小）
+        try:
+            self.thread_count = max(1, int(thread_count))
+        except Exception:
+            self.thread_count = 4
 
     def run(self):
         """在线程中执行图像处理流程"""
@@ -107,7 +115,8 @@ class RenderWorker(QThread):
                             registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
                         else:
                             registration = ImageRegistration(method=mode)
-                        processed_images = registration.process(processed_images, output_path=None)
+                        # pass thread_count into registration processing
+                        processed_images = registration.process(processed_images, output_path=None, thread_count=self.thread_count)
                         registration_performed = True
 
                     alignment_time = time.time() - alignment_start_time
@@ -129,6 +138,8 @@ class RenderWorker(QThread):
                     algorithm = "dct"
                 elif self.rb_c_checked:
                     algorithm = "dtcwt"
+                elif self.rb_gfg_checked:
+                    algorithm = "gfgfgf"
                 elif self.rb_d_checked:
                     algorithm = "stackmffv4"
                 else:
@@ -153,6 +164,7 @@ class RenderWorker(QThread):
                         input_source=processed_images,
                         img_resize=None,
                         kernel_size=kernel_size_value,
+                        thread_count=self.thread_count,
                     )
                 elif algorithm == "dct":
                     fusion_result = fusion.fuse(
@@ -160,11 +172,20 @@ class RenderWorker(QThread):
                         img_resize=None,
                         block_size=8,
                         kernel_size=kernel_size_value,
+                        thread_count=self.thread_count,
                     )
                 elif algorithm == "dtcwt":
                     fusion_result = fusion.fuse(
                         input_source=processed_images,
                         img_resize=None,
+                        thread_count=self.thread_count,
+                    )
+                elif algorithm == "gfgfgf":
+                    fusion_result = fusion.fuse(
+                        input_source=processed_images,
+                        img_resize=None,
+                        kernel_size=kernel_size_value,
+                        thread_count=self.thread_count,
                     )
                 elif algorithm == "stackmffv4":
                     model_path = resource_path("weights", "stackmffv4.pth")
@@ -172,6 +193,7 @@ class RenderWorker(QThread):
                         input_source=processed_images,
                         img_resize=None,
                         model_path=model_path,
+                        thread_count=self.thread_count,
                     )
 
                 fusion_time = time.time() - fusion_start_time
@@ -199,7 +221,7 @@ class BatchWorker(QThread):
     error = pyqtSignal(str)  # 错误信息
     
     def __init__(self, folder_paths, output_type, output_path, processing_settings, reg_downscale_width=None,
-                 tile_enabled=None, tile_block_size=None, tile_overlap=None, tile_threshold=None):
+                 tile_enabled=None, tile_block_size=None, tile_overlap=None, tile_threshold=None, thread_count: int = 4):
         super().__init__()
         self.folder_paths = folder_paths
         self.output_type = output_type  # 'subfolder', 'same', 'custom'
@@ -219,6 +241,10 @@ class BatchWorker(QThread):
         self.tile_block_size = tile_block_size
         self.tile_overlap = tile_overlap
         self.tile_threshold = tile_threshold
+        try:
+            self.thread_count = max(1, int(thread_count))
+        except Exception:
+            self.thread_count = 4
     
     def run(self):
         """执行批处理"""
@@ -288,7 +314,7 @@ class BatchWorker(QThread):
                     registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
                 else:
                     registration = ImageRegistration(method=mode)
-                aligned_images = registration.process(images, output_path=None)
+                aligned_images = registration.process(images, output_path=None, thread_count=self.thread_count)
             else:
                 # 如果没有选择任何配准方法，直接使用原始图像
                 aligned_images = images.copy()
@@ -324,7 +350,7 @@ class BatchWorker(QThread):
             fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=True, **tile_kwargs)
             
             # 调用fuse方法执行融合
-            fusion_result = fusion.fuse(aligned_images, **fusion_params)
+            fusion_result = fusion.fuse(aligned_images, thread_count=self.thread_count, **fusion_params)
         else:
             fusion_result = None
         

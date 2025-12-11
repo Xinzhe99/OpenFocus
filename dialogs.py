@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from styles import PRIMARY_BLUE
+from utils import resource_path
 
 
 class EnvironmentInfoDialog(QDialog):
@@ -367,6 +368,9 @@ class RenderMethodHelpDialog(HelpDialog):
     <p><b>DTCWT</b><br/>
     Dual-tree complex wavelet fusion that decomposes the stack across scales and orientations before recombining it. It is well suited to intricate, high-frequency content where retaining fine detail is critical.</p>
 
+    <p><b>GFG-FGF</b><br/>
+    GFG-FGF is a multi-focus image fusion algorithm based on a generalized four-neighborhood Gaussian gradient (GFG) operator combined with a fast guided filter (FGF). Feature extraction uses the GFG operator to capture high-frequency edge and gradient information. Information enhancement leverages the FGF together with the original image texture to smooth defocused regions while emphasizing focused areas. The fusion strategy constructs a pixel-wise decision map by selecting the maximum focus measure per pixel and then refines these decisions with FGF for edge-preserving smoothing, producing a weighted fusion that favors sharp, well-focused pixels.</p>
+
     <p><b>StackMFF-V4</b><br/>
     A neural network trained on everyday focus stacks. It generally produces the strongest results with minimal tuning. Because it is not fine-tuned for specialist domains (microphotography, microscopy, medical imaging, etc.), avoid it when domain shifts are expected. Runs fastest with GPU acceleration.</p>"""
         
@@ -637,6 +641,10 @@ class BatchProcessingDialog(QDialog):
                     kernel_size_value = slider_widget.value()
             elif rb_c and rb_c.isChecked():
                 fusion_method = "DTCWT"
+            elif getattr(self.parent_window, 'rb_gfg', None) and self.parent_window.rb_gfg.isChecked():
+                fusion_method = "GFG-FGF"
+                if slider_widget:
+                    kernel_size_value = slider_widget.value()
             elif rb_d and rb_d.isChecked():
                 fusion_method = "StackMFF-V4"
         
@@ -860,6 +868,9 @@ class BatchProcessingDialog(QDialog):
                 fusion_params["kernel_size"] = _sanitized_kernel_value()
             elif rb_c and rb_c.isChecked():
                 fusion_method = "dtcwt"
+            elif getattr(self.parent_window, 'rb_gfg', None) and self.parent_window.rb_gfg.isChecked():
+                fusion_method = "gfgfgf"
+                fusion_params["kernel_size"] = _sanitized_kernel_value()
             elif rb_d and rb_d.isChecked():
                 fusion_method = "stackmffv4"
         
@@ -1179,12 +1190,13 @@ class TileSettingsDialog(QDialog):
 
         # Buttons: help and OK/Cancel
         btn_layout = QHBoxLayout()
-        help_btn = QPushButton("?")
+        help_btn = QPushButton("")
         help_btn.setToolTip("Show help for tile settings")
-        help_btn.setFixedSize(22, 22)
-        help_btn.setFont(QFont("Arial", 16))
+        help_btn.setFixedSize(26, 26)
+        help_btn.setIcon(QIcon(resource_path('assets', 'help_white.svg')))
+        help_btn.setIconSize(QSize(18, 18))
         help_btn.setStyleSheet(
-            "QPushButton { background-color: #444; color: white; border: 1px solid #222; border-radius: 11px; }"
+            "QPushButton { background-color: transparent; border: none; padding: 0px; }"
         )
         help_btn.clicked.connect(self.show_help)
         btn_layout.addWidget(help_btn)
@@ -1297,12 +1309,13 @@ class RegistrationSettingsDialog(QDialog):
         layout.addWidget(group)
 
         btn_layout = QHBoxLayout()
-        help_btn = QPushButton("?")
+        help_btn = QPushButton("")
         help_btn.setToolTip("Show help for registration settings")
-        help_btn.setFixedSize(22, 22)
-        help_btn.setFont(QFont("Arial", 16))
+        help_btn.setFixedSize(26, 26)
+        help_btn.setIcon(QIcon(resource_path('assets', 'help_white.svg')))
+        help_btn.setIconSize(QSize(18, 18))
         help_btn.setStyleSheet(
-            "QPushButton { background-color: #444; color: white; border: 1px solid #222; border-radius: 11px; }"
+            "QPushButton { background-color: transparent; border: none; padding: 0px; }"
         )
         help_btn.clicked.connect(self.show_help)
         btn_layout.addWidget(help_btn)
@@ -1346,3 +1359,125 @@ class RegistrationSettingsDialog(QDialog):
         it can improve accuracy on very detailed images but increases runtime.</p>"""
         dlg = HelpDialog("Registration Setting Help", help_text, parent=self)
         dlg.exec()
+
+
+class ThreadSettingsDialog(QDialog):
+    """Thread count settings dialog."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.setWindowTitle("Thread Count Settings")
+        self.resize(420, 160)
+
+        # Apply the same dark dialog styling as TileSettingsDialog
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: #2b2b2b;
+                color: #ffffff;
+                font-family: "Segoe UI", "Microsoft YaHei";
+            }}
+            QLabel {{
+                color: #ffffff;
+            }}
+            QSpinBox {{
+                background-color: #3c3c3c;
+                color: #ffffff;
+                border: 1px solid #555;
+                padding: 5px;
+                selection-background-color: {PRIMARY_BLUE};
+                min-height: 28px;
+            }}
+            QPushButton {{
+                background-color: #444;
+                color: white;
+                border: 1px solid #222;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #555;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+
+        from PyQt6.QtWidgets import QGroupBox
+
+        group = QGroupBox("Thread Count")
+        g_layout = QHBoxLayout(group)
+
+        lbl = QLabel("Thread Count (threads):")
+        lbl.setMinimumWidth(140)
+        g_layout.addWidget(lbl)
+
+        self.spin_threads = QSpinBox()
+        self.spin_threads.setRange(1, 256)
+        self.spin_threads.setSingleStep(1)
+        self.spin_threads.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        g_layout.addWidget(self.spin_threads)
+        g_layout.addStretch()
+
+        layout.addWidget(group)
+
+        # Buttons: help and OK/Cancel (match Tile/Registration style)
+        btn_layout = QHBoxLayout()
+        help_btn = QPushButton("")
+        help_btn.setToolTip("Show help for application settings")
+        help_btn.setFixedSize(26, 26)
+        help_btn.setIcon(QIcon(resource_path('assets', 'help_white.svg')))
+        help_btn.setIconSize(QSize(18, 18))
+        help_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; border: none; padding: 0px; }"
+        )
+        help_btn.clicked.connect(self.show_help)
+        btn_layout.addWidget(help_btn)
+        btn_layout.addStretch()
+
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(self.on_accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addLayout(btn_layout)
+
+        self.load_defaults()
+
+    def show_help(self):
+        help_text = """<h3>Thread Count Settings</h3>
+        <p>This setting controls the number of worker threads used by algorithms that
+        support multithreading. Set to a value appropriate for your CPU (commonly 2–16).</p>
+
+        <h4>Current multithreading support</h4>
+        <ul>
+        <li><b>GFG-FGF</b>: supports user-controlled threads (default cap: 8)</li>
+        <li><b>Guided Filter Fusion (GFF)</b>: supports user-controlled threads (default cap: 4)</li>
+        <li><b>Registration</b>: parallel feature extraction/warping uses thread_count when provided</li>
+        <li><b>DCT, DTCWT, StackMFF-V4</b>: currently ignore this setting (no thread control)</li>
+        </ul>
+
+        <p>Algorithms that do not consume this value will safely ignore it. For best
+        performance, avoid setting thread count higher than your physical core count.</p>
+
+        <p>Note: installing <code>opencv-contrib-python</code> can provide faster
+        implementations for some operations (e.g. guided filter).</p>
+        """
+        dlg = HelpDialog("Application Settings Help", help_text, parent=self)
+        dlg.exec()
+
+    def load_defaults(self):
+        if self.parent_window:
+            val = getattr(self.parent_window, "thread_count", 4)
+            try:
+                self.spin_threads.setValue(int(val))
+            except Exception:
+                self.spin_threads.setValue(4)
+
+    def on_accept(self):
+        val = int(self.spin_threads.value())
+        if self.parent_window:
+            setattr(self.parent_window, "thread_count", val)
+        self.accept()

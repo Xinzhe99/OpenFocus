@@ -79,6 +79,8 @@ class ExportManager:
             fusion_method = "DCT"
         elif window.rb_c.isChecked():
             fusion_method = "DTCWT"
+        elif window.rb_gfg.isChecked():
+            fusion_method = "GFGFGF"
         elif window.rb_d.isChecked():
             fusion_method = "StackMFFV4"
         else:
@@ -103,6 +105,8 @@ class ExportManager:
             fusion_method = "DCT"
         elif window.rb_c.isChecked():
             fusion_method = "DTCWT"
+        elif window.rb_gfg.isChecked():
+            fusion_method = "GFGFGF"
         elif window.rb_d.isChecked():
             fusion_method = "StackMFFV4"
         else:

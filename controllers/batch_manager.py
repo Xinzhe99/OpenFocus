@@ -39,6 +39,28 @@ class BatchManager:
             return
 
         self._initialise_progress_dialog(len(folder_paths))
+        # 禁用在批处理运行时不应被修改的 UI 控件
+        try:
+            self.window.slider_smooth.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            self.window.rb_a.setEnabled(False)
+            self.window.rb_b.setEnabled(False)
+            self.window.rb_c.setEnabled(False)
+            self.window.rb_gfg.setEnabled(False)
+            self.window.rb_d.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            self.window.cb_align_homography.setEnabled(False)
+            self.window.cb_align_ecc.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            self.window.btn_reset.setEnabled(False)
+        except Exception:
+            pass
         self._worker = BatchWorker(
             folder_paths=folder_paths,
             output_type=output_type,
@@ -49,6 +71,7 @@ class BatchManager:
             tile_block_size=getattr(self.window, "tile_block_size", None),
             tile_overlap=getattr(self.window, "tile_overlap", None),
             tile_threshold=getattr(self.window, "tile_threshold", None),
+            thread_count=getattr(self.window, "thread_count", 4),
         )
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
@@ -110,6 +133,28 @@ class BatchManager:
         finally:
             self._close_progress_dialog()
             self._teardown_worker()
+            # 恢复 UI 控件
+            try:
+                self.window.slider_smooth.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                self.window.rb_a.setEnabled(True)
+                self.window.rb_b.setEnabled(True)
+                self.window.rb_c.setEnabled(True)
+                self.window.rb_gfg.setEnabled(True)
+                self.window.rb_d.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                self.window.cb_align_homography.setEnabled(True)
+                self.window.cb_align_ecc.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                self.window.btn_reset.setEnabled(True)
+            except Exception:
+                pass
 
     def _handle_error(self, error_msg: str) -> None:
         self._show_message(
@@ -120,6 +165,28 @@ class BatchManager:
         )
         self._close_progress_dialog()
         self._teardown_worker()
+        # 恢复 UI 控件
+        try:
+            self.window.slider_smooth.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            self.window.rb_a.setEnabled(True)
+            self.window.rb_b.setEnabled(True)
+            self.window.rb_c.setEnabled(True)
+            self.window.rb_gfg.setEnabled(True)
+            self.window.rb_d.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            self.window.cb_align_homography.setEnabled(True)
+            self.window.cb_align_ecc.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            self.window.btn_reset.setEnabled(True)
+        except Exception:
+            pass
 
     def _show_message(
         self,
@@ -141,6 +208,28 @@ class BatchManager:
         if self._worker:
             self._worker.cancel()
         self._close_progress_dialog()
+        # 若用户取消，也恢复 UI
+        try:
+            self.window.slider_smooth.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            self.window.rb_a.setEnabled(True)
+            self.window.rb_b.setEnabled(True)
+            self.window.rb_c.setEnabled(True)
+            self.window.rb_gfg.setEnabled(True)
+            self.window.rb_d.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            self.window.cb_align_homography.setEnabled(True)
+            self.window.cb_align_ecc.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            self.window.btn_reset.setEnabled(True)
+        except Exception:
+            pass
 
     def _close_progress_dialog(self) -> None:
         if self._progress_dialog:

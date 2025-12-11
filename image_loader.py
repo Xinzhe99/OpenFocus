@@ -83,6 +83,59 @@ class ImageStackLoader:
             message += f" (failed: {failed_count})"
         
         return True, message, loaded_images, filenames
+
+    def load_from_filepaths(self, filepaths: list[str], scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
+        """
+        从给定的文件路径列表加载图像（保持原有接口返回格式）
+
+        Args:
+            filepaths: 有序的文件路径列表
+            scale_factor: 下采样比例
+
+        Returns:
+            (成功标志, 消息, 图像列表, 文件名列表)
+        """
+        if not filepaths:
+            return False, "No file paths provided", [], []
+
+        loaded_images = []
+        filenames = []
+        failed_count = 0
+
+        for full_path in filepaths:
+            try:
+                if not os.path.exists(full_path):
+                    failed_count += 1
+                    continue
+
+                img = cv2.imread(full_path)
+                if img is None:
+                    failed_count += 1
+                    continue
+
+                # 如果需要下采样
+                if scale_factor != 1.0 and 0 < scale_factor < 1.0:
+                    width = int(img.shape[1] * scale_factor)
+                    height = int(img.shape[0] * scale_factor)
+                    img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
+
+                loaded_images.append(img)
+                filenames.append(os.path.basename(full_path))
+            except Exception as e:
+                failed_count += 1
+                print(f"Failed to load image {full_path}: {e}")
+
+        if not loaded_images:
+            return False, "Could not load any image files", [], []
+
+        self.images = loaded_images
+        self.image_paths = list(filepaths[: len(loaded_images)])
+
+        message = f"Loaded {len(loaded_images)} image(s)"
+        if failed_count > 0:
+            message += f" (failed: {failed_count})"
+
+        return True, message, loaded_images, filenames
     
     def create_pixmaps(self, images: List[np.ndarray], max_size: Tuple[int, int] = (800, 600)) -> List[QPixmap]:
         """

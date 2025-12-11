@@ -26,6 +26,29 @@ class RenderManager:
         window.btn_render.setText("⏳ Processing...")
         QApplication.processEvents()
 
+        # 禁用在处理过程中不应被修改的 UI 控件
+        try:
+            window.slider_smooth.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            window.rb_a.setEnabled(False)
+            window.rb_b.setEnabled(False)
+            window.rb_c.setEnabled(False)
+            window.rb_gfg.setEnabled(False)
+            window.rb_d.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            window.cb_align_homography.setEnabled(False)
+            window.cb_align_ecc.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            window.btn_reset.setEnabled(False)
+        except Exception:
+            pass
+
         need_align_homography = window.cb_align_homography.isChecked()
         need_align_ecc = window.cb_align_ecc.isChecked()
 
@@ -33,6 +56,7 @@ class RenderManager:
             window.rb_a.isChecked()
             or window.rb_b.isChecked()
             or window.rb_c.isChecked()
+            or window.rb_gfg.isChecked()
             or window.rb_d.isChecked()
         )
 
@@ -64,6 +88,7 @@ class RenderManager:
             window.rb_a.isChecked(),
             window.rb_b.isChecked(),
             window.rb_c.isChecked(),
+            window.rb_gfg.isChecked(),
             window.rb_d.isChecked(),
             kernel_slider_value,
             tile_enabled=getattr(window, "tile_enabled", None),
@@ -71,6 +96,7 @@ class RenderManager:
             tile_overlap=getattr(window, "tile_overlap", None),
             tile_threshold=getattr(window, "tile_threshold", None),
             reg_downscale_width=getattr(window, "reg_downscale_width", None),
+            thread_count=getattr(window, "thread_count", 4),
         )
 
         self.worker.finished_signal.connect(self.on_render_finished)
@@ -148,6 +174,7 @@ class RenderManager:
                 window.rb_a.isChecked()
                 or window.rb_b.isChecked()
                 or window.rb_c.isChecked()
+                or window.rb_gfg.isChecked()
                 or window.rb_d.isChecked()
             ):
                 if window.rb_a.isChecked():
@@ -156,6 +183,8 @@ class RenderManager:
                     method_name = "DCT"
                 elif window.rb_c.isChecked():
                     method_name = "DTCWT"
+                elif window.rb_gfg.isChecked():
+                    method_name = "GFG-FGF"
                 elif window.rb_d.isChecked():
                     method_name = "StackMFF-V4"
                 else:
@@ -189,6 +218,29 @@ class RenderManager:
             traceback.print_exc()
 
         finally:
+            # 恢复 UI 控件
+            try:
+                window.slider_smooth.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                window.rb_a.setEnabled(True)
+                window.rb_b.setEnabled(True)
+                window.rb_c.setEnabled(True)
+                window.rb_gfg.setEnabled(True)
+                window.rb_d.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                window.cb_align_homography.setEnabled(True)
+                window.cb_align_ecc.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                window.btn_reset.setEnabled(True)
+            except Exception:
+                pass
+
             window.btn_render.setEnabled(True)
             window.btn_render.setText("▶ Start Render")
             self.worker = None

@@ -10,11 +10,19 @@ import concurrent.futures
 # https://github.com/RCharradi/Image-fusion-with-guided-filtering
 # Li S, Kang X, Hu J. Image fusion with guided filtering[J]. IEEE Transactions on Image processing, 2013, 22(7): 2864-2875.
 
-def gff_impl(input_source, img_resize, kernel_size=31):
+def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None):
     """
     基于引导滤波的多焦点图像栈融合算法实现 (CPU版本)
     不依赖 opencv-contrib (ximgproc)，内置引导滤波实现。
     """
+    # Determine thread pool size: if thread_count is provided use it, else use default
+    if thread_count is None:
+        max_workers = None
+    else:
+        try:
+            max_workers = max(1, int(thread_count))
+        except Exception:
+            max_workers = None
     
     # ========== 参数设置 ==========
     # 默认参数 (参考原脚本)
@@ -124,7 +132,7 @@ def gff_impl(input_source, img_resize, kernel_size=31):
             return base, detail
 
         # 并行处理图像分解
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             decompose_results = list(executor.map(process_decompose, images))
         
         base_layers = [res[0] for res in decompose_results]
@@ -143,7 +151,7 @@ def gff_impl(input_source, img_resize, kernel_size=31):
             return sal
 
         # 并行处理显著性图计算
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             saliency_maps = list(executor.map(process_saliency, images))
             
         # 3. 生成初始决策图 (Decision Map)
@@ -212,7 +220,7 @@ def gff_impl(input_source, img_resize, kernel_size=31):
 
         # 并行处理权重计算与融合
         # 使用 as_completed 模式，处理完一个就累加一个，避免一次性持有所有结果导致内存爆炸
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(process_weight_fusion, k): k for k in range(num_images)}
             for future in concurrent.futures.as_completed(futures):
                 try:

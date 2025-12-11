@@ -15,7 +15,7 @@ from PyQt6.QtGui import QFont, QIcon, QDragEnterEvent, QDropEvent, QImage
 from image_loader import ImageStackLoader
 import cv2
 from styles import GLOBAL_DARK_STYLE
-from dialogs import EnvironmentInfoDialog, ContactInfoDialog, BatchProcessingDialog, TileSettingsDialog
+from dialogs import EnvironmentInfoDialog, ContactInfoDialog, BatchProcessingDialog, TileSettingsDialog, ThreadSettingsDialog
 from utils import (
     show_message_box,
     show_warning_box,
@@ -69,6 +69,8 @@ class OpenFocus(QMainWindow):
         self.tile_threshold = 2048
         # Registration downscale default (用户可在 Settings -> Registration 中修改)
         self.reg_downscale_width = 1024
+        # 全局线程数设置，默认4（可在 Settings 中修改）
+        self.thread_count = 4
         
         self.render_manager = RenderManager(self)
         self.output_manager = OutputManager(self)
@@ -150,6 +152,7 @@ class OpenFocus(QMainWindow):
         self.rb_a = right_panel_components.rb_a
         self.rb_b = right_panel_components.rb_b
         self.rb_c = right_panel_components.rb_c
+        self.rb_gfg = right_panel_components.rb_gfg
         self.rb_d = right_panel_components.rb_d
         self.cb_align_homography = right_panel_components.cb_align_homography
         self.cb_align_ecc = right_panel_components.cb_align_ecc
@@ -206,11 +209,12 @@ class OpenFocus(QMainWindow):
         self.rb_a.setChecked(True)
         self.rb_b.setChecked(False)
         self.rb_c.setChecked(False)
+        self.rb_gfg.setChecked(False)
         self.rb_d.setChecked(False)
         
-        # 重置配准选项 - 默认选中Homography，不选中ECC
-        self.cb_align_homography.setChecked(True)
-        self.cb_align_ecc.setChecked(False)
+        # 重置配准选项 - 默认选中 ECC，不选中 Homography
+        self.cb_align_homography.setChecked(False)
+        self.cb_align_ecc.setChecked(True)
         
         # 重置滑块值到默认值
         self.slider_smooth.setValue(31)
@@ -270,7 +274,7 @@ class OpenFocus(QMainWindow):
         # 如果点击的是已选中的按钮，则取消选中
         if selected_button.isChecked():
             # 取消其他按钮的选中状态
-            for btn in [self.rb_a, self.rb_b, self.rb_c, self.rb_d]:
+            for btn in [self.rb_a, self.rb_b, self.rb_c, self.rb_gfg, self.rb_d]:
                 if btn != selected_button:
                     btn.setChecked(False)
         # 如果点击时未选中，则什么也不做（已经自动取消选中）
@@ -306,6 +310,13 @@ class OpenFocus(QMainWindow):
             if self.current_kernel_mode != "dct":
                 self.slider_smooth.setValue(7)
             self.current_kernel_mode = "dct"
+        elif self.rb_gfg.isChecked():
+            # GFG-FGF uses the initial mean/blur kernel controlled by the same slider
+            self.smooth_widget.setEnabled(True)
+            if self.current_kernel_mode != "gfg":
+                # GFG-FGF 默认使用 kernel=7
+                self.slider_smooth.setValue(7)
+            self.current_kernel_mode = "gfg"
         else:
             self.smooth_widget.setEnabled(False)
             self.current_kernel_mode = None
@@ -399,6 +410,12 @@ class OpenFocus(QMainWindow):
             # 值已写回到 self.reg_downscale_width
             return True
         return False
+
+    def show_thread_settings(self):
+        """显示线程数设置对话框"""
+        from dialogs import ThreadSettingsDialog
+        dialog = ThreadSettingsDialog(self)
+        dialog.exec()
 
     def rotate_stack(self, rotation_code):
         """Delegate stack rotation to the transform manager."""

@@ -36,109 +36,109 @@ if sys.stdout is not None and hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 
-# ========== 缩放对齐算法实现（线性） ==========
+# # ========== 缩放对齐算法实现（线性） ==========
 
 
 
-def _align_zoom_impl(input_source, output_path=None, img_filenames=None):
-    """
-    Align images from directory path or image list
-    Args:
-        input_source: string (directory path) or list of images
-        output_path: string, directory path to save results (optional, None means no saving)
-    Returns:
-        list of aligned images (always returns processed images regardless of output_path)
-    """
-    # Process input source
-    if img_filenames is None and isinstance(input_source, str):
-        # Pre-compile regular expression
-        num_pattern = re.compile(r"\d+")
-        # Use generator expression and list comprehension for optimized file filtering and sorting
-        img_paths = sorted(
-            (os.path.join(input_source, f) for f in os.listdir(input_source)
-             if os.path.splitext(f)[1].lower() in {'.jpg', '.jpeg', '.png', '.bmp', '.tif'}),
-            key=lambda x: int(num_pattern.findall(os.path.basename(x))[-1])
-        )
-        # Use list comprehension to read all images at once
-        images = [cv2.imread(path) for path in img_paths]
-        # Store original filenames with extensions
-        img_filenames = [os.path.basename(path) for path in img_paths]
-    else:
-        images = input_source
+# def _align_zoom_impl(input_source, output_path=None, img_filenames=None):
+#     """
+#     Align images from directory path or image list
+#     Args:
+#         input_source: string (directory path) or list of images
+#         output_path: string, directory path to save results (optional, None means no saving)
+#     Returns:
+#         list of aligned images (always returns processed images regardless of output_path)
+#     """
+#     # Process input source
+#     if img_filenames is None and isinstance(input_source, str):
+#         # Pre-compile regular expression
+#         num_pattern = re.compile(r"\d+")
+#         # Use generator expression and list comprehension for optimized file filtering and sorting
+#         img_paths = sorted(
+#             (os.path.join(input_source, f) for f in os.listdir(input_source)
+#              if os.path.splitext(f)[1].lower() in {'.jpg', '.jpeg', '.png', '.bmp', '.tif'}),
+#             key=lambda x: int(num_pattern.findall(os.path.basename(x))[-1])
+#         )
+#         # Use list comprehension to read all images at once
+#         images = [cv2.imread(path) for path in img_paths]
+#         # Store original filenames with extensions
+#         img_filenames = [os.path.basename(path) for path in img_paths]
+#     else:
+#         images = input_source
 
-    # Cache image dimensions and feature detector
-    img_first = images[0]
-    img_last = images[-1]
-    h_first, w_first = img_first.shape[:2]
-    h_last, w_last = img_last.shape[:2]
+#     # Cache image dimensions and feature detector
+#     img_first = images[0]
+#     img_last = images[-1]
+#     h_first, w_first = img_first.shape[:2]
+#     h_last, w_last = img_last.shape[:2]
 
-    # SIFT feature detection and matching
-    sift = cv2.SIFT_create()
-    kp1, des1 = sift.detectAndCompute(img_first, None)
-    kp2, des2 = sift.detectAndCompute(img_last, None)
+#     # SIFT feature detection and matching
+#     sift = cv2.SIFT_create()
+#     kp1, des1 = sift.detectAndCompute(img_first, None)
+#     kp2, des2 = sift.detectAndCompute(img_last, None)
 
-    # Use BFMatcher for feature matching (SIFT uses L2 norm)
-    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
-    matches = sorted(bf.match(des1, des2), key=lambda x: x.distance)
+#     # Use BFMatcher for feature matching (SIFT uses L2 norm)
+#     bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+#     matches = sorted(bf.match(des1, des2), key=lambda x: x.distance)
 
-    # Find valid matching points
-    min_distance_threshold = w_first / 2
-    p1 = p2 = q1 = q2 = None
+#     # Find valid matching points
+#     min_distance_threshold = w_first / 2
+#     p1 = p2 = q1 = q2 = None
 
-    # Use numpy array operations to optimize distance calculation
-    for i in range(len(matches) - 1):
-        p1 = np.array(kp1[matches[i].queryIdx].pt)
-        p2 = np.array(kp1[matches[i + 1].queryIdx].pt)
-        q1 = np.array(kp2[matches[i].trainIdx].pt)
-        q2 = np.array(kp2[matches[i + 1].trainIdx].pt)
+#     # Use numpy array operations to optimize distance calculation
+#     for i in range(len(matches) - 1):
+#         p1 = np.array(kp1[matches[i].queryIdx].pt)
+#         p2 = np.array(kp1[matches[i + 1].queryIdx].pt)
+#         q1 = np.array(kp2[matches[i].trainIdx].pt)
+#         q2 = np.array(kp2[matches[i + 1].trainIdx].pt)
 
-        if np.linalg.norm(p1 - p2) > min_distance_threshold:
-            break
-    else:
-        raise ValueError("Unable to find matching point pairs that meet the criteria")
+#         if np.linalg.norm(p1 - p2) > min_distance_threshold:
+#             break
+#     else:
+#         raise ValueError("Unable to find matching point pairs that meet the criteria")
 
-    # Calculate scaling factor
-    dist = np.linalg.norm(p1 - p2)
-    dist2 = np.linalg.norm(q1 - q2)
-    c = max(dist2 / dist, dist / dist2)
+#     # Calculate scaling factor
+#     dist = np.linalg.norm(p1 - p2)
+#     dist2 = np.linalg.norm(q1 - q2)
+#     c = max(dist2 / dist, dist / dist2)
 
-    # Pre-calculate all scaling factors
-    aug_list = np.linspace(1, c, len(images))
-    is_forward = dist2 / dist > 1
-    target_shape = (h_last, w_last) if is_forward else (h_first, w_first)
-    aug_factors = aug_list[::-1] if is_forward else aug_list
+#     # Pre-calculate all scaling factors
+#     aug_list = np.linspace(1, c, len(images))
+#     is_forward = dist2 / dist > 1
+#     target_shape = (h_last, w_last) if is_forward else (h_first, w_first)
+#     aug_factors = aug_list[::-1] if is_forward else aug_list
 
-    # Pre-create output directory
-    if output_path:
-        os.makedirs(output_path, exist_ok=True)
+#     # Pre-create output directory
+#     if output_path:
+#         os.makedirs(output_path, exist_ok=True)
 
-    # Process images
-    aligned_images = []
-    target_h, target_w = target_shape
+#     # Process images
+#     aligned_images = []
+#     target_h, target_w = target_shape
 
-    for idx, (img, aug_factor) in enumerate(zip(images, aug_factors)):
-        # Use cv2.INTER_AREA for scaling
-        img_resized = cv2.resize(img, None, fx=aug_factor, fy=aug_factor, interpolation=cv2.INTER_AREA)
+#     for idx, (img, aug_factor) in enumerate(zip(images, aug_factors)):
+#         # Use cv2.INTER_AREA for scaling
+#         img_resized = cv2.resize(img, None, fx=aug_factor, fy=aug_factor, interpolation=cv2.INTER_AREA)
 
-        # Calculate crop position
-        h, w = img_resized.shape[:2]
-        x = (w - target_w) // 2
-        y = (h - target_h) // 2
+#         # Calculate crop position
+#         h, w = img_resized.shape[:2]
+#         x = (w - target_w) // 2
+#         y = (h - target_h) // 2
 
-        # Crop image
-        img_crop = img_resized[y:y + target_h, x:x + target_w]
-        aligned_images.append(img_crop)
+#         # Crop image
+#         img_crop = img_resized[y:y + target_h, x:x + target_w]
+#         aligned_images.append(img_crop)
 
-        # Save results
-        if output_path:
-            # Use original filename if available, otherwise use default naming
-            if img_filenames:
-                output_file = os.path.join(output_path, img_filenames[idx])
-            else:
-                output_file = os.path.join(output_path, f'frame_{idx:04d}.png')
-            cv2.imwrite(output_file, img_crop)
+#         # Save results
+#         if output_path:
+#             # Use original filename if available, otherwise use default naming
+#             if img_filenames:
+#                 output_file = os.path.join(output_path, img_filenames[idx])
+#             else:
+#                 output_file = os.path.join(output_path, f'frame_{idx:04d}.png')
+#             cv2.imwrite(output_file, img_crop)
 
-    return aligned_images
+#     return aligned_images
 
 
 # ========== 基于变换矩阵的精确裁切函数 ==========
@@ -261,7 +261,7 @@ def _crop_with_transforms(images, H_matrices):
 
 # ========== 单应性对齐算法实现（非线性） ==========
 
-def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600):
+def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4):
     """
     商业级图像对齐算法优化版
     特性：
@@ -333,7 +333,12 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
 
     # 使用线程池并行提取特征
     # OpenCV 的大部分操作释放 GIL，因此多线程可以有效加速
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    try:
+        max_workers = max(1, int(thread_count))
+    except Exception:
+        max_workers = min(8, os.cpu_count() or 1)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         features_list = list(executor.map(get_features_task, images))
 
     # --- 3. 序列矩阵计算 (必须串行) ---
@@ -424,7 +429,7 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     # 准备参数
     warp_args = zip(images, H_matrices)
     
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         aligned_images = list(executor.map(warp_task, warp_args))
 
     # 如果有输出路径，保存图像
@@ -440,7 +445,7 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
 
 # ========== ECC对齐算法实现（高精度） ==========
 
-def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000):
+def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000, thread_count: int = 4):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -507,8 +512,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     print(f"Aligning {len(images)} images using ECC (Parallel Optimized)...")
 
     # --- 3. 并行预处理 ---
-    print("  - Step 1/3: Preprocessing images concurrently...")
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    # print("  - Step 1/3: Preprocessing images concurrently...")
+    try:
+        max_workers = max(1, int(thread_count))
+    except Exception:
+        max_workers = min(8, os.cpu_count() or 1)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # map 保证结果顺序与输入一致
         preprocessed_data = list(executor.map(preprocess, images))
 
@@ -520,7 +530,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         os.makedirs(output_path, exist_ok=True)
 
     # --- 4. 逐帧计算矩阵 (必须串行) ---
-    print("  - Step 2/3: Calculating ECC matrices...")
+    # print("  - Step 2/3: Calculating ECC matrices...")
     
     for idx in range(1, len(images)):
         curr_gray, _ = preprocessed_data[idx]
@@ -575,11 +585,11 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         # 更新上一帧
         last_gray = curr_gray
         
-        if idx % 5 == 0:
-            print(f"    Calculated matrix {idx}/{len(images)}...")
+        # if idx % 5 == 0:
+            # print(f"    Calculated matrix {idx}/{len(images)}...")
 
     # --- 5. 并行应用变换与裁切 ---
-    print("  - Step 3/3: Warping and saving concurrently...")
+    # print("  - Step 3/3: Warping and saving concurrently...")
 
     # 计算公共有效区域
     top, bottom, left, right = _compute_valid_region_from_transforms(H_matrices, (h_orig, w_orig))
@@ -595,7 +605,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         target_h = bottom - top
         offset_x = -left
         offset_y = -top
-        print(f"    Optimized: Warping directly to cropped region ({target_w}x{target_h})...")
+        # print(f"    Optimized: Warping directly to cropped region ({target_w}x{target_h})...")
 
     # 构造裁切平移矩阵
     T_crop = np.array([[1, 0, offset_x], [0, 1, offset_y], [0, 0, 1]], dtype=np.float32)
@@ -706,7 +716,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             aligned_images.append(warp_task(args))
     else:
         # CPU 模式下继续使用多线程
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             aligned_images = list(executor.map(warp_task, task_args))
 
     return aligned_images
@@ -832,35 +842,35 @@ def _stabilisation_impl(input_source, output_path=None, filenames=None):
     return stabilized_images
 
 
-# ========== 组合配准算法实现 ==========
+# # ========== 组合配准算法实现 ==========
 
-def _registration_impl(input_source, output_path=None):
-    """
-    组合配准算法内部实现
-    Args:
-        input_source: string (directory path) or list of images
-        output_path: string, directory path to save results (optional, None means no saving)
-    Returns:
-        list of registered images (always returns processed images regardless of output_path)
-    """
-    # Store original filenames if input is a directory
-    img_filenames = None
-    if isinstance(input_source, str):
-        num_pattern = re.compile(r"\d+")
-        img_paths = sorted(
-            (os.path.join(input_source, f) for f in os.listdir(input_source)
-             if os.path.splitext(f)[1].lower() in {'.jpg', '.jpeg', '.png', '.bmp', '.tif'}),
-            key=lambda x: int(num_pattern.findall(os.path.basename(x))[-1])
-        )
-        img_filenames = [os.path.basename(path) for path in img_paths]
+# def _registration_impl(input_source, output_path=None):
+#     """
+#     组合配准算法内部实现
+#     Args:
+#         input_source: string (directory path) or list of images
+#         output_path: string, directory path to save results (optional, None means no saving)
+#     Returns:
+#         list of registered images (always returns processed images regardless of output_path)
+#     """
+#     # Store original filenames if input is a directory
+#     img_filenames = None
+#     if isinstance(input_source, str):
+#         num_pattern = re.compile(r"\d+")
+#         img_paths = sorted(
+#             (os.path.join(input_source, f) for f in os.listdir(input_source)
+#              if os.path.splitext(f)[1].lower() in {'.jpg', '.jpeg', '.png', '.bmp', '.tif'}),
+#             key=lambda x: int(num_pattern.findall(os.path.basename(x))[-1])
+#         )
+#         img_filenames = [os.path.basename(path) for path in img_paths]
     
-    # Step 1: Coarse alignment using zoom
-    zoom_aligned_images = _align_zoom_impl(input_source)
+#     # Step 1: Coarse alignment using zoom
+#     zoom_aligned_images = _align_zoom_impl(input_source)
     
-    # Step 2: Fine registration using stabilisation
-    final_images = _stabilisation_impl(zoom_aligned_images, output_path, img_filenames)
+#     # Step 2: Fine registration using stabilisation
+#     final_images = _stabilisation_impl(zoom_aligned_images, output_path, img_filenames)
     
-    return final_images
+#     return final_images
 
 
 # ========== 统一接口类 ==========
@@ -909,7 +919,8 @@ class ImageRegistration:
     
     def process(self, 
                 input_source: Union[str, List[np.ndarray]], 
-                output_path: Optional[str] = None) -> List[np.ndarray]:
+                output_path: Optional[str] = None,
+                thread_count: int = 4) -> List[np.ndarray]:
         """
         执行图像配准
         
@@ -923,23 +934,24 @@ class ImageRegistration:
             list: 配准后的图像列表（始终返回，无论是否保存到磁盘）
         """
         if self.method == 'homography':
-            return self._process_homography(input_source, output_path)
+            return self._process_homography(input_source, output_path, thread_count=thread_count)
         elif self.method == 'ecc':
-            return self._process_ecc(input_source, output_path)
+            return self._process_ecc(input_source, output_path, thread_count=thread_count)
         elif self.method == 'both':
             # 组合模式：先 Homography，后 ECC
             # 第一步：Homography (不保存中间结果，除非只做这一步)
             print("=== Step 1: Homography Alignment ===")
             # 如果是 both 模式，第一步不需要保存到 output_path，只在内存中传递
-            homography_result = self._process_homography(input_source, output_path=None)
+            homography_result = self._process_homography(input_source, output_path=None, thread_count=thread_count)
             
             print("\n=== Step 2: ECC Alignment ===")
             # 第二步：ECC (保存最终结果)
-            return self._process_ecc(homography_result, output_path)
+            return self._process_ecc(homography_result, output_path, thread_count=thread_count)
     
     def _process_homography(self, 
                            input_source: Union[str, List[np.ndarray]], 
-                           output_path: Optional[str] = None) -> List[np.ndarray]:
+                           output_path: Optional[str] = None,
+                           thread_count: int = 4) -> List[np.ndarray]:
         """
         单应性对齐配准（非线性）
         
@@ -950,11 +962,12 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width)
+        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count)
     
     def _process_ecc(self, 
                     input_source: Union[str, List[np.ndarray]], 
-                    output_path: Optional[str] = None) -> List[np.ndarray]:
+                    output_path: Optional[str] = None,
+                    thread_count: int = 4) -> List[np.ndarray]:
         """
         ECC对齐配准（高精度、亚像素级）
         
@@ -965,7 +978,7 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width)
+        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count)
     
     def set_method(self, method: str):
         """
@@ -1030,21 +1043,21 @@ def register_images(input_source: Union[str, List[np.ndarray]],
 
 # ========== 向后兼容的函数别名 ==========
 
-def image_stack_align_zoom(input_source, output_path=None):
-    """向后兼容的函数别名"""
-    return _align_zoom_impl(input_source, output_path)
+# def image_stack_align_zoom(input_source, output_path=None):
+#     """向后兼容的函数别名"""
+#     return _align_zoom_impl(input_source, output_path)
 
-def image_stack_stabilisation(input_source, output_path=None, filenames=None):
-    """向后兼容的函数别名"""
-    return _stabilisation_impl(input_source, output_path, filenames)
+# def image_stack_stabilisation(input_source, output_path=None, filenames=None):
+#     """向后兼容的函数别名"""
+#     return _stabilisation_impl(input_source, output_path, filenames)
 
-def image_stack_registration(input_source, output_path=None):
-    """向后兼容的函数别名"""
-    return _registration_impl(input_source, output_path)
+# def image_stack_registration(input_source, output_path=None):
+#     """向后兼容的函数别名"""
+#     return _registration_impl(input_source, output_path)
 
-def process_image_stack(input_path, output_path=None):
-    """向后兼容的函数别名"""
-    return _registration_impl(input_path, output_path)
+# def process_image_stack(input_path, output_path=None):
+#     """向后兼容的函数别名"""
+#     return _registration_impl(input_path, output_path)
 
 def main():
     """

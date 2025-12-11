@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox
 
 from dialogs import DownsampleDialog
 from utils import show_message_box, show_warning_box
+from styles import MESSAGE_BOX_STYLE
 
 
 @dataclass
@@ -82,23 +83,96 @@ class SourceManager:
             return False
 
         urls = event.mimeData().urls()
-        if len(urls) != 1:
+        if not urls:
             return False
 
-        folder_path = urls[0].toLocalFile()
-        return os.path.isdir(folder_path)
+        # Accept if single directory, or one-or-more files
+        # We will further validate on drop
+        return True
 
     def handle_drop_event(self, event: QDropEvent) -> None:
         urls = event.mimeData().urls()
         if not urls:
             return
+        paths = [u.toLocalFile() for u in urls]
 
-        folder_path = urls[0].toLocalFile()
-        if os.path.isdir(folder_path):
-            self.load_image_stack(folder_path)
+        # If a single directory was dropped, keep existing behavior
+        if len(paths) == 1 and os.path.isdir(paths[0]):
+            self.load_image_stack(paths[0])
             event.acceptProposedAction()
-        else:
-            show_warning_box(self.window, "Error", "Please drag a folder, not a file")
+            return
+
+        # Otherwise treat dropped items as a list of files
+        filepaths = [p for p in paths if os.path.isfile(p)]
+        if not filepaths:
+            show_warning_box(self.window, "Error", "No valid files were dropped")
+            event.ignore()
+            return
+
+        # Filter by supported image extensions (use ImageStackLoader.SUPPORTED_FORMATS)
+        from image_loader import ImageStackLoader
+
+        loader = self.window.image_loader if hasattr(self.window, "image_loader") else ImageStackLoader()
+
+        valid_paths = []
+        for p in filepaths:
+            ext = os.path.splitext(p)[1].lower()
+            if ext in ImageStackLoader.SUPPORTED_FORMATS:
+                valid_paths.append(p)
+
+        if not valid_paths:
+            show_warning_box(self.window, "Error", "No supported image files were found in the dropped selection")
+            event.ignore()
+            return
+
+        # Prompt for downsample (same UX as folder loading)
+        try:
+            current_scale = getattr(self.window, "current_scale_factor", 1.0)
+            dlg = DownsampleDialog(self.window, initial_scale=current_scale)
+            if not dlg.exec():
+                # user cancelled
+                event.ignore()
+                return
+            scale = dlg.get_scale_factor()
+
+            success, message, full_res_images, filenames = loader.load_from_filepaths(valid_paths, scale_factor=scale)
+            if not success:
+                show_warning_box(self.window, "Load Failed", "Failed to load dropped images.", message)
+                event.ignore()
+                return
+            # Check image sizes (after loading / downsampling)
+            shapes = {(img.shape[0], img.shape[1]) for img in full_res_images}
+            if len(shapes) > 1:
+                # Ask user to continue or cancel (Continue/Cancel)
+                msg = QMessageBox(self.window)
+                msg.setWindowTitle("Image Size Mismatch")
+                msg.setText("Not all images have the same dimensions.")
+                msg.setInformativeText("Do you want to continue opening the stack?")
+                msg.setIcon(QMessageBox.Icon.Warning)
+                msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                # relabel buttons to Continue / Cancel
+                yes_btn = msg.button(QMessageBox.StandardButton.Yes)
+                no_btn = msg.button(QMessageBox.StandardButton.No)
+                if yes_btn:
+                    yes_btn.setText("Continue")
+                if no_btn:
+                    no_btn.setText("Cancel")
+                msg.setStyleSheet(MESSAGE_BOX_STYLE)
+                ret = msg.exec()
+                if ret != QMessageBox.StandardButton.Yes:
+                    event.ignore()
+                    return
+            load_options = self._build_load_options(full_res_images, filenames, scale)
+            self._apply_load_options(load_options)
+            event.acceptProposedAction()
+        except Exception as exc:  # pylint: disable=broad-except
+            show_message_box(
+                self.window,
+                "Load Error",
+                "An error occurred while loading the dropped images.",
+                f"Error: {str(exc)}",
+                QMessageBox.Icon.Critical,
+            )
             event.ignore()
 
     def _build_load_options(

@@ -38,6 +38,7 @@ class RightPanelComponents:
     rb_a: QRadioButton
     rb_b: QRadioButton
     rb_c: QRadioButton
+    rb_gfg: QRadioButton
     rb_d: QRadioButton
     cb_align_homography: QCheckBox
     cb_align_ecc: QCheckBox
@@ -77,12 +78,15 @@ def create_right_panel() -> RightPanelComponents:
     rb_b.setAutoExclusive(False)
     rb_c = QRadioButton("DTCWT")
     rb_c.setAutoExclusive(False)
+    rb_gfg = QRadioButton("GFG-FGF")
+    rb_gfg.setAutoExclusive(False)
     rb_d = QRadioButton("StackMFF-V4")
     rb_d.setAutoExclusive(False)
 
     method_layout.addWidget(rb_a)
     method_layout.addWidget(rb_b)
     method_layout.addWidget(rb_c)
+    method_layout.addWidget(rb_gfg)
     method_layout.addWidget(rb_d)
     method_layout.addStretch()
 
@@ -97,13 +101,13 @@ def create_right_panel() -> RightPanelComponents:
 
     registration_group = QGroupBox("Registration")
     registration_layout = QVBoxLayout(registration_group)
-    cb_align_homography = QCheckBox("Align (Homography)")
-    cb_align_homography.setChecked(True)
     cb_align_ecc = QCheckBox("Align (ECC)")
-    cb_align_ecc.setChecked(False)
+    cb_align_ecc.setChecked(True)
+    cb_align_homography = QCheckBox("Align (Homography)")
+    cb_align_homography.setChecked(False)
 
-    registration_layout.addWidget(cb_align_homography)
     registration_layout.addWidget(cb_align_ecc)
+    registration_layout.addWidget(cb_align_homography)
     registration_layout.addStretch()
 
     reg_help_layout = QHBoxLayout()
@@ -192,6 +196,7 @@ def create_right_panel() -> RightPanelComponents:
         rb_a=rb_a,
         rb_b=rb_b,
         rb_c=rb_c,
+        rb_gfg=rb_gfg,
         rb_d=rb_d,
         cb_align_homography=cb_align_homography,
         cb_align_ecc=cb_align_ecc,
@@ -211,6 +216,7 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.rb_a.clicked.connect(lambda: window.handle_method_selection(components.rb_a))
     components.rb_b.clicked.connect(lambda: window.handle_method_selection(components.rb_b))
     components.rb_c.clicked.connect(lambda: window.handle_method_selection(components.rb_c))
+    components.rb_gfg.clicked.connect(lambda: window.handle_method_selection(components.rb_gfg))
     components.rb_d.clicked.connect(lambda: window.handle_method_selection(components.rb_d))
 
     components.btn_method_help.clicked.connect(lambda: RenderMethodHelpDialog(window).exec())
@@ -224,6 +230,7 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.rb_a.clicked.connect(window.update_slider_availability)
     components.rb_b.clicked.connect(window.update_slider_availability)
     components.rb_c.clicked.connect(window.update_slider_availability)
+    components.rb_gfg.clicked.connect(window.update_slider_availability)
     components.rb_d.clicked.connect(window.update_slider_availability)
 
     components.file_list.customContextMenuRequested.connect(window.source_manager.show_source_context_menu)

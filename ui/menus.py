@@ -126,6 +126,10 @@ def setup_menus(window: QMainWindow) -> None:
     registration_action.triggered.connect(lambda: window.show_registration_settings())
     settings_menu.addAction(registration_action)
 
+    thread_settings_action = QAction("Thread Count Settings", window)
+    thread_settings_action.triggered.connect(lambda: window.show_thread_settings())
+    settings_menu.addAction(thread_settings_action)
+
     help_menu = menubar.addMenu("Help")
 
     env_action = QAction("Environment Info", window)
