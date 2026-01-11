@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QUrl, QEvent
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtGui import QFont, QIcon, QDragEnterEvent, QDropEvent, QImage
-from core.image_loader import ImageStackLoader
+from core import ImageStackLoader
 import cv2
 from ui.styles import GLOBAL_DARK_STYLE
 from locales import trans
@@ -45,7 +45,7 @@ from controllers.label_manager import LabelManager
 from controllers.export_manager import ExportManager
 from controllers.transform_manager import TransformManager
 from controllers.batch_manager import BatchManager
-from core.multi_focus_fusion import is_stackmffv4_available
+from core import is_stackmffv4_available
 from constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,

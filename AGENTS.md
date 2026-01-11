@@ -1,6 +1,6 @@
 # OPENFOCUS KNOWLEDGE BASE
 
-**Generated:** 2026-01-11 22:25
+**Generated:** 2026-01-11
 **Type:** PyQt6 Desktop Application (Python 3.10+)
 
 ## OVERVIEW
@@ -12,16 +12,24 @@ OpenFocus/
 ├── main.py                    # Entry point (OpenFocus QMainWindow)
 ├── config.py                  # Dataclasses: FusionMethod, ROIMode, Options
 ├── constants.py               # SCREAMING_SNAKE constants
-├── styles.py                  # QSS dark theme
 ├── locales.py                 # i18n (en/zh, timezone auto-detect)
 ├── controllers/               # 7 managers (MVC pattern)
-│   ├── source_manager.py      # Image loading, drag-drop
-│   ├── render_manager.py      # Fusion orchestration
-│   ├── output_manager.py      # Result handling
-│   ├── export_manager.py      # GIF/PNG/BMP/TIFF export
-│   ├── label_manager.py       # Annotation labels
-│   ├── transform_manager.py   # Image transformations
-│   └── batch_manager.py       # Batch processing
+│   ├── source_manager.py      # Image loading, drag-drop, stack management
+│   ├── render_manager.py      # Fusion pipeline orchestration
+│   ├── output_manager.py      # Result display, history
+│   ├── export_manager.py      # GIF/PNG/BMP/TIFF + metadata
+│   ├── label_manager.py       # ROI labels, annotations
+│   ├── transform_manager.py   # Crop, resize, rotation
+│   └── batch_manager.py       # Multi-folder batch jobs
+├── core/                      # Core processing modules
+│   ├── __init__.py            # Unified exports
+│   ├── image_loader.py        # Image stack loading and processing
+│   ├── registration.py        # Image registration algorithms (Homography, ECC)
+│   ├── multi_focus_fusion.py  # Multi-focus image fusion orchestrator
+│   ├── workers.py             # Background thread workers for rendering
+│   └── models/                # Neural network models
+│       ├── __init__.py
+│       └── stackmffv4_network.py  # StackMFF-V4 neural network
 ├── dialogs/                   # Refactored dialogs (modularized from monolithic dialogs.py)
 │   ├── __init__.py            # Unified exports
 │   ├── about.py               # EnvironmentInfoDialog, ContactInfoDialog
@@ -30,16 +38,25 @@ OpenFocus/
 │   ├── batch.py               # BatchProcessingDialog, FolderImportDialog
 │   └── roi.py                 # ROIRenderOptionsDialog
 ├── fusion_methods/            # Algorithm implementations
+│   ├── __init__.py            # Unified exports
 │   ├── gff.py                 # Guided Filter Fusion
 │   ├── dct.py                 # DCT Multi-Focus Fusion
 │   ├── dtcwt.py               # Dual-Tree Complex Wavelet
 │   ├── gfg_fgf.py             # Gradient-based Fusion
 │   └── stackmffv4.py          # PyTorch neural model
 ├── ui/                        # UI components
+│   ├── __init__.py
 │   ├── image_panels.py        # Source/Result display
 │   ├── menus.py               # Menu bar setup
-│   └── right_panel.py         # Control panel
-├── widgets/
+│   ├── right_panel.py         # Control panel
+│   └── styles.py              # QSS dark theme
+├── utils/                     # Utility modules
+│   ├── __init__.py            # Unified exports
+│   ├── image_utils.py         # Image conversion (pixmap <-> cv2)
+│   ├── ui_utils.py            # Message boxes, dialog helpers
+│   └── validators.py          # Validation and utility functions
+├── widgets/                   # Custom widgets
+│   ├── __init__.py
 │   └── magnifier_label.py     # Zoom magnifier
 └── assets/, weights/, docs/
 ```
@@ -48,8 +65,11 @@ OpenFocus/
 | Task | Location |
 |------|----------|
 | Add fusion algorithm | `fusion_methods/` (follow `gff.py` pattern) |
-| UI changes | `ui/` or `styles.py` (QSS) |
-| Image processing | `workers.py`, `multi_focus_fusion.py`, `Registration.py` |
+| UI changes | `ui/` (styles.py for QSS, right_panel.py for controls) |
+| Image registration | `core/registration.py` (Homography, ECC algorithms) |
+| Image fusion | `core/multi_focus_fusion.py` (orchestrator) |
+| Background workers | `core/workers.py` (render thread workers) |
+| Neural network | `core/models/stackmffv4_network.py` (StackMFF-V4) |
 | Configuration | `config.py` (dataclasses), `constants.py` (values) |
 | i18n | `locales.py` (translations dict) |
 | Batch processing | `controllers/batch_manager.py` |
@@ -60,22 +80,24 @@ OpenFocus/
 ### NEVER DO
 1. **Emit `roiDeleted` during ROI creation** (`main.py:341`) — toggles button off unexpectedly
 2. **Use GPU acceleration with DCT/DTCWT/Guided Filter** — CPU only
-3. **Multi-thread with CuPy** — causes PCIe contention (`Registration.py:712`)
+3. **Multi-thread with CuPy** — causes PCIe contention (`core/registration.py:712`)
 4. **Resize images after DCT fusion starts** — DCT doesn't support dynamic resize
 5. **Hold all tile results in memory** — use `as_completed` pattern
 6. **Add new dialogs to monolithic files** — Use `dialogs/` module structure
+7. **Duplicate utility functions** — Use `utils/` modules instead
 
 ### ALWAYS
-1. **Validate crop regions** before transformations (`Registration.py:403`)
-2. **Ensure kernel_size is odd** (`workers.py:429`)
+1. **Validate crop regions** before transformations (`core/registration.py:403`)
+2. **Ensure kernel_size is odd** — use `utils.validators.normalize_kernel_size()`
 3. **Use tile mode for images > 2048px** — auto-switches (`constants.py: TILE_THRESHOLD`)
-4. **Validate thread_count** — `max(1, int(thread_count))` (`workers.py:76`)
+4. **Validate thread_count** — `max(1, int(thread_count))` (`core/workers.py:76`)
 5. **New dialogs** go in `dialogs/` subdirectory (see existing patterns)
+6. **Import from parent modules** — Use `from core import MultiFocusFusion` not `from core.multi_focus_fusion import MultiFocusFusion`
 
-### PERFORMANCE NOTES
+## PERFORMANCE NOTES
 - DCT/DTCWT/Guided Filter: CPU only, no GPU
-- StackMFF V4: Force serial to avoid GPU OOM (`workers.py:606`)
-- Large images: Tiled fusion auto-enabled (`multi_focus_fusion.py:253`)
+- StackMFF V4: Force serial to avoid GPU OOM (`core/workers.py:606`)
+- Large images: Tiled fusion auto-enabled (`core/multi_focus_fusion.py:253`)
 
 ## CONVENTIONS
 
@@ -91,15 +113,13 @@ OpenFocus/
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `Registration.py` | 1093 | Registration algorithms |
-| `multi_focus_fusion.py` | 778 | Fusion orchestrator |
-| `workers.py` | 737 | Background thread workers |
-| `network.py` | 630 | Network utilities |
-| `locales.py` | 563 | i18n translations |
-| `styles.py` | 422 | QSS stylesheets |
-| `dialogs/` | ~75/total | ✅ REFACTORED — Split into modular files |
-| `dialogs/batch.py` | 891 | BatchProcessingDialog |
-| `dialogs/settings.py` | 643 | Settings dialogs |
+| `core/registration.py` | ~1100 | Registration algorithms (Homography, ECC) |
+| `core/multi_focus_fusion.py` | ~778 | Fusion orchestrator |
+| `core/workers.py` | ~737 | Background thread workers |
+| `locales.py` | ~563 | i18n translations |
+| `ui/styles.py` | ~422 | QSS stylesheets |
+| `dialogs/batch.py` | ~891 | BatchProcessingDialog |
+| `dialogs/settings.py` | ~643 | Settings dialogs |
 
 ## COMMANDS
 ```bash
@@ -109,7 +129,7 @@ python main.py
 # Environment (conda)
 conda create -n openfocus python=3.10
 conda activate openfocus
-pip install opencv-python pyqt6 numpy imageio dtcwt scipy torch torchvision
+pip install opencv-python pyqt6 numpy imageio dtcwt scipy torch torchvision 
 
 # Build (Windows)
 # See docs/BUILD_COMMANDS.md
@@ -119,4 +139,4 @@ pip install opencv-python pyqt6 numpy imageio dtcwt scipy torch torchvision
 - **No test infrastructure** — zero test files, pytest not configured
 - **No pyproject.toml** — no modern Python packaging
 - **i18n auto-detects** timezone UTC+8 → Chinese, else English
-- **Empty `dialogs/` dir** — `dialogs.py` should be refactored there
+- **Dialogs refactored** — monolithic `dialogs.py` split into `dialogs/` module (✅ COMPLETE)

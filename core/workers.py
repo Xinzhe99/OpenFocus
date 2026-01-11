@@ -6,7 +6,7 @@ import numpy as np
 import imageio.v2 as imageio
 from core.registration import ImageRegistration
 from core.multi_focus_fusion import MultiFocusFusion
-from utils import resource_path
+from utils import resource_path, normalize_kernel_size
 from constants import (
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     DEFAULT_THREAD_COUNT
@@ -222,7 +222,7 @@ class RenderWorker(QThread):
         info = fusion.get_info()
         device_name = info['device']
 
-        kernel_size = self._normalize_kernel_size()
+        kernel_size = normalize_kernel_size(self.kernel_slider_value)
 
         if algorithm == "guided_filter":
             result = fusion.fuse(
@@ -284,13 +284,6 @@ class RenderWorker(QThread):
             return "stackmffv4"
         else:
             return "guided_filter"
-
-    def _normalize_kernel_size(self):
-        """规范化核大小为奇数"""
-        value = max(1, int(self.kernel_slider_value))
-        if value % 2 == 0:
-            value = max(1, value - 1)
-        return value
 
     def _apply_roi_pasting(self, fusion_result, base_image, roi_rect_int):
         """将融合结果粘贴回基准图像"""
