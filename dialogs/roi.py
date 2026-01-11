@@ -1,8 +1,12 @@
+# dialogs/roi.py
+"""ROI-related dialogs."""
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QRadioButton, QGroupBox, QComboBox, QDialogButtonBox, QLabel, QHBoxLayout, QPushButton
 )
 from PyQt6.QtCore import Qt
 from locales import trans
+
 
 class ROIRenderOptionsDialog(QDialog):
     """Dialog to ask user how to handle ROI fusion result."""

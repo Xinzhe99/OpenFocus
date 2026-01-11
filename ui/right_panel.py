@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from dialogs import RegistrationHelpDialog, RenderMethodHelpDialog
-from styles import (
+from ui.styles import (
     HELP_BUTTON_STYLE,
     HOVER_HIGHLIGHT_BUTTON_STYLE,
     OUTPUT_LIST_STYLE,

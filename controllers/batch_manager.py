@@ -5,8 +5,8 @@ from typing import Iterable, Optional
 from PyQt6.QtCore import QThread, Qt
 from PyQt6.QtWidgets import QMessageBox, QProgressDialog
 
-from styles import MESSAGE_BOX_STYLE, PROGRESS_DIALOG_STYLE
-from workers import BatchWorker
+from ui.styles import MESSAGE_BOX_STYLE, PROGRESS_DIALOG_STYLE
+from core.workers import BatchWorker
 
 
 class BatchManager:
@@ -28,7 +28,7 @@ class BatchManager:
                 folder_name = os.path.basename(folder_path)
                 from PyQt6.QtWidgets import QListWidgetItem
                 from PyQt6.QtGui import QIcon
-                from image_loader import ImageStackLoader
+                from core.image_loader import ImageStackLoader
                 item = QListWidgetItem(f"{folder_name}\n{folder_path}")
                 loader = ImageStackLoader()
                 success, _, images, _ = loader.load_from_folder(folder_path)

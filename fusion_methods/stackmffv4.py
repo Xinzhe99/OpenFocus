@@ -50,7 +50,7 @@ def _stackmffv4_impl(input_source, img_resize, model_path, use_gpu):
     """
     if torch is None or F is None:
         raise ImportError("PyTorch not installed")
-    from network import StackMFF_V4
+    from core.models.stackmffv4_network import StackMFF_V4
 
     if use_gpu and _MPS_AVAILABLE:
         device = torch.device('mps')

@@ -7,14 +7,14 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
 
 from dialogs import DurationDialog
-from styles import PROGRESS_DIALOG_STYLE
+from ui.styles import PROGRESS_DIALOG_STYLE
 from utils import (
     show_error_box,
     show_message_box,
     show_success_box,
     show_warning_box,
 )
-from workers import GifSaverWorker
+from core.workers import GifSaverWorker
 
 ALLOWED_EXPORT_EXTENSION_MAP = {
     ".png": ".png",

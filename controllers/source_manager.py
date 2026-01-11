@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox, QD
 
 from dialogs import DownsampleDialog
 from utils import show_message_box, show_warning_box
-from styles import MESSAGE_BOX_STYLE
+from ui.styles import MESSAGE_BOX_STYLE
 
 
 @dataclass

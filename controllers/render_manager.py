@@ -4,9 +4,9 @@ from typing import Any, List, Optional
 from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
 
 from utils import show_custom_message_box, show_message_box, show_warning_box
-from multi_focus_fusion import is_stackmffv4_available
-from workers import RenderWorker
-from roi_dialog import ROIRenderOptionsDialog # Import the new dialog
+from core.multi_focus_fusion import is_stackmffv4_available
+from core.workers import RenderWorker
+from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
 
 

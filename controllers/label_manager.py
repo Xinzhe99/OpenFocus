@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from styles import WHITE_COMBOBOX_STYLE
+from ui.styles import WHITE_COMBOBOX_STYLE
 from utils import (
     LabelAdder,
     cv2_to_pixmap,
@@ -136,7 +136,7 @@ class LabelManager:
         dialog.setWindowTitle(trans.t('add_label_title'))
         dialog.setFixedSize(500, 650)
 
-        from styles import ADD_LABEL_DIALOG_STYLE  # Local import to avoid circular deps
+        from ui.styles import ADD_LABEL_DIALOG_STYLE  # Local import to avoid circular deps
 
         dialog.setStyleSheet(ADD_LABEL_DIALOG_STYLE)
 

@@ -4,9 +4,13 @@ import os
 import cv2
 import numpy as np
 import imageio.v2 as imageio
-from Registration import ImageRegistration
-from multi_focus_fusion import MultiFocusFusion
+from core.registration import ImageRegistration
+from core.multi_focus_fusion import MultiFocusFusion
 from utils import resource_path
+from constants import (
+    TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
+    DEFAULT_THREAD_COUNT
+)
 
 
 class RenderWorker(QThread):
@@ -35,7 +39,7 @@ class RenderWorker(QThread):
         tile_overlap=None,
         tile_threshold=None,
         reg_downscale_width=None,
-        thread_count: int = 4,
+        thread_count: int = DEFAULT_THREAD_COUNT,
         roi_rect=None,
         roi_mode="crop", # 'crop' or 'paste'
         roi_base_index=0,
@@ -79,7 +83,7 @@ class RenderWorker(QThread):
         try:
             alignment_time = 0
             fusion_time = 0
-            use_gpu = False
+            device_name = "CPU"
 
             current_alignment_options = (
                 self.need_align_homography,
@@ -95,6 +99,7 @@ class RenderWorker(QThread):
                 and self.last_alignment_options == current_alignment_options
             )
 
+            # 1. 配准阶段
             if need_registration and can_reuse_aligned_images:
                 processed_images = self.aligned_images
                 registration_performed = True
@@ -104,157 +109,23 @@ class RenderWorker(QThread):
 
                 if need_registration:
                     alignment_start_time = time.time()
+                    processed_images, alignment_time = self._run_registration(processed_images)
+                    registration_performed = True
 
-                    # 确定配准模式
-                    if self.need_align_homography and self.need_align_ecc:
-                        mode = "both"
-                    elif self.need_align_homography:
-                        mode = "homography"
-                    elif self.need_align_ecc:
-                        mode = "ecc"
-                    else:
-                        mode = None # Should not happen if need_registration is True
+            # 2. ROI裁剪阶段
+            cropped_images, base_full_image, roi_rect_int = self._apply_roi_cropping(processed_images)
 
-                    if mode:
-                        # Pass configured downscale width into ImageRegistration when available
-                        if self.reg_downscale_width is not None:
-                            registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
-                        else:
-                            registration = ImageRegistration(method=mode)
-                        # pass thread_count into registration processing
-                        processed_images = registration.process(processed_images, output_path=None, thread_count=self.thread_count)
-                        registration_performed = True
-
-                    alignment_time = time.time() - alignment_start_time
-                else:
-                    if can_reuse_aligned_images:
-                        processed_images = self.aligned_images
-                        registration_performed = True
-                    else:
-                        processed_images = self.raw_images.copy()
-                        registration_performed = False
-
-            # --- ROI Cropping Logic ---
-            base_full_image = None # For 'paste' mode
-            roi_original_rect_int = None
-
-            if self.roi_rect is not None and len(processed_images) > 0:
-                rx, ry, rw, rh = int(self.roi_rect.x()), int(self.roi_rect.y()), int(self.roi_rect.width()), int(self.roi_rect.height())
-                h, w = processed_images[0].shape[:2]
-                rx = max(0, min(rx, w))
-                ry = max(0, min(ry, h))
-                rw = max(1, min(rw, w - rx))
-                rh = max(1, min(rh, h - ry))
-                
-                roi_original_rect_int = (rx, ry, rw, rh) # x, y, w, h
-                
-                # If paste mode, save the base frame before cropping
-                if self.roi_mode == "paste":
-                    idx = max(0, min(self.roi_base_index, len(processed_images) - 1))
-                    base_full_image = processed_images[idx].copy()
-                
-                cropped_stack = []
-                for img in processed_images:
-                    if img.ndim == 3:
-                        crop = img[ry:ry+rh, rx:rx+rw, :]
-                    else:
-                        crop = img[ry:ry+rh, rx:rx+rw]
-                    cropped_stack.append(crop)
-                processed_images = cropped_stack
-            # --------------------------
-
+            # 3. 融合阶段
             fusion_result = None
             if self.need_fusion:
                 fusion_start_time = time.time()
+                # 使用裁剪后的图像进行融合（如果ROI已启用）
+                fusion_images = cropped_images if cropped_images is not None else processed_images
+                fusion_result, device_name = self._run_fusion(fusion_images)
 
-                if self.rb_a_checked:
-                    algorithm = "guided_filter"
-                elif self.rb_b_checked:
-                    algorithm = "dct"
-                elif self.rb_c_checked:
-                    algorithm = "dtcwt"
-                elif self.rb_gfg_checked:
-                    algorithm = "gfgfgf"
-                elif self.rb_d_checked:
-                    algorithm = "stackmffv4"
-                else:
-                    algorithm = "guided_filter"
-
-                fusion = MultiFocusFusion(
-                    algorithm=algorithm,
-                    use_gpu=True,
-                    tile_enabled=(self.tile_enabled if self.tile_enabled is not None else True),
-                    tile_block_size=(self.tile_block_size if self.tile_block_size is not None else 1024),
-                    tile_overlap=(self.tile_overlap if self.tile_overlap is not None else 256),
-                    tile_threshold=(self.tile_threshold if self.tile_threshold is not None else 2048),
-                )
-                info = fusion.get_info()
-                device_name = info['device']
-
-                kernel_size_value = max(1, int(self.kernel_slider_value))
-                if kernel_size_value % 2 == 0:
-                    kernel_size_value = max(1, kernel_size_value - 1)
-
-                if algorithm == "guided_filter":
-                    fusion_result = fusion.fuse(
-                        input_source=processed_images,
-                        img_resize=None,
-                        kernel_size=kernel_size_value,
-                        thread_count=self.thread_count,
-                    )
-                elif algorithm == "dct":
-                    fusion_result = fusion.fuse(
-                        input_source=processed_images,
-                        img_resize=None,
-                        block_size=8,
-                        kernel_size=kernel_size_value,
-                        thread_count=self.thread_count,
-                    )
-                elif algorithm == "dtcwt":
-                    fusion_result = fusion.fuse(
-                        input_source=processed_images,
-                        img_resize=None,
-                        thread_count=self.thread_count,
-                    )
-                elif algorithm == "gfgfgf":
-                    fusion_result = fusion.fuse(
-                        input_source=processed_images,
-                        img_resize=None,
-                        kernel_size=kernel_size_value,
-                        thread_count=self.thread_count,
-                    )
-                elif algorithm == "stackmffv4":
-                    model_path = resource_path("weights", "stackmffv4.pth")
-                    fusion_result = fusion.fuse(
-                        input_source=processed_images,
-                        img_resize=None,
-                        model_path=model_path,
-                        thread_count=self.thread_count,
-                    )
-
-                # --- ROI Paste Logic ---
-                if self.roi_mode == "paste" and base_full_image is not None and fusion_result is not None and roi_original_rect_int is not None:
-                    rx, ry, rw, rh = roi_original_rect_int
-                    
-                    # Ensure dimensions match (fusion result might vary slightly or be float range?)
-                    # Usually fusion result matches input size (ROI size)
-                    fused_patch = fusion_result
-                    
-                    # Handle channels. Base might be RGB, fused might be grayscale if input was? 
-                    # Assuming consistency.
-                    
-                    # Simply paste
-                    if base_full_image.ndim == 3 and fused_patch.ndim == 3:
-                        base_full_image[ry:ry+rh, rx:rx+rw, :] = fused_patch[:rh, :rw, :]
-                    elif base_full_image.ndim == 2 and fused_patch.ndim == 2:
-                        base_full_image[ry:ry+rh, rx:rx+rw] = fused_patch[:rh, :rw]
-                    elif base_full_image.ndim == 3 and fused_patch.ndim == 2:
-                         # Broadcast grayscale patch to RGB base
-                         for c in range(3):
-                             base_full_image[ry:ry+rh, rx:rx+rw, c] = fused_patch[:rh, :rw]
-                    
-                    fusion_result = base_full_image
-                 # -----------------------
+                # ROI粘贴阶段
+                if self.roi_mode == "paste" and base_full_image is not None and fusion_result is not None and roi_rect_int is not None:
+                    fusion_result = self._apply_roi_pasting(fusion_result, base_full_image, roi_rect_int)
 
                 fusion_time = time.time() - fusion_start_time
 
@@ -266,11 +137,179 @@ class RenderWorker(QThread):
                 fusion_time,
                 device_name,
             )
-        except Exception as e:  # pragma: no cover - 运行时异常路径
+        except Exception as e:
             self.error_signal.emit(str(e))
             import traceback
-
             traceback.print_exc()
+
+    def _run_registration(self, images):
+        """执行图像配准"""
+        alignment_start_time = time.time()
+
+        if self.need_align_homography and self.need_align_ecc:
+            mode = "both"
+        elif self.need_align_homography:
+            mode = "homography"
+        elif self.need_align_ecc:
+            mode = "ecc"
+        else:
+            return images, 0
+
+        if self.reg_downscale_width is not None:
+            registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
+        else:
+            registration = ImageRegistration(method=mode)
+
+        processed = registration.process(images, output_path=None, thread_count=self.thread_count)
+        alignment_time = time.time() - alignment_start_time
+
+        return processed, alignment_time
+
+    def _apply_roi_cropping(self, images):
+        """应用ROI裁剪，返回(裁剪后图像栈, 基准图像, ROI矩形)"""
+        base_full_image = None
+        roi_rect_int = None
+
+        if self.roi_rect is not None and len(images) > 0:
+            rx, ry, rw, rh = self._normalize_roi_rect(images[0].shape)
+
+            roi_rect_int = (rx, ry, rw, rh)
+
+            if self.roi_mode == "paste":
+                idx = max(0, min(self.roi_base_index, len(images) - 1))
+                base_full_image = images[idx].copy()
+
+            cropped_stack = []
+            for img in images:
+                if img.ndim == 3:
+                    crop = img[ry:ry+rh, rx:rx+rw, :]
+                else:
+                    crop = img[ry:ry+rh, rx:rx+rw]
+                cropped_stack.append(crop)
+
+            return cropped_stack, base_full_image, roi_rect_int
+
+        return None, None, None
+
+    def _normalize_roi_rect(self, image_shape):
+        """规范化ROI矩形边界"""
+        rx = int(self.roi_rect.x())
+        ry = int(self.roi_rect.y())
+        rw = int(self.roi_rect.width())
+        rh = int(self.roi_rect.height())
+
+        h, w = image_shape[:2]
+        rx = max(0, min(rx, w))
+        ry = max(0, min(ry, h))
+        rw = max(1, min(rw, w - rx))
+        rh = max(1, min(rh, h - ry))
+
+        return rx, ry, rw, rh
+
+    def _run_fusion(self, images):
+        """执行图像融合，返回(融合结果, 设备名称)"""
+        algorithm = self._get_fusion_algorithm()
+
+        fusion = MultiFocusFusion(
+            algorithm=algorithm,
+            use_gpu=True,
+            tile_enabled=(self.tile_enabled if self.tile_enabled is not None else True),
+            tile_block_size=(self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE),
+            tile_overlap=(self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP),
+            tile_threshold=(self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD),
+        )
+
+        info = fusion.get_info()
+        device_name = info['device']
+
+        kernel_size = self._normalize_kernel_size()
+
+        if algorithm == "guided_filter":
+            result = fusion.fuse(
+                input_source=images,
+                img_resize=None,
+                kernel_size=kernel_size,
+                thread_count=self.thread_count,
+            )
+        elif algorithm == "dct":
+            result = fusion.fuse(
+                input_source=images,
+                img_resize=None,
+                block_size=8,
+                kernel_size=kernel_size,
+                thread_count=self.thread_count,
+            )
+        elif algorithm == "dtcwt":
+            result = fusion.fuse(
+                input_source=images,
+                img_resize=None,
+                thread_count=self.thread_count,
+            )
+        elif algorithm == "gfgfgf":
+            result = fusion.fuse(
+                input_source=images,
+                img_resize=None,
+                kernel_size=kernel_size,
+                thread_count=self.thread_count,
+            )
+        elif algorithm == "stackmffv4":
+            model_path = resource_path("weights", "stackmffv4.pth")
+            result = fusion.fuse(
+                input_source=images,
+                img_resize=None,
+                model_path=model_path,
+                thread_count=self.thread_count,
+            )
+        else:
+            result = fusion.fuse(
+                input_source=images,
+                img_resize=None,
+                kernel_size=kernel_size,
+                thread_count=self.thread_count,
+            )
+
+        return result, device_name
+
+    def _get_fusion_algorithm(self):
+        """根据UI选择获取融合算法名称"""
+        if self.rb_a_checked:
+            return "guided_filter"
+        elif self.rb_b_checked:
+            return "dct"
+        elif self.rb_c_checked:
+            return "dtcwt"
+        elif self.rb_gfg_checked:
+            return "gfgfgf"
+        elif self.rb_d_checked:
+            return "stackmffv4"
+        else:
+            return "guided_filter"
+
+    def _normalize_kernel_size(self):
+        """规范化核大小为奇数"""
+        value = max(1, int(self.kernel_slider_value))
+        if value % 2 == 0:
+            value = max(1, value - 1)
+        return value
+
+    def _apply_roi_pasting(self, fusion_result, base_image, roi_rect_int):
+        """将融合结果粘贴回基准图像"""
+        rx, ry, rw, rh = roi_rect_int
+
+        # 确保融合结果尺寸匹配（分块融合时可能尺寸不完全一致）
+        fr_h, fr_w = fusion_result.shape[:2]
+        copy_h = min(fr_h, rh)
+        copy_w = min(fr_w, rw)
+
+        if base_image.ndim == 3 and fusion_result.ndim == 3:
+            base_image[ry:ry+copy_h, rx:rx+copy_w, :] = fusion_result[:copy_h, :copy_w, :]
+        elif base_image.ndim == 2 and fusion_result.ndim == 2:
+            base_image[ry:ry+copy_h, rx:rx+copy_w] = fusion_result[:copy_h, :copy_w]
+        elif base_image.ndim == 3 and fusion_result.ndim == 2:
+            for c in range(3):
+                base_image[ry:ry+copy_h, rx:rx+copy_w, c] = fusion_result[:copy_h, :copy_w]
+
+        return base_image
 
 
 class BatchWorker(QThread):
@@ -430,9 +469,9 @@ class BatchWorker(QThread):
 
             tile_kwargs = {}
             tile_kwargs.setdefault('tile_enabled', self.tile_enabled if self.tile_enabled is not None else True)
-            tile_kwargs.setdefault('tile_block_size', self.tile_block_size if self.tile_block_size is not None else 1024)
-            tile_kwargs.setdefault('tile_overlap', self.tile_overlap if self.tile_overlap is not None else 256)
-            tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else 2048)
+            tile_kwargs.setdefault('tile_block_size', self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE)
+            tile_kwargs.setdefault('tile_overlap', self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP)
+            tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD)
 
             fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=True, **tile_kwargs)
 
@@ -558,9 +597,9 @@ class BatchWorker(QThread):
 
             # Fallback to worker-level (window) settings if not provided
             tile_kwargs.setdefault('tile_enabled', self.tile_enabled if self.tile_enabled is not None else True)
-            tile_kwargs.setdefault('tile_block_size', self.tile_block_size if self.tile_block_size is not None else 1024)
-            tile_kwargs.setdefault('tile_overlap', self.tile_overlap if self.tile_overlap is not None else 256)
-            tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else 2048)
+            tile_kwargs.setdefault('tile_block_size', self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE)
+            tile_kwargs.setdefault('tile_overlap', self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP)
+            tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD)
 
             fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=True, **tile_kwargs)
             
