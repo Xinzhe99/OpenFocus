@@ -372,8 +372,7 @@ QCheckBox::indicator {{
     background-color: #333;
 }}
 QCheckBox::indicator:checked {{
-    background-color: {PRIMARY_BLUE};
-    border: 1px solid {PRIMARY_BLUE};
+    background: qradialgradient(cx:0.5, cy:0.5, radius:0.4, fx:0.5, fy:0.5, stop:0 #fff, stop:0.7 #fff, stop:0.71 #333, stop:1 #333);
 }}
 """
 

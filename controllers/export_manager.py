@@ -34,6 +34,32 @@ EXPORT_EXTENSION_ALIASES = {
 DEFAULT_EXPORT_EXTENSION = ".png"
 
 
+def get_imwrite_params(extension: str) -> list:
+    """Get OpenCV imwrite parameters for maximum quality based on file extension.
+
+    Args:
+        extension: File extension (e.g., '.jpg', '.png', '.tif', '.bmp')
+
+    Returns:
+        List of parameter tuples for cv2.imwrite, or empty list if no special params needed
+    """
+    ext = extension.lower()
+    if ext in (".jpg", ".jpeg", ".jpe", ".jfif"):
+        # JPG: 100 quality (highest, default is ~95)
+        return [cv2.IMWRITE_JPEG_QUALITY, 100]
+    elif ext in (".png",):
+        # PNG: 0 compression (no compression, default is 3)
+        return [cv2.IMWRITE_PNG_COMPRESSION, 0]
+    elif ext in (".tif", ".tiff"):
+        # TIFF: LZW compression disabled (compression flag 1 = no compression)
+        return [cv2.IMWRITE_TIFF_COMPRESSION, 1]
+    elif ext in (".bmp",):
+        # BMP: No quality parameters needed (always lossless)
+        return []
+    else:
+        return []
+
+
 class ExportManager:
     """Handles save and export workflows for the main window."""
 
@@ -163,7 +189,9 @@ class ExportManager:
             if index < 0:
                 index = 0
             image_to_save = window.label_manager.prepare_bgr_image("registered", result_to_save, index)
-            if cv2.imwrite(file_path, image_to_save):
+            ext = os.path.splitext(file_path)[1].lower()
+            params = get_imwrite_params(ext)
+            if cv2.imwrite(file_path, image_to_save, params):
                 show_message_box(
                     window,
                     "Success",
@@ -223,7 +251,9 @@ class ExportManager:
                     filename = f"registered_{index + 1:04d}{DEFAULT_EXPORT_EXTENSION}"
                 file_path = os.path.join(folder_path, filename)
                 file_path = self.normalize_export_path(file_path)
-                if cv2.imwrite(file_path, image_to_save):
+                ext = os.path.splitext(file_path)[1].lower()
+                params = get_imwrite_params(ext)
+                if cv2.imwrite(file_path, image_to_save, params):
                     saved_count += 1
 
             show_message_box(
@@ -348,7 +378,9 @@ class ExportManager:
                     filename = f"processed_{index + 1:04d}{DEFAULT_EXPORT_EXTENSION}"
                 file_path = os.path.join(folder_path, filename)
                 file_path = self.normalize_export_path(file_path)
-                if cv2.imwrite(file_path, image_to_save):
+                ext = os.path.splitext(file_path)[1].lower()
+                params = get_imwrite_params(ext)
+                if cv2.imwrite(file_path, image_to_save, params):
                     saved_count += 1
 
             show_success_box(

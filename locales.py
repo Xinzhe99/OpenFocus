@@ -191,6 +191,7 @@ class TranslationManager(QObject):
                 'batch_btn_select_split': 'Select Folder and Split',
                 'batch_output_format': 'Output Format',
                 'batch_format_label': 'Format:',
+                'batch_quality_label': 'Quality:',
                 'batch_output_location': 'Output Location',
                 'batch_out_subfolder': 'Create subfolder in source folder',
                 'batch_subfolder_name': 'Subfolder Name:',
@@ -207,7 +208,69 @@ class TranslationManager(QObject):
                 
                 # Help Dialogs
                 'help_render_title': 'Fusion Help',
-                # ... (I will skip full help text translation for now to keep it manageable, or user can ask later if they want full partial help text translation)
+                'help_registration_title': 'Registration Help',
+                'help_tile_title': 'Tile Settings Help',
+
+                'dialog_tile_title': 'Tile Settings',
+                'dialog_tile_group': 'Tile Options',
+                'dialog_tile_enabled_label': 'Enable Tiling:',
+                'dialog_tile_enabled': 'Enabled',
+                'dialog_tile_disabled': 'Disabled',
+                'dialog_tile_block_size': 'Tile Block Size:',
+                'dialog_tile_overlap': 'Tile Overlap:',
+                'dialog_tile_threshold': 'Tile Threshold:',
+                'dialog_tile_help_title': 'Tile Settings Help',
+                'dialog_tile_help_text': '''<h3>Tile Settings Help</h3>
+        <p>tile_enabled: Enable or disable tiled processing. When enabled, large images
+        will be processed in smaller blocks to reduce memory usage.</p>
+
+        <p>tile_block_size: Size (in pixels) of each square tile block. Typical values
+        are 512–2048 depending on memory and speed tradeoffs.</p>
+
+        <p>tile_overlap: Overlap (in pixels) between adjacent tiles used to avoid seams
+        when combining results. A positive overlap helps smooth boundaries.</p>
+
+        <p>tile_threshold: If the image's longest side is larger than this threshold,
+        tiled processing will be considered. Smaller images are processed as a whole.</p>''',
+                'dialog_reg_title': 'Registration Settings',
+                'dialog_reg_group': 'Registration Options',
+                'dialog_reg_downscale': 'Downscale Width:',
+                'dialog_reg_help_title': 'Registration Settings Help',
+                'dialog_reg_help_text': '''<h3>Downscale Width</h3>
+        <p>downscale_width controls the pre-processing (downsampling) width when extracting
+        registration features. Smaller values can speed up feature detection and reduce
+        memory usage, but may sacrifice some geometric accuracy.</p>
+
+        <p>Recommended values: Use <code>1024</code> for large images (>=2048px),
+        <code>1600</code> for medium images. Only set higher values when maximum
+        registration accuracy is needed and you have sufficient CPU/GPU resources.</p>
+
+        <p>Lowering this value speeds up registration and reduces memory usage;
+        increasing it can improve accuracy for very detailed images but increases runtime.</p>''',
+                'dialog_thread_title': 'Thread Settings',
+                'dialog_thread_group': 'Thread Count',
+                'dialog_thread_label': 'Thread Count:',
+                'dialog_thread_help_title': 'Thread Settings Help',
+                'dialog_thread_help_text': '''<h3>Thread Count Settings</h3>
+        <p>This setting controls the number of processing threads used by algorithms
+        that support multi-threading. Typically set to match CPU core count (2-16).</p>
+
+        <h4>Current multi-threading support:</h4>
+        <ul>
+        <li>GFG-FGF: Supports user-controlled thread count (default max: 8)</li>
+        <li>Guided Filter Fusion (GFF): Supports user-controlled thread count (default max: 4)</li>
+        <li>Image Registration: Feature extraction/transformation uses specified thread count</li>
+        <li>DCT, DTCWT, StackMFF-V4: Currently do not use this setting (no thread control)</li>
+        </ul>
+
+        <p>Algorithms that don't use this value will safely ignore it. For best performance,
+        avoid setting thread count higher than physical core count.</p>
+
+        <p>Note: Installing <code>opencv-contrib-python</code> can accelerate certain
+        operations (e.g., guided filtering).</p>''',
+                'dialog_duration_title': 'GIF Duration Settings',
+                'dialog_duration_group': 'Frame Duration',
+                'dialog_duration_label': 'Duration (ms):',
 
                 # Add Label Dialog
                 'add_label_title': 'Add Label Configuration',
@@ -427,6 +490,7 @@ class TranslationManager(QObject):
                 'batch_btn_select_split': '选择文件夹并分割',
                 'batch_output_format': '输出格式',
                 'batch_format_label': '格式:',
+                'batch_quality_label': '质量:',
                 'batch_output_location': '输出位置',
                 'batch_out_subfolder': '在源文件夹中创建子文件夹',
                 'batch_subfolder_name': '子文件夹名称:',

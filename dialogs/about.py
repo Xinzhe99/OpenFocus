@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
 )
 from locales import trans
+from utils import get_monospace_font_family
 from ui.styles import PRIMARY_BLUE
 
 
@@ -35,7 +36,7 @@ class EnvironmentInfoDialog(QDialog):
                 background-color: #2b2b2b;
                 color: #ffffff;
                 border: 1px solid #444;
-                font-family: 'Consolas', 'Courier New', monospace;
+                font-family: "" + get_monospace_font_family() + ";"
             }}
             QPushButton {{
                 background-color: #444;
@@ -57,7 +58,7 @@ class EnvironmentInfoDialog(QDialog):
 
         # 标题
         title = QLabel(trans.t('env_subtitle'))
-        title.setFont(QFont("Arial", 14, QFont.Weight.Normal))
+        title.setFont(QFont("Arial", 14, QFont.Weight.Normal))  # System UI font
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 

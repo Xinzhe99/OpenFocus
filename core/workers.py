@@ -327,9 +327,9 @@ class BatchWorker(QThread):
         self.split_param = split_param
         self.single_folder_images_with_times = single_folder_images_with_times or []
 
-        from image_loader import ImageStackLoader
+        from core.image_loader import ImageStackLoader
         self.image_loader = ImageStackLoader()
-        from Registration import ImageRegistration
+        from core.registration import ImageRegistration
         self.reg_downscale_width = reg_downscale_width
         self.tile_enabled = tile_enabled
         self.tile_block_size = tile_block_size

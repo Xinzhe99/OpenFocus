@@ -25,7 +25,7 @@ class DurationDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("GIF Duration Settings")
+        self.setWindowTitle(trans.t("dialog_duration_title"))
         self.resize(350, 150)
         self.duration = 500  # 默认500毫秒
 
@@ -91,11 +91,11 @@ class DurationDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # 创建组框
-        duration_group = QGroupBox("Frame Duration")
+        duration_group = QGroupBox(trans.t("dialog_duration_group"))
         duration_layout = QHBoxLayout()
 
         # 标签
-        label = QLabel("Duration (ms):")
+        label = QLabel(trans.t("dialog_duration_label"))
         label.setMinimumWidth(120)
 
         # 旋转框

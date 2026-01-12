@@ -6,6 +6,7 @@ from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QAction, QIcon, QPixmap, QImage
 from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox
 
+from controllers.export_manager import get_imwrite_params
 from utils import show_error_box, show_message_box, show_success_box, show_warning_box
 
 
@@ -25,7 +26,7 @@ class OutputManager:
     def update_output_list_for_fusion(self) -> None:
         window = self.window
 
-        fusion_filename = window.export_manager.generate_default_filename() + ".png"
+        fusion_filename = window.export_manager.generate_default_filename()
 
         if window.fusion_result is not None:
             window.fusion_results.insert(0, window.fusion_result.copy())
@@ -102,7 +103,7 @@ class OutputManager:
         if row < 0:
             return
 
-        default_filename = item.text()
+        default_filename = window.export_manager.generate_default_filename()
         file_path, _selected_filter = QFileDialog.getSaveFileName(
             window,
             "Save as",
@@ -125,7 +126,9 @@ class OutputManager:
                     "registered", window.fusion_results[row], 0
                 )
 
-                success = cv2.imwrite(file_path, image_to_save)
+                ext = os.path.splitext(file_path)[1].lower()
+                params = get_imwrite_params(ext)
+                success = cv2.imwrite(file_path, image_to_save, params)
                 if success:
                     show_success_box(window, "Success", "Image saved successfully!", f"Image saved to:\n{file_path}")
                 else:
@@ -135,7 +138,9 @@ class OutputManager:
                     "registered", window.fusion_result, 0
                 )
 
-                success = cv2.imwrite(file_path, image_to_save)
+                ext = os.path.splitext(file_path)[1].lower()
+                params = get_imwrite_params(ext)
+                success = cv2.imwrite(file_path, image_to_save, params)
                 if success:
                     show_success_box(window, "Success", "Image saved successfully!", f"Image saved to:\n{file_path}")
                 else:

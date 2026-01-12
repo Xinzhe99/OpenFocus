@@ -14,6 +14,8 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --icon ".\assets\OpenFocus.ico" `
   --add-data "assets;assets" `
   --add-data "weights;weights" `
+  --add-data "ui;ui" `
+  --add-data "docs;docs" `
   --collect-all PyQt6 `
   --collect-all scipy `
   --copy-metadata imageio `
@@ -26,6 +28,8 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
 Notes:
 - `--exclude-module` prevents `torch` / `torchvision` from being scanned and bundled.
 - Use when target machines do not need GPU/torch features.
+- `--add-data "ui;ui"` includes UI styles and resources.
+- `--add-data "docs;docs"` includes documentation files.
 
 ---
 
@@ -39,6 +43,8 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --icon ".\assets\OpenFocus.ico" `
   --add-data "assets;assets" `
   --add-data "weights;weights" `
+  --add-data "ui;ui" `
+  --add-data "docs;docs" `
   --collect-all PyQt6 `
   --collect-all scipy `
   --copy-metadata imageio `
@@ -50,6 +56,7 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
 
 Notes:
 - Single-file with `torch` may hit antivirus false positives and will be large. Consider `--onedir` if size/time is an issue.
+- Includes `ui` and `docs` directories for complete application functionality.
 
 ---
 
@@ -63,6 +70,8 @@ pyinstaller --clean --noconfirm --onedir --noconsole `
   --icon ".\assets\OpenFocus.ico" `
   --add-data "assets;assets" `
   --add-data "weights;weights" `
+  --add-data "ui;ui" `
+  --add-data "docs;docs" `
   --collect-all PyQt6 `
   --collect-all scipy `
   --copy-metadata imageio `
@@ -74,6 +83,7 @@ pyinstaller --clean --noconfirm --onedir --noconsole `
 
 Notes:
 - `--onedir` is recommended for large dependencies like `torch` during development or when debugging.
+- Includes `ui` and `docs` directories for complete application functionality.
 
 ---
 
@@ -84,9 +94,23 @@ Notes:
 - `--noconsole`: Hide console window (useful for GUI apps).
 - `--icon`: App icon file path.
 - `--add-data "src;dest"`: Include extra data files; format on Windows is `"src;dest"` (note backslashes in paths).
+  - Required directories: `assets`, `weights`, `ui`, `docs`
 - `--collect-all <package>`: Collect package data, binaries, submodules for the named package.
 - `--copy-metadata <package>`: Copy package metadata (useful for packages like `imageio`).
 - `--exclude-module <module>`: Prevent a specific module from being bundled.
+
+## ⭐ Required Resource Directories
+
+All PyInstaller commands MUST include these directories:
+
+| Directory | Purpose | Required |
+|-----------|---------|----------|
+| `assets` | Icons, images, UI resources | ✅ Yes |
+| `weights` | AI model files (StackMFF-V4) | ✅ Yes |
+| `ui` | UI styles and resources (styles.py) | ✅ Yes |
+| `docs` | Documentation files | ✅ Yes |
+
+**Failure to include all directories will result in `FileNotFoundError` at runtime.**
 
 ---
 
@@ -101,7 +125,8 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --icon ".\assets\OpenFocus.ico" `
   --add-data "assets;assets" `
   --add-data "weights;weights" `
-  --add-data "locales;locales" `
+  --add-data "ui;ui" `
+  --add-data "docs;docs" `
   --collect-all PyQt6 `
   --collect-all scipy `
   --copy-metadata imageio `
@@ -118,7 +143,8 @@ pyinstaller --clean --noconfirm --onedir --noconsole \
   --icon "./assets/OpenFocus.icns" \
   --add-data "assets:assets" \
   --add-data "weights:weights" \
-  --add-data "locales:locales" \
+  --add-data "ui:ui" \
+  --add-data "docs:docs" \
   --collect-all PyQt6 \
   --collect-all scipy \
   --copy-metadata imageio \
@@ -136,7 +162,8 @@ pyinstaller --clean --noconfirm --onedir --noconsole \
   --icon "./assets/OpenFocus.png" \
   --add-data "assets:assets" \
   --add-data "weights:weights" \
-  --add-data "locales:locales" \
+  --add-data "ui:ui" \
+  --add-data "docs:docs" \
   --collect-all PyQt6 \
   --collect-all scipy \
   --copy-metadata imageio \

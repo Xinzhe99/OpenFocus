@@ -48,3 +48,6 @@ weights/*.pth  # Keep weights but ignore downloads/temp
 # Project management
 .sisyphus/
 .sisyphus/**
+
+# Documentation
+**/AGENTS.md

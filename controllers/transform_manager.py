@@ -4,7 +4,7 @@ from typing import Any
 from PyQt6.QtGui import QFont
 
 from dialogs import DownsampleDialog
-from utils import show_error_box, show_success_box, show_warning_box
+from utils import show_error_box, show_success_box, show_warning_box, get_default_font
 from locales import trans
 
 
@@ -107,7 +107,7 @@ class TransformManager:
                 window.resize_action.setEnabled(False)
                 window.lbl_source_img.clear()
                 window.lbl_source_img.setText(trans.t('drag_hint'))
-                window.lbl_source_img.setFont(QFont("Microsoft YaHei", 16))
+                window.lbl_source_img.setFont(QFont(get_default_font(), 16))
                 
                 if hasattr(window, "update_loaded_status"):
                     window.update_loaded_status()

@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QGroupBox,
     QSpinBox,
+    QSlider,
     QTextEdit,
     QPushButton,
     QListWidget,
@@ -243,7 +244,30 @@ class BatchProcessingDialog(QDialog):
         format_layout.addWidget(QLabel(trans.t('batch_format_label')))
         self.format_combo = QComboBox()
         self.format_combo.addItems(["JPG", "PNG", "BMP", "TIFF"])
+        self.format_combo.currentTextChanged.connect(self.on_format_changed)
         format_layout.addWidget(self.format_combo)
+        
+        # JPG质量控制（默认隐藏，只有JPG时显示）
+        self.quality_label = QLabel(trans.t('batch_quality_label'))
+        self.quality_slider = QSlider(Qt.Orientation.Horizontal)
+        self.quality_slider.setRange(0, 100)
+        self.quality_slider.setValue(100)
+        self.quality_slider.setFixedWidth(150)
+        self.quality_value_label = QLabel("100%")
+        self.quality_value_label.setFixedWidth(40)
+        self.quality_slider.valueChanged.connect(lambda v: self.quality_value_label.setText(f"{v}%"))
+        self.quality_layout = QHBoxLayout()
+        self.quality_layout.addWidget(self.quality_label)
+        self.quality_layout.addWidget(self.quality_slider)
+        self.quality_layout.addWidget(self.quality_value_label)
+        self.quality_layout.addStretch()
+        format_layout.addLayout(self.quality_layout)
+        
+        # 初始隐藏质量控制（非JPG格式）
+        self.quality_label.setVisible(False)
+        self.quality_slider.setVisible(False)
+        self.quality_value_label.setVisible(False)
+        
         format_layout.addStretch()
         
         layout.addWidget(format_group)
@@ -360,6 +384,9 @@ class BatchProcessingDialog(QDialog):
         button_layout.addWidget(cancel_btn)
         
         layout.addLayout(button_layout)
+        
+        # 初始化质量滑块显示状态（确保对话框打开时滑块正确显示）
+        self.on_format_changed(self.format_combo.currentText())
     
     def add_folders(self):
         """添加多个文件夹（参考demo.py的实现）"""
@@ -529,6 +556,9 @@ class BatchProcessingDialog(QDialog):
         self.single_folder_group.setVisible(not is_multiple)
         
         self.setFixedHeight(800)
+        
+        # 初始化质量滑块显示状态
+        self.on_format_changed(self.format_combo.currentText())
     
     def on_split_method_changed(self, index):
         """分割方式改变时的处理"""
@@ -544,6 +574,13 @@ class BatchProcessingDialog(QDialog):
             self.param_unit_label.setText(trans.t('batch_unit_seconds'))
         
         self.update_single_folder_preview()
+    
+    def on_format_changed(self, format_text):
+        """格式改变时的处理 - 控制质量滑块显示"""
+        is_jpg = format_text.upper() == "JPG"
+        self.quality_label.setVisible(is_jpg)
+        self.quality_slider.setVisible(is_jpg)
+        self.quality_value_label.setVisible(is_jpg)
     
     def update_single_folder_preview(self):
         """更新单文件夹预览"""
@@ -677,8 +714,14 @@ class BatchProcessingDialog(QDialog):
             if self.parent_window.cb_align_ecc.isChecked():
                 reg_methods.append("ecc")
         
+        # 获取JPG质量设置
+        jpg_quality = 100
+        if format_str == "jpg":
+            jpg_quality = self.quality_slider.value()
+        
         return {
             "format": format_str,
+            "jpg_quality": jpg_quality,
             "fusion_method": fusion_method,
             "fusion_params": fusion_params,
             "reg_methods": reg_methods,

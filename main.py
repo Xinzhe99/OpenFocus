@@ -29,6 +29,8 @@ from dialogs import (
 from dialogs.help import RenderMethodHelpDialog
 from dialogs.settings import RegistrationSettingsDialog
 from utils import (
+    get_ui_font_family,
+    get_monospace_font_family,
     show_message_box,
     show_warning_box,
     show_error_box,
@@ -404,7 +406,7 @@ class OpenFocus(QMainWindow):
         # 恢复空状态提示 (如果当前没有加载图像)
         if hasattr(self, 'stack_images') and not self.stack_images:
             self.lbl_source_img.setText(trans.t('drag_hint'))
-            self.lbl_source_img.setFont(QFont("Microsoft YaHei", 16))
+            self.lbl_source_img.setFont(QFont(get_default_font(), 16))
     
 
 
@@ -562,8 +564,11 @@ class OpenFocus(QMainWindow):
                  pass
 
     def apply_dark_theme(self):
-        # 使用 styles.py 中定义的全局样式
-        self.setStyleSheet(GLOBAL_DARK_STYLE)
+        # 动态替换为平台特定字体
+        ui_font = get_ui_font_family()
+        mono_font = get_monospace_font_family()
+        style_sheet = GLOBAL_DARK_STYLE.replace('"Segoe UI", "Microsoft YaHei"', ui_font).replace('Consolas, "Segoe UI", monospace', mono_font)
+        self.setStyleSheet(style_sheet)
 
     def show_contact_info(self):
         """显示联系信息"""

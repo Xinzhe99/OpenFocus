@@ -112,7 +112,7 @@ class RegistrationHelpDialog(HelpDialog):
 
     <p>Both options are independent—enable either one individually or turn on both to apply homography alignment first and then refine with ECC.</p>"""
         
-        super().__init__("Registration Help", help_text, parent)
+        super().__init__(trans.t("help_registration_title"), help_text, parent)
 
 
 class TileHelpDialog(HelpDialog):
@@ -132,4 +132,4 @@ class TileHelpDialog(HelpDialog):
         <p>tile_threshold: If the image's longest side is larger than this threshold,
         tiled processing will be considered. Smaller images are processed as a whole.</p>"""
 
-        super().__init__("Tile Settings Help", help_text, parent)
+        super().__init__(trans.t("help_tile_title"), help_text, parent)
