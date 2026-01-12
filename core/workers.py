@@ -447,7 +447,7 @@ class BatchWorker(QThread):
                 mode = None
 
             if mode:
-                from Registration import ImageRegistration
+                from core.registration import ImageRegistration
                 if self.reg_downscale_width is not None:
                     registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
                 else:
