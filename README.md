@@ -11,6 +11,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.01.12**: Added drag-and-drop image import on Mac and refactored core modules for improved code maintainability and readability.
+
 > 🎉 **2026.01.10**: Added bilingual support, a status dashboard, and new ROI fusion options to improve efficiency and flexibility.
 
 > 🎉 **2026.01.09**: Improved UI and navigation, faster parallel processing, multi-folder batch support, and bug fixes.
