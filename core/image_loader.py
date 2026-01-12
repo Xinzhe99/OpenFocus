@@ -182,6 +182,8 @@ class ImageStackLoader:
         thumbnails = []
         for img in images:
             h, w = img.shape[:2]
+            if h <= 0 or w <= 0:
+                raise ValueError(f"Invalid image dimensions: {w}x{h}")
             scale = thumb_size / max(h, w)
             new_w = int(w * scale)
             new_h = int(h * scale)

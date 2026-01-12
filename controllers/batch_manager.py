@@ -99,6 +99,7 @@ class BatchManager:
             tile_overlap=getattr(self.window, "tile_overlap", None),
             tile_threshold=getattr(self.window, "tile_threshold", None),
             thread_count=getattr(self.window, "thread_count", 4),
+            stackmffv4_batch_size=getattr(self.window, "stackmffv4_batch_size", 2),
             import_mode=import_mode,
             split_method=split_method,
             split_param=split_param,

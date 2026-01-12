@@ -140,6 +140,7 @@ class RenderManager:
             tile_threshold=getattr(window, "tile_threshold", None),
             reg_downscale_width=getattr(window, "reg_downscale_width", None),
             thread_count=getattr(window, "thread_count", 4),
+            stackmffv4_batch_size=getattr(window, "stackmffv4_batch_size", 2),
             roi_rect=roi_rect,
             roi_mode=roi_mode,
             roi_base_index=roi_base_index,

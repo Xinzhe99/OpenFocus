@@ -666,3 +666,111 @@ class ThreadSettingsDialog(QDialog):
         if self.parent_window:
             setattr(self.parent_window, "thread_count", val)
         self.accept()
+
+
+class StackMFFV4BatchSettingsDialog(QDialog):
+    """StackMFF V4 Batch Size settings dialog for tile batch processing."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.setWindowTitle(trans.t("dialog_stackmffv4_batch_title"))
+        self.resize(420, 160)
+
+        # Apply the same dark dialog styling as other settings dialogs
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: #2b2b2b;
+                color: #ffffff;
+                font-family: "Segoe UI", "Microsoft YaHei";
+            }}
+            QLabel {{
+                color: #ffffff;
+            }}
+            QSpinBox {{
+                background-color: #3c3c3c;
+                color: #ffffff;
+                border: 1px solid #555;
+                padding: 5px;
+                selection-background-color: {PRIMARY_BLUE};
+                min-height: 28px;
+            }}
+            QPushButton {{
+                background-color: #444;
+                color: white;
+                border: 1px solid #222;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: normal;
+            }}
+            QPushButton:hover {{
+                background-color: #555;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+
+        from PyQt6.QtWidgets import QGroupBox
+
+        group = QGroupBox(trans.t("dialog_stackmffv4_batch_group"))
+        g_layout = QHBoxLayout(group)
+
+        lbl = QLabel(trans.t("dialog_stackmffv4_batch_label"))
+        lbl.setMinimumWidth(140)
+        g_layout.addWidget(lbl)
+
+        self.spin_batch_size = QSpinBox()
+        self.spin_batch_size.setRange(1, 16)
+        self.spin_batch_size.setSingleStep(1)
+        self.spin_batch_size.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        g_layout.addWidget(self.spin_batch_size)
+        g_layout.addStretch()
+
+        layout.addWidget(group)
+
+        # Buttons: help and OK/Cancel
+        btn_layout = QHBoxLayout()
+        help_btn = QPushButton("")
+        help_btn.setToolTip("Show help for StackMFF V4 batch settings")
+        help_btn.setFixedSize(26, 26)
+        help_btn.setIcon(QIcon(resource_path('assets', 'help_white.svg')))
+        help_btn.setIconSize(QSize(18, 18))
+        help_btn.setStyleSheet(
+            "QPushButton { background-color: transparent; border: none; padding: 0px; }"
+        )
+        help_btn.clicked.connect(self.show_help)
+        btn_layout.addWidget(help_btn)
+        btn_layout.addStretch()
+
+        ok_btn = QPushButton(trans.t("btn_ok"))
+        ok_btn.clicked.connect(self.on_accept)
+        cancel_btn = QPushButton(trans.t("btn_cancel"))
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addLayout(btn_layout)
+
+        self.load_defaults()
+
+    def show_help(self):
+        from dialogs.help import HelpDialog
+        help_text = trans.t("dialog_stackmffv4_batch_help_text")
+        dlg = HelpDialog(trans.t("dialog_stackmffv4_batch_help_title"), help_text, parent=self)
+        dlg.exec()
+
+    def load_defaults(self):
+        if self.parent_window:
+            val = getattr(self.parent_window, "stackmffv4_batch_size", 2)
+            try:
+                self.spin_batch_size.setValue(int(val))
+            except Exception:
+                self.spin_batch_size.setValue(2)
+        else:
+            self.spin_batch_size.setValue(2)
+
+    def on_accept(self):
+        val = int(self.spin_batch_size.value())
+        if self.parent_window:
+            setattr(self.parent_window, "stackmffv4_batch_size", val)
+        self.accept()

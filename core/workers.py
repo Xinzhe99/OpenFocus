@@ -76,6 +76,7 @@ class RenderWorker(QThread):
         tile_threshold=None,
         reg_downscale_width=None,
         thread_count: int = DEFAULT_THREAD_COUNT,
+        stackmffv4_batch_size: int = 2,
         roi_rect=None,
         roi_mode="crop", # 'crop' or 'paste'
         roi_base_index=0,
@@ -106,6 +107,8 @@ class RenderWorker(QThread):
         self.tile_block_size = tile_block_size
         self.tile_overlap = tile_overlap
         self.tile_threshold = tile_threshold
+        # StackMFF V4 批量处理大小
+        self.stackmffv4_batch_size = max(1, int(stackmffv4_batch_size)) if stackmffv4_batch_size else 2
         # Registration downscale width passed from UI (optional)
         self.reg_downscale_width = reg_downscale_width
         # 用户配置的线程数（用于控制内部 ThreadPool 大小）
@@ -253,6 +256,7 @@ class RenderWorker(QThread):
             tile_block_size=(self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE),
             tile_overlap=(self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP),
             tile_threshold=(self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD),
+            stackmffv4_batch_size=self.stackmffv4_batch_size,
         )
 
         info = fusion.get_info()
@@ -350,6 +354,7 @@ class BatchWorker(QThread):
 
     def __init__(self, folder_paths, output_type, output_path, processing_settings, reg_downscale_width=None,
                  tile_enabled=None, tile_block_size=None, tile_overlap=None, tile_threshold=None, thread_count: int = 4,
+                 stackmffv4_batch_size: int = 2,
                  import_mode="multiple_folders", split_method=None, split_param=None,
                  single_folder_images_with_times=None):
         super().__init__()
@@ -371,6 +376,7 @@ class BatchWorker(QThread):
         self.tile_block_size = tile_block_size
         self.tile_overlap = tile_overlap
         self.tile_threshold = tile_threshold
+        self.stackmffv4_batch_size = max(1, int(stackmffv4_batch_size)) if stackmffv4_batch_size else 2
         try:
             self.thread_count = max(1, int(thread_count))
         except Exception:
@@ -501,6 +507,7 @@ class BatchWorker(QThread):
             tile_kwargs.setdefault('tile_block_size', self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE)
             tile_kwargs.setdefault('tile_overlap', self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP)
             tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD)
+            tile_kwargs.setdefault('stackmffv4_batch_size', self.stackmffv4_batch_size)
 
             fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=True, **tile_kwargs)
 

@@ -59,6 +59,7 @@ class TranslationManager(QObject):
                 'action_thread_settings': 'Thread Settings',
                 'action_reg_settings': 'Registration Settings',
                 'action_tile_settings': 'Tile Settings',
+                'action_stackmffv4_batch_settings': 'StackMFF V4 Batch Size',
                 
                 # Menu Help
                 'menu_help': 'Help',
@@ -279,6 +280,30 @@ class TranslationManager(QObject):
 
         <p>Note: Installing <code>opencv-contrib-python</code> can accelerate certain
         operations (e.g., guided filtering).</p>''',
+
+                # StackMFF V4 Batch settings dialog
+                'dialog_stackmffv4_batch_title': 'StackMFF V4 Batch Settings',
+                'dialog_stackmffv4_batch_group': 'Batch Processing',
+                'dialog_stackmffv4_batch_label': 'Batch Size:',
+                'dialog_stackmffv4_batch_help_title': 'StackMFF V4 Batch Settings Help',
+                'dialog_stackmffv4_batch_help_text': '''<h3>StackMFF V4 Batch Settings</h3>
+        <p>This setting controls the batch size when processing tiles with the StackMFF V4
+        neural network fusion algorithm. Batch processing allows multiple tiles to be
+        processed in parallel on the GPU, improving efficiency.</p>
+
+        <h4>Batch Size:</h4>
+        <ul>
+        <li><b>Default: 2</b> - Balanced between memory usage and speed</li>
+        <li><b>Higher values (4-8)</b> - Faster processing but requires more GPU memory</li>
+        <li><b>Lower values (1)</b> - Lower memory usage, useful for limited GPU memory</li>
+        </ul>
+
+        <p><b>Note:</b> If you encounter out-of-memory errors on GPU, try reducing the batch size.
+        This setting only affects StackMFF V4 when processing large images with tiling enabled.</p>
+
+        <p>CPU mode is not significantly affected by this setting but will use it for
+        consistency.</p>''',
+
                 'dialog_duration_title': 'GIF Duration Settings',
                 'dialog_duration_group': 'Frame Duration',
                 'dialog_duration_label': 'Duration (ms):',
@@ -371,6 +396,7 @@ class TranslationManager(QObject):
                 'action_thread_settings': '线程设置',
                 'action_reg_settings': '配准设置',
                 'action_tile_settings': '分块设置',
+                'action_stackmffv4_batch_settings': 'StackMFF V4 批量大小',
                 
                 # Menu Help
                 'menu_help': '帮助',
@@ -596,6 +622,27 @@ class TranslationManager(QObject):
 
         <p>注意：安装 <code>opencv-contrib-python</code> 可以加速某些操作（例如引导滤波）。</p>
         ''',
+
+                # StackMFF V4 Batch settings dialog
+                'dialog_stackmffv4_batch_title': 'StackMFF V4 批量设置',
+                'dialog_stackmffv4_batch_group': '批量处理',
+                'dialog_stackmffv4_batch_label': '批量大小 (Batch Size):',
+                'dialog_stackmffv4_batch_help_title': 'StackMFF V4 批量设置帮助',
+                'dialog_stackmffv4_batch_help_text': '''<h3>StackMFF V4 批量设置</h3>
+        <p>此设置控制使用 StackMFF V4 神经网络融合算法处理分块时的批量大小。
+        批量处理允许在 GPU 上并行处理多个分块，提高效率。</p>
+
+        <h4>批量大小：</h4>
+        <ul>
+        <li><b>默认值: 2</b> - 在内存使用和速度之间取得平衡</li>
+        <li><b>较高值 (4-8)</b> - 处理更快，但需要更多 GPU 内存</li>
+        <li><b>较低值 (1)</b> - 内存使用较低，适用于 GPU 内存有限的情况</li>
+        </ul>
+
+        <p><b>注意：</b>如果在 GPU 上遇到内存不足的错误，请尝试减小批量大小。
+        此设置仅在处理大图像并启用分块时影响 StackMFF V4。</p>
+
+        <p>CPU 模式不会显著受此设置影响，但会保持一致性。</p>''',
 
                 # Tile settings dialog
                 'dialog_tile_title': '分块设置',

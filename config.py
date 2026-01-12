@@ -31,6 +31,7 @@ class FusionOptions:
     tile_block_size: int = 1024
     tile_overlap: int = 256
     tile_threshold: int = 2048
+    stackmffv4_batch_size: int = 2
 
 
 @dataclass

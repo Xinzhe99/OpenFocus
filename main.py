@@ -25,6 +25,7 @@ from dialogs import (
     BatchProcessingDialog,
     TileSettingsDialog,
     ThreadSettingsDialog,
+    StackMFFV4BatchSettingsDialog,
     ROIRenderOptionsDialog,
 )
 from dialogs.help import RenderMethodHelpDialog
@@ -53,7 +54,8 @@ from core import is_stackmffv4_available
 from constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
-    REG_DOWNSCALE_WIDTH, DEFAULT_THREAD_COUNT
+    REG_DOWNSCALE_WIDTH, DEFAULT_THREAD_COUNT,
+    STACKMFFV4_BATCH_SIZE,
 )
 
 class OpenFocus(QMainWindow):
@@ -98,6 +100,8 @@ class OpenFocus(QMainWindow):
         self.reg_downscale_width = REG_DOWNSCALE_WIDTH
         # 全局线程数设置，默认4（可在 Settings 中修改）
         self.thread_count = DEFAULT_THREAD_COUNT
+        # StackMFF V4 批量大小设置，默认2（可在 Settings 中修改）
+        self.stackmffv4_batch_size = STACKMFFV4_BATCH_SIZE
         
         self.render_manager = RenderManager(self)
         self.output_manager = OutputManager(self)
@@ -798,6 +802,11 @@ class OpenFocus(QMainWindow):
         """显示线程数设置对话框"""
         from dialogs import ThreadSettingsDialog
         dialog = ThreadSettingsDialog(self)
+        dialog.exec()
+
+    def show_stackmffv4_batch_settings(self):
+        """显示 StackMFF V4 批量大小设置对话框"""
+        dialog = StackMFFV4BatchSettingsDialog(self)
         dialog.exec()
 
     def rotate_stack(self, rotation_code):

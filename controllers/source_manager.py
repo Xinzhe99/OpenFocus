@@ -185,7 +185,7 @@ class SourceManager:
             return
 
         # Check if a single video file was dropped
-        from image_loader import ImageStackLoader
+        from core.image_loader import ImageStackLoader
         if len(paths) == 1 and os.path.isfile(paths[0]):
             ext = os.path.splitext(paths[0])[1].lower()
             if ext in ImageStackLoader.SUPPORTED_VIDEO_FORMATS:
@@ -201,7 +201,7 @@ class SourceManager:
             return
 
         # Filter by supported image extensions (use ImageStackLoader.SUPPORTED_FORMATS)
-        from image_loader import ImageStackLoader
+        from core.image_loader import ImageStackLoader
 
         loader = self.window.image_loader if hasattr(self.window, "image_loader") else ImageStackLoader()
 

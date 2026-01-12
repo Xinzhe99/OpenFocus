@@ -5,7 +5,7 @@ import numpy as np
 from typing import Union, List, Tuple, Optional
 from fusion_methods.dct import dct_focus_stack_fusion
 from fusion_methods.gff import gff_impl
-from fusion_methods.stackmffv4 import _stackmffv4_impl
+from fusion_methods.stackmffv4 import _stackmffv4_impl, _stackmffv4_batch_impl
 from fusion_methods.dtcwt import _dtcwt_impl
 from utils import resource_path
 
@@ -17,6 +17,7 @@ _DEFAULT_TILE_ENABLED = True
 _DEFAULT_TILE_BLOCK_SIZE = 1024
 _DEFAULT_TILE_OVERLAP = 256
 _DEFAULT_TILE_THRESHOLD = 2048
+_DEFAULT_STACKMFFV4_BATCH_SIZE = 2
 
 
 def set_tile_mode(enabled: bool):
@@ -82,13 +83,15 @@ class MultiFocusFusion:
     
     def __init__(self, algorithm: str = 'guided_filter', use_gpu: bool = False,
                  tile_enabled: bool = True, tile_block_size: int = 1024,
-                 tile_overlap: int = 256, tile_threshold: int = 2048):
+                 tile_overlap: int = 256, tile_threshold: int = 2048,
+                 stackmffv4_batch_size: int = 2):
         """
         初始化融合器
         
         Args:
             algorithm (str): 融合算法名称,可选 'guided_filter', 'dct', 'dtcwt', 'stackmffv4'
             use_gpu (bool): 是否使用GPU加速(CUDA/MPS),默认为False
+            stackmffv4_batch_size (int): StackMFF V4 批量处理大小，默认为2
         """
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
@@ -99,6 +102,8 @@ class MultiFocusFusion:
         self.tile_block_size = int(tile_block_size)
         self.tile_overlap = int(tile_overlap)
         self.tile_threshold = int(tile_threshold)
+        # StackMFF V4 批量处理大小
+        self.stackmffv4_batch_size = max(1, int(stackmffv4_batch_size))
         self._validate_environment()
     
     def _ensure_supported_algorithm(self, algorithm: str) -> None:
@@ -564,6 +569,7 @@ class MultiFocusFusion:
         - 将图像切成若干 `block_size` 大小的块，块间以 `overlap` 重叠。
         - 对每个块调用对应算法的融合函数，最后对重叠区域简单平均融合以消除边界伪影。
         - 支持多线程并行处理 tile，线程数根据系统内存自动计算（保守策略）。
+        - StackMFF V4 使用批量处理以利用 GPU 并行能力。
         """
 
         imgs = None
@@ -599,14 +605,29 @@ class MultiFocusFusion:
         step = max(1, block_size - overlap)
         num_images = len(imgs) if imgs is not None else len(files)
 
+        # 计算 tile 坐标
+        tile_coords = []
+        max_start_y = h - block_size
+        max_start_x = w - block_size
+        for y in range(0, h, step):
+            y0 = min(y, max_start_y)
+            y1 = y0 + block_size
+            for x in range(0, w, step):
+                x0 = min(x, max_start_x)
+                x1 = x0 + block_size
+                tile_coords.append((x0, y0, x1, y1))
+
+        # StackMFF V4 使用批量处理
+        if algorithm == 'stackmffv4':
+            return self._fuse_tiled_stackmffv4_batched(
+                imgs, img_dir, tile_coords, h, w, channels,
+                block_size, overlap, **kwargs
+            )
+
+        # 其他算法使用原有的多线程处理
         optimal_threads = self._calculate_optimal_thread_count(
             h, w, channels, num_images, block_size, thread_count
         )
-
-        # Force serial execution for StackMFF v4 to avoid GPU OOM or model conflicts
-        if algorithm == 'stackmffv4':
-            print("Info: StackMFF-V4 algorithm detected. Forcing serial execution (single thread) to conserve memory.")
-            optimal_threads = 1
 
         print(f"Tiled fusion: {optimal_threads} parallel workers (memory-optimized)")
 
@@ -619,25 +640,12 @@ class MultiFocusFusion:
                 return self._fuse_dtcwt(crops, img_resize, **kwargs)
             elif algorithm == 'gfgfgf':
                 return self._fuse_gfgfgf(crops, img_resize, **kwargs)
-            elif algorithm == 'stackmffv4':
-                return self._fuse_stackmffv4(crops, img_resize, **kwargs)
             else:
                 method_name = f"_fuse_{algorithm}"
                 method = getattr(self, method_name, None)
                 if callable(method):
                     return method(crops, img_resize, **kwargs)
                 raise ValueError(f"Unsupported algorithm for tiled fusion: {algorithm}")
-
-        tile_coords = []
-        max_start_y = h - block_size
-        max_start_x = w - block_size
-        for y in range(0, h, step):
-            y0 = min(y, max_start_y)
-            y1 = y0 + block_size
-            for x in range(0, w, step):
-                x0 = min(x, max_start_x)
-                x1 = x0 + block_size
-                tile_coords.append((x0, y0, x1, y1))
 
         def process_single_tile(coords):
             x0, y0, x1, y1 = coords
@@ -683,6 +691,91 @@ class MultiFocusFusion:
         fused = acc / weight
         fused = np.clip(fused, 0, 255).astype(np.uint8)
 
+        if channels == 1:
+            return fused[:, :, 0]
+        return fused
+
+    def _fuse_tiled_stackmffv4_batched(self,
+                                        imgs: Optional[List[np.ndarray]],
+                                        img_dir: Optional[str],
+                                        tile_coords: List[Tuple[int, int, int, int]],
+                                        h: int, w: int, channels: int,
+                                        block_size: int, overlap: int,
+                                        **kwargs) -> np.ndarray:
+        """
+        使用批量处理的 StackMFF V4 分块融合。
+        
+        通过将多个 tile 打包成一个 batch 进行 GPU 推理，提高效率。
+        """
+        import cv2
+        
+        batch_size = self.stackmffv4_batch_size
+        total_tiles = len(tile_coords)
+        
+        print(f"StackMFF V4 batched tiled fusion: {total_tiles} tiles, batch_size={batch_size}")
+        
+        # 获取模型路径
+        model_path = kwargs.get('model_path', 'weights/stackmffv4.pth')
+        if not model_path:
+            model_path = 'weights/stackmffv4.pth'
+        if not os.path.isabs(model_path):
+            model_path = resource_path(model_path)
+        
+        acc = np.zeros((h, w, channels), dtype=np.float32)
+        weight = np.zeros((h, w, 1), dtype=np.float32)
+        
+        # 获取文件列表（如果是目录输入）
+        files = None
+        if img_dir is not None:
+            exts = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp')
+            files = [f for f in sorted(os.listdir(img_dir)) if f.lower().endswith(exts)]
+        
+        # 分批处理
+        for batch_start in range(0, total_tiles, batch_size):
+            batch_end = min(batch_start + batch_size, total_tiles)
+            batch_coords = tile_coords[batch_start:batch_end]
+            current_batch_size = len(batch_coords)
+            
+            print(f"  Processing batch {batch_start // batch_size + 1}/{(total_tiles + batch_size - 1) // batch_size} ({current_batch_size} tiles)")
+            
+            # 准备这个 batch 的所有 tile 数据
+            tiles_list = []
+            for (x0, y0, x1, y1) in batch_coords:
+                if imgs is not None:
+                    crops = [img[y0:y1, x0:x1].copy() for img in imgs]
+                else:
+                    crops = []
+                    for fname in files:
+                        fp = os.path.join(img_dir, fname)
+                        full = cv2.imread(fp, cv2.IMREAD_UNCHANGED)
+                        if full is None:
+                            raise RuntimeError(f"Unable to read image: {fp}")
+                        crops.append(full[y0:y1, x0:x1].copy())
+                tiles_list.append(crops)
+            
+            # 批量处理
+            fused_tiles = _stackmffv4_batch_impl(tiles_list, model_path, self.use_gpu)
+            
+            # 将结果合并到累加器
+            for idx, (x0, y0, x1, y1) in enumerate(batch_coords):
+                fused_tile = fused_tiles[idx]
+                if fused_tile is None:
+                    raise RuntimeError("Fusion returned None for a tile")
+                
+                if fused_tile.ndim == 2:
+                    fused_tile = fused_tile[:, :, np.newaxis]
+                fh, fw = fused_tile.shape[:2]
+                
+                weight2d = self._compute_tile_weights(x0, y0, x1, y1, fw, fh, w, h, overlap)
+                w_exp = weight2d[:, :, np.newaxis]
+                
+                acc[y0:y0+fh, x0:x0+fw, :channels] += fused_tile.astype(np.float32) * w_exp
+                weight[y0:y0+fh, x0:x0+fw, 0] += weight2d
+        
+        weight[weight == 0] = 1.0
+        fused = acc / weight
+        fused = np.clip(fused, 0, 255).astype(np.uint8)
+        
         if channels == 1:
             return fused[:, :, 0]
         return fused
@@ -735,6 +828,7 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
                 tile_block_size: Optional[int] = None,
                 tile_overlap: Optional[int] = None,
                 tile_threshold: Optional[int] = None,
+                stackmffv4_batch_size: Optional[int] = None,
                 **kwargs) -> np.ndarray:
     """
     便捷函数:一次性完成图像融合
@@ -744,6 +838,7 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
             algorithm: 融合算法 ('guided_filter', 'dct', 'dtcwt', 'stackmffv4')
         use_gpu: 是否使用GPU（当前版本将自动切换到CPU）
         img_resize: 目标尺寸
+        stackmffv4_batch_size: StackMFF V4 批量处理大小（默认2）
         **kwargs: 算法特定参数
     
     Returns:
@@ -765,6 +860,7 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
     tbs = _DEFAULT_TILE_BLOCK_SIZE if tile_block_size is None else int(tile_block_size)
     to = _DEFAULT_TILE_OVERLAP if tile_overlap is None else int(tile_overlap)
     tt = _DEFAULT_TILE_THRESHOLD if tile_threshold is None else int(tile_threshold)
+    sbs = _DEFAULT_STACKMFFV4_BATCH_SIZE if stackmffv4_batch_size is None else int(stackmffv4_batch_size)
 
     fusion = MultiFocusFusion(
         algorithm=algorithm,
@@ -773,6 +869,7 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
         tile_block_size=tbs,
         tile_overlap=to,
         tile_threshold=tt,
+        stackmffv4_batch_size=sbs,
     )
 
     return fusion.fuse(input_source, img_resize=img_resize, **kwargs)
