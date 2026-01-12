@@ -415,3 +415,73 @@ class SourceManager:
     def _pop_sequence(self, sequence: list[Any] | None, index: int) -> None:
         if sequence is not None and 0 <= index < len(sequence):
             sequence.pop(index)
+
+    # === Icon Drag-and-Drop Support Methods ===
+    # These methods handle files dropped on app icon/taskbar/dock
+
+    def load_image_stack_from_icon(self, folder_path: str) -> None:
+        """Load image stack from folder dropped on app icon."""
+        from dialogs import FolderImportDialog
+        dialog = FolderImportDialog(folder_path, self.window)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            if dialog.is_single_stack():
+                self.load_image_stack(folder_path)
+            else:
+                current_scale = getattr(self.window, "current_scale_factor", 1.0)
+                dlg = DownsampleDialog(self.window, initial_scale=current_scale)
+                if dlg.exec():
+                    self.window.show_batch_processing_dialog(
+                        preload_folder_paths=[folder_path],
+                        scale_factor=dlg.get_scale_factor()
+                    )
+
+    def load_multiple_folders_from_icon(self, folder_paths: list[str]) -> None:
+        """Load multiple folders dropped on app icon."""
+        current_scale = getattr(self.window, "current_scale_factor", 1.0)
+        dlg = DownsampleDialog(self.window, initial_scale=current_scale)
+        if dlg.exec():
+            self.window.show_batch_processing_dialog(
+                preload_folder_paths=folder_paths,
+                scale_factor=dlg.get_scale_factor()
+            )
+
+    def load_video_stack_from_icon(self, video_path: str) -> None:
+        """Load video file dropped on app icon."""
+        self.load_video_stack(video_path)
+
+    def load_image_files_from_icon(self, file_paths: list[str]) -> None:
+        """Load image files dropped on app icon."""
+        current_scale = getattr(self.window, "current_scale_factor", 1.0)
+        dlg = DownsampleDialog(self.window, initial_scale=current_scale)
+        if not dlg.exec():
+            return
+        scale = dlg.get_scale_factor()
+
+        loader = self.window.image_loader if hasattr(self.window, "image_loader") else ImageStackLoader()
+        success, message, full_res_images, filenames = loader.load_from_filepaths(file_paths, scale_factor=scale)
+
+        if not success:
+            show_warning_box(self.window, "Load Failed", "Failed to load dropped images.", message)
+            return
+
+        # Check image sizes
+        shapes = {(img.shape[0], img.shape[1]) for img in full_res_images}
+        if len(shapes) > 1:
+            msg = QMessageBox(self.window)
+            msg.setWindowTitle("Image Size Mismatch")
+            msg.setText("Not all images have the same dimensions.")
+            msg.setInformativeText("Do you want to continue opening the stack?")
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            yes_btn = msg.button(QMessageBox.StandardButton.Yes)
+            no_btn = msg.button(QMessageBox.StandardButton.No)
+            if yes_btn:
+                yes_btn.setText("Continue")
+            if no_btn:
+                no_btn.setText("Cancel")
+            msg.setStyleSheet(MESSAGE_BOX_STYLE)
+            if msg.exec() != QMessageBox.StandardButton.Yes:
+                return
+
+        load_options = self._build_load_options(full_res_images, filenames, scale)
+        self._apply_load_options(load_options)

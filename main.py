@@ -14,6 +14,7 @@ from PyQt6.QtCore import Qt, QUrl, QEvent
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtGui import QFont, QIcon, QDragEnterEvent, QDropEvent, QImage
 from core import ImageStackLoader
+from core.app import OpenFocusApplication, process_command_line_args
 import cv2
 from ui.styles import GLOBAL_DARK_STYLE
 from locales import trans
@@ -739,7 +740,13 @@ class OpenFocus(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
+    app = OpenFocusApplication(sys.argv)
     window = OpenFocus()
+    app.set_main_window(window)
+    
+    # Handle files passed via command-line (drag-to-EXE, desktop file, etc.)
+    if len(sys.argv) > 1:
+        process_command_line_args(window, sys.argv[1:])
+    
     window.show()
     sys.exit(app.exec())

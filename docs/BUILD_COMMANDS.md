@@ -89,3 +89,107 @@ Notes:
 - `--exclude-module <module>`: Prevent a specific module from being bundled.
 
 ---
+
+## 4) Build with Cross-Platform Drag-and-Drop Support
+
+Use the spec file (`docs/OpenFocus.spec`) for proper macOS app bundle and drag-and-drop support:
+
+```powershell
+# Windows (PowerShell)
+pyinstaller --clean --noconfirm --onefile --noconsole `
+  --name OpenFocus `
+  --icon ".\assets\OpenFocus.ico" `
+  --add-data "assets;assets" `
+  --add-data "weights;weights" `
+  --add-data "locales;locales" `
+  --collect-all PyQt6 `
+  --collect-all scipy `
+  --copy-metadata imageio `
+  --collect-data dtcwt `
+  --collect-all torch `
+  --collect-all torchvision `
+  main.py
+```
+
+```bash
+# macOS (bash) - Creates .app bundle with dock drag-and-drop support
+pyinstaller --clean --noconfirm --onedir --noconsole \
+  --name OpenFocus \
+  --icon "./assets/OpenFocus.icns" \
+  --add-data "assets:assets" \
+  --add-data "weights:weights" \
+  --add-data "locales:locales" \
+  --collect-all PyQt6 \
+  --collect-all scipy \
+  --copy-metadata imageio \
+  --collect-data dtcwt \
+  --collect-all torch \
+  --collect-all torchvision \
+  --osx-bundle-identifier com.openfocus.app \
+  main.py
+```
+
+```bash
+# Linux (bash) - With desktop file integration
+pyinstaller --clean --noconfirm --onedir --noconsole \
+  --name openfocus \
+  --icon "./assets/OpenFocus.png" \
+  --add-data "assets:assets" \
+  --add-data "weights:weights" \
+  --add-data "locales:locales" \
+  --collect-all PyQt6 \
+  --collect-all scipy \
+  --copy-metadata imageio \
+  --collect-data dtcwt \
+  --collect-all torch \
+  --collect-all torchvision \
+  main.py
+
+# Install desktop file for taskbar drag-and-drop support
+cp assets/openfocus.desktop ~/.local/share/applications/
+update-desktop-database ~/.local/share/applications/
+```
+
+### macOS Requirements for Dock Drag-and-Drop
+
+The `assets/Info.plist` file defines document types for drag-and-drop. Copy it to the app bundle:
+
+```bash
+# After building, copy Info.plist to app bundle
+cp assets/Info.plist OpenFocus.app/Contents/Info.plist
+```
+
+### Linux Desktop File Installation
+
+For full taskbar/dock drag-and-drop support on Linux:
+
+```bash
+# System-wide installation (requires root)
+sudo cp assets/openfocus.desktop /usr/share/applications/
+sudo cp assets/OpenFocus.png /usr/share/pixmaps/openfocus.png
+sudo update-desktop-database /usr/share/applications/
+
+# Or user-specific installation
+mkdir -p ~/.local/share/applications/
+cp assets/openfocus.desktop ~/.local/share/applications/
+cp assets/OpenFocus.png ~/.local/share/pixmaps/
+update-desktop-database ~/.local/share/applications/
+```
+
+---
+
+## Drag-and-Drop Feature Support by Platform
+
+| Platform | Taskbar/Dock Icon | Window | EXE/Shortcut |
+|----------|-------------------|--------|--------------|
+| macOS | ✅ Full support | ✅ Full support | N/A |
+| Linux | ⚠️ Partial (DE-dependent) | ✅ Full support | N/A |
+| Windows | ⚠️ Limited | ✅ Full support | ✅ Full support |
+
+### Platform Notes
+
+- **macOS**: Dock drag-and-drop uses `QFileOpenEvent` via Info.plist
+- **Linux**: Desktop file with `%U` argument handles file URLs
+- **Windows**: Drag-to-EXE/shortcut passes files via command-line arguments
+
+---

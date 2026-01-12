@@ -1,0 +1,17 @@
+[Desktop Entry]
+Name=OpenFocus
+Comment=Multi-focus image fusion workstation
+Exec=openfocus %U
+Icon=openfocus
+Terminal=false
+Type=Application
+Categories=Graphics;Photography;
+MimeType=image/png;image/jpeg;image/tiff;image/bmp;image/webp;image/heic;
+           video/avi;video/mp4;video/mpeg;video/quicktime;video/x-matroska;
+Keywords=focus stacking;image fusion;multi-focus;microscopy;
+StartupNotify=true
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Window
+Exec=openfocus %U
