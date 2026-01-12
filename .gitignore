@@ -51,3 +51,6 @@ weights/*.pth  # Keep weights but ignore downloads/temp
 
 # Documentation
 **/AGENTS.md
+
+# build
+*.spec
