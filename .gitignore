@@ -44,3 +44,7 @@ Desktop.ini
 weights/*.pth  # Keep weights but ignore downloads/temp
 .temp/
 .temp/**
+
+# Project management
+.sisyphus/
+.sisyphus/**
