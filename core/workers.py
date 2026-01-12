@@ -13,6 +13,42 @@ from constants import (
 )
 
 
+class ROIAlignmentWorker(QThread):
+    """后台执行ROI模式下的ECC配准线程，用于在ROI选择前对齐图像栈"""
+
+    finished_signal = pyqtSignal(object, float)  # aligned_images, alignment_time
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, raw_images, reg_downscale_width=None, thread_count: int = DEFAULT_THREAD_COUNT):
+        super().__init__()
+        self.raw_images = raw_images
+        self.reg_downscale_width = reg_downscale_width
+        try:
+            self.thread_count = max(1, int(thread_count))
+        except Exception:
+            self.thread_count = 4
+
+    def run(self):
+        """在线程中执行ECC配准"""
+        try:
+            alignment_start_time = time.time()
+
+            # 使用ECC方法进行配准
+            if self.reg_downscale_width is not None:
+                registration = ImageRegistration(method="ecc", downscale_width=self.reg_downscale_width)
+            else:
+                registration = ImageRegistration(method="ecc")
+
+            aligned_images = registration.process(self.raw_images, output_path=None, thread_count=self.thread_count)
+            alignment_time = time.time() - alignment_start_time
+
+            self.finished_signal.emit(aligned_images, alignment_time)
+        except Exception as e:
+            self.error_signal.emit(str(e))
+            import traceback
+            traceback.print_exc()
+
+
 class RenderWorker(QThread):
     """后台执行图像配准和融合的线程（从 main.py 抽离）"""
 

@@ -14,6 +14,7 @@ class MagnifierLabel(QLabel):
     leavePreview = pyqtSignal()
     roiChanged = pyqtSignal(QRectF)  # Emits normalized ROI (0-1) or base coords? Let's use base coords (pixels)
     roiDeleted = pyqtSignal()
+    roiModeExitRequested = pyqtSignal()  # 请求退出ROI模式（点击X按钮或右键）
 
     def __init__(self, text: Optional[str] = "", parent=None):
         super().__init__(parent)
@@ -307,11 +308,11 @@ class MagnifierLabel(QLabel):
                 )
                 handles = self._get_handle_rects(screen_roi)
                 
-                # Check delete button first
+                # Check delete button first - emit exit request instead of just deleting
                 if "del" in handles and handles["del"].contains(pos):
                     self._roi_rect = None
                     self._roi_state = "none"
-                    self.roiDeleted.emit()
+                    self.roiModeExitRequested.emit()  # 请求退出ROI模式
                     self.update()
                     event.accept()
                     return
@@ -353,6 +354,29 @@ class MagnifierLabel(QLabel):
                 return
 
         if event.button() == Qt.MouseButton.RightButton:
+            # 在ROI模式下，右键点击非ROI区域退出ROI模式
+            if self._roi_mode:
+                pos = event.position()
+                is_inside_roi = False
+                if self._roi_rect is not None:
+                    scale, _, _ = self._get_layout_params()
+                    screen_roi = QRectF(
+                       (self._roi_rect.x() * scale) + self._get_layout_params()[1],
+                       (self._roi_rect.y() * scale) + self._get_layout_params()[2],
+                       self._roi_rect.width() * scale,
+                       self._roi_rect.height() * scale
+                    )
+                    is_inside_roi = screen_roi.contains(pos)
+                
+                if not is_inside_roi:
+                    # 右键点击非ROI区域，请求退出ROI模式
+                    self._roi_rect = None
+                    self._roi_state = "none"
+                    self.roiModeExitRequested.emit()
+                    self.update()
+                    event.accept()
+                    return
+            
             if self._base_pixmap is not None and not self._base_pixmap.isNull():
                 self._is_panning = True
                 self._last_mouse_pos = event.position()

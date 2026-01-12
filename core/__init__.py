@@ -11,7 +11,7 @@ Modules:
 
 from core.image_loader import ImageStackLoader
 from core.multi_focus_fusion import MultiFocusFusion, is_stackmffv4_available
-from core.workers import RenderWorker
+from core.workers import RenderWorker, ROIAlignmentWorker
 
 __all__ = [
     'ImageStackLoader',

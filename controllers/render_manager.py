@@ -79,30 +79,54 @@ class RenderManager:
             window.btn_render.setText("▶ Start Render")
             return
 
-        # Handle ROI options
-        roi_rect = window.lbl_source_img.get_roi_rect() if window.btn_preview_roi.isChecked() else None
+        # Handle ROI options - check if ROI mode is active and we have aligned images
+        roi_rect = None
         roi_mode = "crop"
         roi_base_index = 0
-
-        if roi_rect is not None:
-             dialog = ROIRenderOptionsDialog(len(window.raw_images), window)
-             if dialog.exec() == QDialog.DialogCode.Accepted:
-                 roi_mode = dialog.mode
-                 roi_base_index = dialog.base_frame_index
-             else:
-                 # User cancelled the ROI dialog -> cancel render? 
-                 # Or just render crop? Let's cancel to be safe.
-                 window.btn_render.setEnabled(True)
-                 window.btn_render.setText(trans.t('btn_render'))
-                 return
+        use_roi_aligned_images = False
+        
+        # 检查ROI模式是否激活，并从右侧面板获取ROI区域
+        if getattr(window, 'roi_mode_active', False) and window.roi_aligned_images:
+            # 从右侧结果面板获取ROI区域（因为ROI是在对齐后的图像上选择的）
+            roi_rect = window.lbl_result_img.get_roi_rect() if hasattr(window.lbl_result_img, 'get_roi_rect') else None
+            if roi_rect is not None:
+                use_roi_aligned_images = True
+                dialog = ROIRenderOptionsDialog(len(window.roi_aligned_images), window)
+                if dialog.exec() == QDialog.DialogCode.Accepted:
+                    roi_mode = dialog.mode
+                    roi_base_index = dialog.base_frame_index
+                else:
+                    # User cancelled the ROI dialog -> cancel render
+                    window.btn_render.setEnabled(True)
+                    window.btn_render.setText(trans.t('btn_render'))
+                    return
+        
+        # 确定要使用的图像源
+        if use_roi_aligned_images:
+            # ROI模式下使用已经对齐的图像栈，跳过额外的配准
+            source_images = window.roi_aligned_images
+            # 在ROI模式下，图像已经对齐，不需要再次配准
+            effective_need_align_homography = False
+            effective_need_align_ecc = False
+            # 告诉Worker图像已经对齐
+            effective_aligned_images = window.roi_aligned_images
+            effective_is_aligned = True
+            effective_last_alignment_options = (False, True)  # 表示ECC已完成
+        else:
+            source_images = window.raw_images
+            effective_need_align_homography = need_align_homography
+            effective_need_align_ecc = need_align_ecc
+            effective_aligned_images = window.aligned_images
+            effective_is_aligned = window.is_images_aligned
+            effective_last_alignment_options = window.last_alignment_options
 
         self.worker = RenderWorker(
-            window.raw_images,
-            window.aligned_images,
-            window.is_images_aligned,
-            window.last_alignment_options,
-            need_align_homography,
-            need_align_ecc,
+            source_images,
+            effective_aligned_images,
+            effective_is_aligned,
+            effective_last_alignment_options,
+            effective_need_align_homography,
+            effective_need_align_ecc,
             need_fusion,
             window.rb_a.isChecked(),
             window.rb_b.isChecked(),
@@ -140,6 +164,19 @@ class RenderManager:
             if fusion_result is not None:
                 window.fusion_result = fusion_result
                 window.registration_results = processed_images
+
+                # 如果是ROI模式下的融合，退出ROI模式（但保留对齐图像供复用）
+                if getattr(window, 'roi_mode_active', False):
+                    window.roi_mode_active = False
+                    # 不清空 roi_aligned_images，保留供下次复用
+                    if hasattr(window, 'lbl_result_img'):
+                        window.lbl_result_img.roi_mode = False
+                        window.lbl_result_img.set_roi_rect(None)
+                    # 取消ROI按钮的选中状态
+                    if hasattr(window, 'btn_preview_roi'):
+                        window.btn_preview_roi.blockSignals(True)
+                        window.btn_preview_roi.setChecked(False)
+                        window.btn_preview_roi.blockSignals(False)
 
                 window.output_manager.show_fusion_result()
                 window.output_manager.update_output_list_for_fusion()

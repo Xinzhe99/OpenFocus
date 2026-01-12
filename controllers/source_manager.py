@@ -309,6 +309,11 @@ class SourceManager:
         window.stack_images = []
         window.image_filenames = []
         window.current_display_index = -1
+        
+        # 清空ROI对齐缓存
+        window.roi_aligned_images = []
+        window.roi_aligned_raw_count = 0
+        window.roi_mode_active = False
 
         window.label_manager.reset_labels()
 

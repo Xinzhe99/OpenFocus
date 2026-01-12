@@ -156,6 +156,11 @@ class TransformManager:
         window.aligned_images = []
         window.is_images_aligned = False
         window.last_alignment_options = None
+        
+        # 清空ROI对齐缓存
+        window.roi_aligned_images = []
+        window.roi_aligned_raw_count = 0
+        window.roi_mode_active = False
 
         window.registration_results = []
         window.current_result_index = -1

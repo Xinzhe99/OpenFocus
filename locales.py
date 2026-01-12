@@ -111,6 +111,17 @@ class TranslationManager(QObject):
                 'dialog_roi_group_base': 'Base Frame Selection',
                 'dialog_roi_lbl_base': 'Select Base Frame:',
                 
+                # ROI Alignment (New)
+                'roi_need_images': 'Please load at least 2 images before using ROI mode.',
+                'roi_aligning': 'Aligning...',
+                'roi_ready_title': 'ROI Mode Ready',
+                'roi_ready_msg': 'Images have been aligned using ECC method.',
+                'roi_ready_detail': 'Alignment completed in {:.2f}s.\n\nYou can now draw a ROI on the right panel.\nPress Render to fuse only the selected region.',
+                'roi_align_failed': 'ROI alignment failed.',
+                'roi_aligned': 'Aligned',
+                'roi_display_failed': 'Failed to display aligned image.',
+                'result_hint': 'Result will appear here',
+                
                 # Completion Dialog
                 'dialog_completed_title': 'Processing Completed',
                 'dialog_completed_msg': 'Processing completed successfully!',
@@ -411,6 +422,17 @@ class TranslationManager(QObject):
                 'dialog_roi_opt_paste_tooltip': '结果将是完整的底图，其中 ROI 区域被融合结果覆盖。',
                 'dialog_roi_group_base': '底图选择',
                 'dialog_roi_lbl_base': '选择底图:',
+                
+                # ROI Alignment (New)
+                'roi_need_images': '请先加载至少2张图像才能使用ROI模式。',
+                'roi_aligning': '对齐中...',
+                'roi_ready_title': 'ROI模式就绪',
+                'roi_ready_msg': '图像已使用ECC方法完成对齐。',
+                'roi_ready_detail': '对齐耗时 {:.2f}s。\n\n您现在可以在右侧面板上绘制ROI区域。\n点击渲染按钮仅融合所选区域。',
+                'roi_align_failed': 'ROI对齐失败。',
+                'roi_aligned': '已对齐',
+                'roi_display_failed': '显示对齐图像失败。',
+                'result_hint': '结果将显示在这里',
                 
                 # Completion Dialog
                 'dialog_completed_title': '处理完成',

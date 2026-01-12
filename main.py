@@ -12,9 +12,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QUrl, QEvent
 from PyQt6.QtGui import QKeySequence, QShortcut
-from PyQt6.QtGui import QFont, QIcon, QDragEnterEvent, QDropEvent, QImage
+from PyQt6.QtGui import QFont, QIcon, QDragEnterEvent, QDropEvent, QImage, QPixmap
 from core import ImageStackLoader
 from core.app import OpenFocusApplication, process_command_line_args
+from core.workers import ROIAlignmentWorker
 import cv2
 from ui.styles import GLOBAL_DARK_STYLE
 from locales import trans
@@ -81,6 +82,12 @@ class OpenFocus(QMainWindow):
         self.is_images_aligned = False  # 标记图像是否已对齐
         self.last_alignment_options = None  # 存储上次使用的对齐选项
         self.current_kernel_mode = None
+        
+        # ROI模式相关属性
+        self.roi_aligned_images = []  # 存储ROI模式下对齐的图像栈
+        self.roi_alignment_worker = None  # ROI配准工作线程
+        self.roi_mode_active = False  # ROI模式是否激活
+        self.roi_aligned_raw_count = 0  # 记录对齐时原始图像的数量，用于判断是否可以复用
 
         # Tile settings defaults
         self.tile_enabled = True
@@ -166,12 +173,15 @@ class OpenFocus(QMainWindow):
         # ROI Button
         self.btn_preview_roi = source_panel.roi_btn
         self.btn_preview_roi.toggled.connect(self.toggle_roi_mode)
-        self.lbl_source_img.roiDeleted.connect(lambda: self.btn_preview_roi.setChecked(False))
+        # 注意：现在ROI是在右侧面板选择的，所以lbl_source_img的roiDeleted不再控制按钮状态
+        # self.lbl_source_img.roiDeleted.connect(lambda: self.btn_preview_roi.setChecked(False))
 
         result_panel = create_result_panel()
         self.lbl_result_img = result_panel.image_label
         self.result_control_bar = result_panel.control_bar
         self.result_slider = result_panel.slider
+        # 连接右侧面板的ROI模式退出请求信号
+        self.lbl_result_img.roiModeExitRequested.connect(self._on_roi_mode_exit_requested)
         self.lbl_result_info = result_panel.info_label
         self.result_slider.valueChanged.connect(self.update_result_view)
 
@@ -504,8 +514,12 @@ class OpenFocus(QMainWindow):
             self.current_kernel_mode = None
     
     def update_result_view(self, index):
-        """更新Output区域显示的图像（仅用于配准结果）"""
-        self.output_manager.show_registration_result(index)
+        """更新Output区域显示的图像（用于配准结果或ROI模式下的对齐图像）"""
+        # 如果ROI模式激活，显示对齐后的图像栈
+        if getattr(self, 'roi_mode_active', False) and self.roi_aligned_images:
+            self._display_roi_aligned_image(index)
+        else:
+            self.output_manager.show_registration_result(index)
     
     # --- 文件加载功能 ---
     
@@ -551,17 +565,158 @@ class OpenFocus(QMainWindow):
         self.output_manager.refresh_current_result_view()
 
     def toggle_roi_mode(self, enabled: bool):
-        """Toggle ROI selection mode on the source image label."""
-        if hasattr(self, 'lbl_source_img'):
-            self.lbl_source_img.roi_mode = enabled
-            if enabled:
-                # Disable conflicting interactions if any?
-                # Usually we want panning to still work with Right click or space, which magnifier_label handles
-                pass
+        """Toggle ROI selection mode. 
+        When enabled, first align images using ECC, then display aligned stack on result panel for ROI selection.
+        """
+        if enabled:
+            # 检查是否有足够的图像
+            if not self.raw_images or len(self.raw_images) < 2:
+                show_warning_box(self, trans.t("msg_warning"), trans.t("roi_need_images"))
+                self.btn_preview_roi.blockSignals(True)
+                self.btn_preview_roi.setChecked(False)
+                self.btn_preview_roi.blockSignals(False)
+                return
+            
+            # 检查是否可以复用已有的对齐图像
+            can_reuse = (
+                len(self.roi_aligned_images) > 0 and
+                len(self.roi_aligned_images) == len(self.raw_images) and
+                self.roi_aligned_raw_count == len(self.raw_images)
+            )
+            
+            if can_reuse:
+                # 直接使用已有的对齐图像
+                self.roi_mode_active = True
+                self._display_roi_aligned_image(0)
+                
+                # 启用滑动条
+                self.result_slider.setRange(0, len(self.roi_aligned_images) - 1)
+                self.result_slider.setValue(0)
+                self.result_slider.setEnabled(True)
+                self.result_control_bar.setVisible(True)
+                
+                # 启用右侧面板的ROI选择模式
+                if hasattr(self, 'lbl_result_img'):
+                    self.lbl_result_img.roi_mode = True
+                return
+            
+            # 需要重新对齐，禁用按钮，显示处理中状态
+            self.btn_preview_roi.setEnabled(False)
+            self.btn_preview_roi.setText(trans.t("roi_aligning"))
+            QApplication.processEvents()
+            
+            # 启动ECC配准线程
+            self.roi_alignment_worker = ROIAlignmentWorker(
+                self.raw_images,
+                reg_downscale_width=self.reg_downscale_width,
+                thread_count=self.thread_count
+            )
+            self.roi_alignment_worker.finished_signal.connect(self._on_roi_alignment_finished)
+            self.roi_alignment_worker.error_signal.connect(self._on_roi_alignment_error)
+            self.roi_alignment_worker.start()
+        else:
+            # 退出ROI模式
+            self.roi_mode_active = False
+            if hasattr(self, 'lbl_result_img'):
+                self.lbl_result_img.roi_mode = False
+            # 恢复右侧面板显示
+            if self.fusion_result is not None:
+                self.output_manager.show_fusion_result()
+            elif self.registration_results:
+                self.output_manager.show_registration_result(self.current_result_index)
             else:
-                 # Clear ROI on exit? 
-                 # Handled by roi_mode setter for now
-                 pass
+                self.lbl_result_img.clear()
+                self.lbl_result_img.setText(trans.t("result_hint"))
+            # 清理ROI对齐图像
+            self.roi_aligned_images = []
+
+    def _on_roi_alignment_finished(self, aligned_images, alignment_time):
+        """ROI配准完成的回调"""
+        self.roi_aligned_images = aligned_images
+        self.roi_aligned_raw_count = len(self.raw_images)  # 记录对齐时的原图数量
+        self.roi_mode_active = True
+        
+        # 恢复按钮状态
+        self.btn_preview_roi.setEnabled(True)
+        self.btn_preview_roi.setText(trans.t("btn_roi"))
+        
+        # 在右侧结果面板显示对齐后的第一张图像
+        if aligned_images and len(aligned_images) > 0:
+            self._display_roi_aligned_image(0)
+            
+            # 启用滑动条，让用户可以浏览对齐后的图像栈
+            self.result_slider.setRange(0, len(aligned_images) - 1)
+            self.result_slider.setValue(0)
+            self.result_slider.setEnabled(True)
+            self.result_control_bar.setVisible(True)
+            
+            # 启用右侧面板的ROI选择模式
+            if hasattr(self, 'lbl_result_img'):
+                self.lbl_result_img.roi_mode = True
+                
+            # 显示提示信息
+            show_message_box(
+                self, 
+                trans.t("roi_ready_title"),
+                trans.t("roi_ready_msg"),
+                trans.t("roi_ready_detail").format(alignment_time),
+                QMessageBox.Icon.Information
+            )
+        
+        self.roi_alignment_worker = None
+
+    def _on_roi_alignment_error(self, error_message):
+        """ROI配准错误的回调"""
+        self.btn_preview_roi.setEnabled(True)
+        self.btn_preview_roi.setText(trans.t("btn_roi"))
+        self.btn_preview_roi.blockSignals(True)
+        self.btn_preview_roi.setChecked(False)
+        self.btn_preview_roi.blockSignals(False)
+        
+        show_error_box(
+            self,
+            trans.t("msg_error"),
+            trans.t("roi_align_failed"),
+            error_message
+        )
+        
+        self.roi_alignment_worker = None
+
+    def _display_roi_aligned_image(self, index: int):
+        """在右侧结果面板显示ROI模式下对齐后的图像"""
+        if not self.roi_aligned_images or index < 0 or index >= len(self.roi_aligned_images):
+            return
+        
+        # 保存当前ROI区域，以便在切换图像时保持ROI选择
+        current_roi = None
+        if hasattr(self, 'lbl_result_img') and self.lbl_result_img.get_roi_rect() is not None:
+            current_roi = self.lbl_result_img.get_roi_rect()
+        
+        try:
+            image = self.roi_aligned_images[index]
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            height, width, _channels = rgb_image.shape
+            bytes_per_line = 3 * width
+            
+            q_image = QImage(rgb_image.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_image)
+            
+            self.lbl_result_img.set_display_pixmap(pixmap)
+            self.lbl_result_info.setText(f"{index + 1} / {len(self.roi_aligned_images)}")
+            # ROI模式下保持控制栏可见，以便用户切换图像
+            self.result_control_bar.setVisible(True)
+            
+            # 恢复之前的ROI选择区域
+            if current_roi is not None:
+                self.lbl_result_img.set_roi_rect(current_roi)
+        except Exception as exc:
+            show_error_box(self, trans.t("msg_error"), trans.t("roi_display_failed"), str(exc))
+
+    def _on_roi_mode_exit_requested(self):
+        """处理ROI模式退出请求（点击X按钮或右键点击非ROI区域）"""
+        if self.roi_mode_active:
+            # 取消ROI按钮的选中状态，这会触发toggle_roi_mode(False)
+            self.btn_preview_roi.setChecked(False)
 
     def apply_dark_theme(self):
         # 动态替换为平台特定字体
