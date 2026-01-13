@@ -114,7 +114,7 @@ class SourceManager:
     def prompt_and_load_video(self) -> None:
         """Open a file dialog to select a video file and load it as image stack."""
         window = self.window
-        from image_loader import ImageStackLoader
+        from core.image_loader import ImageStackLoader
 
         # Build video filter string
         video_exts = " ".join([f"*{ext}" for ext in ImageStackLoader.SUPPORTED_VIDEO_FORMATS])
@@ -456,6 +456,8 @@ class SourceManager:
 
     def load_image_files_from_icon(self, file_paths: list[str]) -> None:
         """Load image files dropped on app icon."""
+        from core.image_loader import ImageStackLoader
+
         current_scale = getattr(self.window, "current_scale_factor", 1.0)
         dlg = DownsampleDialog(self.window, initial_scale=current_scale)
         if not dlg.exec():

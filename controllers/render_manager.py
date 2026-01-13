@@ -206,12 +206,14 @@ class RenderManager:
                     print("No operation selected. Please select registration options or fusion method.")
 
             # Only cache aligned images if we performed a FULL registration (no ROI cropping)
-            if registration_performed and not getattr(self.worker, 'roi_rect', None):
+            # Note: self.worker may be None if error occurred, so we check first
+            worker = self.worker
+            if registration_performed and worker is not None and not getattr(worker, 'roi_rect', None):
                 window.aligned_images = processed_images
                 window.is_images_aligned = True
                 window.last_alignment_options = (
-                    self.worker.need_align_homography,
-                    self.worker.need_align_ecc,
+                    worker.need_align_homography,
+                    worker.need_align_ecc,
                 )
 
             total_time = alignment_time + fusion_time

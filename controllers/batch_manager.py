@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Iterable, Optional
 
 from PyQt6.QtCore import QThread, Qt

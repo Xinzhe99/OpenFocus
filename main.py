@@ -33,6 +33,7 @@ from dialogs.settings import RegistrationSettingsDialog
 from utils import (
     get_ui_font_family,
     get_monospace_font_family,
+    get_default_font,
     show_message_box,
     show_warning_box,
     show_error_box,
@@ -839,6 +840,34 @@ class OpenFocus(QMainWindow):
 
     def _is_mouse_in_preview(self) -> bool:
         return self._mouse_in_source_preview or self._mouse_in_result_preview
+
+    def closeEvent(self, event):
+        """Clean up background threads before closing the window."""
+        # Stop ROI alignment worker if running
+        if self.roi_alignment_worker is not None:
+            if self.roi_alignment_worker.isRunning():
+                self.roi_alignment_worker.quit()
+                self.roi_alignment_worker.wait(1000)  # Wait up to 1 second
+            self.roi_alignment_worker = None
+
+        # Stop render worker if running
+        if hasattr(self, 'render_manager') and self.render_manager.worker is not None:
+            if self.render_manager.worker.isRunning():
+                self.render_manager.worker.quit()
+                self.render_manager.worker.wait(1000)
+            self.render_manager.worker = None
+
+        # Stop batch worker if running
+        if hasattr(self, 'batch_manager') and self.batch_manager._thread is not None:
+            if self.batch_manager._worker:
+                self.batch_manager._worker.cancel()
+            self.batch_manager._teardown_worker()
+
+        # Stop status update timer
+        if hasattr(self, 'status_timer') and self.status_timer.isActive():
+            self.status_timer.stop()
+
+        super().closeEvent(event)
 
     # --- Language ---
     
