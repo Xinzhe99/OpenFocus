@@ -95,15 +95,14 @@ We welcome community contributions of all kinds:
 
 <a id="license"></a>
 
-## Attribution request
-📸 If you publish images created with OpenFocus, please consider adding a note such as:
+## 📄 License
+This project is released under the [MIT License](./LICENSE). Feel free to use, modify, and distribute within the terms of the license.
+
+If you publish images created with OpenFocus, please consider adding a note such as:
 
 Created with OpenFocus – https://github.com/Xinzhe99/OpenFocus
 
 This is not mandatory, but highly appreciated.
-
-## 📄 License
-This project is released under the [MIT License](./LICENSE). Feel free to use, modify, and distribute within the terms of the license.
 
 <p align="center" style="font-size:1.25rem; font-weight:600;">
   If OpenFocus helps you, please consider leaving a ⭐ on the repository!
