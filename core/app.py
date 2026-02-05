@@ -109,8 +109,12 @@ class OpenFocusApplication(QApplication):
             src.load_image_files_from_icon(c['images'])
         else:
             from utils import show_warning_box
-            show_warning_box(self.main_window, "No Valid Files",
-                           "No supported image or video files found.")
+            from locales import trans
+            show_warning_box(
+                self.main_window,
+                trans.t("msg_no_valid_files_title"),
+                trans.t("msg_no_valid_files_text"),
+            )
 
 
 def process_command_line_args(main_window, args: List[str]):

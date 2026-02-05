@@ -21,7 +21,7 @@ class RenderManager:
         window = self.window
 
         if not window.raw_images or len(window.raw_images) < 2:
-            show_warning_box(window, "No Images", "Please load at least 2 images before rendering.")
+            show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             return
 
         window.btn_render.setEnabled(False)
@@ -71,12 +71,12 @@ class RenderManager:
         if window.rb_d.isChecked() and not is_stackmffv4_available():
             show_warning_box(
                 window,
-                "StackMFF-V4 Unavailable",
-                "StackMFF-V4 requires torch + torchvision. Please install them or choose another fusion method.",
+                trans.t("msg_stackmff_unavailable_title"),
+                trans.t("msg_stackmff_unavailable_text"),
             )
             window.rb_d.setChecked(False)
             window.btn_render.setEnabled(True)
-            window.btn_render.setText("▶ Start Render")
+            window.btn_render.setText(trans.t('btn_render'))
             return
 
         # Handle ROI options - check if ROI mode is active and we have aligned images

@@ -27,6 +27,7 @@ from ui.styles import (
     SOURCE_LIST_STYLE,
 )
 from locales import trans
+from widgets.output_list import OutputListWidget
 
 
 @dataclass
@@ -188,10 +189,12 @@ def create_right_panel() -> RightPanelComponents:
     output_list_layout.setContentsMargins(10, 10, 10, 10)
     output_label = QLabel(trans.t('label_output').format(0))
     output_list_layout.addWidget(output_label)
-    output_list = QListWidget()
+    output_list = OutputListWidget()
     output_list.setIconSize(QSize(40, 40))
     output_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     output_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    output_list.setDragEnabled(True)
+    output_list.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
     output_list.setStyleSheet(OUTPUT_LIST_STYLE)
     output_list_layout.addWidget(output_list)
 
@@ -269,6 +272,9 @@ def create_right_panel() -> RightPanelComponents:
 
 def bind_right_panel(window, components: RightPanelComponents) -> None:
     """Connect signals for the right-panel controls using the provided window."""
+
+    if hasattr(components.output_list, "set_window"):
+        components.output_list.set_window(window)
 
     components.rb_a.clicked.connect(lambda: window.handle_method_selection(components.rb_a))
     components.rb_b.clicked.connect(lambda: window.handle_method_selection(components.rb_b))

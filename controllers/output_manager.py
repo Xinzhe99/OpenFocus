@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox
 
 from controllers.export_manager import get_imwrite_params
 from utils import show_error_box, show_message_box, show_success_box, show_warning_box
+from locales import trans
 
 
 class OutputManager:
@@ -106,7 +107,7 @@ class OutputManager:
         default_filename = window.export_manager.generate_default_filename()
         file_path, _selected_filter = QFileDialog.getSaveFileName(
             window,
-            "Save as",
+            trans.t("action_save"),
             default_filename,
             "PNG Files (*.png);;JPG Files (*.jpg);;Bitmap Files (*.bmp);;TIFF Files (*.tif *.tiff);;All Files (*)",
         )
@@ -130,9 +131,19 @@ class OutputManager:
                 params = get_imwrite_params(ext)
                 success = cv2.imwrite(file_path, image_to_save, params)
                 if success:
-                    show_success_box(window, "Success", "Image saved successfully!", f"Image saved to:\n{file_path}")
+                    show_success_box(
+                        window,
+                        trans.t("msg_success"),
+                        trans.t("msg_image_saved_text"),
+                        trans.t("msg_image_saved_info").format(path=file_path),
+                    )
                 else:
-                    show_error_box(window, "Save Failed", "Failed to save the image.", "Unable to write image to the specified file path.")
+                    show_error_box(
+                        window,
+                        trans.t("msg_save_failed_title"),
+                        trans.t("msg_save_failed_text"),
+                        trans.t("msg_save_failed_info_write"),
+                    )
             elif window.fusion_result is not None and row == 0:
                 image_to_save = window.label_manager.prepare_bgr_image(
                     "registered", window.fusion_result, 0
@@ -142,15 +153,40 @@ class OutputManager:
                 params = get_imwrite_params(ext)
                 success = cv2.imwrite(file_path, image_to_save, params)
                 if success:
-                    show_success_box(window, "Success", "Image saved successfully!", f"Image saved to:\n{file_path}")
+                    show_success_box(
+                        window,
+                        trans.t("msg_success"),
+                        trans.t("msg_image_saved_text"),
+                        trans.t("msg_image_saved_info").format(path=file_path),
+                    )
                 else:
-                    show_error_box(window, "Save Failed", "Failed to save the image.", "Unable to write image to the specified file path.")
+                    show_error_box(
+                        window,
+                        trans.t("msg_save_failed_title"),
+                        trans.t("msg_save_failed_text"),
+                        trans.t("msg_save_failed_info_write"),
+                    )
             else:
-                show_warning_box(window, "Warning", "No valid image to save.", "The selected item does not contain a valid image.")
+                show_warning_box(
+                    window,
+                    trans.t("msg_warning"),
+                    trans.t("msg_no_valid_image_text"),
+                    trans.t("msg_no_valid_image_info"),
+                )
         except cv2.error as exc:
-            show_error_box(window, "Save Failed", "Failed to save the image.", f"OpenCV Error: {str(exc)}\n\nPlease check the file extension and ensure it is supported.")
+            show_error_box(
+                window,
+                trans.t("msg_save_failed_title"),
+                trans.t("msg_save_failed_text"),
+                trans.t("msg_save_failed_info_opencv").format(error=str(exc)),
+            )
         except Exception as exc:  # pylint: disable=broad-except
-            show_error_box(window, "Save Failed", "Failed to save the image.", f"Unexpected error: {str(exc)}")
+            show_error_box(
+                window,
+                trans.t("msg_save_failed_title"),
+                trans.t("msg_save_failed_text"),
+                trans.t("msg_save_failed_info_unexpected").format(error=str(exc)),
+            )
 
     def delete_selected_output_images(self) -> None:
         window = self.window
@@ -204,8 +240,8 @@ class OutputManager:
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
-                "Display Error",
-                "Failed to display the fusion result.",
+                trans.t("msg_display_error_title"),
+                trans.t("msg_display_fusion_failed_text"),
                 f"Error: {str(exc)}",
                 QMessageBox.Icon.Critical,
             )
@@ -256,8 +292,8 @@ class OutputManager:
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
-                "Display Error",
-                "Failed to display the registration result.",
+                trans.t("msg_display_error_title"),
+                trans.t("msg_display_registration_failed_text"),
                 f"Error: {str(exc)}",
                 QMessageBox.Icon.Critical,
             )

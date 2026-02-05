@@ -429,7 +429,7 @@ class OpenFocus(QMainWindow):
         """Disable fusion methods whose dependencies are not installed."""
         if not is_stackmffv4_available():
             self.rb_d.setEnabled(False)
-            self.rb_d.setToolTip("Requires torch + torchvision. Install to enable StackMFF-V4.")
+            self.rb_d.setToolTip(trans.t("msg_stackmff_unavailable_text"))
         else:
             self.rb_d.setEnabled(True)
             self.rb_d.setToolTip("")
@@ -459,8 +459,8 @@ class OpenFocus(QMainWindow):
             except Exception as e:
                 show_message_box(
                     self,
-                    "Display Error",
-                    "Failed to display the source image.",
+                    trans.t("msg_display_error_title"),
+                    trans.t("msg_display_source_failed_text"),
                     f"Error: {str(e)}",
                     QMessageBox.Icon.Critical
                 )

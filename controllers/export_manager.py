@@ -15,6 +15,7 @@ from utils import (
     show_warning_box,
 )
 from core.workers import GifSaverWorker
+from locales import trans
 
 ALLOWED_EXPORT_EXTENSION_MAP = {
     ".png": ".png",
@@ -161,13 +162,13 @@ class ExportManager:
 
         if window.fusion_result is not None:
             result_to_save = window.fusion_result
-            title = "Save Fusion Result"
+            title = trans.t("action_save")
         elif window.registration_results:
             index = window.current_result_index if window.current_result_index >= 0 else 0
             result_to_save = window.registration_results[index]
-            title = "Save Registration Result"
+            title = trans.t("action_save")
         else:
-            show_warning_box(window, "No Result", "Please render the result first (registration or fusion).")
+            show_warning_box(window, trans.t("msg_no_result_title"), trans.t("msg_no_result_text"))
             return
 
         default_filename = self.generate_default_filename()
@@ -194,40 +195,40 @@ class ExportManager:
             if cv2.imwrite(file_path, image_to_save, params):
                 show_message_box(
                     window,
-                    "Success",
-                    "Image saved successfully!",
-                    f"Image saved to:\n{file_path}",
+                    trans.t("msg_success"),
+                    trans.t("msg_image_saved_text"),
+                    trans.t("msg_image_saved_info").format(path=file_path),
                     QMessageBox.Icon.Information,
                 )
             else:
                 show_message_box(
                     window,
-                    "Save Failed",
-                    "Failed to save the image.",
-                    "Unable to write image to the specified file path.",
+                    trans.t("msg_save_failed_title"),
+                    trans.t("msg_save_failed_text"),
+                    trans.t("msg_save_failed_info_write"),
                     QMessageBox.Icon.Critical,
                 )
         except cv2.error as exc:
             show_message_box(
                 window,
-                "Save Failed",
-                "Failed to save the image.",
-                f"OpenCV Error: {str(exc)}\n\nPlease check the file extension and ensure it is supported.",
+                trans.t("msg_save_failed_title"),
+                trans.t("msg_save_failed_text"),
+                trans.t("msg_save_failed_info_opencv").format(error=str(exc)),
                 QMessageBox.Icon.Critical,
             )
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
-                "Save Failed",
-                "Failed to save the image.",
-                f"Unexpected error: {str(exc)}",
+                trans.t("msg_save_failed_title"),
+                trans.t("msg_save_failed_text"),
+                trans.t("msg_save_failed_info_unexpected").format(error=str(exc)),
                 QMessageBox.Icon.Critical,
             )
 
     def save_result_stack(self) -> None:
         window = self.window
         if not window.registration_results:
-            show_warning_box(window, "No Stack", "Please perform registration first to save the stack.")
+            show_warning_box(window, trans.t("msg_no_stack_title"), trans.t("msg_no_stack_text"))
             return
 
         default_foldername = self.generate_default_foldername()
@@ -258,25 +259,29 @@ class ExportManager:
 
             show_message_box(
                 window,
-                "Success",
-                "Stack saved successfully!",
-                f"Successfully saved {saved_count}/{len(window.registration_results)} images to:\n{folder_path}",
+                trans.t("msg_success"),
+                trans.t("msg_stack_saved_text"),
+                trans.t("msg_stack_saved_info").format(
+                    saved=saved_count,
+                    total=len(window.registration_results),
+                    folder=folder_path,
+                ),
                 QMessageBox.Icon.Information,
             )
         except cv2.error as exc:
             show_message_box(
                 window,
-                "Error",
-                "Failed to save stack:",
-                f"OpenCV Error: {str(exc)}\n\nPlease check the file path and permissions.",
+                trans.t("msg_error"),
+                trans.t("msg_save_stack_failed_text"),
+                trans.t("msg_save_stack_opencv_info").format(error=str(exc)),
                 QMessageBox.Icon.Critical,
             )
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
-                "Error",
-                "Failed to save stack:",
-                f"Unexpected error: {str(exc)}",
+                trans.t("msg_error"),
+                trans.t("msg_save_stack_failed_text"),
+                trans.t("msg_save_stack_unexpected_info").format(error=str(exc)),
                 QMessageBox.Icon.Critical,
             )
 
@@ -285,12 +290,12 @@ class ExportManager:
 
         if target_type == "registered":
             if not window.registration_results:
-                show_warning_box(window, "No Registered Images", "Please perform registration first.")
+                show_warning_box(window, trans.t("msg_no_registered_images_title"), trans.t("msg_no_registered_images_text"))
                 return
             images_to_save = window.registration_results
         else:
             if not window.raw_images:
-                show_warning_box(window, "No Input Images", "Please load images first.")
+                show_warning_box(window, trans.t("msg_no_input_images_title"), trans.t("msg_no_input_images_text"))
                 return
             images_to_save = window.raw_images
 
@@ -310,8 +315,14 @@ class ExportManager:
         if not file_path:
             return
 
-        self.gif_progress_dialog = QProgressDialog("Saving GIF animation...", "Cancel", 0, 0, window)
-        self.gif_progress_dialog.setWindowTitle("Processing")
+        self.gif_progress_dialog = QProgressDialog(
+            trans.t("msg_gif_saving_text"),
+            trans.t("btn_cancel"),
+            0,
+            0,
+            window,
+        )
+        self.gif_progress_dialog.setWindowTitle(trans.t("msg_gif_processing_title"))
         self.gif_progress_dialog.setStyleSheet(PROGRESS_DIALOG_STYLE)
         self.gif_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self.gif_progress_dialog.setMinimumDuration(0)
@@ -337,23 +348,23 @@ class ExportManager:
         if success:
             show_success_box(
                 window,
-                "Success",
-                "GIF animation saved successfully!",
-                f"{message}\nFrame duration: {duration_ms}ms",
+                trans.t("msg_success"),
+                trans.t("msg_gif_saved_text"),
+                trans.t("msg_gif_saved_info").format(message=message, duration=duration_ms),
             )
         else:
             show_message_box(
                 window,
-                "Error",
-                "Failed to save as GIF animation:",
-                f"Error: {message}",
+                trans.t("msg_error"),
+                trans.t("msg_gif_save_failed_text"),
+                trans.t("msg_gif_save_failed_info").format(message=message),
                 QMessageBox.Icon.Critical,
             )
 
     def save_processed_input_stack(self) -> None:
         window = self.window
         if not window.raw_images:
-            show_warning_box(window, "No Images", "Please load images first to save the stack.")
+            show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_save_stack_text"))
             return
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -385,21 +396,25 @@ class ExportManager:
 
             show_success_box(
                 window,
-                "Success",
-                "Processed input stack saved successfully!",
-                f"Successfully saved {saved_count}/{len(window.raw_images)} images to:\n{folder_path}",
+                trans.t("msg_success"),
+                trans.t("msg_processed_stack_saved_text"),
+                trans.t("msg_processed_stack_saved_info").format(
+                    saved=saved_count,
+                    total=len(window.raw_images),
+                    folder=folder_path,
+                ),
             )
         except cv2.error as exc:
             show_error_box(
                 window,
-                "Error",
-                "Failed to save stack:",
-                f"OpenCV Error: {str(exc)}\n\nPlease check the file path and permissions.",
+                trans.t("msg_error"),
+                trans.t("msg_save_stack_failed_text"),
+                trans.t("msg_save_stack_opencv_info").format(error=str(exc)),
             )
         except Exception as exc:  # pylint: disable=broad-except
             show_error_box(
                 window,
-                "Error",
-                "Failed to save stack:",
-                f"Unexpected error: {str(exc)}",
+                trans.t("msg_error"),
+                trans.t("msg_save_stack_failed_text"),
+                trans.t("msg_save_stack_unexpected_info").format(error=str(exc)),
             )

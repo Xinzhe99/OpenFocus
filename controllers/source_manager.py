@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox, QD
 from dialogs import DownsampleDialog
 from utils import show_message_box, show_warning_box
 from ui.styles import MESSAGE_BOX_STYLE
+from locales import trans
 
 
 @dataclass
@@ -33,7 +34,7 @@ class SourceManager:
         count = self.window.file_list.count()
         self.window.source_images_label.setText(f"Source Images: {count}")
 
-    def load_image_stack(self, folder_path: str) -> None:
+    def load_image_stack(self, folder_path: str, append: bool = False) -> None:
         window = self.window
 
         current_scale = getattr(window, "current_scale_factor", 1.0)
@@ -51,21 +52,23 @@ class SourceManager:
             )
 
             if not success:
-                show_warning_box(window, "Load Failed", "Failed to load image stack.", message)
+                show_warning_box(window, trans.t("msg_load_failed"), trans.t("msg_load_stack_failed_text"), message)
                 return
 
+            if append and not self._confirm_append_dimensions(full_res_images):
+                return
             load_options = self._build_load_options(full_res_images, filenames, scale_factor)
-            self._apply_load_options(load_options)
+            self._apply_load_options(load_options, append=append)
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
-                "Load Error",
-                "An error occurred while loading the image stack.",
+                trans.t("msg_load_error"),
+                trans.t("msg_load_stack_error_text"),
                 f"Error: {str(exc)}",
                 QMessageBox.Icon.Critical,
             )
 
-    def load_video_stack(self, video_path: str) -> None:
+    def load_video_stack(self, video_path: str, append: bool = False) -> None:
         """Load image stack from a video file."""
         window = self.window
 
@@ -84,16 +87,18 @@ class SourceManager:
             )
 
             if not success:
-                show_warning_box(window, "Load Failed", "Failed to load video.", message)
+                show_warning_box(window, trans.t("msg_load_failed"), trans.t("msg_load_video_failed_text"), message)
                 return
 
+            if append and not self._confirm_append_dimensions(full_res_images):
+                return
             load_options = self._build_load_options(full_res_images, filenames, scale_factor)
-            self._apply_load_options(load_options)
+            self._apply_load_options(load_options, append=append)
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
-                "Load Error",
-                "An error occurred while loading the video.",
+                trans.t("msg_load_error"),
+                trans.t("msg_load_video_error_text"),
                 f"Error: {str(exc)}",
                 QMessageBox.Icon.Critical,
             )
@@ -153,7 +158,7 @@ class SourceManager:
             dialog = FolderImportDialog(paths[0], self.window)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 if dialog.is_single_stack():
-                    self.load_image_stack(paths[0])
+                    self.load_image_stack(paths[0], append=True)
                     event.acceptProposedAction()
                 else:
                     # 多组图像栈 - 先弹出下采样设置
@@ -189,14 +194,14 @@ class SourceManager:
         if len(paths) == 1 and os.path.isfile(paths[0]):
             ext = os.path.splitext(paths[0])[1].lower()
             if ext in ImageStackLoader.SUPPORTED_VIDEO_FORMATS:
-                self.load_video_stack(paths[0])
+                self.load_video_stack(paths[0], append=True)
                 event.acceptProposedAction()
                 return
 
         # Otherwise treat dropped items as a list of files
         filepaths = [p for p in paths if os.path.isfile(p)]
         if not filepaths:
-            show_warning_box(self.window, "Error", "No valid files were dropped")
+            show_warning_box(self.window, trans.t("msg_warning"), trans.t("msg_drop_no_valid_files_text"))
             event.ignore()
             return
 
@@ -212,7 +217,7 @@ class SourceManager:
                 valid_paths.append(p)
 
         if not valid_paths:
-            show_warning_box(self.window, "Error", "No supported image files were found in the dropped selection")
+            show_warning_box(self.window, trans.t("msg_warning"), trans.t("msg_drop_no_supported_images_text"))
             event.ignore()
             return
 
@@ -228,7 +233,7 @@ class SourceManager:
 
             success, message, full_res_images, filenames = loader.load_from_filepaths(valid_paths, scale_factor=scale)
             if not success:
-                show_warning_box(self.window, "Load Failed", "Failed to load dropped images.", message)
+                show_warning_box(self.window, trans.t("msg_load_failed"), trans.t("msg_load_dropped_failed_text"), message)
                 event.ignore()
                 return
             # Check image sizes (after loading / downsampling)
@@ -236,31 +241,34 @@ class SourceManager:
             if len(shapes) > 1:
                 # Ask user to continue or cancel (Continue/Cancel)
                 msg = QMessageBox(self.window)
-                msg.setWindowTitle("Image Size Mismatch")
-                msg.setText("Not all images have the same dimensions.")
-                msg.setInformativeText("Do you want to continue opening the stack?")
+                msg.setWindowTitle(trans.t("msg_size_mismatch_title"))
+                msg.setText(trans.t("msg_size_mismatch_stack_text"))
+                msg.setInformativeText(trans.t("msg_size_mismatch_open_info"))
                 msg.setIcon(QMessageBox.Icon.Warning)
                 msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                 # relabel buttons to Continue / Cancel
                 yes_btn = msg.button(QMessageBox.StandardButton.Yes)
                 no_btn = msg.button(QMessageBox.StandardButton.No)
                 if yes_btn:
-                    yes_btn.setText("Continue")
+                    yes_btn.setText(trans.t("btn_continue"))
                 if no_btn:
-                    no_btn.setText("Cancel")
+                    no_btn.setText(trans.t("btn_cancel_generic"))
                 msg.setStyleSheet(MESSAGE_BOX_STYLE)
                 ret = msg.exec()
                 if ret != QMessageBox.StandardButton.Yes:
                     event.ignore()
                     return
+            if not self._confirm_append_dimensions(full_res_images):
+                event.ignore()
+                return
             load_options = self._build_load_options(full_res_images, filenames, scale)
-            self._apply_load_options(load_options)
+            self._apply_load_options(load_options, append=True)
             event.acceptProposedAction()
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 self.window,
-                "Load Error",
-                "An error occurred while loading the dropped images.",
+                trans.t("msg_load_error"),
+                trans.t("msg_load_dropped_error_text"),
                 f"Error: {str(exc)}",
                 QMessageBox.Icon.Critical,
             )
@@ -279,20 +287,56 @@ class SourceManager:
             working_images=full_res_images,
         )
 
-    def _apply_load_options(self, options: LoadOptions) -> None:
+    def _apply_load_options(self, options: LoadOptions, append: bool = False) -> None:
         window = self.window
 
-        window.base_images = options.base_images
-        window.current_scale_factor = options.scale_factor
-        window.raw_images = options.working_images
-        window.image_filenames = options.filenames
+        if append and window.raw_images:
+            window.base_images = (window.base_images or []) + options.base_images
+            window.raw_images = (window.raw_images or []) + options.working_images
+            window.image_filenames = (window.image_filenames or []) + options.filenames
+            initial_index = window.current_display_index if window.current_display_index >= 0 else 0
+        else:
+            window.base_images = options.base_images
+            window.current_scale_factor = options.scale_factor
+            window.raw_images = options.working_images
+            window.image_filenames = options.filenames
+            initial_index = 0
 
         window.label_manager.reset_labels()
         window.transform_manager.invalidate_processing_results(
             clear_output_view=True,
             preserve_outputs=True,
         )
-        window.transform_manager.reload_image_stack()
+        window.transform_manager.reload_image_stack(initial_index=initial_index)
+
+    def _confirm_append_dimensions(self, new_images: list[Any]) -> bool:
+        window = self.window
+        if not window.raw_images:
+            return True
+
+        try:
+            existing_shape = window.raw_images[0].shape[:2]
+            new_shapes = {(img.shape[0], img.shape[1]) for img in new_images}
+            if len(new_shapes) == 1 and existing_shape in new_shapes:
+                return True
+        except Exception:
+            return True
+
+        msg = QMessageBox(window)
+        msg.setWindowTitle(trans.t("msg_size_mismatch_title"))
+        msg.setText(trans.t("msg_size_mismatch_text"))
+        msg.setInformativeText(trans.t("msg_size_mismatch_info"))
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        yes_btn = msg.button(QMessageBox.StandardButton.Yes)
+        no_btn = msg.button(QMessageBox.StandardButton.No)
+        if yes_btn:
+            yes_btn.setText(trans.t("btn_continue"))
+        if no_btn:
+            no_btn.setText(trans.t("btn_cancel_generic"))
+        msg.setStyleSheet(MESSAGE_BOX_STYLE)
+        ret = msg.exec()
+        return ret == QMessageBox.StandardButton.Yes
 
     def refresh_current_source_view(self) -> None:
         index = getattr(self.window, "current_display_index", -1)
@@ -339,8 +383,8 @@ class SourceManager:
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
-                "Update Error",
-                "Failed to update the file list.",
+                trans.t("msg_update_error_title"),
+                trans.t("msg_update_file_list_text"),
                 f"Error: {str(exc)}",
                 QMessageBox.Icon.Critical,
             )
@@ -430,7 +474,7 @@ class SourceManager:
         dialog = FolderImportDialog(folder_path, self.window)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             if dialog.is_single_stack():
-                self.load_image_stack(folder_path)
+                self.load_image_stack(folder_path, append=True)
             else:
                 current_scale = getattr(self.window, "current_scale_factor", 1.0)
                 dlg = DownsampleDialog(self.window, initial_scale=current_scale)
@@ -468,27 +512,30 @@ class SourceManager:
         success, message, full_res_images, filenames = loader.load_from_filepaths(file_paths, scale_factor=scale)
 
         if not success:
-            show_warning_box(self.window, "Load Failed", "Failed to load dropped images.", message)
+            show_warning_box(self.window, trans.t("msg_load_failed"), trans.t("msg_load_dropped_failed_text"), message)
+            return
+
+        if not self._confirm_append_dimensions(full_res_images):
             return
 
         # Check image sizes
         shapes = {(img.shape[0], img.shape[1]) for img in full_res_images}
         if len(shapes) > 1:
             msg = QMessageBox(self.window)
-            msg.setWindowTitle("Image Size Mismatch")
-            msg.setText("Not all images have the same dimensions.")
-            msg.setInformativeText("Do you want to continue opening the stack?")
+            msg.setWindowTitle(trans.t("msg_size_mismatch_title"))
+            msg.setText(trans.t("msg_size_mismatch_stack_text"))
+            msg.setInformativeText(trans.t("msg_size_mismatch_open_info"))
             msg.setIcon(QMessageBox.Icon.Warning)
             msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             yes_btn = msg.button(QMessageBox.StandardButton.Yes)
             no_btn = msg.button(QMessageBox.StandardButton.No)
             if yes_btn:
-                yes_btn.setText("Continue")
+                yes_btn.setText(trans.t("btn_continue"))
             if no_btn:
-                no_btn.setText("Cancel")
+                no_btn.setText(trans.t("btn_cancel_generic"))
             msg.setStyleSheet(MESSAGE_BOX_STYLE)
             if msg.exec() != QMessageBox.StandardButton.Yes:
                 return
 
         load_options = self._build_load_options(full_res_images, filenames, scale)
-        self._apply_load_options(load_options)
+        self._apply_load_options(load_options, append=True)

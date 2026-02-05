@@ -18,7 +18,7 @@ class TransformManager:
         """Rotate every image in the current stack."""
         window = self.window
         if not window.raw_images:
-            show_warning_box(window, "No Images", "No images to rotate.")
+            show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_rotate"))
             return
 
         window.raw_images = [cv2.rotate(img, rotation_code) for img in window.raw_images]
@@ -33,7 +33,7 @@ class TransformManager:
         """Flip every image in the current stack."""
         window = self.window
         if not window.raw_images:
-            show_warning_box(window, "No Images", "No images to flip.")
+            show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_flip"))
             return
 
         window.raw_images = [cv2.flip(img, flip_code) for img in window.raw_images]
@@ -48,7 +48,7 @@ class TransformManager:
         """Resize working images according to the down-sample dialog."""
         window = self.window
         if not window.raw_images:
-            show_warning_box(window, "No Images", "No images to resize.")
+            show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_resize"))
             return
 
         current_scale = getattr(window, "current_scale_factor", 1.0)
@@ -79,14 +79,14 @@ class TransformManager:
 
             show_success_box(
                 window,
-                "Success",
-                f"Images resized to {int(new_scale * 100)}%. Existing outputs preserved.",
+                trans.t("msg_success"),
+                trans.t("msg_resize_success_text").format(percent=int(new_scale * 100)),
             )
         except Exception as exc:  # pylint: disable=broad-except
             show_error_box(
                 window,
-                "Resize Error",
-                "An error occurred while resizing images.",
+                trans.t("msg_resize_error_title"),
+                trans.t("msg_resize_error_text"),
                 f"Error: {str(exc)}",
             )
 
@@ -140,8 +140,8 @@ class TransformManager:
         except Exception as exc:  # pylint: disable=broad-except
             show_error_box(
                 window,
-                "Reload Error",
-                "An error occurred while reloading the image stack.",
+                trans.t("msg_reload_error_title"),
+                trans.t("msg_reload_error_text"),
                 f"Error: {str(exc)}",
             )
 
