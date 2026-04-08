@@ -59,7 +59,7 @@ class OutputManager:
     # ------------------------------------------------------------------
     def show_output_context_menu(self, position: QPoint) -> None:
         window = self.window
-        menu = QMenu(window)
+        menu = QMenu(window.output_list)
 
         delete_action = QAction("Delete", window)
         delete_action.triggered.connect(self.delete_selected_output_images)
