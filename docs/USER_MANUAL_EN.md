@@ -69,8 +69,9 @@ Upon launch, you will see the main application window with a dark theme interfac
 2. Configure fusion settings in the right panel
 3. Optionally enable registration for alignment
 4. Adjust kernel size if needed
-5. Click "Start Render" to begin processing
-6. Export your results
+5. *(optional)* Check **Quick preview** to test parameters on a downscaled draft first
+6. Click "Start Render" to begin processing
+7. Export your results
 
 ---
 
@@ -107,7 +108,7 @@ The top menu bar provides access to all functions:
 - **Edit**: Image transformations and labels
 - **Batch**: Batch processing
 - **Settings**: GPU acceleration, language, tile, registration, and thread configurations
-- **Help**: Environment info and contact information
+- **Help**: Environment info, contact information, update check, and the log folder
 
 ---
 
@@ -306,6 +307,17 @@ OpenFocus offers five fusion algorithms. Each has different characteristics suit
 | DTCWT | Medium | Very Good | Complex scenes |
 | GFG-FGF | Fast | Good | Focus regions |
 | StackMFF-V4 | Slow (GPU) | Excellent | Best quality |
+
+### Quick Preview (Draft Render)
+
+Tuning parameters on large stacks is slow at full resolution. Check
+**Quick preview** above the render button and OpenFocus first renders a
+downscaled draft (longest side 1200 px) — typically several times faster,
+including registration. The preview is displayed with a "Preview" note in
+the completion dialog and is **not** added to the output history. Uncheck
+the box and render again to produce the full-resolution result. Preview
+mode does not apply to ROI renders and never pollutes the full-resolution
+alignment cache.
 
 ---
 

@@ -36,6 +36,7 @@ class RightPanelComponents:
     splitter: QSplitter
     btn_reset: QPushButton
     btn_render: QPushButton
+    chk_quick_preview: QCheckBox
     btn_method_help: QPushButton
     btn_reg_help: QPushButton
     rb_a: QRadioButton
@@ -166,6 +167,11 @@ def create_right_panel() -> RightPanelComponents:
     button_bar.addWidget(btn_render)
     config_layout.addLayout(button_bar)
 
+    chk_quick_preview = QCheckBox(trans.t('chk_quick_preview'))
+    chk_quick_preview.setToolTip(trans.t('chk_quick_preview_hint'))
+    chk_quick_preview.setStyleSheet("color: #aaa;")
+    config_layout.addWidget(chk_quick_preview)
+
     right_splitter.addWidget(config_widget)
 
     # Source list -----------------------------------------
@@ -242,6 +248,7 @@ def create_right_panel() -> RightPanelComponents:
         splitter=right_splitter,
         btn_reset=btn_reset,
         btn_render=btn_render,
+        chk_quick_preview=chk_quick_preview,
         btn_method_help=btn_method_help,
         btn_reg_help=btn_reg_help,
         rb_a=rb_a,

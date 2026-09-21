@@ -52,4 +52,6 @@ Desktop.ini
 **/AGENTS.md
 
 # build
-*.spec
+*.spec.pytest_cache/
+.temp_qsettings/
+.temp_shots/

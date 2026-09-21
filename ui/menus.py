@@ -234,3 +234,13 @@ def setup_menus(window: QMainWindow) -> None:
     contact_action.triggered.connect(window.show_contact_info)
     help_menu.addAction(contact_action)
     window.ui_objs['action_contact'] = contact_action
+
+    update_action = QAction(trans.t('menu_check_updates'), window)
+    update_action.triggered.connect(window.check_for_updates)
+    help_menu.addAction(update_action)
+    window.ui_objs['menu_check_updates'] = update_action
+
+    logs_action = QAction(trans.t('menu_open_logs'), window)
+    logs_action.triggered.connect(window.open_logs_folder)
+    help_menu.addAction(logs_action)
+    window.ui_objs['menu_open_logs'] = logs_action

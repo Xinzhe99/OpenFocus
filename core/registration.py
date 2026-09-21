@@ -496,7 +496,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     termination_eps = 1e-4
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, number_of_iterations, termination_eps)
 
-    # 预处理函数：转灰度 + 降采样 + 高斯模糊
+    # 预处理函数：转灰度 + 降采样 + 高斯模糊 + 归一化
     def preprocess(img):
         h, w = img.shape[:2]
         scale = downscale_width / float(w) if w > downscale_width else 1.0
@@ -504,9 +504,12 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             small_img = cv2.resize(img, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
         else:
             small_img = img # 引用即可，无需拷贝
-        
+
         gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        # findTransformECC 的数值稳定性依赖归一化的浮点输入：uint8 的
+        # 大幅值梯度会让优化步长过大，常见于小位移场景直接不收敛
+        gray = gray.astype(np.float32) / 255.0
         return gray, scale
 
     print(f"Aligning {len(images)} images using ECC (Parallel Optimized)...")

@@ -3,6 +3,29 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.11] — 2026-09-21
+
+### Added
+- **Quick preview**: optional draft render (longest side downscaled to
+  1200 px) for fast parameter tuning; preview results are marked in the
+  completion dialog and kept out of the output history and the
+  full-resolution alignment cache
+- **Update check** (Help → Check for Updates): compares the installed
+  version against GitHub releases and offers a direct link to the
+  download page
+- **File logging**: rotating log files under the user's application-data
+  directory (`Help → Open Logs Folder`); startup, renders and errors are
+  recorded — attach the newest `openfocus.log` when reporting issues
+- **Delete confirmation**: deleting source frames or output results now
+  asks for confirmation (previously unrecoverable without any prompt)
+- **Test suite** (`tests/`, pytest): golden-behaviour tests for all five
+  fusion algorithms, registration recovery, label ranges, the update
+  checker, settings persistence, the wipe widget and the CLI; runs on
+  every push via a new GitHub Actions workflow (Ubuntu + Windows)
+- `APP_VERSION` constant and ECC preprocessing now normalizes grayscale
+  inputs to float32, which makes `findTransformECC` far more reliable on
+  small-shift stacks (verified by the new registration tests)
+
 ## [v1.10] — 2026-09-21
 
 ### Added

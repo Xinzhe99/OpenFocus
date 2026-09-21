@@ -198,6 +198,14 @@ class OutputManager:
         if not selected_items:
             return
 
+        confirm = QMessageBox(window)
+        confirm.setIcon(QMessageBox.Icon.Warning)
+        confirm.setWindowTitle(trans.t("msg_confirm_delete_title"))
+        confirm.setText(trans.t("msg_confirm_delete_output_text").format(count=len(selected_items)))
+        confirm.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        if confirm.exec() != QMessageBox.StandardButton.Yes:
+            return
+
         rows = [window.output_list.row(item) for item in selected_items]
         rows.sort(reverse=True)
 

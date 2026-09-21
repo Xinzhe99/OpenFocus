@@ -1,6 +1,9 @@
 import traceback
 from typing import Any, List, Optional
 
+import cv2
+
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
 
 from utils import show_custom_message_box, show_message_box, show_warning_box
@@ -8,6 +11,19 @@ from core.multi_focus_fusion import is_stackmffv4_available
 from core.workers import RenderWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
+
+PREVIEW_MAX_SIDE = 1200
+
+
+def _downscale_for_preview(img):
+    """Scale a frame so its longest side is at most PREVIEW_MAX_SIDE."""
+    h, w = img.shape[:2]
+    longest = max(h, w)
+    if longest <= PREVIEW_MAX_SIDE:
+        return img
+    scale = PREVIEW_MAX_SIDE / float(longest)
+    return cv2.resize(img, (int(round(w * scale)), int(round(h * scale))),
+                      interpolation=cv2.INTER_AREA)
 
 
 class RenderManager:
@@ -127,6 +143,12 @@ class RenderManager:
                     return
         
         # 确定要使用的图像源
+        preview_downscale = getattr(window, 'chk_quick_preview', None)
+        self._preview_mode = bool(
+            preview_downscale is not None
+            and preview_downscale.isChecked()
+            and not use_roi_aligned_images
+        )
         if use_roi_aligned_images:
             # ROI模式下使用已经对齐的图像栈，跳过额外的配准
             source_images = window.roi_aligned_images
@@ -137,6 +159,16 @@ class RenderManager:
             effective_aligned_images = window.roi_aligned_images
             effective_is_aligned = True
             effective_last_alignment_options = (False, True)  # 表示ECC已完成
+        elif self._preview_mode:
+            # Quick preview: downscale the stack so the draft render finishes
+            # in a fraction of the time; alignment always reruns on the small
+            # frames (the full-resolution aligned cache does not apply).
+            source_images = [_downscale_for_preview(img) for img in window.raw_images]
+            effective_need_align_homography = need_align_homography
+            effective_need_align_ecc = need_align_ecc
+            effective_aligned_images = source_images
+            effective_is_aligned = False
+            effective_last_alignment_options = (False, False)
         else:
             source_images = window.raw_images
             effective_need_align_homography = need_align_homography
@@ -186,11 +218,17 @@ class RenderManager:
         device_name: str,
     ) -> None:
         window = self.window
+        preview = getattr(self, '_preview_mode', False)
+        self._preview_mode = False
 
         try:
             if fusion_result is not None:
                 window.fusion_result = fusion_result
-                window.registration_results = processed_images
+                # A quick preview is a throwaway draft: show it, but keep it
+                # out of the output history so only full-quality renders land
+                # there.
+                if not preview:
+                    window.registration_results = processed_images
 
                 # 如果是ROI模式下的融合，退出ROI模式（但保留对齐图像供复用）
                 if getattr(window, 'roi_mode_active', False):
@@ -206,7 +244,8 @@ class RenderManager:
                         window.btn_preview_roi.blockSignals(False)
 
                 window.output_manager.show_fusion_result()
-                window.output_manager.update_output_list_for_fusion()
+                if not preview:
+                    window.output_manager.update_output_list_for_fusion()
 
                 # New output: refresh the wipe B-side history, keep selection
                 if getattr(window, "wipe_active", False):
@@ -217,33 +256,57 @@ class RenderManager:
                 window.current_result_index = -1
                 window.add_label_action.setEnabled(True)
 
-                print("Fusion completed successfully!")
+                if preview:
+                    print("Preview render completed (not added to output history)")
+                else:
+                    print("Fusion completed successfully!")
+
+                import logging
+                logging.getLogger("openfocus").info(
+                    "render finished (preview=%s, method fusion, %.1fs)", preview, fusion_time)
             else:
                 if registration_performed:
-                    window.fusion_result = None
-                    window.registration_results = processed_images
+                    if preview:
+                        # Preview draft: show the small aligned frames without
+                        # touching the full-resolution output history
+                        first = processed_images[0] if processed_images else None
+                        if first is not None:
+                            rgb_image = cv2.cvtColor(first, cv2.COLOR_BGR2RGB)
+                            h, w, _ch = rgb_image.shape
+                            q_image = QImage(rgb_image.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+                            window.lbl_result_img.set_display_pixmap(QPixmap.fromImage(q_image))
+                        window.result_control_bar.setVisible(False)
+                        print("Preview registration completed (not added to output history)")
+                    else:
+                        window.fusion_result = None
+                        window.registration_results = processed_images
 
-                    window.result_slider.setEnabled(True)
-                    window.result_slider.setRange(0, len(window.registration_results) - 1)
-                    window.result_control_bar.setVisible(True)
+                        window.result_slider.setEnabled(True)
+                        window.result_slider.setRange(0, len(window.registration_results) - 1)
+                        window.result_control_bar.setVisible(True)
 
-                    window.current_result_index = 0
-                    window.update_result_view(0)
-                    window.add_label_action.setEnabled(True)
+                        window.current_result_index = 0
+                        window.update_result_view(0)
+                        window.add_label_action.setEnabled(True)
 
-                    # Registration results replaced the output history the
-                    # wipe view may be scrubbing through
-                    if getattr(window, "wipe_active", False):
-                        window.refresh_wipe_controls()
+                        # Registration results replaced the output history the
+                        # wipe view may be scrubbing through
+                        if getattr(window, "wipe_active", False):
+                            window.refresh_wipe_controls()
 
-                    print("Registration completed successfully!")
+                        print("Registration completed successfully!")
                 else:
                     print("No operation selected. Please select registration options or fusion method.")
 
             # Only cache aligned images if we performed a FULL registration (no ROI cropping)
             # Note: self.worker may be None if error occurred, so we check first
+            # Preview renders work on downscaled frames — never cache them as
+            # the full-resolution aligned stack.
             worker = self.worker
-            if registration_performed and worker is not None and not getattr(worker, 'roi_rect', None):
+            if (
+                registration_performed and not preview
+                and worker is not None and not getattr(worker, 'roi_rect', None)
+            ):
                 window.aligned_images = processed_images
                 window.is_images_aligned = True
                 window.last_alignment_options = (
@@ -255,6 +318,8 @@ class RenderManager:
 
             info_lines = []
 
+            if preview:
+                info_lines.append(trans.t("info_preview_quality"))
             if registration_performed:
                 align_methods = []
                 if window.cb_align_homography.isChecked():
@@ -324,6 +389,9 @@ class RenderManager:
         window = self.window
 
         self._restore_ui_controls()
+
+        import logging
+        logging.getLogger("openfocus").error("render failed: %s", error_message)
 
         show_message_box(
             window,

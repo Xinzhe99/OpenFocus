@@ -76,6 +76,8 @@ from constants import (
 class OpenFocus(QMainWindow):
     # Emitted from the background torch probe; auto-queued to the UI thread.
     _stackmff_probe_done = pyqtSignal(bool)
+    # Emitted from the background update check (state, tag, download_url).
+    _update_check_done = pyqtSignal(str, str, str)
 
     def __init__(self):
         super().__init__()
@@ -256,6 +258,7 @@ class OpenFocus(QMainWindow):
         self.right_splitter = right_panel_components.splitter
         self.btn_reset = right_panel_components.btn_reset
         self.btn_render = right_panel_components.btn_render
+        self.chk_quick_preview = right_panel_components.chk_quick_preview
         self.btn_method_help = right_panel_components.btn_method_help
         self.btn_reg_help = right_panel_components.btn_reg_help
         self.rb_a = right_panel_components.rb_a
@@ -503,6 +506,54 @@ class OpenFocus(QMainWindow):
         else:
             self.rb_d.setEnabled(False)
             self.rb_d.setToolTip(trans.t("msg_stackmff_unavailable_text"))
+
+    # --- Update check ---
+
+    def check_for_updates(self) -> None:
+        """Ask GitHub for the latest release and report back asynchronously."""
+        from constants import APP_VERSION
+        from utils import updater
+
+        self.statusBar().showMessage(trans.t('update_checking'), 3000)
+        updater.check_async(
+            APP_VERSION,
+            lambda state, tag, url: self._update_check_done.emit(state, tag, url),
+        )
+
+    def _show_update_result(self, state: str, tag: str, download_url: str) -> None:
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtWidgets import QMessageBox
+
+        if state == "update":
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle(trans.t('update_available_title'))
+            box.setText(trans.t('update_available_text').format(version=tag))
+            open_btn = box.addButton(trans.t('btn_open_downloads'), QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(trans.t('btn_later'), QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is open_btn:
+                QDesktopServices.openUrl(QUrl(download_url))
+        elif state == "latest":
+            show_message_box(
+                self,
+                trans.t('update_up_to_date_title'),
+                trans.t('update_up_to_date_text'),
+                QMessageBox.Icon.Information,
+            )
+        else:
+            show_message_box(
+                self,
+                trans.t('update_check_failed_title'),
+                trans.t('update_check_failed_text'),
+                QMessageBox.Icon.Warning,
+            )
+
+    def open_logs_folder(self) -> None:
+        """Open the folder that contains the application log files."""
+        from PyQt6.QtGui import QDesktopServices
+        from utils.logging_setup import logs_dir
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_dir())))
 
 
     def update_source_view(self, index):
@@ -1255,6 +1306,11 @@ class OpenFocus(QMainWindow):
 
 
 if __name__ == "__main__":
+    # File logging first so every later step leaves a trace in the log
+    from utils.logging_setup import setup_logging, get_logger
+    setup_logging()
+    _log = get_logger()
+
     # Headless CLI mode (--input/--output/--method ...); unknown options exit
     # with argparse usage. Plain positional paths still auto-load in the GUI.
     if any(arg.startswith("-") for arg in sys.argv[1:]):
@@ -1264,10 +1320,12 @@ if __name__ == "__main__":
     app = OpenFocusApplication(sys.argv)
     window = OpenFocus()
     app.set_main_window(window)
-    
+    _log.info("main window ready")
+
     # Handle files passed via command-line (drag-to-EXE, desktop file, etc.)
     if len(sys.argv) > 1:
         process_command_line_args(window, sys.argv[1:])
-    
+
     window.show()
+    _log.info("entering event loop")
     sys.exit(app.exec())

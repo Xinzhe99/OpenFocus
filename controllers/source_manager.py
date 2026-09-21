@@ -449,6 +449,14 @@ class SourceManager:
         if not rows:
             return
 
+        confirm = QMessageBox(window)
+        confirm.setIcon(QMessageBox.Icon.Warning)
+        confirm.setWindowTitle(trans.t("msg_confirm_delete_title"))
+        confirm.setText(trans.t("msg_confirm_delete_source_text").format(count=len(rows)))
+        confirm.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        if confirm.exec() != QMessageBox.StandardButton.Yes:
+            return
+
         remaining = len(window.raw_images) - len(rows)
         if remaining <= 0:
             self.clear_image_stack()

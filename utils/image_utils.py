@@ -43,3 +43,28 @@ def cv2_to_pixmap(cv2_img: np.ndarray) -> QPixmap:
         return pixmap
     except Exception:
         return QPixmap()
+
+
+def get_imwrite_params(extension: str) -> list:
+    """Get OpenCV imwrite parameters for maximum quality based on file extension.
+
+    Args:
+        extension: File extension (e.g., '.jpg', '.png', '.tif', '.bmp')
+
+    Returns:
+        List of parameter tuples for cv2.imwrite, or empty list if no special params needed
+    """
+    ext = extension.lower()
+    if ext in (".jpg", ".jpeg", ".jpe", ".jfif"):
+        # JPG: 100 quality (highest, default is ~95)
+        return [cv2.IMWRITE_JPEG_QUALITY, 100]
+    elif ext in (".png",):
+        # PNG: 0 compression (no compression, default is 3)
+        return [cv2.IMWRITE_PNG_COMPRESSION, 0]
+    elif ext in (".tif", ".tiff"):
+        # TIFF: compression flag 1 = no compression
+        return [cv2.IMWRITE_TIFF_COMPRESSION, 1]
+    elif ext in (".bmp",):
+        # BMP: always lossless, no quality parameters
+        return []
+    return []
