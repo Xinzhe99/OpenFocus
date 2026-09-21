@@ -1,3 +1,5 @@
+import os
+
 import cv2
 import numpy as np
 from typing import Optional
@@ -68,3 +70,49 @@ def get_imwrite_params(extension: str) -> list:
         # BMP: always lossless, no quality parameters
         return []
     return []
+
+
+def to_display_uint8(img: np.ndarray) -> np.ndarray:
+    """Convert any supported bit depth to uint8 for on-screen display.
+
+    uint16 is scaled by 1/257 (exactly 65535->255); float images are
+    interpreted as 0-1 and clipped. uint8 passes through untouched.
+    """
+    if img.dtype == np.uint16:
+        return (img.astype(np.float32) / 257.0).round().astype(np.uint8)
+    if img.dtype != np.uint8 and img.dtype.kind == "f":
+        return (np.clip(img, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+    return img.astype(np.uint8)
+
+
+def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None) -> bool:
+    """cv2.imwrite that accepts 16-bit images.
+
+    PNG/TIFF store uint16 natively; formats that cannot (JPG/BMP) are
+    converted to uint8 automatically instead of failing.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if image.dtype == np.uint16 and ext not in (".png", ".tif", ".tiff"):
+        image = to_display_uint8(image)
+    return cv2.imwrite(path, image, params if params else [])
+
+
+def normalize_fuse_input(images):
+    """Scale uint16 stacks into 0-1 float32 for the fusion back-ends.
+
+    Returns (frames, is_16bit) — caller re-quantizes the fused result with
+    quantize_fuse_output.
+    """
+    is_16 = len(images) > 0 and images[0].dtype == np.uint16
+    if is_16:
+        return [f.astype(np.float32) * (1.0 / 65535.0) for f in images], True
+    return images, False
+
+
+def quantize_fuse_output(result, is_16bit: bool):
+    """Quantize a 0-1 float fusion result back to the source bit depth."""
+    if result is None:
+        return None
+    if is_16bit:
+        return (np.clip(result, 0.0, 1.0) * 65535.0).round().astype(np.uint16)
+    return result

@@ -173,6 +173,15 @@ def setup_menus(window: QMainWindow) -> None:
     settings_menu.addAction(gpu_action)
     window.ui_objs['action_gpu_accel'] = gpu_action
 
+    # Registration disk cache toggle (persisted via settings_store)
+    cache_action = QAction(trans.t('action_align_cache'), window)
+    cache_action.setCheckable(True)
+    cache_action.setChecked(getattr(window, 'align_cache_enabled', True))
+    cache_action.setToolTip(trans.t('action_align_cache_hint'))
+    cache_action.triggered.connect(window.set_align_cache_enabled)
+    settings_menu.addAction(cache_action)
+    window.ui_objs['action_align_cache'] = cache_action
+
     settings_menu.addSeparator()
 
     # Language Submenu

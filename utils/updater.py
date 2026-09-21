@@ -49,13 +49,17 @@ def fetch_latest_release() -> Tuple[bool, str, str]:
     return True, tag, url
 
 
-def check_async(current_version: str, on_result: Callable[[str, str, str], None]) -> None:
+def check_async(current_version: str, on_result: Callable[[str, str, str], None], quiet: bool = False) -> None:
     """Check for updates off-thread.
 
     on_result receives (state, tag, download_url) where state is:
       - "update": a newer release exists (tag holds the new version)
       - "latest": the current version is the newest
       - "error":  the check could not be completed (offline, API failure)
+
+    With quiet=True the "latest" and "error" states are not reported (used
+    for the automatic startup check, which must stay silent unless there is
+    something to install).
     """
 
     def worker():
@@ -63,9 +67,10 @@ def check_async(current_version: str, on_result: Callable[[str, str, str], None]
             ok, tag, url = fetch_latest_release()
             if ok and is_newer(tag, current_version):
                 on_result("update", tag, url)
-            else:
+            elif not quiet:
                 on_result("latest", tag or "", url)
         except Exception:
-            on_result("error", "", RELEASES_PAGE_URL)
+            if not quiet:
+                on_result("error", "", RELEASES_PAGE_URL)
 
     threading.Thread(target=worker, daemon=True, name="update-check").start()

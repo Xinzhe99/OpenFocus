@@ -328,6 +328,10 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
             img_small = cv2.resize(img, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
         else:
             img_small = img
+        if img_small.dtype != np.uint8:
+            # SIFT expects 8-bit input; scale 16-bit frames down equivalently
+            divisor = 65535.0 if img_small.dtype == np.uint16 else 1.0
+            img_small = (img_small.astype(np.float32) / divisor * 255.0).round().astype(np.uint8)
         kps, des = local_detector.detectAndCompute(img_small, None)
         return kps, des, scale
 

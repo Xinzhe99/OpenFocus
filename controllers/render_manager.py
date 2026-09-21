@@ -169,6 +169,31 @@ class RenderManager:
             effective_aligned_images = source_images
             effective_is_aligned = False
             effective_last_alignment_options = (False, False)
+        elif (need_align_homography or need_align_ecc) and not window.is_images_aligned \
+                and getattr(window, "align_cache_enabled", True):
+            # Try the on-disk registration cache before re-aligning
+            from utils import align_cache
+            cached = align_cache.load_aligned(
+                getattr(window, "current_folder_path", ""),
+                window.image_filenames,
+                (need_align_homography, need_align_ecc),
+                getattr(window, "reg_downscale_width", None),
+            )
+            if cached is not None and len(cached) == len(window.raw_images):
+                print("Registration cache hit — skipping alignment")
+                source_images = window.raw_images
+                effective_need_align_homography = need_align_homography
+                effective_need_align_ecc = need_align_ecc
+                effective_aligned_images = cached
+                effective_is_aligned = True
+                effective_last_alignment_options = (need_align_homography, need_align_ecc)
+            else:
+                source_images = window.raw_images
+                effective_need_align_homography = need_align_homography
+                effective_need_align_ecc = need_align_ecc
+                effective_aligned_images = window.aligned_images
+                effective_is_aligned = window.is_images_aligned
+                effective_last_alignment_options = window.last_alignment_options
         else:
             source_images = window.raw_images
             effective_need_align_homography = need_align_homography
@@ -313,6 +338,18 @@ class RenderManager:
                     worker.need_align_homography,
                     worker.need_align_ecc,
                 )
+
+                # Persist the alignment for future renders of the same stack
+                if getattr(window, "align_cache_enabled", True) and getattr(
+                        window, "current_folder_path", None):
+                    from utils import align_cache
+                    align_cache.save_aligned(
+                        window.current_folder_path,
+                        window.image_filenames,
+                        processed_images,
+                        (worker.need_align_homography, worker.need_align_ecc),
+                        getattr(window, "reg_downscale_width", None),
+                    )
 
             total_time = alignment_time + fusion_time
 

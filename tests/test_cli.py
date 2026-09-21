@@ -54,3 +54,33 @@ def test_full_pipeline_synthetic_stack(tmp_path):
                 "--method", "guided_filter", "--align", "ecc", "--threads", "2")
     assert r.returncode == 0, r.stderr
     assert out.exists() and out.stat().st_size > 0
+
+
+def _write_stack(folder, n=3):
+    import numpy as np, cv2
+    xx, yy = np.meshgrid(np.arange(140), np.arange(110))
+    pattern = ((np.sin(xx / 6.0) * np.sin(yy / 6.0) + 1) / 2 * 255).astype(np.uint8)
+    for i in range(n):
+        shifted = np.roll(pattern, i * 2, axis=1)
+        cv2.imwrite(str(folder / f"f{i}.png"), shifted[..., None].repeat(3, axis=2))
+
+
+def test_batch_output_dir(tmp_path):
+    import numpy as np
+    stacks = tmp_path / "stacks"
+    out = tmp_path / "out"
+    for name in ("stackA", "stackB"):
+        d = stacks / name
+        d.mkdir(parents=True)
+        _write_stack(d)
+
+    r = run_cli("--input", str(stacks / "stackA"), str(stacks / "stackB"),
+                "--output-dir", str(out), "--method", "guided_filter",
+                "--threads", "2")
+    assert r.returncode == 0, r.stderr
+    assert sorted(os.listdir(out)) == ["stackA.png", "stackB.png"]
+
+
+def test_batch_no_folders_exit_code(tmp_path):
+    r = run_cli("--input", str(tmp_path / "nofolder"), "--output-dir", str(tmp_path / "out"))
+    assert r.returncode == 2

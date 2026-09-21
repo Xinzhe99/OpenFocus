@@ -141,6 +141,17 @@ Every stack you open is remembered under **File → Open Recent** (up to 8 entri
 
 You can also drag a folder directly onto the application window to import images. Dropping more files onto an existing stack appends them (after a size check).
 
+### EXIF Orientation
+
+Camera JPEG/TIFF files with an EXIF Orientation tag are rotated/flip-corrected
+automatically during import, so portrait shots load upright.
+
+### 16-bit Sources
+
+16-bit PNG/TIFF inputs are detected automatically and preserved end-to-end:
+fusion runs at full depth and results can be saved back as 16-bit PNG/TIFF
+(JPG/BMP exports are converted to 8-bit, as those formats cannot store 16 bits).
+
 ### Clearing the Stack
 
 To remove all loaded images, go to **File → Clear Stack** or press `Ctrl+W`.
@@ -420,12 +431,20 @@ Access via **Settings → StackMFF-V4 Batch Settings**:
 - Controls how many tiles the neural model processes per batch (default: 2)
 - Higher values are faster but use more memory
 
+### Registration Cache
+
+OpenFocus can store registration results in a `.openfocus_cache` folder
+next to the source stack. Re-opening the same stack (files unchanged)
+then skips alignment entirely. Toggle via **Settings → Registration
+Cache**; stale entries are replaced automatically.
+
 ### Persisted Settings
 
 All of the following survive an application restart automatically:
 thread count, tile parameters, registration downscale width, StackMFF-V4
-batch size, the GPU acceleration toggle, interface language, and your
-recently opened stacks. Settings dialogs save the moment you confirm them;
+batch size, the GPU acceleration toggle, the registration cache toggle,
+interface language, window size/panel layout, the drag-out export format
+and your recently opened stacks. Settings dialogs save the moment you confirm them;
 everything is also saved when the application closes. Preferences are
 stored per user in `OpenFocus/OpenFocus.ini` (QSettings INI format).
 
@@ -433,6 +452,12 @@ stored per user in `OpenFocus/OpenFocus.ini` (QSettings INI format).
 
 Switch anytime via **Settings → Language → English / 中文**. The change
 applies immediately and is remembered for future sessions.
+
+### Automatic Update Check
+
+Once per day, a few seconds after launch, OpenFocus silently checks GitHub
+for a newer release and shows a notice with a download link. You can also
+check manually anytime via **Help → Check for Updates**.
 
 ---
 
@@ -470,6 +495,12 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 2. Go to **File → Save** or press `Ctrl+S`
 3. Choose format and location
 4. Click Save
+
+### Drag-out Export Format
+
+Dragging results from the output list writes image files using the format
+chosen under the output list's context menu (**Drag-out format**: JPG,
+PNG or TIFF). The choice is remembered.
 
 ### Saving the Registered Stack
 

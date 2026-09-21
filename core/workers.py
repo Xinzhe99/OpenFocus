@@ -7,6 +7,7 @@ import imageio.v2 as imageio
 from core.registration import ImageRegistration
 from core.multi_focus_fusion import MultiFocusFusion
 from utils import resource_path, normalize_kernel_size
+from utils.image_utils import to_display_uint8
 from constants import (
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     DEFAULT_THREAD_COUNT
@@ -252,6 +253,11 @@ class RenderWorker(QThread):
         """执行图像融合，返回(融合结果, 设备名称)"""
         algorithm = self._get_fusion_algorithm()
 
+        # 16-bit sources are normalized to 0-1 float for the back-ends and
+        # quantized back to uint16 afterwards, preserving the extra depth.
+        from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+        images, is_16bit = normalize_fuse_input(list(images))
+
         fusion = MultiFocusFusion(
             algorithm=algorithm,
             use_gpu=self.use_gpu,
@@ -279,6 +285,7 @@ class RenderWorker(QThread):
                 kernel_size=kernel_size,
                 thread_count=self.thread_count,
             )
+            result = quantize_fuse_output(result, is_16bit)
         elif algorithm == "dct":
             result = fusion.fuse(
                 input_source=images,
@@ -287,12 +294,14 @@ class RenderWorker(QThread):
                 kernel_size=kernel_size,
                 thread_count=self.thread_count,
             )
+            result = quantize_fuse_output(result, is_16bit)
         elif algorithm == "dtcwt":
             result = fusion.fuse(
                 input_source=images,
                 img_resize=None,
                 thread_count=self.thread_count,
             )
+            result = quantize_fuse_output(result, is_16bit)
         elif algorithm == "gfgfgf":
             result = fusion.fuse(
                 input_source=images,
@@ -300,6 +309,7 @@ class RenderWorker(QThread):
                 kernel_size=kernel_size,
                 thread_count=self.thread_count,
             )
+            result = quantize_fuse_output(result, is_16bit)
         elif algorithm == "stackmffv4":
             model_path = resource_path("weights", "stackmffv4.pth")
             result = fusion.fuse(
@@ -308,6 +318,7 @@ class RenderWorker(QThread):
                 model_path=model_path,
                 thread_count=self.thread_count,
             )
+            result = quantize_fuse_output(result, is_16bit)
         else:
             result = fusion.fuse(
                 input_source=images,
@@ -315,6 +326,7 @@ class RenderWorker(QThread):
                 kernel_size=kernel_size,
                 thread_count=self.thread_count,
             )
+            result = quantize_fuse_output(result, is_16bit)
 
         return result, device_name
 
@@ -401,7 +413,8 @@ class BatchWorker(QThread):
             except (TypeError, ValueError):
                 quality = 100
             params = [cv2.IMWRITE_JPEG_QUALITY, max(0, min(100, quality))]
-        return cv2.imwrite(path, image, params)
+        from utils.image_utils import imwrite_auto
+        return imwrite_auto(path, image, params)
 
     def run(self):
         """执行批处理"""
@@ -531,6 +544,13 @@ class BatchWorker(QThread):
             tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD)
             tile_kwargs.setdefault('stackmffv4_batch_size', self.stackmffv4_batch_size)
 
+            # 16-bit inputs are normalized to 0-1 float for fusion and
+            # quantized back afterwards; aligned exports keep the original
+            # bit depth.
+            from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+            aligned_for_export = aligned_images
+            fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
+
             fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=self.use_gpu, **tile_kwargs)
 
             if fusion_method == "guided_filter":
@@ -538,7 +558,7 @@ class BatchWorker(QThread):
                 if kernel_size % 2 == 0:
                     kernel_size = max(1, kernel_size - 1)
                 result = fusion.fuse(
-                    input_source=aligned_images,
+                    input_source=fusion_input,
                     img_resize=None,
                     kernel_size=kernel_size,
                     thread_count=self.thread_count,
@@ -548,7 +568,7 @@ class BatchWorker(QThread):
                 if kernel_size % 2 == 0:
                     kernel_size = max(1, kernel_size - 1)
                 result = fusion.fuse(
-                    input_source=aligned_images,
+                    input_source=fusion_input,
                     img_resize=None,
                     block_size=8,
                     kernel_size=kernel_size,
@@ -556,7 +576,7 @@ class BatchWorker(QThread):
                 )
             elif fusion_method == "dtcwt":
                 result = fusion.fuse(
-                    input_source=aligned_images,
+                    input_source=fusion_input,
                     img_resize=None,
                     thread_count=self.thread_count,
                 )
@@ -565,7 +585,7 @@ class BatchWorker(QThread):
                 if kernel_size % 2 == 0:
                     kernel_size = max(1, kernel_size - 1)
                 result = fusion.fuse(
-                    input_source=aligned_images,
+                    input_source=fusion_input,
                     img_resize=None,
                     kernel_size=kernel_size,
                     thread_count=self.thread_count,
@@ -573,7 +593,7 @@ class BatchWorker(QThread):
             elif fusion_method == "stackmffv4":
                 model_path = fusion_params.get('model_path', resource_path("weights", "stackmffv4.pth"))
                 result = fusion.fuse(
-                    input_source=aligned_images,
+                    input_source=fusion_input,
                     img_resize=None,
                     model_path=model_path,
                     thread_count=self.thread_count,
@@ -581,12 +601,14 @@ class BatchWorker(QThread):
             else:
                 result = None
 
+            result = quantize_fuse_output(result, is_16bit)
+
             if result is not None:
                 output_path = os.path.join(output_dir, f"{stack_name}.{output_format}")
                 self._save_image(output_path, result, output_format)
 
             if self.processing_settings.get('save_aligned'):
-                for idx, img in enumerate(aligned_images):
+                for idx, img in enumerate(aligned_for_export):
                     aligned_filename = f"{stack_name}_aligned_{idx + 1:03d}.{output_format}"
                     aligned_path = os.path.join(output_dir, aligned_filename)
                     self._save_image(aligned_path, img, output_format)
@@ -780,9 +802,9 @@ class GifSaverWorker(QThread):
                 elif len(img_copy.shape) == 3 and img_copy.shape[2] == 3:
                     img_copy = cv2.cvtColor(img_copy, cv2.COLOR_BGR2RGB)
                 
-                # 确保图像是uint8格式
+                # 确保图像是uint8格式（16-bit 按比例缩放，不是截断）
                 if img_copy.dtype != np.uint8:
-                    img_copy = np.clip(img_copy, 0, 255).astype(np.uint8)
+                    img_copy = to_display_uint8(img_copy)
                 
                 normalized_images.append(img_copy)
             

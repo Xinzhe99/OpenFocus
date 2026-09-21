@@ -16,6 +16,43 @@ except ImportError:
     PIL_AVAILABLE = False
 
 from PyQt6.QtGui import QPixmap, QImage
+from utils.image_utils import to_display_uint8
+
+
+# EXIF Orientation tag values that need a pixel transform (1 = already OK).
+_EXIF_TRANSFORMS = {
+    2: lambda a: a[:, ::-1],                       # mirror horizontal
+    3: lambda a: np.rot90(a, 2),                   # rotate 180
+    4: lambda a: a[::-1, :],                       # mirror vertical
+    5: lambda a: np.rot90(a[:, ::-1], 1),          # transpose
+    6: lambda a: np.rot90(a, -1),                  # rotate 90 CW
+    7: lambda a: np.rot90(a[::-1, :], 1),          # anti-transpose
+    8: lambda a: np.rot90(a, 1),                   # rotate 90 CCW
+}
+
+
+def apply_exif_orientation(path: str, img: np.ndarray) -> np.ndarray:
+    """Rotate/flip a decoded image according to its EXIF Orientation tag.
+
+    Cameras store sensor-native orientation and record how to display it in
+    EXIF; OpenCV ignores that tag, so portrait shots load sideways without
+    this correction. Returns the image unchanged when Pillow is missing or
+    the tag is absent/neutral.
+    """
+    if not PIL_AVAILABLE:
+        return img
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in ('.jpg', '.jpeg', '.tif', '.tiff'):
+            return img
+        with PILImage.open(path) as pil_img:
+            orientation = pil_img.getexif().get(274, 1)
+        transform = _EXIF_TRANSFORMS.get(int(orientation))
+        if transform is not None:
+            return np.ascontiguousarray(transform(img))
+    except Exception as e:
+        print(f"EXIF orientation check failed for {path}: {e}")
+    return img
 
 
 class ImageStackLoader:
@@ -49,10 +86,32 @@ class ImageStackLoader:
         filenames = []
         failed_count = 0
 
+    def load_from_folder(self, folder_path: str, scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
+        if not os.path.isdir(folder_path):
+            return False, "Selected path is not a valid directory", [], []
+
+        image_files = []
+        for filename in os.listdir(folder_path):
+            ext = os.path.splitext(filename)[1].lower()
+            if ext in self.SUPPORTED_FORMATS:
+                full_path = os.path.join(folder_path, filename)
+                image_files.append((filename, full_path))
+
+        if not image_files:
+            return False, "No supported image files found in the folder", [], []
+
+        image_files.sort(key=lambda x: x[0])
+
+        loaded_images = []
+        filenames = []
+        failed_count = 0
+
         for filename, full_path in image_files:
             try:
-                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
+                                cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
                 if img is not None:
+                    img = apply_exif_orientation(full_path, img)
                     if scale_factor != 1.0 and 0 < scale_factor < 1.0:
                         width = int(img.shape[1] * scale_factor)
                         height = int(img.shape[0] * scale_factor)
@@ -143,7 +202,8 @@ class ImageStackLoader:
                     failed_count += 1
                     continue
 
-                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
+                                cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
                 if img is None:
                     failed_count += 1
                     continue
@@ -189,12 +249,12 @@ class ImageStackLoader:
             new_h = int(h * scale)
 
             resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-            pixmap = self._cv_to_pixmap(resized, (thumb_size, thumb_size))
+            pixmap = self._cv_to_pixmap(to_display_uint8(resized), (thumb_size, thumb_size))
             thumbnails.append(pixmap)
         return thumbnails
 
     def _cv_to_pixmap(self, cv_img: np.ndarray, max_size: Optional[Tuple[int, int]] = None) -> QPixmap:
-        rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        rgb_img = cv2.cvtColor(to_display_uint8(cv_img), cv2.COLOR_BGR2RGB)
 
         if max_size is not None:
             h, w = rgb_img.shape[:2]
@@ -278,7 +338,8 @@ class ImageStackLoader:
 
         for filename, full_path in image_files:
             try:
-                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
+                                cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
                 if img is not None:
                     timestamp = self.get_image_timestamp(full_path)
                     loaded_data.append((filename, full_path, img, timestamp))

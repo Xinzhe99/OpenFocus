@@ -12,6 +12,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.22**: **v1.12** — **16-bit PNG/TIFF inputs are now preserved end-to-end** (fuse at full depth, export back at 16 bits), **registration results are cached on disk** so re-opening a stack skips alignment, the CLI gained **batch mode** (`--output-dir`), plus window-layout memory, EXIF orientation correction, a selectable drag-out export format, and a daily automatic update check. Also shipped: a pytest test suite running on CI for every push.
+
 > 🎉 **2026.09.21 (4)**: **v1.11** — **Quick preview** renders a fast downscaled draft for parameter tuning, **Help → Check for Updates** tells you when a new release is out, delete actions now ask for confirmation, and OpenFocus finally writes **log files** (Help → Open Logs Folder). Plus: a proper **pytest test suite** running on CI for every push, and more reliable ECC on small-shift stacks.
 
 > 🎉 **2026.09.21 (3)**: New **Wipe compare** view — after rendering, press "Wipe" in the result panel title bar to compare the fusion result against any source frame (or two outputs against each other) in one frame with a draggable divider, shared zoom and pan. Side A can follow the source slider or lock to any frame; side B shows the latest render or scrubs the output history — both via sliders that scale to large stacks. Performance: **ECC registration now computes frame pairs in parallel** (~1.5x+ faster, scales with frame count), the app **starts faster** (torch probe moved off the UI thread, UPX disabled in release builds). Settings, language, GPU toggle and recent files persist across sessions, and OpenFocus runs **headless from the command line** — see [Command Line Usage](#command-line-usage).

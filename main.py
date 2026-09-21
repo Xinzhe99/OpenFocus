@@ -50,10 +50,18 @@ from utils import (
     show_custom_message_box,
     resource_path,
 )
+from utils.image_utils import to_display_uint8
 from utils.settings_store import (
     load_window_settings,
     save_window_settings,
     get_saved_language,
+    load_drag_export_format,
+    get_drag_export_format,
+    set_drag_export_format,
+    save_window_layout,
+    restore_window_layout,
+    get_settings,
+    LAST_UPDATE_CHECK_KEY,
 )
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
@@ -126,6 +134,7 @@ class OpenFocus(QMainWindow):
         self.use_gpu = True
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
+        load_drag_export_format(self)
         saved_lang = get_saved_language()
         if saved_lang:
             trans.set_language(saved_lang)
@@ -159,7 +168,10 @@ class OpenFocus(QMainWindow):
         
         # Connect language change signal
         trans.languageChanged.connect(self.update_ui_text)
-        
+
+        # Restore last session's window geometry and splitter positions
+        restore_window_layout(self)
+
         # Set initial text for drag hint if needed (it is set in image_panels or loaded later, 
         # but let's Ensure it matches current lang if empty)
         # Note: image_panels create_source_panel sets initial text. 
@@ -289,6 +301,7 @@ class OpenFocus(QMainWindow):
         # can block for seconds, and this only decides one checkbox state.
         from PyQt6.QtCore import QTimer
         self._stackmff_probe_done.connect(self._apply_stackmff_availability)
+        self._update_check_done.connect(self._show_update_result)
         QTimer.singleShot(0, self._probe_stackmff_availability_async)
 
         # 确保分割器已经添加了子部件后再设置折叠属性
@@ -509,15 +522,37 @@ class OpenFocus(QMainWindow):
 
     # --- Update check ---
 
-    def check_for_updates(self) -> None:
-        """Ask GitHub for the latest release and report back asynchronously."""
+    def check_for_updates(self, quiet: bool = False) -> None:
+        """Ask GitHub for the latest release and report back asynchronously.
+
+        quiet=True only surfaces an actual update (used for the automatic
+        startup check), and is rate-limited to once per 24 hours.
+        """
+        import time
         from constants import APP_VERSION
         from utils import updater
 
-        self.statusBar().showMessage(trans.t('update_checking'), 3000)
+        if quiet:
+            settings = get_settings()
+            try:
+                last = float(settings.value(LAST_UPDATE_CHECK_KEY, 0) or 0)
+            except (TypeError, ValueError):
+                last = 0.0
+            if time.time() - last < 24 * 3600:
+                return
+
+        if not quiet:
+            self.statusBar().showMessage(trans.t('update_checking'), 3000)
+
+        def done(state, tag, url):
+            settings = get_settings()
+            settings.setValue(LAST_UPDATE_CHECK_KEY, time.time())
+            self._update_check_done.emit(state, tag, url)
+
         updater.check_async(
             APP_VERSION,
-            lambda state, tag, url: self._update_check_done.emit(state, tag, url),
+            lambda state, tag, url: done(state, tag, url),
+            quiet=quiet,
         )
 
     def _show_update_result(self, state: str, tag: str, download_url: str) -> None:
@@ -959,6 +994,7 @@ class OpenFocus(QMainWindow):
         
         try:
             image = self.roi_aligned_images[index]
+            image = to_display_uint8(image)
             rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             height, width, _channels = rgb_image.shape
             bytes_per_line = 3 * width
@@ -1103,9 +1139,10 @@ class OpenFocus(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up background threads before closing the window."""
-        # Persist user preferences and recent files for the next session
+        # Persist user preferences, layout and recent files for next time
         try:
             self.persist_settings()
+            save_window_layout(self)
         except Exception:
             pass
 
@@ -1177,6 +1214,11 @@ class OpenFocus(QMainWindow):
         """Toggle GPU acceleration (Settings menu); applies to future renders."""
         self.use_gpu = bool(enabled)
         self._update_dynamic_status()
+        self.persist_settings()
+
+    def set_align_cache_enabled(self, enabled: bool) -> None:
+        """Toggle the on-disk registration cache (Settings menu)."""
+        self.align_cache_enabled = bool(enabled)
         self.persist_settings()
 
     def add_recent_file(self, path: str) -> None:
@@ -1302,6 +1344,8 @@ class OpenFocus(QMainWindow):
             self.chk_wipe_follow_right.setText(trans.t('wipe_follow_latest'))
         if 'action_gpu_accel' in getattr(self, 'ui_objs', {}):
             self.ui_objs['action_gpu_accel'].setToolTip(trans.t('msg_gpu_accel_hint'))
+            self.ui_objs['action_align_cache'].setText(trans.t('action_align_cache'))
+            self.ui_objs['action_align_cache'].setToolTip(trans.t('action_align_cache_hint'))
         self.rebuild_recent_menu()
 
 
@@ -1328,4 +1372,9 @@ if __name__ == "__main__":
 
     window.show()
     _log.info("entering event loop")
+
+    # One silent update check per day, a few seconds after startup
+    from PyQt6.QtCore import QTimer
+    QTimer.singleShot(4000, lambda: window.check_for_updates(quiet=True))
+
     sys.exit(app.exec())

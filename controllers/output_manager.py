@@ -3,11 +3,14 @@ from typing import Any
 
 import cv2
 from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtGui import QAction, QIcon, QPixmap, QImage
+from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QImage
 from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox
 
 from controllers.export_manager import get_imwrite_params
 from utils import show_error_box, show_message_box, show_success_box, show_warning_box
+from utils.settings_store import get_drag_export_format, set_drag_export_format
+from utils.image_utils import to_display_uint8
+from utils.image_utils import imwrite_auto
 from locales import trans
 
 
@@ -69,6 +72,19 @@ class OutputManager:
         save_as_action.triggered.connect(lambda: self.save_output_image_as(window.output_list.currentItem()))
         save_as_action.setEnabled(len(window.output_list.selectedItems()) == 1)
         menu.addAction(save_as_action)
+
+        # Drag-out export format submenu (persisted per user)
+        drag_menu = menu.addMenu(trans.t("menu_drag_format"))
+        current_fmt = get_drag_export_format(window)
+        group = QActionGroup(window)
+        group.setExclusive(True)
+        for fmt, label in ((".jpg", "JPG"), (".png", "PNG"), (".tif", "TIFF")):
+            act = QAction(label, drag_menu)
+            act.setCheckable(True)
+            act.setChecked(fmt == current_fmt)
+            act.triggered.connect(lambda _checked, f=fmt: set_drag_export_format(window, f))
+            group.addAction(act)
+            drag_menu.addAction(act)
 
         menu.exec(window.output_list.mapToGlobal(position))
 
@@ -133,7 +149,7 @@ class OutputManager:
 
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                success = cv2.imwrite(file_path, image_to_save, params)
+                success = imwrite_auto(file_path, image_to_save, params)
                 if success:
                     show_success_box(
                         window,
@@ -155,7 +171,7 @@ class OutputManager:
 
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                success = cv2.imwrite(file_path, image_to_save, params)
+                success = imwrite_auto(file_path, image_to_save, params)
                 if success:
                     show_success_box(
                         window,
@@ -238,7 +254,8 @@ class OutputManager:
         window = self.window
 
         try:
-            display_image = window.label_manager.prepare_bgr_image("registered", fusion_image, 0)
+            display_image = to_display_uint8(
+                window.label_manager.prepare_bgr_image("registered", fusion_image, 0))
             rgb_image = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
             height, width, _channels = rgb_image.shape
             bytes_per_line = 3 * width
@@ -294,7 +311,8 @@ class OutputManager:
 
         try:
             image = window.registration_results[index]
-            image = window.label_manager.apply_labels_to_registered_image(image, index)
+            image = to_display_uint8(
+                window.label_manager.apply_labels_to_registered_image(image, index))
 
             rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             height, width, channel = rgb_image.shape

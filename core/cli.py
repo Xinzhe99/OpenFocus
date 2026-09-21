@@ -3,6 +3,7 @@
 Lets batch users and CI pipelines run registration + fusion without the GUI:
 
     python main.py --input ./stack_folder --output ./out --method guided_filter
+    python main.py --input ./stackA ./stackB --output-dir ./results   (batch)
 
 Exit codes: 0 success, 1 processing error, 2 usage error.
 """
@@ -10,7 +11,7 @@ import argparse
 import os
 import sys
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 VALID_METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv4"]
 VALID_ALIGN = ["none", "homography", "ecc", "both"]
@@ -28,15 +29,18 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
-            "  python main.py --input ./stack --output ./result\n"
-            "  python main.py --input ./stack --output ./result --method dtcwt --align ecc --threads 8\n"
+            "  python main.py --input ./stack --output ./result/fused.png\n"
+            "  python main.py --input ./stack --output ./result/fused.png --method dtcwt --align ecc --threads 8\n"
+            "  python main.py --input ./stackA ./stackB --output-dir ./results -m guided_filter\n"
             "  python main.py --input img1.jpg img2.jpg img3.jpg --output fused.png --method gfgfgf\n"
         ),
     )
     parser.add_argument("--input", "-i", nargs="+", required=True,
-                        help="Image folder, video file, or a list of image files")
-    parser.add_argument("--output", "-o", required=True,
-                        help="Output file (single stack) or folder (default OpenFocus_result.png)")
+                        help="Image folder(s), video file(s), or a list of image files")
+    parser.add_argument("--output", "-o", default=None,
+                        help="Output file for a single stack (default: fused.png)")
+    parser.add_argument("--output-dir", "-d", default=None,
+                        help="Batch mode: fuse every input folder, writing <folder>.<ext> here")
     parser.add_argument("--method", "-m", default="guided_filter", choices=VALID_METHODS,
                         help="Fusion method (default: guided_filter)")
     parser.add_argument("--align", "-a", default="none", choices=VALID_ALIGN,
@@ -56,8 +60,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_stack(args, video_temp_root: str) -> List[str]:
-    """Return image file paths from a folder, video, or explicit file list.
+def _list_folder_images(folder: str, loader) -> List[str]:
+    return sorted(
+        os.path.join(folder, f) for f in os.listdir(folder)
+        if f.lower().endswith(tuple(loader.SUPPORTED_FORMATS))
+    )
+
+
+def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
+    """Return (source_label, image file paths) from folders, videos, or files.
 
     Video frames are materialized as PNGs under video_temp_root (a
     TemporaryDirectory managed by the caller) so downstream code can treat
@@ -71,17 +82,14 @@ def _resolve_stack(args, video_temp_root: str) -> List[str]:
 
     for entry in inputs:
         if os.path.isdir(entry):
-            paths.extend(sorted(
-                os.path.join(entry, f) for f in os.listdir(entry)
-                if f.lower().endswith(tuple(loader.SUPPORTED_FORMATS))
-            ))
+            paths.extend(_list_folder_images(entry, loader))
         elif loader.is_video_file(entry):
             ok, message, frames, _names = loader.load_from_video(entry)
             if not ok:
                 raise RuntimeError(f"Failed to read video {entry}: {message}")
             import cv2
             for i, frame in enumerate(frames):
-                frame_path = os.path.join(video_temp_root, f"frame_{len(paths) + i:05d}.png")
+                frame_path = os.path.join(video_temp_root, f"video_{len(paths) + i:05d}.png")
                 cv2.imwrite(frame_path, frame)
                 paths.append(frame_path)
         elif os.path.isfile(entry):
@@ -91,7 +99,18 @@ def _resolve_stack(args, video_temp_root: str) -> List[str]:
 
     if len(paths) < 2:
         raise RuntimeError("Need at least 2 images in the stack for fusion")
-    return paths
+    return ", ".join(args.input), paths
+
+
+def _load_images(paths: List[str]):
+    import cv2
+    images = []
+    for p in paths:
+        img = cv2.imread(p, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+        if img is None:
+            raise RuntimeError(f"Failed to decode image: {p}")
+        images.append(img)
+    return images
 
 
 def _normalize_kernel(kernel: Optional[int], default: int) -> int:
@@ -101,14 +120,97 @@ def _normalize_kernel(kernel: Optional[int], default: int) -> int:
     return max(1, size)
 
 
+def _fuse_stack(images, args):
+    """Register and fuse one stack; returns the fused image."""
+    import cv2
+    from core.registration import ImageRegistration
+    from core.multi_focus_fusion import MultiFocusFusion
+    from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+
+    # 16-bit sources are normalized to 0-1 float for the back-ends and
+    # quantized back to uint16 afterwards, preserving the extra depth.
+    images, is_16bit = normalize_fuse_input(images)
+
+    if args.align != "none":
+        t0 = time.time()
+        reg = ImageRegistration(method=args.align, downscale_width=args.downscale)
+        images = reg.process(images, output_path=None, thread_count=args.threads)
+        print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
+
+    fusion_kwargs = dict(algorithm=args.method, use_gpu=not args.cpu)
+    if args.tile_size:
+        fusion_kwargs["tile_block_size"] = args.tile_size
+    if args.method == "stackmffv4":
+        fusion_kwargs["stackmffv4_batch_size"] = args.batch_size
+    fusion = MultiFocusFusion(**fusion_kwargs)
+    info = fusion.get_info()
+
+    t0 = time.time()
+    fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads)
+    if args.method == "guided_filter":
+        fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 31)
+    elif args.method in ("dct", "gfgfgf"):
+        fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 7)
+    elif args.method == "stackmffv4":
+        fuse_kwargs["model_path"] = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "weights", "stackmffv4.pth")
+
+    fused = fusion.fuse(**fuse_kwargs)
+    if fused is None:
+        raise RuntimeError("Fusion returned no result")
+    fused = quantize_fuse_output(fused, is_16bit)
+    print(f"Fusion ({args.method}, device={info['device']}) done in {time.time() - t0:.1f}s")
+    return fused
+
+
+def _save(path: str, fused) -> None:
+    from utils.image_utils import imwrite_auto
+    out_dir = os.path.dirname(os.path.abspath(path))
+    os.makedirs(out_dir, exist_ok=True)
+    if not imwrite_auto(path, fused):
+        raise RuntimeError(f"Failed to write output: {path}")
+
+
+def _run_batch(args) -> int:
+    """Batch mode: fuse every input folder into --output-dir."""
+    from core.image_loader import ImageStackLoader
+
+    loader = ImageStackLoader()
+    folders = [os.path.abspath(p) for p in args.input if os.path.isdir(p)]
+    if not folders:
+        print("error: --output-dir requires image folder(s) as --input", file=sys.stderr)
+        return EXIT_USAGE
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    ok_count, failures = 0, []
+    for folder in folders:
+        name = os.path.basename(folder.rstrip("/\\")) or "stack"
+        out_path = os.path.join(args.output_dir, f"{name}{args._batch_ext}")
+        print(f"\n=== {name} ===")
+        try:
+            paths = _list_folder_images(folder, loader)
+            if len(paths) < 2:
+                raise RuntimeError(f"need at least 2 images, found {len(paths)}")
+            images = _load_images(paths)
+            fused = _fuse_stack(images, args)
+            _save(out_path, fused)
+            print(f"Saved: {out_path}")
+            ok_count += 1
+        except Exception as exc:
+            print(f"error: {name}: {exc}", file=sys.stderr)
+            failures.append(name)
+
+    print(f"\nBatch finished: {ok_count}/{len(folders)} stacks succeeded")
+    if failures:
+        print("failed: " + ", ".join(failures), file=sys.stderr)
+        return EXIT_ERROR
+    return EXIT_OK
+
+
 def run_cli(argv: List[str]) -> int:
     args = build_parser().parse_args(argv)
 
-    ext = os.path.splitext(args.output)[1].lower()
-    if not ext or ext not in VALID_FORMATS:
-        print(f"error: unsupported output extension '{ext or '(none)'}'; "
-              f"expected one of {', '.join(VALID_FORMATS)}", file=sys.stderr)
-        return EXIT_USAGE
     if args.threads < 1:
         print("error: --threads must be >= 1", file=sys.stderr)
         return EXIT_USAGE
@@ -119,59 +221,39 @@ def run_cli(argv: List[str]) -> int:
         print("error: --batch-size must be >= 1", file=sys.stderr)
         return EXIT_USAGE
 
+    batch_mode = args.output_dir is not None
+    if batch_mode:
+        args._batch_ext = ".png"
+    else:
+        if not args.output:
+            print("error: one of --output / --output-dir is required", file=sys.stderr)
+            return EXIT_USAGE
+        ext = os.path.splitext(args.output)[1].lower()
+        if not ext or ext not in VALID_FORMATS:
+            print(f"error: unsupported output extension '{ext or '(none)'}'; "
+                  f"expected one of {', '.join(VALID_FORMATS)}", file=sys.stderr)
+            return EXIT_USAGE
+
     try:
         import tempfile
-        from core.registration import ImageRegistration
+        import cv2
+
+        if batch_mode:
+            return _run_batch(args)
+
         from core.multi_focus_fusion import MultiFocusFusion
 
         # Video inputs are unpacked to a temp dir that is always cleaned up
         with tempfile.TemporaryDirectory(prefix="openfocus_video_") as video_temp:
-            paths = _resolve_stack(args, video_temp)
+            _src, paths = _resolve_stack(args, video_temp)
             print(f"Loaded {len(paths)} images from {args.input[0]}")
-            import cv2
-            images = []
-            for p in paths:
-                img = cv2.imread(p)
-                if img is None:
-                    raise RuntimeError(f"Failed to decode image: {p}")
-                images.append(img)
+            images = _load_images(paths)
 
-            if args.align != "none":
-                t0 = time.time()
-                reg = ImageRegistration(method=args.align, downscale_width=args.downscale)
-                images = reg.process(images, output_path=None, thread_count=args.threads)
-                print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
-
-            fusion_kwargs = dict(algorithm=args.method, use_gpu=not args.cpu)
-            if args.tile_size:
-                fusion_kwargs["tile_block_size"] = args.tile_size
-            if args.method == "stackmffv4":
-                fusion_kwargs["stackmffv4_batch_size"] = args.batch_size
-            fusion = MultiFocusFusion(**fusion_kwargs)
-            info = fusion.get_info()
-
-            t0 = time.time()
-            fuse_kwargs = dict(input_source=images, img_resize=None,
-                               thread_count=args.threads)
-            if args.method == "guided_filter":
-                fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 31)
-            elif args.method in ("dct", "gfgfgf"):
-                fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 7)
-            elif args.method == "stackmffv4":
-                fuse_kwargs["model_path"] = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    "weights", "stackmffv4.pth")
-
-            fused = fusion.fuse(**fuse_kwargs)
+            fused = _fuse_stack(images, args)
             if fused is None:
                 raise RuntimeError("Fusion returned no result")
 
-        out_dir = os.path.dirname(os.path.abspath(args.output))
-        os.makedirs(out_dir, exist_ok=True)
-        if not cv2.imwrite(args.output, fused):
-            raise RuntimeError(f"Failed to write output: {args.output}")
-
-        print(f"Fusion ({args.method}, device={info['device']}) done in {time.time() - t0:.1f}s")
+        _save(args.output, fused)
         print(f"Saved: {args.output}")
         return EXIT_OK
     except KeyboardInterrupt:

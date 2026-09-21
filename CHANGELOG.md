@@ -3,6 +3,33 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.12] — 2026-09-22
+
+### Added
+- **16-bit end-to-end pipeline**: 16-bit PNG/TIFF inputs are detected
+  automatically; fusion runs at full depth (input normalized to 0-1 float,
+  output quantized back to uint16) and results can be saved as 16-bit
+  PNG/TIFF. JPG/BMP exports convert to 8-bit automatically; on-screen
+  display scales 16-bit correctly
+- **Registration disk cache**: aligned frames are stored next to the source
+  stack (`.openfocus_cache/`, keyed by file signatures + alignment options)
+  so re-opening the same stack skips alignment; toggle via Settings →
+  Registration Cache
+- **Batch CLI**: `--output-dir` fuses every input folder, writing
+  `<folder>.<ext>` per stack, with per-folder failure reporting
+- **Window layout memory**: window geometry and splitter positions are
+  restored on the next launch
+- **Drag-out export format**: choose JPG/PNG/TIFF for results dragged out
+  of the app (output list context menu)
+- **Automatic update check**: once per day after launch, silent unless a
+  newer release exists (rate-limited via QSettings)
+- **EXIF orientation**: camera JPEG/TIFF files are rotated/flip-corrected
+  on import
+
+### Fixed
+- Settings singleton: QSettings writes from short-lived instances could be
+  lost before reaching disk
+
 ## [v1.11] — 2026-09-21
 
 ### Added

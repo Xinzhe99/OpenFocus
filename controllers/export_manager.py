@@ -16,6 +16,7 @@ from utils import (
 )
 from core.workers import GifSaverWorker
 from locales import trans
+from utils.image_utils import imwrite_auto
 
 ALLOWED_EXPORT_EXTENSION_MAP = {
     ".png": ".png",
@@ -170,7 +171,7 @@ class ExportManager:
             image_to_save = window.label_manager.prepare_bgr_image("registered", result_to_save, index)
             ext = os.path.splitext(file_path)[1].lower()
             params = get_imwrite_params(ext)
-            if cv2.imwrite(file_path, image_to_save, params):
+            if imwrite_auto(file_path, image_to_save, params):
                 show_message_box(
                     window,
                     trans.t("msg_success"),
@@ -232,7 +233,7 @@ class ExportManager:
                 file_path = self.normalize_export_path(file_path)
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                if cv2.imwrite(file_path, image_to_save, params):
+                if imwrite_auto(file_path, image_to_save, params):
                     saved_count += 1
 
             show_message_box(
@@ -369,7 +370,7 @@ class ExportManager:
                 file_path = self.normalize_export_path(file_path)
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                if cv2.imwrite(file_path, image_to_save, params):
+                if imwrite_auto(file_path, image_to_save, params):
                     saved_count += 1
 
             show_success_box(

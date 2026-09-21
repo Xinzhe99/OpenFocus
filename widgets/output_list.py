@@ -83,12 +83,16 @@ class OutputListWidget(QListWidget):
         return window.label_manager.prepare_bgr_image("registered", image, 0)
 
     def _write_temp_jpg(self, image, base_name: str) -> str | None:
+        window = self._window
+        fmt = ".jpg"
+        if window is not None and hasattr(window, "drag_export_format"):
+            fmt = window.drag_export_format
         safe_name = self._sanitize_filename(base_name)
-        params = get_imwrite_params(".jpg")
+        params = get_imwrite_params(fmt)
 
         try:
             with tempfile.NamedTemporaryFile(
-                suffix=".jpg",
+                suffix=fmt,
                 prefix=f"{safe_name}_",
                 delete=False,
             ) as temp_file:
