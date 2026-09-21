@@ -1,5 +1,5 @@
 from PyQt6.QtGui import QAction, QActionGroup
-from PyQt6.QtWidgets import QMenu, QMainWindow
+from PyQt6.QtWidgets import QMainWindow
 from locales import trans
 
 
@@ -33,12 +33,10 @@ def setup_menus(window: QMainWindow) -> None:
     file_menu.addAction(save_action)
     window.ui_objs['action_save'] = save_action
 
-    save_stack_menu = QMenu(trans.t('menu_save_stack'), window)
-    file_menu.addMenu(save_stack_menu)
+    save_stack_menu = file_menu.addMenu(trans.t('menu_save_stack'))
     window.ui_objs['menu_save_stack'] = save_stack_menu
 
-    registered_stack_menu = QMenu(trans.t('menu_registered_stack'), window)
-    save_stack_menu.addMenu(registered_stack_menu)
+    registered_stack_menu = save_stack_menu.addMenu(trans.t('menu_registered_stack'))
     window.ui_objs['menu_registered_stack'] = registered_stack_menu
 
     save_reg_folder_action = QAction(trans.t('action_save_folder'), window)
@@ -54,8 +52,7 @@ def setup_menus(window: QMainWindow) -> None:
     registered_stack_menu.addAction(save_reg_gif_action)
     window.ui_objs['action_save_gif_reg'] = save_reg_gif_action
 
-    input_stack_menu = QMenu(trans.t('menu_input_stack'), window)
-    save_stack_menu.addMenu(input_stack_menu)
+    input_stack_menu = save_stack_menu.addMenu(trans.t('menu_input_stack'))
     window.ui_objs['menu_input_stack'] = input_stack_menu
 
     save_input_folder_action = QAction(trans.t('action_save_folder'), window)
@@ -90,8 +87,7 @@ def setup_menus(window: QMainWindow) -> None:
     edit_menu = menubar.addMenu(trans.t('menu_edit'))
     window.ui_objs['menu_edit'] = edit_menu
 
-    rotate_menu = QMenu(trans.t('menu_rotate'), window)
-    edit_menu.addMenu(rotate_menu)
+    rotate_menu = edit_menu.addMenu(trans.t('menu_rotate'))
     window.ui_objs['menu_rotate'] = rotate_menu
 
     rotate_90_cw_action = QAction(trans.t('action_rotate_90_cw'), window)
@@ -109,8 +105,7 @@ def setup_menus(window: QMainWindow) -> None:
     rotate_menu.addAction(rotate_180_action)
     window.ui_objs['action_rotate_180'] = rotate_180_action
 
-    flip_menu = QMenu(trans.t('menu_flip'), window)
-    edit_menu.addMenu(flip_menu)
+    flip_menu = edit_menu.addMenu(trans.t('menu_flip'))
     window.ui_objs['menu_flip'] = flip_menu
 
     flip_horizontal_action = QAction(trans.t('action_flip_h'), window)
@@ -135,8 +130,7 @@ def setup_menus(window: QMainWindow) -> None:
     edit_menu.addAction(window.add_label_action)
     window.ui_objs['action_add_label'] = window.add_label_action
 
-    delete_label_menu = QMenu(trans.t('menu_del_label'), window)
-    edit_menu.addMenu(delete_label_menu)
+    delete_label_menu = edit_menu.addMenu(trans.t('menu_del_label'))
     window.ui_objs['menu_del_label'] = delete_label_menu
 
     window.del_reg_label_action = QAction(trans.t('action_del_reg_label'), window)
@@ -165,8 +159,7 @@ def setup_menus(window: QMainWindow) -> None:
     window.ui_objs['menu_settings'] = settings_menu
 
     # Language Submenu
-    lang_menu = QMenu(trans.t('menu_language'), window)
-    settings_menu.addMenu(lang_menu)
+    lang_menu = settings_menu.addMenu(trans.t('menu_language'))
     window.ui_objs['menu_language'] = lang_menu
     
     lang_group = QActionGroup(window)
