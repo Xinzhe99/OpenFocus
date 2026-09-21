@@ -55,8 +55,9 @@ def test_settings_round_trip(qapp, clean_settings):
     w.thread_count = 11
     w.use_gpu = False
     w.tile_block_size = 640
-    add_recent_file(w, r"C:\stacks\demo")
-    add_recent_file(w, r"C:\stacks\demo")  # dedupe
+    demo = r"C:\stacks\demo"
+    add_recent_file(w, demo)
+    add_recent_file(w, demo)  # dedupe
     save_window_settings(w)
 
     w2 = FakeWindow()
@@ -64,7 +65,8 @@ def test_settings_round_trip(qapp, clean_settings):
     assert w2.thread_count == 11
     assert w2.use_gpu is False
     assert w2.tile_block_size == 640
-    assert w2.recent_files == [r"C:\stacks\demo"]
+    # add_recent_file stores the abspath (form differs across platforms)
+    assert w2.recent_files == [os.path.abspath(demo)]
 
 
 def test_recent_files_cap(qapp, clean_settings):
