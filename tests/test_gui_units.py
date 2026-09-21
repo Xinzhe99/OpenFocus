@@ -1,5 +1,7 @@
 """Offscreen GUI tests: settings persistence round-trip and the wipe widget."""
+import os
 import shutil
+import tempfile
 
 import numpy as np
 import pytest
@@ -9,7 +11,7 @@ QSettings = pytest.importorskip("PyQt6.QtCore").QSettings
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-TEMP_SETTINGS = r"F:\Working\OpenFocus\.temp_pytest_qsettings"
+TEMP_SETTINGS = os.path.join(tempfile.gettempdir(), "openfocus_pytest_qsettings")
 
 
 @pytest.fixture(scope="session")
