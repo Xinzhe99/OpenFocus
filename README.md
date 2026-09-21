@@ -5,7 +5,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 <p align="left">
   <a href="https://www.python.org/downloads/release/python-3100/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?logo=open-source-initiative&logoColor=white" alt="License: MIT" /></a>
-  <a href="https://github.com/your-org/OpenFocus"><img src="https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white" alt="GitHub Repository" /></a>
+  <a href="https://github.com/Xinzhe99/OpenFocus"><img src="https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white" alt="GitHub Repository" /></a>
+  <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/badge/Windows%20%7C%20macOS-Download-0078D7?logo=github&logoColor=white" alt="Download" /></a>
 </p>
 
 ## 📢 News
@@ -60,12 +61,19 @@ python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 ```
 Exit codes: `0` success, `1` processing error, `2` usage error. Run `python main.py --help` for all options.
 
+## 📖 Documentation
+- [**User Manual (English)**](./docs/USER_MANUAL_EN.md) — full feature guide: interface, workflows, wipe compare, settings, batch, CLI, troubleshooting
+- [**用户手册（中文）**](./docs/USER_MANUAL_ZH.md) — 完整中文功能手册
+- [**Changelog**](./CHANGELOG.md) — release history and notable changes
+- [**Build Commands**](./docs/BUILD_COMMANDS.md) — packaging from source with PyInstaller
+
 ## Table of Contents
 - [⚙️ Environment Setup](#environment-setup)
 - [💻 Command Line Usage](#command-line-usage)
+- [📖 Documentation](#documentation)
 - [🔭 Overview](#overview)
 - [✨ Highlights](#highlights)
-- [🧪 Fusion & Registration Methods](#fusion--registration-methods)
+- [🧪 Algorithms](#algorithms)
 - [📚 References](#references)
 - [🤝 Contribution](#contribution)
 - [📄 License](#license)
@@ -82,9 +90,12 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 ## ✨ Highlights
 - **Beginner-Friendly**: Plug-and-play workflows with unapologetically simple, guided operations.
 - **Flexible Processing Flows**: Run fusion-only, registration-only, or combined registration + fusion pipelines depending on your workload.
+- **Wipe Compare View**: Overlay any source frame and any result in one frame with a draggable divider and shared zoom — spot alignment errors at a glance.
 - **Batch Automation**: Kick off batch jobs across multiple folders with live progress, cancellation, and automatic output organization.
-- **Annotation & Export Toolkit**: Overlay labels, export GIF animations, and save processed stacks in JPG/PNG/BMP/TIFF with consistent metadata handling.
+- **Headless CLI**: Full pipeline from the command line with script-friendly exit codes.
+- **Annotation & Export Toolkit**: Overlay labels, export GIF animations, drag results straight out of the app, and save stacks in JPG/PNG/BMP/TIFF.
 - **AI-Assisted Fusion**: Ship with StackMFF V4 to unlock deep-learning-quality fusion alongside classic signal-processing methods.
+- **Remembers You**: Settings, language, GPU preference and recently opened stacks persist across sessions; bilingual UI throughout.
 
 <a id="fusion--registration-methods"></a>
 ## 🧪 Algorithms

@@ -7,15 +7,17 @@
 3. [Main Interface Overview](#3-main-interface-overview)
 4. [Importing Images and Video](#4-importing-images-and-video)
 5. [Viewing and Navigating Images](#5-viewing-and-navigating-images)
-6. [Image Registration](#6-image-registration)
-7. [Image Fusion Methods](#7-image-fusion-methods)
-8. [Image Transformations](#8-image-transformations)
-9. [Labels and Annotations](#9-labels-and-annotations)
-10. [Settings and Configuration](#10-settings-and-configuration)
-11. [Batch Processing](#11-batch-processing)
-12. [Exporting Results](#12-exporting-results)
-13. [Keyboard Shortcuts](#13-keyboard-shortcuts)
-14. [Troubleshooting](#14-troubleshooting)
+6. [Wipe Compare View](#6-wipe-compare-view)
+7. [Image Registration](#7-image-registration)
+8. [Image Fusion Methods](#8-image-fusion-methods)
+9. [Image Transformations](#9-image-transformations)
+10. [Labels and Annotations](#10-labels-and-annotations)
+11. [Settings and Configuration](#11-settings-and-configuration)
+12. [Batch Processing](#12-batch-processing)
+13. [Exporting Results](#13-exporting-results)
+14. [Command Line Interface](#14-command-line-interface)
+15. [Keyboard Shortcuts](#15-keyboard-shortcuts)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -28,10 +30,13 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - **Multi-Focus Image Fusion**: Combine multiple images with different focus points into one fully focused image
 - **Multiple Fusion Algorithms**: Choose from Guided Filter, DCT, DTCWT, GFG-FGF, and StackMFF-V4 (deep learning)
 - **Image Registration**: Align misaligned image sequences using ECC or Homography methods
+- **Wipe Compare View**: Inspect alignment and compare results with an A/B divider view
 - **Batch Processing**: Process multiple image folders simultaneously
+- **Headless CLI**: Script OpenFocus from the command line for automation and CI
 - **Flexible Export**: Save results as individual images, folders, or GIF animations
 - **Image Transformations**: Rotate, flip, and resize image stacks
 - **Label Addition**: Add text labels to registered and input stacks
+- **Persistent Settings**: Your preferences, language, and recently opened stacks survive restarts
 
 ### Supported Input Formats
 
@@ -98,10 +103,10 @@ The right panel contains all configuration options organized vertically:
 
 The top menu bar provides access to all functions:
 
-- **File**: Import/export operations
+- **File**: Import/export operations and the recent-files list
 - **Edit**: Image transformations and labels
 - **Batch**: Batch processing
-- **Settings**: Tile, Registration, and Thread configurations
+- **Settings**: GPU acceleration, language, tile, registration, and thread configurations
 - **Help**: Environment info and contact information
 
 ---
@@ -123,13 +128,17 @@ The software will automatically:
 ### Opening Video Files
 
 1. Go to **File → Open Video** or press `Ctrl+Shift+O`
-2. Select an MP4 video file
+2. Select a video file (MP4, AVI, MOV, MKV, WMV, FLV, WEBM)
 3. The video will be automatically decoded into individual frames
 4. Each frame becomes part of the image stack
 
+### Recent Files
+
+Every stack you open is remembered under **File → Open Recent** (up to 8 entries). Press `Alt+1` … `Alt+8` to reopen an entry directly. Reopening the same stack moves it to the top; entries whose files no longer exist can be removed with a prompt, and **Clear Recent List** empties the menu.
+
 ### Drag and Drop
 
-You can also drag a folder directly onto the application window to import images.
+You can also drag a folder directly onto the application window to import images. Dropping more files onto an existing stack appends them (after a size check).
 
 ### Clearing the Stack
 
@@ -158,7 +167,45 @@ When you navigate in the source panel, the result panel shows the corresponding 
 
 ---
 
-## 6. Image Registration
+## 6. Wipe Compare View
+
+The Wipe view overlays two images in a single frame with a draggable vertical divider, making misalignments and quality differences directly visible across the split.
+
+### Opening the Wipe View
+
+1. Render at least one result (fusion or registration)
+2. Press the **Wipe** toggle in the top-right corner of the result panel title bar
+3. The result area switches to the compare view; press **Wipe** again to return
+
+### Reading the View
+
+- **Side A (left of the divider)**: a source frame — by default it follows the source panel slider
+- **Side B (right of the divider)**: the most recent render
+- **White divider + round handle**: drag horizontally to move the split
+- Dragging edges that jump across the divider reveals registration errors that are hard to see in side-by-side panels
+
+### Choosing What to Compare
+
+The bar at the bottom of the compare view has one group per side:
+
+- **Side A** — check **Follow source** (default) to track the source panel slider, or uncheck it to lock side A to any frame with its own slider
+- **Side B** — check **Latest result** (default) to always show the newest render, or uncheck it to scrub through your output history with its slider
+
+Both sides update live: new renders, source-slider moves, and frame deletions are reflected immediately.
+
+### Zooming and Panning
+
+The compare view shares one transform for both images:
+
+- **Zoom**: mouse wheel (zooms around the cursor)
+- **Pan**: click and drag anywhere except the divider
+- **Reset**: double-click
+
+Wipe mode and ROI mode share the result panel, so entering one exits the other. Clearing the stack also exits wipe mode.
+
+---
+
+## 7. Image Registration
 
 Image registration corrects spatial misalignment between frames in your image stack. This is essential when images have slight shifts or perspective changes.
 
@@ -201,7 +248,7 @@ Access additional settings via **Settings → Registration**:
 
 ---
 
-## 7. Image Fusion Methods
+## 8. Image Fusion Methods
 
 OpenFocus offers five fusion algorithms. Each has different characteristics suitable for various image types.
 
@@ -228,7 +275,7 @@ OpenFocus offers five fusion algorithms. Each has different characteristics suit
 - **Advantages**: Excellent multi-scale analysis, good directionality
 - **Parameter**: Kernel size for filtering operations
 
-### GFG-FGF (Generalized Four邻域 Gradient - Fast Guided Filter)
+### GFG-FGF (Generalized Four-neighborhood Gradient - Fast Guided Filter)
 
 - **Algorithm**: Gradient-based fusion with fast guided filtering
 - **Best for**: Images with clear focus regions
@@ -262,7 +309,7 @@ OpenFocus offers five fusion algorithms. Each has different characteristics suit
 
 ---
 
-## 8. Image Transformations
+## 9. Image Transformations
 
 ### Rotation
 
@@ -292,7 +339,7 @@ Transformations are applied to the entire image stack, maintaining alignment bet
 
 ---
 
-## 9. Labels and Annotations
+## 10. Labels and Annotations
 
 ### Adding Labels
 
@@ -310,7 +357,7 @@ Access these options via **Edit → Delete Label** submenu.
 
 ---
 
-## 10. Settings and Configuration
+## 11. Settings and Configuration
 
 ### Tile Settings (Memory Optimization)
 
@@ -345,9 +392,39 @@ Access via **Settings → Thread Count Settings**:
 - Match your CPU core count for optimal performance
 - Higher values = faster processing, more CPU usage
 
+### GPU Acceleration Toggle
+
+OpenFocus uses the GPU (CUDA/MPS) only for the StackMFF-V4 neural model; classical algorithms always run on CPU.
+
+- Toggle via **Settings → GPU Acceleration**
+- Unchecking forces everything onto the CPU — useful when GPU drivers misbehave
+- The status panel shows `CPU*` while the GPU is disabled
+- The choice takes effect on the next render and is remembered
+
+### StackMFF-V4 Batch Size
+
+Access via **Settings → StackMFF-V4 Batch Settings**:
+
+- Controls how many tiles the neural model processes per batch (default: 2)
+- Higher values are faster but use more memory
+
+### Persisted Settings
+
+All of the following survive an application restart automatically:
+thread count, tile parameters, registration downscale width, StackMFF-V4
+batch size, the GPU acceleration toggle, interface language, and your
+recently opened stacks. Settings dialogs save the moment you confirm them;
+everything is also saved when the application closes. Preferences are
+stored per user in `OpenFocus/OpenFocus.ini` (QSettings INI format).
+
+### Interface Language
+
+Switch anytime via **Settings → Language → English / 中文**. The change
+applies immediately and is remembered for future sessions.
+
 ---
 
-## 11. Batch Processing
+## 12. Batch Processing
 
 Process multiple folders automatically:
 
@@ -373,7 +450,7 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 ---
 
-## 12. Exporting Results
+## 13. Exporting Results
 
 ### Saving a Single Result
 
@@ -406,7 +483,45 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 ---
 
-## 13. Keyboard Shortcuts
+## 14. Command Line Interface
+
+OpenFocus can run without the GUI — useful for scripted pipelines and CI.
+From a Python environment (or next to the packaged executable):
+
+```bash
+# Fuse a folder with the default Guided Filter
+python main.py --input ./stack_folder --output ./result/fused.png
+
+# DTCWT with ECC registration, 8 threads
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+
+# StackMFF-V4 forced to CPU with a custom tile size
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv4 --cpu --tile-size 512
+
+# Explicit file list; video files are also accepted as input
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+```
+
+| Option | Description |
+|--------|-------------|
+| `--input, -i` | Image folder, video file, or one or more image files |
+| `--output, -o` | Output image path (extension sets the format) |
+| `--method, -m` | `guided_filter` (default), `dct`, `dtcwt`, `gfgfgf`, `stackmffv4` |
+| `--align, -a` | `none` (default), `homography`, `ecc`, `both` |
+| `--kernel, -k` | Kernel size for guided_filter/dct/gfgfgf (forced odd) |
+| `--threads, -t` | Worker thread count (default 4) |
+| `--batch-size` | StackMFF-V4 tile batch size (default 2) |
+| `--cpu` | Force CPU even if a GPU is available |
+| `--downscale` | Registration feature-detection downscale width |
+| `--tile-size` | Tile block size for large images |
+
+Exit codes: `0` success, `1` processing error, `2` usage error. Running
+`python main.py --help` prints all options; launching with a plain path
+(`python main.py C:\stack`) still opens the GUI with that folder loaded.
+
+---
+
+## 15. Keyboard Shortcuts
 
 ### File Operations
 
@@ -438,7 +553,7 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 ---
 
-## 14. Troubleshooting
+## 16. Troubleshooting
 
 ### Common Issues
 
@@ -479,6 +594,23 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 - Use a more powerful CPU
 - Reduce image resolution
 - Use simpler fusion algorithms (Guided Filter instead of StackMFF-V4)
+
+#### Windows SmartScreen Warning on First Launch
+
+The released binaries are unsigned. Click **More info → Run anyway**.
+The first launch after unzipping may take 30–60 seconds.
+
+#### macOS Says the App "Cannot Be Opened" or "Is Damaged"
+
+The app is unsigned and not notarized. After moving `OpenFocus.app` to
+Applications, run:
+
+```bash
+xattr -cr /Applications/OpenFocus.app
+```
+
+or right-click the app and choose **Open**. Released macOS builds are for
+Apple Silicon (M1/M2/M3/M4); Intel Macs can run from source.
 
 ### Getting Help
 
