@@ -50,6 +50,11 @@ from utils import (
     show_custom_message_box,
     resource_path,
 )
+from utils.settings_store import (
+    load_window_settings,
+    save_window_settings,
+    get_saved_language,
+)
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
 from ui.right_panel import bind_right_panel, create_right_panel
@@ -112,6 +117,14 @@ class OpenFocus(QMainWindow):
         self.thread_count = DEFAULT_THREAD_COUNT
         # StackMFF V4 批量大小设置，默认2（可在 Settings 中修改）
         self.stackmffv4_batch_size = STACKMFFV4_BATCH_SIZE
+        # GPU 加速开关（Settings 菜单可切换，QSettings 持久化）
+        self.use_gpu = True
+        # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
+        load_window_settings(self)
+        saved_lang = get_saved_language()
+        if saved_lang:
+            trans.set_language(saved_lang)
+        self.recent_files = getattr(self, 'recent_files', [])
         
         self.render_manager = RenderManager(self)
         self.output_manager = OutputManager(self)
@@ -154,6 +167,7 @@ class OpenFocus(QMainWindow):
 
     def init_ui(self):
         setup_menus(self)
+        self.rebuild_recent_menu()
 
         # 2. 主容器
         main_container = QWidget()
@@ -388,6 +402,10 @@ class OpenFocus(QMainWindow):
             self.lbl_status_memory.setText(trans.t('status_ram').format('N/A'))
 
         # GPU
+        if not getattr(self, 'use_gpu', True):
+            # User disabled GPU acceleration (Settings menu)
+            self.lbl_status_gpu.setText(trans.t('status_gpu').format('CPU*'))
+            return
         try:
             import torch
             if torch.cuda.is_available():
@@ -852,6 +870,12 @@ class OpenFocus(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up background threads before closing the window."""
+        # Persist user preferences and recent files for the next session
+        try:
+            self.persist_settings()
+        except Exception:
+            pass
+
         def _shutdown_worker(worker, timeout_ms=1500):
             """Wait for a QThread to finish, terminating as a last resort.
 
@@ -908,6 +932,73 @@ class OpenFocus(QMainWindow):
     def set_language(self, lang_code: str) -> None:
         """Switch application language."""
         trans.set_language(lang_code)
+        self.persist_settings()
+
+    # --- Settings persistence & recent files ---
+
+    def persist_settings(self) -> None:
+        """Write user preferences (thread count, tile params, GPU, language...)."""
+        save_window_settings(self)
+
+    def set_use_gpu(self, enabled: bool) -> None:
+        """Toggle GPU acceleration (Settings menu); applies to future renders."""
+        self.use_gpu = bool(enabled)
+        self._update_dynamic_status()
+        self.persist_settings()
+
+    def add_recent_file(self, path: str) -> None:
+        """Record a successfully opened stack at the top of the recent list."""
+        from utils.settings_store import add_recent_file as _store_add
+        _store_add(self, path)
+
+    def rebuild_recent_menu(self) -> None:
+        """Fill the File > Open Recent submenu from self.recent_files."""
+        from PyQt6.QtGui import QAction
+        menu = self.ui_objs.get('menu_recent') if hasattr(self, 'ui_objs') else None
+        if menu is None:
+            return
+
+        menu.clear()
+        recent = list(getattr(self, 'recent_files', []))
+        if not recent:
+            empty = QAction(trans.t('menu_recent_empty'), menu)
+            empty.setEnabled(False)
+            menu.addAction(empty)
+            return
+
+        for i, path in enumerate(recent):
+            label = f"&{i + 1}  {path}" if i < 9 else path
+            action = QAction(label, menu)
+            action.triggered.connect(lambda checked=False, p=path: self._open_recent_path(p))
+            menu.addAction(action)
+
+        menu.addSeparator()
+        clear_action = QAction(trans.t('menu_recent_clear'), menu)
+        clear_action.triggered.connect(self._clear_recent_files)
+        menu.addAction(clear_action)
+
+    def _open_recent_path(self, path: str) -> None:
+        import os as _os
+        if not _os.path.exists(path):
+            show_warning_box(self, trans.t('msg_recent_missing_title'), trans.t('msg_recent_missing_text'))
+            if path in self.recent_files:
+                self.recent_files.remove(path)
+                self.persist_settings()
+                self.rebuild_recent_menu()
+            return
+        if _os.path.isdir(path):
+            self.source_manager.load_image_stack(path)
+        else:
+            ext = _os.path.splitext(path)[1].lower()
+            if ext in ImageStackLoader.SUPPORTED_VIDEO_FORMATS:
+                self.source_manager.load_video_stack(path)
+            else:
+                self.source_manager.load_image_stack(_os.path.dirname(path))
+
+    def _clear_recent_files(self) -> None:
+        self.recent_files = []
+        self.persist_settings()
+        self.rebuild_recent_menu()
 
     def update_ui_text(self) -> None:
         """Update all UI strings based on current language."""
@@ -970,8 +1061,17 @@ class OpenFocus(QMainWindow):
             self.ui_objs['action_lang_en'].setChecked(is_en)
             self.ui_objs['action_lang_zh'].setChecked(not is_en)
 
+        # Rebuild recent-files submenu so its titles follow the language
+        self.rebuild_recent_menu()
+
 
 if __name__ == "__main__":
+    # Headless CLI mode (--input/--output/--method ...); unknown options exit
+    # with argparse usage. Plain positional paths still auto-load in the GUI.
+    if any(arg.startswith("-") for arg in sys.argv[1:]):
+        from core.cli import run_cli
+        sys.exit(run_cli(sys.argv[1:]))
+
     app = OpenFocusApplication(sys.argv)
     window = OpenFocus()
     app.set_main_window(window)

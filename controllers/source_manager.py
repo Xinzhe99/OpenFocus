@@ -59,6 +59,8 @@ class SourceManager:
                 return
             load_options = self._build_load_options(full_res_images, filenames, scale_factor)
             self._apply_load_options(load_options, append=append)
+            if hasattr(window, "add_recent_file"):
+                window.add_recent_file(folder_path)
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
@@ -94,6 +96,8 @@ class SourceManager:
                 return
             load_options = self._build_load_options(full_res_images, filenames, scale_factor)
             self._apply_load_options(load_options, append=append)
+            if hasattr(window, "add_recent_file"):
+                window.add_recent_file(video_path)
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,

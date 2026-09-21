@@ -11,6 +11,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.21 (2)**: **Settings now persist** across sessions (thread count, tile parameters, registration downscale, StackMFF-V4 batch size, GPU toggle, language) plus a **File → Open Recent** menu. A **GPU Acceleration** toggle was added under Settings for machines with problematic GPU drivers. And OpenFocus can now run **headless from the command line** — see [Command Line Usage](#command-line-usage).
+
 > 🎉 **2026.09.21**: **v1.9 released** — now with ready-to-run builds for both **Windows and macOS (Apple Silicon)** on the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page. This version fixes 9 bugs (batch processing NameError, JPG quality setting ignored, UI controls staying disabled after a render error, a crash when closing during processing, the StackMFF-V4 "NoneType" error in the packaged build, and more), honors the label Range field, and completes the Chinese translations. Also merged PR #3 (Wayland menu fixes).
 
 > 🎉 **2026.01.13**: Optimized ROI mode processing and fixed bugs to improve performance and stability.
@@ -39,8 +41,28 @@ python main.py
 ```
 
 > **Pre-built packages (Windows & macOS):** Grab the ready-to-run builds from the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page — `OpenFocus-v*.*-windows-x64.zip` for Windows 10/11 (64-bit) and `OpenFocus-v*.*-macos-arm64.zip` for Apple Silicon Macs. Other platforms can run from source (see below).
+
+<a id="command-line-usage"></a>
+## 💻 Command Line Usage
+Beyond the GUI, OpenFocus can run headless — handy for batch scripts and CI pipelines:
+```bash
+# Fuse a folder of images with guided filter, no registration
+python main.py --input ./stack_folder --output ./result/fused.png
+
+# DTCWT with ECC registration, 8 threads
+python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+
+# StackMFF-V4 forced to CPU with custom tile size
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv4 --cpu --tile-size 512
+
+# Explicit file list instead of a folder; video files also work as input
+python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+```
+Exit codes: `0` success, `1` processing error, `2` usage error. Run `python main.py --help` for all options.
+
 ## Table of Contents
 - [⚙️ Environment Setup](#environment-setup)
+- [💻 Command Line Usage](#command-line-usage)
 - [🔭 Overview](#overview)
 - [✨ Highlights](#highlights)
 - [🧪 Fusion & Registration Methods](#fusion--registration-methods)

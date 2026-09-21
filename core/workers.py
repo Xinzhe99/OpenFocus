@@ -80,6 +80,7 @@ class RenderWorker(QThread):
         roi_rect=None,
         roi_mode="crop", # 'crop' or 'paste'
         roi_base_index=0,
+        use_gpu: bool = True,
     ):
         super().__init__()
         self.raw_images = raw_images
@@ -111,6 +112,8 @@ class RenderWorker(QThread):
         self.stackmffv4_batch_size = max(1, int(stackmffv4_batch_size)) if stackmffv4_batch_size else 2
         # Registration downscale width passed from UI (optional)
         self.reg_downscale_width = reg_downscale_width
+        # GPU 加速开关（仅影响 StackMFF-V4；经典算法本身固定 CPU）
+        self.use_gpu = bool(use_gpu)
         # 用户配置的线程数（用于控制内部 ThreadPool 大小）
         try:
             self.thread_count = max(1, int(thread_count))
@@ -251,7 +254,7 @@ class RenderWorker(QThread):
 
         fusion = MultiFocusFusion(
             algorithm=algorithm,
-            use_gpu=True,
+            use_gpu=self.use_gpu,
             tile_enabled=(self.tile_enabled if self.tile_enabled is not None else True),
             tile_block_size=(self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE),
             tile_overlap=(self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP),
@@ -361,7 +364,7 @@ class BatchWorker(QThread):
                  tile_enabled=None, tile_block_size=None, tile_overlap=None, tile_threshold=None, thread_count: int = 4,
                  stackmffv4_batch_size: int = 2,
                  import_mode="multiple_folders", split_method=None, split_param=None,
-                 single_folder_images_with_times=None):
+                 single_folder_images_with_times=None, use_gpu: bool = True):
         super().__init__()
         self.folder_paths = folder_paths
         self.output_type = output_type
@@ -372,6 +375,8 @@ class BatchWorker(QThread):
         self.split_method = split_method
         self.split_param = split_param
         self.single_folder_images_with_times = single_folder_images_with_times or []
+        # GPU 加速开关（仅影响 StackMFF-V4）
+        self.use_gpu = bool(use_gpu)
 
         from core.image_loader import ImageStackLoader
         self.image_loader = ImageStackLoader()
@@ -526,7 +531,7 @@ class BatchWorker(QThread):
             tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD)
             tile_kwargs.setdefault('stackmffv4_batch_size', self.stackmffv4_batch_size)
 
-            fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=True, **tile_kwargs)
+            fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=self.use_gpu, **tile_kwargs)
 
             if fusion_method == "guided_filter":
                 kernel_size = fusion_params.get('kernel_size', 31)
@@ -653,7 +658,7 @@ class BatchWorker(QThread):
             tile_kwargs.setdefault('tile_overlap', self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP)
             tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD)
 
-            fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=True, **tile_kwargs)
+            fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=self.use_gpu, **tile_kwargs)
             
             # 调用fuse方法执行融合
             fusion_result = fusion.fuse(aligned_images, thread_count=self.thread_count, **fusion_params)

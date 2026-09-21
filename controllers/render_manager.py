@@ -169,6 +169,7 @@ class RenderManager:
             roi_rect=roi_rect,
             roi_mode=roi_mode,
             roi_base_index=roi_base_index,
+            use_gpu=getattr(window, "use_gpu", True),
         )
 
         self.worker.finished_signal.connect(self.on_render_finished)

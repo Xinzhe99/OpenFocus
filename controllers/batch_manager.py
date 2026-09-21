@@ -105,6 +105,7 @@ class BatchManager:
             split_method=split_method,
             split_param=split_param,
             single_folder_images_with_times=single_folder_images_with_times,
+            use_gpu=getattr(self.window, "use_gpu", True),
         )
         self._thread = QThread()
         self._worker.moveToThread(self._thread)

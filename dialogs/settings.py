@@ -453,6 +453,8 @@ class TileSettingsDialog(QDialog):
             setattr(self.parent_window, "tile_block_size", bsize)
             setattr(self.parent_window, "tile_overlap", overlap)
             setattr(self.parent_window, "tile_threshold", thr)
+            if hasattr(self.parent_window, "persist_settings"):
+                self.parent_window.persist_settings()
 
         self.accept()
 
@@ -553,6 +555,8 @@ class RegistrationSettingsDialog(QDialog):
         val = int(self.spin_downscale.value())
         if self.parent_window:
             setattr(self.parent_window, "reg_downscale_width", val)
+            if hasattr(self.parent_window, "persist_settings"):
+                self.parent_window.persist_settings()
         self.accept()
 
     def show_help(self):
@@ -665,6 +669,8 @@ class ThreadSettingsDialog(QDialog):
         val = int(self.spin_threads.value())
         if self.parent_window:
             setattr(self.parent_window, "thread_count", val)
+            if hasattr(self.parent_window, "persist_settings"):
+                self.parent_window.persist_settings()
         self.accept()
 
 
@@ -773,4 +779,6 @@ class StackMFFV4BatchSettingsDialog(QDialog):
         val = int(self.spin_batch_size.value())
         if self.parent_window:
             setattr(self.parent_window, "stackmffv4_batch_size", val)
+            if hasattr(self.parent_window, "persist_settings"):
+                self.parent_window.persist_settings()
         self.accept()

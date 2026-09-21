@@ -27,6 +27,12 @@ def setup_menus(window: QMainWindow) -> None:
     file_menu.addAction(open_video_action)
     window.ui_objs['action_open_video'] = open_video_action
 
+    # Recent files submenu (items filled in by window.rebuild_recent_menu())
+    recent_menu = file_menu.addMenu(trans.t('menu_recent'))
+    window.ui_objs['menu_recent'] = recent_menu
+
+    file_menu.addSeparator()
+
     save_action = QAction(trans.t('action_save'), window)
     save_action.setShortcut("Ctrl+S")
     save_action.triggered.connect(window.export_manager.save_result)
@@ -157,6 +163,17 @@ def setup_menus(window: QMainWindow) -> None:
     # --- Settings Menu ---
     settings_menu = menubar.addMenu(trans.t('menu_settings'))
     window.ui_objs['menu_settings'] = settings_menu
+
+    # GPU acceleration toggle (persisted via settings_store)
+    gpu_action = QAction(trans.t('action_gpu_accel'), window)
+    gpu_action.setCheckable(True)
+    gpu_action.setChecked(getattr(window, 'use_gpu', True))
+    gpu_action.setToolTip(trans.t('msg_gpu_accel_hint'))
+    gpu_action.triggered.connect(window.set_use_gpu)
+    settings_menu.addAction(gpu_action)
+    window.ui_objs['action_gpu_accel'] = gpu_action
+
+    settings_menu.addSeparator()
 
     # Language Submenu
     lang_menu = settings_menu.addMenu(trans.t('menu_language'))
