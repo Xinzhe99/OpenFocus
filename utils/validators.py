@@ -152,6 +152,12 @@ class LabelAdder:
             font_scale = font_size / 30.0
             thickness = max(1, int(font_size / 15))
 
+            # Label colours are defined in the 0-255 domain; scale them up
+            # when annotating 16-bit frames, otherwise they draw near-black.
+            if image.dtype == np.uint16:
+                bg_color = [min(65535, int(c) * 257) for c in bg_color]
+                font_color = [min(65535, int(c) * 257) for c in font_color]
+
             (text_width, text_height), baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
 
             if not transparent_bg:

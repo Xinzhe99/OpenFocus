@@ -12,6 +12,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.22 (2)**: **v1.13** — a review round over the 16-bit pipeline and registration cache fixed 15 issues, including corrupted wipe-view output for 16-bit stacks, silent 16-bit truncation in the CuPy registration path, stale disk-cache hits after rotate/flip/resize, near-invisible label colours on 16-bit frames and a broken daily update-check rate limit.
+
 > 🎉 **2026.09.22**: **v1.12** — **16-bit PNG/TIFF inputs are now preserved end-to-end** (fuse at full depth, export back at 16 bits), **registration results are cached on disk** so re-opening a stack skips alignment, the CLI gained **batch mode** (`--output-dir`), plus window-layout memory, EXIF orientation correction, a selectable drag-out export format, and a daily automatic update check. Also shipped: a pytest test suite running on CI for every push.
 
 > 🎉 **2026.09.21 (4)**: **v1.11** — **Quick preview** renders a fast downscaled draft for parameter tuning, **Help → Check for Updates** tells you when a new release is out, delete actions now ask for confirmation, and OpenFocus finally writes **log files** (Help → Open Logs Folder). Plus: a proper **pytest test suite** running on CI for every push, and more reliable ECC on small-shift stacks.

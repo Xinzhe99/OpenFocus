@@ -3,6 +3,40 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.13] — 2026-09-22
+
+### Fixed
+Review round on the v1.12 features — 15 issues found and fixed:
+
+- **16-bit corruption in the wipe compare view**: raw uint16 frames were
+  reinterpreted as RGB888; both sides now render through the display
+  conversion (also fixes the registration-only preview render and the
+  output-list thumbnails/icons)
+- **Silent 16-bit data loss**: ECC registration on machines with CuPy
+  truncated aligned 16-bit frames to uint8 (mod-256 wrap); the GPU path
+  now preserves the source bit depth — and registration cache entries
+  written from corrupted frames are invalidated by the new signature
+- **Stale registration cache after rotate/flip/resize**: the cache
+  signature now includes the frame shape, so orientation changes no
+  longer serve pre-transform results; superseded cache folders are
+  pruned automatically
+- **Cache signature missed the load-time downsample**: loading the same
+  folder at different downsample scales can no longer reuse the wrong
+  cached alignment
+- **Label colours near-invisible on 16-bit frames**: annotation colours
+  are scaled into the 16-bit domain when drawing
+- **Drag-out export silently produced nothing for 16-bit results into
+  JPG**: now converts to 8-bit like the other non-16-bit formats
+- **Update check rate limit never engaged**: the daily timestamp is now
+  written when the silent check starts
+- **EXIF orientation was skipped on the drag-drop and batch preload
+  paths**: applied consistently on all three loaders
+- **CLI batch overwrote stacks with duplicate folder names**: duplicate
+  basenames are now rejected with a clear error; non-folder inputs are
+  reported as skipped; `--output` together with `--output-dir` warns
+- Removed a shadowed duplicate `load_from_folder` definition and a
+  per-context-menu QActionGroup leak
+
 ## [v1.12] — 2026-09-22
 
 ### Added

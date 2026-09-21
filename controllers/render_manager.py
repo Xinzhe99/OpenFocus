@@ -178,6 +178,8 @@ class RenderManager:
                 window.image_filenames,
                 (need_align_homography, need_align_ecc),
                 getattr(window, "reg_downscale_width", None),
+                getattr(window, "current_scale_factor", 1.0),
+                tuple(window.raw_images[0].shape[:2]) if window.raw_images else None,
             )
             if cached is not None and len(cached) == len(window.raw_images):
                 print("Registration cache hit — skipping alignment")
@@ -296,6 +298,7 @@ class RenderManager:
                         # touching the full-resolution output history
                         first = processed_images[0] if processed_images else None
                         if first is not None:
+                            first = to_display_uint8(first)
                             rgb_image = cv2.cvtColor(first, cv2.COLOR_BGR2RGB)
                             h, w, _ch = rgb_image.shape
                             q_image = QImage(rgb_image.data, w, h, 3 * w, QImage.Format.Format_RGB888)
@@ -349,6 +352,8 @@ class RenderManager:
                         processed_images,
                         (worker.need_align_homography, worker.need_align_ecc),
                         getattr(window, "reg_downscale_width", None),
+                        getattr(window, "current_scale_factor", 1.0),
+                        tuple(processed_images[0].shape[:2]) if processed_images else None,
                     )
 
             total_time = alignment_time + fusion_time

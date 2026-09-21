@@ -8,6 +8,7 @@ the same stack skips registration entirely.
 import hashlib
 import json
 import os
+import shutil
 from typing import List, Optional, Tuple
 
 import cv2
@@ -17,9 +18,14 @@ CACHE_DIR_NAME = ".openfocus_cache"
 
 
 def _signature(folder: str, filenames: List[str], align_options: Tuple[bool, bool],
-               downscale_width: Optional[int]) -> str:
-    """Stable hash of everything that changes the registration result."""
-    parts = [f"opts={align_options}|downscale={downscale_width}"]
+               downscale_width: Optional[int], scale_factor: float = 1.0,
+               frame_shape: Optional[Tuple[int, int]] = None) -> str:
+    """Stable hash of everything that changes the registration result.
+
+    frame_shape covers rotate/flip/resize mutations and load-time
+    downsampling, which file mtimes alone cannot detect.
+    """
+    parts = [f"opts={align_options}|downscale={downscale_width}|scale={scale_factor}|shape={frame_shape}"]
     for name in filenames:
         path = os.path.join(folder, name)
         try:
@@ -36,11 +42,12 @@ def cache_dir(folder: str) -> str:
 
 
 def load_aligned(folder: str, filenames: List[str], align_options: Tuple[bool, bool],
-                 downscale_width: Optional[int]) -> Optional[List[np.ndarray]]:
+                 downscale_width: Optional[int], scale_factor: float = 1.0,
+                 frame_shape: Optional[Tuple[int, int]] = None) -> Optional[List[np.ndarray]]:
     """Return cached aligned frames, or None when absent/stale/corrupt."""
     if not folder or not os.path.isdir(folder):
         return None
-    sig = _signature(folder, filenames, align_options, downscale_width)
+    sig = _signature(folder, filenames, align_options, downscale_width, scale_factor, frame_shape)
     cdir = os.path.join(folder, CACHE_DIR_NAME, sig)
     meta_path = os.path.join(cdir, "meta.json")
     if not os.path.isfile(meta_path):
@@ -63,13 +70,20 @@ def load_aligned(folder: str, filenames: List[str], align_options: Tuple[bool, b
 
 
 def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndarray],
-                 align_options: Tuple[bool, bool], downscale_width: Optional[int]) -> None:
-    """Persist aligned frames; best-effort (failures are silently ignored)."""
+                 align_options: Tuple[bool, bool], downscale_width: Optional[int],
+                 scale_factor: float = 1.0,
+                 frame_shape: Optional[Tuple[int, int]] = None) -> None:
+    """Persist aligned frames; best-effort (failures are silently ignored).
+
+    Signature dirs from earlier signatures are pruned afterwards so stacks
+    do not accumulate a full aligned copy per parameter tweak.
+    """
     if not folder or not os.path.isdir(folder):
         return
     try:
-        sig = _signature(folder, filenames, align_options, downscale_width)
-        cdir = os.path.join(folder, CACHE_DIR_NAME, sig)
+        sig = _signature(folder, filenames, align_options, downscale_width, scale_factor, frame_shape)
+        root = os.path.join(folder, CACHE_DIR_NAME)
+        cdir = os.path.join(root, sig)
         os.makedirs(cdir, exist_ok=True)
         for i, img in enumerate(aligned_images):
             frame_path = os.path.join(cdir, f"aligned_{i:04d}.png")
@@ -78,5 +92,11 @@ def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndar
         with open(os.path.join(cdir, "meta.json"), "w", encoding="utf-8") as f:
             json.dump({"signature": sig, "count": len(aligned_images),
                        "align_options": list(align_options)}, f)
+        # Prune superseded signature dirs
+        for entry in os.listdir(root):
+            if entry != sig:
+                stale = os.path.join(root, entry)
+                if os.path.isdir(stale):
+                    shutil.rmtree(stale, ignore_errors=True)
     except OSError:
         pass

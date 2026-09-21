@@ -690,7 +690,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             aligned_img_gpu = cp.stack(channels, axis=2)
             
             # 传回 CPU
-            aligned_img = cp.asnumpy(aligned_img_gpu).astype(np.uint8)
+            aligned_img = cp.asnumpy(aligned_img_gpu).astype(img.dtype)
             
         else:
             # CPU 版本 (OpenCV)

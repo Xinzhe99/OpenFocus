@@ -86,26 +86,6 @@ class ImageStackLoader:
         filenames = []
         failed_count = 0
 
-    def load_from_folder(self, folder_path: str, scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
-        if not os.path.isdir(folder_path):
-            return False, "Selected path is not a valid directory", [], []
-
-        image_files = []
-        for filename in os.listdir(folder_path):
-            ext = os.path.splitext(filename)[1].lower()
-            if ext in self.SUPPORTED_FORMATS:
-                full_path = os.path.join(folder_path, filename)
-                image_files.append((filename, full_path))
-
-        if not image_files:
-            return False, "No supported image files found in the folder", [], []
-
-        image_files.sort(key=lambda x: x[0])
-
-        loaded_images = []
-        filenames = []
-        failed_count = 0
-
         for filename, full_path in image_files:
             try:
                 img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
@@ -204,6 +184,8 @@ class ImageStackLoader:
 
                 img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
                                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                if img is not None:
+                    img = apply_exif_orientation(full_path, img)
                 if img is None:
                     failed_count += 1
                     continue
@@ -341,6 +323,7 @@ class ImageStackLoader:
                 img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
                                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
                 if img is not None:
+                    img = apply_exif_orientation(full_path, img)
                     timestamp = self.get_image_timestamp(full_path)
                     loaded_data.append((filename, full_path, img, timestamp))
                 else:

@@ -81,16 +81,16 @@ class TestAlignCache:
     def test_round_trip(self, stack_dir):
         names = self.names(stack_dir)
         frames = [np.full((8, 8, 3), 9, np.uint8) for _ in names]
-        align_cache.save_aligned(stack_dir, names, frames, (True, False), 1024)
-        loaded = align_cache.load_aligned(stack_dir, names, (True, False), 1024)
+        align_cache.save_aligned(stack_dir, names, frames, (True, False), 1024, 1.0)
+        loaded = align_cache.load_aligned(stack_dir, names, (True, False), 1024, 1.0)
         assert loaded is not None and len(loaded) == 3
         assert np.array_equal(loaded[0], frames[0])
 
     def test_signature_invalidates_on_options(self, stack_dir):
         names = self.names(stack_dir)
         align_cache.save_aligned(stack_dir, names, [np.zeros((8, 8, 3), np.uint8)] * 3,
-                                 (True, False), 1024)
-        assert align_cache.load_aligned(stack_dir, names, (False, True), 1024) is None
+                                 (True, False), 1024, 1.0)
+        assert align_cache.load_aligned(stack_dir, names, (False, True), 1024, 1.0) is None
 
     def test_missing_cache_returns_none(self, stack_dir):
         assert align_cache.load_aligned(stack_dir, self.names(stack_dir),
@@ -99,7 +99,13 @@ class TestAlignCache:
     def test_stale_signature_after_file_change(self, stack_dir):
         names = self.names(stack_dir)
         align_cache.save_aligned(stack_dir, names, [np.zeros((8, 8, 3), np.uint8)] * 3,
-                                 (True, False), 1024)
+                                 (True, False), 1024, 1.0)
         # Touch one source file (size change -> new signature)
         cv2.imwrite(os.path.join(stack_dir, "f0.png"), np.full((16, 16, 3), 7, np.uint8))
-        assert align_cache.load_aligned(stack_dir, names, (True, False), 1024) is None
+        assert align_cache.load_aligned(stack_dir, names, (True, False), 1024, 1.0) is None
+
+    def test_signature_invalidates_on_scale(self, stack_dir):
+        names = self.names(stack_dir)
+        align_cache.save_aligned(stack_dir, names, [np.zeros((8, 8, 3), np.uint8)] * 3,
+                                 (True, False), 1024, 1.0)
+        assert align_cache.load_aligned(stack_dir, names, (True, False), 1024, 0.5) is None

@@ -39,7 +39,8 @@ class OutputManager:
 
         if window.fusion_result is not None:
             try:
-                rgb_image = cv2.cvtColor(window.fusion_result.copy(), cv2.COLOR_BGR2RGB)
+                rgb_image = cv2.cvtColor(
+                    to_display_uint8(window.fusion_result.copy()), cv2.COLOR_BGR2RGB)
                 h, w = rgb_image.shape[:2]
                 bytes_per_line = 3 * w
                 q_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
@@ -76,7 +77,7 @@ class OutputManager:
         # Drag-out export format submenu (persisted per user)
         drag_menu = menu.addMenu(trans.t("menu_drag_format"))
         current_fmt = get_drag_export_format(window)
-        group = QActionGroup(window)
+        group = QActionGroup(drag_menu)
         group.setExclusive(True)
         for fmt, label in ((".jpg", "JPG"), (".png", "PNG"), (".tif", "TIFF")):
             act = QAction(label, drag_menu)

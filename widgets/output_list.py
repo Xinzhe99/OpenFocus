@@ -91,6 +91,7 @@ class OutputListWidget(QListWidget):
         params = get_imwrite_params(fmt)
 
         try:
+            from utils.image_utils import imwrite_auto
             with tempfile.NamedTemporaryFile(
                 suffix=fmt,
                 prefix=f"{safe_name}_",
@@ -98,7 +99,7 @@ class OutputListWidget(QListWidget):
             ) as temp_file:
                 file_path = temp_file.name
 
-            success = cv2.imwrite(file_path, image, params)
+            success = imwrite_auto(file_path, image, params)
             if not success:
                 return None
             return file_path

@@ -178,8 +178,25 @@ def _run_batch(args) -> int:
 
     loader = ImageStackLoader()
     folders = [os.path.abspath(p) for p in args.input if os.path.isdir(p)]
+    skipped = [p for p in args.input if not os.path.isdir(os.path.abspath(p))]
+    for p in skipped:
+        print(f"warning: skipping non-folder input in batch mode: {p}", file=sys.stderr)
     if not folders:
         print("error: --output-dir requires image folder(s) as --input", file=sys.stderr)
+        return EXIT_USAGE
+    if args.output:
+        print(f"warning: --output is ignored in batch mode (using --output-dir)", file=sys.stderr)
+
+    # Duplicate basenames would silently overwrite each other
+    seen, duplicates = set(), False
+    for folder in folders:
+        name = os.path.basename(folder.rstrip("/\\")) or "stack"
+        if name in seen:
+            duplicates = True
+            print(f"error: duplicate folder name '{name}' would overwrite results; "
+                  f"rename the folders or fuse them individually", file=sys.stderr)
+        seen.add(name)
+    if duplicates:
         return EXIT_USAGE
     os.makedirs(args.output_dir, exist_ok=True)
 

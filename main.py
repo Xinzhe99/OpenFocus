@@ -540,6 +540,9 @@ class OpenFocus(QMainWindow):
                 last = 0.0
             if time.time() - last < 24 * 3600:
                 return
+            # Stamp up front: quiet checks that find nothing to report never
+            # reach the completion callback, and this is what the limiter reads.
+            settings.setValue(LAST_UPDATE_CHECK_KEY, time.time())
 
         if not quiet:
             self.statusBar().showMessage(trans.t('update_checking'), 3000)
@@ -690,6 +693,7 @@ class OpenFocus(QMainWindow):
     # --- Wipe A/B compare ---
 
     def _bgr_to_pixmap(self, image) -> QPixmap:
+        image = to_display_uint8(image)
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         height, width, _channels = rgb_image.shape
         q_image = QImage(rgb_image.data, width, height, 3 * width, QImage.Format.Format_RGB888)
