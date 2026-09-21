@@ -22,7 +22,7 @@ class OutputManager:
     # ------------------------------------------------------------------
     def update_output_count(self) -> None:
         count = self.window.output_list.count()
-        self.window.output_label.setText(f"Output: {count}")
+        self.window.output_label.setText(trans.t("label_output").format(count))
 
     def update_output_list_for_fusion(self) -> None:
         window = self.window
@@ -61,11 +61,11 @@ class OutputManager:
         window = self.window
         menu = QMenu(window)
 
-        delete_action = QAction("Delete", window)
+        delete_action = QAction(trans.t("action_delete"), window)
         delete_action.triggered.connect(self.delete_selected_output_images)
         menu.addAction(delete_action)
 
-        save_as_action = QAction("Save as", window)
+        save_as_action = QAction(trans.t("action_save_as"), window)
         save_as_action.triggered.connect(lambda: self.save_output_image_as(window.output_list.currentItem()))
         save_as_action.setEnabled(len(window.output_list.selectedItems()) == 1)
         menu.addAction(save_as_action)

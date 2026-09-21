@@ -124,6 +124,8 @@ class MultiFocusFusion:
             self._validate_spatial_environment()
         elif self.algorithm == 'stackmffv4':
             self._validate_ai_environment()
+        elif self.algorithm == 'gfgfgf':
+            pass  # pure NumPy implementation, no extra dependencies
 
     def _fuse_gfgfgf(self,
                      input_source: Union[str, List[np.ndarray]],
@@ -797,14 +799,17 @@ class MultiFocusFusion:
         Returns:
             dict: 包含算法名称、设备类型等信息
         """
-        import torch
         if self.use_gpu:
-            if torch.cuda.is_available():
-                device_name = 'CUDA'
-            elif torch.backends.mps.is_available():
-                device_name = 'MPS'
-            else:
-                device_name = 'CPU (GPU unavailable)'
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    device_name = 'CUDA'
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    device_name = 'MPS'
+                else:
+                    device_name = 'CPU (GPU unavailable)'
+            except ImportError:
+                device_name = 'CPU'
         else:
             device_name = 'CPU'
         return {

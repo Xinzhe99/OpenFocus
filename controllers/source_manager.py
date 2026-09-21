@@ -32,7 +32,7 @@ class SourceManager:
     # ------------------------------------------------------------------
     def update_source_images_count(self) -> None:
         count = self.window.file_list.count()
-        self.window.source_images_label.setText(f"Source Images: {count}")
+        self.window.source_images_label.setText(trans.t("label_source_images").format(count))
 
     def load_image_stack(self, folder_path: str, append: bool = False) -> None:
         window = self.window
@@ -402,7 +402,7 @@ class SourceManager:
         window = self.window
         menu = QMenu(window)
 
-        delete_action = QAction("Delete", window)
+        delete_action = QAction(trans.t("action_delete"), window)
         delete_action.triggered.connect(self.delete_selected_source_images)
         menu.addAction(delete_action)
 

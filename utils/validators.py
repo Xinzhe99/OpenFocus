@@ -137,6 +137,9 @@ class LabelAdder:
             bg_color = self.config.bg_color
             font_color = self.config.font_color
 
+            if not self._index_in_range(self.config.range, index):
+                return image
+
             current_value = starting_value + index * interval
 
             if '{value}' in format_str:
@@ -171,6 +174,45 @@ class LabelAdder:
             )
 
             return image
-        except Exception:
+        except Exception as exc:
+            print(f"LabelAdder: failed to draw label on image {index}: {exc}")
             return image
+
+    @staticmethod
+    def _index_in_range(range_spec: str, index: int) -> bool:
+        """Match a 1-based label range: "All", "3-7", "1,4,9" or "1-3,7".
+
+        Unparseable specs fall back to True (label everything) so a typo in
+        the range field can never silently drop all labels.
+        """
+        spec = (range_spec or "").strip()
+        if not spec or spec.lower() == "all":
+            return True
+
+        parsed_any = False
+        matched = False
+        for part in spec.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            if '-' in part:
+                start_str, _, end_str = part.partition('-')
+                try:
+                    start, end = int(start_str), int(end_str)
+                except ValueError:
+                    continue
+                if start > end:
+                    start, end = end, start
+                parsed_any = True
+                if start <= index + 1 <= end:
+                    matched = True
+            else:
+                try:
+                    value = int(part)
+                except ValueError:
+                    continue
+                parsed_any = True
+                if value == index + 1:
+                    matched = True
+        return True if not parsed_any else matched
 

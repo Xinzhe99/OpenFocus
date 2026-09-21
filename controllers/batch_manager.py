@@ -272,6 +272,10 @@ class BatchManager:
     def _teardown_worker(self) -> None:
         if self._thread:
             self._thread.quit()
-            self._thread.wait()
+            # The worker only checks is_cancelled between folders, so a folder
+            # in progress cannot be interrupted — never block the UI forever.
+            if not self._thread.wait(5000):
+                self._thread.terminate()
+                self._thread.wait(1000)
             self._thread = None
         self._worker = None

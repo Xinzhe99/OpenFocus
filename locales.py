@@ -24,6 +24,8 @@ class TranslationManager(QObject):
                 'action_open_folder': 'Open Folder',
                 'action_open_video': 'Open Video',
                 'action_save': 'Save',
+                'action_save_as': 'Save as',
+                'action_delete': 'Delete',
                 'menu_save_stack': 'Save Stack',
                 'menu_registered_stack': 'Registered Stack',
                 'menu_input_stack': 'Input Stack',
@@ -432,6 +434,8 @@ class TranslationManager(QObject):
                 'action_open_folder': '打开文件夹',
                 'action_open_video': '打开视频',
                 'action_save': '保存',
+                'action_save_as': '另存为',
+                'action_delete': '删除',
                 'menu_save_stack': '保存堆栈',
                 'menu_registered_stack': '已配准堆栈',
                 'menu_input_stack': '输入堆栈',
@@ -572,6 +576,9 @@ class TranslationManager(QObject):
                 'msg_gif_saved_info': '{message}\n帧时长: {duration}ms',
                 'msg_gif_save_failed_text': '保存 GIF 动画失败：',
                 'msg_gif_save_failed_info': '错误: {message}',
+                'dialog_duration_title': 'GIF 时长设置',
+                'dialog_duration_group': '帧时长',
+                'dialog_duration_label': '时长 (ms):',
                 'msg_processed_stack_saved_text': '处理后的输入图像栈保存成功！',
                 'msg_processed_stack_saved_info': '已成功保存 {saved}/{total} 张图像到:\n{folder}',
                 'msg_size_mismatch_title': '图像尺寸不一致',
@@ -697,6 +704,8 @@ class TranslationManager(QObject):
                 
                 # Help Dialogs
                 'help_render_title': '融合帮助',
+                'help_registration_title': '配准帮助',
+                'help_tile_title': '分块设置帮助',
 
                 # Add Label Dialog
                 'add_label_title': '添加标签配置',

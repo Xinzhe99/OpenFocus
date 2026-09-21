@@ -843,29 +843,54 @@ class OpenFocus(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up background threads before closing the window."""
+        def _shutdown_worker(worker, timeout_ms=1500):
+            """Wait for a QThread to finish, terminating as a last resort.
+
+            The reference is parked on the window instead of dropped: dropping
+            the last reference to a still-running QThread aborts the process
+            with "QThread: Destroyed while thread is still running".
+            """
+            if worker is None:
+                return
+            if worker.isRunning():
+                worker.quit()  # no-op for run() overrides, harmless otherwise
+                if not worker.wait(timeout_ms):
+                    worker.terminate()
+                    worker.wait(1000)
+                if not hasattr(self, '_dying_workers'):
+                    self._dying_workers = []
+                self._dying_workers.append(worker)
+
         # Stop ROI alignment worker if running
-        if self.roi_alignment_worker is not None:
-            if self.roi_alignment_worker.isRunning():
-                self.roi_alignment_worker.quit()
-                self.roi_alignment_worker.wait(1000)  # Wait up to 1 second
+        if getattr(self, 'roi_alignment_worker', None) is not None:
+            _shutdown_worker(self.roi_alignment_worker)
             self.roi_alignment_worker = None
 
         # Stop render worker if running
-        if hasattr(self, 'render_manager') and self.render_manager.worker is not None:
-            if self.render_manager.worker.isRunning():
-                self.render_manager.worker.quit()
-                self.render_manager.worker.wait(1000)
+        if hasattr(self, 'render_manager'):
+            _shutdown_worker(self.render_manager.worker)
             self.render_manager.worker = None
+
+        # Stop GIF saver worker if running (no cancel support; wait briefly)
+        if hasattr(self, 'export_manager'):
+            _shutdown_worker(getattr(self.export_manager, 'gif_worker', None))
 
         # Stop batch worker if running
         if hasattr(self, 'batch_manager') and self.batch_manager._thread is not None:
             if self.batch_manager._worker:
                 self.batch_manager._worker.cancel()
+            if self.batch_manager._thread.isRunning():
+                self.batch_manager._thread.quit()
+                self.batch_manager._thread.wait(5000)
             self.batch_manager._teardown_worker()
 
         # Stop status update timer
         if hasattr(self, 'status_timer') and self.status_timer.isActive():
             self.status_timer.stop()
+
+        # Remove temp JPGs written for drag-out export
+        if hasattr(self, 'output_list') and hasattr(self.output_list, 'cleanup_temp_files'):
+            self.output_list.cleanup_temp_files()
 
         super().closeEvent(event)
 

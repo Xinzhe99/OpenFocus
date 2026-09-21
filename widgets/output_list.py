@@ -17,9 +17,20 @@ class OutputListWidget(QListWidget):
     def __init__(self, parent: Any | None = None) -> None:
         super().__init__(parent)
         self._window: Any | None = None
+        # Temp JPGs from the last finished drag; they stay on disk until the
+        # next drag starts (or the app quits) so the drop target can copy them.
+        self._temp_files: list[str] = []
 
     def set_window(self, window: Any) -> None:
         self._window = window
+
+    def cleanup_temp_files(self) -> None:
+        for path in self._temp_files:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        self._temp_files = []
 
     def startDrag(self, supportedActions: Qt.DropAction) -> None:  # noqa: N802
         if self._window is None:
@@ -28,6 +39,8 @@ class OutputListWidget(QListWidget):
         selected_items = self.selectedItems()
         if not selected_items:
             return
+
+        self.cleanup_temp_files()
 
         urls: list[QUrl] = []
         for item in selected_items:
@@ -41,9 +54,11 @@ class OutputListWidget(QListWidget):
 
             file_path = self._write_temp_jpg(image, item.text())
             if file_path:
+                self._temp_files.append(file_path)
                 urls.append(QUrl.fromLocalFile(file_path))
 
         if not urls:
+            self.cleanup_temp_files()
             return
 
         mime_data = QMimeData()

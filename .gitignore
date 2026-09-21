@@ -40,14 +40,13 @@ ehthumbs.db
 Desktop.ini
 
 # Project specific
+# Ignore .pth model files (weights/stackmffv4.pth was committed before this rule and stays tracked)
 *.pth
-weights/*.pth  # Keep weights but ignore downloads/temp
 .temp/
-.temp/**
 
-# Project management
+# AI agent leftovers
+.kiro/
 .sisyphus/
-.sisyphus/**
 
 # Documentation
 **/AGENTS.md

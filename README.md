@@ -36,7 +36,7 @@ pip install opencv-python pyqt6 numpy imageio dtcwt scipy torch torchvision
 python main.py
 ```
 
-> **Pre-built package (Windows only):** Grab the compact Windows build from the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page; other platforms can run from source.
+> **Pre-built packages (Windows & macOS):** Grab the ready-to-run builds from the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page — `OpenFocus-v*.*-windows-x64.zip` for Windows 10/11 (64-bit) and `OpenFocus-v*.*-macos-arm64.zip` for Apple Silicon Macs. Other platforms can run from source (see below).
 ## Table of Contents
 - [⚙️ Environment Setup](#environment-setup)
 - [🔭 Overview](#overview)

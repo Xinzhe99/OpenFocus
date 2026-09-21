@@ -259,8 +259,13 @@ class RenderWorker(QThread):
             stackmffv4_batch_size=self.stackmffv4_batch_size,
         )
 
-        info = fusion.get_info()
-        device_name = info['device']
+        # Classical algorithms are CPU-only (see AGENTS.md); only the neural
+        # model actually uses the GPU, so only query the device for it.
+        if algorithm == "stackmffv4":
+            info = fusion.get_info()
+            device_name = info['device']
+        else:
+            device_name = "CPU"
 
         kernel_size = normalize_kernel_size(self.kernel_slider_value)
 
@@ -381,7 +386,18 @@ class BatchWorker(QThread):
             self.thread_count = max(1, int(thread_count))
         except Exception:
             self.thread_count = 4
-    
+
+    def _save_image(self, path: str, image, extension: str) -> bool:
+        """Save with the user-selected JPG quality; other formats use defaults."""
+        params = []
+        if extension.lower().lstrip('.') in ('jpg', 'jpeg', 'jpe', 'jfif'):
+            try:
+                quality = int(self.processing_settings.get('jpg_quality', 100))
+            except (TypeError, ValueError):
+                quality = 100
+            params = [cv2.IMWRITE_JPEG_QUALITY, max(0, min(100, quality))]
+        return cv2.imwrite(path, image, params)
+
     def run(self):
         """执行批处理"""
         try:
@@ -496,6 +512,7 @@ class BatchWorker(QThread):
                     registration = ImageRegistration(method=mode)
                 aligned_images = registration.process(images, output_path=None, thread_count=self.thread_count)
 
+        output_format = self.processing_settings.get('format', 'jpg')
         fusion_method = self.processing_settings.get('fusion_method')
         if fusion_method:
             fusion_params = self.processing_settings.get('fusion_params', {}).copy()
@@ -560,15 +577,14 @@ class BatchWorker(QThread):
                 result = None
 
             if result is not None:
-                output_format = self.processing_settings.get('format', 'jpg')
                 output_path = os.path.join(output_dir, f"{stack_name}.{output_format}")
-                cv2.imwrite(output_path, result)
+                self._save_image(output_path, result, output_format)
 
             if self.processing_settings.get('save_aligned'):
                 for idx, img in enumerate(aligned_images):
                     aligned_filename = f"{stack_name}_aligned_{idx + 1:03d}.{output_format}"
                     aligned_path = os.path.join(output_dir, aligned_filename)
-                    cv2.imwrite(aligned_path, img)
+                    self._save_image(aligned_path, img, output_format)
     
     def process_single_folder(self, folder_path):
         """处理单个文件夹"""
@@ -670,10 +686,9 @@ class BatchWorker(QThread):
         extension = self.processing_settings.get('format', 'png')
         filename = f"{folder_name}.{extension}"
         output_path = os.path.join(output_dir, filename)
-        
+
         # 保存图像
-        import cv2
-        cv2.imwrite(output_path, fusion_result)
+        self._save_image(output_path, fusion_result, extension)
     
     def save_registered_stack(self, folder_path, images, filenames):
         """保存配准后的图像栈"""
@@ -703,7 +718,7 @@ class BatchWorker(QThread):
                 filename = f"registered_{i+1:04d}.{extension}"
             
             output_path = os.path.join(output_dir, filename)
-            cv2.imwrite(output_path, image)
+            self._save_image(output_path, image, extension)
 
     def _get_output_path_for_single_folder(self, source_folder_path):
         """获取单文件夹模式下的输出路径"""

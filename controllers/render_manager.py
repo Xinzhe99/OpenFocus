@@ -17,6 +17,33 @@ class RenderManager:
         self.window = window
         self.worker: Optional[RenderWorker] = None
 
+    def _restore_ui_controls(self) -> None:
+        """Re-enable every control disabled by start_render (safe to call anywhere)."""
+        window = self.window
+        try:
+            window.slider_smooth.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            window.rb_a.setEnabled(True)
+            window.rb_b.setEnabled(True)
+            window.rb_c.setEnabled(True)
+            window.rb_gfg.setEnabled(True)
+            window.rb_d.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            window.cb_align_homography.setEnabled(True)
+            window.cb_align_ecc.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            window.btn_reset.setEnabled(True)
+        except Exception:
+            pass
+        window.btn_render.setEnabled(True)
+        window.btn_render.setText(trans.t('btn_render'))
+
     def start_render(self) -> None:
         window = self.window
 
@@ -75,8 +102,7 @@ class RenderManager:
                 trans.t("msg_stackmff_unavailable_text"),
             )
             window.rb_d.setChecked(False)
-            window.btn_render.setEnabled(True)
-            window.btn_render.setText(trans.t('btn_render'))
+            self._restore_ui_controls()
             return
 
         # Handle ROI options - check if ROI mode is active and we have aligned images
@@ -97,8 +123,7 @@ class RenderManager:
                     roi_base_index = dialog.base_frame_index
                 else:
                     # User cancelled the ROI dialog -> cancel render
-                    window.btn_render.setEnabled(True)
-                    window.btn_render.setText(trans.t('btn_render'))
+                    self._restore_ui_controls()
                     return
         
         # 确定要使用的图像源
@@ -282,37 +307,13 @@ class RenderManager:
 
         finally:
             # 恢复 UI 控件
-            try:
-                window.slider_smooth.setEnabled(True)
-            except Exception:
-                pass
-            try:
-                window.rb_a.setEnabled(True)
-                window.rb_b.setEnabled(True)
-                window.rb_c.setEnabled(True)
-                window.rb_gfg.setEnabled(True)
-                window.rb_d.setEnabled(True)
-            except Exception:
-                pass
-            try:
-                window.cb_align_homography.setEnabled(True)
-                window.cb_align_ecc.setEnabled(True)
-            except Exception:
-                pass
-            try:
-                window.btn_reset.setEnabled(True)
-            except Exception:
-                pass
-
-            window.btn_render.setEnabled(True)
-            window.btn_render.setText(trans.t('btn_render'))
+            self._restore_ui_controls()
             self.worker = None
 
     def on_render_error(self, error_message: str) -> None:
         window = self.window
 
-        window.btn_render.setEnabled(True)
-        window.btn_render.setText(trans.t('btn_render'))
+        self._restore_ui_controls()
 
         show_message_box(
             window,
