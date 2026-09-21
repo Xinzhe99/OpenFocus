@@ -121,10 +121,26 @@ def create_result_panel() -> ResultPanel:
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(0)
 
+    # Title bar carries the always-visible Wipe toggle: the bottom control
+    # bar is hidden most of the time, which used to hide the button with it
+    title_bar = QWidget()
+    title_bar.setFixedHeight(25)
+    title_bar.setStyleSheet("background-color: #333; border-bottom: 1px solid #444;")
+    title_layout = QHBoxLayout(title_bar)
+    title_layout.setContentsMargins(6, 0, 4, 0)
+    title_layout.setSpacing(4)
+
     title = QLabel(" Output")
-    title.setFixedHeight(25)
-    title.setStyleSheet("background-color: #333; color: #aaa; border-bottom: 1px solid #444;")
+    title.setStyleSheet("color: #aaa; background: transparent;")
     title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+    wipe_btn = QPushButton(trans.t('btn_wipe'))
+    wipe_btn.setCheckable(True)
+    wipe_btn.setToolTip(trans.t('wipe_hint'))
+    wipe_btn.setStyleSheet("QPushButton { background-color: #333; color: #aaa; border: 1px solid #444; border-radius: 2px; padding: 0 6px; } QPushButton:checked { background-color: #0078d7; color: white; border-color: #005a9e; }")
+    title_layout.addWidget(title)
+    title_layout.addStretch()
+    title_layout.addWidget(wipe_btn)
 
     image_label = MagnifierLabel()
     image_label.setStyleSheet("background-color: #222;")
@@ -149,12 +165,6 @@ def create_result_panel() -> ResultPanel:
 
     control_layout.addWidget(info_label)
     control_layout.addWidget(slider)
-
-    wipe_btn = QPushButton(trans.t('btn_wipe'))
-    wipe_btn.setCheckable(True)
-    wipe_btn.setToolTip(trans.t('wipe_hint'))
-    wipe_btn.setStyleSheet("QPushButton { background-color: #333; color: #aaa; border: 1px solid #444; border-radius: 2px; padding: 0 5px; } QPushButton:checked { background-color: #0078d7; color: white; border-color: #005a9e; }")
-    control_layout.addWidget(wipe_btn)
 
     control_bar.setVisible(False)
 
@@ -196,7 +206,7 @@ def create_result_panel() -> ResultPanel:
     view_stack.addWidget(image_label)  # index 0: normal result view
     view_stack.addWidget(wipe_page)    # index 1: wipe compare view
 
-    layout.addWidget(title)
+    layout.addWidget(title_bar)
     layout.addWidget(view_stack, 1)
     layout.addWidget(control_bar)
 
