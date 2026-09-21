@@ -55,3 +55,6 @@ Desktop.ini
 *.spec.pytest_cache/
 .temp_qsettings/
 .temp_shots/
+.ecc_inputs.npz
+.zcodeignore
+docs/OpenFocus.spec
