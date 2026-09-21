@@ -221,12 +221,18 @@ class OpenFocus(QMainWindow):
         self.view_stack = result_panel.view_stack
         self.wipe_widget = result_panel.wipe_widget
         self.wipe_bar = result_panel.wipe_bar
-        self.combo_wipe_left = result_panel.combo_wipe_left
-        self.combo_wipe_right = result_panel.combo_wipe_right
+        self.chk_wipe_follow_left = result_panel.chk_wipe_follow_left
+        self.slider_wipe_left = result_panel.slider_wipe_left
+        self.lbl_wipe_left_index = result_panel.lbl_wipe_left_index
+        self.chk_wipe_follow_right = result_panel.chk_wipe_follow_right
+        self.slider_wipe_right = result_panel.slider_wipe_right
+        self.lbl_wipe_right_index = result_panel.lbl_wipe_right_index
         self.btn_wipe = result_panel.btn_wipe
         self.btn_wipe.toggled.connect(self.set_wipe_mode)
-        self.combo_wipe_left.currentIndexChanged.connect(self._on_wipe_combo_changed)
-        self.combo_wipe_right.currentIndexChanged.connect(self._on_wipe_combo_changed)
+        self.chk_wipe_follow_left.toggled.connect(self._on_wipe_follow_left_toggled)
+        self.slider_wipe_left.valueChanged.connect(self._on_wipe_left_slider_changed)
+        self.chk_wipe_follow_right.toggled.connect(self._on_wipe_follow_right_toggled)
+        self.slider_wipe_right.valueChanged.connect(self._on_wipe_right_slider_changed)
 
         self.lbl_source_img.enterPreview.connect(self._on_enter_source_preview)
         self.lbl_source_img.leavePreview.connect(self._on_leave_source_preview)
@@ -522,7 +528,8 @@ class OpenFocus(QMainWindow):
                     self.file_list.setCurrentRow(index)
 
                 # Keep the wipe view's left side following the current frame
-                if self.wipe_active and self.combo_wipe_left.currentIndex() <= 0:
+                if self.wipe_active and self.chk_wipe_follow_left.isChecked():
+                    self.slider_wipe_left.setValue(index)
                     self._update_wipe_images()
             except Exception as e:
                 show_message_box(
@@ -621,62 +628,78 @@ class OpenFocus(QMainWindow):
             return
 
         self.wipe_active = True
-        self._populate_wipe_combos()
+        self._setup_wipe_sliders()
         self.wipe_bar.setVisible(True)
         self.view_stack.setCurrentIndex(1)
         self._update_wipe_images()
 
-    def _populate_wipe_combos(self) -> None:
-        self.combo_wipe_left.blockSignals(True)
-        self.combo_wipe_right.blockSignals(True)
+    def _setup_wipe_sliders(self) -> None:
+        """Size the A/B frame sliders to the current stacks (follow checkboxes
+        keep their state across renders)."""
+        self.slider_wipe_left.blockSignals(True)
+        self.slider_wipe_left.setRange(0, max(0, len(self.raw_images) - 1))
+        if self.chk_wipe_follow_left.isChecked() and 0 <= self.current_display_index:
+            self.slider_wipe_left.setValue(self.current_display_index)
+        self.slider_wipe_left.setEnabled(not self.chk_wipe_follow_left.isChecked())
+        self.slider_wipe_left.blockSignals(False)
 
-        self.combo_wipe_left.clear()
-        self.combo_wipe_left.addItem(trans.t("wipe_opt_source_current"))
-        for i in range(len(self.raw_images)):
-            self.combo_wipe_left.addItem(trans.t("wipe_frame_fmt").format(i + 1))
-        # Default is index 0 = "follow the source panel's current frame"
+        self.slider_wipe_right.blockSignals(True)
+        self.slider_wipe_right.setRange(0, max(0, len(self.fusion_results) - 1))
+        self.slider_wipe_right.setEnabled(
+            not self.chk_wipe_follow_right.isChecked() and len(self.fusion_results) > 0)
+        self.slider_wipe_right.blockSignals(False)
 
-        self.combo_wipe_right.clear()
-        self.combo_wipe_right.addItem(trans.t("wipe_opt_result"))
-        for i in range(len(self.fusion_results)):
-            self.combo_wipe_right.addItem(trans.t("wipe_frame_fmt").format(i + 1))
-
-        self.combo_wipe_left.blockSignals(False)
-        self.combo_wipe_right.blockSignals(False)
-
-    def refresh_wipe_combos(self) -> None:
-        """Rebuild the wipe A/B choices after the stacks changed, keeping the
-        user's current selection where it is still valid."""
-        left_index = max(0, self.combo_wipe_left.currentIndex())
-        right_index = max(0, self.combo_wipe_right.currentIndex())
-        self._populate_wipe_combos()
-        self.combo_wipe_left.setCurrentIndex(min(left_index, self.combo_wipe_left.count() - 1))
-        self.combo_wipe_right.setCurrentIndex(min(right_index, self.combo_wipe_right.count() - 1))
+    def refresh_wipe_controls(self) -> None:
+        """Re-range the wipe sliders after the stacks changed (new render,
+        frames appended/deleted), keeping the user's positions where valid."""
+        self._setup_wipe_sliders()
         self._update_wipe_images()
 
-    def _on_wipe_combo_changed(self, _index: int) -> None:
+    def _on_wipe_follow_left_toggled(self, checked: bool) -> None:
+        self.slider_wipe_left.setEnabled(not checked)
+        if checked and 0 <= self.current_display_index:
+            self.slider_wipe_left.setValue(self.current_display_index)
         if self.wipe_active:
             self._update_wipe_images()
 
+    def _on_wipe_left_slider_changed(self, value: int) -> None:
+        if not self.wipe_active:
+            return
+        self.lbl_wipe_left_index.setText(trans.t("wipe_frame_fmt").format(value + 1))
+        self._update_wipe_images()
+
+    def _on_wipe_follow_right_toggled(self, checked: bool) -> None:
+        self.slider_wipe_right.setEnabled(not checked and len(self.fusion_results) > 0)
+        if self.wipe_active:
+            self._update_wipe_images()
+
+    def _on_wipe_right_slider_changed(self, value: int) -> None:
+        if not self.wipe_active:
+            return
+        self.lbl_wipe_right_index.setText(trans.t("wipe_result_fmt").format(value + 1))
+        self._update_wipe_images()
+
     def _wipe_left_image(self):
-        index = self.combo_wipe_left.currentIndex()
-        if index <= 0:
-            index = self.current_display_index + 1  # "current frame"
-        if 1 <= index <= len(self.raw_images):
-            return self.raw_images[index - 1]
+        if self.chk_wipe_follow_left.isChecked():
+            index = self.current_display_index
+        else:
+            index = self.slider_wipe_left.value()
+        if 0 <= index < len(self.raw_images):
+            return self.raw_images[index]
         return None
 
     def _wipe_right_image(self):
-        index = self.combo_wipe_right.currentIndex()
-        if index <= 0:
+        if self.chk_wipe_follow_right.isChecked():
+            # The most recent render
             if self.fusion_result is not None:
                 return self.label_manager.prepare_bgr_image("registered", self.fusion_result, 0)
             if self.registration_results:
                 return self.label_manager.prepare_bgr_image(
                     "registered", self.registration_results[self.current_result_index if self.current_result_index >= 0 else 0], 0)
             return None
-        if index <= len(self.fusion_results):
-            return self.label_manager.prepare_bgr_image("registered", self.fusion_results[index - 1], index - 1)
+        index = self.slider_wipe_right.value()
+        if 0 <= index < len(self.fusion_results):
+            return self.label_manager.prepare_bgr_image("registered", self.fusion_results[index], index)
         return None
 
     def _update_wipe_images(self) -> None:
@@ -688,14 +711,24 @@ class OpenFocus(QMainWindow):
         left_pix = self._bgr_to_pixmap(left_image) if left_image is not None else None
         right_pix = self._bgr_to_pixmap(right_image) if right_image is not None else None
 
-        left_index = self.combo_wipe_left.currentIndex()
+        if self.chk_wipe_follow_left.isChecked():
+            left_idx = self.current_display_index
+        else:
+            left_idx = self.slider_wipe_left.value()
         left_title = (
-            trans.t("wipe_frame_fmt").format(self.current_display_index + 1)
-            if left_index == 0 and self.current_display_index >= 0
-            else self.combo_wipe_left.currentText()
+            trans.t("wipe_frame_fmt").format(left_idx + 1)
+            if 0 <= left_idx < len(self.raw_images)
+            else "-"
         )
-        right_title = self.combo_wipe_right.currentText()
+        if self.chk_wipe_follow_right.isChecked():
+            right_title = trans.t("wipe_opt_result")
+        else:
+            right_title = trans.t("wipe_result_fmt").format(self.slider_wipe_right.value() + 1)
         self.wipe_widget.set_images(left_pix, right_pix, f"A: {left_title}", f"B: {right_title}")
+
+        # Keep the index labels in sync with whatever is being shown
+        self.lbl_wipe_left_index.setText(left_title)
+        self.lbl_wipe_right_index.setText(right_title)
 
     
     # --- 文件加载功能 ---

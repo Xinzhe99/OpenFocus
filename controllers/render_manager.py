@@ -210,7 +210,7 @@ class RenderManager:
 
                 # New output: refresh the wipe B-side history, keep selection
                 if getattr(window, "wipe_active", False):
-                    window.refresh_wipe_combos()
+                    window.refresh_wipe_controls()
 
                 window.result_control_bar.setVisible(False)
                 window.result_slider.setEnabled(False)

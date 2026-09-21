@@ -3,8 +3,9 @@ from dataclasses import dataclass
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QComboBox,
+    QCheckBox,
     QHBoxLayout,
+    QFrame,
     QLabel,
     QSizePolicy,
     QSlider,
@@ -17,13 +18,6 @@ from PyQt6.QtWidgets import (
 from widgets.magnifier_label import MagnifierLabel
 from widgets.wipe_compare import WipeCompareWidget
 from locales import trans
-
-WIPE_COMBO_STYLE = (
-    "QComboBox { background-color: #333; color: #aaa; border: 1px solid #444;"
-    " border-radius: 2px; padding: 0 4px; }"
-    " QComboBox QAbstractItemView { background-color: #2a2a2a; color: #ddd;"
-    " selection-background-color: #0078d7; }"
-)
 
 
 @dataclass
@@ -47,8 +41,12 @@ class ResultPanel:
     wipe_widget: WipeCompareWidget
     wipe_bar: QWidget
     btn_wipe: QPushButton
-    combo_wipe_left: QComboBox
-    combo_wipe_right: QComboBox
+    chk_wipe_follow_left: QCheckBox
+    slider_wipe_left: QSlider
+    lbl_wipe_left_index: QLabel
+    chk_wipe_follow_right: QCheckBox
+    slider_wipe_right: QSlider
+    lbl_wipe_right_index: QLabel
 
 
 def create_source_panel() -> SourcePanel:
@@ -172,27 +170,48 @@ def create_result_panel() -> ResultPanel:
     wipe_widget = WipeCompareWidget()
     wipe_widget.setStyleSheet("background-color: #181818;")
 
-    combo_wipe_left = QComboBox()
-    combo_wipe_right = QComboBox()
-    for combo in (combo_wipe_left, combo_wipe_right):
-        combo.setStyleSheet(WIPE_COMBO_STYLE)
-        combo.setMinimumWidth(140)
+    def _make_wipe_group(label_text, follow_text):
+        """One wipe side: follow checkbox + frame slider + index label."""
+        side_label = QLabel(label_text)
+        side_label.setStyleSheet("color: #aaa; background: transparent;")
+        follow_chk = QCheckBox(follow_text)
+        follow_chk.setChecked(True)
+        follow_chk.setStyleSheet("color: #aaa; background: transparent;")
+        frame_slider = QSlider(Qt.Orientation.Horizontal)
+        frame_slider.setRange(0, 0)
+        frame_slider.setEnabled(False)
+        frame_slider.setMinimumWidth(60)
+        index_label = QLabel("-")
+        index_label.setMinimumWidth(52)
+        index_label.setStyleSheet("color: #aaa; background: transparent;")
+        return follow_chk, frame_slider, index_label, side_label
+
+    chk_follow_left, slider_wipe_left, lbl_left_idx, label_a = _make_wipe_group(
+        trans.t('wipe_side_a'), trans.t('wipe_follow_source'))
+    chk_follow_right, slider_wipe_right, lbl_right_idx, label_b = _make_wipe_group(
+        trans.t('wipe_side_b'), trans.t('wipe_follow_latest'))
 
     wipe_bar = QWidget()
-    wipe_bar.setFixedHeight(36)
+    wipe_bar.setFixedHeight(40)
     wipe_bar.setStyleSheet("background-color: #2a2a2a; border-top: 1px solid #444;")
     wipe_bar_layout = QHBoxLayout(wipe_bar)
-    wipe_bar_layout.setContentsMargins(10, 2, 10, 2)
+    wipe_bar_layout.setContentsMargins(8, 2, 8, 2)
     wipe_bar_layout.setSpacing(6)
-    label_a = QLabel(trans.t('wipe_side_a'))
-    label_b = QLabel(trans.t('wipe_side_b'))
-    for label in (label_a, label_b):
-        label.setStyleSheet("color: #aaa; background: transparent;")
-    wipe_bar_layout.addWidget(label_a)
-    wipe_bar_layout.addWidget(combo_wipe_left)
-    wipe_bar_layout.addStretch()
-    wipe_bar_layout.addWidget(label_b)
-    wipe_bar_layout.addWidget(combo_wipe_right)
+
+    def _add_side(layout, side_label, follow_chk, frame_slider, index_label):
+        layout.addWidget(side_label)
+        layout.addWidget(follow_chk)
+        layout.addWidget(frame_slider, 1)
+        layout.addWidget(index_label)
+
+    _add_side(wipe_bar_layout, label_a, chk_follow_left, slider_wipe_left, lbl_left_idx)
+
+    divider = QFrame()
+    divider.setFrameShape(QFrame.Shape.VLine)
+    divider.setStyleSheet("color: #444; background: transparent;")
+    wipe_bar_layout.addWidget(divider)
+
+    _add_side(wipe_bar_layout, label_b, chk_follow_right, slider_wipe_right, lbl_right_idx)
     wipe_bar.setVisible(False)
 
     wipe_page = QWidget()
@@ -220,6 +239,10 @@ def create_result_panel() -> ResultPanel:
         wipe_widget=wipe_widget,
         wipe_bar=wipe_bar,
         btn_wipe=wipe_btn,
-        combo_wipe_left=combo_wipe_left,
-        combo_wipe_right=combo_wipe_right,
+        chk_wipe_follow_left=chk_follow_left,
+        slider_wipe_left=slider_wipe_left,
+        lbl_wipe_left_index=lbl_left_idx,
+        chk_wipe_follow_right=chk_follow_right,
+        slider_wipe_right=slider_wipe_right,
+        lbl_wipe_right_index=lbl_right_idx,
     )
