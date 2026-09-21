@@ -422,8 +422,15 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
             H_final = T_crop @ H
         else:
             H_final = H
-            
-        return cv2.warpPerspective(img, H_final, (target_w, target_h), 
+
+        if (
+            not do_crop
+            and np.allclose(H_final, np.eye(3, dtype=np.float32), atol=1e-6)
+            and target_w == img.shape[1] and target_h == img.shape[0]
+        ):
+            # 恒等变换：直接复用原图引用，省去一次全图拷贝
+            return img
+        return cv2.warpPerspective(img, H_final, (target_w, target_h),
                                  flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
 
     # 准备参数
@@ -522,37 +529,37 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         # map 保证结果顺序与输入一致
         preprocessed_data = list(executor.map(preprocess, images))
 
-    # 准备第一张图作为参考
-    last_gray, scale_factor = preprocessed_data[0]
+    # 所有帧同尺寸，缩放比例一致
+    scale_factor = preprocessed_data[0][1]
 
     # 预先创建输出目录
     if output_path:
         os.makedirs(output_path, exist_ok=True)
 
-    # --- 4. 逐帧计算矩阵 (必须串行) ---
+    # --- 4. 计算矩阵 (相邻帧对彼此独立 -> 并行计算, 串行累积) ---
     # print("  - Step 2/3: Calculating ECC matrices...")
-    
-    for idx in range(1, len(images)):
+
+    def _compute_pair_transform(idx: int) -> np.ndarray:
+        """ECC transform of frame idx relative to frame idx-1 (scale-restored)."""
+        prev_gray = preprocessed_data[idx - 1][0]
         curr_gray, _ = preprocessed_data[idx]
-        
-        # 初始化当前变换矩阵
+
         if warp_mode == cv2.MOTION_HOMOGRAPHY:
             warp_matrix = np.eye(3, 3, dtype=np.float32)
         else:
             warp_matrix = np.eye(2, 3, dtype=np.float32)
 
         try:
-            # 核心：计算当前帧相对于上一帧的变换
             cc, warp_matrix = cv2.findTransformECC(
-                last_gray,  # template
+                prev_gray,  # template
                 curr_gray,  # input
-                warp_matrix, 
-                warp_mode, 
+                warp_matrix,
+                warp_mode,
                 criteria,
-                None, 
+                None,
                 1
             )
-            
+
             # 尺度还原
             if warp_mode == cv2.MOTION_HOMOGRAPHY:
                 warp_matrix[0, 2] /= scale_factor
@@ -562,14 +569,19 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             else:
                 warp_matrix[0, 2] /= scale_factor
                 warp_matrix[1, 2] /= scale_factor
-
-        except cv2.error as e:
+        except cv2.error:
             print(f"Warning: ECC failed to converge at frame {idx}. Assuming no motion.")
             if warp_mode == cv2.MOTION_HOMOGRAPHY:
                 warp_matrix = np.eye(3, dtype=np.float32)
             else:
                 warp_matrix = np.eye(2, 3, dtype=np.float32)
+        return warp_matrix
 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # map 保证结果顺序与输入一致
+        pair_transforms = list(executor.map(_compute_pair_transform, range(1, len(images))))
+
+    for idx, warp_matrix in enumerate(pair_transforms, start=1):
         # 矩阵累积
         if warp_mode == cv2.MOTION_AFFINE:
             row = np.array([[0, 0, 1]], dtype=np.float32)
@@ -581,12 +593,6 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         # 记录变换矩阵（使用逆矩阵）
         H_inv = np.linalg.inv(H_global)
         H_matrices.append(H_inv.copy())
-
-        # 更新上一帧
-        last_gray = curr_gray
-        
-        # if idx % 5 == 0:
-            # print(f"    Calculated matrix {idx}/{len(images)}...")
 
     # --- 5. 并行应用变换与裁切 ---
     # print("  - Step 3/3: Warping and saving concurrently...")
@@ -688,6 +694,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             
         else:
             # CPU 版本 (OpenCV)
+            if (
+                not do_crop
+                and np.allclose(H_final, np.eye(3, dtype=np.float32), atol=1e-6)
+                and target_w == img.shape[1] and target_h == img.shape[0]
+            ):
+                # 恒等变换：直接复用原图引用，省去一次全图拷贝
+                return img
             aligned_img = cv2.warpPerspective(
                 img,
                 H_final,

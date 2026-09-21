@@ -55,17 +55,31 @@ def get_tile_params() -> dict:
     }
 
 
+_STACKMFF_AVAILABLE_CACHE = None
+
+
 def is_stackmffv4_available() -> bool:
-    """Return True when PyTorch is importable for the StackMFF-V4 fusion."""
+    """Return True when PyTorch is importable for the StackMFF-V4 fusion.
+
+    The result is cached: importing torch costs seconds on Windows, so the
+    startup probe must never pay it twice.
+    """
+    global _STACKMFF_AVAILABLE_CACHE
+    if _STACKMFF_AVAILABLE_CACHE is not None:
+        return _STACKMFF_AVAILABLE_CACHE
+
     torch_spec = importlib.util.find_spec("torch")
     if not torch_spec:
+        _STACKMFF_AVAILABLE_CACHE = False
         return False
 
     try:
         importlib.import_module("torch")
     except ImportError:
+        _STACKMFF_AVAILABLE_CACHE = False
         return False
 
+    _STACKMFF_AVAILABLE_CACHE = True
     return True
 
 class MultiFocusFusion:

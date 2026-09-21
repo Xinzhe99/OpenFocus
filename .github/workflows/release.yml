@@ -30,7 +30,7 @@ jobs:
       - name: Build with PyInstaller
         shell: pwsh
         run: |
-          pyinstaller --clean --noconfirm --onedir --noconsole `
+          pyinstaller --clean --noconfirm --onedir --noconsole --noupx `
             --name OpenFocus `
             --icon "assets/OpenFocus.ico" `
             --add-data "assets;assets" `

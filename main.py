@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QDialog,
 )
-from PyQt6.QtCore import Qt, QUrl, QEvent
+from PyQt6.QtCore import Qt, QUrl, QEvent, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtGui import QFont, QIcon, QDragEnterEvent, QDropEvent, QImage, QPixmap
 from core import ImageStackLoader
@@ -74,6 +74,9 @@ from constants import (
 )
 
 class OpenFocus(QMainWindow):
+    # Emitted from the background torch probe; auto-queued to the UI thread.
+    _stackmff_probe_done = pyqtSignal(bool)
+
     def __init__(self):
         super().__init__()
 
@@ -213,6 +216,18 @@ class OpenFocus(QMainWindow):
         self.lbl_result_info = result_panel.info_label
         self.result_slider.valueChanged.connect(self.update_result_view)
 
+        # Wipe A/B compare mode (result panel second page)
+        self.wipe_active = False
+        self.view_stack = result_panel.view_stack
+        self.wipe_widget = result_panel.wipe_widget
+        self.wipe_bar = result_panel.wipe_bar
+        self.combo_wipe_left = result_panel.combo_wipe_left
+        self.combo_wipe_right = result_panel.combo_wipe_right
+        self.btn_wipe = result_panel.btn_wipe
+        self.btn_wipe.toggled.connect(self.set_wipe_mode)
+        self.combo_wipe_left.currentIndexChanged.connect(self._on_wipe_combo_changed)
+        self.combo_wipe_right.currentIndexChanged.connect(self._on_wipe_combo_changed)
+
         self.lbl_source_img.enterPreview.connect(self._on_enter_source_preview)
         self.lbl_source_img.leavePreview.connect(self._on_leave_source_preview)
         self.lbl_result_img.enterPreview.connect(self._on_enter_result_preview)
@@ -261,7 +276,11 @@ class OpenFocus(QMainWindow):
         self.main_splitter.addWidget(right_panel_components.widget)
         bind_right_panel(self, right_panel_components)
 
-        self._configure_fusion_method_availability()
+        # Probe torch availability in a background thread: importing torch
+        # can block for seconds, and this only decides one checkbox state.
+        from PyQt6.QtCore import QTimer
+        self._stackmff_probe_done.connect(self._apply_stackmff_availability)
+        QTimer.singleShot(0, self._probe_stackmff_availability_async)
 
         # 确保分割器已经添加了子部件后再设置折叠属性
         # 使用QTimer来延迟设置折叠属性，确保所有子部件都已正确添加
@@ -461,6 +480,24 @@ class OpenFocus(QMainWindow):
             self.rb_d.setEnabled(True)
             self.rb_d.setToolTip("")
 
+    def _probe_stackmff_availability_async(self) -> None:
+        """Probe torch availability off the UI thread, then apply the result."""
+        import threading
+
+        def worker():
+            available = is_stackmffv4_available()
+            self._stackmff_probe_done.emit(available)
+
+        threading.Thread(target=worker, daemon=True, name="stackmff-probe").start()
+
+    def _apply_stackmff_availability(self, available: bool) -> None:
+        if available:
+            self.rb_d.setEnabled(True)
+            self.rb_d.setToolTip("")
+        else:
+            self.rb_d.setEnabled(False)
+            self.rb_d.setToolTip(trans.t("msg_stackmff_unavailable_text"))
+
 
     def update_source_view(self, index):
         if not self.stack_images:
@@ -483,6 +520,10 @@ class OpenFocus(QMainWindow):
                 # 只有当列表选中项和当前slider不一致时才去设置列表，防止信号死循环
                 if self.file_list.currentRow() != index:
                     self.file_list.setCurrentRow(index)
+
+                # Keep the wipe view's left side following the current frame
+                if self.wipe_active and self.combo_wipe_left.currentIndex() <= 0:
+                    self._update_wipe_images()
             except Exception as e:
                 show_message_box(
                     self,
@@ -552,6 +593,101 @@ class OpenFocus(QMainWindow):
             self._display_roi_aligned_image(index)
         else:
             self.output_manager.show_registration_result(index)
+
+    # --- Wipe A/B compare ---
+
+    def _bgr_to_pixmap(self, image) -> QPixmap:
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        height, width, _channels = rgb_image.shape
+        q_image = QImage(rgb_image.data, width, height, 3 * width, QImage.Format.Format_RGB888)
+        return QPixmap.fromImage(q_image)
+
+    def set_wipe_mode(self, enabled: bool) -> None:
+        """Toggle the A/B wipe compare page of the result panel."""
+        if not enabled:
+            self.wipe_active = False
+            self.wipe_bar.setVisible(False)
+            self.view_stack.setCurrentIndex(0)
+            self.wipe_widget.clear()
+            return
+
+        if getattr(self, 'roi_mode_active', False):
+            self.btn_wipe.setChecked(False)
+            return
+
+        if self.fusion_result is None and not self.fusion_results and not self.registration_results:
+            show_warning_box(self, trans.t("msg_warning"), trans.t("wipe_need_result"))
+            self.btn_wipe.setChecked(False)
+            return
+
+        self.wipe_active = True
+        self._populate_wipe_combos()
+        self.wipe_bar.setVisible(True)
+        self.view_stack.setCurrentIndex(1)
+        self._update_wipe_images()
+
+    def _populate_wipe_combos(self) -> None:
+        for combo in (self.combo_wipe_left, self.combo_wipe_right):
+            combo.blockSignals(True)
+            combo.clear()
+
+        self.combo_wipe_left.addItem(trans.t("wipe_opt_source_current"))
+        for i in range(len(self.raw_images)):
+            self.combo_wipe_left.addItem(trans.t("wipe_frame_fmt").format(i + 1))
+        if self.combo_wipe_left.count() > 1 and self.current_display_index >= 0:
+            # Keep "current frame" semantically in sync with the initial frame
+            self.combo_wipe_left.setCurrentIndex(min(self.current_display_index + 1, self.combo_wipe_left.count() - 1))
+
+        self.combo_wipe_right.addItem(trans.t("wipe_opt_result"))
+        for i in range(len(self.fusion_results)):
+            self.combo_wipe_right.addItem(trans.t("wipe_frame_fmt").format(i + 1))
+
+        for combo in (self.combo_wipe_left, self.combo_wipe_right):
+            combo.blockSignals(False)
+
+    def _on_wipe_combo_changed(self, _index: int) -> None:
+        if self.wipe_active:
+            self._update_wipe_images()
+
+    def _wipe_left_image(self):
+        index = self.combo_wipe_left.currentIndex()
+        if index <= 0:
+            index = self.current_display_index + 1  # "current frame"
+        if 1 <= index <= len(self.raw_images):
+            return self.raw_images[index - 1]
+        return None
+
+    def _wipe_right_image(self):
+        index = self.combo_wipe_right.currentIndex()
+        if index <= 0:
+            if self.fusion_result is not None:
+                return self.label_manager.prepare_bgr_image("registered", self.fusion_result, 0)
+            if self.registration_results:
+                return self.label_manager.prepare_bgr_image(
+                    "registered", self.registration_results[self.current_result_index if self.current_result_index >= 0 else 0], 0)
+            return None
+        if index <= len(self.fusion_results):
+            return self.label_manager.prepare_bgr_image("registered", self.fusion_results[index - 1], index - 1)
+        return None
+
+    def _update_wipe_images(self) -> None:
+        if not self.wipe_active:
+            return
+
+        left_image = self._wipe_left_image()
+        right_image = self._wipe_right_image()
+        left_pix = self._bgr_to_pixmap(left_image) if left_image is not None else None
+        right_pix = self._bgr_to_pixmap(right_image) if right_image is not None else None
+
+        left_index = self.combo_wipe_left.currentIndex()
+        left_title = (
+            trans.t("wipe_frame_fmt").format(self.current_display_index + 1)
+            if left_index == 0 and self.current_display_index >= 0
+            else self.combo_wipe_left.currentText()
+        )
+        right_title = self.combo_wipe_right.currentText()
+        self.wipe_widget.set_images(left_pix, right_pix, f"A: {left_title}", f"B: {right_title}")
+
     
     # --- 文件加载功能 ---
     
@@ -608,6 +744,10 @@ class OpenFocus(QMainWindow):
                 self.btn_preview_roi.setChecked(False)
                 self.btn_preview_roi.blockSignals(False)
                 return
+
+            # ROI 模式占用结果面板，进入前退出 wipe 对比
+            if getattr(self, 'wipe_active', False):
+                self.btn_wipe.setChecked(False)
             
             # 检查是否可以复用已有的对齐图像
             can_reuse = (

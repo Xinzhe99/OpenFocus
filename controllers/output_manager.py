@@ -237,6 +237,10 @@ class OutputManager:
             window.lbl_result_img.set_display_pixmap(pixmap)
             window.result_control_bar.setVisible(False)
             window.lbl_result_info.setText("-- / --")
+
+            # Keep the wipe view's right side following the latest result
+            if getattr(window, "wipe_active", False):
+                window._update_wipe_images()
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
