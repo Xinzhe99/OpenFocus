@@ -11,6 +11,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.21**: **v1.9 released** — now with ready-to-run builds for both **Windows and macOS (Apple Silicon)** on the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page. This version fixes 9 bugs (batch processing NameError, JPG quality setting ignored, UI controls staying disabled after a render error, a crash when closing during processing, the StackMFF-V4 "NoneType" error in the packaged build, and more), honors the label Range field, and completes the Chinese translations. Also merged PR #3 (Wayland menu fixes).
+
 > 🎉 **2026.01.13**: Optimized ROI mode processing and fixed bugs to improve performance and stability.
  
 > 🎉 **2026.01.12**: Added drag-and-drop image import on Mac and refactored core modules for improved code maintainability and readability.
@@ -32,7 +34,7 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ```bash
 conda create -n openfocus python=3.10
 conda activate openfocus
-pip install opencv-python pyqt6 numpy imageio dtcwt scipy torch torchvision 
+pip install -r requirements.txt
 python main.py
 ```
 

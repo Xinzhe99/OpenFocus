@@ -1,5 +1,14 @@
 import sys
 import os
+
+# In --noconsole (windowed) PyInstaller builds sys.stdout/stderr are None, and
+# any print() then crashes with AttributeError ('NoneType' object has no
+# attribute 'write'). Route them to the null device instead.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w', encoding='utf-8')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w', encoding='utf-8')
+
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,

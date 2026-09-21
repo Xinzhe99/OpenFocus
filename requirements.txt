@@ -1,0 +1,9 @@
+# OpenFocus runtime dependencies (Python 3.10+)
+opencv-python
+pyqt6
+numpy
+imageio
+dtcwt
+scipy
+torch
+torchvision

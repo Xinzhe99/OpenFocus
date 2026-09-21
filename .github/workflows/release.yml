@@ -14,9 +14,9 @@ jobs:
     name: Build Windows (x64)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -24,8 +24,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install opencv-python pyqt6 numpy imageio dtcwt scipy pyinstaller
-          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          pip install pyinstaller
 
       - name: Build with PyInstaller
         shell: pwsh
@@ -50,7 +50,7 @@ jobs:
         run: |
           Compress-Archive -Path dist/OpenFocus -DestinationPath "OpenFocus-${{ github.ref_name }}-windows-x64.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: OpenFocus-windows
           path: OpenFocus-*-windows-x64.zip
@@ -60,9 +60,9 @@ jobs:
     name: Build macOS (Apple Silicon)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -70,8 +70,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install opencv-python pyqt6 numpy imageio dtcwt scipy pyinstaller
-          pip install torch torchvision
+          pip install -r requirements.txt
+          pip install pyinstaller
 
       - name: Generate .icns icon
         run: |
@@ -111,7 +111,7 @@ jobs:
       - name: Package zip
         run: ditto -c -k --keepParent dist/OpenFocus.app "OpenFocus-${{ github.ref_name }}-macos-arm64.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: OpenFocus-macos
           path: OpenFocus-*-macos-arm64.zip
@@ -123,7 +123,7 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
           path: release
