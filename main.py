@@ -1243,7 +1243,14 @@ class OpenFocus(QMainWindow):
             self.ui_objs['action_lang_en'].setChecked(is_en)
             self.ui_objs['action_lang_zh'].setChecked(not is_en)
 
-        # Rebuild recent-files submenu so its titles follow the language
+        # Wipe controls are created outside ui_objs; retranslate them here
+        if hasattr(self, 'btn_wipe'):
+            self.btn_wipe.setText(trans.t('btn_wipe'))
+            self.btn_wipe.setToolTip(trans.t('wipe_hint'))
+            self.chk_wipe_follow_left.setText(trans.t('wipe_follow_source'))
+            self.chk_wipe_follow_right.setText(trans.t('wipe_follow_latest'))
+        if 'action_gpu_accel' in getattr(self, 'ui_objs', {}):
+            self.ui_objs['action_gpu_accel'].setToolTip(trans.t('msg_gpu_accel_hint'))
         self.rebuild_recent_menu()
 
 

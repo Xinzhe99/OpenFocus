@@ -144,6 +144,12 @@ class TransformManager:
                 trans.t("msg_reload_error_text"),
                 f"Error: {str(exc)}",
             )
+        finally:
+            # Any stack mutation (load, rotate, flip, resize, delete) can
+            # invalidate the wipe view's frame ranges — resync it here so no
+            # caller has to remember.
+            if getattr(window, "wipe_active", False) and hasattr(window, "refresh_wipe_controls"):
+                window.refresh_wipe_controls()
 
     def invalidate_processing_results(self, clear_output_view: bool = False, preserve_outputs: bool = False) -> None:
         """Expose processing reset so other controllers can reuse it."""

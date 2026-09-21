@@ -56,8 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_stack(args) -> List[str]:
-    """Return image file paths from a folder, video, or explicit file list."""
+def _resolve_stack(args, video_temp_root: str) -> List[str]:
+    """Return image file paths from a folder, video, or explicit file list.
+
+    Video frames are materialized as PNGs under video_temp_root (a
+    TemporaryDirectory managed by the caller) so downstream code can treat
+    every input as a plain file path.
+    """
     from core.image_loader import ImageStackLoader
 
     loader = ImageStackLoader()
@@ -74,13 +79,9 @@ def _resolve_stack(args) -> List[str]:
             ok, message, frames, _names = loader.load_from_video(entry)
             if not ok:
                 raise RuntimeError(f"Failed to read video {entry}: {message}")
-            temp_dir = os.path.join(
-                os.path.dirname(args.output) or ".", f".openfocus_video_{os.getpid()}"
-            )
-            os.makedirs(temp_dir, exist_ok=True)
             import cv2
             for i, frame in enumerate(frames):
-                frame_path = os.path.join(temp_dir, f"frame_{i:05d}.png")
+                frame_path = os.path.join(video_temp_root, f"frame_{len(paths) + i:05d}.png")
                 cv2.imwrite(frame_path, frame)
                 paths.append(frame_path)
         elif os.path.isfile(entry):
@@ -111,52 +112,59 @@ def run_cli(argv: List[str]) -> int:
     if args.threads < 1:
         print("error: --threads must be >= 1", file=sys.stderr)
         return EXIT_USAGE
+    if args.downscale is not None and args.downscale < 1:
+        print("error: --downscale must be >= 1", file=sys.stderr)
+        return EXIT_USAGE
+    if args.batch_size < 1:
+        print("error: --batch-size must be >= 1", file=sys.stderr)
+        return EXIT_USAGE
 
     try:
+        import tempfile
         from core.registration import ImageRegistration
         from core.multi_focus_fusion import MultiFocusFusion
 
-        paths = _resolve_stack(args)
-        print(f"Loaded {len(paths)} images from {args.input[0]}")
-        import cv2
-        images = []
-        for p in paths:
-            img = cv2.imread(p)
-            if img is None:
-                raise RuntimeError(f"Failed to decode image: {p}")
-            images.append(img)
+        # Video inputs are unpacked to a temp dir that is always cleaned up
+        with tempfile.TemporaryDirectory(prefix="openfocus_video_") as video_temp:
+            paths = _resolve_stack(args, video_temp)
+            print(f"Loaded {len(paths)} images from {args.input[0]}")
+            import cv2
+            images = []
+            for p in paths:
+                img = cv2.imread(p)
+                if img is None:
+                    raise RuntimeError(f"Failed to decode image: {p}")
+                images.append(img)
 
-        if args.align != "none":
+            if args.align != "none":
+                t0 = time.time()
+                reg = ImageRegistration(method=args.align, downscale_width=args.downscale)
+                images = reg.process(images, output_path=None, thread_count=args.threads)
+                print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
+
+            fusion_kwargs = dict(algorithm=args.method, use_gpu=not args.cpu)
+            if args.tile_size:
+                fusion_kwargs["tile_block_size"] = args.tile_size
+            if args.method == "stackmffv4":
+                fusion_kwargs["stackmffv4_batch_size"] = args.batch_size
+            fusion = MultiFocusFusion(**fusion_kwargs)
+            info = fusion.get_info()
+
             t0 = time.time()
-            reg = ImageRegistration(method=args.align, downscale_width=args.downscale)
-            images = reg.process(images, output_path=None, thread_count=args.threads)
-            print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
+            fuse_kwargs = dict(input_source=images, img_resize=None,
+                               thread_count=args.threads)
+            if args.method == "guided_filter":
+                fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 31)
+            elif args.method in ("dct", "gfgfgf"):
+                fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 7)
+            elif args.method == "stackmffv4":
+                fuse_kwargs["model_path"] = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "weights", "stackmffv4.pth")
 
-        kernel_default = {"guided_filter": 31, "dct": 7, "gfgfgf": 7}.get(args.method, 7)
-        fusion_kwargs = dict(algorithm=args.method, use_gpu=not args.cpu)
-        if args.tile_size:
-            fusion_kwargs["tile_block_size"] = args.tile_size
-        fusion = MultiFocusFusion(**fusion_kwargs)
-        info = fusion.get_info()
-
-        t0 = time.time()
-        fuse_kwargs = dict(input_source=images, img_resize=None,
-                           thread_count=args.threads)
-        if args.method == "guided_filter":
-            fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 31)
-        elif args.method in ("dct", "gfgfgf"):
-            fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 7)
-        elif args.method == "dct":
-            fuse_kwargs["block_size"] = 8
-        elif args.method == "stackmffv4":
-            fuse_kwargs["model_path"] = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "weights", "stackmffv4.pth")
-            fuse_kwargs["stackmffv4_batch_size"] = args.batch_size
-
-        fused = fusion.fuse(**fuse_kwargs)
-        if fused is None:
-            raise RuntimeError("Fusion returned no result")
+            fused = fusion.fuse(**fuse_kwargs)
+            if fused is None:
+                raise RuntimeError("Fusion returned no result")
 
         out_dir = os.path.dirname(os.path.abspath(args.output))
         os.makedirs(out_dir, exist_ok=True)

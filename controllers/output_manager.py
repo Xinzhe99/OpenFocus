@@ -85,6 +85,10 @@ class OutputManager:
 
         self.update_output_count()
 
+        # Output history changed: resync the wipe B-side slider range
+        if getattr(window, "wipe_active", False) and hasattr(window, "refresh_wipe_controls"):
+            window.refresh_wipe_controls()
+
         if window.fusion_results:
             new_index = min(row, len(window.fusion_results) - 1)
             window.fusion_result = window.fusion_results[new_index]

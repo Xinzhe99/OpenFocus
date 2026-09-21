@@ -423,13 +423,6 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
         else:
             H_final = H
 
-        if (
-            not do_crop
-            and np.allclose(H_final, np.eye(3, dtype=np.float32), atol=1e-6)
-            and target_w == img.shape[1] and target_h == img.shape[0]
-        ):
-            # 恒等变换：直接复用原图引用，省去一次全图拷贝
-            return img
         return cv2.warpPerspective(img, H_final, (target_w, target_h),
                                  flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
 
@@ -694,13 +687,6 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             
         else:
             # CPU 版本 (OpenCV)
-            if (
-                not do_crop
-                and np.allclose(H_final, np.eye(3, dtype=np.float32), atol=1e-6)
-                and target_w == img.shape[1] and target_h == img.shape[0]
-            ):
-                # 恒等变换：直接复用原图引用，省去一次全图拷贝
-                return img
             aligned_img = cv2.warpPerspective(
                 img,
                 H_final,

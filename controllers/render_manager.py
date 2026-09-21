@@ -231,6 +231,11 @@ class RenderManager:
                     window.update_result_view(0)
                     window.add_label_action.setEnabled(True)
 
+                    # Registration results replaced the output history the
+                    # wipe view may be scrubbing through
+                    if getattr(window, "wipe_active", False):
+                        window.refresh_wipe_controls()
+
                     print("Registration completed successfully!")
                 else:
                     print("No operation selected. Please select registration options or fusion method.")

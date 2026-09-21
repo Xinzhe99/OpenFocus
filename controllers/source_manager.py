@@ -367,6 +367,10 @@ class SourceManager:
 
         window.transform_manager.reload_image_stack(initial_index=None)
 
+        # No source frames left to compare against: exit wipe mode cleanly
+        if getattr(window, "wipe_active", False) and hasattr(window, "btn_wipe"):
+            window.btn_wipe.setChecked(False)
+
     def update_slider_range(self) -> None:
         window = self.window
         if window.stack_images:
