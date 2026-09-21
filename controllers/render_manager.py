@@ -208,6 +208,10 @@ class RenderManager:
                 window.output_manager.show_fusion_result()
                 window.output_manager.update_output_list_for_fusion()
 
+                # New output: refresh the wipe B-side history, keep selection
+                if getattr(window, "wipe_active", False):
+                    window.refresh_wipe_combos()
+
                 window.result_control_bar.setVisible(False)
                 window.result_slider.setEnabled(False)
                 window.current_result_index = -1

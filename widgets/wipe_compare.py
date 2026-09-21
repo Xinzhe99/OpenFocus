@@ -8,7 +8,7 @@ from typing import Optional
 
 from PyQt6.QtCore import QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QApplication, QWidget
 
 DIVIDER_HIT_RADIUS = 10
 ZOOM_STEP = 1.15
@@ -129,7 +129,9 @@ class WipeCompareWidget(QWidget):
     def _draw_title_chip(self, painter: QPainter, text: str, left: bool) -> None:
         if not text:
             return
-        painter.setFont(self.font())
+        # Match the app-wide UI font (set by apply_dark_theme) so the chips
+        # render CJK text exactly like the rest of the interface
+        painter.setFont(QApplication.instance().font())
         metrics = painter.fontMetrics()
         text_w = metrics.horizontalAdvance(text) + 16
         text_h = metrics.height() + 6

@@ -627,23 +627,32 @@ class OpenFocus(QMainWindow):
         self._update_wipe_images()
 
     def _populate_wipe_combos(self) -> None:
-        for combo in (self.combo_wipe_left, self.combo_wipe_right):
-            combo.blockSignals(True)
-            combo.clear()
+        self.combo_wipe_left.blockSignals(True)
+        self.combo_wipe_right.blockSignals(True)
 
+        self.combo_wipe_left.clear()
         self.combo_wipe_left.addItem(trans.t("wipe_opt_source_current"))
         for i in range(len(self.raw_images)):
             self.combo_wipe_left.addItem(trans.t("wipe_frame_fmt").format(i + 1))
-        if self.combo_wipe_left.count() > 1 and self.current_display_index >= 0:
-            # Keep "current frame" semantically in sync with the initial frame
-            self.combo_wipe_left.setCurrentIndex(min(self.current_display_index + 1, self.combo_wipe_left.count() - 1))
+        # Default is index 0 = "follow the source panel's current frame"
 
+        self.combo_wipe_right.clear()
         self.combo_wipe_right.addItem(trans.t("wipe_opt_result"))
         for i in range(len(self.fusion_results)):
             self.combo_wipe_right.addItem(trans.t("wipe_frame_fmt").format(i + 1))
 
-        for combo in (self.combo_wipe_left, self.combo_wipe_right):
-            combo.blockSignals(False)
+        self.combo_wipe_left.blockSignals(False)
+        self.combo_wipe_right.blockSignals(False)
+
+    def refresh_wipe_combos(self) -> None:
+        """Rebuild the wipe A/B choices after the stacks changed, keeping the
+        user's current selection where it is still valid."""
+        left_index = max(0, self.combo_wipe_left.currentIndex())
+        right_index = max(0, self.combo_wipe_right.currentIndex())
+        self._populate_wipe_combos()
+        self.combo_wipe_left.setCurrentIndex(min(left_index, self.combo_wipe_left.count() - 1))
+        self.combo_wipe_right.setCurrentIndex(min(right_index, self.combo_wipe_right.count() - 1))
+        self._update_wipe_images()
 
     def _on_wipe_combo_changed(self, _index: int) -> None:
         if self.wipe_active:
