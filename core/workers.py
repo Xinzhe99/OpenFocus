@@ -80,6 +80,7 @@ class RenderWorker(QThread):
     """后台执行图像配准和融合的线程（从 main.py 抽离）"""
 
     finished_signal = pyqtSignal(object, object, bool, float, float, str)
+    progress_signal = pyqtSignal(int, int)  # done, total (tiled fusion)
     error_signal = pyqtSignal(str)
 
     def __init__(
@@ -202,7 +203,8 @@ class RenderWorker(QThread):
                 # 使用裁剪后的图像进行融合（如果ROI已启用）
                 fusion_images = cropped_images if cropped_images is not None else processed_images
                 fusion_result, device_name = self._run_fusion(
-                    fusion_images, should_cancel=lambda: self.is_cancelled)
+                    fusion_images, should_cancel=lambda: self.is_cancelled,
+                    progress_callback=lambda done, total: self.progress_signal.emit(done, total))
 
                 # ROI粘贴阶段
                 if self.roi_mode == "paste" and base_full_image is not None and fusion_result is not None and roi_rect_int is not None:
@@ -289,7 +291,7 @@ class RenderWorker(QThread):
 
         return rx, ry, rw, rh
 
-    def _run_fusion(self, images, should_cancel=None):
+    def _run_fusion(self, images, should_cancel=None, progress_callback=None):
         """执行图像融合，返回(融合结果, 设备名称)"""
         algorithm = self._get_fusion_algorithm()
 
@@ -317,6 +319,8 @@ class RenderWorker(QThread):
             device_name = "CPU"
 
         kernel_size = normalize_kernel_size(self.kernel_slider_value)
+        fuse_cancel = {"should_cancel": should_cancel,
+                       "progress_callback": progress_callback}
 
         if algorithm == "guided_filter":
             result = fusion.fuse(
@@ -324,6 +328,7 @@ class RenderWorker(QThread):
                 img_resize=None,
                 kernel_size=kernel_size,
                 thread_count=self.thread_count,
+                **fuse_cancel,
             )
             result = quantize_fuse_output(result, is_16bit)
         elif algorithm == "dct":
@@ -333,6 +338,7 @@ class RenderWorker(QThread):
                 block_size=8,
                 kernel_size=kernel_size,
                 thread_count=self.thread_count,
+                **fuse_cancel,
             )
             result = quantize_fuse_output(result, is_16bit)
         elif algorithm == "dtcwt":
@@ -340,6 +346,7 @@ class RenderWorker(QThread):
                 input_source=images,
                 img_resize=None,
                 thread_count=self.thread_count,
+                **fuse_cancel,
             )
             result = quantize_fuse_output(result, is_16bit)
         elif algorithm == "gfgfgf":
@@ -348,6 +355,7 @@ class RenderWorker(QThread):
                 img_resize=None,
                 kernel_size=kernel_size,
                 thread_count=self.thread_count,
+                **fuse_cancel,
             )
             result = quantize_fuse_output(result, is_16bit)
         elif algorithm == "stackmffv4":
@@ -357,6 +365,7 @@ class RenderWorker(QThread):
                 img_resize=None,
                 model_path=model_path,
                 thread_count=self.thread_count,
+                **fuse_cancel,
             )
             result = quantize_fuse_output(result, is_16bit)
         else:
@@ -365,6 +374,7 @@ class RenderWorker(QThread):
                 img_resize=None,
                 kernel_size=kernel_size,
                 thread_count=self.thread_count,
+                **fuse_cancel,
             )
             result = quantize_fuse_output(result, is_16bit)
 

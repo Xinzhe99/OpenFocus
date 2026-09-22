@@ -172,6 +172,11 @@ class OpenFocus(QMainWindow):
         # Restore last session's window geometry and splitter positions
         restore_window_layout(self)
 
+        # Optionally re-load the last opened stack a moment after launch
+        if getattr(self, "restore_last_stack", False):
+            from PyQt6.QtCore import QTimer as _QTimer
+            _QTimer.singleShot(1500, lambda: self.source_manager.restore_last_stack())
+
         # Set initial text for drag hint if needed (it is set in image_panels or loaded later, 
         # but let's Ensure it matches current lang if empty)
         # Note: image_panels create_source_panel sets initial text. 
@@ -1234,6 +1239,11 @@ class OpenFocus(QMainWindow):
         self._update_dynamic_status()
         self.persist_settings()
 
+    def set_restore_last_stack(self, enabled: bool) -> None:
+        """Toggle auto-restoring the last opened stack on startup."""
+        self.restore_last_stack = bool(enabled)
+        self.persist_settings()
+
     def set_align_cache_enabled(self, enabled: bool) -> None:
         """Toggle the on-disk registration cache (Settings menu)."""
         self.align_cache_enabled = bool(enabled)
@@ -1364,6 +1374,7 @@ class OpenFocus(QMainWindow):
             self.ui_objs['action_gpu_accel'].setToolTip(trans.t('msg_gpu_accel_hint'))
             self.ui_objs['action_align_cache'].setText(trans.t('action_align_cache'))
             self.ui_objs['action_align_cache'].setToolTip(trans.t('action_align_cache_hint'))
+            self.ui_objs['action_restore_last_stack'].setText(trans.t('action_restore_last_stack'))
         self.rebuild_recent_menu()
 
 
@@ -1380,9 +1391,52 @@ if __name__ == "__main__":
         sys.exit(run_cli(sys.argv[1:]))
 
     app = OpenFocusApplication(sys.argv)
+
+    # ---- Single-instance guard ----
+    # A second launch forwards its file arguments to the running instance
+    # (through a local socket) and exits, instead of opening a competing
+    # instance whose settings writes would clobber the first one's.
+    from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+    import json as _json
+    _server_name = "OpenFocus-single-instance"
+
+    probe = QLocalSocket()
+    probe.connectToServer(_server_name)
+    if probe.waitForConnected(500):
+        paths = [os.path.abspath(a) for a in sys.argv[1:] if not a.startswith("-")]
+        probe.write(_json.dumps(paths).encode("utf-8"))
+        probe.flush()
+        probe.waitForBytesWritten(1000)
+        probe.disconnectFromServer()
+        _log.info("forwarded %d path(s) to the running instance", len(paths))
+        sys.exit(0)
+    QLocalServer.removeServer(_server_name)
+    _single_server = QLocalServer()
+    _single_server.listen(_server_name)
+
     window = OpenFocus()
     app.set_main_window(window)
     _log.info("main window ready")
+
+    def _on_second_instance(paths_json: str) -> None:
+        try:
+            paths = _json.loads(paths_json)
+        except ValueError:
+            paths = []
+        if paths:
+            process_command_line_args(window, paths)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def _on_new_connection() -> None:
+        conn = _single_server.nextPendingConnection()
+        if conn is None:
+            return
+        conn.readyRead.connect(
+            lambda: _on_second_instance(bytes(conn.readAll()).decode("utf-8", "ignore")))
+
+    _single_server.newConnection.connect(_on_new_connection)
 
     # Handle files passed via command-line (drag-to-EXE, desktop file, etc.)
     if len(sys.argv) > 1:

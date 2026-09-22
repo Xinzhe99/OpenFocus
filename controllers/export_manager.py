@@ -24,6 +24,7 @@ ALLOWED_EXPORT_EXTENSION_MAP = {
     ".bmp": ".bmp",
     ".tif": ".tif",
     ".tiff": ".tiff",
+    ".webp": ".webp",
 }
 
 EXPORT_EXTENSION_ALIASES = {

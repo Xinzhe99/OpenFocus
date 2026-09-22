@@ -15,7 +15,7 @@ from typing import List, Optional, Tuple
 
 VALID_METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv4"]
 VALID_ALIGN = ["none", "homography", "ecc", "both"]
-VALID_FORMATS = [".png", ".jpg", ".bmp", ".tif", ".tiff"]
+VALID_FORMATS = [".png", ".jpg", ".webp", ".bmp", ".tif", ".tiff"]
 
 EXIT_OK = 0
 EXIT_ERROR = 1

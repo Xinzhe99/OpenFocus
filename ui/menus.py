@@ -182,6 +182,14 @@ def setup_menus(window: QMainWindow) -> None:
     settings_menu.addAction(cache_action)
     window.ui_objs['action_align_cache'] = cache_action
 
+    # Restore-last-stack toggle (persisted via settings_store)
+    restore_action = QAction(trans.t('action_restore_last_stack'), window)
+    restore_action.setCheckable(True)
+    restore_action.setChecked(getattr(window, 'restore_last_stack', False))
+    restore_action.triggered.connect(window.set_restore_last_stack)
+    settings_menu.addAction(restore_action)
+    window.ui_objs['action_restore_last_stack'] = restore_action
+
     settings_menu.addSeparator()
 
     # Language Submenu

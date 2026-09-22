@@ -235,6 +235,7 @@ class MultiFocusFusion:
              input_source: Union[str, List[np.ndarray]], 
              img_resize: Optional[Tuple[int, int]] = None,
              should_cancel=None,
+             progress_callback=None,
              **kwargs) -> np.ndarray:
         if should_cancel is not None and should_cancel():
             from core.registration import RegistrationCancelled
@@ -288,6 +289,8 @@ class MultiFocusFusion:
                     img_resize=img_resize,
                     block_size=self.tile_block_size,
                     overlap=self.tile_overlap,
+                    should_cancel=should_cancel,
+                    progress_callback=progress_callback,
                     **kws,
                 )
 
@@ -318,6 +321,8 @@ class MultiFocusFusion:
                         img_resize=img_resize,
                         block_size=self.tile_block_size,
                         overlap=self.tile_overlap,
+                        should_cancel=should_cancel,
+                        progress_callback=progress_callback,
                         **kws,
                     )
 
@@ -583,6 +588,7 @@ class MultiFocusFusion:
                     overlap: int = 256,
                     thread_count: int = None,
                     should_cancel=None,
+                    progress_callback=None,
                     **kwargs) -> np.ndarray:
         """
         分块（滑动窗口）融合：当单张图像尺寸过大时调用。
@@ -644,6 +650,7 @@ class MultiFocusFusion:
                 imgs, img_dir, tile_coords, h, w, channels,
                 block_size, overlap, **kwargs,
                 should_cancel=should_cancel,
+                progress_callback=progress_callback,
             )
 
         # 其他算法使用原有的多线程处理
@@ -699,10 +706,18 @@ class MultiFocusFusion:
         with concurrent.futures.ThreadPoolExecutor(max_workers=optimal_threads) as executor:
             futures = {executor.submit(process_single_tile, coords): coords 
                        for coords in tile_coords}
+            completed_tiles = 0
+            total_tiles = len(futures)
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
                 x0, y0, fh, fw, fused_tile, weight2d = result
                 results[(x0, y0)] = result
+                if progress_callback is not None:
+                    completed_tiles += 1
+                    try:
+                        progress_callback(completed_tiles, total_tiles)
+                    except Exception:
+                        pass
 
         for x0, y0, fh, fw, fused_tile, weight2d in results.values():
             w_exp = weight2d[:, :, np.newaxis]
@@ -724,6 +739,7 @@ class MultiFocusFusion:
                                         h: int, w: int, channels: int,
                                         block_size: int, overlap: int,
                                         should_cancel=None,
+                                        progress_callback=None,
                                         **kwargs):
         """
         使用批量处理的 StackMFF V4 分块融合。
@@ -763,6 +779,8 @@ class MultiFocusFusion:
             current_batch_size = len(batch_coords)
             
             print(f"  Processing batch {batch_start // batch_size + 1}/{(total_tiles + batch_size - 1) // batch_size} ({current_batch_size} tiles)")
+            if progress_callback is not None:
+                progress_callback(batch_start + current_batch_size, total_tiles)
             
             # 准备这个 batch 的所有 tile 数据
             tiles_list = []

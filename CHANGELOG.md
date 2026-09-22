@@ -3,6 +3,26 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.16] — 2026-09-22
+
+### Added
+- **WebP lossless export**: available in save dialogs, the output context
+  menu's drag-out format and the CLI (OpenCV WebP encoder, quality 101 =
+  lossless)
+- **Render progress + completion alert**: tiled fusion now reports
+  per-tile progress to the status bar with a rough ETA, and the taskbar
+  icon flashes when a render finishes
+- **Single-instance guard**: launching a second copy forwards its file
+  arguments to the running instance (which raises its window and loads
+  them) instead of opening a competing instance that would clobber shared
+  settings
+- **Restore last stack on startup** (Settings menu, default off)
+
+### Fixed
+- Tiled-fusion cancellation and progress callbacks were never forwarded
+  from `fuse()` to the tiled back-end — mid-render cancel and progress
+  reporting now actually work
+
 ## [v1.15] — 2026-09-22
 
 ### Changed

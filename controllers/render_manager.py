@@ -238,8 +238,11 @@ class RenderManager:
             use_gpu=getattr(window, "use_gpu", True),
         )
 
+        self._progress_first_t = None
+        self._progress_last_t = None
         self.worker.finished_signal.connect(self.on_render_finished)
         self.worker.error_signal.connect(self.on_render_error)
+        self.worker.progress_signal.connect(self.on_render_progress)
         self.worker.start()
 
     def on_render_finished(
@@ -289,6 +292,11 @@ class RenderManager:
                 window.result_slider.setEnabled(False)
                 window.current_result_index = -1
                 window.add_label_action.setEnabled(True)
+
+                window.statusBar().clearMessage()
+
+                # Bring attention back: flash the taskbar icon
+                QApplication.alert(window)
 
                 if preview:
                     print("Preview render completed (not added to output history)")
@@ -433,6 +441,25 @@ class RenderManager:
             # 恢复 UI 控件
             self._restore_ui_controls()
             self.worker = None
+
+    def on_render_progress(self, done: int, total: int) -> None:
+        """Surface tiled-fusion progress in the status bar with an ETA."""
+        import time as _time
+        window = self.window
+        now = _time.time()
+        last = getattr(self, '_progress_last_t', None)
+        if last is None or now - last > 1.0:  # throttle to 1 Hz
+            self._progress_last_t = now
+            pct = int(done * 100 / max(1, total))
+            eta = ''
+            first = getattr(self, '_progress_first_t', None)
+            if first is not None and done > 0:
+                remaining = (now - first) / done * (total - done)
+                eta = f" · ~{int(remaining) + 1}s"
+            else:
+                self._progress_first_t = now
+            window.statusBar().showMessage(
+                f"{trans.t('render_progress')} {pct}% ({done}/{total}){eta}", 5000)
 
     def on_render_error(self, error_message: str) -> None:
         window = self.window

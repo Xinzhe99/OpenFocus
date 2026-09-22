@@ -79,7 +79,7 @@ class OutputManager:
         current_fmt = get_drag_export_format(window)
         group = QActionGroup(drag_menu)
         group.setExclusive(True)
-        for fmt, label in ((".jpg", "JPG"), (".png", "PNG"), (".tif", "TIFF")):
+        for fmt, label in ((".jpg", "JPG"), (".png", "PNG"), (".webp", "WebP"), (".tif", "TIFF")):
             act = QAction(label, drag_menu)
             act.setCheckable(True)
             act.setChecked(fmt == current_fmt)
@@ -130,7 +130,7 @@ class OutputManager:
             window,
             trans.t("action_save"),
             default_filename,
-            "PNG Files (*.png);;JPG Files (*.jpg);;Bitmap Files (*.bmp);;TIFF Files (*.tif *.tiff);;All Files (*)",
+            "PNG Files (*.png);;JPG Files (*.jpg);;WebP Files (*.webp);;Bitmap Files (*.bmp);;TIFF Files (*.tif *.tiff);;All Files (*)",
         )
 
         if not file_path:

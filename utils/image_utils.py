@@ -60,6 +60,9 @@ def get_imwrite_params(extension: str) -> list:
     if ext in (".jpg", ".jpeg", ".jpe", ".jfif"):
         # JPG: 100 quality (highest, default is ~95)
         return [cv2.IMWRITE_JPEG_QUALITY, 100]
+    if ext in (".webp",):
+        # WebP: quality > 100 means lossless
+        return [cv2.IMWRITE_WEBP_QUALITY, 101]
     elif ext in (".png",):
         # PNG: 0 compression (no compression, default is 3)
         return [cv2.IMWRITE_PNG_COMPRESSION, 0]

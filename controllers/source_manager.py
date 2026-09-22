@@ -65,6 +65,9 @@ class SourceManager:
                 self._apply_load_options(load_options, append=append)
                 if on_success is not None:
                     on_success()
+                # Remember for the optional "restore last stack on startup"
+                from utils.settings_store import get_settings, LAST_STACK_FOLDER_KEY
+                get_settings().setValue(LAST_STACK_FOLDER_KEY, window.current_folder_path or "")
             except Exception as exc:  # pylint: disable=broad-except
                 show_message_box(
                     window,
@@ -79,6 +82,20 @@ class SourceManager:
         self._load_worker.finished_load.connect(on_done)
         self._load_worker.start()
         window.statusBar().showMessage(trans.t("msg_loading_stack"), 5000)
+
+    def restore_last_stack(self) -> None:
+        """Re-load the most recently opened stack (skip the downsample dialog,
+        reusing the scale from the previous session)."""
+        from utils.settings_store import get_settings, LAST_STACK_FOLDER_KEY
+        folder = str(get_settings().value(LAST_STACK_FOLDER_KEY, "") or "")
+        if folder and os.path.isdir(folder):
+            window = self.window
+            window.current_folder_path = folder
+            self._start_load_worker(
+                folder=folder,
+                scale=getattr(window, "current_scale_factor", 1.0),
+                append=False,
+            )
 
     def load_image_stack(self, folder_path: str, append: bool = False) -> None:
         window = self.window

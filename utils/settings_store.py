@@ -22,6 +22,7 @@ MAIN_SPLITTER_KEY = "ui/main_splitter"
 RIGHT_SPLITTER_KEY = "ui/right_splitter"
 DRAG_FORMAT_KEY = "export/drag_format"
 LAST_UPDATE_CHECK_KEY = "updates/last_check_epoch"
+LAST_STACK_FOLDER_KEY = "ui/last_stack_folder"
 
 # window attribute -> (settings key, default, cast)
 _PERSISTED_FIELDS = {
@@ -34,6 +35,7 @@ _PERSISTED_FIELDS = {
     "stackmffv4_batch_size": ("rendering/stackmffv4_batch_size", 2, int),
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
+    "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
 }
 
 
@@ -134,7 +136,7 @@ def restore_window_layout(window) -> None:
 def get_drag_export_format(window) -> str:
     """Format extension used when dragging results out ('.jpg' default)."""
     value = getattr(window, "drag_export_format", None)
-    if value in (".jpg", ".png", ".tif", ".tiff"):
+    if value in (".jpg", ".png", ".webp", ".tif", ".tiff"):
         return ".tif" if value == ".tiff" else value
     return ".jpg"
 
@@ -152,7 +154,7 @@ def set_drag_export_format(window, fmt: str) -> None:
 def load_drag_export_format(window) -> None:
     settings = get_settings()
     fmt = str(settings.value(DRAG_FORMAT_KEY, ".jpg") or ".jpg").lower()
-    window.drag_export_format = fmt if fmt in (".jpg", ".png", ".tif") else ".jpg"
+    window.drag_export_format = fmt if fmt in (".jpg", ".png", ".webp", ".tif") else ".jpg"
 
 
 def add_recent_file(window, path: str) -> None:
