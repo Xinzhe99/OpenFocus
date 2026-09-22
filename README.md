@@ -12,6 +12,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.22 (4)**: **v1.15** — the deep-learning method is now simply **"AI"** in the interface and help pages, releases now ship a **Windows installer** (setup.exe with shortcuts and uninstaller) and a **macOS DMG** alongside the portable packages, and the app has a **new icon**.
+
 > 🎉 **2026.09.22 (3)**: **v1.14** — pure speed and control, zero changes to results: **renders are cancellable** (click the render button mid-run), **stack loading happens in the background** (the window no longer freezes on big stacks), display pixmaps render lazily (faster loads, hundreds of MB less memory on large stacks), and startup is ~1.4 s faster now that torch imports only when you actually use StackMFF-V4.
 
 > 🎉 **2026.09.22 (2)**: **v1.13** — a review round over the 16-bit pipeline and registration cache fixed 15 issues, including corrupted wipe-view output for 16-bit stacks, silent 16-bit truncation in the CuPy registration path, stale disk-cache hits after rotate/flip/resize, near-invisible label colours on 16-bit frames and a broken daily update-check rate limit.

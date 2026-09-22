@@ -1,10 +1,8 @@
-# 条件导入，避免在不需要时产生错误
-try:
-    import torch
-    import torch.nn.functional as F
-except ImportError:
-    torch = None
-    F = None
+# torch is imported lazily on first use: eager import here added ~1.4 s to
+# application startup (it is pulled in via fusion_methods/__init__) for users
+# who never touch the neural method.
+torch = None
+F = None
 
 import os
 import re
@@ -16,24 +14,26 @@ import cv2
 _GLOBAL_MODEL = None
 _GLOBAL_DEVICE = None
 
-# 缓存可用的加速器类型（模块加载时检测一次）
+# 缓存可用的加速器类型（首次使用 torch 时检测一次）
 _MPS_AVAILABLE = None
 _CUDA_AVAILABLE = None
 
 
-def _detect_accelerators():
-    """检测系统可用的加速器类型，模块加载时执行一次"""
-    global _MPS_AVAILABLE, _CUDA_AVAILABLE
+def _ensure_torch():
+    """Import torch on first use and probe available accelerators once."""
+    global torch, F, _MPS_AVAILABLE, _CUDA_AVAILABLE
+    if torch is not None:
+        return
+    import torch as _torch
+    import torch.nn.functional as _F
+    torch = _torch
+    F = _F
     try:
-        import torch
         _MPS_AVAILABLE = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
         _CUDA_AVAILABLE = torch.cuda.is_available()
     except Exception:
         _MPS_AVAILABLE = False
         _CUDA_AVAILABLE = False
-
-
-_detect_accelerators()
 
 
 def _get_model_and_device(model_path, use_gpu):
@@ -47,8 +47,7 @@ def _get_model_and_device(model_path, use_gpu):
     Returns:
         (model, device) 元组
     """
-    if torch is None or F is None:
-        raise ImportError("PyTorch not installed")
+    _ensure_torch()
     from core.models.stackmffv4_network import StackMFF_V4
 
     if use_gpu and _MPS_AVAILABLE:
@@ -85,6 +84,7 @@ def _get_model_and_device(model_path, use_gpu):
 
 def _resize_to_multiple_of_32(image):
     """将图像大小调整为32的倍数"""
+    _ensure_torch()
     h, w = image.shape[-2:]
     new_h = ((h - 1) // 32 + 1) * 32
     new_w = ((w - 1) // 32 + 1) * 32
@@ -107,9 +107,7 @@ def _stackmffv4_batch_impl(tiles_list, model_path, use_gpu):
     Returns:
         融合后的图像列表，每个元素是 BGR 格式的 uint8 numpy 数组
     """
-    if torch is None or F is None:
-        raise ImportError("PyTorch not installed")
-    
+    _ensure_torch()
     if not tiles_list:
         return []
     
@@ -200,8 +198,7 @@ def _stackmffv4_impl(input_source, img_resize, model_path, use_gpu):
     Returns:
         融合后的图像 (BGR格式, uint8)
     """
-    if torch is None or F is None:
-        raise ImportError("PyTorch not installed")
+    _ensure_torch()
 
     model, device = _get_model_and_device(model_path, use_gpu)
 

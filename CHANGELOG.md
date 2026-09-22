@@ -3,6 +3,22 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.15] — 2026-09-22
+
+### Changed
+- **"StackMFF V4" is now branded "AI"** across the interface and help
+  pages: the fusion method radio, availability messages, environment
+  status, batch-size settings and their help texts (the underlying model
+  is still StackMFF-V4; internal names unchanged)
+- User manual updated to match the new naming
+
+### Added
+- Windows **installer** (Inno Setup wizard: install dir, shortcuts,
+  uninstaller) and **macOS DMG** image are now built alongside the
+  portable packages for every release
+- New application icon (focus-stacking artwork) across the app, exe,
+  installer and README
+
 ## [v1.14] — 2026-09-22
 
 ### Added

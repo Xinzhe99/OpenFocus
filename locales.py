@@ -104,7 +104,7 @@ class TranslationManager(QObject):
                 'action_thread_settings': 'Thread Settings',
                 'action_reg_settings': 'Registration Settings',
                 'action_tile_settings': 'Tile Settings',
-                'action_stackmffv4_batch_settings': 'StackMFF V4 Batch Size',
+                'action_stackmffv4_batch_settings': 'AI Batch Size',
                 
                 # Menu Help
                 'menu_help': 'Help',
@@ -117,7 +117,7 @@ class TranslationManager(QObject):
                 'radio_dct': 'DCT',
                 'radio_dtcwt': 'DTCWT',
                 'radio_gfg': 'GFG-FGF',
-                'radio_stackmff': 'StackMFF-V4',
+                'radio_stackmff': 'AI',
                 'group_registration': 'Registration',
                 'check_align_ecc': 'ECC',
                 'check_align_homography': 'Homography',
@@ -169,8 +169,8 @@ class TranslationManager(QObject):
                 'msg_reload_error_title': 'Reload Error',
                 'msg_reload_error_text': 'An error occurred while reloading the image stack.',
                 'msg_render_need_images_text': 'Please load at least 2 images before rendering.',
-                'msg_stackmff_unavailable_title': 'StackMFF-V4 Unavailable',
-                'msg_stackmff_unavailable_text': 'StackMFF-V4 requires torch + torchvision. Please install them or choose another fusion method.',
+                'msg_stackmff_unavailable_title': 'AI Unavailable',
+                'msg_stackmff_unavailable_text': 'AI requires torch + torchvision. Please install them or choose another fusion method.',
                 'msg_save_failed_title': 'Save Failed',
                 'msg_save_failed_text': 'Failed to save the image.',
                 'msg_save_failed_info_write': 'Unable to write image to the specified file path.',
@@ -272,16 +272,16 @@ class TranslationManager(QObject):
                 'env_cuda_avail': 'CUDA available: {}',
                 'env_cuda_ver': 'CUDA version: {}',
                 'env_mps_avail': 'MPS available (Apple Silicon)',
-                'env_gpu_accel': 'StackMFF-V4: GPU acceleration available',
+                'env_gpu_accel': 'AI: GPU acceleration available',
                 'env_no_gpu': 'Warning: No GPU acceleration (CUDA/MPS)',
-                'env_cpu_mode': 'StackMFF-V4: Available (CPU mode - slower)',
-                'env_stackmff_unavailable': 'StackMFF-V4 fusion not available',
+                'env_cpu_mode': 'AI: Available (CPU mode - slower)',
+                'env_stackmff_unavailable': 'AI fusion not available',
                 'env_dtcwt_unavailable': 'Not installed (DTCWT fusion unavailable)',
                 'env_summary': 'Summary',
                 'env_core_dep': 'Core Dependencies:',
                 'env_core_desc': '- OpenCV, NumPy, PyQt6: Required for basic functionality',
                 'env_gpu_opt': 'GPU Acceleration (Optional):',
-                'env_gpu_desc': '- PyTorch: Enables StackMFF-V4 (CPU fallback available but slower)',
+                'env_gpu_desc': '- PyTorch: Enables AI (CPU fallback available but slower)',
                 'env_fusion_alg': 'Fusion Algorithms:',
                 'env_fusion_desc': '- DTCWT library: Required for DTCWT fusion',
                 
@@ -389,7 +389,7 @@ class TranslationManager(QObject):
         <li>GFG-FGF: Supports user-controlled thread count (default max: 8)</li>
         <li>Guided Filter Fusion (GFF): Supports user-controlled thread count (default max: 4)</li>
         <li>Image Registration: Feature extraction/transformation uses specified thread count</li>
-        <li>DCT, DTCWT, StackMFF-V4: Currently do not use this setting (no thread control)</li>
+        <li>DCT, DTCWT, AI: Currently do not use this setting (no thread control)</li>
         </ul>
 
         <p>Algorithms that don't use this value will safely ignore it. For best performance,
@@ -398,13 +398,13 @@ class TranslationManager(QObject):
         <p>Note: Installing <code>opencv-contrib-python</code> can accelerate certain
         operations (e.g., guided filtering).</p>''',
 
-                # StackMFF V4 Batch settings dialog
-                'dialog_stackmffv4_batch_title': 'StackMFF V4 Batch Settings',
+                # AI Batch settings dialog
+                'dialog_stackmffv4_batch_title': 'AI Batch Settings',
                 'dialog_stackmffv4_batch_group': 'Batch Processing',
                 'dialog_stackmffv4_batch_label': 'Batch Size:',
-                'dialog_stackmffv4_batch_help_title': 'StackMFF V4 Batch Settings Help',
-                'dialog_stackmffv4_batch_help_text': '''<h3>StackMFF V4 Batch Settings</h3>
-        <p>This setting controls the batch size when processing tiles with the StackMFF V4
+                'dialog_stackmffv4_batch_help_title': 'AI Batch Settings Help',
+                'dialog_stackmffv4_batch_help_text': '''<h3>AI Batch Settings</h3>
+        <p>This setting controls the batch size when processing tiles with the AI
         neural network fusion algorithm. Batch processing allows multiple tiles to be
         processed in parallel on the GPU, improving efficiency.</p>
 
@@ -416,7 +416,7 @@ class TranslationManager(QObject):
         </ul>
 
         <p><b>Note:</b> If you encounter out-of-memory errors on GPU, try reducing the batch size.
-        This setting only affects StackMFF V4 when processing large images with tiling enabled.</p>
+        This setting only affects AI when processing large images with tiling enabled.</p>
 
         <p>CPU mode is not significantly affected by this setting but will use it for
         consistency.</p>''',
@@ -558,7 +558,7 @@ class TranslationManager(QObject):
                 'action_thread_settings': '线程设置',
                 'action_reg_settings': '配准设置',
                 'action_tile_settings': '分块设置',
-                'action_stackmffv4_batch_settings': 'StackMFF V4 批量大小',
+                'action_stackmffv4_batch_settings': 'AI 批量大小',
                 
                 # Menu Help
                 'menu_help': '帮助',
@@ -571,7 +571,7 @@ class TranslationManager(QObject):
                 'radio_dct': '余弦离散变换',
                 'radio_dtcwt': '双数复小波变换',
                 'radio_gfg': '引导滤波2',
-                'radio_stackmff': 'StackMFF-V4',
+                'radio_stackmff': 'AI',
                 'group_registration': '图像配准',
                 'check_align_ecc': 'ECC',
                 'check_align_homography': 'Homography',
@@ -623,8 +623,8 @@ class TranslationManager(QObject):
                 'msg_reload_error_title': '重新加载错误',
                 'msg_reload_error_text': '重新加载图像栈时发生错误。',
                 'msg_render_need_images_text': '渲染前请至少加载 2 张图像。',
-                'msg_stackmff_unavailable_title': 'StackMFF-V4 不可用',
-                'msg_stackmff_unavailable_text': 'StackMFF-V4 需要 torch + torchvision。请安装或选择其他融合方法。',
+                'msg_stackmff_unavailable_title': 'AI 不可用',
+                'msg_stackmff_unavailable_text': 'AI 需要 torch + torchvision。请安装或选择其他融合方法。',
                 'msg_save_failed_title': '保存失败',
                 'msg_save_failed_text': '保存图像失败。',
                 'msg_save_failed_info_write': '无法写入指定的文件路径。',
@@ -727,16 +727,16 @@ class TranslationManager(QObject):
                 'env_cuda_avail': 'CUDA 可用: {}',
                 'env_cuda_ver': 'CUDA 版本: {}',
                 'env_mps_avail': 'MPS 可用 (Apple Silicon)',
-                'env_gpu_accel': 'StackMFF-V4: GPU 加速可用',
+                'env_gpu_accel': 'AI: GPU 加速可用',
                 'env_no_gpu': '警告: 无 GPU 加速 (CUDA/MPS)',
-                'env_cpu_mode': 'StackMFF-V4: 可用 (CPU 模式 - 较慢)',
-                'env_stackmff_unavailable': 'StackMFF-V4 融合不可用',
+                'env_cpu_mode': 'AI: 可用 (CPU 模式 - 较慢)',
+                'env_stackmff_unavailable': 'AI 融合不可用',
                 'env_dtcwt_unavailable': '未安装 (DTCWT 融合不可用)',
                 'env_summary': '总结',
                 'env_core_dep': '核心依赖:',
                 'env_core_desc': '- OpenCV, NumPy, PyQt6: 基本功能所需',
                 'env_gpu_opt': 'GPU 加速 (可选):',
-                'env_gpu_desc': '- PyTorch: 启用 StackMFF-V4 (提供 CPU 回退模式，但较慢)',
+                'env_gpu_desc': '- PyTorch: 启用 AI (提供 CPU 回退模式，但较慢)',
                 'env_fusion_alg': '融合算法:',
                 'env_fusion_desc': '- DTCWT 库: DTCWT 融合所需',
                 
@@ -854,7 +854,7 @@ class TranslationManager(QObject):
         <li>GFG-FGF：支持用户控制线程数（默认上限：8）</li>
         <li>引导滤波融合 (GFF)：支持用户控制线程数（默认上限：4）</li>
         <li>图像配准：特征提取/变换操作使用指定线程数</li>
-        <li>DCT, DTCWT, StackMFF-V4：目前不使用此设置（无线程控制）</li>
+        <li>DCT, DTCWT, AI：目前不使用此设置（无线程控制）</li>
         </ul>
 
         <p>不使用此值的算法会安全地忽略它。为获得最佳性能，请避免将线程数设置得高于物理核心数。</p>
@@ -862,13 +862,13 @@ class TranslationManager(QObject):
         <p>注意：安装 <code>opencv-contrib-python</code> 可以加速某些操作（例如引导滤波）。</p>
         ''',
 
-                # StackMFF V4 Batch settings dialog
-                'dialog_stackmffv4_batch_title': 'StackMFF V4 批量设置',
+                # AI Batch settings dialog
+                'dialog_stackmffv4_batch_title': 'AI 批量设置',
                 'dialog_stackmffv4_batch_group': '批量处理',
                 'dialog_stackmffv4_batch_label': '批量大小 (Batch Size):',
-                'dialog_stackmffv4_batch_help_title': 'StackMFF V4 批量设置帮助',
-                'dialog_stackmffv4_batch_help_text': '''<h3>StackMFF V4 批量设置</h3>
-        <p>此设置控制使用 StackMFF V4 神经网络融合算法处理分块时的批量大小。
+                'dialog_stackmffv4_batch_help_title': 'AI 批量设置帮助',
+                'dialog_stackmffv4_batch_help_text': '''<h3>AI 批量设置</h3>
+        <p>此设置控制使用 AI 神经网络融合算法处理分块时的批量大小。
         批量处理允许在 GPU 上并行处理多个分块，提高效率。</p>
 
         <h4>批量大小：</h4>
@@ -879,7 +879,7 @@ class TranslationManager(QObject):
         </ul>
 
         <p><b>注意：</b>如果在 GPU 上遇到内存不足的错误，请尝试减小批量大小。
-        此设置仅在处理大图像并启用分块时影响 StackMFF V4。</p>
+        此设置仅在处理大图像并启用分块时影响 AI。</p>
 
         <p>CPU 模式不会显著受此设置影响，但会保持一致性。</p>''',
 

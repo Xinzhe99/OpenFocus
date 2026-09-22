@@ -28,7 +28,7 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 ### Key Features
 
 - **Multi-Focus Image Fusion**: Combine multiple images with different focus points into one fully focused image
-- **Multiple Fusion Algorithms**: Choose from Guided Filter, DCT, DTCWT, GFG-FGF, and StackMFF-V4 (deep learning)
+- **Multiple Fusion Algorithms**: Choose from Guided Filter, DCT, DTCWT, GFG-FGF, and AI Fusion (deep learning)
 - **Image Registration**: Align misaligned image sequences using ECC or Homography methods
 - **Wipe Compare View**: Inspect alignment and compare results with an A/B divider view
 - **Batch Processing**: Process multiple image folders simultaneously
@@ -317,7 +317,7 @@ OpenFocus offers five fusion algorithms. Each has different characteristics suit
 | DCT | Medium | Good | Textures |
 | DTCWT | Medium | Very Good | Complex scenes |
 | GFG-FGF | Fast | Good | Focus regions |
-| StackMFF-V4 | Slow (GPU) | Excellent | Best quality |
+| AI Fusion (StackMFF-V4) | Slow (GPU) | Excellent | Best quality |
 
 ### Quick Preview (Draft Render)
 
@@ -417,16 +417,16 @@ Access via **Settings → Thread Count Settings**:
 
 ### GPU Acceleration Toggle
 
-OpenFocus uses the GPU (CUDA/MPS) only for the StackMFF-V4 neural model; classical algorithms always run on CPU.
+OpenFocus uses the GPU (CUDA/MPS) only for the AI neural model (StackMFF-V4); classical algorithms always run on CPU.
 
 - Toggle via **Settings → GPU Acceleration**
 - Unchecking forces everything onto the CPU — useful when GPU drivers misbehave
 - The status panel shows `CPU*` while the GPU is disabled
 - The choice takes effect on the next render and is remembered
 
-### StackMFF-V4 Batch Size
+### AI Batch Size
 
-Access via **Settings → StackMFF-V4 Batch Settings**:
+Access via **Settings → AI Batch Settings**:
 
 - Controls how many tiles the neural model processes per batch (default: 2)
 - Higher values are faster but use more memory
@@ -441,7 +441,7 @@ Cache**; stale entries are replaced automatically.
 ### Persisted Settings
 
 All of the following survive an application restart automatically:
-thread count, tile parameters, registration downscale width, StackMFF-V4
+thread count, tile parameters, registration downscale width, AI Fusion (StackMFF-V4)
 batch size, the GPU acceleration toggle, the registration cache toggle,
 interface language, window size/panel layout, the drag-out export format
 and your recently opened stacks. Settings dialogs save the moment you confirm them;
@@ -553,7 +553,7 @@ python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 | `--align, -a` | `none` (default), `homography`, `ecc`, `both` |
 | `--kernel, -k` | Kernel size for guided_filter/dct/gfgfgf (forced odd) |
 | `--threads, -t` | Worker thread count (default 4) |
-| `--batch-size` | StackMFF-V4 tile batch size (default 2) |
+| `--batch-size` | AI tile batch size (default 2) |
 | `--cpu` | Force CPU even if a GPU is available |
 | `--downscale` | Registration feature-detection downscale width |
 | `--tile-size` | Tile block size for large images |
@@ -612,7 +612,7 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 - Try a different fusion algorithm
 - Increase kernel size for smoother results
 
-#### StackMFF-V4 Unavailable
+#### AI Unavailable
 
 - Install PyTorch: `pip install torch torchvision`
 - For GPU support, install CUDA-enabled PyTorch
@@ -636,7 +636,7 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 - Increase thread count in **Settings → Thread Count Settings**
 - Use a more powerful CPU
 - Reduce image resolution
-- Use simpler fusion algorithms (Guided Filter instead of StackMFF-V4)
+- Use simpler fusion algorithms (Guided Filter instead of AI Fusion)
 
 #### Windows SmartScreen Warning on First Launch
 
@@ -680,7 +680,7 @@ DTCWT provides multi-scale, multi-directional decomposition of images. It captur
 
 This algorithm uses a Generalized Four-neighborhood Gaussian approach to measure local focus, combined with Fast Guided Filter for weight map refinement. It efficiently identifies and merges in-focus regions.
 
-### StackMFF-V4
+### AI Fusion (StackMFF-V4)
 
 A deep learning approach using a neural network trained on large datasets of multi-focus image pairs. The network learns optimal fusion strategies automatically, providing state-of-the-art results when properly configured.
 
