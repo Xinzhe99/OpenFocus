@@ -23,6 +23,7 @@ RIGHT_SPLITTER_KEY = "ui/right_splitter"
 DRAG_FORMAT_KEY = "export/drag_format"
 LAST_UPDATE_CHECK_KEY = "updates/last_check_epoch"
 LAST_STACK_FOLDER_KEY = "ui/last_stack_folder"
+LAST_DIALOG_DIR_KEY = "ui/last_dialog_dir"
 
 # window attribute -> (settings key, default, cast)
 _PERSISTED_FIELDS = {
@@ -149,6 +150,19 @@ def set_drag_export_format(window, fmt: str) -> None:
         return
     window.drag_export_format = fmt
     get_settings().setValue(DRAG_FORMAT_KEY, fmt)
+
+
+def get_last_dialog_dir() -> str:
+    value = str(get_settings().value(LAST_DIALOG_DIR_KEY, "") or "")
+    return value if value and os.path.isdir(value) else ""
+
+
+def set_last_dialog_dir(path: str) -> None:
+    """Remember the folder used for the last file dialog (stores the dir
+    component when given a file path)."""
+    folder = os.path.dirname(path) if os.path.isfile(path) else path
+    if folder and os.path.isdir(folder):
+        get_settings().setValue(LAST_DIALOG_DIR_KEY, folder)
 
 
 def load_drag_export_format(window) -> None:

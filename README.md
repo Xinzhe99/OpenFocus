@@ -12,6 +12,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.22 (6)**: **v1.17** — **Compare All Methods**: one click renders your stack with every available fusion algorithm, tagging each result so you can pick the best via Wipe. Plus a dark native title bar on Windows, one-click export of all results, a first-run quick-start guide, and dialogs that remember their last folder.
+
 > 🎉 **2026.09.22 (5)**: **v1.16** — **WebP lossless export**, a live **render progress bar** with ETA in the status bar (taskbar flashes when done), a **single-instance guard** (launching again just loads your files into the running app), an optional **"restore last stack on startup"** toggle, and a fix so mid-render cancel/progress actually reach the tiled fusion back-end.
 
 > 🎉 **2026.09.22 (4)**: **v1.15** — the deep-learning method is now simply **"AI"** in the interface and help pages, releases now ship a **Windows installer** (setup.exe with shortcuts and uninstaller) and a **macOS DMG** alongside the portable packages, and the app has a **new icon**.

@@ -36,6 +36,7 @@ class RightPanelComponents:
     splitter: QSplitter
     btn_reset: QPushButton
     btn_render: QPushButton
+    btn_compare: QPushButton
     chk_quick_preview: QCheckBox
     btn_method_help: QPushButton
     btn_reg_help: QPushButton
@@ -163,8 +164,13 @@ def create_right_panel() -> RightPanelComponents:
     btn_render = QPushButton(trans.t('btn_render'))
     btn_render.setFixedHeight(40)
     btn_render.setStyleSheet(HOVER_HIGHLIGHT_BUTTON_STYLE)
+    btn_compare = QPushButton(trans.t('btn_compare_all'))
+    btn_compare.setFixedHeight(40)
+    btn_compare.setToolTip(trans.t('btn_compare_all_hint'))
+    btn_compare.setStyleSheet(HOVER_HIGHLIGHT_BUTTON_STYLE)
     button_bar.addWidget(btn_reset)
     button_bar.addWidget(btn_render)
+    button_bar.addWidget(btn_compare)
     config_layout.addLayout(button_bar)
 
     chk_quick_preview = QCheckBox(trans.t('chk_quick_preview'))
@@ -248,6 +254,7 @@ def create_right_panel() -> RightPanelComponents:
         splitter=right_splitter,
         btn_reset=btn_reset,
         btn_render=btn_render,
+        btn_compare=btn_compare,
         chk_quick_preview=chk_quick_preview,
         btn_method_help=btn_method_help,
         btn_reg_help=btn_reg_help,

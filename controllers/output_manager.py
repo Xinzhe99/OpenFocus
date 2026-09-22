@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox
 from controllers.export_manager import get_imwrite_params
 from utils import show_error_box, show_message_box, show_success_box, show_warning_box
 from utils.settings_store import get_drag_export_format, set_drag_export_format
+from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
 from utils.image_utils import to_display_uint8
 from utils.image_utils import imwrite_auto
 from locales import trans
@@ -115,6 +116,36 @@ class OutputManager:
             window.fusion_result = None
             window.lbl_result_img.clear()
             window.result_control_bar.setVisible(False)
+
+    def export_all_results(self) -> None:
+        """Save every result in the output history to a user-chosen folder."""
+        window = self.window
+        if window.fusion_result is None and not window.fusion_results:
+            show_warning_box(window, trans.t("msg_warning"), trans.t("msg_export_all_none"))
+            return
+
+        folder = QFileDialog.getExistingDirectory(
+            window, trans.t("menu_export_all"),
+            get_last_dialog_dir(), QFileDialog.Option.ShowDirsOnly)
+        if not folder:
+            return
+        set_last_dialog_dir(folder)
+
+        base = window.export_manager.generate_default_filename()
+        base = os.path.splitext(os.path.basename(base))[0] or "OpenFocus"
+        count = 0
+        results = list(window.fusion_results)  # newest first
+        total = len(results)
+        for i, image in enumerate(results):
+            labeled = window.label_manager.prepare_bgr_image("registered", image, i)
+            name = f"{base}_{total - i:02d}.png"
+            from utils.image_utils import imwrite_auto
+            if imwrite_auto(os.path.join(folder, name), labeled):
+                count += 1
+
+        show_success_box(
+            window, trans.t("msg_success"),
+            trans.t("msg_export_all_done_text").format(count=count, folder=folder))
 
     def save_output_image_as(self, item: QListWidgetItem | None) -> None:
         window = self.window

@@ -3,6 +3,7 @@ from typing import Any, List, Optional
 
 import cv2
 
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
 
@@ -29,13 +30,33 @@ def _downscale_for_preview(img):
 class RenderManager:
     """Encapsulates render pipeline orchestration for the main window."""
 
+    ALGORITHM_DISPLAY = {
+        "guided_filter": "Guided Filter",
+        "dct": "DCT",
+        "dtcwt": "DTCWT",
+        "gfgfgf": "GFG-FGF",
+        "stackmffv4": "AI",
+    }
+
     def __init__(self, window: Any):
         self.window = window
         self.worker: Optional[RenderWorker] = None
+        self._compare_mode = False
+        self._compare_queue: List[str] = []
+        self._compare_total = 0
+        self._compare_current: Optional[str] = None
 
     def _restore_ui_controls(self) -> None:
         """Re-enable every control disabled by start_render (safe to call anywhere)."""
         window = self.window
+        if getattr(self, '_compare_mode', False):
+            # A comparison queue is still running - keep controls locked and
+            # show progress instead.
+            window.btn_render.setEnabled(False)
+            done = self._compare_total - len(self._compare_queue)
+            window.btn_render.setText(
+                f"{trans.t('msg_compare_progress').format(i=done + 1, n=self._compare_total, method=trans.t('btn_render_processing'))}")
+            return
         try:
             window.slider_smooth.setEnabled(True)
         except Exception:
@@ -60,7 +81,40 @@ class RenderManager:
         window.btn_render.setEnabled(True)
         window.btn_render.setText(trans.t('btn_render'))
 
-    def start_render(self) -> None:
+    def start_compare_all(self) -> None:
+        """Render the stack once per available fusion method so the results
+        can be compared side by side (output history + Wipe side B)."""
+        window = self.window
+        if self.worker is not None and self.worker.isRunning():
+            return
+        if not window.raw_images or len(window.raw_images) < 2:
+            show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
+            return
+
+        methods = ["guided_filter", "dct", "dtcwt", "gfgfgf"]
+        if is_stackmffv4_available():
+            methods.append("stackmffv4")
+
+        self._compare_queue = list(methods)
+        self._compare_total = len(methods)
+        self._compare_mode = True
+        self._start_next_compare()
+
+    def _start_next_compare(self) -> None:
+        if not self._compare_queue:
+            return
+        method = self._compare_queue.pop(0)
+        self._compare_current = method
+        window = self.window
+        window.statusBar().showMessage(
+            trans.t("msg_compare_progress").format(
+                i=self._compare_total - len(self._compare_queue) + 1,
+                n=self._compare_total,
+                method=self.ALGORITHM_DISPLAY.get(method, method)),
+            5000)
+        self.start_render(force_algorithm=method)
+
+    def start_render(self, force_algorithm: str | None = None) -> None:
         window = self.window
 
         # A render is already running: this click cancels it
@@ -74,6 +128,14 @@ class RenderManager:
         if not window.raw_images or len(window.raw_images) < 2:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             return
+
+        if force_algorithm:
+            # Compare-all mode drives the next renders programmatically; the
+            # button doubles as a cancel affordance and everything else stays
+            # locked until the queue finishes.
+            window.btn_render.setEnabled(False)
+            window.btn_render.setText(trans.t('btn_render_processing'))
+            QApplication.processEvents()
 
         window.btn_render.setText(trans.t('btn_cancel_render'))
         QApplication.processEvents()
@@ -105,7 +167,8 @@ class RenderManager:
         need_align_ecc = window.cb_align_ecc.isChecked()
 
         need_fusion = (
-            window.rb_a.isChecked()
+            force_algorithm is not None
+            or window.rb_a.isChecked()
             or window.rb_b.isChecked()
             or window.rb_c.isChecked()
             or window.rb_gfg.isChecked()
@@ -118,7 +181,7 @@ class RenderManager:
         if kernel_slider_value % 2 == 0:
             kernel_slider_value = max(1, kernel_slider_value - 1)
 
-        if window.rb_d.isChecked() and not is_stackmffv4_available():
+        if force_algorithm is None and window.rb_d.isChecked() and not is_stackmffv4_available():
             show_warning_box(
                 window,
                 trans.t("msg_stackmff_unavailable_title"),
@@ -236,6 +299,7 @@ class RenderManager:
             roi_mode=roi_mode,
             roi_base_index=roi_base_index,
             use_gpu=getattr(window, "use_gpu", True),
+            algorithm_override=force_algorithm,
         )
 
         self._progress_first_t = None
@@ -257,6 +321,7 @@ class RenderManager:
         window = self.window
         preview = getattr(self, '_preview_mode', False)
         self._preview_mode = False
+        compare = getattr(self, '_compare_mode', False)
 
         try:
             if fusion_result is not None:
@@ -283,6 +348,14 @@ class RenderManager:
                 window.output_manager.show_fusion_result()
                 if not preview:
                     window.output_manager.update_output_list_for_fusion()
+
+                # Tag the newest output entry with the method that made it
+                method = getattr(self, '_compare_current', None) if compare else None
+                if method and window.output_list.count() > 0:
+                    item = window.output_list.item(0)
+                    if item is not None:
+                        item.setText(
+                            f"{item.text()} — {self.ALGORITHM_DISPLAY.get(method, method)}")
 
                 # New output: refresh the wipe B-side history, keep selection
                 if getattr(window, "wipe_active", False):
@@ -419,13 +492,14 @@ class RenderManager:
 
             info_lines.append(trans.t("info_total_time").format(total_time))
 
-            show_custom_message_box(
-                window,
-                trans.t("dialog_completed_title"),
-                trans.t("dialog_completed_msg"),
-                "\n".join(info_lines),
-                QMessageBox.Icon.Information,
-            )
+            if not compare:
+                show_custom_message_box(
+                    window,
+                    trans.t("dialog_completed_title"),
+                    trans.t("dialog_completed_msg"),
+                    "\n".join(info_lines),
+                    QMessageBox.Icon.Information,
+                )
 
         except Exception as exc:
             show_message_box(
@@ -438,8 +512,21 @@ class RenderManager:
             traceback.print_exc()
 
         finally:
-            # 恢复 UI 控件
-            self._restore_ui_controls()
+            if compare:
+                if self._compare_queue:
+                    # Keep controls locked and chain the next method
+                    compare_continues = True
+                    QTimer.singleShot(400, self._start_next_compare)
+                else:
+                    self._compare_mode = False
+                    self._restore_ui_controls()
+                    window.statusBar().showMessage(
+                        trans.t('msg_compare_done').format(count=self._compare_total),
+                        10000)
+                    QApplication.alert(window)
+            else:
+                # 恢复 UI 控件
+                self._restore_ui_controls()
             self.worker = None
 
     def on_render_progress(self, done: int, total: int) -> None:
@@ -463,6 +550,11 @@ class RenderManager:
 
     def on_render_error(self, error_message: str) -> None:
         window = self.window
+
+        if getattr(self, '_compare_mode', False):
+            # A failed method aborts the whole comparison run
+            self._compare_mode = False
+            self._compare_queue = []
 
         self._restore_ui_controls()
 

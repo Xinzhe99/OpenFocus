@@ -135,34 +135,38 @@ class SourceManager:
         )
 
     def prompt_and_load_stack(self) -> None:
+        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
         window = self.window
 
         folder_path = QFileDialog.getExistingDirectory(
             window,
-            "Select Image Stack Folder",
-            "",
+            trans.t("action_open_folder"),
+            get_last_dialog_dir(),
             QFileDialog.Option.ShowDirsOnly,
         )
 
         if folder_path:
+            set_last_dialog_dir(folder_path)
             self.load_image_stack(folder_path)
 
     def prompt_and_load_video(self) -> None:
         """Open a file dialog to select a video file and load it as image stack."""
+        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
         window = self.window
         from core.image_loader import ImageStackLoader
 
         # Build video filter string
         video_exts = " ".join([f"*{ext}" for ext in ImageStackLoader.SUPPORTED_VIDEO_FORMATS])
-        
+
         video_path, _ = QFileDialog.getOpenFileName(
             window,
-            "Select Video File",
-            "",
+            trans.t("action_open_video"),
+            get_last_dialog_dir(),
             f"Video Files ({video_exts});;All Files (*)",
         )
 
         if video_path:
+            set_last_dialog_dir(video_path)
             self.load_video_stack(video_path)
 
     def can_accept_drag(self, event: QDragEnterEvent) -> bool:

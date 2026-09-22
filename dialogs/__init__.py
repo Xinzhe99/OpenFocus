@@ -56,9 +56,12 @@ __all__ = [
     'RegistrationSettingsDialog',
     'ThreadSettingsDialog',
     'StackMFFV4BatchSettingsDialog',
+    'WelcomeDialog',
     # Batch dialogs
     'BatchProcessingDialog',
     'FolderImportDialog',
     # ROI dialogs
     'ROIRenderOptionsDialog',
 ]
+
+from dialogs.welcome import WelcomeDialog

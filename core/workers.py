@@ -109,6 +109,7 @@ class RenderWorker(QThread):
         roi_mode="crop", # 'crop' or 'paste'
         roi_base_index=0,
         use_gpu: bool = True,
+        algorithm_override: str | None = None,
     ):
         super().__init__()
         self.raw_images = raw_images
@@ -143,11 +144,19 @@ class RenderWorker(QThread):
         # GPU 加速开关（仅影响 StackMFF-V4；经典算法本身固定 CPU）
         self.use_gpu = bool(use_gpu)
         self.is_cancelled = False
+        # 对比渲染模式：显式指定算法，覆盖 UI 单选按钮的选择
+        self.algorithm_override = algorithm_override
         # 用户配置的线程数（用于控制内部 ThreadPool 大小）
         try:
             self.thread_count = max(1, int(thread_count))
         except Exception:
             self.thread_count = 4
+        # 对比渲染模式：显式指定算法，覆盖 UI 单选按钮的选择
+        self.algorithm_override = algorithm_override
+
+    def cancel(self):
+        """Request cancellation; checked between registration/fusion stages."""
+        self.is_cancelled = True
 
     def run(self):
         """在线程中执行图像处理流程"""
@@ -382,6 +391,8 @@ class RenderWorker(QThread):
 
     def _get_fusion_algorithm(self):
         """根据UI选择获取融合算法名称"""
+        if self.algorithm_override:
+            return self.algorithm_override
         if self.rb_a_checked:
             return "guided_filter"
         elif self.rb_b_checked:

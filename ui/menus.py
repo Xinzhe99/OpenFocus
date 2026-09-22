@@ -252,6 +252,11 @@ def setup_menus(window: QMainWindow) -> None:
     help_menu.addAction(contact_action)
     window.ui_objs['action_contact'] = contact_action
 
+    quickstart_action = QAction(trans.t('menu_quick_start'), window)
+    quickstart_action.triggered.connect(window.show_quick_start)
+    help_menu.addAction(quickstart_action)
+    window.ui_objs['menu_quick_start'] = quickstart_action
+
     update_action = QAction(trans.t('menu_check_updates'), window)
     update_action.triggered.connect(window.check_for_updates)
     help_menu.addAction(update_action)

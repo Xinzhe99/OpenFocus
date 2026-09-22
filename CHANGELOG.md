@@ -3,6 +3,24 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.17] — 2026-09-22
+
+### Added
+- **Compare All Methods**: one click renders the stack once per available
+  fusion method; every result lands in the output history tagged with its
+  method name, ready to compare via Wipe (side B). The render button shows
+  queue progress and doubles as a stop button; a failed method aborts the
+  run
+- **Windows dark title bar**: the native title bar now follows the dark
+  theme (DWM immersive dark mode)
+- **Export all results to a folder** in one action (output list context
+  menu), 16-bit preserved for PNG/TIFF
+- **First-run quick start guide** (Help → Quick Start Guide to reopen):
+  a one-screen walkthrough of the core workflow
+- **Remember last dialog directory** for open/save dialogs
+- **WebP lossless export** (from v1.16 additions, listed here for release
+  notes completeness)
+
 ## [v1.16] — 2026-09-22
 
 ### Added

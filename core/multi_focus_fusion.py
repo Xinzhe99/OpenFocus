@@ -661,14 +661,18 @@ class MultiFocusFusion:
         print(f"Tiled fusion: {optimal_threads} parallel workers (memory-optimized)")
 
         def call_algo(crops):
+            # should_cancel/progress_callback drive the tile loop itself and
+            # are not accepted by the concrete algorithm implementations.
+            algo_kwargs = {k: v for k, v in kwargs.items()
+                           if k not in ('should_cancel', 'progress_callback')}
             if algorithm == 'guided_filter':
-                return self._fuse_guided_filter(crops, img_resize, **kwargs)
+                return self._fuse_guided_filter(crops, img_resize, **algo_kwargs)
             elif algorithm == 'dct':
-                return self._fuse_dct(crops, img_resize, **kwargs)
+                return self._fuse_dct(crops, img_resize, **algo_kwargs)
             elif algorithm == 'dtcwt':
-                return self._fuse_dtcwt(crops, img_resize, **kwargs)
+                return self._fuse_dtcwt(crops, img_resize, **algo_kwargs)
             elif algorithm == 'gfgfgf':
-                return self._fuse_gfgfgf(crops, img_resize, **kwargs)
+                return self._fuse_gfgfgf(crops, img_resize, **algo_kwargs)
             else:
                 method_name = f"_fuse_{algorithm}"
                 method = getattr(self, method_name, None)

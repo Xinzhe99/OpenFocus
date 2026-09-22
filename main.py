@@ -275,6 +275,8 @@ class OpenFocus(QMainWindow):
         self.right_splitter = right_panel_components.splitter
         self.btn_reset = right_panel_components.btn_reset
         self.btn_render = right_panel_components.btn_render
+        self.btn_compare_all = right_panel_components.btn_compare
+        self.btn_compare_all.clicked.connect(self.render_manager.start_compare_all)
         self.chk_quick_preview = right_panel_components.chk_quick_preview
         self.btn_method_help = right_panel_components.btn_method_help
         self.btn_reg_help = right_panel_components.btn_reg_help
@@ -591,6 +593,10 @@ class OpenFocus(QMainWindow):
                 trans.t('update_check_failed_text'),
                 QMessageBox.Icon.Warning,
             )
+
+    def show_quick_start(self) -> None:
+        from dialogs.welcome import WelcomeDialog
+        WelcomeDialog(self).exec()
 
     def open_logs_folder(self) -> None:
         """Open the folder that contains the application log files."""
@@ -1048,6 +1054,23 @@ class OpenFocus(QMainWindow):
         mono_font = get_monospace_font_family()
         style_sheet = GLOBAL_DARK_STYLE.replace('"Segoe UI", "Microsoft YaHei"', ui_font).replace('Consolas, "Segoe UI", monospace', mono_font)
         self.setStyleSheet(style_sheet)
+        self._enable_dark_title_bar()
+
+    def _enable_dark_title_bar(self):
+        """Windows: paint the native title bar dark to match the theme."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            hwnd = int(self.winId())  # forces native handle creation
+            value = ctypes.c_int(1)
+            # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE on Win10 20H1+; 19 on older builds
+            for attribute in (20, 19):
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, attribute, ctypes.byref(value), 4) == 0:
+                    break
+        except Exception:
+            pass
 
     def show_contact_info(self):
         """显示联系信息"""
@@ -1448,5 +1471,14 @@ if __name__ == "__main__":
     # One silent update check per day, a few seconds after startup
     from PyQt6.QtCore import QTimer
     QTimer.singleShot(4000, lambda: window.check_for_updates(quiet=True))
+
+    # First-run quick-start guide (once ever)
+    from utils.settings_store import get_settings
+    if str(get_settings().value("ui/first_run_done", "") or "") != "1":
+        def _show_welcome():
+            from dialogs.welcome import WelcomeDialog
+            WelcomeDialog(window).exec()
+            get_settings().setValue("ui/first_run_done", "1")
+        QTimer.singleShot(1500, _show_welcome)
 
     sys.exit(app.exec())
