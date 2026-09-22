@@ -58,3 +58,8 @@ Desktop.ini
 .ecc_inputs.npz
 .zcodeignore
 docs/OpenFocus.spec
+
+# Local build spec and stray export screenshots in repo root
+/OpenFocus.spec
+/docs/OpenFocus.spec
+/*.png
