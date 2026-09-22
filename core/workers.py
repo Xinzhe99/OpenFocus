@@ -4,7 +4,7 @@ import os
 import cv2
 import numpy as np
 import imageio.v2 as imageio
-from core.registration import ImageRegistration
+from core.registration import ImageRegistration, RegistrationCancelled
 from core.multi_focus_fusion import MultiFocusFusion
 from utils import resource_path, normalize_kernel_size
 from utils.image_utils import to_display_uint8
@@ -12,6 +12,32 @@ from constants import (
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     DEFAULT_THREAD_COUNT
 )
+
+
+class StackLoadWorker(QThread):
+    """后台加载图像栈，避免大栈解码时冻结界面"""
+
+    finished_load = pyqtSignal(bool, str, object, object)  # ok, message, images, filenames
+
+    def __init__(self, loader, folder=None, video=None, filepaths=None, scale=1.0):
+        super().__init__()
+        self.loader = loader
+        self.folder = folder
+        self.video = video
+        self.filepaths = filepaths
+        self.scale = scale
+
+    def run(self):
+        try:
+            if self.folder:
+                ok, msg, imgs, names = self.loader.load_from_folder(self.folder, scale_factor=self.scale)
+            elif self.video:
+                ok, msg, imgs, names = self.loader.load_from_video(self.video, scale_factor=self.scale)
+            else:
+                ok, msg, imgs, names = self.loader.load_from_filepaths(self.filepaths, scale_factor=self.scale)
+        except Exception as e:
+            ok, msg, imgs, names = False, str(e), [], []
+        self.finished_load.emit(ok, msg, imgs, names)
 
 
 class ROIAlignmentWorker(QThread):
@@ -115,6 +141,7 @@ class RenderWorker(QThread):
         self.reg_downscale_width = reg_downscale_width
         # GPU 加速开关（仅影响 StackMFF-V4；经典算法本身固定 CPU）
         self.use_gpu = bool(use_gpu)
+        self.is_cancelled = False
         # 用户配置的线程数（用于控制内部 ThreadPool 大小）
         try:
             self.thread_count = max(1, int(thread_count))
@@ -124,6 +151,9 @@ class RenderWorker(QThread):
     def run(self):
         """在线程中执行图像处理流程"""
         try:
+            if self.is_cancelled:
+                self.error_signal.emit("CANCELLED: render cancelled")
+                return
             alignment_time = 0
             fusion_time = 0
             device_name = "CPU"
@@ -151,8 +181,12 @@ class RenderWorker(QThread):
                 registration_performed = False
 
                 if need_registration:
+                    if self.is_cancelled:
+                        self.error_signal.emit("CANCELLED: render cancelled")
+                        return
                     alignment_start_time = time.time()
-                    processed_images, alignment_time = self._run_registration(processed_images)
+                    processed_images, alignment_time = self._run_registration(
+                        processed_images, should_cancel=lambda: self.is_cancelled)
                     registration_performed = True
 
             # 2. ROI裁剪阶段
@@ -161,10 +195,14 @@ class RenderWorker(QThread):
             # 3. 融合阶段
             fusion_result = None
             if self.need_fusion:
+                if self.is_cancelled:
+                    self.error_signal.emit("CANCELLED: render cancelled")
+                    return
                 fusion_start_time = time.time()
                 # 使用裁剪后的图像进行融合（如果ROI已启用）
                 fusion_images = cropped_images if cropped_images is not None else processed_images
-                fusion_result, device_name = self._run_fusion(fusion_images)
+                fusion_result, device_name = self._run_fusion(
+                    fusion_images, should_cancel=lambda: self.is_cancelled)
 
                 # ROI粘贴阶段
                 if self.roi_mode == "paste" and base_full_image is not None and fusion_result is not None and roi_rect_int is not None:
@@ -180,12 +218,14 @@ class RenderWorker(QThread):
                 fusion_time,
                 device_name,
             )
+        except RegistrationCancelled:
+            self.error_signal.emit("CANCELLED: render cancelled")
         except Exception as e:
             self.error_signal.emit(str(e))
             import traceback
             traceback.print_exc()
 
-    def _run_registration(self, images):
+    def _run_registration(self, images, should_cancel=None):
         """执行图像配准"""
         alignment_start_time = time.time()
 
@@ -203,7 +243,7 @@ class RenderWorker(QThread):
         else:
             registration = ImageRegistration(method=mode)
 
-        processed = registration.process(images, output_path=None, thread_count=self.thread_count)
+        processed = registration.process(images, output_path=None, thread_count=self.thread_count, should_cancel=should_cancel)
         alignment_time = time.time() - alignment_start_time
 
         return processed, alignment_time
@@ -249,7 +289,7 @@ class RenderWorker(QThread):
 
         return rx, ry, rw, rh
 
-    def _run_fusion(self, images):
+    def _run_fusion(self, images, should_cancel=None):
         """执行图像融合，返回(融合结果, 设备名称)"""
         algorithm = self._get_fusion_algorithm()
 

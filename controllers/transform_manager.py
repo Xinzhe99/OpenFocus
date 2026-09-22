@@ -113,10 +113,12 @@ class TransformManager:
                     window.update_loaded_status()
                 return
 
-            pixmaps = window.image_loader.create_pixmaps(window.raw_images, max_size=None)
+            # Display pixmaps are generated lazily per frame (see
+            # main.get_or_create_source_pixmap): pre-rendering full-resolution
+            # pixmaps for every frame costs seconds and hundreds of MB on
+            # large stacks, while only one frame is visible at a time.
+            window.stack_images = [None] * len(window.raw_images)
             thumbnails = window.image_loader.create_thumbnails(window.raw_images, thumb_size=40)
-
-            window.stack_images = pixmaps
             window.source_manager.update_file_list(window.image_filenames, thumbnails)
             window.source_manager.update_slider_range()
 

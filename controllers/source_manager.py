@@ -7,6 +7,7 @@ from PyQt6.QtCore import QPoint
 from PyQt6.QtGui import QAction, QIcon, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox, QDialog
 
+from core.workers import StackLoadWorker
 from dialogs import DownsampleDialog
 from utils import show_message_box, show_warning_box
 from ui.styles import MESSAGE_BOX_STYLE
@@ -34,6 +35,51 @@ class SourceManager:
         count = self.window.file_list.count()
         self.window.source_images_label.setText(trans.t("label_source_images").format(count))
 
+    def _start_load_worker(self, folder=None, video=None, filepaths=None,
+                           scale=1.0, append=False, on_success=None,
+                           accept_event=None) -> None:
+        """Run the loader on a background thread and apply results on the
+        UI thread when it finishes."""
+        window = self.window
+        worker = getattr(self, "_load_worker", None)
+        if worker is not None and worker.isRunning():
+            show_warning_box(window, trans.t("msg_warning"), trans.t("msg_load_in_progress"))
+            return
+
+        self._load_worker = StackLoadWorker(
+            window.image_loader, folder=folder, video=video,
+            filepaths=filepaths, scale=scale,
+        )
+        self._load_accept_event = accept_event
+
+        def on_done(ok: bool, message: str, images, filenames) -> None:
+            try:
+                if not ok:
+                    if accept_event is None:
+                        show_warning_box(window, trans.t("msg_load_failed"),
+                                         trans.t("msg_load_stack_failed_text"), message)
+                    return
+                if append and not self._confirm_append_dimensions(images):
+                    return
+                load_options = self._build_load_options(images, filenames, scale)
+                self._apply_load_options(load_options, append=append)
+                if on_success is not None:
+                    on_success()
+            except Exception as exc:  # pylint: disable=broad-except
+                show_message_box(
+                    window,
+                    trans.t("msg_load_error"),
+                    trans.t("msg_load_stack_error_text"),
+                    f"Error: {str(exc)}",
+                    QMessageBox.Icon.Critical,
+                )
+            finally:
+                self._load_worker = None
+
+        self._load_worker.finished_load.connect(on_done)
+        self._load_worker.start()
+        window.statusBar().showMessage(trans.t("msg_loading_stack"), 5000)
+
     def load_image_stack(self, folder_path: str, append: bool = False) -> None:
         window = self.window
 
@@ -46,29 +92,12 @@ class SourceManager:
 
         window.current_folder_path = folder_path
 
-        try:
-            success, message, full_res_images, filenames = window.image_loader.load_from_folder(
-                folder_path, scale_factor=scale_factor
-            )
-
-            if not success:
-                show_warning_box(window, trans.t("msg_load_failed"), trans.t("msg_load_stack_failed_text"), message)
-                return
-
-            if append and not self._confirm_append_dimensions(full_res_images):
-                return
-            load_options = self._build_load_options(full_res_images, filenames, scale_factor)
-            self._apply_load_options(load_options, append=append)
-            if hasattr(window, "add_recent_file"):
-                window.add_recent_file(folder_path)
-        except Exception as exc:  # pylint: disable=broad-except
-            show_message_box(
-                window,
-                trans.t("msg_load_error"),
-                trans.t("msg_load_stack_error_text"),
-                f"Error: {str(exc)}",
-                QMessageBox.Icon.Critical,
-            )
+        # Decode on a background thread so the window stays responsive on
+        # large stacks; the continuation runs on the UI thread via the signal.
+        self._start_load_worker(
+            folder=folder_path, scale=scale_factor, append=append,
+            on_success=lambda: window.add_recent_file(folder_path) if hasattr(window, "add_recent_file") else None,
+        )
 
     def load_video_stack(self, video_path: str, append: bool = False) -> None:
         """Load image stack from a video file."""
@@ -83,29 +112,10 @@ class SourceManager:
 
         window.current_folder_path = os.path.dirname(video_path)
 
-        try:
-            success, message, full_res_images, filenames = window.image_loader.load_from_video(
-                video_path, scale_factor=scale_factor
-            )
-
-            if not success:
-                show_warning_box(window, trans.t("msg_load_failed"), trans.t("msg_load_video_failed_text"), message)
-                return
-
-            if append and not self._confirm_append_dimensions(full_res_images):
-                return
-            load_options = self._build_load_options(full_res_images, filenames, scale_factor)
-            self._apply_load_options(load_options, append=append)
-            if hasattr(window, "add_recent_file"):
-                window.add_recent_file(video_path)
-        except Exception as exc:  # pylint: disable=broad-except
-            show_message_box(
-                window,
-                trans.t("msg_load_error"),
-                trans.t("msg_load_video_error_text"),
-                f"Error: {str(exc)}",
-                QMessageBox.Icon.Critical,
-            )
+        self._start_load_worker(
+            video=video_path, scale=scale_factor, append=append,
+            on_success=lambda: window.add_recent_file(video_path) if hasattr(window, "add_recent_file") else None,
+        )
 
     def prompt_and_load_stack(self) -> None:
         window = self.window

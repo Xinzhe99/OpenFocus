@@ -234,7 +234,11 @@ class MultiFocusFusion:
     def fuse(self, 
              input_source: Union[str, List[np.ndarray]], 
              img_resize: Optional[Tuple[int, int]] = None,
+             should_cancel=None,
              **kwargs) -> np.ndarray:
+        if should_cancel is not None and should_cancel():
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
         """
         执行图像融合
         
@@ -578,6 +582,7 @@ class MultiFocusFusion:
                     block_size: int = 1024,
                     overlap: int = 256,
                     thread_count: int = None,
+                    should_cancel=None,
                     **kwargs) -> np.ndarray:
         """
         分块（滑动窗口）融合：当单张图像尺寸过大时调用。
@@ -637,7 +642,8 @@ class MultiFocusFusion:
         if algorithm == 'stackmffv4':
             return self._fuse_tiled_stackmffv4_batched(
                 imgs, img_dir, tile_coords, h, w, channels,
-                block_size, overlap, **kwargs
+                block_size, overlap, **kwargs,
+                should_cancel=should_cancel,
             )
 
         # 其他算法使用原有的多线程处理
@@ -717,7 +723,8 @@ class MultiFocusFusion:
                                         tile_coords: List[Tuple[int, int, int, int]],
                                         h: int, w: int, channels: int,
                                         block_size: int, overlap: int,
-                                        **kwargs) -> np.ndarray:
+                                        should_cancel=None,
+                                        **kwargs):
         """
         使用批量处理的 StackMFF V4 分块融合。
         
@@ -747,7 +754,10 @@ class MultiFocusFusion:
             files = [f for f in sorted(os.listdir(img_dir)) if f.lower().endswith(exts)]
         
         # 分批处理
+        from core.registration import RegistrationCancelled
         for batch_start in range(0, total_tiles, batch_size):
+            if should_cancel is not None and should_cancel():
+                raise RegistrationCancelled()
             batch_end = min(batch_start + batch_size, total_tiles)
             batch_coords = tile_coords[batch_start:batch_end]
             current_batch_size = len(batch_coords)

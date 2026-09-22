@@ -63,12 +63,19 @@ class RenderManager:
     def start_render(self) -> None:
         window = self.window
 
+        # A render is already running: this click cancels it
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.is_cancelled = True
+            window.btn_render.setEnabled(False)
+            window.btn_render.setText(trans.t('btn_cancel_render'))
+            QApplication.processEvents()
+            return
+
         if not window.raw_images or len(window.raw_images) < 2:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             return
 
-        window.btn_render.setEnabled(False)
-        window.btn_render.setText(trans.t('btn_render_processing'))
+        window.btn_render.setText(trans.t('btn_cancel_render'))
         QApplication.processEvents()
 
         # 禁用在处理过程中不应被修改的 UI 控件
@@ -431,6 +438,11 @@ class RenderManager:
         window = self.window
 
         self._restore_ui_controls()
+
+        # Cancellation is not an error: quiet status message, no dialog
+        if error_message.startswith("CANCELLED"):
+            window.statusBar().showMessage(trans.t('msg_render_cancelled'), 4000)
+            return
 
         import logging
         logging.getLogger("openfocus").error("render failed: %s", error_message)

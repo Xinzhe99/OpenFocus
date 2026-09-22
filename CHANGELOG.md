@@ -3,6 +3,25 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.14] — 2026-09-22
+
+### Added
+- **Cancellable renders**: clicking the render button while processing
+  cancels cleanly at registration/fusion checkpoints — no result, no
+  error dialog, UI restored with a status note
+- **Asynchronous stack loading**: folder/video loading decodes on a
+  background thread, keeping the window responsive on large stacks
+- **Lazy display pixmaps**: full-resolution pixmaps render on first view
+  instead of up-front for every frame (large stacks load faster and use
+  hundreds of MB less)
+- **Faster startup**: torch is now imported lazily on first StackMFF-V4
+  use; measured `import main` drops from 1.9 s to 0.8 s on machines with
+  torch installed
+
+### Changed
+- EXIF orientation is read from the in-memory file buffer instead of a
+  second disk open
+
 ## [v1.13] — 2026-09-22
 
 ### Fixed

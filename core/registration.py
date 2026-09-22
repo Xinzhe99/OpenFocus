@@ -261,7 +261,7 @@ def _crop_with_transforms(images, H_matrices):
 
 # ========== 单应性对齐算法实现（非线性） ==========
 
-def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4):
+def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None):
     """
     商业级图像对齐算法优化版
     特性：
@@ -431,10 +431,17 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
                                  flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
 
     # 准备参数
-    warp_args = zip(images, H_matrices)
+    warp_args = list(zip(images, H_matrices))
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        aligned_images = list(executor.map(warp_task, warp_args))
+        futures = {executor.submit(warp_task, args): k for k, args in enumerate(warp_args)}
+        aligned_images = [None] * len(warp_args)
+        for fut in concurrent.futures.as_completed(futures):
+            aligned_images[futures[fut]] = fut.result()
+            if should_cancel is not None and should_cancel():
+                for f in futures:
+                    f.cancel()
+                raise RegistrationCancelled()
 
     # 如果有输出路径，保存图像
     if output_path:
@@ -447,9 +454,13 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     return aligned_images
 
 
+class RegistrationCancelled(Exception):
+    """Raised when a render cancellation flag fires mid-registration."""
+
+
 # ========== ECC对齐算法实现（高精度） ==========
 
-def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000, thread_count: int = 4):
+def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000, thread_count: int = 4, should_cancel=None):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -578,8 +589,16 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         return warp_matrix
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # map 保证结果顺序与输入一致
-        pair_transforms = list(executor.map(_compute_pair_transform, range(1, len(images))))
+        # as_completed lets a render cancellation interrupt mid-stage; the
+        # result list is filled back into submission order.
+        futures = {executor.submit(_compute_pair_transform, i): i for i in range(1, len(images))}
+        pair_transforms = [None] * len(futures)
+        for fut in concurrent.futures.as_completed(futures):
+            pair_transforms[futures[fut] - 1] = fut.result()
+            if should_cancel is not None and should_cancel():
+                for f in futures:
+                    f.cancel()
+                raise RegistrationCancelled()
 
     for idx, warp_matrix in enumerate(pair_transforms, start=1):
         # 矩阵累积
@@ -723,7 +742,14 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     else:
         # CPU 模式下继续使用多线程
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            aligned_images = list(executor.map(warp_task, task_args))
+            futures = {executor.submit(warp_task, args): args[0] for args in task_args}
+            aligned_images = [None] * len(task_args)
+            for fut in concurrent.futures.as_completed(futures):
+                aligned_images[futures[fut]] = fut.result()
+                if should_cancel is not None and should_cancel():
+                    for f in futures:
+                        f.cancel()
+                    raise RegistrationCancelled()
 
     return aligned_images
 
@@ -926,7 +952,8 @@ class ImageRegistration:
     def process(self, 
                 input_source: Union[str, List[np.ndarray]], 
                 output_path: Optional[str] = None,
-                thread_count: int = 4) -> List[np.ndarray]:
+                thread_count: int = 4,
+                should_cancel=None) -> List[np.ndarray]:
         """
         执行图像配准
         
@@ -940,24 +967,25 @@ class ImageRegistration:
             list: 配准后的图像列表（始终返回，无论是否保存到磁盘）
         """
         if self.method == 'homography':
-            return self._process_homography(input_source, output_path, thread_count=thread_count)
+            return self._process_homography(input_source, output_path, thread_count=thread_count, should_cancel=should_cancel)
         elif self.method == 'ecc':
-            return self._process_ecc(input_source, output_path, thread_count=thread_count)
+            return self._process_ecc(input_source, output_path, thread_count=thread_count, should_cancel=should_cancel)
         elif self.method == 'both':
             # 组合模式：先 Homography，后 ECC
             # 第一步：Homography (不保存中间结果，除非只做这一步)
             print("=== Step 1: Homography Alignment ===")
             # 如果是 both 模式，第一步不需要保存到 output_path，只在内存中传递
-            homography_result = self._process_homography(input_source, output_path=None, thread_count=thread_count)
+            homography_result = self._process_homography(input_source, output_path=None, thread_count=thread_count, should_cancel=should_cancel)
             
             print("\n=== Step 2: ECC Alignment ===")
             # 第二步：ECC (保存最终结果)
-            return self._process_ecc(homography_result, output_path, thread_count=thread_count)
+            return self._process_ecc(homography_result, output_path, thread_count=thread_count, should_cancel=should_cancel)
     
     def _process_homography(self, 
                            input_source: Union[str, List[np.ndarray]], 
                            output_path: Optional[str] = None,
-                           thread_count: int = 4) -> List[np.ndarray]:
+                           thread_count: int = 4,
+                           should_cancel=None) -> List[np.ndarray]:
         """
         单应性对齐配准（非线性）
         
@@ -968,12 +996,13 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count)
+        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel)
     
     def _process_ecc(self, 
                     input_source: Union[str, List[np.ndarray]], 
                     output_path: Optional[str] = None,
-                    thread_count: int = 4) -> List[np.ndarray]:
+                    thread_count: int = 4,
+                    should_cancel=None) -> List[np.ndarray]:
         """
         ECC对齐配准（高精度、亚像素级）
         
@@ -984,7 +1013,7 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count)
+        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel)
     
     def set_method(self, method: str):
         """

@@ -594,6 +594,20 @@ class OpenFocus(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_dir())))
 
 
+    def get_or_create_source_pixmap(self, index: int):
+        """Return the display pixmap for a frame, rendering it on first use.
+
+        Full-resolution pixmaps are generated lazily: pre-rendering every
+        frame costs seconds and hundreds of MB on large stacks while only
+        one frame is visible at a time.
+        """
+        if 0 <= index < len(self.stack_images):
+            if self.stack_images[index] is None and index < len(self.raw_images):
+                made = self.image_loader.create_pixmaps(
+                    [self.raw_images[index]], max_size=None)
+                self.stack_images[index] = made[0]
+        return self.stack_images[index] if 0 <= index < len(self.stack_images) else None
+
     def update_source_view(self, index):
         if not self.stack_images:
             return
@@ -603,7 +617,7 @@ class OpenFocus(QMainWindow):
             
             try:
                 # 获取原始图片并根据需要叠加标签
-                original_pixmap = self.stack_images[index]
+                original_pixmap = self.get_or_create_source_pixmap(index)
                 display_pixmap = self.label_manager.apply_labels_to_source_pixmap(original_pixmap, index)
 
                 # 使用自定义label处理缩放和缩放重置
