@@ -54,13 +54,14 @@ jobs:
         shell: pwsh
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAPP_VERSION=${{ github.ref_name }} OpenFocus.iss
+          Copy-Item installer/OpenFocus-*-setup.exe .
 
       - uses: actions/upload-artifact@v5
         with:
           name: OpenFocus-windows
           path: |
             OpenFocus-*-windows-x64.zip
-            installer/OpenFocus-*-setup.exe
+            OpenFocus-*-setup.exe
           retention-days: 7
 
   build-macos:
@@ -182,6 +183,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A leftover release from a previously failed run would break "create"
+          gh release delete "${{ github.ref_name }}" --repo "${{ github.repository }}" --yes 2>/dev/null || true
           gh release create "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" \
             --title "OpenFocus ${{ github.ref_name }}" \
