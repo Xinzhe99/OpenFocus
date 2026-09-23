@@ -431,6 +431,20 @@ Access via **Settings → AI Batch Settings**:
 - Controls how many tiles the neural model processes per batch (default: 2)
 - Higher values are faster but use more memory
 
+### Themes
+
+Two interface themes are available: **Dark (default)** and **Light**. Switch via
+**Settings → Theme**; the choice is applied immediately (the Windows title
+bar follows) and remembered. First-launch users choose a theme in the
+welcome dialog.
+
+### Themes
+
+Two interface themes are available: **Dark (default)** and **Light**.
+Switch via **Settings → Theme**; the choice applies immediately (the
+Windows title bar follows) and is remembered. First-launch users choose a
+theme inside the welcome dialog.
+
 ### Registration Cache
 
 OpenFocus can store registration results in a `.openfocus_cache` folder

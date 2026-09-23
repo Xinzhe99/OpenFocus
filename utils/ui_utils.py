@@ -81,12 +81,7 @@ def resource_path(*relative_parts: str) -> str:
     return os.path.normpath(os.path.join(base_path, *relative_parts))
 
 
-# Import MESSAGE_BOX_STYLE from sibling module to avoid circular imports
-import importlib.util
-_styles_spec = importlib.util.spec_from_file_location("styles_module", resource_path("ui", "styles.py"))
-_styles_module = importlib.util.module_from_spec(_styles_spec)
-_styles_spec.loader.exec_module(_styles_module)
-MESSAGE_BOX_STYLE = _styles_module.MESSAGE_BOX_STYLE
+
 
 
 def show_message_box(
@@ -102,7 +97,9 @@ def show_message_box(
     if informative_text:
         msg_box.setInformativeText(informative_text)
     msg_box.setIcon(icon)
-    msg_box.setStyleSheet(MESSAGE_BOX_STYLE)
+    # Imported lazily: ui.styles sits above this module in the package graph
+    from ui.styles import CURRENT_MESSAGE_BOX_STYLE
+    msg_box.setStyleSheet(CURRENT_MESSAGE_BOX_STYLE)
     msg_box.exec()
 
 
@@ -139,8 +136,11 @@ def show_custom_message_box(
     text: str,
     informative_text: str = "",
     icon: QMessageBox.Icon = QMessageBox.Icon.Information,
-    style_sheet: str = MESSAGE_BOX_STYLE,
+    style_sheet: str = None,
 ) -> None:
+    if style_sheet is None:
+        from ui.styles import CURRENT_MESSAGE_BOX_STYLE
+        style_sheet = CURRENT_MESSAGE_BOX_STYLE
     msg_box = QMessageBox(parent)
     msg_box.setWindowTitle(title)
     msg_box.setText(text)

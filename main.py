@@ -584,14 +584,14 @@ class OpenFocus(QMainWindow):
                 self,
                 trans.t('update_up_to_date_title'),
                 trans.t('update_up_to_date_text'),
-                QMessageBox.Icon.Information,
+                icon=QMessageBox.Icon.Information,
             )
         else:
             show_message_box(
                 self,
                 trans.t('update_check_failed_title'),
                 trans.t('update_check_failed_text'),
-                QMessageBox.Icon.Warning,
+                icon=QMessageBox.Icon.Warning,
             )
 
     def show_quick_start(self) -> None:
@@ -1049,21 +1049,33 @@ class OpenFocus(QMainWindow):
             self.btn_preview_roi.setChecked(False)
 
     def apply_dark_theme(self):
-        # 动态替换为平台特定字体
+        """启动时按持久化的主题应用样式（默认暗色）"""
+        self.apply_theme(getattr(self, "ui_theme", "dark"))
+
+    def apply_theme(self, theme: str) -> None:
+        """Apply the 'dark' or 'light' theme immediately and persist it."""
+        from ui.styles import get_theme_style, set_current_theme
+        theme = "light" if theme == "light" else "dark"
+        self.ui_theme = theme
         ui_font = get_ui_font_family()
         mono_font = get_monospace_font_family()
-        style_sheet = GLOBAL_DARK_STYLE.replace('"Segoe UI", "Microsoft YaHei"', ui_font).replace('Consolas, "Segoe UI", monospace', mono_font)
+        style_sheet = get_theme_style(theme).replace('"Segoe UI", "Microsoft YaHei"', ui_font).replace('Consolas, "Segoe UI", monospace', mono_font)
         self.setStyleSheet(style_sheet)
-        self._enable_dark_title_bar()
+        set_current_theme(theme)
+        self._enable_dark_title_bar(dark=(theme != "light"))
+        if hasattr(self, "ui_objs") and "menu_theme" in self.ui_objs:
+            for act in self.ui_objs["menu_theme"].actions():
+                is_dark_item = act.text() in (trans.t('theme_dark'), "Dark")
+                act.setChecked((theme == "dark") == is_dark_item)
 
-    def _enable_dark_title_bar(self):
-        """Windows: paint the native title bar dark to match the theme."""
+    def _enable_dark_title_bar(self, dark: bool = True):
+        """Windows: paint the native title bar dark/light to match the theme."""
         if sys.platform != "win32":
             return
         try:
             import ctypes
             hwnd = int(self.winId())  # forces native handle creation
-            value = ctypes.c_int(1)
+            value = ctypes.c_int(1 if dark else 0)
             # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE on Win10 20H1+; 19 on older builds
             for attribute in (20, 19):
                 if ctypes.windll.dwmapi.DwmSetWindowAttribute(

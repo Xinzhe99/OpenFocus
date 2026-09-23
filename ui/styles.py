@@ -9,6 +9,7 @@ PRIMARY_BLUE = "#0033A0"
 # 主窗口 Dark Theme 样式（原 OpenFocus.apply_dark_theme 中的字符串）
 GLOBAL_DARK_STYLE = f"""
 QMainWindow {{ background-color: #1e1e1e; }}
+QDialog {{ background-color: #2b2b2b; }}
 QWidget {{ color: #d0d0d0; font-family: \"Segoe UI\", \"Microsoft YaHei\"; font-size: 13px; }}
 
 QSplitter::handle {{ background-color: #111; width: 2px; }}
@@ -419,3 +420,61 @@ QPushButton:hover {{
 }}
 """
 
+
+
+# 亮色主题：由暗色主题做颜色映射生成（保持选择器结构一致）
+_DARK_TO_LIGHT = {
+    "#1e1e1e": "#f5f5f5",  # window background
+    "#d0d0d0": "#202020",  # default text
+    "#111": "#e0e0e0",     # splitter handle
+    "#444": "#cccccc",     # borders
+    "#aaa": "#666666",     # titles / hover accents
+    "#2b2b2b": "#f0f0f0",  # menubar / menu background
+    "#e0e0e0": "#202020",  # menubar / menu text
+    "#3a3a3a": "#e2e2e2",  # menubar item hover / menu selected
+    "#4a4a4a": "#d0d0d0",  # menubar item pressed
+    "#555": "#bbbbbb",     # menu border / slider handle border
+    "#888": "#888888",     # indicator border (same)
+    "#333": "#ffffff",     # indicator background
+    "#202020": "#eeeeee",  # slider groove background
+    "#1a1a2a": "#e8e8f0",  # disabled groove
+    "#222": "#dddddd",     # disabled groove border / button border
+    "#fff": "#ffffff",     # indicator check dot (same)
+    "#888": "#888888",
+    "#2a2a2a": "#d5d5d5",  # disabled sub-page
+    "#666": "#999999",     # disabled label text
+}
+
+LIGHT_STYLE = GLOBAL_DARK_STYLE
+for _dark, _light in _DARK_TO_LIGHT.items():
+    LIGHT_STYLE = LIGHT_STYLE.replace(_dark, _light)
+
+
+def get_theme_style(theme: str) -> str:
+    """Return the QSS for 'dark' (default) or 'light'."""
+    return LIGHT_STYLE if theme == "light" else GLOBAL_DARK_STYLE
+
+
+# 亮色主题下的消息框样式
+MESSAGE_BOX_STYLE_LIGHT = (
+    MESSAGE_BOX_STYLE
+    .replace("#2b2b2b", "#f5f5f5")
+    .replace("#ffffff", "#222222")
+    .replace("#444", "#cccccc")
+    .replace("#222", "#bbbbbb")
+)
+
+
+def get_message_box_style(theme: str) -> str:
+    return MESSAGE_BOX_STYLE_LIGHT if theme == "light" else MESSAGE_BOX_STYLE
+
+
+# 当前主题（ui_utils 的消息框动态读取；main.apply_theme 切换时更新）
+CURRENT_THEME = "dark"
+CURRENT_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE
+
+
+def set_current_theme(theme: str) -> None:
+    global CURRENT_THEME, CURRENT_MESSAGE_BOX_STYLE
+    CURRENT_THEME = "light" if theme == "light" else "dark"
+    CURRENT_MESSAGE_BOX_STYLE = get_message_box_style(CURRENT_THEME)

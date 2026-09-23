@@ -3,6 +3,22 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.18] — 2026-09-23
+
+### Added
+- **Themes**: dark (default) and light, switchable from Settings → Theme
+  and persisted; the native Windows title bar follows the theme; first-run
+  users choose a theme inside the welcome dialog
+
+### Fixed
+- **Crash on Help → Check for Updates**: the icon enum was passed as the
+  informative-text positional argument of the message-box helper;
+  PyQt6 aborts the process on the resulting type error inside a slot
+- **Welcome dialog was white-on-white**: dialogs now inherit the theme
+  background (QDialog rule added to both themes)
+- **App icon background is now transparent**: the off-white backdrop is
+  flood-fill removed from the artwork and the multi-size ICO regenerated
+
 ## [v1.17] — 2026-09-22
 
 ### Added

@@ -182,6 +182,21 @@ def setup_menus(window: QMainWindow) -> None:
     settings_menu.addAction(cache_action)
     window.ui_objs['action_align_cache'] = cache_action
 
+    # Theme submenu (dark / light, persisted)
+    theme_menu = settings_menu.addMenu(trans.t('menu_theme'))
+    theme_group_theme = QActionGroup(window)
+    theme_group_theme.setExclusive(True)
+    for theme_code, label in (("dark", trans.t('theme_dark')), ("light", trans.t('theme_light'))):
+        act = QAction(label, window)
+        act.setCheckable(True)
+        act.setChecked(getattr(window, 'ui_theme', 'dark') == theme_code)
+        act.triggered.connect(lambda _checked, code=theme_code: window.apply_theme(code))
+        theme_group_theme.addAction(act)
+        theme_menu.addAction(act)
+    window.ui_objs['menu_theme'] = theme_menu
+
+    settings_menu.addSeparator()
+
     # Restore-last-stack toggle (persisted via settings_store)
     restore_action = QAction(trans.t('action_restore_last_stack'), window)
     restore_action.setCheckable(True)

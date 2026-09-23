@@ -37,6 +37,7 @@ _PERSISTED_FIELDS = {
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
+    "ui_theme": ("ui/theme", "dark", "str"),
 }
 
 
@@ -74,6 +75,8 @@ def _cast(raw: Any, kind: Any, default: Any) -> Any:
 def load_window_settings(window) -> None:
     """Restore persisted preferences onto window attributes (defaults kept)."""
     settings = get_settings()
+    if getattr(window, "ui_theme", None) not in ("dark", "light"):
+        window.ui_theme = "dark"
     for attr, (key, default, kind) in _PERSISTED_FIELDS.items():
         if settings.contains(key):
             setattr(window, attr, _cast(settings.value(key), kind, default))
