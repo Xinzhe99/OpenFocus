@@ -2,6 +2,8 @@
 集中存放全局样式 / 公共样式，避免在 main.py 中塞入大量 QSS 字符串。
 """
 
+import re
+
 
 # 主题颜色常量
 PRIMARY_BLUE = "#0033A0"
@@ -422,32 +424,78 @@ QPushButton:hover {{
 
 
 
-# 亮色主题：由暗色主题做颜色映射生成（保持选择器结构一致）
+# 亮色主题：单遍正则映射（链式 str.replace 会造成二次替换污染，
+# 例如 #e0e0e0 -> #202020 之后又被 #202020 -> #eeeeee 再次替换成白色）
 _DARK_TO_LIGHT = {
-    "#1e1e1e": "#f5f5f5",  # window background
-    "#d0d0d0": "#202020",  # default text
-    "#111": "#e0e0e0",     # splitter handle
-    "#444": "#cccccc",     # borders
-    "#aaa": "#666666",     # titles / hover accents
-    "#2b2b2b": "#f0f0f0",  # menubar / menu background
-    "#e0e0e0": "#202020",  # menubar / menu text
-    "#3a3a3a": "#e2e2e2",  # menubar item hover / menu selected
-    "#4a4a4a": "#d0d0d0",  # menubar item pressed
-    "#555": "#bbbbbb",     # menu border / slider handle border
-    "#888": "#888888",     # indicator border (same)
-    "#333": "#ffffff",     # indicator background
-    "#202020": "#eeeeee",  # slider groove background
-    "#1a1a2a": "#e8e8f0",  # disabled groove
-    "#222": "#dddddd",     # disabled groove border / button border
-    "#fff": "#ffffff",     # indicator check dot (same)
-    "#888": "#888888",
-    "#2a2a2a": "#d5d5d5",  # disabled sub-page
-    "#666": "#999999",     # disabled label text
+    "#1e1e1e": "#f5f5f5",
+    "#d0d0d0": "#202020",
+    "#111": "#e0e0e0",
+    "#444": "#c8c8c8",
+    "#aaa": "#666666",
+    "#2b2b2b": "#f0f0f0",
+    "#e0e0e0": "#202020",
+    "#3a3a3a": "#e2e2e2",
+    "#4a4a4a": "#d0d0d0",
+    "#555": "#bbbbbb",
+    "#333": "#ffffff",
+    "#202020": "#eeeeee",
+    "#1a1a2a": "#e8e8f0",
+    "#222": "#dddddd",
+    "#2a2a2a": "#d5d5d5",
+    "#666": "#999999",
 }
+_DARK_TO_LIGHT_RE = re.compile(
+    "(" + "|".join(re.escape(c) for c in sorted(_DARK_TO_LIGHT, key=len, reverse=True)) + ")"
+)
 
-LIGHT_STYLE = GLOBAL_DARK_STYLE
-for _dark, _light in _DARK_TO_LIGHT.items():
-    LIGHT_STYLE = LIGHT_STYLE.replace(_dark, _light)
+
+def _to_light(qss: str) -> str:
+    return _DARK_TO_LIGHT_RE.sub(lambda m: _DARK_TO_LIGHT[m.group(0)], qss)
+
+
+LIGHT_STYLE = _to_light(GLOBAL_DARK_STYLE)
+
+
+# 应用级亮色样式：light 模式下清除全部内联深色样式后统一渲染，
+# 保证每个控件在浅色背景下可读
+LIGHT_APP_STYLE = """
+QWidget {{ background-color: #f5f5f5; color: #202020; font-family: "Segoe UI", "Microsoft YaHei"; font-size: 13px; }}
+QMainWindow, QDialog {{ background-color: #f5f5f5; }}
+QSplitter::handle {{ background-color: #dddddd; width: 2px; }}
+QGroupBox {{ border: 1px solid #c8c8c8; margin-top: 20px; font-weight: normal; }}
+QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; padding: 0 5px; color: #555555; }}
+QMenuBar {{ background-color: #f0f0f0; color: #202020; border-bottom: 1px solid #d0d0d0; }}
+QMenuBar::item {{ background: transparent; padding: 4px 12px; }}
+QMenuBar::item:selected {{ background-color: #e0e0e0; }}
+QMenuBar::item:pressed {{ background-color: #d5d5d5; }}
+QMenu {{ background-color: #ffffff; color: #202020; border: 1px solid #c8c8c8; }}
+QMenu::item {{ padding: 6px 30px 6px 20px; background: transparent; }}
+QMenu::item:selected {{ background-color: #e0e0e0; }}
+QMenu::separator {{ height: 1px; background-color: #d0d0d0; margin: 4px 0; }}
+QRadioButton::indicator {{ width: 16px; height: 16px; border-radius: 8px; border: 2px solid #888888; background: white; }}
+QRadioButton::indicator:checked {{ background: qradialgradient(cx:0.5, cy:0.5, radius:0.4, fx:0.5, fy:0.5, stop:0 #0033A0, stop:0.7 #0033A0, stop:0.71 white, stop:1 white); }}
+QCheckBox::indicator {{ width: 16px; height: 16px; border: 2px solid #888888; background: white; border-radius: 3px; }}
+QCheckBox::indicator:checked {{ image: url(none); background: #0033A0; }}
+QSlider::groove:horizontal {{ border: 1px solid #c8c8c8; height: 6px; background: #e0e0e0; margin: 2px 0; border-radius: 3px; }}
+QSlider::handle:horizontal {{ background: #888888; border: 1px solid #999999; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
+QSlider::handle:horizontal:hover {{ background: #666666; }}
+QSlider::sub-page:horizontal {{ background: {PRIMARY_BLUE}; border-radius: 3px; }}
+QPushButton {{ background-color: #e8e8e8; color: #202020; border: 1px solid #c8c8c8; padding: 6px; border-radius: 4px; }}
+QPushButton:hover {{ background-color: #dcdcdc; }}
+QPushButton:pressed {{ background-color: #d0d0d0; }}
+QListWidget, QLineEdit, QSpinBox, QComboBox, QTextEdit, QPlainTextEdit {{
+    background-color: #ffffff; color: #202020; border: 1px solid #c8c8c8;
+    border-radius: 3px; padding: 2px;
+}}
+QComboBox QAbstractItemView {{ background-color: #ffffff; color: #202020; selection-background-color: #cce0f5; selection-color: #202020; }}
+QLabel {{ color: #202020; background: transparent; }}
+QStatusBar {{ background-color: #f0f0f0; color: #202020; }}
+QToolTip {{ background-color: #ffffff; color: #202020; border: 1px solid #c8c8c8; }}
+""".replace("{PRIMARY_BLUE}", PRIMARY_BLUE)
+
+
+def get_app_light_style() -> str:
+    return LIGHT_APP_STYLE
 
 
 def get_theme_style(theme: str) -> str:

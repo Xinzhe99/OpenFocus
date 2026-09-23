@@ -12,6 +12,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.23 (2)**: **v1.19** — light theme readability rework: the native light palette now governs the whole interface (inline dark styles are stripped while light mode is active and restored on switch-back), and the Settings → Theme menu shows proper translated names.
+
 > 🎉 **2026.09.23**: **v1.18** — **dark & light themes**: switch from Settings → Theme (title bar follows), first-run users pick a theme in the welcome dialog. Also: fixed a crash on Help → Check for Updates, and the app icon now has a transparent background.
 
 > 🎉 **2026.09.22 (6)**: **v1.17** — **Compare All Methods**: one click renders your stack with every available fusion algorithm, tagging each result so you can pick the best via Wipe. Plus a dark native title bar on Windows, one-click export of all results, a first-run quick-start guide, and dialogs that remember their last folder.

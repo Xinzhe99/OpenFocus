@@ -3,6 +3,20 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.19] — 2026-09-23
+
+### Fixed
+- **Light theme readability**: the first light-theme attempt derived its
+  colors with chained string replaces, which re-replaced already converted
+  colors (menu text turned white on white) and never touched the dozens of
+  inline dark stylesheets. Light mode now uses the native light palette
+  with inline dark styles stripped while active (originals restored when
+  switching back to dark), so every control is guaranteed readable
+- **Settings -> Theme showed raw key names** (menu_theme / theme_dark /
+  theme_light): the translation keys were lost in a failed edit and are
+  now present in both languages
+- The Windows title bar now follows the active theme when switching
+
 ## [v1.18] — 2026-09-23
 
 ### Added

@@ -1053,14 +1053,54 @@ class OpenFocus(QMainWindow):
         self.apply_theme(getattr(self, "ui_theme", "dark"))
 
     def apply_theme(self, theme: str) -> None:
-        """Apply the 'dark' or 'light' theme immediately and persist it."""
+        """Apply the 'dark' or 'light' theme immediately and persist it.
+
+        dark  = the custom dark QSS (unchanged look from previous versions)
+        light = native light palette with the custom stylesheet cleared, so
+                every control is guaranteed readable without per-widget
+                light variants of the many hardcoded dark styles
+        """
         from ui.styles import get_theme_style, set_current_theme
         theme = "light" if theme == "light" else "dark"
         self.ui_theme = theme
         ui_font = get_ui_font_family()
         mono_font = get_monospace_font_family()
-        style_sheet = get_theme_style(theme).replace('"Segoe UI", "Microsoft YaHei"', ui_font).replace('Consolas, "Segoe UI", monospace', mono_font)
-        self.setStyleSheet(style_sheet)
+
+        if theme == "light":
+            # Strip every inline dark stylesheet (they are all dark-designed),
+            # remembering originals so switching back to dark restores them.
+            if not getattr(self, "_inline_styles_saved", None):
+                saved = []
+                for wdg in self.findChildren(__import__("PyQt6.QtWidgets", fromlist=["QWidget"]).QWidget):
+                    try:
+                        ss = wdg.styleSheet()
+                        if ss:
+                            saved.append((wdg, ss))
+                            wdg.setStyleSheet("")
+                    except RuntimeError:
+                        pass
+                self._inline_styles_saved = saved
+            self.setStyleSheet("")
+            app = QApplication.instance()
+            if app is not None:
+                app.setStyleSheet("")
+                app.setPalette(app.style().standardPalette())
+            from ui.styles import get_app_light_style
+            app.setStyleSheet(
+                get_app_light_style()
+                .replace('"Segoe UI", "Microsoft YaHei"', ui_font)
+                .replace('Consolas, "Segoe UI", monospace', mono_font))
+        else:
+            # Restore the inline dark-designed styles captured for light mode
+            for wdg, ss in getattr(self, "_inline_styles_saved", None) or []:
+                try:
+                    wdg.setStyleSheet(ss)
+                except RuntimeError:
+                    pass
+            self._inline_styles_saved = None
+            style_sheet = get_theme_style(theme).replace('"Segoe UI", "Microsoft YaHei"', ui_font).replace('Consolas, "Segoe UI", monospace', mono_font)
+            self.setStyleSheet(style_sheet)
+
         set_current_theme(theme)
         self._enable_dark_title_bar(dark=(theme != "light"))
         if hasattr(self, "ui_objs") and "menu_theme" in self.ui_objs:
