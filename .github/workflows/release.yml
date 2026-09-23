@@ -183,10 +183,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          echo "Files downloaded:"
+          ls -la release/
           # A leftover release from a previously failed run would break "create"
           gh release delete "${{ github.ref_name }}" --repo "${{ github.repository }}" --yes 2>/dev/null || true
           gh release create "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" \
             --title "OpenFocus ${{ github.ref_name }}" \
           --notes-file release_notes.md \
-          release/*
+          release/* \
+          || { echo "create/upload failed; retrying upload"; gh release upload "${{ github.ref_name }}" release/* --repo "${{ github.repository }}" --clobber; }
