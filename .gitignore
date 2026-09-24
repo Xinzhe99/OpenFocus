@@ -63,3 +63,8 @@ docs/OpenFocus.spec
 /OpenFocus.spec
 /docs/OpenFocus.spec
 /*.png
+
+# 临时调试/截图脚本
+/_test_*.py
+/_theme_shots*.py
+/.shot_*.png
