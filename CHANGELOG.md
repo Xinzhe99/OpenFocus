@@ -3,6 +3,23 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.20] — 2026-09-23
+
+### Changed
+- **Light theme redesigned**: pure white background, light rounded cards,
+  blue accents and dark-gray text — matching a modern clean look instead
+  of the flat system-gray palette. The render button is a blue primary
+  button in light mode
+
+### Added
+- **Theme choice in the welcome dialog**: first-launch users can pick
+  dark or light right away (applies immediately, persists); theme buttons
+  also appear in the welcome dialog when reopened
+
+### Fixed
+- Welcome dialog text was near-invisible (white text on white dialog) in
+  both themes; dialogs now follow the active theme properly
+
 ## [v1.19] — 2026-09-23
 
 ### Fixed

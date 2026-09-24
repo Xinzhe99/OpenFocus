@@ -596,7 +596,7 @@ class OpenFocus(QMainWindow):
 
     def show_quick_start(self) -> None:
         from dialogs.welcome import WelcomeDialog
-        WelcomeDialog(self).exec()
+        WelcomeDialog(self, main_window=self).exec()
 
     def open_logs_folder(self) -> None:
         """Open the folder that contains the application log files."""
@@ -1529,7 +1529,8 @@ if __name__ == "__main__":
     if str(get_settings().value("ui/first_run_done", "") or "") != "1":
         def _show_welcome():
             from dialogs.welcome import WelcomeDialog
-            WelcomeDialog(window).exec()
+            dlg = WelcomeDialog(window, main_window=window)
+            dlg.exec()
             get_settings().setValue("ui/first_run_done", "1")
         QTimer.singleShot(1500, _show_welcome)
 
