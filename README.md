@@ -12,6 +12,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.28 (2)**: **v1.22** — **portable mode** (settings travel with the app on a USB stick), **EXIF metadata preserved** in lossless exports, **iPhone HEIC/HEIF photos load directly**, and Check for Updates can now **download and launch** the new version in-app.
+
 > 🎉 **2026.09.28**: **v1.21** — **project files** (save/restore your whole session as .ofproj), a **built-in demo stack** (try OpenFocus in seconds from the welcome dialog), a **sharpness curve** above the source slider that flags out-of-focus frames, and **Japanese + Spanish** interfaces with automatic system-language detection.
 
 > 🎉 **2026.09.23 (3)**: **v1.20** — the **light theme got a full redesign**: white background, rounded cards, blue accents and a blue primary render button. The welcome dialog now lets first-launch users pick dark or light, and follows the theme properly.

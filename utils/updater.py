@@ -1,9 +1,10 @@
 """Release update checker backed by the GitHub releases API.
 
-Runs the network call on a daemon thread and reports back through a
-callback so the caller (UI) can decide how to present the result.
+Runs network calls on daemon threads and reports back through callbacks so
+the caller (UI) can decide how to present progress and results.
 """
 import json
+import sys
 import threading
 import urllib.request
 from typing import Callable, Optional, Tuple
@@ -34,8 +35,28 @@ def is_newer(latest_tag: str, current_version: str) -> bool:
     return latest > current
 
 
-def fetch_latest_release() -> Tuple[bool, str, str]:
-    """Return (ok, tag_name, html_url) of the latest published release."""
+def find_installer_asset(release: dict) -> Optional[dict]:
+    """Pick the right installer asset for this platform from a release dict."""
+    assets = release.get("assets", []) or []
+    if sys.platform == "win32":
+        want = "setup.exe"
+    elif sys.platform == "darwin":
+        want = "macos.dmg"
+    else:
+        return None
+    for a in assets:
+        name = str(a.get("name", "")).lower()
+        if want in name:
+            return {"name": a["name"], "url": a.get("browser_download_url", ""),
+                    "size": int(a.get("size", 0))}
+    return None
+
+
+def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict]]:
+    """Return (ok, tag_name, html_url, installer_asset) of the latest release.
+
+    installer_asset is None when no platform-matching installer is attached.
+    """
     req = urllib.request.Request(
         RELEASES_API_URL,
         headers={"Accept": "application/vnd.github+json", "User-Agent": "OpenFocus"},
@@ -45,8 +66,42 @@ def fetch_latest_release() -> Tuple[bool, str, str]:
     tag = str(data.get("tag_name", "")).strip()
     url = str(data.get("html_url", "")) or RELEASES_PAGE_URL
     if not tag:
-        return False, "", url
-    return True, tag, url
+        return False, "", url, None
+    return True, tag, url, find_installer_asset(data)
+
+
+def download_async(url: str, dest_path: str,
+                   on_progress: Callable[[int, int], None],
+                   on_done: Callable[[bool, str], None]) -> None:
+    """Stream a download to dest_path on a daemon thread.
+
+    on_progress(received_bytes, total_bytes) fires after every chunk;
+    on_done(ok, message) fires once at the end (worker thread).
+    """
+
+    def worker():
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "OpenFocus"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                total = int(resp.headers.get("Content-Length", 0) or 0)
+                done = 0
+                with open(dest_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        if total:
+                            try:
+                                on_progress(done, total)
+                            except Exception:
+                                pass
+            on_done(True, dest_path)
+        except Exception as exc:
+            on_done(False, str(exc))
+
+    threading.Thread(target=worker, daemon=True, name="update-download").start()
 
 
 def check_async(current_version: str, on_result: Callable[[str, str, str], None], quiet: bool = False) -> None:
@@ -64,11 +119,12 @@ def check_async(current_version: str, on_result: Callable[[str, str, str], None]
 
     def worker():
         try:
-            ok, tag, url = fetch_latest_release()
+            ok, tag, url, asset = fetch_latest_release()
+            asset_url = (asset or {}).get("url", "") if asset else ""
             if ok and is_newer(tag, current_version):
                 on_result("update", tag, url)
             elif not quiet:
-                on_result("latest", tag or "", url)
+                on_result("latest", tag or "", asset_url)
         except Exception:
             if not quiet:
                 on_result("error", "", RELEASES_PAGE_URL)

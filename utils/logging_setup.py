@@ -21,7 +21,10 @@ _logger: logging.Logger = logging.getLogger("openfocus")
 
 
 def logs_dir() -> Path:
-    """%APPDATA%/OpenFocus/logs on Windows, ~/Library/Application Support/... on macOS."""
+    """Logs next to the exe in portable mode; user profile dir otherwise."""
+    from utils.settings_store import is_portable_mode, portable_data_dir
+    if is_portable_mode():
+        return Path(portable_data_dir()) / LOG_DIR_NAME
     if sys.platform == "win32":
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
     elif sys.platform == "darwin":

@@ -84,8 +84,9 @@ from constants import (
 class OpenFocus(QMainWindow):
     # Emitted from the background torch probe; auto-queued to the UI thread.
     _stackmff_probe_done = pyqtSignal(bool)
-    # Emitted from the background update check (state, tag, download_url).
-    _update_check_done = pyqtSignal(str, str, str)
+    # Emitted from the background update check (state, tag, download_url,
+    # installer_asset_url).
+    _update_check_done = pyqtSignal(str, str, str, str)
 
     def __init__(self):
         super().__init__()
@@ -559,18 +560,19 @@ class OpenFocus(QMainWindow):
         if not quiet:
             self.statusBar().showMessage(trans.t('update_checking'), 3000)
 
-        def done(state, tag, url):
+        def done(state, tag, url, asset=""):
             settings = get_settings()
             settings.setValue(LAST_UPDATE_CHECK_KEY, time.time())
-            self._update_check_done.emit(state, tag, url)
+            self._update_check_done.emit(state, tag, url, asset)
 
         updater.check_async(
             APP_VERSION,
-            lambda state, tag, url: done(state, tag, url),
+            lambda state, tag, url, asset="": done(state, tag, url, asset),
             quiet=quiet,
         )
 
-    def _show_update_result(self, state: str, tag: str, download_url: str) -> None:
+    def _show_update_result(self, state: str, tag: str, download_url: str,
+                            installer_asset: str = "") -> None:
         from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtWidgets import QMessageBox
 
@@ -579,10 +581,13 @@ class OpenFocus(QMainWindow):
             box.setIcon(QMessageBox.Icon.Information)
             box.setWindowTitle(trans.t('update_available_title'))
             box.setText(trans.t('update_available_text').format(version=tag))
-            open_btn = box.addButton(trans.t('btn_open_downloads'), QMessageBox.ButtonRole.AcceptRole)
+            download_btn = box.addButton(trans.t('btn_download_install'), QMessageBox.ButtonRole.AcceptRole)
+            open_btn = box.addButton(trans.t('btn_open_downloads'), QMessageBox.ButtonRole.ActionRole)
             box.addButton(trans.t('btn_later'), QMessageBox.ButtonRole.RejectRole)
             box.exec()
-            if box.clickedButton() is open_btn:
+            if box.clickedButton() is download_btn:
+                self._download_and_launch_update(download_url or installer_asset, tag)
+            elif box.clickedButton() is open_btn:
                 QDesktopServices.openUrl(QUrl(download_url))
         elif state == "latest":
             show_message_box(
@@ -665,6 +670,40 @@ class OpenFocus(QMainWindow):
             folder=demo_dir, scale=1.0, append=False,
             on_success=lambda: self.add_recent_file(demo_dir) if hasattr(self, "add_recent_file") else None,
         )
+
+    def _download_and_launch_update(self, url: str, tag: str) -> None:
+        """Download the installer in the background, then offer to run it."""
+        import tempfile
+        from PyQt6.QtWidgets import QProgressDialog
+        from utils import updater
+
+        dest = os.path.join(tempfile.gettempdir(),
+                            f"OpenFocus-{tag}-{os.path.basename(url)}")
+        progress = QProgressDialog(trans.t('update_downloading'), "", 0, 100, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setWindowTitle(trans.t('update_downloading'))
+
+        def on_progress(done: int, total: int) -> None:
+            progress.setValue(int(done * 100 / max(1, total)))
+
+        def on_done(ok: bool, message: str) -> None:
+            progress.close()
+            if not ok:
+                show_warning_box(self, trans.t('update_check_failed_title'), message)
+                return
+            reply = QMessageBox.question(
+                self, trans.t('update_downloaded_title'),
+                trans.t('update_run_installer'),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                if sys.platform == "win32":
+                    os.startfile(message)  # noqa: S606 - user-confirmed installer
+                else:
+                    import subprocess
+                    subprocess.Popen(["open", message])
+
+        updater.download_async(url, dest, on_progress, on_done)
 
     def show_quick_start(self) -> None:
         from dialogs.welcome import WelcomeDialog

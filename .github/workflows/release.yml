@@ -48,6 +48,7 @@ jobs:
       - name: Package zip (portable)
         shell: pwsh
         run: |
+          New-Item -ItemType File -Path "dist/OpenFocus/OpenFocus.portable" -Force | Out-Null
           Compress-Archive -Path dist/OpenFocus -DestinationPath "OpenFocus-${{ github.ref_name }}-windows-x64.zip"
 
       - name: Build installer (Inno Setup)

@@ -468,6 +468,33 @@ Switch via **Settings → Theme**; the choice applies immediately (the
 Windows title bar follows) and is remembered. First-launch users choose a
 theme inside the welcome dialog.
 
+### Portable Mode
+
+Create an empty file named `OpenFocus.portable` next to `OpenFocus.exe`
+(the portable zip ships with one) and all user data — settings, logs,
+recent files — is stored in an `OpenFocusData` folder beside the app
+instead of your user profile, so the installation can travel on a USB
+stick. Delete the marker to switch back to the normal profile.
+
+### EXIF Metadata
+
+Source metadata (camera model, exposure, orientation and so on) is kept:
+orientation is applied on load, and PNG/TIFF/WebP exports embed the
+original EXIF automatically. JPG/BMP exports cannot store full EXIF and
+are written without it.
+
+### HEIC/HEIF Input
+
+iPhone photos load directly. Requires the optional `pillow-heif` package
+(`pip install pillow-heif`; included in the packaged builds).
+
+### Updates
+
+Help → Check for Updates compares your version against GitHub Releases.
+**Download and Install** fetches the new installer in-app (with progress)
+and launches it; Open Downloads Page goes to the releases list. The check
+runs silently at most once a day.
+
 ### Registration Cache
 
 OpenFocus can store registration results in a `.openfocus_cache` folder

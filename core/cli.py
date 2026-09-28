@@ -265,6 +265,10 @@ def run_cli(argv: List[str]) -> int:
             _src, paths = _resolve_stack(args, video_temp)
             print(f"Loaded {len(paths)} images from {args.input[0]}")
             images = _load_images(paths)
+            if paths:
+                from utils.image_utils import set_source_exif
+                from core.image_loader import _read_exif_bytes
+                set_source_exif(_read_exif_bytes(paths[0]))
 
             fused = _fuse_stack(images, args)
             if fused is None:

@@ -10,13 +10,34 @@ from datetime import datetime
 from typing import List, Tuple, Optional, Dict, Any
 
 try:
-    from PIL import Image as PILImage
+    from PIL import Image as PILImage, ImageOps
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
 
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    HEIF_AVAILABLE = True
+except ImportError:
+    HEIF_AVAILABLE = False
+
 from PyQt6.QtGui import QPixmap, QImage
 from utils.image_utils import to_display_uint8
+
+
+def _read_exif_bytes(path: str) -> bytes:
+    """Raw EXIF block of an image (b"") when absent or unreadable."""
+    if not PIL_AVAILABLE:
+        return b""
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in ('.jpg', '.jpeg', '.tif', '.tiff', '.png'):
+            return b""
+        with PILImage.open(path) as pil_img:
+            return pil_img.info.get('exif', b"") or b""
+    except Exception:
+        return b""
 
 
 # EXIF Orientation tag values that need a pixel transform (1 = already OK).
@@ -59,6 +80,8 @@ class ImageStackLoader:
     """图像栈加载器"""
 
     SUPPORTED_FORMATS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
+    if HEIF_AVAILABLE:
+        SUPPORTED_FORMATS |= {'.heic', '.heif'}
     SUPPORTED_VIDEO_FORMATS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'}
 
     def __init__(self):
@@ -85,12 +108,15 @@ class ImageStackLoader:
         loaded_images = []
         filenames = []
         failed_count = 0
+        self.source_exif = b""
 
         for filename, full_path in image_files:
             try:
                 img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
                                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
                 if img is not None:
+                    if not self.source_exif:
+                        self.source_exif = _read_exif_bytes(full_path)
                     img = apply_exif_orientation(full_path, img)
                     if scale_factor != 1.0 and 0 < scale_factor < 1.0:
                         width = int(img.shape[1] * scale_factor)
@@ -182,7 +208,12 @@ class ImageStackLoader:
                     failed_count += 1
                     continue
 
-                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
+                if full_path.lower().endswith(('.heic', '.heif')):
+                    img = _read_via_pil(full_path)
+                elif full_path.lower().endswith(('.heic', '.heif')):
+                    img = _read_via_pil(full_path)
+                else:
+                    img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
                                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
                 if img is not None:
                     img = apply_exif_orientation(full_path, img)
@@ -320,7 +351,10 @@ class ImageStackLoader:
 
         for filename, full_path in image_files:
             try:
-                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
+                if full_path.lower().endswith(('.heic', '.heif')):
+                    img = _read_via_pil(full_path)
+                else:
+                    img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
                                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
                 if img is not None:
                     img = apply_exif_orientation(full_path, img)

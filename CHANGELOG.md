@@ -3,6 +3,24 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.22] — 2026-09-28
+
+### Added
+- **Portable mode**: when `OpenFocus.portable` sits next to the executable
+  (the portable zip ships it), settings and logs are stored beside the app
+  instead of the user profile — the installation travels on a USB stick
+- **EXIF preservation**: source metadata is embedded into lossless exports
+  (PNG/TIFF/WebP) automatically
+- **HEIC/HEIF input**: iPhone photos load directly (via pillow-heif), with
+  EXIF orientation applied
+- **In-app update download**: Check for Updates can download the new
+  installer directly (with progress) and launch it, in addition to the
+  Releases-page link
+
+### Changed
+- requirements.txt now lists pillow-heif; HEIC support activates
+  automatically when it is installed
+
 ## [v1.21] — 2026-09-28
 
 ### Added

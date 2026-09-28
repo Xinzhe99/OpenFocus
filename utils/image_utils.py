@@ -88,16 +88,40 @@ def to_display_uint8(img: np.ndarray) -> np.ndarray:
     return img.astype(np.uint8)
 
 
-def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None) -> bool:
-    """cv2.imwrite that accepts 16-bit images.
+# Raw EXIF of the loaded source stack; set by the loaders, embedded into
+# lossless exports automatically. Empty bytes = no metadata to embed.
+SOURCE_EXIF = b""
+
+
+def set_source_exif(exif: bytes) -> None:
+    global SOURCE_EXIF
+    SOURCE_EXIF = exif or b""
+
+
+def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
+                 exif: Optional[bytes] = None) -> bool:
+    """cv2.imwrite that accepts 16-bit images and can embed EXIF metadata.
 
     PNG/TIFF store uint16 natively; formats that cannot (JPG/BMP) are
-    converted to uint8 automatically instead of failing.
+    converted to uint8 automatically instead of failing. EXIF (raw bytes
+    from the source file) is embedded into PNG/TIFF/WebP exports when
+    provided; the pixel data itself is never re-encoded.
     """
     ext = os.path.splitext(path)[1].lower()
     if image.dtype == np.uint16 and ext not in (".png", ".tif", ".tiff"):
         image = to_display_uint8(image)
-    return cv2.imwrite(path, image, params if params else [])
+    ok = cv2.imwrite(path, image, params if params else [])
+    # EXIF embed only for 8-bit lossless files; re-opening a 16-bit PNG with
+    # Pillow would downgrade it to 8-bit.
+    embed = SOURCE_EXIF if exif is None else exif
+    if ok and embed and image.dtype == np.uint8 and ext in (".png", ".tif", ".tiff", ".webp"):
+        try:
+            from PIL import Image
+            with Image.open(path) as pil_img:
+                pil_img.save(path, exif=embed)
+        except Exception as exc:
+            print(f"EXIF embed skipped for {path}: {exc}")
+    return ok
 
 
 def normalize_fuse_input(images):

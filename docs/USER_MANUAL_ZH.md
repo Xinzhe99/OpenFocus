@@ -450,6 +450,28 @@ OpenFocus 只有 AI 神经网络模型（StackMFF-V4）使用 GPU（CUDA/MPS）�
 
 OpenFocus 可以把配准结果保存在源图像栈旁的 `.openfocus_cache` 文件夹中。再次打开同一个图像栈（文件未变化）时会直接跳过配准。通过 **设置 → 配准缓存** 开关；过期条目会被自动替换。
 
+### 便携模式
+
+在 `OpenFocus.exe` 旁创建名为 `OpenFocus.portable` 的空文件（便携版 zip
+自带），所有用户数据——设置、日志、最近文件——会改存到应用旁的
+`OpenFocusData` 文件夹，安装可随 U 盘移动。删除标记即恢复普通模式。
+
+### EXIF 元数据
+
+源图像的拍摄元数据会被保留：加载时自动应用方向，PNG/TIFF/WebP 导出会
+自动嵌入原始 EXIF。JPG/BMP 无法存储完整 EXIF，导出时不包含。
+
+### HEIC/HEIF 输入
+
+直接加载 iPhone 照片。需要可选的 `pillow-heif` 包
+（`pip install pillow-heif`；打包版已内置）。
+
+### 更新
+
+帮助 → 检查更新 会与 GitHub Releases 比对版本。**下载并安装** 可在应用内
+（带进度）下载新安装包并启动安装；打开下载页则跳转发布列表。静默检查
+每天最多一次。
+
 ### 设置持久化
 
 以下设置在应用重启后自动恢复：线程数、瓦片参数、配准下采样宽度、AI 批量大小、GPU 加速开关、配准缓存开关、界面语言、窗口大小与面板布局、拖出导出格式，以及最近打开的图像栈。设置对话框确认即保存；应用关闭时再次整体保存。偏好按用户存储在 `OpenFocus/OpenFocus.ini`（QSettings INI 格式）。

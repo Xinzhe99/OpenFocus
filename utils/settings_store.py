@@ -5,6 +5,7 @@ registration downscale, StackMFF-V4 batch size, GPU toggle, UI language,
 recently opened stacks) survives restarts through this module.
 """
 import os
+import sys
 from typing import Any
 
 from PyQt6.QtCore import QSettings
@@ -42,6 +43,44 @@ _PERSISTED_FIELDS = {
 
 
 _settings_singleton = None
+_PORTABLE_MARKER = "OpenFocus.portable"
+
+
+def is_portable_mode() -> bool:
+    """True when an OpenFocus.portable marker sits next to the executable.
+
+    Portable builds (the zip from Releases) ship this marker; the installer
+    build does not. In portable mode all user data (settings, logs, project
+    defaults) lives next to the executable instead of the user profile, so
+    the installation can travel on a USB stick.
+    """
+    global _portable_dir
+    try:
+        if getattr(sys, "frozen", False):
+            base = os.path.dirname(sys.executable)
+        else:
+            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        marker = os.path.join(base, _PORTABLE_MARKER)
+        if os.path.isfile(marker):
+            _portable_dir = base
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def portable_data_dir() -> str:
+    """Directory holding portable user data (created on demand)."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    d = os.path.join(base, "OpenFocusData")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+_portable_dir = None
 
 
 def get_settings() -> QSettings:
@@ -49,15 +88,23 @@ def get_settings() -> QSettings:
 
     A fresh instance per call risks losing writes when the temporary Python
     wrapper is garbage-collected before Qt syncs the backing store.
+    Portable mode (marker file next to the executable) stores the INI next
+    to the executable so settings travel with it.
     """
     global _settings_singleton
     if _settings_singleton is None:
-        _settings_singleton = QSettings(
-            QSettings.Format.IniFormat,
-            QSettings.Scope.UserScope,
-            ORGANIZATION,
-            APPLICATION,
-        )
+        if is_portable_mode():
+            _settings_singleton = QSettings(
+                os.path.join(portable_data_dir(), "settings.ini"),
+                QSettings.Format.IniFormat,
+            )
+        else:
+            _settings_singleton = QSettings(
+                QSettings.Format.IniFormat,
+                QSettings.Scope.UserScope,
+                ORGANIZATION,
+                APPLICATION,
+            )
     return _settings_singleton
 
 

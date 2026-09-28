@@ -68,6 +68,15 @@ class SourceManager:
                 # Remember for the optional "restore last stack on startup"
                 from utils.settings_store import get_settings, LAST_STACK_FOLDER_KEY
                 get_settings().setValue(LAST_STACK_FOLDER_KEY, window.current_folder_path or "")
+                # Exports inherit the source metadata from now on
+                from utils.image_utils import set_source_exif
+                set_source_exif(getattr(window.image_loader, "source_exif", b""))
+
+                if on_success is not None:
+                    on_success()
+                # Remember for the optional "restore last stack on startup"
+                from utils.settings_store import get_settings, LAST_STACK_FOLDER_KEY
+                get_settings().setValue(LAST_STACK_FOLDER_KEY, window.current_folder_path or "")
             except Exception as exc:  # pylint: disable=broad-except
                 show_message_box(
                     window,
