@@ -12,6 +12,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.28**: **v1.21** — **project files** (save/restore your whole session as .ofproj), a **built-in demo stack** (try OpenFocus in seconds from the welcome dialog), a **sharpness curve** above the source slider that flags out-of-focus frames, and **Japanese + Spanish** interfaces with automatic system-language detection.
+
 > 🎉 **2026.09.23 (3)**: **v1.20** — the **light theme got a full redesign**: white background, rounded cards, blue accents and a blue primary render button. The welcome dialog now lets first-launch users pick dark or light, and follows the theme properly.
 
 > 🎉 **2026.09.23 (2)**: **v1.19** — light theme readability rework: the native light palette now governs the whole interface (inline dark styles are stripped while light mode is active and restored on switch-back), and the Settings → Theme menu shows proper translated names.

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from widgets.magnifier_label import MagnifierLabel
+from widgets.sharpness_curve import SharpnessCurveWidget
 from widgets.wipe_compare import WipeCompareWidget
 from locales import trans
 
@@ -28,6 +29,7 @@ class SourcePanel:
     slider: QSlider
     info_label: QLabel
     roi_btn: QPushButton
+    sharpness_curve: "SharpnessCurveWidget"
 
 
 @dataclass
@@ -98,8 +100,13 @@ def create_source_panel() -> SourcePanel:
 
     control_bar.setVisible(False)
 
+    # Per-frame sharpness curve above the navigation slider
+    sharpness_curve = SharpnessCurveWidget()
+    sharpness_curve.setVisible(False)
+
     layout.addWidget(title)
     layout.addWidget(image_label, 1)
+    layout.addWidget(sharpness_curve)
     layout.addWidget(control_bar)
 
     return SourcePanel(
@@ -109,6 +116,7 @@ def create_source_panel() -> SourcePanel:
         slider=slider,
         info_label=info_label,
         roi_btn=roi_btn,
+        sharpness_curve=sharpness_curve,
     )
 
 

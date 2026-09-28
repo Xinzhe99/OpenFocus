@@ -1,0 +1,153 @@
+"""OpenFocus project files (.ofproj): save/restore the complete work state.
+
+A project stores the exact source file list (in stack order), the load-time
+downsample scale, all rendering settings, label configurations and the
+current frame index — everything needed to rebuild the working session.
+Source images themselves are referenced, not copied.
+"""
+import json
+import os
+from typing import Any, Dict, List, Optional, Tuple
+
+PROJECT_SUFFIX = ".ofproj"
+FORMAT_VERSION = 1
+
+
+def _collect_state(window) -> Dict[str, Any]:
+    """Snapshot everything restorable from the main window."""
+    from constants import APP_VERSION
+    settings = {
+        "fusion_method": (
+            "guided_filter" if window.rb_a.isChecked()
+            else "dct" if window.rb_b.isChecked()
+            else "dtcwt" if window.rb_c.isChecked()
+            else "gfgfgf" if window.rb_gfg.isChecked()
+            else "stackmffv4" if window.rb_d.isChecked()
+            else "guided_filter"
+        ),
+        "align_homography": window.cb_align_homography.isChecked(),
+        "align_ecc": window.cb_align_ecc.isChecked(),
+        "kernel_size": window.slider_smooth.value(),
+        "thread_count": getattr(window, "thread_count", 4),
+        "tile_enabled": getattr(window, "tile_enabled", True),
+        "tile_block_size": getattr(window, "tile_block_size", 1024),
+        "tile_overlap": getattr(window, "tile_overlap", 256),
+        "tile_threshold": getattr(window, "tile_threshold", 2048),
+        "reg_downscale_width": getattr(window, "reg_downscale_width", None),
+        "stackmffv4_batch_size": getattr(window, "stackmffv4_batch_size", 2),
+        "quick_preview": getattr(window, "chk_quick_preview", None) is not None
+        and window.chk_quick_preview.isChecked(),
+        "current_index": getattr(window, "current_display_index", -1),
+    }
+    labels = {}
+    lm = getattr(window, "label_manager", None)
+    if lm is not None and hasattr(lm, "export_state"):
+        labels = lm.export_state()
+    # Store absolute paths: image_filenames are base names relative to the
+    # source folder, and appended frames may come from several folders.
+    folder = getattr(window, "current_folder_path", "") or ""
+    abs_paths = []
+    for name in getattr(window, "image_filenames", []):
+        cand = os.path.join(folder, name)
+        abs_paths.append(cand if os.path.isfile(cand) else name)
+    return {
+        "openfocus_project": FORMAT_VERSION,
+        "app_version": APP_VERSION,
+        "sources": abs_paths,
+        "scale_factor": getattr(window, "current_scale_factor", 1.0),
+        "settings": settings,
+        "labels": labels,
+    }
+
+
+def save_project(window, path: str) -> Tuple[bool, str]:
+    """Write the current session state to an .ofproj file."""
+    if not getattr(window, "raw_images", []):
+        return False, "no images loaded"
+    try:
+        state = _collect_state(window)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        return True, path
+    except OSError as exc:
+        return False, str(exc)
+
+
+def validate_project(path: str) -> Tuple[bool, str, Dict[str, Any]]:
+    """Read and validate a project file. Returns (ok, error, state)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"cannot read project: {exc}", {}
+    if not isinstance(state, dict) or "openfocus_project" not in state:
+        return False, "not an OpenFocus project file", {}
+    sources = state.get("sources", [])
+    if not sources:
+        return False, "project contains no sources", {}
+    missing = [p for p in sources if not os.path.isfile(p)]
+    if missing:
+        return False, f"{len(missing)} source file(s) missing (first: {missing[0]})", {}
+    return True, "", state
+
+
+def apply_project(window, state: Dict[str, Any]) -> None:
+    """Load the project's sources and restore settings/labels/index."""
+    sources: List[str] = state["sources"]
+    settings = state.get("settings", {})
+
+    # Load frames from the exact recorded file list (no dialog)
+    window.source_manager._start_load_worker(
+        filepaths=list(sources),
+        scale=float(state.get("scale_factor", 1.0) or 1.0),
+        append=False,
+        on_success=lambda: _apply_after_load(window, state),
+    )
+
+
+def _apply_after_load(window, state: Dict[str, Any]) -> None:
+    settings = state.get("settings", {})
+
+    method = settings.get("fusion_method")
+    for code, rb in (("guided_filter", window.rb_a), ("dct", window.rb_b),
+                     ("dtcwt", window.rb_c), ("gfgfgf", window.rb_gfg),
+                     ("stackmffv4", window.rb_d)):
+        rb.setChecked(code == method)
+
+    window.cb_align_homography.setChecked(bool(settings.get("align_homography", False)))
+    window.cb_align_ecc.setChecked(bool(settings.get("align_ecc", False)))
+
+    kernel = int(settings.get("kernel_size", 31) or 31)
+    if kernel % 2 == 0:
+        kernel = max(1, kernel - 1)
+    window.slider_smooth.setValue(kernel)
+
+    if settings.get("thread_count"):
+        window.thread_count = int(settings["thread_count"])
+    window.tile_enabled = bool(settings.get("tile_enabled", True))
+    window.tile_block_size = int(settings.get("tile_block_size", 1024))
+    window.tile_overlap = int(settings.get("tile_overlap", 256))
+    window.tile_threshold = int(settings.get("tile_threshold", 2048))
+    if settings.get("reg_downscale_width"):
+        window.reg_downscale_width = int(settings["reg_downscale_width"])
+    if settings.get("stackmffv4_batch_size"):
+        window.stackmffv4_batch_size = int(settings["stackmffv4_batch_size"])
+    qp = window.chk_quick_preview if hasattr(window, "chk_quick_preview") else None
+    if qp is not None:
+        qp.setChecked(bool(settings.get("quick_preview", False)))
+
+    labels = state.get("labels", {})
+    lm = getattr(window, "label_manager", None)
+    if lm is not None and labels and hasattr(lm, "import_state"):
+        lm.import_state(labels)
+
+    idx = int(settings.get("current_index", -1) or -1)
+    if idx >= 0 and idx < len(window.raw_images):
+        window.update_source_view(idx)
+
+
+def suggest_project_path(window) -> Optional[str]:
+    """Default save location: next to the source stack."""
+    folder = getattr(window, "current_folder_path", "") or ""
+    name = os.path.basename(folder.rstrip("/\\")) or "OpenFocus"
+    return os.path.join(folder, name + PROJECT_SUFFIX) if folder else None

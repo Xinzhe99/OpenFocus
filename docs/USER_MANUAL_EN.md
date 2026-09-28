@@ -31,7 +31,8 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - **Multiple Fusion Algorithms**: Choose from Guided Filter, DCT, DTCWT, GFG-FGF, and AI Fusion (deep learning)
 - **Image Registration**: Align misaligned image sequences using ECC or Homography methods
 - **Wipe Compare View**: Inspect alignment and compare results with an A/B divider view
-- **Batch Processing**: Process multiple image folders simultaneously
+- **Project Files**: save and restore complete working sessions
+- **Multi-language**: English, 中文, 日本語, Español with automatic system-language detection
 - **Headless CLI**: Script OpenFocus from the command line for automation and CI
 - **Flexible Export**: Save results as individual images, folders, or GIF animations
 - **Image Transformations**: Rotate, flip, and resize image stacks
@@ -132,6 +133,28 @@ The software will automatically:
 2. Select a video file (MP4, AVI, MOV, MKV, WMV, FLV, WEBM)
 3. The video will be automatically decoded into individual frames
 4. Each frame becomes part of the image stack
+
+### Project Files
+
+File → Save Project stores your whole working session as an `.ofproj`
+file: the exact source file list (in order), the load scale, fusion
+method, registration options, kernel size, tile/thread/registration
+settings, label configurations and the current frame. File → Open Project
+rebuilds that session exactly (source images are referenced, not copied —
+keep them in place). The window title shows the open project.
+
+### Demo Stack
+
+The welcome dialog offers **Load Demo Stack**: six bundled sample photos
+from a real focus stack, so you can try the full workflow immediately
+without your own images. Also handy for verifying an installation.
+
+### Sharpness Curve
+
+A small curve above the source navigation slider shows the per-frame
+sharpness (normalized). Out-of-focus frames appear as dips marked with a
+red dot. Click anywhere on the curve to jump to that frame; hovering
+shows the frame number.
 
 ### Recent Files
 

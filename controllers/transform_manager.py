@@ -119,6 +119,9 @@ class TransformManager:
             # large stacks, while only one frame is visible at a time.
             window.stack_images = [None] * len(window.raw_images)
             thumbnails = window.image_loader.create_thumbnails(window.raw_images, thumb_size=40)
+
+            # Per-frame sharpness for the curve above the navigation slider
+            self._update_sharpness_curve(window)
             window.source_manager.update_file_list(window.image_filenames, thumbnails)
             window.source_manager.update_slider_range()
 
@@ -152,6 +155,27 @@ class TransformManager:
             # caller has to remember.
             if getattr(window, "wipe_active", False) and hasattr(window, "refresh_wipe_controls"):
                 window.refresh_wipe_controls()
+
+    @staticmethod
+    def _update_sharpness_curve(window) -> None:
+        """Compute per-frame Laplacian variance (on small copies) and feed the
+        curve widget above the source slider."""
+        curve = getattr(window, "sharpness_curve", None)
+        if curve is None:
+            return
+        try:
+            values = []
+            for img in window.raw_images:
+                h, w = img.shape[:2]
+                scale = 320.0 / max(h, w)
+                small = cv2.resize(img, (int(w * scale), int(h * scale)),
+                                   interpolation=cv2.INTER_AREA) if scale < 1.0 else img
+                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                values.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
+            curve.set_data(values)
+            curve.set_current(window.current_display_index)
+        except Exception as exc:
+            print(f"sharpness analysis failed: {exc}")
 
     def invalidate_processing_results(self, clear_output_view: bool = False, preserve_outputs: bool = False) -> None:
         """Expose processing reset so other controllers can reuse it."""

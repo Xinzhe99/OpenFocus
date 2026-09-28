@@ -45,6 +45,18 @@ class WelcomeDialog(QDialog):
             theme_row.addWidget(btn)
         layout.addLayout(theme_row)
 
+        # Demo stack: zero-friction first success
+        demo_row = QHBoxLayout()
+        demo_btn = QPushButton(trans.t('btn_load_demo'))
+        demo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        demo_btn.clicked.connect(self._load_demo)
+        demo_row.addWidget(demo_btn)
+        demo_hint = QLabel(trans.t('btn_load_demo_hint'))
+        demo_hint.setStyleSheet("color: #57606a; background: transparent;")
+        demo_row.addWidget(demo_hint)
+        demo_row.addStretch()
+        layout.addLayout(demo_row)
+
         row = QHBoxLayout()
         row.addStretch()
         ok = QPushButton(trans.t('btn_get_started'))
@@ -54,6 +66,11 @@ class WelcomeDialog(QDialog):
         layout.addLayout(row)
 
         self._sync_theme_buttons()
+
+    def _load_demo(self) -> None:
+        if self._main_window is not None:
+            self._main_window.load_demo_stack()
+            self.accept()
 
     def _apply_dialog_style(self):
         """Keep the dialog readable in whichever theme is active."""

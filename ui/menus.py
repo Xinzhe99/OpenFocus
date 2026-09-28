@@ -27,6 +27,25 @@ def setup_menus(window: QMainWindow) -> None:
     file_menu.addAction(open_video_action)
     window.ui_objs['action_open_video'] = open_video_action
 
+    open_project_action = QAction(trans.t('menu_open_project'), window)
+    open_project_action.setShortcut("Ctrl+Alt+O")
+    open_project_action.triggered.connect(window.open_project_dialog)
+    file_menu.addAction(open_project_action)
+    window.ui_objs['menu_open_project'] = open_project_action
+
+    save_project_action = QAction(trans.t('menu_save_project'), window)
+    save_project_action.setShortcut("Ctrl+Alt+S")
+    save_project_action.triggered.connect(lambda: window.save_project_dialog(save_as=False))
+    file_menu.addAction(save_project_action)
+    window.ui_objs['menu_save_project'] = save_project_action
+
+    save_project_as_action = QAction(trans.t('menu_save_project_as'), window)
+    save_project_as_action.triggered.connect(lambda: window.save_project_dialog(save_as=True))
+    file_menu.addAction(save_project_as_action)
+    window.ui_objs['menu_save_project_as'] = save_project_as_action
+
+    file_menu.addSeparator()
+
     # Recent files submenu (items filled in by window.rebuild_recent_menu())
     recent_menu = file_menu.addMenu(trans.t('menu_recent'))
     window.ui_objs['menu_recent'] = recent_menu
@@ -229,6 +248,22 @@ def setup_menus(window: QMainWindow) -> None:
     lang_group.addAction(lang_zh)
     lang_menu.addAction(lang_zh)
     window.ui_objs['action_lang_zh'] = lang_zh
+
+    lang_ja = QAction(trans.t('action_lang_ja'), window)
+    lang_ja.setCheckable(True)
+    lang_ja.setChecked(trans.current_lang == 'ja')
+    lang_ja.triggered.connect(lambda: window.set_language('ja'))
+    lang_group.addAction(lang_ja)
+    lang_menu.addAction(lang_ja)
+    window.ui_objs['action_lang_ja'] = lang_ja
+
+    lang_es = QAction(trans.t('action_lang_es'), window)
+    lang_es.setCheckable(True)
+    lang_es.setChecked(trans.current_lang == 'es')
+    lang_es.triggered.connect(lambda: window.set_language('es'))
+    lang_group.addAction(lang_es)
+    lang_menu.addAction(lang_es)
+    window.ui_objs['action_lang_es'] = lang_es
 
     tile_action = QAction(trans.t('action_tile_settings'), window)
     # 打开瓦片设置对话框

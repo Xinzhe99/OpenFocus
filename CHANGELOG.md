@@ -3,6 +3,24 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.21] — 2026-09-28
+
+### Added
+- **Project files (.ofproj)**: File → Save Project / Save Project As /
+  Open Project. Stores the exact source file list, load scale, all
+  rendering settings and label configurations; opening one rebuilds the
+  whole working session. Window title shows the open project
+- **Built-in demo stack**: "Load Demo Stack" in the welcome dialog loads
+  six bundled sample photos (from a real ring-shot stack) so new users can
+  see their first fusion in seconds
+- **Sharpness curve**: a per-frame focus-quality curve above the source
+  navigation slider. Out-of-focus frames appear as dips with red markers;
+  click anywhere on the curve to jump to that frame
+- **Japanese and Spanish interfaces** with full translations
+- **System language auto-detection** via QLocale (zh/ja/es/en), replacing
+  the timezone heuristic (kept as fallback); the persisted choice still
+  wins
+
 ## [v1.20] — 2026-09-23
 
 ### Changed

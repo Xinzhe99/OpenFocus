@@ -9,13 +9,26 @@ class TranslationManager(QObject):
         super().__init__()
         self.current_lang = 'en'
         
-        # Auto-detect language based on timezone (UTC+8 -> China -> zh)
+        # Auto-detect system language via QLocale (best practice); fall back
+        # to the legacy UTC+8 heuristic when detection fails.
         try:
-            offset = datetime.datetime.now().astimezone().utcoffset()
-            if offset is not None and int(offset.total_seconds()) == 28800:
+            from PyQt6.QtCore import QLocale
+            name = QLocale.system().name()  # e.g. 'zh_CN', 'ja_JP', 'es_ES'
+            if name.startswith('zh'):
                 self.current_lang = 'zh'
+            elif name.startswith('ja'):
+                self.current_lang = 'ja'
+            elif name.startswith('es'):
+                self.current_lang = 'es'
+            else:
+                raise ValueError('unsupported locale')
         except Exception:
-            pass
+            try:
+                offset = datetime.datetime.now().astimezone().utcoffset()
+                if offset is not None and int(offset.total_seconds()) == 28800:
+                    self.current_lang = 'zh'
+            except Exception:
+                pass
 
         self.translations = {
             'en': {
@@ -23,6 +36,11 @@ class TranslationManager(QObject):
                 'menu_file': 'File',
                 'action_open_folder': 'Open Folder',
                 'action_open_video': 'Open Video',
+                'menu_open_project': 'Open Project…',
+                'menu_save_project': 'Save Project',
+                'menu_save_project_as': 'Save Project As…',
+                'msg_project_saved': 'Project saved: {path}',
+                'msg_project_save_failed': 'Failed to save project: {err}',
                 'menu_recent': 'Open Recent',
                 'menu_recent_empty': '(No Recent Files)',
                 'menu_recent_clear': 'Clear Recent List',
@@ -64,6 +82,7 @@ class TranslationManager(QObject):
                 'msg_confirm_delete_output_text': 'Delete {count} selected result(s)?\n\nThis cannot be undone.',
                 'msg_confirm_delete_all_output_text': 'Delete ALL {count} result(s)?\n\nThis cannot be undone.',
                 'menu_drag_format': 'Drag-out format',
+                'sharpness_curve_tooltip': 'Sharpness curve (click to jump to a frame)',
                 'menu_export_all': 'Export All Results to Folder',
                 'msg_export_all_done_text': 'Exported {count} result(s) to:\n{folder}',
                 'msg_export_all_none': 'No results to export yet - render first',
@@ -74,6 +93,9 @@ class TranslationManager(QObject):
                 'msg_compare_done': 'Comparison finished: {count} results in the output list. Open Wipe and scrub side B to compare them.',
                 'welcome_title': 'Welcome to OpenFocus',
                 'welcome_choose_theme': 'Theme:',
+                'msg_demo_missing': 'Bundled demo stack not found (demo_stack folder missing)',
+                'btn_load_demo': 'Load Demo Stack',
+                'btn_load_demo_hint': 'try OpenFocus instantly with bundled sample photos',
                 'welcome_body': '<h3>Three steps to your first all-in-focus image</h3><p><b>1.</b> Open a folder of photos taken at different focus points (File → Open Folder, or drag it here).<br><b>2.</b> Pick a fusion method and click <b>Render</b>. Tip: tick <b>Quick preview</b> to try settings fast.</p><p><b>3.</b> Compare results with the <b>Wipe</b> toggle (top-right of the result panel), then save from the output list (drag out, right-click, or Ctrl+S).</p><p>Full details: Help → User Manual.</p>',
                 'btn_get_started': 'Get Started',
                 'menu_drag_format_hint': 'Image format used when dragging results out of the app',
@@ -118,7 +140,9 @@ class TranslationManager(QObject):
                 'menu_settings': 'Settings',
                 'menu_language': 'Language',
                 'action_lang_en': 'English',
-                'action_lang_zh': 'Chinese (Simplified)',
+                'action_lang_zh': '中文（简体）',
+                'action_lang_ja': '日本語',
+                'action_lang_es': 'Español',
                 'action_thread_settings': 'Thread Settings',
                 'action_reg_settings': 'Registration Settings',
                 'action_tile_settings': 'Tile Settings',
@@ -495,6 +519,11 @@ class TranslationManager(QObject):
                 'menu_file': '文件',
                 'action_open_folder': '打开文件夹',
                 'action_open_video': '打开视频',
+                'menu_open_project': '打开工程…',
+                'menu_save_project': '保存工程',
+                'menu_save_project_as': '工程另存为…',
+                'msg_project_saved': '工程已保存：{path}',
+                'msg_project_save_failed': '工程保存失败：{err}',
                 'menu_recent': '最近打开',
                 'menu_recent_empty': '（无最近文件）',
                 'menu_recent_clear': '清空最近列表',
@@ -536,6 +565,7 @@ class TranslationManager(QObject):
                 'msg_confirm_delete_output_text': '确定要删除选中的 {count} 个结果？\n\n此操作无法撤销。',
                 'msg_confirm_delete_all_output_text': '确定要删除全部 {count} 个结果？\n\n此操作无法撤销。',
                 'menu_drag_format': '拖出格式',
+                'sharpness_curve_tooltip': '清晰度曲线（点击跳转到对应帧）',
                 'menu_export_all': '导出全部结果到文件夹',
                 'msg_export_all_done_text': '已导出 {count} 个结果到：\n{folder}',
                 'msg_export_all_none': '还没有可导出的结果——请先渲染',
@@ -546,6 +576,9 @@ class TranslationManager(QObject):
                 'msg_compare_done': '对比完成：{count} 个结果已加入输出列表。打开 Wipe 并拖动 B 侧滑块即可逐一比较。',
                 'welcome_title': '欢迎使用 OpenFocus',
                 'welcome_choose_theme': '主题：',
+                'msg_demo_missing': '未找到内置示例图像栈（缺少 demo_stack 文件夹）',
+                'btn_load_demo': '加载示例图像栈',
+                'btn_load_demo_hint': '用内置示例照片立即体验 OpenFocus',
                 'welcome_body': '<h3>三步得到你的第一张全清晰图像</h3><p><b>1.</b> 打开一个包含不同对焦点照片的文件夹（文件 → 打开文件夹，或直接拖进来）。<br><b>2.</b> 选择融合算法并点击 <b>渲染</b>。提示：勾选 <b>快速预览</b> 可以更快试参数。</p><p><b>3.</b> 用结果面板右上角的 <b>对比（Wipe）</b> 检查结果，然后从输出列表保存（拖出、右键或 Ctrl+S）。</p><p>详细说明：帮助 → 用户手册。</p>',
                 'btn_get_started': '开始使用',
                 'menu_drag_format_hint': '把结果拖出软件时使用的图像格式',
@@ -591,6 +624,8 @@ class TranslationManager(QObject):
                 'menu_language': '语言',
                 'action_lang_en': 'English',
                 'action_lang_zh': '简体中文',
+                'action_lang_ja': '日本語',
+                'action_lang_es': 'Español',
                 'action_thread_settings': '线程设置',
                 'action_reg_settings': '配准设置',
                 'action_tile_settings': '分块设置',
@@ -951,6 +986,14 @@ class TranslationManager(QObject):
         <p>降低此值可加速配准并减少内存使用；增加此值可以提高非常精细图像的准确性，但会增加运行时间。</p>'''
             }
         }
+
+        # Community language packs (ja/es); missing keys fall back to English
+        try:
+            from locales_extra import EXTRA_TRANSLATIONS
+            for lang_code, lang_dict in EXTRA_TRANSLATIONS.items():
+                self.translations.setdefault(lang_code, {}).update(lang_dict)
+        except Exception:
+            pass
 
     def set_language(self, lang_code):
         if lang_code in self.translations:

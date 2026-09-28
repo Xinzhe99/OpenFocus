@@ -90,6 +90,37 @@ class LabelManager:
         if hasattr(self.window, "del_reg_label_action"):
             self.window.del_reg_label_action.setEnabled(False)
 
+    def export_state(self) -> dict:
+        """Serialize both label configurations for project files."""
+        def _dump(adder, enabled):
+            cfg = dict(vars(adder.config)) if adder is not None else {}
+            # strip non-JSON-safe values (none expected, but be safe)
+            return {"enabled": enabled, "config": cfg}
+        return {
+            "input": _dump(self._input_adder, self._input_enabled),
+            "registered": _dump(self._registered_adder, self._registered_enabled),
+        }
+
+    def import_state(self, state: dict) -> None:
+        """Restore label configurations from a project file."""
+        try:
+            for key, adder, attr in (("input", self._input_adder, "_input_enabled"),
+                                     ("registered", self._registered_adder, "_registered_enabled")):
+                block = state.get(key) or {}
+                cfg = block.get("config", {})
+                if cfg:
+                    adder.config.update_config(cfg)
+                adder.config.target_stack = 0 if key == "input" else 1
+                setattr(self, attr, bool(block.get("enabled", False)))
+            if hasattr(self.window, "del_input_label_action"):
+                self.window.del_input_label_action.setEnabled(self._input_enabled)
+            if hasattr(self.window, "del_reg_label_action"):
+                self.window.del_reg_label_action.setEnabled(self._registered_enabled)
+            if (self._input_enabled or self._registered_enabled) and                     self.window.stack_images and self.window.current_display_index >= 0:
+                self.window.update_source_view(self.window.current_display_index)
+        except Exception as exc:
+            print(f"label import failed: {exc}")
+
     def apply_labels_to_source_pixmap(self, pixmap, index: int):
         """Return a pixmap with input labels applied when enabled."""
         if not self._input_enabled:

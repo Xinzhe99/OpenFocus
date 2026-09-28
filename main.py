@@ -156,6 +156,7 @@ class OpenFocus(QMainWindow):
         
         # 当前显示的图像索引
         self.current_display_index = -1
+        self.current_folder_path = ""
 
         self.apply_dark_theme()
         self.init_ui()
@@ -223,6 +224,10 @@ class OpenFocus(QMainWindow):
         # ROI Button
         self.btn_preview_roi = source_panel.roi_btn
         self.btn_preview_roi.toggled.connect(self.toggle_roi_mode)
+        self.sharpness_curve = source_panel.sharpness_curve
+        self.sharpness_curve.set_tooltip_base(trans.t('sharpness_curve_tooltip'))
+        self.sharpness_curve.frame_clicked.connect(
+            lambda idx: self.stack_slider.setValue(idx))
         # 注意：现在ROI是在右侧面板选择的，所以lbl_source_img的roiDeleted不再控制按钮状态
         # self.lbl_source_img.roiDeleted.connect(lambda: self.btn_preview_roi.setChecked(False))
 
@@ -594,6 +599,73 @@ class OpenFocus(QMainWindow):
                 icon=QMessageBox.Icon.Warning,
             )
 
+    # --- Project files (.ofproj) ---
+
+    def open_project_dialog(self) -> None:
+        from PyQt6.QtWidgets import QFileDialog
+        from utils.project_file import validate_project, apply_project, PROJECT_SUFFIX
+        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+        path, _ = QFileDialog.getOpenFileName(
+            self, trans.t('menu_open_project'),
+            get_last_dialog_dir(), f"OpenFocus Project (*{PROJECT_SUFFIX})")
+        if not path:
+            return
+        ok, err, state = validate_project(path)
+        if not ok:
+            show_warning_box(self, trans.t("msg_error"), err)
+            return
+        set_last_dialog_dir(path)
+        self.project_path = path
+        apply_project(self, state)
+        self._update_project_title()
+
+    def save_project_dialog(self, save_as: bool = False) -> None:
+        from PyQt6.QtWidgets import QFileDialog
+        from utils.project_file import save_project, suggest_project_path, PROJECT_SUFFIX
+        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+        import os as _os
+        target = getattr(self, "project_path", None)
+        if save_as or not target:
+            suggested = suggest_project_path(self) or _os.path.join(
+                get_last_dialog_dir() or _os.path.expanduser("~"),
+                "OpenFocus" + PROJECT_SUFFIX)
+            path, _ = QFileDialog.getSaveFileName(
+                self, trans.t('menu_save_project'), suggested,
+                f"OpenFocus Project (*{PROJECT_SUFFIX})")
+            if not path:
+                return
+            if not path.endswith(PROJECT_SUFFIX):
+                path += PROJECT_SUFFIX
+            set_last_dialog_dir(path)
+            target = path
+        ok, err = save_project(self, target)
+        if ok:
+            self.project_path = target
+            self._update_project_title()
+            self.statusBar().showMessage(
+                trans.t('msg_project_saved').format(path=target), 5000)
+        else:
+            show_warning_box(self, trans.t("msg_error"),
+                             trans.t('msg_project_save_failed').format(err=err))
+
+    def _update_project_title(self) -> None:
+        import os as _os
+        name = _os.path.basename(self.project_path) if getattr(self, "project_path", None) else None
+        self.setWindowTitle(f"OpenFocus — {name}" if name else "OpenFocus")
+
+    def load_demo_stack(self) -> None:
+        """Load the bundled demo stack (no downsample dialog)."""
+        from utils import resource_path
+        demo_dir = resource_path("assets", "demo_stack")
+        if not os.path.isdir(demo_dir):
+            show_warning_box(self, trans.t("msg_warning"), trans.t("msg_demo_missing"))
+            return
+        self.current_folder_path = demo_dir
+        self.source_manager._start_load_worker(
+            folder=demo_dir, scale=1.0, append=False,
+            on_success=lambda: self.add_recent_file(demo_dir) if hasattr(self, "add_recent_file") else None,
+        )
+
     def show_quick_start(self) -> None:
         from dialogs.welcome import WelcomeDialog
         WelcomeDialog(self, main_window=self).exec()
@@ -640,6 +712,8 @@ class OpenFocus(QMainWindow):
                 # 只有当列表选中项和当前slider不一致时才去设置列表，防止信号死循环
                 if self.file_list.currentRow() != index:
                     self.file_list.setCurrentRow(index)
+
+                self.sharpness_curve.set_current(index)
 
                 # Keep the wipe view's left side following the current frame
                 if self.wipe_active and self.chk_wipe_follow_left.isChecked():
@@ -1434,10 +1508,10 @@ class OpenFocus(QMainWindow):
                 self.lbl_source_img.setText(trans.t('drag_hint'))
 
         # Update language checked state
-        if 'action_lang_en' in self.ui_objs:
-            is_en = trans.current_lang == 'en'
-            self.ui_objs['action_lang_en'].setChecked(is_en)
-            self.ui_objs['action_lang_zh'].setChecked(not is_en)
+        for lang_code, key in (('en', 'action_lang_en'), ('zh', 'action_lang_zh'),
+                               ('ja', 'action_lang_ja'), ('es', 'action_lang_es')):
+            if key in self.ui_objs:
+                self.ui_objs[key].setChecked(trans.current_lang == lang_code)
 
         # Wipe controls are created outside ui_objs; retranslate them here
         if hasattr(self, 'btn_wipe'):
