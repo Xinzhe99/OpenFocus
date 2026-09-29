@@ -58,7 +58,7 @@ def create_source_panel() -> SourcePanel:
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(0)
 
-    title = QLabel(" Source Stack")
+    title = QLabel(' ' + trans.t('panel_source_stack'))
     title.setFixedHeight(25)
     title.setStyleSheet("background-color: #333; color: #aaa; border-bottom: 1px solid #444;")
     title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -91,7 +91,7 @@ def create_source_panel() -> SourcePanel:
     roi_btn = QPushButton(trans.t('btn_roi'))
     roi_btn.setCheckable(True)
     # roi_btn.setFixedWidth(40) # Allow auto-width for longer text
-    roi_btn.setToolTip("Select Region of Interest to preview")
+    roi_btn.setToolTip(trans.t('btn_roi_hint'))
     roi_btn.setStyleSheet("QPushButton { background-color: #333; color: #aaa; border: 1px solid #444; border-radius: 2px; padding: 0 5px; } QPushButton:checked { background-color: #0078d7; color: white; border-color: #005a9e; }")
 
     control_layout.addWidget(info_label)
@@ -136,7 +136,7 @@ def create_result_panel() -> ResultPanel:
     title_layout.setContentsMargins(6, 0, 4, 0)
     title_layout.setSpacing(4)
 
-    title = QLabel(" Output")
+    title = QLabel(' ' + trans.t('panel_output'))
     title.setStyleSheet("color: #aaa; background: transparent;")
     title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 

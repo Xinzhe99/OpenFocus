@@ -268,19 +268,18 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(compute_fusion_component, i) for i in range(num_imgs)]
         
+        # 收集后按帧序号固定顺序累加：as_completed 的完成顺序取决于线程
+        # 调度，float 加法不满足结合律，会导致同输入不同运行输出抖动。
+        results = []
         for fut in as_completed(futures):
             res = fut.result()
-            if res is None:
-                continue
-            
-            i, fdm_weight = res
-            
+            if res is not None:
+                results.append(res)
+        results.sort(key=lambda r: r[0])
+        for i, fdm_weight in results:
             # 累加权重 (H, W)
             sum_fdms += fdm_weight
-            
-            # 累加加权图像 (H, W, 3)
-            # 利用广播机制：(H,W,3) * (H,W,1) -> (H,W,3)
-            # 这里是主要的计算量之一
+            # 累加加权图像 (H, W, 3)，广播 (H,W,3) * (H,W,1) -> (H,W,3)
             imfu_result += imgs_f32[i] * fdm_weight[:, :, None]
 
     # -------------------------------------------------------------------------

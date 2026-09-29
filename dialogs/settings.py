@@ -116,11 +116,11 @@ class DurationDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
-        self.ok_button = QPushButton("OK")
+        self.ok_button = QPushButton(trans.t('btn_ok'))
         self.ok_button.setDefault(True)
         self.ok_button.clicked.connect(self.accept)
 
-        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button = QPushButton(trans.t('btn_cancel'))
         self.cancel_button.clicked.connect(self.reject)
 
         button_layout.addWidget(self.ok_button)

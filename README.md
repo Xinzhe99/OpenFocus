@@ -16,55 +16,11 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 
 > 🎉 **2026.09.29**: **v1.26** — fixed the **"I/O operation on closed file"** render crash in windowed builds and a stale embedded version number that kept offering updates users already had.
 
-> 🎉 **2026.09.28 (6)**: **v1.25** — portable-mode hardening: the portable marker can no longer leak into installed copies (which broke settings/logging for installed users), and render failures now log full tracebacks.
+> 🎉 **2026.09.28**: **v1.25 / v1.24 / v1.22** — portable mode (settings travel with the app), one-click in-app update with progress, EXIF preservation, HEIC/HEIF input, and render-failure tracebacks in the log folder.
 
-> 🎉 **2026.09.28 (5)**: **v1.24** — fixed the freeze when downloading updates in-app (progress now streams through a worker thread), and the running version is now visible in Help → Environment Info.
+> 🎉 **2026.09.28**: **v1.21** — project files (.ofproj), built-in demo stack, per-frame sharpness curve, Japanese + Spanish interfaces.
 
-> 🎉 **2026.09.28 (3)**: **v1.23** — maintenance release: the app version constant now tracks releases (the daily update check no longer offers updates you already have), unhandled slot exceptions are captured to the crash file instead of aborting, and render failures log full tracebacks.
-
-> 🎉 **2026.09.28 (2)**: **v1.22** — **portable mode** (settings travel with the app on a USB stick), **EXIF metadata preserved** in lossless exports, **iPhone HEIC/HEIF photos load directly**, and Check for Updates can now **download and launch** the new version in-app.
-
-> 🎉 **2026.09.28**: **v1.21** — **project files** (save/restore your whole session as .ofproj), a **built-in demo stack** (try OpenFocus in seconds from the welcome dialog), a **sharpness curve** above the source slider that flags out-of-focus frames, and **Japanese + Spanish** interfaces with automatic system-language detection.
-
-> 🎉 **2026.09.23 (3)**: **v1.20** — the **light theme got a full redesign**: white background, rounded cards, blue accents and a blue primary render button. The welcome dialog now lets first-launch users pick dark or light, and follows the theme properly.
-
-> 🎉 **2026.09.23 (2)**: **v1.19** — light theme readability rework: the native light palette now governs the whole interface (inline dark styles are stripped while light mode is active and restored on switch-back), and the Settings → Theme menu shows proper translated names.
-
-> 🎉 **2026.09.23**: **v1.18** — **dark & light themes**: switch from Settings → Theme (title bar follows), first-run users pick a theme in the welcome dialog. Also: fixed a crash on Help → Check for Updates, and the app icon now has a transparent background.
-
-> 🎉 **2026.09.22 (6)**: **v1.17** — **Compare All Methods**: one click renders your stack with every available fusion algorithm, tagging each result so you can pick the best via Wipe. Plus a dark native title bar on Windows, one-click export of all results, a first-run quick-start guide, and dialogs that remember their last folder.
-
-> 🎉 **2026.09.22 (5)**: **v1.16** — **WebP lossless export**, a live **render progress bar** with ETA in the status bar (taskbar flashes when done), a **single-instance guard** (launching again just loads your files into the running app), an optional **"restore last stack on startup"** toggle, and a fix so mid-render cancel/progress actually reach the tiled fusion back-end.
-
-> 🎉 **2026.09.22 (4)**: **v1.15** — the deep-learning method is now simply **"AI"** in the interface and help pages, releases now ship a **Windows installer** (setup.exe with shortcuts and uninstaller) and a **macOS DMG** alongside the portable packages, and the app has a **new icon**.
-
-> 🎉 **2026.09.22 (3)**: **v1.14** — pure speed and control, zero changes to results: **renders are cancellable** (click the render button mid-run), **stack loading happens in the background** (the window no longer freezes on big stacks), display pixmaps render lazily (faster loads, hundreds of MB less memory on large stacks), and startup is ~1.4 s faster now that torch imports only when you actually use StackMFF-V4.
-
-> 🎉 **2026.09.22 (2)**: **v1.13** — a review round over the 16-bit pipeline and registration cache fixed 15 issues, including corrupted wipe-view output for 16-bit stacks, silent 16-bit truncation in the CuPy registration path, stale disk-cache hits after rotate/flip/resize, near-invisible label colours on 16-bit frames and a broken daily update-check rate limit.
-
-> 🎉 **2026.09.22**: **v1.12** — **16-bit PNG/TIFF inputs are now preserved end-to-end** (fuse at full depth, export back at 16 bits), **registration results are cached on disk** so re-opening a stack skips alignment, the CLI gained **batch mode** (`--output-dir`), plus window-layout memory, EXIF orientation correction, a selectable drag-out export format, and a daily automatic update check. Also shipped: a pytest test suite running on CI for every push.
-
-> 🎉 **2026.09.21 (4)**: **v1.11** — **Quick preview** renders a fast downscaled draft for parameter tuning, **Help → Check for Updates** tells you when a new release is out, delete actions now ask for confirmation, and OpenFocus finally writes **log files** (Help → Open Logs Folder). Plus: a proper **pytest test suite** running on CI for every push, and more reliable ECC on small-shift stacks.
-
-> 🎉 **2026.09.21 (3)**: New **Wipe compare** view — after rendering, press "Wipe" in the result panel title bar to compare the fusion result against any source frame (or two outputs against each other) in one frame with a draggable divider, shared zoom and pan. Side A can follow the source slider or lock to any frame; side B shows the latest render or scrubs the output history — both via sliders that scale to large stacks. Performance: **ECC registration now computes frame pairs in parallel** (~1.5x+ faster, scales with frame count), the app **starts faster** (torch probe moved off the UI thread, UPX disabled in release builds). Settings, language, GPU toggle and recent files persist across sessions, and OpenFocus runs **headless from the command line** — see [Command Line Usage](#command-line-usage).
-
-> 🎉 **2026.09.21**: **v1.9 released** — now with ready-to-run builds for both **Windows and macOS (Apple Silicon)** on the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page. This version fixes 9 bugs (batch processing NameError, JPG quality setting ignored, UI controls staying disabled after a render error, a crash when closing during processing, the StackMFF-V4 "NoneType" error in the packaged build, and more), honors the label Range field, and completes the Chinese translations. Also merged PR #3 (Wayland menu fixes).
-
-> 🎉 **2026.01.13**: Optimized ROI mode processing and fixed bugs to improve performance and stability.
- 
-> 🎉 **2026.01.12**: Added drag-and-drop image import on Mac and refactored core modules for improved code maintainability and readability.
-
-> 🎉 **2026.01.10**: Added bilingual support, a status dashboard, and new ROI fusion options to improve efficiency and flexibility.
-
-> 🎉 **2026.01.09**: Improved UI and navigation, faster parallel processing, multi-folder batch support, and bug fixes.
-
-> 🎉 **2025.12.11**: Added functionality to read image stacks in video format.
- 
-> 🎉 **2025.12.11**: Thanks to Rangj for providing the C++ implementation of the GFG-FGF fusion algorithm, which is now available in the software.
-
-> 🎉 **2025.12.11**: We have fixed some bugs and added configuration options such as block-wise fusion to avoid OOM (Out of Memory) issues.
-
-> 🎉 **2025.12.05**: OpenFocus officially released — welcome to try it.
+**Earlier milestones**: v1.9–v1.20 brought the Wipe compare view, dark/light themes, Compare-All-Methods rendering, quick preview, cancellable background renders, 16-bit pipeline, registration disk cache, batch CLI, WebP export, Windows installer + macOS DMG, and CI test automation. Full history in the [Changelog](./CHANGELOG.md).
 
 <a id="download"></a>
 ## ⬇️ Download & Install
@@ -134,6 +90,7 @@ Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.m
 - [📚 References](#references)
 - [🤝 Contribution](#contribution)
 - [📄 License](#license)
+- [⭐ Star History](#star-history)
 
 <a id="overview"></a>
 ## 🔭 Overview
@@ -199,6 +156,11 @@ This is not mandatory, but highly appreciated.
 <p align="center" style="font-size:1.25rem; font-weight:600;">
   If OpenFocus helps you, please consider leaving a ⭐ on the repository!
 </p>
+
+<a id="star-history"></a>
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Xinzhe99/OpenFocus&type=Date)](https://star-history.com/#Xinzhe99/OpenFocus&Date)
 
 
 

@@ -50,6 +50,13 @@ class RenderManager:
         # What the *running* render was launched with; see start_render().
         self._render_context: Optional[dict] = None
 
+    def _abort_compare_run(self) -> None:
+        """Abort a chained comparison whose next render failed to start."""
+        if getattr(self, '_compare_mode', False):
+            self._compare_mode = False
+            self._compare_queue = []
+            self._restore_ui_controls()
+
     def _restore_ui_controls(self) -> None:
         """Re-enable every control disabled by start_render (safe to call anywhere)."""
         window = self.window
@@ -76,6 +83,10 @@ class RenderManager:
         try:
             window.cb_align_homography.setEnabled(True)
             window.cb_align_ecc.setEnabled(True)
+        except Exception:
+            pass
+        try:
+            window.chk_quick_preview.setEnabled(True)
         except Exception:
             pass
         try:
@@ -143,6 +154,12 @@ class RenderManager:
         # whether the result is treated as a throwaway draft.
         self._preview_mode = False
 
+        timer = getattr(self, "_compare_chain_timer", None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+            self._compare_chain_timer = None
+
         # A render is already running: this click cancels it
         if self.worker is not None and self.worker.isRunning():
             self.worker.is_cancelled = True
@@ -153,6 +170,7 @@ class RenderManager:
 
         if not window.raw_images or len(window.raw_images) < 2:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
+            self._abort_compare_run()
             return
 
         if force_algorithm:
@@ -186,6 +204,12 @@ class RenderManager:
             pass
         try:
             window.btn_reset.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            # Quick-preview toggling mid-run fragments a comparison: later
+            # methods would render as drafts and vanish from the history.
+            window.chk_quick_preview.setEnabled(False)
         except Exception:
             pass
 
@@ -236,6 +260,7 @@ class RenderManager:
                 else:
                     # User cancelled the ROI dialog -> cancel render
                     self._restore_ui_controls()
+                    self._abort_compare_run()
                     return
         
         # 确定要使用的图像源
@@ -564,9 +589,15 @@ class RenderManager:
         finally:
             if compare:
                 if self._compare_queue:
-                    # Keep controls locked and chain the next method
+                    # Keep controls locked and chain the next method. The
+                    # timer is tracked so cancelling the run can stop it —
+                    # an untracked one fired into a restarted run and
+                    # cancelled its in-flight render.
                     compare_continues = True
-                    QTimer.singleShot(400, self._start_next_compare)
+                    self._compare_chain_timer = QTimer(self.window)
+                    self._compare_chain_timer.setSingleShot(True)
+                    self._compare_chain_timer.timeout.connect(self._start_next_compare)
+                    self._compare_chain_timer.start(400)
                 else:
                     self._compare_mode = False
                     self._restore_ui_controls()

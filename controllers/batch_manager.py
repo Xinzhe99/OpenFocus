@@ -118,8 +118,9 @@ class BatchManager:
         self._thread.start()
 
     def _initialise_progress_dialog(self, total: int) -> None:
-        dialog = QProgressDialog("Starting batch processing...", "Cancel", 0, total, self.window)
-        dialog.setWindowTitle("Batch Processing")
+        dialog = QProgressDialog(
+            trans.t("batch_title"), trans.t("btn_cancel"), 0, total, self.window)
+        dialog.setWindowTitle(trans.t("batch_title"))
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setStyleSheet(PROGRESS_DIALOG_STYLE)
         dialog.canceled.connect(self._cancel_running_batch)
@@ -199,6 +200,13 @@ class BatchManager:
         )
         self._close_progress_dialog()
         self._teardown_worker()
+        # A render/compare run owns these controls; let its own restore path
+        # re-enable them instead of unlocking mid-run.
+        _rm = getattr(self.window, "render_manager", None)
+        if _rm is not None and (
+                (getattr(_rm, "worker", None) is not None and _rm.worker.isRunning())
+                or getattr(_rm, "_compare_mode", False)):
+            return
         # 恢复 UI 控件
         try:
             self.window.slider_smooth.setEnabled(True)
@@ -243,6 +251,13 @@ class BatchManager:
             self._worker.cancel()
         self._close_progress_dialog()
         # 若用户取消，也恢复 UI
+        # A render/compare run owns these controls; let its own restore path
+        # re-enable them instead of unlocking mid-run.
+        _rm = getattr(self.window, "render_manager", None)
+        if _rm is not None and (
+                (getattr(_rm, "worker", None) is not None and _rm.worker.isRunning())
+                or getattr(_rm, "_compare_mode", False)):
+            return
         try:
             self.window.slider_smooth.setEnabled(True)
         except Exception:

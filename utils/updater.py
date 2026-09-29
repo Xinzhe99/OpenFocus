@@ -105,11 +105,13 @@ def download_to_file(url: str, dest_path: str,
     after every chunk in this thread — wrap it in a signal before touching
     any UI. Raises on network/IO errors.
     """
+    import os
+    part_path = dest_path + ".part"
     req = urllib.request.Request(url, headers={"User-Agent": "OpenFocus"})
     with urllib.request.urlopen(req, timeout=60) as resp:
         total = int(resp.headers.get("Content-Length", 0) or 0)
         done = 0
-        with open(dest_path, "wb") as f:
+        with open(part_path, "wb") as f:
             while True:
                 chunk = resp.read(256 * 1024)
                 if not chunk:
@@ -121,6 +123,9 @@ def download_to_file(url: str, dest_path: str,
                         on_progress(done, total)
                     except Exception:
                         pass
+    # A network drop mid-transfer leaves a partial .part (never the final
+    # name); only a fully transferred file is promoted.
+    os.replace(part_path, dest_path)
     return True
 
 

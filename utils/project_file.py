@@ -128,6 +128,29 @@ def validate_project(path: str) -> Tuple[bool, str, Dict[str, Any]]:
         missing = [p for p in sources if not os.path.isfile(p)]
         return False, f"{len(missing)} source file(s) missing (first: {missing[0]})", {}
     state["resolved_sources"] = resolved
+
+    # Numeric settings reach int()/float() casts inside Qt slots; a
+    # hand-edited .ofproj must not crash the app there. Coerce here so
+    # apply_project only ever sees clean types.
+    def _num(key, cast, default):
+        try:
+            settings[key] = cast(settings.get(key, default))
+        except (TypeError, ValueError):
+            settings[key] = default
+
+    settings = state.get("settings", {})
+    _num("kernel_size", int, 31)
+    _num("thread_count", int, 4)
+    _num("tile_block_size", int, 1024)
+    _num("tile_overlap", int, 256)
+    _num("tile_threshold", int, 2048)
+    _num("reg_downscale_width", int, 1024)
+    _num("stackmffv4_batch_size", int, 2)
+    _num("current_index", int, -1)
+    try:
+        state["scale_factor"] = float(state.get("scale_factor", 1.0))
+    except (TypeError, ValueError):
+        state["scale_factor"] = 1.0
     return True, "", state
 
 

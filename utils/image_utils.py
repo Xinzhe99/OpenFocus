@@ -110,7 +110,22 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
     ext = os.path.splitext(path)[1].lower()
     if image.dtype == np.uint16 and ext not in (".png", ".tif", ".tiff"):
         image = to_display_uint8(image)
-    ok = cv2.imwrite(path, image, params if params else [])
+
+    # cv2.imwrite encodes paths as UTF-8 regardless of the ANSI codepage,
+    # silently creating mojibake filenames (中文.png -> 娓枃...) on Windows.
+    # imencode + ndarray.tofile handles unicode paths correctly, mirroring
+    # the np.fromfile workaround the loaders already use for reading.
+    try:
+        path.encode("ascii")
+        ok = cv2.imwrite(path, image, params if params else [])
+    except UnicodeEncodeError:
+        ok = False
+        try:
+            ok, buf = cv2.imencode(ext, image, params if params else [])
+            if ok:
+                buf.tofile(path)
+        except cv2.error:
+            ok = False
     # EXIF embed only for 8-bit lossless files; re-opening a 16-bit PNG with
     # Pillow would downgrade it to 8-bit.
     embed = SOURCE_EXIF if exif is None else exif

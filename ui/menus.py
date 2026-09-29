@@ -205,14 +205,21 @@ def setup_menus(window: QMainWindow) -> None:
     theme_menu = settings_menu.addMenu(trans.t('menu_theme'))
     theme_group_theme = QActionGroup(window)
     theme_group_theme.setExclusive(True)
-    for theme_code, label in (("dark", trans.t('theme_dark')), ("light", trans.t('theme_light'))):
-        act = QAction(label, window)
+    for theme_code, trans_key in (("dark", 'theme_dark'), ("light", 'theme_light')):
+        act = QAction(trans.t(trans_key), window)
         act.setCheckable(True)
         act.setChecked(getattr(window, 'ui_theme', 'dark') == theme_code)
+        # data carries the theme code (display text changes with the
+        # language and must never identify the item); trans_key lets
+        # update_ui_text retranslate the label.
+        act.setData(theme_code)
+        act.setProperty("trans_key", trans_key)
         act.triggered.connect(lambda _checked, code=theme_code: window.apply_theme(code))
         theme_group_theme.addAction(act)
         theme_menu.addAction(act)
+        window.ui_objs[f'theme_{theme_code}'] = act
     window.ui_objs['menu_theme'] = theme_menu
+    window.ui_objs['menu_theme'].setProperty("trans_key", 'menu_theme')
 
     settings_menu.addSeparator()
 

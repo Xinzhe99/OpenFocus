@@ -390,6 +390,13 @@ class MultiFocusFusion:
         if img_resize is not None:
             raise ValueError("DCT fusion does not support dynamic resizing. Resize images before processing.")
 
+        # dct_focus_stack_fusion trims each tile to a whole number of
+        # blocks; a block size that is not a multiple of 8 therefore left a
+        # black strip at the image edges under tiling. Round down like the
+        # odd-kernel normalizations elsewhere.
+        if block_size and block_size % 8 != 0:
+            block_size = max(8, (block_size // 8) * 8)
+
         # thread_count (if passed) is ignored by this implementation
         return dct_focus_stack_fusion(
             input_source,

@@ -7,7 +7,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+# Two runs for one tag (moved tag, re-run, workflow_dispatch) used to
+# delete-then-create the same release concurrently and clobber assets.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-windows:
@@ -20,6 +26,14 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
+
+      - name: Verify APP_VERSION matches the tag
+        run: |
+          V="v$(python -c 'import constants; print(constants.APP_VERSION)')"
+          if [ "$V" != "${{ github.ref_name }}" ]; then
+            echo "::error::constants.py APP_VERSION ($V) != tag (${{ github.ref_name }})."
+            exit 1
+          fi
 
       - name: Install dependencies
         run: |
@@ -79,6 +93,14 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
+
+      - name: Verify APP_VERSION matches the tag
+        run: |
+          V="v$(python -c 'import constants; print(constants.APP_VERSION)')"
+          if [ "$V" != "${{ github.ref_name }}" ]; then
+            echo "::error::constants.py APP_VERSION ($V) != tag (${ github.ref_name }})."
+            exit 1
+          fi
 
       - name: Install dependencies
         run: |
@@ -141,6 +163,8 @@ jobs:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v5
         with:

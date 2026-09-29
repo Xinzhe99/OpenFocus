@@ -571,8 +571,8 @@ class OpenFocus(QMainWindow):
             self.statusBar().showMessage(trans.t('update_checking'), 3000)
 
         def done(state, tag, url, zip_url="", setup_url=""):
-            settings = get_settings()
-            settings.setValue(LAST_UPDATE_CHECK_KEY, time.time())
+            # Only the signal emit runs on the worker thread; the shared
+            # QSettings singleton is written from the (queued) GUI handler.
             self._update_check_done.emit(state, tag, url, zip_url, setup_url)
 
         updater.check_async(
@@ -707,6 +707,26 @@ class OpenFocus(QMainWindow):
         from utils.updater import RELEASES_PAGE_URL
 
         if not self_update.is_frozen():
+            QDesktopServices.openUrl(QUrl(RELEASES_PAGE_URL))
+            return
+
+        # Fail fast when the install dir exists but is not writable
+        # (Program Files without elevation): downloading ~350 MB first just
+        # to hit a guaranteed UAC wall wastes the user's time and bandwidth.
+        # A missing directory is not probed — tests stage into fresh paths
+        # and the apply script handles creation.
+        app_dir = self_update.app_install_dir()
+        try:
+            probe = os.path.join(app_dir, ".update_write_test")
+            if not os.path.isdir(app_dir):
+                os.makedirs(app_dir, exist_ok=True)
+            with open(probe, "w") as f:
+                f.write("ok")
+            os.remove(probe)
+        except OSError:
+            show_warning_box(
+                self, trans.t('update_check_failed_title'),
+                trans.t('msg_update_needs_elevation'))
             QDesktopServices.openUrl(QUrl(RELEASES_PAGE_URL))
             return
 
@@ -1225,8 +1245,15 @@ class OpenFocus(QMainWindow):
             QApplication.processEvents()
             
             # 启动ECC配准线程
+            # Snapshot the list (mid-run frame deletes mutate the live list)
+            # and capture the stack identity so a stale result — finished
+            # after the user loaded/rotated/deleted — is discarded instead
+            # of being published for the wrong stack.
+            self._roi_align_snapshot = list(self.raw_images)
+            self._roi_align_context = (len(self.raw_images),
+                                       tuple(self.image_filenames or []))
             self.roi_alignment_worker = ROIAlignmentWorker(
-                self.raw_images,
+                self._roi_align_snapshot,
                 reg_downscale_width=self.reg_downscale_width,
                 thread_count=self.thread_count
             )
@@ -1251,8 +1278,17 @@ class OpenFocus(QMainWindow):
 
     def _on_roi_alignment_finished(self, aligned_images, alignment_time):
         """ROI配准完成的回调"""
+        # Discard the result if the stack changed while ECC ran.
+        context_now = (len(self.raw_images),
+                       tuple(self.image_filenames or []))
+        if context_now != getattr(self, "_roi_align_context", None):
+            self.btn_preview_roi.setEnabled(True)
+            self.btn_preview_roi.setText(trans.t("btn_roi"))
+            self.statusBar().showMessage(trans.t("msg_render_cancelled"), 4000)
+            return
+
         self.roi_aligned_images = aligned_images
-        self.roi_aligned_raw_count = len(self.raw_images)  # 记录对齐时的原图数量
+        self.roi_aligned_raw_count = len(self._roi_align_snapshot)  # 对齐时快照的帧数
         self.roi_mode_active = True
         
         # 恢复按钮状态
@@ -1388,6 +1424,13 @@ class OpenFocus(QMainWindow):
                 except RuntimeError:
                     pass
             self._inline_styles_saved = None
+            # Clear the app-level light stylesheet + palette first — leaving
+            # it in place kept plain containers white and tooltips/scrollbars
+            # light after a light->dark switch.
+            app = QApplication.instance()
+            if app is not None:
+                app.setStyleSheet("")
+                app.setPalette(app.style().standardPalette())
             style_sheet = get_theme_style(theme).replace('"Segoe UI", "Microsoft YaHei"', ui_font).replace('Consolas, "Segoe UI", monospace', mono_font)
             self.setStyleSheet(style_sheet)
 
@@ -1395,8 +1438,9 @@ class OpenFocus(QMainWindow):
         self._enable_dark_title_bar(dark=(theme != "light"))
         if hasattr(self, "ui_objs") and "menu_theme" in self.ui_objs:
             for act in self.ui_objs["menu_theme"].actions():
-                is_dark_item = act.text() in (trans.t('theme_dark'), "Dark")
-                act.setChecked((theme == "dark") == is_dark_item)
+                # Sync by data property, not display text: the text changes
+                # with the language and mis-matched after a switch.
+                act.setChecked(act.data() == theme)
 
     def _enable_dark_title_bar(self, dark: bool = True):
         """Windows: paint the native title bar dark/light to match the theme."""
@@ -1526,7 +1570,8 @@ class OpenFocus(QMainWindow):
         return self._mouse_in_source_preview or self._mouse_in_result_preview
 
     def _has_work_in_flight(self) -> bool:
-        """True while a render, batch job, ROI alignment or GIF export runs."""
+        """True while a render, batch job, ROI alignment, GIF export or
+        stack load runs."""
         running = []
         render_manager = getattr(self, 'render_manager', None)
         if render_manager is not None and getattr(render_manager, 'worker', None):
@@ -1541,6 +1586,10 @@ class OpenFocus(QMainWindow):
         gif_worker = getattr(export_manager, 'gif_worker', None) if export_manager else None
         if gif_worker is not None:
             running.append(gif_worker.isRunning())
+        source_manager = getattr(self, 'source_manager', None)
+        load_worker = getattr(source_manager, '_load_worker', None) if source_manager else None
+        if load_worker is not None:
+            running.append(load_worker.isRunning())
         return any(running)
 
     def closeEvent(self, event):
@@ -1590,6 +1639,16 @@ class OpenFocus(QMainWindow):
         if getattr(self, 'roi_alignment_worker', None) is not None:
             _shutdown_worker(self.roi_alignment_worker)
             self.roi_alignment_worker = None
+
+        # Stop stack-load worker if running (closing mid-decode otherwise
+        # destroys a running QThread at teardown and aborts the process)
+        if hasattr(self, 'source_manager'):
+            _shutdown_worker(getattr(self.source_manager, '_load_worker', None))
+            self.source_manager._load_worker = None
+
+        # Stop update download/stage workers if running
+        _shutdown_worker(getattr(self, '_update_download_worker', None))
+        _shutdown_worker(getattr(self, '_update_stage_worker', None))
 
         # Stop render worker if running
         if hasattr(self, 'render_manager'):
@@ -1735,7 +1794,12 @@ class OpenFocus(QMainWindow):
         
         c.lbl_kernel.setText(trans.t('label_kernel'))
         c.btn_reset.setText(trans.t('btn_reset'))
-        c.btn_render.setText(trans.t('btn_render'))
+        # Keep the cancel/progress affordance while a render runs — the
+        # retranslation must not reset it to the idle "Render" label.
+        busy = (getattr(self.render_manager, 'worker', None) is not None
+                and self.render_manager.worker.isRunning())             or getattr(self.render_manager, '_compare_mode', False)
+        if not busy:
+            c.btn_render.setText(trans.t('btn_render'))
         c.btn_compare.setText(trans.t('btn_compare_all'))
         c.btn_compare.setToolTip(trans.t('btn_compare_all_hint'))
         c.chk_quick_preview.setText(trans.t('chk_quick_preview'))
@@ -1766,6 +1830,8 @@ class OpenFocus(QMainWindow):
                                ('ja', 'action_lang_ja'), ('es', 'action_lang_es')):
             if key in self.ui_objs:
                 self.ui_objs[key].setChecked(trans.current_lang == lang_code)
+
+        self.sharpness_curve.set_tooltip_base(trans.t('sharpness_curve_tooltip'))
 
         # Wipe controls are created outside ui_objs; retranslate them here
         if hasattr(self, 'btn_wipe'):

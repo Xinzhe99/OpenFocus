@@ -299,7 +299,10 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.btn_method_help.clicked.connect(lambda: RenderMethodHelpDialog(window).exec())
     components.btn_reg_help.clicked.connect(lambda: RegistrationHelpDialog(window).exec())
 
-    components.btn_render.clicked.connect(window.render_manager.start_render)
+    # clicked(bool) would deliver checked=False into start_render's
+    # force_algorithm parameter, forcing need_fusion=True; drop the bool.
+    components.btn_render.clicked.connect(
+        lambda: window.render_manager.start_render())
     components.btn_reset.clicked.connect(window.reset_to_default)
 
     components.slider_smooth.valueChanged.connect(window.handle_kernel_slider_change)

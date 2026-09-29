@@ -339,9 +339,17 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
         else:
             img_small = img
         if img_small.dtype != np.uint8:
-            # SIFT expects 8-bit input; scale 16-bit frames down equivalently
-            divisor = 65535.0 if img_small.dtype == np.uint16 else 1.0
-            img_small = (img_small.astype(np.float32) / divisor * 255.0).round().astype(np.uint8)
+            # SIFT expects 8-bit input. Scale by dynamic range: uint16 by
+            # 65535, float inputs (already 0-255 from normalize_fuse_input)
+            # by 1 — the old dtype-based branch multiplied floats by 255
+            # again and the uint8 cast wrapped them mod 256.
+            if img_small.dtype == np.uint16:
+                divisor = 65535.0
+            elif np.issubdtype(img_small.dtype, np.floating):
+                divisor = float(np.max(img_small)) if float(np.max(img_small)) > 255.0 else 1.0
+            else:
+                divisor = 1.0
+            img_small = (img_small.astype(np.float32) / divisor * 255.0).round().clip(0, 255).astype(np.uint8)
         kps, des = local_detector.detectAndCompute(img_small, None)
         return kps, des, scale
 
@@ -533,7 +541,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
         # findTransformECC 的数值稳定性依赖归一化的浮点输入：uint8 的
         # 大幅值梯度会让优化步长过大，常见于小位移场景直接不收敛
-        gray = gray.astype(np.float32) / 255.0
+        gray = gray.astype(np.float32) / (65535.0 if gray.dtype == np.uint16 else 255.0)
         return gray, scale
 
     print(f"Aligning {len(images)} images using ECC (Parallel Optimized)...")
@@ -610,13 +618,16 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 raise RegistrationCancelled()
 
     for idx, warp_matrix in enumerate(pair_transforms, start=1):
-        # 矩阵累积
+        # 矩阵累积：warp_matrix maps frame k-1 -> frame k, so the map
+        # frame0 -> frame_k is Wk @ ... @ W1 — compose on the LEFT.
+        # (The old right-side product W1 @ W2 @ ... left frame 3+ misaligned
+        # for any rotation/scale; pure translations commute and hid it.)
         if warp_mode == cv2.MOTION_AFFINE:
             row = np.array([[0, 0, 1]], dtype=np.float32)
             H_local_3x3 = np.vstack([warp_matrix, row])
-            H_global = np.matmul(H_global, H_local_3x3)
+            H_global = np.matmul(H_local_3x3, H_global)
         else:
-            H_global = np.matmul(H_global, warp_matrix)
+            H_global = np.matmul(warp_matrix, H_global)
 
         # 记录变换矩阵（使用逆矩阵）
         H_inv = np.linalg.inv(H_global)
@@ -688,7 +699,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             
             # 应用变换矩阵 (H_final 已经是 H_inv，即从目标到源的映射)
             # src_coords = H_final @ dst_coords
-            H_gpu = cp.asarray(H_final)
+            # cv2.warpPerspective treats M as the forward src->dst map and
+            # inverts it internally; manual grid sampling must therefore use
+            # the inverse so the CuPy path matches the CPU path.
+            H_gpu = cp.asarray(np.linalg.inv(H_final))
             src_coords_homo = cp.matmul(H_gpu, coords)
             
             # 归一化齐次坐标

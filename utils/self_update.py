@@ -132,11 +132,35 @@ def extract_zip(zip_path: str, dest_root: str,
                     pass
 
 
+def _short_path(path: str) -> str:
+    """ASCII-safe 8.3 path via GetShortPathNameW; falls back to the input.
+
+    A .bat is parsed in the OEM codepage, so non-ASCII paths (Chinese
+    usernames under %TEMP%) must be converted to their short form before
+    being embedded — an encoding error here used to kill the one-click
+    update silently after the download had already finished.
+    """
+    if sys.platform != "win32" or path.isascii():
+        return path
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(1024)
+        n = ctypes.windll.kernel32.GetShortPathNameW(
+            os.path.abspath(path), buf, len(buf))
+        if 0 < n < len(buf):
+            return buf.value
+    except Exception:
+        pass
+    return path
+
+
 def _bat_path(path: str) -> str:
     """Quote a path for cmd, refusing anything that could escape the quotes."""
-    abspath = os.path.abspath(path)
+    abspath = _short_path(os.path.abspath(path))
     if '"' in abspath or "\n" in abspath or "\r" in abspath:
         raise ValueError("Unsafe path for the update script")
+    if not abspath.isascii():
+        raise ValueError("Path cannot be made ASCII-safe for the update script")
     return f'"{abspath}"'
 
 
@@ -157,6 +181,7 @@ def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
     script_path = os.path.join(
         script_dir, f"apply_update_{sanitize_tag(tag)}.bat")
     exe = os.path.join(app_dir, APP_NAME + ".exe")
+    sentinel = os.path.join(script_dir, f"update_ok_{sanitize_tag(tag)}.flg")
     copy_cmd = (
         f"robocopy {_bat_path(staging_app_dir)} {_bat_path(app_dir)}"
         " /E /IS /IT /NFL /NDL /NJH /NJS /NP"
@@ -171,6 +196,12 @@ def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
         '  powershell -NoProfile -Command "Start-Process -FilePath \'%~f0\''
         ' -ArgumentList \'/elevated\' -Verb RunAs -Wait"\r\n'
         ")\r\n"
+        # Clean up + relaunch only after a copy that verifiably succeeded:
+        # the elevated branch writes the sentinel on success, so a declined
+        # UAC prompt (or a still-failing copy) keeps the staged folder as
+        # the rollback instead of deleting it and relaunching a mixed
+        # install.
+        f'if not exist {_bat_path(sentinel)} (start "" {_bat_path(exe)} & exit /b)\r\n'
         f'rmdir /S /Q {_bat_path(staging_root)} >nul 2>&1\r\n'
         f'if exist {_bat_path(zip_path)} del /Q {_bat_path(zip_path)} >nul 2>&1'
         "\r\n"
@@ -180,6 +211,7 @@ def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
         ":elevatedcopy\r\n"
         "call :waitforexit\r\n"
         f"{copy_cmd}\r\n"
+        f'if not errorlevel 8 type NUL > {_bat_path(sentinel)}\r\n'
         "exit /b\r\n"
         ":waitforexit\r\n"
         "set /a TRIES=0\r\n"
@@ -216,11 +248,24 @@ def write_apply_script_macos(app_bundle: str, staged_bundle: str, tag: str,
         f"  [ {pid} -gt 0 ] && kill -0 {pid} 2>/dev/null || break\n"
         "  sleep 1\n"
         "done\n"
+        # Swap guarded step by step: keep the old bundle until the new one
+        # is verified in place, restore it if the second mv fails, and
+        # always relaunch something (old or new) so the app never just
+        # disappears after quitting for an update.
         f'if ditto "{staged_bundle}" "{app_bundle}.new"; then\n'
         '  rm -rf "' + app_bundle + '.old"\n'
-        f'  mv "{app_bundle}" "{app_bundle}.old" 2>/dev/null\n'
-        f'  mv "{app_bundle}.new" "{app_bundle}"\n'
-        f'  rm -rf "{app_bundle}.old"\n'
+        f'  if mv "{app_bundle}" "{app_bundle}.old" 2>/dev/null; then\n'
+        f'    if mv "{app_bundle}.new" "{app_bundle}"; then\n'
+        f'      rm -rf "{app_bundle}.old"\n'
+        f'      open "{app_bundle}"\n'
+        "    else\n"
+        f'      mv "{app_bundle}.old" "{app_bundle}" 2>/dev/null\n'
+        f'      open "{app_bundle}"\n'
+        "    fi\n"
+        "  else\n"
+        f'    open "{app_bundle}"\n'
+        "  fi\n"
+        "else\n"
         f'  open "{app_bundle}"\n'
         "fi\n"
         f'rm -rf "{staging_root}"\n'

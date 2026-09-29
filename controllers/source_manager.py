@@ -54,9 +54,16 @@ class SourceManager:
         # Remembered so the frames just decoded can be traced back to the files
         # they came from (project files need that to round-trip).
         self._load_source = (folder, video, filepaths)
+        # Load-identity token: a slow in-flight load whose result arrives
+        # after the user swapped the stack (e.g. via drag-drop) is discarded
+        # instead of silently replacing what they see.
+        self._load_generation = getattr(self, "_load_generation", 0) + 1
+        generation = self._load_generation
 
         def on_done(ok: bool, message: str, images, filenames) -> None:
             try:
+                if generation != getattr(self, "_load_generation", -1):
+                    return  # superseded by a newer load request
                 if not ok:
                     if accept_event is None:
                         show_warning_box(window, trans.t("msg_load_failed"),
@@ -74,12 +81,6 @@ class SourceManager:
                 # Exports inherit the source metadata from now on
                 from utils.image_utils import set_source_exif
                 set_source_exif(getattr(window.image_loader, "source_exif", b""))
-
-                if on_success is not None:
-                    on_success()
-                # Remember for the optional "restore last stack on startup"
-                from utils.settings_store import get_settings, LAST_STACK_FOLDER_KEY
-                get_settings().setValue(LAST_STACK_FOLDER_KEY, window.current_folder_path or "")
             except Exception as exc:  # pylint: disable=broad-except
                 show_message_box(
                     window,

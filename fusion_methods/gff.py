@@ -230,8 +230,10 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None)
         # 并行处理权重计算与融合
         # 使用 as_completed 模式，处理完一个就累加一个，避免一次性持有所有结果导致内存爆炸
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(process_weight_fusion, k): k for k in range(num_images)}
-            for future in concurrent.futures.as_completed(futures):
+            futures = [executor.submit(process_weight_fusion, k) for k in range(num_images)]
+            # 按帧序号固定顺序累加：as_completed 的完成顺序取决于线程调度，
+            # float32 加法不满足结合律，同输入不同运行会产生不同的输出像素。
+            for future in futures:
                 # 抛出来，不再只 print 后跳过：吞掉某一帧的异常会"成功"产出一张
                 # 缺帧的融合图，用户看不出结果已经被破坏。
                 bn, bd, dn, dd = future.result()

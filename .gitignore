@@ -69,3 +69,5 @@ docs/OpenFocus.spec
 /_theme_shots*.py
 /.shot_*.png
 assets/demo_stack/.openfocus_cache/
+
+/.review_skill/

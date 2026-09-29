@@ -747,7 +747,7 @@ class BatchProcessingDialog(QDialog):
         # 2. 设置默认划分方式：Fixed Count, 5张/组
         self.split_method_combo.setCurrentIndex(0)  # Fixed Count
         self.param_spinbox.setValue(5)
-        self.param_unit_label.setText("images")
+        self.param_unit_label.setText(trans.t('batch_unit_images'))
         self.on_split_method_changed(0)
 
         # 3. 加载文件夹并应用缩放
