@@ -76,6 +76,31 @@ def apply_exif_orientation(path: str, img: np.ndarray) -> np.ndarray:
     return img
 
 
+def _read_via_pil(path: str) -> Optional[np.ndarray]:
+    """Decode a file OpenCV cannot (HEIC/HEIF) through Pillow.
+
+    Returns a 3-channel BGR array like cv2.imdecode(IMREAD_COLOR), or None when
+    Pillow is missing or the file is unreadable, so callers count it as a
+    failed file instead of raising.
+    """
+    if not PIL_AVAILABLE:
+        return None
+    try:
+        with PILImage.open(path) as pil_img:
+            if pil_img.mode in ('I', 'I;16', 'I;16B'):
+                arr = np.array(pil_img).astype(np.uint16)
+            else:
+                arr = np.array(pil_img.convert('RGB'))
+        if arr.ndim == 2:
+            return cv2.cvtColor(np.ascontiguousarray(arr), cv2.COLOR_GRAY2BGR)
+        if arr.shape[2] == 4:
+            return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+        return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    except Exception as e:
+        print(f"Unsupported image for PIL fallback {path}: {e}")
+        return None
+
+
 class ImageStackLoader:
     """图像栈加载器"""
 
@@ -114,6 +139,9 @@ class ImageStackLoader:
             try:
                 img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
                                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                if img is None:
+                    # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
+                    img = _read_via_pil(full_path)
                 if img is not None:
                     if not self.source_exif:
                         self.source_exif = _read_exif_bytes(full_path)
@@ -208,13 +236,11 @@ class ImageStackLoader:
                     failed_count += 1
                     continue
 
-                if full_path.lower().endswith(('.heic', '.heif')):
-                    img = _read_via_pil(full_path)
-                elif full_path.lower().endswith(('.heic', '.heif')):
-                    img = _read_via_pil(full_path)
-                else:
-                    img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
+                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
                                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                if img is None:
+                    # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
+                    img = _read_via_pil(full_path)
                 if img is not None:
                     img = apply_exif_orientation(full_path, img)
                 if img is None:
@@ -351,11 +377,11 @@ class ImageStackLoader:
 
         for filename, full_path in image_files:
             try:
-                if full_path.lower().endswith(('.heic', '.heif')):
-                    img = _read_via_pil(full_path)
-                else:
-                    img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
+                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
                                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                if img is None:
+                    # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
+                    img = _read_via_pil(full_path)
                 if img is not None:
                     img = apply_exif_orientation(full_path, img)
                     timestamp = self.get_image_timestamp(full_path)

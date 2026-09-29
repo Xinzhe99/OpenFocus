@@ -841,9 +841,63 @@ class BatchProcessingDialog(QDialog):
                 return
 
         output_type, output_path = self.get_output_settings()
+        problem = self._validate_output_target(output_type, output_path)
+        if problem:
+            QMessageBox.warning(self, trans.t("msg_error"), problem)
+            return
+
         processing_settings = self.get_processing_settings()
-        
+
         self.accept()
+
+    def _source_output_folders(self) -> list:
+        """Folders the results are written into for the 'same'/'subfolder' modes."""
+        if self.get_import_mode() == "single_folder":
+            return [getattr(self, "single_folder_folder_path", "") or ""]
+        return list(self.folder_paths)
+
+    def _validate_output_target(self, output_type: str, output_path: str):
+        """Return a message when the batch cannot write its results, else None.
+
+        Checked before the dialog closes: an unwritable or missing target used
+        to fail deep inside the worker loop, one opaque error per folder.
+        """
+        if output_type == "custom":
+            target = (output_path or "").strip()
+            if not target:
+                return trans.t("msg_no_folder_text")
+            # A not-yet-existing folder only needs a writable parent to create
+            probe = target if os.path.isdir(target) else os.path.dirname(os.path.abspath(target))
+            if not _is_writable_dir(probe):
+                return f"{trans.t('msg_save_failed_info_write')}\n{target}"
+            return None
+
+        if output_type == "subfolder" and not (output_path or "").strip():
+            return trans.t("msg_no_folder_text")
+
+        # 'same' and 'subfolder' both write inside every source folder
+        for folder in self._source_output_folders():
+            if not _is_writable_dir(folder):
+                return f"{trans.t('msg_save_failed_info_write')}\n{folder}"
+        return None
+
+
+def _is_writable_dir(path: str) -> bool:
+    """True when files can actually be created in `path`.
+
+    os.access(W_OK) lies on Windows (it ignores the read-only attribute of
+    directories and reports ACL-permitted writes that still fail), so probe
+    with a real temporary file.
+    """
+    import tempfile
+
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        with tempfile.NamedTemporaryFile(dir=path, prefix=".openfocus_probe_", suffix=".tmp"):
+            return True
+    except OSError:
+        return False
 
 
 class FolderImportDialog(QDialog):

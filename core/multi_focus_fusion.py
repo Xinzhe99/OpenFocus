@@ -8,6 +8,7 @@ from fusion_methods.gff import gff_impl
 from fusion_methods.stackmffv4 import _stackmffv4_impl, _stackmffv4_batch_impl
 from fusion_methods.dtcwt import _dtcwt_impl
 from utils import resource_path
+from utils.image_utils import normalize_fuse_input
 
 
 # Tile 参数已改为 MultiFocusFusion 实例属性，见类构造函数中的默认值和访问器方法。
@@ -607,6 +608,7 @@ class MultiFocusFusion:
                 raise ValueError("_fuse_tiled requires a non-empty list of numpy arrays as input_source")
             h, w = imgs[0].shape[:2]
             channels = imgs[0].shape[2] if imgs[0].ndim == 3 else 1
+            src_dtype = imgs[0].dtype
         elif isinstance(input_source, str):
             img_dir = input_source
             try:
@@ -623,12 +625,22 @@ class MultiFocusFusion:
                 raise RuntimeError(f"Unable to read image: {os.path.join(img_dir, files[0])}")
             h, w = first_img.shape[:2]
             channels = first_img.shape[2] if first_img.ndim == 3 else 1
+            src_dtype = first_img.dtype
         else:
             raise ValueError("_fuse_tiled input_source must be a list of arrays or a directory path string")
+
+        # 输出位深跟随源栈：16-bit 的分块结果是 float32 (0-255)，在这里压成
+        # uint8 就把调用方要还原的深度丢掉了。
+        out_dtype = np.uint8 if src_dtype == np.uint8 else np.float32
 
         acc = np.zeros((h, w, channels), dtype=np.float32)
         weight = np.zeros((h, w, 1), dtype=np.float32)
 
+        # A tile can never be larger than the image. Clamping only the start
+        # position is not enough: on a 5000x1000 stack with block_size 1024 the
+        # y start went negative and every crop came out empty.
+        block_size = max(1, min(int(block_size), h, w))
+        overlap = max(0, min(int(overlap), block_size - 1))
         step = max(1, block_size - overlap)
         num_images = len(imgs) if imgs is not None else len(files)
 
@@ -651,6 +663,7 @@ class MultiFocusFusion:
                 block_size, overlap, **kwargs,
                 should_cancel=should_cancel,
                 progress_callback=progress_callback,
+                out_dtype=out_dtype,
             )
 
         # 其他算法使用原有的多线程处理
@@ -693,6 +706,9 @@ class MultiFocusFusion:
                     if full is None:
                         raise RuntimeError(f"Unable to read image: {fp}")
                     crops.append(full[y0:y1, x0:x1].copy())
+                # 目录里的 16-bit 文件同样要落到 0-255 float，否则各算法的
+                # /255 预处理会得到 0-257 的错值。
+                crops = normalize_fuse_input(crops)[0]
 
             fused_tile = call_algo(crops)
             if fused_tile is None:
@@ -706,16 +722,25 @@ class MultiFocusFusion:
 
             return (x0, y0, fh, fw, fused_tile, weight2d)
 
-        results = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=optimal_threads) as executor:
             futures = {executor.submit(process_single_tile, coords): coords 
                        for coords in tile_coords}
             completed_tiles = 0
             total_tiles = len(futures)
             for future in concurrent.futures.as_completed(futures):
-                result = future.result()
-                x0, y0, fh, fw, fused_tile, weight2d = result
-                results[(x0, y0)] = result
+                # 取消必须在这个循环里检查：以前所有分块都会被跑完才回到
+                # worker 的取消判定，大图上点"取消"看起来毫无反应。
+                if should_cancel is not None and should_cancel():
+                    for pending in futures:
+                        pending.cancel()
+                    from core.registration import RegistrationCancelled
+                    raise RegistrationCancelled()
+                x0, y0, fh, fw, fused_tile, weight2d = future.result()
+                # 立刻累加并释放，不在 results 里攒下所有分块：重叠分块的
+                # 总面积可达整图的两倍，攒起来会翻倍峰值内存。
+                acc[y0:y0+fh, x0:x0+fw, :channels] += fused_tile.astype(np.float32) * weight2d[:, :, np.newaxis]
+                weight[y0:y0+fh, x0:x0+fw, 0] += weight2d
+                del fused_tile, weight2d
                 if progress_callback is not None:
                     completed_tiles += 1
                     try:
@@ -723,14 +748,9 @@ class MultiFocusFusion:
                     except Exception:
                         pass
 
-        for x0, y0, fh, fw, fused_tile, weight2d in results.values():
-            w_exp = weight2d[:, :, np.newaxis]
-            acc[y0:y0+fh, x0:x0+fw, :channels] += fused_tile.astype(np.float32) * w_exp
-            weight[y0:y0+fh, x0:x0+fw, 0] += weight2d
-
         weight[weight == 0] = 1.0
         fused = acc / weight
-        fused = np.clip(fused, 0, 255).astype(np.uint8)
+        fused = np.clip(fused, 0, 255).astype(out_dtype)
 
         if channels == 1:
             return fused[:, :, 0]
@@ -744,6 +764,7 @@ class MultiFocusFusion:
                                         block_size: int, overlap: int,
                                         should_cancel=None,
                                         progress_callback=None,
+                                        out_dtype=np.uint8,
                                         **kwargs):
         """
         使用批量处理的 StackMFF V4 分块融合。
@@ -799,6 +820,7 @@ class MultiFocusFusion:
                         if full is None:
                             raise RuntimeError(f"Unable to read image: {fp}")
                         crops.append(full[y0:y1, x0:x1].copy())
+                    crops = normalize_fuse_input(crops)[0]
                 tiles_list.append(crops)
             
             # 批量处理
@@ -822,7 +844,7 @@ class MultiFocusFusion:
         
         weight[weight == 0] = 1.0
         fused = acc / weight
-        fused = np.clip(fused, 0, 255).astype(np.uint8)
+        fused = np.clip(fused, 0, 255).astype(out_dtype)
         
         if channels == 1:
             return fused[:, :, 0]

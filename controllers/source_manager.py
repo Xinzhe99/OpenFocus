@@ -51,6 +51,9 @@ class SourceManager:
             filepaths=filepaths, scale=scale,
         )
         self._load_accept_event = accept_event
+        # Remembered so the frames just decoded can be traced back to the files
+        # they came from (project files need that to round-trip).
+        self._load_source = (folder, video, filepaths)
 
         def on_done(ok: bool, message: str, images, filenames) -> None:
             try:
@@ -280,6 +283,7 @@ class SourceManager:
                 show_warning_box(self.window, trans.t("msg_load_failed"), trans.t("msg_load_dropped_failed_text"), message)
                 event.ignore()
                 return
+            self._load_source = (None, None, valid_paths)
             # Check image sizes (after loading / downsampling)
             shapes = {(img.shape[0], img.shape[1]) for img in full_res_images}
             if len(shapes) > 1:
@@ -324,26 +328,60 @@ class SourceManager:
         filenames: list[str],
         scale_factor: float,
     ) -> LoadOptions:
+        # The loader decodes every frame at `scale_factor` already, so the
+        # frames must be *shared* between the two stacks (a copy would double
+        # the memory of a large stack) but the lists must not: deleting a
+        # frame pops it from each list, and an aliased list dropped two frames
+        # while only one name went away, desyncing names from images.
         return LoadOptions(
-            scale_factor=1.0,
+            scale_factor=scale_factor,
             filenames=list(filenames),
-            base_images=full_res_images,
-            working_images=full_res_images,
+            base_images=list(full_res_images),
+            working_images=list(full_res_images),
         )
+
+    def _source_paths_for(self, filenames: list[str]) -> list[str]:
+        """Full path of every freshly loaded frame, aligned with `filenames`.
+
+        Empty when the origin cannot be mapped back to files (video stacks
+        decode to synthetic frame names that have no file on disk).
+        """
+        folder, video, filepaths = getattr(self, "_load_source", (None, None, None))
+        if video:
+            return []
+        if folder:
+            return [os.path.join(folder, name) for name in filenames]
+        if filepaths and len(filepaths) == len(filenames):
+            return list(filepaths)
+        return []
 
     def _apply_load_options(self, options: LoadOptions, append: bool = False) -> None:
         window = self.window
+        paths = self._source_paths_for(options.filenames)
+        previous_paths = list(getattr(window, "image_source_paths", None) or [])
+        previous_count = len(window.image_filenames or [])
 
         if append and window.raw_images:
             window.base_images = (window.base_images or []) + options.base_images
             window.raw_images = (window.raw_images or []) + options.working_images
             window.image_filenames = (window.image_filenames or []) + options.filenames
+            # Keep the paths aligned with the names; anything else is better
+            # dropped than left pointing at the wrong frame.
+            window.image_source_paths = (
+                previous_paths + paths
+                if paths and len(previous_paths) == previous_count
+                else []
+            )
             initial_index = window.current_display_index if window.current_display_index >= 0 else 0
         else:
             window.base_images = options.base_images
             window.current_scale_factor = options.scale_factor
+            # The loader already decoded at this scale, so base_images is the
+            # sharpest copy available until the source is read again.
+            window.base_scale_factor = options.scale_factor
             window.raw_images = options.working_images
             window.image_filenames = options.filenames
+            window.image_source_paths = paths
             initial_index = 0
 
         window.label_manager.reset_labels()
@@ -390,18 +428,16 @@ class SourceManager:
     def clear_image_stack(self) -> None:
         window = self.window
 
+        # Also drops the ROI stack, rect and tool button (see reset_roi_selection)
         window.transform_manager.invalidate_processing_results(clear_output_view=True)
 
         window.raw_images = []
         window.base_images = []
         window.stack_images = []
         window.image_filenames = []
+        window.image_source_paths = []
+        window.base_scale_factor = 1.0
         window.current_display_index = -1
-        
-        # 清空ROI对齐缓存
-        window.roi_aligned_images = []
-        window.roi_aligned_raw_count = 0
-        window.roi_mode_active = False
 
         window.label_manager.reset_labels()
 
@@ -471,6 +507,7 @@ class SourceManager:
         self._pop_sequence(window.image_filenames, row)
         self._pop_sequence(window.raw_images, row)
         self._pop_sequence(getattr(window, "base_images", None), row)
+        self._pop_sequence(getattr(window, "image_source_paths", None), row)
 
         if window.raw_images:
             new_index = min(row, len(window.raw_images) - 1)
@@ -510,6 +547,7 @@ class SourceManager:
             self._pop_sequence(window.image_filenames, row)
             self._pop_sequence(window.raw_images, row)
             self._pop_sequence(getattr(window, "base_images", None), row)
+            self._pop_sequence(getattr(window, "image_source_paths", None), row)
 
         if window.raw_images:
             target_index = min(min(rows), len(window.raw_images) - 1)
@@ -570,6 +608,7 @@ class SourceManager:
         if not success:
             show_warning_box(self.window, trans.t("msg_load_failed"), trans.t("msg_load_dropped_failed_text"), message)
             return
+        self._load_source = (None, None, file_paths)
 
         if not self._confirm_append_dimensions(full_res_images):
             return

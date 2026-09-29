@@ -14,7 +14,7 @@ from urllib.parse import unquote
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFileOpenEvent
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, QUrl
 
 
 class PlatformFileHandler:
@@ -22,11 +22,28 @@ class PlatformFileHandler:
 
     @staticmethod
     def normalize(path: str) -> str:
+        """Turn a file:// URI (or a mac-style /// path) into a local path.
+
+        QUrl.toLocalFile() does the platform-correct job: hand-stripping the
+        scheme leaves the URI's leading slash on Windows, so 'file:///C:/stack'
+        became '/C:/stack' and the file was never found. Percent-decoding also
+        belongs to URI syntax only — a plain command-line path may contain a
+        literal '%', so it must not be unquoted here.
+        """
+        if not path:
+            return ""
+
         if path.startswith('file://'):
-            path = path[7:]
-        elif path.startswith('///'):
-            path = path[3:]
-        return unquote(path)
+            local = QUrl(path).toLocalFile()
+            if local:
+                return local
+            return '/' + unquote(path[7:]).lstrip('/')   # malformed URI fallback
+
+        if path.startswith('///'):
+            # Extra leading slashes in front of an absolute POSIX path
+            return '/' + unquote(path).lstrip('/')
+
+        return path
 
     @staticmethod
     def is_video(path: str) -> bool:

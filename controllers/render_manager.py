@@ -8,6 +8,7 @@ from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
 
 from utils import show_custom_message_box, show_message_box, show_warning_box
+from utils.image_utils import to_display_uint8
 from core.multi_focus_fusion import is_stackmffv4_available
 from core.workers import RenderWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
@@ -45,6 +46,9 @@ class RenderManager:
         self._compare_queue: List[str] = []
         self._compare_total = 0
         self._compare_current: Optional[str] = None
+        self._preview_mode = False
+        # What the *running* render was launched with; see start_render().
+        self._render_context: Optional[dict] = None
 
     def _restore_ui_controls(self) -> None:
         """Re-enable every control disabled by start_render (safe to call anywhere)."""
@@ -83,8 +87,27 @@ class RenderManager:
 
     def start_compare_all(self) -> None:
         """Render the stack once per available fusion method so the results
-        can be compared side by side (output history + Wipe side B)."""
+        can be compared side by side (output history + Wipe side B).
+
+        Clicking again while a run is queued or rendering cancels it."""
         window = self.window
+
+        if self._compare_mode:
+            # Cancel: RenderWorker polls is_cancelled between its stages, and
+            # the chained _start_next_compare no-ops on the emptied queue.
+            self._compare_mode = False
+            queued = bool(self._compare_queue)
+            self._compare_queue = []
+            self._compare_current = None
+            if self.worker is not None and self.worker.isRunning():
+                self.worker.is_cancelled = True
+            elif queued:
+                # Between two queued renders nothing is running, so the UI has
+                # to be unlocked here instead of by the cancel callback.
+                self._restore_ui_controls()
+            window.statusBar().showMessage(trans.t('msg_render_cancelled'), 4000)
+            return
+
         if self.worker is not None and self.worker.isRunning():
             return
         if not window.raw_images or len(window.raw_images) < 2:
@@ -116,6 +139,9 @@ class RenderManager:
 
     def start_render(self, force_algorithm: str | None = None) -> None:
         window = self.window
+        # A previous render may have aborted without clearing this; it decides
+        # whether the result is treated as a throwaway draft.
+        self._preview_mode = False
 
         # A render is already running: this click cancels it
         if self.worker is not None and self.worker.isRunning():
@@ -274,6 +300,20 @@ class RenderManager:
             effective_is_aligned = window.is_images_aligned
             effective_last_alignment_options = window.last_alignment_options
 
+        # Record exactly what THIS render was launched with. on_render_finished
+        # must not read self.worker (a newer render may already have replaced
+        # it) and must not publish an alignment that belongs to a different
+        # stack than the one the UI shows (quick preview and ROI mode hand the
+        # worker downscaled / cropped copies instead of window.raw_images).
+        self._render_context = {
+            "source": source_images,
+            "alignment_options": (
+                effective_need_align_homography, effective_need_align_ecc),
+            "preview": self._preview_mode,
+            "roi": roi_rect is not None,
+            "filenames": list(window.image_filenames or []),
+        }
+
         self.worker = RenderWorker(
             source_images,
             effective_aligned_images,
@@ -319,7 +359,8 @@ class RenderManager:
         device_name: str,
     ) -> None:
         window = self.window
-        preview = getattr(self, '_preview_mode', False)
+        context = self._render_context
+        preview = context["preview"] if context else getattr(self, '_preview_mode', False)
         self._preview_mode = False
         compare = getattr(self, '_compare_mode', False)
 
@@ -414,23 +455,30 @@ class RenderManager:
                 else:
                     print("No operation selected. Please select registration options or fusion method.")
 
-            # Only cache aligned images if we performed a FULL registration (no ROI cropping)
-            # Note: self.worker may be None if error occurred, so we check first
-            # Preview renders work on downscaled frames — never cache them as
-            # the full-resolution aligned stack.
-            worker = self.worker
-            if (
-                registration_performed and not preview
-                and worker is not None and not getattr(worker, 'roi_rect', None)
-            ):
+            # Publish the alignment only when it belongs to the stack the UI
+            # still shows: quick preview and ROI renders run on downscaled /
+            # cropped copies, and the stack may have changed (frame deleted,
+            # new load, rotate) while this render was in flight. Caching any of
+            # those as the full-resolution aligned stack — on memory or on disk
+            # — makes the next render fuse frames that never came from the
+            # images it shows.
+            source_stack = context["source"] if context else None
+            alignment_matches_ui = (
+                context is not None
+                and not context["preview"]
+                and not context["roi"]
+                and window.raw_images is source_stack
+                and list(window.image_filenames or []) == context["filenames"]
+                and len(processed_images) == len(window.raw_images)
+            )
+            if registration_performed and alignment_matches_ui:
                 window.aligned_images = processed_images
                 window.is_images_aligned = True
-                window.last_alignment_options = (
-                    worker.need_align_homography,
-                    worker.need_align_ecc,
-                )
+                window.last_alignment_options = context["alignment_options"]
 
-                # Persist the alignment for future renders of the same stack
+                # Persist the alignment for future renders of the same stack.
+                # Keyed on the *source* frames (same signature load_aligned()
+                # looks up), not on the rendered ones.
                 if getattr(window, "align_cache_enabled", True) and getattr(
                         window, "current_folder_path", None):
                     from utils import align_cache
@@ -438,10 +486,10 @@ class RenderManager:
                         window.current_folder_path,
                         window.image_filenames,
                         processed_images,
-                        (worker.need_align_homography, worker.need_align_ecc),
+                        context["alignment_options"],
                         getattr(window, "reg_downscale_width", None),
                         getattr(window, "current_scale_factor", 1.0),
-                        tuple(processed_images[0].shape[:2]) if processed_images else None,
+                        tuple(source_stack[0].shape[:2]) if source_stack else None,
                     )
 
             total_time = alignment_time + fusion_time
@@ -552,6 +600,11 @@ class RenderManager:
 
     def on_render_error(self, error_message: str) -> None:
         window = self.window
+        # Every exit path clears the draft flag: a failed or cancelled render
+        # must not leave the controller in preview mode.
+        self._preview_mode = False
+        self._render_context = None
+        self.worker = None
 
         if getattr(self, '_compare_mode', False):
             # A failed method aborts the whole comparison run
@@ -577,4 +630,3 @@ class RenderManager:
         )
 
         traceback.print_exc()
-        self.worker = None

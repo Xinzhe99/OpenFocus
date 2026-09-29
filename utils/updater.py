@@ -45,15 +45,29 @@ def find_asset_by_keyword(release: dict, keyword: str) -> Optional[dict]:
     return None
 
 
+def _find_zip_asset(release: dict, keywords) -> Optional[dict]:
+    """First zip asset whose name contains one of keywords (best match first)."""
+    zips = [a for a in (release.get("assets") or [])
+            if str(a.get("name", "")).lower().endswith(".zip")]
+    for keyword in keywords:
+        for a in zips:
+            if keyword in str(a.get("name", "")).lower():
+                return {"name": a["name"], "url": a.get("browser_download_url", ""),
+                        "size": int(a.get("size", 0))}
+    return None
+
+
 def find_portable_zip_asset(release: dict) -> Optional[dict]:
     """Platform portable zip used by the in-app one-click update flow."""
     if sys.platform == "win32":
-        keyword = "windows-x64.zip"
-    elif sys.platform == "darwin":
-        keyword = "macos-arm64.zip"
-    else:
-        return None
-    return find_asset_by_keyword(release, keyword)
+        return _find_zip_asset(release, ("windows-x64.zip",))
+    if sys.platform == "darwin":
+        import platform
+        # Only arm64 builds are published. Matching the exact arch keeps an
+        # Intel Mac from swapping in a binary it cannot launch.
+        arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x86_64"
+        return _find_zip_asset(release, (f"macos-{arch}.zip",))
+    return None
 
 
 def find_installer_asset(release: dict) -> Optional[dict]:
@@ -145,12 +159,12 @@ def check_async(current_version: str, on_result: Callable[[str, str, str], None]
     def worker():
         try:
             ok, tag, url, asset, portable_zip = fetch_latest_release()
-            asset_url = (asset or {}).get("url", "") if asset else ""
-            zip_url = (portable_zip or {}).get("url", "") if portable_zip else ""
+            setup_url = (asset or {}).get("url", "")
+            zip_url = (portable_zip or {}).get("url", "")
             if ok and is_newer(tag, current_version):
-                on_result("update", tag, url, zip_url)
+                on_result("update", tag, url, zip_url, setup_url)
             elif not quiet:
-                on_result("latest", tag or "", asset_url)
+                on_result("latest", tag or "", url)
         except Exception:
             if not quiet:
                 on_result("error", "", RELEASES_PAGE_URL)

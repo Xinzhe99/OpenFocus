@@ -17,11 +17,12 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QSplitter,
     QMessageBox,
+    QProgressDialog,
     QDialog,
 )
-from PyQt6.QtCore import Qt, QUrl, QEvent, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QUrl, QEvent, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
-from PyQt6.QtGui import QFont, QIcon, QDragEnterEvent, QDropEvent, QImage, QPixmap
+from PyQt6.QtGui import QFont, QIcon, QDesktopServices, QDragEnterEvent, QDropEvent, QImage, QPixmap
 from core import ImageStackLoader
 from core.app import OpenFocusApplication, process_command_line_args
 from core.workers import ROIAlignmentWorker
@@ -108,6 +109,12 @@ class OpenFocus(QMainWindow):
         self.image_filenames = []  # 文件名列表
         self.raw_images = []  # 存储原始的numpy数组图像，用于配准和融合
         self.base_images = []  # 存储首次加载的基准尺寸图像，用于恢复和resize计算
+        # Scale the loader used to decode base_images, relative to the files on
+        # disk; resize_all_images must never offer more detail than that.
+        self.base_scale_factor = 1.0
+        self.current_scale_factor = 1.0
+        # Full path of each frame in image_filenames, when the origin is known
+        self.image_source_paths = []
         self.fusion_result = None  # 存储最新的融合结果
         self.fusion_results = []  # 存储所有融合结果的历史记录
         self.registration_results = []  # 存储配准后的图像栈
@@ -576,7 +583,6 @@ class OpenFocus(QMainWindow):
 
     def _show_update_result(self, state: str, tag: str, page_url: str,
                             zip_url: str = "", setup_url: str = "") -> None:
-        from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtWidgets import QMessageBox
 
         if state == "update":
@@ -697,24 +703,30 @@ class OpenFocus(QMainWindow):
         """One-click self-update: download portable zip, stage it, then quit
         and let a detached script swap it in and restart."""
         import tempfile
-        from PyQt6.QtWidgets import QProgressDialog
         from utils import self_update
+        from utils.updater import RELEASES_PAGE_URL
 
         if not self_update.is_frozen():
-            QDesktopServices.openUrl(QUrl(page_url if False else "https://github.com/Xinzhe99/OpenFocus/releases"))
+            QDesktopServices.openUrl(QUrl(RELEASES_PAGE_URL))
             return
 
-        app_dir = self_update.app_install_dir()
-        staging_root = self_update.staging_dir_for(app_dir, tag)
+        safe_tag = self_update.sanitize_tag(tag)
+        staging_root = self_update.staging_root_for(safe_tag)
         zip_path = os.path.join(tempfile.gettempdir(),
-                                f"OpenFocus-{tag}-portable.zip")
+                                f"OpenFocus-{safe_tag}-portable.zip")
+        try:
+            os.makedirs(staging_root, exist_ok=True)
+        except OSError:
+            show_warning_box(self, trans.t('update_check_failed_title'),
+                             trans.t('msg_update_stage_failed'))
+            return
 
         progress = QProgressDialog(trans.t('update_downloading'), "", 0, 100, self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
         progress.setWindowTitle(trans.t('update_downloading'))
 
-        class _DownloadWorker(_QThread):
+        class _DownloadWorker(QThread):
             progress_sig = pyqtSignal(int, int)
             done_sig = pyqtSignal(bool, str)
 
@@ -737,7 +749,7 @@ class OpenFocus(QMainWindow):
             if not ok:
                 show_warning_box(self, trans.t('update_check_failed_title'), message)
                 return
-            self._stage_and_restart(zip_path, staging_root)
+            self._stage_and_restart(zip_path, staging_root, safe_tag)
 
         worker = _DownloadWorker(zip_url, zip_path)
         worker.progress_sig.connect(
@@ -746,9 +758,8 @@ class OpenFocus(QMainWindow):
         self._update_download_worker = worker
         worker.start()
 
-    def _stage_and_restart(self, zip_path: str, staging_root: str) -> None:
+    def _stage_and_restart(self, zip_path: str, staging_root: str, tag: str) -> None:
         """Extract the downloaded zip and hand off to the apply script."""
-        from PyQt6.QtWidgets import QProgressDialog
         from utils import self_update
 
         progress = QProgressDialog(trans.t('update_preparing'), "", 0, 0, self)
@@ -756,7 +767,7 @@ class OpenFocus(QMainWindow):
         progress.setMinimumDuration(0)
         progress.setWindowTitle(trans.t('update_preparing'))
 
-        class _StageWorker(_QThread):
+        class _StageWorker(QThread):
             done_sig = pyqtSignal(bool, str)
 
             def run(self) -> None:
@@ -776,16 +787,37 @@ class OpenFocus(QMainWindow):
             app_dir = self_update.app_install_dir()
             bundle = self_update.mac_app_bundle()
             if sys.platform == "darwin" and bundle:
-                script = self_update.write_apply_script_macos(bundle, message, "v1.23")
+                staged_bundle = self_update.find_staged_bundle(message)
+                if not staged_bundle:
+                    show_warning_box(self, trans.t('update_check_failed_title'),
+                                     trans.t('msg_update_stage_failed'))
+                    return
+                script = self_update.write_apply_script_macos(
+                    bundle, staged_bundle, tag, staging_root=message,
+                    zip_path=zip_path, wait_pid=os.getpid())
                 self_update.launch_detached_unix(script)
             else:
-                staged_app = os.path.join(message, "OpenFocus")
-                script = self_update.write_apply_script_windows(app_dir, staged_app, "v1.23")
+                staged_app = self_update.find_staged_app_dir(message)
+                if not staged_app:
+                    show_warning_box(self, trans.t('update_check_failed_title'),
+                                     trans.t('msg_update_stage_failed'))
+                    return
+                script = self_update.write_apply_script_windows(
+                    app_dir, staged_app, tag, staging_root=message,
+                    zip_path=zip_path)
                 self_update.launch_detached_windows(script)
+            # The apply script can only swap unlocked binaries: close() is
+            # what stops the workers, and the restart must not be blocked by
+            # the "work in flight" confirmation.
+            self._restart_for_update = True
+            # close() first: its handler stops the worker threads that would
+            # otherwise hold the binaries locked while the script copies.
             self.close()
+            QApplication.quit()
 
         worker = _StageWorker()
         worker.done_sig.connect(_on_staged)
+        self._update_stage_worker = worker  # keep a reference until it finishes
         worker.start()
 
     def _download_and_launch_update(self, url: str, tag: str) -> None:
@@ -795,13 +827,18 @@ class OpenFocus(QMainWindow):
         download thread directly.
         """
         import tempfile
-        from PyQt6.QtCore import QThread as _QThread
         from utils import updater
+        from utils.self_update import sanitize_tag
 
-        dest = os.path.join(tempfile.gettempdir(),
-                            f"OpenFocus-{tag}-{os.path.basename(url)}")
+        if not url:
+            QDesktopServices.openUrl(QUrl(updater.RELEASES_PAGE_URL))
+            return
 
-        class _DownloadWorker(_QThread):
+        dest = os.path.join(
+            tempfile.gettempdir(),
+            f"OpenFocus-{sanitize_tag(tag)}-{sanitize_tag(os.path.basename(url))}")
+
+        class _DownloadWorker(QThread):
             progress = pyqtSignal(int, int)
             done = pyqtSignal(bool, str)
 
@@ -1488,8 +1525,42 @@ class OpenFocus(QMainWindow):
     def _is_mouse_in_preview(self) -> bool:
         return self._mouse_in_source_preview or self._mouse_in_result_preview
 
+    def _has_work_in_flight(self) -> bool:
+        """True while a render, batch job, ROI alignment or GIF export runs."""
+        running = []
+        render_manager = getattr(self, 'render_manager', None)
+        if render_manager is not None and getattr(render_manager, 'worker', None):
+            running.append(render_manager.worker.isRunning())
+        batch_manager = getattr(self, 'batch_manager', None)
+        if batch_manager is not None and getattr(batch_manager, '_thread', None):
+            running.append(batch_manager._thread.isRunning())
+        roi_worker = getattr(self, 'roi_alignment_worker', None)
+        if roi_worker is not None:
+            running.append(roi_worker.isRunning())
+        export_manager = getattr(self, 'export_manager', None)
+        gif_worker = getattr(export_manager, 'gif_worker', None) if export_manager else None
+        if gif_worker is not None:
+            running.append(gif_worker.isRunning())
+        return any(running)
+
     def closeEvent(self, event):
         """Clean up background threads before closing the window."""
+        # Shutting down discards in-flight results without a word; ask first
+        # (the self-update restart has already stopped the workers itself).
+        if not getattr(self, '_restart_for_update', False) and self._has_work_in_flight():
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(trans.t('msg_warning'))
+            box.setText(trans.t('msg_quit_during_render'))
+            quit_btn = box.addButton(trans.t('btn_quit_anyway'),
+                                     QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(trans.t('btn_continue'), QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(quit_btn)
+            box.exec()
+            if box.clickedButton() is not quit_btn:
+                event.ignore()
+                return
+
         # Persist user preferences, layout and recent files for next time
         try:
             self.persist_settings()
@@ -1551,7 +1622,7 @@ class OpenFocus(QMainWindow):
     # --- Language ---
     
     def set_language(self, lang_code: str) -> None:
-        """Switch application language."""
+        """Switch application language (update_ui_text runs via the signal)."""
         trans.set_language(lang_code)
         self.persist_settings()
 
@@ -1665,6 +1736,10 @@ class OpenFocus(QMainWindow):
         c.lbl_kernel.setText(trans.t('label_kernel'))
         c.btn_reset.setText(trans.t('btn_reset'))
         c.btn_render.setText(trans.t('btn_render'))
+        c.btn_compare.setText(trans.t('btn_compare_all'))
+        c.btn_compare.setToolTip(trans.t('btn_compare_all_hint'))
+        c.chk_quick_preview.setText(trans.t('chk_quick_preview'))
+        c.chk_quick_preview.setToolTip(trans.t('chk_quick_preview_hint'))
         
         # ROI Button
         if hasattr(self, 'btn_preview_roi'):

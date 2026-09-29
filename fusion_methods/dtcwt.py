@@ -8,6 +8,8 @@ import numpy as np
 from typing import Union, List, Tuple, Optional
 import cv2
 
+from utils.image_utils import fuse_output_dtype
+
 # NumPy 2.0 compatibility shims
 if not hasattr(np, "asfarray"):
     def _asfarray_compat(arr, dtype=None):
@@ -63,6 +65,7 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu):
     # Convert to float32 RGB [0, 1]
     # Processing images as a batch is not easily possible with standard dtcwt library 
     # (which expects 2D inputs), so we prepare them for channel-wise processing.
+    out_dtype = fuse_output_dtype(images)
     images_rgb = [
         cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         for img in images
@@ -162,7 +165,7 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu):
     fused_img = np.stack(fused_channels, axis=-1)
     
     # Clip and Convert
-    fused_img = np.clip(fused_img * 255.0, 0, 255).astype(np.uint8)
+    fused_img = np.clip(fused_img * 255.0, 0, 255).astype(out_dtype)
     fused_img = cv2.cvtColor(fused_img, cv2.COLOR_RGB2BGR)
     
     return fused_img

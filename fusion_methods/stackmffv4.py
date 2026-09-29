@@ -10,6 +10,8 @@ import glob
 import numpy as np
 import cv2
 
+from utils.image_utils import fuse_output_dtype
+
 # ================= 全局缓存变量 =================
 _GLOBAL_MODEL = None
 _GLOBAL_DEVICE = None
@@ -114,6 +116,9 @@ def _stackmffv4_batch_impl(tiles_list, model_path, use_gpu):
     model, device = _get_model_and_device(model_path, use_gpu)
     
     batch_size = len(tiles_list)
+    # 网络只产生焦点索引，色彩是从源帧里挑出来的，所以输出位深直接跟随输入；
+    # 硬转 uint8 会让调用方无法还原 16-bit。
+    out_dtype = fuse_output_dtype(list(tiles_list[0]))
     
     # 准备所有 tile 的数据
     all_color_images = []  # [batch][num_images] 的 RGB 图像
@@ -179,7 +184,8 @@ def _stackmffv4_batch_impl(tiles_list, model_path, use_gpu):
         color_images = all_color_images[tile_idx]
         color_array = np.stack(color_images, axis=0)
         fused_color = color_array[focus_map, np.arange(orig_h)[:, None], np.arange(orig_w)]
-        fused_color_bgr = cv2.cvtColor(fused_color.astype(np.uint8), cv2.COLOR_RGB2BGR)
+        # 焦点图只是从源帧里"选像素"，不做混合，所以保持源位深即可
+        fused_color_bgr = cv2.cvtColor(fused_color.astype(out_dtype), cv2.COLOR_RGB2BGR)
         results.append(fused_color_bgr)
     
     return results
@@ -276,6 +282,7 @@ def _stackmffv4_impl(input_source, img_resize, model_path, use_gpu):
     focus_map = np.clip(focus_map, 0, num_images - 1)
     color_array = np.stack(color_images, axis=0)
     fused_color = color_array[focus_map, np.arange(h)[:, None], np.arange(w)]
-    fused_color_bgr = cv2.cvtColor(fused_color.astype(np.uint8), cv2.COLOR_RGB2BGR)
+    fused_color_bgr = cv2.cvtColor(
+        fused_color.astype(fuse_output_dtype(color_images)), cv2.COLOR_RGB2BGR)
 
     return fused_color_bgr

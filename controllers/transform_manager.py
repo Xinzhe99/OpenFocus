@@ -51,8 +51,14 @@ class TransformManager:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_resize"))
             return
 
-        current_scale = getattr(window, "current_scale_factor", 1.0)
-        dialog = DownsampleDialog(window, initial_scale=current_scale)
+        # base_images are the sharpest frames the session holds, decoded at
+        # base_scale relative to the files on disk. Rescaling must start from
+        # them: resizing raw_images again compounds the previous downsample,
+        # and a target above base_scale only upscales blur.
+        base_scale = float(getattr(window, "base_scale_factor", 1.0) or 1.0)
+        base_scale = min(1.0, max(0.01, base_scale))
+        current_scale = min(base_scale, float(getattr(window, "current_scale_factor", 1.0) or 1.0))
+        dialog = DownsampleDialog(window, initial_scale=current_scale, max_scale=base_scale)
         if not dialog.exec():
             return
 
@@ -61,16 +67,16 @@ class TransformManager:
             return
 
         try:
-            if new_scale == 1.0:
+            if abs(new_scale - base_scale) < 0.001:
                 window.raw_images = [img.copy() for img in window.base_images]
             else:
-                new_width = int(window.base_images[0].shape[1] * new_scale)
-                new_height = int(window.base_images[0].shape[0] * new_scale)
-                resized = []
-                for img in window.raw_images:
-                    resized_img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
-                    resized.append(resized_img)
-                window.raw_images = resized
+                factor = new_scale / base_scale
+                new_width = max(1, int(window.base_images[0].shape[1] * factor))
+                new_height = max(1, int(window.base_images[0].shape[0] * factor))
+                window.raw_images = [
+                    cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                    for img in window.base_images
+                ]
 
             window.current_scale_factor = new_scale
 
@@ -177,6 +183,34 @@ class TransformManager:
         except Exception as exc:
             print(f"sharpness analysis failed: {exc}")
 
+    def reset_roi_selection(self) -> None:
+        """Drop *all* ROI state: aligned stack, the rect drawn on the result
+        view and the tool button.
+
+        Half a reset used to leave the rectangle behind, so the next render
+        cropped the new stack with the previous stack's ROI. Idempotent: it is
+        called on every stack mutation and on clear."""
+        window = self.window
+
+        window.roi_aligned_images = []
+        window.roi_aligned_raw_count = 0
+        window.roi_mode_active = False
+
+        result_view = getattr(window, "lbl_result_img", None)
+        if result_view is not None:
+            # roi_mode = False clears the stored rect too; set_roi_rect(None)
+            # keeps both code paths in sync with the render manager.
+            result_view.roi_mode = False
+            result_view.set_roi_rect(None)
+
+        roi_button = getattr(window, "btn_preview_roi", None)
+        if roi_button is not None:
+            # Signals blocked: toggling it would re-enter the main window's
+            # ROI-mode handler from the middle of a reset.
+            roi_button.blockSignals(True)
+            roi_button.setChecked(False)
+            roi_button.blockSignals(False)
+
     def invalidate_processing_results(self, clear_output_view: bool = False, preserve_outputs: bool = False) -> None:
         """Expose processing reset so other controllers can reuse it."""
         self._invalidate_processing_results(clear_output_view, preserve_outputs)
@@ -188,11 +222,9 @@ class TransformManager:
         window.aligned_images = []
         window.is_images_aligned = False
         window.last_alignment_options = None
-        
-        # 清空ROI对齐缓存
-        window.roi_aligned_images = []
-        window.roi_aligned_raw_count = 0
-        window.roi_mode_active = False
+
+        # 清空ROI对齐缓存（含结果视图上的选区与按钮状态）
+        self.reset_roi_selection()
 
         window.registration_results = []
         window.current_result_index = -1

@@ -9,6 +9,9 @@ import cv2
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from fusion_methods.dct import _ensure_color_image
+from utils.image_utils import fuse_output_dtype
+
 # -----------------------------------------------------------------------------
 # 全局辅助与核心算法实现
 # -----------------------------------------------------------------------------
@@ -111,6 +114,10 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     if not stack_ori:
         raise ValueError("Input stack is empty")
 
+    # 灰度栈会在按通道取索引时崩溃，BGRA 栈会把引导通道选成 Alpha 从而得到全黑
+    # 结果；统一先转成 3 通道 BGR
+    stack_ori = [_ensure_color_image(np.ascontiguousarray(img)) for img in stack_ori]
+
     # Resize 处理
     if img_resize is not None:
         # 检查是否需要 resize，避免无用操作
@@ -126,16 +133,10 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
 
     # imgs_f32: (N, H, W, 3) range [0, 1]
     # 使用列表存储，避免一次性分配巨大的 numpy 数组导致内存溢出
-    imgs_f32 = []
-    for img in stack_ori:
-        if img.dtype == np.uint8:
-            imgs_f32.append(img.astype(np.float32) / 255.0)
-        else:
-            # 假设已经是 float 且范围 0-1 或 0-255，这里做安全处理
-            temp = img.astype(np.float32)
-            if temp.max() > 1.0:
-                temp /= 255.0
-            imgs_f32.append(temp)
+    # Every back-end takes 0-255 scaled input regardless of bit depth, so a
+    # plain /255 is correct for uint8 and for the float32 16-bit stacks.
+    out_dtype = fuse_output_dtype(stack_ori)
+    imgs_f32 = [img.astype(np.float32) / 255.0 for img in stack_ori]
     
     # 原始 uint8 数据不再需要，释放引用（如果外部未持有）
     del stack_ori
@@ -300,7 +301,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # Boolean indexing 在大数组下可能会产生临时拷贝，但比迭代快
     # 考虑到内存效率，逐通道处理
     
-    out = np.zeros((h, w, 3), dtype=np.uint8)
+    out = np.zeros((h, w, 3), dtype=out_dtype)
     
     for c in range(3):
         # 提取通道
@@ -308,9 +309,9 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         # 除法
         # 使用 np.divide 的 out 参数
         np.divide(ch_data, sum_fdms, out=ch_data, where=nonzero_mask)
-        # Clip 并转 uint8
+        # Clip 并写回源位深
         np.clip(ch_data * 255.0, 0, 255, out=ch_data)
-        out[:, :, c] = ch_data.astype(np.uint8)
+        out[:, :, c] = ch_data
 
     return out
 

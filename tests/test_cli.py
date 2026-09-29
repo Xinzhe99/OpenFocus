@@ -10,6 +10,8 @@ import cv2
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAIN = os.path.join(PROJECT_ROOT, "main.py")
 
+QUrl = pytest.importorskip("PyQt6.QtCore").QUrl
+
 
 def run_cli(*argv):
     return subprocess.run(
@@ -84,3 +86,45 @@ def test_batch_output_dir(tmp_path):
 def test_batch_no_folders_exit_code(tmp_path):
     r = run_cli("--input", str(tmp_path / "nofolder"), "--output-dir", str(tmp_path / "out"))
     assert r.returncode == 2
+
+
+# --- file:// URI normalisation ------------------------------------------------
+
+def test_dropped_file_uri_maps_back_to_the_file(tmp_path):
+    """A file:// URI (Dock drop, single-instance forwarding) must name a path
+    that exists — that only holds if the scheme *and* the URI quoting go away."""
+    from core.app import PlatformFileHandler
+
+    target = tmp_path / "My Stacks" / "f 0.png"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"png")
+
+    uri = QUrl.fromLocalFile(str(target)).toString()
+    assert uri.startswith("file://")
+    assert os.path.normcase(PlatformFileHandler.normalize(uri)) == os.path.normcase(str(target))
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="drive letters are Windows paths")
+def test_windows_file_uri_has_no_phantom_leading_slash():
+    from core.app import PlatformFileHandler
+
+    # Stripping the scheme by hand left '/C:/...', which no file API accepts
+    assert PlatformFileHandler.normalize("file:///C:/stacks/demo/f0.png") == "C:/stacks/demo/f0.png"
+    assert PlatformFileHandler.normalize("file:///C:/Users/me/My%20Stacks/f0.png") == r"C:/Users/me/My Stacks/f0.png"
+
+
+def test_posix_uris_and_mac_triple_slash():
+    from core.app import PlatformFileHandler
+
+    assert PlatformFileHandler.normalize("file:///Users/me/stack/f0.png") == "/Users/me/stack/f0.png"
+    assert PlatformFileHandler.normalize("///Users/me/stack/f0.png") == "/Users/me/stack/f0.png"
+
+
+def test_plain_paths_keep_a_literal_percent():
+    """Command-line arguments are paths, not URIs: unquoting them corrupts
+    folders really named '100%'."""
+    from core.app import PlatformFileHandler
+
+    assert PlatformFileHandler.normalize(r"C:\stacks\100%\f0.png") == r"C:\stacks\100%\f0.png"
+    assert PlatformFileHandler.normalize("/stacks/100%/f0.png") == "/stacks/100%/f0.png"
+    assert PlatformFileHandler.normalize("") == ""

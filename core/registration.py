@@ -261,6 +261,17 @@ def _crop_with_transforms(images, H_matrices):
 
 # ========== 单应性对齐算法实现（非线性） ==========
 
+def _image_sort_key(path):
+    """按文件名末尾数字排序，无数字的按字典序排在后面。
+
+    直接返回 int 或 str 的混合键会在 Python 3 里抛 TypeError（'<' not supported
+    between instances of 'int' and 'str'），所以统一返回可比较的元组。
+    """
+    name = os.path.basename(path)
+    nums = re.findall(r"\d+", name)
+    return (0, int(nums[-1]), "") if nums else (1, 0, name)
+
+
 def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None):
     """
     商业级图像对齐算法优化版
@@ -275,13 +286,12 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
 
     # --- 1. 数据加载与预处理 ---
     if img_filenames is None and isinstance(input_source, str):
-        num_pattern = re.compile(r"\d+")
         # 支持常见格式，过滤非图片
         valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
         img_paths = sorted(
             (os.path.join(input_source, f) for f in os.listdir(input_source)
              if os.path.splitext(f)[1].lower() in valid_exts),
-            key=lambda x: int(num_pattern.findall(os.path.basename(x))[-1]) if num_pattern.findall(os.path.basename(x)) else x
+            key=_image_sort_key
         )
         # 注意：这里为了内存考虑，商业软件通常不会一次性读入所有大图
         # 但为了保持接口一致，这里先全部读入。更好的做法是建立生成器。
@@ -471,11 +481,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     # --- 1. 数据加载 ---
     if img_filenames is None and isinstance(input_source, str):
-        num_pattern = re.compile(r"\d+")
         img_paths = sorted(
             (os.path.join(input_source, f) for f in os.listdir(input_source)
              if os.path.splitext(f)[1].lower() in {'.jpg', '.jpeg', '.png', '.bmp', '.tif'}),
-            key=lambda x: int(num_pattern.findall(os.path.basename(x))[-1]) if num_pattern.findall(os.path.basename(x)) else x
+            key=_image_sort_key
         )
         images = [cv2.imread(path) for path in img_paths]
         img_filenames = [os.path.basename(path) for path in img_paths]
@@ -772,7 +781,7 @@ def _stabilisation_impl(input_source, output_path=None, filenames=None):
         img_paths = sorted(
             [os.path.join(input_source, file) for file in os.listdir(input_source)
              if os.path.splitext(file)[1].lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.tif']],
-            key=lambda x: int(re.findall(r"\d+", os.path.basename(x))[-1])
+            key=_image_sort_key
         )
         images = [cv2.imread(path) for path in img_paths]
         # Store original filenames with extensions

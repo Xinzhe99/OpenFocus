@@ -747,8 +747,13 @@ class BatchWorker(QThread):
 
             fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=self.use_gpu, **tile_kwargs)
             
-            # 调用fuse方法执行融合
-            fusion_result = fusion.fuse(aligned_images, thread_count=self.thread_count, **fusion_params)
+            # 调用fuse方法执行融合：与单文件夹路径使用同一套 16-bit 输入/输出契约，
+            # 否则批处理会把 16-bit 栈压成 8-bit（甚至过曝）
+            from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+            fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
+            fusion_result = quantize_fuse_output(
+                fusion.fuse(fusion_input, thread_count=self.thread_count, **fusion_params),
+                is_16bit)
         else:
             fusion_result = None
         
@@ -874,10 +879,12 @@ class GifSaverWorker(QThread):
                 normalized_images.append(img_copy)
             
             # 使用imageio保存GIF
+            # imageio 把 duration 原样交给 Pillow，而 Pillow 的单位是毫秒；
+            # 这里传的是秒，不换算的话每帧时长会被截断成 0（播放速度失控）
             imageio.mimsave(
                 self.file_path,
                 normalized_images,
-                duration=self.duration_sec,
+                duration=self.duration_sec * 1000.0,
                 loop=0  # 循环播放，0表示无限循环
             )
             self.finished_signal.emit(True, f"GIF animation saved to:\n{self.file_path}")

@@ -6,6 +6,9 @@ import cv2
 import numpy as np
 import concurrent.futures
 
+from fusion_methods.dct import _ensure_color_image
+from utils.image_utils import fuse_output_dtype
+
 # Reference:
 # https://github.com/RCharradi/Image-fusion-with-guided-filtering
 # Li S, Kang X, Hu J. Image fusion with guided filtering[J]. IEEE Transactions on Image processing, 2013, 22(7): 2864-2875.
@@ -104,11 +107,17 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None)
     if not stack_ori:
         raise ValueError("No image data was loaded")
 
+    # 灰度栈会让下游的 3 通道解包崩溃，BGRA 栈会输出 4 通道结果；统一先转成 BGR
+    stack_ori = [_ensure_color_image(np.ascontiguousarray(img)) for img in stack_ori]
+
     if img_resize:
         stack_ori = [cv2.resize(img, img_resize) for img in stack_ori]
 
     # 转换为 float32 并归一化到 [0, 1]
     stack_flt = [img.astype(np.float32) / 255.0 for img in stack_ori]
+    # 16-bit stacks arrive as float32 in 0-255; returning uint8 here would
+    # discard the depth the caller asked to preserve.
+    out_dtype = fuse_output_dtype(stack_ori)
     
     # ========== 核心算法实现 ==========
     
@@ -223,16 +232,15 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(process_weight_fusion, k): k for k in range(num_images)}
             for future in concurrent.futures.as_completed(futures):
-                try:
-                    bn, bd, dn, dd = future.result()
-                    fused_base_numerator += bn
-                    fused_base_denominator += bd
-                    fused_detail_numerator += dn
-                    fused_detail_denominator += dd
-                    # 显式删除引用，帮助垃圾回收
-                    del bn, bd, dn, dd
-                except Exception as exc:
-                    print(f'Image {futures[future]} generated an exception: {exc}')
+                # 抛出来，不再只 print 后跳过：吞掉某一帧的异常会"成功"产出一张
+                # 缺帧的融合图，用户看不出结果已经被破坏。
+                bn, bd, dn, dd = future.result()
+                fused_base_numerator += bn
+                fused_base_denominator += bd
+                fused_detail_numerator += dn
+                fused_detail_denominator += dd
+                # 显式删除引用，帮助垃圾回收
+                del bn, bd, dn, dd
 
             
         # 5. 重建图像
@@ -246,8 +254,8 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None)
         
         fused_img = fused_base + fused_detail
         
-        # 裁剪并转换回 uint8
-        fused_img = np.clip(fused_img * 255, 0, 255).astype(np.uint8)
+        # 裁剪并转换回源位深
+        fused_img = np.clip(fused_img * 255, 0, 255).astype(out_dtype)
         
         return fused_img
 

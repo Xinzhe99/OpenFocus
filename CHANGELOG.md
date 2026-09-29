@@ -3,7 +3,146 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.27] — 2026-09-29
+
+### Fixed
+- **16-bit stacks rendered as a black or blown-out image**: the fusion
+  back-ends were handed raw 0-65535 data and clipped it to white or black.
+  The bit depth is now carried end to end - loader, registration, all five
+  fusion algorithms and the PNG/TIFF export - so a 16-bit stack fuses into
+  a 16-bit result instead of an 8-bit collapse. 8-bit stacks are unchanged
+- **Help -> Check for Updates -> "Update and Restart" did nothing**: the
+  click raised `NameError` before the download even started, and the global
+  exception hook swallowed it. The whole path is now functional: the staged
+  build lives in the user-writable temp folder (an install under Program
+  Files used to fail before the swap could be offered), the Windows swap
+  script waits for the app to actually exit instead of a fixed two seconds,
+  and the elevation retry no longer loops through repeated UAC prompts
+- **Update dialog was unusable without a packaged build**: the fallback
+  "Download and Install" path crashed on a missing `QProgressDialog`
+  import, and the installer URL was never passed to it. Apple Silicon now
+  picks only its own architecture's build instead of a possibly
+  unlaunchable one
+- **Tall or wide stacks crashed tiled fusion** (e.g. 5000x1000): a tile
+  could start at a negative offset whenever one image axis was shorter
+  than the tile size, producing empty crops and a broadcast error
+- **Tiled fusion kept every tile result in memory** until the whole stack
+  finished; tiles are now accumulated and released as they complete, and
+  cancelling stops the tile loop instead of waiting for it to drain
+- **Silent partial renders**: a per-tile failure was printed and ignored,
+  so the app happily exported an incomplete image; it now fails loudly
+- **Closing the window during a render threw the result away without a
+  word**; it now asks first
+- **Two controls kept their old language**: switching language relabels
+  most of the interface, but the Compare All button and the Quick Preview
+  checkbox (together with their tooltips) were never retranslated
+- **Japanese and Spanish were missing the self-update strings**, showing
+  raw English button names; the four language packs are now kept in sync by
+  a test
+- **DCT fusion crashed on stacks of 256 or more frames**, and could pick a
+  truncated frame index (the 300th frame became the 44th) on the frames it
+  did survive; both are fixed and a long stack now reproduces its sharp
+  frame exactly
+- **Grayscale and BGRA stacks crashed or came out black**: guided filter
+  raised on a single-channel stack, GFG-FGF raised on grayscale and turned
+  BGRA into an all-black image by filtering the alpha channel. Both now
+  return the same result as the equivalent BGR stack
+- **HEIC/HEIF photos were silently dropped** instead of loading: the Pillow
+  fallback the loader called for did not exist, and the failure was
+  swallowed per file. Every entry point now falls back to Pillow, keeping
+  16-bit depth, and reports a file it truly cannot read
+- **Batch processing ignored 16-bit depth**: the multi-folder branch of the
+  batch worker bypassed the bit-depth contract fixed above, so batch runs
+  of a 16-bit stack still came out as 8-bit (or over-exposed)
+- **Exported GIFs played at the wrong speed**: the frame duration was
+  passed in seconds to a millisecond argument, so each frame lasted about
+  zero milliseconds
+- **Opening a folder whose images were not all named with numbers failed**
+  with `TypeError: '<' not supported between instances of 'int' and 'str'`
+  while sorting the file list for alignment
+- **Quick preview and ROI renders poisoned the alignment**: they run on
+  downscaled or cropped copies, yet published those copies as the
+  full-resolution aligned stack and wrote them into the on-disk registration
+  cache. The next render then fused frames that never came from the images
+  the window was showing. An alignment is published only when it still
+  belongs to the stack on screen
+- **A failed or cancelled render left the draft flag set**, so the following
+  successful render was treated as a throwaway preview and its result never
+  appeared; every exit path now clears it
+- **Compare All could not be stopped**: clicking it again while it ran did
+  nothing. It now cancels the run and re-enables the controls even when the
+  click lands between two queued renders
+- **Deleting a frame removed the wrong ones**: the filename list was aliased
+  into the frame list, so one deletion dropped two frames and left the
+  remaining names pointing at the wrong images
+- **A stack loaded at reduced size was remembered as full size**: loading a
+  folder at 50% decoded every frame at 50% but recorded the scale as 100%,
+  so any reload silently decoded the whole folder at full resolution (the
+  memory spike the down-sample was meant to avoid) and keyed the
+  registration cache on the wrong scale
+- **Repeated downsampling shrank far below the chosen percentage**: the
+  Resize dialog sized its output from the untouched base images but resized
+  the *already reduced* ones, so 50% then 25% produced 12.5%, and asking for
+  100% returned the degraded frames while reporting full resolution. Resizing
+  now always starts from the best frames held and the slider cannot be set
+  above the scale that was actually decoded
+- **Batch jobs failed deep inside the run** when the output target was
+  missing or unwritable - one opaque error per folder, after every frame had
+  been fused. The target is probed with a real temporary file before the
+  dialog closes (`os.access` reports success on read-only directories on
+  Windows)
+- **Clearing the stack left the ROI behind**: the rectangle and its tool
+  button kept their state, so the next stack could be rendered against a
+  crop region from the previous one
+- **Project files could not reopen a moved stack**: they stored bare
+  filenames, so a stack loaded from another directory - a moved folder, a
+  network share, frames appended from a second folder - failed validation.
+  Each frame's folder is now recorded and the resolver falls back to the
+  project's own directory, which keeps older files readable
+- **Opening a file from the command line or the macOS file-open event could
+  miss it entirely**: `file:///C:/stack/f0.png` was reduced to `/C:/stack/…`
+  by hand-stripping the scheme, and a folder name containing a literal `%`
+  (e.g. `C:\stacks\100%`) was corrupted by percent-decoding
+- **The sharpness curve was unreadable in the dark theme**: it picked its
+  colours from the widget palette, which the QSS dark skin never updates, so
+  dark grey text was drawn on the dark background
+
+## [v1.26] — 2026-09-29
+
+### Fixed
+- **Windowed (no-console) builds crashed on any log line**: with no console
+  attached `sys.stdout`/`sys.stderr` are `None` (or closed), so a single
+  `print()` inside a render raised `AttributeError`/`ValueError` and killed
+  the job. They are now routed to the null device at start-up and to a
+  no-op writer when the packaged build reopens them
+- **Version constant lagged the release**: `APP_VERSION` was still `1.25`
+  when `v1.26` shipped, so the update check kept offering an update the
+  user had just installed
+
+## [v1.25] — 2026-09-29
+
+### Fixed
+- **Portable mode detection**: the portable marker is now resolved
+  consistently, so a portable folder no longer falls back to registry
+  storage (settings and recent files stayed put after the folder moved)
+- **Render failures were silent**: failures inside the render worker are
+  logged with a traceback instead of surfacing as a bare error box
+
 ## [v1.24] — 2026-09-28
+
+### Added
+- **One-click self-update**: Help → Check for Updates offers "Update and
+  Restart" for packaged builds. It downloads the new portable build with
+  progress, stages it, verifies the new executable, then quits the app -
+  a detached script mirrors the staged files over the installation
+  (automatic UAC elevation when Program Files is not writable), cleans up
+  and relaunches OpenFocus. No manual reinstall needed
+- **Download and Install** button in the update dialog (downloads the
+  platform installer with a progress bar and launches it)
+- **Theme menu fixes**: Settings -> Theme showed raw key names
+  (menu_theme / theme_dark / theme_light) - translations restored
+- Windows title bar now follows the theme when switching at runtime
+- App icon edges cleaned up further
 
 ### Fixed
 - **Check for Updates -> Download froze the app**: the download ran on a
@@ -14,27 +153,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   version constant lagging releases (fixed in v1.23); the Environment
   Info dialog now also shows the running version (OpenFocus vX.Y) so
   this is visible at a glance
-
-### Added
-- **Download and Install** button in the update dialog (downloads the
-  platform installer with a progress bar and launches it)
-- App icon edges cleaned up further
-
-## [v1.24] — 2026-09-29
-
-### Added
-- **One-click self-update**: Help → Check for Updates offers "Update and
-  Restart" for packaged builds. It downloads the new portable build with
-  progress, stages it next to the installation, verifies the new
-  executable, then quits the app - a detached script mirrors the staged
-  files over the installation (automatic UAC elevation when Program Files
-  is not writable), cleans up and relaunches OpenFocus. No manual
-  reinstall needed
-- **Theme menu fixes**: Settings -> Theme showed raw key names
-  (menu_theme / theme_dark / theme_light) - translations restored
-- Windows title bar now follows the theme when switching at runtime
-
-### Fixed
 - **Light theme readability**: the color mapping used chained string
   replaces that double-replaced already converted colors (menu text white
   on white); replaced with a single-pass regex mapping

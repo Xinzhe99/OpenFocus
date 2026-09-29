@@ -43,17 +43,29 @@ def _collect_state(window) -> Dict[str, Any]:
     lm = getattr(window, "label_manager", None)
     if lm is not None and hasattr(lm, "export_state"):
         labels = lm.export_state()
-    # Store absolute paths: image_filenames are base names relative to the
-    # source folder, and appended frames may come from several folders.
+    # Absolute paths: image_filenames are base names relative to the source
+    # folder, and appended frames may come from several folders. The loader
+    # keeps the real path of every frame; fall back to joining the current
+    # folder (and finally to the bare name) when that record is unavailable.
     folder = getattr(window, "current_folder_path", "") or ""
+    recorded = list(getattr(window, "image_source_paths", None) or [])
+    names = list(getattr(window, "image_filenames", []))
     abs_paths = []
-    for name in getattr(window, "image_filenames", []):
+    for i, name in enumerate(names):
+        if i < len(recorded) and recorded[i] and os.path.isfile(recorded[i]):
+            abs_paths.append(recorded[i])
+            continue
         cand = os.path.join(folder, name)
         abs_paths.append(cand if os.path.isfile(cand) else name)
     return {
         "openfocus_project": FORMAT_VERSION,
         "app_version": APP_VERSION,
         "sources": abs_paths,
+        # Folder each frame was read from, so the stack still round-trips after
+        # the frames are reached through another directory (moved, network
+        # share, appended from a second folder).
+        "source_folders": [os.path.dirname(p) if os.path.dirname(p) else ""
+                           for p in abs_paths],
         "scale_factor": getattr(window, "current_scale_factor", 1.0),
         "settings": settings,
         "labels": labels,
@@ -73,8 +85,34 @@ def save_project(window, path: str) -> Tuple[bool, str]:
         return False, str(exc)
 
 
+def _resolve_sources(state: Dict[str, Any], project_dir: str) -> Optional[List[str]]:
+    """Locate every recorded frame. Returns the aligned path list, or None.
+
+    Order of attempts: the recorded absolute path, the recorded per-frame
+    folder, then a basename search next to the project file (the folder it was
+    saved in) — which is also what old .ofproj files, that only stored names,
+    can be matched with.
+    """
+    recorded_folders = state.get("source_folders") or []
+    resolved: List[str] = []
+    for i, recorded in enumerate(state.get("sources", [])):
+        name = os.path.basename(recorded)
+        candidates = [recorded]
+        if i < len(recorded_folders) and recorded_folders[i]:
+            candidates.append(os.path.join(str(recorded_folders[i]), name))
+        candidates.append(os.path.join(project_dir, name))
+        hit = next((c for c in candidates if c and os.path.isfile(c)), None)
+        if hit is None:
+            return None
+        resolved.append(os.path.abspath(hit))
+    return resolved
+
+
 def validate_project(path: str) -> Tuple[bool, str, Dict[str, Any]]:
-    """Read and validate a project file. Returns (ok, error, state)."""
+    """Read and validate a project file. Returns (ok, error, state).
+
+    The resolved paths are stored back into the state as `resolved_sources`,
+    so apply_project() opens exactly the frames that were found here."""
     try:
         with open(path, encoding="utf-8") as f:
             state = json.load(f)
@@ -85,16 +123,22 @@ def validate_project(path: str) -> Tuple[bool, str, Dict[str, Any]]:
     sources = state.get("sources", [])
     if not sources:
         return False, "project contains no sources", {}
-    missing = [p for p in sources if not os.path.isfile(p)]
-    if missing:
+    resolved = _resolve_sources(state, os.path.dirname(os.path.abspath(path)))
+    if resolved is None:
+        missing = [p for p in sources if not os.path.isfile(p)]
         return False, f"{len(missing)} source file(s) missing (first: {missing[0]})", {}
+    state["resolved_sources"] = resolved
     return True, "", state
 
 
 def apply_project(window, state: Dict[str, Any]) -> None:
     """Load the project's sources and restore settings/labels/index."""
-    sources: List[str] = state["sources"]
+    sources: List[str] = state.get("resolved_sources") or state["sources"]
     settings = state.get("settings", {})
+
+    # The stack may span folders; the registration cache and the "save project"
+    # suggestion both key off the folder of the first frame.
+    window.current_folder_path = os.path.dirname(sources[0])
 
     # Load frames from the exact recorded file list (no dialog)
     window.source_manager._start_load_worker(

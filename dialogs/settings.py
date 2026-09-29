@@ -137,11 +137,14 @@ class DurationDialog(QDialog):
 class DownsampleDialog(QDialog):
     """下采样设置对话框"""
 
-    def __init__(self, parent=None, initial_scale=1.0):
+    def __init__(self, parent=None, initial_scale=1.0, max_scale=1.0):
         super().__init__(parent)
         self.setWindowTitle(trans.t('ds_title'))
         self.resize(400, 150)
-        self.scale_percent = int(initial_scale * 100)
+        # Frames already decoded at a reduced scale cannot be restored to full
+        # detail, so the slider stops where the images on hand end.
+        self.max_percent = max(1, min(100, int(round(max_scale * 100))))
+        self.scale_percent = min(max(1, int(initial_scale * 100)), self.max_percent)
 
         # 应用深色主题
         self.setStyleSheet(f"""
@@ -236,7 +239,7 @@ class DownsampleDialog(QDialog):
 
         # 滑块
         self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(1, 100)
+        self.slider.setRange(1, self.max_percent)
         self.slider.setValue(self.scale_percent)
         self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.slider.setTickInterval(10)
@@ -254,7 +257,7 @@ class DownsampleDialog(QDialog):
         # 旋转框
         self.spinbox = QSpinBox()
         self.spinbox.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)  # 隐藏自带按钮
-        self.spinbox.setRange(1, 100)
+        self.spinbox.setRange(1, self.max_percent)
         self.spinbox.setValue(self.scale_percent)
         self.spinbox.setSuffix("%")
         self.spinbox.setFixedWidth(60)

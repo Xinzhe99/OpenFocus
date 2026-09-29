@@ -7,6 +7,9 @@ from typing import List, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
+from scipy.ndimage import median_filter
+
+from utils.image_utils import fuse_output_dtype
 
 ArraySource = Sequence[np.ndarray]
 
@@ -102,9 +105,9 @@ def dct_focus_stack_fusion(
     # --- 2. 快速计算方差图 (核心优化) ---
     # 预分配空间
     max_variance_map = np.full((map_h, map_w), -1.0, dtype=np.float32)
-    # 使用较小的数据类型存储索引，节省内存
-    idx_dtype = np.uint8 if len(images) < 256 else np.int32
-    best_index_map = np.zeros((map_h, map_w), dtype=idx_dtype)
+    # 赢家索引图统一用 int32：帧数可以超过 255，不能为了迁就 cv2.medianBlur
+    # 而存成 uint8
+    best_index_map = np.zeros((map_h, map_w), dtype=np.int32)
 
     for idx, bgr_img in enumerate(normalized_images):
         # 裁剪边缘以匹配 block 分块
@@ -131,38 +134,28 @@ def dct_focus_stack_fusion(
         best_index_map[mask] = idx
 
     # --- 3. 一致性验证 (中值滤波) ---
-    # 必须转回适合滤波的类型，虽然 uint8 也可以，但为了稳健转一下
-    if idx_dtype == np.uint8:
-        map_to_filter = best_index_map
-    else:
-        map_to_filter = best_index_map.astype(np.float32)
+    # cv2.medianBlur 在 ksize > 5 时只接受 CV_8U，帧数 >= 256 的索引图会直接报错。
+    # mode="nearest" 与 cv2.medianBlur 的补边行为逐像素一致，8-bit 结果保持不变。
+    filtered_map = median_filter(best_index_map, size=kernel_size, mode="nearest")
+    filtered_map = median_filter(filtered_map, size=kernel_size, mode="nearest")
 
-    # 两次中值滤波去除噪点
-    filtered_map = cv2.medianBlur(map_to_filter, kernel_size)
-    filtered_map = cv2.medianBlur(filtered_map, kernel_size)
-    
-    # 转回整数索引
-    if filtered_map.dtype != np.int32 and filtered_map.dtype != np.uint8:
-        final_index_map = filtered_map.astype(np.int32)
-    else:
-        final_index_map = filtered_map
+    # 索引图本身就是整数，无需再转换
+    final_index_map = filtered_map.astype(np.int32, copy=False)
 
     # --- 4. 快速重建 ---
-    # 将小尺寸的索引图一次性放大回原图尺寸 (Nearest Neighbor)
-    full_size_indices = cv2.resize(
-        final_index_map.astype(np.uint8), # resize 对 uint8 最快
-        (w_trim, h_trim), 
-        interpolation=cv2.INTER_NEAREST
-    )
+    # 输出位深跟随输入：16-bit 栈在这里被压成 uint8 会丢掉调用方要保留的深度
+    fused_image = np.zeros((h_trim, w_trim, 3), dtype=fuse_output_dtype(normalized_images))
 
-    fused_image = np.zeros((h_trim, w_trim, 3), dtype=np.uint8)
-    
     # 仅遍历用到的源图像索引进行填充
     unique_indices = np.unique(final_index_map)
     
     for idx in unique_indices:
         # 生成掩膜：哪里需要这张图，哪里就是 True
-        mask = (full_size_indices == idx)
+        # 放大"每个索引的掩膜"而不是索引图本身：把索引图 resize 成 uint8 会把
+        # 第 256 张之后的帧截断成错误的小索引（长栈会取错源图）。
+        block_mask = (final_index_map == idx).astype(np.uint8)
+        mask = cv2.resize(block_mask, (w_trim, h_trim),
+                          interpolation=cv2.INTER_NEAREST).astype(bool)
         
         # 即使这里是 Python 循环，也是针对整张图的掩膜操作，速度很快
         # 裁剪源图像以匹配尺寸
@@ -172,7 +165,8 @@ def dct_focus_stack_fusion(
         fused_image[mask] = source_layer[mask]
 
     if output_path:
-        cv2.imwrite(output_path, fused_image)
+        from utils.image_utils import imwrite_auto
+        imwrite_auto(output_path, fused_image)
 
     return fused_image
 

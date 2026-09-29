@@ -12,6 +12,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.29**: **v1.27** — **16-bit stacks no longer fuse to a black or blown-out image** (bit depth is now carried from loading through fusion to export), **Help → Check for Updates → "Update and Restart" works again** (it had been failing silently, and now also handles installs under Program Files), tall/wide stacks stop crashing tiled fusion, cancelling a large render takes effect immediately, and closing the window mid-job asks before discarding the result. Also fixed this round: quick-preview and ROI renders no longer poison the saved alignment, Compare All can be cancelled, deleting a frame keeps its filename, downsampling stops compounding below the percentage you chose, batch jobs check their output folder before they start, `.ofproj` projects reopen after the images move, and the sharpness curve is readable in the dark theme.
+
 > 🎉 **2026.09.29**: **v1.26** — fixed the **"I/O operation on closed file"** render crash in windowed builds and a stale embedded version number that kept offering updates users already had.
 
 > 🎉 **2026.09.28 (6)**: **v1.25** — portable-mode hardening: the portable marker can no longer leak into installed copies (which broke settings/logging for installed users), and render failures now log full tracebacks.

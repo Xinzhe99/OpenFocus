@@ -63,16 +63,34 @@ class SharpnessCurveWidget(QWidget):
             self.setToolTip(self._tooltip_base + extra)
         super().mouseMoveEvent(event)
 
+    def _theme_colors(self):
+        """(line, axis, text, alert) for the theme the app actually applies.
+
+        The dark theme is a QSS skin: its background-color never reaches the
+        widget palette, so testing palette().color(backgroundRole()) reports
+        "light" while the app is dark and the curve text/axis came out
+        unreadable. CURRENT_THEME is what apply_theme() installed; the palette
+        (whose text role *is* synced in light mode) stays the fallback.
+        """
+        from ui import styles
+
+        theme = getattr(styles, "CURRENT_THEME", None)
+        if theme in ("light", "dark"):
+            light = theme == "light"
+        else:
+            foreground = self.palette().color(self.foregroundRole())
+            light = foreground.lightness() < 128
+
+        if light:
+            return QColor("#0969da"), QColor("#c8cfd6"), QColor("#57606a"), QColor("#d1242f")
+        return QColor("#4da3ff"), QColor("#6b6b6b"), QColor("#c9d1d9"), QColor("#ff6a6a")
+
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         w, h = self.width(), self.height()
 
-        theme_light = self.palette().color(self.backgroundRole()).lightness() > 128
-        line = QColor("#0969da") if theme_light else QColor("#4da3ff")
-        axis = QColor("#c8cfd6") if theme_light else QColor("#3a3a3a")
-        text = QColor("#57606a") if theme_light else QColor("#999999")
-        alert = QColor("#d1242f") if theme_light else QColor("#ff6a6a")
+        line, axis, text, alert = self._theme_colors()
 
         painter.setPen(QPen(axis, 1))
         painter.drawLine(QPointF(0, h - 4), QPointF(w, h - 4))

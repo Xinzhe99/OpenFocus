@@ -1,9 +1,11 @@
 """Registration tests: known-shift synthetic stacks must be recovered."""
+import os
+
 import numpy as np
 import cv2
 import pytest
 
-from core.registration import ImageRegistration
+from core.registration import ImageRegistration, _image_sort_key
 
 
 def _shifted_stack(dx=12, dy=6, size=(140, 180), n=2):
@@ -61,3 +63,49 @@ def test_registration_output_is_cropped_to_common_region():
     # Cropping to the common valid region must shrink the frames
     assert aligned[0].shape[0] <= frames[0].shape[0]
     assert aligned[0].shape[1] <= frames[0].shape[1]
+
+
+def _mixed_name_folder(tmp_path):
+    """A stack folder where some names carry no digits at all."""
+    folder = tmp_path / "mixed"
+    folder.mkdir()
+    for name in ("img1.png", "img2.png", "img10.png", "cover.png"):
+        assert cv2.imwrite(str(folder / name), np.full((24, 32, 3), 90, np.uint8))
+    return str(folder)
+
+
+@pytest.mark.parametrize("method", ["homography", "ecc"])
+def test_registration_folder_with_mixed_filenames(tmp_path, method):
+    """Sorting by `int(...) if digits else name` compared ints with strs and
+    raised TypeError ('<' not supported between instances of 'int' and 'str')
+    as soon as one file name had no digits (e.g. a cover/thumbnail PNG).
+    """
+    folder = _mixed_name_folder(tmp_path)
+    aligned = ImageRegistration(method=method, downscale_width=8).process(
+        folder, thread_count=1)
+
+    assert len(aligned) == len(os.listdir(folder)) == 4
+
+
+def test_image_sort_key_is_type_safe():
+    """Numeric names keep the old numeric order; digit-free names sort last."""
+    names = ["img10.png", "img2.png", "cover.png", "img1.png", "img100.png"]
+    assert sorted(names, key=lambda n: _image_sort_key(f"/x/{n}")) == [
+        "img1.png", "img2.png", "img10.png", "img100.png", "cover.png"]
+
+
+def test_stabilisation_folder_with_mixed_filenames(tmp_path):
+    """The stabilisation path sorted with int(findall(...)[-1]) outright, so a
+    digit-free name raised IndexError before any frame was read.
+    """
+    from core.registration import _stabilisation_impl
+
+    folder = tmp_path / "stab"
+    folder.mkdir()
+    rng = np.random.default_rng(4)
+    base = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+    for i, name in enumerate(("frame1.png", "frame2.png", "cover.png")):
+        assert cv2.imwrite(str(folder / name), np.roll(base, 3 * i, axis=1))
+
+    stabilized = _stabilisation_impl(str(folder))
+    assert len(stabilized) == 3

@@ -125,21 +125,34 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
 
 
 def normalize_fuse_input(images):
-    """Scale uint16 stacks into 0-1 float32 for the fusion back-ends.
+    """Scale uint16 stacks down to float32 in the 0-255 range the back-ends use.
 
     Returns (frames, is_16bit) — caller re-quantizes the fused result with
-    quantize_fuse_output.
+    quantize_fuse_output. The 0-255 range is what every back-end already
+    assumes, so their own `/ 255.0` preprocessing stays correct; keeping the
+    values float rather than rounding to uint8 is what preserves the depth.
     """
     is_16 = len(images) > 0 and images[0].dtype == np.uint16
     if is_16:
-        return [f.astype(np.float32) * (1.0 / 65535.0) for f in images], True
+        return [f.astype(np.float32) * (255.0 / 65535.0) for f in images], True
     return images, False
 
 
+def fuse_output_dtype(images) -> type:
+    """Return dtype a back-end should produce for this stack.
+
+    8-bit stacks keep returning uint8; float stacks (from normalize_fuse_input)
+    must return float32 in 0-255 so quantize_fuse_output can restore 16 bits.
+    """
+    if len(images) > 0 and images[0].dtype != np.uint8:
+        return np.float32
+    return np.uint8
+
+
 def quantize_fuse_output(result, is_16bit: bool):
-    """Quantize a 0-1 float fusion result back to the source bit depth."""
+    """Quantize a 0-255 fusion result back to the source bit depth."""
     if result is None:
         return None
     if is_16bit:
-        return (np.clip(result, 0.0, 1.0) * 65535.0).round().astype(np.uint16)
+        return (np.clip(result, 0.0, 255.0) * (65535.0 / 255.0)).round().astype(np.uint16)
     return result
