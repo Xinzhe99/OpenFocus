@@ -87,6 +87,9 @@ class OpenFocus(QMainWindow):
     # Emitted from the background update check (state, tag, download_url,
     # installer_asset_url).
     _update_check_done = pyqtSignal(str, str, str, str)
+    # Emitted by the installer download worker: received, total.
+    _update_download_progress = pyqtSignal(int, int)
+    _update_download_done = pyqtSignal(bool, str)
 
     def __init__(self):
         super().__init__()
@@ -672,23 +675,42 @@ class OpenFocus(QMainWindow):
         )
 
     def _download_and_launch_update(self, url: str, tag: str) -> None:
-        """Download the installer in the background, then offer to run it."""
+        """Download the installer on a worker thread, then offer to run it.
+
+        All UI updates happen through queued signals - never from the
+        download thread directly.
+        """
         import tempfile
-        from PyQt6.QtWidgets import QProgressDialog
+        from PyQt6.QtCore import QThread as _QThread
         from utils import updater
 
         dest = os.path.join(tempfile.gettempdir(),
                             f"OpenFocus-{tag}-{os.path.basename(url)}")
-        progress = QProgressDialog(trans.t('update_downloading'), "", 0, 100, self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setWindowTitle(trans.t('update_downloading'))
 
-        def on_progress(done: int, total: int) -> None:
-            progress.setValue(int(done * 100 / max(1, total)))
+        class _DownloadWorker(_QThread):
+            progress = pyqtSignal(int, int)
+            done = pyqtSignal(bool, str)
 
-        def on_done(ok: bool, message: str) -> None:
-            progress.close()
+            def run(self) -> None:
+                try:
+                    updater.download_to_file(
+                        url, dest,
+                        on_progress=lambda d, tt: self.progress.emit(d, tt))
+                    self.done.emit(True, dest)
+                except Exception as exc:
+                    self.done.emit(False, str(exc))
+
+        self._update_progress = QProgressDialog(
+            trans.t('update_downloading'), "", 0, 100, self)
+        self._update_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self._update_progress.setMinimumDuration(0)
+        self._update_progress.setWindowTitle(trans.t('update_downloading'))
+
+        def _on_download_progress(done: int, total: int) -> None:
+            self._update_progress.setValue(int(done * 100 / max(1, total)))
+
+        def _on_download_done(ok: bool, message: str) -> None:
+            self._update_progress.close()
             if not ok:
                 show_warning_box(self, trans.t('update_check_failed_title'), message)
                 return
@@ -703,7 +725,11 @@ class OpenFocus(QMainWindow):
                     import subprocess
                     subprocess.Popen(["open", message])
 
-        updater.download_async(url, dest, on_progress, on_done)
+        worker = _DownloadWorker()
+        worker.progress.connect(_on_download_progress)
+        worker.done.connect(_on_download_done)
+        self._update_download_worker = worker  # keep a reference
+        worker.start()
 
     def show_quick_start(self) -> None:
         from dialogs.welcome import WelcomeDialog

@@ -70,33 +70,45 @@ def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict]]:
     return True, tag, url, find_installer_asset(data)
 
 
+def download_to_file(url: str, dest_path: str,
+                     on_progress: Callable[[int, int], None] = None) -> bool:
+    """Stream a download to dest_path on the CALLING thread (blocking).
+
+    Intended to run inside a QThread. on_progress(received, total) fires
+    after every chunk in this thread — wrap it in a signal before touching
+    any UI. Raises on network/IO errors.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": "OpenFocus"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        total = int(resp.headers.get("Content-Length", 0) or 0)
+        done = 0
+        with open(dest_path, "wb") as f:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if on_progress is not None and total:
+                    try:
+                        on_progress(done, total)
+                    except Exception:
+                        pass
+    return True
+
+
 def download_async(url: str, dest_path: str,
                    on_progress: Callable[[int, int], None],
                    on_done: Callable[[bool, str], None]) -> None:
-    """Stream a download to dest_path on a daemon thread.
+    """Daemon-thread wrapper kept for non-UI callers.
 
-    on_progress(received_bytes, total_bytes) fires after every chunk;
-    on_done(ok, message) fires once at the end (worker thread).
+    UI code must prefer download_to_file inside a QThread: the callbacks
+    here run on the worker thread and may not touch widgets.
     """
 
     def worker():
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "OpenFocus"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                total = int(resp.headers.get("Content-Length", 0) or 0)
-                done = 0
-                with open(dest_path, "wb") as f:
-                    while True:
-                        chunk = resp.read(256 * 1024)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        done += len(chunk)
-                        if total:
-                            try:
-                                on_progress(done, total)
-                            except Exception:
-                                pass
+            download_to_file(url, dest_path, on_progress)
             on_done(True, dest_path)
         except Exception as exc:
             on_done(False, str(exc))

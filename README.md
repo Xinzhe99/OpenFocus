@@ -12,6 +12,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.28 (4)**: **v1.24** — fixed the freeze when downloading updates in-app (progress now streams through a worker thread), and the running version is now visible in Help → Environment Info.
+
 > 🎉 **2026.09.28 (3)**: **v1.23** — maintenance release: the app version constant now tracks releases (the daily update check no longer offers updates you already have), unhandled slot exceptions are captured to the crash file instead of aborting, and render failures log full tracebacks.
 
 > 🎉 **2026.09.28 (2)**: **v1.22** — **portable mode** (settings travel with the app on a USB stick), **EXIF metadata preserved** in lossless exports, **iPhone HEIC/HEIF photos load directly**, and Check for Updates can now **download and launch** the new version in-app.

@@ -3,6 +3,23 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.24] — 2026-09-28
+
+### Fixed
+- **Check for Updates -> Download froze the app**: the download ran on a
+  worker but its progress/completion callbacks touched the UI directly
+  from that thread. Downloading now runs in a proper worker thread and
+  updates the UI through queued signals
+- **Update prompt offered an update users already had**: caused by the
+  version constant lagging releases (fixed in v1.23); the Environment
+  Info dialog now also shows the running version (OpenFocus vX.Y) so
+  this is visible at a glance
+
+### Added
+- **Download and Install** button in the update dialog (downloads the
+  platform installer with a progress bar and launches it)
+- App icon edges cleaned up further
+
 ## [v1.23] — 2026-09-28
 
 ### Fixed
