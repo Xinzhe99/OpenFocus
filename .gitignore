@@ -71,3 +71,10 @@ docs/OpenFocus.spec
 assets/demo_stack/.openfocus_cache/
 
 /.review_skill/
+
+# PyPI build artifacts
+/dist/
+/build/
+*.egg-info/
+/.venv_cli/
+/.cli_demo/

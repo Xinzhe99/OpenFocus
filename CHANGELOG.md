@@ -3,6 +3,43 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.28] — 2026-09-30
+
+### Added
+- **PyPI package `openfocus`** (https://pypi.org/project/openfocus/):
+  the full registration + fusion pipeline as a multi-platform CLI
+  (`pip install openfocus`; `openfocus[ai]` adds StackMFF-V4 with the
+  shipped weights, `openfocus[heic]` iPhone input). No GUI stack needed —
+  core/utils import chains are now PyQt6-optional with guarded fallbacks
+
+### Fixed (seven-domain code review, 35 confirmed findings)
+- **ECC registration composed pair transforms in reversed order** — frame
+  3+ of every rotation/scale stack stayed misaligned; verified decisively
+  on a synthetic chain (residual 2.86 fixed vs 7.09 broken)
+- CuPy warp branch applied the inverse of the CPU matrix; SIFT wrapped
+  CLI 16-bit floats mod 256; ECC uint16 normalization off by 256x; DCT
+  non-multiple-of-8 tiles left black edges; GFF/GFG-FGF float
+  accumulation was thread-completion-order dependent (nondeterministic)
+- Stack-load/update workers never shut down on window close (process
+  abort); ROI alignment ran over the live frame list with no stale guard;
+  update check wrote QSettings from its daemon thread; slow loads could
+  replace a drag-drop-swapped stack
+- clicked(bool) fed False into start_render forcing fusion on
+  registration-only renders; compare-all chain timer untracked; two early
+  returns left compare mode armed with the UI locked; quick-preview and
+  batch restores broke in-flight comparisons; language switch reset the
+  cancel button mid-render
+- cv2.imwrite mojibaked non-ASCII (CJK) output filenames; the Windows
+  update script died on non-ASCII %TEMP% paths; a declined UAC destroyed
+  the update rollback; the macOS swap could delete the only good bundle;
+  downloads now use .part + atomic promote; install-dir writability is
+  probed before the 350 MB download; .ofproj numerics sanitized
+- Dark theme never cleared the app-level light stylesheet; theme menu not
+  retranslated with data-driven check state; batch progress dialog, panel
+  titles, DurationDialog buttons and ROI tooltip localized (4 languages)
+- CI fails when APP_VERSION mismatches the tag; concurrency group stops
+  two runs racing one release; contents:write scoped to the release job
+
 ## [v1.27] — 2026-09-29
 
 ### Fixed

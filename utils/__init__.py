@@ -3,9 +3,12 @@ Utility modules for OpenFocus.
 
 Modules:
 - image_utils: Image conversion functions (pixmap <-> cv2)
-- ui_utils: UI-related functions (message boxes, dialogs)
+- ui_utils: UI-related functions (message boxes, dialogs) — requires PyQt6
 - validators: Validation and utility functions
 - platform_utils: Cross-platform utilities (font detection, OS detection)
+
+PyQt6-dependent re-exports are guarded so the headless CLI package
+(``pip install openfocus``) can use this package without a GUI stack.
 """
 
 from utils.image_utils import (
@@ -13,14 +16,26 @@ from utils.image_utils import (
     cv2_to_pixmap,
 )
 
-from utils.ui_utils import (
-    show_message_box,
-    show_warning_box,
-    show_error_box,
-    show_success_box,
-    show_custom_message_box,
-    resource_path,
-)
+try:  # GUI stack present (the desktop app)
+    from utils.ui_utils import (
+        show_message_box,
+        show_warning_box,
+        show_error_box,
+        show_success_box,
+        show_custom_message_box,
+        resource_path,
+    )
+    _HAS_QT = True
+except ImportError:  # headless openfocus package
+    _HAS_QT = False
+    show_message_box = show_warning_box = show_error_box = None
+    show_success_box = show_custom_message_box = None
+
+    def resource_path(*parts):
+        """Headless fallback: resolve relative to this package directory."""
+        import os
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.normpath(os.path.join(base, *parts))
 
 from utils.platform_utils import (
     get_os_type,
@@ -51,7 +66,7 @@ __all__ = [
     # image_utils
     'pixmap_to_cv2',
     'cv2_to_pixmap',
-    # ui_utils
+    # ui_utils (GUI only)
     'show_message_box',
     'show_warning_box',
     'show_error_box',

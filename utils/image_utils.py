@@ -4,10 +4,13 @@ import cv2
 import numpy as np
 from typing import Optional
 
-from PyQt6.QtGui import QPixmap, QImage
+try:  # GUI stack; the headless CLI package runs without PyQt6
+    from PyQt6.QtGui import QPixmap, QImage
+except ImportError:  # pragma: no cover - headless openfocus package
+    QPixmap = QImage = None
 
 
-def pixmap_to_cv2(pixmap: QPixmap) -> Optional[np.ndarray]:
+def pixmap_to_cv2(pixmap) -> Optional[np.ndarray]:
     try:
         qimage = pixmap.toImage()
         qimage = qimage.convertToFormat(QImage.Format.Format_RGBA8888)

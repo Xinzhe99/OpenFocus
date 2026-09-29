@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openfocus"
+description = "Multi-focus image fusion from the command line: registration (ECC / homography) plus five fusion algorithms in one pip-installable tool"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Xinzhe Xie", email = "xiexinzheyyy@163.com" }]
+license = { text = "MIT" }
+keywords = ["image-fusion", "focus-stacking", "multifocus", "microscopy", "photography"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "numpy",
+    "opencv-python-headless",
+    "scipy",
+    "dtcwt",
+    "imageio",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+ai = ["torch", "torchvision"]
+heic = ["pillow-heif"]
+
+[project.scripts]
+openfocus = "core.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Xinzhe99/OpenFocus"
+Documentation = "https://github.com/Xinzhe99/OpenFocus#command-line-usage"
+Changelog = "https://github.com/Xinzhe99/OpenFocus/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+packages = ["core", "core.models", "fusion_methods", "utils", "weights"]
+py-modules = ["constants"]
+
+[tool.setuptools.dynamic]
+version = { attr = "constants.APP_VERSION" }
+
+[tool.setuptools.package-data]
+weights = ["*.pth"]
+core = ["py.typed"]

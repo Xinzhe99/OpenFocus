@@ -152,9 +152,7 @@ def _fuse_stack(images, args):
     elif args.method in ("dct", "gfgfgf"):
         fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 7)
     elif args.method == "stackmffv4":
-        fuse_kwargs["model_path"] = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "weights", "stackmffv4.pth")
+        fuse_kwargs["model_path"] = _find_model_path()
 
     fused = fusion.fuse(**fuse_kwargs)
     if fused is None:
@@ -283,3 +281,26 @@ def run_cli(argv: List[str]) -> int:
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
+
+
+def _find_model_path() -> str:
+    """Locate stackmffv4.pth: repo checkout first, then the installed
+    weights package (pip-installed openfocus ships it as package data)."""
+    repo = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "weights", "stackmffv4.pth")
+    if os.path.isfile(repo):
+        return repo
+    try:
+        import weights
+        shipped = os.path.join(os.path.dirname(weights.__file__), "stackmffv4.pth")
+        if os.path.isfile(shipped):
+            return shipped
+    except ImportError:
+        pass
+    return repo
+
+
+def main() -> None:
+    """Console-script entry point (pip-installed ``openfocus`` command)."""
+    sys.exit(run_cli(sys.argv[1:]))

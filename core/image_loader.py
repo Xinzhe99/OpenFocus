@@ -22,7 +22,6 @@ try:
 except ImportError:
     HEIF_AVAILABLE = False
 
-from PyQt6.QtGui import QPixmap, QImage
 from utils.image_utils import to_display_uint8
 
 
@@ -270,14 +269,14 @@ class ImageStackLoader:
 
         return True, message, loaded_images, filenames
 
-    def create_pixmaps(self, images: List[np.ndarray], max_size: Tuple[int, int] = (800, 600)) -> List[QPixmap]:
+    def create_pixmaps(self, images: List[np.ndarray], max_size: Tuple[int, int] = (800, 600)) -> list:
         pixmaps = []
         for img in images:
             pixmap = self._cv_to_pixmap(img, max_size)
             pixmaps.append(pixmap)
         return pixmaps
 
-    def create_thumbnails(self, images: List[np.ndarray], thumb_size: int = 40) -> List[QPixmap]:
+    def create_thumbnails(self, images: List[np.ndarray], thumb_size: int = 40) -> list:
         thumbnails = []
         for img in images:
             h, w = img.shape[:2]
@@ -292,7 +291,10 @@ class ImageStackLoader:
             thumbnails.append(pixmap)
         return thumbnails
 
-    def _cv_to_pixmap(self, cv_img: np.ndarray, max_size: Optional[Tuple[int, int]] = None) -> QPixmap:
+    def _cv_to_pixmap(self, cv_img: np.ndarray, max_size: Optional[Tuple[int, int]] = None):
+        # Imported lazily: the headless PyPI package uses this module for
+        # decoding without PyQt6 installed.
+        from PyQt6.QtGui import QPixmap, QImage
         rgb_img = cv2.cvtColor(to_display_uint8(cv_img), cv2.COLOR_BGR2RGB)
 
         if max_size is not None:

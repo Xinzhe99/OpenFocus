@@ -12,6 +12,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.30**: **v1.28** — **pip install openfocus**: the full fusion pipeline is now a multi-platform CLI on [PyPI](https://pypi.org/project/openfocus/) (guided filter, DCT, DTCWT, GFG-FGF built in; `openfocus[ai]` adds the neural model with weights). Also: 30+ fixes from a seven-domain code review — most notably **ECC registration composed its transforms in reversed order**, leaving frame 3+ of rotation/scale stacks misaligned.
+
 > 🎉 **2026.09.29**: **v1.27** — **16-bit stacks no longer fuse to a black or blown-out image** (bit depth is now carried from loading through fusion to export), **Help → Check for Updates → "Update and Restart" works again** (it had been failing silently, and now also handles installs under Program Files), tall/wide stacks stop crashing tiled fusion, cancelling a large render takes effect immediately, and closing the window mid-job asks before discarding the result. Also fixed this round: quick-preview and ROI renders no longer poison the saved alignment, Compare All can be cancelled, deleting a frame keeps its filename, downsampling stops compounding below the percentage you chose, batch jobs check their output folder before they start, `.ofproj` projects reopen after the images move, and the sharpness curve is readable in the dark theme.
 
 > 🎉 **2026.09.29**: **v1.26** — fixed the **"I/O operation on closed file"** render crash in windowed builds and a stale embedded version number that kept offering updates users already had.
@@ -42,24 +44,30 @@ Full details, including the portable mode and the log folder, are in the [User M
 
 <a id="command-line-usage"></a>
 ## 💻 Command Line Usage
-Beyond the GUI, OpenFocus can run headless — handy for batch scripts and CI pipelines:
+Beyond the GUI, OpenFocus ships as a pip-installable CLI on [PyPI](https://pypi.org/project/openfocus/) — Windows, macOS and Linux, no Python GUI stack required:
+```bash
+pip install openfocus          # classical algorithms (guided filter, DCT, DTCWT, GFG-FGF)
+pip install "openfocus[ai]"    # + the AI (StackMFF-V4) model, weights included
+openfocus --input ./stack_folder --output ./result/fused.png
+```
+Examples:
 ```bash
 # Fuse a folder of images with guided filter, no registration
-python main.py --input ./stack_folder --output ./result/fused.png
+openfocus -i ./stack_folder -o ./result/fused.png
 
 # DTCWT with ECC registration, 8 threads
-python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+openfocus -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V4 forced to CPU with custom tile size
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv4 --cpu --tile-size 512
+# AI fusion forced to CPU with a custom tile size
+openfocus -i ./stack_folder -o ./result/fused.png -m stackmffv4 --cpu --tile-size 512
 
 # Explicit file list instead of a folder; video files also work as input
-python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+openfocus -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 
 # Batch mode: fuse every folder into one output directory
-python main.py --input ./stackA ./stackB --output-dir ./results
+openfocus --input ./stackA ./stackB --output-dir ./results
 ```
-Exit codes: `0` success, `1` processing error, `2` usage error. Run `python main.py --help` for all options.
+Exit codes: `0` success, `1` processing error, `2` usage error. Run `openfocus --help` for all options. From a source checkout, the same interface works as `python main.py …`.
 
 ## 📖 Documentation
 - [**User Manual (English)**](./docs/USER_MANUAL_EN.md) — full feature guide: interface, workflows, wipe compare, settings, batch, CLI, troubleshooting
