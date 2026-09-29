@@ -232,6 +232,10 @@ class RenderWorker(QThread):
         except RegistrationCancelled:
             self.error_signal.emit("CANCELLED: render cancelled")
         except Exception as e:
+            # Full traceback into the file log - message boxes alone make
+            # user reports undiagnosable.
+            import logging
+            logging.getLogger("openfocus").exception("render failed")
             self.error_signal.emit(str(e))
             import traceback
             traceback.print_exc()

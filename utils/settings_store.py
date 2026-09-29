@@ -62,6 +62,18 @@ def is_portable_mode() -> bool:
             base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         marker = os.path.join(base, _PORTABLE_MARKER)
         if os.path.isfile(marker):
+            data_dir = os.path.join(base, "OpenFocusData")
+            os.makedirs(data_dir, exist_ok=True)
+            # Writability probe: a marker inside a read-only install dir
+            # (e.g. accidentally shipped in Program Files) must not break
+            # every settings access - fall back to the user profile.
+            probe = os.path.join(data_dir, ".write_test")
+            try:
+                with open(probe, "w") as f:
+                    f.write("ok")
+                os.remove(probe)
+            except OSError:
+                return False
             _portable_dir = base
             return True
     except Exception:

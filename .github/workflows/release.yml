@@ -54,6 +54,10 @@ jobs:
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
+          # The portable marker must never ship inside the installer build:
+          # installed copies live in Program Files and must use the normal
+          # user-profile settings location, not a portable data folder.
+          Remove-Item -Path "dist/OpenFocus/OpenFocus.portable" -Force -ErrorAction SilentlyContinue
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAPP_VERSION=${{ github.ref_name }} OpenFocus.iss
           Copy-Item installer/OpenFocus-*-setup.exe .
 
