@@ -1572,6 +1572,25 @@ if __name__ == "__main__":
     setup_logging()
     _log = get_logger()
 
+    # Diagnostics: capture every unhandled exception (slots abort silently
+    # on PyQt6 otherwise) into a crash file next to the normal log.
+    import faulthandler as _fh, tempfile as _tf
+    _crash_path = os.path.join(_tf.gettempdir(), "openfocus_crash.txt")
+    _crash_f = open(_crash_path, "a", encoding="utf-8")
+    _fh.enable(_crash_f)
+
+    def _dump_exc(kind, exc_info):
+        try:
+            _crash_f.write(kind + " " + repr(exc_info) + "\n")
+            _crash_f.flush()
+        except Exception:
+            pass
+
+    sys.excepthook = lambda t, v, tb: _dump_exc("EXCEPTHOOK", (t, v, tb))
+    import threading as _th
+    _th.excepthook = lambda a: _dump_exc("THREAD EXC", a)
+    _log.info("crash diagnostics active: %s", _crash_path)
+
     # Headless CLI mode (--input/--output/--method ...); unknown options exit
     # with argparse usage. Plain positional paths still auto-load in the GUI.
     if any(arg.startswith("-") for arg in sys.argv[1:]):

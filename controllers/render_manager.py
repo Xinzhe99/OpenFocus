@@ -502,6 +502,8 @@ class RenderManager:
                 )
 
         except Exception as exc:
+            import logging
+            logging.getLogger("openfocus").exception("render failed with exception")
             show_message_box(
                 window,
                 trans.t("msg_error"),

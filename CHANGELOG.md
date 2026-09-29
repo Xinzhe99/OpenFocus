@@ -3,6 +3,19 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.23] — 2026-09-28
+
+### Fixed
+- **Version constant lagged releases**: APP_VERSION stayed one release
+  behind (1.21 while v1.22 shipped), which made the daily update check
+  offer an "update" users effectively already had. Release process now
+  bumps the constant; this release moves it to 1.23
+
+### Diagnostics
+- Unhandled exceptions in any slot are now captured into the crash file
+  instead of aborting silently (PyQt6 default), and render failures log
+  the full traceback through the file logger
+
 ## [v1.22] — 2026-09-28
 
 ### Added
