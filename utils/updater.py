@@ -35,28 +35,41 @@ def is_newer(latest_tag: str, current_version: str) -> bool:
     return latest > current
 
 
-def find_installer_asset(release: dict) -> Optional[dict]:
-    """Pick the right installer asset for this platform from a release dict."""
+def find_asset_by_keyword(release: dict, keyword: str) -> Optional[dict]:
     assets = release.get("assets", []) or []
-    if sys.platform == "win32":
-        want = "setup.exe"
-    elif sys.platform == "darwin":
-        want = "macos.dmg"
-    else:
-        return None
     for a in assets:
         name = str(a.get("name", "")).lower()
-        if want in name:
+        if keyword in name:
             return {"name": a["name"], "url": a.get("browser_download_url", ""),
                     "size": int(a.get("size", 0))}
     return None
 
 
-def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict]]:
-    """Return (ok, tag_name, html_url, installer_asset) of the latest release.
+def find_portable_zip_asset(release: dict) -> Optional[dict]:
+    """Platform portable zip used by the in-app one-click update flow."""
+    if sys.platform == "win32":
+        keyword = "windows-x64.zip"
+    elif sys.platform == "darwin":
+        keyword = "macos-arm64.zip"
+    else:
+        return None
+    return find_asset_by_keyword(release, keyword)
 
-    installer_asset is None when no platform-matching installer is attached.
-    """
+
+def find_installer_asset(release: dict) -> Optional[dict]:
+    """Pick the right installer asset for this platform from a release dict."""
+    if sys.platform == "win32":
+        return find_asset_by_keyword(release, "setup.exe")
+    if sys.platform == "darwin":
+        return find_asset_by_keyword(release, "macos.dmg")
+    return None
+
+
+def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict], Optional[dict]]:
+    """Return (ok, tag_name, page_url, installer_asset, portable_zip) where
+    portable_zip is the platform portable-zip asset used by the one-click
+    self-update flow."""
+
     req = urllib.request.Request(
         RELEASES_API_URL,
         headers={"Accept": "application/vnd.github+json", "User-Agent": "OpenFocus"},
@@ -66,8 +79,8 @@ def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict]]:
     tag = str(data.get("tag_name", "")).strip()
     url = str(data.get("html_url", "")) or RELEASES_PAGE_URL
     if not tag:
-        return False, "", url, None
-    return True, tag, url, find_installer_asset(data)
+        return False, "", url, None, None
+    return True, tag, url, find_installer_asset(data), find_portable_zip_asset(data)
 
 
 def download_to_file(url: str, dest_path: str,
@@ -131,10 +144,11 @@ def check_async(current_version: str, on_result: Callable[[str, str, str], None]
 
     def worker():
         try:
-            ok, tag, url, asset = fetch_latest_release()
+            ok, tag, url, asset, portable_zip = fetch_latest_release()
             asset_url = (asset or {}).get("url", "") if asset else ""
+            zip_url = (portable_zip or {}).get("url", "") if portable_zip else ""
             if ok and is_newer(tag, current_version):
-                on_result("update", tag, url)
+                on_result("update", tag, url, zip_url)
             elif not quiet:
                 on_result("latest", tag or "", asset_url)
         except Exception:

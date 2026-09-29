@@ -80,7 +80,8 @@ class EnvironmentInfoDialog(QDialog):
         """检测环境依赖"""
         info_lines = []
         info_lines.append("=" * 60)
-        info_lines.append(trans.t('env_subtitle') if trans.current_lang == 'en' else "OpenFocus Environment Check")
+        from constants import APP_VERSION
+        info_lines.append(f"OpenFocus v{APP_VERSION}")
         info_lines.append("=" * 60)
         info_lines.append("")
 

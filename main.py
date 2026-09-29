@@ -84,9 +84,9 @@ from constants import (
 class OpenFocus(QMainWindow):
     # Emitted from the background torch probe; auto-queued to the UI thread.
     _stackmff_probe_done = pyqtSignal(bool)
-    # Emitted from the background update check (state, tag, download_url,
-    # installer_asset_url).
-    _update_check_done = pyqtSignal(str, str, str, str)
+    # Emitted from the background update check: (state, tag, page_url,
+    # portable_zip_url, setup_url).
+    _update_check_done = pyqtSignal(str, str, str, str, str)
     # Emitted by the installer download worker: received, total.
     _update_download_progress = pyqtSignal(int, int)
     _update_download_done = pyqtSignal(bool, str)
@@ -563,19 +563,19 @@ class OpenFocus(QMainWindow):
         if not quiet:
             self.statusBar().showMessage(trans.t('update_checking'), 3000)
 
-        def done(state, tag, url, asset=""):
+        def done(state, tag, url, zip_url="", setup_url=""):
             settings = get_settings()
             settings.setValue(LAST_UPDATE_CHECK_KEY, time.time())
-            self._update_check_done.emit(state, tag, url, asset)
+            self._update_check_done.emit(state, tag, url, zip_url, setup_url)
 
         updater.check_async(
             APP_VERSION,
-            lambda state, tag, url, asset="": done(state, tag, url, asset),
+            lambda state, tag, url, zip_url="", setup_url="": done(state, tag, url, zip_url, setup_url),
             quiet=quiet,
         )
 
-    def _show_update_result(self, state: str, tag: str, download_url: str,
-                            installer_asset: str = "") -> None:
+    def _show_update_result(self, state: str, tag: str, page_url: str,
+                            zip_url: str = "", setup_url: str = "") -> None:
         from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtWidgets import QMessageBox
 
@@ -584,14 +584,33 @@ class OpenFocus(QMainWindow):
             box.setIcon(QMessageBox.Icon.Information)
             box.setWindowTitle(trans.t('update_available_title'))
             box.setText(trans.t('update_available_text').format(version=tag))
-            download_btn = box.addButton(trans.t('btn_download_install'), QMessageBox.ButtonRole.AcceptRole)
-            open_btn = box.addButton(trans.t('btn_open_downloads'), QMessageBox.ButtonRole.ActionRole)
-            box.addButton(trans.t('btn_later'), QMessageBox.ButtonRole.RejectRole)
+            can_one_click = (
+                getattr(sys, "frozen", False)
+                and sys.platform in ("win32", "darwin")
+                and bool(zip_url)
+            )
+            if can_one_click:
+                restart_btn = box.addButton(
+                    trans.t('btn_update_restart'), QMessageBox.ButtonRole.AcceptRole)
+                open_btn = box.addButton(
+                    trans.t('btn_open_downloads'), QMessageBox.ButtonRole.ActionRole)
+                box.addButton(trans.t('btn_later'), QMessageBox.ButtonRole.RejectRole)
+            else:
+                download_btn = box.addButton(
+                    trans.t('btn_download_install'), QMessageBox.ButtonRole.AcceptRole)
+                open_btn = box.addButton(
+                    trans.t('btn_open_downloads'), QMessageBox.ButtonRole.ActionRole)
+                box.addButton(trans.t('btn_later'), QMessageBox.ButtonRole.RejectRole)
             box.exec()
-            if box.clickedButton() is download_btn:
-                self._download_and_launch_update(download_url or installer_asset, tag)
-            elif box.clickedButton() is open_btn:
-                QDesktopServices.openUrl(QUrl(download_url))
+            clicked = box.clickedButton()
+            if can_one_click and clicked is restart_btn:
+                self._apply_update_and_restart(zip_url, tag)
+            elif can_one_click and clicked is open_btn:
+                QDesktopServices.openUrl(QUrl(page_url))
+            elif not can_one_click and clicked is download_btn:
+                self._download_and_launch_update(setup_url, tag)
+            elif clicked is open_btn:
+                QDesktopServices.openUrl(QUrl(page_url))
         elif state == "latest":
             show_message_box(
                 self,
@@ -673,6 +692,101 @@ class OpenFocus(QMainWindow):
             folder=demo_dir, scale=1.0, append=False,
             on_success=lambda: self.add_recent_file(demo_dir) if hasattr(self, "add_recent_file") else None,
         )
+
+    def _apply_update_and_restart(self, zip_url: str, tag: str) -> None:
+        """One-click self-update: download portable zip, stage it, then quit
+        and let a detached script swap it in and restart."""
+        import tempfile
+        from PyQt6.QtWidgets import QProgressDialog
+        from utils import self_update
+
+        if not self_update.is_frozen():
+            QDesktopServices.openUrl(QUrl(page_url if False else "https://github.com/Xinzhe99/OpenFocus/releases"))
+            return
+
+        app_dir = self_update.app_install_dir()
+        staging_root = self_update.staging_dir_for(app_dir, tag)
+        zip_path = os.path.join(tempfile.gettempdir(),
+                                f"OpenFocus-{tag}-portable.zip")
+
+        progress = QProgressDialog(trans.t('update_downloading'), "", 0, 100, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setWindowTitle(trans.t('update_downloading'))
+
+        class _DownloadWorker(_QThread):
+            progress_sig = pyqtSignal(int, int)
+            done_sig = pyqtSignal(bool, str)
+
+            def __init__(self, url_, dest_):
+                super().__init__()
+                self._url, self._dest = url_, dest_
+
+            def run(self) -> None:
+                try:
+                    from utils.updater import download_to_file
+                    download_to_file(
+                        self._url, self._dest,
+                        on_progress=lambda d, tt: self.progress_sig.emit(d, tt))
+                    self.done_sig.emit(True, self._dest)
+                except Exception as exc:
+                    self.done_sig.emit(False, str(exc))
+
+        def _on_download_done(ok: bool, message: str) -> None:
+            progress.close()
+            if not ok:
+                show_warning_box(self, trans.t('update_check_failed_title'), message)
+                return
+            self._stage_and_restart(zip_path, staging_root)
+
+        worker = _DownloadWorker(zip_url, zip_path)
+        worker.progress_sig.connect(
+            lambda d, tt: progress.setValue(int(d * 100 / max(1, tt))))
+        worker.done_sig.connect(_on_download_done)
+        self._update_download_worker = worker
+        worker.start()
+
+    def _stage_and_restart(self, zip_path: str, staging_root: str) -> None:
+        """Extract the downloaded zip and hand off to the apply script."""
+        from PyQt6.QtWidgets import QProgressDialog
+        from utils import self_update
+
+        progress = QProgressDialog(trans.t('update_preparing'), "", 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setWindowTitle(trans.t('update_preparing'))
+
+        class _StageWorker(_QThread):
+            done_sig = pyqtSignal(bool, str)
+
+            def run(self) -> None:
+                try:
+                    self_update.extract_zip(zip_path, staging_root)
+                    ok = self_update.verify_staged_app(staging_root)
+                    self.done_sig.emit(ok, staging_root)
+                except Exception as exc:
+                    self.done_sig.emit(False, str(exc))
+
+        def _on_staged(ok: bool, message: str) -> None:
+            progress.close()
+            if not ok:
+                show_warning_box(self, trans.t('update_check_failed_title'),
+                                 trans.t('msg_update_stage_failed'))
+                return
+            app_dir = self_update.app_install_dir()
+            bundle = self_update.mac_app_bundle()
+            if sys.platform == "darwin" and bundle:
+                script = self_update.write_apply_script_macos(bundle, message, "v1.23")
+                self_update.launch_detached_unix(script)
+            else:
+                staged_app = os.path.join(message, "OpenFocus")
+                script = self_update.write_apply_script_windows(app_dir, staged_app, "v1.23")
+                self_update.launch_detached_windows(script)
+            self.close()
+
+        worker = _StageWorker()
+        worker.done_sig.connect(_on_staged)
+        worker.start()
 
     def _download_and_launch_update(self, url: str, tag: str) -> None:
         """Download the installer on a worker thread, then offer to run it.
