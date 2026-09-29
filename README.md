@@ -97,6 +97,7 @@ Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.m
 - [🧪 Algorithms](#algorithms)
 - [📚 References](#references)
 - [🤝 Contribution](#contribution)
+- [📚 Citing OpenFocus](#citation)
 - [📄 License](#license)
 - [⭐ Star History](#star-history)
 
@@ -149,6 +150,25 @@ We welcome community contributions of all kinds:
 2. **Algorithm & Performance Work**: Share new fusion/registration ideas, optimizations.
 
 > Bug reports or suggestions? Please open an issue so we can follow up quickly.
+
+<a id="citation"></a>
+## 📚 Citing OpenFocus
+
+If OpenFocus contributes to your research or work, please cite it — it makes the project visible to others who need it:
+
+```bibtex
+@software{xie_openfocus,
+  author  = {Xie, Xinzhe},
+  title   = {{OpenFocus}: An Open-Source Multi-Focus Image Fusion Workstation},
+  year    = {2026},
+  url     = {https://github.com/Xinzhe99/OpenFocus},
+  license = {MIT}
+}
+```
+
+The repository's **About** sidebar has a *Cite this repository* button (generated from [CITATION.cff](./CITATION.cff)). Releases are archived on Zenodo with versioned DOIs — cite the specific version DOI of the release you used when available.
+
+If you publish images created with OpenFocus, a note such as *"Created with OpenFocus – https://github.com/Xinzhe99/OpenFocus"* is appreciated (not required).
 
 <a id="license"></a>
 

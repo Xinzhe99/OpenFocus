@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use OpenFocus in your work, please cite it as below. See also the repository README for algorithm-specific references."
+title: OpenFocus
+type: software
+authors:
+  - given-names: Xinzhe
+    family-names: Xie
+    email: xiexinzheyyy@163.com
+    affiliation: Zhejiang University
+repository-code: "https://github.com/Xinzhe99/OpenFocus"
+url: "https://github.com/Xinzhe99/OpenFocus"
+abstract: >-
+  OpenFocus is an open-source multi-focus image fusion workstation for
+  PyQt6-based desktop use and headless command-line pipelines. It combines
+  homography and ECC image registration with five fusion algorithms
+  (guided filter, DCT, dual-tree complex wavelet transform, GFG-FGF and
+  the StackMFF-V4 deep model), supports 8- and 16-bit stacks, HEIC input,
+  batch processing and project files, and ships for Windows and macOS
+  (Apple Silicon) as well as through PyPI (`pip install openfocus`).
+keywords:
+  - image fusion
+  - focus stacking
+  - multifocus
+  - microscopy
+  - macro photography
+  - image registration
+  - ECC
+  - PyQt6
+license: MIT

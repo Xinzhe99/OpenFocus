@@ -1,0 +1,23 @@
+{
+  "title": "OpenFocus: An Open-Source Multi-Focus Image Fusion Workstation",
+  "description": "<p>OpenFocus is an open-source multi-focus image fusion workstation. It combines homography and ECC image registration with five fusion algorithms (guided filter, DCT, dual-tree complex wavelet transform, GFG-FGF and the StackMFF-V4 deep model), supports 8- and 16-bit image stacks, HEIC input, batch processing, project files and a wipe-compare inspection view. Ready-to-run builds are provided for Windows and macOS (Apple Silicon), and the full pipeline is installable from PyPI as a headless command-line tool (<code>pip install openfocus</code>).</p>",
+  "creators": [
+    {
+      "name": "Xie, Xinzhe",
+      "affiliation": "Zhejiang University"
+    }
+  ],
+  "license": "MIT",
+  "keywords": [
+    "image fusion",
+    "focus stacking",
+    "multifocus",
+    "microscopy",
+    "macro photography",
+    "image registration",
+    "ECC",
+    "PyQt6"
+  ],
+  "access_right": "open",
+  "upload_type": "software"
+}
