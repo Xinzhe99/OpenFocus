@@ -12,7 +12,11 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> 🎉 **2026.09.28 (4)**: **v1.24** — fixed the freeze when downloading updates in-app (progress now streams through a worker thread), and the running version is now visible in Help → Environment Info.
+> 🎉 **2026.09.29**: **v1.26** — fixed the **"I/O operation on closed file"** render crash in windowed builds and a stale embedded version number that kept offering updates users already had.
+
+> 🎉 **2026.09.28 (6)**: **v1.25** — portable-mode hardening: the portable marker can no longer leak into installed copies (which broke settings/logging for installed users), and render failures now log full tracebacks.
+
+> 🎉 **2026.09.28 (5)**: **v1.24** — fixed the freeze when downloading updates in-app (progress now streams through a worker thread), and the running version is now visible in Help → Environment Info.
 
 > 🎉 **2026.09.28 (3)**: **v1.23** — maintenance release: the app version constant now tracks releases (the daily update check no longer offers updates you already have), unhandled slot exceptions are captured to the crash file instead of aborting, and render failures log full tracebacks.
 

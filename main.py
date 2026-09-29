@@ -1707,6 +1707,23 @@ class OpenFocus(QMainWindow):
 
 
 if __name__ == "__main__":
+    # Windowed (no-console) builds have no usable stdout/stderr - any
+    # print() would raise "I/O operation on closed file" and kill renders.
+    # Route them to a no-op writer; real diagnostics go to the file log.
+    class _NullWriter:
+        def write(self, s):
+            return len(s)
+        def flush(self):
+            pass
+        def isatty(self):
+            return False
+
+    if getattr(sys, "frozen", False) and (
+            sys.stdout is None or getattr(sys.stdout, "closed", False)
+            or sys.stderr is None or getattr(sys.stderr, "closed", False)):
+        sys.stdout = _NullWriter()
+        sys.stderr = _NullWriter()
+
     # File logging first so every later step leaves a trace in the log
     from utils.logging_setup import setup_logging, get_logger
     setup_logging()
