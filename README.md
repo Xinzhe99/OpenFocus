@@ -56,16 +56,23 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 
 > 🎉 **2025.12.05**: OpenFocus officially released — welcome to try it.
 
-<a id="environment-setup"></a>
-## ⚙️ Environment Setup
-```bash
-conda create -n openfocus python=3.10
-conda activate openfocus
-pip install -r requirements.txt
-python main.py
-```
+<a id="download"></a>
+## ⬇️ Download & Install
 
-> **Pre-built packages (Windows & macOS):** Grab the ready-to-run builds from the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page — `OpenFocus-v*.*-windows-x64.zip` for Windows 10/11 (64-bit) and `OpenFocus-v*.*-macos-arm64.zip` for Apple Silicon Macs. Other platforms can run from source (see below).
+No setup needed — grab a build from the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page:
+
+| Platform | File | Type |
+|----------|------|------|
+| Windows 10/11 (64-bit) | `OpenFocus-*-setup.exe` | **Installer** (recommended) |
+| Windows 10/11 (64-bit) | `OpenFocus-*-windows-x64.zip` | Portable (unzip and run) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk image (drag to Applications) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portable (unzip) |
+
+The app is unsigned, so the first launch may show a security prompt:
+- **Windows**: SmartScreen → "More info" → "Run anyway". The first start may take 30–60 s.
+- **macOS**: right-click → Open, or run `xattr -cr /Applications/OpenFocus.app` in Terminal.
+
+Full details, including the portable mode and the log folder, are in the [User Manual](./docs/USER_MANUAL_EN.md).
 
 <a id="command-line-usage"></a>
 ## 💻 Command Line Usage
@@ -82,6 +89,9 @@ python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv4 --cpu --til
 
 # Explicit file list instead of a folder; video files also work as input
 python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+
+# Batch mode: fuse every folder into one output directory
+python main.py --input ./stackA ./stackB --output-dir ./results
 ```
 Exit codes: `0` success, `1` processing error, `2` usage error. Run `python main.py --help` for all options.
 
@@ -91,10 +101,23 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Run `python main
 - [**Changelog**](./CHANGELOG.md) — release history and notable changes
 - [**Build Commands**](./docs/BUILD_COMMANDS.md) — packaging from source with PyInstaller
 
+<a id="building-from-source"></a>
+## 🛠️ Building from Source
+
+For contributors and platforms without pre-built packages:
+```bash
+conda create -n openfocus python=3.10
+conda activate openfocus
+pip install -r requirements.txt
+python main.py
+```
+Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md).
+
 ## Table of Contents
-- [⚙️ Environment Setup](#environment-setup)
+- [⬇️ Download & Install](#download)
 - [💻 Command Line Usage](#command-line-usage)
 - [📖 Documentation](#documentation)
+- [🛠️ Building from Source](#building-from-source)
 - [🔭 Overview](#overview)
 - [✨ Highlights](#highlights)
 - [🧪 Algorithms](#algorithms)
