@@ -68,3 +68,4 @@ docs/OpenFocus.spec
 /_test_*.py
 /_theme_shots*.py
 /.shot_*.png
+assets/demo_stack/.openfocus_cache/
