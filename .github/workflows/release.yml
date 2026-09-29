@@ -28,6 +28,7 @@ jobs:
           cache: 'pip'
 
       - name: Verify APP_VERSION matches the tag
+        shell: bash
         run: |
           V="v$(python -c 'import constants; print(constants.APP_VERSION)')"
           if [ "$V" != "${{ github.ref_name }}" ]; then
@@ -95,6 +96,7 @@ jobs:
           cache: 'pip'
 
       - name: Verify APP_VERSION matches the tag
+        shell: bash
         run: |
           V="v$(python -c 'import constants; print(constants.APP_VERSION)')"
           if [ "$V" != "${{ github.ref_name }}" ]; then
