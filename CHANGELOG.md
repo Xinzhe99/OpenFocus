@@ -20,6 +20,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   platform installer with a progress bar and launches it)
 - App icon edges cleaned up further
 
+## [v1.24] — 2026-09-29
+
+### Added
+- **One-click self-update**: Help → Check for Updates offers "Update and
+  Restart" for packaged builds. It downloads the new portable build with
+  progress, stages it next to the installation, verifies the new
+  executable, then quits the app - a detached script mirrors the staged
+  files over the installation (automatic UAC elevation when Program Files
+  is not writable), cleans up and relaunches OpenFocus. No manual
+  reinstall needed
+- **Theme menu fixes**: Settings -> Theme showed raw key names
+  (menu_theme / theme_dark / theme_light) - translations restored
+- Windows title bar now follows the theme when switching at runtime
+
+### Fixed
+- **Light theme readability**: the color mapping used chained string
+  replaces that double-replaced already converted colors (menu text white
+  on white); replaced with a single-pass regex mapping
+- Downloading updates no longer touches UI widgets from the download
+  thread (was a freeze/crash risk)
+
 ## [v1.23] — 2026-09-28
 
 ### Fixed
