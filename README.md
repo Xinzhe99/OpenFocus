@@ -7,6 +7,7 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?logo=open-source-initiative&logoColor=white" alt="License: MIT" /></a>
   <a href="https://github.com/Xinzhe99/OpenFocus"><img src="https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white" alt="GitHub Repository" /></a>
   <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/badge/Windows%20%7C%20macOS-Download-0078D7?logo=github&logoColor=white" alt="Download" /></a>
+  <a href="https://doi.org/10.5281/zenodo.23050823"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.23050823-0078D7?logo=doi&logoColor=white" alt="DOI" /></a>
 </p>
 
 ## 📢 News
@@ -162,11 +163,12 @@ If OpenFocus contributes to your research or work, please cite it — it makes t
   title   = {{OpenFocus}: An Open-Source Multi-Focus Image Fusion Workstation},
   year    = {2026},
   url     = {https://github.com/Xinzhe99/OpenFocus},
+  doi     = {10.5281/zenodo.23050823},
   license = {MIT}
 }
 ```
 
-The repository's **About** sidebar has a *Cite this repository* button (generated from [CITATION.cff](./CITATION.cff)). Releases are archived on Zenodo with versioned DOIs — cite the specific version DOI of the release you used when available.
+The repository's **About** sidebar has a *Cite this repository* button (generated from [CITATION.cff](./CITATION.cff)). Every release is archived on Zenodo with a versioned DOI — the DOI above always resolves to the latest release; [cite the specific version DOI](https://zenodo.org/doi/10.5281/zenodo.23050823) when your work depends on a particular one.
 
 If you publish images created with OpenFocus, a note such as *"Created with OpenFocus – https://github.com/Xinzhe99/OpenFocus"* is appreciated (not required).
 

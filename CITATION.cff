@@ -9,6 +9,10 @@ authors:
     affiliation: Zhejiang University
 repository-code: "https://github.com/Xinzhe99/OpenFocus"
 url: "https://github.com/Xinzhe99/OpenFocus"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23050823
+    description: "Zenodo concept DOI — always resolves to the latest versioned release"
 abstract: >-
   OpenFocus is an open-source multi-focus image fusion workstation for
   PyQt6-based desktop use and headless command-line pipelines. It combines
