@@ -32,6 +32,9 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - **Image Registration**: Align misaligned image sequences using ECC or Homography methods
 - **Wipe Compare View**: Inspect alignment and compare results with an A/B divider view
 - **Project Files**: save and restore complete working sessions
+- **Multi-page TIFF**: single-file Z-stacks load page-by-page and export back into one file
+- **Scale Bar**: publication-grade scale bars with automatic µm/px calibration
+- **Crash Auto-Recovery**: the last working session is offered for restore after a crash
 - **Multi-language**: English, 中文, 日本語, Español with automatic system-language detection
 - **Headless CLI**: Script OpenFocus from the command line for automation and CI
 - **Flexible Export**: Save results as individual images, folders, or GIF animations
@@ -640,6 +643,9 @@ python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv4 --cpu --til
 
 # Explicit file list; video files are also accepted as input
 python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+
+# Single multi-page TIFF Z-stack with a metadata-calibrated scale bar
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 ```
 
 | Option | Description |
@@ -654,6 +660,9 @@ python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 | `--cpu` | Force CPU even if a GPU is available |
 | `--downscale` | Registration feature-detection downscale width |
 | `--tile-size` | Tile block size for large images |
+| `--output-dir, -d` | Batch mode: fuse every input folder, writing `<folder>.png` per stack |
+| `--scale-bar` | Draw a scale bar (calibration auto-detected from TIFF metadata) |
+| `--scale-um` | Pixel size in µm/px, overriding metadata (implies `--scale-bar`) |
 
 Exit codes: `0` success, `1` processing error, `2` usage error. Running
 `python main.py --help` prints all options; launching with a plain path

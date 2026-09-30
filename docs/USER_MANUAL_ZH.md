@@ -32,6 +32,9 @@ OpenFocus 是一款面向科研人员、工程师和图像处理从业者的专�
 - **图像配准**：使用 ECC 或单应性变换对齐存在偏移的图像序列
 - **Wipe 对比视图**：通过 A/B 分割线视图直观检查配准质量、对比不同结果
 - **工程文件**：保存并恢复完整工作会话
+- **多页 TIFF**：单文件 Z-Stack 逐页载入，也可整体写回单文件
+- **比例尺**：论文级比例尺，µm/px 自动标定
+- **崩溃自动恢复**：崩溃后下次启动可一键恢复上次工作现场
 - **多语言**：English、中文、日本語、Español，自动检测系统语言
 - **无头命令行**：支持脚本化调用与 CI 集成
 - **灵活导出**：结果可保存为单张图像、文件夹或 GIF 动画
@@ -592,6 +595,9 @@ python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv4 --cpu --til
 
 # 显式文件列表；也接受视频文件作为输入
 python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+
+# 单个多页 TIFF Z-Stack + 元数据自动标定的比例尺
+python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 ```
 
 | 参数 | 说明 |
@@ -606,6 +612,9 @@ python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 | `--cpu` | 即使有 GPU 也强制 CPU |
 | `--downscale` | 配准特征提取的下采样宽度 |
 | `--tile-size` | 大图的瓦片分块尺寸 |
+| `--output-dir, -d` | 批处理模式：逐个融合输入文件夹，每个栈输出 `<文件夹名>.png` |
+| `--scale-bar` | 绘制比例尺（标定从 TIFF 元数据自动检测） |
+| `--scale-um` | 手动指定像素大小 µm/px，覆盖元数据（隐含 `--scale-bar`） |
 
 退出码：`0` 成功，`1` 处理错误，`2` 用法错误。`python main.py --help` 打印全部参数；以普通路径启动（`python main.py C:\stack`）仍会打开 GUI 并自动加载该文件夹。
 
