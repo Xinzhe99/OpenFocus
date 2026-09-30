@@ -3,6 +3,15 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.29] — 2026-09-30
+
+### Added
+- **Citable releases**: CITATION.cff in the repo root gives every visitor
+  a one-click "Cite this repository" button (APA/BibTeX/RIS export);
+  releases are archived on Zenodo with versioned DOIs (metadata curated
+  via .zenodo.json); README gained a Citing OpenFocus section with a
+  software BibTeX entry
+
 ## [v1.28] — 2026-09-30
 
 ### Added
