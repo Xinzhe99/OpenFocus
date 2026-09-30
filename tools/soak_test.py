@@ -25,34 +25,62 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class _PeakMemoryWindows:
-    """Peak working-set tracker via GetProcessMemoryInfo (KB)."""
+    """Working-set tracker via GetProcessMemoryInfo.
+
+    argtypes/restype must be declared: without them the Win64 call can
+    silently fail and leave the struct zeroed (all readings 0MB).
+    """
+
+    class PMC(ctypes.Structure):
+        _fields_ = [("cb", ctypes.c_uint), ("PageFaultCount", ctypes.c_uint),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t)]
 
     def __init__(self):
+        psapi = ctypes.windll.psapi
+        psapi.GetProcessMemoryInfo.argtypes = (
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint)
+        psapi.GetProcessMemoryInfo.restype = ctypes.c_int
+        self._fn = psapi.GetProcessMemoryInfo
         self.proc = ctypes.windll.kernel32.GetCurrentProcess()
-        class PMC(ctypes.Structure):
-            _fields_ = [("cb", ctypes.c_uint), ("PageFaultCount", ctypes.c_uint),
-                        ("PeakWorkingSetSize", ctypes.c_size_t),
-                        ("WorkingSetSize", ctypes.c_size_t),
-                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                        ("PagefileUsage", ctypes.c_size_t),
-                        ("PeakPagefileUsage", ctypes.c_size_t)]
-        self.pmc = PMC()
-        self.pmc.cb = ctypes.sizeof(PMC)
+        self.pmc = self.PMC()
+        self.pmc.cb = ctypes.sizeof(self.PMC)
+
+    def _query(self):
+        ok = self._fn(self.proc, ctypes.byref(self.pmc), self.pmc.cb)
+        if not ok:
+            raise OSError("GetProcessMemoryInfo failed")
+        return self.pmc
+
+    def now_mb(self) -> float:
+        """Current working set (snapshot at end of a case)."""
+        return self._query().WorkingSetSize / (1024 * 1024)
 
     def peak_mb(self) -> float:
-        ctypes.windll.psapi.GetProcessMemoryInfo(self.proc, ctypes.byref(self.pmc), self.pmc.cb)
-        return self.pmc.PeakWorkingSetSize / (1024 * 1024)
+        """Lifetime peak working set (process-wide, monotonic)."""
+        return self._query().PeakWorkingSetSize / (1024 * 1024)
+
+
+_TRACKER = None
 
 
 def _mem_mb():
+    global _TRACKER
+    if os.name == "nt":
+        if _TRACKER is None:
+            _TRACKER = _PeakMemoryWindows()
+        return _TRACKER.now_mb()
     try:
         import psutil
         return psutil.Process().memory_info().rss / (1024 * 1024)
     except ImportError:
-        return _PeakMemoryWindows().peak_mb()
+        return 0.0
 
 
 def load_stack(folder):
@@ -138,7 +166,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--json", default=None)
+    ap.add_argument("--only", default="",
+                    help="comma-separated substrings; run only matching case labels "
+                         "(e.g. 'synth120/stackmffv4,u16,io-roundtrip')")
     args = ap.parse_args()
+    wanted = [s.strip().lower() for s in args.only.split(",") if s.strip()]
+
+    def want(label):
+        return not wanted or any(s in label.lower() for s in wanted)
 
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     hetao = load_stack(r"C:\Users\dell\Pictures\Helicon Focus\hetao_aligned_stabled")
@@ -149,51 +184,60 @@ def main():
     results, failures = [], []
     algos = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv4"]
 
-    print("\n== A. real 40-frame stack, each algorithm (no registration) ==")
-    for a in algos:
-        run_case(f"hetao40/{a}", hetao, a, failures, results)
+    if any(want(f"hetao40/{a}") for a in algos):
+        print("\n== A. real 40-frame stack, each algorithm (no registration) ==")
+        for a in algos:
+            if want(f"hetao40/{a}"):
+                run_case(f"hetao40/{a}", hetao, a, failures, results)
 
-    print("\n== B. real 40-frame stack + ECC registration ==")
-    for a in ("guided_filter", "dtcwt", "stackmffv4"):
-        run_case(f"hetao40/ecc+{a}", hetao, a, failures, results, reg="ecc")
+    if any(want(f"hetao40/ecc+{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
+        print("\n== B. real 40-frame stack + ECC registration ==")
+        for a in ("guided_filter", "dtcwt", "stackmffv4"):
+            if want(f"hetao40/ecc+{a}"):
+                run_case(f"hetao40/ecc+{a}", hetao, a, failures, results, reg="ecc")
 
-    print("\n== C. high-resolution stack (3636x4756 x24) ==")
-    for a in ("guided_filter", "dtcwt", "stackmffv4"):
-        run_case(f"samples24/{a}", samples, a, failures, results)
+    if any(want(f"samples24/{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
+        print("\n== C. high-resolution stack (3636x4756 x24) ==")
+        for a in ("guided_filter", "dtcwt", "stackmffv4"):
+            if want(f"samples24/{a}"):
+                run_case(f"samples24/{a}", samples, a, failures, results)
 
-    print("\n== D. synthetic 120-frame stack (real frames cycled) ==")
-    if not args.quick:
+    if not args.quick and any(want(f"synth120/{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
+        print("\n== D. synthetic 120-frame stack (real frames cycled) ==")
         big = synth_big_stack(hetao, 120)
         for a in ("guided_filter", "dtcwt", "stackmffv4"):
-            run_case(f"synth120/{a}", big, a, failures, results)
+            if want(f"synth120/{a}"):
+                run_case(f"synth120/{a}", big, a, failures, results)
         del big
 
-    print("\n== E. 16-bit variants ==")
-    if not args.quick:
+    if not args.quick and any(want(f"u16-hetao40/{a}") for a in ("guided_filter", "dtcwt")):
+        print("\n== E. 16-bit variants ==")
         u16 = [im.astype(np.uint16) * 257 for im in hetao]
         for a in ("guided_filter", "dtcwt"):
-            run_case(f"u16-hetao40/{a}", u16, a, failures, results)
+            if want(f"u16-hetao40/{a}"):
+                run_case(f"u16-hetao40/{a}", u16, a, failures, results)
         del u16
 
-    print("\n== F. scale bar + multipage round-trip on the big output ==")
-    try:
-        from utils.scalebar import draw_scale_bar
-        from utils.image_utils import imwrite_multi_tiff
-        import tempfile
-        out = fuse(hetao, "guided_filter")
-        bar = draw_scale_bar(out, 0.35, "bottom-right", "auto")
-        assert bar.shape == out.shape
-        with tempfile.TemporaryDirectory() as td:
-            p = os.path.join(td, " soak.tif".strip())
-            assert imwrite_multi_tiff(p, hetao)
-            ok, pages = cv2.imdecodemulti(np.fromfile(p, dtype=np.uint8),
-                                           flags=cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
-            assert ok and len(pages) == len(hetao)
-        print("  scalebar + multipage round-trip: OK")
-        results.append({"case": "io-roundtrip", "frames": len(hetao), "algo": "-",
-                        "reg": "-", "fuse_s": 0, "reg_s": 0, "total_s": 0, "peak_mb": 0})
-    except Exception as exc:
-        failures.append(f"io-roundtrip: {exc}")
+    if want("io-roundtrip"):
+        print("\n== F. scale bar + multipage round-trip on the big output ==")
+        try:
+            from utils.scalebar import draw_scale_bar
+            from utils.image_utils import imwrite_multi_tiff
+            import tempfile
+            out = fuse(hetao, "guided_filter")
+            bar = draw_scale_bar(out, 0.35, "bottom-right", "auto")
+            assert bar.shape == out.shape
+            with tempfile.TemporaryDirectory() as td:
+                p = os.path.join(td, " soak.tif".strip())
+                assert imwrite_multi_tiff(p, hetao)
+                ok, pages = cv2.imdecodemulti(np.fromfile(p, dtype=np.uint8),
+                                               flags=cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                assert ok and len(pages) == len(hetao)
+            print("  scalebar + multipage round-trip: OK")
+            results.append({"case": "io-roundtrip", "frames": len(hetao), "algo": "-",
+                            "reg": "-", "fuse_s": 0, "reg_s": 0, "total_s": 0, "rss_mb": 0})
+        except Exception as exc:
+            failures.append(f"io-roundtrip: {exc}")
 
     print("\n===== SUMMARY =====")
     if failures:
@@ -202,6 +246,8 @@ def main():
             print("  -", f)
     else:
         print("All soak cases passed (output sanity verified).")
+    if _TRACKER is not None:
+        print(f"process peak working set: {_TRACKER.peak_mb():.0f}MB")
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:

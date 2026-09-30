@@ -13,6 +13,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.30 (4)**: **v1.32** — **deep stacks no longer crash the AI fusion with out-of-memory**: found by a final soak test on a real 120-frame stack, tiling now engages on total stack size (not just per-frame dimensions) and the AI path shrinks its tiles/batches with depth so a single model call stays within a measured memory budget. New `tools/soak_test.py` harness and a measured [performance reference](./docs/PERFORMANCE.md) ship with it.
+
 > 🎉 **2026.09.30 (3)**: **v1.31** — **publication-grade scale bars**: pixel size auto-detected from ImageJ/OME-TIFF metadata (manual fallback), configured via Settings → Scale Bar with a live preview, and burned into every export — single images, stacks, multi-page TIFF, GIF, batch processing and the CLI (`--scale-bar`).
 
 > 🎉 **2026.09.30 (2)**: **v1.30** — **multi-page TIFF support**: microscopy Z-stacks saved as a single multi-page TIFF now load page-by-page into the stack (and Save Stack can write the whole stack back into one file, 16-bit preserved). Plus **crash auto-recovery**: after a crash, the next launch offers to restore your last working session with one click. **v1.29** made releases citable (CITATION.cff + Zenodo DOIs).

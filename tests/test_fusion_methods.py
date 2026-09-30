@@ -237,3 +237,67 @@ class TestStackFootprintTiling:
         f10 = [np.zeros((400, 600, 3), np.uint16) for _ in range(10)]
         assert not _stack_footprint_exceeds(f8, 2048)
         assert _stack_footprint_exceeds(f10, 2048)
+
+
+class TestStackMFFV4EffectiveTiling:
+    """The AI tiled path must shrink tiles/batches so one model call stays
+    within frames x pixels budget (2 tiles x 120 frames used to request a
+    16GB conv allocation -> DefaultCPUAllocator OOM)."""
+
+    def _tiling(self, n, block=1024, h=1637, w=1783, ov=256, pref=2):
+        from core.multi_focus_fusion import _stackmffv4_effective_tiling
+        return _stackmffv4_effective_tiling(n, block, h, w, ov, pref)
+
+    def test_moderate_stack_unchanged(self):
+        # 40 frames x 2 tiles x 1024^2 == budget exactly: keep user settings
+        blk, batch, _ = self._tiling(40)
+        assert (blk, batch) == (1024, 2)
+
+    def test_batch_never_exceeds_preference(self):
+        # 24 frames would allow batch 3; the user preference (2) wins
+        blk, batch, _ = self._tiling(24)
+        assert (blk, batch) == (1024, 2)
+
+    def test_deep_stack_shrinks_tiles_and_batch(self):
+        # 120 frames: tile shrinks to 768 (128-aligned sqrt of budget/n) and
+        # only one tile per model call
+        blk, batch, _ = self._tiling(120)
+        assert blk == 768
+        assert batch == 1
+        assert 120 * batch * blk * blk <= 80 * 1024 * 1024
+
+    def test_very_deep_stack_floor_256(self):
+        blk, batch, _ = self._tiling(300)
+        assert blk == 512
+        assert batch == 1
+
+    def test_user_small_tiles_never_grow(self):
+        # user chose 128px tiles: never enlarged even on deep stacks
+        blk, batch, _ = self._tiling(400, block=128)
+        assert blk == 128
+        assert batch >= 1
+
+    def test_budget_respected_across_range(self):
+        from core.multi_focus_fusion import STACKMFFV4_IMAGE_BUDGET
+        budget = STACKMFFV4_IMAGE_BUDGET * 1024 * 1024
+        for n in (40, 60, 80, 120, 200, 300, 600):
+            blk, batch, coords = self._tiling(n)
+            assert n * batch * blk * blk <= budget, f"budget blown at {n} frames"
+            if blk < 1024:
+                # the network downsamples by 128x in total; non-128 tiles
+                # come back spatially shrunk (832 -> 768 focus map)
+                assert blk % 128 == 0, f"tile {blk} not 128-aligned at {n} frames"
+            # tiles must cover the image and never exceed the block size
+            cover = np.zeros((1637, 1783), bool)
+            for x0, y0, x1, y1 in coords:
+                assert x1 - x0 == blk and y1 - y0 == blk
+                assert 0 <= y0 and y1 <= 1637 and 0 <= x0 and x1 <= 1783
+                cover[y0:y1, x0:x1] = True
+            assert cover.all(), f"tile gap at {n} frames"
+
+    def test_tiny_image_clamps(self):
+        # image smaller than the block: tiles clamp to the image itself
+        blk, batch, coords = self._tiling(120, block=1024, h=300, w=400)
+        assert blk <= 300
+        assert all(y1 <= 300 and x1 <= 400 for _, _, x1, y1 in
+                   ((a, b, c, d) for (a, b, c, d) in coords))

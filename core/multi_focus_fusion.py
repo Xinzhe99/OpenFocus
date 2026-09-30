@@ -98,6 +98,43 @@ def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
     return total_bytes > (tile_threshold ** 2) * 3
 
 
+# 每次 StackMFF-V4 模型调用可承受的激活内存预算，单位为 1024x1024 帧。
+# 实测（soak，CPU）：2 瓦片 x 40 帧 ≈ 80 单位时峰值 ~6GB 可跑完；
+# 2 x 120 ≈ 240 单位时卷积要 16GB，DefaultCPUAllocator 直接 OOM。
+STACKMFFV4_IMAGE_BUDGET = 80
+
+
+def _stackmffv4_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
+    """为 AI 分块融合挑选瓦片尺寸/批量，使单次模型调用不超内存预算。
+
+    模型输出的是逐像素选帧索引，帧轴不能拆分（拆了选择集就变了），
+    所以深栈下唯一的内存杠杆是缩小瓦片和每批瓦片数。
+    返回 (effective_block, effective_batch, tile_coords)。
+    """
+    n_frames = max(1, int(n_frames))
+    block_size = max(1, min(int(block_size), int(h), int(w)))
+    eff_block = block_size
+    budget_px = STACKMFFV4_IMAGE_BUDGET * 1024 * 1024
+    if n_frames * eff_block * eff_block > budget_px:
+        safe = int((budget_px / n_frames) ** 0.5)
+        # 128 对齐：网络下采样链路合计÷128，832 这类 32 倍数会让输出缩水
+        # （768）；256 下限再小会伤融合质量，但绝不超过原 block_size
+        # （也兼容用户主动设置的小瓦片）。
+        eff_block = min(block_size, max(256, (safe // 128) * 128))
+    max_batch = budget_px // max(1, n_frames * eff_block * eff_block)
+    eff_batch = max(1, min(int(batch_pref), int(max_batch)))
+    eff_overlap = max(0, min(int(overlap), eff_block - 1))
+    step = max(1, eff_block - eff_overlap)
+    max_sy, max_sx = h - eff_block, w - eff_block
+    coords = []
+    for y in range(0, h, step):
+        y0 = min(y, max_sy)
+        for x in range(0, w, step):
+            x0 = min(x, max_sx)
+            coords.append((x0, y0, x0 + eff_block, y0 + eff_block))
+    return eff_block, eff_batch, coords
+
+
 class MultiFocusFusion:
     """
     多焦点图像融合统一接口类
@@ -801,27 +838,32 @@ class MultiFocusFusion:
         通过将多个 tile 打包成一个 batch 进行 GPU 推理，提高效率。
         """
         import cv2
-        
-        batch_size = self.stackmffv4_batch_size
+
+        # 获取文件列表（如果是目录输入）——先于分批决策，帧数决定瓦片/批量
+        files = None
+        if img_dir is not None:
+            exts = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp')
+            files = [f for f in sorted(os.listdir(img_dir)) if f.lower().endswith(exts)]
+
+        n_frames = len(imgs) if imgs is not None else len(files)
+        eff_block, batch_size, tile_coords = _stackmffv4_effective_tiling(
+            n_frames, block_size, h, w, overlap, self.stackmffv4_batch_size)
         total_tiles = len(tile_coords)
-        
+        if eff_block < block_size or batch_size < self.stackmffv4_batch_size:
+            print(f"Info: deep stack ({n_frames} frames) - AI tiles auto-shrunk to "
+                  f"{eff_block}px, batch_size={batch_size} to bound model memory")
+
         print(f"StackMFF V4 batched tiled fusion: {total_tiles} tiles, batch_size={batch_size}")
-        
+
         # 获取模型路径
         model_path = kwargs.get('model_path', 'weights/stackmffv4.pth')
         if not model_path:
             model_path = 'weights/stackmffv4.pth'
         if not os.path.isabs(model_path):
             model_path = resource_path(model_path)
-        
+
         acc = np.zeros((h, w, channels), dtype=np.float32)
         weight = np.zeros((h, w, 1), dtype=np.float32)
-        
-        # 获取文件列表（如果是目录输入）
-        files = None
-        if img_dir is not None:
-            exts = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp')
-            files = [f for f in sorted(os.listdir(img_dir)) if f.lower().endswith(exts)]
         
         # 分批处理
         from core.registration import RegistrationCancelled

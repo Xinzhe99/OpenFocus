@@ -3,6 +3,35 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.32] — 2026-09-30
+
+### Fixed
+- **Deep-stack OOM in the AI fusion path** (found by the final soak test
+  on a real 120-frame stack, two distinct bugs):
+  1. The tiling decision compared only the per-frame size against the
+     threshold, so a deep stack of sub-threshold frames (40 × 1783 × 1637)
+     skipped tiling entirely and the network requested a ~7.6 GB
+     convolution allocation. Tiling now also engages on the **total stack
+     footprint** (`frames × H × W × bytes`).
+  2. Even tiled, StackMFF-V4 packed every frame of every tile in the batch
+     into one model call — 2 tiles × 120 frames = 240 images → a single
+     16 GB allocation. Tiles and batch size now shrink automatically with
+     stack depth so each model call stays within a measured memory budget
+     (`_stackmffv4_effective_tiling`), and tiles are 128-aligned because
+     the network downsamples ÷128 in total (an 832 px tile returned a
+     768 px focus map and crashed the pixel gather). Non-128 inputs are
+     additionally resized back defensively.
+
+### Added
+- `tools/soak_test.py`: rerunnable soak harness — wall time and memory
+  across real 40-frame / 36 MP 24-frame / synthetic 120-frame stacks,
+  every algorithm, ECC registration, 16-bit variants and a scale-bar +
+  multi-page-TIFF round-trip, with per-case output sanity checks and
+  `--only` filtering. 11 regression tests guard both fixes.
+- `docs/PERFORMANCE.md`: measured throughput/memory reference and
+  practical guidance for deep stacks; linked from the README and both
+  user manuals.
+
 ## [v1.31] — 2026-09-30
 
 ### Added

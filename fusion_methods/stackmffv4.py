@@ -85,11 +85,15 @@ def _get_model_and_device(model_path, use_gpu):
 
 
 def _resize_to_multiple_of_32(image):
-    """将图像大小调整为32的倍数"""
+    """将图像大小调整为128的倍数
+
+    网络下采样链路合计 ÷128（firstconv÷2 + MobileNet÷8 + 3级pool÷8）；
+    非128倍数的输入上采样回来会缩水（832->768），这里直接对齐到位。
+    """
     _ensure_torch()
     h, w = image.shape[-2:]
-    new_h = ((h - 1) // 32 + 1) * 32
-    new_w = ((w - 1) // 32 + 1) * 32
+    new_h = ((h - 1) // 128 + 1) * 128
+    new_w = ((w - 1) // 128 + 1) * 128
     if new_h == h and new_w == w:
         return image, (h, w)
     resized = F.interpolate(image, size=(new_h, new_w), mode='bilinear', align_corners=False)
@@ -154,9 +158,9 @@ def _stackmffv4_batch_impl(tiles_list, model_path, use_gpu):
     max_h = max(s[0] for s in all_original_sizes)
     max_w = max(s[1] for s in all_original_sizes)
     
-    # Pad 到32的倍数
-    padded_h = ((max_h - 1) // 32 + 1) * 32
-    padded_w = ((max_w - 1) // 32 + 1) * 32
+    # Pad 到128的倍数：网络下采样合计÷128，其他尺寸上采样回来会缩水
+    padded_h = ((max_h - 1) // 128 + 1) * 128
+    padded_w = ((max_w - 1) // 128 + 1) * 128
     
     # 创建批量输入张量 [batch, num_images, padded_h, padded_w]
     batch_input = torch.zeros(batch_size, num_images_per_tile, padded_h, padded_w)
@@ -176,7 +180,15 @@ def _stackmffv4_batch_impl(tiles_list, model_path, use_gpu):
     for tile_idx in range(batch_size):
         focus_indices = focus_indices_batch[tile_idx]
         orig_h, orig_w = all_original_sizes[tile_idx]
-        
+
+        # 防御：网络对非128倍数输入会返回缩水的尺寸（832->768），
+        # 最近邻插值回填充尺寸再裁剪，索引图必须保持整数语义。
+        if focus_indices.shape[:2] != (padded_h, padded_w):
+            focus_indices = cv2.resize(
+                focus_indices.astype(np.float32), (padded_w, padded_h),
+                interpolation=cv2.INTER_NEAREST,
+            )
+
         # 裁剪回原始大小
         focus_map = focus_indices[:orig_h, :orig_w]
         focus_map = np.clip(focus_map.astype(int), 0, num_images_per_tile - 1)
