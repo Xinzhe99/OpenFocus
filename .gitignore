@@ -78,3 +78,7 @@ assets/demo_stack/.openfocus_cache/
 *.egg-info/
 /.venv_cli/
 /.cli_demo/
+
+# soak test local artifacts
+/.soak_full*.log
+/.soak_results*.json
