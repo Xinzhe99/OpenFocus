@@ -97,15 +97,27 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
         else:
             raise FileNotFoundError(f"Input not found: {entry}")
 
-    if len(paths) < 2:
+    # A single multi-page TIFF is a whole stack: count its pages, not files
+    from core.image_loader import _read_tiff_pages
+    total_frames = 0
+    for p in paths:
+        pages = _read_tiff_pages(p)
+        total_frames += len(pages) if pages is not None else 1
+    if total_frames < 2:
         raise RuntimeError("Need at least 2 images in the stack for fusion")
     return ", ".join(args.input), paths
 
 
 def _load_images(paths: List[str]):
     import cv2
+    from core.image_loader import _read_tiff_pages
     images = []
     for p in paths:
+        # A multi-page TIFF is a whole stack in one file
+        pages = _read_tiff_pages(p)
+        if pages is not None:
+            images.extend(pages)
+            continue
         img = cv2.imread(p, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
         if img is None:
             raise RuntimeError(f"Failed to decode image: {p}")
