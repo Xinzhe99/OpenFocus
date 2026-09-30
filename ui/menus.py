@@ -197,6 +197,11 @@ def setup_menus(window: QMainWindow) -> None:
     settings_menu = menubar.addMenu(trans.t('menu_settings'))
     window.ui_objs['menu_settings'] = settings_menu
 
+    scalebar_action = QAction(trans.t('menu_scale_bar'), window)
+    scalebar_action.triggered.connect(window.show_scale_bar_dialog)
+    settings_menu.addAction(scalebar_action)
+    window.ui_objs['menu_scale_bar'] = scalebar_action
+
     # GPU acceleration toggle (persisted via settings_store)
     gpu_action = QAction(trans.t('action_gpu_accel'), window)
     gpu_action.setCheckable(True)

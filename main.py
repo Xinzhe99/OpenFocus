@@ -902,6 +902,11 @@ class OpenFocus(QMainWindow):
         self._update_download_worker = worker  # keep a reference
         worker.start()
 
+    def show_scale_bar_dialog(self) -> None:
+        """Configure the exported-image scale bar with a live preview."""
+        from dialogs.scalebar import ScaleBarDialog
+        ScaleBarDialog(self).exec()
+
     def show_quick_start(self) -> None:
         from dialogs.welcome import WelcomeDialog
         WelcomeDialog(self, main_window=self).exec()

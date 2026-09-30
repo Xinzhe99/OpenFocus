@@ -17,6 +17,7 @@ from utils import (
 from core.workers import GifSaverWorker
 from locales import trans
 from utils.image_utils import imwrite_auto
+from utils import scalebar
 
 ALLOWED_EXPORT_EXTENSION_MAP = {
     ".png": ".png",
@@ -172,7 +173,7 @@ class ExportManager:
             image_to_save = window.label_manager.prepare_bgr_image("registered", result_to_save, index)
             ext = os.path.splitext(file_path)[1].lower()
             params = get_imwrite_params(ext)
-            if imwrite_auto(file_path, image_to_save, params):
+            if imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params):
                 show_message_box(
                     window,
                     trans.t("msg_success"),
@@ -234,7 +235,7 @@ class ExportManager:
                 file_path = self.normalize_export_path(file_path)
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                if imwrite_auto(file_path, image_to_save, params):
+                if imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params):
                     saved_count += 1
 
             show_message_box(
@@ -310,7 +311,7 @@ class ExportManager:
         self.gif_progress_dialog.show()
 
         duration_sec = duration_ms / 1000.0
-        self.gif_worker = GifSaverWorker(images_to_save, file_path, duration_sec, window.label_manager, target_type)
+        self.gif_worker = GifSaverWorker(images_to_save, file_path, duration_sec, window.label_manager, target_type, scale_cfg=scalebar.export_cfg(window))
         self.gif_worker.finished_signal.connect(
             lambda success, msg: self.on_gif_saved(success, msg, duration_ms)
         )
@@ -371,7 +372,9 @@ class ExportManager:
         set_last_dialog_dir(file_path)
 
         try:
-            labeled = [window.label_manager.prepare_bgr_image(label_target, img, i)
+            cfg = scalebar.export_cfg(window)
+            labeled = [scalebar.burn(
+                           window.label_manager.prepare_bgr_image(label_target, img, i), cfg)
                        for i, img in enumerate(images)]
             from utils.image_utils import imwrite_multi_tiff
             if imwrite_multi_tiff(file_path, labeled):
@@ -418,7 +421,7 @@ class ExportManager:
                 file_path = self.normalize_export_path(file_path)
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                if imwrite_auto(file_path, image_to_save, params):
+                if imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params):
                     saved_count += 1
 
             show_success_box(

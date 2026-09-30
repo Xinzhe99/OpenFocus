@@ -3,6 +3,22 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.31] — 2026-09-30
+
+### Added
+- **Scale bar for publication figures** (microscopy-ready): pixel size
+  (µm/px) is auto-detected from TIFF metadata — ImageJ's `unit=micron`
+  convention, OME-TIFF's `PhysicalSizeX` XML and standard cm/inch
+  resolution tags — with a manual fallback remembered between sessions.
+  Settings → Scale Bar… configures the bar with a live preview
+  (position, color, enable). When enabled, every export burns a
+  publication-grade bar into the pixels: a 1-2-5 nice length spanning
+  ~12% of the image width, stroked text readable on any background,
+  auto inverse color. Applied to single saves, folder-stack saves,
+  multi-page TIFF, GIF export, export-all, batch processing (each stack
+  uses its own detected calibration) and the CLI (`--scale-bar`,
+  `--scale-um`). Project files and crash recovery carry the calibration
+
 ## [v1.30] — 2026-09-30
 
 ### Added

@@ -135,6 +135,8 @@ class ImageStackLoader:
         self.image_paths = []
         self.images = []
         self.thumbnail_size = (600, 400)
+        # µm/px auto-detected from the stack's TIFF metadata (None = unknown)
+        self.px_size_um = None
 
     def load_from_folder(self, folder_path: str, scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
         if not os.path.isdir(folder_path):
@@ -164,6 +166,9 @@ class ImageStackLoader:
                     # One multi-page TIFF = one whole stack
                     if not self.source_exif:
                         self.source_exif = _read_exif_bytes(full_path)
+                    if self.px_size_um is None:
+                        from utils.scalebar import detect_px_size_um
+                        self.px_size_um = detect_px_size_um(full_path)
                     stem = os.path.splitext(filename)[0]
                     for page_no, page in enumerate(pages, start=1):
                         if scale_factor != 1.0 and 0 < scale_factor < 1.0:
@@ -182,6 +187,9 @@ class ImageStackLoader:
                 if img is not None:
                     if not self.source_exif:
                         self.source_exif = _read_exif_bytes(full_path)
+                    if self.px_size_um is None:
+                        from utils.scalebar import detect_px_size_um
+                        self.px_size_um = detect_px_size_um(full_path)
                     img = apply_exif_orientation(full_path, img)
                     if scale_factor != 1.0 and 0 < scale_factor < 1.0:
                         width = int(img.shape[1] * scale_factor)

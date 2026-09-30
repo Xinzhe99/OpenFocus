@@ -166,6 +166,20 @@ Single-page TIFFs behave exactly as before. The reverse works too:
 **File → Save Stack → (Registered / Input) → Save as Multi-page TIFF**
 writes the entire stack back into a single `.tif`, preserving 16-bit depth.
 
+### Scale Bar (Publication Figures)
+
+Settings → Scale Bar… configures a scale bar burned into exported images.
+The pixel size (µm/px) is auto-detected from TIFF metadata — ImageJ's
+`unit=micron` convention, OME-TIFF's `PhysicalSizeX`, or standard
+cm/inch tags — so microscopy stacks (including multi-page TIFFs) calibrate
+themselves; enter a manual value when metadata has none. Choose the corner
+and color (Auto inverts against the background); the dialog shows a live
+preview. With the bar enabled, every export (single image, folder stacks,
+multi-page TIFF, GIF, export-all, batch) carries a publication-style bar:
+a rounded 1-2-5 length (~12% of the image width) with stroked, readable
+text. The CLI supports it via `--scale-bar` (auto calibration) and
+`--scale-um <um/px>`.
+
 ### Crash Auto-Recovery
 
 OpenFocus continuously keeps a snapshot of your working session (stack,

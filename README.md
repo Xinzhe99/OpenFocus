@@ -13,6 +13,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.09.30 (3)**: **v1.31** — **publication-grade scale bars**: pixel size auto-detected from ImageJ/OME-TIFF metadata (manual fallback), configured via Settings → Scale Bar with a live preview, and burned into every export — single images, stacks, multi-page TIFF, GIF, batch processing and the CLI (`--scale-bar`).
+
 > 🎉 **2026.09.30 (2)**: **v1.30** — **multi-page TIFF support**: microscopy Z-stacks saved as a single multi-page TIFF now load page-by-page into the stack (and Save Stack can write the whole stack back into one file, 16-bit preserved). Plus **crash auto-recovery**: after a crash, the next launch offers to restore your last working session with one click. **v1.29** made releases citable (CITATION.cff + Zenodo DOIs).
 
 > 🎉 **2026.09.30**: **v1.28** — **pip install openfocus**: the full fusion pipeline is now a multi-platform CLI on [PyPI](https://pypi.org/project/openfocus/) (guided filter, DCT, DTCWT, GFG-FGF built in; `openfocus[ai]` adds the neural model with weights). Also: 30+ fixes from a seven-domain code review — most notably **ECC registration composed its transforms in reversed order**, leaving frame 3+ of rotation/scale stacks misaligned.

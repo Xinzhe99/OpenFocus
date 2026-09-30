@@ -38,6 +38,12 @@ def _collect_state(window) -> Dict[str, Any]:
         "quick_preview": getattr(window, "chk_quick_preview", None) is not None
         and window.chk_quick_preview.isChecked(),
         "current_index": getattr(window, "current_display_index", -1),
+        # Scale-bar calibration & style (manual value only; metadata is
+        # re-detected per stack on load)
+        "scale_bar_enabled": bool(getattr(window, "scale_bar_enabled", False)),
+        "scale_um_per_px_manual": float(getattr(window, "scale_um_per_px_manual", 0.0) or 0.0),
+        "scale_bar_position": getattr(window, "scale_bar_position", "bottom-right"),
+        "scale_bar_color": getattr(window, "scale_bar_color", "auto"),
     }
     labels = {}
     lm = getattr(window, "label_manager", None)
@@ -202,6 +208,11 @@ def _apply_after_load(window, state: Dict[str, Any]) -> None:
     qp = window.chk_quick_preview if hasattr(window, "chk_quick_preview") else None
     if qp is not None:
         qp.setChecked(bool(settings.get("quick_preview", False)))
+
+    window.scale_bar_enabled = bool(settings.get("scale_bar_enabled", False))
+    window.scale_um_per_px_manual = float(settings.get("scale_um_per_px_manual", 0.0) or 0.0)
+    window.scale_bar_position = settings.get("scale_bar_position", "bottom-right")
+    window.scale_bar_color = settings.get("scale_bar_color", "auto")
 
     labels = state.get("labels", {})
     lm = getattr(window, "label_manager", None)

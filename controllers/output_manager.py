@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox
 from controllers.export_manager import get_imwrite_params
 from utils import show_error_box, show_message_box, show_success_box, show_warning_box
 from utils.settings_store import get_drag_export_format, set_drag_export_format
+from utils import scalebar
 from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
 from utils.image_utils import to_display_uint8
 from utils.image_utils import imwrite_auto
@@ -140,7 +141,7 @@ class OutputManager:
             labeled = window.label_manager.prepare_bgr_image("registered", image, i)
             name = f"{base}_{total - i:02d}.png"
             from utils.image_utils import imwrite_auto
-            if imwrite_auto(os.path.join(folder, name), labeled):
+            if imwrite_auto(os.path.join(folder, name), scalebar.burn(labeled, scalebar.export_cfg(window))):
                 count += 1
 
         show_success_box(
@@ -181,7 +182,7 @@ class OutputManager:
 
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                success = imwrite_auto(file_path, image_to_save, params)
+                success = imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params)
                 if success:
                     show_success_box(
                         window,
@@ -203,7 +204,7 @@ class OutputManager:
 
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                success = imwrite_auto(file_path, image_to_save, params)
+                success = imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params)
                 if success:
                     show_success_box(
                         window,

@@ -1,3 +1,5 @@
+from typing import Optional
+
 from PyQt6.QtCore import QThread, pyqtSignal
 import time
 import os
@@ -469,7 +471,7 @@ class BatchWorker(QThread):
         except Exception:
             self.thread_count = 4
 
-    def _save_image(self, path: str, image, extension: str) -> bool:
+    def _save_image(self, path: str, image, extension: str, scale_cfg=None) -> bool:
         """Save with the user-selected JPG quality; other formats use defaults."""
         params = []
         if extension.lower().lstrip('.') in ('jpg', 'jpeg', 'jpe', 'jfif'):
@@ -479,6 +481,9 @@ class BatchWorker(QThread):
                 quality = 100
             params = [cv2.IMWRITE_JPEG_QUALITY, max(0, min(100, quality))]
         from utils.image_utils import imwrite_auto
+        if scale_cfg:
+            from utils import scalebar
+            image = scalebar.burn(image, scale_cfg)
         return imwrite_auto(path, image, params)
 
     def run(self):
@@ -565,6 +570,18 @@ class BatchWorker(QThread):
             )
         else:
             return [self.single_folder_images_with_times]
+
+    def _stack_scale_cfg(self) -> Optional[dict]:
+        """Scale-bar config for the stack just loaded: auto-detected µm/px
+        from its own TIFF metadata, else the manual value from the dialog."""
+        cfg = self.processing_settings.get("scale_bar")
+        if not cfg:
+            return None
+        px_um = getattr(self.image_loader, "px_size_um", None) or cfg.get("manual_px_um")
+        if not px_um or px_um <= 0:
+            return None
+        return {"px_um": px_um, "position": cfg.get("position", "bottom-right"),
+                "color": cfg.get("color", "auto")}
 
     def _process_single_stack(self, stack_images_with_times, output_dir, stack_name, stack_index):
         """处理单个图像栈（来自单文件夹分割）"""
@@ -667,16 +684,17 @@ class BatchWorker(QThread):
                 result = None
 
             result = quantize_fuse_output(result, is_16bit)
+            stack_cfg = self._stack_scale_cfg()
 
             if result is not None:
                 output_path = os.path.join(output_dir, f"{stack_name}.{output_format}")
-                self._save_image(output_path, result, output_format)
+                self._save_image(output_path, result, output_format, scale_cfg=stack_cfg)
 
             if self.processing_settings.get('save_aligned'):
                 for idx, img in enumerate(aligned_for_export):
                     aligned_filename = f"{stack_name}_aligned_{idx + 1:03d}.{output_format}"
                     aligned_path = os.path.join(output_dir, aligned_filename)
-                    self._save_image(aligned_path, img, output_format)
+                    self._save_image(aligned_path, img, output_format, scale_cfg=stack_cfg)
     
     def process_single_folder(self, folder_path):
         """处理单个文件夹"""
@@ -785,7 +803,7 @@ class BatchWorker(QThread):
         output_path = os.path.join(output_dir, filename)
 
         # 保存图像
-        self._save_image(output_path, fusion_result, extension)
+        self._save_image(output_path, fusion_result, extension, scale_cfg=self._stack_scale_cfg())
     
     def save_registered_stack(self, folder_path, images, filenames):
         """保存配准后的图像栈"""
@@ -815,7 +833,7 @@ class BatchWorker(QThread):
                 filename = f"registered_{i+1:04d}.{extension}"
             
             output_path = os.path.join(output_dir, filename)
-            self._save_image(output_path, image, extension)
+            self._save_image(output_path, image, extension, scale_cfg=self._stack_scale_cfg())
 
     def _get_output_path_for_single_folder(self, source_folder_path):
         """获取单文件夹模式下的输出路径"""
@@ -850,13 +868,14 @@ class GifSaverWorker(QThread):
     """后台保存GIF的线程"""
     finished_signal = pyqtSignal(bool, str)  # success, message
 
-    def __init__(self, images, file_path, duration_sec, label_manager, target_type):
+    def __init__(self, images, file_path, duration_sec, label_manager, target_type, scale_cfg=None):
         super().__init__()
         self.images = images
         self.file_path = file_path
         self.duration_sec = duration_sec
         self.label_manager = label_manager
         self.target_type = target_type
+        self.scale_cfg = scale_cfg
 
     def run(self):
         try:
@@ -875,6 +894,9 @@ class GifSaverWorker(QThread):
                 # 确保图像是uint8格式（16-bit 按比例缩放，不是截断）
                 if img_copy.dtype != np.uint8:
                     img_copy = to_display_uint8(img_copy)
+                if self.scale_cfg:
+                    from utils import scalebar
+                    img_copy = scalebar.burn(img_copy, self.scale_cfg)
                 
                 normalized_images.append(img_copy)
             

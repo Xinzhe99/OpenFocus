@@ -57,6 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Registration feature-detection downscale width")
     parser.add_argument("--tile-size", type=int, default=None,
                         help="Tile block size for large images (default: auto)")
+    parser.add_argument("--scale-bar", action="store_true",
+                        help="Draw a scale bar on the output (calibration auto-detected from TIFF metadata, or --scale-um)")
+    parser.add_argument("--scale-um", type=float, default=None,
+                        help="Pixel size in um/px, overriding metadata (implies --scale-bar)")
     return parser
 
 
@@ -174,10 +178,34 @@ def _fuse_stack(images, args):
     return fused
 
 
-def _save(path: str, fused) -> None:
+def _resolve_scale_cfg(args, paths):
+    """Scale-bar config from --scale-bar/--scale-um + TIFF metadata.
+
+    Returns None when the bar was not requested or no calibration is
+    available (raising in the latter case only when the user asked for it).
+    """
+    if not args.scale_bar and args.scale_um is None:
+        return None
+    px_um = args.scale_um
+    if px_um is None:
+        from utils.scalebar import detect_px_size_um
+        for p in paths:
+            px_um = detect_px_size_um(p)
+            if px_um:
+                break
+    if not px_um or px_um <= 0:
+        raise RuntimeError(
+            "--scale-bar: no pixel size available — pass --scale-um <um/px>")
+    return {"px_um": px_um, "position": "bottom-right", "color": "auto"}
+
+
+def _save(path: str, fused, scale_cfg=None) -> None:
     from utils.image_utils import imwrite_auto
     out_dir = os.path.dirname(os.path.abspath(path))
     os.makedirs(out_dir, exist_ok=True)
+    if scale_cfg:
+        from utils import scalebar
+        fused = scalebar.burn(fused, scale_cfg)
     if not imwrite_auto(path, fused):
         raise RuntimeError(f"Failed to write output: {path}")
 
@@ -221,7 +249,7 @@ def _run_batch(args) -> int:
                 raise RuntimeError(f"need at least 2 images, found {len(paths)}")
             images = _load_images(paths)
             fused = _fuse_stack(images, args)
-            _save(out_path, fused)
+            _save(out_path, fused, _resolve_scale_cfg(args, paths))
             print(f"Saved: {out_path}")
             ok_count += 1
         except Exception as exc:
@@ -283,8 +311,9 @@ def run_cli(argv: List[str]) -> int:
             fused = _fuse_stack(images, args)
             if fused is None:
                 raise RuntimeError("Fusion returned no result")
+            scale_cfg = _resolve_scale_cfg(args, paths)
 
-        _save(args.output, fused)
+        _save(args.output, fused, scale_cfg)
         print(f"Saved: {args.output}")
         return EXIT_OK
     except KeyboardInterrupt:

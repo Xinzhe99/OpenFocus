@@ -65,3 +65,4 @@ __all__ = [
 ]
 
 from dialogs.welcome import WelcomeDialog
+from dialogs.scalebar import ScaleBarDialog

@@ -723,13 +723,26 @@ class BatchProcessingDialog(QDialog):
         if format_str == "jpg":
             jpg_quality = self.quality_slider.value()
         
+        # Scale-bar preferences: per-stack µm/px is auto-detected by the
+        # worker's own loader from each stack's TIFF metadata; the manual
+        # value here is the fallback when metadata has no calibration.
+        scale_cfg = None
+        if self.parent_window and getattr(self.parent_window, "scale_bar_enabled", False):
+            manual = float(getattr(self.parent_window, "scale_um_per_px_manual", 0.0) or 0.0)
+            scale_cfg = {
+                "manual_px_um": manual if manual > 0 else None,
+                "position": getattr(self.parent_window, "scale_bar_position", "bottom-right"),
+                "color": getattr(self.parent_window, "scale_bar_color", "auto"),
+            }
+
         return {
             "format": format_str,
             "jpg_quality": jpg_quality,
             "fusion_method": fusion_method,
             "fusion_params": fusion_params,
             "reg_methods": reg_methods,
-            "save_aligned": self.save_aligned_cb.isChecked()  # 是否保存对齐后的图像栈
+            "save_aligned": self.save_aligned_cb.isChecked(),  # 是否保存对齐后的图像栈
+            "scale_bar": scale_cfg,
         }
 
     def preload_single_folder(self, folder_path: str, scale_factor: float = 1.0) -> None:

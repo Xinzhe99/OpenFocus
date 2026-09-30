@@ -82,6 +82,9 @@ class SourceManager:
                 from utils.image_utils import set_source_exif
                 set_source_exif(getattr(window.image_loader, "source_exif", b""))
 
+                # Scale-bar calibration detected in TIFF metadata
+                window.source_px_um = getattr(window.image_loader, "px_size_um", None)
+
                 # Crash auto-recovery: refresh the session snapshot
                 from utils import recovery
                 recovery.write_snapshot(window)
