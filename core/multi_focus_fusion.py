@@ -83,6 +83,21 @@ def is_stackmffv4_available() -> bool:
     _STACKMFF_AVAILABLE_CACHE = True
     return True
 
+def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
+    """True when total stack bytes exceed a single threshold-sized frame.
+
+    A deep stack of sub-threshold frames carries more pixels than one big
+    frame; the neural path allocates conv buffers proportional to
+    frames x H x W, so the depth must count toward the tiling decision.
+    """
+    if not frames:
+        return False
+    first = frames[0]
+    bytes_per_frame = first.itemsize * int(np.prod(first.shape)) if first.ndim else first.itemsize
+    total_bytes = len(frames) * bytes_per_frame
+    return total_bytes > (tile_threshold ** 2) * 3
+
+
 class MultiFocusFusion:
     """
     多焦点图像融合统一接口类
@@ -277,9 +292,16 @@ class MultiFocusFusion:
         # 情况1: 已加载的图像列表
         if is_list_of_arrays:
             h, w = input_source[0].shape[:2]
-            if self.tile_enabled and max(h, w) > self.tile_threshold:
+            # Tiling is decided by the TOTAL stack footprint, not the
+            # per-frame dimensions alone: a 40-frame 1783px stack is ~3x
+            # the pixels of a single 2048px frame and used to OOM the
+            # neural path (a 7.6GB conv allocation) because the size-only
+            # check never fired.
+            if self.tile_enabled and (
+                    max(h, w) > self.tile_threshold
+                    or _stack_footprint_exceeds(input_source, self.tile_threshold)):
                 # 使用分块融合，块大小和重叠均由实例属性控制
-                print(f"Info: Large image size detected ({w}x{h}). Using tiled fusion mode (block={self.tile_block_size}, overlap={self.tile_overlap}).")
+                print(f"Info: Large stack detected ({len(input_source)}x{w}x{h}). Using tiled fusion mode (block={self.tile_block_size}, overlap={self.tile_overlap}).")
                 kws = dict(kwargs)
                 # 防止外部 kwargs 中含有会与内部指定值冲突的同名参数
                 kws.pop('block_size', None)

@@ -205,3 +205,35 @@ def test_fusion_gray_stack_keeps_16bit_contract(algorithm, kwargs):
 
     assert fused.shape == (80, 100, 3)
     assert fused.dtype == np.float32, "back-end collapsed the 16-bit stack to uint8"
+
+class TestStackFootprintTiling:
+    """Deep stacks of sub-threshold frames must trigger tiling (the
+    size-only check used to OOM the neural path on 40-frame 1783px
+    stacks with a 7.6GB conv allocation)."""
+
+    def test_deep_small_frame_stack_exceeds(self):
+        from core.multi_focus_fusion import _stack_footprint_exceeds
+        import numpy as np
+        # 30 frames of 600x400x3 uint8 = 21.6MB > 12.6MB (2048^2*3)
+        frames = [np.zeros((400, 600, 3), np.uint8) for _ in range(30)]
+        assert _stack_footprint_exceeds(frames, 2048)
+
+    def test_shallow_small_stack_does_not(self):
+        from core.multi_focus_fusion import _stack_footprint_exceeds
+        import numpy as np
+        frames = [np.zeros((400, 600, 3), np.uint8) for _ in range(3)]
+        assert not _stack_footprint_exceeds(frames, 2048)
+
+    def test_empty_stack(self):
+        from core.multi_focus_fusion import _stack_footprint_exceeds
+        assert not _stack_footprint_exceeds([], 2048)
+
+    def test_16bit_counts_double(self):
+        from core.multi_focus_fusion import _stack_footprint_exceeds
+        import numpy as np
+        # 8 frames of 600x400x3 uint16 = 11.5MB < 12.6MB -> False;
+        # 10 frames = 14.4MB -> True
+        f8 = [np.zeros((400, 600, 3), np.uint16) for _ in range(8)]
+        f10 = [np.zeros((400, 600, 3), np.uint16) for _ in range(10)]
+        assert not _stack_footprint_exceeds(f8, 2048)
+        assert _stack_footprint_exceeds(f10, 2048)

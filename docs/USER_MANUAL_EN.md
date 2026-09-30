@@ -464,6 +464,12 @@ Access via **Settings → Registration**:
   - Default: 1024px
   - Lower for speed, higher for accuracy
 
+### Performance Reference
+
+See [PERFORMANCE.md](./PERFORMANCE.md) for measured throughput and memory
+numbers on large real stacks, and practical guidance for deep stacks and
+high-resolution input.
+
 ### Thread Count Settings
 
 Control CPU parallel processing:

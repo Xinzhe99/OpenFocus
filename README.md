@@ -78,6 +78,7 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Run `openfocus -
 - [**User Manual (English)**](./docs/USER_MANUAL_EN.md) — full feature guide: interface, workflows, wipe compare, settings, batch, CLI, troubleshooting
 - [**用户手册（中文）**](./docs/USER_MANUAL_ZH.md) — 完整中文功能手册
 - [**Changelog**](./CHANGELOG.md) — release history and notable changes
+- [**Performance \& Large Stacks**](./docs/PERFORMANCE.md) — soak-test throughput/memory reference and tuning guidance
 - [**Build Commands**](./docs/BUILD_COMMANDS.md) — packaging from source with PyInstaller
 
 <a id="building-from-source"></a>
