@@ -341,6 +341,53 @@ class ExportManager:
                 QMessageBox.Icon.Critical,
             )
 
+    def save_stack_as_multipage_tiff(self, target_type: str = "registered") -> None:
+        """Save a whole stack as ONE multi-page TIFF file (16-bit preserved)."""
+        window = self.window
+        if target_type == "registered":
+            if not window.registration_results:
+                show_warning_box(window, trans.t("msg_no_registered_images_title"), trans.t("msg_no_registered_images_text"))
+                return
+            images = window.registration_results
+            label_target = "registered"
+            default_name = self.generate_default_filename() + ".tif"
+        else:
+            if not window.raw_images:
+                show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_save_stack_text"))
+                return
+            images = window.raw_images
+            label_target = "input"
+            default_name = f"Input_Stack_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.tif"
+
+        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+        file_path, _ = QFileDialog.getSaveFileName(
+            window, trans.t("action_save_multipage_tiff"),
+            os.path.join(get_last_dialog_dir() or os.path.expanduser("~"), default_name),
+            "Multi-page TIFF (*.tif *.tiff)")
+        if not file_path:
+            return
+        if os.path.splitext(file_path)[1].lower() not in ('.tif', '.tiff'):
+            file_path += '.tif'
+        set_last_dialog_dir(file_path)
+
+        try:
+            labeled = [window.label_manager.prepare_bgr_image(label_target, img, i)
+                       for i, img in enumerate(images)]
+            from utils.image_utils import imwrite_multi_tiff
+            if imwrite_multi_tiff(file_path, labeled):
+                show_success_box(
+                    window, trans.t("msg_success"),
+                    trans.t("msg_multipage_saved_text"),
+                    trans.t("msg_multipage_saved_info").format(
+                        count=len(labeled), path=file_path))
+            else:
+                show_error_box(window, trans.t("msg_save_failed_title"),
+                               trans.t("msg_save_failed_text"),
+                               trans.t("msg_save_failed_info_write"))
+        except Exception as exc:  # pylint: disable=broad-except
+            show_error_box(window, trans.t("msg_error"),
+                           trans.t("msg_save_failed_text"), f"Error: {exc}")
+
     def save_processed_input_stack(self) -> None:
         window = self.window
         if not window.raw_images:

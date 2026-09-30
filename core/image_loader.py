@@ -100,6 +100,29 @@ def _read_via_pil(path: str) -> Optional[np.ndarray]:
         return None
 
 
+def _read_tiff_pages(path: str) -> Optional[List[np.ndarray]]:
+    """Read every page of a multi-page TIFF as a list of BGR arrays.
+
+    Microscopy software (ZEN, NIS-Elements, ImageJ) exports whole Z-stacks
+    as single multi-page TIFFs; cv2.imdecode reads only page 0 and silently
+    drops the rest. Returns None for single-page files (and non-TIFFs) so
+    callers keep their normal single-image path.
+    """
+    if os.path.splitext(path)[1].lower() not in ('.tif', '.tiff'):
+        return None
+    try:
+        flags = cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
+        # np.fromfile + imdecodemulti survives non-ASCII paths (imreadmulti
+        # silently fails on them, same as imread)
+        success, pages = cv2.imdecodemulti(
+            np.fromfile(path, dtype=np.uint8), flags=flags)
+        if not success or len(pages) < 2:
+            return None
+        return list(pages)
+    except Exception:
+        return None
+
+
 class ImageStackLoader:
     """图像栈加载器"""
 
@@ -136,6 +159,21 @@ class ImageStackLoader:
 
         for filename, full_path in image_files:
             try:
+                pages = _read_tiff_pages(full_path)
+                if pages is not None:
+                    # One multi-page TIFF = one whole stack
+                    if not self.source_exif:
+                        self.source_exif = _read_exif_bytes(full_path)
+                    stem = os.path.splitext(filename)[0]
+                    for page_no, page in enumerate(pages, start=1):
+                        if scale_factor != 1.0 and 0 < scale_factor < 1.0:
+                            width = int(page.shape[1] * scale_factor)
+                            height = int(page.shape[0] * scale_factor)
+                            page = cv2.resize(page, (width, height), interpolation=cv2.INTER_AREA)
+                        loaded_images.append(page)
+                        filenames.append(f"{stem}_page_{page_no:03d}.tif")
+                    continue
+
                 img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
                                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
                 if img is None:
@@ -233,6 +271,18 @@ class ImageStackLoader:
             try:
                 if not os.path.exists(full_path):
                     failed_count += 1
+                    continue
+
+                pages = _read_tiff_pages(full_path)
+                if pages is not None:
+                    stem = os.path.splitext(os.path.basename(full_path))[0]
+                    for page_no, page in enumerate(pages, start=1):
+                        if scale_factor != 1.0 and 0 < scale_factor < 1.0:
+                            width = int(page.shape[1] * scale_factor)
+                            height = int(page.shape[0] * scale_factor)
+                            page = cv2.resize(page, (width, height), interpolation=cv2.INTER_AREA)
+                        loaded_images.append(page)
+                        filenames.append(f"{stem}_page_{page_no:03d}.tif")
                     continue
 
                 img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),

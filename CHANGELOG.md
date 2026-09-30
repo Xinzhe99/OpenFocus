@@ -3,6 +3,23 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.30] — 2026-09-30
+
+### Added
+- **Multi-page TIFF end to end**: Z-stacks exported by microscopy
+  software (ZEN, NIS-Elements, ImageJ) as a single multi-page TIFF now
+  load with every page becoming a frame (previously only page 0 was
+  read and the rest silently dropped). File → Save Stack → Save as
+  Multi-page TIFF writes a whole stack back into one file; 16-bit depth
+  and non-ASCII paths preserved on both sides (unicode-safe via
+  imdecodemulti/imwritemulti temp-file dance)
+- **Crash auto-recovery**: a session snapshot (.ofproj) is rewritten
+  after every stack load and finished render into a recovery slot next
+  to the user settings; a live-lock file distinguishes clean exits from
+  crashes. On the next start after a crash OpenFocus offers one-click
+  "Restore Session" (snapshot validation skips entries whose source
+  files have moved). Portable installs keep recovery data beside the exe
+
 ## [v1.29] — 2026-09-30
 
 ### Added

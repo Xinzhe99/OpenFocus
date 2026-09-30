@@ -81,6 +81,10 @@ class SourceManager:
                 # Exports inherit the source metadata from now on
                 from utils.image_utils import set_source_exif
                 set_source_exif(getattr(window.image_loader, "source_exif", b""))
+
+                # Crash auto-recovery: refresh the session snapshot
+                from utils import recovery
+                recovery.write_snapshot(window)
             except Exception as exc:  # pylint: disable=broad-except
                 show_message_box(
                     window,

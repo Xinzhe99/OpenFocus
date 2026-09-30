@@ -1617,6 +1617,11 @@ class OpenFocus(QMainWindow):
         except Exception:
             pass
 
+        # Crash auto-recovery: keep the last snapshot, clear the live lock
+        from utils import recovery
+        recovery.write_snapshot(self)
+        recovery.mark_clean_exit()
+
         def _shutdown_worker(worker, timeout_ms=1500):
             """Wait for a QThread to finish, terminating as a last resort.
 
@@ -1942,6 +1947,28 @@ if __name__ == "__main__":
             lambda: _on_second_instance(bytes(conn.readAll()).decode("utf-8", "ignore")))
 
     _single_server.newConnection.connect(_on_new_connection)
+
+    # Crash auto-recovery: a leftover lock means the last session died
+    # without a clean close. Offer the saved snapshot before anything else.
+    from utils import recovery
+    pending = recovery.pending_recovery()
+    if pending is not None:
+        from PyQt6.QtWidgets import QMessageBox
+        box = QMessageBox(window)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(trans.t('recovery_title'))
+        box.setText(trans.t('recovery_text').format(
+            count=recovery.snapshot_frame_count(pending)))
+        restore_btn = box.addButton(trans.t('btn_restore'), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(trans.t('btn_start_fresh'), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(restore_btn)
+        box.exec()
+        if box.clickedButton() is restore_btn:
+            from utils.project_file import apply_project
+            window.project_path = recovery.session_path()
+            apply_project(window, pending)
+            _log.info("recovered previous session from %s", recovery.session_path())
+    recovery.init_lock()
 
     # Handle files passed via command-line (drag-to-EXE, desktop file, etc.)
     if len(sys.argv) > 1:

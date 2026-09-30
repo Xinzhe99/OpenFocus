@@ -77,6 +77,13 @@ def setup_menus(window: QMainWindow) -> None:
     registered_stack_menu.addAction(save_reg_gif_action)
     window.ui_objs['action_save_gif_reg'] = save_reg_gif_action
 
+    save_reg_mtiff_action = QAction(trans.t('action_save_multipage_tiff'), window)
+    save_reg_mtiff_action.triggered.connect(
+        lambda: window.export_manager.save_stack_as_multipage_tiff("registered"))
+    save_reg_mtiff_action.setProperty("trans_key", 'action_save_multipage_tiff')
+    registered_stack_menu.addAction(save_reg_mtiff_action)
+    window.ui_objs['action_save_mtiff_reg'] = save_reg_mtiff_action
+
     input_stack_menu = save_stack_menu.addMenu(trans.t('menu_input_stack'))
     window.ui_objs['menu_input_stack'] = input_stack_menu
 
@@ -91,6 +98,13 @@ def setup_menus(window: QMainWindow) -> None:
     save_input_gif_action.setProperty("trans_key", 'action_save_gif')
     input_stack_menu.addAction(save_input_gif_action)
     window.ui_objs['action_save_gif_input'] = save_input_gif_action
+
+    save_input_mtiff_action = QAction(trans.t('action_save_multipage_tiff'), window)
+    save_input_mtiff_action.triggered.connect(
+        lambda: window.export_manager.save_stack_as_multipage_tiff("input"))
+    save_input_mtiff_action.setProperty("trans_key", 'action_save_multipage_tiff')
+    input_stack_menu.addAction(save_input_mtiff_action)
+    window.ui_objs['action_save_mtiff_input'] = save_input_mtiff_action
 
     file_menu.addSeparator()
 

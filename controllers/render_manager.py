@@ -437,6 +437,10 @@ class RenderManager:
                 # Bring attention back: flash the taskbar icon
                 QApplication.alert(window)
 
+                # Crash auto-recovery: new outputs refresh the snapshot
+                from utils import recovery
+                recovery.write_snapshot(window)
+
                 if preview:
                     print("Preview render completed (not added to output history)")
                 else:

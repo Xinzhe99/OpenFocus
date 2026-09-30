@@ -156,6 +156,25 @@ sharpness (normalized). Out-of-focus frames appear as dips marked with a
 red dot. Click anywhere on the curve to jump to that frame; hovering
 shows the frame number.
 
+### Multi-page TIFF Stacks
+
+Microscopy software (ZEN, NIS-Elements, ImageJ/Fiji) often exports a whole
+Z-stack as ONE multi-page TIFF file. OpenFocus reads every page of such a
+file as an individual frame of the image stack — drop or open the file and
+the stack appears complete (frames are named `<file>_page_001` and so on).
+Single-page TIFFs behave exactly as before. The reverse works too:
+**File → Save Stack → (Registered / Input) → Save as Multi-page TIFF**
+writes the entire stack back into a single `.tif`, preserving 16-bit depth.
+
+### Crash Auto-Recovery
+
+OpenFocus continuously keeps a snapshot of your working session (stack,
+settings, labels, current frame). If the application closes unexpectedly —
+a crash, power loss, or a forced kill — the next launch detects it and
+offers **Restore Session** to return exactly to where you were. Clean
+exits never show the prompt. Recovery data lives next to your settings
+(portable installs keep it beside the executable, so it travels with you).
+
 ### Recent Files
 
 Every stack you open is remembered under **File → Open Recent** (up to 8 entries). Press `Alt+1` … `Alt+8` to reopen an entry directly. Reopening the same stack moves it to the top; entries whose files no longer exist can be removed with a prompt, and **Clear Recent List** empties the menu.

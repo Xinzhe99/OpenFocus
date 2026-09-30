@@ -91,6 +91,37 @@ def to_display_uint8(img: np.ndarray) -> np.ndarray:
     return img.astype(np.uint8)
 
 
+def imwrite_multi_tiff(path: str, images) -> bool:
+    """Write a whole stack as ONE multi-page TIFF (uint8/uint16 preserved).
+
+    cv2.imwritemulti needs an encodable filename, so non-ASCII targets are
+    written to a .part neighbour first and renamed into place.
+    """
+    if not images:
+        return False
+    import tempfile
+    # cv2.imwritemulti silently fails on non-encodable filenames, so always
+    # write to an ASCII temp path and rename onto the (possibly unicode)
+    # destination — os.replace handles unicode targets fine.
+    fd, part = tempfile.mkstemp(suffix=".tif")
+    os.close(fd)
+    try:
+        try:
+            ok = cv2.imwritemulti(part, [np.asarray(i) for i in images])
+        except cv2.error:
+            ok = False
+        if not ok:
+            return False
+        os.replace(part, path)
+        return True
+    finally:
+        try:
+            if os.path.exists(part):
+                os.remove(part)
+        except OSError:
+            pass
+
+
 # Raw EXIF of the loaded source stack; set by the loaders, embedded into
 # lossless exports automatically. Empty bytes = no metadata to embed.
 SOURCE_EXIF = b""
