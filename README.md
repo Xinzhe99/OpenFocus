@@ -13,23 +13,15 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> 🎉 **2026.09.30 (4)**: **v1.32** — **deep stacks no longer crash the AI fusion with out-of-memory**: found by a final soak test on a real 120-frame stack, tiling now engages on total stack size (not just per-frame dimensions) and the AI path shrinks its tiles/batches with depth so a single model call stays within a measured memory budget. New `tools/soak_test.py` harness and a measured [performance reference](./docs/PERFORMANCE.md) ship with it.
+> 🎉 **2026.09.30**: **v1.32** — deep stacks no longer crash the AI fusion with **out-of-memory**: tiling now engages on total stack size and the AI path adapts its tile/batch size to stack depth. Ships with a soak-test harness and a measured [performance reference](./docs/PERFORMANCE.md).
 
-> 🎉 **2026.09.30 (3)**: **v1.31** — **publication-grade scale bars**: pixel size auto-detected from ImageJ/OME-TIFF metadata (manual fallback), configured via Settings → Scale Bar with a live preview, and burned into every export — single images, stacks, multi-page TIFF, GIF, batch processing and the CLI (`--scale-bar`).
+> 🎉 **2026.09.30**: **v1.28–v1.31** — **pip install openfocus** ([PyPI](https://pypi.org/project/openfocus/)), **publication-grade scale bars** (µm/px auto-detected from ImageJ/OME-TIFF metadata, burned into every export), **multi-page TIFF** Z-stack input/output, **crash auto-recovery**, citable releases (Zenodo DOIs) — plus 30+ code-review fixes, most notably ECC registration composing its transforms in reversed order.
 
-> 🎉 **2026.09.30 (2)**: **v1.30** — **multi-page TIFF support**: microscopy Z-stacks saved as a single multi-page TIFF now load page-by-page into the stack (and Save Stack can write the whole stack back into one file, 16-bit preserved). Plus **crash auto-recovery**: after a crash, the next launch offers to restore your last working session with one click. **v1.29** made releases citable (CITATION.cff + Zenodo DOIs).
+> 🎉 **2026.09.29**: **v1.27** — **16-bit stacks no longer fuse to a black/blown-out image**, in-app **Update and Restart** works again, tall/wide stacks stop crashing tiled fusion, and a dozen smaller fixes (cancellation, batch, projects, themes). **v1.26** fixed the "I/O operation on closed file" render crash in windowed builds ([#4](https://github.com/Xinzhe99/OpenFocus/issues/4)).
 
-> 🎉 **2026.09.30**: **v1.28** — **pip install openfocus**: the full fusion pipeline is now a multi-platform CLI on [PyPI](https://pypi.org/project/openfocus/) (guided filter, DCT, DTCWT, GFG-FGF built in; `openfocus[ai]` adds the neural model with weights). Also: 30+ fixes from a seven-domain code review — most notably **ECC registration composed its transforms in reversed order**, leaving frame 3+ of rotation/scale stacks misaligned.
+> 🎉 **2026.09.28**: **v1.21–v1.25** — portable mode, one-click in-app self-update, EXIF preservation, HEIC input, project files (.ofproj), built-in demo stack, sharpness curve, Japanese/Spanish interfaces.
 
-> 🎉 **2026.09.29**: **v1.27** — **16-bit stacks no longer fuse to a black or blown-out image** (bit depth is now carried from loading through fusion to export), **Help → Check for Updates → "Update and Restart" works again** (it had been failing silently, and now also handles installs under Program Files), tall/wide stacks stop crashing tiled fusion, cancelling a large render takes effect immediately, and closing the window mid-job asks before discarding the result. Also fixed this round: quick-preview and ROI renders no longer poison the saved alignment, Compare All can be cancelled, deleting a frame keeps its filename, downsampling stops compounding below the percentage you chose, batch jobs check their output folder before they start, `.ofproj` projects reopen after the images move, and the sharpness curve is readable in the dark theme.
-
-> 🎉 **2026.09.29**: **v1.26** — fixed the **"I/O operation on closed file"** render crash in windowed builds and a stale embedded version number that kept offering updates users already had.
-
-> 🎉 **2026.09.28**: **v1.25 / v1.24 / v1.22** — portable mode (settings travel with the app), one-click in-app update with progress, EXIF preservation, HEIC/HEIF input, and render-failure tracebacks in the log folder.
-
-> 🎉 **2026.09.28**: **v1.21** — project files (.ofproj), built-in demo stack, per-frame sharpness curve, Japanese + Spanish interfaces.
-
-**Earlier milestones**: v1.9–v1.20 brought the Wipe compare view, dark/light themes, Compare-All-Methods rendering, quick preview, cancellable background renders, 16-bit pipeline, registration disk cache, batch CLI, WebP export, Windows installer + macOS DMG, and CI test automation. Full history in the [Changelog](./CHANGELOG.md).
+**Earlier milestones**: v1.9–v1.20 — Wipe compare view, dark/light themes, compare-all-methods, quick preview, cancellable renders, 16-bit pipeline, registration cache, batch CLI, installer/DMG, CI automation. Full history in the [Changelog](./CHANGELOG.md).
 
 <a id="download"></a>
 ## ⬇️ Download & Install
