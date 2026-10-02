@@ -33,10 +33,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest pytest-timeout
 
       - name: Run test suite
         timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest -v --faulthandler-timeout=120
+        run: pytest -v --timeout=90 --timeout-method=thread
