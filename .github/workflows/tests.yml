@@ -36,6 +36,7 @@ jobs:
           pip install pytest
 
       - name: Run test suite
+        timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest -v
+        run: pytest -v --faulthandler-timeout=120
