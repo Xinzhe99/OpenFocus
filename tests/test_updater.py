@@ -251,6 +251,12 @@ class TestOneClickUpdateFlow:
         monkeypatch.setattr(QApplication, "quit", staticmethod(lambda *a: None))
 
         import main
+        # 失败路径上的警告框是模态 exec()——offscreen 下没人能点它，测试会
+        # 永久卡死（CI 的 ubuntu 上真实发生过：staging 校验失败 -> 警告框）。
+        # 记录下来代替弹出，让失败 loud 而不是 hang。
+        shown_warnings = []
+        monkeypatch.setattr(main, "show_warning_box",
+                            lambda *a, **k: shown_warnings.append(a))
         # A bare QWidget hosting the two update methods: constructing the
         # whole main window here would leak a second top-level widget into
         # the rest of the session, and none of this code needs it.

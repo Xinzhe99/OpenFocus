@@ -71,8 +71,11 @@ def staging_root_for(tag: str) -> str:
 
 
 def _has_executable(candidate: str) -> bool:
-    exe = APP_NAME + (".exe" if sys.platform == "win32" else "")
-    return os.path.isfile(os.path.join(candidate, exe))
+    # 非 Windows 也要接受 OpenFocus.exe：Windows onedir 的 zip 在任何系统上
+    # 解开都只有这个入口（Linux CI 的端到端用例就是这种场景）。
+    names = ([APP_NAME + ".exe"] if sys.platform == "win32"
+             else [APP_NAME, APP_NAME + ".exe"])
+    return any(os.path.isfile(os.path.join(candidate, n)) for n in names)
 
 
 def find_staged_app_dir(staging_root: str) -> str:
