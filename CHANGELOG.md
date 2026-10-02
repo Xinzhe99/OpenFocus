@@ -25,6 +25,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (LUTs); 23 new tests (suite at 176).
 
 ### Fixed
+- The ubuntu CI suite hung forever in the one-click-update end-to-end
+  test: staging verification only accepted the platform-specific entry
+  (`OpenFocus.exe` on Windows, bare `OpenFocus` elsewhere), so a Windows
+  zip unpacked on Linux failed and the failure path popped a modal
+  warning box that nothing can dismiss under the offscreen Qt platform.
+  Verification now accepts `OpenFocus.exe` on every platform, the test
+  records warnings instead of popping modals, and CI runs with
+  pytest-timeout (90 s) so any future stall dumps its stack instead of
+  hanging silently.
 - Tiled fusion degenerated to one tile per pixel when the tile size was
   set below twice the overlap (step → 1 px, effectively an infinite
   loop); the overlap is now clamped to half the tile size, and the AI
