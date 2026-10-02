@@ -61,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Draw a scale bar on the output (calibration auto-detected from TIFF metadata, or --scale-um)")
     parser.add_argument("--scale-um", type=float, default=None,
                         help="Pixel size in um/px, overriding metadata (implies --scale-bar)")
+    parser.add_argument("--depth-map", "-D", dest="depth_map", nargs="?", const=True, default=None,
+                        help="Also save a colorized focus-position (pseudo-depth) map computed with the same method "
+                             "(optional value: output path; default <output>_depth.png)")
+    parser.add_argument("--depth-colormap", default="turbo",
+                        help="Colormap for --depth-map: turbo, viridis, jet, gray, ... (default turbo)")
     return parser
 
 
@@ -174,8 +179,38 @@ def _fuse_stack(images, args):
     if fused is None:
         raise RuntimeError("Fusion returned no result")
     fused = quantize_fuse_output(fused, is_16bit)
+    # 注册/归一化后的帧留给 --depth-map 用（与融合同一输入）
+    args._depth_frames = list(images)
     print(f"Fusion ({args.method}, device={info['device']}) done in {time.time() - t0:.1f}s")
     return fused
+
+
+def _depth_out_path(args, fused_out: str) -> str:
+    dm = args.depth_map
+    if isinstance(dm, str) and dm:
+        return dm
+    stem, _ = os.path.splitext(fused_out)
+    return stem + "_depth.png"
+
+
+def _save_depth(args, fused_out: str) -> None:
+    frames = getattr(args, "_depth_frames", None)
+    if not frames:
+        raise RuntimeError("--depth-map: no fused frames available")
+    from core.depth_map import compute_focus_index
+    from utils.colormap import colorize
+    from utils.image_utils import imwrite_auto
+
+    path = _depth_out_path(args, fused_out)
+    t0 = time.time()
+    idx = compute_focus_index(
+        frames, args.method,
+        model_path=_find_model_path() if args.method == "stackmffv4" else None,
+        use_gpu=not args.cpu)
+    if not imwrite_auto(path, colorize(idx, args.depth_colormap)):
+        raise RuntimeError(f"Failed to write depth map: {path}")
+    print(f"Depth map ({args.depth_colormap}) saved: {path} "
+          f"[{time.time() - t0:.1f}s]")
 
 
 def _resolve_scale_cfg(args, paths):
@@ -251,6 +286,8 @@ def _run_batch(args) -> int:
             fused = _fuse_stack(images, args)
             _save(out_path, fused, _resolve_scale_cfg(args, paths))
             print(f"Saved: {out_path}")
+            if args.depth_map:
+                _save_depth(args, out_path)
             ok_count += 1
         except Exception as exc:
             print(f"error: {name}: {exc}", file=sys.stderr)
@@ -315,6 +352,8 @@ def run_cli(argv: List[str]) -> int:
 
         _save(args.output, fused, scale_cfg)
         print(f"Saved: {args.output}")
+        if args.depth_map:
+            _save_depth(args, args.output)
         return EXIT_OK
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)

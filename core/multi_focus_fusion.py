@@ -123,7 +123,9 @@ def _stackmffv4_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref
         eff_block = min(block_size, max(256, (safe // 128) * 128))
     max_batch = budget_px // max(1, n_frames * eff_block * eff_block)
     eff_batch = max(1, min(int(batch_pref), int(max_batch)))
-    eff_overlap = max(0, min(int(overlap), eff_block - 1))
+    # overlap 超过半个瓦片会让 step 退化到 1（每像素一个瓦片）——小图上
+    # block 被钳到图像尺寸时就会发生，等于无限循环
+    eff_overlap = max(0, min(int(overlap), eff_block // 2))
     step = max(1, eff_block - eff_overlap)
     max_sy, max_sx = h - eff_block, w - eff_block
     coords = []
@@ -706,7 +708,9 @@ class MultiFocusFusion:
         # position is not enough: on a 5000x1000 stack with block_size 1024 the
         # y start went negative and every crop came out empty.
         block_size = max(1, min(int(block_size), h, w))
-        overlap = max(0, min(int(overlap), block_size - 1))
+        # overlap 超过半瓦会让 step 逼近 1（每像素一个瓦片，等于无限循环），
+        # 用户把瓦片设小而重叠保持默认 256 时就会触发
+        overlap = max(0, min(int(overlap), block_size // 2))
         step = max(1, block_size - overlap)
         num_images = len(imgs) if imgs is not None else len(files)
 

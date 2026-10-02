@@ -193,6 +193,12 @@ def setup_menus(window: QMainWindow) -> None:
     batch_menu.addAction(batch_action)
     window.ui_objs['action_batch_process'] = batch_action
 
+    depth_action = QAction(trans.t('menu_depth_map'), window)
+    depth_action.triggered.connect(window.show_depth_map_dialog)
+    depth_action.setProperty("trans_key", 'menu_depth_map')
+    batch_menu.addAction(depth_action)
+    window.ui_objs['menu_depth_map'] = depth_action
+
     # --- Settings Menu ---
     settings_menu = menubar.addMenu(trans.t('menu_settings'))
     window.ui_objs['menu_settings'] = settings_menu

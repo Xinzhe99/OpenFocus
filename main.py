@@ -907,6 +907,11 @@ class OpenFocus(QMainWindow):
         from dialogs.scalebar import ScaleBarDialog
         ScaleBarDialog(self).exec()
 
+    def show_depth_map_dialog(self) -> None:
+        """Focus-position (pseudo-depth) map viewer and exporter."""
+        from dialogs.depthmap import DepthMapDialog
+        DepthMapDialog(self).exec()
+
     def show_quick_start(self) -> None:
         from dialogs.welcome import WelcomeDialog
         WelcomeDialog(self, main_window=self).exec()

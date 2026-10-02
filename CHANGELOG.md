@@ -3,6 +3,34 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.33] — 2026-10-02
+
+### Added
+- **Depth maps (focus-position maps) with customizable pseudo-color**
+  — Tools → Depth Map… computes, per pixel, which frame of the stack is
+  in focus, using the selected fusion method's own activity measure
+  (guided filter saliency, DCT block variance, GFG-FGF's guided AFM,
+  DTCWT high-pass energy, or the AI model's own focus indices — all five
+  methods supported). Shown pseudo-colored with a frame legend and
+  customizable live: 15 built-in scientific palettes (Turbo, Viridis,
+  Magma, …) plus user-defined schemes built from any number of color
+  stops (persisted between sessions); invert, gamma and edge-aware
+  smoothing; and an overlay-on-fused-result mode with adjustable opacity
+  for checking where each frame won. Exports a colorized image
+  (PNG/JPEG/TIFF/BMP) or the raw 16-bit index map at full precision.
+  Background computation with progress and cancellation; the AI path
+  reuses the memory-safe tiling budget from v1.32. CLI: `--depth-map
+  [path]` and `--depth-colormap`. Localized in EN/ZH/JA/ES.
+- New modules `core/depth_map.py` (measures) and `utils/colormap.py`
+  (LUTs); 23 new tests (suite at 176).
+
+### Fixed
+- Tiled fusion degenerated to one tile per pixel when the tile size was
+  set below twice the overlap (step → 1 px, effectively an infinite
+  loop); the overlap is now clamped to half the tile size, and the AI
+  depth-map path skips tiling entirely when the whole stack fits the
+  memory budget in one model call.
+
 ## [v1.32] — 2026-09-30
 
 ### Fixed

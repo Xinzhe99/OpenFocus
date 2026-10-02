@@ -33,6 +33,7 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - **Wipe Compare View**: Inspect alignment and compare results with an A/B divider view
 - **Project Files**: save and restore complete working sessions
 - **Multi-page TIFF**: single-file Z-stacks load page-by-page and export back into one file
+- **Depth Map**: per-pixel focus-position maps with custom pseudo-color schemes
 - **Scale Bar**: publication-grade scale bars with automatic µm/px calibration
 - **Crash Auto-Recovery**: the last working session is offered for restore after a crash
 - **Multi-language**: English, 中文, 日本語, Español with automatic system-language detection
@@ -182,6 +183,32 @@ multi-page TIFF, GIF, export-all, batch) carries a publication-style bar:
 a rounded 1-2-5 length (~12% of the image width) with stroked, readable
 text. The CLI supports it via `--scale-bar` (auto calibration) and
 `--scale-um <um/px>`.
+
+### Depth Map (Focus Position)
+
+Tools → Depth Map… opens a viewer that computes, per pixel, which frame of
+the stack is in focus — the pseudo-depth signal every fusion method derives
+internally — using the selected method's own activity measure (all five
+methods are supported; for DTCWT it is the wavelet high-pass energy). The
+map is shown pseudo-colored with a legend (frame 0 → N-1) and can be
+customized live:
+
+- **Color map**: 15 scientific palettes (Turbo, Viridis, Magma, …) plus
+  your own — *New Custom Scheme…* builds a gradient from any number of
+  color stops (double-click a stop to edit position and color); custom
+  schemes are saved and offered in the dropdown.
+- **Invert / Gamma / Smoothing**: flip the depth axis, re-balance tone
+  (gamma < 1 brightens low indices), and remove speckle with an
+  edge-aware pass.
+- **Overlay on fused image**: blend the colorized map over the fusion
+  result at an adjustable opacity to see exactly where each frame won.
+- **Export**: *Save Colorized…* (PNG/JPEG/TIFF/BMP) or *Save Raw 16-bit…*
+  (the normalized index map at full precision, ideal for downstream
+  analysis in ImageJ/Fiji/python).
+
+Computation runs in the background with progress and cancellation; the AI
+method reuses the same memory-safe tiling as AI fusion, so deep stacks
+work. The CLI equivalent is `--depth-map [path]` with `--depth-colormap`.
 
 ### Crash Auto-Recovery
 
@@ -668,6 +695,8 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--tile-size` | Tile block size for large images |
 | `--output-dir, -d` | Batch mode: fuse every input folder, writing `<folder>.png` per stack |
 | `--scale-bar` | Draw a scale bar (calibration auto-detected from TIFF metadata) |
+| `--depth-map [path]` | Also save a colorized focus-position (depth) map (default: `<output>_depth.png`) |
+| `--depth-colormap` | Colormap for `--depth-map`: turbo, viridis, jet, gray, … (default turbo) |
 | `--scale-um` | Pixel size in µm/px, overriding metadata (implies `--scale-bar`) |
 
 Exit codes: `0` success, `1` processing error, `2` usage error. Running

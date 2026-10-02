@@ -13,6 +13,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.10.02**: **v1.33** — **depth maps**: export the per-pixel focus-position (pseudo-depth) map of any fusion method with customizable pseudo-color schemes — 15 built-in palettes plus your own color stops, live preview, overlay-on-result, and 16-bit raw export; also in the CLI (`--depth-map`). Available in four languages.
+
 > 🎉 **2026.09.30**: **v1.32** — deep stacks no longer crash the AI fusion with **out-of-memory**: tiling now engages on total stack size and the AI path adapts its tile/batch size to stack depth. Ships with a soak-test harness and a measured [performance reference](./docs/PERFORMANCE.md).
 
 > 🎉 **2026.09.30**: **v1.28–v1.31** — **pip install openfocus** ([PyPI](https://pypi.org/project/openfocus/)), **publication-grade scale bars** (µm/px auto-detected from ImageJ/OME-TIFF metadata, burned into every export), **multi-page TIFF** Z-stack input/output, **crash auto-recovery**, citable releases (Zenodo DOIs) — plus 30+ code-review fixes, most notably ECC registration composing its transforms in reversed order.
@@ -118,6 +120,7 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 - **Headless CLI**: Full pipeline from the command line with script-friendly exit codes.
 - **Annotation & Export Toolkit**: Overlay labels, export GIF animations, drag results straight out of the app, and save stacks in JPG/PNG/BMP/TIFF.
 - **AI-Assisted Fusion**: Ship with StackMFF V4 to unlock deep-learning-quality fusion alongside classic signal-processing methods.
+- **Depth Maps**: Per-pixel focus-position maps from any fusion method's own measure, with customizable pseudo-color schemes (built-in palettes or your own color stops), overlay-on-result view, and 16-bit raw export.
 - **Remembers You**: Settings, language, GPU preference and recently opened stacks persist across sessions; bilingual UI throughout.
 
 <a id="fusion--registration-methods"></a>
