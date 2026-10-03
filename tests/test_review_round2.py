@@ -149,3 +149,46 @@ class TestWebpLosslessEmbed:
             arr = np.array(im.convert("RGB"))
         # 无损必须逐像素还原（有损 webp 会有可见差异）
         assert np.array_equal(arr, img[:, :, ::-1])
+
+
+class TestSettingsCast:
+    """_cast must accept kind given as the *name* of a type ("str"/"float").
+
+    It used to call "str"(raw) -> TypeError -> default, so every string and
+    float setting (theme, scale-bar position/color/calibration) silently
+    reverted on startup.
+    """
+
+    def test_str_kind_by_name(self):
+        from utils.settings_store import _cast
+        assert _cast("light", "str", "dark") == "light"
+
+    def test_float_kind_by_name(self):
+        from utils.settings_store import _cast
+        assert _cast("0.35", "float", 0.0) == 0.35
+        assert abs(_cast("0.35", "float", 0.0) - 0.35) < 1e-9
+
+    def test_garbage_falls_back(self):
+        from utils.settings_store import _cast
+        assert _cast("abc", "float", 0.0) == 0.0
+        assert _cast(None, "str", "dark") == "dark"
+
+    def test_theme_round_trip_through_load(self, qapp, monkeypatch, tmp_path):
+        from PyQt6.QtCore import QSettings
+        import utils.settings_store as ss
+        ini = tmp_path / "s.ini"
+        QSettings.setPath(QSettings.Format.IniFormat,
+                          QSettings.Scope.UserScope, str(tmp_path))
+        # 清掉单例以启用新路径
+        monkeypatch.setattr(ss, "_settings_singleton", None)
+        s = ss.get_settings()
+        s.setValue("ui/theme", "light")
+        s.sync()
+
+        class W:
+            pass
+
+        w = W()
+        ss.load_window_settings(w)
+        assert w.ui_theme == "light"
+        monkeypatch.setattr(ss, "_settings_singleton", None)

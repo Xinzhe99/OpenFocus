@@ -124,14 +124,24 @@ def get_settings() -> QSettings:
     return _settings_singleton
 
 
+_STR_KINDS = {"str": str, "float": float, "int": int}
+
+
 def _cast(raw: Any, kind: Any, default: Any) -> Any:
     try:
+        if raw is None:
+            return default
         if kind == "bool":
             if isinstance(raw, bool):
                 return raw
             return str(raw).strip().lower() in ("true", "1", "yes", "on")
+        # 字段表里的 kind 可能是类型也可能是其名字字符串（"str"/"float"）；
+        # 直接 "str"(raw) 会 TypeError 被吞成 default——ui_theme、比例尺
+        # 标定等所有字符串/浮点设置曾因此从未恢复过
+        if isinstance(kind, str):
+            kind = _STR_KINDS[kind]
         return kind(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, KeyError):
         return default
 
 

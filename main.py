@@ -169,8 +169,11 @@ class OpenFocus(QMainWindow):
         self.current_display_index = -1
         self.current_folder_path = ""
 
-        self.apply_dark_theme()
+        # 主题应用必须在 init_ui 之后：light 模式要剥离控件的内联暗样式，
+        # UI 未建时剥离是空操作，之后创建的控件会带着暗色内联样式覆盖
+        # 应用级亮色 QSS（白底白字，整个右侧面板不可读）
         self.init_ui()
+        self.apply_dark_theme()
 
         # Install global event filter to handle Space key for panning
         QApplication.instance().installEventFilter(self)

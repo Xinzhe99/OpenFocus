@@ -5,6 +5,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [v1.34] — 2026-10-03
 
+### Fixed (GUI visual audit round)
+- **Every string/float preference silently reverted on startup** (since
+  v1.18): the settings loader passed the type *name* ("str"/"float")
+  where a callable was expected, the resulting TypeError was swallowed
+  and the default returned — the dark/light theme choice, scale-bar
+  position/color and the manual µm/px calibration never survived a
+  restart. Fixed plus regression tests.
+- **Light theme was unreadable when started in light mode** (also since
+  v1.18): the theme was applied before the UI was built, so stripping
+  the controls' inline dark styles was a no-op and every widget created
+  afterwards re-applied its dark inline style over the app-level light
+  stylesheet — white text on white panels. Theme application now runs
+  after the UI is constructed (runtime switching was unaffected).
+  Verified with real-app screenshots in both themes.
+
+
 Second multi-domain review round (concurrency / memory / file-IO /
 robustness / UI-i18n), all findings fixed:
 
