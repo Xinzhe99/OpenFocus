@@ -10,7 +10,7 @@ import json
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QThread, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -46,6 +46,9 @@ _METHOD_KEYS = (
 )
 
 _DEFAULT_METHOD_COLORMAP = "turbo"
+
+# 打开对话框时自动计算的方法（秒级）；dtcwt/stackmffv4 分钟级，不自动跑
+_FAST_AUTO_METHODS = {"guided_filter", "dct", "gfgfgf"}
 
 
 class DepthWorker(QThread):
@@ -235,8 +238,13 @@ class DepthMapDialog(QDialog):
 
         self.window_main = parent
         self._index01 = None
+        self._map_method = None   # 生成当前预览图的方法（与方法下拉失步时提示）
         self._worker = None
         self._custom = self._load_custom_schemes()
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(120)
+        self._resize_timer.timeout.connect(self._refresh_preview)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
@@ -343,8 +351,14 @@ class DepthMapDialog(QDialog):
             sig = getattr(w, "currentIndexChanged", None) or getattr(w, "valueChanged", None) or getattr(w, "toggled", None)
             if sig:
                 sig.connect(self._refresh_preview)
+        self.method_combo.currentIndexChanged.connect(self._on_method_changed)
 
         self._load_prefs()
+        self._update_overlay_availability()
+        # 打开即出图：经典方法秒级完成，直接算；DTCWT/AI 分钟级，留给用户决定
+        if (self._index01 is None and self._images()
+                and self.method_combo.currentData() in _FAST_AUTO_METHODS):
+            self._compute()
 
     # ------------------------------------------------------------------
     def _apply_style(self):
@@ -381,7 +395,9 @@ class DepthMapDialog(QDialog):
     def _fill_colormaps(self):
         self.map_combo.blockSignals(True)
         self.map_combo.clear()
-        for cid, _rev in cmap.builtin_choices():
+        # 灰度是论文图的常见需求，但不在 cv2 伪彩表里，手动补上
+        entries = [("gray", False), ("gray_r", False)] + cmap.builtin_choices()
+        for cid, _rev in entries:
             lut = cmap.get_lut(cid)
             strip = cmap.lut_preview_bgr(lut)
             rgb = cv2.cvtColor(strip, cv2.COLOR_BGR2RGB)
@@ -419,6 +435,29 @@ class DepthMapDialog(QDialog):
             self._refresh_preview()
 
     # ------------------------------------------------------------------
+    def _on_method_changed(self):
+        """预览图还是旧方法的——明确告诉用户，避免拿错图。"""
+        if (self._index01 is not None and self._map_method is not None
+                and self.method_combo.currentData() != self._map_method
+                and not (self._worker and self._worker.isRunning())):
+            self.status_lbl.setText(trans.t("depth_map_stale"))
+
+    def _update_overlay_availability(self):
+        base = getattr(self.window_main, "fusion_result", None) if self.window_main else None
+        has_result = base is not None
+        if not has_result:
+            self.overlay_chk.setChecked(False)
+        self.overlay_chk.setEnabled(has_result)
+        hint = (trans.t("depth_overlay_hint") if has_result
+                else trans.t("depth_overlay_missing"))
+        self.overlay_chk.setToolTip(hint)
+        self.opacity_spin.setEnabled(has_result and self.overlay_chk.isChecked())
+
+    def resizeEvent(self, event):
+        """拖大/最大化窗口后预览要跟着重排（防抖 120ms）。"""
+        super().resizeEvent(event)
+        self._resize_timer.start()
+
     def _images(self):
         imgs = getattr(self.window_main, "raw_images", None) or []
         return list(imgs) if len(imgs) >= 2 else None
@@ -446,6 +485,7 @@ class DepthMapDialog(QDialog):
 
     def _computed(self, index01):
         self._index01 = np.asarray(index01, np.float32)
+        self._map_method = self.method_combo.currentData()
         self._worker = None
         self.compute_btn.setVisible(True)
         self.cancel_btn.setVisible(False)
@@ -490,6 +530,8 @@ class DepthMapDialog(QDialog):
         img = self._colorized_full()
         h, w = img.shape[:2]
         target = self.preview_lbl.size()
+        if target.width() < 40 or target.height() < 40:
+            return  # 布局尚未定型（首次显示前），resizeEvent 会再触发
         scale = min(target.width() / w, target.height() / h, 1.0)
         if scale < 1.0:
             img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),

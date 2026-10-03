@@ -146,6 +146,12 @@ class ScaleBarDialog(QDialog):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation))
 
+    def resizeEvent(self, event):
+        """拖大窗口后预览要跟着重算（简单防抖：直接重绘即可，预览是缩略图）。"""
+        super().resizeEvent(event)
+        if self.isVisible():
+            self._refresh_preview()
+
     def _save_and_accept(self):
         parent = self.parent()
         if parent is not None:

@@ -193,7 +193,8 @@ methods are supported; for DTCWT it is the wavelet high-pass energy). The
 map is shown pseudo-colored with a legend (frame 0 → N-1) and can be
 customized live:
 
-- **Color map**: 15 scientific palettes (Turbo, Viridis, Magma, …) plus
+- **Color map**: grayscale (publication standard) plus 15 scientific
+  palettes (Turbo, Viridis, Magma, …), and
   your own — *New Custom Scheme…* builds a gradient from any number of
   color stops (double-click a stop to edit position and color); custom
   schemes are saved and offered in the dropdown.
