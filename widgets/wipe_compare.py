@@ -86,7 +86,9 @@ class WipeCompareWidget(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        painter.setBackground(QColor("#181818"))
+        from ui import styles as _styles
+        canvas = "#ffffff" if getattr(_styles, "CURRENT_THEME", "dark") == "light" else "#181818"
+        painter.setBackground(QColor(canvas))
         painter.eraseRect(self.rect())
 
         if not self.has_images():

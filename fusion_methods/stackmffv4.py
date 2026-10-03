@@ -15,6 +15,7 @@ from utils.image_utils import fuse_output_dtype
 # ================= 全局缓存变量 =================
 _GLOBAL_MODEL = None
 _GLOBAL_DEVICE = None
+_GLOBAL_MODEL_PATH = None
 
 # 缓存可用的加速器类型（首次使用 torch 时检测一次）
 _MPS_AVAILABLE = None
@@ -59,9 +60,12 @@ def _get_model_and_device(model_path, use_gpu):
     else:
         device = torch.device('cpu')
 
-    global _GLOBAL_MODEL, _GLOBAL_DEVICE
+    global _GLOBAL_MODEL, _GLOBAL_DEVICE, _GLOBAL_MODEL_PATH
 
-    if _GLOBAL_MODEL is None:
+    # 缓存键包含权重路径：换 weights 文件曾被静默忽略（仍用旧模型）
+    same_path = (_GLOBAL_MODEL_PATH
+                 == os.path.abspath(model_path))
+    if _GLOBAL_MODEL is None or not same_path:
         print("Loading StackMFF-V4 model (once)...")
         model = StackMFF_V4()
         try:
@@ -75,6 +79,7 @@ def _get_model_and_device(model_path, use_gpu):
         model.eval()
         _GLOBAL_MODEL = model
         _GLOBAL_DEVICE = device
+        _GLOBAL_MODEL_PATH = os.path.abspath(model_path)
     else:
         model = _GLOBAL_MODEL
         if _GLOBAL_DEVICE != device:
@@ -195,6 +200,7 @@ def _stackmffv4_batch_impl(tiles_list, model_path, use_gpu):
         
         color_images = all_color_images[tile_idx]
         color_array = np.stack(color_images, axis=0)
+        del color_images  # stack 已复制数据
         fused_color = color_array[focus_map, np.arange(orig_h)[:, None], np.arange(orig_w)]
         # 焦点图只是从源帧里"选像素"，不做混合，所以保持源位深即可
         fused_color_bgr = cv2.cvtColor(fused_color.astype(out_dtype), cv2.COLOR_RGB2BGR)
@@ -273,6 +279,7 @@ def _stackmffv4_impl(input_source, img_resize, model_path, use_gpu):
 
     image_stack = torch.stack(gray_tensors)
     original_size = image_stack.shape[-2:]
+    del gray_tensors  # stack 已复制数据，列表继续存活纯占 n×H×W×4
 
     with torch.no_grad():
         input_tensor = image_stack.unsqueeze(0).to(device)

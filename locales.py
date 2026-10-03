@@ -55,6 +55,8 @@ class TranslationManager(QObject):
                 'depth_overlay_hint': 'Blend the colorized map over the fusion result to check where each frame won (needs a rendered result).',
                 'depth_compute': 'Compute',
                 'btn_cancel_compute': 'Cancel',
+                'msg_update_in_progress': 'An update download is already in progress.',
+                'depth_new_scheme_default': 'My scheme',
                 'depth_computing': 'Computing… frame {i}/{n}',
                 'depth_ready': 'Done — preview updated. Save colorized or raw 16-bit below.',
                 'depth_saved': 'Saved: {path}',
@@ -602,6 +604,8 @@ class TranslationManager(QObject):
                 'depth_overlay_hint': '把伪彩图按透明度叠加在融合结果上，检查各帧的取胜区域（需要先完成渲染）。',
                 'depth_compute': '计算',
                 'btn_cancel_compute': '取消',
+                'msg_update_in_progress': '已有更新正在下载中。',
+                'depth_new_scheme_default': '我的配色',
                 'depth_computing': '计算中… 第 {i}/{n} 帧',
                 'depth_ready': '完成——预览已更新。可在下方保存伪彩图或 16-bit 原始图。',
                 'depth_saved': '已保存：{path}',
@@ -1120,8 +1124,10 @@ class TranslationManager(QObject):
             from locales_extra import EXTRA_TRANSLATIONS
             for lang_code, lang_dict in EXTRA_TRANSLATIONS.items():
                 self.translations.setdefault(lang_code, {}).update(lang_dict)
-        except Exception:
-            pass
+        except Exception as exc:
+            # 语言包损坏时绝不能静默吞掉：四语完整性测试依赖这里的日志，
+            # 静默 pass 曾让整个日文/西文包失效而测试全绿
+            print(f"Warning: extra language pack failed to load: {exc}")
 
     def set_language(self, lang_code):
         if lang_code in self.translations:

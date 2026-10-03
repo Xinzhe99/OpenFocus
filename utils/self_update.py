@@ -183,51 +183,84 @@ def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
     script_dir = os.path.dirname(staging_root)
     script_path = os.path.join(
         script_dir, f"apply_update_{sanitize_tag(tag)}.bat")
-    exe = os.path.join(app_dir, APP_NAME + ".exe")
-    sentinel = os.path.join(script_dir, f"update_ok_{sanitize_tag(tag)}.flg")
-    copy_cmd = (
-        f"robocopy {_bat_path(staging_app_dir)} {_bat_path(app_dir)}"
-        " /E /IS /IT /NFL /NDL /NJH /NJS /NP"
-    )
-    content = (
-        "@echo off\r\n"
-        "setlocal enableextensions\r\n"
-        'if "%~1"=="/elevated" goto elevatedcopy\r\n'
-        "call :waitforexit\r\n"
-        f"{copy_cmd}\r\n"
-        "if errorlevel 8 (\r\n"
-        '  powershell -NoProfile -Command "Start-Process -FilePath \'%~f0\''
-        ' -ArgumentList \'/elevated\' -Verb RunAs -Wait"\r\n'
-        ")\r\n"
-        # Clean up + relaunch only after a copy that verifiably succeeded:
-        # the elevated branch writes the sentinel on success, so a declined
-        # UAC prompt (or a still-failing copy) keeps the staged folder as
-        # the rollback instead of deleting it and relaunching a mixed
-        # install.
-        f'if not exist {_bat_path(sentinel)} (start "" {_bat_path(exe)} & exit /b)\r\n'
-        f'rmdir /S /Q {_bat_path(staging_root)} >nul 2>&1\r\n'
-        f'if exist {_bat_path(zip_path)} del /Q {_bat_path(zip_path)} >nul 2>&1'
-        "\r\n"
-        f'start "" {_bat_path(exe)}\r\n'
-        'del "%~f0"\r\n'
-        "exit /b\r\n"
-        ":elevatedcopy\r\n"
-        "call :waitforexit\r\n"
-        f"{copy_cmd}\r\n"
-        f'if not errorlevel 8 type NUL > {_bat_path(sentinel)}\r\n'
-        "exit /b\r\n"
-        ":waitforexit\r\n"
-        "set /a TRIES=0\r\n"
-        ":waitloop\r\n"
-        "timeout /t 1 /nobreak >nul 2>&1\r\n"
-        f'tasklist /FI "IMAGENAME eq {APP_NAME}.exe" 2>NUL'
-        f' | find /I "{APP_NAME}.exe" >NUL\r\n'
-        "if errorlevel 1 exit /b 0\r\n"
-        "set /a TRIES+=1\r\n"
-        "if %TRIES% LSS 20 goto waitloop\r\n"
-        "exit /b 0\r\n"
-    )
-    with open(script_path, "w", encoding="ascii") as f:
+    def _quote_policy(allow_ansi: bool):
+        """Quote a path for cmd, refusing anything that could escape quotes."""
+        def q(path: str) -> str:
+            abspath = _short_path(os.path.abspath(path))
+            if not abspath.isascii():
+                if not allow_ansi:
+                    raise ValueError(
+                        "Path cannot be made ASCII-safe for the update script")
+                # 8.3 短名保不住 ASCII（CJK 目录常见）。退回原始路径，
+                # 整个脚本改用 ANSI 代码页写入——中文系统的 cp936/GBK
+                # 同时是 cmd 的解析代码页，可正确解析
+                abspath = os.path.abspath(path)
+            if '"' in abspath or '\n' in abspath or '\r' in abspath:
+                raise ValueError("Unsafe path for the update script")
+            return f'"{abspath}"'
+        return q
+
+    def _build_content(_bp):
+        exe = os.path.join(app_dir, APP_NAME + ".exe")
+        sentinel = os.path.join(script_dir, f"update_ok_{sanitize_tag(tag)}.flg")
+        copy_cmd = (
+            f"robocopy {_bp(staging_app_dir)} {_bp(app_dir)}"
+            " /E /IS /IT /NFL /NDL /NJH /NJS /NP"
+        )
+        content = (
+            "@echo off\r\n"
+            "setlocal enableextensions\r\n"
+            'if "%~1"=="/elevated" goto elevatedcopy\r\n'
+            "call :waitforexit\r\n"
+            f"{copy_cmd}\r\n"
+            "if errorlevel 8 (\r\n"
+            '  powershell -NoProfile -Command "Start-Process -FilePath \'%~f0\''
+            ' -ArgumentList \'/elevated\' -Verb RunAs -Wait"\r\n'
+            ") else (\r\n"
+            # 非特权复制成功同样要写哨兵：只有特权分支写的话，可写安装
+            # （便携版）每次更新都会跳过下面的清理，~1GB 暂存永久留在 %TEMP%
+            f'  if not errorlevel 8 type NUL > {_bp(sentinel)}\r\n'
+            ")\r\n"
+            # Clean up + relaunch only after a copy that verifiably succeeded:
+            # the elevated branch writes the sentinel on success, so a declined
+            # UAC prompt (or a still-failing copy) keeps the staged folder as
+            # the rollback instead of deleting it and relaunching a mixed
+            # install.
+            f'if not exist {_bp(sentinel)} (start "" {_bp(exe)} & exit /b)\r\n'
+            f'rmdir /S /Q {_bp(staging_root)} >nul 2>&1\r\n'
+            f'if exist {_bp(zip_path)} del /Q {_bp(zip_path)} >nul 2>&1\r\n'
+            f'if exist {_bp(sentinel)} del /Q {_bp(sentinel)} >nul 2>&1'
+            "\r\n"
+            f'start "" {_bp(exe)}\r\n'
+            'del "%~f0"\r\n'
+            "exit /b\r\n"
+            ":elevatedcopy\r\n"
+            "call :waitforexit\r\n"
+            f"{copy_cmd}\r\n"
+            f'if not errorlevel 8 type NUL > {_bp(sentinel)}\r\n'
+            "exit /b\r\n"
+            ":waitforexit\r\n"
+            "set /a TRIES=0\r\n"
+            ":waitloop\r\n"
+            "timeout /t 1 /nobreak >nul 2>&1\r\n"
+            f'tasklist /FI "IMAGENAME eq {APP_NAME}.exe" 2>NUL'
+            f' | find /I "{APP_NAME}.exe" >NUL\r\n'
+            "if errorlevel 1 exit /b 0\r\n"
+            "set /a TRIES+=1\r\n"
+            "if %TRIES% LSS 20 goto waitloop\r\n"
+            "exit /b 0\r\n"
+        )
+
+        return content
+
+    try:
+        content = _build_content(_quote_policy(False))
+        encoding = "ascii"
+    except ValueError:
+        content = _build_content(_quote_policy(True))
+        encoding = "mbcs"
+
+    with open(script_path, "w", encoding=encoding) as f:
         f.write(content)
     return script_path
 

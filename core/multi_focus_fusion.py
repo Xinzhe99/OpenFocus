@@ -121,19 +121,21 @@ def _stackmffv4_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref
         # （768）；256 下限再小会伤融合质量，但绝不超过原 block_size
         # （也兼容用户主动设置的小瓦片）。
         eff_block = min(block_size, max(256, (safe // 128) * 128))
-    max_batch = budget_px // max(1, n_frames * eff_block * eff_block)
+    # 预算按 padded（128 对齐）瓦片面积计：下游张量才是这个尺寸，
+    # 用原始 block 会低估（900px 栈按 77 单位过检、实际 125 单位超支）
+    padded = ((eff_block + 127) // 128) * 128
+    max_batch = budget_px // max(1, n_frames * padded * padded)
     eff_batch = max(1, min(int(batch_pref), int(max_batch)))
     # overlap 超过半个瓦片会让 step 退化到 1（每像素一个瓦片）——小图上
     # block 被钳到图像尺寸时就会发生，等于无限循环
     eff_overlap = max(0, min(int(overlap), eff_block // 2))
     step = max(1, eff_block - eff_overlap)
-    max_sy, max_sx = h - eff_block, w - eff_block
-    coords = []
-    for y in range(0, h, step):
-        y0 = min(y, max_sy)
-        for x in range(0, w, step):
-            x0 = min(x, max_sx)
-            coords.append((x0, y0, x0 + eff_block, y0 + eff_block))
+    # 钳位会让最后若干起点坍缩成重复坐标（step 小于边界余量时尤甚）——
+    # 去重，重复瓦片纯属重复推理/融合，结果不变
+    ys = sorted({min(y, h - eff_block) for y in range(0, h, step)})
+    xs = sorted({min(x, w - eff_block) for x in range(0, w, step)})
+    coords = [(x0, y0, x0 + eff_block, y0 + eff_block)
+              for y0 in ys for x0 in xs]
     return eff_block, eff_batch, coords
 
 
@@ -372,7 +374,10 @@ class MultiFocusFusion:
                 if first_img is None:
                     raise RuntimeError(f"Unable to read first image: {first_path}")
                 fh, fw = first_img.shape[:2]
-                if self.tile_enabled and max(fh, fw) > self.tile_threshold:
+                if self.tile_enabled and (
+                        max(fh, fw) > self.tile_threshold
+                        or _stack_footprint_exceeds(
+                            [first_img] * len(files), self.tile_threshold)):
                     # 目录输入按文件懒加载方式分块融合（仅当实例 tile_enabled 开启时）
                     kws = dict(kwargs)
                     kws.pop('block_size', None)

@@ -118,6 +118,7 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None)
     # 16-bit stacks arrive as float32 in 0-255; returning uint8 here would
     # discard the depth the caller asked to preserve.
     out_dtype = fuse_output_dtype(stack_ori)
+    del stack_ori  # float 化完成后原 uint8 栈只占内存（gfg_fgf 同理已删）
     
     # ========== 核心算法实现 ==========
     

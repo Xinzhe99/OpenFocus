@@ -52,10 +52,14 @@ class ROIAlignmentWorker(QThread):
         super().__init__()
         self.raw_images = raw_images
         self.reg_downscale_width = reg_downscale_width
+        self._cancelled = False
         try:
             self.thread_count = max(1, int(thread_count))
         except Exception:
             self.thread_count = 4
+
+    def cancel(self):
+        self._cancelled = True
 
     def run(self):
         """在线程中执行ECC配准"""
@@ -68,7 +72,9 @@ class ROIAlignmentWorker(QThread):
             else:
                 registration = ImageRegistration(method="ecc")
 
-            aligned_images = registration.process(self.raw_images, output_path=None, thread_count=self.thread_count)
+            aligned_images = registration.process(
+                self.raw_images, output_path=None, thread_count=self.thread_count,
+                should_cancel=lambda: self._cancelled)
             alignment_time = time.time() - alignment_start_time
 
             self.finished_signal.emit(aligned_images, alignment_time)
@@ -610,7 +616,9 @@ class BatchWorker(QThread):
                     registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
                 else:
                     registration = ImageRegistration(method=mode)
-                aligned_images = registration.process(images, output_path=None, thread_count=self.thread_count)
+                aligned_images = registration.process(
+                    images, output_path=None, thread_count=self.thread_count,
+                    should_cancel=lambda: self.is_cancelled)
 
         output_format = self.processing_settings.get('format', 'jpg')
         fusion_method = self.processing_settings.get('fusion_method')
@@ -630,8 +638,11 @@ class BatchWorker(QThread):
             # quantized back afterwards; aligned exports keep the original
             # bit depth.
             from utils.image_utils import normalize_fuse_input, quantize_fuse_output
-            aligned_for_export = aligned_images
+            save_aligned = bool(self.processing_settings.get('save_aligned', False))
+            aligned_for_export = aligned_images if save_aligned else None
             fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
+            if aligned_for_export is None:
+                del aligned_images  # 融合期间原 uint16 栈纯属悬挂占用
 
             fusion = MultiFocusFusion(algorithm=fusion_method, use_gpu=self.use_gpu, **tile_kwargs)
 
@@ -644,6 +655,7 @@ class BatchWorker(QThread):
                     img_resize=None,
                     kernel_size=kernel_size,
                     thread_count=self.thread_count,
+                    should_cancel=lambda: self.is_cancelled,
                 )
             elif fusion_method == "dct":
                 kernel_size = fusion_params.get('kernel_size', 7)
@@ -655,12 +667,14 @@ class BatchWorker(QThread):
                     block_size=8,
                     kernel_size=kernel_size,
                     thread_count=self.thread_count,
+                    should_cancel=lambda: self.is_cancelled,
                 )
             elif fusion_method == "dtcwt":
                 result = fusion.fuse(
                     input_source=fusion_input,
                     img_resize=None,
                     thread_count=self.thread_count,
+                    should_cancel=lambda: self.is_cancelled,
                 )
             elif fusion_method == "gfgfgf":
                 kernel_size = fusion_params.get('kernel_size', 7)
@@ -671,6 +685,7 @@ class BatchWorker(QThread):
                     img_resize=None,
                     kernel_size=kernel_size,
                     thread_count=self.thread_count,
+                    should_cancel=lambda: self.is_cancelled,
                 )
             elif fusion_method == "stackmffv4":
                 model_path = fusion_params.get('model_path', resource_path("weights", "stackmffv4.pth"))
@@ -679,6 +694,7 @@ class BatchWorker(QThread):
                     img_resize=None,
                     model_path=model_path,
                     thread_count=self.thread_count,
+                    should_cancel=lambda: self.is_cancelled,
                 )
             else:
                 result = None
@@ -730,7 +746,9 @@ class BatchWorker(QThread):
                     registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
                 else:
                     registration = ImageRegistration(method=mode)
-                aligned_images = registration.process(images, output_path=None, thread_count=self.thread_count)
+                aligned_images = registration.process(
+                    images, output_path=None, thread_count=self.thread_count,
+                    should_cancel=lambda: self.is_cancelled)
             else:
                 # 如果没有选择任何配准方法，直接使用原始图像
                 aligned_images = images.copy()
@@ -770,7 +788,8 @@ class BatchWorker(QThread):
             from utils.image_utils import normalize_fuse_input, quantize_fuse_output
             fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
             fusion_result = quantize_fuse_output(
-                fusion.fuse(fusion_input, thread_count=self.thread_count, **fusion_params),
+                fusion.fuse(fusion_input, thread_count=self.thread_count,
+                            should_cancel=lambda: self.is_cancelled, **fusion_params),
                 is_16bit)
         else:
             fusion_result = None

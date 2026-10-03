@@ -150,6 +150,20 @@ class RenderManager:
 
     def start_render(self, force_algorithm: str | None = None) -> None:
         window = self.window
+        # 重入守卫：本方法中途有多次 processEvents()，期间排队的第二次点击
+        # 会重入并把 self.worker 覆盖掉——正在运行的 RenderWorker 失去引用
+        # 被 C++ 析构，QThread 直接 qFatal abort。守卫必须在任何
+        # processEvents 之前设置。
+        if getattr(self, "_render_pending", False):
+            return
+        self._render_pending = True
+        try:
+            self._start_render_inner(force_algorithm)
+        finally:
+            self._render_pending = False
+
+    def _start_render_inner(self, force_algorithm: str | None = None) -> None:
+        window = self.window
         # A previous render may have aborted without clearing this; it decides
         # whether the result is treated as a throwaway draft.
         self._preview_mode = False

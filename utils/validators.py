@@ -48,6 +48,8 @@ def crop_roi(
     h, w = images[0].shape[:2]
     rx = max(0, min(rx, w))
     ry = max(0, min(ry, h))
+    if rx >= w or ry >= h or rw <= 0 or rh <= 0:
+        raise ValueError(f"ROI {rect} does not intersect the image {w}x{h}")
     rw = max(1, min(rw, w - rx))
     rh = max(1, min(rh, h - ry))
 

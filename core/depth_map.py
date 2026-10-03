@@ -62,7 +62,9 @@ def _tick(progress: Optional[Callable], i: int, n: int,
 # --------------------------------------------------------------------------
 def _measure_gff(images: Sequence[np.ndarray], progress, should_cancel):
     sigma = 5.0  # gff.DEFAULT_SIGMA_R
-    stack = None
+    # 流式 argmax：不物化 n×H×W 的显著性栈（40×6K×4K = 3.8GB），只保留
+    # 逐像素当前最优值/索引；严格 > 保持与 np.argmax 相同的首胜语义
+    best_val = best_idx = None
     for idx, bgr in enumerate(images):
         _tick(progress, idx, len(images), should_cancel)
         img_sum = np.sum(bgr.astype(np.float32), axis=2)
@@ -70,10 +72,13 @@ def _measure_gff(images: Sequence[np.ndarray], progress, should_cancel):
                                    borderType=cv2.BORDER_REFLECT))
         sal = cv2.GaussianBlur(lap, (0, 0), sigmaX=sigma, sigmaY=sigma,
                                borderType=cv2.BORDER_REFLECT)
-        if stack is None:
-            stack = np.empty((len(images), *sal.shape), np.float32)
-        stack[idx] = sal
-    return np.argmax(stack, axis=0)
+        if best_val is None:
+            best_val, best_idx = sal, np.zeros(sal.shape, np.int32)
+        else:
+            hit = sal > best_val
+            best_val[hit] = sal[hit]
+            best_idx[hit] = idx
+    return best_idx
 
 
 # --------------------------------------------------------------------------
@@ -127,18 +132,23 @@ def _measure_gfgfgf(images, progress, should_cancel, kernel_size=7,
     if kernel_size % 2 == 0:
         kernel_size += 1
     g_msz, g_gsz, g_eps, threshold = kernel_size, 5, 0.3, 0.005
-    h, w = images[0].shape[:2]
     n = len(images)
-    afms = np.zeros((n, h, w), np.float32)
-
+    # 流式 argmax（见 _measure_gff）：AFM 栈不物化
+    best_val = best_idx = None
     for idx, bgr in enumerate(images):
         _tick(progress, idx, n, should_cancel)
         g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
         blur = cv2.blur(g, (g_msz, g_msz))
         diff = cv2.absdiff(g, blur)
         _, gfg = cv2.threshold(diff, threshold, 0, cv2.THRESH_TOZERO)
-        afms[idx] = _run_guided_filter(g, gfg, g_gsz, g_eps)
-    return np.argmax(afms, axis=0)
+        afm = _run_guided_filter(g, gfg, g_gsz, g_eps)
+        if best_val is None:
+            best_val, best_idx = afm, np.zeros(afm.shape, np.int32)
+        else:
+            hit = afm > best_val
+            best_val[hit] = afm[hit]
+            best_idx[hit] = idx
+    return best_idx
 
 
 # --------------------------------------------------------------------------
@@ -153,7 +163,8 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=3):
     transform = dtcwt_lib.Transform2d()
     n = len(images)
     h, w = images[0].shape[:2]
-    energy = np.zeros((n, h, w), np.float32)
+    # 流式 argmax（见 _measure_gff）：能量栈不物化
+    best_val = best_idx = None
     for idx, bgr in enumerate(images):
         _tick(progress, idx, n, should_cancel)
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
@@ -164,8 +175,13 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=3):
             mag2 = np.sum(np.abs(level_yh) ** 2, axis=2).astype(np.float32)
             lvl = cv2.resize(mag2, (w, h), interpolation=cv2.INTER_LINEAR)
             acc += lvl
-        energy[idx] = acc
-    return np.argmax(energy, axis=0)
+        if best_val is None:
+            best_val, best_idx = acc, np.zeros(acc.shape, np.int32)
+        else:
+            hit = acc > best_val
+            best_val[hit] = acc[hit]
+            best_idx[hit] = idx
+    return best_idx
 
 
 # --------------------------------------------------------------------------
@@ -208,7 +224,11 @@ def _measure_stackmffv4(images, progress, should_cancel,
     n = len(images)
     from core.multi_focus_fusion import STACKMFFV4_IMAGE_BUDGET
     budget_px = STACKMFFV4_IMAGE_BUDGET * 1024 * 1024  # 与融合路径同一预算
-    grays = [cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) for img in images]
+
+    def _gray01(f, y0, y1, x0, x1):
+        crop = images[f][y0:y1, x0:x1]
+        return torch.from_numpy(
+            cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0)
 
     def forward_and_stitch(coords, block, batch, ov):
         acc = np.zeros((h, w), np.float32)
@@ -221,8 +241,7 @@ def _measure_stackmffv4(images, progress, should_cancel,
             inp = torch.zeros(len(chunk), n, padded, padded)
             for i, (x0, y0, x1, y1) in enumerate(chunk):
                 for f in range(n):
-                    crop = grays[f][y0:y1, x0:x1].astype(np.float32) / 255.0
-                    inp[i, f, :y1 - y0, :x1 - x0] = torch.from_numpy(crop)
+                    inp[i, f, :y1 - y0, :x1 - x0] = _gray01(f, y0, y1, x0, x1)
             with torch.no_grad():
                 _, focus = model(inp.to(device))
             focus = focus.cpu().numpy()  # [B, Hp, Wp]
@@ -245,8 +264,7 @@ def _measure_stackmffv4(images, progress, should_cancel,
         padded_w = ((w - 1) // 128 + 1) * 128
         inp = torch.zeros(1, n, padded_h, padded_w)
         for f in range(n):
-            inp[0, f, :h, :w] = torch.from_numpy(
-                grays[f].astype(np.float32) / 255.0)
+            inp[0, f, :h, :w] = _gray01(f, 0, h, 0, w)
         with torch.no_grad():
             _, focus = model(inp.to(device))
         idx = focus[0, :h, :w].cpu().numpy().astype(np.float32)
@@ -278,6 +296,9 @@ def compute_focus_index(images: Sequence[np.ndarray],
     map is upscaled back, mirroring how dct fusion upscales its masks.
     """
     _check(images)
+    if images[0].dtype == np.uint16:
+        # 与融合管线同口径：0-65535 -> 0-255 float（详见 normalize_fuse_input）
+        images = [f.astype(np.float32) * (255.0 / 65535.0) for f in images]
     n = len(images)
     if method == "guided_filter":
         idx = _measure_gff(images, progress_callback, should_cancel)

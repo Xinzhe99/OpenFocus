@@ -11,6 +11,8 @@ import argparse
 import os
 import sys
 import time
+
+import numpy as np
 from typing import List, Optional, Tuple
 
 VALID_METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv4"]
@@ -99,7 +101,8 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
             import cv2
             for i, frame in enumerate(frames):
                 frame_path = os.path.join(video_temp_root, f"video_{len(paths) + i:05d}.png")
-                cv2.imwrite(frame_path, frame)
+                from utils.image_utils import imwrite_auto
+                imwrite_auto(frame_path, frame)
                 paths.append(frame_path)
         elif os.path.isfile(entry):
             paths.append(entry)
@@ -127,7 +130,8 @@ def _load_images(paths: List[str]):
         if pages is not None:
             images.extend(pages)
             continue
-        img = cv2.imread(p, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+        data = np.fromfile(p, dtype=np.uint8)
+        img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
         if img is None:
             raise RuntimeError(f"Failed to decode image: {p}")
         images.append(img)
@@ -202,9 +206,14 @@ def _save_depth(args, fused_out: str) -> None:
     from utils.image_utils import imwrite_auto
 
     path = _depth_out_path(args, fused_out)
+    out_dir = os.path.dirname(os.path.abspath(path))
+    os.makedirs(out_dir, exist_ok=True)
     t0 = time.time()
+    kernel = None
+    if args.method in ("dct", "gfgfgf"):
+        kernel = _normalize_kernel(args.kernel, 7)
     idx = compute_focus_index(
-        frames, args.method,
+        frames, args.method, kernel_size=kernel,
         model_path=_find_model_path() if args.method == "stackmffv4" else None,
         use_gpu=not args.cpu)
     if not imwrite_auto(path, colorize(idx, args.depth_colormap)):
@@ -312,6 +321,9 @@ def run_cli(argv: List[str]) -> int:
     if args.batch_size < 1:
         print("error: --batch-size must be >= 1", file=sys.stderr)
         return EXIT_USAGE
+    if args.tile_size is not None and args.tile_size < 64:
+        print("error: --tile-size must be >= 64", file=sys.stderr)
+        return EXIT_USAGE
     if args.depth_map:
         # 提前校验：否则拼写错误要到融合全部跑完后才在 colorize 里炸掉
         try:
@@ -322,6 +334,12 @@ def run_cli(argv: List[str]) -> int:
             return EXIT_USAGE
 
     batch_mode = args.output_dir is not None
+    if batch_mode and isinstance(args.depth_map, str) and args.depth_map:
+        print("error: --depth-map with an explicit path cannot be used with "
+              "--output-dir (every stack would overwrite the same file); "
+              "use --depth-map without a value to derive one per stack",
+              file=sys.stderr)
+        return EXIT_USAGE
     if batch_mode:
         args._batch_ext = ".png"
     else:

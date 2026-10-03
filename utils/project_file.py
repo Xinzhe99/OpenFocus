@@ -7,6 +7,8 @@ Source images themselves are referenced, not copied.
 """
 import json
 import os
+import re
+import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 PROJECT_SUFFIX = ".ofproj"
@@ -62,7 +64,14 @@ def _collect_state(window) -> Dict[str, Any]:
             abs_paths.append(recorded[i])
             continue
         cand = os.path.join(folder, name)
-        abs_paths.append(cand if os.path.isfile(cand) else name)
+        if os.path.isfile(cand):
+            abs_paths.append(cand)
+            continue
+        # 多页 TIFF 的每帧是合成名（X_page_NNN.tif），磁盘上只有容器
+        # X.tif——不映射回容器的话工程永远校验失败，崩溃恢复也被连带
+        # 静默丢弃（pending_recovery 会过滤校验失败的快照）
+        mapped = _multipage_container_for(name, folder)
+        abs_paths.append(mapped if mapped else name)
     return {
         "openfocus_project": FORMAT_VERSION,
         "app_version": APP_VERSION,
@@ -78,14 +87,39 @@ def _collect_state(window) -> Dict[str, Any]:
     }
 
 
+def _multipage_container_for(name: str, folder: str) -> str:
+    """Map a synthetic multi-page frame name (X_page_NNN.tif, emitted by
+    core.image_loader for each TIFF page) back to its container file."""
+    m = re.match(r"^(.*)_page_\d{3,}\.(tif|tiff)$", name, re.IGNORECASE)
+    if not m:
+        return ""
+    for ext in (m.group(2), m.group(2).lower(), m.group(2).upper(), "tif", "tiff"):
+        cand = os.path.join(folder, f"{m.group(1)}.{ext}")
+        if os.path.isfile(cand):
+            return cand
+    return ""
+
+
 def save_project(window, path: str) -> Tuple[bool, str]:
     """Write the current session state to an .ofproj file."""
     if not getattr(window, "raw_images", []):
         return False, "no images loaded"
     try:
         state = _collect_state(window)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        # 原子写：快照写入中途断电/被杀留下的截断文件会让
+        # validate_project 拒绝它——恰好废掉崩溃恢复存在的意义
+        fd, tmp = tempfile.mkstemp(
+            suffix=".ofproj.tmp", dir=os.path.dirname(os.path.abspath(path)) or ".")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         return True, path
     except OSError as exc:
         return False, str(exc)

@@ -164,6 +164,7 @@ class _CustomSchemeDialog(QDialog):
         close_row = QHBoxLayout()
         close_row.addStretch()
         ok_btn = QPushButton(trans.t("btn_ok"))
+        ok_btn.setDefault(True)
         ok_btn.clicked.connect(self.accept)
         cancel_btn = QPushButton(trans.t("btn_cancel"))
         cancel_btn.clicked.connect(self.reject)
@@ -371,8 +372,9 @@ class DepthMapDialog(QDialog):
         if theme == "light":
             self.setStyleSheet("QDialog { background-color: #ffffff; } QLabel { color: #1f2328; }")
         else:
+            from ui.styles import DIALOG_CONTROL_DARK_QSS
             self.setStyleSheet("QDialog { background-color: #2b2b2b; border: 1px solid #444; }"
-                               "QLabel { color: #d0d0d0; }")
+                               "QLabel { color: #d0d0d0; }" + DIALOG_CONTROL_DARK_QSS)
 
     def _current_window_method(self):
         w = self.window_main
@@ -426,10 +428,11 @@ class DepthMapDialog(QDialog):
         return cid or _DEFAULT_METHOD_COLORMAP, stops
 
     def _edit_custom_scheme(self):
-        dlg = _CustomSchemeDialog("My scheme", cmap.default_stops(), self)
+        dlg = _CustomSchemeDialog(trans.t("depth_new_scheme_default"),
+                                  cmap.default_stops(), self)
         dlg.listw.itemDoubleClicked.connect(dlg._edit_stop)
         if dlg.exec():
-            name = dlg.name_edit.text().strip() or "custom"
+            name = dlg.name_edit.text().strip() or trans.t("depth_new_scheme_default")
             self._custom[name] = [(float(p), c) for p, c in dlg.stops]
             self._save_custom_schemes()
             self._fill_colormaps()
@@ -474,6 +477,7 @@ class DepthMapDialog(QDialog):
         method = self.method_combo.currentData()
         use_gpu = bool(getattr(self.window_main, "use_gpu", False))
         self._worker = DepthWorker(imgs, method, use_gpu, self)
+        self._worker_method = method
         self._worker.progress.connect(lambda i, n: self.status_lbl.setText(
             trans.t("depth_computing").format(i=i, n=n)))
         self._worker.ok.connect(self._computed)
@@ -489,7 +493,7 @@ class DepthMapDialog(QDialog):
 
     def _computed(self, index01):
         self._index01 = np.asarray(index01, np.float32)
-        self._map_method = self.method_combo.currentData()
+        self._map_method = getattr(self, "_worker_method", None)
         self._worker = None
         self.compute_btn.setVisible(True)
         self.cancel_btn.setVisible(False)

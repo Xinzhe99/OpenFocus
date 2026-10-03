@@ -93,7 +93,10 @@ def detect_px_size_um(path: str) -> Optional[float]:
             unit = (mu.group(1) if mu else "µm").strip()
             um_per_unit = _UM_PER_UNIT.get(unit.lower())
             if um_per_unit:
-                px_um = float(mv.group(1)) * um_per_unit
+                try:
+                    px_um = float(mv.group(1)) * um_per_unit
+                except ValueError:
+                    px_um = 0.0  # 畸形标签（如 "1.2.3"）不阻断加载
                 if 1e-4 <= px_um <= 1e3:
                     return px_um
 
@@ -198,6 +201,25 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
         position = "bottom-right"
     if color not in _VALID_COLORS:
         color = "auto"
+
+    if img.dtype != np.uint8:
+        # 16-bit（或 0-255 float）结果：PIL 画不了。在 8-bit 渲染上画，
+        # 只把被改动的像素抬回原位深——条和文字都是纯色/抗锯齿灰阶，
+        # 乘 257 恰好是精确映射（255*257=65535）。
+        if img.dtype == np.uint16:
+            img8 = (img.astype(np.float32) * (255.0 / 65535.0)).round().astype(np.uint8)
+        else:
+            img8 = np.clip(img, 0, 255).astype(np.uint8)
+        drawn = draw_scale_bar(img8, px_um, position, color)
+        if drawn is img8:
+            return img
+        mask = np.any(drawn != img8, axis=2)
+        out = img.copy()
+        if img.dtype == np.uint16:
+            out[mask] = (drawn[mask].astype(np.float64) * 257.0).round().astype(np.uint16)
+        else:
+            out[mask] = drawn[mask].astype(img.dtype)
+        return out
 
     h, w = img.shape[:2]
     bar_um = nice_bar_um(w * px_um * BAR_FRACTION)

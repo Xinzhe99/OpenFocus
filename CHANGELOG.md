@@ -5,6 +5,93 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Second multi-domain review round (concurrency / memory / file-IO /
+robustness / UI-i18n), all findings fixed:
+
+### Fixed — crashes & data loss
+- **Japanese and Spanish language packs were completely dead** since
+  v1.33 (a misplaced patch left `locales_extra.py` with a syntax error;
+  the silent `except: pass` in the merge hid it and the i18n tests —
+  which iterate the merged dict — stayed green). File reconstructed,
+  merge failures now log loudly, and a regression test imports the pack
+  directly and asserts ja/es made it into the translations.
+- Double-clicking Render could re-enter `start_render` through its
+  `processEvents` calls, drop the first running worker and abort the
+  process (QThread destroyed while running). Re-entry is now blocked
+  while the method is executing; the cancel affordance is preserved.
+- A second update flow overwrote `_update_download_worker` while its
+  download was still running (same QThread abort); both entry points
+  now refuse with a notice.
+- Depth-map workers orphaned by closing the dialog were invisible to
+  the shutdown prompt — quitting mid-computation aborted at exit. They
+  now count as in-flight work and are drained on close.
+- **Burning a scale bar into 16-bit output crashed** (`TypeError` from
+  PIL): the bar is now drawn on an 8-bit rendition and lifted back at
+  full depth (exact ×257 mapping), preserving the bit depth.
+- **Multi-page TIFF sessions could not reopen their projects** (synthetic
+  `X_page_NNN.tif` names never resolve to files) — which also silently
+  disabled crash recovery for those sessions. Frame names now map back
+  to the container TIFF.
+- Projects and recovery snapshots are written atomically
+  (temp + `os.replace`); a crash mid-snapshot used to destroy the file
+  recovery depends on.
+
+### Fixed — correctness
+- EXIF-preserving WebP export silently re-encoded losslessly-encoded
+  pixels (Pillow's WebP default is lossy); the embed now forces
+  `lossless=True` for WebP.
+- Multi-page TIFF export failed whenever %TEMP% sits on another drive
+  (os.replace cannot cross volumes) or is non-ASCII: the temp file now
+  lives in the destination directory with an imencode+tofile fallback.
+- The CLI read images with raw `cv2.imread`, failing every non-ASCII
+  path on Windows; it now uses the same imdecode/np.fromfile path as
+  the GUI (end-to-end verified on a Chinese-path stack).
+- Depth maps fed a raw uint16 stack into the AI model with values up to
+  257; inputs are normalized at entry like the fusion pipeline. Batch
+  mode rejects an explicit `--depth-map` path (it would overwrite the
+  same file per stack), `--depth-map` now follows `--kernel`, and its
+  parent directory is created.
+- Malformed OME `PhysicalSizeX` (e.g. "1.2.3") no longer aborts stack
+  loading with a ValueError.
+- Truncated downloads are no longer promoted: the received size must
+  match Content-Length, and failed `.part` files are removed instead of
+  piling up in %TEMP%.
+- The one-click updater now also writes the success sentinel after an
+  unelevated copy (a writable install used to leak the ~1 GB staging
+  folder and the zip on every update), cleans the sentinel itself, and
+  falls back to an ANSI-codepage script when 8.3 short paths cannot
+  make CJK directories ASCII (previously: silent death after the 350 MB
+  download); script-generation failures now surface as a dialog.
+- `crop_roi` rejected out-of-bounds ROIs with zero-sized arrays instead
+  of a clear error; the model cache now keys on the weights path.
+
+### Improved — memory & performance
+- The three classical depth-map measures no longer materialize an
+  n×H×W float32 activity stack (3.8 GB on a 40×6K×4K stack); they keep
+  a streaming per-pixel best.
+- Tiling no longer generates duplicate clamped tiles (up to 4× wasted
+  AI inference on exact-fit stacks); the AI budget now counts padded
+  (128-aligned) tile area, and directory-input fusion honors the stack
+  footprint rule like list input.
+- Full-resolution frame pixmaps are evicted beyond current±1 (browsing
+  a 40×6K×4K stack used to retain ~2.9 GB); the AI path drops redundant
+  whole-stack gray/color copies; 16-bit batch jobs free the original
+  stack during fusion when aligned frames aren't exported.
+- Batch cancellation now reaches inside registration and fusion
+  (previously only checked between stacks, so a "cancelled" job kept
+  both thread pools busy for minutes); ROI alignment got a cooperative
+  cancel so app shutdown no longer `terminate()`s into ECC's native
+  code.
+
+### Improved — UI
+- The depth-map and scale-bar dialogs now style their controls in dark
+  mode (buttons/combos/spins were rendering as native light widgets);
+  the Wipe canvas follows the light theme; the custom-scheme dialog has
+  a default button; the default scheme name is localized.
+
+Suite: 189 tests (9 new regressions from this round).
+
+
 ### Fixed
 - **Closing the depth-map dialog during an AI computation could abort the
   whole process**: the dialog (and with it the running QThread) was

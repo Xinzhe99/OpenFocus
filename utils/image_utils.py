@@ -103,13 +103,27 @@ def imwrite_multi_tiff(path: str, images) -> bool:
     # cv2.imwritemulti silently fails on non-encodable filenames, so always
     # write to an ASCII temp path and rename onto the (possibly unicode)
     # destination — os.replace handles unicode targets fine.
-    fd, part = tempfile.mkstemp(suffix=".tif")
+    dest_dir = os.path.dirname(os.path.abspath(path)) or "."
+    try:
+        fd, part = tempfile.mkstemp(suffix=".tif", dir=dest_dir)
+    except OSError:
+        fd, part = tempfile.mkstemp(suffix=".tif")  # 目标目录不可写时退回
     os.close(fd)
     try:
         try:
             ok = cv2.imwritemulti(part, [np.asarray(i) for i in images])
         except cv2.error:
             ok = False
+        if not ok:
+            # 目标目录非 ASCII 时 mkstemp 生成的随机名也会带上它——
+            # 退回 imencode+tofile（对 unicode 路径免疫）
+            try:
+                ok_ext, buf = cv2.imencodemulti(".tif", [np.asarray(i) for i in images])
+                if ok_ext:
+                    buf.tofile(part)
+                    ok = True
+            except (cv2.error, AttributeError):
+                ok = False
         if not ok:
             return False
         os.replace(part, path)
@@ -167,7 +181,11 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
         try:
             from PIL import Image
             with Image.open(path) as pil_img:
-                pil_img.save(path, exif=embed)
+                # webp 默认有损：嵌入 EXIF 的重存必须保持无损
+                save_kw = {"exif": embed}
+                if ext == ".webp":
+                    save_kw["lossless"] = True
+                pil_img.save(path, **save_kw)
         except Exception as exc:
             print(f"EXIF embed skipped for {path}: {exc}")
     return ok

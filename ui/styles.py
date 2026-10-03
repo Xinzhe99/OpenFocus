@@ -9,6 +9,24 @@ import re
 PRIMARY_BLUE = "#0033A0"
 
 # 主窗口 Dark Theme 样式（原 OpenFocus.apply_dark_theme 中的字符串）
+# 暗色主题下给 QDialog 的控件补色（主窗口 QSS 不会传播到对话框）。
+# settings/batch 一直这么做；depthmap/scalebar 此前漏了，暗色下
+# 按钮和下拉渲染成本色浅灰控件。
+DIALOG_CONTROL_DARK_QSS = """
+QComboBox, QSpinBox, QDoubleSpinBox, QListWidget, QLineEdit {
+    background-color: #3c3c3c; color: #ffffff;
+    border: 1px solid #555; padding: 4px;
+    selection-background-color: #3d6dda;
+}
+QPushButton {
+    background-color: #444; color: white;
+    border: 1px solid #222; padding: 6px 16px; border-radius: 4px;
+}
+QPushButton:hover { background-color: #555; }
+QCheckBox { color: #d0d0d0; }
+QCheckBox::indicator { width: 16px; height: 16px; }
+"""
+
 GLOBAL_DARK_STYLE = f"""
 QMainWindow {{ background-color: #1e1e1e; }}
 QDialog {{ background-color: #2b2b2b; }}

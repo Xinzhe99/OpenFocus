@@ -123,9 +123,19 @@ def download_to_file(url: str, dest_path: str,
                         on_progress(done, total)
                     except Exception:
                         pass
-    # A network drop mid-transfer leaves a partial .part (never the final
-    # name); only a fully transferred file is promoted.
-    os.replace(part_path, dest_path)
+    try:
+        # 无 Content-Length 的响应 total=0，跳过校验；否则字节数必须吻合，
+        # 代理/杀软截断会"干净地"提前 EOF，晋升半截 zip 只会在解压时白费
+        if total and done != total:
+            raise RuntimeError(
+                f"download truncated: {done} of {total} bytes")
+        os.replace(part_path, dest_path)
+    except BaseException:
+        try:
+            os.unlink(part_path)
+        except OSError:
+            pass
+        raise
     return True
 
 

@@ -730,6 +730,12 @@ class OpenFocus(QMainWindow):
             QDesktopServices.openUrl(QUrl(RELEASES_PAGE_URL))
             return
 
+        running = getattr(self, "_update_download_worker", None)
+        if running is not None and running.isRunning():
+            show_warning_box(self, trans.t('update_check_failed_title'),
+                             trans.t('msg_update_in_progress'))
+            return
+
         safe_tag = self_update.sanitize_tag(tag)
         staging_root = self_update.staging_root_for(safe_tag)
         zip_path = os.path.join(tempfile.gettempdir(),
@@ -822,9 +828,16 @@ class OpenFocus(QMainWindow):
                     show_warning_box(self, trans.t('update_check_failed_title'),
                                      trans.t('msg_update_stage_failed'))
                     return
-                script = self_update.write_apply_script_windows(
-                    app_dir, staged_app, tag, staging_root=message,
-                    zip_path=zip_path)
+                try:
+                    script = self_update.write_apply_script_windows(
+                        app_dir, staged_app, tag, staging_root=message,
+                        zip_path=zip_path)
+                except Exception as exc:
+                    # 脚本生成失败（路径安全校验等）曾直接死在 excepthook：
+                    # 应用不退出、不交换、用户毫无感知
+                    show_warning_box(
+                        self, trans.t('update_check_failed_title'), str(exc))
+                    return
                 self_update.launch_detached_windows(script)
             # The apply script can only swap unlocked binaries: close() is
             # what stops the workers, and the restart must not be blocked by
@@ -846,6 +859,12 @@ class OpenFocus(QMainWindow):
         All UI updates happen through queued signals - never from the
         download thread directly.
         """
+        running = getattr(self, "_update_download_worker", None)
+        if running is not None and running.isRunning():
+            show_warning_box(self, trans.t('update_check_failed_title'),
+                             trans.t('msg_update_in_progress'))
+            return
+
         import tempfile
         from utils import updater
         from utils.self_update import sanitize_tag
@@ -935,6 +954,11 @@ class OpenFocus(QMainWindow):
                 made = self.image_loader.create_pixmaps(
                     [self.raw_images[index]], max_size=None)
                 self.stack_images[index] = made[0]
+                # 惰性生成但不设上限等于无界缓存：只保留当前帧±1，
+                # 跳回远处帧时按需重建（这正是惰性机制的本意）
+                for j in range(len(self.stack_images)):
+                    if abs(j - index) > 1:
+                        self.stack_images[j] = None
         return self.stack_images[index] if 0 <= index < len(self.stack_images) else None
 
     def update_source_view(self, index):
@@ -1600,6 +1624,13 @@ class OpenFocus(QMainWindow):
         load_worker = getattr(source_manager, '_load_worker', None) if source_manager else None
         if load_worker is not None:
             running.append(load_worker.isRunning())
+        # 深度图对话框关闭后仍在跑的 worker（AI 可达数分钟）也要算数，
+        # 否则退出时模块级集合随解释器清理，QThread 运行中被析构 -> abort
+        try:
+            from dialogs.depthmap import _ORPHAN_WORKERS
+            running.extend(w.isRunning() for w in _ORPHAN_WORKERS)
+        except Exception:
+            pass
         return any(running)
 
     def closeEvent(self, event):
@@ -1664,6 +1695,13 @@ class OpenFocus(QMainWindow):
         # Stop update download/stage workers if running
         _shutdown_worker(getattr(self, '_update_download_worker', None))
         _shutdown_worker(getattr(self, '_update_stage_worker', None))
+        try:
+            from dialogs.depthmap import _ORPHAN_WORKERS
+            for orphan in list(_ORPHAN_WORKERS):
+                orphan.cancel()
+                _shutdown_worker(orphan)
+        except Exception:
+            pass
 
         # Stop render worker if running
         if hasattr(self, 'render_manager'):
