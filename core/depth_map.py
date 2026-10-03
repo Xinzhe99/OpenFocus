@@ -109,9 +109,12 @@ def _measure_dct(images, progress, should_cancel, kernel_size=7, block_size=8):
 
     best = median_filter(best, size=kernel_size, mode="nearest")
     best = median_filter(best, size=kernel_size, mode="nearest")
-    # 块级索引回到全分辨率，与 dct 融合重建的掩膜放大方式一致
-    return cv2.resize(best.astype(np.float32), (w_trim, h_trim),
+    # 块级索引回到全分辨率（与 dct 融合重建的掩膜放大方式一致）；
+    # 融合输出会裁到 block 的整数倍，但深度图必须与栈同尺寸，否则
+    # 叠加/保存侧的形状守卫会静默失效
+    best = cv2.resize(best.astype(np.float32), (w, h),
                       interpolation=cv2.INTER_NEAREST).astype(np.int32)
+    return best
 
 
 # --------------------------------------------------------------------------
@@ -203,7 +206,8 @@ def _measure_stackmffv4(images, progress, should_cancel,
 
     h, w = images[0].shape[:2]
     n = len(images)
-    budget_px = 80 * 1024 * 1024  # 与融合路径一致的帧×像素预算
+    from core.multi_focus_fusion import STACKMFFV4_IMAGE_BUDGET
+    budget_px = STACKMFFV4_IMAGE_BUDGET * 1024 * 1024  # 与融合路径同一预算
     grays = [cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) for img in images]
 
     def forward_and_stitch(coords, block, batch, ov):
@@ -236,6 +240,7 @@ def _measure_stackmffv4(images, progress, should_cancel,
     # 整栈一次前向就装得下预算时不要分块：小图上瓦片化还会让 overlap
     # 逼近瓦片尺寸、step 退化成逐像素
     if n * h * w <= budget_px:
+        _tick(progress, 0, 1, should_cancel)
         padded_h = ((h - 1) // 128 + 1) * 128
         padded_w = ((w - 1) // 128 + 1) * 128
         inp = torch.zeros(1, n, padded_h, padded_w)
@@ -268,9 +273,9 @@ def compute_focus_index(images: Sequence[np.ndarray],
                          ) -> np.ndarray:
     """Focus-position map: float32 [H, W] in [0, 1] (normalized frame index).
 
-    `images` are 0-255-domain BGR frames (uint8 or float). For dtcwt the
-    output size is trimmed to a multiple of nothing (kept full); for dct it
-    is trimmed to a multiple of block_size, mirroring the fused output.
+    `images` are 0-255-domain BGR frames (uint8 or float). The output is
+    always full stack size — dct decides winners on its block grid and the
+    map is upscaled back, mirroring how dct fusion upscales its masks.
     """
     _check(images)
     n = len(images)

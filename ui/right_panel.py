@@ -19,7 +19,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from dialogs import RegistrationHelpDialog, RenderMethodHelpDialog
 from ui.styles import (
     HELP_BUTTON_STYLE,
     HOVER_HIGHLIGHT_BUTTON_STYLE,
@@ -296,8 +295,18 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.rb_gfg.clicked.connect(lambda: window.handle_method_selection(components.rb_gfg))
     components.rb_d.clicked.connect(lambda: window.handle_method_selection(components.rb_d))
 
-    components.btn_method_help.clicked.connect(lambda: RenderMethodHelpDialog(window).exec())
-    components.btn_reg_help.clicked.connect(lambda: RegistrationHelpDialog(window).exec())
+    # 帮助对话框在点击时才导入：模块级导入 dialogs 会与 ui 包形成循环
+    # (dialogs.about -> ui.styles -> ui/__init__ -> right_panel -> dialogs)
+    def _show_method_help():
+        from dialogs.help import RenderMethodHelpDialog
+        RenderMethodHelpDialog(window).exec()
+
+    def _show_reg_help():
+        from dialogs.help import RegistrationHelpDialog
+        RegistrationHelpDialog(window).exec()
+
+    components.btn_method_help.clicked.connect(_show_method_help)
+    components.btn_reg_help.clicked.connect(_show_reg_help)
 
     # clicked(bool) would deliver checked=False into start_render's
     # force_algorithm parameter, forcing need_fusion=True; drop the bool.

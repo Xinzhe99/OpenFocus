@@ -40,5 +40,27 @@ def laplacian_sharpness(bgr_img):
 
 
 @pytest.fixture(scope="session")
+def qapp():
+    """Session-lifetime QApplication.
+
+    The C++ object must outlive every QSettings the suite creates: a
+    bare ``QApplication([])`` local to one test gets GC'd and leaves all
+    cached settings wrappers dangling (RuntimeError: wrapped C/C++
+    object of type QSettings has been deleted).
+    """
+    pytest.importorskip("PyQt6")
+    import tempfile
+    from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import QApplication
+    # 必须在第一个 QSettings 单例诞生前配置沙箱路径：晚了单例会指向
+    # 真实用户设置，后续断言读到用户机器上的实际值（机器相关、还会
+    # 污染用户配置）
+    tmp = os.path.join(tempfile.gettempdir(), "openfocus_pytest_qsettings")
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, tmp)
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+@pytest.fixture(scope="session")
 def two_focus_stack():
     return make_two_focus_stack()

@@ -3,6 +3,28 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+- **Closing the depth-map dialog during an AI computation could abort the
+  whole process**: the dialog (and with it the running QThread) was
+  destroyed when the user closed it mid-inference. The worker is now
+  detached on close, cancelled, and self-cleans when it finishes.
+- DCT depth maps came back cropped to a multiple of the 8 px block grid
+  (unlike every other method) — silently failing the overlay shape guard
+  and exporting a smaller-than-stack image. All depth maps are now full
+  stack size.
+- A typo in `--depth-colormap` only surfaced after the entire fusion had
+  run; the value is now validated up front with a clear usage error.
+- The AI depth-map memory budget was duplicated as a literal (drift risk
+  against the fusion-side constant); it now imports the single source.
+- `ui.right_panel` imported the help dialogs at module level, making
+  `import dialogs.*` from any other entry order fail with a circular
+  import; those imports are now made at click time.
+- The test suite could read the developer's real user settings: the
+  shared QApplication fixture now sandboxes QSettings *before* the
+  singleton can be created, and keeps the app alive for the session.
+
 ## [v1.33] — 2026-10-02
 
 ### Added

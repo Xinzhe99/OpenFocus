@@ -1,4 +1,6 @@
 """Depth-map (focus-position index) and pseudo-color colormap tests."""
+import time
+
 import cv2
 import numpy as np
 import pytest
@@ -150,3 +152,65 @@ class TestRawQuantization:
         idx = np.array([[0.0, 0.5, 1.0]], np.float32)
         u16 = np.clip(idx * 65535.0, 0, 65535).round().astype(np.uint16)
         assert u16.tolist()[0] == [0, 32768, 65535]
+
+
+class TestReviewFixes:
+    """Regressions from the v1.33 code review round."""
+
+    def test_dct_map_matches_stack_size(self):
+        # 245/321 are not multiples of the 8px block grid: the map must
+        # still come back at full stack size (upscaled like dct's masks),
+        # not trimmed like the fused image
+        frames = _synthetic_thirds(h=245, w=321)
+        idx = compute_focus_index(frames, "dct")
+        assert idx.shape == (245, 321)
+        assert idx.dtype == np.float32
+
+    def test_cli_rejects_bad_depth_colormap_early(self, capsys):
+        from core.cli import run_cli
+        rc = run_cli(["-i", "x", "-o", "y.png", "--depth-map",
+                      "--depth-colormap", "nope"])
+        assert rc == 2  # EXIT_USAGE
+        assert "--depth-colormap" in capsys.readouterr().err
+
+    def test_close_detaches_running_worker(self, monkeypatch, qapp):
+        import threading
+        import os as _os
+        _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6.QtWidgets import QWidget
+        app = qapp  # noqa: F841
+        import dialogs.depthmap as dm
+        from core import depth_map
+
+        started = threading.Event()
+
+        def slow_compute(images, method, **kw):
+            started.set()
+            time.sleep(0.8)
+            return np.zeros(images[0].shape[:2], np.float32)
+
+        monkeypatch.setattr(depth_map, "compute_focus_index", slow_compute)
+
+        class _Stub(QWidget):
+            raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
+            ui_theme = "dark"
+            use_gpu = False
+            fusion_result = None
+
+        # guided_filter is a fast method -> construction auto-starts the
+        # (monkeypatched, slow) worker
+        dlg = dm.DepthMapDialog(_Stub())
+        assert started.wait(5), "auto-compute did not start"
+        worker = dlg._worker
+        assert worker is not None and worker.isRunning()
+        dlg.reject()
+        # the dialog must not keep (and later destroy) a running QThread:
+        # it detaches it, keeps a module-level reference, and lets it
+        # self-clean on finish
+        assert dlg._worker is None
+        assert worker in dm._ORPHAN_WORKERS
+        deadline = time.time() + 5
+        while dm._ORPHAN_WORKERS and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.02)
+        assert worker not in dm._ORPHAN_WORKERS

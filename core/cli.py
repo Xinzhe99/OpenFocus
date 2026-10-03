@@ -312,6 +312,14 @@ def run_cli(argv: List[str]) -> int:
     if args.batch_size < 1:
         print("error: --batch-size must be >= 1", file=sys.stderr)
         return EXIT_USAGE
+    if args.depth_map:
+        # 提前校验：否则拼写错误要到融合全部跑完后才在 colorize 里炸掉
+        try:
+            from utils.colormap import get_lut
+            get_lut(args.depth_colormap)
+        except ValueError as exc:
+            print(f"error: --depth-colormap: {exc}", file=sys.stderr)
+            return EXIT_USAGE
 
     batch_mode = args.output_dir is not None
     if batch_mode:

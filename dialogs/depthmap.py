@@ -50,6 +50,10 @@ _DEFAULT_METHOD_COLORMAP = "turbo"
 # 打开对话框时自动计算的方法（秒级）；dtcwt/stackmffv4 分钟级，不自动跑
 _FAST_AUTO_METHODS = {"guided_filter", "dct", "gfgfgf"}
 
+# 对话框关闭时仍在跑的 worker 放这里保活：QThread 对象被销毁而线程仍在
+# 运行会直接 abort 整个进程（AI 推理可达数分钟，用户关窗很正常）。
+_ORPHAN_WORKERS = set()
+
 
 class DepthWorker(QThread):
     progress = pyqtSignal(int, int)
@@ -591,12 +595,26 @@ class DepthMapDialog(QDialog):
         s.setValue("depthmap/smooth", self.smooth_spin.value())
         s.setValue("depthmap/invert", self.invert_chk.isChecked())
 
+    def _detach_worker(self):
+        """关闭对话框时后台线程可能正处在长推理中——QThread 被销毁而线程
+        仍在运行会让整个进程 abort。让它脱离对话框的生命周期，取消后
+        自行跑完/退出并自我清理；信号在接收者销毁后由 Qt 自动断开。"""
+        w = self._worker
+        self._worker = None
+        if w is None or not w.isRunning():
+            return
+        w.cancel()
+        w.setParent(None)
+        _ORPHAN_WORKERS.add(w)
+        w.finished.connect(w.deleteLater)
+        w.finished.connect(lambda ww=w: _ORPHAN_WORKERS.discard(ww))
+
     def reject(self):
-        self._cancel()
+        self._detach_worker()
         self._save_prefs()
         super().reject()
 
     def closeEvent(self, event):
-        self._cancel()
+        self._detach_worker()
         self._save_prefs()
         super().closeEvent(event)
