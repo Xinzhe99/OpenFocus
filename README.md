@@ -15,6 +15,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 > [!NOTE]
 > 🎉 **2026.10.02**: **v1.33** — **depth maps**: export the per-pixel focus-position (pseudo-depth) map of any fusion method with customizable pseudo-color schemes — 15 built-in palettes plus your own color stops, live preview, overlay-on-result, and 16-bit raw export; also in the CLI (`--depth-map`). Available in four languages.
 
+> 🎉 **2026.10.03**: **v1.34** — quality release: 25+ fixes from a five-domain code review — restored the dead Japanese/Spanish language packs, fixed render double-click and 16-bit scale-bar crashes, made multi-page TIFF projects reopenable, stopped lossy WebP re-encoding and a ~1 GB per-update temp leak, and cut depth-map/tiling memory several-fold.
+
 > 🎉 **2026.09.30**: **v1.32** — deep stacks no longer crash the AI fusion with **out-of-memory**: tiling now engages on total stack size and the AI path adapts its tile/batch size to stack depth. Ships with a soak-test harness and a measured [performance reference](./docs/PERFORMANCE.md).
 
 > 🎉 **2026.09.30**: **v1.28–v1.31** — **pip install openfocus** ([PyPI](https://pypi.org/project/openfocus/)), **publication-grade scale bars** (µm/px auto-detected from ImageJ/OME-TIFF metadata, burned into every export), **multi-page TIFF** Z-stack input/output, **crash auto-recovery**, citable releases (Zenodo DOIs) — plus 30+ code-review fixes, most notably ECC registration composing its transforms in reversed order.
