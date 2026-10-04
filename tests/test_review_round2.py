@@ -192,3 +192,46 @@ class TestSettingsCast:
         ss.load_window_settings(w)
         assert w.ui_theme == "light"
         monkeypatch.setattr(ss, "_settings_singleton", None)
+
+
+class TestImportFlowFixes:
+    """Startup/import flow: same folder twice must reload, not duplicate;
+    the icon/command-line path must not ask how to import."""
+
+    def test_same_folder_append_becomes_reload(self, monkeypatch, qapp):
+        pytest.importorskip("PyQt6")
+        import os as _os
+        _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from controllers.source_manager import SourceManager
+
+        calls = {}
+
+        class _SM(SourceManager):
+            def __init__(self):  # 跳过 QObject 父类初始化
+                pass
+            def _start_load_worker(self, **kw):
+                calls.update(kw)
+
+        sm = _SM()
+        sm.window = type("W", (), {"current_folder_path": r"C:\data\stack",
+                                   "current_scale_factor": 1.0,
+                                   "raw_images": [object()]})
+        dialog_result = {"shown": False}
+
+        import controllers.source_manager as sm_mod
+        class _FakeDlg:
+            def __init__(self, *a, **k):
+                pass
+            def exec(self):
+                dialog_result["shown"] = True
+                return True
+            def get_scale_factor(self):
+                return 1.0
+        monkeypatch.setattr(sm_mod, "DownsampleDialog", _FakeDlg)
+
+        sm.load_image_stack(r"C:\data\stack", append=True)
+        assert calls.get("append") is False, "same folder must reload, not append"
+
+        sm.window.current_folder_path = r"C:\data\other"
+        sm.load_image_stack(r"C:\data\stack", append=True)
+        assert calls.get("append") is True, "different folder keeps append semantics"

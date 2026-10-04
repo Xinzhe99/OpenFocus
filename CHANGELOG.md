@@ -3,6 +3,21 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.35] — 2026-10-04
+
+### Changed — smoother startup & import flow
+- **Opening a folder from the command line / app icon no longer asks
+  "how to import this folder?"** — one folder is one stack; the batch
+  dialog is still one menu away for multi-stack jobs. Only the
+  (meaningful) downsample prompt remains.
+- **Re-opening the same folder reloads it** instead of appending a
+  second copy (loading the same stack twice used to double the frame
+  count).
+- **Crash recovery and command-line files are now mutually exclusive**:
+  accepting the recovery prompt restores your last workspace and any
+  command-line folder is skipped (previously both ran, appending the
+  same stack onto the recovered one).
+
 ## [v1.34] — 2026-10-03
 
 ### Fixed (GUI visual audit round)

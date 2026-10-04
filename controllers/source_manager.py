@@ -120,6 +120,12 @@ class SourceManager:
     def load_image_stack(self, folder_path: str, append: bool = False) -> None:
         window = self.window
 
+        # 同一文件夹再次导入按"重新加载"处理：追加只会得到帧数翻倍的
+        # 重复栈（恢复会话后再导入、拖同一文件夹两次都触发过）
+        if append and os.path.normcase(os.path.abspath(folder_path)) == os.path.normcase(
+                os.path.abspath(getattr(window, "current_folder_path", "") or "")):
+            append = False
+
         current_scale = getattr(window, "current_scale_factor", 1.0)
         dialog = DownsampleDialog(window, initial_scale=current_scale)
         if not dialog.exec():
@@ -571,20 +577,19 @@ class SourceManager:
     # These methods handle files dropped on app icon/taskbar/dock
 
     def load_image_stack_from_icon(self, folder_path: str) -> None:
-        """Load image stack from folder dropped on app icon."""
-        from dialogs import FolderImportDialog
-        dialog = FolderImportDialog(folder_path, self.window)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            if dialog.is_single_stack():
-                self.load_image_stack(folder_path, append=True)
-            else:
-                current_scale = getattr(self.window, "current_scale_factor", 1.0)
-                dlg = DownsampleDialog(self.window, initial_scale=current_scale)
-                if dlg.exec():
-                    self.window.show_batch_processing_dialog(
-                        preload_folder_paths=[folder_path],
-                        scale_factor=dlg.get_scale_factor()
-                    )
+        """Load image stack from folder dropped on app icon / passed on the
+        command line. The intent there is unambiguous — one folder is one
+        stack — so no import-mode dialog; open the batch dialog explicitly
+        when several stacks are wanted. Same folder again = reload."""
+        append = bool(getattr(self.window, "raw_images", None))
+        same = (os.path.normcase(os.path.abspath(folder_path))
+                == os.path.normcase(os.path.abspath(
+                    getattr(self.window, "current_folder_path", "") or "")))
+        if not append or same:
+            self.load_image_stack(folder_path, append=False)
+            return
+        # 已有其他栈时才需要确认是追加还是……直接追加（与拖放语义一致）
+        self.load_image_stack(folder_path, append=True)
 
     def load_multiple_folders_from_icon(self, folder_paths: list[str]) -> None:
         """Load multiple folders dropped on app icon."""

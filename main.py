@@ -2014,15 +2014,19 @@ if __name__ == "__main__":
         box.addButton(trans.t('btn_start_fresh'), QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(restore_btn)
         box.exec()
+        recovered = False
         if box.clickedButton() is restore_btn:
             from utils.project_file import apply_project
             window.project_path = recovery.session_path()
             apply_project(window, pending)
+            recovered = True
             _log.info("recovered previous session from %s", recovery.session_path())
     recovery.init_lock()
 
     # Handle files passed via command-line (drag-to-EXE, desktop file, etc.)
-    if len(sys.argv) > 1:
+    # 恢复会话与命令行参数互斥：接受恢复后再加载命令行文件夹会把同一栈
+    # 追加成两倍帧数；恢复的工作区就是用户要的现场
+    if len(sys.argv) > 1 and not recovered:
         process_command_line_args(window, sys.argv[1:])
 
     window.show()
