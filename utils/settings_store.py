@@ -15,8 +15,10 @@ from locales import trans
 ORGANIZATION = "OpenFocus"
 APPLICATION = "OpenFocus"
 MAX_RECENT_FILES = 8
+MAX_RECENT_PROJECTS = 8
 
 RECENT_FILES_KEY = "recent/files"
+RECENT_PROJECTS_KEY = "recent/projects"
 LANGUAGE_KEY = "ui/language"
 WINDOW_GEOMETRY_KEY = "ui/window_geometry"
 MAIN_SPLITTER_KEY = "ui/main_splitter"
@@ -178,6 +180,11 @@ def load_window_settings(window) -> None:
         raw_recent = [raw_recent]
     window.recent_files = [str(p) for p in raw_recent][:MAX_RECENT_FILES]
 
+    raw_projects = settings.value(RECENT_PROJECTS_KEY, []) or []
+    if not isinstance(raw_projects, list):
+        raw_projects = [raw_projects]
+    window.recent_projects = [str(p) for p in raw_projects][:MAX_RECENT_PROJECTS]
+
 
 def save_window_settings(window) -> None:
     """Write current window preferences (including language) to QSettings."""
@@ -186,6 +193,7 @@ def save_window_settings(window) -> None:
         settings.setValue(key, getattr(window, attr, default))
     settings.setValue(LANGUAGE_KEY, trans.current_lang)
     settings.setValue(RECENT_FILES_KEY, list(getattr(window, "recent_files", [])))
+    settings.setValue(RECENT_PROJECTS_KEY, list(getattr(window, "recent_projects", [])))
 
 
 def get_saved_language():
@@ -275,3 +283,16 @@ def add_recent_file(window, path: str) -> None:
     get_settings().setValue(RECENT_FILES_KEY, list(window.recent_files))
     if hasattr(window, "rebuild_recent_menu"):
         window.rebuild_recent_menu()
+
+
+def add_recent_project(window, path: str) -> None:
+    """Track a successfully opened project; dedupe, cap and persist."""
+    path = os.path.abspath(path)
+    recent = list(getattr(window, "recent_projects", []))
+    if path in recent:
+        recent.remove(path)
+    recent.insert(0, path)
+    window.recent_projects = recent[:MAX_RECENT_PROJECTS]
+    get_settings().setValue(RECENT_PROJECTS_KEY, list(window.recent_projects))
+    if hasattr(window, "rebuild_recent_projects_menu"):
+        window.rebuild_recent_projects_menu()

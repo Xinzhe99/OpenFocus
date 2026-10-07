@@ -31,8 +31,12 @@ import sys
 import io
 from typing import Union, List, Optional
 
-# Set standard output encoding to utf-8 when a console stream exists
-if sys.stdout is not None and hasattr(sys.stdout, "buffer"):
+# Windowed/Windows console mojibake fix — frozen builds only. Rebinding
+# sys.stdout at import time closes the ORIGINAL wrapper once it is collected
+# (TextIOWrapper.__del__ closes its buffer), which under pytest silently kills
+# the terminal output mid-session (the ubuntu CI job failed exactly there) and
+# made any redirected run lose its report tail.
+if getattr(sys, "frozen", False) and sys.stdout is not None and hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 

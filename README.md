@@ -13,6 +13,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.10.08**: **v1.37** — **Undo/Redo (Ctrl+Z)** for every stack operation, **per-frame enable/disable** (untick a frame to exclude it from fusion without deleting it), **drag to reorder** the stack, Recent Projects, new shortcuts (Ctrl+R render, Ctrl+Shift+R compare all, Ctrl+Shift+B batch, Ctrl+M depth map), SHA-256-verified one-click updates, and CLI pipeline flags (`--dry-run`, `--resume`, `--json`, `--json-progress`, `--config` per-folder overrides).
+
 > 🎉 **2026.10.07**: **v1.36** — **updates happen in the background**: a new release downloads while you keep working (no modal, cancellable, and the staged build is reused, so updating is instant and works offline), and *Update and Restart* reopens the project you had open. Also fixed: the burst of black console windows and the silent stall that never restarted the app, multi-page TIFF stacks multiplying their frames on restore, 16-bit depth-map overlays turning white, and scale-bar calibration leaking between stacks.
 
 > 🎉 **2026.10.02**: **v1.33** — **depth maps**: export the per-pixel focus-position (pseudo-depth) map of any fusion method with customizable pseudo-color schemes — 15 built-in palettes plus your own color stops, live preview, overlay-on-result, and 16-bit raw export; also in the CLI (`--depth-map`). Available in four languages.

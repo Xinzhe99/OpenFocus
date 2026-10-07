@@ -68,6 +68,17 @@ def build_parser() -> argparse.ArgumentParser:
                              "(optional value: output path; default <output>_depth.png)")
     parser.add_argument("--depth-colormap", default="turbo",
                         help="Colormap for --depth-map: turbo, viridis, jet, gray, ... (default turbo)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Validate inputs and print the plan without fusing")
+    parser.add_argument("--resume", action="store_true",
+                        help="Batch mode: skip folders whose output file already exists")
+    parser.add_argument("--json", default=None, metavar="FILE",
+                        help="Write a machine-readable result summary to FILE when done")
+    parser.add_argument("--json-progress", action="store_true",
+                        help="Print one JSON progress object per step to stdout (NDJSON)")
+    parser.add_argument("--config", default=None, metavar="FILE",
+                        help="Batch mode: JSON file with per-folder overrides, "
+                             "e.g. {\"stackA\": {\"method\": \"dct\", \"kernel\": 9}}")
     return parser
 
 
@@ -251,8 +262,9 @@ def _save(path: str, fused, scale_cfg=None) -> None:
         raise RuntimeError(f"Failed to write output: {path}")
 
 
-def _run_batch(args) -> int:
+def _run_batch(args, _emit_json=None) -> int:
     """Batch mode: fuse every input folder into --output-dir."""
+    import argparse
     from core.image_loader import ImageStackLoader
 
     loader = ImageStackLoader()
@@ -280,10 +292,44 @@ def _run_batch(args) -> int:
     os.makedirs(args.output_dir, exist_ok=True)
 
     ok_count, failures = 0, []
-    for folder in folders:
+    skipped_existing = []
+    started = time.time()
+    for i, folder in enumerate(folders):
         name = os.path.basename(folder.rstrip("/\\")) or "stack"
         out_path = os.path.join(args.output_dir, f"{name}{args._batch_ext}")
         print(f"\n=== {name} ===")
+
+        # --resume: a finished folder (output exists) is skipped, so rerunning
+        # a failed batch only processes what is still missing.
+        if args.resume and os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+            print(f"skip (output exists): {out_path}")
+            skipped_existing.append(name)
+            ok_count += 1
+            continue
+
+        # Per-folder overrides from --config, keyed by folder name or path.
+        folder_args = args
+        override = (args._folder_overrides or {}).get(name) \
+            or (args._folder_overrides or {}).get(folder)
+        if override:
+            folder_args = argparse.Namespace(**{**vars(args), **override})
+            applied = ", ".join(f"{k}={v}" for k, v in override.items())
+            print(f"config override: {applied}")
+
+        if args.dry_run:
+            try:
+                paths = _list_folder_images(folder, loader)
+                from core.image_loader import count_frames
+                frames = sum(count_frames(p) for p in paths)
+                print(f"[dry-run] frames={frames} method={folder_args.method} "
+                      f"align={folder_args.align} output={out_path}")
+            except Exception as exc:
+                print(f"[dry-run] {name}: {exc}")
+            continue
+
+        if args.json_progress:
+            print('{"event": "folder", "name": "%s", "index": %d, "total": %d}'
+                  % (name, i + 1, len(folders)), flush=True)
         try:
             paths = _list_folder_images(folder, loader)
             # Count frames, not files: a folder holding one multi-page TIFF
@@ -294,19 +340,33 @@ def _run_batch(args) -> int:
                 raise RuntimeError(
                     f"need at least 2 frames, found {frame_count}")
             images = _load_images(paths)
-            fused = _fuse_stack(images, args)
-            _save(out_path, fused, _resolve_scale_cfg(args, paths))
+            fused = _fuse_stack(images, folder_args)
+            _save(out_path, fused, _resolve_scale_cfg(folder_args, paths))
             print(f"Saved: {out_path}")
             if args.depth_map:
-                _save_depth(args, out_path)
+                _save_depth(folder_args, out_path)
             ok_count += 1
         except Exception as exc:
             print(f"error: {name}: {exc}", file=sys.stderr)
             failures.append(name)
 
+    summary = {
+        "mode": "batch", "dry_run": bool(args.dry_run),
+        "method": args.method, "align": args.align,
+        "total": len(folders),
+        "succeeded": ok_count,
+        "skipped_existing": skipped_existing,
+        "failed": failures,
+        "duration_s": round(time.time() - started, 1),
+    }
     print(f"\nBatch finished: {ok_count}/{len(folders)} stacks succeeded")
+    if skipped_existing:
+        print(f"skipped (already done): {', '.join(skipped_existing)}")
     if failures:
         print("failed: " + ", ".join(failures), file=sys.stderr)
+    if _emit_json is not None:
+        _emit_json(summary)
+    if failures:
         return EXIT_ERROR
     return EXIT_OK
 
@@ -335,6 +395,41 @@ def run_cli(argv: List[str]) -> int:
             print(f"error: --depth-colormap: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
+    # Per-folder overrides (--config) are batch-only; load once here so a bad
+    # file is a usage error instead of a mid-run failure.
+    args._folder_overrides = {}
+    if args.config:
+        if not args.output_dir:
+            print("error: --config requires batch mode (--output-dir)", file=sys.stderr)
+            return EXIT_USAGE
+        try:
+            import json
+            with open(args.config, encoding="utf-8") as f:
+                args._folder_overrides = json.load(f)
+            if not isinstance(args._folder_overrides, dict):
+                raise ValueError("top level must be a JSON object")
+        except Exception as exc:
+            print(f"error: --config: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+
+    def _emit_json(payload: dict) -> None:
+        if not args.json:
+            return
+        import json
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(args.json)), exist_ok=True)
+            with open(args.json, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            print(f"warning: --json: {exc}", file=sys.stderr)
+
+    def _progress(**fields) -> None:
+        if args.json_progress:
+            import json
+            print(json.dumps(fields, ensure_ascii=False), flush=True)
+
+    args._progress = _progress
+
     batch_mode = args.output_dir is not None
     if batch_mode and isinstance(args.depth_map, str) and args.depth_map:
         print("error: --depth-map with an explicit path cannot be used with "
@@ -345,6 +440,9 @@ def run_cli(argv: List[str]) -> int:
     if batch_mode:
         args._batch_ext = ".png"
     else:
+        if args.resume:
+            print("error: --resume requires batch mode (--output-dir)", file=sys.stderr)
+            return EXIT_USAGE
         if not args.output:
             print("error: one of --output / --output-dir is required", file=sys.stderr)
             return EXIT_USAGE
@@ -359,7 +457,7 @@ def run_cli(argv: List[str]) -> int:
         import cv2
 
         if batch_mode:
-            return _run_batch(args)
+            return _run_batch(args, _emit_json)
 
         from core.multi_focus_fusion import MultiFocusFusion
 
@@ -367,6 +465,19 @@ def run_cli(argv: List[str]) -> int:
         with tempfile.TemporaryDirectory(prefix="openfocus_video_") as video_temp:
             _src, paths = _resolve_stack(args, video_temp)
             print(f"Loaded {len(paths)} images from {args.input[0]}")
+
+            if args.dry_run:
+                print(f"[dry-run] method={args.method} align={args.align} "
+                      f"frames={len(paths)} output={args.output}")
+                for p in paths:
+                    print(f"[dry-run]   {p}")
+                _emit_json({"mode": "single", "dry_run": True,
+                            "method": args.method, "align": args.align,
+                            "frames": len(paths), "input": args.input,
+                            "output": args.output})
+                return EXIT_OK
+
+            _progress(event="load", done=1, total=1, frames=len(paths))
             images = _load_images(paths)
             if paths:
                 from utils.image_utils import set_source_exif
@@ -380,14 +491,21 @@ def run_cli(argv: List[str]) -> int:
 
         _save(args.output, fused, scale_cfg)
         print(f"Saved: {args.output}")
+        _progress(event="save", output=args.output)
+        outputs = [args.output]
         if args.depth_map:
             _save_depth(args, args.output)
+            outputs.append(_depth_out_path(args, args.output))
+        _emit_json({"mode": "single", "method": args.method, "align": args.align,
+                    "frames": len(paths), "input": args.input,
+                    "output": args.output, "outputs": outputs})
         return EXIT_OK
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
         return EXIT_ERROR
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
+        _emit_json({"mode": "single", "error": str(exc)})
         return EXIT_ERROR
 
 

@@ -178,6 +178,8 @@ class TestTilingTrigger:
         assert tiled == [], "classical algorithm was tiled on stack footprint"
 
     def test_neural_path_still_tiles_on_footprint(self, monkeypatch):
+        # The AI backend's constructor validates the torch environment.
+        pytest.importorskip("torch", reason="StackMFF-V4 requires PyTorch")
         from core.multi_focus_fusion import MultiFocusFusion
         frames = [np.zeros((512, 512, 3), np.uint8) for _ in range(20)]
         fusion = MultiFocusFusion(algorithm="stackmffv4", use_gpu=False,

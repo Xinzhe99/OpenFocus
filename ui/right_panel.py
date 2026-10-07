@@ -324,6 +324,13 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
 
     components.file_list.customContextMenuRequested.connect(window.source_manager.show_source_context_menu)
     components.file_list.currentRowChanged.connect(window.source_manager.sync_slider_from_list)
+    components.file_list.itemChanged.connect(window.source_manager.on_item_changed)
+    # Drag rows to reorder the stack; the list reports the move, the manager
+    # maps it back onto the data arrays.
+    components.file_list.setDragDropMode(
+        QAbstractItemView.DragDropMode.InternalMove)
+    components.file_list.model().rowsInserted.connect(
+        window.source_manager.apply_list_order)
     components.output_list.customContextMenuRequested.connect(window.output_manager.show_output_context_menu)
     components.output_list.currentRowChanged.connect(window.output_manager.sync_output_slider_from_list)
     components.output_list.itemClicked.connect(window.output_manager.display_output_image_in_result_view)

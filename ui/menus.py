@@ -50,6 +50,11 @@ def setup_menus(window: QMainWindow) -> None:
     recent_menu = file_menu.addMenu(trans.t('menu_recent'))
     window.ui_objs['menu_recent'] = recent_menu
 
+    # Recent projects submenu (items filled in by rebuild_recent_projects_menu())
+    recent_proj_menu = file_menu.addMenu(trans.t('menu_recent_projects'))
+    recent_proj_menu.setProperty("trans_key", 'menu_recent_projects')
+    window.ui_objs['menu_recent_projects'] = recent_proj_menu
+
     file_menu.addSeparator()
 
     save_action = QAction(trans.t('action_save'), window)
@@ -125,6 +130,24 @@ def setup_menus(window: QMainWindow) -> None:
     # --- Edit Menu ---
     edit_menu = menubar.addMenu(trans.t('menu_edit'))
     window.ui_objs['menu_edit'] = edit_menu
+
+    undo_action = QAction(trans.t('menu_undo'), window)
+    undo_action.setShortcut("Ctrl+Z")
+    undo_action.setProperty("trans_key", 'menu_undo')
+    undo_action.triggered.connect(window.undo)
+    undo_action.setEnabled(False)
+    edit_menu.addAction(undo_action)
+    window.ui_objs['action_undo'] = undo_action
+
+    redo_action = QAction(trans.t('menu_redo'), window)
+    redo_action.setShortcut("Ctrl+Y")
+    redo_action.setProperty("trans_key", 'menu_redo')
+    redo_action.triggered.connect(window.redo)
+    redo_action.setEnabled(False)
+    edit_menu.addAction(redo_action)
+    window.ui_objs['action_redo'] = redo_action
+
+    edit_menu.addSeparator()
 
     rotate_menu = edit_menu.addMenu(trans.t('menu_rotate'))
     window.ui_objs['menu_rotate'] = rotate_menu

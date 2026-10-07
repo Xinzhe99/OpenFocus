@@ -246,6 +246,10 @@ class TestOneClickUpdateFlow:
         monkeypatch.setattr(updater, "download_to_file", fake_download)
         monkeypatch.setattr(self_update, "is_frozen", lambda: True)
         monkeypatch.setattr(self_update, "app_install_dir", lambda: install_dir)
+        # This test drives the WINDOWS swap flow on every platform: without
+        # pinning sys.platform, can_self_update() refuses on Linux/macOS and
+        # the hand-off never happens (the ubuntu CI job failed exactly there).
+        monkeypatch.setattr(sys, "platform", "win32")
         # The hand-off snapshots the session and writes the restore marker:
         # without this the test leaves a real marker in the user's profile.
         from utils import recovery as _recovery

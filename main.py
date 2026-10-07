@@ -165,6 +165,11 @@ class OpenFocus(QMainWindow):
         if saved_lang:
             trans.set_language(saved_lang)
         self.recent_files = getattr(self, 'recent_files', [])
+        self.recent_projects = getattr(self, 'recent_projects', [])
+        self._undo_stack = []
+        self._redo_stack = []
+        self._undo_guard = False
+        self.excluded_frames = set()
         
         self.render_manager = RenderManager(self)
         self.output_manager = OutputManager(self)
@@ -221,6 +226,7 @@ class OpenFocus(QMainWindow):
     def init_ui(self):
         setup_menus(self)
         self.rebuild_recent_menu()
+        self.rebuild_recent_projects_menu()
 
         # 2. 主容器
         main_container = QWidget()
@@ -360,6 +366,19 @@ class OpenFocus(QMainWindow):
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._update_dynamic_status)
         self.status_timer.start(2000) # Update every 2 seconds
+
+        # Panel actions have no menu entry, so give them shortcuts here.
+        # They must not clash with the menu shortcuts in ui/menus.py.
+        for keys, handler in (
+                ("Ctrl+R", lambda: self.render_manager.start_render()),
+                ("Ctrl+Shift+R", lambda: self.render_manager.start_compare_all()),
+                ("Ctrl+Shift+B", lambda: self.show_batch_processing_dialog()),
+                ("Ctrl+M", lambda: self.show_depth_map_dialog()),
+                ("Ctrl+E", lambda: self.btn_wipe.toggle()),
+        ):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(handler)
 
         def set_splitter_properties():
             try:
@@ -510,6 +529,107 @@ class OpenFocus(QMainWindow):
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('Err'))
 
     # --- 逻辑控制 ---
+
+    # --- Undo / redo for stack mutations (rotate, flip, resize, delete,
+    #     drag-reorder and the per-frame exclusion set) ---
+
+    UNDO_LIMIT = 20
+
+    def _capture_stack_state(self) -> dict:
+        return {
+            "raw": [im.copy() for im in self.raw_images],
+            "filenames": list(self.image_filenames),
+            "source_paths": list(getattr(self, "image_source_paths", [])),
+            "base": [im.copy() for im in getattr(self, "base_images", [])],
+            "excluded": set(getattr(self, "excluded_frames", set())),
+            "current": getattr(self, "current_img_index", 0),
+        }
+
+    def push_undo(self) -> None:
+        """Snapshot the stack BEFORE a mutation. Cheap enough for stacks of
+        realistic depth (references are copied, pixels duplicated) and it makes
+        every destructive operation reversible."""
+        if getattr(self, "_undo_guard", False):
+            return
+        self._undo_stack.append(self._capture_stack_state())
+        if len(self._undo_stack) > self.UNDO_LIMIT:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._refresh_undo_actions()
+
+    def _restore_stack_state(self, state: dict) -> None:
+        self.raw_images = [im.copy() for im in state["raw"]]
+        self.image_filenames = list(state["filenames"])
+        self.image_source_paths = list(state["source_paths"])
+        self.base_images = [im.copy() for im in state["base"]]
+        self.excluded_frames = set(state["excluded"])
+        self.current_img_index = state["current"]
+        # The restored stack invalidates every derived result, exactly like
+        # rotate/flip do.
+        self.transform_manager.invalidate_processing_results(
+            clear_output_view=False, preserve_outputs=True)
+        self.transform_manager.reload_image_stack(
+            initial_index=max(0, min(state["current"],
+                                     len(self.raw_images) - 1)))
+        if hasattr(self, "file_list"):
+            self.source_manager.decorate_source_items()
+
+    def undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self._undo_guard = True
+        try:
+            self._redo_stack.append(self._capture_stack_state())
+            state = self._undo_stack.pop()
+            self._restore_stack_state(state)
+        finally:
+            self._undo_guard = False
+        self._refresh_undo_actions()
+        self._show_status_message(trans.t("msg_undo_done"), 3000)
+
+    def redo(self) -> None:
+        if not self._redo_stack:
+            return
+        self._undo_guard = True
+        try:
+            self._undo_stack.append(self._capture_stack_state())
+            state = self._redo_stack.pop()
+            self._restore_stack_state(state)
+        finally:
+            self._undo_guard = False
+        self._refresh_undo_actions()
+        self._show_status_message(trans.t("msg_redo_done"), 3000)
+
+    def _refresh_undo_actions(self) -> None:
+        ui = getattr(self, "ui_objs", {})
+        undo_action = ui.get("action_undo")
+        redo_action = ui.get("action_redo")
+        if undo_action is not None:
+            undo_action.setEnabled(bool(self._undo_stack))
+        if redo_action is not None:
+            redo_action.setEnabled(bool(self._redo_stack))
+
+    # --- Per-frame exclusion (checkboxes in the source list) ---
+
+    def included_indices(self) -> list:
+        """Indices of the frames that participate in registration/fusion."""
+        excluded = getattr(self, "excluded_frames", set())
+        return [i for i in range(len(self.raw_images)) if i not in excluded]
+
+    def effective_stack(self):
+        """(images, filenames, indices) of the frames that will be rendered.
+
+        With nothing excluded this returns the live lists untouched, so every
+        existing identity check keeps working.
+        """
+        idx = self.included_indices()
+        all_names = list(self.image_filenames or [])
+        if len(idx) == len(self.raw_images):
+            return self.raw_images, all_names, idx
+        images = [self.raw_images[i] for i in idx]
+        names = [all_names[i] if i < len(all_names) else f"frame_{i + 1}"
+                 for i in idx]
+        return images, names, idx
 
     def reset_to_default(self):
         """重置到默认状态"""
@@ -819,6 +939,7 @@ class OpenFocus(QMainWindow):
         self.project_path = path
         apply_project(self, state)
         self._update_project_title()
+        self.add_recent_project(path)
 
     def save_project_dialog(self, save_as: bool = False) -> None:
         from PyQt6.QtWidgets import QFileDialog
@@ -1845,6 +1966,61 @@ class OpenFocus(QMainWindow):
         from utils.settings_store import add_recent_file as _store_add
         _store_add(self, path)
 
+    def add_recent_project(self, path: str) -> None:
+        """Record a successfully opened project at the top of the recent list."""
+        from utils.settings_store import add_recent_project as _store_add
+        _store_add(self, path)
+
+    def rebuild_recent_projects_menu(self) -> None:
+        """Fill the File > Open Recent Project submenu."""
+        from PyQt6.QtGui import QAction
+        menu = self.ui_objs.get('menu_recent_projects') if hasattr(self, 'ui_objs') else None
+        if menu is None:
+            return
+
+        menu.clear()
+        recent = list(getattr(self, 'recent_projects', []))
+        if not recent:
+            empty = QAction(trans.t('menu_recent_projects_empty'), menu)
+            empty.setEnabled(False)
+            menu.addAction(empty)
+            return
+
+        for path in recent:
+            action = QAction(path, menu)
+            action.triggered.connect(
+                lambda checked=False, p=path: self._open_recent_project(p))
+            menu.addAction(action)
+
+        menu.addSeparator()
+        clear_action = QAction(trans.t('menu_recent_projects_clear'), menu)
+        clear_action.triggered.connect(self._clear_recent_projects)
+        menu.addAction(clear_action)
+
+    def _open_recent_project(self, path: str) -> None:
+        from utils.project_file import validate_project, apply_project, PROJECT_SUFFIX
+        if not os.path.exists(path):
+            show_warning_box(self, trans.t('msg_recent_missing_title'),
+                             trans.t('msg_recent_project_missing'))
+            if path in getattr(self, 'recent_projects', []):
+                self.recent_projects.remove(path)
+                self.persist_settings()
+                self.rebuild_recent_projects_menu()
+            return
+        ok, err, state = validate_project(path)
+        if not ok:
+            show_warning_box(self, trans.t('msg_error'), err)
+            return
+        self.project_path = path
+        apply_project(self, state)
+        self._update_project_title()
+        self.add_recent_project(path)
+
+    def _clear_recent_projects(self) -> None:
+        self.recent_projects = []
+        self.persist_settings()
+        self.rebuild_recent_projects_menu()
+
     def rebuild_recent_menu(self) -> None:
         """Fill the File > Open Recent submenu from self.recent_files."""
         from PyQt6.QtGui import QAction
@@ -1986,6 +2162,7 @@ class OpenFocus(QMainWindow):
         # no build is staged).
         self._refresh_update_indicator()
         self.rebuild_recent_menu()
+        self.rebuild_recent_projects_menu()
 
 
 if __name__ == "__main__":

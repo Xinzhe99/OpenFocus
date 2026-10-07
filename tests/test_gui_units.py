@@ -241,6 +241,16 @@ class _StubLabelManager:
 
 def _source_window(filenames):
     class FakeWindow:
+        def push_undo(self):
+            pass
+
+        def included_indices(self):
+            return list(range(len(self.raw_images)))
+
+        def effective_stack(self):
+            imgs = self.raw_images
+            return imgs, list(getattr(self, 'image_filenames', [])), list(range(len(imgs)))
+
         pass
 
     w = FakeWindow()
@@ -261,6 +271,16 @@ def _source_window(filenames):
 
 def _render_window(frames):
     class FakeWindow:
+        def push_undo(self):
+            pass
+
+        def included_indices(self):
+            return list(range(len(self.raw_images)))
+
+        def effective_stack(self):
+            imgs = self.raw_images
+            return imgs, list(getattr(self, 'image_filenames', [])), list(range(len(imgs)))
+
         pass
 
     w = FakeWindow()
@@ -268,6 +288,20 @@ def _render_window(frames):
     w.base_images = list(frames)
     w.image_filenames = [f"f{i}.png" for i in range(len(frames))]
     w.image_source_paths = []
+    # mirror the real window's per-frame exclusion API
+    w.excluded_frames = set()
+
+    def included_indices(self=None):
+        excluded = w.excluded_frames
+        return [i for i in range(len(w.raw_images)) if i not in excluded]
+
+    def effective_stack(self=None):
+        idx = included_indices()
+        return w.raw_images, list(w.image_filenames), idx
+
+    import types
+    w.included_indices = types.MethodType(included_indices, w)
+    w.effective_stack = types.MethodType(effective_stack, w)
     w.file_list = QListWidget()
     for name in w.image_filenames:
         w.file_list.addItem(name)
@@ -535,6 +569,16 @@ def test_roi_reset_clears_rect_button_and_state(qapp):
     from controllers.transform_manager import TransformManager
 
     class FakeWindow:
+        def push_undo(self):
+            pass
+
+        def included_indices(self):
+            return list(range(len(self.raw_images)))
+
+        def effective_stack(self):
+            imgs = self.raw_images
+            return imgs, list(getattr(self, 'image_filenames', [])), list(range(len(imgs)))
+
         pass
 
     w = FakeWindow()
@@ -683,6 +727,16 @@ class _StubResizeDialog:
 
 def _resize_window(base_shape, base_scale, current_scale):
     class FakeWindow:
+        def push_undo(self):
+            pass
+
+        def included_indices(self):
+            return list(range(len(self.raw_images)))
+
+        def effective_stack(self):
+            imgs = self.raw_images
+            return imgs, list(getattr(self, 'image_filenames', [])), list(range(len(imgs)))
+
         pass
 
     w = FakeWindow()

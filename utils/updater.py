@@ -35,13 +35,19 @@ def is_newer(latest_tag: str, current_version: str) -> bool:
     return latest > current
 
 
+def _asset_fields(a: dict) -> dict:
+    """Normalize one API asset entry (name/url/size plus its digest)."""
+    return {"name": a.get("name", ""), "url": a.get("browser_download_url", ""),
+            "size": int(a.get("size", 0)),
+            "digest": str(a.get("digest", "") or "")}
+
+
 def find_asset_by_keyword(release: dict, keyword: str) -> Optional[dict]:
     assets = release.get("assets", []) or []
     for a in assets:
         name = str(a.get("name", "")).lower()
         if keyword in name:
-            return {"name": a["name"], "url": a.get("browser_download_url", ""),
-                    "size": int(a.get("size", 0))}
+            return _asset_fields(a)
     return None
 
 
@@ -52,8 +58,7 @@ def _find_zip_asset(release: dict, keywords) -> Optional[dict]:
     for keyword in keywords:
         for a in zips:
             if keyword in str(a.get("name", "")).lower():
-                return {"name": a["name"], "url": a.get("browser_download_url", ""),
-                        "size": int(a.get("size", 0))}
+                return _asset_fields(a)
     return None
 
 
@@ -154,6 +159,36 @@ def download_to_file(url: str, dest_path: str,
     return True
 
 
+def verify_file_digest(path: str, digest: str) -> Optional[bool]:
+    """Check a downloaded file against a GitHub asset digest ("sha256:<hex>").
+
+    Returns True/False on a definite result, None when no usable digest was
+    published (older releases) — callers skip verification then rather than
+    blocking the update.
+    """
+    import hashlib
+    import re
+    digest = str(digest or "").strip()
+    if not digest:
+        return None
+    m = re.match(r"^sha256[:=]?([0-9a-fA-F]{64})$", digest)
+    bare = re.match(r"^([0-9a-fA-F]{64})$", digest)
+    if m:
+        expected = m.group(1).lower()
+    elif bare:
+        expected = bare.group(1).lower()
+    else:
+        return None  # unknown algorithm (sha384/md5/…): skip, don't fail
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest() == expected
+
+
 def download_async(url: str, dest_path: str,
                    on_progress: Callable[[int, int], None],
                    on_done: Callable[[bool, str], None]) -> None:
@@ -184,6 +219,11 @@ def check_async(current_version: str, on_result: Callable[[str, str, str], None]
     With quiet=True the "latest" and "error" states are not reported (used
     for the automatic startup check, which must stay silent unless there is
     something to install).
+
+    For the "update" state two extra arguments follow the page URL: the
+    portable-zip URL and the SHA-256 digest GitHub publishes for that asset,
+    so the caller can verify the download instead of swapping in whatever a
+    proxy handed it.
     """
 
     def worker():
@@ -191,8 +231,9 @@ def check_async(current_version: str, on_result: Callable[[str, str, str], None]
             ok, tag, url, asset, portable_zip = fetch_latest_release()
             setup_url = (asset or {}).get("url", "")
             zip_url = (portable_zip or {}).get("url", "")
+            zip_digest = (portable_zip or {}).get("digest", "")
             if ok and is_newer(tag, current_version):
-                on_result("update", tag, url, zip_url, setup_url)
+                on_result("update", tag, url, zip_url, setup_url, zip_digest)
             elif not quiet:
                 on_result("latest", tag or "", url)
         except Exception:

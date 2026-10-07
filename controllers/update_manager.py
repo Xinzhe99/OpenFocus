@@ -14,6 +14,7 @@ Behaviour (modelled on the update flow of modern desktop tools):
 * applying it snapshots the session, hands off to a detached swap script
   and restarts the app, which restores the project ([utils.recovery]).
 """
+import logging
 import os
 import sys
 
@@ -267,13 +268,14 @@ class UpdateManager(QObject):
             if self.state != STATE_READY:
                 self._set_state(STATE_CHECKING, self.tag, 0)
 
-        def done(state, tag, url, zip_url="", setup_url=""):
+        def done(state, tag, url, zip_url="", setup_url="", zip_digest=""):
             # Runs on the checker's thread: the signal hop moves it to the GUI.
-            self._on_check_result(state, tag, url, zip_url, setup_url)
+            self._on_check_result(state, tag, url, zip_url, setup_url, zip_digest)
 
         updater.check_async(APP_VERSION, lambda *a: done(*a), quiet=quiet)
 
-    def _on_check_result(self, state, tag, page_url, zip_url="", setup_url=""):
+    def _on_check_result(self, state, tag, page_url, zip_url="", setup_url="",
+                         zip_digest=""):
         self.check_finished.emit(state, tag, page_url, zip_url, setup_url)
         if state != "update":
             if self.state == STATE_CHECKING:
@@ -284,6 +286,9 @@ class UpdateManager(QObject):
         self.zip_url = zip_url or self.zip_url
         self.setup_url = setup_url or self.setup_url
         self.tag = tag or self.tag
+        # SHA-256 of the zip as published by GitHub; "" when the release
+        # predates digests (verification is skipped then, never faked).
+        self.zip_digest = zip_digest or getattr(self, "zip_digest", "")
         try:
             from utils.settings_store import get_settings
             settings = get_settings()
@@ -402,6 +407,36 @@ class UpdateManager(QObject):
             if self._manual:
                 self._fail("update_check_failed_title", detail)
             return
+        # Integrity: the swap overwrites the installation with whatever this
+        # download produced. GitHub publishes a SHA-256 per release asset, so
+        # compare before extracting; a tampered/truncated file is deleted and
+        # the update fails loudly instead of bricking the install. No digest
+        # on the release (pre-digest era) -> skip with a log line.
+        from utils.updater import verify_file_digest
+        try:
+            verdict = verify_file_digest(detail, getattr(self, "zip_digest", ""))
+        except OSError as exc:
+            verdict = None
+            logging.getLogger("openfocus").warning(
+                "update digest could not be read: %s", exc)
+        if verdict is False:
+            self._apply_when_ready = False
+            try:
+                os.remove(detail)
+            except OSError:
+                pass
+            self._set_state(STATE_FAILED, self.tag, 0)
+            logging.getLogger("openfocus").error(
+                "update zip failed its SHA-256 check (tag %s) — file deleted",
+                self.tag)
+            if self._manual:
+                from locales import trans
+                self._fail("update_check_failed_title",
+                           trans.t("msg_update_digest_mismatch"))
+            return
+        if verdict is None:
+            logging.getLogger("openfocus").warning(
+                "release published no digest; skipping integrity check")
         self._staged_zip = detail
         self._stage_zip(detail, self_update.staging_root_for(safe_tag), safe_tag)
 

@@ -21,6 +21,7 @@ class TransformManager:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_rotate"))
             return
 
+        window.push_undo()
         window.raw_images = [cv2.rotate(img, rotation_code) for img in window.raw_images]
 
         if getattr(window, "base_images", None):
@@ -36,6 +37,7 @@ class TransformManager:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_flip"))
             return
 
+        window.push_undo()
         window.raw_images = [cv2.flip(img, flip_code) for img in window.raw_images]
 
         if getattr(window, "base_images", None):
@@ -66,6 +68,7 @@ class TransformManager:
         if abs(new_scale - current_scale) < 0.001:
             return
 
+        window.push_undo()
         try:
             if abs(new_scale - base_scale) < 0.001:
                 window.raw_images = [img.copy() for img in window.base_images]
@@ -218,6 +221,9 @@ class TransformManager:
     def _invalidate_processing_results(self, clear_output_view: bool = False, preserve_outputs: bool = False) -> None:
         """Clear cached processing results and reset related UI elements."""
         window = self.window
+
+        # Exclusions are index-based: any stack mutation invalidates them.
+        window.excluded_frames = set()
 
         window.aligned_images = []
         window.is_images_aligned = False

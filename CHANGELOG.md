@@ -3,6 +3,49 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.37] — 2026-10-08
+
+### Added
+- **Undo / Redo (Ctrl+Z / Ctrl+Y)** for every stack mutation — rotate, flip,
+  resize, frame deletion and drag-reorder are all reversible now (20-step
+  history; the per-frame exclusion set travels with it).
+- **Per-frame enable/disable**: untick a frame in the source list and it is
+  excluded from registration and fusion (checkbox + strike-through in the
+  list; at least two frames must stay included). The perfect way to drop one
+  misaligned/wrong-exposure frame without deleting it.
+- **Drag to reorder the stack** in the source list — the new order is the
+  fusion order.
+- **Recent Projects** (File → Open Recent Project) with the same dedupe/cap/
+  clear behaviour as recent stacks.
+- **Keyboard shortcuts** for the panel actions that had no menu entry:
+  Ctrl+R render, Ctrl+Shift+R compare all, Ctrl+Shift+B batch, Ctrl+M depth
+  map, Ctrl+E wipe compare.
+- **Update integrity**: the one-click update now verifies the downloaded
+  portable zip against the SHA-256 digest GitHub publishes for the release
+  asset; a mismatched/truncated file is deleted and the update fails loudly
+  instead of swapping in unverified bytes. (Releases without a published
+  digest skip the check, never fake it.)
+- **CLI engineering** (scripted pipelines): `--dry-run` (validate + print the
+  plan, fuse nothing), `--resume` (batch: skip folders whose output already
+  exists, so a failed batch continues where it stopped), `--json FILE`
+  (machine-readable result summary), `--json-progress` (one NDJSON progress
+  object per step) and `--config FILE` (per-folder parameter overrides, e.g.
+  `{"stackB": {"method": "dct", "kernel": 9}}`).
+- **Golden-image regression tests**: fusing the committed demo stack is
+  compared against a committed baseline (tolerant float thresholds), so the
+  DCT-seam/black-output class of regression cannot return unnoticed, plus a
+  determinism test (same input → byte-identical output).
+
+### Fixed
+- **Linux CI**: the one-click-update end-to-end test now pins the platform it
+  simulates (the v1.36 self-update guards refused the hand-off on
+  non-Windows runners), the AI tiling test skips cleanly without torch, and
+  the update-HTTP test server is threaded so a client that hangs up cannot
+  stall `shutdown()` into the 90 s CI timeout.
+- `core/registration.py` no longer rebinds `sys.stdout` at import time — the
+  module-level wrapper broke pytest's terminal output on redirected runs
+  (the reason the ubuntu failure printed no details).
+
 ## [v1.36] — 2026-10-07
 
 ### Changed — background updates, one-click restart

@@ -474,13 +474,14 @@ class SourceManager:
 
     def update_file_list(self, filenames, thumbnails) -> None:
         window = self.window
+        window.file_list.blockSignals(True)
         window.file_list.clear()
 
         try:
             for filename, thumbnail in zip(filenames, thumbnails):
                 item = QListWidgetItem(QIcon(thumbnail), filename)
                 window.file_list.addItem(item)
-        except Exception as exc:  # pylint: disable=broad-except
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             show_message_box(
                 window,
                 trans.t("msg_update_error_title"),
@@ -488,6 +489,9 @@ class SourceManager:
                 f"Error: {str(exc)}",
                 QMessageBox.Icon.Critical,
             )
+        finally:
+            self.decorate_source_items()
+            window.file_list.blockSignals(False)
 
         self.update_source_images_count()
 
@@ -520,6 +524,7 @@ class SourceManager:
 
         window.transform_manager.invalidate_processing_results(clear_output_view=False, preserve_outputs=True)
 
+        window.push_undo()
         self._pop_sequence(window.image_filenames, row)
         self._pop_sequence(window.raw_images, row)
         self._pop_sequence(getattr(window, "base_images", None), row)
@@ -559,6 +564,7 @@ class SourceManager:
 
         window.transform_manager.invalidate_processing_results(clear_output_view=False, preserve_outputs=True)
 
+        window.push_undo()
         rows.sort(reverse=True)
 
         for row in rows:
@@ -576,6 +582,99 @@ class SourceManager:
     def _pop_sequence(self, sequence: list[Any] | None, index: int) -> None:
         if sequence is not None and 0 <= index < len(sequence):
             sequence.pop(index)
+
+    # ------------------------------------------------------------------
+    # Per-frame exclusion + drag reordering
+    # ------------------------------------------------------------------
+    def decorate_source_items(self) -> None:
+        """Give every list row its checkable "included" state and its original
+        position tag (UserRole), so a drag-drop can be mapped back to data."""
+        window = self.window
+        excluded = getattr(window, "excluded_frames", set())
+        for row in range(window.file_list.count()):
+            item = window.file_list.item(row)
+            if item is None:
+                continue
+            item.setData(Qt.ItemDataRole.UserRole, row)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Unchecked if row in excluded
+                else Qt.CheckState.Checked)
+
+    def on_item_changed(self, item: QListWidgetItem) -> None:
+        """A checkbox was toggled: update the excluded set (indices shift when
+        frames are deleted, so exclusions reset on any stack mutation)."""
+        window = self.window
+        row = window.file_list.row(item)
+        if row < 0 or row >= len(window.raw_images):
+            return
+        excluded = getattr(window, "excluded_frames", None)
+        if excluded is None:
+            excluded = set()
+            window.excluded_frames = excluded
+        was_blocked = window.file_list.blockSignals(True)
+        try:
+            if item.checkState() == Qt.CheckState.Checked:
+                excluded.discard(row)
+            else:
+                # at least two frames must stay included
+                if len(window.raw_images) - len(excluded) <= 1:
+                    item.setCheckState(Qt.CheckState.Checked)
+                    return
+                excluded.add(row)
+            font = item.font()
+            font.setStrikeOut(item.checkState() == Qt.CheckState.Unchecked)
+            item.setFont(font)
+        finally:
+            window.file_list.blockSignals(was_blocked)
+
+    def apply_list_order(self) -> None:
+        """Reorder the underlying stacks to match a drag-drop in the list.
+
+        Items carry their original index in UserRole; after an InternalMove
+        the widget order IS the wanted order.
+        """
+        window = self.window
+        n = len(window.raw_images)
+        if window.file_list.count() != n:
+            return
+        new_order = []
+        for row in range(window.file_list.count()):
+            item = window.file_list.item(row)
+            old = item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(old, int) or not (0 <= old < n):
+                return  # unmappable: leave the data alone
+            new_order.append(old)
+        if new_order == list(range(n)):
+            return
+
+        window.push_undo()
+
+        def _reorder(seq):
+            return [seq[i] for i in new_order]
+
+        window.raw_images = _reorder(window.raw_images)
+        window.image_filenames = _reorder(window.image_filenames)
+        if getattr(window, "base_images", None):
+            window.base_images = _reorder(window.base_images)
+        if getattr(window, "image_source_paths", None):
+            window.image_source_paths = _reorder(window.image_source_paths)
+        excluded = getattr(window, "excluded_frames", None)
+        if excluded:
+            # old index i ends up at position new_order.index(i)
+            window.excluded_frames = {
+                new_order.index(i) for i in excluded if i in new_order}
+
+        # _invalidate_processing_results clears the exclusion set; remap first
+        # (above), then invalidate, then restore the remapped set.
+        window.transform_manager.invalidate_processing_results(
+            clear_output_view=False, preserve_outputs=True)
+        if excluded:
+            window.excluded_frames = {
+                new_order.index(i) for i in excluded if i in new_order}
+        kept = window.current_img_index if 0 <= window.current_img_index < n else 0
+        new_pos = new_order.index(kept) if kept in new_order else 0
+        window.transform_manager.reload_image_stack(initial_index=new_pos)
 
     # === Icon Drag-and-Drop Support Methods ===
     # These methods handle files dropped on app icon/taskbar/dock

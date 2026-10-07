@@ -287,6 +287,10 @@ class RenderManager:
                     return
         
         # 确定要使用的图像源
+        # Frames the user unticked in the source list are excluded here, so
+        # registration/fusion only see the included subset. With nothing
+        # excluded, effective_stack() returns the live lists unchanged.
+        stack_images, stack_filenames, included_idx = window.effective_stack()
         preview_downscale = getattr(window, 'chk_quick_preview', None)
         self._preview_mode = bool(
             preview_downscale is not None
@@ -307,7 +311,7 @@ class RenderManager:
             # Quick preview: downscale the stack so the draft render finishes
             # in a fraction of the time; alignment always reruns on the small
             # frames (the full-resolution aligned cache does not apply).
-            source_images = [_downscale_for_preview(img) for img in window.raw_images]
+            source_images = [_downscale_for_preview(img) for img in stack_images]
             effective_need_align_homography = need_align_homography
             effective_need_align_ecc = need_align_ecc
             effective_aligned_images = source_images
@@ -319,34 +323,42 @@ class RenderManager:
             from utils import align_cache
             cached = align_cache.load_aligned(
                 getattr(window, "current_folder_path", ""),
-                window.image_filenames,
+                stack_filenames,
                 (need_align_homography, need_align_ecc),
                 getattr(window, "reg_downscale_width", None),
                 getattr(window, "current_scale_factor", 1.0),
-                tuple(window.raw_images[0].shape[:2]) if window.raw_images else None,
+                tuple(stack_images[0].shape[:2]) if stack_images else None,
             )
-            if cached is not None and len(cached) == len(window.raw_images):
+            if cached is not None and len(cached) == len(stack_images):
                 print("Registration cache hit — skipping alignment")
-                source_images = window.raw_images
+                source_images = stack_images
                 effective_need_align_homography = need_align_homography
                 effective_need_align_ecc = need_align_ecc
                 effective_aligned_images = cached
                 effective_is_aligned = True
                 effective_last_alignment_options = (need_align_homography, need_align_ecc)
             else:
-                source_images = window.raw_images
+                source_images = stack_images
                 effective_need_align_homography = need_align_homography
                 effective_need_align_ecc = need_align_ecc
                 effective_aligned_images = window.aligned_images
                 effective_is_aligned = window.is_images_aligned
                 effective_last_alignment_options = window.last_alignment_options
         else:
-            source_images = window.raw_images
+            source_images = stack_images
             effective_need_align_homography = need_align_homography
             effective_need_align_ecc = need_align_ecc
             effective_aligned_images = window.aligned_images
             effective_is_aligned = window.is_images_aligned
             effective_last_alignment_options = window.last_alignment_options
+
+        # Aligned stacks (cache or reused) cover the full source stack: filter
+        # them down to the included subset so they stay 1:1 with source_images.
+        if (len(stack_images) != len(window.raw_images)
+                and effective_aligned_images is not None
+                and len(effective_aligned_images) == len(window.raw_images)):
+            effective_aligned_images = [effective_aligned_images[i] for i in included_idx]
+            effective_is_aligned = window.is_images_aligned
 
         # Record exactly what THIS render was launched with. on_render_finished
         # must not read self.worker (a newer render may already have replaced
@@ -355,11 +367,16 @@ class RenderManager:
         # worker downscaled / cropped copies instead of window.raw_images).
         self._render_context = {
             "source": source_images,
+            # Live reference of the FULL stack at launch: with exclusions,
+            # "source" is a filtered copy, so identity must be checked against
+            # this, never against "source".
+            "source_ref": window.raw_images,
             "alignment_options": (
                 effective_need_align_homography, effective_need_align_ecc),
             "preview": self._preview_mode,
             "roi": roi_rect is not None,
-            "filenames": list(window.image_filenames or []),
+            "filenames": list(stack_filenames),
+            "included": list(included_idx),
         }
 
         self.worker = RenderWorker(
@@ -420,7 +437,12 @@ class RenderManager:
         stack_changed = (
             context is not None
             and not context["preview"]
-            and (window.raw_images is not context["source"]
+            # ROI renders run on their own pre-aligned stack (its staleness is
+            # guarded in main.py's ROI flow), so the stack-identity check
+            # below does not apply to them.
+            and not context.get("roi")
+            and (window.raw_images is not context.get("source_ref")
+                 or window.included_indices() != context.get("included")
                  or list(window.image_filenames or []) != context["filenames"])
         )
         if stack_changed:
