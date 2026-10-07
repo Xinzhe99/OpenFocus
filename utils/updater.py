@@ -136,13 +136,6 @@ def download_to_file(url: str, dest_path: str,
                             on_progress(done, total)
                         except Exception:
                             pass
-    except DownloadCancelled:
-        try:
-            os.unlink(part_path)
-        except OSError:
-            pass
-        raise
-    try:
         # 无 Content-Length 的响应 total=0，跳过校验；否则字节数必须吻合，
         # 代理/杀软截断会"干净地"提前 EOF，晋升半截 zip 只会在解压时白费
         if total and done != total:
@@ -150,6 +143,9 @@ def download_to_file(url: str, dest_path: str,
                 f"download truncated: {done} of {total} bytes")
         os.replace(part_path, dest_path)
     except BaseException:
+        # ANY failure (socket reset, disk full, truncation, cancel) must take
+        # the partial file with it: a leftover .part only wasted disk and made
+        # the next attempt look like it had already downloaded something.
         try:
             os.unlink(part_path)
         except OSError:

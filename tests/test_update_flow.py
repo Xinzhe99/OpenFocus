@@ -139,9 +139,16 @@ class TestStagedReuse:
 
 class TestDownloadCancellation:
     def _serve(self, size=8 * 1024 * 1024):
-        """Minimal HTTP server returning `size` bytes with Content-Length."""
+        """Minimal threaded HTTP server returning `size` bytes.
+
+        ThreadingHTTPServer + daemon threads: a single-threaded server whose
+        handler is blocked writing to a client that went away makes
+        shutdown() hang (that timed out the ubuntu CI job).
+        """
         import http.server
         import threading
+
+        stop = threading.Event()
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -150,19 +157,23 @@ class TestDownloadCancellation:
                 self.end_headers()
                 chunk = b"x" * 65536
                 sent = 0
-                while sent < size:
-                    self.wfile.write(chunk)
-                    sent += len(chunk)
+                try:
+                    while sent < size and not stop.is_set():
+                        self.wfile.write(chunk)
+                        sent += len(chunk)
+                except OSError:
+                    pass  # client went away: normal for the cancel test
 
             def log_message(self, *args):
                 pass
 
-        httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        httpd.daemon_threads = True
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        return httpd, f"http://127.0.0.1:{httpd.server_address[1]}/x.zip"
+        return (httpd, stop), f"http://127.0.0.1:{httpd.server_address[1]}/x.zip"
 
     def test_cancel_removes_the_part_file(self, tmp_path):
-        httpd, url = self._serve()
+        (httpd, stop), url = self._serve()
         dest = str(tmp_path / "out.zip")
         calls = {"n": 0}
 
@@ -174,18 +185,35 @@ class TestDownloadCancellation:
             with pytest.raises(updater.DownloadCancelled):
                 updater.download_to_file(url, dest, should_cancel=should_cancel)
         finally:
+            stop.set()
             httpd.shutdown()
+            httpd.server_close()
         assert not os.path.exists(dest)
         assert not os.path.exists(dest + ".part")
 
     def test_completed_download_is_promoted(self, tmp_path):
-        httpd, url = self._serve(size=200 * 1024)
+        (httpd, stop), url = self._serve(size=200 * 1024)
         dest = str(tmp_path / "out.zip")
         try:
             updater.download_to_file(url, dest)
         finally:
+            stop.set()
             httpd.shutdown()
+            httpd.server_close()
         assert os.path.getsize(dest) == 200 * 1024
+        assert not os.path.exists(dest + ".part")
+
+    def test_part_file_is_removed_when_the_target_cannot_be_written(self, tmp_path):
+        """Any failure — not just a cancel — must leave no .part behind."""
+        (httpd, stop), url = self._serve(size=64 * 1024)
+        dest = str(tmp_path / "missing_dir" / "out.zip")
+        try:
+            with pytest.raises(Exception):
+                updater.download_to_file(url, dest)
+        finally:
+            stop.set()
+            httpd.shutdown()
+            httpd.server_close()
         assert not os.path.exists(dest + ".part")
 
 
