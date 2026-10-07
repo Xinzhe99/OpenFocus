@@ -124,6 +124,23 @@ def get_settings() -> QSettings:
     return _settings_singleton
 
 
+def reset_settings_singleton() -> None:
+    """Drop the cached QSettings so the next get_settings() re-reads disk.
+
+    The singleton caches values in memory, so wiping the settings directory
+    (or calling QSettings.setPath) after it exists has no effect on it — the
+    test suite wiped its sandbox but kept reading the previous values, and
+    then wrote them back. Tests must call this around such a wipe.
+    """
+    global _settings_singleton
+    if _settings_singleton is not None:
+        try:
+            _settings_singleton.sync()
+        except Exception:
+            pass
+    _settings_singleton = None
+
+
 _STR_KINDS = {"str": str, "float": float, "int": int}
 
 

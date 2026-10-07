@@ -191,7 +191,10 @@ class LV_UNet(nn.Module):
                  drop_rate=0, act_num=1, strides=[2,2,2], deploy=False):
         super().__init__()
         self.deploy = deploy
-        mobile = models.mobilenet_v3_large(pretrained=True)
+        # weights=None: every parameter is overwritten by the StackMFF-V4
+        # checkpoint right after construction, so pretrained=True only made the
+        # first use on a cold machine download 22 MB from download.pytorch.org.
+        mobile = models.mobilenet_v3_large(weights=None)
         # 修改第一层卷积以适应单通道输入
         self.firstconv = nn.Conv2d(input_channel, 16, kernel_size=3, stride=2, padding=1, bias=False)
         # 初始化权重

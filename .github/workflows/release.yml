@@ -100,7 +100,7 @@ jobs:
         run: |
           V="v$(python -c 'import constants; print(constants.APP_VERSION)')"
           if [ "$V" != "${{ github.ref_name }}" ]; then
-            echo "::error::constants.py APP_VERSION ($V) != tag (${ github.ref_name }})."
+            echo "::error::constants.py APP_VERSION ($V) != tag (${{ github.ref_name }})."
             exit 1
           fi
 

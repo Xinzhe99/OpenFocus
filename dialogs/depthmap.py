@@ -60,11 +60,12 @@ class DepthWorker(QThread):
     ok = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, images, method, use_gpu, parent=None):
+    def __init__(self, images, method, use_gpu, kernel_size=7, parent=None):
         super().__init__(parent)
         self._images = images
         self._method = method
         self._use_gpu = use_gpu
+        self._kernel_size = int(kernel_size) if kernel_size else 7
         self._cancelled = False
 
     def cancel(self):
@@ -79,6 +80,9 @@ class DepthWorker(QThread):
                 model_path = _find_model_path()
             m = compute_focus_index(
                 self._images, self._method,
+                # 与融合管线同参数：否则 DCT 的中值窗口 / GFG-FGF 的模糊窗口
+                # 永远是默认的 7，而界面上用户调的是别的值
+                kernel_size=self._kernel_size,
                 model_path=model_path, use_gpu=self._use_gpu,
                 progress_callback=lambda i, n: self.progress.emit(i, n),
                 should_cancel=lambda: self._cancelled,
@@ -470,13 +474,27 @@ class DepthMapDialog(QDialog):
         return list(imgs) if len(imgs) >= 2 else None
 
     def _compute(self):
+        # One worker at a time: a second _compute would overwrite the reference
+        # and leave the first worker parented to this dialog, so closing it
+        # aborted the process ("QThread destroyed while running").
+        if self._worker is not None and self._worker.isRunning():
+            return
         imgs = self._images()
         if not imgs:
             self.status_lbl.setText(trans.t("depth_need_stack"))
             return
         method = self.method_combo.currentData()
         use_gpu = bool(getattr(self.window_main, "use_gpu", False))
-        self._worker = DepthWorker(imgs, method, use_gpu, self)
+        # The depth map must use the kernel the user set for fusion (DCT's
+        # median window / GFG-FGF's blur), not the built-in default.
+        kernel_size = 7
+        try:
+            slider = getattr(self.window_main, "slider_smooth", None)
+            if slider is not None:
+                kernel_size = int(slider.value())
+        except Exception:
+            kernel_size = 7
+        self._worker = DepthWorker(imgs, method, use_gpu, kernel_size, self)
         self._worker_method = method
         self._worker.progress.connect(lambda i, n: self.status_lbl.setText(
             trans.t("depth_computing").format(i=i, n=n)))
@@ -494,17 +512,34 @@ class DepthMapDialog(QDialog):
     def _computed(self, index01):
         self._index01 = np.asarray(index01, np.float32)
         self._map_method = getattr(self, "_worker_method", None)
-        self._worker = None
+        self._detach_worker()
         self.compute_btn.setVisible(True)
         self.cancel_btn.setVisible(False)
         self.status_lbl.setText(trans.t("depth_ready"))
         self._refresh_preview()
 
     def _failed(self, msg):
-        self._worker = None
+        self._detach_worker()
         self.compute_btn.setVisible(True)
         self.cancel_btn.setVisible(False)
         self.status_lbl.setText("" if msg == "cancelled" else msg)
+
+    def _detach_worker(self):
+        """Release the finished worker safely (never while it is running)."""
+        worker = self._worker
+        self._worker = None
+        if worker is None:
+            return
+        if worker.isRunning():
+            worker.cancel()
+            try:
+                from dialogs.depthmap import _ORPHAN_WORKERS
+            except Exception:
+                _ORPHAN_WORKERS = None
+            if _ORPHAN_WORKERS is not None:
+                _ORPHAN_WORKERS.add(worker)
+                worker.finished.connect(lambda w=worker: _ORPHAN_WORKERS.discard(w))
+        worker.deleteLater()
 
     # ------------------------------------------------------------------
     def _colorized_full(self):
@@ -517,8 +552,11 @@ class DepthMapDialog(QDialog):
         if self.overlay_chk.isChecked():
             base = getattr(self.window_main, "fusion_result", None)
             if base is not None and base.shape[:2] == colored.shape[:2]:
+                from utils.image_utils import to_display_uint8
                 a = float(self.opacity_spin.value())
-                base_f = base.astype(np.float32)
+                # 16-bit 结果 (0-65535) 直接当 0-255 混合再 clip，整幅会变白；
+                # 先按显示位深换算
+                base_f = to_display_uint8(base).astype(np.float32)
                 col_f = colored.astype(np.float32)
                 if base_f.ndim == 2:
                     base_f = cv2.cvtColor(base_f, cv2.COLOR_GRAY2BGR)

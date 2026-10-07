@@ -337,10 +337,15 @@ class MultiFocusFusion:
             # per-frame dimensions alone: a 40-frame 1783px stack is ~3x
             # the pixels of a single 2048px frame and used to OOM the
             # neural path (a 7.6GB conv allocation) because the size-only
-            # check never fired.
-            if self.tile_enabled and (
-                    max(h, w) > self.tile_threshold
-                    or _stack_footprint_exceeds(input_source, self.tile_threshold)):
+            # check never fired. Only the neural path allocates buffers
+            # proportional to frames x H x W — for the classical algorithms
+            # the same rule just tiles (and slows down) stacks that were
+            # previously fused whole-image with byte-identical output.
+            footprint_tiles = (
+                self.algorithm == 'stackmffv4'
+                and _stack_footprint_exceeds(input_source, self.tile_threshold))
+            if self.tile_enabled and (max(h, w) > self.tile_threshold
+                                      or footprint_tiles):
                 # 使用分块融合，块大小和重叠均由实例属性控制
                 print(f"Info: Large stack detected ({len(input_source)}x{w}x{h}). Using tiled fusion mode (block={self.tile_block_size}, overlap={self.tile_overlap}).")
                 kws = dict(kwargs)
@@ -374,10 +379,13 @@ class MultiFocusFusion:
                 if first_img is None:
                     raise RuntimeError(f"Unable to read first image: {first_path}")
                 fh, fw = first_img.shape[:2]
-                if self.tile_enabled and (
-                        max(fh, fw) > self.tile_threshold
-                        or _stack_footprint_exceeds(
-                            [first_img] * len(files), self.tile_threshold)):
+                # same rule as list input: the footprint bound is neural-only
+                footprint_tiles = (
+                    self.algorithm == 'stackmffv4'
+                    and _stack_footprint_exceeds(
+                        [first_img] * len(files), self.tile_threshold))
+                if self.tile_enabled and (max(fh, fw) > self.tile_threshold
+                                          or footprint_tiles):
                     # 目录输入按文件懒加载方式分块融合（仅当实例 tile_enabled 开启时）
                     kws = dict(kwargs)
                     kws.pop('block_size', None)
@@ -394,15 +402,24 @@ class MultiFocusFusion:
                     )
 
         if self.algorithm == 'guided_filter':
-            return self._fuse_guided_filter(input_source, img_resize, **kwargs)
+            result = self._fuse_guided_filter(input_source, img_resize, **kwargs)
         elif self.algorithm == 'dct':
-            return self._fuse_dct(input_source, img_resize, **kwargs)
+            result = self._fuse_dct(input_source, img_resize, **kwargs)
         elif self.algorithm == 'dtcwt':
-            return self._fuse_dtcwt(input_source, img_resize, **kwargs)
+            result = self._fuse_dtcwt(input_source, img_resize, **kwargs)
         elif self.algorithm == 'gfgfgf':
-            return self._fuse_gfgfgf(input_source, img_resize, **kwargs)
+            result = self._fuse_gfgfgf(input_source, img_resize, **kwargs)
         elif self.algorithm == 'stackmffv4':
-            return self._fuse_stackmffv4(input_source, img_resize, **kwargs)
+            result = self._fuse_stackmffv4(input_source, img_resize, **kwargs)
+        else:
+            result = None
+        # The back-ends cannot be interrupted mid-computation, but returning a
+        # finished result after the user cancelled reported a cancelled job as
+        # a success (and published its output).
+        if should_cancel is not None and should_cancel():
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
+        return result
     
     def _fuse_guided_filter(self, 
                             input_source: Union[str, List[np.ndarray]], 
@@ -682,6 +699,10 @@ class MultiFocusFusion:
             h, w = imgs[0].shape[:2]
             channels = imgs[0].shape[2] if imgs[0].ndim == 3 else 1
             src_dtype = imgs[0].dtype
+            # BGRA frames are fused as BGR (the back-ends drop alpha), so the
+            # accumulator must be 3-channel: sizing it from the source made
+            # every tile write raise a broadcast ValueError.
+            channels = min(channels, 3)
         elif isinstance(input_source, str):
             img_dir = input_source
             try:
@@ -698,6 +719,7 @@ class MultiFocusFusion:
                 raise RuntimeError(f"Unable to read image: {os.path.join(img_dir, files[0])}")
             h, w = first_img.shape[:2]
             channels = first_img.shape[2] if first_img.ndim == 3 else 1
+            channels = min(channels, 3)  # see the list branch: BGR accumulator
             src_dtype = first_img.dtype
         else:
             raise ValueError("_fuse_tiled input_source must be a list of arrays or a directory path string")
@@ -753,6 +775,10 @@ class MultiFocusFusion:
             # are not accepted by the concrete algorithm implementations.
             algo_kwargs = {k: v for k, v in kwargs.items()
                            if k not in ('should_cancel', 'progress_callback')}
+            # Tiles are already parallel: giving every per-tile call its own
+            # pool nested 24-worker pools inside a 16-worker one and
+            # oversubscribed the machine.
+            algo_kwargs['thread_count'] = 1
             if algorithm == 'guided_filter':
                 return self._fuse_guided_filter(crops, img_resize, **algo_kwargs)
             elif algorithm == 'dct':
@@ -768,9 +794,9 @@ class MultiFocusFusion:
                     return method(crops, img_resize, **kwargs)
                 raise ValueError(f"Unsupported algorithm for tiled fusion: {algorithm}")
 
-        def process_single_tile(coords):
+        def _crop_frames(coords):
+            import cv2
             x0, y0, x1, y1 = coords
-
             if imgs is not None:
                 crops = [img[y0:y1, x0:x1].copy() for img in imgs]
             else:
@@ -784,6 +810,16 @@ class MultiFocusFusion:
                 # 目录里的 16-bit 文件同样要落到 0-255 float，否则各算法的
                 # /255 预处理会得到 0-257 的错值。
                 crops = normalize_fuse_input(crops)[0]
+            # The back-ends normalise BGRA to BGR themselves, so the accumulator
+            # (sized from the source channel count) would reject their output.
+            if crops and crops[0].ndim == 3 and crops[0].shape[2] == 4:
+                crops = [cv2.cvtColor(c, cv2.COLOR_BGRA2BGR) for c in crops]
+            return crops
+
+        def process_single_tile(coords):
+            import cv2
+            x0, y0, x1, y1 = coords
+            crops = _crop_frames(coords)
 
             fused_tile = call_algo(crops)
             if fused_tile is None:
@@ -792,6 +828,20 @@ class MultiFocusFusion:
             if fused_tile.ndim == 2:
                 fused_tile = fused_tile[:, :, np.newaxis]
             fh, fw = fused_tile.shape[:2]
+
+            # DCT returns a block-aligned (smaller) tile; writing only that
+            # region left the uncovered strips at zero, which the weight
+            # normalisation then "confirmed" as black seams in the output.
+            expect_h = y1 - y0
+            expect_w = x1 - x0
+            if (fh, fw) != (expect_h, expect_w):
+                interp = (cv2.INTER_NEAREST
+                          if fused_tile.shape[2] == 1 else cv2.INTER_LINEAR)
+                fused_tile = cv2.resize(fused_tile, (expect_w, expect_h),
+                                        interpolation=interp)
+                if fused_tile.ndim == 2:
+                    fused_tile = fused_tile[:, :, np.newaxis]
+                fh, fw = fused_tile.shape[:2]
 
             weight2d = self._compute_tile_weights(x0, y0, x1, y1, fw, fh, w, h, overlap)
 

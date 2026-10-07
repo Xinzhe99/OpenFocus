@@ -110,11 +110,8 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
             raise FileNotFoundError(f"Input not found: {entry}")
 
     # A single multi-page TIFF is a whole stack: count its pages, not files
-    from core.image_loader import _read_tiff_pages
-    total_frames = 0
-    for p in paths:
-        pages = _read_tiff_pages(p)
-        total_frames += len(pages) if pages is not None else 1
+    from core.image_loader import count_frames
+    total_frames = sum(count_frames(p) for p in paths)
     if total_frames < 2:
         raise RuntimeError("Need at least 2 images in the stack for fusion")
     return ", ".join(args.input), paths
@@ -289,8 +286,13 @@ def _run_batch(args) -> int:
         print(f"\n=== {name} ===")
         try:
             paths = _list_folder_images(folder, loader)
-            if len(paths) < 2:
-                raise RuntimeError(f"need at least 2 images, found {len(paths)}")
+            # Count frames, not files: a folder holding one multi-page TIFF
+            # Z-stack is a complete stack (same rule as single-stack mode).
+            from core.image_loader import count_frames
+            frame_count = sum(count_frames(p) for p in paths)
+            if frame_count < 2:
+                raise RuntimeError(
+                    f"need at least 2 frames, found {frame_count}")
             images = _load_images(paths)
             fused = _fuse_stack(images, args)
             _save(out_path, fused, _resolve_scale_cfg(args, paths))

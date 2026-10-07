@@ -234,7 +234,7 @@ class TestOneClickUpdateFlow:
             zf.writestr("OpenFocus/OpenFocus.exe", "MZ")
             zf.writestr("OpenFocus/_internal/base_library.zip", "x")
 
-        def fake_download(url, dest, on_progress=None):
+        def fake_download(url, dest, on_progress=None, should_cancel=None):
             shutil.copyfile(str(fake_zip), dest)
             return True
 
@@ -246,6 +246,11 @@ class TestOneClickUpdateFlow:
         monkeypatch.setattr(updater, "download_to_file", fake_download)
         monkeypatch.setattr(self_update, "is_frozen", lambda: True)
         monkeypatch.setattr(self_update, "app_install_dir", lambda: install_dir)
+        # The hand-off snapshots the session and writes the restore marker:
+        # without this the test leaves a real marker in the user's profile.
+        from utils import recovery as _recovery
+        monkeypatch.setattr(_recovery, "recovery_dir",
+                            lambda: str(tmp_path / "recovery"))
         monkeypatch.setattr(self_update, "launch_detached_windows",
                             lambda script: launched.append(script))
         monkeypatch.setattr(QApplication, "quit", staticmethod(lambda *a: None))

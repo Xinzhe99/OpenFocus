@@ -13,6 +13,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> 🎉 **2026.10.07**: **v1.36** — **updates happen in the background**: a new release downloads while you keep working (no modal, cancellable, and the staged build is reused, so updating is instant and works offline), and *Update and Restart* reopens the project you had open. Also fixed: the burst of black console windows and the silent stall that never restarted the app, multi-page TIFF stacks multiplying their frames on restore, 16-bit depth-map overlays turning white, and scale-bar calibration leaking between stacks.
+
 > 🎉 **2026.10.02**: **v1.33** — **depth maps**: export the per-pixel focus-position (pseudo-depth) map of any fusion method with customizable pseudo-color schemes — 15 built-in palettes plus your own color stops, live preview, overlay-on-result, and 16-bit raw export; also in the CLI (`--depth-map`). Available in four languages.
 
 > 🎉 **2026.10.04**: **v1.35** — smoother startup: opening a folder from the command line or app icon loads it directly (no import-mode prompt), re-opening the same folder reloads instead of duplicating frames, and crash recovery no longer stacks command-line folders on top of the restored session.

@@ -578,13 +578,27 @@ class BatchWorker(QThread):
             return [self.single_folder_images_with_times]
 
     def _stack_scale_cfg(self) -> Optional[dict]:
-        """Scale-bar config for the stack just loaded: auto-detected µm/px
-        from its own TIFF metadata, else the manual value from the dialog."""
+        """Scale-bar config for this stack.
+
+        Same rule as every other export path (utils.scalebar.effective_px_um):
+        a manual value wins over the detected metadata, so a batch output
+        carries the same bar as a normal save. Otherwise a stack whose
+        metadata is wrong got a different bar in batch mode only.
+        """
         cfg = self.processing_settings.get("scale_bar")
         if not cfg:
             return None
-        px_um = getattr(self.image_loader, "px_size_um", None) or cfg.get("manual_px_um")
-        if not px_um or px_um <= 0:
+        manual = cfg.get("manual_px_um") or 0
+        try:
+            manual = float(manual)
+        except (TypeError, ValueError):
+            manual = 0.0
+        detected = getattr(self.image_loader, "px_size_um", None)
+        if manual > 0:
+            px_um = manual
+        elif detected and detected > 0:
+            px_um = detected
+        else:
             return None
         return {"px_um": px_um, "position": cfg.get("position", "bottom-right"),
                 "color": cfg.get("color", "auto")}
@@ -702,15 +716,25 @@ class BatchWorker(QThread):
             result = quantize_fuse_output(result, is_16bit)
             stack_cfg = self._stack_scale_cfg()
 
+            saved = []
             if result is not None:
                 output_path = os.path.join(output_dir, f"{stack_name}.{output_format}")
-                self._save_image(output_path, result, output_format, scale_cfg=stack_cfg)
+                saved.append(self._save_image(output_path, result, output_format,
+                                              scale_cfg=stack_cfg))
 
             if self.processing_settings.get('save_aligned'):
                 for idx, img in enumerate(aligned_for_export):
                     aligned_filename = f"{stack_name}_aligned_{idx + 1:03d}.{output_format}"
                     aligned_path = os.path.join(output_dir, aligned_filename)
-                    self._save_image(aligned_path, img, output_format, scale_cfg=stack_cfg)
+                    saved.append(self._save_image(aligned_path, img, output_format,
+                                                  scale_cfg=stack_cfg))
+
+            # A stack whose writes all failed (or that produced nothing at all)
+            # is a failure, not a success.
+            if not any(saved):
+                raise Exception(
+                    f"nothing was written for '{stack_name}'"
+                    + ("" if result is not None else " (no fusion method selected)"))
     
     def process_single_folder(self, folder_path):
         """处理单个文件夹"""
@@ -795,13 +819,25 @@ class BatchWorker(QThread):
             fusion_result = None
         
         # 4. 保存结果
+        wrote_something = False
         if fusion_result is not None:
-            self.save_fusion_result(folder_path, fusion_result)
-        
+            wrote_something = bool(self.save_fusion_result(folder_path, fusion_result))
+
         # 5. 如果需要，保存配准后的图像栈
         save_aligned = self.processing_settings.get('save_aligned', False)
         if save_aligned:
-            self.save_registered_stack(folder_path, aligned_images, filenames)
+            wrote_something = bool(
+                self.save_registered_stack(folder_path, aligned_images, filenames)
+            ) or wrote_something
+
+        # A folder that produced no file is a failure: it used to be counted as
+        # a success and reported as "processed", while the output folder stayed
+        # empty (no fusion method selected, or every write failed).
+        if not wrote_something:
+            raise Exception(
+                "nothing was written"
+                + ("" if fusion_result is not None
+                   else " (no fusion method selected)"))
     
     def save_fusion_result(self, folder_path, fusion_result):
         """保存融合结果"""
@@ -814,16 +850,32 @@ class BatchWorker(QThread):
         else:  # custom
             output_dir = self.output_path
             os.makedirs(output_dir, exist_ok=True)
-        
-        # 生成文件名
+
+        # 生成文件名。两个同名文件夹（D:\run1\stack 与 D:\run2\stack）在
+        # custom 模式下会写到同一个文件，第二个静默覆盖第一个——加序号区分
         folder_name = os.path.basename(folder_path)
         extension = self.processing_settings.get('format', 'png')
         filename = f"{folder_name}.{extension}"
         output_path = os.path.join(output_dir, filename)
+        if self.output_type == "custom":
+            output_path = self._unique_output_path(output_path)
 
         # 保存图像
-        self._save_image(output_path, fusion_result, extension, scale_cfg=self._stack_scale_cfg())
-    
+        return self._save_image(output_path, fusion_result, extension,
+                                scale_cfg=self._stack_scale_cfg())
+
+    @staticmethod
+    def _unique_output_path(path: str) -> str:
+        """Append _2, _3, ... when the target already exists."""
+        if not os.path.exists(path):
+            return path
+        stem, ext = os.path.splitext(path)
+        for n in range(2, 1000):
+            candidate = f"{stem}_{n}{ext}"
+            if not os.path.exists(candidate):
+                return candidate
+        return path
+
     def save_registered_stack(self, folder_path, images, filenames):
         """保存配准后的图像栈"""
         # 确定输出路径
@@ -834,11 +886,14 @@ class BatchWorker(QThread):
             os.makedirs(output_dir, exist_ok=True)
         else:  # same as source
             output_dir = folder_path
-        
+
         # 保存每个图像
         import cv2
         extension = self.processing_settings.get('format', 'png')
-        
+        source_paths = {os.path.abspath(os.path.join(folder_path, name))
+                        for name in (filenames or [])}
+        saved = False
+
         for i, image in enumerate(images):
             if i < len(filenames):
                 # 使用原始文件名
@@ -850,9 +905,19 @@ class BatchWorker(QThread):
             else:
                 # 生成默认文件名
                 filename = f"registered_{i+1:04d}.{extension}"
-            
+
             output_path = os.path.join(output_dir, filename)
-            self._save_image(output_path, image, extension, scale_cfg=self._stack_scale_cfg())
+            # Aligned frames must never overwrite the frames they came from:
+            # with "same as source" and a matching output format the originals
+            # were replaced by the registered copies (irreversible).
+            if os.path.abspath(output_path) in source_paths:
+                output_path = self._unique_output_path(
+                    os.path.join(output_dir,
+                                 f"{os.path.splitext(filename)[0]}_registered.{extension}"))
+            self._save_image(output_path, image, extension,
+                             scale_cfg=self._stack_scale_cfg())
+            saved = True
+        return saved
 
     def _get_output_path_for_single_folder(self, source_folder_path):
         """获取单文件夹模式下的输出路径"""

@@ -84,6 +84,21 @@ def resource_path(*relative_parts: str) -> str:
 
 
 
+def style_message_box(box):
+    """Apply the current theme stylesheet to a hand-built QMessageBox.
+
+    Boxes that add custom buttons cannot go through show_message_box(), and
+    without this they render with the native (light) palette in dark mode —
+    a white box in the middle of a dark window.
+    """
+    try:
+        from ui.styles import CURRENT_MESSAGE_BOX_STYLE
+        box.setStyleSheet(CURRENT_MESSAGE_BOX_STYLE)
+    except Exception:
+        pass
+    return box
+
+
 def show_message_box(
     parent: Optional[QMessageBox],
     title: str,

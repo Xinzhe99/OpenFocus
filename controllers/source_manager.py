@@ -303,6 +303,8 @@ class SourceManager:
             if len(shapes) > 1:
                 # Ask user to continue or cancel (Continue/Cancel)
                 msg = QMessageBox(self.window)
+                from utils.ui_utils import style_message_box
+                style_message_box(msg)
                 msg.setWindowTitle(trans.t("msg_size_mismatch_title"))
                 msg.setText(trans.t("msg_size_mismatch_stack_text"))
                 msg.setInformativeText(trans.t("msg_size_mismatch_open_info"))
@@ -541,6 +543,8 @@ class SourceManager:
             return
 
         confirm = QMessageBox(window)
+        from utils.ui_utils import style_message_box
+        style_message_box(confirm)
         confirm.setIcon(QMessageBox.Icon.Warning)
         confirm.setWindowTitle(trans.t("msg_confirm_delete_title"))
         confirm.setText(trans.t("msg_confirm_delete_source_text").format(count=len(rows)))

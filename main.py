@@ -49,6 +49,7 @@ from utils import (
     show_error_box,
     show_success_box,
     show_custom_message_box,
+    style_message_box,
     resource_path,
 )
 from utils.image_utils import to_display_uint8
@@ -62,7 +63,6 @@ from utils.settings_store import (
     save_window_layout,
     restore_window_layout,
     get_settings,
-    LAST_UPDATE_CHECK_KEY,
 )
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
@@ -74,6 +74,13 @@ from controllers.label_manager import LabelManager
 from controllers.export_manager import ExportManager
 from controllers.transform_manager import TransformManager
 from controllers.batch_manager import BatchManager
+from controllers.update_manager import (
+    UpdateManager,
+    STATE_DOWNLOADING,
+    STATE_FAILED,
+    STATE_READY,
+    STATE_STAGING,
+)
 from core import is_stackmffv4_available
 from constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
@@ -82,15 +89,23 @@ from constants import (
     STACKMFFV4_BATCH_SIZE,
 )
 
+def update_manager_for(window) -> UpdateManager:
+    """Return (creating on first use) the window's update manager.
+
+    Module-level so the update entry points keep working on hosts that never
+    ran OpenFocus.__init__ — the test suite binds those two methods onto a
+    bare widget to exercise the whole download -> stage -> hand-off chain.
+    """
+    manager = getattr(window, 'update_manager', None)
+    if manager is None:
+        manager = UpdateManager(window)
+        window.update_manager = manager
+    return manager
+
+
 class OpenFocus(QMainWindow):
     # Emitted from the background torch probe; auto-queued to the UI thread.
     _stackmff_probe_done = pyqtSignal(bool)
-    # Emitted from the background update check: (state, tag, page_url,
-    # portable_zip_url, setup_url).
-    _update_check_done = pyqtSignal(str, str, str, str, str)
-    # Emitted by the installer download worker: received, total.
-    _update_download_progress = pyqtSignal(int, int)
-    _update_download_done = pyqtSignal(bool, str)
 
     def __init__(self):
         super().__init__()
@@ -158,6 +173,7 @@ class OpenFocus(QMainWindow):
         self.export_manager = ExportManager(self)
         self.transform_manager = TransformManager(self)
         self.batch_manager = BatchManager(self)
+        self.update_manager = UpdateManager(self)
 
         # 初始化图像加载器
         self.image_loader = ImageStackLoader()
@@ -327,7 +343,13 @@ class OpenFocus(QMainWindow):
         # can block for seconds, and this only decides one checkbox state.
         from PyQt6.QtCore import QTimer
         self._stackmff_probe_done.connect(self._apply_stackmff_availability)
-        self._update_check_done.connect(self._show_update_result)
+        self.update_manager.check_finished.connect(self._show_update_result)
+        self.update_manager.state_changed.connect(self._on_update_state)
+        self.update_manager.error.connect(
+            lambda title, message: show_warning_box(self, title, message))
+        self.update_manager.manual_download_needed.connect(self._open_releases_page)
+        self.update_manager.restart_requested.connect(self._quit_for_update)
+        self._build_update_indicator()
         QTimer.singleShot(0, self._probe_stackmff_availability_async)
 
         # 确保分割器已经添加了子部件后再设置折叠属性
@@ -521,12 +543,8 @@ class OpenFocus(QMainWindow):
 
     def _configure_fusion_method_availability(self) -> None:
         """Disable fusion methods whose dependencies are not installed."""
-        if not is_stackmffv4_available():
-            self.rb_d.setEnabled(False)
-            self.rb_d.setToolTip(trans.t("msg_stackmff_unavailable_text"))
-        else:
-            self.rb_d.setEnabled(True)
-            self.rb_d.setToolTip("")
+        self._stackmff_available = bool(is_stackmffv4_available())
+        self.refresh_method_availability()
 
     def _probe_stackmff_availability_async(self) -> None:
         """Probe torch availability off the UI thread, then apply the result."""
@@ -539,6 +557,18 @@ class OpenFocus(QMainWindow):
         threading.Thread(target=worker, daemon=True, name="stackmff-probe").start()
 
     def _apply_stackmff_availability(self, available: bool) -> None:
+        self._stackmff_available = bool(available)
+        self.refresh_method_availability()
+
+    def refresh_method_availability(self) -> None:
+        """Re-apply the cached torch-probe result to the method controls.
+
+        Other code paths (render restore, batch restore) blanket-enable the
+        fusion radios, which silently re-armed StackMFF-V4 on machines without
+        torch until the next restart."""
+        available = getattr(self, '_stackmff_available', None)
+        if available is None:
+            return
         if available:
             self.rb_d.setEnabled(True)
             self.rb_d.setToolTip("")
@@ -551,60 +581,195 @@ class OpenFocus(QMainWindow):
     def check_for_updates(self, quiet: bool = False) -> None:
         """Ask GitHub for the latest release and report back asynchronously.
 
-        quiet=True only surfaces an actual update (used for the automatic
-        startup check), and is rate-limited to once per 24 hours.
+        The state machine lives in UpdateManager: quiet checks are
+        rate-limited to one request per day and never open a dialog; a manual
+        check reports "up to date" / network failures in a message box.
         """
-        import time
-        from constants import APP_VERSION
-        from utils import updater
-
-        if quiet:
-            settings = get_settings()
-            try:
-                last = float(settings.value(LAST_UPDATE_CHECK_KEY, 0) or 0)
-            except (TypeError, ValueError):
-                last = 0.0
-            if time.time() - last < 24 * 3600:
-                return
-            # Stamp up front: quiet checks that find nothing to report never
-            # reach the completion callback, and this is what the limiter reads.
-            settings.setValue(LAST_UPDATE_CHECK_KEY, time.time())
-
         if not quiet:
-            self.statusBar().showMessage(trans.t('update_checking'), 3000)
+            self._show_status_message(trans.t('update_checking'), 3000)
+        self.update_manager.check(quiet=quiet)
 
-        def done(state, tag, url, zip_url="", setup_url=""):
-            # Only the signal emit runs on the worker thread; the shared
-            # QSettings singleton is written from the (queued) GUI handler.
-            self._update_check_done.emit(state, tag, url, zip_url, setup_url)
+    # --- Update execution (background download / restart) ---
 
-        updater.check_async(
-            APP_VERSION,
-            lambda state, tag, url, zip_url="", setup_url="": done(state, tag, url, zip_url, setup_url),
-            quiet=quiet,
-        )
+    def _update_manager(self) -> UpdateManager:
+        return update_manager_for(self)
+
+    def _build_update_indicator(self) -> None:
+        """Status-bar widget: background download progress / "restart to update"."""
+        from PyQt6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QWidget
+
+        bar = self.statusBar()
+        container = QWidget(bar)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(6, 0, 6, 0)
+        layout.setSpacing(6)
+        self.lbl_update_status = QLabel("", container)
+        self.update_progress = QProgressBar(container)
+        self.update_progress.setFixedWidth(140)
+        self.update_progress.setTextVisible(False)
+        self.update_progress.setRange(0, 100)
+        self.btn_update_action = QPushButton("", container)
+        self.btn_update_action.setFlat(True)
+        self.btn_update_action.clicked.connect(self._on_update_action_clicked)
+        layout.addWidget(self.lbl_update_status)
+        layout.addWidget(self.update_progress)
+        layout.addWidget(self.btn_update_action)
+        bar.addPermanentWidget(container)
+        container.hide()
+        # The app has no status bar in its idle layout: create it hidden and
+        # reveal it only while a message or the update indicator needs it.
+        bar.messageChanged.connect(self._on_status_message_changed)
+        bar.setVisible(False)
+        self._update_indicator = container
+
+    def _show_status_message(self, text: str, timeout_ms: int = 5000) -> None:
+        bar = self.statusBar()
+        bar.setVisible(True)
+        bar.showMessage(text, timeout_ms)
+
+    def _on_status_message_changed(self, text: str) -> None:
+        if not text and not getattr(self, '_update_indicator', None):
+            return
+        if not text and not self._update_indicator.isVisible():
+            self.statusBar().setVisible(False)
+
+    def _refresh_update_indicator(self) -> None:
+        """Render the manager's current state into the status bar + menu."""
+        if not hasattr(self, '_update_indicator'):
+            return
+        manager = self.update_manager
+        state, tag, percent = manager.state, manager.tag, manager.percent
+        show = True
+        if state == STATE_DOWNLOADING:
+            self.lbl_update_status.setText(
+                trans.t('update_bg_downloading').format(version=tag, percent=percent))
+            self.update_progress.setRange(0, 100)
+            self.update_progress.setValue(percent)
+            self.update_progress.show()
+            self.btn_update_action.setText(trans.t('btn_cancel_download'))
+            self.btn_update_action.show()
+        elif state == STATE_STAGING:
+            self.lbl_update_status.setText(trans.t('update_status_preparing'))
+            self.update_progress.setRange(0, 0)  # busy indicator
+            self.update_progress.show()
+            self.btn_update_action.hide()
+        elif state == STATE_READY:
+            self.lbl_update_status.setText(
+                trans.t('update_status_ready').format(version=tag))
+            self.update_progress.hide()
+            self.btn_update_action.setText(trans.t('btn_restart_now'))
+            self.btn_update_action.show()
+        elif state == STATE_FAILED:
+            self.lbl_update_status.setText(trans.t('update_status_failed'))
+            self.update_progress.hide()
+            self.btn_update_action.setText(trans.t('btn_retry'))
+            self.btn_update_action.show()
+        else:
+            show = False
+        self._update_indicator.setVisible(show)
+        bar = self.statusBar()
+        if show or not bar.currentMessage():
+            bar.setVisible(show)
+
+        action = getattr(self, 'ui_objs', {}).get('action_install_update')
+        if action is not None:
+            ready = bool(manager.staged_tag())
+            action.setVisible(ready)
+            if ready:
+                action.setText(trans.t('menu_install_update').format(version=tag))
+
+    def _on_update_state(self, state: str, tag: str, percent: int) -> None:
+        if state == STATE_READY and tag:
+            self._show_status_message(
+                trans.t('update_status_ready').format(version=tag), 8000)
+        self._refresh_update_indicator()
+
+    def _on_update_action_clicked(self) -> None:
+        manager = self.update_manager
+        if manager.state == STATE_DOWNLOADING:
+            manager.cancel_download()
+        elif manager.state == STATE_FAILED and manager.zip_url:
+            manager.download(manager.tag, manager.zip_url, manual=True)
+        else:
+            self.install_update_now()
+
+    def install_update_now(self) -> None:
+        """User pressed "update": the staged build is swapped in immediately."""
+        manager = self._update_manager()
+        if not manager.staged_tag():
+            if manager.zip_url:
+                manager.download(manager.tag, manager.zip_url, manual=True)
+            return
+        # Applying the update closes the app and terminates its workers, so a
+        # running render/batch would lose its result without a word.
+        if self._has_work_in_flight() and not self._confirm_update_quit():
+            return
+        manager.apply_and_restart()
+
+    def _confirm_update_quit(self) -> bool:
+        from PyQt6.QtWidgets import QMessageBox
+        box = QMessageBox(self)
+        style_message_box(box)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(trans.t('msg_warning'))
+        box.setText(trans.t('msg_update_discards_work'))
+        yes = box.addButton(trans.t('btn_quit_anyway'), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(trans.t('btn_continue'), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(yes)
+        box.exec()
+        return box.clickedButton() is yes
+
+    def _open_releases_page(self) -> None:
+        from utils.updater import RELEASES_PAGE_URL
+        QDesktopServices.openUrl(QUrl(RELEASES_PAGE_URL))
+
+    def _quit_for_update(self) -> None:
+        """The swap script is running: quit so it can replace the binaries."""
+        self._restart_for_update = True
+        self.close()
+        QApplication.quit()
+
+    def set_auto_download(self, enabled: bool) -> None:
+        """Settings menu: download updates in the background while idle."""
+        self.update_manager.set_auto_download(enabled)
+        self.persist_settings()
 
     def _show_update_result(self, state: str, tag: str, page_url: str,
                             zip_url: str = "", setup_url: str = "") -> None:
         from PyQt6.QtWidgets import QMessageBox
 
         if state == "update":
+            manager = self._update_manager()
+            staged = bool(manager.staged_tag())
+            # A background check must never nag: the status bar and the Help
+            # menu carry "ready to install" until the user acts on it.
+            if not manager.manual_check:
+                return
             box = QMessageBox(self)
+            style_message_box(box)
             box.setIcon(QMessageBox.Icon.Information)
             box.setWindowTitle(trans.t('update_available_title'))
-            box.setText(trans.t('update_available_text').format(version=tag))
             can_one_click = (
                 getattr(sys, "frozen", False)
                 and sys.platform in ("win32", "darwin")
-                and bool(zip_url)
+                and (bool(zip_url) or staged)
             )
-            if can_one_click:
-                restart_btn = box.addButton(
+            if staged:
+                box.setText(trans.t('update_ready_text').format(version=tag))
+                install_btn = box.addButton(
+                    trans.t('btn_restart_now'), QMessageBox.ButtonRole.AcceptRole)
+                open_btn = box.addButton(
+                    trans.t('btn_open_downloads'), QMessageBox.ButtonRole.ActionRole)
+                box.addButton(trans.t('btn_later'), QMessageBox.ButtonRole.RejectRole)
+            elif can_one_click:
+                box.setText(trans.t('update_available_oneclick_text').format(version=tag))
+                install_btn = box.addButton(
                     trans.t('btn_update_restart'), QMessageBox.ButtonRole.AcceptRole)
                 open_btn = box.addButton(
                     trans.t('btn_open_downloads'), QMessageBox.ButtonRole.ActionRole)
                 box.addButton(trans.t('btn_later'), QMessageBox.ButtonRole.RejectRole)
             else:
+                box.setText(trans.t('update_available_text').format(version=tag))
                 download_btn = box.addButton(
                     trans.t('btn_download_install'), QMessageBox.ButtonRole.AcceptRole)
                 open_btn = box.addButton(
@@ -612,11 +777,11 @@ class OpenFocus(QMainWindow):
                 box.addButton(trans.t('btn_later'), QMessageBox.ButtonRole.RejectRole)
             box.exec()
             clicked = box.clickedButton()
-            if can_one_click and clicked is restart_btn:
+            if staged and clicked is install_btn:
+                self.install_update_now()
+            elif can_one_click and clicked is install_btn:
                 self._apply_update_and_restart(zip_url, tag)
-            elif can_one_click and clicked is open_btn:
-                QDesktopServices.openUrl(QUrl(page_url))
-            elif not can_one_click and clicked is download_btn:
+            elif (not can_one_click) and clicked is download_btn:
                 self._download_and_launch_update(setup_url, tag)
             elif clicked is open_btn:
                 QDesktopServices.openUrl(QUrl(page_url))
@@ -678,7 +843,7 @@ class OpenFocus(QMainWindow):
         if ok:
             self.project_path = target
             self._update_project_title()
-            self.statusBar().showMessage(
+            self._show_status_message(
                 trans.t('msg_project_saved').format(path=target), 5000)
         else:
             show_warning_box(self, trans.t("msg_error"),
@@ -703,158 +868,26 @@ class OpenFocus(QMainWindow):
         )
 
     def _apply_update_and_restart(self, zip_url: str, tag: str) -> None:
-        """One-click self-update: download portable zip, stage it, then quit
-        and let a detached script swap it in and restart."""
-        import tempfile
+        """One-click self-update: download if needed, then swap and restart.
+
+        The download/stage/apply state machine lives in UpdateManager; this
+        keeps the entry point the UI (and the tests) already use.
+        """
         from utils import self_update
         from utils.updater import RELEASES_PAGE_URL
 
         if not self_update.is_frozen():
             QDesktopServices.openUrl(QUrl(RELEASES_PAGE_URL))
             return
-
-        # Fail fast when the install dir exists but is not writable
-        # (Program Files without elevation): downloading ~350 MB first just
-        # to hit a guaranteed UAC wall wastes the user's time and bandwidth.
-        # A missing directory is not probed — tests stage into fresh paths
-        # and the apply script handles creation.
-        app_dir = self_update.app_install_dir()
-        try:
-            probe = os.path.join(app_dir, ".update_write_test")
-            if not os.path.isdir(app_dir):
-                os.makedirs(app_dir, exist_ok=True)
-            with open(probe, "w") as f:
-                f.write("ok")
-            os.remove(probe)
-        except OSError:
-            show_warning_box(
-                self, trans.t('update_check_failed_title'),
-                trans.t('msg_update_needs_elevation'))
-            QDesktopServices.openUrl(QUrl(RELEASES_PAGE_URL))
-            return
-
-        running = getattr(self, "_update_download_worker", None)
-        if running is not None and running.isRunning():
-            show_warning_box(self, trans.t('update_check_failed_title'),
-                             trans.t('msg_update_in_progress'))
-            return
-
-        safe_tag = self_update.sanitize_tag(tag)
-        staging_root = self_update.staging_root_for(safe_tag)
-        zip_path = os.path.join(tempfile.gettempdir(),
-                                f"OpenFocus-{safe_tag}-portable.zip")
-        try:
-            os.makedirs(staging_root, exist_ok=True)
-        except OSError:
-            show_warning_box(self, trans.t('update_check_failed_title'),
-                             trans.t('msg_update_stage_failed'))
-            return
-
-        progress = QProgressDialog(trans.t('update_downloading'), "", 0, 100, self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setWindowTitle(trans.t('update_downloading'))
-
-        class _DownloadWorker(QThread):
-            progress_sig = pyqtSignal(int, int)
-            done_sig = pyqtSignal(bool, str)
-
-            def __init__(self, url_, dest_):
-                super().__init__()
-                self._url, self._dest = url_, dest_
-
-            def run(self) -> None:
-                try:
-                    from utils.updater import download_to_file
-                    download_to_file(
-                        self._url, self._dest,
-                        on_progress=lambda d, tt: self.progress_sig.emit(d, tt))
-                    self.done_sig.emit(True, self._dest)
-                except Exception as exc:
-                    self.done_sig.emit(False, str(exc))
-
-        def _on_download_done(ok: bool, message: str) -> None:
-            progress.close()
-            if not ok:
-                show_warning_box(self, trans.t('update_check_failed_title'), message)
-                return
-            self._stage_and_restart(zip_path, staging_root, safe_tag)
-
-        worker = _DownloadWorker(zip_url, zip_path)
-        worker.progress_sig.connect(
-            lambda d, tt: progress.setValue(int(d * 100 / max(1, tt))))
-        worker.done_sig.connect(_on_download_done)
-        self._update_download_worker = worker
-        worker.start()
+        update_manager_for(self).download_and_apply(tag, zip_url)
 
     def _stage_and_restart(self, zip_path: str, staging_root: str, tag: str) -> None:
-        """Extract the downloaded zip and hand off to the apply script."""
-        from utils import self_update
+        """Extract the downloaded zip and hand off to the apply script.
 
-        progress = QProgressDialog(trans.t('update_preparing'), "", 0, 0, self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setWindowTitle(trans.t('update_preparing'))
-
-        class _StageWorker(QThread):
-            done_sig = pyqtSignal(bool, str)
-
-            def run(self) -> None:
-                try:
-                    self_update.extract_zip(zip_path, staging_root)
-                    ok = self_update.verify_staged_app(staging_root)
-                    self.done_sig.emit(ok, staging_root)
-                except Exception as exc:
-                    self.done_sig.emit(False, str(exc))
-
-        def _on_staged(ok: bool, message: str) -> None:
-            progress.close()
-            if not ok:
-                show_warning_box(self, trans.t('update_check_failed_title'),
-                                 trans.t('msg_update_stage_failed'))
-                return
-            app_dir = self_update.app_install_dir()
-            bundle = self_update.mac_app_bundle()
-            if sys.platform == "darwin" and bundle:
-                staged_bundle = self_update.find_staged_bundle(message)
-                if not staged_bundle:
-                    show_warning_box(self, trans.t('update_check_failed_title'),
-                                     trans.t('msg_update_stage_failed'))
-                    return
-                script = self_update.write_apply_script_macos(
-                    bundle, staged_bundle, tag, staging_root=message,
-                    zip_path=zip_path, wait_pid=os.getpid())
-                self_update.launch_detached_unix(script)
-            else:
-                staged_app = self_update.find_staged_app_dir(message)
-                if not staged_app:
-                    show_warning_box(self, trans.t('update_check_failed_title'),
-                                     trans.t('msg_update_stage_failed'))
-                    return
-                try:
-                    script = self_update.write_apply_script_windows(
-                        app_dir, staged_app, tag, staging_root=message,
-                        zip_path=zip_path)
-                except Exception as exc:
-                    # 脚本生成失败（路径安全校验等）曾直接死在 excepthook：
-                    # 应用不退出、不交换、用户毫无感知
-                    show_warning_box(
-                        self, trans.t('update_check_failed_title'), str(exc))
-                    return
-                self_update.launch_detached_windows(script)
-            # The apply script can only swap unlocked binaries: close() is
-            # what stops the workers, and the restart must not be blocked by
-            # the "work in flight" confirmation.
-            self._restart_for_update = True
-            # close() first: its handler stops the worker threads that would
-            # otherwise hold the binaries locked while the script copies.
-            self.close()
-            QApplication.quit()
-
-        worker = _StageWorker()
-        worker.done_sig.connect(_on_staged)
-        self._update_stage_worker = worker  # keep a reference until it finishes
-        worker.start()
+        Delegates to UpdateManager so the download path, the "already staged"
+        path and the tests share one implementation.
+        """
+        update_manager_for(self).stage_and_handoff(zip_path, staging_root, tag)
 
     def _download_and_launch_update(self, url: str, tag: str) -> None:
         """Download the installer on a worker thread, then offer to run it.
@@ -884,17 +917,29 @@ class OpenFocus(QMainWindow):
             progress = pyqtSignal(int, int)
             done = pyqtSignal(bool, str)
 
+            def __init__(self):
+                super().__init__()
+                self._cancelled = False
+
+            def cancel(self) -> None:
+                self._cancelled = True
+
             def run(self) -> None:
                 try:
                     updater.download_to_file(
                         url, dest,
-                        on_progress=lambda d, tt: self.progress.emit(d, tt))
+                        on_progress=lambda d, tt: self.progress.emit(d, tt),
+                        should_cancel=lambda: self._cancelled)
                     self.done.emit(True, dest)
                 except Exception as exc:
                     self.done.emit(False, str(exc))
 
+        # A visible, working Cancel button. Passing "" used to create a
+        # QPushButton with no text (the grey empty box in the dialog) that
+        # cancelled nothing and left the download running invisibly.
         self._update_progress = QProgressDialog(
-            trans.t('update_downloading'), "", 0, 100, self)
+            trans.t('update_downloading'), trans.t('btn_cancel_download'),
+            0, 100, self)
         self._update_progress.setWindowModality(Qt.WindowModality.WindowModal)
         self._update_progress.setMinimumDuration(0)
         self._update_progress.setWindowTitle(trans.t('update_downloading'))
@@ -905,7 +950,8 @@ class OpenFocus(QMainWindow):
         def _on_download_done(ok: bool, message: str) -> None:
             self._update_progress.close()
             if not ok:
-                show_warning_box(self, trans.t('update_check_failed_title'), message)
+                if message != "download cancelled":
+                    show_warning_box(self, trans.t('update_check_failed_title'), message)
                 return
             reply = QMessageBox.question(
                 self, trans.t('update_downloaded_title'),
@@ -921,6 +967,7 @@ class OpenFocus(QMainWindow):
         worker = _DownloadWorker()
         worker.progress.connect(_on_download_progress)
         worker.done.connect(_on_download_done)
+        self._update_progress.canceled.connect(worker.cancel)
         self._update_download_worker = worker  # keep a reference
         worker.start()
 
@@ -1106,9 +1153,13 @@ class OpenFocus(QMainWindow):
         self.slider_wipe_left.blockSignals(False)
 
         self.slider_wipe_right.blockSignals(True)
-        self.slider_wipe_right.setRange(0, max(0, len(self.fusion_results) - 1))
+        # A registration-only render fills registration_results, not
+        # fusion_results — size the slider to whatever B can actually show, or
+        # both halves of the comparison go blank.
+        self._wipe_right_count = len(self.fusion_results) or len(self.registration_results)
+        self.slider_wipe_right.setRange(0, max(0, self._wipe_right_count - 1))
         self.slider_wipe_right.setEnabled(
-            not self.chk_wipe_follow_right.isChecked() and len(self.fusion_results) > 0)
+            not self.chk_wipe_follow_right.isChecked() and self._wipe_right_count > 0)
         self.slider_wipe_right.blockSignals(False)
 
     def refresh_wipe_controls(self) -> None:
@@ -1131,7 +1182,8 @@ class OpenFocus(QMainWindow):
         self._update_wipe_images()
 
     def _on_wipe_follow_right_toggled(self, checked: bool) -> None:
-        self.slider_wipe_right.setEnabled(not checked and len(self.fusion_results) > 0)
+        self.slider_wipe_right.setEnabled(
+            not checked and getattr(self, "_wipe_right_count", 0) > 0)
         if self.wipe_active:
             self._update_wipe_images()
 
@@ -1162,7 +1214,17 @@ class OpenFocus(QMainWindow):
         index = self.slider_wipe_right.value()
         if 0 <= index < len(self.fusion_results):
             return self.label_manager.prepare_bgr_image("registered", self.fusion_results[index], index)
+        # registration-only session: B shows the aligned frame instead
+        if 0 <= index < len(self.registration_results):
+            return self.label_manager.prepare_bgr_image(
+                "registered", self.registration_results[index], index)
         return None
+
+    def _wipe_right_shows_registration(self) -> bool:
+        """True when B falls back to the registration results."""
+        if self.fusion_result is not None or self.fusion_results:
+            return False
+        return bool(self.registration_results)
 
     def _update_wipe_images(self) -> None:
         if not self.wipe_active:
@@ -1183,7 +1245,11 @@ class OpenFocus(QMainWindow):
             else "-"
         )
         if self.chk_wipe_follow_right.isChecked():
-            right_title = trans.t("wipe_opt_result")
+            # B is the latest render; in a registration-only session that is an
+            # aligned frame, so do not label it "Fusion Result".
+            right_title = (trans.t("wipe_opt_registered")
+                           if self._wipe_right_shows_registration()
+                           else trans.t("wipe_opt_result"))
         else:
             right_title = trans.t("wipe_result_fmt").format(self.slider_wipe_right.value() + 1)
         self.wipe_widget.set_images(left_pix, right_pix, f"A: {left_title}", f"B: {right_title}")
@@ -1321,7 +1387,7 @@ class OpenFocus(QMainWindow):
         if context_now != getattr(self, "_roi_align_context", None):
             self.btn_preview_roi.setEnabled(True)
             self.btn_preview_roi.setText(trans.t("btn_roi"))
-            self.statusBar().showMessage(trans.t("msg_render_cancelled"), 4000)
+            self._show_status_message(trans.t("msg_render_cancelled"), 4000)
             return
 
         self.roi_aligned_images = aligned_images
@@ -1638,10 +1704,14 @@ class OpenFocus(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up background threads before closing the window."""
+        # Nothing new may start once we are on the way out (update downloads
+        # check this flag before they begin).
+        self._shutting_down = True
         # Shutting down discards in-flight results without a word; ask first
         # (the self-update restart has already stopped the workers itself).
         if not getattr(self, '_restart_for_update', False) and self._has_work_in_flight():
             box = QMessageBox(self)
+            style_message_box(box)
             box.setIcon(QMessageBox.Icon.Question)
             box.setWindowTitle(trans.t('msg_warning'))
             box.setText(trans.t('msg_quit_during_render'))
@@ -1651,6 +1721,9 @@ class OpenFocus(QMainWindow):
             box.setDefaultButton(quit_btn)
             box.exec()
             if box.clickedButton() is not quit_btn:
+                # The user chose to keep working: un-arm the shutdown so
+                # background update checks keep working afterwards.
+                self._shutting_down = False
                 event.ignore()
                 return
 
@@ -1695,9 +1768,13 @@ class OpenFocus(QMainWindow):
             _shutdown_worker(getattr(self.source_manager, '_load_worker', None))
             self.source_manager._load_worker = None
 
-        # Stop update download/stage workers if running
+        # Stop update download/stage workers if running. The background
+        # update download is not "work in flight" — it is cancelled here
+        # instead of nagging the user with the quit confirmation.
+        manager = getattr(self, 'update_manager', None)
+        if manager is not None:
+            manager.shutdown()
         _shutdown_worker(getattr(self, '_update_download_worker', None))
-        _shutdown_worker(getattr(self, '_update_stage_worker', None))
         try:
             from dialogs.depthmap import _ORPHAN_WORKERS
             for orphan in list(_ORPHAN_WORKERS):
@@ -1900,6 +1977,14 @@ class OpenFocus(QMainWindow):
             self.ui_objs['action_align_cache'].setText(trans.t('action_align_cache'))
             self.ui_objs['action_align_cache'].setToolTip(trans.t('action_align_cache_hint'))
             self.ui_objs['action_restore_last_stack'].setText(trans.t('action_restore_last_stack'))
+        if 'action_auto_download' in getattr(self, 'ui_objs', {}):
+            act = self.ui_objs['action_auto_download']
+            act.setToolTip(trans.t('action_auto_download_hint'))
+            act.setChecked(bool(self.update_manager.auto_download))
+        # The install action carries a {version} placeholder, so the trans_key
+        # sweep above cannot render it; the indicator does (and hides it when
+        # no build is staged).
+        self._refresh_update_indicator()
         self.rebuild_recent_menu()
 
 
@@ -1947,9 +2032,13 @@ if __name__ == "__main__":
 
     # Headless CLI mode (--input/--output/--method ...); unknown options exit
     # with argparse usage. Plain positional paths still auto-load in the GUI.
-    if any(arg.startswith("-") for arg in sys.argv[1:]):
+    # --restore-session is ours (the updater passes it to the relaunched build)
+    # and must be consumed before the CLI sees a leading dash.
+    _argv = [a for a in sys.argv[1:] if a != "--restore-session"]
+    _restore_flag = len(_argv) != len(sys.argv[1:])
+    if any(arg.startswith("-") for arg in _argv):
         from core.cli import run_cli
-        sys.exit(run_cli(sys.argv[1:]))
+        sys.exit(run_cli(_argv))
 
     app = OpenFocusApplication(sys.argv)
 
@@ -1999,13 +2088,66 @@ if __name__ == "__main__":
 
     _single_server.newConnection.connect(_on_new_connection)
 
+    # ---- Update restart: restore the session the updater snapshotted ----
+    # The swap script relaunches with --restore-session, so this runs before
+    # (and instead of) the crash prompt: the previous exit was clean.
+    from PyQt6.QtCore import QTimer
+    from utils import recovery
+    restore_hint = recovery.pending_restore()
+    if restore_hint is None and _restore_flag:
+        restore_hint = ""  # explicit request without a marker: use the snapshot
+    recovered = False
+    if restore_hint is not None:
+        from utils.project_file import apply_project, validate_project
+        state = None
+        project_loaded = False
+        if restore_hint:
+            ok, _err, state = validate_project(restore_hint)
+            if ok:
+                project_loaded = True
+            else:
+                state = None
+                _log.warning("update restore: %s is no longer valid", restore_hint)
+        if state is None:
+            state = recovery.load_snapshot_state()
+        if state is not None:
+            # Only claim the recorded project when that project itself loaded:
+            # pointing project_path at a stale file made the next Ctrl+S write
+            # the snapshot over it.
+            window.project_path = (restore_hint if project_loaded
+                                   else recovery.session_path())
+            apply_project(window, state)
+            recovered = True
+            _log.info("restored the session after an update (%s)",
+                      window.project_path)
+            QTimer.singleShot(1200, lambda: window._show_status_message(
+                trans.t('update_restored_session'), 8000))
+        else:
+            # Nothing to restore: do not consume the user's launch arguments
+            # and do not claim a restore that did not happen.
+            _log.warning("update restore requested but no valid snapshot exists")
+        recovery.clear_pending_restore()
+
+    # Report how the previous in-place update ended (a failed swap used to
+    # look exactly like the user simply closing the app).
+    from utils import self_update as _self_update
+    for tag_res, ok_res, detail_res in _self_update.consume_results():
+        if ok_res:
+            _log.info("in-place update to %s succeeded", tag_res)
+            QTimer.singleShot(900, lambda t=tag_res: window._show_status_message(
+                trans.t('update_applied').format(version=t), 10000))
+        else:
+            _log.warning("in-place update to %s failed: %s", tag_res, detail_res)
+            show_warning_box(window, trans.t('update_check_failed_title'),
+                             trans.t('update_failed_after_restart'))
+
     # Crash auto-recovery: a leftover lock means the last session died
     # without a clean close. Offer the saved snapshot before anything else.
-    from utils import recovery
-    pending = recovery.pending_recovery()
+    pending = None if recovered else recovery.pending_recovery()
     if pending is not None:
         from PyQt6.QtWidgets import QMessageBox
         box = QMessageBox(window)
+        style_message_box(box)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle(trans.t('recovery_title'))
         box.setText(trans.t('recovery_text').format(
@@ -2026,15 +2168,16 @@ if __name__ == "__main__":
     # Handle files passed via command-line (drag-to-EXE, desktop file, etc.)
     # 恢复会话与命令行参数互斥：接受恢复后再加载命令行文件夹会把同一栈
     # 追加成两倍帧数；恢复的工作区就是用户要的现场
-    if len(sys.argv) > 1 and not recovered:
-        process_command_line_args(window, sys.argv[1:])
+    if len(_argv) > 0 and not recovered:
+        process_command_line_args(window, _argv)
 
     window.show()
     _log.info("entering event loop")
 
-    # One silent update check per day, a few seconds after startup
-    from PyQt6.QtCore import QTimer
-    QTimer.singleShot(4000, lambda: window.check_for_updates(quiet=True))
+    # Background updates: reuse an already staged build, then check quietly
+    # (once a day, rate-limited inside the manager) and download any newer
+    # release in the background so "update now" is instant.
+    QTimer.singleShot(4000, window.update_manager.start_idle)
 
     # First-run quick-start guide (once ever)
     from utils.settings_store import get_settings

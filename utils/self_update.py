@@ -167,8 +167,95 @@ def _bat_path(path: str) -> str:
     return f'"{abspath}"'
 
 
+def portable_zip_path(tag: str) -> str:
+    """Canonical download target for a release's portable zip."""
+    return os.path.join(tempfile.gettempdir(),
+                        f"{APP_NAME}-{sanitize_tag(tag)}-portable.zip")
+
+
+def result_path(tag: str) -> str:
+    return os.path.join(tempfile.gettempdir(),
+                        f"{APP_NAME}_update_result_{sanitize_tag(tag)}.txt")
+
+
+def write_result(tag: str, ok: bool, detail: str = "") -> None:
+    """Record how the swap ended so the next launch can report it.
+
+    Without this a failed swap was indistinguishable from "the user closed
+    the app": the old build came back with no explanation at all.
+    """
+    try:
+        with open(result_path(tag), "w", encoding="utf-8") as f:
+            f.write(("ok" if ok else "failed") + "\n" + str(detail or ""))
+    except OSError:
+        pass
+
+
+def consume_results() -> list:
+    """Read and delete every pending apply result. [(tag, ok, detail)]."""
+    import glob
+    out = []
+    pattern = os.path.join(tempfile.gettempdir(), f"{APP_NAME}_update_result_*.txt")
+    for path in sorted(glob.glob(pattern)):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                first, _, rest = f.read().partition("\n")
+            out.append((os.path.basename(path)
+                        .replace(f"{APP_NAME}_update_result_", "")
+                        .replace(".txt", ""),
+                        first.strip() == "ok", rest.strip()))
+        except OSError:
+            continue
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    return out
+
+
+def staging_complete_marker(tag: str) -> str:
+    """Path of the marker that says "this staging folder is a whole build"."""
+    return os.path.join(staging_root_for(tag), ".staging_complete")
+
+
+def mark_staging_complete(tag: str) -> bool:
+    """Called only after extract + verify succeeded.
+
+    `verify_staged_app` can only see that an entry point exists, so a staging
+    folder truncated by a cancelled extraction (or a full disk) looked exactly
+    like a good build and would have been swapped in over a working install.
+    """
+    try:
+        with open(staging_complete_marker(tag), "w", encoding="utf-8") as f:
+            f.write("ok")
+        return True
+    except OSError:
+        return False
+
+
+def discard_staging(tag: str) -> None:
+    """Remove an incomplete staging folder (never leave it half-unpacked)."""
+    import shutil
+    try:
+        shutil.rmtree(staging_root_for(tag), ignore_errors=True)
+    except Exception:
+        pass
+
+
+def staged_ready(tag: str) -> bool:
+    """True when a *complete* staged build for this tag is on disk."""
+    root = staging_root_for(tag)
+    if not os.path.isdir(root):
+        return False
+    if not os.path.isfile(staging_complete_marker(tag)):
+        return False
+    return verify_staged_app(root)
+
+
 def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
-                               staging_root: str = "", zip_path: str = "") -> str:
+                               staging_root: str = "", zip_path: str = "",
+                               wait_pid: int = 0) -> str:
     """Write a detached batch script: wait for the app to exit -> mirror the
     staged folder over the installation -> clean up -> restart. Retries the
     copy elevated when the install directory is not writable.
@@ -176,6 +263,13 @@ def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
     The elevated retry re-invokes this script with '/elevated'; that branch
     only copies, so a failing unelevated first pass cannot loop into repeated
     UAC prompts.
+
+    Everything here runs without a visible console (the launcher uses
+    CREATE_NO_WINDOW): an earlier version combined DETACHED_PROCESS with
+    per-second `timeout`/`tasklist` polling, which allocated a fresh console
+    window per call — the "flashing black windows" users saw — and robocopy
+    without /R:/W: retried a locked exe a million times in silence, so the
+    update never finished and the app never came back.
     """
     app_dir = os.path.abspath(app_dir)
     staging_app_dir = os.path.abspath(staging_app_dir)
@@ -183,6 +277,11 @@ def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
     script_dir = os.path.dirname(staging_root)
     script_path = os.path.join(
         script_dir, f"apply_update_{sanitize_tag(tag)}.bat")
+    try:
+        pid = max(0, int(wait_pid))
+    except (TypeError, ValueError):
+        pid = 0
+
     def _quote_policy(allow_ansi: bool):
         """Quote a path for cmd, refusing anything that could escape quotes."""
         def q(path: str) -> str:
@@ -197,25 +296,40 @@ def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
                 abspath = os.path.abspath(path)
             if '"' in abspath or '\n' in abspath or '\r' in abspath:
                 raise ValueError("Unsafe path for the update script")
+            # cmd expands %VAR% inside double quotes: a '%' in the temp or
+            # install path silently rewrote the robocopy arguments (and the
+            # result path), so the swap failed in a way nobody could see.
+            # Doubling it is the escape cmd understands.
+            abspath = abspath.replace("%", "%%")
             return f'"{abspath}"'
         return q
 
     def _build_content(_bp):
         exe = os.path.join(app_dir, APP_NAME + ".exe")
         sentinel = os.path.join(script_dir, f"update_ok_{sanitize_tag(tag)}.flg")
+        result = result_path(tag)
         copy_cmd = (
             f"robocopy {_bp(staging_app_dir)} {_bp(app_dir)}"
-            " /E /IS /IT /NFL /NDL /NJH /NJS /NP"
+            # Bounded retries: the defaults (/R:1000000 /W:30) turned one
+            # locked binary into a silent multi-hour stall.
+            " /E /IS /IT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP"
         )
         content = (
             "@echo off\r\n"
             "setlocal enableextensions\r\n"
+            f"set APP_PID={pid}\r\n"
+            # A sentinel left by an interrupted earlier attempt would make this
+            # run report success without a successful copy.
+            f'if exist {_bp(sentinel)} del /Q {_bp(sentinel)} >nul 2>&1\r\n'
             'if "%~1"=="/elevated" goto elevatedcopy\r\n'
             "call :waitforexit\r\n"
             f"{copy_cmd}\r\n"
             "if errorlevel 8 (\r\n"
+            # Re-invoke this script elevated. Keep `%~f0` inside PowerShell
+            # SINGLE quotes: doubling it with quotes would close cmd's own
+            # double-quoted -Command region and mangle the whole line.
             '  powershell -NoProfile -Command "Start-Process -FilePath \'%~f0\''
-            ' -ArgumentList \'/elevated\' -Verb RunAs -Wait"\r\n'
+            ' -ArgumentList \'/elevated\' -Verb RunAs -Wait -WindowStyle Hidden"\r\n'
             ") else (\r\n"
             # 非特权复制成功同样要写哨兵：只有特权分支写的话，可写安装
             # （便携版）每次更新都会跳过下面的清理，~1GB 暂存永久留在 %TEMP%
@@ -225,14 +339,22 @@ def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
             # the elevated branch writes the sentinel on success, so a declined
             # UAC prompt (or a still-failing copy) keeps the staged folder as
             # the rollback instead of deleting it and relaunching a mixed
-            # install.
-            f'if not exist {_bp(sentinel)} (start "" {_bp(exe)} & exit /b)\r\n'
-            f'rmdir /S /Q {_bp(staging_root)} >nul 2>&1\r\n'
-            f'if exist {_bp(zip_path)} del /Q {_bp(zip_path)} >nul 2>&1\r\n'
-            f'if exist {_bp(sentinel)} del /Q {_bp(sentinel)} >nul 2>&1'
-            "\r\n"
-            f'start "" {_bp(exe)}\r\n'
-            'del "%~f0"\r\n'
+            # install. A failure is recorded so the next launch can say so.
+            f"if not exist {_bp(sentinel)} (\r\n"
+            f'  echo failed> {_bp(result)}\r\n'
+            f'  echo robocopy errorlevel %ERRORLEVEL%>> {_bp(result)}\r\n'
+            f'  start "" {_bp(exe)}\r\n'
+            "  exit /b\r\n"
+            ")\r\n"            f"rmdir /S /Q {_bp(staging_root)} >nul 2>&1\r\n"
+            f"if exist {_bp(zip_path)} del /Q {_bp(zip_path)} >nul 2>&1\r\n"
+            f"if exist {_bp(sentinel)} del /Q {_bp(sentinel)} >nul 2>&1\r\n"
+            # The relaunched instance restores the session the updater
+            # snapshotted before quitting (see utils.recovery).
+            f'echo ok> {_bp(result)}\r\n'
+            f'start "" {_bp(exe)} --restore-session\r\n'
+            # Detached self-delete: cmd reads a .bat incrementally, so
+            # deleting it inline can truncate the remaining lines.
+            f'start "" /b cmd /c del /Q "%~f0"\r\n'
             "exit /b\r\n"
             ":elevatedcopy\r\n"
             "call :waitforexit\r\n"
@@ -240,18 +362,24 @@ def write_apply_script_windows(app_dir: str, staging_app_dir: str, tag: str,
             f'if not errorlevel 8 type NUL > {_bp(sentinel)}\r\n'
             "exit /b\r\n"
             ":waitforexit\r\n"
+            # No PID (0/unknown): nothing to wait for — otherwise the filter
+            # matches the System Idle Process row and burns the full timeout.
+            "if %APP_PID% LEQ 0 exit /b 0\r\n"
             "set /a TRIES=0\r\n"
             ":waitloop\r\n"
-            "timeout /t 1 /nobreak >nul 2>&1\r\n"
-            f'tasklist /FI "IMAGENAME eq {APP_NAME}.exe" 2>NUL'
-            f' | find /I "{APP_NAME}.exe" >NUL\r\n'
+            # 用 PID 等待，不用镜像名：更新期间用户手动再开一个实例时，
+            # 按 IMAGENAME 过滤会把新实例当成"老进程还在"而干等到超时。
+            f'tasklist /FI "PID eq %APP_PID%" 2>NUL | find " %APP_PID% " >NUL\r\n'
             "if errorlevel 1 exit /b 0\r\n"
             "set /a TRIES+=1\r\n"
-            "if %TRIES% LSS 20 goto waitloop\r\n"
-            "exit /b 0\r\n"
+            "if %TRIES% GEQ 60 exit /b 0\r\n"
+            # ping 而不是 timeout：隐藏控制台下 timeout 直接报错退出（不等待）
+            "ping -n 2 127.0.0.1 >NUL 2>&1\r\n"
+            "goto waitloop\r\n"
         )
 
         return content
+
 
     try:
         content = _build_content(_quote_policy(False))
@@ -276,6 +404,7 @@ def write_apply_script_macos(app_bundle: str, staged_bundle: str, tag: str,
     if not os.path.isdir(os.path.join(staged_bundle, "Contents", "MacOS")):
         raise ValueError("Staged bundle is incomplete")
     pid = int(wait_pid) if str(wait_pid).lstrip("-").isdigit() else 0
+    result_file = result_path(tag)
     script_path = os.path.join(
         os.path.dirname(staging_root), f"apply_update_{sanitize_tag(tag)}.sh")
     content = (
@@ -287,21 +416,26 @@ def write_apply_script_macos(app_bundle: str, staged_bundle: str, tag: str,
         # Swap guarded step by step: keep the old bundle until the new one
         # is verified in place, restore it if the second mv fails, and
         # always relaunch something (old or new) so the app never just
-        # disappears after quitting for an update.
+        # disappears after quitting for an update. Every branch records the
+        # outcome so the next launch can report a failed swap.
         f'if ditto "{staged_bundle}" "{app_bundle}.new"; then\n'
         '  rm -rf "' + app_bundle + '.old"\n'
         f'  if mv "{app_bundle}" "{app_bundle}.old" 2>/dev/null; then\n'
         f'    if mv "{app_bundle}.new" "{app_bundle}"; then\n'
         f'      rm -rf "{app_bundle}.old"\n'
-        f'      open "{app_bundle}"\n'
+        f'      echo ok > "{result_file}"\n'
+        f'      open "{app_bundle}" --args --restore-session\n'
         "    else\n"
         f'      mv "{app_bundle}.old" "{app_bundle}" 2>/dev/null\n'
+        f'      echo failed > "{result_file}"\n'
         f'      open "{app_bundle}"\n'
         "    fi\n"
         "  else\n"
+        f'    echo failed > "{result_file}"\n'
         f'    open "{app_bundle}"\n'
         "  fi\n"
         "else\n"
+        f'  echo failed > "{result_file}"\n'
         f'  open "{app_bundle}"\n'
         "fi\n"
         f'rm -rf "{staging_root}"\n'
@@ -317,7 +451,12 @@ def write_apply_script_macos(app_bundle: str, staged_bundle: str, tag: str,
 
 
 def launch_detached_windows(script_path: str) -> None:
-    flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    # CREATE_NO_WINDOW, NOT DETACHED_PROCESS: a detached cmd has no console,
+    # so every console child it spawns (tasklist, ping, robocopy, powershell)
+    # allocates its own — which is what flashed a burst of black windows over
+    # the screen while the update ran. With a hidden console they all inherit
+    # it and stay invisible.
+    flags = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(["cmd", "/c", script_path], close_fds=True,
                      creationflags=flags, cwd=os.path.dirname(script_path))
 

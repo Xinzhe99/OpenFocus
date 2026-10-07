@@ -97,32 +97,51 @@ def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict], Optional[dic
     return True, tag, url, find_installer_asset(data), find_portable_zip_asset(data)
 
 
+class DownloadCancelled(Exception):
+    """Raised out of download_to_file when should_cancel() asked to stop."""
+
+
 def download_to_file(url: str, dest_path: str,
-                     on_progress: Callable[[int, int], None] = None) -> bool:
+                     on_progress: Callable[[int, int], None] = None,
+                     should_cancel: Callable[[], bool] = None) -> bool:
     """Stream a download to dest_path on the CALLING thread (blocking).
 
     Intended to run inside a QThread. on_progress(received, total) fires
     after every chunk in this thread — wrap it in a signal before touching
     any UI. Raises on network/IO errors.
+
+    should_cancel() is polled between chunks (a background update must not
+    pin a thread for the whole ~350 MB just because the user quit or hit
+    cancel). A cancelled download removes its .part file and raises
+    DownloadCancelled, so a half file can never be promoted.
     """
     import os
     part_path = dest_path + ".part"
     req = urllib.request.Request(url, headers={"User-Agent": "OpenFocus"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        total = int(resp.headers.get("Content-Length", 0) or 0)
-        done = 0
-        with open(part_path, "wb") as f:
-            while True:
-                chunk = resp.read(256 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-                done += len(chunk)
-                if on_progress is not None and total:
-                    try:
-                        on_progress(done, total)
-                    except Exception:
-                        pass
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            total = int(resp.headers.get("Content-Length", 0) or 0)
+            done = 0
+            with open(part_path, "wb") as f:
+                while True:
+                    if should_cancel is not None and should_cancel():
+                        raise DownloadCancelled("download cancelled")
+                    chunk = resp.read(256 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if on_progress is not None and total:
+                        try:
+                            on_progress(done, total)
+                        except Exception:
+                            pass
+    except DownloadCancelled:
+        try:
+            os.unlink(part_path)
+        except OSError:
+            pass
+        raise
     try:
         # 无 Content-Length 的响应 total=0，跳过校验；否则字节数必须吻合，
         # 代理/杀软截断会"干净地"提前 EOF，晋升半截 zip 只会在解压时白费

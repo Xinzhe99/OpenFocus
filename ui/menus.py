@@ -256,6 +256,15 @@ def setup_menus(window: QMainWindow) -> None:
     settings_menu.addAction(restore_action)
     window.ui_objs['action_restore_last_stack'] = restore_action
 
+    # Background update download toggle (persisted by the update manager)
+    auto_update_action = QAction(trans.t('action_auto_download'), window)
+    auto_update_action.setCheckable(True)
+    auto_update_action.setChecked(bool(window.update_manager.auto_download))
+    auto_update_action.setToolTip(trans.t('action_auto_download_hint'))
+    auto_update_action.triggered.connect(window.set_auto_download)
+    settings_menu.addAction(auto_update_action)
+    window.ui_objs['action_auto_download'] = auto_update_action
+
     settings_menu.addSeparator()
 
     # Language Submenu
@@ -343,6 +352,15 @@ def setup_menus(window: QMainWindow) -> None:
     update_action.triggered.connect(window.check_for_updates)
     help_menu.addAction(update_action)
     window.ui_objs['menu_check_updates'] = update_action
+
+    # Only visible once a build is downloaded and verified: "update now"
+    # applies it instantly and restarts into the restored session.
+    install_action = QAction(trans.t('menu_install_update').format(version=""), window)
+    install_action.setProperty("trans_key", 'menu_install_update')
+    install_action.triggered.connect(window.install_update_now)
+    install_action.setVisible(False)
+    help_menu.addAction(install_action)
+    window.ui_objs['action_install_update'] = install_action
 
     logs_action = QAction(trans.t('menu_open_logs'), window)
     logs_action.triggered.connect(window.open_logs_folder)

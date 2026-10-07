@@ -121,11 +121,20 @@ class ScaleBarDialog(QDialog):
         return (np.random.rand(400, 600, 3) * 255).astype(np.uint8)
 
     def _effective_px_um(self):
+        """Same rule as the export path (utils.scalebar.effective_px_um):
+        a manual value wins over metadata, so the preview matches the file."""
         parent = self.parent()
+        manual = self.px_spin.value()
+        if parent is not None:
+            try:
+                parent.scale_um_per_px_manual = manual
+            except Exception:
+                pass
+            from utils.scalebar import effective_px_um
+            return effective_px_um(parent)
         detected = getattr(parent, "source_px_um", None) if parent else None
         if detected and detected > 0:
             return detected
-        manual = self.px_spin.value()
         return manual if manual > 0 else None
 
     def _refresh_preview(self):
@@ -135,10 +144,13 @@ class ScaleBarDialog(QDialog):
         scale = 520.0 / w if w > 520 else 1.0
         small = cv2.resize(img, (int(w * scale), int(h * scale)),
                            interpolation=cv2.INTER_AREA) if scale < 1.0 else img
-        if px_um:
+        if px_um and self.enable_chk.isChecked():
+            # The bar length is a fraction of the *exported* width, so scale the
+            # calibration with the thumbnail — otherwise the preview labelled a
+            # 10x-too-short length for a 4000 px image.
             small = scalebar.draw_scale_bar(
-                small, px_um, self.pos_combo.currentData(),
-                self.color_combo.currentData())
+                small, px_um / (scale if scale < 1.0 else 1.0),
+                self.pos_combo.currentData(), self.color_combo.currentData())
         rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0],
                       3 * rgb.shape[1], QImage.Format.Format_RGB888)

@@ -23,13 +23,14 @@ try:  # GUI stack present (the desktop app)
         show_error_box,
         show_success_box,
         show_custom_message_box,
+        style_message_box,
         resource_path,
     )
     _HAS_QT = True
 except ImportError:  # headless openfocus package
     _HAS_QT = False
     show_message_box = show_warning_box = show_error_box = None
-    show_success_box = show_custom_message_box = None
+    show_success_box = show_custom_message_box = style_message_box = None
 
     def resource_path(*parts):
         """Headless fallback: resolve relative to this package directory."""
@@ -72,6 +73,7 @@ __all__ = [
     'show_error_box',
     'show_success_box',
     'show_custom_message_box',
+    'style_message_box',
     'resource_path',
     # validators
     'normalize_kernel_size',

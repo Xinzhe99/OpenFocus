@@ -123,6 +123,42 @@ def _read_tiff_pages(path: str) -> Optional[List[np.ndarray]]:
         return None
 
 
+def count_frames(path: str) -> int:
+    """Frames a path contributes to a stack, without decoding pixels.
+
+    A multi-page TIFF counts as all of its pages (PIL exposes the page count
+    from the directory, so counting a 40-page Z-stack costs a metadata read
+    instead of a full decode); anything else counts as one.
+    """
+    if os.path.splitext(path)[1].lower() in (".tif", ".tiff"):
+        try:
+            from PIL import Image
+            with Image.open(path) as im:
+                frames = int(getattr(im, "n_frames", 1) or 1)
+            if frames > 1:
+                return frames
+        except Exception:
+            pass
+    return 1
+
+
+def _collapse_repeats(paths: list) -> list:
+    """Drop consecutive duplicates from a source list.
+
+    Every frame of a multi-page TIFF records the *same* container path, and
+    each entry is expanded into all of its pages on load — so replaying such
+    a list turned an N-page stack into N² frames (projects and crash
+    recovery both do exactly that).
+    """
+    out = []
+    for path in paths:
+        if out and os.path.normcase(os.path.abspath(out[-1])) == os.path.normcase(
+                os.path.abspath(path)):
+            continue
+        out.append(path)
+    return out
+
+
 class ImageStackLoader:
     """图像栈加载器"""
 
@@ -158,6 +194,10 @@ class ImageStackLoader:
         filenames = []
         failed_count = 0
         self.source_exif = b""
+        # Reset per load: one loader instance serves the whole session, so a
+        # calibration detected for a previous stack must not leak into this
+        # one (every later export would carry the wrong scale bar).
+        self.px_size_um = None
 
         for filename, full_path in image_files:
             try:
@@ -274,8 +314,12 @@ class ImageStackLoader:
         loaded_images = []
         filenames = []
         failed_count = 0
+        sources = _collapse_repeats(list(filepaths))
+        # see load_from_folder: calibration must not stick across stacks
+        self.px_size_um = None
+        self.source_exif = b""
 
-        for full_path in filepaths:
+        for full_path in sources:
             try:
                 if not os.path.exists(full_path):
                     failed_count += 1
@@ -283,6 +327,11 @@ class ImageStackLoader:
 
                 pages = _read_tiff_pages(full_path)
                 if pages is not None:
+                    if not self.source_exif:
+                        self.source_exif = _read_exif_bytes(full_path)
+                    if self.px_size_um is None:
+                        from utils.scalebar import detect_px_size_um
+                        self.px_size_um = detect_px_size_um(full_path)
                     stem = os.path.splitext(os.path.basename(full_path))[0]
                     for page_no, page in enumerate(pages, start=1):
                         if scale_factor != 1.0 and 0 < scale_factor < 1.0:
@@ -299,6 +348,11 @@ class ImageStackLoader:
                     # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
                     img = _read_via_pil(full_path)
                 if img is not None:
+                    if not self.source_exif:
+                        self.source_exif = _read_exif_bytes(full_path)
+                    if self.px_size_um is None:
+                        from utils.scalebar import detect_px_size_um
+                        self.px_size_um = detect_px_size_um(full_path)
                     img = apply_exif_orientation(full_path, img)
                 if img is None:
                     failed_count += 1
@@ -319,7 +373,7 @@ class ImageStackLoader:
             return False, "Could not load any image files", [], []
 
         self.images = loaded_images
-        self.image_paths = list(filepaths[:len(loaded_images)])
+        self.image_paths = list(sources)
 
         message = f"Loaded {len(loaded_images)} image(s)"
         if failed_count > 0:

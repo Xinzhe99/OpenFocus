@@ -74,7 +74,24 @@ class TestMultipageProjectMapping:
         state = json.loads((tmp_path / "s2.ofproj").read_text(encoding="utf-8"))
         resolved = [p for p in state["sources"]
                     if os.path.normcase(p) == os.path.normcase(str(tif))]
-        assert len(resolved) == 3
+        # 三帧同属一个多页容器：必须折叠成一条，否则重载时每个条目再展开
+        # 一次全部页 -> 3 页变 9 帧（工程/崩溃恢复都会这样）
+        assert len(resolved) == 1
+        assert len(state["sources"]) == 1
+
+    def test_reloading_a_collapsed_project_keeps_the_frame_count(self, tmp_path):
+        """Round-trip guard for the N-pages -> N²-frames regression."""
+        import cv2
+        from core.image_loader import ImageStackLoader
+        tif = tmp_path / "zstack.tif"
+        pages = [np.full((8, 8, 3), 40 * i, np.uint8) for i in range(3)]
+        cv2.imwritemulti(str(tif), pages)
+        loader = ImageStackLoader()
+        ok, _msg, images, _names = loader.load_from_folder(str(tmp_path))
+        assert ok and len(images) == 3
+        # what a project/recovery replay does: the same container listed N times
+        ok2, _msg2, images2, _names2 = loader.load_from_filepaths([str(tif)] * 3)
+        assert ok2 and len(images2) == 3, "duplicate container entries must not multiply"
 
 
 class TestScaleBar16Bit:

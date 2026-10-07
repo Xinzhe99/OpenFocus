@@ -3,6 +3,130 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.36] — 2026-10-07
+
+### Changed — background updates, one-click restart
+- **Updates now download in the background while you work** — no modal
+  window, cancellable from the status bar, and the staged build stays ready
+  so "update" is instant and works offline. Settings → *Download Updates
+  Automatically* turns it off.
+- **Update and restart reopens your work**: the app snapshots the session
+  (or the project file you had open) before quitting, and the relaunched
+  build restores it silently — no crash-recovery prompt, no re-importing
+  the stack. The Help menu gains *Update to vX and Restart* as soon as a
+  build is staged.
+- **The update no longer flashes console windows or hangs.** The swap script
+  ran under `DETACHED_PROCESS`, so every `timeout`/`tasklist` it spawned
+  allocated its own console window (the burst of black boxes), while
+  robocopy used its defaults — `/R:1000000 /W:30` — which turned one locked
+  binary into a silent multi-hour stall that never restarted the app. It now
+  runs under `CREATE_NO_WINDOW`, waits on the *process id* (a stray second
+  instance no longer confuses it), bounds retries (`/R:2 /W:1`), hides the
+  elevation prompt's console, and writes an outcome file so a failed swap is
+  reported on the next start instead of looking like a normal close.
+- The download dialog's cancel button was an empty grey rectangle (Qt turns
+  `cancelButtonText=""` into a blank button that cancelled nothing); it is a
+  real, localized Cancel that stops the download and removes the `.part`.
+
+### Fixed — review round on the v1.30–v1.35 features
+- **Batch processing never started at all**: `batch_manager` used `trans`
+  without importing it, so clicking Start raised a `NameError` after the dialog
+  had already closed — no batch, no message. Its completion/error texts are
+  localized now too.
+- **"Save aligned stack" could overwrite the source frames** when the output
+  folder was the source folder and the format matched (the registered copies
+  replaced the originals, irreversibly); those writes now get a `_registered`
+  suffix.
+- **Two stacks with the same folder name silently overwrote each other** in
+  batch mode's custom output folder; the second output is suffixed instead, and
+  a folder that produced no file is reported as a failure rather than counted
+  as "successfully processed".
+- **A render finishing after the stack changed is discarded** instead of being
+  published and exported as frames of the previous stack under the new stack's
+  filenames.
+- **DCT tiled fusion punched black seams** into the output whenever the tile
+  size was not a multiple of 8 (tiles were trimmed and the uncovered strips
+  stayed zero); tile results are now resized back to the tile footprint.
+- **A BGRA (alpha) stack crashed tiled fusion** with a broadcast error; alpha
+  is dropped before fusion, as the non-tiled path already did.
+- **Cancel is honoured**: a non-tiled fusion that finishes after "Cancel render"
+  no longer reports success, and per-tile calls no longer spawn a nested thread
+  pool per tile (thread oversubscription on high-core machines).
+- The scale-bar dialog's preview now uses the same calibration rule as the
+  export (a manual µm/px wins), honours the "Enable scale bar" checkbox, and
+  scales the bar with the thumbnail — a 4000 px image used to be previewed with
+  a 10×-too-short bar.
+- Batch output now uses that same calibration rule, so a stack whose metadata
+  is wrong gets the same bar in batch mode as in a normal save.
+- The StackMFF-V4 option stays greyed out after a render/batch on machines
+  without torch (it was blanket re-enabled by the control-restore paths).
+- Opening a project re-syncs the kernel control with the restored method.
+- The magnifier no longer keeps a stuck "panning" state when the user
+  right-clicks inside an ROI, and the zoom indicator connects its handler once.
+- Depth maps: the dialog refuses a second compute while one runs (a second
+  worker could abort the process at close), and a malformed stored colour scheme
+  no longer makes the dialog impossible to open.
+- A crash/cancel in a background stack load no longer leaves the ROI toggle
+  visually pressed, and the status bar reports what actually happened.
+- Message boxes opened from a controller now follow the dark/light theme like
+  every other dialog.
+- Character-designating cleanup: `utils.validators.crop_roi`'s error path
+  referenced an undefined name, and the StackMFF-V4 model no longer downloads
+  22 MB of ImageNet weights that its checkpoint immediately overwrites.
+
+### Fixed — update flow hardening (second pass)
+- **A partially extracted staging folder is no longer accepted as a build**:
+  staging is only usable once extraction finished (a marker file), and an
+  interrupted/failed extraction is deleted instead of being offered as
+  "restart to update".
+- A refused "update now" click no longer arms auto-apply, so a running
+  background download cannot silently restart the app later.
+- Clicking the one-click button when a build is *already* staged applies it
+  immediately (it used to just flip the state and do nothing).
+- A `%` in the temp or install path no longer mangles the generated update
+  script (cmd expands `%` inside quotes — it is escaped now).
+- macOS swaps record their outcome like Windows ones, so a failed update is
+  reported on the next start instead of looking like a normal restart.
+- A stale sentinel from an interrupted attempt can no longer turn a failed copy
+  into a reported success.
+- Source runs (not frozen) never offer to self-update — the apply path used to
+  be reachable there, where the "install dir" is the repository.
+- A quiet update check no longer leaves the manager stuck in "checking" (which
+  hid an already-staged build for the session).
+- The session restore after an update only restores what validates, keeps the
+  command-line arguments when there is nothing to restore, and no longer claims
+  a restore that did not happen or points the project path at a stale file.
+- Declining the quit confirmation re-arms background update checks.
+- The failed-update message no longer promises that the old version is intact
+  (a failed robocopy can leave a mixed install).
+
+
+- **Multi-page TIFF stacks no longer explode on restore**: projects and crash
+  recovery recorded one entry per *page* pointing at the same container, and
+  every entry was expanded into all pages again — a 40-page Z-stack came
+  back as 1600 frames. Duplicate containers collapse to a single source.
+- **16-bit results no longer white out in the depth-map overlay** (uint16
+  data blended as if it were 0-255 and clipped).
+- **Scale-bar calibration no longer leaks between stacks**, a manual µm/px now
+  takes precedence over detected metadata, and printer resolution tags
+  (72/300 dpi) are no longer mistaken for physical calibration.
+- Depth maps: DTCWT now uses the fusion's own decomposition depth (4, was 3)
+  and the dialog forwards the kernel size you set instead of always using 7.
+- The stack-footprint tiling rule is neural-only again — classical algorithms
+  were being tiled on deep stacks at ~3× the time for byte-identical output.
+- CLI batch mode accepts a folder holding one multi-page TIFF Z-stack, and
+  frame counting no longer decodes every page just to count it.
+- The soak harness runs on any machine (`OPENFOCUS_SOAK_DIR`), and no longer
+  crashes on a host without the author's photo folders.
+- The test suite could serve stale values from a previous run (or, before the
+  sandbox existed, the real user settings): the QSettings singleton caches in
+  memory, so wiping the sandbox directory was not enough. It is now reset
+  around every wipe.
+
+### Removed
+- `config.py` — dead since the fusion layer moved to keyword arguments; no
+  module imported it (`FusionMethod`/`FusionOptions` and friends).
+
 ## [v1.35] — 2026-10-04
 
 ### Changed — smoother startup & import flow

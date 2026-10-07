@@ -72,6 +72,15 @@ def _collect_state(window) -> Dict[str, Any]:
         # 静默丢弃（pending_recovery 会过滤校验失败的快照）
         mapped = _multipage_container_for(name, folder)
         abs_paths.append(mapped if mapped else name)
+    # 多页 TIFF 的每一帧都映射到同一个容器：原样保存会让重载时每个容器
+    # 再展开一遍全部页（N 页 -> N² 帧，工程/崩溃恢复都会 OOM）。折叠连续
+    # 重复项，容器只保留一次。
+    collapsed: list = []
+    for path in abs_paths:
+        if collapsed and os.path.normcase(collapsed[-1]) == os.path.normcase(path):
+            continue
+        collapsed.append(path)
+    abs_paths = collapsed
     return {
         "openfocus_project": FORMAT_VERSION,
         "app_version": APP_VERSION,

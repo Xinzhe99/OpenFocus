@@ -154,7 +154,13 @@ def _measure_gfgfgf(images, progress, should_cancel, kernel_size=7,
 # --------------------------------------------------------------------------
 # dtcwt — per-frame wavelet high-pass energy (its activity level)
 # --------------------------------------------------------------------------
-def _measure_dtcwt(images, progress, should_cancel, nlevels=3):
+def _measure_dtcwt(images, progress, should_cancel, nlevels=4):
+    """DTCWT high-pass energy per frame.
+
+    nlevels mirrors the fusion's own decomposition depth
+    (MultiFocusFusion._fuse_dtcwt defaults to N=4): a map computed at a
+    different depth is not "the method's own activity measure".
+    """
     try:
         import dtcwt as dtcwt_lib
     except ImportError as exc:  # pragma: no cover - env dependent

@@ -24,9 +24,14 @@ def qapp():
 
 @pytest.fixture()
 def clean_settings():
+    # The cached QSettings keeps serving the previous values after a bare
+    # directory wipe (and then writes them back), so reset it around the wipe.
+    from utils.settings_store import reset_settings_singleton
+    reset_settings_singleton()
     shutil.rmtree(TEMP_SETTINGS, ignore_errors=True)
     os_makedirs(TEMP_SETTINGS)
     yield
+    reset_settings_singleton()
     shutil.rmtree(TEMP_SETTINGS, ignore_errors=True)
 
 

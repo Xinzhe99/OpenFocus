@@ -27,7 +27,7 @@ class TransformManager:
             window.base_images = [cv2.rotate(img, rotation_code) for img in window.base_images]
 
         self._invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
-        self.reload_image_stack()
+        self.reload_image_stack(initial_index=getattr(self.window, "current_img_index", 0))
 
     def flip_stack(self, flip_code: int) -> None:
         """Flip every image in the current stack."""
@@ -42,7 +42,7 @@ class TransformManager:
             window.base_images = [cv2.flip(img, flip_code) for img in window.base_images]
 
         self._invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
-        self.reload_image_stack()
+        self.reload_image_stack(initial_index=getattr(self.window, "current_img_index", 0))
 
     def resize_all_images(self) -> None:
         """Resize working images according to the down-sample dialog."""
@@ -81,7 +81,7 @@ class TransformManager:
             window.current_scale_factor = new_scale
 
             self._invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
-            self.reload_image_stack()
+            self.reload_image_stack(initial_index=getattr(self.window, "current_img_index", 0))
 
             show_success_box(
                 window,

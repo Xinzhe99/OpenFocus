@@ -362,7 +362,7 @@ class TileSettingsDialog(QDialog):
         block_layout = QHBoxLayout()
         block_layout.addWidget(QLabel(trans.t("dialog_tile_block_size")))
         self.spin_block = QSpinBox()
-        self.spin_block.setRange(64, 16384)
+        self.spin_block.setRange(1, 16384)
         self.spin_block.setSingleStep(1)
         self.spin_block.setValue(1024)
         # 移除右侧的增减按钮以便用户直接输入或使用键盘/滑块调整
@@ -513,7 +513,7 @@ class RegistrationSettingsDialog(QDialog):
         g_layout.addWidget(lbl)
 
         self.spin_downscale = QSpinBox()
-        self.spin_downscale.setRange(256, 8192)
+        self.spin_downscale.setRange(64, 8192)
         self.spin_downscale.setSingleStep(1)
         # 默认值会在 load_defaults 中设置
         self.spin_downscale.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QMessageBox, QProgressDialog
 
 from ui.styles import MESSAGE_BOX_STYLE, PROGRESS_DIALOG_STYLE
 from core.workers import BatchWorker
+from locales import trans
 
 
 class BatchManager:
@@ -51,9 +52,20 @@ class BatchManager:
     ) -> None:
         if self._thread and self._thread.isRunning():
             self._show_message(
-                title="Batch Processing Already Running",
-                text="Batch Processing Pending",
-                info="Please wait for the current batch job to finish before starting another one.",
+                title=trans.t("batch_running_title"),
+                text=trans.t("batch_running_text"),
+                info=trans.t("batch_running_info"),
+                icon=QMessageBox.Icon.Warning,
+            )
+            return
+
+        # Without a method no fusion runs at all: the worker would report
+        # every folder as "successfully processed" while writing nothing.
+        if not (processing_settings or {}).get("fusion_method"):
+            self._show_message(
+                title=trans.t("batch_no_method_title"),
+                text=trans.t("batch_no_method_text"),
+                info="",
                 icon=QMessageBox.Icon.Warning,
             )
             return
@@ -152,83 +164,62 @@ class BatchManager:
 
             if not was_cancelled:
                 info_lines = [
-                    f"Successfully processed: {success_count}/{total_count} folders",
+                    trans.t("batch_done_success").format(
+                        success=success_count, total=total_count),
                 ]
                 if failed_folders:
                     info_lines.append("")
-                    info_lines.append(f"Failed to process {len(failed_folders)} folder(s):")
+                    info_lines.append(trans.t("batch_done_failed").format(
+                        count=len(failed_folders)))
                     info_lines.extend(failed_folders)
 
                 self._show_message(
-                    title="Batch Processing Complete",
-                    text="Batch Processing Complete",
+                    title=trans.t("batch_done_title"),
+                    text=trans.t("batch_done_title"),
                     info="\n".join(info_lines),
                     icon=QMessageBox.Icon.Information,
                 )
         finally:
             self._close_progress_dialog()
             self._teardown_worker()
-            # 恢复 UI 控件
+            self._restore_controls()
+
+    def _render_owns_controls(self) -> bool:
+        """True while a render/compare run owns the fusion controls."""
+        _rm = getattr(self.window, "render_manager", None)
+        if _rm is None:
+            return False
+        return bool((getattr(_rm, "worker", None) is not None and _rm.worker.isRunning())
+                    or getattr(_rm, "_compare_mode", False))
+
+    def _restore_controls(self) -> None:
+        """Re-enable the controls a batch job disabled (unless a render owns them)."""
+        if self._render_owns_controls():
+            return
+        for name in ("slider_smooth", "rb_a", "rb_b", "rb_c", "rb_gfg",
+                     "cb_align_homography", "cb_align_ecc", "btn_reset"):
+            widget = getattr(self.window, name, None)
+            if widget is None:
+                continue
             try:
-                self.window.slider_smooth.setEnabled(True)
+                widget.setEnabled(True)
             except Exception:
                 pass
-            try:
-                self.window.rb_a.setEnabled(True)
-                self.window.rb_b.setEnabled(True)
-                self.window.rb_c.setEnabled(True)
-                self.window.rb_gfg.setEnabled(True)
-                self.window.rb_d.setEnabled(True)
-            except Exception:
-                pass
-            try:
-                self.window.cb_align_homography.setEnabled(True)
-                self.window.cb_align_ecc.setEnabled(True)
-            except Exception:
-                pass
-            try:
-                self.window.btn_reset.setEnabled(True)
-            except Exception:
-                pass
+        # StackMFF-V4 stays disabled when torch is missing.
+        hook = getattr(self.window, "refresh_method_availability", None)
+        if callable(hook):
+            hook()
 
     def _handle_error(self, error_msg: str) -> None:
         self._show_message(
-            title="Batch Processing Error",
-            text="Batch Processing Error",
-            info=f"An error occurred during batch processing:\n\n{error_msg}",
+            title=trans.t("batch_error_title"),
+            text=trans.t("batch_error_title"),
+            info=trans.t("batch_error_info").format(error=error_msg),
             icon=QMessageBox.Icon.Critical,
         )
         self._close_progress_dialog()
         self._teardown_worker()
-        # A render/compare run owns these controls; let its own restore path
-        # re-enable them instead of unlocking mid-run.
-        _rm = getattr(self.window, "render_manager", None)
-        if _rm is not None and (
-                (getattr(_rm, "worker", None) is not None and _rm.worker.isRunning())
-                or getattr(_rm, "_compare_mode", False)):
-            return
-        # 恢复 UI 控件
-        try:
-            self.window.slider_smooth.setEnabled(True)
-        except Exception:
-            pass
-        try:
-            self.window.rb_a.setEnabled(True)
-            self.window.rb_b.setEnabled(True)
-            self.window.rb_c.setEnabled(True)
-            self.window.rb_gfg.setEnabled(True)
-            self.window.rb_d.setEnabled(True)
-        except Exception:
-            pass
-        try:
-            self.window.cb_align_homography.setEnabled(True)
-            self.window.cb_align_ecc.setEnabled(True)
-        except Exception:
-            pass
-        try:
-            self.window.btn_reset.setEnabled(True)
-        except Exception:
-            pass
+        self._restore_controls()
 
     def _show_message(
         self,

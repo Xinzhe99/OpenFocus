@@ -1,6 +1,12 @@
 # PyInstaller Build Commands
 
-This document converts the examples in `build_command.txt` to a Markdown reference. Each command is written for PowerShell (Windows) and uses PyInstaller to create a packaged application.
+PowerShell commands for packaging OpenFocus with PyInstaller (6.x).
+
+> **Authoritative build**: the release pipeline
+> (`.github/workflows/release.yml`) builds with **mode 3 (onedir + torch)**
+> below — that exact command produces the shipped artifacts. The commands here
+> are the same thing for local runs; `python -m PyInstaller` is preferred over
+> a bare `pyinstaller` so the interpreter you intend is the one that runs.
 
 ---
 
@@ -114,9 +120,21 @@ All PyInstaller commands MUST include these directories:
 
 ---
 
-## 4) Build with Cross-Platform Drag-and-Drop Support
+## 4) Spec-file builds
 
-Use the spec file (`docs/OpenFocus.spec`) for proper macOS app bundle and drag-and-drop support:
+The repo root `OpenFocus.spec` is the PyInstaller 6 equivalent of mode 3
+(onedir, torch included, UPX off) if you prefer a spec:
+
+```powershell
+python -m PyInstaller --clean --noconfirm OpenFocus.spec
+```
+
+It is **not** used by CI (the release workflow passes the flags explicitly) and
+it is gitignored, so treat it as a convenience for local builds. The older
+`docs/OpenFocus.spec` was removed: it used the PyInstaller 4/5 API
+(`cipher`, `a.zipfiles`, `win_*` kwargs) and referenced files that do not
+exist (`locales/`, `assets/OpenFocus.icns`), so it could not run on the
+version CI installs.
 
 ```powershell
 # Windows (PowerShell)

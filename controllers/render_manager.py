@@ -77,9 +77,18 @@ class RenderManager:
             window.rb_b.setEnabled(True)
             window.rb_c.setEnabled(True)
             window.rb_gfg.setEnabled(True)
-            window.rb_d.setEnabled(True)
         except Exception:
             pass
+        # StackMFF-V4 availability is owned by the torch probe: blanket-enabling
+        # it here re-armed an unavailable backend after every render.
+        hook = getattr(window, "refresh_method_availability", None)
+        if callable(hook):
+            hook()
+        else:
+            try:
+                window.rb_d.setEnabled(True)
+            except Exception:
+                pass
         try:
             window.cb_align_homography.setEnabled(True)
             window.cb_align_ecc.setEnabled(True)
@@ -402,6 +411,27 @@ class RenderManager:
         preview = context["preview"] if context else getattr(self, '_preview_mode', False)
         self._preview_mode = False
         compare = getattr(self, '_compare_mode', False)
+
+        # The stack can change while a render runs (a frame deleted, a new
+        # folder loaded, rotate/flip/resize). Publishing that result would show
+        # — and export — frames of the previous stack under the new stack's
+        # filenames, so drop it instead. The alignment cache has its own,
+        # stricter guard below.
+        stack_changed = (
+            context is not None
+            and not context["preview"]
+            and (window.raw_images is not context["source"]
+                 or list(window.image_filenames or []) != context["filenames"])
+        )
+        if stack_changed:
+            import logging as _logging
+            message = trans.t('msg_render_stack_changed')
+            print("Render finished but the stack changed meanwhile — result discarded.")
+            _logging.getLogger("openfocus").warning(
+                "render result discarded: stack changed while rendering")
+            window.statusBar().showMessage(message, 8000)
+            self._restore_ui_controls()
+            return
 
         try:
             if fusion_result is not None:

@@ -40,6 +40,9 @@ from dialogs.roi import (
     ROIRenderOptionsDialog,
 )
 
+from dialogs.welcome import WelcomeDialog
+from dialogs.scalebar import ScaleBarDialog
+
 __all__ = [
     # About dialogs
     'EnvironmentInfoDialog',
@@ -57,12 +60,13 @@ __all__ = [
     'ThreadSettingsDialog',
     'StackMFFV4BatchSettingsDialog',
     'WelcomeDialog',
+    'ScaleBarDialog',
     # Batch dialogs
     'BatchProcessingDialog',
     'FolderImportDialog',
     # ROI dialogs
     'ROIRenderOptionsDialog',
+    # dialogs.depthmap (DepthMapDialog) is imported lazily on purpose: it pulls
+    # in core.depth_map + utils.colormap, and keeping it out of this package
+    # import avoids an import cycle through ui.right_panel.
 ]
-
-from dialogs.welcome import WelcomeDialog
-from dialogs.scalebar import ScaleBarDialog

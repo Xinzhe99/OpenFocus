@@ -74,3 +74,7 @@ python tools/soak_test.py --quick                    # sections A–C + IO
 python tools/soak_test.py --json out.json            # full matrix incl. 120-frame + 16-bit
 python tools/soak_test.py --only synth120,io-roundtrip   # just the deep-stack and IO cases
 ```
+
+Sections A–C need real photo stacks. Point `OPENFOCUS_SOAK_DIR` at a folder
+containing `hetao_aligned_stabled/` and `Samples1/` to run them; without it
+those sections are skipped with a notice (the synthetic sections still run).

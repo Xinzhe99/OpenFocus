@@ -52,7 +52,12 @@ class WelcomeDialog(QDialog):
         demo_btn.clicked.connect(self._load_demo)
         demo_row.addWidget(demo_btn)
         demo_hint = QLabel(trans.t('btn_load_demo_hint'))
-        demo_hint.setStyleSheet("color: #57606a; background: transparent;")
+        # Theme-aware muted colour: the old hardcoded #57606a was ~2:1 on the
+        # dark dialog background, effectively invisible.
+        demo_hint.setObjectName("welcome_hint")
+        demo_hint.setStyleSheet(
+            "background: transparent;" if self._is_dark() else
+            "color: #57606a; background: transparent;")
         demo_row.addWidget(demo_hint)
         demo_row.addStretch()
         layout.addLayout(demo_row)
@@ -71,6 +76,10 @@ class WelcomeDialog(QDialog):
         if self._main_window is not None:
             self._main_window.load_demo_stack()
             self.accept()
+
+    def _is_dark(self) -> bool:
+        theme = getattr(self._main_window, "ui_theme", "dark") if self._main_window else "dark"
+        return theme != "light"
 
     def _apply_dialog_style(self):
         """Keep the dialog readable in whichever theme is active."""

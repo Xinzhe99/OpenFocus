@@ -49,6 +49,7 @@ def qapp():
     object of type QSettings has been deleted).
     """
     pytest.importorskip("PyQt6")
+    import shutil
     import tempfile
     from PyQt6.QtCore import QSettings
     from PyQt6.QtWidgets import QApplication
@@ -56,6 +57,15 @@ def qapp():
     # 真实用户设置，后续断言读到用户机器上的实际值（机器相关、还会
     # 污染用户配置）
     tmp = os.path.join(tempfile.gettempdir(), "openfocus_pytest_qsettings")
+    try:
+        from utils.settings_store import reset_settings_singleton
+        reset_settings_singleton()
+    except Exception:
+        pass
+    # Start from an empty store: a previous run's file would otherwise be
+    # read back as if it were the defaults (the singleton caches in memory,
+    # so simply deleting the directory mid-session is not enough).
+    shutil.rmtree(tmp, ignore_errors=True)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, tmp)
     app = QApplication.instance() or QApplication([])
     yield app

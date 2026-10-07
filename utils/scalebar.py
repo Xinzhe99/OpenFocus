@@ -113,13 +113,12 @@ def detect_px_size_um(path: str) -> Optional[float]:
             if 1e-4 <= px_um <= 1e3:
                 return px_um
 
-    # Generic tags: 3 = cm, 2 = inch
-    if resunit == 3:
+    # Generic resolution tags: only an explicit unit is meaningful. The
+    # implied default (inch) is how printers describe *paper* — a 72/300 dpi
+    # Photoshop or scan TIFF would become "352.78 µm/px" and silently
+    # mislabel every exported figure, so inches are not trusted at all.
+    if resunit == 3:  # explicit cm
         px_um = 1e4 / xres
-        if 1e-4 <= px_um <= 1e3:
-            return px_um
-    if resunit == 2:
-        px_um = 2.54e4 / xres
         if 1e-4 <= px_um <= 1e3:
             return px_um
     return None
@@ -297,12 +296,20 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
 
 
 def effective_px_um(window) -> Optional[float]:
-    """Calibration for the current stack: metadata first, manual second."""
+    """Calibration for the current stack: an explicit manual value wins over
+    auto-detected metadata.
+
+    The user typed that number for *this* stack because they know the optics;
+    metadata can be wrong (or left over from another file), and a
+    plausible-looking wrong scale bar in a publication is worse than none.
+    """
+    manual = getattr(window, "scale_um_per_px_manual", 0.0) or 0.0
+    if manual > 0:
+        return manual
     source = getattr(window, "source_px_um", None)
     if source and source > 0:
         return source
-    manual = getattr(window, "scale_um_per_px_manual", 0.0) or 0.0
-    return manual if manual > 0 else None
+    return None
 
 
 def export_cfg(window) -> Optional[dict]:

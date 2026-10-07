@@ -248,6 +248,8 @@ class OutputManager:
             return
 
         confirm = QMessageBox(window)
+        from utils.ui_utils import style_message_box
+        style_message_box(confirm)
         confirm.setIcon(QMessageBox.Icon.Warning)
         confirm.setWindowTitle(trans.t("msg_confirm_delete_title"))
         confirm.setText(trans.t("msg_confirm_delete_output_text").format(count=len(selected_items)))

@@ -174,9 +174,12 @@ writes the entire stack back into a single `.tif`, preserving 16-bit depth.
 
 Settings → Scale Bar… configures a scale bar burned into exported images.
 The pixel size (µm/px) is auto-detected from TIFF metadata — ImageJ's
-`unit=micron` convention, OME-TIFF's `PhysicalSizeX`, or standard
-cm/inch tags — so microscopy stacks (including multi-page TIFFs) calibrate
-themselves; enter a manual value when metadata has none. Choose the corner
+`unit=micron` convention, OME-TIFF's `PhysicalSizeX`, or an explicit
+centimetre resolution unit — so microscopy stacks (including multi-page
+TIFFs) calibrate themselves. Printer resolution (72/300 dpi and friends)
+is deliberately *not* treated as calibration, and a manual value you type
+always wins over detected metadata: a plausible-looking wrong bar in a
+figure is worse than none. Choose the corner
 and color (Auto inverts against the background); the dialog shows a live
 preview. With the bar enabled, every export (single image, folder stacks,
 multi-page TIFF, GIF, export-all, batch) carries a publication-style bar:

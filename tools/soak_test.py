@@ -176,33 +176,46 @@ def main():
         return not wanted or any(s in label.lower() for s in wanted)
 
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    hetao = load_stack(r"C:\Users\dell\Pictures\Helicon Focus\hetao_aligned_stabled")
-    samples = load_stack(r"C:\Users\dell\Pictures\Helicon Focus\Samples1")
-    print(f"hetao  : {len(hetao)} frames {hetao[0].shape}")
-    print(f"samples: {len(samples)} frames {samples.shape if hasattr(samples,'shape') else samples[0].shape}")
+    # Sections A-C need the author's real stacks. Point OPENFOCUS_SOAK_DIR at
+    # your own photo folder, or the sections are skipped with a notice —
+    # indexing an empty list used to crash the harness before any case ran.
+    photo_root = os.environ.get(
+        "OPENFOCUS_SOAK_DIR", r"C:\Users\dell\Pictures\Helicon Focus")
+    hetao = load_stack(os.path.join(photo_root, "hetao_aligned_stabled"))
+    samples = load_stack(os.path.join(photo_root, "Samples1"))
+    if hetao:
+        print(f"hetao  : {len(hetao)} frames {hetao[0].shape}")
+    else:
+        print(f"hetao  : not found under {photo_root} — sections A/B skipped "
+              f"(set OPENFOCUS_SOAK_DIR to a folder with real stacks)")
+    if samples:
+        shape = samples.shape if hasattr(samples, "shape") else samples[0].shape
+        print(f"samples: {len(samples)} frames {shape}")
+    else:
+        print(f"samples: not found under {photo_root} — section C skipped")
 
     results, failures = [], []
     algos = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv4"]
 
-    if any(want(f"hetao40/{a}") for a in algos):
+    if hetao and any(want(f"hetao40/{a}") for a in algos):
         print("\n== A. real 40-frame stack, each algorithm (no registration) ==")
         for a in algos:
             if want(f"hetao40/{a}"):
                 run_case(f"hetao40/{a}", hetao, a, failures, results)
 
-    if any(want(f"hetao40/ecc+{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
+    if hetao and any(want(f"hetao40/ecc+{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
         print("\n== B. real 40-frame stack + ECC registration ==")
         for a in ("guided_filter", "dtcwt", "stackmffv4"):
             if want(f"hetao40/ecc+{a}"):
                 run_case(f"hetao40/ecc+{a}", hetao, a, failures, results, reg="ecc")
 
-    if any(want(f"samples24/{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
+    if samples and any(want(f"samples24/{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
         print("\n== C. high-resolution stack (3636x4756 x24) ==")
         for a in ("guided_filter", "dtcwt", "stackmffv4"):
             if want(f"samples24/{a}"):
                 run_case(f"samples24/{a}", samples, a, failures, results)
 
-    if not args.quick and any(want(f"synth120/{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
+    if not args.quick and hetao and any(want(f"synth120/{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
         print("\n== D. synthetic 120-frame stack (real frames cycled) ==")
         big = synth_big_stack(hetao, 120)
         for a in ("guided_filter", "dtcwt", "stackmffv4"):
@@ -210,7 +223,7 @@ def main():
                 run_case(f"synth120/{a}", big, a, failures, results)
         del big
 
-    if not args.quick and any(want(f"u16-hetao40/{a}") for a in ("guided_filter", "dtcwt")):
+    if not args.quick and hetao and any(want(f"u16-hetao40/{a}") for a in ("guided_filter", "dtcwt")):
         print("\n== E. 16-bit variants ==")
         u16 = [im.astype(np.uint16) * 257 for im in hetao]
         for a in ("guided_filter", "dtcwt"):
@@ -218,7 +231,7 @@ def main():
                 run_case(f"u16-hetao40/{a}", u16, a, failures, results)
         del u16
 
-    if want("io-roundtrip"):
+    if hetao and want("io-roundtrip"):
         print("\n== F. scale bar + multipage round-trip on the big output ==")
         try:
             from utils.scalebar import draw_scale_bar

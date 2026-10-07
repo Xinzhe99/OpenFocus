@@ -52,7 +52,8 @@ Desktop.ini
 **/AGENTS.md
 
 # build
-*.spec.pytest_cache/
+*.spec
+.pytest_cache/
 .temp_qsettings/
 .temp_shots/
 .ecc_inputs.npz
@@ -82,3 +83,6 @@ assets/demo_stack/.openfocus_cache/
 # soak test local artifacts
 /.soak_full*.log
 /.soak_results*.json
+
+# portable-mode user data (created beside the exe next to the marker)
+/OpenFocusData/
