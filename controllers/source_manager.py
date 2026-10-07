@@ -3,7 +3,7 @@ from typing import Any
 
 import cv2
 import os
-from PyQt6.QtCore import QPoint
+from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QAction, QIcon, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox, QDialog
 
@@ -672,7 +672,8 @@ class SourceManager:
         if excluded:
             window.excluded_frames = {
                 new_order.index(i) for i in excluded if i in new_order}
-        kept = window.current_img_index if 0 <= window.current_img_index < n else 0
+        kept = getattr(window, "current_img_index", 0)
+        kept = kept if isinstance(kept, int) and 0 <= kept < n else 0
         new_pos = new_order.index(kept) if kept in new_order else 0
         window.transform_manager.reload_image_stack(initial_index=new_pos)
 

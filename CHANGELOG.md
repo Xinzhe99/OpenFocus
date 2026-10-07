@@ -3,6 +3,16 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.38] — 2026-10-08
+
+### Fixed
+- **Loading any stack crashed with "Error: name 'Qt' is not defined"** (the
+  v1.37 per-frame checkboxes referenced Qt without importing it in
+  `source_manager`). Regression caught by a user one click into v1.37 —
+  "Load Demo Stack" was enough. A regression test now drives the real
+  `update_file_list` path (checkbox states, position tags, drag-reorder
+  mapping).
+
 ## [v1.37] — 2026-10-08
 
 ### Added
