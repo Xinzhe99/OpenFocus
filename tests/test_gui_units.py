@@ -373,6 +373,7 @@ def _fake_worker_class():
             self.finished_signal = _StubSignal()
             self.error_signal = _StubSignal()
             self.progress_signal = _StubSignal()
+            self.stage_signal = _StubSignal()
 
         def isRunning(self):
             return self._running
@@ -399,7 +400,7 @@ def _patched_render_manager(monkeypatch, window, ai_available=False):
 
     monkeypatch.setattr(render_module, "RenderWorker", _fake_worker_class())
     monkeypatch.setattr(render_module, "is_stackmffv4_available", lambda: ai_available)
-    for name in ("show_custom_message_box", "show_message_box", "show_warning_box"):
+    for name in ("show_message_box", "show_warning_box"):
         monkeypatch.setattr(render_module, name, lambda *a, **k: None)
 
     saved = []

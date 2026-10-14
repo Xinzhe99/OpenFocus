@@ -89,6 +89,7 @@ class RenderWorker(QThread):
 
     finished_signal = pyqtSignal(object, object, bool, float, float, str)
     progress_signal = pyqtSignal(int, int)  # done, total (tiled fusion)
+    stage_signal = pyqtSignal(str)  # "align" | "fuse"
     error_signal = pyqtSignal(str)
 
     def __init__(
@@ -219,6 +220,7 @@ class RenderWorker(QThread):
                         self.error_signal.emit("CANCELLED: render cancelled")
                         return
                     alignment_start_time = time.time()
+                    self.stage_signal.emit("align")
                     processed_images, alignment_time = self._run_registration(
                         processed_images, should_cancel=lambda: self.is_cancelled)
                     registration_performed = True
@@ -233,6 +235,7 @@ class RenderWorker(QThread):
                     self.error_signal.emit("CANCELLED: render cancelled")
                     return
                 fusion_start_time = time.time()
+                self.stage_signal.emit("fuse")
                 # 使用裁剪后的图像进行融合（如果ROI已启用）
                 fusion_images = cropped_images if cropped_images is not None else processed_images
                 fusion_result, device_name = self._run_fusion(

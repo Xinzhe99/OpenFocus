@@ -340,3 +340,76 @@ class TestOpenFocusAlignment:
         # 0.75，并要求两帧都显著改善
         assert res(out[2], out[0]) < res(f2, base) * 0.75
         assert res(out[1], out[0]) < res(f1, base) * 0.75
+
+    # ------------------------------------------------------------------
+    # 位移上限：逆向实证 §7.2 —— Helicon 在 ~6–8% 之上放弃追踪。默认从
+    # 25% 降到 8%，且超限**放弃**而非钳制（钳制会得到半错位 + 裁掉大块
+    # 有效区）。
+    # ------------------------------------------------------------------
+    def _shift_only_stack(self, shift_px, size=(120, 240)):
+        base = make_two_focus_stack(size)[0]
+        # roll 的符号：内容移动 −shift ⇒ 校正量为 +shift（与既有测试一致）
+        f1 = np.roll(base, -shift_px, axis=1)
+        return base, f1
+
+    def test_default_shift_limit_is_helicon_parsimonious(self):
+        from core.registration import _OF_MAX_SHIFT_RATIO
+        assert _OF_MAX_SHIFT_RATIO <= 0.08, (
+            "the default must stay at Helicon's give-up point (§7.2); a wider "
+            "default re-introduces half-corrected large shifts")
+
+    def test_shift_over_limit_drops_alignment(self):
+        """超限帧保持原位（放弃），而不是被钳制到上限（半错位）。"""
+        from core.registration import ImageRegistration
+        base, f1 = self._shift_only_stack(42)  # 17.5% of a 240px width
+        reg = ImageRegistration(method="openfocus")
+        out = reg.process([base.copy(), f1.copy()], output_path=None,
+                          thread_count=2)
+        # 放弃 → 无位移 → 只剩安全边裁切（2px/侧），不是上限比例的 19px
+        assert out[0].shape[1] >= base.shape[1] - 6
+        # 钳制会留下 42−19=23px 的残错位；放弃则原位移完整保留
+        assert abs(out[1] - out[0]).mean() > 20
+
+    def test_shift_within_limit_is_aligned(self):
+        """上限内的位移仍被完整校正。"""
+        from core.registration import ImageRegistration
+        base, f1 = self._shift_only_stack(6)  # 2.5% of width
+        reg = ImageRegistration(method="openfocus")
+        out = reg.process([base.copy(), f1.copy()], output_path=None,
+                          thread_count=2)
+        raw = np.abs(f1.astype(int)[4:-4, 8:-8]
+                     - base.astype(int)[4:-4, 8:-8]).mean()
+        got = np.abs(out[1].astype(int)[4:-4, 8:-8]
+                     - out[0].astype(int)[4:-4, 8:-8]).mean()
+        assert got < raw * 0.35
+
+    def test_shift_limit_is_overridable(self):
+        """显式放宽上限后，同样的大位移会被追（钳制语义已移除，改为接受）。"""
+        from core.registration import ImageRegistration
+        base, f1 = self._shift_only_stack(42)
+        reg = ImageRegistration(method="openfocus", max_shift_ratio=0.25)
+        out = reg.process([base.copy(), f1.copy()], output_path=None,
+                          thread_count=2)
+        got = np.abs(out[1].astype(int)[4:-4, 48:-48]
+                     - out[0].astype(int)[4:-4, 48:-48]).mean()
+        raw = np.abs(f1.astype(int)[4:-4, 48:-48]
+                     - base.astype(int)[4:-4, 48:-48]).mean()
+        assert got < raw * 0.35
+        # 追了 42px 的位移 → 有效区交集相应缩小（与"放弃"形成对照）
+        assert out[0].shape[1] < base.shape[1] - 30
+
+    def test_rotation_alone_is_not_dropped_by_shift_limit(self):
+        """纯旋转/缩放（画面中心净位移≈0）不得被位移上限误杀：
+        上限判据用的是中心净平移，而非矩阵的平移分量。"""
+        from core.registration import ImageRegistration
+        base = make_two_focus_stack((140, 180))[0]
+        h, w = base.shape[:2]
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), 2.5, 1.0)
+        f1 = cv2.warpAffine(base, M, (w, h))
+        out = ImageRegistration(method="openfocus").process(
+            [base.copy(), f1], output_path=None, thread_count=2)
+        m = np.abs(out[1].astype(int)[8:-8, 8:-8]
+                   - out[0].astype(int)[8:-8, 8:-8]).mean()
+        un = np.abs(f1.astype(int)[8:-8, 8:-8]
+                    - base.astype(int)[8:-8, 8:-8]).mean()
+        assert m < un * 0.45

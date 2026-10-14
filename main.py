@@ -529,17 +529,12 @@ class OpenFocus(QMainWindow):
             # User disabled GPU acceleration (Settings menu)
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('CPU*'))
             return
+        # Read the probe's cached result: importing torch here (UI thread,
+        # on a timer) froze the window for seconds and raced the probe thread
+        from core.multi_focus_fusion import torch_device_kind
         try:
-            import torch
-            if torch.cuda.is_available():
-                props = torch.cuda.get_device_properties(0)
-                self.lbl_status_gpu.setText(trans.t('status_gpu').format('CUDA'))
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                self.lbl_status_gpu.setText(trans.t('status_gpu').format('MPS'))
-            else:
-                self.lbl_status_gpu.setText(trans.t('status_gpu').format('N/A'))
-        except ImportError:
-            self.lbl_status_gpu.setText(trans.t('status_gpu').format('N/A'))
+            kind = torch_device_kind()
+            self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind or '…'))
         except Exception:
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('Err'))
 
@@ -771,10 +766,25 @@ class OpenFocus(QMainWindow):
         bar.showMessage(text, timeout_ms)
 
     def _on_status_message_changed(self, text: str) -> None:
-        if not text and not getattr(self, '_update_indicator', None):
+        # The bar is hidden while idle; any message must reveal it. Callers
+        # use statusBar().showMessage() directly (render progress, cancel,
+        # compare-done...) and those messages were silently invisible.
+        if text:
+            self.statusBar().setVisible(True)
             return
-        if not text and not self._update_indicator.isVisible():
-            self.statusBar().setVisible(False)
+        if self._status_bar_busy():
+            return
+        self.statusBar().setVisible(False)
+
+    def _status_bar_busy(self) -> bool:
+        """True while a permanent status widget (update indicator, render
+        progress) is showing — the bar must then stay visible."""
+        indicator = getattr(self, '_update_indicator', None)
+        if indicator is not None and indicator.isVisible():
+            return True
+        progress = getattr(getattr(self, 'render_manager', None),
+                           '_status_bar_progress', None)
+        return progress is not None and progress.isVisible()
 
     def _refresh_update_indicator(self) -> None:
         """Render the manager's current state into the status bar + menu."""

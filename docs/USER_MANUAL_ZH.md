@@ -305,12 +305,21 @@ Wipe 模式与 ROI 模式共用结果面板，进入其一自动退出另一个�
 - 初始对齐比 ECC 快
 - 适合透视变化明显的图像
 
+#### OpenFocus（快速）
+
+- 有界相似变换对齐（平移 + 旋转 + 缩放，逆向复刻自 Helicon Focus），
+  附带逐帧亮度均衡与自动裁边
+- 每帧亚秒级——远快于 ECC 或单应性
+- 位移超过**帧尺寸 8%** 的帧会放弃对齐，而不是被强行半校正；Helicon
+  自身的对齐器同样在此处放弃。可用 CLI `--align-shift-limit` 覆盖
+- 非刚性或极端几何请改选 ECC 或单应性
+
 ### 启用配准
 
 1. 在右侧面板找到 **配准** 组
-2. 勾选 **Align (ECC)** 启用 ECC 对齐
-3. 勾选 **Align (Homography)** 启用单应性对齐
-4. 两者可以同时使用以获得更好效果
+2. 从下拉框选择一种方法：**不对齐**、**OpenFocus（快速）**、
+   **Align (ECC)** 或 **Align (Homography)**
+3. OpenFocus 快速对齐可前置在 ECC 或单应性之前（先全局粗对齐，再精配准）
 
 ### 何时需要配准
 
@@ -373,8 +382,8 @@ OpenFocus 提供八种融合算法（外加"仅对齐"的配准模式），各�
 
 ### OpenFocus A / B / C（逆向复刻自 Helicon Focus）
 
-- **算法**：Helicon Focus 方法族，已对照原软件输出完成验证（基准栈
-  MAE 0.5–4%）
+- **算法**：Helicon Focus 方法族，已对照原软件输出完成验证（真实基准栈
+  MAE 约 1–3.5%，偏移配准口径；深度图重合 99.5%）
 - **OpenFocus A**：方差加权平均 + 末帧先验——速度快，短栈色彩稳定
 - **OpenFocus B**：方差深度图选择——逐像素挑最清晰帧，平滑表面与
   显微场景最佳
@@ -653,9 +662,13 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 |------|------|
 | `--input, -i` | 图像文件夹、视频文件，或一个/多个图像文件 |
 | `--output, -o` | 输出图像路径（扩展名决定格式） |
-| `--method, -m` | `guided_filter`（默认）、`dct`、`dtcwt`、`gfgfgf`、`stackmffv4` |
-| `--align, -a` | `none`（默认）、`homography`、`ecc`、`both` |
-| `--kernel, -k` | guided_filter/dct/gfgfgf 的核大小（自动取奇） |
+| `--method, -m` | `guided_filter`（默认）、`dct`、`dtcwt`、`gfgfgf`、`stackmffv4`、`openfocus_a`、`openfocus_b`、`openfocus_c` |
+| `--align, -a` | `none`（默认）、`homography`、`ecc`、`both`、`openfocus` |
+| `--align-shift-limit` | 仅 `openfocus` 对齐：可接受的最大位移（帧尺寸比例，默认 0.08；超限帧放弃对齐而非半校正） |
+| `--base-frame` | 融合后把输出低频对齐到 `last`/`first` 帧（默认 `none`），消除亮度漂移 |
+| `--sort` | `openfocus_a/b/c` 的帧序：`asc`（默认，文件序）、`desc`（反转远→近扫描）、`off` |
+| `--dust-map WHITE` | 用失焦白场照片做平场（尘点图）校正 |
+| `--kernel, -k` | 核大小（自动取奇；openfocus 族为方差窗口半径来源） |
 | `--threads, -t` | 工作线程数（默认 4） |
 | `--batch-size` | StackMFF-V4 瓦片批大小（默认 2） |
 | `--cpu` | 即使有 GPU 也强制 CPU |

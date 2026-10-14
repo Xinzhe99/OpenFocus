@@ -1,5 +1,9 @@
 # Helicon Focus 8.1 核心算法深度逆向：对齐 + A/B/C/Bl 四种融合方法
 
+> ⚠️ **历史文档（2026-10-12）**：正文部分结论已被后续探针推翻
+> （1/32 量化、"带通能量"、自动排序反转、窗口半径）。
+> **权威版本：[HELICON_FOCUS_RE.md](HELICON_FOCUS_RE.md)**，请以其为准。
+
 > 承接 [HELICON_REVERSE_COMPARE.md](HELICON_REVERSE_COMPARE.md)，这是 REA "Understand" 阶段的算法层结论。
 > 证据链 = ① 二进制静态证据（内嵌 OpenCL 编译命令行 / GPU 内核符号表 / x64 反汇编）
 > ② 官方文档语义 ③ 对本机 Pro 版 CLI 的 20 次受控黑盒差分实验（16-bit 合成堆栈探针）。

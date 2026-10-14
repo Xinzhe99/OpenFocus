@@ -51,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--align", "-a", default="none", choices=VALID_ALIGN,
                         help="Registration applied before fusion (default: none); openfocus = fast bounded "
                              "phase correlation with brightness equalization")
+    parser.add_argument("--align-shift-limit", type=float, default=None, metavar="RATIO",
+                        help="openfocus alignment only: maximum accepted frame shift as a fraction of the "
+                             "frame size (default 0.08, the limit Helicon gives up at; frames above it are "
+                             "left unaligned rather than half-corrected)")
     parser.add_argument("--base-frame", default="none", choices=["none", "last", "first"],
                         help="Base correction after fusion: match the output's low frequencies to the "
                              "last/first frame (removes brightness/exposure drift, default: none)")
@@ -63,7 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "area; removes static dust specks and vignetting from every frame before "
                              "registration")
     parser.add_argument("--kernel", "-k", type=int, default=None,
-                        help="Kernel size for guided_filter/dct/gfgfgf (forced odd)")
+                        help="Kernel size (forced odd); for the openfocus family it is the "
+                             "source of the variance-window radius")
     parser.add_argument("--threads", "-t", type=int, default=4,
                         help="Worker thread count (default: 4)")
     parser.add_argument("--batch-size", type=int, default=2,
@@ -195,7 +200,11 @@ def _fuse_stack(images, args):
 
     if args.align != "none":
         t0 = time.time()
-        reg = ImageRegistration(method=args.align, downscale_width=args.downscale)
+        # max_shift_ratio is only read by the openfocus method; the others
+        # ignore it, so one call site stays simple.
+        reg = ImageRegistration(method=args.align, downscale_width=args.downscale,
+                                max_shift_ratio=getattr(args, "align_shift_limit",
+                                                        None))
         images = reg.process(images, output_path=None, thread_count=args.threads)
         print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
 

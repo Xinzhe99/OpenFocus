@@ -66,15 +66,24 @@ def make(frames, r, luma, base=True):
     return out
 
 def registered_mae(mine, ref, R=5, m=6):
-    """min MAE over integer crop offsets (Helicon's crop is asymmetric)."""
+    """min MAE over integer crop offsets (Helicon's crop is asymmetric).
+
+    Overlap length is recomputed per offset: a fixed length silently drops
+    every |offset| > m (shapes stop matching), which under-sweeps the range.
+    (tests/test_helicon_regression.py::_metrics carries the same fix.)
+    """
     best = (1e18, 0, 0)
+    H0, W0 = mine.shape[:2]; H1, W1 = ref.shape[:2]
     for dy in range(-R, R+1):
         for dx in range(-R, R+1):
-            h = min(mine.shape[0], ref.shape[0]) - 2*m
-            w = min(mine.shape[1], ref.shape[1]) - 2*m
-            a = mine[m+max(dy,0):m+max(dy,0)+h, m+max(dx,0):m+max(dx,0)+w]
-            b = ref[m+max(-dy,0):m+max(-dy,0)+h, m+max(-dx,0):m+max(-dx,0)+w]
-            if a.shape != b.shape or a.size == 0: continue
+            y0a, y0b = max(dy, 0), max(-dy, 0)
+            x0a, x0b = max(dx, 0), max(-dx, 0)
+            h = min(H0 - y0a, H1 - y0b) - 2*m
+            w = min(W0 - x0a, W1 - x0b) - 2*m
+            if h <= 0 or w <= 0:
+                continue
+            a = mine[m+y0a:m+y0a+h, m+x0a:m+x0a+w]
+            b = ref[m+y0b:m+y0b+h, m+x0b:m+x0b+w]
             e = float(np.abs(a-b).mean())
             if e < best[0]: best = (e, dy, dx)
     return best

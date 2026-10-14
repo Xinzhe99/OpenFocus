@@ -1,5 +1,6 @@
 import concurrent.futures
 import importlib
+import threading
 import os
 import numpy as np
 from typing import Union, List, Tuple, Optional
@@ -59,29 +60,57 @@ def get_tile_params() -> dict:
 _STACKMFF_AVAILABLE_CACHE = None
 
 
+_TORCH_PROBE_LOCK = threading.Lock()
+_TORCH_DEVICE_KIND = None  # 'CUDA' | 'MPS' | 'N/A'，探测后缓存
+
+
 def is_stackmffv4_available() -> bool:
     """Return True when PyTorch is importable for the StackMFF-V4 fusion.
 
     The result is cached: importing torch costs seconds on Windows, so the
-    startup probe must never pay it twice.
+    startup probe must never pay it twice. The probe is serialized: two
+    threads importing torch at once (the startup probe thread and the
+    status bar on the UI thread) raced inside torch's operator registry
+    ("RuntimeError: operator prims::amin does not exist").
     """
-    global _STACKMFF_AVAILABLE_CACHE
+    global _STACKMFF_AVAILABLE_CACHE, _TORCH_DEVICE_KIND
     if _STACKMFF_AVAILABLE_CACHE is not None:
         return _STACKMFF_AVAILABLE_CACHE
 
-    torch_spec = importlib.util.find_spec("torch")
-    if not torch_spec:
-        _STACKMFF_AVAILABLE_CACHE = False
-        return False
+    with _TORCH_PROBE_LOCK:
+        if _STACKMFF_AVAILABLE_CACHE is not None:
+            return _STACKMFF_AVAILABLE_CACHE
+        if not importlib.util.find_spec("torch"):
+            _TORCH_DEVICE_KIND = "N/A"
+            _STACKMFF_AVAILABLE_CACHE = False
+            return False
+        try:
+            torch = importlib.import_module("torch")
+            # The network module itself imports `from torchvision import models`
+            # — torch without torchvision used to pass the probe and then crash
+            # at fusion time. Probe what the code path actually needs.
+            importlib.import_module("torchvision")
+        except Exception:  # ImportError, or a broken/mismatched install
+            _TORCH_DEVICE_KIND = "N/A"
+            _STACKMFF_AVAILABLE_CACHE = False
+            return False
+        try:
+            if torch.cuda.is_available():
+                _TORCH_DEVICE_KIND = "CUDA"
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                _TORCH_DEVICE_KIND = "MPS"
+            else:
+                _TORCH_DEVICE_KIND = "N/A"
+        except Exception:
+            _TORCH_DEVICE_KIND = "N/A"
+        _STACKMFF_AVAILABLE_CACHE = True
+        return True
 
-    try:
-        importlib.import_module("torch")
-    except ImportError:
-        _STACKMFF_AVAILABLE_CACHE = False
-        return False
 
-    _STACKMFF_AVAILABLE_CACHE = True
-    return True
+def torch_device_kind():
+    """Cached accelerator kind from the availability probe, or None while the
+    probe has not run yet (never imports torch itself — safe on the UI thread)."""
+    return _TORCH_DEVICE_KIND
 
 def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
     """True when total stack bytes exceed a single threshold-sized frame.

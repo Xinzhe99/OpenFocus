@@ -7,7 +7,7 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
 
-from utils import show_custom_message_box, show_message_box, show_warning_box
+from utils import show_message_box, show_warning_box
 from utils.image_utils import to_display_uint8
 from core.multi_focus_fusion import is_stackmffv4_available
 from core.workers import RenderWorker
@@ -436,6 +436,9 @@ class RenderManager:
         self.worker.finished_signal.connect(self.on_render_finished)
         self.worker.error_signal.connect(self.on_render_error)
         self.worker.progress_signal.connect(self.on_render_progress)
+        self.worker.stage_signal.connect(self.on_render_stage)
+        window.statusBar().clearMessage()  # stale "loading…" etc.
+        self._show_progress_bar(trans.t('render_progress'))
         self.worker.start()
 
     def on_render_finished(
@@ -448,6 +451,7 @@ class RenderManager:
         device_name: str,
     ) -> None:
         window = self.window
+        self._hide_progress_bar()
         context = self._render_context
         preview = context["preview"] if context else getattr(self, '_preview_mode', False)
         self._preview_mode = False
@@ -648,14 +652,20 @@ class RenderManager:
 
             info_lines.append(trans.t("info_total_time").format(total_time))
 
+            # Non-blocking completion report: a modal "Completed" box after
+            # every render (incl. quick previews) cost a click per iteration
+            # and covered the result the user wanted to inspect. The summary
+            # goes to the status bar; the full timing sits in the output
+            # entry's tooltip.
             if not compare:
-                show_custom_message_box(
-                    window,
-                    trans.t("dialog_completed_title"),
-                    trans.t("dialog_completed_msg"),
-                    "\n".join(info_lines),
-                    QMessageBox.Icon.Information,
-                )
+                window.statusBar().showMessage(
+                    trans.t("dialog_completed_title") + " — "
+                    + " · ".join(info_lines), 15000)
+            if (fusion_result is not None and not preview
+                    and window.output_list.count() > 0):
+                newest = window.output_list.item(0)
+                if newest is not None:
+                    newest.setToolTip("\n".join(info_lines))
 
         except Exception as exc:
             import logging
@@ -693,10 +703,62 @@ class RenderManager:
                 self._restore_ui_controls()
             self.worker = None
 
+    def _progress_widgets(self):
+        """Lazily created status-bar progress bar + stage label.
+
+        Before this a render showed no activity at all unless the fusion
+        happened to be tiled; long ECC alignments looked like a hang."""
+        bar = getattr(self, "_status_bar_progress", None)
+        if bar is None:
+            from PyQt6.QtWidgets import QLabel, QProgressBar
+            sb = self.window.statusBar()
+            label = QLabel()
+            bar = QProgressBar()
+            bar.setFixedWidth(180)
+            bar.setFixedHeight(14)
+            bar.setTextVisible(False)
+            sb.addPermanentWidget(label)
+            sb.addPermanentWidget(bar)
+            label.hide()
+            bar.hide()
+            self._status_bar_progress = bar
+            self._status_bar_label = label
+        return bar, self._status_bar_label
+
+    def _show_progress_bar(self, text: str) -> None:
+        try:
+            bar, label = self._progress_widgets()
+            bar.setRange(0, 0)  # indeterminate until a stage reports counts
+            label.setText(text)
+            label.show()
+            bar.show()
+            self.window.statusBar().setVisible(True)
+        except Exception:
+            pass
+
+    def _hide_progress_bar(self) -> None:
+        bar = getattr(self, "_status_bar_progress", None)
+        if bar is not None:
+            bar.hide()
+            self._status_bar_label.hide()
+            sb = self.window.statusBar()
+            busy = getattr(self.window, "_status_bar_busy", None)
+            if not sb.currentMessage() and callable(busy) and not busy():
+                sb.setVisible(False)
+
+    def on_render_stage(self, stage: str) -> None:
+        text = trans.t('render_stage_align') if stage == "align" else trans.t('render_stage_fuse')
+        self._progress_first_t = None
+        self._show_progress_bar(text)
+
     def on_render_progress(self, done: int, total: int) -> None:
         """Surface tiled-fusion progress in the status bar with an ETA."""
         import time as _time
         window = self.window
+        bar = getattr(self, "_status_bar_progress", None)
+        if bar is not None and total > 0:
+            bar.setRange(0, int(total))
+            bar.setValue(int(done))
         now = _time.time()
         last = getattr(self, '_progress_last_t', None)
         if last is None or now - last > 1.0:  # throttle to 1 Hz
@@ -719,6 +781,7 @@ class RenderManager:
         self._preview_mode = False
         self._render_context = None
         self.worker = None
+        self._hide_progress_bar()
 
         if getattr(self, '_compare_mode', False):
             # A failed method aborts the whole comparison run

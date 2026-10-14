@@ -86,3 +86,9 @@ assets/demo_stack/.openfocus_cache/
 
 # portable-mode user data (created beside the exe next to the marker)
 /OpenFocusData/
+
+# Local-only: disassembly/strings of third-party binaries must never be published
+tools/helicon_repro/evidence/
+# Local GUI screenshots / scratch
+.shots/
+shot_tmp.py

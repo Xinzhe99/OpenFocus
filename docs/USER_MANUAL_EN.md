@@ -327,12 +327,24 @@ Image registration corrects spatial misalignment between frames in your image st
 - Faster than ECC for initial alignment
 - Good for images with significant perspective changes
 
+#### OpenFocus (fast)
+
+- Bounded similarity alignment (translation + rotation + scale),
+  reverse-engineered from Helicon Focus, with per-frame brightness
+  equalization and auto-crop
+- Sub-second per frame — much faster than ECC or Homography
+- Frames shifting more than **8% of the frame size are left unaligned**
+  rather than partially corrected; that is where Helicon's own aligner
+  gives up too. Override with the CLI `--align-shift-limit`
+- For non-rigid or extreme geometry, pick ECC or Homography instead
+
 ### Enabling Registration
 
 1. In the right panel, locate the **Registration** group
-2. Check **Align (ECC)** to enable ECC alignment
-3. Check **Align (Homography)** to enable Homography alignment
-4. Both methods can be used together for better results
+2. Pick one method from the dropdown: **No alignment**, **OpenFocus (fast)**,
+   **Align (ECC)** or **Align (Homography)**
+3. The OpenFocus fast alignment can also be chained in front of ECC or
+   Homography (coarse global pass first, then the precise local pass)
 
 ### When to Use Registration
 
@@ -395,8 +407,9 @@ OpenFocus offers eight fusion algorithms (plus an alignment-only mode). Each has
 ### OpenFocus A / B / C (reverse-engineered from Helicon Focus)
 
 - **Algorithm**: The Helicon Focus method family, reproduced and verified
-  against the original software's output (0.5–4% MAE across benchmark
-  stacks)
+  against the original software's output (about 1–3.5% MAE,
+  crop-offset-registered, on real benchmark stacks; 99.5% depth-map
+  agreement)
 - **OpenFocus A**: variance-weighted average with a last-frame prior —
   fast, colour-stable on short stacks
 - **OpenFocus B**: variance depth-map pick — selects the sharpest frame
@@ -714,9 +727,13 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 |--------|-------------|
 | `--input, -i` | Image folder, video file, or one or more image files |
 | `--output, -o` | Output image path (extension sets the format) |
-| `--method, -m` | `guided_filter` (default), `dct`, `dtcwt`, `gfgfgf`, `stackmffv4` |
-| `--align, -a` | `none` (default), `homography`, `ecc`, `both` |
-| `--kernel, -k` | Kernel size for guided_filter/dct/gfgfgf (forced odd) |
+| `--method, -m` | `guided_filter` (default), `dct`, `dtcwt`, `gfgfgf`, `stackmffv4`, `openfocus_a`, `openfocus_b`, `openfocus_c` |
+| `--align, -a` | `none` (default), `homography`, `ecc`, `both`, `openfocus` |
+| `--align-shift-limit` | `openfocus` align only: max accepted shift as a fraction of the frame size (default 0.08; frames above it are left unaligned) |
+| `--base-frame` | After fusion, match the output's low frequencies to the `last`/`first` frame (`none` default) — removes exposure drift |
+| `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |
+| `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
+| `--kernel, -k` | Kernel size (forced odd; for the openfocus family it is the source of the variance-window radius) |
 | `--threads, -t` | Worker thread count (default 4) |
 | `--batch-size` | AI tile batch size (default 2) |
 | `--cpu` | Force CPU even if a GPU is available |

@@ -484,6 +484,13 @@ class RegistrationCancelled(Exception):
 # ========== OpenFocus 对齐：有界相似变换（平移+旋转+缩放） ==========
 
 _OF_EST_WIDTH = 480  # 估计阶段长边上限（旋转/缩放网格在低分辨率上搜索）
+# 位移上限（帧尺寸比例）。逆向实证 §7.2：Helicon 的对齐在 ≤6% 时裁边精确
+# 跟随位移，≥8% 直接放弃追踪（输出高频能量跳升=鬼影模糊）。旧默认 25% 有
+# 两个害处：强行把不可靠的大位移校正成半错位；且有效区交集会被裁掉一大块
+# （25% 上限 = 单边最多丢 1/4 画面）。取 8%（Helicon 放弃点的上端——本对齐
+# 器有 NCC 置信门限与简约规则，比 Helicon 的全局参数估计更稳），可用
+# ImageRegistration(max_shift_ratio=) / CLI --align-shift-limit 按需放宽。
+_OF_MAX_SHIFT_RATIO = 0.08
 
 
 def _of_gray_hp(img, est_width):
@@ -612,7 +619,7 @@ def _of_estimate_similarity(ref_hp, cur_hp,
 def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                           downscale_width=None, thread_count: int = 4,
                           should_cancel=None, equalize_brightness=True,
-                          max_shift_ratio=0.25):
+                          max_shift_ratio=None):
     """
     OpenFocus 快速对齐：有界相似变换（平移+旋转+缩放）+ 亮度均衡 + 自动裁边。
 
@@ -622,9 +629,12 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
     平移用 Hann 窗相位相关亚像素估计；失焦/弱纹理帧对参考帧置信不足时
     链到上一帧（相邻帧模糊程度更接近）；低置信或运动分量低于死区时视为
     无运动（保护固定机位栈不被噪声抖动）。每帧低频亮度均衡到参考帧
-    （Helicon AdjustBrightness），位移钳制在 max_shift_ratio 内
-    （对应其 -va/-ha 上限），最后按有效区交集自动裁边（AutoCrop）。
+    （Helicon AdjustBrightness），位移超过 max_shift_ratio 时**放弃该帧
+    对齐**（逆向实证 §7.2：Helicon 在 6–8% 之上直接不追，强行钳制会得到
+    一半错位 + 污染有效区），最后按有效区交集自动裁边（AutoCrop）。
     """
+    if max_shift_ratio is None:
+        max_shift_ratio = _OF_MAX_SHIFT_RATIO
     if img_filenames is None and isinstance(input_source, str):
         valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'}
         img_paths = sorted(
@@ -722,11 +732,22 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
         ncc = est[0]
         if ncc < min_ncc:
             M = np.eye(3)
-        # 有界钳制（平移，对应 Helicon 的位移上限参数）
-        tx = float(np.clip(M[0, 2], -max_shift[0], max_shift[0]))
-        ty = float(np.clip(M[1, 2], -max_shift[1], max_shift[1]))
-        M[0, 2] = tx
-        M[1, 2] = ty
+        # 平移分量取“画面中心的净位移”：矩阵的 M[:,2] 还包含绕中心旋转/缩放
+        # 诱导的项（480×360 上 2.5° 就有 ~8-11px），直接拿它判上限会把合法
+        # 的旋转校正误杀成“位移超限”。t_c = b + (A − I)·c。
+        A2 = M[:2, :2]
+        tc = M[:2, 2] + A2 @ np.array([w / 2.0, h / 2.0]) - np.array(
+            [w / 2.0, h / 2.0])
+        tx = float(tc[0])
+        ty = float(tc[1])
+        # 位移上限：超限**放弃该帧对齐**。逆向实证 §7.2——Helicon 在位移
+        # 超过 ~6–8% 帧尺寸时直接不追（裁边不再跟随、输出高频跳升=鬼影），
+        # 而旧的"钳制到上限"会把大位移校正成半错位，还让有效区交集被裁掉
+        # 一大块（25% 上限意味着单边最多裁 1/4 画面）。
+        over = (abs(tx) > max_shift[0] or abs(ty) > max_shift[1])
+        if over:
+            M = np.eye(3)
+            tx = ty = 0.0
         # 死区：整体运动可忽略 → 恒等（不产生裁边/插值损失）
         rot_deg = float(np.degrees(np.arctan2(M[1, 0], M[0, 0])))
         scale_now = float(np.sqrt(abs(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])))
@@ -737,8 +758,10 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
         corrections.append(M)
         prev_hp = cur_hp
         print("  frame %d/%d: rot %+.2f° scale %.3f shift (%+.2f, %+.2f)"
-              " ncc %.2f%s" % (i, n - 1, rot_deg, scale_now, tx, ty, ncc,
-                               " (chained)" if chained else ""))
+              " ncc %.2f%s%s" % (i, n - 1, rot_deg, scale_now, tx, ty, ncc,
+                                 " (chained)" if chained else "",
+                                 " (DROPPED: shift over %.0f%% of frame)"
+                                 % (100.0 * max_shift_ratio) if over else ""))
 
     def _warp(args):
         idx, img, M, gain = args
@@ -1264,12 +1287,16 @@ class ImageRegistration:
     
     SUPPORTED_METHODS = ['homography', 'ecc', 'both', 'openfocus']
     
-    def __init__(self, method: str = 'homography', downscale_width: int = 1024):
+    def __init__(self, method: str = 'homography', downscale_width: int = 1024,
+                 max_shift_ratio: Optional[float] = None):
         """
         初始化配准器
         
         Args:
             method (str): 配准方法名称，可选 'homography', 'ecc', 'both'
+            downscale_width (int): 特征/估计阶段的下采样宽度
+            max_shift_ratio (float): 仅 'openfocus' 生效——位移上限（帧尺寸
+                比例，0–1）。None 用 _OF_MAX_SHIFT_RATIO（8%，逆向 §7.2）。
         """
         if method not in self.SUPPORTED_METHODS:
             raise ValueError(
@@ -1280,6 +1307,8 @@ class ImageRegistration:
         self.method = method
         # 用户可配置的下采样宽度，用于特征提取等预处理阶段
         self.downscale_width = int(downscale_width) if downscale_width is not None else 1024
+        self.max_shift_ratio = (float(max_shift_ratio)
+                                if max_shift_ratio is not None else None)
     
     def process(self, 
                 input_source: Union[str, List[np.ndarray]], 
@@ -1360,7 +1389,8 @@ class ImageRegistration:
         return _align_openfocus_impl(input_source, output_path,
                                      downscale_width=self.downscale_width,
                                      thread_count=thread_count,
-                                     should_cancel=should_cancel)
+                                     should_cancel=should_cancel,
+                                     max_shift_ratio=self.max_shift_ratio)
 
     def set_method(self, method: str):
         """

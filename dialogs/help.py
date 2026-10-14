@@ -96,7 +96,7 @@ class RenderMethodHelpDialog(HelpDialog):
     A neural network trained on everyday focus stacks. It generally produces the strongest results with minimal tuning. Because it is not fine-tuned for specialist domains (microphotography, microscopy, medical imaging, etc.), avoid it when domain shifts are expected. Runs fastest with GPU acceleration.</p>
 
     <p>OpenFocus A / B / C<br/>
-    The Helicon Focus method family, reverse-engineered and verified against the original software's output (0.5&ndash;4% MAE on benchmark stacks). <b>A</b> is a variance-weighted average with a last-frame prior &mdash; fast and colour-stable on short stacks. <b>B</b> is a variance depth-map pick that selects the sharpest frame per pixel &mdash; the best choice for smooth surfaces and microscopy. <b>C</b> is a Laplacian-pyramid per-band blend with a natural look on textured subjects. The kernel slider sets the variance window (default radius 5, matching Helicon's fixed window); fused output is insensitive to it, while depth maps get sharper labels.</p>"""
+    The Helicon Focus method family, reverse-engineered and verified against the original software's output (about 1&ndash;3.5% MAE, crop-offset-registered, on real benchmark stacks). <b>A</b> is a variance-weighted average with a last-frame prior &mdash; fast and colour-stable on short stacks. <b>B</b> is a variance depth-map pick that selects the sharpest frame per pixel &mdash; the best choice for smooth surfaces and microscopy. <b>C</b> is a Laplacian-pyramid per-band blend with a natural look on textured subjects. The kernel slider sets the variance window (default radius 5, matching Helicon's fixed window); fused output is insensitive to it, while depth maps get sharper labels.</p>"""
         
         super().__init__(trans.t('help_render_title'), help_text, parent)
 
@@ -123,8 +123,11 @@ class RegistrationHelpDialog(HelpDialog):
     <p>Align (OpenFocus, fast)<br/>
     Bounded similarity registration (translation + rotation + scale,
     reverse-engineered from Helicon Focus) with per-frame brightness
-    equalization and auto-crop. Sub-second per frame. Choose ECC or
-    Homography for non-rigid or extreme geometry.</p>"""
+    equalization and auto-crop. Sub-second per frame. Frames whose shift
+    exceeds 8% of the frame size are left unaligned rather than partially
+    corrected — that is where Helicon's own aligner gives up too (CLI:
+    --align-shift-limit). Choose ECC or Homography for non-rigid or extreme
+    geometry.</p>"""
 
         super().__init__(trans.t("help_registration_title"), help_text, parent)
 

@@ -11,7 +11,7 @@ per-pixel decision and are deliberately absent.
                  consistency pass), upsampled from the block grid
 - dtcwt:         argmax of the per-pixel DTCWT high-pass energy (the wavelet
                  activity level the fusion uses, on the gray channel)
-- gfgfgf:        argmax of the guided-filtered blur-difference AFM
+- gfgfgf:        argmax of the GFG + fast-guided-filter focus map (paper eqs 1-13)
 - stackmffv4:    the model's own focus-index output (tiled with the same
                  memory budget as AI fusion)
 - openfocus_b:   argmax of the window local variance — the measure the
@@ -109,31 +109,25 @@ def _measure_dct(images, progress, should_cancel, kernel_size=7, block_size=8):
 
 
 # --------------------------------------------------------------------------
-# gfgfgf — blur-difference + guided-filter AFM
+# gfgfgf — GFG (Gaussian-like four-neighbourhood gradient) + FGF AFM
 # --------------------------------------------------------------------------
 def _measure_gfgfgf(images, progress, should_cancel, kernel_size=7,
                     thread_count=None):
-    from fusion_methods.gfg_fgf import _run_guided_filter
+    from fusion_methods.gfg_fgf import gfg_focus_map, gfg_decision_index
 
     if kernel_size % 2 == 0:
         kernel_size += 1
-    g_msz, g_gsz, g_eps, threshold = kernel_size, 5, 0.3, 0.005
     n = len(images)
-    # 流式 argmax：AFM 栈不物化
-    best_val = best_idx = None
+    # 与融合同一聚焦图与并列决策（Sobel 小区域度量），深度图才与融合一致
+    afms = None
     for idx, bgr in enumerate(images):
         _tick(progress, idx, n, should_cancel)
         g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-        blur = cv2.blur(g, (g_msz, g_msz))
-        diff = cv2.absdiff(g, blur)
-        _, gfg = cv2.threshold(diff, threshold, 0, cv2.THRESH_TOZERO)
-        afm = _run_guided_filter(g, gfg, g_gsz, g_eps)
-        if best_val is None:
-            best_val, best_idx = afm, np.zeros(afm.shape, np.int32)
-        else:
-            hit = afm > best_val
-            best_val[hit] = afm[hit]
-            best_idx[hit] = idx
+        afm = gfg_focus_map(g, kernel_size)
+        if afms is None:
+            afms = np.empty((n,) + afm.shape, np.float32)
+        afms[idx] = afm
+    best_idx = gfg_decision_index(afms)
     return best_idx
 
 

@@ -77,7 +77,86 @@ except AttributeError:
     def _run_guided_filter(guide, src, radius, eps):
         return _fast_guided_filter_impl(guide, src, radius, eps, s=4)
 
-def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int = None):
+# 论文式 (4) 的类高斯卷积模板 T
+_GFG_TEMPLATE = np.array([[1, 2, 1], [2, 4, 2], [1, 2, 1]], dtype=np.float32) / 16.0
+# 四邻域位移核：filter2D 求 I(x±1, y) / I(x, y±1)
+_SHIFT_KERNELS = [np.zeros((3, 3), np.float32) for _ in range(4)]
+for _k, (_r, _c) in zip(_SHIFT_KERNELS, ((1, 2), (1, 0), (2, 1), (0, 1))):
+    _k[_r, _c] = 1.0
+GFG_THRESHOLD = 0.005  # 论文 T0
+
+
+def gfg_gradient(gray):
+    """类高斯四邻域梯度（GFG）算子，论文式 (3)–(8)。
+
+    P = I ⊗ T；G∥ = (|I(x+1,y)−P| + |I(x−1,y)−P|)/2，G⊥ 同理沿 y；
+    G = G∥ + G⊥，低于 T0 的置 0。输入为 [0,1] float32 单通道。
+    """
+    p = cv2.filter2D(gray, cv2.CV_32F, _GFG_TEMPLATE, borderType=cv2.BORDER_REFLECT)
+    g = np.zeros_like(p)
+    for k in _SHIFT_KERNELS:
+        nb = cv2.filter2D(gray, cv2.CV_32F, k, borderType=cv2.BORDER_REFLECT)
+        g += np.abs(nb - p)
+    g *= 0.5
+    g[g < GFG_THRESHOLD] = 0.0
+    return g
+
+
+def gfg_focus_map(gray, mean_ksize, gf_radius=5, gf_eps=0.3):
+    """单帧最终聚焦信息图 IF（论文式 (1)–(10)）。
+
+    IR = |I − I∗fm|（粗略聚焦图）；G = GFG(I)；IA 在 G ≥ T0 处取 G（边缘
+    高频），其余取 IR；IF = FGF(I, IA)。融合与深度图共用这一实现。
+    """
+    blur = cv2.blur(gray, (mean_ksize, mean_ksize))
+    ia = cv2.absdiff(gray, blur)
+    g = gfg_gradient(gray)
+    edge = g > 0
+    ia[edge] = g[edge]
+    return _run_guided_filter(gray, ia, gf_radius, gf_eps)
+
+
+def _sobel_energy(fm):
+    """论文式 (11)–(13)：G3×3 = |Gx| + |Gy|（Sobel 作用于聚焦信息图）。"""
+    gx = cv2.Sobel(fm, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(fm, cv2.CV_32F, 0, 1, ksize=3)
+    return np.abs(gx) + np.abs(gy)
+
+
+class GfgDecision:
+    """流式逐像素决策：取聚焦度量最大的帧；并列（差值 ≤ tie_eps，如平坦背景
+    上全为 0）时按论文 §2.2 的小区域聚焦度量——比较聚焦信息图的 3×3 Sobel
+    梯度 G3×3，取梯度大的帧。只保留 3 张图，内存与帧数无关。"""
+
+    def __init__(self, tie_eps=1e-6):
+        self.tie_eps = float(tie_eps)
+        self.val = self.idx = self.sob = None
+
+    def update(self, i, afm):
+        sob = _sobel_energy(afm)
+        if self.val is None:
+            self.val = afm.astype(np.float32, copy=True)
+            self.idx = np.full(afm.shape, i, np.int32)
+            self.sob = sob
+            return
+        diff = afm - self.val
+        win = diff > self.tie_eps
+        win |= (np.abs(diff) <= self.tie_eps) & (sob > self.sob)
+        self.val[win] = afm[win]
+        self.sob[win] = sob[win]
+        self.idx[win] = i
+
+
+def gfg_decision_index(afms, tie_eps=1e-6):
+    """afms 可迭代（按帧序）→ 决策索引图（见 GfgDecision）。"""
+    dec = GfgDecision(tie_eps)
+    for i, afm in enumerate(afms):
+        dec.update(i, afm)
+    return dec.idx
+
+
+def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int = None,
+                min_frame_focus=0.0):
     """
     GFG-FGF 优化实现版。
     """
@@ -184,11 +263,12 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         except Exception:
             max_workers = min(8, os.cpu_count() or 4)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(compute_focus_score, i) for i in range(num_imgs)]
-        for fut in as_completed(futures):
-            i, val = fut.result()
-            focus_vals[i] = val
+    if min_frame_focus > 0:  # 整帧分数只服务于可选的跳帧
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(compute_focus_score, i) for i in range(num_imgs)]
+            for fut in as_completed(futures):
+                i, val = fut.result()
+                focus_vals[i] = val
 
     max_focus = np.max(focus_vals) if num_imgs > 0 else 1.0
     if max_focus == 0: max_focus = 1.0 # 避免除零
@@ -196,50 +276,38 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # -------------------------------------------------------------------------
     # 4. 计算初始决策图 (AFMs) - 阶段 2
     # -------------------------------------------------------------------------
-    scale = 0.15
+    scale = float(min_frame_focus)
     g_msz = kernel_size
     g_gsz = 5
     g_eps = 0.3
-    threshold = 0.005
-    
-    # 预分配 stack 空间 (N, H, W)
-    afms_stack = np.zeros((num_imgs, h, w), dtype=np.float32)
 
     def compute_afm_map(i):
-        # 焦点值过低直接跳过，保留全0
-        if focus_vals[i] < scale * max_focus:
+        # 整帧清晰度过低的帧可选跳过（默认关闭：论文无此步，且会丢掉只有
+        # 一小块物体清晰的帧——tools/synthetic_benchmark.py --scene small）
+        if scale > 0 and focus_vals[i] < scale * max_focus:
             return i, None
-        
-        g = grays[i]
-        # 局部平均
-        src_blur = cv2.blur(g, (g_msz, g_msz))
-        # 差分
-        src_diff = cv2.absdiff(g, src_blur)
-        
-        # 阈值处理：原地操作优化
-        # gfg_map = src_diff if src_diff > threshold else 0
-        _, gfg_map = cv2.threshold(src_diff, threshold, 0, cv2.THRESH_TOZERO)
-        
-        # 导向滤波
-        afm = _run_guided_filter(g, gfg_map, g_gsz, g_eps)
-        return i, afm
+        # 论文完整聚焦检测：均值差分粗图 + 类高斯四邻域梯度高频 + FGF
+        # （issue #5：旧实现只有均值差分，缺 GFG 算子）
+        return i, gfg_focus_map(grays[i], g_msz, g_gsz, g_eps)
 
+    # 按帧序流式决策（并列判定依赖顺序，且不物化 N×H×W 聚焦图栈）；
+    # 每批 max_workers 帧并行计算聚焦图
+    decision = GfgDecision()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(compute_afm_map, i) for i in range(num_imgs)]
-        for fut in as_completed(futures):
-            i, res = fut.result()
-            if res is not None:
-                afms_stack[i] = res
+        for start in range(0, num_imgs, max_workers):
+            batch = list(executor.map(compute_afm_map,
+                                      range(start, min(num_imgs, start + max_workers))))
+            for i, res in batch:
+                if res is not None:
+                    decision.update(i, res)
+    if decision.idx is None:  # 全部被跳过：退化为首帧
+        decision.update(0, np.zeros((h, w), np.float32))
 
     # -------------------------------------------------------------------------
     # 5. 决策与融合 (Fusion) - 阶段 3
     # -------------------------------------------------------------------------
-    # 计算 IDM (Argmax)
-    # idm_map: (H, W) 每个像素对应最大响应的图片索引
-    idm_map = np.argmax(afms_stack, axis=0).astype(np.int32)
-    
-    # 释放 afms_stack 内存
-    del afms_stack
+    idm_map = decision.idx
+    del decision
 
     # 累加器
     sum_fdms = np.zeros((h, w), dtype=np.float32)
@@ -251,7 +319,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # 由于 GuidedFilter 比较耗时，我们还是并行计算 Filter，主线程累加。
     
     def compute_fusion_component(i):
-        if focus_vals[i] < scale * max_focus:
+        if not (idm_map == i).any():
             return None
             
         # 生成二值 Mask (float)
@@ -264,23 +332,17 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         
         return i, fdm
 
-    # 启动并行计算权重
+    # 并行计算权重，按帧序号固定顺序流式累加（float 加法不满足结合律，
+    # 固定顺序保证同输入同输出；每批只持有 max_workers 张权重图）
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(compute_fusion_component, i) for i in range(num_imgs)]
-        
-        # 收集后按帧序号固定顺序累加：as_completed 的完成顺序取决于线程
-        # 调度，float 加法不满足结合律，会导致同输入不同运行输出抖动。
-        results = []
-        for fut in as_completed(futures):
-            res = fut.result()
-            if res is not None:
-                results.append(res)
-        results.sort(key=lambda r: r[0])
-        for i, fdm_weight in results:
-            # 累加权重 (H, W)
-            sum_fdms += fdm_weight
-            # 累加加权图像 (H, W, 3)，广播 (H,W,3) * (H,W,1) -> (H,W,3)
-            imfu_result += imgs_f32[i] * fdm_weight[:, :, None]
+        for start in range(0, num_imgs, max_workers):
+            for res in executor.map(compute_fusion_component,
+                                    range(start, min(num_imgs, start + max_workers))):
+                if res is None:
+                    continue
+                i, fdm_weight = res
+                sum_fdms += fdm_weight
+                imfu_result += imgs_f32[i] * fdm_weight[:, :, None]
 
     # -------------------------------------------------------------------------
     # 6. 归一化与输出
@@ -308,6 +370,12 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         # 除法
         # 使用 np.divide 的 out 参数
         np.divide(ch_data, sum_fdms, out=ch_data, where=nonzero_mask)
+        # 权重和退化（各帧引导图不同，平滑后的权重和不保证为 1）处直接取
+        # 决策帧像素，避免出现黑点
+        if not nonzero_mask.all():
+            for i in np.unique(idm_map[~nonzero_mask]):
+                sel = (~nonzero_mask) & (idm_map == i)
+                ch_data[sel] = imgs_f32[i][:, :, c][sel]
         # Clip 并写回源位深
         np.clip(ch_data * 255.0, 0, 255, out=ch_data)
         out[:, :, c] = ch_data

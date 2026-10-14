@@ -1,5 +1,9 @@
 # Helicon Focus 8.1 算法完整复现与逐像素比对报告
 
+> ⚠️ **历史文档（分轮记录，2026-10-11~14）**：§1–§5 的早期结论被 §6/§7
+> 及后续探针多次修正（"窗口=Radius"、自动排序反转、足迹 9px 等）。
+> **权威版本：[HELICON_FOCUS_RE.md](HELICON_FOCUS_RE.md)**，请以其为准。
+
 > 目标：不接触原代码，用二进制证据 + 黑盒差分实验复现 Helicon Focus 8.1 的
 > 对齐与 A/B/C 三种融合算法，并与本机安装的正版软件 CLI 输出逐像素比对。
 > 复现实现：[tools/helicon_repro/helicon_repro.py](../tools/helicon_repro/helicon_repro.py)

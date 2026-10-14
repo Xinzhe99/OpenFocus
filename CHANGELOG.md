@@ -3,6 +3,48 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed — alignment gave up too late (Helicon reverse-engineering round 5,
+report §7.2/§7.6)
+
+- **The `openfocus` alignment shift limit dropped from 25% to 8% of the
+  frame size, and over-limit frames are now left unaligned instead of
+  clamped.** Black-box probing of Helicon's aligner showed it stops
+  tracking at 6–8% (crop no longer follows the shift; output high-frequency
+  energy jumps = ghosting). Clamping to a 25% limit produced a half-corrected
+  frame *and* shrank the valid-region crop by up to a quarter of the frame.
+  The measured center-net translation is now what is checked, so a pure
+  rotation — whose matrix translation term is large — is never mistaken for
+  an over-limit shift. Escape hatch: `--align-shift-limit 0.25` restores the
+  old acceptance range per run.
+- **The Helicon regression harness compared with a centered crop, but
+  Helicon's AutoCrop is not centered** (§7.4: measured offsets (0,+1) and
+  (2,2)). A 1-px grid misalignment costs ~25 levels of pure error, inflating
+  synthetic stackB cases 6.5 % → 4.9 % false-positive range. `_metrics()`
+  now sweeps integer crop offsets (the `registered_mae` recipe from
+  `tools/helicon_repro/`) before scoring.
+
+- **`is_stackmffv4_available()` now probes `torchvision`, not just `torch`.**
+  Found while running the suite (unrelated to the alignment work): the
+  network module imports `from torchvision import models`, so a torch-without-
+  torchvision environment passed the availability guard and crashed at fusion
+  time — and through the tests' "torch installed" skipif. The probe now
+  imports what the code path actually needs.
+
+### Tests
+- `test_helicon_regression.py`: budgets tightened to the measured registered
+  MAE + ~30 % headroom (C real stacks were carried at up to 10.5 % from the
+  v1.39 era; actual 1.4–3.5 %).
+- Five new alignment cases: default limit parsimony, over-limit drop
+  (identity preserved), within-limit recovery, `max_shift_ratio=`
+  override, and rotation-alone not dropped.
+- Stale-comment cleanup: the retracted "Helicon auto-reverses frame order"
+  claim (§6.2 correction) was still quoted in `fusion_methods/openfocus_ab.py`;
+  help dialog / manuals now state the verified numbers (≈1–3.5 % MAE,
+  crop-registered) and document `--align-shift-limit`, `--base-frame`,
+  `--sort`, `--dust-map` and the openfocus family in the CLI tables.
+
 ## [v1.51] — 2026-10-14
 
 ### Fixed

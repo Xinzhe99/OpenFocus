@@ -14,9 +14,11 @@ green; run locally next to the reference library to guard Helicon parity:
   stacks  (default) E:\\ImagefusionDatasets\\StackMFF_jpg\\Mobile Depth\\image stack
                                                   -> $OPENFOCUS_STACKMFF_DATA
 
-Thresholds carry ~15-30% headroom over the measured values (2026-10-13,
-cv2 4.12): B real 1.19/1.77/3.49 %, C real 3.48/5.09/8.95 %,
-synthetic A 1.80/6.46, B 6.28/3.05, C 0.51/6.4/3.39 %.
+Thresholds carry ~25-30% headroom over the measured registered MAE (2026-10-14,
+cv2 4.11): B real 1.18/1.77/3.49 %, C real 1.37/2.00/3.51 %, synthetic A
+1.76/4.90, B 4.88/3.04, C 0.50/4.99/3.39 %. The synthetic stackB cases were
+6.5 % under the old center-crop comparison — Helicon's AutoCrop is not
+centered, so _metrics() sweeps integer offsets (report §7.4) instead.
 """
 import glob
 import os
@@ -44,16 +46,43 @@ def _load_rgb(path):
     return np.asarray(PILImage.open(path).convert("RGB"), dtype=np.float64)
 
 
-def _metrics(mine, ref, m=4):
-    """Center-crop to common size, strip m border, MAE % of ref range."""
+def _metrics(mine, ref, m=4, R=5):
+    """MAE % of ref range, minimized over integer crop offsets.
+
+    Helicon's AutoCrop is *not* centered: the kept window sits off by up to a
+    couple of pixels (docs/HELICON_REPRODUCTION_REPORT.md §7.4 measured
+    (0,+1) and (2,2)). A naive center-crop then compares two grids shifted by
+    1-2 px, which costs ~25 levels of pure misalignment and inflates the
+    reported error up to 9x — a normal alignment-semantics difference would
+    ship as an "algorithm regression". Sweeping small integer offsets and
+    taking the minimum measures the fusion, not the crop convention.
+    """
+    best = None
+    # Same-size overlap first (centered), then sweep integer offsets — the
+    # identical recipe to tools/helicon_repro/registered_table.py, with the
+    # overlap length computed per offset so *every* shift in [-R, R] is
+    # evaluated (a fixed length silently drops |offset| > m).
     hh = min(mine.shape[0], ref.shape[0])
     ww = min(mine.shape[1], ref.shape[1])
-    a = mine[(mine.shape[0] - hh) // 2:(mine.shape[0] - hh) // 2 + hh,
-             (mine.shape[1] - ww) // 2:(mine.shape[1] - ww) // 2 + ww]
-    b = ref[(ref.shape[0] - hh) // 2:(ref.shape[0] - hh) // 2 + hh,
-            (ref.shape[1] - ww) // 2:(ref.shape[1] - ww) // 2 + ww]
-    a, b = a[m:-m, m:-m], b[m:-m, m:-m]
-    return float(np.abs(a - b).mean()) / max(float(b.max()), 1.0) * 100.0
+    a0 = mine[(mine.shape[0] - hh) // 2:(mine.shape[0] - hh) // 2 + hh,
+              (mine.shape[1] - ww) // 2:(mine.shape[1] - ww) // 2 + ww]
+    b0 = ref[(ref.shape[0] - hh) // 2:(ref.shape[0] - hh) // 2 + hh,
+             (ref.shape[1] - ww) // 2:(ref.shape[1] - ww) // 2 + ww]
+    for dy in range(-R, R + 1):
+        for dx in range(-R, R + 1):
+            ya, yb = m + max(dy, 0), m + max(-dy, 0)
+            xa, xb = m + max(dx, 0), m + max(-dx, 0)
+            h, w = min(hh - ya, hh - yb) - m, min(ww - xa, ww - xb) - m
+            if h < 8 or w < 8:
+                continue
+            a, b = a0[ya:ya + h, xa:xa + w], b0[yb:yb + h, xb:xb + w]
+            e = float(np.abs(a - b).mean()) / max(float(b.max()), 1.0) * 100.0
+            if best is None or e < best:
+                best = e
+    if best is None:  # images too small to sweep — fall back to center crop
+        a, b = a0[m:-m, m:-m], b0[m:-m, m:-m]
+        best = float(np.abs(a - b).mean()) / max(float(b.max()), 1.0) * 100.0
+    return best
 
 
 def _box_blur(a, r):
@@ -168,15 +197,19 @@ def _load_synth(name, tag):
 
 
 # ------------------------------------------------------------------ tests
+# Budgets = registered MAE measured 2026-10-14 (offset sweep, cv2 4.11),
+# ~25-30% headroom. Real: B 1.18-3.49 / C 1.37-3.51 %; synth stackB 4.88-4.99
+# (naive center-crop was 6.45-6.56 — the asymmetry of Helicon's AutoCrop,
+# see _metrics).
 REAL_B_BUDGET = {"keyboard": 1.6, "balls": 2.3, "kitchen": 4.2}
-REAL_C_BUDGET = {"keyboard": 4.3, "balls": 6.2, "kitchen": 10.5}
+REAL_C_BUDGET = {"keyboard": 1.8, "balls": 2.6, "kitchen": 4.5}
 SYNTH_BUDGET = {
     ("stackA", "a", "A_m0.tif"): 2.3,
-    ("stackB", "a", "B_m0_r3_s3.tif"): 7.1,
-    ("stackB", "b", "B_m1_r1_s0.tif"): 6.9,
+    ("stackB", "a", "B_m0_r3_s3.tif"): 6.1,
+    ("stackB", "b", "B_m1_r1_s0.tif"): 6.1,
     ("stackC", "b", "refB_stackC.tif"): 3.5,
     ("stackA", "c", "refC_stackA.tif"): 1.0,
-    ("stackB", "c", "refC_r1_s0.tif"): 7.2,
+    ("stackB", "c", "refC_r1_s0.tif"): 6.2,
     ("stackC", "c", "refC_stackC.tif"): 4.0,
 }
 

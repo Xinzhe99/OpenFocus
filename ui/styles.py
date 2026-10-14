@@ -8,6 +8,20 @@ import re
 # 主题颜色常量
 PRIMARY_BLUE = "#0033A0"
 
+
+def _asset_url(name):
+    """QSS url() 需要正斜杠的绝对路径（打包后资源在 _MEIPASS 下）。"""
+    try:
+        from utils import resource_path
+        return resource_path("assets", name).replace("\\", "/")
+    except Exception:
+        return ""
+
+
+# 复选框勾选态：蓝底白勾（旧版用白色径向圆点，与单选按钮完全同形，
+# 用户分不清哪个是复选、哪个是单选）
+_CHECK_SVG = _asset_url("check_white.svg")
+
 # 主窗口 Dark Theme 样式（原 OpenFocus.apply_dark_theme 中的字符串）
 # 暗色主题下给 QDialog 的控件补色（主窗口 QSS 不会传播到对话框）。
 # settings/batch 一直这么做；depthmap/scalebar 此前漏了，暗色下
@@ -103,7 +117,9 @@ QCheckBox::indicator {{
     border-radius: 3px;
 }}
 QCheckBox::indicator:checked {{
-    background: qradialgradient(cx:0.5, cy:0.5, radius:0.4, fx:0.5, fy:0.5, stop:0 #fff, stop:0.7 #fff, stop:0.71 #333, stop:1 #333);
+    background-color: #3d6dda;
+    border-color: #3d6dda;
+    image: url("{_CHECK_SVG}");
 }}
 QCheckBox::indicator:hover {{
     border: 2px solid #aaa;
@@ -393,7 +409,9 @@ QCheckBox::indicator {{
     background-color: #333;
 }}
 QCheckBox::indicator:checked {{
-    background: qradialgradient(cx:0.5, cy:0.5, radius:0.4, fx:0.5, fy:0.5, stop:0 #fff, stop:0.7 #fff, stop:0.71 #333, stop:1 #333);
+    background-color: #3d6dda;
+    border-color: #3d6dda;
+    image: url("{_CHECK_SVG}");
 }}
 """
 
@@ -501,7 +519,7 @@ QRadioButton::indicator:hover { border-color: #0969da; }
 
 QCheckBox { spacing: 6px; }
 QCheckBox::indicator { width: 16px; height: 16px; border: 2px solid #9aa4ae; border-radius: 4px; background: #ffffff; }
-QCheckBox::indicator:checked { background-color: #0969da; border-color: #0969da; }
+QCheckBox::indicator:checked { background-color: #0969da; border-color: #0969da; image: url(\"""" + _CHECK_SVG + """\"); }
 QCheckBox::indicator:hover { border-color: #0969da; }
 
 QSlider::groove:horizontal { border: none; height: 6px; background: #e1e4e8; border-radius: 3px; }

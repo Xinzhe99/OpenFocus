@@ -2,7 +2,8 @@
 
 来源与验证（详见 docs/HELICON_REPRODUCTION_REPORT.md）：
 - 清晰度度量 = 窗口局部方差（与 Helicon 深度图逐像素重合 99.5%，
-  真实数据 11 栈输出 MAE 0.95%–4.1% 值域）。
+  复现管线真实数据 11 栈输出 MAE 0.9%–1.8% 值域，配准后口径 §7.4；
+  移植版集成实测 1.2%–3.5%，tests/test_helicon_regression.py 锁定）。
 - Method B（深度图选择）：argmax(var) → 深度图平滑 → 按图硬拾取；
   硬拾取优于软混合（实验证明），平局取首帧。
 - Method A（加权平均）：w = gauss(var)，分母带 +1 的末帧先验
@@ -11,8 +12,9 @@
   （|带|高斯 σ3 权重取 argmax；实测 max-pick 明显优于软归一混合），
   bicubic ×2 + σ0.6 展开，最粗带（基带）整带取末帧——逆向实证的
   Helicon 行为（"低频来自参考帧 + 高频按频段独立决策"，输出高频能量
-  ~1.24×输入）。对 Helicon 原输出基准：stackA 0.51% / stackB 6.5% /
-  stackC 3.4%（tools/helicon_repro/audit_port_v139.py 可复跑）。
+  ~1.24×输入）。对 Helicon 原输出基准（配准后）：stackA 0.50% /
+  stackB 4.99% / stackC 3.39%（tools/helicon_repro/ 可复跑；旧值
+  6.5% 是 naive 居中裁切对 Helicon 非对称裁边的惩罚，§7.4）。
 
 约定：输入为 0-255 域的 BGR 帧列表（uint8 或 float32），
 输出经 fuse_output_dtype 归一（与 gff/dct 相同的位深契约）。
@@ -317,13 +319,14 @@ def detect_stack_flip(curve, min_frames: int = 5, threshold: float = -0.7,
 # ------------------------------------------------------------------
 # 帧序方向（Sort）
 # ------------------------------------------------------------------
-# 实验结论（tools/helicon_repro/validate_autosort.py，2026-10-13）：
+# 实验结论（tools/helicon_repro/validate_autosort.py，2026-10-13；
+# 极性修正见 docs/HELICON_REPRODUCTION_REPORT.md §6.2/§7.6——早前
+# "Helicon 自动反转帧序"的说法是对深度图极性的双重取反误读，已撤回）：
 # 全局清晰度曲线与帧序方向无关——11 个真实栈的 Spearman rho 散布在
 # -0.98…+1.00，"单调递减检测"只对 1/11 正确。根本原因：内容是
 # 反转变换协变的（反转后的栈同样是合法焦点栈），任何内容信号都
-# 无法判定方向；而 Helicon 的 dmap 极性证据显示它对全部 11 栈都按
-# 文件序的反方向处理——方向只能来自元数据或用户意图。
-# 因此方向控制是显式的：asc（默认，保持文件序）/ desc（倒序栈翻转）。
+# 无法判定方向；Helicon 实际保持文件序。因此方向控制是显式的：
+# asc（默认，与 Helicon 一致）/ desc（倒序栈由用户翻转）。
 
 def sort_frames_for_openfocus(frames, mode: str = "asc"):
     """按 mode 规范帧序，返回 (排序后帧列表, 是否翻转)。
