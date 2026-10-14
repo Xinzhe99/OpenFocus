@@ -653,7 +653,8 @@ class OpenFocus(QMainWindow):
         self.chk_base_correct.setChecked(False)
         self.chk_reverse_order.setChecked(False)
         
-        # 重置滑块值到默认值
+        # 重置滑块值到默认值（含每个方法记住的值）
+        self._kernel_by_mode = {}
         self.slider_smooth.setValue(31)
         
         # 更新滑块可用性
@@ -1314,42 +1315,49 @@ class OpenFocus(QMainWindow):
         "ofab": "label_kernel_of",
     }
 
-    def update_slider_availability(self):
-        """根据选中的融合方法更新滑块的可用性、默认值和含义标签"""
-        # Guided Filter/DCT: 共享 kernel 滑块（含义不同！）
-        # DTCWT / StackMFF-V4: 不使用滑块
+    # 方法 → (滑块模式, 范围上限, 默认 kernel)。OpenFocus A/B/C：滑块是方差
+    # 窗口（kernel = 2r+1）；判别性探针（报告 §6.7/§6.8）定 r=5 → 11，范围 1–21。
+    _KERNEL_MODES = {
+        "guided_filter": ("guided", 51, 31),
+        "dct": ("dct", 51, 7),
+        "gfgfgf": ("gfg", 51, 7),
+        "openfocus_a": ("ofab", 21, 11),
+        "openfocus_b": ("ofab", 21, 11),
+        "openfocus_c": ("ofab", 21, 11),
+    }
 
+    def kernel_for_method(self, method: str) -> int:
+        """Kernel the user has set for *method* (its own remembered value,
+        or its default) — the slider means a different thing per method, so
+        another method's value must never leak in (the depth-map dialog
+        used the guided-filter radius 31 as DCT's median window)."""
+        spec = self._KERNEL_MODES.get(method)
+        if spec is None:
+            return 7
+        mode, _hi, default = spec
+        if mode == getattr(self, "current_kernel_mode", None):
+            return int(self.slider_smooth.value())
+        return int(getattr(self, "_kernel_by_mode", {}).get(mode, default))
+
+    def update_slider_availability(self):
+        """根据选中的融合方法更新滑块的可用性、默认值和含义标签。
+
+        每个方法的滑块值单独记忆：切换方法再切回来不再丢失用户调好的值。"""
         method = self.current_fusion_method()
-        if method == "guided_filter":
+        memory = self.__dict__.setdefault("_kernel_by_mode", {})
+        previous = getattr(self, "current_kernel_mode", None)
+        spec = self._KERNEL_MODES.get(method)
+        if previous and spec and previous != spec[0]:
+            memory[previous] = int(self.slider_smooth.value())
+        elif previous and spec is None:
+            memory[previous] = int(self.slider_smooth.value())
+        if spec is not None:
+            mode, hi, default = spec
             self.smooth_widget.setEnabled(True)
-            self.slider_smooth.setRange(1, 51)
-            if self.current_kernel_mode != "guided":
-                self.slider_smooth.setValue(31)
-            self.current_kernel_mode = "guided"
-        elif method == "dct":
-            self.smooth_widget.setEnabled(True)
-            self.slider_smooth.setRange(1, 51)
-            if self.current_kernel_mode != "dct":
-                self.slider_smooth.setValue(7)
-            self.current_kernel_mode = "dct"
-        elif method == "gfgfgf":
-            # GFG-FGF uses the initial mean/blur kernel controlled by the same slider
-            self.smooth_widget.setEnabled(True)
-            self.slider_smooth.setRange(1, 51)
-            if self.current_kernel_mode != "gfg":
-                # GFG-FGF 默认使用 kernel=7
-                self.slider_smooth.setValue(7)
-            self.current_kernel_mode = "gfg"
-        elif method in ("openfocus_a", "openfocus_b", "openfocus_c"):
-            # OpenFocus A/B/C：滑块作为方差窗口半径（kernel = 2r+1）。
-            # 判别性探针（报告 §6.7/§6.8）：Helicon 事实窗口 ≈ 半宽 5px
-            # 且不随 Radius 变化；真实栈深度一致性 r5 最优（kitchen ±3
-            # 95.3% vs r2 92.7%）。默认 kernel=11（r=5），范围 1–21。
-            self.smooth_widget.setEnabled(True)
-            self.slider_smooth.setRange(1, 21)
-            if self.current_kernel_mode != "ofab":
-                self.slider_smooth.setValue(11)
-            self.current_kernel_mode = "ofab"
+            self.slider_smooth.setRange(1, hi)
+            if previous != mode:
+                self.slider_smooth.setValue(min(hi, memory.get(mode, default)))
+            self.current_kernel_mode = mode
         else:
             self.smooth_widget.setEnabled(False)
             self.slider_smooth.setRange(1, 51)
@@ -2093,6 +2101,11 @@ class OpenFocus(QMainWindow):
         self.restore_last_stack = bool(enabled)
         self.persist_settings()
 
+    def set_ask_load_scale(self, enabled: bool) -> None:
+        """Toggle the loading-scale prompt shown before every import."""
+        self.ask_load_scale = bool(enabled)
+        self.persist_settings()
+
     def set_align_cache_enabled(self, enabled: bool) -> None:
         """Toggle the on-disk registration cache (Settings menu)."""
         self.align_cache_enabled = bool(enabled)
@@ -2304,6 +2317,9 @@ class OpenFocus(QMainWindow):
             self.ui_objs['action_align_cache'].setText(trans.t('action_align_cache'))
             self.ui_objs['action_align_cache'].setToolTip(trans.t('action_align_cache_hint'))
             self.ui_objs['action_restore_last_stack'].setText(trans.t('action_restore_last_stack'))
+        if 'action_ask_load_scale' in getattr(self, 'ui_objs', {}):
+            self.ui_objs['action_ask_load_scale'].setText(trans.t('action_ask_load_scale'))
+            self.ui_objs['action_ask_load_scale'].setToolTip(trans.t('action_ask_load_scale_hint'))
         if 'action_auto_download' in getattr(self, 'ui_objs', {}):
             act = self.ui_objs['action_auto_download']
             act.setToolTip(trans.t('action_auto_download_hint'))

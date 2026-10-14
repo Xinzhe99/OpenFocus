@@ -484,11 +484,20 @@ class DepthMapDialog(QDialog):
         if not key:
             self.lbl_kernel_info.setText("")
             return
-        slider = getattr(self.window_main, "slider_smooth", None)
-        k = int(slider.value()) if slider is not None else 7
-        if k % 2 == 0:
-            k += 1
+        k = self._kernel_for(self.method_combo.currentData())
         self.lbl_kernel_info.setText(f"{trans.t(key)} {k}")
+
+    def _kernel_for(self, method):
+        """The kernel the user set for *this* method in the main window (each
+        method remembers its own slider value), forced odd."""
+        k = 7
+        getter = getattr(self.window_main, "kernel_for_method", None)
+        try:
+            if callable(getter):
+                k = int(getter(method))
+        except Exception:
+            k = 7
+        return k + 1 if k % 2 == 0 else k
 
     def _update_overlay_availability(self):
         base = getattr(self.window_main, "fusion_result", None) if self.window_main else None
@@ -522,15 +531,10 @@ class DepthMapDialog(QDialog):
             return
         method = self.method_combo.currentData()
         use_gpu = bool(getattr(self.window_main, "use_gpu", False))
-        # The depth map must use the kernel the user set for fusion (DCT's
-        # median window / GFG-FGF's blur), not the built-in default.
-        kernel_size = 7
-        try:
-            slider = getattr(self.window_main, "slider_smooth", None)
-            if slider is not None:
-                kernel_size = int(slider.value())
-        except Exception:
-            kernel_size = 7
+        # The depth map uses the kernel the user set for that method (DCT's
+        # median window / GFG-FGF's blur / variance window), never another
+        # method's slider value.
+        kernel_size = self._kernel_for(method)
         self._worker = DepthWorker(imgs, method, use_gpu, kernel_size, self)
         self._worker_method = method
         self._worker.progress.connect(lambda i, n: self.status_lbl.setText(

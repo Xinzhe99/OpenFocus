@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QCheckBox,
 )
-from ui.styles import PRIMARY_BLUE
+from ui.styles import PRIMARY_BLUE, _ARROW_DOWN_DARK
 from locales import trans
 
 
@@ -90,10 +90,9 @@ class BatchProcessingDialog(QDialog):
                 width: 20px;
             }}
             QComboBox::down-arrow {{
-                image: none;
-                border-left: 5px solid transparent;
-                border-right: 5px solid transparent;
-                border-top: 5px solid #000;
+                image: url("{_ARROW_DOWN_DARK}");
+                width: 10px;
+                height: 10px;
             }}
             QLineEdit {{
                 background-color: #fff;

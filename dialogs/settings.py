@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import (
     QDialog,
+    QCheckBox,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
@@ -137,9 +138,11 @@ class DurationDialog(QDialog):
 class DownsampleDialog(QDialog):
     """下采样设置对话框"""
 
-    def __init__(self, parent=None, initial_scale=1.0, max_scale=1.0):
+    def __init__(self, parent=None, initial_scale=1.0, max_scale=1.0,
+                 show_dont_ask=False):
         super().__init__(parent)
         self.setWindowTitle(trans.t('ds_title'))
+        self.dont_ask_chk = None
         self.resize(400, 150)
         # Frames already decoded at a reduced scale cannot be restored to full
         # detail, so the slider stops where the images on hand end.
@@ -278,6 +281,12 @@ class DownsampleDialog(QDialog):
         hint_label.setWordWrap(True)
         layout.addWidget(hint_label)
 
+        # 导入时可选"不再询问"（设置菜单可重新打开）
+        if show_dont_ask:
+            self.dont_ask_chk = QCheckBox(trans.t('ds_dont_ask'))
+            self.dont_ask_chk.setToolTip(trans.t('ds_dont_ask_hint'))
+            layout.addWidget(self.dont_ask_chk)
+
         # 按钮布局
         button_layout = QHBoxLayout()
         button_layout.addStretch()
@@ -297,6 +306,9 @@ class DownsampleDialog(QDialog):
     def get_scale_factor(self):
         """返回缩放因子 (0.0 - 1.0)"""
         return self.slider.value() / 100.0
+
+    def dont_ask_again(self) -> bool:
+        return bool(self.dont_ask_chk is not None and self.dont_ask_chk.isChecked())
 
 
 class TileSettingsDialog(QDialog):

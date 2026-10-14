@@ -812,3 +812,83 @@ def test_downsample_dialog_respects_max_scale(qapp):
 
     over = DownsampleDialog(initial_scale=0.9, max_scale=0.4)
     assert over.get_scale_factor() == 0.4
+
+
+def test_kernel_slider_remembers_value_per_method(qapp):
+    """Switching fusion methods used to reset the slider to the method's
+    default, losing the user's tuned value; and the depth dialog read the
+    slider whatever method it belonged to (GF radius 31 as DCT median)."""
+    from PyQt6.QtWidgets import QLabel, QSlider, QWidget
+    import main as main_module
+
+    cls = main_module.OpenFocus
+
+    class W:
+        _KERNEL_MODES = cls._KERNEL_MODES
+        _KERNEL_LABELS = cls._KERNEL_LABELS
+        update_slider_availability = cls.update_slider_availability
+        kernel_for_method = cls.kernel_for_method
+
+        def __init__(self):
+            self.slider_smooth = QSlider()
+            self.smooth_widget = QWidget()
+            self.lbl_kernel = QLabel()
+            self.current_kernel_mode = None
+            self.method = "guided_filter"
+
+        def current_fusion_method(self):
+            return self.method
+
+    w = W()
+    w.update_slider_availability()
+    assert w.slider_smooth.value() == 31
+    w.slider_smooth.setValue(21)
+    w.method = "dct"
+    w.update_slider_availability()
+    assert w.slider_smooth.value() == 7
+    assert w.kernel_for_method("guided_filter") == 21
+    assert w.kernel_for_method("dct") == 7
+    w.slider_smooth.setValue(9)
+    w.method = "guided_filter"
+    w.update_slider_availability()
+    assert w.slider_smooth.value() == 21
+    assert w.kernel_for_method("dct") == 9
+    assert w.kernel_for_method("openfocus_b") == 11
+
+
+def test_load_scale_prompt_can_be_skipped(monkeypatch):
+    """'Don't ask again' stores the scale and later imports skip the prompt."""
+    import controllers.source_manager as sm_mod
+
+    shown = []
+
+    class Dlg:
+        def __init__(self, *a, **k):
+            shown.append(k.get("show_dont_ask"))
+
+        def exec(self):
+            return True
+
+        def get_scale_factor(self):
+            return 0.5
+
+        def dont_ask_again(self):
+            return True
+
+    monkeypatch.setattr(sm_mod, "DownsampleDialog", Dlg)
+
+    class Win:
+        current_scale_factor = 1.0
+        ui_objs = {}
+        persisted = 0
+
+        def persist_settings(self):
+            Win.persisted += 1
+
+    mgr = sm_mod.SourceManager.__new__(sm_mod.SourceManager)
+    mgr.window = Win()
+    assert mgr._ask_load_scale() == 0.5
+    assert shown == [True]
+    assert mgr.window.ask_load_scale is False and Win.persisted == 1
+    assert mgr._ask_load_scale() == 0.5
+    assert len(shown) == 1, "second import must not prompt"

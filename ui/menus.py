@@ -285,6 +285,15 @@ def setup_menus(window: QMainWindow) -> None:
     settings_menu.addAction(restore_action)
     window.ui_objs['action_restore_last_stack'] = restore_action
 
+    # Ask for the loading scale on every import (off = use the last choice)
+    ask_scale_action = QAction(trans.t('action_ask_load_scale'), window)
+    ask_scale_action.setCheckable(True)
+    ask_scale_action.setChecked(bool(getattr(window, 'ask_load_scale', True)))
+    ask_scale_action.setToolTip(trans.t('action_ask_load_scale_hint'))
+    ask_scale_action.triggered.connect(window.set_ask_load_scale)
+    settings_menu.addAction(ask_scale_action)
+    window.ui_objs['action_ask_load_scale'] = ask_scale_action
+
     # Background update download toggle (persisted by the update manager)
     auto_update_action = QAction(trans.t('action_auto_download'), window)
     auto_update_action.setCheckable(True)

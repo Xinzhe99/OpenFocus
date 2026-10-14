@@ -47,6 +47,8 @@ _PERSISTED_FIELDS = {
     "scale_bar_color": ("export/scale_bar_color", "auto", "str"),
     "base_frame_correct": ("fusion/base_frame_correct", False, "bool"),
     "stack_reverse_order": ("fusion/stack_reverse_order", False, "bool"),
+    "ask_load_scale": ("ui/ask_load_scale", True, "bool"),
+    "load_scale_default": ("ui/load_scale_default", 1.0, "float"),
 }
 
 
