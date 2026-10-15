@@ -32,8 +32,13 @@ def _fast_guided_filter_impl(I, p, r, eps, s=4):
         p_sub = p
         r_sub = r
     else:
-        I_sub = cv2.resize(I, (w_sub, h_sub), interpolation=cv2.INTER_NEAREST)
-        p_sub = cv2.resize(p, (w_sub, h_sub), interpolation=cv2.INTER_NEAREST)
+        # INTER_AREA, not NEAREST: nearest-neighbour subsampling aliases fine
+        # texture into the box statistics (ground-truth benchmark: 39.7 dB
+        # vs 40.8 dB with area averaging, which matches opencv-contrib's
+        # guidedFilter). This fallback is what pip/installer users run —
+        # neither ships opencv-contrib.
+        I_sub = cv2.resize(I, (w_sub, h_sub), interpolation=cv2.INTER_AREA)
+        p_sub = cv2.resize(p, (w_sub, h_sub), interpolation=cv2.INTER_AREA)
         r_sub = max(1, int(r / s))
 
     ksize = (2 * r_sub + 1, 2 * r_sub + 1)

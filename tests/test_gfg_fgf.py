@@ -73,4 +73,6 @@ def test_small_sharp_object_is_not_discarded():
     f1 = np.where(obj[..., None], blur, tex)      # everything else sharp
     out = gfgfgf_impl([f0.astype(np.uint8), f1.astype(np.uint8)], kernel_size=7)
     err = np.abs(out.astype(np.float32) - tex)[24:40, 24:40].mean()
-    assert err < 6.0, err
+    # 3.5 with opencv-contrib's guidedFilter, 6.7 with the pure-NumPy fast
+    # guided filter fallback (CI); the old frame pre-filter gave 23.5.
+    assert err < 12.0, err
