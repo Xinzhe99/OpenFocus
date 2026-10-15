@@ -320,6 +320,13 @@ class DepthMapDialog(QDialog):
         self.smooth_spin.setToolTip(trans.t("depth_smooth_hint"))
         form.addRow(trans.t("depth_smooth"), self.smooth_spin)
 
+        self.relief_spin = QSpinBox()
+        self.relief_spin.setRange(1, 100)
+        self.relief_spin.setSuffix(" %")
+        self.relief_spin.setValue(15)
+        self.relief_spin.setToolTip(trans.t("depth_relief_hint"))
+        form.addRow(trans.t("depth_relief"), self.relief_spin)
+
         self.overlay_chk = QCheckBox(trans.t("depth_overlay"))
         self.overlay_chk.setToolTip(trans.t("depth_overlay_hint"))
         self.opacity_spin = QDoubleSpinBox()
@@ -354,6 +361,9 @@ class DepthMapDialog(QDialog):
         save_color.clicked.connect(lambda: self._save(colorized=True))
         save_raw = QPushButton(trans.t("depth_save_raw"))
         save_raw.clicked.connect(lambda: self._save(colorized=False))
+        save_3d = QPushButton(trans.t("depth_export_3d"))
+        save_3d.setToolTip(trans.t("depth_export_3d_hint"))
+        save_3d.clicked.connect(self._export_3d)
         close_btn = QPushButton(trans.t("btn_close"))
         close_btn.clicked.connect(self.reject)
         btns.addWidget(self.compute_btn)
@@ -361,6 +371,7 @@ class DepthMapDialog(QDialog):
         btns.addStretch()
         btns.addWidget(save_color)
         btns.addWidget(save_raw)
+        btns.addWidget(save_3d)
         btns.addWidget(close_btn)
         layout.addLayout(btns)
 
@@ -654,6 +665,37 @@ class DepthMapDialog(QDialog):
         except Exception as exc:
             self.status_lbl.setText(f"{exc}")
 
+    def _export_3d(self):
+        """Depth map + fused image -> textured OBJ (utils/mesh_export.py)."""
+        if self._index01 is None:
+            self.status_lbl.setText(trans.t("depth_no_map_yet"))
+            return
+        tex = getattr(self.window_main, "fusion_result", None)
+        if tex is None or tex.shape[:2] != self._index01.shape[:2]:
+            # no matching result: texture with the first frame of the stack
+            imgs = self._images() or []
+            tex = imgs[0] if imgs and imgs[0].shape[:2] == self._index01.shape[:2] else None
+        if tex is None:
+            self.status_lbl.setText(trans.t("depth_overlay_missing"))
+            return
+        start_dir = get_last_dialog_dir()
+        default = (start_dir.rstrip("/\\") + "/" if start_dir else "") + "depth_model.obj"
+        path, _ = QFileDialog.getSaveFileName(
+            self, trans.t("depth_export_3d"), default, "Wavefront OBJ (*.obj)")
+        if not path:
+            return
+        set_last_dialog_dir(path)
+        try:
+            from core.depth_map import smooth_index_map
+            from utils.mesh_export import export_obj
+            index = smooth_index_map(self._index01, self.smooth_spin.value())
+            info = export_obj(path, index, tex,
+                              relief=self.relief_spin.value() / 100.0,
+                              invert=self.invert_chk.isChecked())
+            self.status_lbl.setText(trans.t("depth_saved").format(path=info["files"][0]))
+        except Exception as exc:
+            self.status_lbl.setText(f"{exc}")
+
     def _default_path(self, start_dir, raw=False):
         base = "depth_map" + ("_raw16" if raw else "")
         ext = ".tif" if raw else ".png"
@@ -669,6 +711,7 @@ class DepthMapDialog(QDialog):
         self.gamma_spin.setValue(float(s.value("depthmap/gamma", 1.0)))
         self.smooth_spin.setValue(int(s.value("depthmap/smooth", 0)))
         self.invert_chk.setChecked(s.value("depthmap/invert", False, type=bool))
+        self.relief_spin.setValue(int(s.value("depthmap/relief", 15)))
         self._refresh_preview()
 
     def _save_prefs(self):
@@ -677,6 +720,7 @@ class DepthMapDialog(QDialog):
         s.setValue("depthmap/gamma", self.gamma_spin.value())
         s.setValue("depthmap/smooth", self.smooth_spin.value())
         s.setValue("depthmap/invert", self.invert_chk.isChecked())
+        s.setValue("depthmap/relief", self.relief_spin.value())
 
     def _detach_worker(self):
         """关闭对话框时后台线程可能正处在长推理中——QThread 被销毁而线程
