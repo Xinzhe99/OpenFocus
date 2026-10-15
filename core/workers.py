@@ -125,6 +125,7 @@ class RenderWorker(QThread):
         rb_ofc_checked: bool = False,
         base_frame: str = "none",
         sort_mode: str = "asc",
+        depth_smoothing: float = None,
     ):
         super().__init__()
         self.raw_images = raw_images
@@ -154,6 +155,8 @@ class RenderWorker(QThread):
         self.base_frame = base_frame if base_frame in ("none", "last", "first") else "none"
         # 帧序方向（仅 openfocus 族生效）：'asc'（默认）| 'desc' | 'off'
         self.sort_mode = sort_mode if sort_mode in ("asc", "desc", "off") else "asc"
+        # OpenFocus B 深度图过渡 σ（None = 默认 1.2）
+        self.depth_smoothing = depth_smoothing
         self.kernel_slider_value = kernel_slider_value
         # Tile params passed from UI (may be None -> use fusion defaults)
         self.tile_enabled = tile_enabled
@@ -418,6 +421,7 @@ class RenderWorker(QThread):
                 img_resize=None,
                 kernel_size=kernel_size,
                 thread_count=self.thread_count,
+                depth_smoothing=self.depth_smoothing,
                 **fuse_cancel,
             )
             result = quantize_fuse_output(result, is_16bit)
@@ -776,6 +780,7 @@ class BatchWorker(QThread):
                     img_resize=None,
                     kernel_size=kernel_size,
                     thread_count=self.thread_count,
+                    depth_smoothing=fusion_params.get('depth_smoothing'),
                     should_cancel=lambda: self.is_cancelled,
                 )
             elif fusion_method == "stackmffv4":

@@ -413,3 +413,22 @@ class TestOpenFocusAlignment:
         un = np.abs(f1.astype(int)[8:-8, 8:-8]
                     - base.astype(int)[8:-8, 8:-8]).mean()
         assert m < un * 0.45
+
+
+def test_openfocus_b_depth_smoothing_controls_transition():
+    """depth_smoothing changes the depth transition (0 = median only; larger
+    = wider, which calms speckle on noisy texture); default (None) equals the
+    Helicon-matched 1.2."""
+    from fusion_methods.openfocus_ab import openfocus_b_impl
+    rng = np.random.default_rng(3)
+    tex = rng.integers(0, 255, (64, 96, 3), dtype=np.uint8)
+    blur = cv2.GaussianBlur(tex, (0, 0), 5)
+    f0 = blur.copy(); f0[:, :48] = tex[:, :48]
+    f1 = blur.copy(); f1[:, 48:] = tex[:, 48:]
+    sharp = openfocus_b_impl([f0, f1], depth_smoothing=0)
+    soft = openfocus_b_impl([f0, f1], depth_smoothing=6)
+    default = openfocus_b_impl([f0, f1])
+    assert (default == openfocus_b_impl([f0, f1], depth_smoothing=1.2)).all()
+    err = lambda o: np.abs(o.astype(int) - tex.astype(int))[:, 40:56].mean()
+    assert (sharp != soft).any()
+    assert err(sharp) < 3.0 and err(soft) < 3.0

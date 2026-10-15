@@ -337,6 +337,11 @@ class OpenFocus(QMainWindow):
         self.lbl_kernel = right_panel_components.lbl_kernel
         self.lbl_smooth_value = right_panel_components.smooth_value_label
         self.smooth_widget = right_panel_components.smooth_widget
+        self.depth_smooth_row = right_panel_components.depth_smooth_row
+        self.lbl_depth_smooth = right_panel_components.lbl_depth_smooth
+        self.spin_depth_smooth = right_panel_components.spin_depth_smooth
+        self.spin_depth_smooth.setValue(float(getattr(self, "ofb_depth_smoothing", 1.2) or 0.0))
+        self.spin_depth_smooth.valueChanged.connect(self.set_ofb_depth_smoothing)
         self.source_images_label = right_panel_components.source_images_label
         self.file_list = right_panel_components.file_list
         self.output_label = right_panel_components.output_label
@@ -657,6 +662,8 @@ class OpenFocus(QMainWindow):
         
         # 重置滑块值到默认值（含每个方法记住的值）
         self._kernel_by_mode = {}
+        if getattr(self, "spin_depth_smooth", None) is not None:
+            self.spin_depth_smooth.setValue(1.2)
         self.slider_smooth.setValue(31)
         
         # 更新滑块可用性
@@ -1398,6 +1405,8 @@ class OpenFocus(QMainWindow):
             self.smooth_widget.setEnabled(False)
             self.slider_smooth.setRange(1, 51)
             self.current_kernel_mode = None
+        if getattr(self, "depth_smooth_row", None) is not None:
+            self.depth_smooth_row.setVisible(method == "openfocus_b")
         # 滑块含义标签随算法切换（每个算法的 kernel 含义不同）
         label_key = self._KERNEL_LABELS.get(self.current_kernel_mode,
                                             "label_kernel")
@@ -2137,6 +2146,11 @@ class OpenFocus(QMainWindow):
         self.restore_last_stack = bool(enabled)
         self.persist_settings()
 
+    def set_ofb_depth_smoothing(self, value: float) -> None:
+        """OpenFocus B depth-transition sigma (persisted)."""
+        self.ofb_depth_smoothing = float(value)
+        self.persist_settings()
+
     def set_ask_load_scale(self, enabled: bool) -> None:
         """Toggle the loading-scale prompt shown before every import."""
         self.ask_load_scale = bool(enabled)
@@ -2356,6 +2370,10 @@ class OpenFocus(QMainWindow):
             self.ui_objs['action_align_cache'].setText(trans.t('action_align_cache'))
             self.ui_objs['action_align_cache'].setToolTip(trans.t('action_align_cache_hint'))
             self.ui_objs['action_restore_last_stack'].setText(trans.t('action_restore_last_stack'))
+        if getattr(self, 'lbl_depth_smooth', None) is not None:
+            self.lbl_depth_smooth.setText(trans.t('label_depth_smoothing'))
+            self.lbl_depth_smooth.setToolTip(trans.t('label_depth_smoothing_hint'))
+            self.spin_depth_smooth.setToolTip(trans.t('label_depth_smoothing_hint'))
         if 'action_ask_load_scale' in getattr(self, 'ui_objs', {}):
             self.ui_objs['action_ask_load_scale'].setText(trans.t('action_ask_load_scale'))
             self.ui_objs['action_ask_load_scale'].setToolTip(trans.t('action_ask_load_scale_hint'))

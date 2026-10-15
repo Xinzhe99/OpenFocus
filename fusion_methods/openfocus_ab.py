@@ -134,8 +134,12 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
     return np.clip(fused, 0, 255).astype(fuse_output_dtype(frames))
 
 
+DEPTH_SMOOTHING_DEFAULT = 1.2  # σ of the depth-map transition (Helicon-matched)
+
+
 def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 11,
-                     thread_count: int = None):
+                     thread_count: int = None,
+                     depth_smoothing: float = DEPTH_SMOOTHING_DEFAULT):
     """OpenFocus - B（方差深度图选择）。
 
     两遍结构：argmax(var) → 深度图平滑（边界 ±3 帧线性过渡）→ 硬拾取。
@@ -158,7 +162,14 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 11,
     # 注意用 float32 做中值：转 uint8 会在帧数 >256 时截断深度索引
     # （显微深栈可达数百帧）；对整数输入两者结果逐位一致。
     depth = cv2.medianBlur(np.ascontiguousarray(depth, np.float32), 3)
-    depth = cv2.GaussianBlur(depth, (0, 0), sigmaX=1.2)
+    # depth_smoothing = 过渡带高斯 σ（Helicon 的 Smoothing/Feathering 旋钮对应
+    # 物，报告 §0.2：过渡宽度随其近线性增宽）。默认 1.2 与 Helicon 输出对齐；
+    # 0 = 只做中值去噪点（细节最锐，真值基准上 +0.5 dB），调大可压制
+    # 噪声栈在深度跳变处的斑点/光晕。
+    sigma = max(0.0, float(depth_smoothing if depth_smoothing is not None
+                           else DEPTH_SMOOTHING_DEFAULT))
+    if sigma > 0.05:
+        depth = cv2.GaussianBlur(depth, (0, 0), sigmaX=sigma)
     idx = np.clip(np.rint(depth), 0, n - 1).astype(np.int32)
 
     h, w = frames_f[0].shape[:2]

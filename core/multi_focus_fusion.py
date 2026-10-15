@@ -295,7 +295,8 @@ class MultiFocusFusion:
             kernel_size = max(1, kernel_size - 1)
         return openfocus_b_impl(input_source, img_resize,
                                 kernel_size=kernel_size,
-                                thread_count=kwargs.get('thread_count', None))
+                                thread_count=kwargs.get('thread_count', None),
+                                depth_smoothing=kwargs.get('depth_smoothing', None))
 
     def _fuse_openfocus_c(self,
                           input_source: Union[str, List[np.ndarray]],

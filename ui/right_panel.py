@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -87,6 +88,11 @@ class RightPanelComponents:
     lbl_status_resolution: QLabel
     lbl_status_gpu: QLabel
     lbl_status_memory: QLabel
+
+    # OpenFocus B depth-transition smoothing (shown only for that method)
+    depth_smooth_row: QWidget = None
+    lbl_depth_smooth: QLabel = None
+    spin_depth_smooth: "QDoubleSpinBox" = None
 
 
 def _fill_combo(combo: QComboBox, items) -> None:
@@ -176,6 +182,25 @@ def create_right_panel() -> RightPanelComponents:
     smooth_layout.addLayout(smooth_top)
     smooth_layout.addWidget(slider_smooth)
     config_layout.addWidget(smooth_widget)
+
+    # OpenFocus B: depth-map transition smoothing (Helicon's Smoothing knob)
+    depth_smooth_row = QWidget()
+    ds_layout = QHBoxLayout(depth_smooth_row)
+    ds_layout.setContentsMargins(0, 0, 0, 4)
+    lbl_depth_smooth = QLabel(trans.t('label_depth_smoothing'))
+    lbl_depth_smooth.setToolTip(trans.t('label_depth_smoothing_hint'))
+    spin_depth_smooth = QDoubleSpinBox()
+    spin_depth_smooth.setRange(0.0, 8.0)
+    spin_depth_smooth.setSingleStep(0.2)
+    spin_depth_smooth.setDecimals(1)
+    spin_depth_smooth.setValue(1.2)
+    spin_depth_smooth.setFixedWidth(80)
+    spin_depth_smooth.setToolTip(trans.t('label_depth_smoothing_hint'))
+    ds_layout.addWidget(lbl_depth_smooth)
+    ds_layout.addStretch()
+    ds_layout.addWidget(spin_depth_smooth)
+    depth_smooth_row.setVisible(False)
+    config_layout.addWidget(depth_smooth_row)
 
     button_bar = QHBoxLayout()
     btn_reset = QPushButton(trans.t('btn_reset'))
@@ -313,6 +338,9 @@ def create_right_panel() -> RightPanelComponents:
         lbl_status_resolution=lbl_status_resolution,
         lbl_status_gpu=lbl_status_gpu,
         lbl_status_memory=lbl_status_memory,
+        depth_smooth_row=depth_smooth_row,
+        lbl_depth_smooth=lbl_depth_smooth,
+        spin_depth_smooth=spin_depth_smooth,
     )
 
 

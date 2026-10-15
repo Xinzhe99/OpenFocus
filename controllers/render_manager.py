@@ -429,6 +429,7 @@ class RenderManager:
                 else "none",
             sort_mode="desc" if getattr(window, "stack_reverse_order", False)
                 else "asc",
+            depth_smoothing=getattr(window, "ofb_depth_smoothing", None),
         )
 
         self._progress_first_t = None

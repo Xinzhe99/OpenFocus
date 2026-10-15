@@ -49,6 +49,7 @@ _PERSISTED_FIELDS = {
     "stack_reverse_order": ("fusion/stack_reverse_order", False, "bool"),
     "ask_load_scale": ("ui/ask_load_scale", True, "bool"),
     "load_scale_default": ("ui/load_scale_default", 1.0, "float"),
+    "ofb_depth_smoothing": ("fusion/ofb_depth_smoothing", 1.2, "float"),
 }
 
 
