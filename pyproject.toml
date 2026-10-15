@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,13 +8,12 @@ description = "Multi-focus image fusion from the command line: registration (ECC
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Xinzhe Xie", email = "xiexinzheyyy@163.com" }]
-license = { text = "MIT" }
+license = "MIT"
 keywords = ["image-fusion", "focus-stacking", "multifocus", "microscopy", "photography", "helicon", "depth-map"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Topic :: Multimedia :: Graphics :: Graphics Conversion",
