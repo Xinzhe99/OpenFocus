@@ -11,7 +11,7 @@
 7. [Image Registration](#7-image-registration)
 8. [Image Fusion Methods](#8-image-fusion-methods)
 9. [Image Transformations](#9-image-transformations)
-10. [Labels and Annotations](#10-labels-and-annotations)
+10. [Retouching, Labels and Annotations](#10-retouching-labels-and-annotations)
 11. [Settings and Configuration](#11-settings-and-configuration)
 12. [Batch Processing](#12-batch-processing)
 13. [Exporting Results](#13-exporting-results)
@@ -34,9 +34,9 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - **Project Files**: save and restore complete working sessions
 - **Multi-page TIFF**: single-file Z-stacks load page-by-page and export back into one file
 - **Depth Map**: per-pixel focus-position maps with custom pseudo-color schemes
-- **Scale Bar**: publication-grade scale bars with automatic 碌m/px calibration
+- **Scale Bar**: publication-grade scale bars with automatic µm/px calibration
 - **Crash Auto-Recovery**: the last working session is offered for restore after a crash
-- **Multi-language**: English, 涓枃, 鏃ユ湰瑾? Espa帽ol with automatic system-language detection
+- **Multi-language**: English, 中文, 日本語, Español with automatic system-language detection
 - **Headless CLI**: Script OpenFocus from the command line for automation and CI
 - **Flexible Export**: Save results as individual images, folders, or GIF animations
 - **Image Transformations**: Rotate, flip, and resize image stacks
@@ -70,7 +70,7 @@ Upon launch, you will see the main application window with a dark theme interfac
 
 ### Quick Start Workflow
 
-1. Import your image sequence (File 鈫?Open Folder or drag-and-drop)
+1. Import your image sequence (File → Open Folder or drag-and-drop)
 2. Configure fusion settings in the right panel
 3. Optionally enable registration for alignment
 4. Adjust kernel size if needed
@@ -121,10 +121,15 @@ The top menu bar provides access to all functions:
 
 ### Opening an Image Folder
 
-1. Go to **File 鈫?Open Folder** or press `Ctrl+O`
+1. Go to **File → Open Folder** or press `Ctrl+O`
 2. Select a folder containing your image sequence
-3. A downsample dialog will appear - choose your preferred scale factor
+3. A loading-scale dialog appears — choose the scale (100% = full resolution)
 4. Click OK to load the images
+
+Tick **Don't ask again** in that dialog to always load at the chosen scale
+without a prompt; **Settings → Ask for Loading Scale on Import** turns the
+prompt back on. A loaded stack can still be downscaled later with
+**Edit → Resize**.
 
 The software will automatically:
 - Detect and sort image files by filename
@@ -133,18 +138,18 @@ The software will automatically:
 
 ### Opening Video Files
 
-1. Go to **File 鈫?Open Video** or press `Ctrl+Shift+O`
+1. Go to **File → Open Video** or press `Ctrl+Shift+O`
 2. Select a video file (MP4, AVI, MOV, MKV, WMV, FLV, WEBM)
 3. The video will be automatically decoded into individual frames
 4. Each frame becomes part of the image stack
 
 ### Project Files
 
-File 鈫?Save Project stores your whole working session as an `.ofproj`
+File → Save Project stores your whole working session as an `.ofproj`
 file: the exact source file list (in order), the load scale, fusion
 method, registration options, kernel size, tile/thread/registration
-settings, label configurations and the current frame. File 鈫?Open Project
-rebuilds that session exactly (source images are referenced, not copied 鈥?keep them in place). The window title shows the open project.
+settings, label configurations and the current frame. File → Open Project
+rebuilds that session exactly (source images are referenced, not copied — keep them in place). The window title shows the open project.
 
 ### Demo Stack
 
@@ -163,18 +168,18 @@ shows the frame number.
 
 Microscopy software (ZEN, NIS-Elements, ImageJ/Fiji) often exports a whole
 Z-stack as ONE multi-page TIFF file. OpenFocus reads every page of such a
-file as an individual frame of the image stack 鈥?drop or open the file and
+file as an individual frame of the image stack — drop or open the file and
 the stack appears complete (frames are named `<file>_page_001` and so on).
 Single-page TIFFs behave exactly as before. The reverse works too:
-**File 鈫?Save Stack 鈫?(Registered / Input) 鈫?Save as Multi-page TIFF**
+**File → Save Stack → (Registered / Input) → Save as Multi-page TIFF**
 writes the entire stack back into a single `.tif`, preserving 16-bit depth.
 
 ### Scale Bar (Publication Figures)
 
-Settings 鈫?Scale Bar鈥?configures a scale bar burned into exported images.
-The pixel size (碌m/px) is auto-detected from TIFF metadata 鈥?ImageJ's
+Settings → Scale Bar… configures a scale bar burned into exported images.
+The pixel size (µm/px) is auto-detected from TIFF metadata — ImageJ's
 `unit=micron` convention, OME-TIFF's `PhysicalSizeX`, or an explicit
-centimetre resolution unit 鈥?so microscopy stacks (including multi-page
+centimetre resolution unit — so microscopy stacks (including multi-page
 TIFFs) calibrate themselves. Printer resolution (72/300 dpi and friends)
 is deliberately *not* treated as calibration, and a manual value you type
 always wins over detected metadata: a plausible-looking wrong bar in a
@@ -188,18 +193,18 @@ text. The CLI supports it via `--scale-bar` (auto calibration) and
 
 ### Depth Map (Focus Position)
 
-Tools 鈥?Depth Map鈥?opens a viewer that computes, per pixel, which frame of
-the stack is in focus 鈥?the pseudo-depth signal the fusion itself decides
-on 鈥?using the selected method's own activity measure. Only
+**Tools → Depth Map…** opens a viewer that computes, per pixel, which frame of
+the stack is in focus — the pseudo-depth signal the fusion itself decides
+on — using the selected method's own activity measure. Only
 index-deciding methods are offered (DCT, DTCWT, GFG-FGF, StackMFF-V4,
 OpenFocus B/C); weighted-average fusions (Guided Filter, OpenFocus A)
 have no per-pixel decision and are not listed. The
-map is shown pseudo-colored with a legend (frame 0 鈫?N-1) and can be
+map is shown pseudo-colored with a legend (frame 0 → N-1) and can be
 customized live:
 
 - **Color map**: grayscale (publication standard) plus 15 scientific
-  palettes (Turbo, Viridis, Magma, 鈥?, and
-  your own 鈥?*New Custom Scheme鈥? builds a gradient from any number of
+  palettes (Turbo, Viridis, Magma, …) and
+  your own — *New Custom Scheme…* builds a gradient from any number of
   color stops (double-click a stop to edit position and color); custom
   schemes are saved and offered in the dropdown.
 - **Invert / Gamma / Smoothing**: flip the depth axis, re-balance tone
@@ -207,7 +212,7 @@ customized live:
   edge-aware pass.
 - **Overlay on fused image**: blend the colorized map over the fusion
   result at an adjustable opacity to see exactly where each frame won.
-- **Export**: *Save Colorized鈥? (PNG/JPEG/TIFF/BMP) or *Save Raw 16-bit鈥?
+- **Export**: *Save Colorized…* (PNG/JPEG/TIFF/BMP) or *Save Raw 16-bit…*
   (the normalized index map at full precision, ideal for downstream
   analysis in ImageJ/Fiji/python).
 
@@ -218,14 +223,14 @@ work. The CLI equivalent is `--depth-map [path]` with `--depth-colormap`.
 ### Crash Auto-Recovery
 
 OpenFocus continuously keeps a snapshot of your working session (stack,
-settings, labels, current frame). If the application closes unexpectedly 鈥?a crash, power loss, or a forced kill 鈥?the next launch detects it and
+settings, labels, current frame). If the application closes unexpectedly — a crash, power loss, or a forced kill — the next launch detects it and
 offers **Restore Session** to return exactly to where you were. Clean
 exits never show the prompt. Recovery data lives next to your settings
 (portable installs keep it beside the executable, so it travels with you).
 
 ### Recent Files
 
-Every stack you open is remembered under **File 鈫?Open Recent** (up to 8 entries). Press `Alt+1` 鈥?`Alt+8` to reopen an entry directly. Reopening the same stack moves it to the top; entries whose files no longer exist can be removed with a prompt, and **Clear Recent List** empties the menu.
+Every stack you open is remembered under **File → Open Recent** (up to 8 entries). Press `Alt+1`–`Alt+8` to reopen an entry directly. Reopening the same stack moves it to the top; entries whose files no longer exist can be removed with a prompt, and **Clear Recent List** empties the menu.
 
 ### Drag and Drop
 
@@ -244,7 +249,7 @@ fusion runs at full depth and results can be saved back as 16-bit PNG/TIFF
 
 ### Clearing the Stack
 
-To remove all loaded images, go to **File 鈫?Clear Stack** or press `Ctrl+W`.
+To remove all loaded images, go to **File → Clear Stack** or press `Ctrl+W`.
 
 ---
 
@@ -281,7 +286,7 @@ The Wipe view overlays two images in a single frame with a draggable vertical di
 
 ### Reading the View
 
-- **Side A (left of the divider)**: a source frame 鈥?by default it follows the source panel slider
+- **Side A (left of the divider)**: a source frame — by default it follows the source panel slider
 - **Side B (right of the divider)**: the most recent render
 - **White divider + round handle**: drag horizontally to move the split
 - Dragging edges that jump across the divider reveals registration errors that are hard to see in side-by-side panels
@@ -290,8 +295,8 @@ The Wipe view overlays two images in a single frame with a draggable vertical di
 
 The bar at the bottom of the compare view has one group per side:
 
-- **Side A** 鈥?check **Follow source** (default) to track the source panel slider, or uncheck it to lock side A to any frame with its own slider
-- **Side B** 鈥?check **Latest result** (default) to always show the newest render, or uncheck it to scrub through your output history with its slider
+- **Side A** — check **Follow source** (default) to track the source panel slider, or uncheck it to lock side A to any frame with its own slider
+- **Side B** — check **Latest result** (default) to always show the newest render, or uncheck it to scrub through your output history with its slider
 
 Both sides update live: new renders, source-slider moves, and frame deletions are reflected immediately.
 
@@ -355,7 +360,7 @@ Image registration corrects spatial misalignment between frames in your image st
 
 ### Registration Settings
 
-Access additional settings via **Settings 鈫?Registration**:
+Access additional settings via **Settings → Registration**:
 - **Downscale Width**: Control preprocessing resolution (default: 1024px)
 - Lower values = faster processing, potentially lower accuracy
 - Higher values = slower processing, potentially higher accuracy
@@ -389,12 +394,18 @@ OpenFocus offers eight fusion algorithms (plus an alignment-only mode). Each has
 - **Advantages**: Excellent multi-scale analysis, good directionality
 - **Parameter**: Kernel size for filtering operations
 
-### GFG-FGF (Generalized Four-neighborhood Gradient - Fast Guided Filter)
+### GFG-FGF (Gaussian-like Four-neighbourhood Gradient + Fast Guided Filter)
 
-- **Algorithm**: Gradient-based fusion with fast guided filtering
-- **Best for**: Images with clear focus regions
-- **Advantages**: Fast, good focus region detection
-- **Parameter**: Kernel size adjustment
+- **Algorithm**: implementation of Fu et al. (*Laser & Optoelectronics
+  Progress*, 2024): a blur-difference focus map |I − mean(I)| is enriched
+  with the Gaussian-like four-neighbourhood gradient (GFG) operator, refined
+  by a fast guided filter, decided per pixel (ties broken by a 3×3 Sobel
+  small-region measure), and the binary decision maps are smoothed by the
+  fast guided filter again before the weighted blend.
+- **Best for**: Microscopy and images with clear focus regions
+- **Advantages**: Fast, sharp focus-region boundaries; memory does not grow
+  with the number of frames
+- **Parameter**: Kernel = size of the mean filter of the coarse focus map
 
 ### StackMFF-V4 (Deep Learning)
 
@@ -451,7 +462,7 @@ inspect registration quality or export aligned frames.
 
 Tuning parameters on large stacks is slow at full resolution. Check
 **Quick preview** above the render button and OpenFocus first renders a
-downscaled draft (longest side 1200 px) 鈥?typically several times faster,
+downscaled draft (longest side 1200 px) — typically several times faster,
 including registration. The preview is displayed with a "Preview" note in
 the completion dialog and is **not** added to the output history. Uncheck
 the box and render again to produce the full-resolution result. Preview
@@ -464,22 +475,22 @@ alignment cache.
 
 ### Rotation
 
-1. Go to **Edit 鈫?Rotate**
+1. Go to **Edit → Rotate**
 2. Choose rotation type:
-   - **90掳 Clockwise**: Rotate all images 90 degrees right
-   - **90掳 Counter-Clockwise**: Rotate all images 90 degrees left
-   - **180掳**: Flip images upside down
+   - **90° Clockwise**: Rotate all images 90 degrees right
+   - **90° Counter-Clockwise**: Rotate all images 90 degrees left
+   - **180°**: Flip images upside down
 
 ### Flipping
 
-1. Go to **Edit 鈫?Flip**
+1. Go to **Edit → Flip**
 2. Choose flip type:
    - **Horizontal Flip**: Mirror left-to-right
    - **Vertical Flip**: Mirror top-to-bottom
 
 ### Resizing
 
-1. Go to **Edit 鈫?Resize**
+1. Go to **Edit → Resize**
 2. A dialog will appear for resizing options
 3. Enter new dimensions or scale percentage
 4. All images in the stack will be resized proportionally
@@ -490,12 +501,37 @@ Transformations are applied to the entire image stack, maintaining alignment bet
 
 ---
 
-## 10. Labels and Annotations
+## 10. Retouching, Labels and Annotations
+
+### Retouching the Result (Edit → Retouch Result…, `Ctrl+T`)
+
+Fusion can still leave a local defect — a halo around a high-contrast edge,
+a bristle taken from the wrong frame, noise in a flat area. The retouch
+brush copies pixels from a source frame onto the result:
+
+1. Render a result (or select one in the output list; right-click → *Retouch
+   Result…* works too) and press `Ctrl+T`.
+2. Paint over the defect with the left mouse button. With **Auto-pick
+   sharpest frame per stroke** on (default), every stroke first selects the
+   frame that has the most detail under the brush — fixing a halo is usually
+   a single drag. Turn it off to choose the frame yourself with the slider
+   or `,` / `.`.
+3. Adjust **radius** (`[` / `]`), **hardness** (soft edges hide the seam) and
+   **opacity**. Overlapping dabs within one stroke never compound.
+4. **Show source frame** (`Tab`) previews the frame you are painting from.
+   Wheel zooms, right/middle-drag pans, `F` fits the image.
+5. `Ctrl+Z` / `Ctrl+Y` undo and redo whole strokes. **Apply as New Output**
+   adds the retouched image to the output list (suffix `_Retouched`); the
+   original output stays untouched.
+
+The brush uses the aligned frames that produced the result, so it lines up
+with it; 16-bit results stay 16-bit. ROI renders and resized stacks cannot
+be retouched (their frames no longer match the result's geometry).
 
 ### Adding Labels
 
 1. Ensure you have rendered results or loaded images
-2. Go to **Edit 鈫?Add Label**
+2. Go to **Edit → Add Label**
 3. Enter your label text in the dialog
 4. Labels are added to both registered stack and input stack
 
@@ -504,7 +540,7 @@ Transformations are applied to the entire image stack, maintaining alignment bet
 - **Delete Registered Stack Labels**: Removes labels from aligned images
 - **Delete Input Stack Labels**: Removes labels from original images
 
-Access these options via **Edit 鈫?Delete Label** submenu.
+Access these options via **Edit → Delete Label** submenu.
 
 ---
 
@@ -514,7 +550,7 @@ Access these options via **Edit 鈫?Delete Label** submenu.
 
 For large images, OpenFocus uses tile-based processing to avoid memory issues.
 
-Access via **Settings 鈫?Tile**:
+Access via **Settings → Tile**:
 
 - **Tile Block Size**: Size of each processing tile (default: 1024px)
 - **Tile Overlap**: Overlap between tiles for seamless blending (default: 256px)
@@ -527,7 +563,7 @@ Access via **Settings 鈫?Tile**:
 
 ### Registration Settings
 
-Access via **Settings 鈫?Registration**:
+Access via **Settings → Registration**:
 
 - **Downscale Width**: Preprocessing resolution for registration
   - Default: 1024px
@@ -543,7 +579,7 @@ high-resolution input.
 
 Control CPU parallel processing:
 
-Access via **Settings 鈫?Thread Count Settings**:
+Access via **Settings → Thread Count Settings**:
 
 - Set the number of worker threads (default: 4)
 - Match your CPU core count for optimal performance
@@ -553,14 +589,14 @@ Access via **Settings 鈫?Thread Count Settings**:
 
 OpenFocus uses the GPU (CUDA/MPS) only for the AI neural model (StackMFF-V4); classical algorithms always run on CPU.
 
-- Toggle via **Settings 鈫?GPU Acceleration**
-- Unchecking forces everything onto the CPU 鈥?useful when GPU drivers misbehave
+- Toggle via **Settings → GPU Acceleration**
+- Unchecking forces everything onto the CPU — useful when GPU drivers misbehave
 - The status panel shows `CPU*` while the GPU is disabled
 - The choice takes effect on the next render and is remembered
 
 ### AI Batch Size
 
-Access via **Settings 鈫?AI Batch Settings**:
+Access via **Settings → AI Batch Settings**:
 
 - Controls how many tiles the neural model processes per batch (default: 2)
 - Higher values are faster but use more memory
@@ -568,22 +604,15 @@ Access via **Settings 鈫?AI Batch Settings**:
 ### Themes
 
 Two interface themes are available: **Dark (default)** and **Light**. Switch via
-**Settings 鈫?Theme**; the choice is applied immediately (the Windows title
+**Settings → Theme**; the choice is applied immediately (the Windows title
 bar follows) and remembered. First-launch users choose a theme in the
 welcome dialog.
-
-### Themes
-
-Two interface themes are available: **Dark (default)** and **Light**.
-Switch via **Settings 鈫?Theme**; the choice applies immediately (the
-Windows title bar follows) and is remembered. First-launch users choose a
-theme inside the welcome dialog.
 
 ### Portable Mode
 
 Create an empty file named `OpenFocus.portable` next to `OpenFocus.exe`
-(the portable zip ships with one) and all user data 鈥?settings, logs,
-recent files 鈥?is stored in an `OpenFocusData` folder beside the app
+(the portable zip ships with one) and all user data — settings, logs,
+recent files — is stored in an `OpenFocusData` folder beside the app
 instead of your user profile, so the installation can travel on a USB
 stick. Delete the marker to switch back to the normal profile.
 
@@ -601,7 +630,7 @@ iPhone photos load directly. Requires the optional `pillow-heif` package
 
 ### Updates
 
-Help 鈫?Check for Updates compares your version against GitHub Releases.
+Help → Check for Updates compares your version against GitHub Releases.
 **Download and Install** fetches the new installer in-app (with progress)
 and launches it; Open Downloads Page goes to the releases list. The check
 runs silently at most once a day.
@@ -610,7 +639,7 @@ runs silently at most once a day.
 
 OpenFocus can store registration results in a `.openfocus_cache` folder
 next to the source stack. Re-opening the same stack (files unchanged)
-then skips alignment entirely. Toggle via **Settings 鈫?Registration
+then skips alignment entirely. Toggle via **Settings → Registration
 Cache**; stale entries are replaced automatically.
 
 ### Persisted Settings
@@ -625,14 +654,14 @@ stored per user in `OpenFocus/OpenFocus.ini` (QSettings INI format).
 
 ### Interface Language
 
-Switch anytime via **Settings 鈫?Language 鈫?English / 涓枃**. The change
+Switch anytime via **Settings → Language → English / 中文**. The change
 applies immediately and is remembered for future sessions.
 
 ### Automatic Update Check
 
 Once per day, a few seconds after launch, OpenFocus silently checks GitHub
 for a newer release and shows a notice with a download link. You can also
-check manually anytime via **Help 鈫?Check for Updates**.
+check manually anytime via **Help → Check for Updates**.
 
 ---
 
@@ -640,7 +669,7 @@ check manually anytime via **Help 鈫?Check for Updates**.
 
 Process multiple folders automatically:
 
-1. Go to **Batch 鈫?Batch Processing** or click the batch option
+1. Go to **Batch → Batch Processing** or click the batch option
 2. In the batch dialog:
    - **Add Folders**: Select folders containing image sequences
    - **Remove Folders**: Remove selected folders from the list
@@ -667,7 +696,7 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 ### Saving a Single Result
 
 1. Select the result you want to save in the output list
-2. Go to **File 鈫?Save** or press `Ctrl+S`
+2. Go to **File → Save** or press `Ctrl+S`
 3. Choose format and location
 4. Click Save
 
@@ -679,14 +708,14 @@ PNG or TIFF). The choice is remembered.
 
 ### Saving the Registered Stack
 
-1. Go to **File 鈫?Save Stack 鈫?Registered Stack**
+1. Go to **File → Save Stack → Registered Stack**
 2. Choose save format:
    - **Save as Folder**: Saves each aligned frame as separate image files
    - **Save as GIF**: Creates an animated GIF of the aligned sequence
 
 ### Saving the Input Stack
 
-1. Go to **File 鈫?Save Stack 鈫?Input Stack**
+1. Go to **File → Save Stack → Input Stack**
 2. Choose save format:
    - **Save as Folder**: Saves original frames as separate images
    - **Save as GIF**: Creates animated GIF of input sequence
@@ -703,7 +732,7 @@ PNG or TIFF). The choice is remembered.
 
 ## 14. Command Line Interface
 
-OpenFocus can run without the GUI 鈥?useful for scripted pipelines and CI.
+OpenFocus can run without the GUI — useful for scripted pipelines and CI.
 From a Python environment (or next to the packaged executable):
 
 ```bash
@@ -742,8 +771,8 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--output-dir, -d` | Batch mode: fuse every input folder, writing `<folder>.png` per stack |
 | `--scale-bar` | Draw a scale bar (calibration auto-detected from TIFF metadata) |
 | `--depth-map [path]` | Also save a colorized focus-position (depth) map (default: `<output>_depth.png`) |
-| `--depth-colormap` | Colormap for `--depth-map`: turbo, viridis, jet, gray, 鈥?(default turbo) |
-| `--scale-um` | Pixel size in 碌m/px, overriding metadata (implies `--scale-bar`) |
+| `--depth-colormap` | Colormap for `--depth-map`: turbo, viridis, jet, gray, … (default turbo) |
+| `--scale-um` | Pixel size in µm/px, overriding metadata (implies `--scale-bar`) |
 
 Exit codes: `0` success, `1` processing error, `2` usage error. Running
 `python main.py --help` prints all options; launching with a plain path
@@ -763,6 +792,13 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 | `Ctrl+Shift+S` | Save Registered Stack |
 | `Ctrl+W` | Clear Stack |
 | `Ctrl+Q` | Exit |
+| `Ctrl+R` | Start Render |
+| `Ctrl+Shift+R` | Compare All methods |
+| `Ctrl+T` | Retouch Result |
+| `Ctrl+M` | Depth Map |
+| `Ctrl+E` | Toggle Wipe compare |
+| `Ctrl+Shift+B` | Batch Processing |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / Redo (stack edits) |
 
 ### Navigation
 
@@ -803,11 +839,11 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 
 - Install PyTorch: `pip install torch torchvision`
 - For GPU support, install CUDA-enabled PyTorch
-- Check via **Help 鈫?Environment Info**
+- Check via **Help → Environment Info**
 
 #### Out of Memory Errors
 
-- Enable tile processing in **Settings 鈫?Tile**
+- Enable tile processing in **Settings → Tile**
 - Reduce tile block size
 - Use smaller kernel sizes
 - Resize images to smaller dimensions
@@ -815,20 +851,20 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 #### Registration Fails
 
 - Try only one registration method at a time
-- Reduce the downscale width in **Settings 鈫?Registration**
+- Reduce the downscale width in **Settings → Registration**
 - Ensure images have sufficient contrast and features
 
 #### Slow Processing
 
-- Increase thread count in **Settings 鈫?Thread Count Settings**
+- Increase thread count in **Settings → Thread Count Settings**
 - Use a more powerful CPU
 - Reduce image resolution
 - Use simpler fusion algorithms (Guided Filter instead of AI Fusion)
 
 #### Windows SmartScreen Warning on First Launch
 
-The released binaries are unsigned. Click **More info 鈫?Run anyway**.
-The first launch after unzipping may take 30鈥?0 seconds.
+The released binaries are unsigned. Click **More info → Run anyway**.
+The first launch after unzipping may take 30–60 seconds.
 
 #### macOS Says the App "Cannot Be Opened" or "Is Damaged"
 
@@ -844,8 +880,8 @@ Apple Silicon (M1/M2/M3/M4); Intel Macs can run from source.
 
 ### Getting Help
 
-1. **Environment Info**: Go to **Help 鈫?Environment Info** to check your installation
-2. **Contact Support**: Go to **Help 鈫?Contact Us** for support information
+1. **Environment Info**: Go to **Help → Environment Info** to check your installation
+2. **Contact Support**: Go to **Help → Contact Us** for support information
 
 ---
 

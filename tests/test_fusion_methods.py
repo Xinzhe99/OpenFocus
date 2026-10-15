@@ -301,3 +301,12 @@ class TestStackMFFV4EffectiveTiling:
         assert blk <= 300
         assert all(y1 <= 300 and x1 <= 400 for _, _, x1, y1 in
                    ((a, b, c, d) for (a, b, c, d) in coords))
+
+
+def test_dtcwt_keeps_odd_frame_size():
+    """dtcwt pads odd sizes; the fused result must match the stack size."""
+    pytest.importorskip("dtcwt")
+    frames = [np.random.default_rng(i).integers(0, 255, (75, 99, 3), dtype=np.uint8)
+              for i in range(3)]
+    out = MultiFocusFusion("dtcwt").fuse(frames)
+    assert out.shape == (75, 99, 3)
