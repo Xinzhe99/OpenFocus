@@ -3,10 +3,79 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v1.52] — 2026-10-15
 
-### Fixed — alignment gave up too late (Helicon reverse-engineering round 5,
-report §7.2/§7.6)
+A review-driven quality round: one new tool (retouch), two algorithm
+corrections measured on a new ground-truth benchmark, and the rough edges
+of the everyday render loop.
+
+### Added
+- **Retouch brush** (Edit → Retouch Result…, `Ctrl+T`; also in the output
+  list's context menu). Paint pixels from a source frame onto the result to
+  fix halos or wrongly picked details. *Auto-pick* selects, per stroke, the
+  frame that is sharpest under the brush. Soft round brush (radius,
+  hardness, opacity), idempotent strokes, tile-based undo/redo, zoom/pan,
+  source-frame preview (`Tab`); 16-bit results stay 16-bit. The edit is
+  added as a new output (`_Retouched`).
+- **`tools/synthetic_benchmark.py`** — ground-truth benchmark: a texture is
+  defocused along a known depth map into a focus stack and every method is
+  scored by PSNR/SSIM against the true all-in-focus image (clean, sensor
+  noise, small-object scenes; an oracle row shows the ceiling).
+- **"Don't ask again"** in the loading-scale dialog;
+  Settings → *Ask for Loading Scale on Import* turns the prompt back on.
+- Render progress in the status bar: stage (Aligning / Fusing) with a
+  progress bar.
+
+### Fixed — algorithms
+- **GFG-FGF now implements its paper** (issue #5): the Gaussian-like
+  four-neighbourhood gradient operator (eqs 3–8) is merged into the
+  blur-difference focus map (eq 9) before the fast guided filter, and equal
+  focus values are decided by the 3×3 Sobel small-region measure
+  (eqs 11–13). Previously only |I − mean(I)| was used.
+- **GFG-FGF dropped small in-focus objects**: a pre-filter skipped every
+  frame whose whole-frame sharpness was under 15% of the sharpest frame —
+  a frame whose only sharp content is a small object was thrown away
+  (error on that object 30 → 0.7 levels). Removed (it is not in the paper).
+  Decisions and weights are now streamed, so memory no longer grows with
+  N × H × W.
+- **DTCWT rebuilt**: the low-pass band averaged *all* frames (defocused
+  low frequencies washed into every region) and decisions were made
+  pairwise, separately per orientation and colour channel. Now one N-way,
+  majority-checked decision per pixel and level shared by all bands and
+  channels, and a decision-driven low-pass. Benchmark: 34.2 → 39.4 dB
+  (clean), 33.0 → 36.1 (noise), 30.8 → 33.9 (small objects); faster.
+  Odd-sized frames no longer come back one pixel larger.
+- Depth maps for GFG-FGF use the same focus measure and decision as fusion.
+
+### Fixed — workflow and UI
+- No modal "Completed" box after every render (and quick preview): the
+  timing summary goes to the status bar and the output item's tooltip.
+- The status bar was hidden unless one helper was used, so tile progress,
+  "render cancelled" and "compare done" messages were never visible; it is
+  now always shown (no layout jump per render).
+- **Ctrl+S saved the newest render even when an older output was selected
+  and displayed**; it now saves the selected output. Save As proposes that
+  output's own name instead of one built from the current method dropdown.
+  "Image saved" is a status message instead of a modal box.
+- The kernel slider remembers its value per fusion method. The depth-map
+  dialog used the guided-filter radius (31) as DCT's median window.
+- Checked checkboxes looked identical to radio buttons (white dot): now a
+  blue box with a check mark.
+- Combo-box and spin-box arrows rendered as solid black blocks (Qt does
+  not support the CSS border-triangle trick); replaced by SVG arrows.
+- The empty result panel says what to do ("Press Start Render (Ctrl+R)").
+- The torch availability probe raced the status bar, which imported torch
+  on the UI thread (window freeze; "operator prims::amin does not exist");
+  the probe is serialized and the status bar reads its cached result.
+
+### Docs
+- User manual (EN): 59 mojibake sequences repaired (UTF-8 read as GBK since
+  v1.41), duplicated Themes section removed; retouching, the load-scale
+  prompt, GFG-FGF/DTCWT details and all panel shortcuts documented (EN + ZH).
+- README: benchmark table, OpenFocus vs. Helicon Focus comparison, complete
+  method lists.
+
+### Alignment and Helicon parity (reverse-engineering round 5)
 
 - **The `openfocus` alignment shift limit dropped from 25% to 8% of the
   frame size, and over-limit frames are now left unaligned instead of

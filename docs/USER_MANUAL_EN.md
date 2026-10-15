@@ -392,7 +392,10 @@ OpenFocus offers eight fusion algorithms (plus an alignment-only mode). Each has
 - **Algorithm**: Multi-scale wavelet domain fusion
 - **Best for**: Complex scenes with multiple detail levels
 - **Advantages**: Excellent multi-scale analysis, good directionality
-- **Parameter**: Kernel size for filtering operations
+- **Fusion rule**: one decision per pixel and level for all orientations and
+  colour channels (N-way, majority-consistency checked); the low-pass band
+  follows the coarsest decision instead of averaging every frame
+- **Parameter**: none (the kernel slider is disabled)
 
 ### GFG-FGF (Gaussian-like Four-neighbourhood Gradient + Fast Guided Filter)
 
@@ -464,7 +467,7 @@ Tuning parameters on large stacks is slow at full resolution. Check
 **Quick preview** above the render button and OpenFocus first renders a
 downscaled draft (longest side 1200 px) — typically several times faster,
 including registration. The preview is displayed with a "Preview" note in
-the completion dialog and is **not** added to the output history. Uncheck
+the status-bar summary after the render and is **not** added to the output history. Uncheck
 the box and render again to produce the full-resolution result. Preview
 mode does not apply to ROI renders and never pollutes the full-resolution
 alignment cache.
@@ -901,7 +904,7 @@ DTCWT provides multi-scale, multi-directional decomposition of images. It captur
 
 ### GFG-FGF
 
-This algorithm uses a Generalized Four-neighborhood Gaussian approach to measure local focus, combined with Fast Guided Filter for weight map refinement. It efficiently identifies and merges in-focus regions.
+Implements Fu et al. (2024): the coarse focus map |I − mean(I)| is enriched with the Gaussian-like four-neighbourhood gradient — the 3×3 template T = [1 2 1; 2 4 2; 1 2 1]/16 gives P = I⊗T, and G = (|I(x±1,y) − P|)/2 + (|I(x,y±1) − P|)/2 with values below T0 = 0.005 dropped — then refined by a fast guided filter. Pixels pick the frame with the largest focus value (ties: 3×3 Sobel small-region measure), and the binary decision maps are smoothed by the fast guided filter before the weighted blend.
 
 ### AI Fusion (StackMFF-V4)
 

@@ -168,6 +168,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5  # CHANGELOG.md for the release notes
       - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
@@ -205,10 +206,23 @@ jobs:
           - macOS: if you see *"cannot be opened"* or *"is damaged"*, run
             `xattr -cr /Applications/OpenFocus.app` in Terminal, then open normally.
 
-          ## Changes
+          ## Full history
 
-          See the commit history for details. This release bundles all fixes and improvements up to this tag.
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
           EOF
+          # "What's new" = this tag's CHANGELOG section, placed first: the
+          # in-app update dialog shows release bodies as per-version notes,
+          # and a body of install boilerplate told users nothing.
+          python3 - "${{ github.ref_name }}" <<'PY'
+          import re, sys
+          tag = sys.argv[1]
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          m = re.search(r"^## \[" + re.escape(tag) + r"\][^\n]*\n(.*?)(?=^## \[)", text, re.S | re.M)
+          notes = open("release_notes.md", encoding="utf-8").read()
+          if m:
+              notes = "## What's new\n" + m.group(1).strip() + "\n\n" + notes
+          open("release_notes.md", "w", encoding="utf-8").write(notes)
+          PY
 
       - name: Create GitHub Release
         env:

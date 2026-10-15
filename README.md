@@ -13,7 +13,9 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **2026.10.14 · v1.51** — dust-map "from a stack frame" preview now works (it silently failed before), rejections show localized messages, and the update flow from v1.50 restarts cleanly into the new version with per-version release notes in the dialog.
+> **2026.10.15 · v1.52 — retouch brush & a quality pass.** New **Retouch** tool (`Ctrl+T`): paint pixels from a source frame onto the result to fix halos — it auto-picks the sharpest frame under the brush. **DTCWT** rebuilt (+5 dB on the ground-truth benchmark), **GFG-FGF** now follows its paper ([#5](https://github.com/Xinzhe99/OpenFocus/issues/5)) and no longer drops small in-focus objects. Smoother workflow: no modal popup after every render, live progress, optional load-scale prompt, per-method kernel memory, Ctrl+S saves the selected output.
+
+> **2026.10.14 · v1.50–v1.51** — dust-map flat-field fixes, in-place background updates with per-version release notes.
 
 > **2026.10.13 · v1.39–v1.49 — the Helicon Focus era.** *OpenFocus A/B/C* (variance-weighted average, variance depth-map pick, Laplacian pyramid) reverse-engineered and verified against the original binary: 99.5% depth-map agreement, ~1% MAE on real stacks. Plus a fast bounded-similarity alignment (translation + rotation + scale), dust-map flat-field correction, per-pixel depth maps for every index-deciding method, an alignment-only mode, and single-choice dropdowns for all algorithm picking.
 
@@ -64,6 +66,7 @@ openfocus --input ./stackA ./stackB --output-dir ./results
 ```
 Exit codes: `0` success, `1` processing error, `2` usage error. Run `openfocus --help` for all options. From a source checkout, the same interface works as `python main.py …`.
 
+<a id="documentation"></a>
 ## 📖 Documentation
 - [**User Manual (English)**](./docs/USER_MANUAL_EN.md) — full feature guide: interface, workflows, wipe compare, settings, batch, CLI, troubleshooting
 - [**用户手册（中文）**](./docs/USER_MANUAL_ZH.md) — 完整中文功能手册
@@ -90,7 +93,7 @@ Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.m
 - [🛠️ Building from Source](#building-from-source)
 - [🔭 Overview](#overview)
 - [✨ Highlights](#highlights)
-- [🧪 Algorithms](#algorithms)
+- [🧪 Algorithms & Benchmark](#algorithms)
 - [📚 References](#references)
 - [🤝 Contribution](#contribution)
 - [📚 Citing OpenFocus](#citation)
@@ -112,25 +115,61 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 - **Wipe Compare View**: Overlay any source frame and any result in one frame with a draggable divider and shared zoom — spot alignment errors at a glance.
 - **Batch Automation**: Kick off batch jobs across multiple folders with live progress, cancellation, and automatic output organization.
 - **Headless CLI**: Full pipeline from the command line with script-friendly exit codes.
-- **Annotation & Export Toolkit**: Overlay labels, export GIF animations, drag results straight out of the app, and save stacks in JPG/PNG/BMP/TIFF.
+- **Retouch Brush**: Fix halos or wrongly picked details by painting from a source frame — the brush auto-picks the frame that is sharpest under the cursor; soft edges, undo/redo, 16-bit safe.
+- **Annotation & Export Toolkit**: Overlay labels, scale bars, export GIF animations and multi-page TIFF stacks, drag results straight out of the app, and save in JPG/PNG/WebP/BMP/TIFF (16-bit preserved end to end).
 - **AI-Assisted Fusion**: Ship with StackMFF V4 to unlock deep-learning-quality fusion alongside classic signal-processing methods.
 - **Depth Maps**: Per-pixel focus-position maps from any fusion method's own measure, with customizable pseudo-color schemes (built-in palettes or your own color stops), overlay-on-result view, and 16-bit raw export.
-- **Remembers You**: Settings, language, GPU preference and recently opened stacks persist across sessions; bilingual UI throughout.
+- **Microscopy-Ready**: 16-bit pipeline, µm/px calibration from TIFF metadata, dust-map flat-field correction, publication scale bars.
+- **Remembers You**: Settings, language, GPU preference, per-method parameters and recently opened stacks persist across sessions; crash auto-recovery; English, 中文, 日本語 and Español UI.
 
-<a id="fusion--registration-methods"></a>
+<a id="algorithms"></a>
 ## 🧪 Algorithms
 ### Fusion Algorithms
 
-- **Guided Filter**: Fast edge-preserving fusion that enhances contrast while suppressing noise.
-- **DCT Multi-Focus Fusion**: Frequency-domain technique optimized for crisp detail recovery.
-- **Dual-Tree Complex Wavelet Transform (DTCWT)**: Multi-scale representation that preserves fine texture structures.
-- **GFG-FGF**: GFG-FGF is based on a generalized four-neighborhood Gaussian gradient (GFG) operator combined with a fast guided filter (FGF). 
-- **StackMFF V4**: Pretrained deep model delivering state-of-the-art focus stacking quality.
+- **Guided Filter**: Fast edge-preserving fusion (Li et al., 2013).
+- **DCT Multi-Focus Fusion**: Block-wise DCT variance with consistency verification — the fastest method.
+- **Dual-Tree Complex Wavelet Transform (DTCWT)**: Multi-scale, multi-orientation fusion with one consistent decision per pixel and level.
+- **GFG-FGF**: Gaussian-like four-neighbourhood gradient operator + fast guided filter (Fu et al., 2024), well suited to microscopy.
+- **StackMFF V4**: Pretrained deep model (GPU optional).
+- **OpenFocus A / B / C**: The Helicon Focus method family (weighted average / depth-map pick / pyramid), reverse-engineered and verified against the original software's output.
 
 ### Registration Algorithms
-- **Homography**: Performs feature-based projective alignment using keypoint matching and RANSAC to handle global perspective transformations.
-- **ECC**: Performs intensity-based alignment by maximizing the enhanced correlation coefficient for precise, sub-pixel registration.
-  
+- **OpenFocus (fast)**: Bounded similarity alignment (translation + rotation + scale) with brightness equalization and auto-crop — sub-second per frame.
+- **ECC**: Intensity-based alignment by maximizing the enhanced correlation coefficient for precise, sub-pixel registration.
+- **Homography**: Feature-based projective alignment (SIFT + RANSAC) for global perspective changes.
+
+### Benchmark
+
+`tools/synthetic_benchmark.py` defocuses a detailed texture along a known depth map into a 16-frame stack, so every method can be scored against the true all-in-focus image (higher PSNR is better; *oracle* = best possible per-pixel frame pick; CPU, 1024×768):
+
+| Method | Clean (dB) | Sensor noise σ=3 (dB) | Small near objects (dB) | Time |
+|---|---|---|---|---|
+| *oracle pick* | *43.7* | *37.5* | *34.9* | – |
+| StackMFF V4 | **42.9** | 35.5 | **34.7** | 9 s |
+| OpenFocus C | 41.7 | **37.0** | 34.3 | 1.0 s |
+| OpenFocus B | 41.0 | 36.7 | 34.0 | 0.3 s |
+| GFG-FGF | 40.9 | 36.7 | 34.4 | 0.8 s |
+| Guided Filter | 40.3 | 36.7 | 34.4 | 0.6 s |
+| DCT | 40.1 | 36.4 | 33.3 | 0.1 s |
+| DTCWT | 39.4 | 36.1 | 33.9 | 8 s |
+
+OpenFocus A (weighted average) is a deliberately soft look and is not built for this test. Reproduce with `python tools/synthetic_benchmark.py [--noise 3] [--scene small]`.
+
+### OpenFocus vs. Helicon Focus
+
+| | OpenFocus | Helicon Focus 8 |
+|---|---|---|
+| Price / license | Free, MIT, source available | Commercial (Lite/Pro/Premium) |
+| Platforms | Windows, macOS, CLI on Linux | Windows, macOS |
+| Fusion methods | 8 (incl. Helicon's A/B/C family, AI model) | 3 (A/B/C) |
+| Retouch brush | ✓ with sharpest-frame auto-pick | ✓ |
+| Alignment | 3 methods (similarity, ECC, homography) | 1 |
+| Depth maps | ✓ for every index-deciding method, 16-bit export | ✓ |
+| One-click compare of all methods (wipe view) | ✓ | render each method separately |
+| Command line | ✓ (`pip install openfocus`, Linux too) | ✓ (paid editions) |
+| Batch, dust map, scale bar, 16-bit, multi-page TIFF | ✓ | ✓ |
+| RAW decoding, 3D model export, camera/rail control | – | ✓ |
+
 > **License Notice:** Every fusion/registration algorithm included comes from open-source research implementations. When using or redistributing them, please follow each algorithm’s original license terms in addition to the OpenFocus MIT license.
 
 <a id="references"></a>
@@ -173,12 +212,6 @@ If you publish images created with OpenFocus, a note such as *"Created with Open
 ## 📄 License
 This project is released under the [MIT License](./LICENSE). Feel free to use, modify, and distribute within the terms of the license.
 
-If you publish images created with OpenFocus, please consider adding a note such as:
-
-Created with OpenFocus – https://github.com/Xinzhe99/OpenFocus
-
-This is not mandatory, but highly appreciated.
-
 <p align="center" style="font-size:1.25rem; font-weight:600;">
   If OpenFocus helps you, please consider leaving a ⭐ on the repository!
 </p>
@@ -187,17 +220,3 @@ This is not mandatory, but highly appreciated.
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Xinzhe99/OpenFocus&type=Date)](https://star-history.com/#Xinzhe99/OpenFocus&Date)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
