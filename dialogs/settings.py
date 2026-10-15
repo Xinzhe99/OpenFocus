@@ -143,13 +143,22 @@ class DownsampleDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(trans.t('ds_title'))
         self.dont_ask_chk = None
+        self._show_dont_ask = bool(show_dont_ask)
         self.resize(400, 150)
         # Frames already decoded at a reduced scale cannot be restored to full
         # detail, so the slider stops where the images on hand end.
         self.max_percent = max(1, min(100, int(round(max_scale * 100))))
         self.scale_percent = min(max(1, int(initial_scale * 100)), self.max_percent)
 
-        # 应用深色主题
+        # 应用深色主题（亮色主题下沿用应用级亮色样式，不强加深色）
+        from ui.styles import CURRENT_THEME as _theme
+        self._dark = _theme != "light"
+        if self._dark:
+            self._apply_dark_style()
+
+        self._build_layout()
+
+    def _apply_dark_style(self):
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: #2b2b2b;
@@ -202,6 +211,7 @@ class DownsampleDialog(QDialog):
             }}
         """)
 
+    def _build_layout(self):
         layout = QVBoxLayout(self)
 
         # 说明文字
@@ -214,6 +224,7 @@ class DownsampleDialog(QDialog):
         # 减小按钮
         self.decrease_btn = QPushButton("-")
         self.decrease_btn.setFixedSize(30, 30)
+        self.decrease_btn.setObjectName("stepButton")
         self.decrease_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.decrease_btn.setAutoRepeat(True)  # 启用长按重复
         self.decrease_btn.setAutoRepeatDelay(300)  # 长按延迟
@@ -238,7 +249,8 @@ class DownsampleDialog(QDialog):
                 background-color: #333;
             }
         """
-        self.decrease_btn.setStyleSheet(btn_style)
+        if self._dark:
+            self.decrease_btn.setStyleSheet(btn_style)
 
         # 滑块
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -250,12 +262,14 @@ class DownsampleDialog(QDialog):
         # 增大按钮
         self.increase_btn = QPushButton("+")
         self.increase_btn.setFixedSize(30, 30)
+        self.increase_btn.setObjectName("stepButton")
         self.increase_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.increase_btn.setAutoRepeat(True)  # 启用长按重复
         self.increase_btn.setAutoRepeatDelay(300)  # 长按延迟
         self.increase_btn.setAutoRepeatInterval(50)  # 重复间隔
         self.increase_btn.clicked.connect(lambda: self.slider.setValue(self.slider.value() + 1))
-        self.increase_btn.setStyleSheet(btn_style)
+        if self._dark:
+            self.increase_btn.setStyleSheet(btn_style)
 
         # 旋转框
         self.spinbox = QSpinBox()
@@ -282,7 +296,7 @@ class DownsampleDialog(QDialog):
         layout.addWidget(hint_label)
 
         # 导入时可选"不再询问"（设置菜单可重新打开）
-        if show_dont_ask:
+        if self._show_dont_ask:
             self.dont_ask_chk = QCheckBox(trans.t('ds_dont_ask'))
             self.dont_ask_chk.setToolTip(trans.t('ds_dont_ask_hint'))
             layout.addWidget(self.dont_ask_chk)

@@ -122,15 +122,16 @@ def create_right_panel() -> RightPanelComponents:
     _fill_combo(combo_fusion, FUSION_ITEMS)
     idx = combo_fusion.findData(FUSION_DEFAULT)
     combo_fusion.setCurrentIndex(max(0, idx))
-    method_layout.addWidget(combo_fusion)
-    method_layout.addStretch()
-
+    # "?" sits on the dropdown's row: a row of its own wasted half the
+    # group's height and got squeezed to 1 px under the light theme padding
     method_help_layout = QHBoxLayout()
-    method_help_layout.addStretch()
+    method_help_layout.setSpacing(6)
+    method_help_layout.addWidget(combo_fusion, 1)
     btn_method_help = QPushButton("?")
     btn_method_help.setFixedSize(22, 22)
-    btn_method_help.setFont(QFont("Arial", 16))
+    btn_method_help.setFont(QFont("Arial", 12))
     btn_method_help.setStyleSheet(HELP_BUTTON_STYLE)
+    btn_method_help.setObjectName("helpButton")
     method_help_layout.addWidget(btn_method_help)
     method_layout.addLayout(method_help_layout)
 
@@ -141,15 +142,16 @@ def create_right_panel() -> RightPanelComponents:
     _fill_combo(combo_align, ALIGN_ITEMS)
     idx = combo_align.findData(ALIGN_DEFAULT)
     combo_align.setCurrentIndex(max(0, idx))
-    registration_layout.addWidget(combo_align)
-    registration_layout.addStretch()
-
+    # "?" sits on the dropdown's row: a row of its own wasted half the
+    # group's height and got squeezed to 1 px under the light theme padding
     reg_help_layout = QHBoxLayout()
-    reg_help_layout.addStretch()
+    reg_help_layout.setSpacing(6)
+    reg_help_layout.addWidget(combo_align, 1)
     btn_reg_help = QPushButton("?")
     btn_reg_help.setFixedSize(22, 22)
-    btn_reg_help.setFont(QFont("Arial", 16))
+    btn_reg_help.setFont(QFont("Arial", 12))
     btn_reg_help.setStyleSheet(HELP_BUTTON_STYLE)
+    btn_reg_help.setObjectName("helpButton")
     reg_help_layout.addWidget(btn_reg_help)
     registration_layout.addLayout(reg_help_layout)
 
