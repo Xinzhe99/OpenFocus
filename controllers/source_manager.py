@@ -35,6 +35,29 @@ class SourceManager:
         count = self.window.file_list.count()
         self.window.source_images_label.setText(trans.t("label_source_images").format(count))
 
+    def _confirm_mixed_sizes(self, images) -> bool:
+        """Frames of different sizes in one dropped file set: ask whether to
+        continue (fusion needs one size; the user may resize afterwards)."""
+        shapes = {(img.shape[0], img.shape[1]) for img in images}
+        if len(shapes) <= 1:
+            return True
+        msg = QMessageBox(self.window)
+        from utils.ui_utils import style_message_box
+        style_message_box(msg)
+        msg.setWindowTitle(trans.t("msg_size_mismatch_title"))
+        msg.setText(trans.t("msg_size_mismatch_stack_text"))
+        msg.setInformativeText(trans.t("msg_size_mismatch_open_info"))
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        yes_btn = msg.button(QMessageBox.StandardButton.Yes)
+        no_btn = msg.button(QMessageBox.StandardButton.No)
+        if yes_btn:
+            yes_btn.setText(trans.t("btn_continue"))
+        if no_btn:
+            no_btn.setText(trans.t("btn_cancel_generic"))
+        msg.setStyleSheet(MESSAGE_BOX_STYLE)
+        return msg.exec() == QMessageBox.StandardButton.Yes
+
     def _start_load_worker(self, folder=None, video=None, filepaths=None,
                            scale=1.0, append=False, on_success=None,
                            accept_event=None) -> None:
@@ -68,6 +91,8 @@ class SourceManager:
                     if accept_event is None:
                         show_warning_box(window, trans.t("msg_load_failed"),
                                          trans.t("msg_load_stack_failed_text"), message)
+                    return
+                if filepaths and not self._confirm_mixed_sizes(images):
                     return
                 if append and not self._confirm_append_dimensions(images):
                     return
@@ -286,8 +311,6 @@ class SourceManager:
         # Filter by supported image extensions (use ImageStackLoader.SUPPORTED_FORMATS)
         from core.image_loader import ImageStackLoader
 
-        loader = self.window.image_loader if hasattr(self.window, "image_loader") else ImageStackLoader()
-
         valid_paths = []
         for p in filepaths:
             ext = os.path.splitext(p)[1].lower()
@@ -307,41 +330,9 @@ class SourceManager:
                 event.ignore()
                 return
 
-            success, message, full_res_images, filenames = loader.load_from_filepaths(valid_paths, scale_factor=scale)
-            if not success:
-                show_warning_box(self.window, trans.t("msg_load_failed"), trans.t("msg_load_dropped_failed_text"), message)
-                event.ignore()
-                return
-            self._load_source = (None, None, valid_paths)
-            # Check image sizes (after loading / downsampling)
-            shapes = {(img.shape[0], img.shape[1]) for img in full_res_images}
-            if len(shapes) > 1:
-                # Ask user to continue or cancel (Continue/Cancel)
-                msg = QMessageBox(self.window)
-                from utils.ui_utils import style_message_box
-                style_message_box(msg)
-                msg.setWindowTitle(trans.t("msg_size_mismatch_title"))
-                msg.setText(trans.t("msg_size_mismatch_stack_text"))
-                msg.setInformativeText(trans.t("msg_size_mismatch_open_info"))
-                msg.setIcon(QMessageBox.Icon.Warning)
-                msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-                # relabel buttons to Continue / Cancel
-                yes_btn = msg.button(QMessageBox.StandardButton.Yes)
-                no_btn = msg.button(QMessageBox.StandardButton.No)
-                if yes_btn:
-                    yes_btn.setText(trans.t("btn_continue"))
-                if no_btn:
-                    no_btn.setText(trans.t("btn_cancel_generic"))
-                msg.setStyleSheet(MESSAGE_BOX_STYLE)
-                ret = msg.exec()
-                if ret != QMessageBox.StandardButton.Yes:
-                    event.ignore()
-                    return
-            if not self._confirm_append_dimensions(full_res_images):
-                event.ignore()
-                return
-            load_options = self._build_load_options(full_res_images, filenames, scale)
-            self._apply_load_options(load_options, append=True)
+            # Decode on the load worker like folder loads: dropping a large
+            # file set used to freeze the window while it decoded.
+            self._start_load_worker(filepaths=valid_paths, scale=scale, append=True)
             event.acceptProposedAction()
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
@@ -725,41 +716,8 @@ class SourceManager:
 
     def load_image_files_from_icon(self, file_paths: list[str]) -> None:
         """Load image files dropped on app icon."""
-        from core.image_loader import ImageStackLoader
-
         scale = self._ask_load_scale()
         if scale is None:
             return
 
-        loader = self.window.image_loader if hasattr(self.window, "image_loader") else ImageStackLoader()
-        success, message, full_res_images, filenames = loader.load_from_filepaths(file_paths, scale_factor=scale)
-
-        if not success:
-            show_warning_box(self.window, trans.t("msg_load_failed"), trans.t("msg_load_dropped_failed_text"), message)
-            return
-        self._load_source = (None, None, file_paths)
-
-        if not self._confirm_append_dimensions(full_res_images):
-            return
-
-        # Check image sizes
-        shapes = {(img.shape[0], img.shape[1]) for img in full_res_images}
-        if len(shapes) > 1:
-            msg = QMessageBox(self.window)
-            msg.setWindowTitle(trans.t("msg_size_mismatch_title"))
-            msg.setText(trans.t("msg_size_mismatch_stack_text"))
-            msg.setInformativeText(trans.t("msg_size_mismatch_open_info"))
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            yes_btn = msg.button(QMessageBox.StandardButton.Yes)
-            no_btn = msg.button(QMessageBox.StandardButton.No)
-            if yes_btn:
-                yes_btn.setText(trans.t("btn_continue"))
-            if no_btn:
-                no_btn.setText(trans.t("btn_cancel_generic"))
-            msg.setStyleSheet(MESSAGE_BOX_STYLE)
-            if msg.exec() != QMessageBox.StandardButton.Yes:
-                return
-
-        load_options = self._build_load_options(full_res_images, filenames, scale)
-        self._apply_load_options(load_options, append=True)
+        self._start_load_worker(filepaths=list(file_paths), scale=scale, append=True)
