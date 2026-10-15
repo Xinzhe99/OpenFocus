@@ -892,3 +892,30 @@ def test_load_scale_prompt_can_be_skipped(monkeypatch):
     assert mgr.window.ask_load_scale is False and Win.persisted == 1
     assert mgr._ask_load_scale() == 0.5
     assert len(shown) == 1, "second import must not prompt"
+
+
+def test_new_output_is_the_only_selected_item(qapp):
+    from PyQt6.QtWidgets import QAbstractItemView, QLabel, QListWidget
+    from controllers.output_manager import OutputManager
+
+    class W:
+        pass
+
+    w = W()
+    w.output_list = QListWidget()
+    w.output_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    w.output_label = QLabel()
+    w.fusion_results = []
+    w.fusion_result = None
+
+    class E:
+        @staticmethod
+        def generate_default_filename():
+            return "out"
+
+    w.export_manager = E()
+    mgr = OutputManager(w)
+    mgr.update_output_list_for_fusion()
+    mgr.update_output_list_for_fusion()
+    assert len(w.output_list.selectedItems()) == 1
+    assert w.output_list.currentRow() == 0

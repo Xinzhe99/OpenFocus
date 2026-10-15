@@ -53,6 +53,10 @@ class OutputManager:
                 pass
 
         window.output_list.insertItem(0, item)
+        # Select only the new entry: setCurrentRow() extends an existing
+        # selection, which left every previous output highlighted too (and
+        # disabled the single-item actions — Save As, Retouch).
+        window.output_list.clearSelection()
         window.output_list.setCurrentRow(0)
         self.update_output_count()
 

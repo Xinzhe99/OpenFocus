@@ -665,7 +665,8 @@ class RenderManager:
                     and window.output_list.count() > 0):
                 newest = window.output_list.item(0)
                 if newest is not None:
-                    newest.setToolTip("\n".join(info_lines))
+                    # Long names are cut off in the list: lead with the name
+                    newest.setToolTip("\n".join([newest.text(), ""] + info_lines))
 
         except Exception as exc:
             import logging
