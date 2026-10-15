@@ -13,7 +13,7 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **2026.10.15 · v1.54** — **camera RAW input** (DNG, CR2/CR3, NEF, ARW, RAF, … developed to 16-bit with one exposure mapping for the whole stack) and a **depth-smoothing control for OpenFocus B** (Helicon's Smoothing knob; also `--depth-smoothing` on the CLI).
+> **2026.10.15 · v1.54–v1.55** — **3D model export** (depth map + fused image as a textured OBJ for Blender/MeshLab), **camera RAW input** (DNG, CR2/CR3, NEF, ARW, RAF, … developed to 16-bit with one exposure mapping for the whole stack) and a **depth-smoothing control for OpenFocus B** (Helicon's Smoothing knob; also `--depth-smoothing` on the CLI).
 
 > **2026.10.15 · v1.52–v1.53 — retouch brush & a quality pass.** New **Retouch** tool (`Ctrl+T`): paint pixels from a source frame onto the result to fix halos — it auto-picks the sharpest frame under the brush. **DTCWT** rebuilt (+5 dB on the ground-truth benchmark), **GFG-FGF** now follows its paper ([#5](https://github.com/Xinzhe99/OpenFocus/issues/5)) and no longer drops small in-focus objects. Smoother workflow: no modal popup after every render, live progress, optional load-scale prompt, per-method kernel memory, Ctrl+S saves the selected output.
 
@@ -121,7 +121,7 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 - **Retouch Brush**: Fix halos or wrongly picked details by painting from a source frame — the brush auto-picks the frame that is sharpest under the cursor; soft edges, undo/redo, 16-bit safe.
 - **Annotation & Export Toolkit**: Overlay labels, scale bars, export GIF animations and multi-page TIFF stacks, drag results straight out of the app, and save in JPG/PNG/WebP/BMP/TIFF (16-bit preserved end to end).
 - **AI-Assisted Fusion**: Ship with StackMFF V4 to unlock deep-learning-quality fusion alongside classic signal-processing methods.
-- **Depth Maps**: Per-pixel focus-position maps from any fusion method's own measure, with customizable pseudo-color schemes (built-in palettes or your own color stops), overlay-on-result view, and 16-bit raw export.
+- **Depth Maps**: Per-pixel focus-position maps from any fusion method's own measure, with customizable pseudo-color schemes (built-in palettes or your own color stops), overlay-on-result view, and 16-bit raw export. Export the depth map plus the fused image as a textured 3D model (OBJ).
 - **Microscopy-Ready**: 16-bit pipeline, µm/px calibration from TIFF metadata, dust-map flat-field correction, publication scale bars.
 - **Remembers You**: Settings, language, GPU preference, per-method parameters and recently opened stacks persist across sessions; crash auto-recovery; English, 中文, 日本語 and Español UI.
 
@@ -172,7 +172,8 @@ OpenFocus A (weighted average) is a deliberately soft look and is not built for 
 | Command line | ✓ (`pip install openfocus`, Linux too) | ✓ (paid editions) |
 | Batch, dust map, scale bar, 16-bit, multi-page TIFF | ✓ | ✓ |
 | Camera RAW input | ✓ (LibRaw, 16-bit) | ✓ |
-| 3D model export, camera/rail control | – | ✓ |
+| 3D model export (textured OBJ) | ✓ | ✓ |
+| Camera/rail control | – | ✓ |
 
 > **License Notice:** Every fusion/registration algorithm included comes from open-source research implementations. When using or redistributing them, please follow each algorithm’s original license terms in addition to the OpenFocus MIT license.
 

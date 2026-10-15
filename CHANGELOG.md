@@ -3,6 +3,14 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.55] — 2026-10-15
+
+### Added
+- **3D model export** (depth-map dialog → *Export 3D (OBJ)…*): a textured
+  surface built from the depth map and the fused image — OBJ + MTL + PNG,
+  adjustable relief, *Invert depth axis* flips near/far. Opens in Blender,
+  MeshLab or 3D Viewer.
+
 ## [v1.54] — 2026-10-15
 
 ### Added

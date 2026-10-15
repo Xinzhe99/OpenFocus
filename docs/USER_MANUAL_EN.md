@@ -219,6 +219,15 @@ customized live:
 - **Export**: *Save Colorized…* (PNG/JPEG/TIFF/BMP) or *Save Raw 16-bit…*
   (the normalized index map at full precision, ideal for downstream
   analysis in ImageJ/Fiji/python).
+- **3D model**: *Export 3D (OBJ)…* writes a textured surface built from the
+  depth map and the fused result as `<name>.obj`, `<name>.mtl` and
+  `<name>_texture.png`, which open in Blender, MeshLab or Windows 3D Viewer.
+  The mesh is downsampled to at most 600 vertices on its longest side and
+  lightly despeckled, after the Smoothing value above is applied. *3D relief*
+  (1–100 %, default 15 %) sets the surface height as a percentage of the
+  image's longest side and is remembered. *Invert depth axis* flips which end
+  of the stack is near. The texture is the fused result, or the stack's first
+  frame if no result of the same size exists.
 
 Computation runs in the background with progress and cancellation; the AI
 method reuses the same memory-safe tiling as AI fusion, so deep stacks
