@@ -3,6 +3,29 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.53] — 2026-10-15
+
+Follow-up polish to v1.52, found while verifying it on CI and in the light
+theme.
+
+### Fixed
+- **GFG-FGF quality for installer and pip users**: neither ships
+  opencv-contrib, so everyone runs the built-in fast guided filter, which
+  subsampled with nearest-neighbour and aliased fine texture (39.7 dB vs
+  40.8 dB on the ground-truth benchmark). Area averaging now matches
+  opencv-contrib's filter.
+- **Dropping image files froze the window while they decoded**; file drops
+  (and files opened on the app icon) now load on the background worker like
+  folders.
+- **After a second render every previous output stayed selected**, which
+  disabled Save As and Retouch in the context menu; only the new output is
+  selected now. The output tooltip leads with the full (often truncated)
+  name.
+- **Light theme**: the "?" help buttons were squeezed to a 1-pixel line; they
+  now sit beside their dropdowns (also tightening the dark layout). The
+  loading-scale dialog follows the theme instead of forcing dark.
+- README screenshot refreshed.
+
 ## [v1.52] — 2026-10-15
 
 A review-driven quality round: one new tool (retouch), two algorithm
