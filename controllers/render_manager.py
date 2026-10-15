@@ -741,10 +741,7 @@ class RenderManager:
         if bar is not None:
             bar.hide()
             self._status_bar_label.hide()
-            sb = self.window.statusBar()
-            busy = getattr(self.window, "_status_bar_busy", None)
-            if not sb.currentMessage() and callable(busy) and not busy():
-                sb.setVisible(False)
+
 
     def on_render_stage(self, stage: str) -> None:
         text = trans.t('render_stage_align') if stage == "align" else trans.t('render_stage_fuse')

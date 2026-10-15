@@ -224,6 +224,8 @@ class OpenFocus(QMainWindow):
         # I should probably update image_panels.py too, or just override text here.
         if hasattr(self, 'lbl_source_img'):
              self.lbl_source_img.setText(trans.t('drag_hint'))
+        if hasattr(self, 'lbl_result_img'):
+            self.lbl_result_img.setText(trans.t('result_hint'))
 
     def init_ui(self):
         setup_menus(self)
@@ -755,10 +757,11 @@ class OpenFocus(QMainWindow):
         layout.addWidget(self.btn_update_action)
         bar.addPermanentWidget(container)
         container.hide()
-        # The app has no status bar in its idle layout: create it hidden and
-        # reveal it only while a message or the update indicator needs it.
+        # Always visible: showing/hiding the bar per message made the image
+        # panels jump by one row on every render (and hidden-by-default bars
+        # swallowed every direct statusBar().showMessage call).
         bar.messageChanged.connect(self._on_status_message_changed)
-        bar.setVisible(False)
+        bar.setSizeGripEnabled(False)
         self._update_indicator = container
 
     def _show_status_message(self, text: str, timeout_ms: int = 5000) -> None:
@@ -767,19 +770,12 @@ class OpenFocus(QMainWindow):
         bar.showMessage(text, timeout_ms)
 
     def _on_status_message_changed(self, text: str) -> None:
-        # The bar is hidden while idle; any message must reveal it. Callers
-        # use statusBar().showMessage() directly (render progress, cancel,
-        # compare-done...) and those messages were silently invisible.
         if text:
             self.statusBar().setVisible(True)
-            return
-        if self._status_bar_busy():
-            return
-        self.statusBar().setVisible(False)
 
     def _status_bar_busy(self) -> bool:
         """True while a permanent status widget (update indicator, render
-        progress) is showing — the bar must then stay visible."""
+        progress) is showing."""
         indicator = getattr(self, '_update_indicator', None)
         if indicator is not None and indicator.isVisible():
             return True
@@ -1158,6 +1154,46 @@ class OpenFocus(QMainWindow):
         """Focus-position (pseudo-depth) map viewer and exporter."""
         from dialogs.depthmap import DepthMapDialog
         DepthMapDialog(self).exec()
+
+    def show_retouch_dialog(self) -> None:
+        """Retouch brush on the selected (or newest) fusion result; the edit
+        lands in the output history as a new entry."""
+        from utils.retouch import frames_matching
+        selected = self.export_manager.selected_output()
+        result = selected[0] if selected else self.fusion_result
+        if result is None:
+            show_warning_box(self, trans.t("msg_no_result_title"),
+                             trans.t("retouch_need_result"))
+            return
+        frames = frames_matching(
+            result,
+            self.registration_results if self.registration_results else None,
+            self.aligned_images if getattr(self, "is_images_aligned", False) else None,
+            self.raw_images)
+        if not frames:
+            show_warning_box(self, trans.t("msg_warning"),
+                             trans.t("retouch_size_mismatch"))
+            return
+        from dialogs.retouch import RetouchDialog
+        dlg = RetouchDialog(self, result, frames, names=self.image_filenames)
+        if not dlg.exec():
+            return
+        edited = dlg.edited_result()
+        if edited is None:
+            return
+        self.fusion_result = edited
+        self.output_manager.update_output_list_for_fusion()
+        item = self.output_list.item(0)
+        base = selected[1] if selected else None
+        if item is not None:
+            item.setText((base or item.text()) + "_Retouched")
+        self.output_manager.show_fusion_result()
+        try:
+            from utils import recovery
+            recovery.write_snapshot(self)
+        except Exception:
+            pass
+        self.statusBar().showMessage(trans.t("retouch_applied"), 6000)
 
     def show_dust_map_dialog(self) -> None:
         """Flat-field (dust map) correction from a defocused white shot."""
@@ -2297,6 +2333,9 @@ class OpenFocus(QMainWindow):
         if not self.stack_images:
             if hasattr(self, 'lbl_source_img'):
                 self.lbl_source_img.setText(trans.t('drag_hint'))
+        if getattr(self, 'fusion_result', None) is None and not getattr(
+                self, 'registration_results', None) and hasattr(self, 'lbl_result_img'):
+            self.lbl_result_img.setText(trans.t('result_hint'))
 
         # Update language checked state
         for lang_code, key in (('en', 'action_lang_en'), ('zh', 'action_lang_zh'),

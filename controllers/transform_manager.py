@@ -262,3 +262,4 @@ class TransformManager:
 
         if clear_output_view:
             window.lbl_result_img.clear()
+            window.lbl_result_img.setText(trans.t("result_hint"))

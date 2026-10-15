@@ -186,6 +186,15 @@ def setup_menus(window: QMainWindow) -> None:
     edit_menu.addAction(window.resize_action)
     window.ui_objs['action_resize'] = window.resize_action
 
+    # Retouch brush: paint pixels from a source frame onto the result
+    retouch_action = QAction(trans.t('action_retouch'), window)
+    retouch_action.setShortcut("Ctrl+T")
+    retouch_action.setToolTip(trans.t('action_retouch_hint'))
+    retouch_action.triggered.connect(window.show_retouch_dialog)
+    edit_menu.addAction(retouch_action)
+    window.ui_objs['action_retouch'] = retouch_action
+    retouch_action.setProperty("trans_key", 'action_retouch')
+
     window.add_label_action = QAction(trans.t('action_add_label'), window)
     window.add_label_action.triggered.connect(window.label_manager.show_add_label_dialog)
     window.add_label_action.setEnabled(False)

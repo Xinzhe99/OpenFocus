@@ -106,6 +106,33 @@ class ExportManager:
         return (f"OpenFocus_{timestamp}_{self._fusion_tag()}_"
                 f"{self._align_tag()}")
 
+    def selected_output(self):
+        """(image, default filename) of the output the user has selected in
+        the output list, or None. Saving must follow the selection: Ctrl+S
+        used to write the newest render even with an older one selected
+        and shown, and Save As proposed a name built from the *current*
+        method dropdown rather than the method that made that output."""
+        window = self.window
+        lst = getattr(window, "output_list", None)
+        results = getattr(window, "fusion_results", None) or []
+        if lst is None or window.fusion_result is None:
+            return None
+        row = lst.currentRow()
+        if row < 0 or row >= len(results):
+            return None
+        item = lst.item(row)
+        name = item.text() if item is not None else ""
+        return results[row], self.filename_from_label(name)
+
+    @staticmethod
+    def filename_from_label(label: str) -> str:
+        """Output-list label -> safe default filename (compare-all labels
+        carry ' — Method' suffixes)."""
+        import re as _re
+        name = (label or "").replace(" — ", "_").strip()
+        name = _re.sub(r'[\\/:*?"<>|\s]+', "_", name)
+        return name or "OpenFocus_result"
+
     def generate_default_foldername(self) -> str:
         window = self.window
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -123,7 +150,12 @@ class ExportManager:
         result_to_save = None
         title = ""
 
-        if window.fusion_result is not None:
+        selected = self.selected_output()
+        default_filename = None
+        if selected is not None:
+            result_to_save, default_filename = selected
+            title = trans.t("action_save")
+        elif window.fusion_result is not None:
             result_to_save = window.fusion_result
             title = trans.t("action_save")
         elif window.registration_results:
@@ -134,7 +166,8 @@ class ExportManager:
             show_warning_box(window, trans.t("msg_no_result_title"), trans.t("msg_no_result_text"))
             return
 
-        default_filename = self.generate_default_filename()
+        if not default_filename:
+            default_filename = self.generate_default_filename()
         file_path, _ = QFileDialog.getSaveFileName(
             window,
             title,
@@ -156,13 +189,10 @@ class ExportManager:
             ext = os.path.splitext(file_path)[1].lower()
             params = get_imwrite_params(ext)
             if imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params):
-                show_message_box(
-                    window,
-                    trans.t("msg_success"),
-                    trans.t("msg_image_saved_text"),
-                    trans.t("msg_image_saved_info").format(path=file_path),
-                    QMessageBox.Icon.Information,
-                )
+                # Non-blocking confirmation (errors still get a dialog)
+                window.statusBar().showMessage(
+                    trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
+                    8000)
             else:
                 show_message_box(
                     window,
