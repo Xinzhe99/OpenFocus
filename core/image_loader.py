@@ -22,7 +22,52 @@ try:
 except ImportError:
     HEIF_AVAILABLE = False
 
+try:
+    import rawpy  # optional: camera RAW via LibRaw
+    RAWPY_AVAILABLE = True
+except ImportError:
+    RAWPY_AVAILABLE = False
+
 from utils.image_utils import to_display_uint8
+
+RAW_FORMATS = {'.dng', '.cr2', '.cr3', '.crw', '.nef', '.nrw', '.arw', '.srf',
+               '.sr2', '.raf', '.orf', '.rw2', '.raw', '.pef', '.srw', '.3fr',
+               '.iiq', '.erf', '.kdc', '.mos', '.mrw', '.x3f'}
+
+
+def _read_raw(path: str) -> Optional[np.ndarray]:
+    """Camera RAW -> 16-bit BGR (sRGB gamma, camera white balance).
+
+    Auto-brightening is off on purpose: LibRaw's per-image auto exposure
+    would brighten each frame of a focus stack differently (the defocused
+    ones most), which reads as flicker and corrupts the focus measures.
+    Orientation is applied by LibRaw itself.
+    """
+    if not RAWPY_AVAILABLE:
+        return None
+    try:
+        with rawpy.imread(path) as raw:
+            rgb = raw.postprocess(use_camera_wb=True, output_bps=16,
+                                  no_auto_bright=True)
+        return np.ascontiguousarray(rgb[:, :, ::-1])
+    except Exception:
+        return None
+
+
+def decode_image(path: str) -> Optional[np.ndarray]:
+    """Decode one still image (any supported format) to BGR, keeping 16-bit.
+    EXIF orientation is applied for everything except RAW (LibRaw does it)."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in RAW_FORMATS:
+        return _read_raw(path)
+    img = cv2.imdecode(np.fromfile(path, dtype=np.uint8),
+                       cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+    if img is None:
+        # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
+        img = _read_via_pil(path)
+    if img is not None:
+        img = apply_exif_orientation(path, img)
+    return img
 
 
 def _read_exif_bytes(path: str) -> bytes:
@@ -165,6 +210,8 @@ class ImageStackLoader:
     SUPPORTED_FORMATS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
     if HEIF_AVAILABLE:
         SUPPORTED_FORMATS |= {'.heic', '.heif'}
+    if RAWPY_AVAILABLE:
+        SUPPORTED_FORMATS |= RAW_FORMATS
     SUPPORTED_VIDEO_FORMATS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'}
 
     def __init__(self):
@@ -219,18 +266,13 @@ class ImageStackLoader:
                         filenames.append(f"{stem}_page_{page_no:03d}.tif")
                     continue
 
-                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
-                                cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
-                if img is None:
-                    # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
-                    img = _read_via_pil(full_path)
+                img = decode_image(full_path)
                 if img is not None:
                     if not self.source_exif:
                         self.source_exif = _read_exif_bytes(full_path)
                     if self.px_size_um is None:
                         from utils.scalebar import detect_px_size_um
                         self.px_size_um = detect_px_size_um(full_path)
-                    img = apply_exif_orientation(full_path, img)
                     if scale_factor != 1.0 and 0 < scale_factor < 1.0:
                         width = int(img.shape[1] * scale_factor)
                         height = int(img.shape[0] * scale_factor)
@@ -342,18 +384,13 @@ class ImageStackLoader:
                         filenames.append(f"{stem}_page_{page_no:03d}.tif")
                     continue
 
-                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
-                                cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
-                if img is None:
-                    # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
-                    img = _read_via_pil(full_path)
+                img = decode_image(full_path)
                 if img is not None:
                     if not self.source_exif:
                         self.source_exif = _read_exif_bytes(full_path)
                     if self.px_size_um is None:
                         from utils.scalebar import detect_px_size_um
                         self.px_size_um = detect_px_size_um(full_path)
-                    img = apply_exif_orientation(full_path, img)
                 if img is None:
                     failed_count += 1
                     continue
@@ -491,13 +528,8 @@ class ImageStackLoader:
 
         for filename, full_path in image_files:
             try:
-                img = cv2.imdecode(np.fromfile(full_path, dtype=np.uint8),
-                                cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
-                if img is None:
-                    # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
-                    img = _read_via_pil(full_path)
+                img = decode_image(full_path)
                 if img is not None:
-                    img = apply_exif_orientation(full_path, img)
                     timestamp = self.get_image_timestamp(full_path)
                     loaded_data.append((filename, full_path, img, timestamp))
                 else:

@@ -32,6 +32,7 @@ dynamic = ["version"]
 [project.optional-dependencies]
 ai = ["torch", "torchvision"]
 heic = ["pillow-heif"]
+raw = ["rawpy"]
 
 [project.scripts]
 openfocus = "core.cli:main"

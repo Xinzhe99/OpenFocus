@@ -48,6 +48,9 @@ OpenFocus 是一款面向科研人员、工程师和图像处理从业者的专�
 - 图像文件：JPG、PNG、BMP、TIFF 及其他常见格式
 - 视频文件：MP4、AVI、MOV、MKV、WMV、FLV、WEBM（自动解码为图像序列）
 - 包含按序号命名的图像序列的文件夹
+- 相机 RAW 文件（DNG、CR2/CR3、NEF、ARW、RAF、ORF、RW2 等常见 RAW 格式）：
+  解码需要可选依赖 `rawpy`（LibRaw）；Windows 与 macOS 安装包已内置，pip
+  用户可执行 `pip install "openfocus[raw]"` 安装
 
 ### 支持的输出格式
 
@@ -224,6 +227,8 @@ OpenFocus 会持续保存工作会话快照（图像栈、设置、标签、当�
 
 16-bit PNG/TIFF 输入会被自动识别并全流程保留位深：融合以完整深度运行，结果可以保存回 16-bit PNG/TIFF（JPG/BMP 导出会转为 8-bit，这两种格式无法存储 16 位）。
 
+相机 RAW 文件会以 16 位解码（采用相机白平衡与 sRGB 伽马），并关闭自动提亮，使栈中每一帧使用相同的曝光映射；逐帧自动曝光会导致帧间亮度闪烁。保存为 TIFF 或 PNG 即可保留 16 位数据。
+
 ### 清空图像栈
 
 点击 **文件 → 清空图像栈** 或按 `Ctrl+W` 移除所有已加载的图像。
@@ -395,6 +400,12 @@ OpenFocus 提供八种融合算法（外加"仅对齐"的配准模式），各�
 - **OpenFocus C**：拉普拉斯金字塔逐带混合——纹理题材观感自然，提升
   局部对比度
 - **参数**：方差窗口（kernel 滑块）；逆向实测对结果不敏感
+
+**深度过渡平滑（仅 OpenFocus B）**：OpenFocus B 的深度图决定每个像素取哪一帧。
+选择 B 后，kernel 滑块下方会出现「深度过渡平滑（σ）：」数值框（范围 0–8，
+步长 0.2，默认 1.2），用于设置帧间过渡的高斯 σ，即 OpenFocus B 深度图中帧间过渡的宽度。
+1.2 与 Helicon 一致；0 保留最细的细节；调大可压制噪声栈在深度跳变处的斑点与光晕。
+该值会在会话间记住，批处理同样使用。命令行参数为 `--depth-smoothing SIGMA`。
 
 ### 仅对齐（不融合）
 
@@ -693,6 +704,7 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--sort` | `openfocus_a/b/c` 的帧序：`asc`（默认，文件序）、`desc`（反转远→近扫描）、`off` |
 | `--dust-map WHITE` | 用失焦白场照片做平场（尘点图）校正 |
 | `--kernel, -k` | 核大小（自动取奇；openfocus 族为方差窗口半径来源） |
+| `--depth-smoothing SIGMA` | 仅 `openfocus_b`：帧间深度过渡的高斯 σ（默认 1.2；0 保留最细的细节） |
 | `--threads, -t` | 工作线程数（默认 4） |
 | `--batch-size` | StackMFF-V4 瓦片批大小（默认 2） |
 | `--cpu` | 即使有 GPU 也强制 CPU |

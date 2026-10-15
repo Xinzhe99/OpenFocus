@@ -26,6 +26,7 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --collect-all scipy `
   --copy-metadata imageio `
   --collect-data dtcwt `
+  --collect-all rawpy `
   --exclude-module torch `
   --exclude-module torchvision `
   main.py
@@ -55,6 +56,7 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --collect-all scipy `
   --copy-metadata imageio `
   --collect-data dtcwt `
+  --collect-all rawpy `
   --collect-all torch `
   --collect-all torchvision `
   main.py
@@ -82,6 +84,7 @@ pyinstaller --clean --noconfirm --onedir --noconsole `
   --collect-all scipy `
   --copy-metadata imageio `
   --collect-data dtcwt `
+  --collect-all rawpy `
   --collect-all torch `
   --collect-all torchvision `
   main.py
@@ -149,6 +152,7 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --collect-all scipy `
   --copy-metadata imageio `
   --collect-data dtcwt `
+  --collect-all rawpy `
   --collect-all torch `
   --collect-all torchvision `
   main.py
@@ -167,6 +171,7 @@ pyinstaller --clean --noconfirm --onedir --noconsole \
   --collect-all scipy \
   --copy-metadata imageio \
   --collect-data dtcwt \
+  --collect-all rawpy \
   --collect-all torch \
   --collect-all torchvision \
   --osx-bundle-identifier com.openfocus.app \
@@ -186,6 +191,7 @@ pyinstaller --clean --noconfirm --onedir --noconsole \
   --collect-all scipy \
   --copy-metadata imageio \
   --collect-data dtcwt \
+  --collect-all rawpy \
   --collect-all torch \
   --collect-all torchvision \
   main.py

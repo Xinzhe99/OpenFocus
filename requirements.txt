@@ -4,6 +4,7 @@ pyqt6
 numpy
 imageio
 pillow-heif
+rawpy
 dtcwt
 scipy
 torch

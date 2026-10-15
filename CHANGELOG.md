@@ -3,6 +3,24 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.54] — 2026-10-15
+
+### Added
+- **OpenFocus B depth smoothing**: a "Depth smoothing (σ)" control (0–8,
+  default 1.2, matching Helicon) sets the Gaussian sigma of the frame-to-frame
+  depth transition. Remembered across sessions, used by batch processing, and
+  exposed on the CLI as `--depth-smoothing SIGMA`.
+- **Camera RAW input**: RAW files (DNG, CR2/CR3, NEF, ARW, RAF and others) load
+  when the optional `rawpy` (LibRaw) package is present; pip users install it
+  with `pip install "openfocus[raw]"`. RAW is developed to 16-bit with
+  auto-brightening off, so every frame of a stack shares one exposure mapping
+  (per-frame auto exposure would flicker).
+
+### Fixed
+- The command line decoded images with a bare `cv2.imdecode`: no EXIF
+  orientation (CLI results could be rotated differently from the GUI), no HEIC.
+  It now shares the GUI's decoder.
+
 ## [v1.53] — 2026-10-15
 
 Follow-up polish to v1.52, found while verifying it on CI and in the light

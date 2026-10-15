@@ -152,8 +152,7 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
 
 
 def _load_images(paths: List[str]):
-    import cv2
-    from core.image_loader import _read_tiff_pages
+    from core.image_loader import _read_tiff_pages, decode_image
     images = []
     for p in paths:
         # A multi-page TIFF is a whole stack in one file
@@ -161,8 +160,9 @@ def _load_images(paths: List[str]):
         if pages is not None:
             images.extend(pages)
             continue
-        data = np.fromfile(p, dtype=np.uint8)
-        img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+        # Same decoder as the GUI: EXIF orientation, HEIC and camera RAW
+        # (the CLI used a bare cv2.imdecode and fused unrotated frames)
+        img = decode_image(p)
         if img is None:
             raise RuntimeError(f"Failed to decode image: {p}")
         images.append(img)

@@ -48,6 +48,10 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - Image files: JPG, PNG, BMP, TIFF, and other common formats
 - Video files: MP4 format (automatically decoded into image sequences)
 - Folders containing numbered image sequences
+- Camera RAW files (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2 and other common
+  RAW formats). Decoding needs the optional `rawpy` (LibRaw) package; the
+  Windows and macOS builds include it, and pip users can install it with
+  `pip install "openfocus[raw]"`
 
 ### Supported Output Formats
 
@@ -247,6 +251,11 @@ automatically during import, so portrait shots load upright.
 fusion runs at full depth and results can be saved back as 16-bit PNG/TIFF
 (JPG/BMP exports are converted to 8-bit, as those formats cannot store 16 bits).
 
+Camera RAW files are developed to 16-bit (camera white balance, sRGB gamma)
+with auto-brightening disabled, so every frame of a stack gets the same
+exposure mapping; per-frame auto exposure would make brightness flicker
+between frames. Save as TIFF or PNG to keep the 16-bit data.
+
 ### Clearing the Stack
 
 To remove all loaded images, go to **File → Clear Stack** or press `Ctrl+W`.
@@ -432,6 +441,14 @@ OpenFocus offers eight fusion algorithms (plus an alignment-only mode). Each has
   textured subjects, boosts local contrast
 - **Parameters**: Variance window (kernel slider); results are
   radius-insensitive per the reverse-engineering measurements
+
+**Depth smoothing (OpenFocus B only)**: B's depth map decides which frame
+wins each pixel. The *Depth smoothing (σ)* spin box, shown under the kernel
+slider when B is selected (range 0–8, step 0.2, default 1.2), sets the
+Gaussian sigma of the transition between frames. 1.2 matches Helicon Focus;
+0 keeps the finest detail; larger values calm speckles and halos at depth
+jumps on noisy stacks. The value is remembered across sessions and is also
+used by batch processing. CLI: `--depth-smoothing SIGMA`.
 
 ### Alignment only (no fusion)
 
@@ -766,6 +783,7 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |
 | `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
 | `--kernel, -k` | Kernel size (forced odd; for the openfocus family it is the source of the variance-window radius) |
+| `--depth-smoothing SIGMA` | `openfocus_b` only: Gaussian sigma of the frame-to-frame depth transition (default 1.2; 0 keeps the finest detail) |
 | `--threads, -t` | Worker thread count (default 4) |
 | `--batch-size` | AI tile batch size (default 2) |
 | `--cpu` | Force CPU even if a GPU is available |

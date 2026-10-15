@@ -56,6 +56,7 @@ jobs:
             --collect-all scipy `
             --copy-metadata imageio `
             --collect-data dtcwt `
+            --collect-all rawpy `
             --collect-all torch `
             --collect-all torchvision `
             main.py
@@ -138,6 +139,7 @@ jobs:
             --collect-all scipy \
             --copy-metadata imageio \
             --collect-data dtcwt \
+            --collect-all rawpy \
             --collect-all torch \
             --collect-all torchvision \
             main.py
