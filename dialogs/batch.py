@@ -107,7 +107,7 @@ class BatchProcessingDialog(QDialog):
 
         # 显示选取的文件夹路径
         self.single_folder_path_label = QLabel(trans.t('batch_folder_none'))
-        self.single_folder_path_label.setStyleSheet("color: #aaa; font-size: 12px;")
+        self.single_folder_path_label.setObjectName("mutedLabel")
         self.single_folder_path_label.setWordWrap(True)
         single_folder_layout.addWidget(self.single_folder_path_label)
 
@@ -127,7 +127,7 @@ class BatchProcessingDialog(QDialog):
         self.param_spinbox = QSpinBox()
         self.param_spinbox.setRange(2, 1000)
         self.param_spinbox.setValue(5)
-        self.param_spinbox.setStyleSheet("background-color: #fff; color: #000;")
+        
         self.param_spinbox.valueChanged.connect(self.update_single_folder_preview)
         param_layout.addWidget(self.param_spinbox)
 
@@ -137,7 +137,7 @@ class BatchProcessingDialog(QDialog):
         single_folder_layout.addLayout(param_layout)
 
         self.preview_label = QLabel(trans.t('batch_preview_default'))
-        self.preview_label.setStyleSheet("color: #aaa; font-size: 12px;")
+        self.preview_label.setObjectName("mutedLabel")
         single_folder_layout.addWidget(self.preview_label)
 
         add_single_folder_btn = QPushButton(trans.t('batch_btn_select_split'))
@@ -862,17 +862,17 @@ class FolderImportDialog(QDialog):
 
         folder_name = os.path.basename(folder_path)
         folder_display = QLabel(trans.t('import_folder_display').format(folder_name))
-        folder_display.setStyleSheet("font-size: 14px;")
+        
         layout.addWidget(folder_display)
 
         path_label = QLabel(folder_path)
-        path_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        path_label.setObjectName("mutedLabel")
         layout.addWidget(path_label)
 
         layout.addSpacing(20)
 
         option_label = QLabel(trans.t('import_choice_label'))
-        option_label.setStyleSheet("font-size: 13px;")
+        
         layout.addWidget(option_label)
 
         self.rb_single = QRadioButton(trans.t('import_option_single'))

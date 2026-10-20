@@ -209,7 +209,7 @@ class RetouchDialog(QDialog):
 
         keys = QLabel(trans.t("retouch_keys"))
         keys.setWordWrap(True)
-        keys.setStyleSheet("color: #8a8a8a; font-size: 11px;")
+        keys.setObjectName("mutedLabel")
         col.addSpacing(6)
         col.addWidget(keys)
         col.addStretch()
@@ -239,14 +239,8 @@ class RetouchDialog(QDialog):
         self._update_buttons()
 
     def _apply_style(self):
-        try:
-            if self.window_main and getattr(self.window_main, "ui_theme", "dark") != "light":
-                from ui.styles import DIALOG_CONTROL_DARK_QSS
-                self.setStyleSheet(
-                    "QDialog { background: #2b2b2b; } QLabel { color: #d0d0d0; }"
-                    + DIALOG_CONTROL_DARK_QSS)
-        except Exception:
-            pass
+        """Styling comes from the generated application stylesheet."""
+        self.setStyleSheet("")
 
     # ------------------------------------------------------------- state
     def brush_radius(self):

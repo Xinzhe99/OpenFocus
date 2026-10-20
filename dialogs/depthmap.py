@@ -274,8 +274,14 @@ class DepthMapDialog(QDialog):
         self.preview_lbl = QLabel(trans.t("depth_no_map_yet"))
         self.preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_lbl.setMinimumSize(420, 320)
+        # Preview placeholder follows the palette instead of a fixed near-black.
+        from ui.styles import CURRENT_THEME
+        from utils.design_tokens import palette
+        _p = palette(CURRENT_THEME)
         self.preview_lbl.setStyleSheet(
-            "background: #161616; border: 1px solid #444; color: #888;")
+            f"background: {_p['surfaceSunken']};"
+            f" border: 1px solid {_p['border']};"
+            f" color: {_p['textMuted']};")
         pvlay.addWidget(self.preview_lbl, 1)
         self.legend = _GradientBar()
         pvlay.addWidget(self.legend)
@@ -297,10 +303,11 @@ class DepthMapDialog(QDialog):
         # kernel 含义随方法不同（与主面板滑块同源语义）——只读说明行
         self.lbl_kernel_info = QLabel("")
         # Muted but readable: #999 on white is ~2.8:1, below the 4.5:1 needed
-        # for body text. #57606a is the palette's own secondary colour.
+        # Muted but readable: uses the palette's secondary text colour.
+        from ui.styles import CURRENT_THEME
+        from utils.design_tokens import palette
         self.lbl_kernel_info.setStyleSheet(
-            "color: #57606a;" if getattr(self.parent(), "ui_theme", "dark") == "light"
-            else "color: #9aa4ae;")
+            f"color: {palette(CURRENT_THEME)['textMuted']};")
         form.addRow("", self.lbl_kernel_info)
         self._update_kernel_info()
 

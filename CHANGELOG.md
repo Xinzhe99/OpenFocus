@@ -3,6 +3,22 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.63] — 2026-10-21
+
+Finishes the design-system migration: no widget paints its own palette any
+more.
+
+### Changed
+- **Every remaining per-dialog stylesheet is gone** — about, contact, help,
+  welcome, dust-map, retouch and the update-notes dialog now inherit the
+  generated application sheet.
+- **Hand-painted widgets read the palette**: the depth-map gradient strip,
+  its preview placeholder, the sharpness curve and the update banner no
+  longer carry literal colours, so they follow the theme like everything
+  else.
+- Hard-coded colour literals in UI code dropped from 80 to 7 (all inside the
+  token file itself).
+
 ## [v1.62] — 2026-10-21
 
 A ground-up rewrite of the visual layer: one design system, one stylesheet

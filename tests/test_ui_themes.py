@@ -53,8 +53,9 @@ def test_help_button_style_is_theme_aware():
 
 def test_dustmap_preview_follows_the_theme():
     src = _source("dialogs/dustmap.py")
-    assert "#f6f8fa" in src, "light theme needs a light preview card"
-    assert "ui_theme" in src
+    assert "palette(CURRENT_THEME)" in src, (
+        "the preview card must take its colours from the palette")
+    assert "surfaceSunken" in src
 
 
 def test_spin_boxes_reserve_room_for_their_buttons():

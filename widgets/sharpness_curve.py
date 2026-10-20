@@ -82,7 +82,10 @@ class SharpnessCurveWidget(QWidget):
             light = foreground.lightness() < 128
 
         if light:
-            return QColor("#0969da"), QColor("#c8cfd6"), QColor("#57606a"), QColor("#d1242f")
+            from utils.design_tokens import palette
+            p = palette(theme)
+            return (QColor(p["accent"]), QColor(p["borderStrong"]),
+                    QColor(p["textMuted"]), QColor(p["danger"]))
         return QColor("#4da3ff"), QColor("#6b6b6b"), QColor("#c9d1d9"), QColor("#ff6a6a")
 
     def paintEvent(self, event) -> None:  # noqa: N802

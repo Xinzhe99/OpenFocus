@@ -565,10 +565,10 @@ class TestStartupUpdateBanner:
         assert host.update_banner.isVisible() is True
 
     def test_banner_survives_a_theme_switch(self, qapp):
-        """The light theme strips inline dark stylesheets; the banner must be
-        re-coloured afterwards or it renders as an unstyled white strip."""
+        """The banner paints its own strip, so it must re-colour per theme."""
+        from utils.design_tokens import palette
         host = self._host(qapp)
         host.update_banner.apply_theme("light")
-        assert "#eaf1fb" in host.update_banner.styleSheet()
+        assert palette("light")["accentSoft"] in host.update_banner.styleSheet()
         host.update_banner.apply_theme("dark")
-        assert "#26364d" in host.update_banner.styleSheet()
+        assert palette("dark")["accentSoft"] in host.update_banner.styleSheet()

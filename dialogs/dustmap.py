@@ -110,10 +110,11 @@ class DustMapDialog(QDialog):
         self.lbl_gain.setMinimumSize(340, 220)
         # Preview placeholders follow the theme: a hard-coded near-black
         # card sat inside the white dialog as three black blocks.
-        _pv_bg, _pv_border, _pv_fg = (
-            ("#f6f8fa", "#d0d7de", "#57606a")
-            if getattr(self.window_main, "ui_theme", "dark") == "light"
-            else ("#161616", "#444", "#888"))
+        from ui.styles import CURRENT_THEME
+        from utils.design_tokens import palette
+        _p = palette(CURRENT_THEME)
+        _pv_bg, _pv_border, _pv_fg = (_p["surfaceSunken"], _p["border"],
+                                      _p["textMuted"])
         self.lbl_gain.setStyleSheet(
             f"background:{_pv_bg};border:1px solid {_pv_border};color:{_pv_fg};")
         grid.addWidget(self.lbl_gain)
@@ -150,14 +151,8 @@ class DustMapDialog(QDialog):
         self._fill_stack_combo()
 
     def _apply_style(self):
-        try:
-            if self.window_main and getattr(self.window_main, "ui_theme", "dark") != "light":
-                from ui.styles import DIALOG_CONTROL_DARK_QSS
-                self.setStyleSheet(
-                    "QDialog { background: #2b2b2b; border: 1px solid #444; }"
-                    "QLabel { color: #d0d0d0; }" + DIALOG_CONTROL_DARK_QSS)
-        except Exception:
-            pass
+        """Styling comes from the generated application stylesheet."""
+        self.setStyleSheet("")
 
     # ------------------------------------------------------------ logic
     def _fill_stack_combo(self):

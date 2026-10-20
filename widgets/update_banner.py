@@ -83,30 +83,21 @@ class UpdateBanner(QWidget):
         out (a white strip with no accent). main.apply_theme calls this after
         its own pass so the correct palette is always the last word.
         """
+        from utils.design_tokens import palette
         self._theme = "light" if theme == "light" else "dark"
-        close_rule = (
-            " QPushButton#updateBannerClose { background: transparent;"
-            " border: none; font-size: 15px; padding: 0; color: %s; }"
-            " QPushButton#updateBannerClose:hover { background: %s;"
-            " border-radius: 11px; }"
-        ) % (("#1f2328", "#dfe4ea") if self._theme == "light"
-             else ("#c8d4e4", "rgba(255,255,255,40)"))
-        if self._theme == "light":
-            self.setStyleSheet(
-                "QWidget#updateBanner { background-color: #eaf1fb;"
-                " border-bottom: 1px solid #b9cdec; }"
-                " QLabel#updateBannerText { color: #1f2328; background: transparent; }"
-                " QLabel#updateBannerHint { color: #57606a; background: transparent; }"
-                + close_rule
-            )
-        else:
-            self.setStyleSheet(
-                "QWidget#updateBanner { background-color: #26364d;"
-                " border-bottom: 1px solid #3d6dda; }"
-                " QLabel#updateBannerText { color: #e8eef8; background: transparent; }"
-                " QLabel#updateBannerHint { color: #9fb3cc; background: transparent; }"
-                + close_rule
-            )
+        p = palette(self._theme)
+        self.setStyleSheet(
+            f"QWidget#updateBanner {{ background-color: {p['accentSoft']};"
+            f" border-bottom: 1px solid {p['accentSoftText']}; }}"
+            f" QLabel#updateBannerText {{ color: {p['text']};"
+            " background: transparent; }"
+            f" QLabel#updateBannerHint {{ color: {p['textMuted']};"
+            " background: transparent; }"
+            f" QPushButton#updateBannerClose {{ background: transparent;"
+            f" border: none; font-size: 15px; padding: 0; color: {p['text']}; }}"
+            f" QPushButton#updateBannerClose:hover {{"
+            f" background: {p['surfaceActive']}; border-radius: 11px; }}"
+        )
 
     # ------------------------------------------------------------------ state
 

@@ -17,10 +17,9 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **v1.62** — the visual layer was rewritten around a design system: one
-> token file (colour, spacing, radius, type), one stylesheet generator, and no
-> per-dialog palettes. Light and dark are now one code path; panels are
-> card-based with a clear primary action.
+> **v1.63** — design-system migration complete: no widget paints its own
+> palette any more. Every dialog, hand-painted widget and banner reads the
+> shared tokens, so light and dark are one code path end to end.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 

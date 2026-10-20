@@ -895,14 +895,7 @@ class OpenFocus(QMainWindow):
         # Same theme rule as the other dialogs (light strips the dark inline
         # style, dark adds the control QSS); style_message_box only accepts a
         # QMessageBox and raises on a plain QDialog.
-        if getattr(self, "ui_theme", "dark") == "light":
-            dialog.setStyleSheet(
-                "QDialog { background-color: #ffffff; } QLabel { color: #1f2328; }")
-        else:
-            from ui.styles import DIALOG_CONTROL_DARK_QSS
-            dialog.setStyleSheet(
-                "QDialog { background-color: #2b2b2b; border: 1px solid #444; }"
-                "QLabel { color: #d0d0d0; }" + DIALOG_CONTROL_DARK_QSS)
+        # Styling comes from the generated application stylesheet.
         layout = QVBoxLayout(dialog)
         view = QTextBrowser(dialog)
         view.setPlainText(notes)
