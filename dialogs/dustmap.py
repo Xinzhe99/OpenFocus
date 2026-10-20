@@ -16,12 +16,12 @@ import numpy as np
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel,
-    QPushButton, QRadioButton, QVBoxLayout,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QHBoxLayout,
+    QLabel, QPushButton, QRadioButton, QVBoxLayout,
 )
 
 from locales import trans
-from utils.dust_map import compute_flat_field, apply_flat_field
+from utils.dust_map import DEFAULT_SIGMA, compute_flat_field, apply_flat_field
 
 
 def _to_pixmap(img, width=340):
@@ -78,6 +78,24 @@ class DustMapDialog(QDialog):
         self.combo_stack.setEnabled(False)
         stack_row.addWidget(self.combo_stack, 1)
         lay.addLayout(stack_row)
+
+        # 尘点尺度：增益场的提取半径。太小会把白场噪声当成尘点，太大
+        # 会把尘点一起抹平（σ=32 时只能去掉约 9% 的尘点对比度）。
+        size_row = QHBoxLayout()
+        self.lbl_size = QLabel(trans.t("dust_size"))
+        self.lbl_size.setToolTip(trans.t("dust_size_hint"))
+        size_row.addWidget(self.lbl_size)
+        self.spin_sigma = QDoubleSpinBox()
+        self.spin_sigma.setRange(1.0, 40.0)
+        self.spin_sigma.setSingleStep(1.0)
+        self.spin_sigma.setDecimals(1)
+        self.spin_sigma.setValue(DEFAULT_SIGMA)
+        self.spin_sigma.setFixedWidth(80)
+        self.spin_sigma.setToolTip(trans.t("dust_size_hint"))
+        self.spin_sigma.valueChanged.connect(self._sigma_changed)
+        size_row.addStretch()
+        size_row.addWidget(self.spin_sigma)
+        lay.addLayout(size_row)
 
         self.chk_remove = QCheckBox(trans.t("dust_remove_hint"))
         lay.addWidget(self.chk_remove)
@@ -148,6 +166,11 @@ class DustMapDialog(QDialog):
         self.lbl_path.setEnabled(from_file)
         self.combo_stack.setEnabled(not from_file)
 
+    def _sigma_changed(self, _value=None):
+        """Recompute the field for the new scale (only if a white field exists)."""
+        if self._white is not None:
+            self._compute()
+
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
             self, trans.t("dust_browse"), "",
@@ -192,7 +215,8 @@ class DustMapDialog(QDialog):
             return
         self.lbl_status.setText("")
         try:
-            self._gain = compute_flat_field(white)
+            self._gain = compute_flat_field(
+                white, sigma=float(self.spin_sigma.value()))
         except ValueError as exc:
             # The library raises English diagnostics; the user sees a
             # localized one and the detail goes to the log.

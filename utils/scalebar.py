@@ -231,7 +231,12 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     margin = min(margin, max(1, h // 4), max(1, w // 4))
     bar_px = min(bar_px, max(4, w - 2 * margin))
     thickness = min(thickness, max(1, h // 3))
-    font_size = max(14, int(round(h * 0.022)))
+    # Font size must leave room for the bar + gap + label inside the frame.
+    # A hard floor of 14 px made the label taller than a 60 px frame, so it
+    # landed on the bar; shrink instead (never below 8 px, where a real font
+    # stops being legible and the cv2 fallback takes over).
+    font_size = max(8, min(int(round(h * 0.022)),
+                           int((h - 2 * margin - thickness) / 2.6)))
 
     font = _load_font(font_size)
     label = format_length(bar_um)
@@ -249,7 +254,12 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
             label, cv2.FONT_HERSHEY_SIMPLEX, font_size / 30.0,
             max(1, font_size // 14))
 
-    gap = max(3, font_size // 6)
+    # Gap between the label and the bar. PIL's getbbox() ignores the stroke
+    # it draws around the glyphs, so a gap of a few pixels let the label sit
+    # directly on the bar (measured: text bottom row 186, bar row 187 — they
+    # touched on a 200 px-tall frame). The gap now includes the stroke.
+    stroke_w = max(1, font_size // 14)
+    gap = max(4, font_size // 3) + stroke_w
     stroke = 1 if thickness <= 3 else 2
 
     # Horizontal placement
@@ -261,15 +271,20 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
         bar_x1 = margin
         bar_x2 = bar_x1 + bar_px
         text_x = bar_x1
-    # Vertical placement (text sits beside the bar, away from the edge)
+    # Vertical placement: the label always sits ABOVE the bar, in all four
+    # corners. "Above" is the only arrangement that keeps the two from
+    # touching when the label is wider than the bar or the frame is short.
     if position.startswith("bottom"):
         bar_y2 = h - margin
         bar_y1 = bar_y2 - thickness
         text_y = bar_y1 - gap - text_h
-        if text_y < margin:  # tight frame: drop the text inside the bar zone
-            text_y = bar_y1 - text_h - 2
-            bar_y2 = h - margin
-            bar_y1 = max(margin, bar_y2 - thickness)
+        if text_y < 0:
+            # Not enough room above: push the whole motif down as far as it
+            # goes rather than letting the label slide onto the bar.
+            shift = -text_y
+            text_y = 0
+            bar_y1 += shift
+            bar_y2 = min(h - 1, bar_y2 + shift)
     else:
         bar_y1 = margin
         bar_y2 = bar_y1 + thickness
@@ -293,16 +308,21 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
                     bar_x2 + stroke, bar_y2 + stroke), fill=edge_rgb)
     draw.rectangle((bar_x1, bar_y1, bar_x2, bar_y2), fill=bar_rgb)
 
+    # Keep the label inside the canvas: PIL clips silently, but a label cut
+    # in half is worse than a nudged one.
+    text_x = max(0, min(int(text_x), max(0, w - text_w - 1)))
+    text_y = max(0, min(int(text_y), max(0, h - text_h - 1)))
+
     if font is not None:
         draw.text((text_x, text_y), label, font=font, fill=bar_rgb,
-                  stroke_width=max(1, font_size // 14), stroke_fill=edge_rgb)
+                  stroke_width=stroke_w, stroke_fill=edge_rgb)
         out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
         return out
 
     out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
     cv2.putText(out, label, (text_x, text_y + text_h),
                 cv2.FONT_HERSHEY_SIMPLEX, font_size / 30.0, bar_rgb,
-                max(1, font_size // 14), cv2.LINE_AA)
+                stroke_w, cv2.LINE_AA)
     return out
 
 

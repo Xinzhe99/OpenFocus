@@ -694,11 +694,15 @@ class BatchProcessingDialog(QDialog):
             if fusion_method in ("guided_filter", "dct", "gfgfgf",
                                  "openfocus_a", "openfocus_b", "openfocus_c"):
                 fusion_params["kernel_size"] = _sanitized_kernel_value()
+            _get = getattr(self.parent_window, "brightness_option_for", None)
             fusion_params["base_frame"] = (
-                "last" if getattr(self.parent_window,
-                                  "base_frame_correct", False) else "none")
-            fusion_params["exposure_match"] = bool(getattr(
-                self.parent_window, "exposure_match", True))
+                "last" if (_get("base_correct", fusion_method) if callable(_get)
+                           else getattr(self.parent_window,
+                                        "base_frame_correct", False))
+                else "none")
+            fusion_params["exposure_match"] = bool(
+                _get("exposure_match", fusion_method) if callable(_get)
+                else getattr(self.parent_window, "exposure_match", True))
             fusion_params["depth_smoothing"] = getattr(
                 self.parent_window, "ofb_depth_smoothing", None)
             # Per-method sigma, same rule as the single render path.
