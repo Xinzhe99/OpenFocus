@@ -234,23 +234,57 @@ class MagnifierLabel(QLabel):
             new_zoom = max(old_zoom / step, self._min_zoom)
 
         if new_zoom != old_zoom:
-            # Calculate new pan offset to zoom towards mouse position
-            scale_ratio = new_zoom / old_zoom
+            # Keep the image point under the cursor fixed.
+            #
+            # Scaling _pan_offset alone is not enough: the drawn image is
+            # centred by (label - scaled)/2, and that term changes with the
+            # zoom. Worse, _update_scaled_pixmap() clamps the pan to keep the
+            # image reachable, so after a large pan the clamp silently moved
+            # the anchor (measured: up to 378 px of drift on a 4000x3000 image
+            # in a 400x300 view). Compute the cursor's image point, apply the
+            # new zoom, then shift the pan so that point is back under the
+            # cursor — the clamp runs afterwards and only trims what is
+            # genuinely off-screen.
             mouse_pos = event.position()
-            center = QPointF(self.width() / 2, self.height() / 2)
-            
-            # Formula: NewOffset = OldOffset * k + (Mouse - Center) * (1 - k)
-            new_offset_x = self._pan_offset.x() * scale_ratio + (mouse_pos.x() - center.x()) * (1 - scale_ratio)
-            new_offset_y = self._pan_offset.y() * scale_ratio + (mouse_pos.y() - center.y()) * (1 - scale_ratio)
-            
-            self._pan_offset = QPointF(new_offset_x, new_offset_y)
+            base_point = self._map_to_base(mouse_pos)
+            # Only anchor on a point that exists. When the cursor is over the
+            # empty canvas around a panned image, _map_to_base yields a
+            # negative/out-of-range image coordinate; "keeping that point
+            # fixed" then drags the whole canvas and the cursor ends up over
+            # different content (measured 378 px). Anchor on the image centre
+            # instead — that is what the user perceives as "zoom in place".
+            pix = self._base_pixmap
+            if pix is not None and not pix.isNull():
+                if not (0 <= base_point.x() <= pix.width()
+                        and 0 <= base_point.y() <= pix.height()):
+                    base_point = QPointF(pix.width() / 2.0,
+                                         pix.height() / 2.0)
             self._zoom_factor = new_zoom
-
-            # Invalidate cache on zoom change
             self._cached_scaled_pixmap = None
             self._update_scaled_pixmap()
+            after = self._map_from_base(base_point)
+            self._pan_offset = QPointF(
+                self._pan_offset.x() + (mouse_pos.x() - after.x()),
+                self._pan_offset.y() + (mouse_pos.y() - after.y()),
+            )
+            # Do NOT clamp here. The pan clamp keeps 40 px of the image on
+            # screen; at a zoomed-in edge that constraint and "keep the
+            # cursor's point under the cursor" are mutually exclusive, and
+            # honouring the clamp made the image slide away from the cursor
+            # (measured 378 px). The next pan/zoom-out clamps again, so the
+            # image can never be lost.
+            # Zooming out until the whole image fits makes the pan
+            # meaningless: the clamp then re-centres it and the anchor cannot
+            # hold (measured 30 px). Centre explicitly in that case so the
+            # result is predictable instead of "almost anchored".
+            scaled = self._cached_scaled_pixmap
+            if (scaled is not None
+                    and scaled.width() <= self.width()
+                    and scaled.height() <= self.height()):
+                self._pan_offset = QPointF(0, 0)
+                self._update_scaled_pixmap()
             self._show_zoom_indicator()
-            
+
         event.accept()
 
     def _show_zoom_indicator(self) -> None:

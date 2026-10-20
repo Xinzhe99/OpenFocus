@@ -3,6 +3,54 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.60] — 2026-10-20
+
+Zoom, batch-dialog theming, brightness options and dust-map correctness.
+
+### Fixed
+- **Zoom no longer jumps away from the cursor after panning.** The wheel
+  handler scaled the pan offset alone, but the drawn image is also centred
+  by (view − scaled)/2, which changes with the zoom; the pan clamp then
+  moved the anchor further. Measured drift before the fix: up to 378 px on a
+  4000×3000 image in a 400×300 view. The same correction was applied to the
+  wipe-compare view (up to 13% of the image width when zooming out). With the
+  cursor over empty canvas the zoom anchors on the image centre, and zooming
+  out until the image fits re-centres predictably.
+- **File dialogs were unreadable in dark mode.** The batch dialog's
+  multi-folder picker is a non-native `QFileDialog`, whose `QTreeView` had no
+  background rule while the global `QWidget` colour applied — light text on a
+  light list. `QAbstractItemView`/`QHeaderView` are now themed in both modes.
+- **Dust-map correction barely removed dust.** The gain field was extracted
+  with a 32 px low-pass (borrowed from the base-correction scale), which
+  blurred the specks away: measured against a synthetic dust disc it removed
+  only ~9% of the dust contrast. The default is now 4 px (~98%), and the
+  scale is exposed as *Dust size (σ)* so large soft blobs or heavy vignetting
+  can be handled.
+- **Scale-bar label could touch the bar** in the left corners (measured 1 px
+  apart on a 200 px-tall frame). The label now always sits above the bar in
+  all four corners with a gap that includes the glyph stroke, and the font
+  shrinks on very short frames instead of overflowing.
+- **Scale-bar pixel size had a fixed 4-decimal/0–1000 spinner**: it rounded a
+  0.00005 µm/px calibration to 0.00 on entry and showed three pointless
+  decimals for "50". Precision now follows the value's magnitude.
+- **Dust-map and retouch dialogs read a non-existent `current_theme`**, so in
+  light mode they applied the dark stylesheet; environment/contact/help
+  dialogs hard-coded a dark palette. All follow the window theme.
+- **Dust-map source radios overlapped**, and the scale-bar preview fell back
+  to random noise when no image was loaded.
+
+### Changed
+- **The two brightness options are per fusion method.** *Match exposure
+  before fusion* and *Remove brightness drift* now have their own value for
+  each method, shown when that method is selected. Both default to on for
+  OpenFocus A/B/C (they have no built-in exposure calibration — the previous
+  hint claimed they did); the other methods keep the historical defaults.
+- **The option row is two columns** instead of a 2+1+1 stack that left the
+  right half empty.
+- **Project files behave like a document**: the title bar marks unsaved
+  changes with `*`, and closing the app or opening another project asks
+  before discarding them.
+
 ## [v1.59] — 2026-10-20
 
 Startup visibility, OpenFocus parameter parity and a UI pass.

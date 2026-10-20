@@ -154,15 +154,29 @@ class WipeCompareWidget(QWidget):
         factor = ZOOM_STEP if delta > 0 else 1.0 / ZOOM_STEP
         new_zoom = max(ZOOM_MIN, min(ZOOM_MAX, self._zoom * factor))
 
-        # Zoom around the mouse cursor: keep the point under it stationary
+        # Zoom around the mouse cursor: keep the image point under it fixed.
+        #
+        # Scaling _pan by the zoom ratio is not sufficient, because the
+        # drawn rect is also centred by (widget - scaled)/2, which changes
+        # with the zoom. Compute the fraction under the cursor, apply the
+        # zoom, then shift the pan until that fraction is back under the
+        # cursor (measured up to 13% of the image width of drift otherwise
+        # when zooming out).
         mouse = QPointF(event.position())
-        center = QPointF(self.width() / 2.0, self.height() / 2.0)
-        keep = new_zoom / self._zoom  # how much of the old pan survives
-        self._pan = QPointF(
-            self._pan.x() * keep + (mouse.x() - center.x()) * (1 - keep),
-            self._pan.y() * keep + (mouse.y() - center.y()) * (1 - keep),
-        )
+        before = self._target_rect()
+        if before.width() > 0 and before.height() > 0:
+            fx = (mouse.x() - before.x()) / before.width()
+            fy = (mouse.y() - before.y()) / before.height()
+            anchored = 0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0
+        else:
+            anchored = False
         self._zoom = new_zoom
+        if anchored:
+            after = self._target_rect()
+            self._pan = QPointF(
+                self._pan.x() + (mouse.x() - (after.x() + fx * after.width())),
+                self._pan.y() + (mouse.y() - (after.y() + fy * after.height())),
+            )
         self.update()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802

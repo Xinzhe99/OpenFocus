@@ -34,12 +34,26 @@ class ScaleBarDialog(QDialog):
         layout.addWidget(self.enable_chk)
 
         form = QFormLayout()
+        # µm/px spans several orders of magnitude in practice: 0.0001 for an
+        # electron micrograph, 1-10 for light microscopy, up to ~1000 for a
+        # macro/landscape shot (1 mm per pixel). A fixed 4-decimals/0-1000
+        # spinner is wrong at both ends: it cannot express 0.00005 µm/px and
+        # wastes three decimals on "50". The range is fixed to the physical
+        # span and the decimals follow the value's magnitude.
         self.px_spin = QDoubleSpinBox()
-        self.px_spin.setDecimals(4)
         self.px_spin.setRange(0.0, 1000.0)
+        self.px_spin.setDecimals(4)
         self.px_spin.setSingleStep(0.01)
-        self.px_spin.setValue(float(getattr(parent, "scale_um_per_px_manual", 0.0) or 0.0))
+        self.px_spin.setValue(
+            float(getattr(parent, "scale_um_per_px_manual", 0.0) or 0.0))
         self.px_spin.setToolTip(trans.t("scalebar_manual_hint"))
+        # Adapt BEFORE the first setValue: at the default 2 decimals a
+        # 0.00005 µm/px calibration was rounded to 0.00 on entry.
+        self._adapt_px_decimals(
+            float(getattr(parent, "scale_um_per_px_manual", 0.0) or 0.0))
+        self.px_spin.setValue(
+            float(getattr(parent, "scale_um_per_px_manual", 0.0) or 0.0))
+        self.px_spin.valueChanged.connect(self._adapt_px_decimals)
         form.addRow(trans.t("scalebar_px_um"), self.px_spin)
 
         detected = getattr(parent, "source_px_um", None)
@@ -95,6 +109,25 @@ class ScaleBarDialog(QDialog):
                        self.color_combo.currentIndexChanged):
             signal.connect(self._refresh_preview)
         self._refresh_preview()
+
+    def _adapt_px_decimals(self, value: float) -> None:
+        """Show enough decimals for sub-micron calibration, not more.
+
+        0.0001 µm/px needs 4-5 decimals to stay editable; 50 µm/px needs one.
+        Changing the decimals mid-edit would move the caret, so the step is
+        derived from the current magnitude instead.
+        """
+        value = abs(float(value or 0.0))
+        if value == 0.0 or value >= 10:
+            decimals, step = 2, 0.1
+        elif value >= 1:
+            decimals, step = 3, 0.01
+        elif value >= 0.01:
+            decimals, step = 4, 0.001
+        else:
+            decimals, step = 6, 0.0001
+        self.px_spin.setDecimals(decimals)
+        self.px_spin.setSingleStep(step)
 
     def _apply_style(self):
         parent = self.parent()

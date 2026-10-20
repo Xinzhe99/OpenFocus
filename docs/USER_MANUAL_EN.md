@@ -466,6 +466,14 @@ slider is hidden for C instead of silently doing nothing.
 
 CLI: `--depth-smoothing SIGMA` (B) and `--blend-smoothing SIGMA` (A, C).
 
+**Brightness options are per method.** *Match exposure before fusion* and
+*Remove brightness drift* are remembered separately for each fusion method,
+because they answer a per-stack question rather than a global preference.
+Both default to on for OpenFocus A/B/C (which have no built-in exposure
+calibration); the other methods keep the historical defaults (exposure
+matching on, drift removal off). Switching methods shows that method's own
+values.
+
 ### Alignment only (no fusion)
 
 Select **Alignment only (no fusion)** as the method to register the stack
@@ -665,6 +673,12 @@ iPhone photos load directly. Requires the optional `pillow-heif` package
 (`pip install pillow-heif`; included in the packaged builds).
 
 ### Updates
+
+Project files (`.ofproj`) behave like a document: the title bar shows the
+project name with a `*` while there are unsaved changes, and closing the app
+or opening another project asks before discarding them. The project stores
+the frame list, load scale, every rendering option, labels and the current
+frame — the images themselves are referenced, not copied.
 
 Help → Check for Updates compares your version against GitHub Releases.
 **Download and Install** fetches the new installer in-app (with progress)

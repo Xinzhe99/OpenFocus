@@ -247,6 +247,15 @@ class RenderManager:
         except Exception:
             pass
 
+        def _brightness(win, option, method):
+            """Per-method brightness option (duck-typed hosts may not have it)."""
+            getter = getattr(win, "brightness_option_for", None)
+            if callable(getter):
+                return bool(getter(option, method))
+            return bool(getattr(win, "exposure_match", True)) if option == (
+                "exposure_match") else bool(
+                    getattr(win, "base_frame_correct", False))
+
         fusion_method = window.current_fusion_method()
         alignment_method = window.current_alignment_method()
         need_align_homography = alignment_method == "homography"
@@ -425,8 +434,8 @@ class RenderManager:
             rb_ofa_checked=fusion_method == "openfocus_a",
             rb_ofb_checked=fusion_method == "openfocus_b",
             rb_ofc_checked=fusion_method == "openfocus_c",
-            base_frame="last" if getattr(window, "base_frame_correct", False)
-                else "none",
+            base_frame="last" if _brightness(window, "base_correct",
+                                             fusion_method) else "none",
             sort_mode="desc" if getattr(window, "stack_reverse_order", False)
                 else "asc",
             depth_smoothing=getattr(window, "ofb_depth_smoothing", None),
@@ -438,7 +447,7 @@ class RenderManager:
                 window.smoothing_for_method(fusion_method)
                 if callable(getattr(window, "smoothing_for_method", None))
                 else getattr(window, "of_blend_smoothing", None)),
-            exposure_match=bool(getattr(window, "exposure_match", True)),
+            exposure_match=_brightness(window, "exposure_match", fusion_method),
         )
 
         self._progress_first_t = None

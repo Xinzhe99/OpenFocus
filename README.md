@@ -17,23 +17,11 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **2026.10.20 · v1.59 — update banner, A/C smoothing, UI pass.** A startup check now raises an in-window banner when a release is found (Update now / What's new / dismiss for that version only). OpenFocus A and C gained the Smoothing control their implementations had hard-coded (Helicon exposes it as the primary parameter for those methods), OpenFocus alignment gained rotation and magnification tolerance, and C no longer shows a radius slider that did nothing. Plus a UI pass: truncated method dropdowns, a clipped radius value, theme detection in the dust-map/retouch dialogs, hard-coded dark palettes in the help dialogs, and overlapping radios.
+> **v1.60** — zoom stays anchored under the cursor after panning; readable
+> file dialogs in dark mode; dust-map correction actually removes dust;
+> per-method brightness options; unsaved-project warnings.
 
-> **2026.10.20 · v1.58 — alignment correctness.** The OpenFocus aligner measured translation with a phase-correlation peak that collapses when the two frames differ in focus — the normal case in a focus stack. A true 16 px shift was read as 145 px, so frames were dropped as "over the shift limit" or moved to the wrong offset. Translation now comes from NCC template matching on plain grayscale (15.93 px on the same pair, within ~0.3 px from σ3 to σ11 of defocus — the old high-pass input was 22 px off at σ11), the anchor frame is exposure-calibrated like every other frame, `--align-shift-limit` above ~15% is honoured, and flat frames no longer report a false corner match.
-
-> **2026.10.20 · v1.57 — exposure matching + A/B/C parity.** New **Match exposure before fusion** switch (`--exposure-match`, on by default): every frame is scaled to the last frame's mean before the focus measure, for all eight fusion methods, with gains computed on the whole stack so tiled output stays seamless. The OpenFocus A/B/C family was brought substantially in line with the A/B/C methods in Helicon Focus — per-frame exposure calibration, `base_frame` as an independent optional post-step, one kernel default, and natural folder ordering. Behavioral parity only; no code or binaries from that product are included. Existing golden baselines opt out explicitly to keep their pinned outputs.
-
-> **2026.10.18 · v1.56 — correctness pass.** EXIF-rotated photos now load upright and export with a neutral orientation tag; mixed 8/16-bit stacks fuse correctly; folder frames sort naturally (`img2` before `img10`); DCT keeps the input size and DTCWT no longer tiles (and seams) just because an image is large; depth maps follow the same frame order/alignment as the render; Japanese/Spanish survive a restart; WebP input and drag-export work.
-
-> **2026.10.15 · v1.54–v1.55** — **3D model export** (depth map + fused image as a textured OBJ for Blender/MeshLab), **camera RAW input** (DNG, CR2/CR3, NEF, ARW, RAF, … developed to 16-bit with one exposure mapping for the whole stack) and a **depth-smoothing control for OpenFocus B** (also `--depth-smoothing` on the CLI).
-
-> **2026.10.15 · v1.52–v1.53 — retouch brush & a quality pass.** New **Retouch** tool (`Ctrl+T`): paint pixels from a source frame onto the result to fix halos — it auto-picks the sharpest frame under the brush. **DTCWT** rebuilt (+5 dB on the ground-truth benchmark), **GFG-FGF** now follows its paper ([#5](https://github.com/Xinzhe99/OpenFocus/issues/5)) and no longer drops small in-focus objects. Smoother workflow: no modal popup after every render, live progress, optional load-scale prompt, per-method kernel memory, Ctrl+S saves the selected output.
-
-> **2026.10.14 · v1.50–v1.51** — dust-map flat-field fixes, in-place background updates with per-version release notes.
-
-> **2026.10.13 · v1.39–v1.49** — **OpenFocus A/B/C** (variance-weighted average, variance depth-map pick, Laplacian pyramid), a fast bounded-similarity alignment (translation + rotation + scale), dust-map flat-field correction, per-pixel depth maps for every index-deciding method, an alignment-only mode, and single-choice dropdowns for all algorithm picking.
-
-**Earlier**: v1.28–v1.37 — pip CLI, scale bars, multi-page TIFF, crash recovery, background updates, undo/redo · v1.21–v1.27 — portable mode, self-update, `.ofproj`, 16-bit pipeline, JA/ES · v1.9–v1.20 — wipe compare, themes, compare-all, quick preview. Full history in the [Changelog](./CHANGELOG.md).
+Earlier releases are in the [Changelog](./CHANGELOG.md).
 
 <a id="download"></a>
 ## ⬇️ Download & Install
@@ -109,7 +97,7 @@ Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.m
 - [🛠️ Building from Source](#building-from-source)
 - [🔭 Overview](#overview)
 - [✨ Highlights](#highlights)
-- [🧪 Algorithms & Benchmark](#algorithms)
+- [🧪 Algorithms](#algorithms)
 - [📚 References](#references)
 - [🤝 Contribution](#contribution)
 - [📚 Citing OpenFocus](#citation)
@@ -126,17 +114,18 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 
 <a id="highlights"></a>
 ## ✨ Highlights
-- **Beginner-Friendly**: Plug-and-play workflows with unapologetically simple, guided operations.
-- **Flexible Processing Flows**: Run fusion-only, registration-only, or combined registration + fusion pipelines depending on your workload.
-- **Wipe Compare View**: Overlay any source frame and any result in one frame with a draggable divider and shared zoom — spot alignment errors at a glance.
-- **Batch Automation**: Kick off batch jobs across multiple folders with live progress, cancellation, and automatic output organization.
-- **Headless CLI**: Full pipeline from the command line with script-friendly exit codes.
-- **Retouch Brush**: Fix halos or wrongly picked details by painting from a source frame — the brush auto-picks the frame that is sharpest under the cursor; soft edges, undo/redo, 16-bit safe.
-- **Annotation & Export Toolkit**: Overlay labels, scale bars, export GIF animations and multi-page TIFF stacks, drag results straight out of the app, and save in JPG/PNG/WebP/BMP/TIFF (16-bit preserved end to end).
-- **AI-Assisted Fusion**: Ship with StackMFF V4 to unlock deep-learning-quality fusion alongside classic signal-processing methods.
-- **Depth Maps**: Per-pixel focus-position maps from any fusion method's own measure, with customizable pseudo-color schemes (built-in palettes or your own color stops), overlay-on-result view, and 16-bit raw export. Export the depth map plus the fused image as a textured 3D model (OBJ).
-- **Microscopy-Ready**: 16-bit pipeline, µm/px calibration from TIFF metadata, dust-map flat-field correction, publication scale bars.
-- **Remembers You**: Settings, language, GPU preference, per-method parameters and recently opened stacks persist across sessions; crash auto-recovery; English, 中文, 日本語 and Español UI.
+
+- **Eight fusion methods** — four classical plus OpenFocus A/B/C, with three
+  registration modes (fast similarity, ECC, homography).
+- **Focus-stack workflow** — stack browser, wipe compare, depth maps, retouch
+  brush, batch processing, quick preview.
+- **Microscopy-ready** — 16-bit end to end, µm/px from TIFF metadata, dust-map
+  flat-field correction, publication scale bars, textured OBJ export.
+- **Headless CLI** — the same pipeline as `openfocus`, with batch mode,
+  `--dry-run`, `--resume` and JSON output for scripting.
+- **Projects and recovery** — `.ofproj` sessions, crash auto-recovery,
+  undo/redo, per-method settings remembered across restarts.
+- **Four UI languages** — English, 中文, 日本語, Español.
 
 <a id="algorithms"></a>
 ## 🧪 Algorithms
@@ -153,23 +142,6 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 - **OpenFocus (fast)**: Bounded similarity alignment (translation + rotation + scale) with brightness equalization and auto-crop — sub-second per frame.
 - **ECC**: Intensity-based alignment by maximizing the enhanced correlation coefficient for precise, sub-pixel registration.
 - **Homography**: Feature-based projective alignment (SIFT + RANSAC) for global perspective changes.
-
-### Benchmark
-
-`tools/synthetic_benchmark.py` defocuses a detailed texture along a known depth map into a 16-frame stack, so every method can be scored against the true all-in-focus image (higher PSNR is better; *oracle* = best possible per-pixel frame pick; CPU, 1024×768):
-
-| Method | Clean (dB) | Sensor noise σ=3 (dB) | Small near objects (dB) | Time |
-|---|---|---|---|---|
-| *oracle pick* | *43.7* | *37.5* | *34.9* | – |
-| StackMFF V4 | **42.9** | 35.5 | **34.7** | 9 s |
-| OpenFocus C | 41.7 | **37.0** | 34.3 | 1.0 s |
-| OpenFocus B | 41.0 | 36.7 | 34.0 | 0.3 s |
-| GFG-FGF | 40.9 | 36.7 | 34.4 | 0.8 s |
-| Guided Filter | 40.3 | 36.7 | 34.4 | 0.6 s |
-| DCT | 40.1 | 36.4 | 33.3 | 0.1 s |
-| DTCWT | 39.4 | 36.1 | 33.9 | 8 s |
-
-OpenFocus A (weighted average) is a deliberately soft look and is not built for this test. Reproduce with `python tools/synthetic_benchmark.py [--noise 3] [--scene small]`.
 
 > **License Notice:** Every fusion/registration algorithm included comes from open-source research implementations. When using or redistributing them, please follow each algorithm’s original license terms in addition to the OpenFocus MIT license.
 

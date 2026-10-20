@@ -393,16 +393,10 @@ class OpenFocus(QMainWindow):
         self.main_splitter.addWidget(right_panel_components.widget)
         bind_right_panel(self, right_panel_components)
 
-        # 持久化开关同步到复选框：属性在 UI 构建前已由 load_window_settings
-        # 恢复（v1.39 起基底校正存在"属性已恢复、复选框仍显示未勾"的不一致，
-        # 这里一并修复）。blockSignals 避免重复触发持久化。
-        self.chk_base_correct.blockSignals(True)
-        self.chk_base_correct.setChecked(bool(self.base_frame_correct))
-        self.chk_base_correct.blockSignals(False)
-        self.chk_exposure_match.blockSignals(True)
-        self.chk_exposure_match.setChecked(bool(getattr(
-            self, "exposure_match", True)))
-        self.chk_exposure_match.blockSignals(False)
+        # 两个亮度开关按当前算法取值（OpenFocus A/B/C 默认两者都开，
+        # 其余算法沿用历史默认）。不能直接用全局属性：那会把上一次
+        # 会话里别的算法的选择带进来。
+        self._sync_brightness_checkboxes()
         self.chk_reverse_order.blockSignals(True)
         self.chk_reverse_order.setChecked(bool(
             getattr(self, "stack_reverse_order", False)))
@@ -623,6 +617,8 @@ class OpenFocus(QMainWindow):
         """
         if getattr(self, "_undo_guard", False):
             return
+        # Any stack mutation makes the saved project stale.
+        self._mark_project_dirty()
         self._undo_stack.append(self._capture_stack_state())
         if len(self._undo_stack) > self.UNDO_LIMIT:
             self._undo_stack.pop(0)
@@ -1074,15 +1070,59 @@ class OpenFocus(QMainWindow):
         self.stack_reverse_order = bool(enabled)
         self.persist_settings()
 
-    def set_base_correct(self, enabled: bool) -> None:
-        """右面板开关：融合后的低频基底校正（默认关）。"""
-        self.base_frame_correct = bool(enabled)
+    # 两个亮度选项都按算法独立记忆：它们是"这次融合用哪条曝光策略"，
+    # 而不是全局偏好。OpenFocus A/B/C 默认两者都开（它们没有内置标定，
+    # 这正是它们与 Helicon 的 A/B/C 最接近的行为）；其余算法沿用历史
+    # 默认（曝光匹配开、亮度漂移关）。
+    _BRIGHTNESS_DEFAULTS = {
+        "exposure_match": {"openfocus_a": True, "openfocus_b": True,
+                           "openfocus_c": True},
+        "base_correct": {"openfocus_a": True, "openfocus_b": True,
+                         "openfocus_c": True},
+    }
+
+    def brightness_option_for(self, option: str, method: str = None) -> bool:
+        """Value of 'exposure_match' / 'base_correct' for *method*."""
+        method = method or self.current_fusion_method()
+        memory = self.__dict__.setdefault("_brightness_by_method", {})
+        key = (option, method)
+        if key in memory:
+            return bool(memory[key])
+        defaults = self._BRIGHTNESS_DEFAULTS.get(option, {})
+        if method in defaults:
+            return bool(defaults[method])
+        # legacy global default: exposure matching on, base correction off
+        return option == "exposure_match"
+
+    def _set_brightness_option(self, option: str, enabled: bool) -> None:
+        method = self.current_fusion_method()
+        self.__dict__.setdefault("_brightness_by_method", {})[
+            (option, method)] = bool(enabled)
+        if option == "exposure_match":
+            self.exposure_match = bool(enabled)
+        else:
+            self.base_frame_correct = bool(enabled)
         self.persist_settings()
 
+    def _sync_brightness_checkboxes(self, method: str = None) -> None:
+        """Show the selected method's own values in the two checkboxes."""
+        for widget_name, option in (
+                ("chk_exposure_match", "exposure_match"),
+                ("chk_base_correct", "base_correct")):
+            widget = getattr(self, widget_name, None)
+            if widget is None:
+                continue
+            widget.blockSignals(True)
+            widget.setChecked(self.brightness_option_for(option, method))
+            widget.blockSignals(False)
+
+    def set_base_correct(self, enabled: bool) -> None:
+        """右面板开关：融合后的低频基底校正（按算法记忆）。"""
+        self._set_brightness_option("base_correct", enabled)
+
     def set_exposure_match(self, enabled: bool) -> None:
-        """右面板开关：融合前把整栈曝光标定到末帧（所有算法）。"""
-        self.exposure_match = bool(enabled)
-        self.persist_settings()
+        """右面板开关：融合前把整栈曝光标定到末帧（按算法记忆）。"""
+        self._set_brightness_option("exposure_match", enabled)
 
     def _show_update_result(self, state: str, tag: str, page_url: str,
                             zip_url: str = "", setup_url: str = "") -> None:
@@ -1166,6 +1206,9 @@ class OpenFocus(QMainWindow):
         from PyQt6.QtWidgets import QFileDialog
         from utils.project_file import validate_project, apply_project, PROJECT_SUFFIX
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+        if not self._confirm_discard_project_changes(
+                "msg_discard_unsaved_project"):
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, trans.t('menu_open_project'),
             get_last_dialog_dir(), f"OpenFocus Project (*{PROJECT_SUFFIX})")
@@ -1178,7 +1221,7 @@ class OpenFocus(QMainWindow):
         set_last_dialog_dir(path)
         self.project_path = path
         apply_project(self, state)
-        self._update_project_title()
+        self._clear_project_dirty()
         self.add_recent_project(path)
 
     def save_project_dialog(self, save_as: bool = False) -> None:
@@ -1203,7 +1246,7 @@ class OpenFocus(QMainWindow):
         ok, err = save_project(self, target)
         if ok:
             self.project_path = target
-            self._update_project_title()
+            self._clear_project_dirty()
             self._show_status_message(
                 trans.t('msg_project_saved').format(path=target), 5000)
         else:
@@ -1211,9 +1254,46 @@ class OpenFocus(QMainWindow):
                              trans.t('msg_project_save_failed').format(err=err))
 
     def _update_project_title(self) -> None:
+        """Window title: project name plus an unsaved-changes marker.
+
+        Every other editor marks a modified document; without it the user had
+        no way to tell whether the current state was saved, and closing threw
+        the state away silently.
+        """
         import os as _os
-        name = _os.path.basename(self.project_path) if getattr(self, "project_path", None) else None
-        self.setWindowTitle(f"OpenFocus — {name}" if name else "OpenFocus")
+        name = (_os.path.basename(self.project_path)
+                if getattr(self, "project_path", None) else None)
+        mark = "*" if getattr(self, "_project_dirty", False) else ""
+        if name:
+            self.setWindowTitle(f"OpenFocus — {name}{mark}")
+        else:
+            self.setWindowTitle(f"OpenFocus{mark}" if mark else "OpenFocus")
+
+    def _mark_project_dirty(self) -> None:
+        if not getattr(self, "_project_dirty", False):
+            self._project_dirty = True
+            self._update_project_title()
+
+    def _clear_project_dirty(self) -> None:
+        self._project_dirty = False
+        self._update_project_title()
+
+    def _confirm_discard_project_changes(self, action_key: str) -> bool:
+        """Ask before an action that would drop unsaved project state."""
+        if not getattr(self, "_project_dirty", False):
+            return True
+        box = QMessageBox(self)
+        style_message_box(box)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(trans.t("msg_warning"))
+        box.setText(trans.t(action_key))
+        discard = box.addButton(trans.t("btn_discard_changes"),
+                                QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(trans.t("btn_continue"),
+                      QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(discard)
+        box.exec()
+        return box.clickedButton() is discard
 
     def load_demo_stack(self) -> None:
         """Load the bundled demo stack (no downsample dialog)."""
@@ -1613,6 +1693,11 @@ class OpenFocus(QMainWindow):
             # 也没有，留着只会显示一个改了不影响输出的数字。
             self.smooth_widget.setVisible(spec is not None
                                           and method != "openfocus_c")
+        # Duck-typed hosts (tests bind update_slider_availability onto a stub)
+        # may not provide the checkbox sync.
+        sync = getattr(self, "_sync_brightness_checkboxes", None)
+        if callable(sync):
+            sync(method)
         # 滑块含义标签随算法切换（每个算法的 kernel 含义不同）
         label_key = self._KERNEL_LABELS.get(self.current_kernel_mode,
                                             "label_kernel")
@@ -2232,6 +2317,16 @@ class OpenFocus(QMainWindow):
         self._shutting_down = True
         # Shutting down discards in-flight results without a word; ask first
         # (the self-update restart has already stopped the workers itself).
+        # Unsaved project state: every editor asks before discarding it.
+        # Skip during the update restart (the session is restored anyway).
+        if (not getattr(self, '_restart_for_update', False)
+                and getattr(self, "_project_dirty", False)):
+            if not self._confirm_discard_project_changes(
+                    "msg_discard_unsaved_project_quit"):
+                self._shutting_down = False
+                event.ignore()
+                return
+
         if not getattr(self, '_restart_for_update', False) and self._has_work_in_flight():
             box = QMessageBox(self)
             style_message_box(box)
@@ -2428,13 +2523,16 @@ class OpenFocus(QMainWindow):
                 self.persist_settings()
                 self.rebuild_recent_projects_menu()
             return
+        if not self._confirm_discard_project_changes(
+                "msg_discard_unsaved_project"):
+            return
         ok, err, state = validate_project(path)
         if not ok:
             show_warning_box(self, trans.t('msg_error'), err)
             return
         self.project_path = path
         apply_project(self, state)
-        self._update_project_title()
+        self._clear_project_dirty()
         self.add_recent_project(path)
 
     def _clear_recent_projects(self) -> None:
