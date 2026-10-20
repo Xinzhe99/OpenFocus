@@ -17,6 +17,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> **2026.10.20 · v1.58 — alignment correctness.** The OpenFocus aligner measured translation with a phase-correlation peak that collapses when the two frames differ in focus — the normal case in a focus stack. A true 16 px shift was read as 145 px, so frames were dropped as "over the shift limit" or moved to the wrong offset. Translation now comes from NCC template matching on plain grayscale (15.93 px on the same pair, within ~0.3 px from σ3 to σ11 of defocus — the old high-pass input was 22 px off at σ11), the anchor frame is exposure-calibrated like every other frame, `--align-shift-limit` above ~15% is honoured, and flat frames no longer report a false corner match.
+
 > **2026.10.20 · v1.57 — exposure matching + A/B/C parity.** New **Match exposure before fusion** switch (`--exposure-match`, on by default): every frame is scaled to the last frame's mean before the focus measure, for all eight fusion methods, with gains computed on the whole stack so tiled output stays seamless. OpenFocus A/B/C gained per-frame exposure calibration, `base_frame` as an independent optional post-step, one kernel default, and natural folder ordering. Existing golden baselines opt out explicitly to keep their pinned outputs.
 
 > **2026.10.18 · v1.56 — correctness pass.** EXIF-rotated photos now load upright and export with a neutral orientation tag; mixed 8/16-bit stacks fuse correctly; folder frames sort naturally (`img2` before `img10`); DCT keeps the input size and DTCWT no longer tiles (and seams) just because an image is large; depth maps follow the same frame order/alignment as the render; Japanese/Spanish survive a restart; WebP input and drag-export work.

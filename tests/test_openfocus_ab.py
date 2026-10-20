@@ -1,6 +1,6 @@
 """Regression tests for the OpenFocus A/B/C features:
 OpenFocus A/B fusion methods, base correction (brightness drift), and the
-OpenFocus fast alignment (bounded phase correlation)."""
+OpenFocus fast alignment (bounded similarity, NCC translation)."""
 import numpy as np
 import cv2
 import pytest
@@ -277,6 +277,20 @@ class TestOpenFocusAlignment:
         out = reg.process([base, dark], output_path=None, thread_count=2)
         assert abs(float(out[1].mean()) - float(base.mean())) < 12.0
 
+    def test_last_reference_also_calibrates_the_first_frame(self):
+        """With the fusion exposure target (last frame), the anchor frame is
+        calibrated too. It used to keep gain 1.0 — the handler copied
+        images[0] verbatim — so one frame stayed at the old exposure while
+        every other frame was moved to the last frame's level."""
+        from core.registration import ImageRegistration
+        base, f1 = self._shifted_stack()
+        dark = (f1.astype(np.float32) * 0.6).astype(np.uint8)
+        reg = ImageRegistration(method="openfocus",
+                                brightness_reference="last")
+        out = reg.process([base, dark], output_path=None, thread_count=2)
+        assert abs(float(out[0].mean()) - float(dark.mean())) < 12.0
+        assert abs(float(out[1].mean()) - float(dark.mean())) < 12.0
+
     def test_registered_in_supported_methods(self):
         from core.registration import ImageRegistration
         assert "openfocus" in ImageRegistration.SUPPORTED_METHODS
@@ -349,9 +363,26 @@ class TestOpenFocusAlignment:
         assert np.abs(out[1].astype(int)[2:-2, 2:-2]
                       - out[0].astype(int)[2:-2, 2:-2]).mean() < 3.0
 
+    def test_sharp_vs_defocused_pair_recovers_translation(self):
+        """Regression: phase correlation reported 145 px for a true 16 px
+        shift when the frames had different focus. The translation must come
+        from a measure that survives defocus (NCC found 15.93 px)."""
+        from core.registration import _of_translation_ncc, _of_gray_est
+        base = make_two_focus_stack((240, 320))[0]
+        f = cv2.warpAffine(cv2.GaussianBlur(base, (0, 0), 4.5),
+                           np.float32([[1, 0, 16], [0, 1, 11]]), (320, 240))
+        _ncc, dx, dy = _of_translation_ncc(_of_gray_est(f, 480),
+                                          _of_gray_est(base, 480))
+        assert abs(abs(dx) - 16.0) < 1.5, dx
+        assert abs(abs(dy) - 11.0) < 1.5, dy
+
     def test_defocus_frames_still_align(self):
-        """失焦 + 位移的帧仍要对齐（高通预处理 + 置信门限 + 链式回退
-        的组合效果）。σ11 级的极端模糊物理上不可恢复，不在此列。"""
+        """失焦 + 位移的帧仍要对齐。
+
+        相位相关在「清晰 vs 失焦」帧对上会给出完全错误的峰（同一对帧真值
+        16 px，它报 145 px），NCC 模板搜索在同一对帧上给出 15.93 px。这里
+        断言的是重对齐后的残差，而不是某个估计器细节。
+        """
         from core.registration import ImageRegistration
         base = make_two_focus_stack((240, 320))[0]
         f1 = cv2.warpAffine(cv2.GaussianBlur(base, (0, 0), 3.5),

@@ -3,6 +3,37 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.58] — 2026-10-20
+
+Alignment correctness. The OpenFocus aligner could not measure translation on
+frames with different focus — the defining case for focus stacking.
+
+### Fixed
+- **OpenFocus alignment measured translation with a phase-correlation peak
+  that does not survive defocus.** On a synthetic pair with a true 16 px
+  shift it reported 145 px, so differently focused frames were rejected as
+  "over the shift limit" or pulled to the wrong offset — the visible symptom
+  was a stack that "would not align". Translation now comes from normalized
+  cross-correlation of a central patch, which found 15.93 px on the same
+  pair and stays within ~0.3 px from σ3 to σ11 of defocus.
+- **The estimator compared high-pass images**, which throws away exactly the
+  low frequencies that survive a change of focus. At σ11 of blur the
+  high-pass input put a 16 px shift 22 px off; plain grayscale put it
+  within 0.27 px, and on a stack whose two frames are sharp in different
+  halves the correlation went from 0.05 to 0.25.
+- **The alignment anchor frame was never exposure-calibrated.** With the
+  last-frame brightness reference the first frame was copied verbatim at
+  gain 1.0, so one frame stayed at the old exposure while the rest moved to
+  the last frame's level.
+- **`--align-shift-limit` above ~15% could not be honoured**: the fixed
+  0.7 patch leaves only ~15% of the frame as search margin, so a larger
+  accepted shift landed outside the window. The patch now shrinks with the
+  configured limit.
+- Flat frames (a black border, an empty plate) reported a 1.0 correlation
+  peak in a corner and could translate the stack; they now report "no
+  correspondence" and stay put.
+- The `--align` help text still described phase correlation.
+
 ## [v1.57] — 2026-10-20
 
 A parity and exposure-handling release for the OpenFocus fusion family.

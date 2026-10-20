@@ -52,7 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "C = Laplacian pyramid)")
     parser.add_argument("--align", "-a", default="none", choices=VALID_ALIGN,
                         help="Registration applied before fusion (default: none); openfocus = fast bounded "
-                             "phase correlation with brightness equalization")
+                             "similarity alignment (rotation + scale + NCC translation) with brightness "
+                             "equalization")
     parser.add_argument("--align-shift-limit", type=float, default=None, metavar="RATIO",
                         help="openfocus alignment only: maximum accepted frame shift as a fraction of the "
                              "frame size (default 0.08; frames above it are "
