@@ -3,6 +3,38 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.61] — 2026-10-20
+
+A full UI pass: every window, dialog and menu was captured in both themes and
+inspected, then the defects were fixed.
+
+### Fixed
+- **Settings, batch, ROI and folder-import dialogs ignored the light theme.**
+  They applied the dark palette unconditionally, so light mode showed dark
+  slabs in the middle of a white window. All of them now go through one
+  `apply_dialog_theme` helper.
+- **The contact dialog's GitHub link was invisible in light mode** — a
+  hard-coded white link on a white background. The link colour follows the
+  theme now.
+- **The "?" help buttons kept a dark chip in light mode** and lost their glyph
+  in dark mode. The inline style is theme-aware, uses a `#helpButton`
+  selector that out-specifies the dialog's plain `QPushButton` rule, and is
+  re-applied when the theme changes.
+- **Dust-map preview cards were black blocks** in the light dialog; they
+  follow the theme now.
+- **Spin-box text ran under the up/down arrows** in the depth-map dialog
+  (the arrow column is 20 px and no right padding was reserved).
+- **The depth-map method note was #999 on white** (~2.8:1); it uses the
+  palette's secondary colour.
+- **The batch folder list had no empty state** — an unexplained blank area
+  until a folder was added. It now says what to do.
+- **Thread/batch/tile numeric fields were narrower than their own value**;
+  they have a usable minimum width.
+
+### Changed
+- The batch dialog's empty list hides the list widget and shows the hint,
+  so the hint cannot be scrolled out of view.
+
 ## [v1.60] — 2026-10-20
 
 Zoom, batch-dialog theming, brightness options and dust-map correctness.
