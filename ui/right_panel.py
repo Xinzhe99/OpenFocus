@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.styles import (
-    HELP_BUTTON_STYLE,
+    HELP_BUTTON_STYLE, help_button_style,
     HOVER_HIGHLIGHT_BUTTON_STYLE,
     OUTPUT_LIST_STYLE,
     SOURCE_LIST_STYLE,
@@ -137,7 +137,7 @@ def create_right_panel() -> RightPanelComponents:
     btn_method_help = QPushButton("?")
     btn_method_help.setFixedSize(22, 22)
     btn_method_help.setFont(QFont("Arial", 12))
-    btn_method_help.setStyleSheet(HELP_BUTTON_STYLE)
+    btn_method_help.setStyleSheet(help_button_style())
     btn_method_help.setObjectName("helpButton")
     method_help_layout.addWidget(btn_method_help)
     method_layout.addLayout(method_help_layout)
@@ -157,7 +157,7 @@ def create_right_panel() -> RightPanelComponents:
     btn_reg_help = QPushButton("?")
     btn_reg_help.setFixedSize(22, 22)
     btn_reg_help.setFont(QFont("Arial", 12))
-    btn_reg_help.setStyleSheet(HELP_BUTTON_STYLE)
+    btn_reg_help.setStyleSheet(help_button_style())
     btn_reg_help.setObjectName("helpButton")
     reg_help_layout.addWidget(btn_reg_help)
     registration_layout.addLayout(reg_help_layout)

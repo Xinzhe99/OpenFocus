@@ -44,8 +44,10 @@ class BatchProcessingDialog(QDialog):
         # 获取父窗口的融合和对齐设置
         self.parent_window = parent
         
-        # 应用深色主题
-        self.setStyleSheet(f"""
+        # Dark palette only in dark mode: hard-coding it showed a dark slab in
+        # light mode.
+        from utils.ui_utils import apply_dialog_theme
+        apply_dialog_theme(self, parent, f"""
             QDialog {{
                 background-color: #2b2b2b;
                 color: #ffffff;
@@ -179,10 +181,19 @@ class BatchProcessingDialog(QDialog):
         add_folder_btn.clicked.connect(self.add_folders)
         folder_layout.addWidget(add_folder_btn)
         
-        # 文件夹列表
+        # 文件夹列表。空列表时显示一行提示——否则中间是一大片没有信息
+        # 的空白，用户不知道是"还没加"还是"加失败了"。
         self.folder_list = QListWidget()
         self.folder_list.setIconSize(QSize(60, 60))
+        self._folder_list_placeholder = QLabel(trans.t('batch_no_folders'))
+        self._folder_list_placeholder.setAlignment(
+            Qt.AlignmentFlag.AlignCenter)
+        self._folder_list_placeholder.setWordWrap(True)
+        self._folder_list_placeholder.setStyleSheet(
+            "color: #888888; background: transparent; padding: 12px;")
         folder_layout.addWidget(self.folder_list)
+        folder_layout.addWidget(self._folder_list_placeholder)
+        self._update_folder_placeholder()
         
         # 移除文件夹按钮
         remove_folder_btn = QPushButton(trans.t('batch_btn_remove'))
@@ -386,6 +397,15 @@ class BatchProcessingDialog(QDialog):
         # 初始化质量滑块显示状态（确保对话框打开时滑块正确显示）
         self.on_format_changed(self.format_combo.currentText())
     
+    def _update_folder_placeholder(self) -> None:
+        """Show the empty-state hint only while the list has no rows."""
+        placeholder = getattr(self, "_folder_list_placeholder", None)
+        if placeholder is None:
+            return
+        empty = self.folder_list.count() == 0
+        placeholder.setVisible(empty)
+        self.folder_list.setVisible(not empty)
+
     def add_folders(self):
         """添加多个文件夹（参考demo.py的实现）"""
         from PyQt6.QtWidgets import QFileDialog, QListView, QTreeView, QAbstractItemView, QLineEdit
@@ -441,6 +461,7 @@ class BatchProcessingDialog(QDialog):
                             item.setIcon(QIcon(self.folder_thumbnails[-1]))
                         
                         self.folder_list.addItem(item)
+                        self._update_folder_placeholder()
 
     def add_folder_to_list(self, folder_path: str) -> None:
         """添加文件夹到批处理列表（用于拖入场景）"""
@@ -467,6 +488,7 @@ class BatchProcessingDialog(QDialog):
             item.setIcon(QIcon(self.folder_thumbnails[-1]))
 
         self.folder_list.addItem(item)
+        self._update_folder_placeholder()
 
     def add_single_folder_to_list(self, folder_list):
         """添加单个文件夹到列表"""
@@ -535,7 +557,8 @@ class BatchProcessingDialog(QDialog):
             self.folder_paths.pop(row)
             if row < len(self.folder_thumbnails):
                 self.folder_thumbnails.pop(row)
-    
+        self._update_folder_placeholder()
+
     def on_output_option_changed(self):
         """输出选项改变时的处理"""
         subfolder_enabled = self.rb_subfolder.isChecked()
@@ -934,7 +957,8 @@ class FolderImportDialog(QDialog):
         self.setWindowTitle(trans.t('import_folder_title'))
         self.resize(500, 200)
 
-        self.setStyleSheet(f"""
+        from utils.ui_utils import apply_dialog_theme
+        apply_dialog_theme(self, parent, f"""
             QDialog {{
                 background-color: #2b2b2b;
                 color: #ffffff;
