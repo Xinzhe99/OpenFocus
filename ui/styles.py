@@ -299,18 +299,52 @@ ERROR_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE
 SUCCESS_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE
 
 # === 右侧 Help 按钮样式（小圆形按钮） ===
-HELP_BUTTON_STYLE = f"""
-QPushButton {{
+# Inline styles win over the app-level stylesheet, so this must be
+# theme-aware: the dark chip stayed dark in light mode (an unreadable blob
+# next to the light dialog buttons).
+HELP_BUTTON_STYLE_DARK = """
+QPushButton#helpButton {
     background-color: #555;
-    color: white;
+    color: #ffffff;
+    border: none;
     border-radius: 10px;
-    font-size: 10px;
-    font-weight: normal;
-}}
-QPushButton:hover {{
-    background-color: #777;
-}}
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0;
+}
+QPushButton#helpButton:hover {
+    background-color: #777777;
+}
 """
+
+HELP_BUTTON_STYLE_LIGHT = """
+QPushButton#helpButton {
+    background-color: #eaeef2;
+    color: #57606a;
+    border: 1px solid #d0d7de;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0;
+}
+QPushButton#helpButton:hover {
+    background-color: #dbe4ee;
+    color: #0969da;
+}
+"""
+
+
+def help_button_style(theme: str = None) -> str:
+    """Inline style for the small round "?" button, for the active theme."""
+    if theme is None:
+        # CURRENT_THEME is defined further down; read it lazily so importing
+        # this module does not depend on declaration order.
+        theme = globals().get("CURRENT_THEME", "dark")
+    return HELP_BUTTON_STYLE_LIGHT if theme == "light" else HELP_BUTTON_STYLE_DARK
+
+
+# Backwards-compatible alias (dark design, used at import time).
+HELP_BUTTON_STYLE = HELP_BUTTON_STYLE_DARK
 
 
 # 重置按钮样式
@@ -555,6 +589,9 @@ QLabel { color: #1f2328; background: transparent; }
 QLabel:disabled { color: #9aa4ae; }
 
 QListWidget, QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 6px; padding: 3px; selection-background-color: #0969da; selection-color: #ffffff; }
+/* Spin boxes reserve a 20 px column for the up/down buttons (see
+   arrow_qss below); without right padding the text runs under it. */
+QSpinBox, QDoubleSpinBox { padding-right: 22px; }
 /* Same rule for item views in light mode: without it the native white
    view keeps the inherited light-grey text and becomes unreadable. */
 QAbstractItemView { background-color: #ffffff; color: #1f2328; alternate-background-color: #f6f8fa; selection-background-color: #0969da; selection-color: #ffffff; border: 1px solid #d0d7de; }

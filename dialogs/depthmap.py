@@ -292,7 +292,11 @@ class DepthMapDialog(QDialog):
 
         # kernel 含义随方法不同（与主面板滑块同源语义）——只读说明行
         self.lbl_kernel_info = QLabel("")
-        self.lbl_kernel_info.setStyleSheet("color: #999;")
+        # Muted but readable: #999 on white is ~2.8:1, below the 4.5:1 needed
+        # for body text. #57606a is the palette's own secondary colour.
+        self.lbl_kernel_info.setStyleSheet(
+            "color: #57606a;" if getattr(self.parent(), "ui_theme", "dark") == "light"
+            else "color: #9aa4ae;")
         form.addRow("", self.lbl_kernel_info)
         self._update_kernel_info()
 

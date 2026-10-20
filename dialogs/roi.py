@@ -15,15 +15,16 @@ class ROIRenderOptionsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(trans.t("dialog_roi_title"))
         self.resize(400, 250)
-        self.setStyleSheet("""
+        from utils.ui_utils import apply_dialog_theme
+        apply_dialog_theme(self, parent, """
             QDialog { background-color: #2b2b2b; color: #ddd; }
             QLabel, QRadioButton { color: #ddd; font-size: 13px; }
             QGroupBox { border: 1px solid #555; border-radius: 5px; margin-top: 10px; padding-top: 15px; }
             QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 5px; color: #aaa; }
             QComboBox { background: #333; color: white; border: 1px solid #555; padding: 5px; }
             QComboBox QAbstractItemView {
-                background-color: white;
-                color: black;
+                background-color: #333;
+                color: #ffffff;
                 selection-background-color: #0078d7;
                 selection-color: white;
             }

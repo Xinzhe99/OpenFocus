@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
 )
-from ui.styles import PRIMARY_BLUE
+from ui.styles import PRIMARY_BLUE, help_button_style
 from locales import trans
 from utils import resource_path
 
@@ -31,7 +31,8 @@ class DurationDialog(QDialog):
         self.duration = 500  # 默认500毫秒
 
         # 应用深色主题
-        self.setStyleSheet(f"""
+        from utils.ui_utils import apply_dialog_theme
+        apply_dialog_theme(self, parent, f"""
             QDialog {{
                 background-color: #2b2b2b;
                 color: #ffffff;
@@ -87,7 +88,7 @@ class DurationDialog(QDialog):
                 left: 10px;
                 padding: 0 5px 0 5px;
             }}
-        """)
+                """)
 
         layout = QVBoxLayout(self)
 
@@ -159,7 +160,8 @@ class DownsampleDialog(QDialog):
         self._build_layout()
 
     def _apply_dark_style(self):
-        self.setStyleSheet(f"""
+        from utils.ui_utils import apply_dialog_theme
+        apply_dialog_theme(self, self.parent(), f"""
             QDialog {{
                 background-color: #2b2b2b;
                 color: #ffffff;
@@ -209,7 +211,7 @@ class DownsampleDialog(QDialog):
             QPushButton:hover {{
                 background-color: #555;
             }}
-        """)
+                """)
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
@@ -335,7 +337,8 @@ class TileSettingsDialog(QDialog):
         self.resize(420, 260)
 
         # 应用与其他对话框一致的深色样式
-        self.setStyleSheet(f"""
+        from utils.ui_utils import apply_dialog_theme
+        apply_dialog_theme(self, parent, f"""
             QDialog {{
                 background-color: #2b2b2b;
                 color: #ffffff;
@@ -363,7 +366,7 @@ class TileSettingsDialog(QDialog):
             QPushButton:hover {{
                 background-color: #555;
             }}
-        """)
+                """)
 
         layout = QVBoxLayout(self)
 
@@ -393,6 +396,8 @@ class TileSettingsDialog(QDialog):
         self.spin_block.setValue(1024)
         # 移除右侧的增减按钮以便用户直接输入或使用键盘/滑块调整
         self.spin_block.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
+        self.spin_block.setMinimumWidth(90)
         block_layout.addWidget(self.spin_block)
         block_layout.addStretch()
         g_layout.addLayout(block_layout)
@@ -406,6 +411,8 @@ class TileSettingsDialog(QDialog):
         self.spin_overlap.setValue(256)
         # 移除右侧的增减按钮
         self.spin_overlap.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
+        self.spin_overlap.setMinimumWidth(90)
         overlap_layout.addWidget(self.spin_overlap)
         overlap_layout.addStretch()
         g_layout.addLayout(overlap_layout)
@@ -419,6 +426,8 @@ class TileSettingsDialog(QDialog):
         self.spin_threshold.setValue(2048)
         # 移除右侧的增减按钮
         self.spin_threshold.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
+        self.spin_threshold.setMinimumWidth(90)
         threshold_layout.addWidget(self.spin_threshold)
         threshold_layout.addStretch()
         g_layout.addLayout(threshold_layout)
@@ -427,14 +436,13 @@ class TileSettingsDialog(QDialog):
 
         # Buttons: help and OK/Cancel
         btn_layout = QHBoxLayout()
-        help_btn = QPushButton("")
+        help_btn = QPushButton("?")
         help_btn.setToolTip("Show help for tile settings")
-        help_btn.setFixedSize(26, 26)
-        help_btn.setIcon(QIcon(resource_path('assets', 'help_white.svg')))
-        help_btn.setIconSize(QSize(18, 18))
-        help_btn.setStyleSheet(
-            "QPushButton { background-color: transparent; border: none; padding: 0px; }"
-        )
+        help_btn.setFixedSize(22, 22)
+        # Text "?" styled by objectName: the old white SVG icon
+        # vanished on the light dialog background.
+        help_btn.setObjectName("helpButton")
+        help_btn.setStyleSheet(help_button_style())
         help_btn.clicked.connect(self.show_help)
         btn_layout.addWidget(help_btn)
         btn_layout.addStretch()
@@ -497,7 +505,8 @@ class RegistrationSettingsDialog(QDialog):
         self.setWindowTitle(trans.t("dialog_reg_title"))
         self.resize(360, 140)
 
-        self.setStyleSheet(f"""
+        from utils.ui_utils import apply_dialog_theme
+        apply_dialog_theme(self, parent, f"""
             QDialog {{
                 background-color: #2b2b2b;
                 color: #ffffff;
@@ -525,7 +534,7 @@ class RegistrationSettingsDialog(QDialog):
             QPushButton:hover {{
                 background-color: #555;
             }}
-        """)
+                """)
 
         layout = QVBoxLayout(self)
 
@@ -544,20 +553,21 @@ class RegistrationSettingsDialog(QDialog):
         # 默认值会在 load_defaults 中设置
         self.spin_downscale.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self.spin_downscale.setValue(1024)
+        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
+        self.spin_downscale.setMinimumWidth(90)
         g_layout.addWidget(self.spin_downscale)
         g_layout.addStretch()
 
         layout.addWidget(group)
 
         btn_layout = QHBoxLayout()
-        help_btn = QPushButton("")
+        help_btn = QPushButton("?")
         help_btn.setToolTip("Show help for registration settings")
-        help_btn.setFixedSize(26, 26)
-        help_btn.setIcon(QIcon(resource_path('assets', 'help_white.svg')))
-        help_btn.setIconSize(QSize(18, 18))
-        help_btn.setStyleSheet(
-            "QPushButton { background-color: transparent; border: none; padding: 0px; }"
-        )
+        help_btn.setFixedSize(22, 22)
+        # Text "?" styled by objectName: the old white SVG icon
+        # vanished on the light dialog background.
+        help_btn.setObjectName("helpButton")
+        help_btn.setStyleSheet(help_button_style())
         help_btn.clicked.connect(self.show_help)
         btn_layout.addWidget(help_btn)
         btn_layout.addStretch()
@@ -605,7 +615,8 @@ class ThreadSettingsDialog(QDialog):
         self.resize(420, 160)
 
         # Apply the same dark dialog styling as TileSettingsDialog
-        self.setStyleSheet(f"""
+        from utils.ui_utils import apply_dialog_theme
+        apply_dialog_theme(self, parent, f"""
             QDialog {{
                 background-color: #2b2b2b;
                 color: #ffffff;
@@ -633,7 +644,7 @@ class ThreadSettingsDialog(QDialog):
             QPushButton:hover {{
                 background-color: #555;
             }}
-        """)
+                """)
 
         layout = QVBoxLayout(self)
 
@@ -650,6 +661,8 @@ class ThreadSettingsDialog(QDialog):
         self.spin_threads.setRange(1, 256)
         self.spin_threads.setSingleStep(1)
         self.spin_threads.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
+        self.spin_threads.setMinimumWidth(90)
         g_layout.addWidget(self.spin_threads)
         g_layout.addStretch()
 
@@ -657,14 +670,13 @@ class ThreadSettingsDialog(QDialog):
 
         # Buttons: help and OK/Cancel (match Tile/Registration style)
         btn_layout = QHBoxLayout()
-        help_btn = QPushButton("")
+        help_btn = QPushButton("?")
         help_btn.setToolTip("Show help for application settings")
-        help_btn.setFixedSize(26, 26)
-        help_btn.setIcon(QIcon(resource_path('assets', 'help_white.svg')))
-        help_btn.setIconSize(QSize(18, 18))
-        help_btn.setStyleSheet(
-            "QPushButton { background-color: transparent; border: none; padding: 0px; }"
-        )
+        help_btn.setFixedSize(22, 22)
+        # Text "?" styled by objectName: the old white SVG icon
+        # vanished on the light dialog background.
+        help_btn.setObjectName("helpButton")
+        help_btn.setStyleSheet(help_button_style())
         help_btn.clicked.connect(self.show_help)
         btn_layout.addWidget(help_btn)
         btn_layout.addStretch()
@@ -713,7 +725,8 @@ class StackMFFV4BatchSettingsDialog(QDialog):
         self.resize(420, 160)
 
         # Apply the same dark dialog styling as other settings dialogs
-        self.setStyleSheet(f"""
+        from utils.ui_utils import apply_dialog_theme
+        apply_dialog_theme(self, parent, f"""
             QDialog {{
                 background-color: #2b2b2b;
                 color: #ffffff;
@@ -741,7 +754,7 @@ class StackMFFV4BatchSettingsDialog(QDialog):
             QPushButton:hover {{
                 background-color: #555;
             }}
-        """)
+                """)
 
         layout = QVBoxLayout(self)
 
@@ -758,6 +771,8 @@ class StackMFFV4BatchSettingsDialog(QDialog):
         self.spin_batch_size.setRange(1, 16)
         self.spin_batch_size.setSingleStep(1)
         self.spin_batch_size.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
+        self.spin_batch_size.setMinimumWidth(90)
         g_layout.addWidget(self.spin_batch_size)
         g_layout.addStretch()
 
@@ -765,14 +780,13 @@ class StackMFFV4BatchSettingsDialog(QDialog):
 
         # Buttons: help and OK/Cancel
         btn_layout = QHBoxLayout()
-        help_btn = QPushButton("")
+        help_btn = QPushButton("?")
         help_btn.setToolTip("Show help for StackMFF V4 batch settings")
-        help_btn.setFixedSize(26, 26)
-        help_btn.setIcon(QIcon(resource_path('assets', 'help_white.svg')))
-        help_btn.setIconSize(QSize(18, 18))
-        help_btn.setStyleSheet(
-            "QPushButton { background-color: transparent; border: none; padding: 0px; }"
-        )
+        help_btn.setFixedSize(22, 22)
+        # Text "?" styled by objectName: the old white SVG icon
+        # vanished on the light dialog background.
+        help_btn.setObjectName("helpButton")
+        help_btn.setStyleSheet(help_button_style())
         help_btn.clicked.connect(self.show_help)
         btn_layout.addWidget(help_btn)
         btn_layout.addStretch()

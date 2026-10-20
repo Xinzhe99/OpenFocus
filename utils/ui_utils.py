@@ -84,6 +84,23 @@ def resource_path(*relative_parts: str) -> str:
 
 
 
+def dialog_theme(parent) -> str:
+    """'light' or 'dark' for a dialog whose parent is the main window."""
+    return "light" if getattr(parent, "ui_theme", "dark") == "light" else "dark"
+
+
+def apply_dialog_theme(dialog, parent, dark_qss: str) -> None:
+    """Apply `dark_qss` only in dark mode.
+
+    Every dialog used to hard-code the dark palette, so in light mode the app
+    showed dark slabs in the middle of a white window (and some of them were
+    barely readable). In light mode the app-level light stylesheet already
+    covers the standard controls, so nothing extra is needed.
+    """
+    if dialog_theme(parent) == "dark":
+        dialog.setStyleSheet(dark_qss)
+
+
 def style_message_box(box):
     """Apply the current theme stylesheet to a hand-built QMessageBox.
 

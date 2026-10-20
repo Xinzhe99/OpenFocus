@@ -108,7 +108,14 @@ class DustMapDialog(QDialog):
         self.lbl_gain = QLabel(trans.t("dust_no_preview"))
         self.lbl_gain.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_gain.setMinimumSize(340, 220)
-        self.lbl_gain.setStyleSheet("background:#161616;border:1px solid #444;color:#888;")
+        # Preview placeholders follow the theme: a hard-coded near-black
+        # card sat inside the white dialog as three black blocks.
+        _pv_bg, _pv_border, _pv_fg = (
+            ("#f6f8fa", "#d0d7de", "#57606a")
+            if getattr(self.window_main, "ui_theme", "dark") == "light"
+            else ("#161616", "#444", "#888"))
+        self.lbl_gain.setStyleSheet(
+            f"background:{_pv_bg};border:1px solid {_pv_border};color:{_pv_fg};")
         grid.addWidget(self.lbl_gain)
         before_after = QVBoxLayout()
         self.lbl_before = QLabel(trans.t("dust_before"))
@@ -116,7 +123,8 @@ class DustMapDialog(QDialog):
         for lbl in (self.lbl_before, self.lbl_after):
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setMinimumSize(340, 104)
-            lbl.setStyleSheet("background:#161616;border:1px solid #444;color:#888;")
+            lbl.setStyleSheet(
+                f"background:{_pv_bg};border:1px solid {_pv_border};color:{_pv_fg};")
         before_after.addWidget(self.lbl_before)
         before_after.addWidget(self.lbl_after)
         grid.addLayout(before_after)

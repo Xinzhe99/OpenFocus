@@ -196,8 +196,12 @@ class ContactInfoDialog(QDialog):
     """联系信息对话框"""
 
     def __init__(self, parent=None):
+        # Link colour must follow the theme: a hard-coded white link was
+        # invisible on the white dialog (the GitHub URL simply vanished).
+        link = "#0969da" if getattr(parent, "ui_theme", "dark") == "light" \
+            else "#6cb6ff"
         contact_text = f"""
-        <style>a {{ color: #ffffff; }}</style>
+        <style>a {{ color: {link}; }}</style>
         <h3>{trans.t('contact_info_title')}</h3>
         
     <p>{trans.t('contact_email')}: xiexinzhe@zju.edu.cn</p>

@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QDialog,
+    QPushButton,
 )
 from PyQt6.QtCore import Qt, QThread, QUrl, QEvent, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
@@ -2144,6 +2145,15 @@ class OpenFocus(QMainWindow):
         banner = getattr(self, "update_banner", None)
         if banner is not None:
             banner.apply_theme(theme)
+        # Inline "?" button styles are captured at creation; re-apply them for
+        # the new theme or the dark chip stays dark on the light panel.
+        from ui.styles import help_button_style
+        for widget in self.findChildren(QPushButton):
+            try:
+                if widget.objectName() == "helpButton":
+                    widget.setStyleSheet(help_button_style(theme))
+            except RuntimeError:
+                pass
 
         set_current_theme(theme)
         self._enable_dark_title_bar(dark=(theme != "light"))

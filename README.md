@@ -17,9 +17,10 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **v1.60** — zoom stays anchored under the cursor after panning; readable
-> file dialogs in dark mode; dust-map correction actually removes dust;
-> per-method brightness options; unsaved-project warnings.
+> **v1.61** — every window, dialog and menu audited in both themes: settings,
+> batch and ROI dialogs now follow the light theme, invisible contact link
+> and help buttons fixed, dust-map cards themed, spin-box padding fixed,
+> batch list gets an empty state.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
