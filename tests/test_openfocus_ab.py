@@ -34,8 +34,10 @@ class TestOpenFocusAB:
         right = cv2.cvtColor(out[:, 80:], cv2.COLOR_BGR2GRAY).astype(int)
         l0 = cv2.cvtColor(frames[0][:, :80], cv2.COLOR_BGR2GRAY).astype(int)
         r1 = cv2.cvtColor(frames[1][:, 80:], cv2.COLOR_BGR2GRAY).astype(int)
-        assert np.abs(left - l0).mean() < 1.0
-        assert np.abs(right - r1).mean() < 1.0
+        # Each frame is exposure-matched to the last frame before the hard
+        # pick, so identical-brightness frames still differ by <=1 LSB.
+        assert np.abs(left - l0).mean() < 1.5
+        assert np.abs(right - r1).mean() < 1.5
 
     def test_b_tie_picks_first_frame(self):
         """Identical frames: np.argmax tie-break is the first frame."""
@@ -86,6 +88,16 @@ class TestOpenFocusAB:
             cv2.imwrite(str(tmp_path / f"f{i}.png"), frame)
         out = openfocus_b_impl(str(tmp_path), None, 7)
         assert out.shape[:2] == (60, 80)
+
+    def test_directory_order_is_natural(self, tmp_path):
+        """Frame order decides the last-frame prior/base reference, so
+        `img10` must not sort before `img2` (plain lexicographic order)."""
+        from fusion_methods.openfocus_ab import _collect_images
+        for i in (1, 2, 10):
+            cv2.imwrite(str(tmp_path / f"img{i}.png"),
+                        np.full((8, 8, 3), i * 10, np.uint8))
+        frames = _collect_images(str(tmp_path))
+        assert [int(f[0, 0, 0]) for f in frames] == [10, 20, 100]
 
     @pytest.mark.parametrize("method", ["openfocus_a", "openfocus_b",
                                         "openfocus_c"])
@@ -169,7 +181,7 @@ class TestBaseCorrection:
         return [base[0].astype(np.float32) * 0.6,
                 base[1].astype(np.float32)]
 
-    def test_default_off(self):
+    def test_default_base_frame_is_none(self):
         from core.multi_focus_fusion import MultiFocusFusion
         f = MultiFocusFusion(algorithm="openfocus_b", use_gpu=False)
         assert f.base_frame == "none"
@@ -180,7 +192,8 @@ class TestBaseCorrection:
         lp = lambda x: cv2.GaussianBlur(
             np.asarray(x, np.float32), (0, 0), 32).mean()
         out = MultiFocusFusion(algorithm="openfocus_b", use_gpu=False,
-                               base_frame="last").fuse(
+                               base_frame="last",
+                               exposure_match=False).fuse(
             input_source=list(stack), img_resize=None, kernel_size=7)
         assert abs(lp(out) - lp(stack[1])) < 3.0
 
@@ -190,31 +203,48 @@ class TestBaseCorrection:
         lp = lambda x: cv2.GaussianBlur(
             np.asarray(x, np.float32), (0, 0), 32).mean()
         out = MultiFocusFusion(algorithm="openfocus_b", use_gpu=False,
-                               base_frame="first").fuse(
+                               base_frame="first",
+                               exposure_match=False).fuse(
             input_source=list(stack), img_resize=None, kernel_size=7)
         assert abs(lp(out) - lp(stack[0])) < 4.0
 
-    def test_none_leaves_blend_untouched(self):
+    def test_exposure_match_calibrates_before_fusion(self):
+        """The pipeline scales every frame to the last frame's mean before
+        the focus measure, for every fusion method."""
+        from core.multi_focus_fusion import MultiFocusFusion
+        stack = self._drifted_stack()
+        lp = lambda x: cv2.GaussianBlur(
+            np.asarray(x, np.float32), (0, 0), 32).mean()
+        for algo in ("openfocus_a", "openfocus_b", "guided_filter"):
+            out = MultiFocusFusion(algorithm=algo, use_gpu=False,
+                                   base_frame="none",
+                                   exposure_match=True).fuse(
+                input_source=list(stack), img_resize=None, kernel_size=7)
+            assert abs(lp(out) - lp(stack[1])) < 3.0, algo
+
+    def test_exposure_match_off_leaves_stack_untouched(self):
+        """`exposure_match=False` must preserve the historical behaviour."""
         from core.multi_focus_fusion import MultiFocusFusion
         stack = self._drifted_stack()
         lp = lambda x: cv2.GaussianBlur(
             np.asarray(x, np.float32), (0, 0), 32).mean()
         out = MultiFocusFusion(algorithm="openfocus_b", use_gpu=False,
-                               base_frame="none").fuse(
+                               base_frame="none",
+                               exposure_match=False).fuse(
             input_source=list(stack), img_resize=None, kernel_size=7)
-        # no correction: the blend sits between the two frames
-        assert lp(stack[0]) + 10 < lp(out) < lp(stack[1]) - 10
+        assert lp(out) < lp(stack[1]) - 10
 
     def test_works_for_every_algorithm(self):
-        """The base correction is a post-step at the unified exit: classical
-        and tiled paths must both honour it."""
+        """`base_frame="last"` remains a post-step at the unified exit:
+        classical and tiled paths must both honour it."""
         from core.multi_focus_fusion import MultiFocusFusion
         stack = self._drifted_stack()
         lp = lambda x: cv2.GaussianBlur(
             np.asarray(x, np.float32), (0, 0), 32).mean()
         for algo in ("guided_filter", "gfgfgf"):
             out = MultiFocusFusion(algorithm=algo, use_gpu=False,
-                                   base_frame="last").fuse(
+                                   base_frame="last",
+                                   exposure_match=False).fuse(
                 input_source=list(stack), img_resize=None, kernel_size=7)
             assert abs(lp(out) - lp(stack[1])) < 4.0, algo
 

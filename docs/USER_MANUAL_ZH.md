@@ -705,7 +705,8 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--method, -m` | `guided_filter`（默认）、`dct`、`dtcwt`、`gfgfgf`、`stackmffv4`、`openfocus_a`、`openfocus_b`、`openfocus_c` |
 | `--align, -a` | `none`（默认）、`homography`、`ecc`、`both`、`openfocus` |
 | `--align-shift-limit` | 仅 `openfocus` 对齐：可接受的最大位移（帧尺寸比例，默认 0.08；超限帧放弃对齐而非半校正） |
-| `--base-frame` | 融合后把输出低频对齐到 `last`/`first` 帧（默认 `none`），消除亮度漂移 |
+| `--exposure-match` | 融合前把每帧均值标定到末帧（默认开启；`--no-exposure-match` 关闭）。增益按整栈计算，分块输出无接缝；对所有算法生效，并决定 OpenFocus 对齐的亮度参考端 |
+| `--base-frame` | 可选的后融合步骤：把输出低频对齐到 `last`/`first` 帧（默认 `none`） |
 | `--sort` | `openfocus_a/b/c` 的帧序：`asc`（默认，文件序）、`desc`（反转远→近扫描）、`off` |
 | `--dust-map WHITE` | 用失焦白场照片做平场（尘点图）校正 |
 | `--kernel, -k` | 核大小（自动取奇；openfocus 族为方差窗口半径来源） |

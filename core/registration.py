@@ -608,7 +608,7 @@ def _of_estimate_similarity(ref_hp, cur_hp,
 def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                           downscale_width=None, thread_count: int = 4,
                           should_cancel=None, equalize_brightness=True,
-                          max_shift_ratio=None):
+                          max_shift_ratio=None, brightness_reference="first"):
     """
     OpenFocus 快速对齐：有界相似变换（平移+旋转+缩放）+ 亮度均衡 + 自动裁边。
 
@@ -656,7 +656,13 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
         return g.astype(np.float32)
 
     ref_gray = _gray_float(images[0])
-    ref_low = cv2.GaussianBlur(ref_gray, (0, 0), 32.0)
+    # Geometry is always estimated against the first frame; the brightness
+    # target is configurable because the fusion pipeline now calibrates the
+    # stack to the LAST frame (the base reference). Matching the alignment
+    # gain to the same end avoids two contradictory scalar corrections.
+    bright_gray = (_gray_float(images[-1])
+                   if brightness_reference == "last" else ref_gray)
+    ref_low = cv2.GaussianBlur(bright_gray, (0, 0), 32.0)
     ref_low_mean = float(ref_low.mean()) or 1.0
     gains = [1.0]
 
@@ -1273,7 +1279,8 @@ class ImageRegistration:
     SUPPORTED_METHODS = ['homography', 'ecc', 'both', 'openfocus']
     
     def __init__(self, method: str = 'homography', downscale_width: int = 1024,
-                 max_shift_ratio: Optional[float] = None):
+                 max_shift_ratio: Optional[float] = None,
+                 brightness_reference: str = "first"):
         """
         初始化配准器
         
@@ -1294,6 +1301,10 @@ class ImageRegistration:
         self.downscale_width = int(downscale_width) if downscale_width is not None else 1024
         self.max_shift_ratio = (float(max_shift_ratio)
                                 if max_shift_ratio is not None else None)
+        # 'first' (reference frame) or 'last' (fusion base reference).
+        self.brightness_reference = (brightness_reference
+                                     if brightness_reference in ("first", "last")
+                                     else "first")
     
     def process(self, 
                 input_source: Union[str, List[np.ndarray]], 
@@ -1375,7 +1386,8 @@ class ImageRegistration:
                                      downscale_width=self.downscale_width,
                                      thread_count=thread_count,
                                      should_cancel=should_cancel,
-                                     max_shift_ratio=self.max_shift_ratio)
+                                     max_shift_ratio=self.max_shift_ratio,
+                                     brightness_reference=self.brightness_reference)
 
     def set_method(self, method: str):
         """

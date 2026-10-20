@@ -785,7 +785,8 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--method, -m` | `guided_filter` (default), `dct`, `dtcwt`, `gfgfgf`, `stackmffv4`, `openfocus_a`, `openfocus_b`, `openfocus_c` |
 | `--align, -a` | `none` (default), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-shift-limit` | `openfocus` align only: max accepted shift as a fraction of the frame size (default 0.08; frames above it are left unaligned) |
-| `--base-frame` | After fusion, match the output's low frequencies to the `last`/`first` frame (`none` default) — removes exposure drift |
+| `--exposure-match` | Match every frame's mean to the last frame before fusion (default: on; `--no-exposure-match` disables). Whole-stack gains, so tiled output stays seamless; applies to every method and to the OpenFocus aligner's brightness reference |
+| `--base-frame` | Optional post-fusion step: match the output's low frequencies to the `last`/`first` frame (`none` default) |
 | `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |
 | `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
 | `--kernel, -k` | Kernel size (forced odd; for the openfocus family it is the source of the variance-window radius) |

@@ -126,6 +126,7 @@ class RenderWorker(QThread):
         base_frame: str = "none",
         sort_mode: str = "asc",
         depth_smoothing: float = None,
+        exposure_match: bool = False,
     ):
         super().__init__()
         self.raw_images = raw_images
@@ -157,6 +158,8 @@ class RenderWorker(QThread):
         self.sort_mode = sort_mode if sort_mode in ("asc", "desc", "off") else "asc"
         # OpenFocus B 深度图过渡 σ（None = 默认 1.2）
         self.depth_smoothing = depth_smoothing
+        # 融合前曝光匹配：对齐与融合必须使用同一个亮度端（末帧）
+        self.exposure_match = bool(exposure_match)
         self.kernel_slider_value = kernel_slider_value
         # Tile params passed from UI (may be None -> use fusion defaults)
         self.tile_enabled = tile_enabled
@@ -277,11 +280,14 @@ class RenderWorker(QThread):
         # OpenFocus 快速对齐先跑（全局平移，毫秒级）；勾选了 ECC/单应性时
         # 在其结果上继续精配准——粗对齐让后续特征匹配更稳。
         if self.need_align_openfocus:
+            bright_ref = "last" if self.exposure_match else "first"
             if self.reg_downscale_width is not None:
                 fast = ImageRegistration(method="openfocus",
-                                         downscale_width=self.reg_downscale_width)
+                                         downscale_width=self.reg_downscale_width,
+                                         brightness_reference=bright_ref)
             else:
-                fast = ImageRegistration(method="openfocus")
+                fast = ImageRegistration(method="openfocus",
+                                         brightness_reference=bright_ref)
             images = fast.process(images, output_path=None,
                                   thread_count=self.thread_count,
                                   should_cancel=should_cancel)
@@ -365,6 +371,7 @@ class RenderWorker(QThread):
             stackmffv4_batch_size=self.stackmffv4_batch_size,
             base_frame=self.base_frame,
             sort_mode=self.sort_mode,
+            exposure_match=self.exposure_match,
         )
 
         # Classical algorithms are CPU-only (see AGENTS.md); only the neural
@@ -501,7 +508,8 @@ class BatchWorker(QThread):
                  tile_enabled=None, tile_block_size=None, tile_overlap=None, tile_threshold=None, thread_count: int = 4,
                  stackmffv4_batch_size: int = 2,
                  import_mode="multiple_folders", split_method=None, split_param=None,
-                 single_folder_images_with_times=None, use_gpu: bool = True):
+                 single_folder_images_with_times=None, use_gpu: bool = True,
+                 exposure_match: bool = False):
         super().__init__()
         self.folder_paths = folder_paths
         self.output_type = output_type
@@ -514,6 +522,7 @@ class BatchWorker(QThread):
         self.single_folder_images_with_times = single_folder_images_with_times or []
         # GPU 加速开关（仅影响 StackMFF-V4）
         self.use_gpu = bool(use_gpu)
+        self.exposure_match = bool(exposure_match)
 
         from core.image_loader import ImageStackLoader
         self.image_loader = ImageStackLoader()
@@ -671,7 +680,10 @@ class BatchWorker(QThread):
             if align_of:
                 # OpenFocus 快速对齐先跑（全局平移，毫秒级）
                 from core.registration import ImageRegistration
-                fast = ImageRegistration(method="openfocus")
+                fast = ImageRegistration(
+                    method="openfocus",
+                    brightness_reference=("last" if self.exposure_match
+                                          else "first"))
                 aligned_images = fast.process(
                     aligned_images, output_path=None,
                     thread_count=self.thread_count,
@@ -728,6 +740,8 @@ class BatchWorker(QThread):
                 algorithm=fusion_method, use_gpu=self.use_gpu,
                 base_frame=self.processing_settings.get('base_frame', 'none'),
                 sort_mode=self.processing_settings.get('sort_mode', 'asc'),
+                exposure_match=fusion_params.pop(
+                    'exposure_match', self.exposure_match),
                 **tile_kwargs)
 
             if fusion_method == "guided_filter":
@@ -772,7 +786,7 @@ class BatchWorker(QThread):
                     should_cancel=lambda: self.is_cancelled,
                 )
             elif fusion_method in ("openfocus_a", "openfocus_b", "openfocus_c"):
-                kernel_size = fusion_params.get('kernel_size', 7)
+                kernel_size = fusion_params.get('kernel_size', 11)
                 if kernel_size % 2 == 0:
                     kernel_size = max(1, kernel_size - 1)
                 result = fusion.fuse(
@@ -839,7 +853,10 @@ class BatchWorker(QThread):
 
             # OpenFocus 快速对齐先跑（若勾选）
             if "openfocus" in reg_methods:
-                fast = ImageRegistration(method="openfocus")
+                fast = ImageRegistration(
+                    method="openfocus",
+                    brightness_reference=("last" if self.exposure_match
+                                          else "first"))
                 aligned_images = fast.process(
                     images, output_path=None, thread_count=self.thread_count,
                     should_cancel=lambda: self.is_cancelled)
@@ -903,6 +920,8 @@ class BatchWorker(QThread):
                 algorithm=fusion_method, use_gpu=self.use_gpu,
                 base_frame=self.processing_settings.get('base_frame', 'none'),
                 sort_mode=self.processing_settings.get('sort_mode', 'asc'),
+                exposure_match=fusion_params.pop(
+                    'exposure_match', self.exposure_match),
                 **tile_kwargs)
 
             # 调用fuse方法执行融合：与单文件夹路径使用同一套 16-bit 输入/输出契约，

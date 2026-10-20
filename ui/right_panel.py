@@ -68,6 +68,7 @@ class RightPanelComponents:
     combo_fusion: QComboBox
     combo_align: QComboBox
     chk_base_correct: QCheckBox
+    chk_exposure_match: QCheckBox
     chk_reverse_order: QCheckBox
     slider_smooth: QSlider
     smooth_value_label: QLabel
@@ -230,6 +231,12 @@ def create_right_panel() -> RightPanelComponents:
     toggle_row.addWidget(chk_base_correct)
     config_layout.addLayout(toggle_row)
 
+    chk_exposure_match = QCheckBox(trans.t('chk_exposure_match'))
+    chk_exposure_match.setChecked(True)
+    chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
+    chk_exposure_match.setStyleSheet("color: #aaa;")
+    config_layout.addWidget(chk_exposure_match)
+
     # 反转帧序（倒序栈）：远→近扫的栈勾选后按规范方向处理，仅影响
     # OpenFocus A/B/C 的 base 参考端 / 末帧先验 / 深度图标签方向
     chk_reverse_order = QCheckBox(trans.t('chk_reverse_order'))
@@ -321,6 +328,7 @@ def create_right_panel() -> RightPanelComponents:
         combo_fusion=combo_fusion,
         combo_align=combo_align,
         chk_base_correct=chk_base_correct,
+        chk_exposure_match=chk_exposure_match,
         chk_reverse_order=chk_reverse_order,
         slider_smooth=slider_smooth,
         smooth_value_label=lbl_smooth_value,
@@ -358,6 +366,8 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
 
     # 基底校正开关（消除亮度漂移）：立即持久化，渲染时读取
     components.chk_base_correct.toggled.connect(window.set_base_correct)
+    # 融合前曝光匹配（整栈标定到末帧）：立即持久化
+    components.chk_exposure_match.toggled.connect(window.set_exposure_match)
     # 反转帧序（倒序栈）：仅影响 openfocus 族的帧序方向语义
     components.chk_reverse_order.toggled.connect(window.set_reverse_order)
 

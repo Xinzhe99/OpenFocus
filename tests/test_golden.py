@@ -43,7 +43,10 @@ def test_demo_stack_guided_filter_matches_golden():
     assert os.path.isdir(DEMO) and os.path.isfile(BASELINE), \
         "demo stack or golden baseline is missing from the checkout"
 
-    fusion = MultiFocusFusion(algorithm="guided_filter", use_gpu=False)
+    # The golden baseline predates the optional pre-fusion exposure match;
+    # this test pins the guided-filter algorithm itself.
+    fusion = MultiFocusFusion(algorithm="guided_filter", use_gpu=False,
+                              exposure_match=False)
     fused = fusion.fuse(input_source=_load_frames(), img_resize=None, kernel_size=31)
     assert fused is not None and fused.ndim == 3
 

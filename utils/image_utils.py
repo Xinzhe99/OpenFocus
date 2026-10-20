@@ -263,3 +263,55 @@ def quantize_fuse_output(result, is_16bit: bool):
     if is_16bit:
         return (np.clip(result, 0.0, 255.0) * (65535.0 / 255.0)).round().astype(np.uint16)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Exposure matching (pipeline-level, before fusion)
+# ---------------------------------------------------------------------------
+def _exposure_mean(frame):
+    """Mean of the color channels (alpha is not exposure)."""
+    arr = frame
+    if arr.ndim == 3 and arr.shape[2] > 3:
+        arr = arr[:, :, :3]
+    return float(np.asarray(arr, dtype=np.float32).mean())
+
+
+def exposure_gains(frames):
+    """Per-frame gains that put every frame at the last frame's mean level.
+
+    The reference A/B/C pipeline matches each frame's exposure to the last
+    frame (the base reference) before the focus measure. Doing it once here,
+    on the whole stack and before tiling, keeps the decision independent of
+    tile boundaries; a per-tile implementation would show brightness seams.
+    """
+    n = len(frames)
+    if n == 0:
+        return []
+    means = [_exposure_mean(f) for f in frames]
+    target = means[-1]
+    if target <= 1e-6:
+        return [1.0] * n
+    return [1.0 if m <= 1e-6 else target / m for m in means]
+
+
+def apply_exposure_gain(frame, gain):
+    """Apply one gain to the color channels, preserving dtype and alpha.
+
+    Alpha is opacity, not exposure: scaling it turns transparent pixels
+    opaque (or vice versa) and changes the fused result.
+    """
+    if gain == 1.0 or frame is None:
+        return frame
+    dtype = frame.dtype
+    limit = 65535.0 if dtype == np.uint16 else 255.0
+    out = frame.astype(np.float32)
+    if out.ndim == 3 and out.shape[2] == 4:
+        color = out[:, :, :3] * float(gain)
+        np.clip(color, 0.0, limit, out=color)
+        out[:, :, :3] = color
+    else:
+        out *= float(gain)
+        np.clip(out, 0.0, limit, out=out)
+    if dtype in (np.uint8, np.uint16):
+        return out.astype(dtype)
+    return out

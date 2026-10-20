@@ -697,6 +697,8 @@ class BatchProcessingDialog(QDialog):
             fusion_params["base_frame"] = (
                 "last" if getattr(self.parent_window,
                                   "base_frame_correct", False) else "none")
+            fusion_params["exposure_match"] = bool(getattr(
+                self.parent_window, "exposure_match", True))
             fusion_params["depth_smoothing"] = getattr(
                 self.parent_window, "ofb_depth_smoothing", None)
             # 帧序方向（仅 openfocus 族生效）

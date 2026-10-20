@@ -24,6 +24,7 @@ def _collect_state(window) -> Dict[str, Any]:
         "kernel_size": window.slider_smooth.value(),
         "stack_reverse_order": bool(getattr(window, "stack_reverse_order", False)),
         "base_frame_correct": bool(getattr(window, "base_frame_correct", False)),
+        "exposure_match": bool(getattr(window, "exposure_match", True)),
         "thread_count": getattr(window, "thread_count", 4),
         "tile_enabled": getattr(window, "tile_enabled", True),
         "tile_block_size": getattr(window, "tile_block_size", 1024),
@@ -248,6 +249,12 @@ def _apply_after_load(window, state: Dict[str, Any]) -> None:
     base_chk = getattr(window, "chk_base_correct", None)
     if base_chk is not None:
         base_chk.setChecked(base_correct)
+
+    exposure_match = bool(settings.get("exposure_match", True))
+    window.exposure_match = exposure_match
+    exp_chk = getattr(window, "chk_exposure_match", None)
+    if exp_chk is not None:
+        exp_chk.setChecked(exposure_match)
 
     if settings.get("thread_count"):
         window.thread_count = int(settings["thread_count"])

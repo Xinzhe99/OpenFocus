@@ -17,6 +17,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> **2026.10.20 · v1.57 — exposure matching + A/B/C parity.** New **Match exposure before fusion** switch (`--exposure-match`, on by default): every frame is scaled to the last frame's mean before the focus measure, for all eight fusion methods, with gains computed on the whole stack so tiled output stays seamless. OpenFocus A/B/C gained per-frame exposure calibration, `base_frame` as an independent optional post-step, one kernel default, and natural folder ordering. Existing golden baselines opt out explicitly to keep their pinned outputs.
+
 > **2026.10.18 · v1.56 — correctness pass.** EXIF-rotated photos now load upright and export with a neutral orientation tag; mixed 8/16-bit stacks fuse correctly; folder frames sort naturally (`img2` before `img10`); DCT keeps the input size and DTCWT no longer tiles (and seams) just because an image is large; depth maps follow the same frame order/alignment as the render; Japanese/Spanish survive a restart; WebP input and drag-export work.
 
 > **2026.10.15 · v1.54–v1.55** — **3D model export** (depth map + fused image as a textured OBJ for Blender/MeshLab), **camera RAW input** (DNG, CR2/CR3, NEF, ARW, RAF, … developed to 16-bit with one exposure mapping for the whole stack) and a **depth-smoothing control for OpenFocus B** (also `--depth-smoothing` on the CLI).

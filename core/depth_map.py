@@ -290,7 +290,7 @@ def _measure_openfocus(images, progress, should_cancel, kernel_size=11):
     return best_idx
 
 
-def _measure_openfocus_c(images, progress, should_cancel, kernel_size=7):
+def _measure_openfocus_c(images, progress, should_cancel, kernel_size=11):
     """C：最细带通层能量 argmax（金字塔法按频带决策的深度侧写）。
 
     band = gray − blur(gray, σ1)（拉普拉斯金字塔最细层的同款构造），
@@ -318,9 +318,15 @@ def _measure_openfocus_c(images, progress, should_cancel, kernel_size=7):
 # --------------------------------------------------------------------------
 # public entry
 # --------------------------------------------------------------------------
+# The depth map must use the same window as the fusion it explains:
+# DCT/GFG-FGF fuse with 7, the OpenFocus family with 11 (Radius 5).
+_DEPTH_KERNEL_DEFAULTS = {"dct": 7, "gfgfgf": 7,
+                          "openfocus_b": 11, "openfocus_c": 11}
+
+
 def compute_focus_index(images: Sequence[np.ndarray],
                          method: str,
-                         kernel_size: int = 7,
+                         kernel_size: Optional[int] = None,
                          block_size: int = 8,
                          model_path: Optional[str] = None,
                          use_gpu: bool = False,
@@ -332,18 +338,22 @@ def compute_focus_index(images: Sequence[np.ndarray],
     `images` are 0-255-domain BGR frames (uint8 or float). The output is
     always full stack size — dct decides winners on its block grid and the
     map is upscaled back, mirroring how dct fusion upscales its masks.
+    `kernel_size=None` uses the fusion default for that method (7 for
+    DCT/GFG-FGF, 11 for OpenFocus B/C).
     """
     _check(images)
     if images[0].dtype == np.uint16:
         # 与融合管线同口径：0-65535 -> 0-255 float（详见 normalize_fuse_input）
         images = [f.astype(np.float32) * (255.0 / 65535.0) for f in images]
     n = len(images)
+    kernel = (kernel_size if kernel_size is not None
+              else _DEPTH_KERNEL_DEFAULTS.get(method))
     if method == "dct":
         idx = _measure_dct(images, progress_callback, should_cancel,
-                           kernel_size=kernel_size, block_size=block_size)
+                           kernel_size=kernel, block_size=block_size)
     elif method == "gfgfgf":
         idx = _measure_gfgfgf(images, progress_callback, should_cancel,
-                              kernel_size=kernel_size)
+                              kernel_size=kernel)
     elif method == "dtcwt":
         idx = _measure_dtcwt(images, progress_callback, should_cancel)
     elif method == "stackmffv4":
@@ -351,10 +361,10 @@ def compute_focus_index(images: Sequence[np.ndarray],
                                   model_path=model_path, use_gpu=use_gpu)
     elif method == "openfocus_b":
         idx = _measure_openfocus(images, progress_callback, should_cancel,
-                                 kernel_size=kernel_size)
+                                 kernel_size=kernel)
     elif method == "openfocus_c":
         idx = _measure_openfocus_c(images, progress_callback, should_cancel,
-                                   kernel_size=kernel_size)
+                                   kernel_size=kernel)
     else:
         raise ValueError(f"Unsupported method for depth maps: {method}")
     return _norm_index(idx, n)

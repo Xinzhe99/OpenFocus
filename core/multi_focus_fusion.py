@@ -9,7 +9,8 @@ from fusion_methods.gff import gff_impl
 from fusion_methods.stackmffv4 import _stackmffv4_impl, _stackmffv4_batch_impl
 from fusion_methods.dtcwt import _dtcwt_impl
 from utils import resource_path
-from utils.image_utils import normalize_fuse_input
+from utils.image_utils import (apply_exposure_gain, exposure_gains,
+                               normalize_fuse_input)
 from utils.sorting import natural_sort_key
 
 
@@ -207,7 +208,8 @@ class MultiFocusFusion:
                  tile_overlap: int = 256, tile_threshold: int = 2048,
                  stackmffv4_batch_size: int = 2,
                  base_frame: str = "none",
-                 sort_mode: str = "asc"):
+                 sort_mode: str = "asc",
+                 exposure_match: bool = True):
         """
         初始化融合器
         
@@ -215,6 +217,8 @@ class MultiFocusFusion:
             algorithm (str): 融合算法名称,可选 'guided_filter', 'dct', 'dtcwt', 'stackmffv4'
             use_gpu (bool): 是否使用GPU加速(CUDA/MPS),默认为False
             stackmffv4_batch_size (int): StackMFF V4 批量处理大小，默认为2
+            exposure_match (bool): 融合前把每帧均值标定到末帧。整栈计算、
+                分块前应用；对所有算法生效。默认 True。
         """
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
@@ -236,6 +240,9 @@ class MultiFocusFusion:
         # 仅对 openfocus 族生效（其余算法对帧序不敏感）。
         # 没有内容式自动检测——内容是反转变换协变的，方向只能显式给出。
         self.sort_mode = sort_mode if sort_mode in ("asc", "desc", "off") else "asc"
+        # 融合前曝光匹配：把整栈每帧均值标定到末帧，再交给任何后端。
+        # 必须在分块之前按整栈计算，否则每个 tile 各自归一化会出现亮度接缝。
+        self.exposure_match = bool(exposure_match)
         self._validate_environment()
     
     def _ensure_supported_algorithm(self, algorithm: str) -> None:
@@ -290,11 +297,11 @@ class MultiFocusFusion:
     def _fuse_openfocus_a(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
-                          kernel_size: int = 7,
+                          kernel_size: int = 11,
                           **kwargs) -> np.ndarray:
         """OpenFocus - A：方差加权平均（末帧先验）。"""
         from fusion_methods.openfocus_ab import openfocus_a_impl
-        kernel_size = max(1, int(kernel_size or 7))
+        kernel_size = max(1, int(kernel_size or 11))
         if kernel_size % 2 == 0:
             kernel_size = max(1, kernel_size - 1)
         return openfocus_a_impl(input_source, img_resize,
@@ -304,11 +311,11 @@ class MultiFocusFusion:
     def _fuse_openfocus_b(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
-                          kernel_size: int = 7,
+                          kernel_size: int = 11,
                           **kwargs) -> np.ndarray:
         """OpenFocus - B：方差深度图选择。"""
         from fusion_methods.openfocus_ab import openfocus_b_impl
-        kernel_size = max(1, int(kernel_size or 7))
+        kernel_size = max(1, int(kernel_size or 11))
         if kernel_size % 2 == 0:
             kernel_size = max(1, kernel_size - 1)
         return openfocus_b_impl(input_source, img_resize,
@@ -335,20 +342,34 @@ class MultiFocusFusion:
     # ------------------------------------------------------------------
     BASE_CORRECTION_SIGMA = 32.0
 
-    def _base_frame_image(self, input_source) -> Optional[np.ndarray]:
+    def _base_frame_image(self, input_source,
+                          which: Optional[str] = None,
+                          exposure_gains=None) -> Optional[np.ndarray]:
         """取基底参考帧（末帧/首帧），统一到 float32 0-255 域。"""
+        which = which if which in ("last", "first") else self.base_frame
         frame = None
+        gain = None
         if isinstance(input_source, (list, tuple)):
             if not input_source:
                 return None
-            frame = input_source[-1] if self.base_frame == "last" else input_source[0]
+            if which == "last":
+                frame = input_source[-1]
+                gain = exposure_gains[-1] if exposure_gains else None
+            else:
+                frame = input_source[0]
+                gain = exposure_gains[0] if exposure_gains else None
         elif isinstance(input_source, str) and os.path.isdir(input_source):
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp', '.tif', '.tiff', '.bmp')
             files = [f for f in sorted(os.listdir(input_source), key=natural_sort_key)
                      if f.lower().endswith(exts)]
             if not files:
                 return None
-            name = files[-1] if self.base_frame == "last" else files[0]
+            if which == "last":
+                name = files[-1]
+                gain = exposure_gains[-1] if exposure_gains else None
+            else:
+                name = files[0]
+                gain = exposure_gains[0] if exposure_gains else None
             import cv2
             data = np.fromfile(os.path.join(input_source, name), dtype=np.uint8)
             frame = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
@@ -357,8 +378,14 @@ class MultiFocusFusion:
         if frame is None:
             return None
         if frame.dtype == np.uint16:
-            return (frame.astype(np.float32) * (255.0 / 65535.0))
-        return frame.astype(np.float32)
+            out = frame.astype(np.float32) * (255.0 / 65535.0)
+        else:
+            out = frame.astype(np.float32)
+        # List input has already been exposure-matched by fuse(); only a
+        # directory base frame still needs the gain (tiled directory path).
+        if gain is not None and isinstance(input_source, str):
+            out = apply_exposure_gain(out, gain)
+        return out
 
     # ------------------------------------------------------------------
     # 帧序规范化（Sort automatically，仅 openfocus 族生效）
@@ -386,15 +413,69 @@ class MultiFocusFusion:
                   "anchor to the other end).")
         return frames
 
-    def _apply_base_correction(self, fused, input_source):
+    def _exposure_gains_for_source(self, input_source):
+        """Gains for a whole stack, streaming directory input one frame at a
+        time (an exposure pass must not defeat the lazy tiled loader)."""
+        if isinstance(input_source, (list, tuple)):
+            frames = [f for f in input_source if f is not None]
+            return exposure_gains(frames)
+        if isinstance(input_source, str) and os.path.isdir(input_source):
+            import cv2
+            exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
+                    '.tif', '.tiff', '.bmp')
+            names = [f for f in sorted(os.listdir(input_source),
+                                       key=natural_sort_key)
+                     if f.lower().endswith(exts)]
+            means = []
+            for name in names:
+                data = np.fromfile(os.path.join(input_source, name),
+                                   dtype=np.uint8)
+                img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH |
+                                   cv2.IMREAD_COLOR)
+                if img is None:
+                    raise RuntimeError(f"Unable to read image: {name}")
+                color = (img[:, :, :3] if img.ndim == 3 and img.shape[2] > 3
+                         else img)
+                means.append(float(color.astype(np.float32).mean()))
+            if not means:
+                return None
+            target = means[-1]
+            if target <= 1e-6:
+                return [1.0] * len(means)
+            return [1.0 if m <= 1e-6 else target / m for m in means]
+        return None
+
+    def _materialize_exposure(self, input_source, gains):
+        """Load a directory stack with the per-frame gains already applied."""
+        if not isinstance(input_source, str) or not os.path.isdir(input_source):
+            return input_source
+        import cv2
+        exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
+                '.tif', '.tiff', '.bmp')
+        names = [f for f in sorted(os.listdir(input_source),
+                                   key=natural_sort_key)
+                 if f.lower().endswith(exts)]
+        frames = []
+        for name, gain in zip(names, gains):
+            data = np.fromfile(os.path.join(input_source, name),
+                               dtype=np.uint8)
+            img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+            if img is None:
+                raise RuntimeError(f"Unable to read image: {name}")
+            frames.append(apply_exposure_gain(img, gain))
+        return frames
+
+    def _apply_base_correction(self, fused, input_source, exposure_gains=None):
         """out += LP(I_base) − LP(out)：细节层不动，基底低频对齐参考帧。
 
-        细节层不动，基底低频对齐参考帧：消除帧间曝光/亮度漂移。
-        self.base_frame == 'none'（默认）时原样返回。
+        这是用户显式选择 base_frame='last'/'first' 时的可选后处理，
+        默认 'none' 不做事。参考帧本身要套用与融合输入相同的曝光增益，
+        否则开启 exposure_match 后这一步会把旧的曝光又拉回来。
         """
         if fused is None or self.base_frame == "none":
             return fused
-        base = self._base_frame_image(input_source)
+        which = self.base_frame
+        base = self._base_frame_image(input_source, which, exposure_gains)
         if base is None or base.shape[:2] != fused.shape[:2]:
             return fused
         import cv2
@@ -503,6 +584,14 @@ class MultiFocusFusion:
         # 深度图标签的确定性方向。必须在任何分派/分块之前完成，让整条
         # 下游（含基底校正）都看到排序后的栈。
         input_source = self._maybe_sort_input(input_source)
+        # 融合前曝光匹配：按整栈（不是按 tile）算出每帧增益。放在分派和
+        # 分块之前，以保证 tiled 与整图结果一致、块间无亮度接缝。
+        exposure_gains_ = None
+        if self.exposure_match:
+            exposure_gains_ = self._exposure_gains_for_source(input_source)
+            if exposure_gains_ is not None and isinstance(input_source, (list, tuple)):
+                input_source = [apply_exposure_gain(f, g)
+                                for f, g in zip(input_source, exposure_gains_)]
         # 如果传入的是已加载的图像列表且单张图像尺寸过大，则使用分块融合
         try:
             is_list_of_arrays = (
@@ -550,8 +639,9 @@ class MultiFocusFusion:
                     overlap=self.tile_overlap,
                     should_cancel=should_cancel,
                     progress_callback=progress_callback,
+                    exposure_gains=exposure_gains_,
                     **kws,
-                ), input_source)
+                ), input_source, exposure_gains_)
 
         # 情况2: 传入的是目录路径，进行懒加载判断（只读取第一张图片以判断尺寸）
         if isinstance(input_source, str) and os.path.isdir(input_source):
@@ -595,9 +685,13 @@ class MultiFocusFusion:
                         overlap=self.tile_overlap,
                         should_cancel=should_cancel,
                         progress_callback=progress_callback,
+                        exposure_gains=exposure_gains_,
                         **kws,
-                    ), input_source)
+                    ), input_source, exposure_gains_)
 
+        if exposure_gains_ is not None and isinstance(input_source, str):
+            input_source = self._materialize_exposure(input_source,
+                                                      exposure_gains_)
         if self.algorithm == 'guided_filter':
             result = self._fuse_guided_filter(input_source, img_resize, **kwargs)
         elif self.algorithm == 'dct':
@@ -622,7 +716,8 @@ class MultiFocusFusion:
         if should_cancel is not None and should_cancel():
             from core.registration import RegistrationCancelled
             raise RegistrationCancelled()
-        return self._apply_base_correction(result, input_source)
+        return self._apply_base_correction(result, input_source,
+                                           exposure_gains_)
     
     def _fuse_guided_filter(self, 
                             input_source: Union[str, List[np.ndarray]], 
@@ -883,6 +978,7 @@ class MultiFocusFusion:
                     thread_count: int = None,
                     should_cancel=None,
                     progress_callback=None,
+                    exposure_gains=None,
                     **kwargs) -> np.ndarray:
         """
         分块（滑动窗口）融合：当单张图像尺寸过大时调用。
@@ -964,6 +1060,7 @@ class MultiFocusFusion:
                 should_cancel=should_cancel,
                 progress_callback=progress_callback,
                 out_dtype=out_dtype,
+                exposure_gains=exposure_gains,
             )
 
         # 其他算法使用原有的多线程处理
@@ -1010,12 +1107,16 @@ class MultiFocusFusion:
                 crops = [img[y0:y1, x0:x1].copy() for img in imgs]
             else:
                 crops = []
-                for fname in files:
+                for idx, fname in enumerate(files):
                     fp = os.path.join(img_dir, fname)
                     full = cv2.imread(fp, cv2.IMREAD_UNCHANGED)
                     if full is None:
                         raise RuntimeError(f"Unable to read image: {fp}")
-                    crops.append(full[y0:y1, x0:x1].copy())
+                    crop = full[y0:y1, x0:x1].copy()
+                    if exposure_gains is not None:
+                        crop = apply_exposure_gain(
+                            crop, exposure_gains[idx])
+                    crops.append(crop)
                 # 目录里的 16-bit 文件同样要落到 0-255 float，否则各算法的
                 # /255 预处理会得到 0-257 的错值。
                 crops = normalize_fuse_input(crops)[0]
@@ -1099,6 +1200,7 @@ class MultiFocusFusion:
                                         should_cancel=None,
                                         progress_callback=None,
                                         out_dtype=np.uint8,
+                                        exposure_gains=None,
                                         **kwargs):
         """
         使用批量处理的 StackMFF V4 分块融合。
@@ -1153,12 +1255,16 @@ class MultiFocusFusion:
                     crops = [img[y0:y1, x0:x1].copy() for img in imgs]
                 else:
                     crops = []
-                    for fname in files:
+                    for idx, fname in enumerate(files):
                         fp = os.path.join(img_dir, fname)
                         full = cv2.imread(fp, cv2.IMREAD_UNCHANGED)
                         if full is None:
                             raise RuntimeError(f"Unable to read image: {fp}")
-                        crops.append(full[y0:y1, x0:x1].copy())
+                        crop = full[y0:y1, x0:x1].copy()
+                        if exposure_gains is not None:
+                            crop = apply_exposure_gain(
+                                crop, exposure_gains[idx])
+                        crops.append(crop)
                     crops = normalize_fuse_input(crops)[0]
                 tiles_list.append(crops)
             

@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 
 from utils.image_utils import fuse_output_dtype
+from utils.sorting import natural_sort_key
 
 
 def _collect_images(input_source) -> List[np.ndarray]:
@@ -28,11 +29,15 @@ def _collect_images(input_source) -> List[np.ndarray]:
         frames = [f for f in input_source if f is not None]
         if len(frames) < 2:
             raise ValueError("OpenFocus A/B fusion needs at least 2 frames")
-        return frames
+        # Same 0-255 domain as the directory loader: a uint16 list used to
+        # stay in 0-65535 and saturate on the final np.clip(..., 0, 255).
+        return [f.astype(np.float32) * (255.0 / 65535.0)
+                if f.dtype == np.uint16 else f for f in frames]
 
     if isinstance(input_source, str) and os.path.isdir(input_source):
         exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp', '.tif', '.tiff', '.bmp')
-        files = [f for f in sorted(os.listdir(input_source))
+        files = [f for f in sorted(os.listdir(input_source),
+                                    key=natural_sort_key)
                  if f.lower().endswith(exts)]
         if len(files) < 2:
             raise ValueError(

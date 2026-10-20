@@ -191,6 +191,8 @@ class OpenFocus(QMainWindow):
         self.use_gpu = True
         # 基底校正（消除亮度漂移）：默认关闭，右面板开关控制
         self.base_frame_correct = False
+        # 融合前曝光匹配：默认开启；整栈标定到末帧，所有算法共用
+        self.exposure_match = True
         # 恢复持久化设置与最近文件（语言需在菜单构建前应用）
         load_window_settings(self)
         load_drag_export_format(self)
@@ -361,6 +363,7 @@ class OpenFocus(QMainWindow):
         self.combo_fusion = right_panel_components.combo_fusion
         self.combo_align = right_panel_components.combo_align
         self.chk_base_correct = right_panel_components.chk_base_correct
+        self.chk_exposure_match = right_panel_components.chk_exposure_match
         self.chk_reverse_order = right_panel_components.chk_reverse_order
         # 帧序方向：False=asc（文件序，默认）/ True=desc（倒序栈）
         self.stack_reverse_order = False
@@ -393,6 +396,10 @@ class OpenFocus(QMainWindow):
         self.chk_base_correct.blockSignals(True)
         self.chk_base_correct.setChecked(bool(self.base_frame_correct))
         self.chk_base_correct.blockSignals(False)
+        self.chk_exposure_match.blockSignals(True)
+        self.chk_exposure_match.setChecked(bool(getattr(
+            self, "exposure_match", True)))
+        self.chk_exposure_match.blockSignals(False)
         self.chk_reverse_order.blockSignals(True)
         self.chk_reverse_order.setChecked(bool(
             getattr(self, "stack_reverse_order", False)))
@@ -949,8 +956,13 @@ class OpenFocus(QMainWindow):
         self.persist_settings()
 
     def set_base_correct(self, enabled: bool) -> None:
-        """右面板开关：消除亮度漂移（基底校正到末帧）。"""
+        """右面板开关：融合后的低频基底校正（默认关）。"""
         self.base_frame_correct = bool(enabled)
+        self.persist_settings()
+
+    def set_exposure_match(self, enabled: bool) -> None:
+        """右面板开关：融合前把整栈曝光标定到末帧（所有算法）。"""
+        self.exposure_match = bool(enabled)
         self.persist_settings()
 
     def _show_update_result(self, state: str, tag: str, page_url: str,
@@ -2331,6 +2343,9 @@ class OpenFocus(QMainWindow):
         if getattr(c, 'chk_base_correct', None) is not None:
             c.chk_base_correct.setText(trans.t('chk_base_correct'))
             c.chk_base_correct.setToolTip(trans.t('chk_base_correct_hint'))
+        if getattr(c, 'chk_exposure_match', None) is not None:
+            c.chk_exposure_match.setText(trans.t('chk_exposure_match'))
+            c.chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
         if getattr(c, 'chk_reverse_order', None) is not None:
             c.chk_reverse_order.setText(trans.t('chk_reverse_order'))
             c.chk_reverse_order.setToolTip(trans.t('chk_reverse_order_hint'))

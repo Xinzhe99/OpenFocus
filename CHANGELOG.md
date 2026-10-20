@@ -3,6 +3,30 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.57] — 2026-10-20
+
+A parity and exposure-handling release for the OpenFocus fusion family.
+
+### Added
+- **Exposure matching before fusion** (`Match exposure before fusion`,
+  `--exposure-match` / `--no-exposure-match`, on by default). Every frame's
+  mean is scaled to the last frame's mean before the focus measure, for
+  every fusion method. Gains are computed on the whole stack before tiling,
+  so tiled output stays seamless, and the OpenFocus aligner now uses the
+  same last-frame brightness reference when this option is on.
+- **OpenFocus A/B/C updates**: per-frame
+  exposure calibration, `base_frame` as an independent optional post-step,
+  method-specific depth-map kernel defaults, and natural frame ordering for
+  directory input.
+
+### Changed
+- **One OpenFocus kernel default (11)** across the fusion wrappers, the
+  depth-map estimator's OpenFocus path and the batch worker — they used 7
+  while the GUI/CLI already used 11. DCT/GFG-FGF keep their own default 7.
+- **OpenFocus A/B/C no longer apply an implicit post-fusion base step**;
+  `base_frame="last"/"first"` is the explicit opt-in, and `none` means no
+  post-step for any method.
+
 ## [v1.56] — 2026-10-18
 
 A correctness pass over image import, tiling and long sessions.

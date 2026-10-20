@@ -160,7 +160,8 @@ def test_dct_long_stack_keeps_winner_index_past_255():
     stack = [blurred] * FRAMES_OVER_UINT8
     stack[280] = winner
 
-    fused = MultiFocusFusion(algorithm="dct", use_gpu=False).fuse(
+    fused = MultiFocusFusion(algorithm="dct", use_gpu=False,
+                             exposure_match=False).fuse(
         input_source=stack, img_resize=None, block_size=8, kernel_size=7)
 
     assert np.array_equal(fused, winner), "DCT did not select the frame beyond index 255"

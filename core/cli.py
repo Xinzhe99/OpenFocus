@@ -58,8 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "frame size (default 0.08; frames above it are "
                              "left unaligned rather than half-corrected)")
     parser.add_argument("--base-frame", default="none", choices=["none", "last", "first"],
-                        help="Base correction after fusion: match the output's low frequencies to the "
-                             "last/first frame (removes brightness/exposure drift, default: none)")
+                        help="Optional post-fusion base correction: match the output's low "
+                             "frequencies to the last/first frame (default: none).")
+    parser.add_argument("--exposure-match", dest="exposure_match",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="Match every frame's exposure to the last frame before fusion "
+                             "(default: on; --no-exposure-match disables it). Computed on the "
+                             "whole stack before tiling, for every fusion method.")
     parser.add_argument("--sort", default="asc", choices=["asc", "desc", "off"],
                         help="Stack order for the openfocus_a/b/c methods: 'asc' keeps the file order "
                              "(default), 'desc' reverses a far-to-near sweep so the "
@@ -208,15 +213,18 @@ def _fuse_stack(images, args):
         t0 = time.time()
         # max_shift_ratio is only read by the openfocus method; the others
         # ignore it, so one call site stays simple.
-        reg = ImageRegistration(method=args.align, downscale_width=args.downscale,
-                                max_shift_ratio=getattr(args, "align_shift_limit",
-                                                        None))
+        reg = ImageRegistration(
+            method=args.align, downscale_width=args.downscale,
+            max_shift_ratio=getattr(args, "align_shift_limit", None),
+            brightness_reference=("last" if getattr(args, "exposure_match", True)
+                                  else "first"))
         images = reg.process(images, output_path=None, thread_count=args.threads)
         print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
 
     fusion_kwargs = dict(algorithm=args.method, use_gpu=not args.cpu,
                          base_frame=getattr(args, "base_frame", "none"),
-                         sort_mode=getattr(args, "sort", "asc"))
+                         sort_mode=getattr(args, "sort", "asc"),
+                         exposure_match=getattr(args, "exposure_match", True))
     if args.tile_size:
         fusion_kwargs["tile_block_size"] = args.tile_size
     if args.method == "stackmffv4":
