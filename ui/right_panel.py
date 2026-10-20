@@ -237,21 +237,12 @@ def create_right_panel() -> RightPanelComponents:
     chk_quick_preview = QCheckBox(trans.t('chk_quick_preview'))
     chk_quick_preview.setToolTip(trans.t('chk_quick_preview_hint'))
     chk_quick_preview.setStyleSheet("color: #aaa;")
-    # 快速预览 + 消除亮度漂移同一行（都是输出侧开关）
-    toggle_row = QHBoxLayout()
-    toggle_row.addWidget(chk_quick_preview)
-    chk_base_correct = QCheckBox(trans.t('chk_base_correct'))
-    chk_base_correct.setChecked(False)
-    chk_base_correct.setToolTip(trans.t('chk_base_correct_hint'))
-    chk_base_correct.setStyleSheet("color: #aaa;")
-    toggle_row.addWidget(chk_base_correct)
-    config_layout.addLayout(toggle_row)
-
-    chk_exposure_match = QCheckBox(trans.t('chk_exposure_match'))
-    chk_exposure_match.setChecked(True)
-    chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
-    chk_exposure_match.setStyleSheet("color: #aaa;")
-    config_layout.addWidget(chk_exposure_match)
+    # 三行两列：快速预览 | 反转帧序；融合前匹配曝光 | 消除亮度漂移。
+    # 旧布局是第一行两个、后两行各一个，右侧留空、行高不一致；把同属
+    # "输入侧"的帧序与输出侧开关混排也更难扫读。
+    row1 = QHBoxLayout()
+    row1.setSpacing(12)
+    row1.addWidget(chk_quick_preview)
 
     # 反转帧序（倒序栈）：远→近扫的栈勾选后按规范方向处理，仅影响
     # OpenFocus A/B/C 的 base 参考端 / 末帧先验 / 深度图标签方向
@@ -259,7 +250,25 @@ def create_right_panel() -> RightPanelComponents:
     chk_reverse_order.setChecked(False)
     chk_reverse_order.setToolTip(trans.t('chk_reverse_order_hint'))
     chk_reverse_order.setStyleSheet("color: #aaa;")
-    config_layout.addWidget(chk_reverse_order)
+    row1.addWidget(chk_reverse_order)
+    row1.addStretch()
+    config_layout.addLayout(row1)
+
+    row2 = QHBoxLayout()
+    row2.setSpacing(12)
+    chk_exposure_match = QCheckBox(trans.t('chk_exposure_match'))
+    chk_exposure_match.setChecked(True)
+    chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
+    chk_exposure_match.setStyleSheet("color: #aaa;")
+    row2.addWidget(chk_exposure_match)
+
+    chk_base_correct = QCheckBox(trans.t('chk_base_correct'))
+    chk_base_correct.setChecked(False)
+    chk_base_correct.setToolTip(trans.t('chk_base_correct_hint'))
+    chk_base_correct.setStyleSheet("color: #aaa;")
+    row2.addWidget(chk_base_correct)
+    row2.addStretch()
+    config_layout.addLayout(row2)
 
     right_splitter.addWidget(config_widget)
 

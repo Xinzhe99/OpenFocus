@@ -100,6 +100,28 @@ QMenuBar::item:pressed {{
     background-color: #4a4a4a;
 }}
 
+/* 通用列表/树视图（含非原生 QFileDialog 的目录树、QTreeWidget）：
+   QWidget 的浅色前景会级联到没有背景规则的 item view，形成浅底浅字。
+   这里给所有 item view 一个深色底 + 明确前景。 */
+QAbstractItemView {{
+    background-color: #2b2b2b;
+    color: #e0e0e0;
+    alternate-background-color: #333333;
+    selection-background-color: #3d6dda;
+    selection-color: #ffffff;
+    border: 1px solid #555;
+}}
+QAbstractItemView::item:hover {{ background-color: #3a3a3a; }}
+QAbstractItemView::item:selected {{ background-color: #3d6dda; color: #ffffff; }}
+QHeaderView::section {{
+    background-color: #333333;
+    color: #d0d0d0;
+    border: 0px;
+    border-right: 1px solid #555;
+    border-bottom: 1px solid #555;
+    padding: 4px 6px;
+}}
+
 /* 下拉菜单样式 */
 QMenu {{
     background-color: #2b2b2b;
@@ -533,6 +555,12 @@ QLabel { color: #1f2328; background: transparent; }
 QLabel:disabled { color: #9aa4ae; }
 
 QListWidget, QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 6px; padding: 3px; selection-background-color: #0969da; selection-color: #ffffff; }
+/* Same rule for item views in light mode: without it the native white
+   view keeps the inherited light-grey text and becomes unreadable. */
+QAbstractItemView { background-color: #ffffff; color: #1f2328; alternate-background-color: #f6f8fa; selection-background-color: #0969da; selection-color: #ffffff; border: 1px solid #d0d7de; }
+QAbstractItemView::item:hover { background-color: #eaeef2; }
+QAbstractItemView::item:selected { background-color: #0969da; color: #ffffff; }
+QHeaderView::section { background-color: #f6f8fa; color: #1f2328; border: 0px; border-right: 1px solid #d0d7de; border-bottom: 1px solid #d0d7de; padding: 4px 6px; }
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus { border-color: #0969da; }
 QComboBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 6px; padding: 3px 8px; }
 QComboBox:focus { border-color: #0969da; }
