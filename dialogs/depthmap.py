@@ -115,7 +115,11 @@ class _GradientBar(QLabel):
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#1a1a1a"))
+        # Follow the active theme: a hard-coded near-black strip looked like a
+        # hole in the light dialog.
+        from ui.styles import CURRENT_THEME
+        from utils.design_tokens import palette
+        p.fillRect(self.rect(), QColor(palette(CURRENT_THEME)["surfaceSunken"]))
         if self._lut is None:
             return
         m = 12  # side margin for labels
@@ -126,7 +130,7 @@ class _GradientBar(QLabel):
             c = self._lut[int(i / n * 255)]
             p.setPen(QColor(c[2], c[1], c[0]))
             p.drawLine(m + i, y, m + i, y + bar)
-        p.setPen(QColor("#b0b0b0"))
+        p.setPen(QColor(palette(CURRENT_THEME)["textMuted"]))
         f = p.font()
         f.setPointSize(8)
         p.setFont(f)
@@ -395,14 +399,8 @@ class DepthMapDialog(QDialog):
 
     # ------------------------------------------------------------------
     def _apply_style(self):
-        parent = self.parent()
-        theme = getattr(parent, "ui_theme", "dark") if parent else "dark"
-        if theme == "light":
-            self.setStyleSheet("QDialog { background-color: #ffffff; } QLabel { color: #1f2328; }")
-        else:
-            from ui.styles import DIALOG_CONTROL_DARK_QSS
-            self.setStyleSheet("QDialog { background-color: #2b2b2b; border: 1px solid #444; }"
-                               "QLabel { color: #d0d0d0; }" + DIALOG_CONTROL_DARK_QSS)
+        """Styling comes from the generated application stylesheet."""
+        self.setStyleSheet("")
 
     def _current_window_method(self):
         w = self.window_main

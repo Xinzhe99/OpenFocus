@@ -130,14 +130,8 @@ class ScaleBarDialog(QDialog):
         self.px_spin.setSingleStep(step)
 
     def _apply_style(self):
-        parent = self.parent()
-        theme = getattr(parent, "ui_theme", "dark") if parent else "dark"
-        if theme == "light":
-            self.setStyleSheet("QDialog { background-color: #ffffff; } QLabel { color: #1f2328; }")
-        else:
-            from ui.styles import DIALOG_CONTROL_DARK_QSS
-            self.setStyleSheet("QDialog { background-color: #2b2b2b; border: 1px solid #444; }"
-                               "QLabel { color: #d0d0d0; }" + DIALOG_CONTROL_DARK_QSS)
+        """Styling comes from the generated application stylesheet."""
+        self.setStyleSheet("")
 
     def _preview_image(self):
         parent = self.parent()

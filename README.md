@@ -17,10 +17,10 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **v1.61** — every window, dialog and menu audited in both themes: settings,
-> batch and ROI dialogs now follow the light theme, invisible contact link
-> and help buttons fixed, dust-map cards themed, spin-box padding fixed,
-> batch list gets an empty state.
+> **v1.62** — the visual layer was rewritten around a design system: one
+> token file (colour, spacing, radius, type), one stylesheet generator, and no
+> per-dialog palettes. Light and dark are now one code path; panels are
+> card-based with a clear primary action.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 

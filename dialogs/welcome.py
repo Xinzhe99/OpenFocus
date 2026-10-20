@@ -65,6 +65,7 @@ class WelcomeDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         ok = QPushButton(trans.t('btn_get_started'))
+        ok.setObjectName("primaryButton")
         ok.setDefault(True)
         ok.clicked.connect(self.accept)
         row.addWidget(ok)
@@ -82,15 +83,8 @@ class WelcomeDialog(QDialog):
         return theme != "light"
 
     def _apply_dialog_style(self):
-        """Keep the dialog readable in whichever theme is active."""
-        theme = getattr(self._main_window, "ui_theme", "dark") if self._main_window else "dark"
-        if theme == "light":
-            self.setStyleSheet("QDialog { background-color: #ffffff; } QLabel { color: #1f2328; }")
-        else:
-            self.setStyleSheet(
-                "QDialog { background-color: #2b2b2b; border: 1px solid #444; }"
-                "QLabel { color: #d0d0d0; }"
-            )
+        """Styling comes from the generated application stylesheet."""
+        self.setStyleSheet("")
 
     def _choose_theme(self, code: str) -> None:
         if self._main_window is not None:

@@ -3,6 +3,44 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.62] — 2026-10-21
+
+A ground-up rewrite of the visual layer: one design system, one stylesheet
+generator, no per-widget palettes.
+
+### Added
+- `utils/design_tokens.py` — the single source of truth for colour, spacing,
+  radius, type scale and icon glyphs. Light and dark expose the same semantic
+  keys (`surface`, `border`, `textMuted`, `accent`…), so widgets are written
+  once. 80 ad-hoc hex values collapsed to 30 semantic tokens.
+- `ui/styles.py` is now a generator: `build_stylesheet(theme)` renders every
+  rule from the tokens. The hand-written dark sheet, the `_to_light()` regex
+  that rewrote it, and the separate light sheet are gone.
+
+### Changed
+- **Every dialog is styled by the application sheet.** The seven dialogs that
+  carried their own dark QSS (settings, batch, ROI, depth-map, dust-map,
+  retouch, scale-bar) no longer do; `apply_dialog_theme` is retired.
+- **Light and dark are one code path.** `apply_theme` installs the generated
+  sheet on the application and then refreshes the widgets that paint by hand;
+  the old implementation stripped every inline stylesheet in light mode,
+  which is why light mode kept losing the panels' own styling.
+- **Image panels** have token-driven title bars, canvases and control bars;
+  the empty state is a muted hint instead of oversized text.
+- **Right panel** is card-based: `primaryButton` for Render, `secondaryButton`
+  for the rest, lists inside bordered cards, status block in the sunken
+  surface colour.
+- **Type and geometry** come from a 4 px grid and a five-step type scale
+  instead of ten different radii and seven paddings.
+
+### Fixed
+- `QListWidget` borders never rendered (Qt paints the border under the
+  viewport); lists are now wrapped in a bordered card.
+- Spin-box arrows were clipped by the text padding.
+- The depth-map gradient strip and the contact link no longer hard-code
+  colours that vanish in one theme.
+- Primary buttons were indistinguishable from secondary ones in dialogs.
+
 ## [v1.61] — 2026-10-20
 
 A full UI pass: every window, dialog and menu was captured in both themes and

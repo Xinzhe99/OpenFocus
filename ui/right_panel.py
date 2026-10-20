@@ -106,8 +106,8 @@ def _fill_combo(combo: QComboBox, items) -> None:
 
 def create_right_panel() -> RightPanelComponents:
     right_panel = QFrame()
+    right_panel.setObjectName("rightPanel")
     right_panel.setMinimumWidth(280)
-    right_panel.setStyleSheet("background-color: #2b2b2b; border-left: 1px solid #111;")
     right_layout = QVBoxLayout(right_panel)
     right_layout.setContentsMargins(0, 0, 0, 0)
     right_layout.setSpacing(0)
@@ -219,24 +219,26 @@ def create_right_panel() -> RightPanelComponents:
     depth_smooth_row.setVisible(False)
     config_layout.addWidget(depth_smooth_row)
 
+    # Primary action stands out; the two secondary actions share the row.
     button_bar = QHBoxLayout()
+    button_bar.setSpacing(8)
     btn_reset = QPushButton(trans.t('btn_reset'))
-    btn_reset.setStyleSheet(HOVER_HIGHLIGHT_BUTTON_STYLE)
+    btn_reset.setObjectName("secondaryButton")
     btn_render = QPushButton(trans.t('btn_render'))
-    btn_render.setFixedHeight(40)
-    btn_render.setStyleSheet(HOVER_HIGHLIGHT_BUTTON_STYLE)
+    btn_render.setObjectName("primaryButton")
+    btn_render.setFixedHeight(36)
     btn_compare = QPushButton(trans.t('btn_compare_all'))
-    btn_compare.setFixedHeight(40)
+    btn_compare.setObjectName("secondaryButton")
+    btn_compare.setFixedHeight(36)
     btn_compare.setToolTip(trans.t('btn_compare_all_hint'))
-    btn_compare.setStyleSheet(HOVER_HIGHLIGHT_BUTTON_STYLE)
     button_bar.addWidget(btn_reset)
-    button_bar.addWidget(btn_render)
+    button_bar.addWidget(btn_render, 1)
     button_bar.addWidget(btn_compare)
     config_layout.addLayout(button_bar)
 
     chk_quick_preview = QCheckBox(trans.t('chk_quick_preview'))
     chk_quick_preview.setToolTip(trans.t('chk_quick_preview_hint'))
-    chk_quick_preview.setStyleSheet("color: #aaa;")
+
     # 三行两列：快速预览 | 反转帧序；融合前匹配曝光 | 消除亮度漂移。
     # 旧布局是第一行两个、后两行各一个，右侧留空、行高不一致；把同属
     # "输入侧"的帧序与输出侧开关混排也更难扫读。
@@ -249,7 +251,7 @@ def create_right_panel() -> RightPanelComponents:
     chk_reverse_order = QCheckBox(trans.t('chk_reverse_order'))
     chk_reverse_order.setChecked(False)
     chk_reverse_order.setToolTip(trans.t('chk_reverse_order_hint'))
-    chk_reverse_order.setStyleSheet("color: #aaa;")
+
     row1.addWidget(chk_reverse_order)
     row1.addStretch()
     config_layout.addLayout(row1)
@@ -259,13 +261,13 @@ def create_right_panel() -> RightPanelComponents:
     chk_exposure_match = QCheckBox(trans.t('chk_exposure_match'))
     chk_exposure_match.setChecked(True)
     chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
-    chk_exposure_match.setStyleSheet("color: #aaa;")
+
     row2.addWidget(chk_exposure_match)
 
     chk_base_correct = QCheckBox(trans.t('chk_base_correct'))
     chk_base_correct.setChecked(False)
     chk_base_correct.setToolTip(trans.t('chk_base_correct_hint'))
-    chk_base_correct.setStyleSheet("color: #aaa;")
+
     row2.addWidget(chk_base_correct)
     row2.addStretch()
     config_layout.addLayout(row2)
@@ -282,8 +284,16 @@ def create_right_panel() -> RightPanelComponents:
     file_list.setIconSize(QSize(40, 40))
     file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     file_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-    file_list.setStyleSheet(SOURCE_LIST_STYLE)
-    source_list_layout.addWidget(file_list)
+    file_list.setObjectName("sourceList")
+    file_list.setFrameShape(QFrame.Shape.NoFrame)
+    # A QListWidget paints its own border under the viewport, so the visible
+    # frame has to come from a wrapping card.
+    file_card = QFrame()
+    file_card.setObjectName("listCard")
+    file_card_layout = QVBoxLayout(file_card)
+    file_card_layout.setContentsMargins(1, 1, 1, 1)
+    file_card_layout.addWidget(file_list)
+    source_list_layout.addWidget(file_card)
 
     right_splitter.addWidget(source_list_widget)
 
@@ -299,8 +309,14 @@ def create_right_panel() -> RightPanelComponents:
     output_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
     output_list.setDragEnabled(True)
     output_list.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
-    output_list.setStyleSheet(OUTPUT_LIST_STYLE)
-    output_list_layout.addWidget(output_list)
+    output_list.setObjectName("outputList")
+    output_list.setFrameShape(QFrame.Shape.NoFrame)
+    output_card = QFrame()
+    output_card.setObjectName("listCard")
+    output_card_layout = QVBoxLayout(output_card)
+    output_card_layout.setContentsMargins(1, 1, 1, 1)
+    output_card_layout.addWidget(output_list)
+    output_list_layout.addWidget(output_card)
 
     right_splitter.addWidget(output_list_widget)
 
@@ -310,21 +326,11 @@ def create_right_panel() -> RightPanelComponents:
 
     # Status Panel -----------------------------------------
     status_widget = QFrame()
-    status_widget.setStyleSheet("""
-        QFrame {
-            background-color: #252526; 
-            border-top: 1px solid #3e3e42;
-        }
-        QLabel {
-            color: #cccccc; 
-            font-size: 11px; 
-            font-family: Consolas, "Segoe UI", monospace;
-        }
-    """)
+    status_widget.setObjectName("statusPanel")
     status_layout = QGridLayout(status_widget)
-    status_layout.setContentsMargins(10, 8, 10, 8)
-    status_layout.setHorizontalSpacing(15)
-    status_layout.setVerticalSpacing(4)
+    status_layout.setContentsMargins(14, 10, 14, 10)
+    status_layout.setHorizontalSpacing(18)
+    status_layout.setVerticalSpacing(6)
 
     lbl_status_loaded = QLabel(trans.t('status_loaded').format(0))
     lbl_status_gpu = QLabel(trans.t('status_gpu').format('-'))

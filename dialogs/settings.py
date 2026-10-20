@@ -31,64 +31,6 @@ class DurationDialog(QDialog):
         self.duration = 500  # 默认500毫秒
 
         # 应用深色主题
-        from utils.ui_utils import apply_dialog_theme
-        apply_dialog_theme(self, parent, f"""
-            QDialog {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                font-family: "Segoe UI", "Microsoft YaHei";
-            }}
-            QLabel {{
-                color: #ffffff;
-            }}
-            QSpinBox {{
-                background-color: #3c3c3c;
-                color: #ffffff;
-                border: 1px solid #555;
-                padding: 5px;
-                selection-background-color: {PRIMARY_BLUE};
-                min-height: 30px;
-            }}
-            QSpinBox::up-button, QSpinBox::down-button {{
-                width: 30px;
-            }}
-            QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
-                background-color: #555;
-            }}
-            QSpinBox::up-arrow, QSpinBox::down-arrow {{
-                width: 10px;
-                height: 10px;
-            }}
-            QSpinBox::up-arrow:disabled, QSpinBox::down-button:disabled {{
-                image: none;
-            }}
-            QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
-                padding: 8px 20px;
-                border-radius: 4px;
-                font-weight: normal;
-            }}
-            QPushButton:hover {{
-                background-color: #555;
-            }}
-            QPushButton:pressed {{
-                background-color: #333;
-            }}
-            QGroupBox {{
-                color: #ffffff;
-                border: 1px solid #555;
-                border-radius: 5px;
-                margin-top: 10px;
-                font-weight: normal;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-            }}
-                """)
 
         layout = QVBoxLayout(self)
 
@@ -119,6 +61,7 @@ class DurationDialog(QDialog):
         button_layout.addStretch()
 
         self.ok_button = QPushButton(trans.t('btn_ok'))
+        self.ok_button.setObjectName("primaryButton")
         self.ok_button.setDefault(True)
         self.ok_button.clicked.connect(self.accept)
 
@@ -151,67 +94,8 @@ class DownsampleDialog(QDialog):
         self.max_percent = max(1, min(100, int(round(max_scale * 100))))
         self.scale_percent = min(max(1, int(initial_scale * 100)), self.max_percent)
 
-        # 应用深色主题（亮色主题下沿用应用级亮色样式，不强加深色）
-        from ui.styles import CURRENT_THEME as _theme
-        self._dark = _theme != "light"
-        if self._dark:
-            self._apply_dark_style()
-
+        # Styling comes from the generated application stylesheet.
         self._build_layout()
-
-    def _apply_dark_style(self):
-        from utils.ui_utils import apply_dialog_theme
-        apply_dialog_theme(self, self.parent(), f"""
-            QDialog {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                font-family: "Segoe UI", "Microsoft YaHei";
-            }}
-            QLabel {{
-                color: #ffffff;
-            }}
-            QSlider::groove:horizontal {{
-                border: 1px solid #333;
-                height: 6px;
-                background: #202020;
-                margin: 2px 0;
-                border-radius: 3px;
-            }}
-            QSlider::handle:horizontal {{
-                background: #888;
-                border: 1px solid #555;
-                width: 14px;
-                height: 14px;
-                margin: -5px 0;
-                border-radius: 7px;
-            }}
-            QSlider::handle:horizontal:hover {{
-                background: #aaa;
-            }}
-            QSlider::sub-page:horizontal {{
-                background: {PRIMARY_BLUE};
-                border-radius: 3px;
-            }}
-            QSpinBox {{
-                background-color: #3c3c3c;
-                color: #ffffff;
-                border: 1px solid #555;
-                padding: 5px;
-                selection-background-color: {PRIMARY_BLUE};
-                min-height: 30px;
-            }}
-            QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
-                padding: 8px 20px;
-                border-radius: 4px;
-                font-weight: normal;
-            }}
-            QPushButton:hover {{
-                background-color: #555;
-            }}
-                """)
 
     def _build_layout(self):
         layout = QVBoxLayout(self)
@@ -233,27 +117,7 @@ class DownsampleDialog(QDialog):
         self.decrease_btn.setAutoRepeatInterval(50)  # 重复间隔
         self.decrease_btn.clicked.connect(lambda: self.slider.setValue(self.slider.value() - 1))
         
-        # 小按钮样式
-        btn_style = """
-            QPushButton {
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
-                padding: 0px;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 18px;
-            }
-            QPushButton:hover {
-                background-color: #555;
-            }
-            QPushButton:pressed {
-                background-color: #333;
-            }
-        """
-        if self._dark:
-            self.decrease_btn.setStyleSheet(btn_style)
-
+        # The generated stylesheet styles these via objectName="stepButton".
         # 滑块
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(1, self.max_percent)
@@ -270,8 +134,6 @@ class DownsampleDialog(QDialog):
         self.increase_btn.setAutoRepeatDelay(300)  # 长按延迟
         self.increase_btn.setAutoRepeatInterval(50)  # 重复间隔
         self.increase_btn.clicked.connect(lambda: self.slider.setValue(self.slider.value() + 1))
-        if self._dark:
-            self.increase_btn.setStyleSheet(btn_style)
 
         # 旋转框
         self.spinbox = QSpinBox()
@@ -293,7 +155,7 @@ class DownsampleDialog(QDialog):
 
         # 提示信息
         hint_label = QLabel(trans.t('ds_hint'))
-        hint_label.setStyleSheet("color: #aaa; font-size: 11px; font-style: italic;")
+        hint_label.setObjectName("mutedLabel")
         hint_label.setWordWrap(True)
         layout.addWidget(hint_label)
 
@@ -308,6 +170,7 @@ class DownsampleDialog(QDialog):
         button_layout.addStretch()
 
         self.ok_button = QPushButton(trans.t('btn_ok'))
+        self.ok_button.setObjectName("primaryButton")
         self.ok_button.setDefault(True)
         self.ok_button.clicked.connect(self.accept)
 
@@ -337,36 +200,6 @@ class TileSettingsDialog(QDialog):
         self.resize(420, 260)
 
         # 应用与其他对话框一致的深色样式
-        from utils.ui_utils import apply_dialog_theme
-        apply_dialog_theme(self, parent, f"""
-            QDialog {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                font-family: "Segoe UI", "Microsoft YaHei";
-            }}
-            QLabel {{
-                color: #ffffff;
-            }}
-            QSpinBox {{
-                background-color: #3c3c3c;
-                color: #ffffff;
-                border: 1px solid #555;
-                padding: 5px;
-                selection-background-color: {PRIMARY_BLUE};
-                min-height: 28px;
-            }}
-            QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-weight: normal;
-            }}
-            QPushButton:hover {{
-                background-color: #555;
-            }}
-                """)
 
         layout = QVBoxLayout(self)
 
@@ -505,36 +338,6 @@ class RegistrationSettingsDialog(QDialog):
         self.setWindowTitle(trans.t("dialog_reg_title"))
         self.resize(360, 140)
 
-        from utils.ui_utils import apply_dialog_theme
-        apply_dialog_theme(self, parent, f"""
-            QDialog {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                font-family: "Segoe UI", "Microsoft YaHei";
-            }}
-            QLabel {{
-                color: #ffffff;
-            }}
-            QSpinBox {{
-                background-color: #3c3c3c;
-                color: #ffffff;
-                border: 1px solid #555;
-                padding: 5px;
-                selection-background-color: {PRIMARY_BLUE};
-                min-height: 28px;
-            }}
-            QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-weight: normal;
-            }}
-            QPushButton:hover {{
-                background-color: #555;
-            }}
-                """)
 
         layout = QVBoxLayout(self)
 
@@ -615,36 +418,6 @@ class ThreadSettingsDialog(QDialog):
         self.resize(420, 160)
 
         # Apply the same dark dialog styling as TileSettingsDialog
-        from utils.ui_utils import apply_dialog_theme
-        apply_dialog_theme(self, parent, f"""
-            QDialog {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                font-family: "Segoe UI", "Microsoft YaHei";
-            }}
-            QLabel {{
-                color: #ffffff;
-            }}
-            QSpinBox {{
-                background-color: #3c3c3c;
-                color: #ffffff;
-                border: 1px solid #555;
-                padding: 5px;
-                selection-background-color: {PRIMARY_BLUE};
-                min-height: 28px;
-            }}
-            QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-weight: normal;
-            }}
-            QPushButton:hover {{
-                background-color: #555;
-            }}
-                """)
 
         layout = QVBoxLayout(self)
 
@@ -725,36 +498,6 @@ class StackMFFV4BatchSettingsDialog(QDialog):
         self.resize(420, 160)
 
         # Apply the same dark dialog styling as other settings dialogs
-        from utils.ui_utils import apply_dialog_theme
-        apply_dialog_theme(self, parent, f"""
-            QDialog {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                font-family: "Segoe UI", "Microsoft YaHei";
-            }}
-            QLabel {{
-                color: #ffffff;
-            }}
-            QSpinBox {{
-                background-color: #3c3c3c;
-                color: #ffffff;
-                border: 1px solid #555;
-                padding: 5px;
-                selection-background-color: {PRIMARY_BLUE};
-                min-height: 28px;
-            }}
-            QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
-                padding: 6px 12px;
-                border-radius: 4px;
-                font-weight: normal;
-            }}
-            QPushButton:hover {{
-                background-color: #555;
-            }}
-                """)
 
         layout = QVBoxLayout(self)
 

@@ -46,107 +46,6 @@ class BatchProcessingDialog(QDialog):
         
         # Dark palette only in dark mode: hard-coding it showed a dark slab in
         # light mode.
-        from utils.ui_utils import apply_dialog_theme
-        apply_dialog_theme(self, parent, f"""
-            QDialog {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                font-family: "Segoe UI", "Microsoft YaHei";
-            }}
-            QLabel {{
-                color: #aaaaaa;
-            }}
-            QListWidget {{
-                background-color: #333;
-                border: 1px solid #555;
-            }}
-            QListWidget::item {{
-                padding: 5px;
-                color: #ccc;
-                border-bottom: 1px solid #444;
-            }}
-            QListWidget::item:selected {{
-                background-color: {PRIMARY_BLUE};
-                color: white;
-            }}
-            QListWidget::item:hover {{
-                background-color: #444;
-            }}
-            QComboBox {{
-                background-color: #fff;
-                color: #000;
-                font-weight: normal;
-                border: 1px solid #555;
-                padding: 5px;
-                border-radius: 3px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #fff;
-                color: #000;
-                selection-background-color: {PRIMARY_BLUE};
-                selection-color: #fff;
-                font-weight: normal;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 20px;
-            }}
-            QComboBox::down-arrow {{
-                image: url("{_ARROW_DOWN_DARK}");
-                width: 10px;
-                height: 10px;
-            }}
-            QLineEdit {{
-                background-color: #fff;
-                color: #000;
-                font-weight: normal;
-                border: 1px solid #555;
-                padding: 5px;
-                border-radius: 3px;
-            }}
-            QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-weight: normal;
-            }}
-            QPushButton:hover {{
-                background-color: #555;
-            }}
-            QPushButton:pressed {{
-                background-color: #333;
-            }}
-            QGroupBox {{
-                color: #ffffff;
-                border: 1px solid #555;
-                border-radius: 5px;
-                margin-top: 10px;
-                font-weight: normal;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-            }}
-            QRadioButton {{
-                spacing: 5px;
-            }}
-            QRadioButton::indicator {{
-                width: 18px;
-                height: 18px;
-                border-radius: 9px;
-                border: 2px solid #888;
-                background-color: #333;
-            }}
-            QRadioButton::indicator:checked {{
-                background: qradialgradient(cx:0.5, cy:0.5, radius:0.4, fx:0.5, fy:0.5, stop:0 #fff, stop:0.7 #fff, stop:0.71 #333, stop:1 #333);
-            }}
-            QRadioButton::indicator:hover {{
-                border: 2px solid #aaa;
-            }}
-        """)
         
         self.init_ui()
     
@@ -385,6 +284,7 @@ class BatchProcessingDialog(QDialog):
         button_layout.addStretch()
         
         start_btn = QPushButton(trans.t('batch_btn_start'))
+        start_btn.setObjectName("primaryButton")
         start_btn.clicked.connect(self.start_batch_processing)
         button_layout.addWidget(start_btn)
         
@@ -957,48 +857,6 @@ class FolderImportDialog(QDialog):
         self.setWindowTitle(trans.t('import_folder_title'))
         self.resize(500, 200)
 
-        from utils.ui_utils import apply_dialog_theme
-        apply_dialog_theme(self, parent, f"""
-            QDialog {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                font-family: "Segoe UI", "Microsoft YaHei";
-            }}
-            QLabel {{
-                color: #ffffff;
-            }}
-            QRadioButton {{
-                spacing: 10px;
-                color: #ffffff;
-            }}
-            QRadioButton::indicator {{
-                width: 18px;
-                height: 18px;
-                border-radius: 9px;
-                border: 2px solid #888;
-                background-color: #333;
-            }}
-            QRadioButton::indicator:checked {{
-                background: qradialgradient(cx:0.5, cy:0.5, radius:0.4, fx:0.5, fy:0.5, stop:0 #fff, stop:0.7 #fff, stop:0.71 #333, stop:1 #333);
-            }}
-            QRadioButton::indicator:hover {{
-                border: 2px solid #aaa;
-            }}
-            QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
-                padding: 8px 20px;
-                border-radius: 4px;
-                font-weight: normal;
-            }}
-            QPushButton:hover {{
-                background-color: #555;
-            }}
-            QPushButton:pressed {{
-                background-color: #333;
-            }}
-        """)
 
         layout = QVBoxLayout(self)
 
@@ -1030,6 +888,7 @@ class FolderImportDialog(QDialog):
         btn_layout.addStretch()
 
         self.ok_button = QPushButton(trans.t('btn_ok'))
+        self.ok_button.setObjectName("primaryButton")
         self.ok_button.setDefault(True)
         self.ok_button.clicked.connect(self.accept)
         btn_layout.addWidget(self.ok_button)

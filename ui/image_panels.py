@@ -19,6 +19,56 @@ from widgets.magnifier_label import MagnifierLabel
 from widgets.sharpness_curve import SharpnessCurveWidget
 from widgets.wipe_compare import WipeCompareWidget
 from locales import trans
+from utils.design_tokens import RADIUS, SPACE, WEIGHT, palette
+
+
+def _panel_qss(theme: str) -> str:
+    """Title bar, canvas and control bar for one image panel."""
+    t = palette(theme)
+    return f"""
+QWidget#panelRoot {{ background-color: {t['bg']}; }}
+QLabel#panelTitle {{
+    background-color: {t['surface']};
+    color: {t['textMuted']};
+    border-bottom: 1px solid {t['border']};
+    font-size: 9pt;
+    font-weight: {WEIGHT['semibold']};
+    padding-left: {SPACE['md']}px;
+}}
+QLabel#panelCanvas, QLabel#panelCanvasHint {{
+    background-color: {t['canvas']};
+}}
+QWidget#panelTitleBar {{
+    background-color: {t['surface']};
+    border-bottom: 1px solid {t['border']};
+}}
+QWidget#panelControlBar {{
+    background-color: {t['surface']};
+    border-top: 1px solid {t['border']};
+}}
+QLabel#panelCanvasHint {{
+    background-color: {t['canvas']};
+    color: {t['textFaint']};
+}}
+QPushButton#panelToggle {{
+    background-color: transparent;
+    color: {t['textMuted']};
+    border: 1px solid transparent;
+    border-radius: {RADIUS['sm']}px;
+    padding: 2px {SPACE['sm']}px;
+}}
+QPushButton#panelToggle:hover {{ background-color: {t['surfaceHover']}; }}
+QPushButton#panelToggle:checked {{
+    background-color: {t['accentSoft']};
+    color: {t['accentSoftText']};
+    border-color: {t['accentSoftText']};
+}}
+"""
+
+
+def apply_panel_theme(widget, theme: str) -> None:
+    """Re-apply the panel stylesheet after a theme switch."""
+    widget.setStyleSheet(_panel_qss(theme))
 
 
 @dataclass
@@ -58,29 +108,31 @@ def create_source_panel() -> SourcePanel:
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(0)
 
+    container.setObjectName("panelRoot")
     title = QLabel(' ' + trans.t('panel_source_stack'))
-    title.setFixedHeight(25)
-    title.setStyleSheet("background-color: #333; color: #aaa; border-bottom: 1px solid #444;")
+    title.setObjectName("panelTitle")
+    title.setFixedHeight(26)
     title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     image_label = MagnifierLabel("Drag images here to add source files\nor use the image menu")
     image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    image_label.setFont(QFont("Microsoft YaHei", 16))
-    image_label.setStyleSheet("background-color: #222; color: #666;")
+    image_label.setFont(QFont("Microsoft YaHei", 10))
+    image_label.setObjectName("panelCanvasHint")
     image_label.setAcceptDrops(True)
     image_label.setScaledContents(False)
     image_label.setMinimumSize(100, 100)
     image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
 
     control_bar = QWidget()
-    control_bar.setFixedHeight(40)
-    control_bar.setStyleSheet("background-color: #2a2a2a; border-top: 1px solid #444;")
+    control_bar.setObjectName("panelControlBar")
+    control_bar.setFixedHeight(42)
 
     control_layout = QHBoxLayout(control_bar)
-    control_layout.setContentsMargins(10, 0, 10, 0)
-    control_layout.setSpacing(5)
+    control_layout.setContentsMargins(12, 0, 12, 0)
+    control_layout.setSpacing(8)
 
     info_label = QLabel("-- / --")
+    info_label.setObjectName("mutedLabel")
     info_label.setFixedWidth(60)
     info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -89,10 +141,9 @@ def create_source_panel() -> SourcePanel:
     slider.setEnabled(False)
 
     roi_btn = QPushButton(trans.t('btn_roi'))
+    roi_btn.setObjectName("panelToggle")
     roi_btn.setCheckable(True)
-    # roi_btn.setFixedWidth(40) # Allow auto-width for longer text
     roi_btn.setToolTip(trans.t('btn_roi_hint'))
-    roi_btn.setStyleSheet("QPushButton { background-color: #333; color: #aaa; border: 1px solid #444; border-radius: 2px; padding: 0 5px; } QPushButton:checked { background-color: #0078d7; color: white; border-color: #005a9e; }")
 
     control_layout.addWidget(info_label)
     control_layout.addWidget(slider)
@@ -129,39 +180,41 @@ def create_result_panel() -> ResultPanel:
 
     # Title bar carries the always-visible Wipe toggle: the bottom control
     # bar is hidden most of the time, which used to hide the button with it
+    container.setObjectName("panelRoot")
     title_bar = QWidget()
-    title_bar.setFixedHeight(25)
-    title_bar.setStyleSheet("background-color: #333; border-bottom: 1px solid #444;")
+    title_bar.setObjectName("panelTitleBar")
+    title_bar.setFixedHeight(26)
     title_layout = QHBoxLayout(title_bar)
-    title_layout.setContentsMargins(6, 0, 4, 0)
-    title_layout.setSpacing(4)
+    title_layout.setContentsMargins(10, 0, 6, 0)
+    title_layout.setSpacing(6)
 
-    title = QLabel(' ' + trans.t('panel_output'))
-    title.setStyleSheet("color: #aaa; background: transparent;")
+    title = QLabel(trans.t('panel_output'))
+    title.setObjectName("panelTitle")
     title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     wipe_btn = QPushButton(trans.t('btn_wipe'))
+    wipe_btn.setObjectName("panelToggle")
     wipe_btn.setCheckable(True)
     wipe_btn.setToolTip(trans.t('wipe_hint'))
-    wipe_btn.setStyleSheet("QPushButton { background-color: #333; color: #aaa; border: 1px solid #444; border-radius: 2px; padding: 0 6px; } QPushButton:checked { background-color: #0078d7; color: white; border-color: #005a9e; }")
     title_layout.addWidget(title)
     title_layout.addStretch()
     title_layout.addWidget(wipe_btn)
 
     image_label = MagnifierLabel()
-    image_label.setStyleSheet("background-color: #222;")
+    image_label.setObjectName("panelCanvas")
     image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
 
     control_bar = QWidget()
-    control_bar.setFixedHeight(40)
-    control_bar.setStyleSheet("background-color: #2a2a2a; border-top: 1px solid #444;")
+    control_bar.setObjectName("panelControlBar")
+    control_bar.setFixedHeight(42)
 
     control_layout = QHBoxLayout(control_bar)
-    control_layout.setContentsMargins(10, 0, 10, 0)
-    control_layout.setSpacing(5)
+    control_layout.setContentsMargins(12, 0, 12, 0)
+    control_layout.setSpacing(8)
 
     info_label = QLabel("-- / --")
+    info_label.setObjectName("mutedLabel")
     info_label.setFixedWidth(60)
     info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -176,22 +229,20 @@ def create_result_panel() -> ResultPanel:
 
     # Wipe compare page: the compare widget plus its A/B source selectors
     wipe_widget = WipeCompareWidget()
-    wipe_widget.setStyleSheet("background-color: #181818;")
 
     def _make_wipe_group(label_text, follow_text):
         """One wipe side: follow checkbox + frame slider + index label."""
         side_label = QLabel(label_text)
-        side_label.setStyleSheet("color: #aaa; background: transparent;")
+        side_label.setObjectName("mutedLabel")
         follow_chk = QCheckBox(follow_text)
         follow_chk.setChecked(True)
-        follow_chk.setStyleSheet("color: #aaa; background: transparent;")
         frame_slider = QSlider(Qt.Orientation.Horizontal)
         frame_slider.setRange(0, 0)
         frame_slider.setEnabled(False)
         frame_slider.setMinimumWidth(60)
         index_label = QLabel("-")
+        index_label.setObjectName("mutedLabel")
         index_label.setMinimumWidth(52)
-        index_label.setStyleSheet("color: #aaa; background: transparent;")
         return follow_chk, frame_slider, index_label, side_label
 
     chk_follow_left, slider_wipe_left, lbl_left_idx, label_a = _make_wipe_group(
@@ -200,8 +251,8 @@ def create_result_panel() -> ResultPanel:
         trans.t('wipe_side_b'), trans.t('wipe_follow_latest'))
 
     wipe_bar = QWidget()
-    wipe_bar.setFixedHeight(40)
-    wipe_bar.setStyleSheet("background-color: #2a2a2a; border-top: 1px solid #444;")
+    wipe_bar.setObjectName("panelControlBar")
+    wipe_bar.setFixedHeight(42)
     wipe_bar_layout = QHBoxLayout(wipe_bar)
     wipe_bar_layout.setContentsMargins(8, 2, 8, 2)
     wipe_bar_layout.setSpacing(6)
@@ -216,7 +267,7 @@ def create_result_panel() -> ResultPanel:
 
     divider = QFrame()
     divider.setFrameShape(QFrame.Shape.VLine)
-    divider.setStyleSheet("color: #444; background: transparent;")
+    divider.setObjectName("divider")
     wipe_bar_layout.addWidget(divider)
 
     _add_side(wipe_bar_layout, label_b, chk_follow_right, slider_wipe_right, lbl_right_idx)

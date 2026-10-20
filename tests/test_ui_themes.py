@@ -15,12 +15,20 @@ def _source(name):
     return Path(name).read_text(encoding="utf-8")
 
 
-def test_dialogs_do_not_hardcode_the_dark_palette_unconditionally():
-    """Each dark QSS must sit behind apply_dialog_theme (or an explicit
-    theme check), never applied unconditionally."""
-    for name in ("dialogs/settings.py", "dialogs/batch.py", "dialogs/roi.py"):
+def test_dialogs_do_not_carry_their_own_palette():
+    """Dialogs must be styled by the generated application sheet only.
+
+    They used to ship their own dark QSS (later gated by apply_dialog_theme);
+    both are gone now, so a dialog that reintroduces a hard-coded palette
+    would silently opt out of the design system.
+    """
+    for name in ("dialogs/settings.py", "dialogs/batch.py", "dialogs/roi.py",
+                 "dialogs/dustmap.py", "dialogs/depthmap.py", "dialogs/help.py"):
         src = _source(name)
-        assert "apply_dialog_theme" in src, f"{name} ignores the window theme"
+        assert "apply_dialog_theme" not in src, (
+            f"{name} still applies a per-dialog palette")
+        assert "background-color: #2b2b2b" not in src, (
+            f"{name} hard-codes the old dark background")
 
 
 def test_contact_link_colour_follows_the_theme():
@@ -32,11 +40,13 @@ def test_contact_link_colour_follows_the_theme():
 
 def test_help_button_style_is_theme_aware():
     from ui.styles import help_button_style
+    from utils.design_tokens import palette
     light = help_button_style("light")
     dark = help_button_style("dark")
     assert light != dark
-    assert "#eaeef2" in light and "#555" in dark
-    # the selector must out-specify a plain `QPushButton` dialog rule
+    # both pull their colours from the palette, not from literals
+    assert palette("light")["surfaceHover"] in light
+    assert palette("dark")["surfaceHover"] in dark
     assert "QPushButton#helpButton" in light
     assert "QPushButton#helpButton" in dark
 
@@ -48,10 +58,12 @@ def test_dustmap_preview_follows_the_theme():
 
 
 def test_spin_boxes_reserve_room_for_their_buttons():
-    """The up/down column is 20 px wide; without right padding the text runs
-    underneath it (the depth-map dialog showed '1.00' under the arrows)."""
+    """The up/down column is 20 px wide; the text side must not run under it."""
     from ui.styles import get_app_light_style
-    assert "padding-right: 22px" in get_app_light_style()
+    qss = get_app_light_style()
+    spin = qss[qss.index("QSpinBox, QDoubleSpinBox {"):]
+    spin = spin[:spin.index("}")]
+    assert "22px" in spin, "spin boxes must reserve the arrow column"
 
 
 def test_batch_dialog_has_an_empty_state():

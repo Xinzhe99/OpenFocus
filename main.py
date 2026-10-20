@@ -121,6 +121,21 @@ def _shutdown_worker(worker, timeout_ms=1500):
             _ORPHAN_THREADS.append(worker)
 
 
+def _apply_font_family(qss: str, ui_font: str, mono_font: str) -> str:
+    """Swap the stylesheet's font stacks for the resolved families.
+
+    The old code replaced one literal string; when the generator changed its
+    font stack the replacement silently stopped matching and the QSS kept its
+    own family. Match every stack the generator can emit.
+    """
+    for stack in ('"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
+                  '"Segoe UI", "Microsoft YaHei"'):
+        qss = qss.replace(stack, ui_font)
+    for stack in ('Consolas, "Segoe UI", monospace',):
+        qss = qss.replace(stack, mono_font)
+    return qss
+
+
 def update_manager_for(window) -> UpdateManager:
     """Return (creating on first use) the window's update manager.
 
@@ -290,6 +305,7 @@ class OpenFocus(QMainWindow):
         
         # --- A1/A2. 图像视图面板 ---
         source_panel = create_source_panel()
+        self._panel_widgets = [source_panel.widget]
         self.lbl_source_img = source_panel.image_label
         self.source_control_bar = source_panel.control_bar
         self.stack_slider = source_panel.slider
@@ -307,6 +323,7 @@ class OpenFocus(QMainWindow):
         # self.lbl_source_img.roiDeleted.connect(lambda: self.btn_preview_roi.setChecked(False))
 
         result_panel = create_result_panel()
+        self._panel_widgets.append(result_panel.widget)
         self.lbl_result_img = result_panel.image_label
         self.result_control_bar = result_panel.control_bar
         self.result_slider = result_panel.slider
@@ -2086,10 +2103,14 @@ class OpenFocus(QMainWindow):
     def apply_theme(self, theme: str) -> None:
         """Apply the 'dark' or 'light' theme immediately and persist it.
 
-        dark  = the custom dark QSS (unchanged look from previous versions)
-        light = native light palette with the custom stylesheet cleared, so
-                every control is guaranteed readable without per-widget
-                light variants of the many hardcoded dark styles
+        Both themes are generated from the same design tokens, so this is a
+        single code path: clear any per-widget leftovers, install the
+        generated sheet on the application, then let widgets that paint by
+        hand (image panels, banner, help buttons) refresh their own palette.
+
+        The old implementation stripped every inline stylesheet in light mode
+        and relied on a hand-written light sheet, which is why light mode kept
+        losing the panels' own styling.
         """
         from ui.styles import get_theme_style, set_current_theme
         theme = "light" if theme == "light" else "dark"
@@ -2097,53 +2118,35 @@ class OpenFocus(QMainWindow):
         ui_font = get_ui_font_family()
         mono_font = get_monospace_font_family()
 
-        if theme == "light":
-            # Strip every inline dark stylesheet (they are all dark-designed),
-            # remembering originals so switching back to dark restores them.
-            if not getattr(self, "_inline_styles_saved", None):
-                saved = []
-                for wdg in self.findChildren(__import__("PyQt6.QtWidgets", fromlist=["QWidget"]).QWidget):
-                    try:
-                        ss = wdg.styleSheet()
-                        if ss:
-                            saved.append((wdg, ss))
-                            wdg.setStyleSheet("")
-                    except RuntimeError:
-                        pass
-                self._inline_styles_saved = saved
-            self.setStyleSheet("")
-            app = QApplication.instance()
-            if app is not None:
-                app.setStyleSheet("")
-                app.setPalette(app.style().standardPalette())
-            from ui.styles import get_app_light_style
-            app.setStyleSheet(
-                get_app_light_style()
-                .replace('"Segoe UI", "Microsoft YaHei"', ui_font)
-                .replace('Consolas, "Segoe UI", monospace', mono_font))
-        else:
-            # Restore the inline dark-designed styles captured for light mode
-            for wdg, ss in getattr(self, "_inline_styles_saved", None) or []:
-                try:
-                    wdg.setStyleSheet(ss)
-                except RuntimeError:
-                    pass
-            self._inline_styles_saved = None
-            # Clear the app-level light stylesheet + palette first — leaving
-            # it in place kept plain containers white and tooltips/scrollbars
-            # light after a light->dark switch.
-            app = QApplication.instance()
-            if app is not None:
-                app.setStyleSheet("")
-                app.setPalette(app.style().standardPalette())
-            style_sheet = get_theme_style(theme).replace('"Segoe UI", "Microsoft YaHei"', ui_font).replace('Consolas, "Segoe UI", monospace', mono_font)
-            self.setStyleSheet(style_sheet)
+        # Drop stylesheets captured by the previous (light) implementation.
+        for wdg, _ss in getattr(self, "_inline_styles_saved", None) or []:
+            try:
+                wdg.setStyleSheet("")
+            except RuntimeError:
+                pass
+        self._inline_styles_saved = None
+        self.setStyleSheet("")
+
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet("")
+            app.setPalette(app.style().standardPalette())
+            app.setStyleSheet(_apply_font_family(get_theme_style(theme),
+                                                 ui_font, mono_font))
 
         # Re-colour themed inline widgets that the light pass above strips:
         # the update banner must survive that sweep with a readable palette.
         banner = getattr(self, "update_banner", None)
         if banner is not None:
             banner.apply_theme(theme)
+        # Image panels carry their own QSS (title bar / canvas / control bar);
+        # it must be rebuilt for the new palette.
+        from ui.image_panels import apply_panel_theme
+        for panel in getattr(self, "_panel_widgets", []):
+            try:
+                apply_panel_theme(panel, theme)
+            except RuntimeError:
+                pass
         # Inline "?" button styles are captured at creation; re-apply them for
         # the new theme or the dark chip stays dark on the light panel.
         from ui.styles import help_button_style
