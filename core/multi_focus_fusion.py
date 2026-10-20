@@ -306,7 +306,8 @@ class MultiFocusFusion:
             kernel_size = max(1, kernel_size - 1)
         return openfocus_a_impl(input_source, img_resize,
                                 kernel_size=kernel_size,
-                                thread_count=kwargs.get('thread_count', None))
+                                thread_count=kwargs.get('thread_count', None),
+                                blend_smoothing=kwargs.get('blend_smoothing', None))
 
     def _fuse_openfocus_b(self,
                           input_source: Union[str, List[np.ndarray]],
@@ -326,16 +327,18 @@ class MultiFocusFusion:
     def _fuse_openfocus_c(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
-                          kernel_size: int = 7,
+                          kernel_size: int = 11,
                           **kwargs) -> np.ndarray:
-        """OpenFocus - C：拉普拉斯金字塔融合。"""
+        """OpenFocus - C：拉普拉斯金字塔融合。
+
+        C has no radius: its only user parameter is the blending Smoothing
+        (`blend_smoothing`). `kernel_size` is
+        accepted for signature parity with A/B and ignored.
+        """
         from fusion_methods.openfocus_ab import openfocus_c_impl
-        kernel_size = max(1, int(kernel_size or 7))
-        if kernel_size % 2 == 0:
-            kernel_size = max(1, kernel_size - 1)
         return openfocus_c_impl(input_source, img_resize,
-                                kernel_size=kernel_size,
-                                thread_count=kwargs.get('thread_count', None))
+                                thread_count=kwargs.get('thread_count', None),
+                                blend_smoothing=kwargs.get('blend_smoothing', None))
 
     # ------------------------------------------------------------------
     # 基底校正（消除亮度漂移）

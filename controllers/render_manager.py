@@ -430,6 +430,14 @@ class RenderManager:
             sort_mode="desc" if getattr(window, "stack_reverse_order", False)
                 else "asc",
             depth_smoothing=getattr(window, "ofb_depth_smoothing", None),
+            # Per-method smoothing: the spin box shows the sigma of the
+            # selected method, so the render must use that method's value —
+            # a shared field sent A's blend sigma to C after a switch.
+            # Duck-typed hosts (tests, preview stubs) may not implement it.
+            blend_smoothing=(
+                window.smoothing_for_method(fusion_method)
+                if callable(getattr(window, "smoothing_for_method", None))
+                else getattr(window, "of_blend_smoothing", None)),
             exposure_match=bool(getattr(window, "exposure_match", True)),
         )
 

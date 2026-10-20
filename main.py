@@ -268,7 +268,8 @@ class OpenFocus(QMainWindow):
         # 2. 主容器
         main_container = QWidget()
         self.setCentralWidget(main_container)
-        main_layout = QHBoxLayout(main_container)
+        # 垂直：顶部可选更新横幅 + 主分割器。横幅默认隐藏，隐藏时不占高度。
+        main_layout = QVBoxLayout(main_container)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
@@ -374,7 +375,9 @@ class OpenFocus(QMainWindow):
         self.depth_smooth_row = right_panel_components.depth_smooth_row
         self.lbl_depth_smooth = right_panel_components.lbl_depth_smooth
         self.spin_depth_smooth = right_panel_components.spin_depth_smooth
-        self.spin_depth_smooth.setValue(float(getattr(self, "ofb_depth_smoothing", 1.2) or 0.0))
+        # 先按当前方法显示它自己的 σ（A/B/C 各有默认与记忆值）
+        self.spin_depth_smooth.setValue(
+            float(self.smoothing_for_method(self.current_fusion_method())))
         self.spin_depth_smooth.valueChanged.connect(self.set_ofb_depth_smoothing)
         self.source_images_label = right_panel_components.source_images_label
         self.file_list = right_panel_components.file_list
@@ -415,6 +418,7 @@ class OpenFocus(QMainWindow):
             lambda title, message: show_warning_box(self, title, message))
         self.update_manager.manual_download_needed.connect(self._open_releases_page)
         self.update_manager.restart_requested.connect(self._quit_for_update)
+        self._build_update_banner()
         self._build_update_indicator()
         QTimer.singleShot(0, self._probe_stackmff_availability_async)
 
@@ -466,7 +470,8 @@ class OpenFocus(QMainWindow):
         total_width = self.width()
         self.main_splitter.setSizes([int(total_width * 0.75), int(total_width * 0.25)])
 
-        main_layout.addWidget(self.main_splitter)
+        main_layout.addWidget(self.update_banner)
+        main_layout.addWidget(self.main_splitter, 1)
 
     def eventFilter(self, obj, event):
         """Global event filter to handle Space key and Delete key interactions."""
@@ -785,16 +790,114 @@ class OpenFocus(QMainWindow):
 
         The state machine lives in UpdateManager: quiet checks are
         rate-limited to one request per day and never open a dialog; a manual
-        check reports "up to date" / network failures in a message box.
+        check reports "up to date" / network failures in a message box. A
+        manual check also re-arms the banner for a version that was dismissed.
         """
         if not quiet:
             self._show_status_message(trans.t('update_checking'), 3000)
+            self._set_banner_dismissed_tag("")
         self.update_manager.check(quiet=quiet)
 
     # --- Update execution (background download / restart) ---
 
     def _update_manager(self) -> UpdateManager:
         return update_manager_for(self)
+
+    # --- Startup update banner ---
+
+    def _build_update_banner(self) -> None:
+        """Top-of-window reminder for a release the startup check found.
+
+        The banner is the only update UI a user sees without opening a menu:
+        the background check stays quiet, so without it a new release went
+        unnoticed until the user happened to open Help. Dismissal is
+        per-version (see utils.settings_store.UPDATE_BANNER_DISMISSED_KEY).
+        """
+        from widgets.update_banner import UpdateBanner
+        self.update_banner = UpdateBanner(self)
+        self.update_banner.update_requested.connect(self._on_banner_update_clicked)
+        self.update_banner.whats_new_requested.connect(self._show_whats_new)
+        self.update_banner.dismissed.connect(self._on_banner_dismissed)
+
+    def _banner_dismissed_tag(self) -> str:
+        try:
+            from utils.settings_store import (UPDATE_BANNER_DISMISSED_KEY,
+                                              get_settings)
+            return str(get_settings().value(UPDATE_BANNER_DISMISSED_KEY, "") or "")
+        except Exception:
+            return ""
+
+    def _set_banner_dismissed_tag(self, tag: str) -> None:
+        try:
+            from utils.settings_store import (UPDATE_BANNER_DISMISSED_KEY,
+                                              get_settings)
+            settings = get_settings()
+            if tag:
+                settings.setValue(UPDATE_BANNER_DISMISSED_KEY, tag)
+            else:
+                settings.remove(UPDATE_BANNER_DISMISSED_KEY)
+        except Exception:
+            pass
+
+    def _on_banner_dismissed(self, tag: str) -> None:
+        self._set_banner_dismissed_tag(tag or self.update_manager.tag)
+
+    def _show_update_banner(self, tag: str, ready: bool = False) -> None:
+        """Show the startup reminder unless this exact version was dismissed."""
+        banner = getattr(self, "update_banner", None)
+        if banner is None or not tag:
+            return
+        if not ready and tag == self._banner_dismissed_tag():
+            return
+        from constants import APP_VERSION
+        banner.show_for(tag, APP_VERSION, ready=ready)
+
+    def _on_banner_update_clicked(self) -> None:
+        """Primary action: install when staged, otherwise start the update."""
+        manager = self._update_manager()
+        tag = getattr(self.update_banner, "tag", "") or manager.tag
+        if manager.staged_tag():
+            self.install_update_now()
+            return
+        if manager.zip_url:
+            if manager.can_self_update():
+                self._apply_update_and_restart(manager.zip_url, tag)
+            else:
+                self._download_and_launch_update(manager.setup_url, tag)
+            return
+        self._open_releases_page()
+
+    def _show_whats_new(self) -> None:
+        """'What's new': release notes when the check fetched them, else the
+        releases page (a build with no notes has nothing to show inline)."""
+        notes = getattr(self._update_manager(), "notes", "") or ""
+        if not notes:
+            self._open_releases_page()
+            return
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QTextBrowser, QVBoxLayout
+        dialog = QDialog(self)
+        dialog.setWindowTitle(trans.t('update_available_title'))
+        dialog.resize(620, 460)
+        # Same theme rule as the other dialogs (light strips the dark inline
+        # style, dark adds the control QSS); style_message_box only accepts a
+        # QMessageBox and raises on a plain QDialog.
+        if getattr(self, "ui_theme", "dark") == "light":
+            dialog.setStyleSheet(
+                "QDialog { background-color: #ffffff; } QLabel { color: #1f2328; }")
+        else:
+            from ui.styles import DIALOG_CONTROL_DARK_QSS
+            dialog.setStyleSheet(
+                "QDialog { background-color: #2b2b2b; border: 1px solid #444; }"
+                "QLabel { color: #d0d0d0; }" + DIALOG_CONTROL_DARK_QSS)
+        layout = QVBoxLayout(dialog)
+        view = QTextBrowser(dialog)
+        view.setPlainText(notes)
+        layout.addWidget(view)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def _build_update_indicator(self) -> None:
         """Status-bar widget: background download progress / "restart to update"."""
@@ -889,10 +992,26 @@ class OpenFocus(QMainWindow):
             if ready:
                 action.setText(trans.t('menu_install_update').format(version=tag))
 
+    def startup_update_check(self) -> None:
+        """Startup entry point: staged build, then the quiet daily check.
+
+        Runs on a timer after the window is up. `start_idle` restores an
+        already-staged build without a network call; its state goes straight
+        to READY, before any state_changed listener existed, so the banner is
+        raised here explicitly.
+        """
+        self.update_manager.start_idle()
+        staged = self.update_manager.staged_tag()
+        if staged:
+            self._show_update_banner(staged, ready=True)
+
     def _on_update_state(self, state: str, tag: str, percent: int) -> None:
         if state == STATE_READY and tag:
             self._show_status_message(
                 trans.t('update_status_ready').format(version=tag), 8000)
+            # The build finished downloading: the banner's action flips from
+            # "update now" to "restart", even if the banner was hidden.
+            self._show_update_banner(tag, ready=True)
         self._refresh_update_indicator()
 
     def _on_update_action_clicked(self) -> None:
@@ -972,8 +1091,10 @@ class OpenFocus(QMainWindow):
         if state == "update":
             manager = self._update_manager()
             staged = bool(manager.staged_tag())
-            # A background check must never nag: the status bar and the Help
-            # menu carry "ready to install" until the user acts on it.
+            # A background check must never open a modal box, but it does show
+            # the in-window banner: without it the startup check was invisible
+            # to anyone who does not watch the status bar.
+            self._show_update_banner(tag, ready=staged)
             if not manager.manual_check:
                 return
             box = QMessageBox(self)
@@ -1461,11 +1582,36 @@ class OpenFocus(QMainWindow):
                 self.slider_smooth.setValue(min(hi, memory.get(mode, default)))
             self.current_kernel_mode = mode
         else:
+            # AI has no kernel: leaving the row visible showed "Kernel: 11"
+            # next to a slider that changed nothing.
             self.smooth_widget.setEnabled(False)
             self.slider_smooth.setRange(1, 51)
             self.current_kernel_mode = None
+        # 平滑行：B 平滑深度图；A/C 平滑混合。标签与取值各自独立。
         if getattr(self, "depth_smooth_row", None) is not None:
-            self.depth_smooth_row.setVisible(method == "openfocus_b")
+            is_a = method == "openfocus_a"
+            is_b = method == "openfocus_b"
+            is_c = method == "openfocus_c"
+            self.depth_smooth_row.setVisible(is_a or is_b or is_c)
+            blend = is_a or is_c
+            label_key = ("label_blend_smoothing" if blend
+                         else "label_depth_smoothing")
+            hint_key = ("label_blend_smoothing_hint" if blend
+                        else "label_depth_smoothing_hint")
+            self.lbl_depth_smooth.setText(trans.t(label_key))
+            self.lbl_depth_smooth.setToolTip(trans.t(hint_key))
+            self.spin_depth_smooth.setToolTip(trans.t(hint_key))
+            value = self.smoothing_for_method(method)
+            self.spin_depth_smooth.blockSignals(True)
+            self.spin_depth_smooth.setValue(float(value))
+            self.spin_depth_smooth.blockSignals(False)
+        # C 没有 Radius：隐藏滑块
+        # 而不是留一个改了也不影响输出的控件。
+        if getattr(self, "smooth_widget", None) is not None:
+            # 只在当前方法真的用得到 kernel 时显示：C 没有半径参数，AI
+            # 也没有，留着只会显示一个改了不影响输出的数字。
+            self.smooth_widget.setVisible(spec is not None
+                                          and method != "openfocus_c")
         # 滑块含义标签随算法切换（每个算法的 kernel 含义不同）
         label_key = self._KERNEL_LABELS.get(self.current_kernel_mode,
                                             "label_kernel")
@@ -1907,6 +2053,12 @@ class OpenFocus(QMainWindow):
             style_sheet = get_theme_style(theme).replace('"Segoe UI", "Microsoft YaHei"', ui_font).replace('Consolas, "Segoe UI", monospace', mono_font)
             self.setStyleSheet(style_sheet)
 
+        # Re-colour themed inline widgets that the light pass above strips:
+        # the update banner must survive that sweep with a readable palette.
+        banner = getattr(self, "update_banner", None)
+        if banner is not None:
+            banner.apply_theme(theme)
+
         set_current_theme(theme)
         self._enable_dark_title_bar(dark=(theme != "light"))
         if hasattr(self, "ui_objs") and "menu_theme" in self.ui_objs:
@@ -2187,9 +2339,36 @@ class OpenFocus(QMainWindow):
         self.restore_last_stack = bool(enabled)
         self.persist_settings()
 
+    # 平滑默认值：B 深度图 σ、A 加权混合 σ、C 金字塔混合 σ
+    _SMOOTHING_DEFAULTS = {
+        "openfocus_a": 2.0,
+        "openfocus_b": 1.2,
+        "openfocus_c": 3.0,
+    }
+
+    def smoothing_for_method(self, method: str) -> float:
+        """Smoothing σ the user has set for *method* (or its default).
+
+        A and C blend their frames and B smooths a depth map, so one shared
+        value would silently apply A's sigma to C or B's to A after a method
+        switch.
+        """
+        memory = self.__dict__.setdefault("_smoothing_by_method", {})
+        if method in memory:
+            return float(memory[method])
+        return float(self._SMOOTHING_DEFAULTS.get(method, 1.2))
+
     def set_ofb_depth_smoothing(self, value: float) -> None:
-        """OpenFocus B depth-transition sigma (persisted)."""
-        self.ofb_depth_smoothing = float(value)
+        """Smoothing spin box: per-method sigma (see smoothing_for_method)."""
+        method = self.current_fusion_method()
+        value = float(value)
+        if method in ("openfocus_a", "openfocus_c"):
+            self.of_blend_smoothing = value
+        elif method == "openfocus_b":
+            self.ofb_depth_smoothing = value
+        else:
+            return
+        self.__dict__.setdefault("_smoothing_by_method", {})[method] = value
         self.persist_settings()
 
     def set_ask_load_scale(self, enabled: bool) -> None:
@@ -2429,6 +2608,9 @@ class OpenFocus(QMainWindow):
         # sweep above cannot render it; the indicator does (and hides it when
         # no build is staged).
         self._refresh_update_indicator()
+        banner = getattr(self, "update_banner", None)
+        if banner is not None:
+            banner.retranslate()
         self.rebuild_recent_menu()
         self.rebuild_recent_projects_menu()
 
@@ -2622,7 +2804,7 @@ if __name__ == "__main__":
     # Background updates: reuse an already staged build, then check quietly
     # (once a day, rate-limited inside the manager) and download any newer
     # release in the background so "update now" is instant.
-    QTimer.singleShot(4000, window.update_manager.start_idle)
+    QTimer.singleShot(4000, window.startup_update_check)
 
     # First-run quick-start guide (once ever)
     from utils.settings_store import get_settings

@@ -701,6 +701,12 @@ class BatchProcessingDialog(QDialog):
                 self.parent_window, "exposure_match", True))
             fusion_params["depth_smoothing"] = getattr(
                 self.parent_window, "ofb_depth_smoothing", None)
+            # Per-method sigma, same rule as the single render path.
+            smoothing_for = getattr(
+                self.parent_window, "smoothing_for_method", None)
+            fusion_params["blend_smoothing"] = (
+                smoothing_for(fusion_method) if callable(smoothing_for)
+                else None)
             # 帧序方向（仅 openfocus 族生效）
             fusion_params["sort_mode"] = (
                 "desc" if getattr(self.parent_window,

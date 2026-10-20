@@ -126,6 +126,7 @@ class RenderWorker(QThread):
         base_frame: str = "none",
         sort_mode: str = "asc",
         depth_smoothing: float = None,
+        blend_smoothing: float = None,
         exposure_match: bool = False,
     ):
         super().__init__()
@@ -158,6 +159,8 @@ class RenderWorker(QThread):
         self.sort_mode = sort_mode if sort_mode in ("asc", "desc", "off") else "asc"
         # OpenFocus B 深度图过渡 σ（None = 默认 1.2）
         self.depth_smoothing = depth_smoothing
+        # OpenFocus A/C 混合平滑 σ（None = 各自默认：A 2.0 / C 3.0）
+        self.blend_smoothing = blend_smoothing
         # 融合前曝光匹配：对齐与融合必须使用同一个亮度端（末帧）
         self.exposure_match = bool(exposure_match)
         self.kernel_slider_value = kernel_slider_value
@@ -429,6 +432,7 @@ class RenderWorker(QThread):
                 kernel_size=kernel_size,
                 thread_count=self.thread_count,
                 depth_smoothing=self.depth_smoothing,
+                blend_smoothing=self.blend_smoothing,
                 **fuse_cancel,
             )
             result = quantize_fuse_output(result, is_16bit)
@@ -795,6 +799,7 @@ class BatchWorker(QThread):
                     kernel_size=kernel_size,
                     thread_count=self.thread_count,
                     depth_smoothing=fusion_params.get('depth_smoothing'),
+                    blend_smoothing=fusion_params.get('blend_smoothing'),
                     should_cancel=lambda: self.is_cancelled,
                 )
             elif fusion_method == "stackmffv4":

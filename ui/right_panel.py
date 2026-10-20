@@ -162,18 +162,33 @@ def create_right_panel() -> RightPanelComponents:
     reg_help_layout.addWidget(btn_reg_help)
     registration_layout.addLayout(reg_help_layout)
 
-    method_registration_layout.addWidget(registration_group)
-    method_registration_layout.addWidget(method_group)
-    config_layout.addLayout(method_registration_layout)
+    # 融合/对齐并排时面板宽 375px，两个下拉各只剩 ~114px —— 比
+    # "Alignment only (no fusion)" 需要的 ~190px 窄得多，文字被截成
+    # "OpenFocus -" 且下拉箭头与 "?" 按钮重叠。改为上下两行：每个组
+    # 独占一行，下拉始终显示完整算法名。
+    for _combo in (combo_fusion, combo_align):
+        _combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        _combo.setMinimumContentsLength(12)
+
+    config_layout.addWidget(registration_group)
+    config_layout.addWidget(method_group)
 
     smooth_widget = QWidget()
     smooth_layout = QVBoxLayout(smooth_widget)
-    smooth_layout.setContentsMargins(0, 5, 0, 5)
+    # 右侧留 6px：数值标签正好顶到容器边缘时，QSS 的边框/padding 会把
+    # 最后一位吃掉（375px 面板下实测 "31" 只剩 "3"）。
+    smooth_layout.setContentsMargins(0, 5, 6, 5)
     smooth_top = QHBoxLayout()
     lbl_kernel = QLabel(trans.t('label_kernel'))
     smooth_top.addWidget(lbl_kernel)
     smooth_top.addStretch()
     lbl_smooth_value = QLabel("31")
+    # 两位数的值紧贴容器右缘时，最后一位会被裁掉（面板 375px 下实测只
+    # 露出 "3"）。给一个最小宽度 + 右对齐，数值再长也不会被切。
+    lbl_smooth_value.setMinimumWidth(28)
+    lbl_smooth_value.setAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     smooth_top.addWidget(lbl_smooth_value)
     slider_smooth = QSlider(Qt.Orientation.Horizontal)
     slider_smooth.setRange(1, 51)
@@ -184,7 +199,8 @@ def create_right_panel() -> RightPanelComponents:
     smooth_layout.addWidget(slider_smooth)
     config_layout.addWidget(smooth_widget)
 
-    # OpenFocus B: depth-map transition smoothing
+    # Per-method smoothing row: B smooths its depth map, A/C smooth the
+    # blend.
     depth_smooth_row = QWidget()
     ds_layout = QHBoxLayout(depth_smooth_row)
     ds_layout.setContentsMargins(0, 0, 0, 4)

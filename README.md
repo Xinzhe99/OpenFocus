@@ -17,6 +17,8 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
+> **2026.10.20 · v1.59 — update banner, A/C smoothing, UI pass.** A startup check now raises an in-window banner when a release is found (Update now / What's new / dismiss for that version only). OpenFocus A and C gained the Smoothing control their implementations had hard-coded, OpenFocus alignment gained rotation and magnification tolerance, and C no longer shows a radius slider that did nothing. Plus a UI pass: truncated method dropdowns, a clipped radius value, theme detection in the dust-map/retouch dialogs, hard-coded dark palettes in the help dialogs, and overlapping radios.
+
 > **2026.10.20 · v1.58 — alignment correctness.** The OpenFocus aligner measured translation with a phase-correlation peak that collapses when the two frames differ in focus — the normal case in a focus stack. A true 16 px shift was read as 145 px, so frames were dropped as "over the shift limit" or moved to the wrong offset. Translation now comes from NCC template matching on plain grayscale (15.93 px on the same pair, within ~0.3 px from σ3 to σ11 of defocus — the old high-pass input was 22 px off at σ11), the anchor frame is exposure-calibrated like every other frame, `--align-shift-limit` above ~15% is honoured, and flat frames no longer report a false corner match.
 
 > **2026.10.20 · v1.57 — exposure matching + A/B/C parity.** New **Match exposure before fusion** switch (`--exposure-match`, on by default): every frame is scaled to the last frame's mean before the focus measure, for all eight fusion methods, with gains computed on the whole stack so tiled output stays seamless. OpenFocus A/B/C gained per-frame exposure calibration, `base_frame` as an independent optional post-step, one kernel default, and natural folder ordering. Existing golden baselines opt out explicitly to keep their pinned outputs.
@@ -86,6 +88,7 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Run `openfocus -
 - [**Changelog**](./CHANGELOG.md) — release history and notable changes
 - [**Performance \& Large Stacks**](./docs/PERFORMANCE.md) — soak-test throughput/memory reference and tuning guidance
 - [**Build Commands**](./docs/BUILD_COMMANDS.md) — packaging from source with PyInstaller
+- [OpenFocus](./docs/OPENFOCUS_CAPABILITIES.md)
 
 <a id="building-from-source"></a>
 ## 🛠️ Building from Source

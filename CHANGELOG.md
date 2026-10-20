@@ -3,6 +3,51 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.59] — 2026-10-20
+
+Startup visibility, OpenFocus parameter parity and a UI pass.
+
+### Added
+- **A startup update banner.** The daily check was deliberately silent, so a
+  new release went unnoticed unless you watched the status bar or opened Help.
+  When a release is found, a strip appears above the image panels with the
+  version, **Update now** (downloads and restarts in one step), **What's new**
+  (release notes) and a dismiss button. Dismissing hides it for that version
+  only; a newer release brings it back, and Help → Check for Updates re-arms
+  it. Four languages.
+- **Smoothing for OpenFocus A and C** (`Blend smoothing (σ)`, CLI
+  `--blend-smoothing`). Both methods had a hard-coded sigma — A at 2.0, C at
+  3.0 — with no way to change it. Each method now remembers its own
+  value.
+- **Rotation and magnification tolerance** for OpenFocus alignment
+  (`_OF_MAX_ROTATION_DEG`, `_OF_MAX_SCALE_DELTA`). Shift had a limit but
+  rotation and scale did not, so a mis-estimated 5° rotation (the coarse
+  search bound) was applied instead of refused.
+- Document OpenFocus capabilities and limits in `docs/OPENFOCUS_CAPABILITIES.md`.
+
+### Fixed
+- **OpenFocus C showed a radius slider that did nothing.** C has no spatial
+  window, and the wrapper passed the value
+  to an implementation that ignored it.
+- **The AI method showed "Kernel: 11"** and a slider whose value had no
+  effect. The kernel row now appears only for methods that use it.
+- **Fusion and registration dropdowns were truncated** to "OpenFocus -" at the
+  default panel width: two side-by-side groups left each dropdown ~114 px
+  while "Alignment only (no fusion)" needs ~190 px. They now stack and show
+  the full method name.
+- **The radius value was clipped** to "3" at panel width — the number sat
+  flush against the container edge.
+- **Dust-map and retouch dialogs read a non-existent `current_theme`
+  attribute**, so with the light theme selected they applied the *dark*
+  stylesheet (light text on the app's white background). They now read
+  `ui_theme` like every other dialog.
+- **Environment, contact and help dialogs hard-coded a dark palette**, which
+  showed as a dark slab in light mode. They follow the window theme now.
+- **Dust-map source radios overlapped**: two radio buttons plus a checkbox in
+  one row ran over each other at dialog width.
+- **The scale-bar preview fell back to random noise** when no image was
+  loaded, which looked like a broken preview; it is a neutral grey card now.
+
 ## [v1.58] — 2026-10-20
 
 Alignment correctness. The OpenFocus aligner could not measure translation on

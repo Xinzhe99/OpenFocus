@@ -532,8 +532,8 @@ QPushButton#primaryButton:disabled { background-color: #a8c7ee; color: #ffffff; 
 QLabel { color: #1f2328; background: transparent; }
 QLabel:disabled { color: #9aa4ae; }
 
-QListWidget, QLineEdit, QSpinBox, QTextEdit, QPlainTextEdit { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 6px; padding: 3px; selection-background-color: #0969da; selection-color: #ffffff; }
-QLineEdit:focus, QSpinBox:focus, QTextEdit:focus { border-color: #0969da; }
+QListWidget, QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 6px; padding: 3px; selection-background-color: #0969da; selection-color: #ffffff; }
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus { border-color: #0969da; }
 QComboBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 6px; padding: 3px 8px; }
 QComboBox:focus { border-color: #0969da; }
 """ + arrow_qss("dark_on_light", "#f6f8fa", "#eaeef2", "#d0d7de") + """

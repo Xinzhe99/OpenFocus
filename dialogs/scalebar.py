@@ -117,8 +117,12 @@ class ScaleBarDialog(QDialog):
         for img in candidates:
             if img is not None:
                 return img
+        # No image loaded yet: a neutral grey card shows where the bar and its
+        # colours land. Random noise (the old fallback) looked like a broken
+        # preview and made the "Auto (inverse of background)" colour choice
+        # impossible to judge.
         import numpy as np
-        return (np.random.rand(400, 600, 3) * 255).astype(np.uint8)
+        return np.full((260, 520, 3), 128, dtype=np.uint8)
 
     def _effective_px_um(self):
         """Same rule as the export path (utils.scalebar.effective_px_um):

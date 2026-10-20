@@ -480,6 +480,11 @@ _OF_EST_WIDTH = 480  # 估计阶段长边上限（旋转/缩放网格在低分�
 # 本对齐器有 NCC 置信门限，可用 ImageRegistration(max_shift_ratio=) /
 # CLI --align-shift-limit 按需放宽。
 _OF_MAX_SHIFT_RATIO = 0.08
+# 旋转和放大率分别限制。
+# 此前只有位移上限，旋转和缩放可以取到搜索边界（8° / ±5%）而不被拒——
+# 一帧被误估出 5° 旋转会以角点错位 0.087·对角线的方式污染整幅画面。
+_OF_MAX_ROTATION_DEG = 8.0
+_OF_MAX_SCALE_DELTA = 0.05
 
 
 def _of_gray_est(img, est_width):
@@ -634,7 +639,8 @@ def _of_estimate_similarity(ref_est, cur_est, patch_frac=0.7,
 def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                           downscale_width=None, thread_count: int = 4,
                           should_cancel=None, equalize_brightness=True,
-                          max_shift_ratio=None, brightness_reference="first"):
+                          max_shift_ratio=None, brightness_reference="first",
+                          max_rotation_deg=None, max_scale_delta=None):
     """
     OpenFocus 快速对齐：有界相似变换（平移+旋转+缩放）+ 亮度均衡 + 自动裁边。
 
@@ -646,6 +652,10 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
     """
     if max_shift_ratio is None:
         max_shift_ratio = _OF_MAX_SHIFT_RATIO
+    if max_rotation_deg is None:
+        max_rotation_deg = _OF_MAX_ROTATION_DEG
+    if max_scale_delta is None:
+        max_scale_delta = _OF_MAX_SCALE_DELTA
     if img_filenames is None and isinstance(input_source, str):
         valid_exts = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.bmp', '.tif', '.tiff', '.webp'}
         img_paths = sorted(
@@ -772,12 +782,18 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
         # 旧的"钳制到上限"会把大位移校正成半错位，还让有效区交集被裁掉
         # 一大块（25% 上限意味着单边最多裁 1/4 画面）。
         over = (abs(tx) > max_shift[0] or abs(ty) > max_shift[1])
+        # 分别限制旋转和放大率。
+        # 与位移超限同样放弃整帧而不是半校正。
+        rot_deg = float(np.degrees(np.arctan2(M[1, 0], M[0, 0])))
+        scale_now = float(np.sqrt(abs(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])))
+        if (abs(rot_deg) > max_rotation_deg + 1e-6
+                or abs(scale_now - 1.0) > max_scale_delta + 1e-6):
+            over = True
         if over:
             M = np.eye(3)
             tx = ty = 0.0
+            rot_deg, scale_now = 0.0, 1.0
         # 死区：整体运动可忽略 → 恒等（不产生裁边/插值损失）
-        rot_deg = float(np.degrees(np.arctan2(M[1, 0], M[0, 0])))
-        scale_now = float(np.sqrt(abs(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])))
         if (abs(tx) < dead_t and abs(ty) < dead_t
                 and abs(rot_deg) < dead_rot
                 and abs(scale_now - 1.0) < dead_scale):

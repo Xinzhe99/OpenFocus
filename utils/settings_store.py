@@ -25,6 +25,9 @@ MAIN_SPLITTER_KEY = "ui/main_splitter"
 RIGHT_SPLITTER_KEY = "ui/right_splitter"
 DRAG_FORMAT_KEY = "export/drag_format"
 LAST_UPDATE_CHECK_KEY = "updates/last_check_epoch"
+# Release tag whose startup banner the user dismissed: the same
+# version must not nag again, a newer one re-shows the banner.
+UPDATE_BANNER_DISMISSED_KEY = "updates/banner_dismissed_tag"
 LAST_STACK_FOLDER_KEY = "ui/last_stack_folder"
 LAST_DIALOG_DIR_KEY = "ui/last_dialog_dir"
 
@@ -51,6 +54,7 @@ _PERSISTED_FIELDS = {
     "ask_load_scale": ("ui/ask_load_scale", True, "bool"),
     "load_scale_default": ("ui/load_scale_default", 1.0, "float"),
     "ofb_depth_smoothing": ("fusion/ofb_depth_smoothing", 1.2, "float"),
+    "of_blend_smoothing": ("fusion/of_blend_smoothing", 3.0, "float"),
 }
 
 

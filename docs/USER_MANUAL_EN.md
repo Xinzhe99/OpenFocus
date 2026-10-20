@@ -445,16 +445,26 @@ OpenFocus offers eight fusion algorithms (plus an alignment-only mode). Each has
   per pixel; best on smooth surfaces and microscopy
 - **OpenFocus C**: Laplacian-pyramid per-band blend — natural look on
   textured subjects, boosts local contrast
-- **Parameters**: Variance window (kernel slider); results are
-  radius-insensitive
+- **Parameters**: A and B take a Variance window (kernel slider); C has no
+  radius. All three take a Smoothing sigma.
 
-**Depth smoothing (OpenFocus B only)**: B's depth map decides which frame
-wins each pixel. The *Depth smoothing (σ)* spin box, shown under the kernel
-slider when B is selected (range 0–8, step 0.2, default 1.2), sets the
-Gaussian sigma of the transition between frames. 1.2 is the default;
-0 keeps the finest detail; larger values calm speckles and halos at depth
-jumps on noisy stacks. The value is remembered across sessions and is also
-used by batch processing. CLI: `--depth-smoothing SIGMA`.
+**Smoothing**: one spin box under the kernel slider, with the meaning of the
+selected method (range 0–8, step 0.2):
+
+| Method | Label | Default | Effect |
+|---|---|---|---|
+| OpenFocus A | Blend smoothing (σ) | 2.0 | Gaussian smoothing of the per-frame weight map — how widely the sharp regions of neighbouring frames are blended |
+| OpenFocus B | Depth smoothing (σ) | 1.2 | Gaussian smoothing of the depth map — width of the transition between frames |
+| OpenFocus C | Blend smoothing (σ) | 3.0 | Gaussian smoothing of each pyramid band's weight map |
+
+0 keeps the crispest per-pixel choice (finest detail, but speckles on noisy
+stacks); larger values soften transitions and halos. Each method remembers
+its own value across sessions, and batch processing uses the same rule.
+
+C has no Radius, so the kernel
+slider is hidden for C instead of silently doing nothing.
+
+CLI: `--depth-smoothing SIGMA` (B) and `--blend-smoothing SIGMA` (A, C).
 
 ### Alignment only (no fusion)
 
@@ -686,8 +696,14 @@ applies immediately and is remembered for future sessions.
 ### Automatic Update Check
 
 Once per day, a few seconds after launch, OpenFocus silently checks GitHub
-for a newer release and shows a notice with a download link. You can also
-check manually anytime via **Help → Check for Updates**.
+for a newer release. When one exists, a banner appears above the image
+panels: the version, **Update now** (downloads and restarts in one step),
+**What's new** (release notes) and a dismiss button. Dismissing hides the
+banner for that version only — the next release brings it back, and
+**Help → Check for Updates** re-arms it immediately.
+
+While the download runs in the background the status bar shows progress.
+You can also check manually anytime via **Help → Check for Updates**.
 
 ---
 
@@ -791,6 +807,7 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
 | `--kernel, -k` | Kernel size (forced odd; for the openfocus family it is the source of the variance-window radius) |
 | `--depth-smoothing SIGMA` | `openfocus_b` only: Gaussian sigma of the frame-to-frame depth transition (default 1.2; 0 keeps the finest detail) |
+| `--blend-smoothing SIGMA` | `openfocus_a` / `openfocus_c` only: Gaussian sigma of the per-frame weight map (defaults 2.0 for A, 3.0 for C; 0 keeps the crispest per-pixel choice) |
 | `--threads, -t` | Worker thread count (default 4) |
 | `--batch-size` | AI tile batch size (default 2) |
 | `--cpu` | Force CPU even if a GPU is available |

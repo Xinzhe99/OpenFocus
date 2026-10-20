@@ -56,14 +56,13 @@ class DustMapDialog(QDialog):
         intro.setWordWrap(True)
         lay.addWidget(intro)
 
-        src_row = QHBoxLayout()
+        # 两个来源单选各占一行：并排时第二个按钮的文字在 760px 宽的
+        # 对话框里会被挤到第一个按钮上（实测文字互相重叠）。
         self.rb_file = QRadioButton(trans.t("dust_from_file"))
         self.rb_stack = QRadioButton(trans.t("dust_from_stack"))
         self.rb_file.setChecked(True)
-        src_row.addWidget(self.rb_file)
-        src_row.addWidget(self.rb_stack)
-        src_row.addStretch()
-        lay.addLayout(src_row)
+        lay.addWidget(self.rb_file)
+        lay.addWidget(self.rb_stack)
 
         pick_row = QHBoxLayout()
         self.btn_browse = QPushButton(trans.t("dust_browse"))
@@ -126,7 +125,7 @@ class DustMapDialog(QDialog):
 
     def _apply_style(self):
         try:
-            if self.window_main and getattr(self.window_main, "current_theme", "dark") != "light":
+            if self.window_main and getattr(self.window_main, "ui_theme", "dark") != "light":
                 from ui.styles import DIALOG_CONTROL_DARK_QSS
                 self.setStyleSheet(
                     "QDialog { background: #2b2b2b; border: 1px solid #444; }"

@@ -489,3 +489,86 @@ class TestUpdateManagerState:
         assert "QProgressDialog(" in src
         assert ', "", ' not in src, "empty cancel label => blank grey button"
         assert "trans.t('btn_cancel_download')" in src
+
+
+
+class TestStartupUpdateBanner:
+    """A background check must be visible without opening a menu, and it must
+    not nag about a version the user already dismissed.
+
+    The helpers live on OpenFocus, whose constructor builds the whole Qt UI;
+    a bare host with the real methods bound exercises exactly the banner
+    logic without the window.
+    """
+
+    @pytest.fixture()
+    def qapp(self):
+        from PyQt6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def _host(self, qapp, dismissed="", ready_staged=""):
+        import main
+        from widgets.update_banner import UpdateBanner
+
+        class _Host:
+            _shutting_down = False
+
+            def __init__(self):
+                self.update_manager = main.UpdateManager(self)
+                self.update_banner = UpdateBanner(None)
+                self._dismissed = dismissed
+                self.ui_theme = "dark"
+
+            def _has_work_in_flight(self):
+                return False
+
+            def _banner_dismissed_tag(self):
+                return self._dismissed
+
+            def _set_banner_dismissed_tag(self, tag):
+                self._dismissed = tag or ""
+
+        host = _Host()
+        # Bind the real implementations; only QSettings is stubbed.
+        for name in ("_show_update_banner", "_on_banner_dismissed"):
+            setattr(host, name,
+                    main.OpenFocus.__dict__[name].__get__(host))
+        if ready_staged:
+            host.update_manager.tag = ready_staged
+            host.update_manager.staged_tag = lambda: ready_staged
+        host.update_banner.dismissed.connect(host._on_banner_dismissed)
+        return host
+
+    def test_found_update_shows_the_banner_and_hides_it_on_dismiss(self, qapp):
+        host = self._host(qapp)
+        assert host.update_banner.isVisible() is False
+        host._show_update_banner("v9.9")
+        assert host.update_banner.isVisible() is True
+        assert host.update_banner.tag == "v9.9"
+        host.update_banner._on_dismiss()
+        assert host.update_banner.isVisible() is False
+        assert host._dismissed == "v9.9"
+
+    def test_dismissed_version_is_not_shown_again(self, qapp):
+        host = self._host(qapp, dismissed="v9.9")
+        host._show_update_banner("v9.9")
+        assert host.update_banner.isVisible() is False
+        # a newer release is a new decision
+        host._show_update_banner("v10.0")
+        assert host.update_banner.isVisible() is True
+
+    def test_ready_state_flips_the_primary_action(self, qapp):
+        host = self._host(qapp)
+        host._show_update_banner("v9.9", ready=True)
+        from locales import trans
+        assert host.update_banner.btn_update.text() == trans.t("btn_restart_now")
+        assert host.update_banner.isVisible() is True
+
+    def test_banner_survives_a_theme_switch(self, qapp):
+        """The light theme strips inline dark stylesheets; the banner must be
+        re-coloured afterwards or it renders as an unstyled white strip."""
+        host = self._host(qapp)
+        host.update_banner.apply_theme("light")
+        assert "#eaf1fb" in host.update_banner.styleSheet()
+        host.update_banner.apply_theme("dark")
+        assert "#26364d" in host.update_banner.styleSheet()

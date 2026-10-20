@@ -491,3 +491,145 @@ def test_openfocus_b_depth_smoothing_controls_transition():
     err = lambda o: np.abs(o.astype(int) - tex.astype(int))[:, 40:56].mean()
     assert (sharp != soft).any()
     assert err(sharp) < 3.0 and err(soft) < 3.0
+
+
+class TestSmoothingParity:
+    """OpenFocus exposes independent controls.
+    Radius for C. Our A/C ignored their smoothing entirely (A hardcoded σ2,
+    C hardcoded σ3) and C showed a Radius slider that did nothing."""
+
+    def _stack(self):
+        return make_two_focus_stack((120, 160))
+
+    @pytest.mark.parametrize("algo", ["openfocus_a", "openfocus_c"])
+    def test_blend_smoothing_changes_the_output(self, algo):
+        from core.multi_focus_fusion import MultiFocusFusion
+        frames = self._stack()
+        sharp = MultiFocusFusion(algorithm=algo, use_gpu=False).fuse(
+            input_source=[f.copy() for f in frames], blend_smoothing=0.0)
+        soft = MultiFocusFusion(algorithm=algo, use_gpu=False).fuse(
+            input_source=[f.copy() for f in frames], blend_smoothing=6.0)
+        assert not np.array_equal(sharp, soft), (
+            f"{algo}: blend_smoothing had no effect on the output")
+
+    @pytest.mark.parametrize("algo,default", [("openfocus_a", 2.0),
+                                              ("openfocus_c", 3.0)])
+    def test_default_smoothing_is_the_documented_sigma(self, algo, default):
+        from core.multi_focus_fusion import MultiFocusFusion
+        frames = self._stack()
+        implied = MultiFocusFusion(algorithm=algo, use_gpu=False).fuse(
+            input_source=[f.copy() for f in frames])
+        explicit = MultiFocusFusion(algorithm=algo, use_gpu=False).fuse(
+            input_source=[f.copy() for f in frames], blend_smoothing=default)
+        assert np.array_equal(implied, explicit), (
+            f"{algo}: the default must be sigma {default}")
+
+    def test_openfocus_c_has_no_radius(self):
+        """C's kernel_size is inert, so the
+        wrapper must not let the slider imply one."""
+        from fusion_methods.openfocus_ab import openfocus_c_impl
+        frames = self._stack()
+        a = openfocus_c_impl([f.copy() for f in frames], kernel_size=3)
+        b = openfocus_c_impl([f.copy() for f in frames], kernel_size=21)
+        assert np.array_equal(a, b)
+
+    def test_smoothing_is_per_method(self, qapp):
+        """The spin box carries one value per method: switching methods must
+        never hand A's blend sigma to C (or B's depth sigma to A).
+
+        A full OpenFocus window cannot be constructed inside this suite (Qt
+        access-violates on teardown here), so the real methods are bound onto
+        a stub that only provides what they touch.
+        """
+        import main
+        from PyQt6.QtWidgets import QSlider
+
+        window = type("Stub", (), {})()
+        window.ui_objs = {}
+        window._kernel_by_mode = {}
+        window._smoothing_by_method = {}
+        window.ofb_depth_smoothing = 1.2
+        window.of_blend_smoothing = 3.0
+        window.depth_smooth_row = None
+        window.smooth_widget = None
+        window.lbl_kernel = None
+        window.slider_smooth = QSlider()
+        window.current_kernel_mode = None
+        window.persist_settings = lambda: None
+        window._SMOOTHING_DEFAULTS = dict(main.OpenFocus._SMOOTHING_DEFAULTS)
+        window._methods = {"method": "openfocus_a"}
+        window.current_fusion_method = lambda: window._methods["method"]
+        for name in ("smoothing_for_method", "set_ofb_depth_smoothing"):
+            setattr(window, name, main.OpenFocus.__dict__[name].__get__(window))
+
+        def select(method):
+            window._methods["method"] = method
+
+        select("openfocus_a")
+        assert window.smoothing_for_method("openfocus_a") == 2.0
+        window.set_ofb_depth_smoothing(7.5)
+        assert window.smoothing_for_method("openfocus_a") == 7.5
+        select("openfocus_b")
+        assert window.smoothing_for_method("openfocus_b") == 1.2
+        select("openfocus_c")
+        assert window.smoothing_for_method("openfocus_c") == 3.0
+        # a shared single field would have leaked A's 7.5 into C
+        assert window.of_blend_smoothing == 7.5
+        assert window.smoothing_for_method("openfocus_c") == 3.0
+
+    def test_radius_slider_is_hidden_for_c(self):
+        """Static check: update_slider_availability must hide the radius row
+        for C."""
+        from pathlib import Path
+        src = (Path("main.py").read_text(encoding="utf-8"))
+        assert 'self.smooth_widget.setVisible(spec is not None' in src
+        assert 'label_blend_smoothing' in src
+        assert 'smoothing_for_method' in src
+
+
+class TestRotationScaleTolerance:
+    """OpenFocus exposes independent controls.
+    parameters. Ours had a shift limit only, so a mis-estimated 5° rotation
+    or 1.05 scale (the coarse-search bounds) was applied instead of refused —
+    corner error grows with the image diagonal."""
+
+    def test_rotation_beyond_tolerance_is_refused(self):
+        from core.registration import ImageRegistration
+        base = make_two_focus_stack((240, 320))[0]
+        h, w = base.shape[:2]
+        # 9° is past the 8° estimate bound, so the estimator cannot represent
+        # it; the frame must stay put rather than take a wrong correction.
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), 9.0, 1.0)
+        f1 = cv2.warpAffine(base, M, (w, h))
+        out = ImageRegistration(method="openfocus").process(
+            [base.copy(), f1], output_path=None, thread_count=2)
+        raw = np.abs(f1.astype(int)[8:-8, 8:-8]
+                     - base.astype(int)[8:-8, 8:-8]).mean()
+        got = np.abs(out[1].astype(int)[8:-8, 8:-8]
+                     - out[0].astype(int)[8:-8, 8:-8]).mean()
+        # an applied rotation would leave a large residual anyway; what must
+        # NOT happen is a partial (half-corrected) transform
+        assert got > raw * 0.9
+
+    def test_rotation_within_tolerance_is_aligned(self):
+        from core.registration import ImageRegistration
+        base = make_two_focus_stack((240, 320))[0]
+        h, w = base.shape[:2]
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), 3.0, 1.0)
+        f1 = cv2.warpAffine(base, M, (w, h))
+        out = ImageRegistration(method="openfocus").process(
+            [base.copy(), f1], output_path=None, thread_count=2)
+        raw = np.abs(f1.astype(int)[8:-8, 8:-8]
+                     - base.astype(int)[8:-8, 8:-8]).mean()
+        got = np.abs(out[1].astype(int)[10:-10, 10:-10]
+                     - out[0].astype(int)[10:-10, 10:-10]).mean()
+        assert got < raw * 0.5
+
+    def test_limits_are_configurable(self):
+        from core import registration as reg
+        assert reg._OF_MAX_ROTATION_DEG == 8.0
+        assert reg._OF_MAX_SCALE_DELTA == 0.05
+        import inspect
+        params = inspect.signature(reg._align_openfocus_impl).parameters
+        assert "max_rotation_deg" in params
+        assert "max_scale_delta" in params

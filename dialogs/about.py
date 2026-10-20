@@ -24,33 +24,41 @@ class EnvironmentInfoDialog(QDialog):
         self.setWindowTitle(trans.t('dialog_env_title'))
         self.resize(600, 500)
 
-        # 应用深色主题
+        # Theme follows the main window: a hard-coded dark palette left a
+        # dark slab in light mode (and the app-level light QSS tinted the
+        # title light-grey on white, which was barely readable).
+        bg, fg, field, field_fg, border, btn, btn_hov, btn_dn = (
+            ("#ffffff", "#1f2328", "#ffffff", "#1f2328", "#d0d7de",
+             "#f6f8fa", "#eaeef2", "#dfe4ea")
+            if getattr(parent, "ui_theme", "dark") == "light"
+            else ("#1e1e1e", "#ccc", "#2b2b2b", "#ffffff", "#444",
+                  "#444", "#555", "#333"))
         self.setStyleSheet(f"""
             QDialog {{
-                background-color: #1e1e1e;
+                background-color: {bg};
             }}
             QLabel {{
-                color: #ccc;
+                color: {fg};
             }}
             QTextEdit {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                border: 1px solid #444;
+                background-color: {field};
+                color: {field_fg};
+                border: 1px solid {border};
                 font-family: "" + get_monospace_font_family() + ";"
             }}
             QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
+                background-color: {btn};
+                color: {field_fg};
+                border: 1px solid {border};
                 padding: 8px 20px;
                 border-radius: 4px;
                 font-weight: normal;
             }}
             QPushButton:hover {{
-                background-color: #555;
+                background-color: {btn_hov};
             }}
             QPushButton:pressed {{
-                background-color: #333;
+                background-color: {btn_dn};
             }}
         """)
 
@@ -201,32 +209,38 @@ class ContactInfoDialog(QDialog):
         self.setWindowTitle(trans.t('dialog_contact_title'))
         self.resize(500, 400)
 
-        # 应用深色主题
+        # Theme follows the main window (see EnvironmentInfoDialog).
+        bg, field, field_fg, border, btn, btn_hov, btn_dn = (
+            ("#ffffff", "#ffffff", "#1f2328", "#d0d7de",
+             "#f6f8fa", "#eaeef2", "#dfe4ea")
+            if getattr(parent, "ui_theme", "dark") == "light"
+            else ("#1e1e1e", "#2b2b2b", "#ffffff", "#444",
+                  "#444", "#555", "#333"))
         self.setStyleSheet(f"""
             QDialog {{
-                background-color: #1e1e1e;
+                background-color: {bg};
             }}
             QTextBrowser {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                border: 1px solid #444;
+                background-color: {field};
+                color: {field_fg};
+                border: 1px solid {border};
                 font-family: 'Segoe UI', 'Microsoft YaHei';
                 font-size: 13px;
                 selection-background-color: {PRIMARY_BLUE};
             }}
             QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
+                background-color: {btn};
+                color: {field_fg};
+                border: 1px solid {border};
                 padding: 8px 20px;
                 border-radius: 4px;
                 font-weight: normal;
             }}
             QPushButton:hover {{
-                background-color: #555;
+                background-color: {btn_hov};
             }}
             QPushButton:pressed {{
-                background-color: #333;
+                background-color: {btn_dn};
             }}
         """)
 

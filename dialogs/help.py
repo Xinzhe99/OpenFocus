@@ -23,32 +23,39 @@ class HelpDialog(QDialog):
         self.setWindowTitle(title)
         self.resize(500, 400)
 
-        # 应用深色主题
+        # Theme follows the main window: the hard-coded dark palette showed
+        # up as a dark slab in light mode.
+        bg, field, field_fg, border, btn, btn_hov, btn_dn = (
+            ("#ffffff", "#ffffff", "#1f2328", "#d0d7de",
+             "#f6f8fa", "#eaeef2", "#dfe4ea")
+            if getattr(parent, "ui_theme", "dark") == "light"
+            else ("#1e1e1e", "#2b2b2b", "#ffffff", "#444",
+                  "#444", "#555", "#333"))
         self.setStyleSheet(f"""
             QDialog {{
-                background-color: #1e1e1e;
+                background-color: {bg};
             }}
             QTextBrowser {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                border: 1px solid #444;
+                background-color: {field};
+                color: {field_fg};
+                border: 1px solid {border};
                 font-family: 'Segoe UI', 'Microsoft YaHei';
                 font-size: 13px;
                 selection-background-color: {PRIMARY_BLUE};
             }}
             QPushButton {{
-                background-color: #444;
-                color: white;
-                border: 1px solid #222;
+                background-color: {btn};
+                color: {field_fg};
+                border: 1px solid {border};
                 padding: 8px 20px;
                 border-radius: 4px;
                 font-weight: normal;
             }}
             QPushButton:hover {{
-                background-color: #555;
+                background-color: {btn_hov};
             }}
             QPushButton:pressed {{
-                background-color: #333;
+                background-color: {btn_dn};
             }}
         """)
 

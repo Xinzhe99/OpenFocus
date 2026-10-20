@@ -92,12 +92,16 @@ def _variance_stack(frames_f: List[np.ndarray], radius: int) -> np.ndarray:
 
 
 def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
-                     thread_count: int = None):
+                     thread_count: int = None, blend_smoothing: float = 2.0):
     """OpenFocus - A（方差加权平均，末帧先验）。
 
-    w_i = gauss(var_i, σ=2) ；out = (Σ w_i·I_i + I_last) / (Σ w_i + 1)。
+    w_i = gauss(var_i, σ=blend_smoothing) ；
+    out = (Σ w_i·I_i + I_last) / (Σ w_i + 1)。
     +1 的末帧先验保证平坦区（权重全零）精确退化为末帧——这正是
     Method A 平局行为（输出恒等于末帧）的成因。
+
+    `blend_smoothing` 控制权重图平滑。
+    决定清晰区之间的过渡宽度（大 = 更柔、细节更软）。
     """
     frames = _collect_images(input_source)
     if img_resize is not None:
@@ -109,8 +113,11 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
     radius = max(1, int(kernel_size) // 2) if kernel_size else 3
     var = _variance_stack(frames_f, radius)
     # Smoothing：对权重图做轻度高斯（深度过渡平滑参数）
+    sigma = max(0.0, float(2.0 if blend_smoothing is None
+                          else blend_smoothing))
     weights = np.stack([
-        cv2.GaussianBlur(v, (0, 0), sigmaX=2.0) for v in var
+        cv2.GaussianBlur(v, (0, 0), sigmaX=sigma) if sigma > 1e-3 else v
+        for v in var
     ], axis=0)
 
     h, w = frames_f[0].shape[:2]
@@ -208,14 +215,19 @@ def _pyramid_expand(band: np.ndarray, shape) -> np.ndarray:
 
 
 def openfocus_c_impl(input_source, img_resize=None, kernel_size: int = 7,
-                     thread_count: int = None, levels: int = 7):
+                     thread_count: int = None, levels: int = 7,
+                     blend_smoothing: float = 3.0):
     """OpenFocus - C：拉普拉斯金字塔融合。
 
-    每个带通层的权重 = |亮度带| 的高斯平滑（wsigma=3），逐像素取
-    argmax 硬拾取（max-pick）——实测 max-pick 明显优于
-    软归一混合（stackA 上 0.51% vs 1.35% MAE）；最粗的基带整带取
-    末帧（亮度基准）。
+    每个带通层的权重 = |亮度带| 的高斯平滑（σ=blend_smoothing），逐像素
+    取 argmax 硬拾取（max-pick）——实测 max-pick 明显优于软归一混合
+    （stackA 上 0.51% vs 1.35% MAE）；最粗的基带整带取末帧（亮度基准）。
     层数自适应：min(levels, log2(min(H,W))-1)，小图不产生退化带。
+
+    `blend_smoothing` 控制权重图平滑。
+    参数）：决定各帧带通在多宽的尺度上被比较/过渡。σ 越大过渡越柔、
+    细节越软；σ→0 等价于逐像素裸 argmax（最锐、最易斑点）。`kernel_size`
+    仅为兼容 A/B 的签名保留，C 不使用空间窗口。
     """
     frames = _collect_images(input_source)
     if img_resize is not None:
@@ -254,8 +266,10 @@ def openfocus_c_impl(input_source, img_resize=None, kernel_size: int = 7,
                                    np.float32)).sum(axis=3)
         else:
             lum = band
-        W = np.stack([cv2.GaussianBlur(np.abs(w), (0, 0), 3.0)
-                      for w in lum], axis=0)
+        sigma = max(0.0, float(3.0 if blend_smoothing is None
+                              else blend_smoothing))
+        W = np.stack([cv2.GaussianBlur(np.abs(w), (0, 0), sigma)
+                      if sigma > 1e-3 else np.abs(w) for w in lum], axis=0)
         # max-pick 硬拾取：逐像素选能量最大帧（无除法，平坦带贡献≈0，
         # 无需除零回退）
         idx = W.argmax(axis=0)

@@ -80,6 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--depth-smoothing", type=float, default=None, metavar="SIGMA",
                         help="openfocus_b only: depth-map transition smoothing (Gaussian sigma, "
                              "default 1.2; 0 = sharpest, larger = calmer on noisy stacks)")
+    parser.add_argument("--blend-smoothing", type=float, default=None, metavar="SIGMA",
+                        help="openfocus_a / openfocus_c only: blend smoothing (Gaussian sigma "
+                             "of the per-frame weight map; defaults 2.0 for A and 3.0 for C; "
+                             "0 = crispest per-pixel choice, larger = softer transitions)")
     parser.add_argument("--threads", "-t", type=int, default=4,
                         help="Worker thread count (default: 4)")
     parser.add_argument("--batch-size", type=int, default=2,
@@ -244,6 +248,9 @@ def _fuse_stack(images, args):
         fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 11)
         if args.method == "openfocus_b" and args.depth_smoothing is not None:
             fuse_kwargs["depth_smoothing"] = max(0.0, float(args.depth_smoothing))
+        if (args.method in ("openfocus_a", "openfocus_c")
+                and args.blend_smoothing is not None):
+            fuse_kwargs["blend_smoothing"] = max(0.0, float(args.blend_smoothing))
     elif args.method == "stackmffv4":
         fuse_kwargs["model_path"] = _find_model_path()
 

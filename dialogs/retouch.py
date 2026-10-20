@@ -240,7 +240,7 @@ class RetouchDialog(QDialog):
 
     def _apply_style(self):
         try:
-            if self.window_main and getattr(self.window_main, "current_theme", "dark") != "light":
+            if self.window_main and getattr(self.window_main, "ui_theme", "dark") != "light":
                 from ui.styles import DIALOG_CONTROL_DARK_QSS
                 self.setStyleSheet(
                     "QDialog { background: #2b2b2b; } QLabel { color: #d0d0d0; }"
