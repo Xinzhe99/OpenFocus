@@ -3,6 +3,16 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.65.2] — 2026-10-21
+
+### Fixed
+- **Tiled stacks ignored the AI output mode.** The mode default was applied
+  after the tiled dispatch had already returned, so any stack large enough to
+  tile fused in `soft` mode no matter what the user picked — a 999x750 demo
+  stack produced byte-identical soft and hard output. The default now applies
+  before the tiling decision, so both paths honour the setting (the small
+  whole-frame path was already correct, which is why the earlier tests passed).
+
 ## [v1.65.1] — 2026-10-21
 
 The v1.65 installers were built without the AI model.

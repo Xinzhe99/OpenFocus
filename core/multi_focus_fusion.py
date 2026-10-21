@@ -609,6 +609,16 @@ class MultiFocusFusion:
         except Exception:
             is_list_of_arrays = False
 
+        # The AI output mode lives on the instance (the GUI's hard/soft
+        # radio), so an explicit per-call override wins but the instance value
+        # is the default. This must happen BEFORE the tiled dispatch below:
+        # the tiled path returns early, so setting it further down left every
+        # large stack fused with the default 'soft' no matter what the user
+        # picked (a 999x750 demo stack hits the tile branch and produced
+        # byte-identical soft and hard output).
+        if self.algorithm == 'stackmffv3':
+            kwargs.setdefault('mode', self.ai_mode)
+
         # 情况1: 已加载的图像列表
         if is_list_of_arrays:
             h, w = input_source[0].shape[:2]
@@ -699,12 +709,6 @@ class MultiFocusFusion:
         if exposure_gains_ is not None and isinstance(input_source, str):
             input_source = self._materialize_exposure(input_source,
                                                       exposure_gains_)
-        # The AI output mode lives on the instance (the GUI's hard/soft radio),
-        # so an explicit per-call override wins but the instance value is the
-        # default for both the whole-frame and tiled paths.
-        if self.algorithm == 'stackmffv3':
-            kwargs.setdefault('mode', self.ai_mode)
-
         if self.algorithm == 'guided_filter':
             result = self._fuse_guided_filter(input_source, img_resize, **kwargs)
         elif self.algorithm == 'dct':

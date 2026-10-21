@@ -66,3 +66,27 @@ def test_unavailable_torch_is_reported(monkeypatch):
     assert mff.is_ai_fusion_available() is False
     with pytest.raises(RuntimeError):
         MultiFocusFusion(algorithm="stackmffv3", use_gpu=False)
+
+
+def test_tiled_path_honours_the_output_mode():
+    """A stack large enough to tile must still fuse in the chosen mode.
+
+    The mode default was set AFTER the tiled dispatch returned, so every
+    tiled run used 'soft' regardless of ai_mode. A 999x750 demo stack hit
+    that branch and produced byte-identical soft and hard output.
+    """
+    import cv2
+    frames = [cv2.resize(f, (700, 520), interpolation=cv2.INTER_CUBIC)
+              for f in make_two_focus_stack()]
+    outs = {}
+    for mode in ("soft", "hard"):
+        fusion = MultiFocusFusion(
+            algorithm="stackmffv3", use_gpu=False, ai_mode=mode,
+            exposure_match=False, tile_enabled=True,
+            tile_block_size=512, tile_overlap=128)
+        outs[mode] = fusion.fuse(input_source=list(frames), img_resize=None,
+                                 model_path=WEIGHTS)
+        assert outs[mode].shape[:2] == frames[0].shape[:2]
+    assert not np.array_equal(outs["soft"], outs["hard"]), (
+        "the tiled path ignored ai_mode: soft and hard produced the same "
+        "image")
