@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 from ui.styles import PRIMARY_BLUE, help_button_style
 from locales import trans
+from widgets.stepper import StepperSpinBox
 from utils import resource_path
 
 
@@ -40,17 +41,20 @@ class DurationDialog(QDialog):
 
         # 标签
         label = QLabel(trans.t("dialog_duration_label"))
-        label.setMinimumWidth(120)
+        # Width follows the text: a fixed 120 px clipped "Dauer (ms)" and
+        # was far too narrow for the longer translations.
+        label.setMinimumWidth(max(120, label.sizeHint().width()))
 
         # 旋转框
-        self.duration_spinbox = QSpinBox()
+        self.duration_spinbox = StepperSpinBox(minimum=50, maximum=10000,
+                                               decimals=0, step=50,
+                                               value=self.duration)
         self.duration_spinbox.setRange(50, 10000)  # 50ms到10秒
         self.duration_spinbox.setValue(self.duration)
         self.duration_spinbox.setSingleStep(50)  # 每次增加50ms
         self.duration_spinbox.setSuffix(" ms")
-        self.duration_spinbox.setButtonSymbols(QSpinBox.ButtonSymbols.UpDownArrows)
         self.duration_spinbox.setMinimumHeight(30)
-        self.duration_spinbox.setMinimumWidth(150)
+        self.duration_spinbox.setMinimumWidth(180)
 
         duration_layout.addWidget(label)
         duration_layout.addWidget(self.duration_spinbox)
@@ -226,14 +230,10 @@ class TileSettingsDialog(QDialog):
         # tile_block_size
         block_layout = QHBoxLayout()
         block_layout.addWidget(QLabel(trans.t("dialog_tile_block_size")))
-        self.spin_block = QSpinBox()
-        self.spin_block.setRange(1, 16384)
-        self.spin_block.setSingleStep(1)
-        self.spin_block.setValue(1024)
-        # 移除右侧的增减按钮以便用户直接输入或使用键盘/滑块调整
-        self.spin_block.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
-        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
-        self.spin_block.setMinimumWidth(90)
+        self.spin_block = StepperSpinBox(minimum=1, maximum=16384,
+                                         decimals=0, step=1, value=1024)
+        # The -/+ pair needs room; 90 px was sized for a button-less spin.
+        self.spin_block.setMinimumWidth(150)
         block_layout.addWidget(self.spin_block)
         block_layout.addStretch()
         g_layout.addLayout(block_layout)
@@ -241,14 +241,9 @@ class TileSettingsDialog(QDialog):
         # tile_overlap
         overlap_layout = QHBoxLayout()
         overlap_layout.addWidget(QLabel(trans.t("dialog_tile_overlap")))
-        self.spin_overlap = QSpinBox()
-        self.spin_overlap.setRange(0, 4096)
-        self.spin_overlap.setSingleStep(1)
-        self.spin_overlap.setValue(256)
-        # 移除右侧的增减按钮
-        self.spin_overlap.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
-        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
-        self.spin_overlap.setMinimumWidth(90)
+        self.spin_overlap = StepperSpinBox(minimum=0, maximum=4096,
+                                           decimals=0, step=1, value=256)
+        self.spin_overlap.setMinimumWidth(150)
         overlap_layout.addWidget(self.spin_overlap)
         overlap_layout.addStretch()
         g_layout.addLayout(overlap_layout)
@@ -256,14 +251,9 @@ class TileSettingsDialog(QDialog):
         # tile_threshold
         threshold_layout = QHBoxLayout()
         threshold_layout.addWidget(QLabel(trans.t("dialog_tile_threshold")))
-        self.spin_threshold = QSpinBox()
-        self.spin_threshold.setRange(256, 131072)
-        self.spin_threshold.setSingleStep(1)
-        self.spin_threshold.setValue(2048)
-        # 移除右侧的增减按钮
-        self.spin_threshold.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
-        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
-        self.spin_threshold.setMinimumWidth(90)
+        self.spin_threshold = StepperSpinBox(minimum=256, maximum=131072,
+                                             decimals=0, step=1, value=2048)
+        self.spin_threshold.setMinimumWidth(150)
         threshold_layout.addWidget(self.spin_threshold)
         threshold_layout.addStretch()
         g_layout.addLayout(threshold_layout)
@@ -273,8 +263,8 @@ class TileSettingsDialog(QDialog):
         # Buttons: help and OK/Cancel
         btn_layout = QHBoxLayout()
         help_btn = QPushButton("?")
-        help_btn.setToolTip("Show help for tile settings")
-        help_btn.setFixedSize(22, 22)
+        help_btn.setToolTip(trans.t("help_btn_tile"))
+        help_btn.setFixedSize(26, 26)
         # Text "?" styled by objectName: the old white SVG icon
         # vanished on the light dialog background.
         help_btn.setObjectName("helpButton")
@@ -350,7 +340,7 @@ class RegistrationSettingsDialog(QDialog):
         g_layout = QHBoxLayout(group)
 
         lbl = QLabel(trans.t("dialog_reg_downscale"))
-        lbl.setMinimumWidth(120)
+        lbl.setMinimumWidth(max(120, lbl.sizeHint().width()))
         g_layout.addWidget(lbl)
 
         self.spin_downscale = QSpinBox()
@@ -368,8 +358,8 @@ class RegistrationSettingsDialog(QDialog):
 
         btn_layout = QHBoxLayout()
         help_btn = QPushButton("?")
-        help_btn.setToolTip("Show help for registration settings")
-        help_btn.setFixedSize(22, 22)
+        help_btn.setToolTip(trans.t("help_btn_registration"))
+        help_btn.setFixedSize(26, 26)
         # Text "?" styled by objectName: the old white SVG icon
         # vanished on the light dialog background.
         help_btn.setObjectName("helpButton")
@@ -430,13 +420,13 @@ class ThreadSettingsDialog(QDialog):
         g_layout = QHBoxLayout(group)
 
         lbl = QLabel(trans.t("dialog_thread_label"))
-        lbl.setMinimumWidth(140)
+        lbl.setMinimumWidth(max(140, lbl.sizeHint().width()))
         g_layout.addWidget(lbl)
 
-        self.spin_threads = QSpinBox()
+        self.spin_threads = StepperSpinBox(minimum=1, maximum=256,
+                                           decimals=0, step=1)
         self.spin_threads.setRange(1, 256)
         self.spin_threads.setSingleStep(1)
-        self.spin_threads.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
         self.spin_threads.setMinimumWidth(90)
         g_layout.addWidget(self.spin_threads)
@@ -447,8 +437,8 @@ class ThreadSettingsDialog(QDialog):
         # Buttons: help and OK/Cancel (match Tile/Registration style)
         btn_layout = QHBoxLayout()
         help_btn = QPushButton("?")
-        help_btn.setToolTip("Show help for application settings")
-        help_btn.setFixedSize(22, 22)
+        help_btn.setToolTip(trans.t("help_btn_app"))
+        help_btn.setFixedSize(26, 26)
         # Text "?" styled by objectName: the old white SVG icon
         # vanished on the light dialog background.
         help_btn.setObjectName("helpButton")
@@ -510,15 +500,12 @@ class AIBatchSettingsDialog(QDialog):
         g_layout = QHBoxLayout(group)
 
         lbl = QLabel(trans.t("dialog_ai_batch_label"))
-        lbl.setMinimumWidth(140)
+        lbl.setMinimumWidth(max(140, lbl.sizeHint().width()))
         g_layout.addWidget(lbl)
 
-        self.spin_batch_size = QSpinBox()
-        self.spin_batch_size.setRange(1, 16)
-        self.spin_batch_size.setSingleStep(1)
-        self.spin_batch_size.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
-        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
-        self.spin_batch_size.setMinimumWidth(90)
+        self.spin_batch_size = StepperSpinBox(minimum=1, maximum=16,
+                                              decimals=0, step=1)
+        self.spin_batch_size.setMinimumWidth(150)
         g_layout.addWidget(self.spin_batch_size)
         g_layout.addStretch()
 
@@ -527,8 +514,8 @@ class AIBatchSettingsDialog(QDialog):
         # Buttons: help and OK/Cancel
         btn_layout = QHBoxLayout()
         help_btn = QPushButton("?")
-        help_btn.setToolTip("Show help for StackMFF V3 batch settings")
-        help_btn.setFixedSize(22, 22)
+        help_btn.setToolTip(trans.t("help_btn_ai_batch"))
+        help_btn.setFixedSize(26, 26)
         # Text "?" styled by objectName: the old white SVG icon
         # vanished on the light dialog background.
         help_btn.setObjectName("helpButton")

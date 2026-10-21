@@ -49,9 +49,8 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - Video files: MP4 format (automatically decoded into image sequences)
 - Folders containing numbered image sequences
 - Camera RAW files (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2 and other common
-  RAW formats). Decoding needs the optional `rawpy` (LibRaw) package; the
-  Windows and macOS builds include it, and pip users can install it with
-  `pip install "openfocus[raw]"`
+  RAW formats). Decoding uses `rawpy` (LibRaw), which `pip install openfocus`
+  installs and the Windows/macOS builds bundle
 
 ### Supported Output Formats
 

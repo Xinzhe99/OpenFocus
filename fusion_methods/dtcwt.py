@@ -53,7 +53,8 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu):
     if dtcwt is None or maximum_filter is None or convolve is None:
         raise RuntimeError(
             "DTCWT fusion requires 'dtcwt' and 'scipy'. "
-            "Please install them via: pip install dtcwt scipy"
+            "Please install them via: pip install dtcwt scipy "
+            "(dtcwt has no wheels for Python 3.13+; it installs on 3.10-3.12)"
         )
 
     # 1. Load and Preprocess Images

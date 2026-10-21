@@ -30,7 +30,7 @@ _LIGHT: Dict[str, str] = {
     "surfaceActive":   "#E9EBEF",
     # borders
     "border":          "#E5E7EB",
-    "borderStrong":    "#D1D5DB",
+    "borderStrong":    "#C9CED6",
     "borderFocus":     "#2563EB",
     # text
     "text":            "#111827",
@@ -52,7 +52,10 @@ _LIGHT: Dict[str, str] = {
     "dangerSoft":      "#FEF2F2",
     # controls
     "controlBg":       "#FFFFFF",
-    "controlBorder":   "#D1D5DB",
+    # 2.3:1 against the control fill. The old #D1D5DB sat at 1.47:1, which is
+    # under the 3:1 WCAG asks of non-text UI; in practice a text input and a
+    # dropdown in the same row had no visible boundary on a busy screenshot.
+    "controlBorder":   "#A5ADB8",
     "controlDisabled": "#F3F4F6",
     # canvas behind images
     "canvas":          "#EDEFF2",
@@ -69,7 +72,7 @@ _DARK: Dict[str, str] = {
     "surfaceHover":    "#1E232B",
     "surfaceActive":   "#262C35",
     "border":          "#262C35",
-    "borderStrong":    "#333B46",
+    "borderStrong":    "#3A424E",
     "borderFocus":     "#4C8DFF",
     "text":            "#E6E9EF",
     "textMuted":       "#9AA4B2",
@@ -87,7 +90,9 @@ _DARK: Dict[str, str] = {
     "danger":          "#F87171",
     "dangerSoft":      "#2C1618",
     "controlBg":       "#1B2028",
-    "controlBorder":   "#333B46",
+    # 2.8:1 against the control fill; #333B46 was 1.44:1 and the dropdown
+    # outline was invisible on the dark panel.
+    "controlBorder":   "#5C6775",
     "controlDisabled": "#1A1E25",
     "canvas":          "#0B0D10",
     "shadow":          "rgba(0, 0, 0, 0.45)",
@@ -104,7 +109,11 @@ PALETTES: Dict[str, Dict[str, str]] = {"light": _LIGHT, "dark": _DARK}
 # sloppiness even when nobody can name the cause.
 SPACE = {"xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24, "2xl": 32, "3xl": 48}
 
-RADIUS = {"xs": 4, "sm": 6, "md": 10, "lg": 14, "xl": 20, "pill": 999}
+# Qt rejects a border-radius larger than half the box (999px, 50%, 16px on a
+# 28px box) by dropping the whole declaration, so the "?" chip rendered as a
+# sharp 28px rectangle. 14px is half of that box and draws a true circle.
+# Anything wider than 28px must not use this token.
+RADIUS = {"xs": 4, "sm": 6, "md": 10, "lg": 14, "xl": 20, "pill": 14}
 
 # Qt font sizes are points. These steps map to the reference's hierarchy:
 # caption < body < label < title < metric.

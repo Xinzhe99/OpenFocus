@@ -37,6 +37,18 @@ _ARROW_DOWN_LIGHT = _asset_url("arrow_down_light.svg")
 _ARROW_UP_LIGHT = _asset_url("arrow_up_light.svg")
 _ARROW_DOWN_DARK = _asset_url("arrow_down_dark.svg")
 _ARROW_UP_DARK = _asset_url("arrow_up_dark.svg")
+# Right-pointing glyph for QMenu submenu indicators. Qt draws its own
+# triangle when the stylesheet leaves QMenu::right-arrow alone; that triangle
+# sits flush against the popup edge and ignores the theme, which is what made
+# the submenu column look wrong next to the padded items.
+_ARROW_RIGHT_LIGHT = _asset_url("arrow_right_light.svg")
+_ARROW_RIGHT_DARK = _asset_url("arrow_right_dark.svg")
+# Spin-box steppers draw a - and a + instead of up/down chevrons, so the
+# control reads as "increase this number" rather than "sort".
+_MINUS_LIGHT = _asset_url("minus_light.svg")
+_MINUS_DARK = _asset_url("minus_dark.svg")
+_PLUS_LIGHT = _asset_url("plus_light.svg")
+_PLUS_DARK = _asset_url("plus_dark.svg")
 
 _UI_FONT = '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif'
 _MONO_FONT = 'Consolas, "Segoe UI", monospace'
@@ -52,8 +64,13 @@ def arrow_qss(theme: str = "dark", button_bg: str = None,
     t = palette(theme)
     down = _ARROW_DOWN_LIGHT if theme == "dark" else _ARROW_DOWN_DARK
     up = _ARROW_UP_LIGHT if theme == "dark" else _ARROW_UP_DARK
+    minus = _MINUS_LIGHT if theme == "dark" else _MINUS_DARK
+    plus = _PLUS_LIGHT if theme == "dark" else _PLUS_DARK
     bg = button_bg or t["surfaceHover"]
     hover = button_hover or t["surfaceActive"]
+    r = RADIUS
+    s = SPACE
+    f = FONT
     bd = border or t["border"]
     return f"""
 QComboBox::drop-down {{
@@ -61,19 +78,78 @@ QComboBox::drop-down {{
     width: 22px; border: none; background: transparent;
 }}
 QComboBox::down-arrow {{ image: url("{down}"); width: 10px; height: 10px; }}
-QSpinBox::up-button, QDoubleSpinBox::up-button,
-QSpinBox::down-button, QDoubleSpinBox::down-button {{
-    subcontrol-origin: border; width: 20px;
-    background-color: {bg}; border: none; border-left: 1px solid {bd};
+/* Spin box steppers keep Qt's native geometry (two sub-controls on the
+   trailing edge; Qt 6 ignores subcontrol-position for them, so they cannot be
+   moved to opposite sides from a stylesheet). The glyphs are still swapped for
+   a + and a -, which is what makes the control read as "adjust this number"
+   rather than "sort".
+
+   Controls that need the + and - on OPPOSITE sides use widgets/stepper.py
+   instead — it builds the buttons explicitly. */
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: url("{plus}"); width: 9px; height: 9px;
 }}
-QSpinBox::up-button, QDoubleSpinBox::up-button {{ subcontrol-position: top right; }}
-QSpinBox::down-button, QDoubleSpinBox::down-button {{ subcontrol-position: bottom right; }}
-QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: url("{minus}"); width: 9px; height: 9px;
+}}
+
+/* StepperSpinBox (widgets/stepper.py): - on the left, + on the right.
+   QToolButton needs a base rule: a bare id selector alone did not beat the
+   widget's native metrics here, and the buttons kept Qt's 20 px height while
+   the adjacent line edit was 34 px. */
+QToolButton {{
+    background-color: {t['surface']};
+    color: {t['text']};
+    border: 1px solid {t['controlBorder']};
+    border-radius: {r['xs']}px;
+    padding: 2px 4px;
+}}
+QToolButton:hover {{ background-color: {t['surfaceHover']}; }}
+QToolButton:pressed {{ background-color: {t['surfaceActive']}; }}
+QToolButton#stepperMinusButton, QToolButton#stepperPlusButton {{
+    background-color: {t['surfaceHover']};
+    color: {t['text']};
+    border: 1px solid {t['controlBorder']};
+    min-width: 22px; max-width: 22px;
+    /* Height has to reach the 34 px of the adjacent QLineEdit; making it
+       implicit left the buttons 14 px short and broke the stepper's outline. */
+    min-height: 32px; max-height: 32px;
+    font-size: {f['body'] + 2}pt;
+    font-weight: 600;
+    padding: 0;
+}}
+QToolButton#stepperMinusButton {{
+    border-top-left-radius: {r['sm']}px;
+    border-bottom-left-radius: {r['sm']}px;
+    border-right: none;
+}}
+QToolButton#stepperPlusButton {{
+    border-top-right-radius: {r['sm']}px;
+    border-bottom-right-radius: {r['sm']}px;
+    border-left: none;
+}}
+QToolButton#stepperMinusButton:hover, QToolButton#stepperPlusButton:hover {{
     background-color: {hover};
 }}
-QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url("{up}"); width: 9px; height: 9px; }}
-QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url("{down}"); width: 9px; height: 9px; }}
+QToolButton#stepperMinusButton:pressed, QToolButton#stepperPlusButton:pressed {{
+    background-color: {t['surfaceActive']};
+}}
+QToolButton#stepperMinusButton:disabled, QToolButton#stepperPlusButton:disabled {{
+    background-color: {t['controlDisabled']};
+    color: {t['textFaint']};
+}}
+#stepperSpinBoxEdit {{
+    background-color: {t['controlBg']};
+    color: {t['text']};
+    border: 1px solid {t['controlBorder']};
+    /* Matches QLineEdit / QComboBox, so a stepper lines up with the plain
+       inputs in the same dialog. */
+    padding: {s['xs'] + 2}px {s['sm']}px;
+    min-height: 20px;
+    selection-background-color: {t['accent']};
+    selection-color: {t['textOnAccent']};
+}}
+#stepperSpinBoxEdit:focus {{ border-color: {t['borderFocus']}; }}
 """
 
 
@@ -89,6 +165,7 @@ def build_stylesheet(theme: str = "dark") -> str:
     f = FONT
     check = _CHECK_SVG
     dot = _RADIO_DOT_DARK if theme == "dark" else _RADIO_DOT_LIGHT
+    arrow_right = _ARROW_RIGHT_LIGHT if theme == "dark" else _ARROW_RIGHT_DARK
 
 
     return f"""
@@ -146,13 +223,32 @@ QMenu {{
 }}
 QMenu::item {{
     padding: {s['sm'] - 2}px {s['xl']}px {s['sm'] - 2}px {s['md']}px;
-    border-radius: {r['sm']}px;
     background-color: {t['surface']};
+    /* No border-radius here. An unselected item's background is the same
+       colour as the menu, so a rounded corner has nothing to round against:
+       Qt still antialiases the corner and the row edge shows a column of
+       little arcs along the popup's right side. The radius belongs to the
+       highlight only. */
+    padding-right: {s['2xl']}px;
 }}
-QMenu::item:selected {{ background-color: {t['accentSoft']}; color: {t['accentSoftText']}; }}
+QMenu::item:selected {{
+    background-color: {t['accentSoft']};
+    color: {t['accentSoftText']};
+    border-radius: {r['sm']}px;
+}}
 QMenu::item:disabled {{ color: {t['textFaint']}; }}
 QMenu::separator {{ height: 1px; background-color: {t['border']}; margin: {s['xs']}px {s['sm']}px; }}
 QMenu::icon {{ padding-left: {s['sm']}px; }}
+/* The indicator gets its own column, vertically centred in the row, instead
+   of the default flush-right triangle. The image is swapped per theme so the
+   glyph keeps contrast on both backgrounds. */
+QMenu::right-arrow {{
+    image: url("{arrow_right}");
+    width: 12px; height: 12px;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    right: {s['sm']}px;
+}}
 
 /* ===================== buttons ===================== */
 QPushButton {{
@@ -191,8 +287,11 @@ QPushButton#helpButton {{
     border: 1px solid {t['border']};
     border-radius: {r['pill']}px;
     padding: 0;
-    min-width: 22px; max-width: 22px;
-    min-height: 22px; max-height: 22px;
+    /* 26 px is the smallest square that still centres the glyph on the same
+       baseline as a 34 px control, so the "?" chip reads as a companion to
+       the dropdown instead of a smaller unrelated button. */
+    min-width: 26px; max-width: 26px;
+    min-height: 26px; max-height: 26px;
     font-weight: {WEIGHT['semibold']};
     font-size: {f['caption']}pt;
 }}
@@ -202,7 +301,23 @@ QPushButton#helpButton:hover {{
     border-color: {t['accentSoftText']};
 }}
 
-QPushButton#stepButton {{ padding: 0; min-width: 26px; max-width: 26px; }}
+/* Stepper +- buttons: an explicit surface so the glyph and the glyph's box
+   read the same way on both themes. Inheriting the base button left them as
+   white chips with a visible frame in light mode and as bare glyphs in dark
+   mode, which made the same dialog look like two different designs. */
+QPushButton#stepButton {{
+    padding: 0;
+    min-width: 26px; max-width: 26px;
+    background-color: {t['surface']};
+    color: {t['text']};
+    border: 1px solid {t['controlBorder']};
+    border-radius: {r['xs']}px;
+}}
+QPushButton#stepButton:hover {{
+    background-color: {t['surfaceHover']};
+    border-color: {t['accent']};
+}}
+QPushButton#stepButton:pressed {{ background-color: {t['surfaceActive']}; }}
 
 /* ===================== text inputs ===================== */
 QLineEdit, QPlainTextEdit, QTextEdit, QTextBrowser {{
@@ -210,7 +325,12 @@ QLineEdit, QPlainTextEdit, QTextEdit, QTextBrowser {{
     color: {t['text']};
     border: 1px solid {t['controlBorder']};
     border-radius: {r['sm']}px;
-    padding: {s['xs'] + 1}px {s['sm']}px;
+    /* Matches the combo box exactly, so an input and a dropdown in the same
+       row are the same height and their text starts at the same offset. */
+    padding: {s['xs'] + 2}px {s['sm']}px;
+    /* Same floor as QComboBox. Without it a line edit computed 30 px while a
+       dropdown next to it computed 34 px, so form rows looked ragged. */
+    min-height: 20px;
     selection-background-color: {t['accent']};
     selection-color: {t['textOnAccent']};
 }}
@@ -224,12 +344,14 @@ QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {{
 QLineEdit[readOnly="true"] {{ background-color: {t['surfaceSunken']}; }}
 
 /* ===================== combo box ===================== */
+/* Inputs share the button's vertical padding so a dropdown and a button in
+   the same row come out exactly the same height. */
 QComboBox {{
     background-color: {t['controlBg']};
     color: {t['text']};
     border: 1px solid {t['controlBorder']};
     border-radius: {r['sm']}px;
-    padding: {s['xs'] + 1}px {s['sm']}px;
+    padding: {s['xs'] + 2}px {s['sm']}px;
     padding-right: {s['xl']}px;
     min-height: 20px;
 }}
@@ -253,9 +375,9 @@ QSpinBox, QDoubleSpinBox {{
     color: {t['text']};
     border: 1px solid {t['controlBorder']};
     border-radius: {r['sm']}px;
-    /* The up/down column is 20 px wide and sits inside the border; padding
-       must not add on top of it or the arrows get clipped. */
-    padding: {s['xs'] + 1}px 22px {s['xs'] + 1}px {s['sm']}px;
+    /* The stepper column sits on the trailing edge and is 22 px wide;
+       padding must reserve exactly that or the digits run under it. */
+    padding: {s['xs'] + 2}px 22px {s['xs'] + 2}px {s['sm']}px;
     min-height: 20px;
     selection-background-color: {t['accent']};
     selection-color: {t['textOnAccent']};
@@ -353,6 +475,28 @@ QRadioButton::indicator:checked {{
     image: url("{dot}");
 }}
 QCheckBox:disabled, QRadioButton:disabled {{ color: {t['textFaint']}; }}
+
+/* List rows that carry a check state (the source-frame list, where a row can
+   be excluded from the render) need the SAME indicator as QCheckBox.
+   Without these rules Qt has no QListWidget::indicator styling to apply, so
+   the check box fell back to the QRadioButton rules declared above — which
+   have `border-radius: 8px` — and every row showed a filled blue disc instead
+   of a ticked square. */
+QListWidget::indicator, QListView::indicator {{
+    width: 16px; height: 16px;
+    border: 1px solid {t['controlBorder']};
+    border-radius: {r['xs']}px;
+    background-color: {t['controlBg']};
+    margin-left: {s['xs']}px;
+}}
+QListWidget::indicator:hover, QListView::indicator:hover {{
+    border-color: {t['accent']};
+}}
+QListWidget::indicator:checked, QListView::indicator:checked {{
+    background-color: {t['accent']};
+    border-color: {t['accent']};
+    image: url("{check}");
+}}
 
 /* ===================== sliders ===================== */
 QSlider::groove:horizontal {{
@@ -472,12 +616,16 @@ QFrame#statusPanel QLabel {{
     font-size: {f['body']}pt;
     font-family: {_UI_FONT};
 }}
+/* Same padding as the base QPushButton on purpose: a different value here made
+   secondary buttons a couple of pixels taller than the primary next to them,
+   which reads as a broken row rather than a hierarchy. The hierarchy comes
+   from the colours, not the height. */
 QPushButton#secondaryButton {{
     background-color: {t['surface']};
     color: {t['text']};
     border: 1px solid {t['controlBorder']};
     border-radius: {r['sm']}px;
-    padding: {s['sm']}px {s['md']}px;
+    padding: {s['xs'] + 2}px {s['md']}px;
 }}
 QPushButton#secondaryButton:hover {{ background-color: {t['surfaceHover']}; }}
 QPushButton#secondaryButton:pressed {{ background-color: {t['surfaceActive']}; }}
@@ -509,7 +657,6 @@ QFrame#listCard QListWidget::item:selected {{
 }}
 QFrame#listCard QListWidget::item:hover {{
     background-color: {t['surfaceHover']};
-}};
     color: {t['accentSoftText']};
 }}
 QFrame#divider {{ background-color: {t['border']}; max-height: 1px; border: none; }}
@@ -621,7 +768,10 @@ QComboBox {{
     color: {t['text']};
     border: 1px solid {t['controlBorder']};
     border-radius: {r['sm']}px;
-    padding: {s['xs'] + 1}px {s['sm']}px;
+    /* Must stay identical to the main QComboBox rule: this second rule wins
+       when arrow_qss() is appended, and a stale padding here silently made
+       every dropdown 2 px shorter than the buttons beside them. */
+    padding: {s['xs'] + 2}px {s['sm']}px;
     padding-right: {s['xl']}px;
 }}
 QComboBox QAbstractItemView {{
@@ -668,11 +818,19 @@ HELP_BUTTON_STYLE_DARK = f"""
 QPushButton#helpButton {{
     background-color: {palette('dark')['surfaceHover']};
     color: {palette('dark')['textMuted']};
-    border: 1px solid {palette('dark')['border']};
+    /* controlBorder, not border: the inline chip is not covered by the
+       generated sheet, so it kept the 1.2:1 dark 'border' token and read as
+       a black square instead of a round "?" chip. */
+    border: 1px solid {palette('dark')['controlBorder']};
     border-radius: {RADIUS['pill']}px;
     font-size: {FONT['caption']}pt;
     font-weight: {WEIGHT['semibold']};
     padding: 0;
+    /* An inline stylesheet replaces the sheet's #helpButton rule wholesale,
+       so the square geometry has to be restated here or the chip collapses
+       to the text width and renders as a rounded rectangle. */
+    min-width: 26px; max-width: 26px;
+    min-height: 26px; max-height: 26px;
 }}
 QPushButton#helpButton:hover {{
     background-color: {palette('dark')['accentSoft']};
@@ -684,11 +842,16 @@ HELP_BUTTON_STYLE_LIGHT = f"""
 QPushButton#helpButton {{
     background-color: {palette('light')['surfaceHover']};
     color: {palette('light')['textMuted']};
-    border: 1px solid {palette('light')['border']};
+    border: 1px solid {palette('light')['controlBorder']};
     border-radius: {RADIUS['pill']}px;
     font-size: {FONT['caption']}pt;
     font-weight: {WEIGHT['semibold']};
     padding: 0;
+    /* An inline stylesheet replaces the sheet's #helpButton rule wholesale,
+       so the square geometry has to be restated here or the chip collapses
+       to the text width and renders as a rounded rectangle. */
+    min-width: 26px; max-width: 26px;
+    min-height: 26px; max-height: 26px;
 }}
 QPushButton#helpButton:hover {{
     background-color: {palette('light')['accentSoft']};

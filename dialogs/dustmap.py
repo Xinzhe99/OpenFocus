@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
+from widgets.stepper import StepperSpinBox
 from utils.dust_map import DEFAULT_SIGMA, compute_flat_field, apply_flat_field
 
 
@@ -85,7 +86,8 @@ class DustMapDialog(QDialog):
         self.lbl_size = QLabel(trans.t("dust_size"))
         self.lbl_size.setToolTip(trans.t("dust_size_hint"))
         size_row.addWidget(self.lbl_size)
-        self.spin_sigma = QDoubleSpinBox()
+        self.spin_sigma = StepperSpinBox(minimum=1.0, maximum=40.0,
+                                       decimals=1, step=1.0, value=DEFAULT_SIGMA)
         self.spin_sigma.setRange(1.0, 40.0)
         self.spin_sigma.setSingleStep(1.0)
         self.spin_sigma.setDecimals(1)

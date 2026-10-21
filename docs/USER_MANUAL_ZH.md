@@ -49,8 +49,8 @@ OpenFocus 是一款面向科研人员、工程师和图像处理从业者的专�
 - 视频文件：MP4、AVI、MOV、MKV、WMV、FLV、WEBM（自动解码为图像序列）
 - 包含按序号命名的图像序列的文件夹
 - 相机 RAW 文件（DNG、CR2/CR3、NEF、ARW、RAF、ORF、RW2 等常见 RAW 格式）：
-  解码需要可选依赖 `rawpy`（LibRaw）；Windows 与 macOS 安装包已内置，pip
-  用户可执行 `pip install "openfocus[raw]"` 安装
+  解码使用 `rawpy`（LibRaw）：`pip install openfocus` 会一并安装，Windows
+  与 macOS 安装包也已内置
 
 ### 支持的输出格式
 

@@ -136,6 +136,14 @@ def _read_via_pil(path: str) -> Optional[np.ndarray]:
     """
     if not PIL_AVAILABLE:
         return None
+    # Pillow's TIFF decoder ABORTS the process (0xC0000409) on compressed
+    # 16-bit TIFFs — LZW, PackBits and colour LZW all reproduce it on Pillow
+    # 11.1.0/Windows, and `cv2.imwrite` writes LZW by default. A try/except
+    # cannot catch a native abort, so a stack of otherwise-readable frames
+    # would take the whole app down. OpenCV decodes every one of those files
+    # correctly, so TIFF simply never goes through Pillow.
+    if os.path.splitext(path)[1].lower() in ('.tif', '.tiff'):
+        return None
     try:
         with PILImage.open(path) as pil_img:
             if pil_img.mode in ('I', 'I;16', 'I;16B'):

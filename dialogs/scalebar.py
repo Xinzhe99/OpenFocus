@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
 )
 
@@ -31,6 +32,15 @@ class ScaleBarDialog(QDialog):
 
         self.enable_chk = QCheckBox(trans.t("scalebar_enable"))
         self.enable_chk.setChecked(getattr(parent, "scale_bar_enabled", False))
+        # A QCheckBox cannot wrap; the dialog is 520 px wide and the German /
+        # Russian label needs 620-750 px, so it was painted cut off. Elide to
+        # the dialog width and keep the full sentence in the tooltip.
+        self.enable_chk.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                      QSizePolicy.Policy.Preferred)
+        self.enable_chk.setMinimumWidth(0)
+        self.enable_chk.setText(self.enable_chk.fontMetrics().elidedText(
+            self.enable_chk.text(), Qt.TextElideMode.ElideRight, 480))
+        self.enable_chk.setToolTip(trans.t("scalebar_enable"))
         layout.addWidget(self.enable_chk)
 
         form = QFormLayout()
@@ -40,10 +50,12 @@ class ScaleBarDialog(QDialog):
         # spinner is wrong at both ends: it cannot express 0.00005 µm/px and
         # wastes three decimals on "50". The range is fixed to the physical
         # span and the decimals follow the value's magnitude.
-        self.px_spin = QDoubleSpinBox()
-        self.px_spin.setRange(0.0, 1000.0)
-        self.px_spin.setDecimals(4)
-        self.px_spin.setSingleStep(0.01)
+        # A StepperSpinBox, not QDoubleSpinBox: Qt lays a spin box's two
+        # buttons out on the trailing edge and ignores subcontrol-position, so
+        # a "- on the left, + on the right" layout is unreachable from CSS.
+        from widgets.stepper import StepperSpinBox
+        self.px_spin = StepperSpinBox(
+            minimum=0.0, maximum=1000.0, decimals=4, step=0.01)
         self.px_spin.setValue(
             float(getattr(parent, "scale_um_per_px_manual", 0.0) or 0.0))
         self.px_spin.setToolTip(trans.t("scalebar_manual_hint"))
@@ -96,6 +108,7 @@ class ScaleBarDialog(QDialog):
         row = QHBoxLayout()
         row.addStretch()
         ok_btn = QPushButton(trans.t("btn_ok"))
+        ok_btn.setObjectName("primaryButton")
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(self._save_and_accept)
         cancel_btn = QPushButton(trans.t("btn_cancel"))

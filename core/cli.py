@@ -12,6 +12,13 @@ import os
 import sys
 import time
 
+# Must precede the numpy/torch import below: two OpenMP runtimes (MKL through
+# numpy, torch's libiomp5md.dll) otherwise abort the process with
+# "OMP: Error #15 ... already initialized" as soon as ECC and the AI model run
+# in the same process. Same guard as main.py — the `openfocus` console script
+# enters here and never imports main.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 import numpy as np
 from typing import List, Optional, Tuple
 

@@ -72,6 +72,64 @@ class RenderManager:
         # What the *running* render was launched with; see start_render().
         self._render_context: Optional[dict] = None
 
+    def _confirm_cpu_ai_render(self, force_algorithm: str | None = None) -> bool:
+        """Warn before starting a CPU-only AI render; True means go ahead.
+
+        StackMFF V3 is roughly 30-90x slower on a CPU than the classical
+        methods, and on a low-spec machine a large stack can leave the whole
+        computer unresponsive for a long time. Users with no accelerator get
+        told that once, with a "don't show this again" opt-out, instead of
+        waiting minutes with no explanation.
+
+        Compare-all drives methods programmatically and must not stop for a
+        modal box mid-run, so it is skipped.
+        """
+        if force_algorithm is not None:
+            return True
+        window = self.window
+        try:
+            algorithm = window.current_fusion_method()
+        except Exception:
+            return True
+        if algorithm != "stackmffv3" or not getattr(window, "use_gpu", True):
+            # A user who explicitly disabled GPU acceleration has already
+            # been told; the setting is the opt-out.
+            return True
+
+        from utils.settings_store import (AI_CPU_WARNING_DISMISSED_KEY,
+                                          get_settings)
+        settings = get_settings()
+        if settings.value(AI_CPU_WARNING_DISMISSED_KEY, False, type=bool):
+            return True
+
+        from core.multi_focus_fusion import is_ai_fusion_available, torch_device_kind
+        if not is_ai_fusion_available():
+            return True  # torch missing: the render itself will say so
+        if torch_device_kind() not in (None, "N/A"):
+            return True  # CUDA or MPS available: nothing to warn about
+
+        from PyQt6.QtWidgets import QCheckBox, QMessageBox
+        from utils import style_message_box
+
+        box = QMessageBox(window)
+        style_message_box(box)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(trans.t("ai_cpu_warning_title"))
+        box.setText(trans.t("ai_cpu_warning_text"))
+        dont_show = QCheckBox(trans.t("ai_cpu_warning_dont_show"))
+        box.setCheckBox(dont_show)
+        start_btn = box.addButton(trans.t("btn_render"),
+                                  QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(trans.t("btn_cancel_generic"),
+                      QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(start_btn)
+        box.exec()
+
+        if dont_show.isChecked():
+            settings.setValue(AI_CPU_WARNING_DISMISSED_KEY, True)
+            settings.sync()
+        return box.clickedButton() is start_btn
+
     def _abort_compare_run(self) -> None:
         """Abort a chained comparison whose next render failed to start."""
         if getattr(self, '_compare_mode', False):
@@ -209,6 +267,10 @@ class RenderManager:
 
         if not window.raw_images or len(window.raw_images) < 2:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
+            self._abort_compare_run()
+            return
+
+        if not self._confirm_cpu_ai_render(force_algorithm):
             self._abort_compare_run()
             return
 
@@ -510,7 +572,7 @@ class RenderManager:
                 self._compare_queue = []
                 self._compare_current = None
             self._render_context = None
-            self.worker = None
+            self._dispose_worker()
             self._restore_ui_controls()
             return
 
@@ -729,7 +791,30 @@ class RenderManager:
             else:
                 # 恢复 UI 控件
                 self._restore_ui_controls()
-            self.worker = None
+            self._dispose_worker()
+
+    def _dispose_worker(self) -> None:
+        """Release the finished RenderWorker without destroying a live QThread.
+
+        Dropping the last Python reference to a QThread that is still
+        finishing makes Qt destroy the C++ object underneath a running
+        thread: the worker emits its result from inside run(), so by the
+        time this slot runs the thread may not have returned yet. Qt then
+        aborts the process in Qt6Core.dll (exception 0xc0000409) — the crash
+        seen after ECC + AI renders. deleteLater() defers destruction to the
+        event loop, which only runs once the thread is really gone.
+        """
+        worker = self.worker
+        self.worker = None
+        if worker is None:
+            return
+        # deleteLater() is enough on its own: Qt posts the deferred delete to
+        # the event loop, which runs the destruction only after run() has
+        # returned. Never wait() here — this slot runs on the GUI thread and
+        # the worker is the thread that would have to finish first.
+        dispose = getattr(worker, "deleteLater", None)
+        if dispose is not None:
+            dispose()
 
     def _progress_widgets(self):
         """Lazily created status-bar progress bar + stage label.
@@ -809,7 +894,7 @@ class RenderManager:
         # must not leave the controller in preview mode.
         self._preview_mode = False
         self._render_context = None
-        self.worker = None
+        self._dispose_worker()
         self._hide_progress_bar()
 
         if getattr(self, '_compare_mode', False):

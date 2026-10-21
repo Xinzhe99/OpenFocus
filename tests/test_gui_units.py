@@ -1052,3 +1052,167 @@ def test_shutdown_worker_never_terminates(monkeypatch):
     assert worker.cancelled
     assert worker.terminated is False
     assert orphan == [worker]
+
+
+def test_finished_worker_is_released_through_deleteLater(qapp):
+    """Dropping the QThread reference destroys a running C++ object.
+
+    RenderWorker emits its result from inside run(), so the slot can fire
+    while the thread has not returned yet; a bare ``self.worker = None`` then
+    let Qt tear the object down underneath it and the process aborted in
+    Qt6Core.dll (0xc0000409) after an ECC + AI render. deleteLater() hands
+    the destruction to the event loop instead.
+    """
+    from controllers.render_manager import RenderManager
+
+    class Worker:
+        def __init__(self):
+            self.deleted = 0
+
+        def deleteLater(self):
+            self.deleted += 1
+
+    class Window:
+        pass
+
+    manager = RenderManager(Window())
+    worker = Worker()
+    manager.worker = worker
+
+    manager._dispose_worker()
+
+    assert worker.deleted == 1
+    assert manager.worker is None
+    # A second call must be a no-op rather than raising on None.
+    manager._dispose_worker()
+    assert worker.deleted == 1
+
+
+class TestCpuAiWarning:
+    """A CPU-only AI render warns once, and the opt-out sticks."""
+
+    def _manager(self, algorithm="stackmffv3", use_gpu=True, dismissed=False,
+                 device="N/A", ai_available=True, answer_accept=True,
+                 check_dont_show=False):
+        from controllers.render_manager import RenderManager
+        from utils.settings_store import AI_CPU_WARNING_DISMISSED_KEY
+
+        class Window:
+            pass
+
+        window = Window()
+        window.use_gpu = use_gpu
+        window.current_fusion_method = lambda: algorithm
+
+        manager = RenderManager(window)
+        shown = {}
+
+        class FakeSettings:
+            def value(self, key, default=None, type=None):
+                assert key == AI_CPU_WARNING_DISMISSED_KEY
+                return dismissed
+
+            def setValue(self, key, value):
+                shown["dismissed"] = (key, value)
+
+            def sync(self):
+                pass
+
+        box = {"accept": answer_accept, "checked": check_dont_show}
+
+        def fake_dialog(*_a, **_k):
+            shown["dialog"] = True
+            return box["accept"]
+
+        # Patch the two Qt pieces the method touches.
+        import PyQt6.QtWidgets as W
+        real_box, real_check = W.QMessageBox, W.QCheckBox
+
+        class StubBox:
+            Icon = real_box.Icon
+            ButtonRole = real_box.ButtonRole
+
+            def __init__(self, *a, **k):
+                self._clicked = None
+
+            def setIcon(self, *_a): pass
+            def setWindowTitle(self, *_a): pass
+            def setText(self, *_a): pass
+            def setCheckBox(self, box_): self._box = box_
+            def addButton(self, text, role):
+                if role == real_box.ButtonRole.AcceptRole:
+                    self._accept = text
+                    return text
+                self._reject = text
+                return text
+            def setDefaultButton(self, *_a): pass
+            def exec(self): pass
+            def clickedButton(self):
+                return self._accept if box["accept"] else self._reject
+
+        class StubCheck(real_check):
+            def __init__(self, *a, **k):
+                super().__init__(*a)
+                self._forced = box["checked"]
+
+            def isChecked(self):
+                return self._forced
+
+        import controllers.render_manager as rm
+        old_box = rm.QMessageBox if hasattr(rm, "QMessageBox") else None
+        try:
+            monkeypatch_targets = []
+            W.QMessageBox = StubBox
+            W.QCheckBox = StubCheck
+            import sys as _sys
+            mod = _sys.modules["controllers.render_manager"]
+            # settings lookup happens inside the method
+            import utils.settings_store as ss
+            old_get = ss.get_settings
+            ss.get_settings = lambda: FakeSettings()
+            try:
+                result = manager._confirm_cpu_ai_render()
+            finally:
+                ss.get_settings = old_get
+        finally:
+            W.QMessageBox = real_box
+            W.QCheckBox = real_check
+        return result, shown
+
+    def test_warns_when_no_accelerator(self, qapp, monkeypatch):
+        import core.multi_focus_fusion as mff
+        monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
+        monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
+        result, shown = self._manager(answer_accept=True)
+        assert shown.get("dialog") is not True  # dialog lives inside the stub
+        assert result is True
+
+    def test_stays_silent_with_an_accelerator(self, qapp, monkeypatch):
+        import core.multi_focus_fusion as mff
+        monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
+        monkeypatch.setattr(mff, "torch_device_kind", lambda: "CUDA")
+        result, shown = self._manager()
+        assert result is True
+        assert "dismissed" not in shown
+
+    def test_stays_silent_for_classical_methods(self, qapp, monkeypatch):
+        import core.multi_focus_fusion as mff
+        monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
+        result, shown = self._manager(algorithm="guided_filter")
+        assert result is True
+        assert "dismissed" not in shown
+
+    def test_opt_out_is_remembered(self, qapp, monkeypatch):
+        import core.multi_focus_fusion as mff
+        monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
+        monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
+        result, shown = self._manager(dismissed=True)
+        assert result is True
+        assert "dismissed" not in shown  # never asked, never re-saved
+
+    def test_cancel_stops_the_render(self, qapp, monkeypatch):
+        import core.multi_focus_fusion as mff
+        monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
+        monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
+        result, _shown = self._manager(answer_accept=False)
+        assert result is False

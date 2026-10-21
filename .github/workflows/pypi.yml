@@ -57,7 +57,11 @@ jobs:
           names = zipfile.ZipFile(wheel).namelist()
           required = ['weights/stackmff_v3_final.pth',
                       'core/models/stackmff_v3/network.py',
-                      'fusion_methods/stackmffv3.py']
+                      'fusion_methods/stackmffv3.py',
+                      'locales.py', 'locales_extra.py',
+                      'locales_de.py', 'locales_fr.py', 'locales_ru.py',
+                      'locales_ko.py', 'locales_pt.py', 'locales_it.py',
+                      'locales_nl.py', 'locales_pl.py']
           missing = [r for r in required if r not in names]
           stale = [n for n in names if 'stackmffv4' in n]
           if missing: sys.exit(f'missing from wheel: {missing}')

@@ -6,7 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "openfocus"
 description = "Multi-focus image fusion from the command line: registration (ECC / homography / fast phase correlation) plus eight fusion algorithms - four classical, the OpenFocus A/B/C family and the StackMFF V3 neural model - in one pip-installable tool"
 readme = "README.md"
-requires-python = ">=3.9"
+# Every CI job and the packaged builds are 3.10; PyQt6 needs 3.10 as well, so
+# advertising 3.9 produced an install that failed at import time.
+requires-python = ">=3.10"
 authors = [{ name = "Xinzhe Xie", email = "xiexinzheyyy@163.com" }]
 license = "MIT"
 keywords = ["image-fusion", "focus-stacking", "multifocus", "microscopy", "photography", "depth-map"]
@@ -23,15 +25,29 @@ dependencies = [
     "numpy",
     "opencv-python-headless",
     "scipy",
-    "dtcwt",
+    # dtcwt ships only an sdist and has no Python 3.13 wheels; making it a hard
+    # requirement made the whole install fail on newer interpreters even though
+    # it powers one of the eight methods. It is pulled in below with an
+    # environment marker covering the interpreters it actually builds on.
+    "dtcwt; python_version < '3.13'",
     "imageio",
+    # torch ships by default so `pip install openfocus` really enables all
+    # eight methods. It used to hide behind [ai], and the very first run of a
+    # plain install reported "StackMFF-V3 unavailable" for the default method.
+    "torch",
+    # Optional in practice, harmless to require: a few KB each, and they turn
+    # HEIC and camera-RAW stacks from "unsupported" into "works" without a
+    # second install step.
+    "pillow-heif",
+    "rawpy",
 ]
 dynamic = ["version"]
 
-[project.optional-dependencies]
-ai = ["torch"]
-heic = ["pillow-heif"]
-raw = ["rawpy"]
+# Deliberately no optional-dependency groups. Every capability (AI model,
+# HEIC, camera RAW) is in `dependencies` above: the ML method is the default
+# one, so an install that silently lacked it was broken on first launch, and
+# a user could not tell which combination they had. `pip install openfocus`
+# is the single supported install. `[ai]`/`[heic]`/`[raw]` no longer resolve.
 
 [project.scripts]
 openfocus = "core.cli:main"
@@ -44,7 +60,12 @@ Changelog = "https://github.com/Xinzhe99/OpenFocus/blob/main/CHANGELOG.md"
 [tool.setuptools]
 packages = ["core", "core.models", "core.models.stackmff_v3",
             "fusion_methods", "utils", "weights"]
-py-modules = ["constants"]
+# The locale packs are top-level modules (locales_de.py, …) discovered at
+# runtime by TranslationManager; if they are not listed here they are absent
+# from the wheel and every language except the inline ones disappears.
+py-modules = ["constants", "locales", "locales_extra", "locales_help_texts",
+              "locales_de", "locales_fr", "locales_ru", "locales_ko",
+              "locales_pt", "locales_it", "locales_nl", "locales_pl"]
 
 [tool.setuptools.dynamic]
 version = { attr = "constants.APP_VERSION" }

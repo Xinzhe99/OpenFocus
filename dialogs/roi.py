@@ -65,6 +65,8 @@ class ROIRenderOptionsDialog(QDialog):
         btn_ok = btns.button(QDialogButtonBox.StandardButton.Ok)
         if btn_ok:
             btn_ok.setText(trans.t('btn_ok'))
+            # Same primary weight as every other dialog's confirm action.
+            btn_ok.setObjectName("primaryButton")
             
         btn_cancel = btns.button(QDialogButtonBox.StandardButton.Cancel)
         if btn_cancel:

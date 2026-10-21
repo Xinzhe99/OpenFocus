@@ -67,8 +67,41 @@ jobs:
             --collect-data dtcwt `
             --collect-all rawpy `
             --collect-all torch `
-            --collect-all torchvision `
+            --exclude-module torchvision `
+            --exclude-module torch.test `
+            --exclude-module torch.utils.tensorboard `
+            --exclude-module torch.distributed `
+            --exclude-module matplotlib `
+            --exclude-module tkinter `
+            --exclude-module IPython `
+            --exclude-module pytest `
+            --exclude-module PyQt6.QtWebEngineCore `
+            --exclude-module PyQt6.Qt3DCore `
+            --exclude-module PyQt6.QtMultimedia `
+            --exclude-module PyQt6.QtBluetooth `
+            --exclude-module PyQt6.QtDesigner `
+            --exclude-module PyQt6.QtQuick `
             main.py
+
+      - name: Prune build-only files from the bundle
+        shell: pwsh
+        run: |
+          # torch ships headers, .lib import libraries and CMake files that are
+          # only used when compiling against it. They are ~80 MB of the bundle
+          # and nothing reads them at runtime. Qt's WebEngine/3D/Multimedia
+          # plugins are likewise unused by this app.
+          $root = "dist/OpenFocus"
+          $patterns = @("*.lib", "*.pdb", "*.exp")
+          foreach ($pat in $patterns) {
+            Get-ChildItem -Path $root -Recurse -Filter $pat -ErrorAction SilentlyContinue |
+              Remove-Item -Force -ErrorAction SilentlyContinue
+          }
+          foreach ($dir in @("torch/include", "torch/share", "torch/test")) {
+            $p = Join-Path $root "_internal/$dir"
+            if (Test-Path $p) { Remove-Item -Path $p -Recurse -Force }
+          }
+          $before = (Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum
+          Write-Output ("bundle after prune: {0:N0} MB" -f ($before/1MB))
 
       - name: Package zip (portable)
         shell: pwsh
@@ -157,8 +190,32 @@ jobs:
             --collect-data dtcwt \
             --collect-all rawpy \
             --collect-all torch \
-            --collect-all torchvision \
+            --exclude-module torchvision \
+            --exclude-module torch.test \
+            --exclude-module torch.utils.tensorboard \
+            --exclude-module torch.distributed \
+            --exclude-module matplotlib \
+            --exclude-module tkinter \
+            --exclude-module IPython \
+            --exclude-module pytest \
+            --exclude-module PyQt6.QtWebEngineCore \
+            --exclude-module PyQt6.Qt3DCore \
+            --exclude-module PyQt6.QtMultimedia \
+            --exclude-module PyQt6.QtBluetooth \
+            --exclude-module PyQt6.QtDesigner \
+            --exclude-module PyQt6.QtQuick \
             main.py
+
+      - name: Prune build-only files from the bundle
+        run: |
+          # Headers, import libraries and CMake files are compile-time only;
+          # they are a large share of the bundle and nothing reads them.
+          APP=dist/OpenFocus.app
+          find "$APP" -name '*.lib' -delete 2>/dev/null || true
+          find "$APP" -name '*.pdb' -delete 2>/dev/null || true
+          rm -rf "$APP"/Contents/Frameworks/torch/include 2>/dev/null || true
+          rm -rf "$APP"/Contents/Resources/torch/include 2>/dev/null || true
+          du -sh dist/OpenFocus.app || true
 
       - name: Ad-hoc codesign
         run: codesign --force --deep -s - dist/OpenFocus.app

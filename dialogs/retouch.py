@@ -216,6 +216,7 @@ class RetouchDialog(QDialog):
 
         bottom = QHBoxLayout()
         self.btn_apply = QPushButton(trans.t("retouch_apply"))
+        self.btn_apply.setObjectName("primaryButton")
         self.btn_apply.setDefault(True)
         self.btn_apply.clicked.connect(self.accept)
         btn_cancel = QPushButton(trans.t("btn_cancel"))

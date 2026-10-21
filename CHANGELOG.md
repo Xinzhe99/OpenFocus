@@ -3,6 +3,140 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added (languages)
+- **Eight new UI languages: German, French, Russian, Korean, Portuguese,
+  Italian, Dutch and Polish.** With English, Chinese, Japanese and Spanish
+  that makes twelve, each a complete 594-key table — no partial packs, so no
+  dialog falls back mid-sentence.
+- **Language packs are discovered, not hardcoded.** A pack is a
+  `locales_<code>.py` module with a `PACK` dict; dropping one in adds the
+  language to the menu, to auto-detection and to the saved-settings whitelist.
+  The menu was a literal block of four `QAction`s, and the settings whitelist
+  a literal tuple, so a pack could ship and still be unreachable.
+- `tests/test_i18n_packs.py` pins this contract: every pack on disk must load,
+  every pack must carry every key, every `{placeholder}` and `%` specifier must
+  survive, and no pack may be mostly untranslated.
+
+### Fixed (i18n)
+- **Switching language left the AI output block in Chinese.** "AI 输出方式",
+  "软融合" and "硬融合" were only set once, at construction; no language switch
+  ever revisited them. Every other panel control was retranslated.
+- **The image panel titles never retranslated.** "Source Stack" and "Output"
+  stayed English in every language.
+- **Long translations were clipped mid-glyph.** The right panel gives each of
+  three buttons ~113 px; Polish needs 343 px for the render label. The three
+  action buttons now use an `ElidingButton` that paints an ellipsis, keeps the
+  full string in the tooltip, and re-elides on resize and on every `setText`.
+  The render button also moved to its own row.
+- **Four `?` tooltips were hardcoded English** in the settings dialogs.
+- **A malformed CSS rule shipped in the stylesheet** —
+  `QWidget::item:hover { … };` followed by an orphan `color:` declaration and a
+  stray `}`. It confused the parser enough to leave a lighter rectangle painted
+  inside every combo box's arrow area.
+
+### Fixed (crash)
+- **A compressed 16-bit TIFF killed the whole application.** Pillow's TIFF
+  decoder aborts the process natively (`0xC0000409`) on LZW and PackBits
+  TIFFs — no exception, no traceback, nothing a `try/except` can catch. Since
+  `cv2.imwrite` writes LZW by default, this is what most microscopy exports
+  and any in-app TIFF save look like. TIFF is now decoded exclusively through
+  OpenCV, which handles every affected file correctly; the Pillow fallback is
+  reserved for the formats OpenCV genuinely cannot read (HEIC/HEIF).
+  This also stopped a test module from aborting the suite mid-run, which is
+  why the full suite could never complete.
+
+### Performance (memory, startup, download size)
+- **Torch is no longer imported at startup.** The availability probe only
+  needed to know whether the package exists, but it imported it — costing
+  ~2.1 s and pinning ~193 MB of RSS on every launch, including for users who
+  only run the classical methods. Availability now comes from `find_spec`,
+  and the accelerator is resolved on a background thread the first time the
+  neural method is actually selected. Measured on Windows:
+  **263 MB → 109 MB** idle with a classical method (**−58 %**), and
+  **263 MB → 201 MB** with the neural default.
+- **The status bar stopped showing a spinner that never settled.** It now
+  reports the real toolchain state (`N/A`, `CPU*` for classical methods) and
+  resolves CUDA/MPS in the background instead of importing torch on a 2 s UI
+  timer.
+- **Windows and macOS bundles pruned.** Build-only artifacts (`.lib` import
+  libraries, `.pdb`, torch's `include/` and `share/` trees — ~80 MB) are
+  removed after PyInstaller runs, and unused Qt modules (WebEngine, 3D,
+  Multimedia, Bluetooth, Designer, Quick, tkinter, matplotlib) are excluded.
+  `torchvision` was bundled whole (14 MB) despite never being imported.
+
+### Fixed (i18n layout)
+- **Long translations overflowed the right panel.** Check and radio labels
+  could not wrap, and the option rows were forced to their full sizeHint —
+  German "Stack-Reihenfolge umkehren (Fern-nach-Nah)" needs 546 px against
+  ~335 px of usable width, so the row grew past the panel and pushed the
+  following controls off-screen. Those labels now elide to the panel width
+  with the full sentence in the tooltip.
+- **The status block cut off the RAM figure in every language.** A 2x2 grid
+  gave each column ~212 px while "RAM: 15.0 GB / 32 GB" needs 260 px; the
+  block is now one full-width row per statistic.
+- **Dialog labels had hardcoded minimum widths** (120/140 px) that clipped
+  "Dauer (ms)", "Thread-Anzahl", "Nombre de threads" and similar. The width
+  now derives from the rendered text.
+- **The scale bar and welcome dialogs clipped their longer translations**;
+  both wrap or elide now.
+- `tools/lang_ui_audit.py` checks every shipped language for clipped labels
+  and reports **0 across all twelve**.
+
+### Changed (packaging)
+- **`pip install openfocus` now installs everything.** `torch`,
+  `pillow-heif` and `rawpy` moved into the base dependencies; previously the
+  AI method — the default one — reported "StackMFF-V3 unavailable" on a plain
+  install. The `[ai]`, `[heic]` and `[raw]` extras still resolve.
+- The wheel now ships the locale packs explicitly; they are top-level modules
+  and were absent from the package list.
+- **`torchvision` is gone from the dependency list.** Nothing imports it —
+  StackMFF V3 is pure torch — but `requirements.txt` pulled it in and the
+  "AI unavailable" message told users to install it.
+
+### Fixed
+- **ECC + AI renders aborted the whole app.** With an ECC registration and
+  the StackMFF V3 method in one run, the process died with
+  `OMP: Error #15: Initializing libiomp5md.dll, but found libiomp5md.dll
+  already initialized` — two OpenMP runtimes (Intel MKL through numpy/scipy,
+  and torch's own copy) reach the process, and the second one to initialise
+  aborts it. ECC alone and AI alone were both fine, which is why it only
+  showed up on stacks that used both. `KMP_DUPLICATE_LIB_OK=TRUE` is now set
+  before numpy/torch are imported, in both `main.py` and the CLI entry point,
+  so a user install no longer needs an environment variable.
+- **A finished render manager could destroy a live QThread.** Every
+  completion and error path dropped the worker with a bare
+  `self.worker = None`; because the worker emits its result from inside
+  `run()`, the C++ object could be destroyed while the thread was still
+  returning, aborting the process in Qt6Core.dll (0xc0000409). The worker is
+  now released through `deleteLater()`.
+
+### Fixed (UI consistency, both themes)
+- **The "?" help chip rendered as a sharp rectangle.** `RADIUS['pill']` was
+  999 px; Qt drops a `border-radius` larger than half the box, so the 28 px
+  chip lost its rounding on every dialog and on the right panel. Now 14 px,
+  the exact half-box value Qt honours.
+- **Controls in one row had four different heights.** `#secondaryButton`
+  used `padding: 8px 12px` while the base button used `6px 12px`, and
+  `QLineEdit` had no `min-height` at all, so a dropdown, a text field and a
+  button next to each other measured 30/32/34 px. All interactive controls
+  now share one 34 px metric; the `?` chip is a 26 px square.
+- **The stepper's `-`/`+` boxes collapsed to bare glyphs.** `QToolButton`
+  resolves its box through `QStyle`, so the `QToolButton#stepper*` rules were
+  ignored (buttons came out 47x20 beside a 34 px field), and once the full
+  sheet was installed the id rules stopped painting the background at all.
+  `widgets/stepper.py` now sizes and themes its buttons inline, per theme.
+- **Dark-mode control borders were invisible.** `controlBorder` sat at
+  1.44:1 against the field fill (`#333B46` on `#1B2028`); light was 1.47:1.
+  Raised to 2.84:1 dark and 2.27:1 light, which is what made every dropdown
+  and text input look like it had no frame at all.
+- **The frame slider was a 2 px sliver.** The panel control bar was pinned to
+  42 px, leaving the 4 px groove and 14 px handle no room; it is 52 px now.
+- **`GPU:` stayed on its placeholder.** The background torch probe updated the
+  method list but never refreshed the status bar, so a finished probe looked
+  stuck on "…" until an unrelated timer tick.
+
 ## [v1.65.4] — 2026-10-21
 
 ### Fixed

@@ -30,6 +30,9 @@ LAST_UPDATE_CHECK_KEY = "updates/last_check_epoch"
 UPDATE_BANNER_DISMISSED_KEY = "updates/banner_dismissed_tag"
 LAST_STACK_FOLDER_KEY = "ui/last_stack_folder"
 LAST_DIALOG_DIR_KEY = "ui/last_dialog_dir"
+# The "AI runs on the CPU" warning is informational and repeat-per-launch
+# annoying; once the user says "don't show again" it must stay gone.
+AI_CPU_WARNING_DISMISSED_KEY = "rendering/ai_cpu_warning_dismissed"
 
 # window attribute -> (settings key, default, cast)
 _PERSISTED_FIELDS = {
@@ -207,21 +210,28 @@ def save_window_settings(window) -> None:
     settings.setValue(RECENT_PROJECTS_KEY, list(getattr(window, "recent_projects", [])))
 
 
-SUPPORTED_LANGUAGES = ("en", "zh", "ja", "es")
+def _supported_languages():
+    """Codes the running build can actually render.
+
+    Read from the translation manager rather than a literal tuple: the old
+    hardcoded list silently dropped any newly added pack, so picking a new
+    language was saved but ignored on the next launch (that is exactly what
+    happened to ja/es in v1.50).
+    """
+    try:
+        from locales import trans
+        return tuple(trans.translations)
+    except Exception:  # pragma: no cover - settings must never import-fail
+        return ("en", "zh", "ja", "es")
 
 
 def get_saved_language():
-    """Return the persisted language code or None for auto-detect.
-
-    Must accept every language the UI offers (ja/es were added in v1.50):
-    the whitelist used to be en/zh only, so picking 日本語 or Español was
-    saved but ignored on the next launch.
-    """
+    """Return the persisted language code or None for auto-detect."""
     settings = get_settings()
     if not settings.contains(LANGUAGE_KEY):
         return None
     lang = str(settings.value(LANGUAGE_KEY, "")).lower()
-    return lang if lang in SUPPORTED_LANGUAGES else None
+    return lang if lang in _supported_languages() else None
 
 
 def save_window_layout(window) -> None:

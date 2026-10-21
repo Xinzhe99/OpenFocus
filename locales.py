@@ -1,5 +1,7 @@
 
 import datetime
+import os
+
 from PyQt6.QtCore import QObject, pyqtSignal
 
 class TranslationManager(QObject):
@@ -9,26 +11,26 @@ class TranslationManager(QObject):
         super().__init__()
         self.current_lang = 'en'
         
-        # Auto-detect system language via QLocale (best practice); fall back
-        # to the legacy UTC+8 heuristic when detection fails.
+        # Auto-detect from the system locale. The lookup is table-driven off
+        # the packs that actually loaded, so adding locales_xx.py is enough to
+        # make 'xx' selectable AND auto-detected; nothing here needs editing.
+        # The legacy UTC+8 fallback stays for hosts where QLocale reports an
+        # unusable value (some stripped Linux images answer 'C').
+        detected = None
         try:
             from PyQt6.QtCore import QLocale
-            name = QLocale.system().name()  # e.g. 'zh_CN', 'ja_JP', 'es_ES'
-            if name.startswith('zh'):
-                self.current_lang = 'zh'
-            elif name.startswith('ja'):
-                self.current_lang = 'ja'
-            elif name.startswith('es'):
-                self.current_lang = 'es'
-            else:
-                raise ValueError('unsupported locale')
+            name = QLocale.system().name() or ""  # e.g. 'zh_CN', 'pt_BR'
+            detected = self._match_locale(name)
         except Exception:
+            detected = None
+        if detected is None:
             try:
                 offset = datetime.datetime.now().astimezone().utcoffset()
                 if offset is not None and int(offset.total_seconds()) == 28800:
-                    self.current_lang = 'zh'
+                    detected = 'zh'
             except Exception:
                 pass
+        self._pending_autodetect = detected
 
         self.translations = {
             'en': {
@@ -326,10 +328,6 @@ class TranslationManager(QObject):
                 # Menu Settings
                 'menu_settings': 'Settings',
                 'menu_language': 'Language',
-                'action_lang_en': 'English',
-                'action_lang_zh': '中文（简体）',
-                'action_lang_ja': '日本語',
-                'action_lang_es': 'Español',
                 'action_thread_settings': 'Thread Settings',
                 'action_reg_settings': 'Registration Settings',
                 'action_tile_settings': 'Tile Settings',
@@ -375,6 +373,10 @@ class TranslationManager(QObject):
                 # Status Panel
                 'status_loaded': 'Loaded: {}',
                 'status_gpu': 'GPU: {}',
+                'help_btn_tile': 'Show help for tile settings',
+                'help_btn_registration': 'Show help for registration settings',
+                'help_btn_app': 'Show help for application settings',
+                'help_btn_ai_batch': 'Show help for StackMFF V3 batch settings',
                 'status_res': 'Res: {}',
                 'status_ram': 'RAM: {}',
                 'status_loaded_fmt': 'Loaded: {} ({:.1f} MB/img)',
@@ -403,6 +405,9 @@ class TranslationManager(QObject):
                 'msg_display_fusion_failed_text': 'Failed to display the fusion result.',
                 'msg_display_registration_failed_text': 'Failed to display the registration result.',
                 'msg_no_images_title': 'No Images',
+                'ai_cpu_warning_title': 'AI Fusion Without a GPU',
+                'ai_cpu_warning_text': 'No CUDA or MPS device was found, so the AI method (StackMFF V3) runs on the CPU.\n\nExpect it to be roughly 30-90x slower than the classical methods, and on a high-resolution or deep stack it can take a very long time. On a low-spec machine this may make the whole computer unresponsive until the render finishes.\n\nTips: turn on Quick preview to tune settings first, lower the stack resolution, or pick guided filter / GFG-FGF for a fast result.',
+                'ai_cpu_warning_dont_show': "Don't show this again",
                 'msg_no_images_rotate': 'No images to rotate.',
                 'msg_no_images_flip': 'No images to flip.',
                 'msg_no_images_resize': 'No images to resize.',
@@ -413,7 +418,7 @@ class TranslationManager(QObject):
                 'msg_reload_error_text': 'An error occurred while reloading the image stack.',
                 'msg_render_need_images_text': 'Please load at least 2 images before rendering.',
                 'msg_stackmff_unavailable_title': 'AI Unavailable',
-                'msg_stackmff_unavailable_text': 'AI requires torch + torchvision. Please install them or choose another fusion method.',
+                'msg_stackmff_unavailable_text': 'AI requires torch. Please install them or choose another fusion method.',
                 'msg_save_failed_title': 'Save Failed',
                 'msg_save_failed_text': 'Failed to save the image.',
                 'msg_save_failed_info_write': 'Unable to write image to the specified file path.',
@@ -1028,10 +1033,6 @@ class TranslationManager(QObject):
                 # Menu Settings
                 'menu_settings': '设置',
                 'menu_language': '语言',
-                'action_lang_en': 'English',
-                'action_lang_zh': '简体中文',
-                'action_lang_ja': '日本語',
-                'action_lang_es': 'Español',
                 'action_thread_settings': '线程设置',
                 'action_reg_settings': '配准设置',
                 'action_tile_settings': '分块设置',
@@ -1078,6 +1079,10 @@ class TranslationManager(QObject):
                 # Status Panel
                 'status_loaded': '已加载: {}',
                 'status_gpu': 'GPU: {}',
+                'help_btn_tile': '显示瓦片设置帮助',
+                'help_btn_registration': '显示配准设置帮助',
+                'help_btn_app': '显示应用设置帮助',
+                'help_btn_ai_batch': '显示 StackMFF V3 批处理设置帮助',
                 'status_res': '分辨率: {}',
                 'status_ram': '内存: {}',
                 'status_loaded_fmt': '已加载: {} ({:.1f} MB/张)',
@@ -1106,6 +1111,9 @@ class TranslationManager(QObject):
                 'msg_display_fusion_failed_text': '显示融合结果失败。',
                 'msg_display_registration_failed_text': '显示配准结果失败。',
                 'msg_no_images_title': '没有图像',
+                'ai_cpu_warning_title': '无 GPU 时使用 AI 融合',
+                'ai_cpu_warning_text': '未检测到 CUDA 或 MPS 设备，AI 算法（StackMFF V3）将使用 CPU 运行。\n\n预计比经典算法慢约 30–90 倍，高分辨率或深栈需要很长时间。在低配置电脑上，渲染期间可能让整台电脑卡顿、无响应。\n\n建议：先用“快速预览”调参数，或降低栈分辨率，或改用导向滤波 / GFG-FGF 快速出图。',
+                'ai_cpu_warning_dont_show': '不再提示',
                 'msg_no_images_rotate': '没有可旋转的图像。',
                 'msg_no_images_flip': '没有可翻转的图像。',
                 'msg_no_images_resize': '没有可缩放的图像。',
@@ -1116,7 +1124,7 @@ class TranslationManager(QObject):
                 'msg_reload_error_text': '重新加载图像栈时发生错误。',
                 'msg_render_need_images_text': '渲染前请至少加载 2 张图像。',
                 'msg_stackmff_unavailable_title': 'AI 不可用',
-                'msg_stackmff_unavailable_text': 'AI 需要 torch + torchvision。请安装或选择其他融合方法。',
+                'msg_stackmff_unavailable_text': 'AI 需要 torch。请安装或选择其他融合方法。',
                 'msg_save_failed_title': '保存失败',
                 'msg_save_failed_text': '保存图像失败。',
                 'msg_save_failed_info_write': '无法写入指定的文件路径。',
@@ -1427,15 +1435,105 @@ class TranslationManager(QObject):
             }
         }
 
-        # Community language packs (ja/es); missing keys fall back to English
+        self._load_language_packs()
+
+        # Apply the detected language only now: the packs had to exist first,
+        # otherwise a locale whose pack failed to load would leave
+        # current_lang pointing at a table that is not in the dict.
+        pending = getattr(self, "_pending_autodetect", None)
+        if pending and pending in self.translations:
+            self.current_lang = pending
+        self._pending_autodetect = None
+
+    # -- language packs ------------------------------------------------------
+
+    # Ordered so the menu lists languages consistently no matter what the
+    # filesystem returns. 'en'/'zh' live inline in this module; 'ja'/'es' ship
+    # in locales_extra.py; everything else is one locales_<code>.py module.
+    PACK_ORDER = ("en", "zh", "ja", "es", "de", "fr", "ru", "ko", "pt", "it",
+                  "nl", "pl")
+    LANG_NAMES = {
+        "en": "English", "zh": "中文", "ja": "日本語", "es": "Español",
+        "de": "Deutsch", "fr": "Français", "ru": "Русский",
+        "ko": "한국어", "pt": "Português", "it": "Italiano",
+        "nl": "Nederlands", "pl": "Polski",
+    }
+
+    @staticmethod
+    def _match_locale(name: str):
+        """Map a QLocale name ('pt_BR', 'zh_Hans_CN') onto a pack code."""
+        if not name:
+            return None
+        low = name.lower().replace("-", "_")
+        primary = low.split("_")[0]
+        # QLocale answers 'C'/'POSIX' when no user locale is configured; there
+        # is no such pack, and treating it as a code would blank the UI.
+        if primary in ("c", "posix"):
+            return None
+        # QLocale marks simplified Chinese as 'zh_Hans_CN'; both scripts use
+        # the same zh pack, which is Simplified.
+        if primary in ("zh", "ja", "ko"):
+            return primary
+        # Portuguese: one pack covers both, labelled pt-BR in the source text.
+        if primary == "pt":
+            return "pt"
+        return primary or None
+
+    def _load_language_packs(self) -> None:
+        """Merge every community pack into self.translations.
+
+        Packs are discovered as modules rather than hardcoded: adding a
+        language means dropping a locales_<code>.py file next to this one with
+        a PACK dict. A broken pack must never be swallowed silently — the
+        completeness tests iterate the merged table, so a bare `pass` once let
+        the whole Japanese pack vanish while every test stayed green.
+        """
+        import importlib
+        import pkgutil
+
+        loaded = {"en", "zh"}  # defined inline above
+
+        # locales_extra.py keeps ja/es in one dict for the original release.
         try:
             from locales_extra import EXTRA_TRANSLATIONS
             for lang_code, lang_dict in EXTRA_TRANSLATIONS.items():
                 self.translations.setdefault(lang_code, {}).update(lang_dict)
-        except Exception as exc:
-            # 语言包损坏时绝不能静默吞掉：四语完整性测试依赖这里的日志，
-            # 静默 pass 曾让整个日文/西文包失效而测试全绿
+                loaded.add(lang_code)
+        except Exception as exc:  # noqa: BLE001 - report, never hide
             print(f"Warning: extra language pack failed to load: {exc}")
+
+        # One module per language: locales_<code>.py with a PACK dict.
+        here = os.path.dirname(os.path.abspath(__file__))
+        try:
+            files = sorted(os.listdir(here))
+        except OSError as exc:
+            print(f"Warning: cannot scan for language packs: {exc}")
+            return
+        for fname in files:
+            if not (fname.startswith("locales_") and fname.endswith(".py")):
+                continue
+            code = fname[len("locales_"):-len(".py")]
+            # locales_extra.py holds ja/es; locales_help_texts.py holds the
+            # multi-line help HTML for ja/es. Neither is a standalone pack.
+            if code in ("extra", "help_texts") or len(code) != 2 or code in loaded:
+                continue
+            try:
+                module = importlib.import_module(f"locales_{code}")
+                pack = getattr(module, "PACK", None)
+                if not isinstance(pack, dict) or not pack:
+                    raise ValueError("module has no non-empty PACK dict")
+                self.translations.setdefault(code, {}).update(pack)
+                loaded.add(code)
+            except Exception as exc:  # noqa: BLE001 - report, never hide
+                print(f"Warning: language pack '{code}' failed to load: {exc}")
+
+    def available_languages(self):
+        """[(code, display_name)] for every fully loaded pack, menu order."""
+        order = {c: i for i, c in enumerate(self.PACK_ORDER)}
+        codes = [c for c in self.translations if c not in ("en",)]
+        codes.sort(key=lambda c: (order.get(c, 999), c))
+        return [("en", self.LANG_NAMES["en"])] + [
+            (c, self.LANG_NAMES.get(c, c.upper())) for c in codes]
 
     def set_language(self, lang_code):
         if lang_code in self.translations:

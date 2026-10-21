@@ -600,17 +600,14 @@ class MagnifierLabel(QLabel):
             label_w = max(1, self.width())
             label_h = max(1, self.height())
 
-            # Determine the geometry of the currently displayed image (scaled & panned)
-            target_width = int(label_w * self._zoom_factor)
-            target_height = int(label_h * self._zoom_factor)
-
+            # Same geometry as the composite: computing it a second, slightly
+            # different way here (int(base_w * r) vs the integer division in
+            # _display_size) put the magnifier's sampling centre off the pixel
+            # under the cursor by up to a pixel of image, and that error is
+            # multiplied by the magnifier zoom.
+            scaled_w, scaled_h = self._display_size()
             base_w = self._base_pixmap.width()
             base_h = self._base_pixmap.height()
-
-            # Calculate scaled dimensions (KeepAspectRatio)
-            r = min(target_width / base_w, target_height / base_h)
-            scaled_w = int(base_w * r)
-            scaled_h = int(base_h * r)
 
             # Calculate position of the image on the label
             img_x = (label_w - scaled_w) / 2.0 + self._pan_offset.x()
@@ -640,30 +637,43 @@ class MagnifierLabel(QLabel):
                 # Convert this patch size to base image pixels
                 base_patch_size = screen_patch_size / scale_factor
 
-                half_patch = base_patch_size / 2.0
+                # The sampling window keeps its size; only its position is
+                # clamped. Shrinking the window to the image instead (the old
+                # `src_w = min(patch, base_w)`) desynchronised position and
+                # size: with the window larger than the image the start was
+                # still offset by half the ORIGINAL patch, so the loupe read a
+                # sample centre up to 19 px away from the pixel under the
+                # cursor.
+                patch_w = max(1.0, base_patch_size)
+                patch_h = max(1.0, base_patch_size)
 
-                src_left = base_cx - half_patch
-                src_top = base_cy - half_patch
+                src_left = base_cx - patch_w / 2.0
+                src_top = base_cy - patch_h / 2.0
+                limit_x = base_w - patch_w
+                limit_y = base_h - patch_h
+                if limit_x > 0:
+                    clamped_left = max(0.0, min(src_left, limit_x))
+                else:
+                    # Window wider than the image: centre it on the image.
+                    clamped_left = limit_x / 2.0
+                if limit_y > 0:
+                    clamped_top = max(0.0, min(src_top, limit_y))
+                else:
+                    clamped_top = limit_y / 2.0
 
-                # Clamp source rect to base image bounds
-                max_x = base_w - base_patch_size
-                max_y = base_h - base_patch_size
+                source_rect = QRectF(clamped_left, clamped_top, patch_w, patch_h)
 
-                src_left = max(0.0, min(src_left, max_x)) if max_x > 0 else 0.0
-                src_top = max(0.0, min(src_top, max_y)) if max_y > 0 else 0.0
-
-                src_w = min(base_patch_size, base_w)
-                src_h = min(base_patch_size, base_h)
-
-                source_rect = QRectF(src_left, src_top, src_w, src_h)
-
-                # Target rectangle centered on mouse
-                half_target = self._magnifier_size / 2.0
+                # Slide the loupe by however far the window had to move, so the
+                # pixel under the cursor stays at the loupe's centre. Without
+                # this the patch content jumped sideways whenever the window
+                # hit an image edge (or the image was smaller than the window).
+                target_x = mouse_x + (clamped_left - src_left) * scale_factor
+                target_y = mouse_y + (clamped_top - src_top) * scale_factor
                 target_rect = QRectF(
-                    mouse_x - half_target,
-                    mouse_y - half_target,
+                    target_x - self._magnifier_size / 2.0,
+                    target_y - self._magnifier_size / 2.0,
                     self._magnifier_size,
-                    self._magnifier_size
+                    self._magnifier_size,
                 )
 
                 # Draw from High-Res base pixmap

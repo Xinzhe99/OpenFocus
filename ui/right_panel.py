@@ -29,6 +29,87 @@ from ui.styles import (
     SOURCE_LIST_STYLE,
 )
 from locales import trans
+
+# Usable text width inside the right panel (375 px minus card padding and the
+# check indicator). Labels that would exceed this are elided; the full string
+# stays in the tooltip.
+PANEL_TEXT_WIDTH = 300
+
+def set_panel_label(button, text: str, tooltip: str = None) -> None:
+    """Set a check/radio label that must fit the fixed-width panel.
+
+    QCheckBox and QRadioButton cannot word-wrap. Setting the full translated
+    string (German and Polish labels need 500-800 px against ~335 px of usable
+    width) made the widget grow wider than the panel and pushed the rest of
+    the column off-screen. The painted text is elided and the full string —
+    plus the explanatory hint — goes into the tooltip.
+    """
+    button.setSizePolicy(QSizePolicy.Policy.Ignored,
+                         QSizePolicy.Policy.Preferred)
+    button.setMinimumWidth(0)
+    full = text or ""
+    button.setText(button.fontMetrics().elidedText(
+        full, Qt.TextElideMode.ElideRight, PANEL_TEXT_WIDTH))
+    tip = full
+    if tooltip:
+        tip = f"{full}\n{tooltip}"
+    button.setToolTip(tip)
+
+
+class ElidingButton(QPushButton):
+    """A QPushButton that paints an ellipsis instead of clipping its label.
+
+    The right panel is ~375 px wide and splits it between up to three
+    buttons, so a long translation ("▶ Rozpocznij renderowanie" needs 343 px)
+    cannot fit. Qt clips mid-glyph, which reads as a rendering bug. Every
+    setText() keeps the full string as the tooltip and paints the elided form
+    for the current width, so callers do not have to remember to elide.
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self._full_text = text
+
+    def setText(self, text: str) -> None:  # noqa: N802 (Qt casing)
+        self._full_text = text or ""
+        if self._full_text:
+            self.setToolTip(self._full_text)
+        super().setText(_elide_to_width(self, self._full_text))
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt casing)
+        super().resizeEvent(event)
+        super().setText(_elide_to_width(self, self._full_text))
+
+    def showEvent(self, event):  # noqa: N802 (Qt casing)
+        # Qt assigns the real geometry on first show, after the constructor's
+        # setText ran against a 100 px default width. Re-elide once laid out.
+        super().showEvent(event)
+        super().setText(_elide_to_width(self, self._full_text))
+
+
+def _elide_to_width(widget, text: str, padding: int = 10) -> str:
+    """Shorten `text` so it fits `widget`'s current width, with an ellipsis.
+
+    Called on every setText() and resize: a 375 px panel gives each secondary
+    button ~174 px, and German/French/Polish labels overflow that. Qt would
+    otherwise clip the glyphs mid-stroke, which reads as a rendering bug
+    rather than a shortened label. 10 px covers the QSS `padding: 6px 12px`
+    minus the 2 px the style engine already deducts, so a label that exactly
+    fits is not elided for no reason.
+    """
+    from PyQt6.QtCore import Qt as _Qt
+    fm = widget.fontMetrics()
+    available = widget.width()
+    # Qt's own size hint already includes the QSS padding, so subtract only
+    # what the text genuinely does not have: no fixed margin. Using a
+    # hardcoded 16 px elided "Reset Default" even though it fits in 174 px
+    # (it needs 169 px).
+    if available <= 0:
+        return text
+    return fm.elidedText(text, _Qt.TextElideMode.ElideRight, available)
 from widgets.output_list import OutputListWidget
 
 # 融合算法下拉项：(算法代码, i18n 键, 提示 i18n 键或 None)。
@@ -76,6 +157,7 @@ class RightPanelComponents:
     smooth_value_label: QLabel
     smooth_widget: QWidget
     ai_mode_widget: QWidget
+    lbl_ai_mode: QLabel
     radio_ai_soft: QRadioButton
     radio_ai_hard: QRadioButton
 
@@ -140,7 +222,7 @@ def create_right_panel() -> RightPanelComponents:
     method_help_layout.setSpacing(6)
     method_help_layout.addWidget(combo_fusion, 1)
     btn_method_help = QPushButton("?")
-    btn_method_help.setFixedSize(22, 22)
+    btn_method_help.setFixedSize(26, 26)
     btn_method_help.setFont(QFont("Arial", 12))
     btn_method_help.setStyleSheet(help_button_style())
     btn_method_help.setObjectName("helpButton")
@@ -161,6 +243,13 @@ def create_right_panel() -> RightPanelComponents:
     radio_ai_soft.setToolTip(trans.t('radio_ai_soft_hint'))
     radio_ai_hard = QRadioButton(trans.t('radio_ai_hard'))
     radio_ai_hard.setToolTip(trans.t('radio_ai_hard_hint'))
+    for _radio, _key in ((radio_ai_soft, 'radio_ai_soft'),
+                         (radio_ai_hard, 'radio_ai_hard')):
+        _radio.setSizePolicy(QSizePolicy.Policy.Ignored,
+                             QSizePolicy.Policy.Preferred)
+        _radio.setMinimumWidth(0)
+        _radio.setText(_radio.fontMetrics().elidedText(
+            trans.t(_key), Qt.TextElideMode.ElideRight, PANEL_TEXT_WIDTH))
     ai_mode_layout.addWidget(radio_ai_soft)
     ai_mode_layout.addWidget(radio_ai_hard)
     ai_mode_widget.setVisible(False)
@@ -179,7 +268,7 @@ def create_right_panel() -> RightPanelComponents:
     reg_help_layout.setSpacing(6)
     reg_help_layout.addWidget(combo_align, 1)
     btn_reg_help = QPushButton("?")
-    btn_reg_help.setFixedSize(22, 22)
+    btn_reg_help.setFixedSize(26, 26)
     btn_reg_help.setFont(QFont("Arial", 12))
     btn_reg_help.setStyleSheet(help_button_style())
     btn_reg_help.setObjectName("helpButton")
@@ -245,35 +334,46 @@ def create_right_panel() -> RightPanelComponents:
     depth_smooth_row.setVisible(False)
     config_layout.addWidget(depth_smooth_row)
 
-    # Primary action stands out; the two secondary actions share the row.
-    button_bar = QHBoxLayout()
-    button_bar.setSpacing(8)
-    btn_reset = QPushButton(trans.t('btn_reset'))
+    # Primary action on its own row, the two secondary actions underneath.
+    # One row of three does not fit the panel: "▶ Rozpocznij renderowanie"
+    # needs 343 px while the panel hands each button ~113 px, so German,
+    # French, Russian and Polish all rendered truncated labels.
+    btn_reset = ElidingButton(trans.t('btn_reset'))
     btn_reset.setObjectName("secondaryButton")
-    btn_render = QPushButton(trans.t('btn_render'))
+    btn_render = ElidingButton(trans.t('btn_render'))
     btn_render.setObjectName("primaryButton")
-    btn_render.setFixedHeight(36)
-    btn_compare = QPushButton(trans.t('btn_compare_all'))
+    btn_compare = ElidingButton(trans.t('btn_compare_all'))
     btn_compare.setObjectName("secondaryButton")
-    btn_compare.setFixedHeight(36)
     btn_compare.setToolTip(trans.t('btn_compare_all_hint'))
-    button_bar.addWidget(btn_reset)
-    button_bar.addWidget(btn_render, 1)
-    button_bar.addWidget(btn_compare)
-    config_layout.addLayout(button_bar)
+    # A fixed panel width cannot fit every language's label (Polish needs
+    # 343 px for the render button, the panel offers ~113 px per button).
+    # Let each button shrink to an elided label and keep the full string in
+    # the tooltip, so a long translation degrades instead of clipping.
+    for _btn in (btn_reset, btn_render, btn_compare):
+        _btn.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Fixed)
+        _btn.setToolTip(_btn.text())
+
+    config_layout.addWidget(btn_render)
+    secondary_bar = QHBoxLayout()
+    secondary_bar.setSpacing(8)
+    secondary_bar.addWidget(btn_reset, 1)
+    secondary_bar.addWidget(btn_compare, 1)
+    config_layout.addLayout(secondary_bar)
 
     # One option per row. A two-column grid looked tidier but truncated long
     # translations ("Invertir orden de la pila (barrid…"): the labels differ in
     # length by language, and a 375 px panel cannot fit two of them.
     def _option(key, checked):
-        # QCheckBox has no word wrap; give it the full row width instead so a
-        # long translation is never elided.
-        box = QCheckBox(trans.t(key))
+        # A QCheckBox cannot wrap its label, and forcing it to its sizeHint
+        # made the box wider than the 375 px panel: German
+        # "Stack-Reihenfolge umkehren (Fern-nah-Sweep)" needs 529 px, so the
+        # row overflowed and the following controls were pushed off-screen.
+        # The checkbox therefore carries a short label and the full sentence
+        # lives in the tooltip; the row never exceeds the panel width.
+        box = QCheckBox("")
         box.setChecked(checked)
-        box.setToolTip(trans.t(key + '_hint'))
-        box.setSizePolicy(QSizePolicy.Policy.Expanding,
-                          QSizePolicy.Policy.Preferred)
-        box.setMinimumWidth(box.sizeHint().width())
+        set_panel_label(box, trans.t(key), trans.t(key + '_hint'))
         config_layout.addWidget(box)
         return box
 
@@ -349,10 +449,16 @@ def create_right_panel() -> RightPanelComponents:
     lbl_status_resolution = QLabel(trans.t('status_res').format('-'))
     lbl_status_memory = QLabel(trans.t('status_ram').format('-'))
 
+    # One label per row, spanning the full width. The old 2x2 grid could not
+    # fit the strings: "RAM: 15.0 GB / 32 GB" needs 260 px on its own while a
+    # half-width column gets ~212 px, so the memory figure was cut off in
+    # every language (and worse in German/French/Russian). Full-width rows
+    # also let the longest translation breathe.
     status_layout.addWidget(lbl_status_loaded, 0, 0)
-    status_layout.addWidget(lbl_status_gpu, 0, 1)
     status_layout.addWidget(lbl_status_resolution, 1, 0)
-    status_layout.addWidget(lbl_status_memory, 1, 1)
+    status_layout.addWidget(lbl_status_gpu, 2, 0)
+    status_layout.addWidget(lbl_status_memory, 3, 0)
+    status_layout.setColumnStretch(0, 1)
 
     status_layout.setColumnStretch(0, 1)
     status_layout.setColumnStretch(1, 1)
@@ -376,6 +482,7 @@ def create_right_panel() -> RightPanelComponents:
         slider_smooth=slider_smooth,
         smooth_value_label=lbl_smooth_value,
         ai_mode_widget=ai_mode_widget,
+        lbl_ai_mode=lbl_ai_mode,
         radio_ai_soft=radio_ai_soft,
         radio_ai_hard=radio_ai_hard,
         smooth_widget=smooth_widget,
@@ -409,6 +516,11 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         window.handle_method_selection)
     components.combo_fusion.currentIndexChanged.connect(
         window.update_slider_availability)
+    # Resolving CUDA/MPS means importing torch (~2.1 s, ~193 MB). Do it when
+    # the user actually chooses the neural method, not on every launch.
+    components.combo_fusion.currentIndexChanged.connect(
+        lambda: components.combo_fusion.currentData() == "stackmffv3"
+        and window._probe_device_kind_async())
 
     # 基底校正开关（消除亮度漂移）：立即持久化，渲染时读取
     components.chk_base_correct.toggled.connect(window.set_base_correct)

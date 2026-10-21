@@ -1,6 +1,17 @@
 import sys
 import os
 
+# Two OpenMP runtimes reach this process: Intel MKL (through numpy/scipy from
+# the Anaconda distribution) and torch's own libiomp5md.dll. Whichever loads
+# second aborts the process with "OMP: Error #15 ... already initialized" —
+# observed as a hard crash the moment an ECC + AI render started, because that
+# is the first code path that touches both. The variable must be set before
+# numpy or torch is imported, so it lives here rather than in a helper module.
+# Intel documents it as unsupported-but-safe for this exact case; the
+# alternative (rebuilding numpy or torch against a single runtime) is not
+# something a user install can do.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 # In --noconsole (windowed) PyInstaller builds sys.stdout/stderr are None, and
 # any print() then crashes with AttributeError ('NoneType' object has no
 # attribute 'write'). Route them to the null device instead.
@@ -306,6 +317,7 @@ class OpenFocus(QMainWindow):
         # --- A1/A2. 图像视图面板 ---
         source_panel = create_source_panel()
         self._panel_widgets = [source_panel.widget]
+        self.lbl_source_title = source_panel.title
         self.lbl_source_img = source_panel.image_label
         self.source_control_bar = source_panel.control_bar
         self.stack_slider = source_panel.slider
@@ -324,6 +336,7 @@ class OpenFocus(QMainWindow):
 
         result_panel = create_result_panel()
         self._panel_widgets.append(result_panel.widget)
+        self.lbl_result_title = result_panel.title
         self.lbl_result_img = result_panel.image_label
         self.result_control_bar = result_panel.control_bar
         self.result_slider = result_panel.slider
@@ -391,6 +404,7 @@ class OpenFocus(QMainWindow):
         self.lbl_smooth_value = right_panel_components.smooth_value_label
         self.smooth_widget = right_panel_components.smooth_widget
         self.ai_mode_widget = right_panel_components.ai_mode_widget
+        self.lbl_ai_mode = right_panel_components.lbl_ai_mode
         self.radio_ai_soft = right_panel_components.radio_ai_soft
         self.radio_ai_hard = right_panel_components.radio_ai_hard
         # AI 输出模式：soft=概率加权混合（默认）/ hard=逐像素取最可能帧
@@ -596,14 +610,31 @@ class OpenFocus(QMainWindow):
             # User disabled GPU acceleration (Settings menu)
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('CPU*'))
             return
-        # Read the probe's cached result: importing torch here (UI thread,
-        # on a timer) froze the window for seconds and raced the probe thread
-        from core.multi_focus_fusion import torch_device_kind
+        # Never import torch from the 2 s UI timer: that froze the window for
+        # seconds (~2.1 s import) and pinned ~193 MB even for users who only
+        # run the classical methods. Until an AI render resolves the device,
+        # show the toolchain state instead of a spinner that never settles.
+        from core.multi_focus_fusion import torch_device_kind, is_ai_fusion_available
         try:
             kind = torch_device_kind()
-            self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind or '…'))
+            if not is_ai_fusion_available():
+                kind = 'N/A'              # torch not installed
+            elif not self._ai_method_selected():
+                # Classical methods are CPU-only by design; showing the
+                # accelerator state here would imply the current render uses it.
+                kind = 'CPU*'
+            elif kind is None:
+                kind = 'CPU'              # resolves in the background
+                self._probe_device_kind_async()
+            self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind))
         except Exception:
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('Err'))
+
+    def _ai_method_selected(self) -> bool:
+        try:
+            return self.combo_fusion.currentData() == "stackmffv3"
+        except Exception:
+            return False
 
     # --- 逻辑控制 ---
 
@@ -763,6 +794,24 @@ class OpenFocus(QMainWindow):
         self._stackmff_available = bool(is_ai_fusion_available())
         self.refresh_method_availability()
 
+    def _probe_device_kind_async(self) -> None:
+        """Resolve CUDA/MPS in the background, only once something needs it.
+
+        Called when the neural method is selected. Importing torch costs ~2.1 s
+        and ~193 MB, which is why it is not done at startup any more.
+        """
+        import threading
+        if getattr(self, "_device_probe_started", False):
+            return
+        self._device_probe_started = True
+
+        def worker():
+            from core.multi_focus_fusion import ensure_torch_device_kind
+            ensure_torch_device_kind()
+
+        threading.Thread(target=worker, daemon=True,
+                         name="torch-device-probe").start()
+
     def _probe_stackmff_availability_async(self) -> None:
         """Probe torch availability off the UI thread, then apply the result."""
         import threading
@@ -773,9 +822,22 @@ class OpenFocus(QMainWindow):
 
         threading.Thread(target=worker, daemon=True, name="stackmff-probe").start()
 
+        # The neural method is the default, so a default selection still needs
+        # the accelerator resolved. Only pay for it when that is the case: a
+        # user whose preference is a classical method never loads torch.
+        try:
+            if self.combo_fusion.currentData() == "stackmffv3":
+                self._probe_device_kind_async()
+        except Exception:
+            pass
+
     def _apply_stackmff_availability(self, available: bool) -> None:
         self._stackmff_available = bool(available)
         self.refresh_method_availability()
+        # The probe is what fills the cached device kind. Without this call the
+        # status bar kept its "GPU: …" placeholder until some unrelated timer
+        # tick happened to run, so a finished probe still looked unfinished.
+        self._update_dynamic_status()
 
     def refresh_method_availability(self) -> None:
         """Re-apply the cached torch-probe result to the method controls.
@@ -2682,6 +2744,13 @@ class OpenFocus(QMainWindow):
         # Update Menus
         if hasattr(self, 'ui_objs'):
              for key, obj in self.ui_objs.items():
+                # Language entries keep their endonym. The generic loop used
+                # the ui_objs key ('action_lang_zh') as a translation key, so
+                # in a Japanese UI the Chinese entry rendered as
+                # "中文（简体）" — the same language under a different name
+                # depending on the current UI language.
+                if key.startswith('action_lang_') and isinstance(obj, QAction):
+                    continue
                 t_key = obj.property("trans_key")
                 if not t_key:
                     t_key = key
@@ -2703,15 +2772,21 @@ class OpenFocus(QMainWindow):
                 if hint_key:
                     c.combo_fusion.setItemData(
                         i, trans.t(hint_key), Qt.ItemDataRole.ToolTipRole)
+        # set_panel_label elides to the panel width and keeps the full string
+        # in the tooltip; plain setText here re-broke the row on language
+        # switch after the panel had already fitted it.
+        from ui.right_panel import set_panel_label
         if getattr(c, 'chk_base_correct', None) is not None:
-            c.chk_base_correct.setText(trans.t('chk_base_correct'))
-            c.chk_base_correct.setToolTip(trans.t('chk_base_correct_hint'))
+            set_panel_label(c.chk_base_correct, trans.t('chk_base_correct'),
+                            trans.t('chk_base_correct_hint'))
         if getattr(c, 'chk_exposure_match', None) is not None:
-            c.chk_exposure_match.setText(trans.t('chk_exposure_match'))
-            c.chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
+            set_panel_label(c.chk_exposure_match,
+                            trans.t('chk_exposure_match'),
+                            trans.t('chk_exposure_match_hint'))
         if getattr(c, 'chk_reverse_order', None) is not None:
-            c.chk_reverse_order.setText(trans.t('chk_reverse_order'))
-            c.chk_reverse_order.setToolTip(trans.t('chk_reverse_order_hint'))
+            set_panel_label(c.chk_reverse_order,
+                            trans.t('chk_reverse_order'),
+                            trans.t('chk_reverse_order_hint'))
 
         c.registration_group.setTitle(trans.t('group_registration'))
         for i, (_code, key, hint_key) in enumerate(ALIGN_ITEMS):
@@ -2731,9 +2806,28 @@ class OpenFocus(QMainWindow):
         if not busy:
             c.btn_render.setText(trans.t('btn_render'))
         c.btn_compare.setText(trans.t('btn_compare_all'))
-        c.btn_compare.setToolTip(trans.t('btn_compare_all_hint'))
+        # ElidingButton elides for the current width itself; setting the hint
+        # after setText keeps the shortcut description rather than the label.
+        c.btn_compare.setToolTip(
+            f"{c.btn_compare.full_text()}\n{trans.t('btn_compare_all_hint')}")
+        # Panel titles are QLabels built once at startup; without this they
+        # kept the language the app was launched in ("Source Stack"/"Output"
+        # stayed English after switching to Polish).
+        if hasattr(self, 'lbl_source_title'):
+            self.lbl_source_title.setText(' ' + trans.t('panel_source_stack'))
+        if hasattr(self, 'lbl_result_title'):
+            self.lbl_result_title.setText(trans.t('panel_output'))
         c.chk_quick_preview.setText(trans.t('chk_quick_preview'))
         c.chk_quick_preview.setToolTip(trans.t('chk_quick_preview_hint'))
+        # The AI output-mode block was never retranslated: switching to any
+        # language left "AI 输出方式 / 软融合 / 硬融合" in Chinese, because
+        # these widgets only got their text once, at construction.
+        c.lbl_ai_mode.setText(trans.t('label_ai_mode'))
+        c.lbl_ai_mode.setToolTip(trans.t('label_ai_mode_hint'))
+        set_panel_label(c.radio_ai_soft, trans.t('radio_ai_soft'),
+                        trans.t('radio_ai_soft_hint'))
+        set_panel_label(c.radio_ai_hard, trans.t('radio_ai_hard'),
+                        trans.t('radio_ai_hard_hint'))
         
         # ROI Button
         if hasattr(self, 'btn_preview_roi'):
@@ -2758,11 +2852,12 @@ class OpenFocus(QMainWindow):
                 self, 'registration_results', None) and hasattr(self, 'lbl_result_img'):
             self.lbl_result_img.setText(trans.t('result_hint'))
 
-        # Update language checked state
-        for lang_code, key in (('en', 'action_lang_en'), ('zh', 'action_lang_zh'),
-                               ('ja', 'action_lang_ja'), ('es', 'action_lang_es')):
-            if key in self.ui_objs:
-                self.ui_objs[key].setChecked(trans.current_lang == lang_code)
+        # Update language checked state. Derived from the registered actions
+        # instead of a hardcoded list: a newly added pack kept its stale tick
+        # because this loop only knew about four codes.
+        for key, action in list(getattr(self, 'ui_objs', {}).items()):
+            if key.startswith('action_lang_') and hasattr(action, 'setChecked'):
+                action.setChecked(trans.current_lang == key[len('action_lang_'):])
 
         self.sharpness_curve.set_tooltip_base(trans.t('sharpness_curve_tooltip'))
 

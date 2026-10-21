@@ -74,6 +74,7 @@ def apply_panel_theme(widget, theme: str) -> None:
 @dataclass
 class SourcePanel:
     widget: QWidget
+    title: QLabel
     image_label: MagnifierLabel
     control_bar: QWidget
     slider: QSlider
@@ -85,6 +86,7 @@ class SourcePanel:
 @dataclass
 class ResultPanel:
     widget: QWidget
+    title: QLabel
     image_label: MagnifierLabel
     control_bar: QWidget
     slider: QSlider
@@ -116,6 +118,10 @@ def create_source_panel() -> SourcePanel:
 
     image_label = MagnifierLabel("Drag images here to add source files\nor use the image menu")
     image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    # The hint is a manually broken two-liner, but a translation can make
+    # either line much longer than the panel (German needs 1014 px for 566 px
+    # of canvas). With wrap on, Qt re-breaks the line instead of clipping it.
+    image_label.setWordWrap(True)
     image_label.setFont(QFont("Microsoft YaHei", 10))
     image_label.setObjectName("panelCanvasHint")
     image_label.setAcceptDrops(True)
@@ -125,7 +131,11 @@ def create_source_panel() -> SourcePanel:
 
     control_bar = QWidget()
     control_bar.setObjectName("panelControlBar")
-    control_bar.setFixedHeight(42)
+    # 42 px squeezed the navigation slider down to a 2 px sliver: the groove
+    # plus the handle's negative margin need ~26 px of its own once the 14 px
+    # handle hangs over a 4 px groove. 52 px leaves that space and still fits
+    # the 26 px ROI chip.
+    control_bar.setFixedHeight(52)
 
     control_layout = QHBoxLayout(control_bar)
     control_layout.setContentsMargins(12, 0, 12, 0)
@@ -162,6 +172,7 @@ def create_source_panel() -> SourcePanel:
 
     return SourcePanel(
         widget=container,
+        title=title,
         image_label=image_label,
         control_bar=control_bar,
         slider=slider,
@@ -203,11 +214,18 @@ def create_result_panel() -> ResultPanel:
     image_label = MagnifierLabel()
     image_label.setObjectName("panelCanvas")
     image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    # Same reason as the source panel: "Press Start Render …" in a long
+    # translation must re-break rather than be clipped.
+    image_label.setWordWrap(True)
     image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
 
     control_bar = QWidget()
     control_bar.setObjectName("panelControlBar")
-    control_bar.setFixedHeight(42)
+    # 42 px squeezed the navigation slider down to a 2 px sliver: the groove
+    # plus the handle's negative margin need ~26 px of its own once the 14 px
+    # handle hangs over a 4 px groove. 52 px leaves that space and still fits
+    # the 26 px ROI chip.
+    control_bar.setFixedHeight(52)
 
     control_layout = QHBoxLayout(control_bar)
     control_layout.setContentsMargins(12, 0, 12, 0)
@@ -290,6 +308,7 @@ def create_result_panel() -> ResultPanel:
 
     return ResultPanel(
         widget=container,
+        title=title,
         image_label=image_label,
         control_bar=control_bar,
         slider=slider,

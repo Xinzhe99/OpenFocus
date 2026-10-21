@@ -321,37 +321,19 @@ def setup_menus(window: QMainWindow) -> None:
     lang_group = QActionGroup(window)
     lang_group.setExclusive(True)
     
-    lang_en = QAction(trans.t('action_lang_en'), window)
-    lang_en.setCheckable(True)
-    lang_en.setChecked(trans.current_lang == 'en')
-    lang_en.triggered.connect(lambda: window.set_language('en'))
-    lang_group.addAction(lang_en)
-    lang_menu.addAction(lang_en)
-    window.ui_objs['action_lang_en'] = lang_en
-    
-    lang_zh = QAction(trans.t('action_lang_zh'), window)
-    lang_zh.setCheckable(True)
-    lang_zh.setChecked(trans.current_lang == 'zh')
-    lang_zh.triggered.connect(lambda: window.set_language('zh'))
-    lang_group.addAction(lang_zh)
-    lang_menu.addAction(lang_zh)
-    window.ui_objs['action_lang_zh'] = lang_zh
-
-    lang_ja = QAction(trans.t('action_lang_ja'), window)
-    lang_ja.setCheckable(True)
-    lang_ja.setChecked(trans.current_lang == 'ja')
-    lang_ja.triggered.connect(lambda: window.set_language('ja'))
-    lang_group.addAction(lang_ja)
-    lang_menu.addAction(lang_ja)
-    window.ui_objs['action_lang_ja'] = lang_ja
-
-    lang_es = QAction(trans.t('action_lang_es'), window)
-    lang_es.setCheckable(True)
-    lang_es.setChecked(trans.current_lang == 'es')
-    lang_es.triggered.connect(lambda: window.set_language('es'))
-    lang_group.addAction(lang_es)
-    lang_menu.addAction(lang_es)
-    window.ui_objs['action_lang_es'] = lang_es
+    # Built from the packs that actually loaded, so adding locales_xx.py puts
+    # the language in this menu without touching it. Order comes from
+    # TranslationManager.PACK_ORDER.
+    for code, label in trans.available_languages():
+        act = QAction(label, window)
+        act.setCheckable(True)
+        act.setChecked(trans.current_lang == code)
+        act.setData(code)
+        act.triggered.connect(
+            lambda _checked=False, c=code: window.set_language(c))
+        lang_group.addAction(act)
+        lang_menu.addAction(act)
+        window.ui_objs[f'action_lang_{code}'] = act
 
     tile_action = QAction(trans.t('action_tile_settings'), window)
     # 打开瓦片设置对话框

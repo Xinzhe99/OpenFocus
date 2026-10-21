@@ -335,17 +335,39 @@ class TestPILFallback:
         if image_loader.HEIF_AVAILABLE:  # only then is .heic a "supported" file
             assert "failed: 1" in msg
 
-    def test_pil_fallback_keeps_16bit_depth(self, tmp_path):
-        from core.image_loader import _read_via_pil
+    def test_compressed_16bit_tiff_decodes_without_crashing(self, tmp_path):
+        """A compressed 16-bit TIFF must load, not abort the process.
+
+        Pillow's TIFF decoder aborts natively (0xC0000409) on LZW/PackBits
+        TIFFs, which `cv2.imwrite` writes by default — an uncatchable crash
+        that took the whole app down. The loader must therefore decode TIFF
+        through OpenCV only. This test calls the real entry point so it fails
+        if the Pillow path is ever reachable again for TIFF.
+        """
+        from core.image_loader import decode_image
 
         gray16 = (np.arange(120).reshape(10, 12) * 500).astype(np.uint16)
         p = str(tmp_path / "g16.tiff")
-        assert cv2.imwrite(p, gray16)
+        # default cv2 TIFF compression is LZW: exactly the crashing case
+        assert cv2.imwrite(p, gray16, [cv2.IMWRITE_TIFF_COMPRESSION, 5])
 
-        img = _read_via_pil(p)
+        img = decode_image(p)
 
+        assert img is not None, "compressed 16-bit TIFF failed to decode"
         assert img.dtype == np.uint16 and img.shape == (10, 12, 3)
         assert img[5, 7].tolist() == [int(gray16[5, 7])] * 3
+
+    def test_tiff_never_routes_through_pillow(self, tmp_path):
+        """Guard the crash at its source: the fallback must refuse TIFF."""
+        from core.image_loader import _read_via_pil
+
+        gray16 = (np.arange(60).reshape(6, 10) * 300).astype(np.uint16)
+        p = str(tmp_path / "guard.tiff")
+        assert cv2.imwrite(p, gray16)
+
+        assert _read_via_pil(p) is None, (
+            "TIFF reached the Pillow fallback; on compressed files that "
+            "aborts the process instead of raising")
 
 
 class TestMixedBitDepthStack:

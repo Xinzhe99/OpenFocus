@@ -46,11 +46,20 @@ Full details, including the portable mode and the log folder, are in the [User M
 ## 💻 Command Line Usage
 Beyond the GUI, OpenFocus ships as a pip-installable CLI on [PyPI](https://pypi.org/project/openfocus/) — Windows, macOS and Linux, no Python GUI stack required:
 ```bash
-pip install openfocus          # all 8 fusion methods (4 classical + OpenFocus A/B/C)
-pip install "openfocus[ai]"    # + the AI (StackMFF-V3) model, weights included
-pip install "openfocus[raw]"   # + camera RAW input (rawpy / LibRaw)
+pip install openfocus          # everything: all 8 methods incl. the AI model,
+                               # HEIC and camera-RAW input
 openfocus --input ./stack_folder --output ./result/fused.png
 ```
+
+The AI model, its pretrained weights, HEIC decoding and camera-RAW decoding
+are all part of that single install — there are no extras to choose from. The
+neural method is the default, so a plain `pip install openfocus` is a complete
+install; nothing reports "AI unavailable" afterwards.
+
+One caveat: `dtcwt` (the DTCWT method) ships only as source and has no wheels
+for Python 3.13+, so it is installed on 3.10–3.12 and skipped on newer
+interpreters. Every other method works everywhere; on 3.13 the DTCWT entry
+stays disabled with an explanatory tooltip.
 Examples:
 ```bash
 # Fuse a folder of images with guided filter, no registration
@@ -161,7 +170,12 @@ both PSNR and SSIM, and leaves fewer ghost pixels than any classical method:
   `--dry-run`, `--resume` and JSON output for scripting.
 - **Projects and recovery** — `.ofproj` sessions, crash auto-recovery,
   undo/redo, per-method settings remembered across restarts.
-- **Four UI languages** — English, 中文, 日本語, Español.
+- **Twelve UI languages** — English, 中文, 日本語, Español, Deutsch, Français,
+  Русский, 한국어, Português, Italiano, Nederlands, Polski. Auto-detected from
+  the system locale; a new language is one `locales_<code>.py` file. Every
+  language is checked for clipped labels by `tools/lang_ui_audit.py`.
+- **Light on memory** — the neural stack is loaded only when the neural method
+  is used, so a classical-method session idles around 110 MB instead of 260 MB.
 
 <a id="algorithms"></a>
 ## 🧪 Algorithms

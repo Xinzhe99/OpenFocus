@@ -28,6 +28,7 @@ from utils import (
     show_warning_box,
 )
 from locales import trans
+from widgets.stepper import StepperSpinBox
 
 
 class LabelManager:
@@ -213,35 +214,40 @@ class LabelManager:
         self.format_edit.setStyleSheet("background-color: #fff; color: #000; font-weight: normal;")
         form_layout.addRow(trans.t('label_format'), self.format_edit)
 
-        self.starting_value_spin = QSpinBox()
+        self.starting_value_spin = StepperSpinBox(minimum=0, maximum=9999,
+                                                  decimals=0, step=1)
         self.starting_value_spin.setRange(0, 9999)
         self.starting_value_spin.setValue(1)
         self.starting_value_spin.setMinimumWidth(200)
         self.starting_value_spin.setStyleSheet("background-color: #fff; color: #000; font-weight: normal;")
         form_layout.addRow(trans.t('label_start_val'), self.starting_value_spin)
 
-        self.interval_spin = QSpinBox()
+        self.interval_spin = StepperSpinBox(minimum=1, maximum=9999,
+                                            decimals=0, step=1)
         self.interval_spin.setRange(1, 9999)
         self.interval_spin.setValue(1)
         self.interval_spin.setMinimumWidth(200)
         self.interval_spin.setStyleSheet("background-color: #fff; color: #000; font-weight: normal;")
         form_layout.addRow(trans.t('label_interval'), self.interval_spin)
 
-        self.x_location_spin = QSpinBox()
+        self.x_location_spin = StepperSpinBox(minimum=0, maximum=20000,
+                                              decimals=0, step=1)
         self.x_location_spin.setRange(0, 9999)
         self.x_location_spin.setValue(20)
         self.x_location_spin.setMinimumWidth(200)
         self.x_location_spin.setStyleSheet("background-color: #fff; color: #000; font-weight: normal;")
         form_layout.addRow(trans.t('label_x'), self.x_location_spin)
 
-        self.y_location_spin = QSpinBox()
+        self.y_location_spin = StepperSpinBox(minimum=0, maximum=20000,
+                                              decimals=0, step=1)
         self.y_location_spin.setRange(0, 9999)
         self.y_location_spin.setValue(80)
         self.y_location_spin.setMinimumWidth(200)
         self.y_location_spin.setStyleSheet("background-color: #fff; color: #000; font-weight: normal;")
         form_layout.addRow(trans.t('label_y'), self.y_location_spin)
 
-        self.font_size_spin = QSpinBox()
+        self.font_size_spin = StepperSpinBox(minimum=6, maximum=400,
+                                             decimals=0, step=1)
         self.font_size_spin.setRange(1, 100)
         self.font_size_spin.setValue(80)
         self.font_size_spin.setMinimumWidth(200)

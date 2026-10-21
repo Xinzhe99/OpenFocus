@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -48,10 +49,18 @@ class WelcomeDialog(QDialog):
         # Demo stack: zero-friction first success
         demo_row = QHBoxLayout()
         demo_btn = QPushButton(trans.t('btn_load_demo'))
+        # Keep the button at its natural width and let the wrapping hint
+        # absorb the remaining space. An Ignored policy made the button
+        # collapse to 0 px next to the hint label.
+        demo_btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                               QSizePolicy.Policy.Fixed)
+        demo_btn.setToolTip(trans.t('btn_load_demo'))
         demo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         demo_btn.clicked.connect(self._load_demo)
         demo_row.addWidget(demo_btn)
         demo_hint = QLabel(trans.t('btn_load_demo_hint'))
+        # Long translations run to ~850 px on one line in a 480 px dialog.
+        demo_hint.setWordWrap(True)
         # Theme-aware muted colour: the old hardcoded #57606a was ~2:1 on the
         # dark dialog background, effectively invisible.
         demo_hint.setObjectName("welcome_hint")

@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 )
 from ui.styles import PRIMARY_BLUE, _ARROW_DOWN_DARK
 from locales import trans
+from widgets.stepper import StepperSpinBox
 
 
 class BatchProcessingDialog(QDialog):
@@ -124,7 +125,8 @@ class BatchProcessingDialog(QDialog):
         self.param_label = QLabel(trans.t('batch_images_per_stack'))
         param_layout.addWidget(self.param_label)
 
-        self.param_spinbox = QSpinBox()
+        self.param_spinbox = StepperSpinBox(minimum=2, maximum=1000,
+                                            decimals=0, step=1, value=5)
         self.param_spinbox.setRange(2, 1000)
         self.param_spinbox.setValue(5)
         

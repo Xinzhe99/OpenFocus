@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
+from widgets.stepper import StepperSpinBox
 from utils import colormap as cmap
 from utils.image_utils import imwrite_auto
 from utils.settings_store import get_last_dialog_dir, get_settings, set_last_dialog_dir
@@ -179,6 +180,7 @@ class _CustomSchemeDialog(QDialog):
         close_row = QHBoxLayout()
         close_row.addStretch()
         ok_btn = QPushButton(trans.t("btn_ok"))
+        ok_btn.setObjectName("primaryButton")
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(self.accept)
         cancel_btn = QPushButton(trans.t("btn_cancel"))
@@ -327,19 +329,19 @@ class DepthMapDialog(QDialog):
         row.addWidget(self.invert_chk)
         form.addRow("", row)
 
-        self.gamma_spin = QDoubleSpinBox()
+        self.gamma_spin = StepperSpinBox(minimum=0.4, maximum=2.5, decimals=2, step=0.05, value=1.0)
         self.gamma_spin.setDecimals(2)
         self.gamma_spin.setRange(0.4, 2.5)
         self.gamma_spin.setSingleStep(0.05)
         self.gamma_spin.setValue(1.0)
         form.addRow(trans.t("depth_gamma"), self.gamma_spin)
 
-        self.smooth_spin = QSpinBox()
+        self.smooth_spin = StepperSpinBox(minimum=0, maximum=5, decimals=0, step=1)
         self.smooth_spin.setRange(0, 5)
         self.smooth_spin.setToolTip(trans.t("depth_smooth_hint"))
         form.addRow(trans.t("depth_smooth"), self.smooth_spin)
 
-        self.relief_spin = QSpinBox()
+        self.relief_spin = StepperSpinBox(minimum=1, maximum=100, decimals=0, step=1, value=15)
         self.relief_spin.setRange(1, 100)
         self.relief_spin.setSuffix(" %")
         self.relief_spin.setValue(15)
@@ -348,7 +350,7 @@ class DepthMapDialog(QDialog):
 
         self.overlay_chk = QCheckBox(trans.t("depth_overlay"))
         self.overlay_chk.setToolTip(trans.t("depth_overlay_hint"))
-        self.opacity_spin = QDoubleSpinBox()
+        self.opacity_spin = StepperSpinBox(minimum=0.05, maximum=1.0, decimals=2, step=0.05, value=0.55)
         self.opacity_spin.setDecimals(2)
         self.opacity_spin.setRange(0.05, 1.0)
         self.opacity_spin.setSingleStep(0.05)
