@@ -17,10 +17,10 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **v1.65.2** — fixes the AI output mode on tiled stacks (soft and hard gave
-> identical results for any stack large enough to tile). Builds include the
-> StackMFF V3 model, with soft (probability-weighted) or hard (per-pixel frame
-> pick) output and AI as the default method.
+> **v1.65.3** — the interface is 2.5–16× more responsive: frame scrubbing,
+> window resizing, zooming and the A/B wipe no longer rebuild the full image
+> on every event (zoom is also sharper when zoomed in). 16-bit stacks display
+> through a conversion that is 14× faster with byte-identical output.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 

@@ -461,25 +461,19 @@ class ImageStackLoader:
     def _cv_to_pixmap(self, cv_img: np.ndarray, max_size: Optional[Tuple[int, int]] = None):
         # Imported lazily: the headless PyPI package uses this module for
         # decoding without PyQt6 installed.
-        from PyQt6.QtGui import QPixmap, QImage
-        rgb_img = cv2.cvtColor(to_display_uint8(cv_img), cv2.COLOR_BGR2RGB)
+        from utils.image_utils import cv2_to_pixmap
 
         if max_size is not None:
-            h, w = rgb_img.shape[:2]
+            h, w = cv_img.shape[:2]
             max_w, max_h = max_size
 
             scale = min(max_w / w, max_h / h)
             if scale < 1.0:
                 new_w = int(w * scale)
                 new_h = int(h * scale)
-                rgb_img = cv2.resize(rgb_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                cv_img = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        h, w, ch = rgb_img.shape
-        bytes_per_line = ch * w
-
-        q_img = QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-
-        return QPixmap.fromImage(q_img)
+        return cv2_to_pixmap(cv_img)
 
     def get_image_info(self, index: int) -> dict:
         if not self.images or index < 0 or index >= len(self.images):

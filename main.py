@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, QUrl, QEvent, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
-from PyQt6.QtGui import QFont, QIcon, QDesktopServices, QDragEnterEvent, QDropEvent, QImage, QPixmap
+from PyQt6.QtGui import QFont, QIcon, QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from core import ImageStackLoader
 from core.app import OpenFocusApplication, process_command_line_args
 from core.workers import ROIAlignmentWorker
@@ -53,7 +53,7 @@ from utils import (
     style_message_box,
     resource_path,
 )
-from utils.image_utils import to_display_uint8
+from utils.image_utils import cv2_to_pixmap
 from utils.settings_store import (
     load_window_settings,
     save_window_settings,
@@ -1751,11 +1751,41 @@ class OpenFocus(QMainWindow):
     # --- Wipe A/B compare ---
 
     def _bgr_to_pixmap(self, image) -> QPixmap:
-        image = to_display_uint8(image)
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        height, width, _channels = rgb_image.shape
-        q_image = QImage(rgb_image.data, width, height, 3 * width, QImage.Format.Format_RGB888)
-        return QPixmap.fromImage(q_image)
+        return cv2_to_pixmap(image)
+
+    def _wipe_pixmap(self, kind: str, index: int, image):
+        """Pixmap for one side of the wipe, cached across slider steps.
+
+        Both halves used to be re-converted from numpy on every step of
+        either slider: 12 MP -> uint8 -> RGB -> pixmap is ~27 ms per side,
+        so dragging one slider re-rendered the other side for nothing.
+        The cache holds the source array itself, so its identity cannot be
+        recycled by a later allocation while an entry is alive.
+
+        Only the B side gets the registered labels burnt in — that is what
+        the pre-cache code did for each side, kept as-is. The label state is
+        part of the key: enabling labels must not keep serving the cached
+        unlabeled pixmap.
+        """
+        if image is None:
+            return None
+        cache = getattr(self, "_wipe_pix_cache", None)
+        if cache is None:
+            cache = self._wipe_pix_cache = {}
+        labeled = (kind == "right"
+                   and self.label_manager.is_enabled_for_target("registered"))
+        entry = cache.get(kind)
+        if (entry is not None and entry[0] is image and entry[1] == index
+                and entry[2] == labeled):
+            return entry[3]
+        display = image
+        if labeled:
+            display = self.label_manager.display_bgr_image("registered", image, index)
+        pixmap = self._bgr_to_pixmap(display)
+        if len(cache) > 4:
+            cache.clear()
+        cache[kind] = (image, index, labeled, pixmap)
+        return pixmap
 
     def set_wipe_mode(self, enabled: bool) -> None:
         """Toggle the A/B wipe compare page of the result panel."""
@@ -1832,31 +1862,39 @@ class OpenFocus(QMainWindow):
         self.lbl_wipe_right_index.setText(trans.t("wipe_result_fmt").format(value + 1))
         self._update_wipe_images()
 
-    def _wipe_left_image(self):
+    def _wipe_left_index(self) -> int:
         if self.chk_wipe_follow_left.isChecked():
-            index = self.current_display_index
-        else:
-            index = self.slider_wipe_left.value()
+            return self.current_display_index
+        return self.slider_wipe_left.value()
+
+    def _wipe_left_image(self):
+        index = self._wipe_left_index()
         if 0 <= index < len(self.raw_images):
             return self.raw_images[index]
         return None
 
+    def _wipe_right_index(self) -> int:
+        if self.chk_wipe_follow_right.isChecked():
+            return 0
+        return self.slider_wipe_right.value()
+
     def _wipe_right_image(self):
+        """Raw B-side frame; labels and bit-depth conversion happen once, in
+        _wipe_pixmap, so the result can be cached by identity."""
         if self.chk_wipe_follow_right.isChecked():
             # The most recent render
             if self.fusion_result is not None:
-                return self.label_manager.prepare_bgr_image("registered", self.fusion_result, 0)
+                return self.fusion_result
             if self.registration_results:
-                return self.label_manager.prepare_bgr_image(
-                    "registered", self.registration_results[self.current_result_index if self.current_result_index >= 0 else 0], 0)
+                return self.registration_results[
+                    self.current_result_index if self.current_result_index >= 0 else 0]
             return None
         index = self.slider_wipe_right.value()
         if 0 <= index < len(self.fusion_results):
-            return self.label_manager.prepare_bgr_image("registered", self.fusion_results[index], index)
+            return self.fusion_results[index]
         # registration-only session: B shows the aligned frame instead
         if 0 <= index < len(self.registration_results):
-            return self.label_manager.prepare_bgr_image(
-                "registered", self.registration_results[index], index)
+            return self.registration_results[index]
         return None
 
     def _wipe_right_shows_registration(self) -> bool:
@@ -1871,8 +1909,8 @@ class OpenFocus(QMainWindow):
 
         left_image = self._wipe_left_image()
         right_image = self._wipe_right_image()
-        left_pix = self._bgr_to_pixmap(left_image) if left_image is not None else None
-        right_pix = self._bgr_to_pixmap(right_image) if right_image is not None else None
+        left_pix = self._wipe_pixmap("left", self._wipe_left_index(), left_image)
+        right_pix = self._wipe_pixmap("right", self._wipe_right_index(), right_image)
 
         if self.chk_wipe_follow_left.isChecked():
             left_idx = self.current_display_index
@@ -1932,14 +1970,32 @@ class OpenFocus(QMainWindow):
     
     def on_splitter_moved(self, pos, index):
         """分割器移动时重新缩放图像"""
-        self.source_manager.refresh_current_source_view()
-        self.output_manager.refresh_current_result_view()
-    
+        # The image labels re-fit themselves in resizeEvent from the pixmaps
+        # they already hold; rebuilding those pixmaps from the numpy stack
+        # here cost 55-165 ms per event while dragging the splitter.
+        self._refresh_image_views()
+
     def resizeEvent(self, event):
         """窗口大小改变时重新缩放图像"""
         super().resizeEvent(event)
-        self.source_manager.refresh_current_source_view()
-        self.output_manager.refresh_current_result_view()
+        self._refresh_image_views()
+
+    def _refresh_image_views(self) -> None:
+        """Repaint the image panels after a size change.
+
+        MagnifierLabel (and WipeCompareWidget) recompute their fit, zoom and
+        pan from the pixmap they already hold whenever they are resized, so
+        a repaint is all that is needed — re-running the numpy -> uint8 ->
+        pixmap pipeline here re-uploaded a 12 MP frame per resize event
+        (measured 165 ms/event while dragging the window edge).
+        """
+        for label in (getattr(self, "lbl_source_img", None),
+                      getattr(self, "lbl_result_img", None)):
+            if label is not None and label.isVisible():
+                label.update()
+        wipe = getattr(self, "wipe_widget", None)
+        if wipe is not None and self.wipe_active:
+            wipe.update()
 
     def toggle_roi_mode(self, enabled: bool):
         """Toggle ROI selection mode. 
@@ -2091,15 +2147,7 @@ class OpenFocus(QMainWindow):
         
         try:
             image = self.roi_aligned_images[index]
-            image = to_display_uint8(image)
-            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            height, width, _channels = rgb_image.shape
-            bytes_per_line = 3 * width
-            
-            q_image = QImage(rgb_image.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(q_image)
-            
-            self.lbl_result_img.set_display_pixmap(pixmap)
+            self.lbl_result_img.set_display_pixmap(cv2_to_pixmap(image))
             self.lbl_result_info.setText(f"{index + 1} / {len(self.roi_aligned_images)}")
             # ROI模式下保持控制栏可见，以便用户切换图像
             self.result_control_bar.setVisible(True)

@@ -153,6 +153,24 @@ class LabelManager:
             return output
         raise ValueError(f"Unknown label target: {target}")
 
+    def display_bgr_image(self, target: str, image, index: int):
+        """BGR image ready to be shown, without a defensive copy.
+
+        `prepare_bgr_image` copies because exports may draw into the result;
+        the display path only reads, and copying a 24 MP frame per repaint
+        cost 13 ms on its own. LabelAdder draws in place, so a copy is still
+        made when labels are actually enabled — never otherwise.
+        """
+        if target == "registered":
+            if self._registered_enabled:
+                return self._registered_adder.add_label_to_image(image.copy(), index)
+            return image
+        if target == "input":
+            if self._input_enabled:
+                return self._input_adder.add_label_to_image(image.copy(), index)
+            return image
+        raise ValueError(f"Unknown label target: {target}")
+
     def is_enabled_for_target(self, target: str) -> bool:
         """Expose current label enabled state for the requested stack."""
         if target == "registered":

@@ -4,11 +4,10 @@ from typing import Any, List, Optional
 import cv2
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
 
 from utils import show_message_box, show_warning_box
-from utils.image_utils import to_display_uint8
+from utils.image_utils import cv2_to_pixmap
 from core.multi_focus_fusion import is_ai_fusion_available
 from core.workers import RenderWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
@@ -582,11 +581,7 @@ class RenderManager:
                         # touching the full-resolution output history
                         first = processed_images[0] if processed_images else None
                         if first is not None:
-                            first = to_display_uint8(first)
-                            rgb_image = cv2.cvtColor(first, cv2.COLOR_BGR2RGB)
-                            h, w, _ch = rgb_image.shape
-                            q_image = QImage(rgb_image.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-                            window.lbl_result_img.set_display_pixmap(QPixmap.fromImage(q_image))
+                            window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(first))
                         window.result_control_bar.setVisible(False)
                         print("Preview registration completed (not added to output history)")
                     else:

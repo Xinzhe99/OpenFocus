@@ -78,3 +78,40 @@ python tools/soak_test.py --only synth120,io-roundtrip   # just the deep-stack a
 Sections A–C need real photo stacks. Point `OPENFOCUS_SOAK_DIR` at a folder
 containing `hetao_aligned_stabled/` and `Samples1/` to run them; without it
 those sections are skipped with a notice (the synthetic sections still run).
+
+## Interactive latency (the UI, not the fusion)
+
+The soak above measures fusion throughput. Interaction lag is a different
+budget, measured by `tools/ui_perf_probe.py` (offscreen, synthetic stack, no
+window shown):
+
+```bash
+python tools/ui_perf_probe.py --size 4000x3000 --frames 40
+```
+
+Measured on the reference machine, 40 × 12 MP frames + a result on screen
+(medians of 5 interleaved runs against the previous build):
+
+| Gesture | Before | After |
+|---------|--------|-------|
+| Scrub the frame slider (per step) | 39.7 ms | 15.4 ms |
+| Drag the window edge (per event) | 63.7 ms | 10.8 ms |
+| Zoom one notch at 4× | 9.2 ms | 1.0 ms |
+| Re-composite at 4× | 7.3 ms | 1.1 ms |
+| Toggle a wipe A/B frame | 37.9 ms | 2.3 ms |
+
+The four fixes behind those numbers:
+
+1. **`to_display_uint8` no longer copies 8-bit frames** and converts 16-bit
+   through `cv2.convertScaleAbs` (identical output for all 65536 values,
+   232 ms → 16 ms on 24 MP).
+2. **`cv2_to_pixmap` feeds OpenCV's BGR buffer to `QImage.Format_BGR888`**
+   instead of converting to RGB first (11 ms instead of 23 ms per 12 MP frame).
+3. **`MagnifierLabel` resamples only the visible region when zoomed in**,
+   instead of smooth-scaling the whole image and downscaling it again to fit
+   the label (31 ms → 2 ms at 5× on 24 MP), and skips a re-composite when
+   nothing changed.
+4. **Resizing repaints the pixmaps already held** instead of rebuilding them
+   from the numpy stack, and the A/B wipe caches one pixmap per side.
+
+`tests/test_display_paths.py` pins the invariants those changes rely on.

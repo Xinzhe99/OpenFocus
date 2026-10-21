@@ -11,14 +11,32 @@ from utils import show_error_box, show_message_box, show_success_box, show_warni
 from utils.settings_store import get_drag_export_format, set_drag_export_format
 from utils import scalebar
 from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-from utils.image_utils import to_display_uint8
+from utils.image_utils import to_display_uint8, cv2_to_pixmap
 from utils.image_utils import imwrite_auto
 from locales import trans
 
 
+def _thumbnail_bgr(image, size: int):
+    """Downscale a result frame to a `size`-px square thumbnail, in uint8.
+
+    Resampling first keeps the colour conversion and the pixmap upload
+    proportional to the icon instead of to the full-resolution frame.
+    """
+    display = to_display_uint8(image)
+    if display.ndim == 2:
+        display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
+    h, w = display.shape[:2]
+    if h <= 0 or w <= 0:
+        return display
+    scale = min(size / float(w), size / float(h))
+    if scale >= 1.0:
+        return display
+    return cv2.resize(display, (max(1, int(w * scale)), max(1, int(h * scale))),
+                      interpolation=cv2.INTER_AREA)
+
+
 class OutputManager:
     """Encapsulates output panel interactions and state updates."""
-
     # Every entry keeps a full-resolution copy; unbounded history plus
     # compare-all (8 results per run) exhausted memory on large stacks.
     MAX_HISTORY = 20
@@ -45,13 +63,10 @@ class OutputManager:
 
         if window.fusion_result is not None:
             try:
-                rgb_image = cv2.cvtColor(
-                    to_display_uint8(window.fusion_result.copy()), cv2.COLOR_BGR2RGB)
-                h, w = rgb_image.shape[:2]
-                bytes_per_line = 3 * w
-                q_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-                pixmap = QPixmap.fromImage(q_image)
-                icon = QIcon(pixmap.scaled(40, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                # Thumbnail from a 40 px resample, not from the full frame:
+                # converting 12 MP just to fill a 40x40 icon cost ~35 ms of
+                # copy + colour convert + pixmap upload per render.
+                icon = QIcon(cv2_to_pixmap(_thumbnail_bgr(window.fusion_result, 40)))
                 item.setIcon(icon)
             except Exception:
                 pass
@@ -306,15 +321,8 @@ class OutputManager:
 
         try:
             display_image = to_display_uint8(
-                window.label_manager.prepare_bgr_image("registered", fusion_image, 0))
-            rgb_image = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
-            height, width, _channels = rgb_image.shape
-            bytes_per_line = 3 * width
-
-            q_image = QImage(rgb_image.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(q_image)
-
-            window.lbl_result_img.set_display_pixmap(pixmap)
+                window.label_manager.display_bgr_image("registered", fusion_image, 0))
+            window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(display_image))
             window.result_control_bar.setVisible(False)
             window.lbl_result_info.setText("-- / --")
 
@@ -365,14 +373,7 @@ class OutputManager:
             image = to_display_uint8(
                 window.label_manager.apply_labels_to_registered_image(image, index))
 
-            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            height, width, channel = rgb_image.shape
-            bytes_per_line = 3 * width
-
-            q_image = QImage(rgb_image.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(q_image)
-
-            window.lbl_result_img.set_display_pixmap(pixmap)
+            window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(image))
             window.lbl_result_info.setText(f"{index + 1} / {len(window.registration_results)}")
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
@@ -382,10 +383,3 @@ class OutputManager:
                 f"Error: {str(exc)}",
                 QMessageBox.Icon.Critical,
             )
-
-    def refresh_current_result_view(self) -> None:
-        window = self.window
-        if window.fusion_result is not None:
-            self.show_fusion_result()
-        elif window.current_result_index >= 0:
-            self.show_registration_result(window.current_result_index)

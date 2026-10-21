@@ -442,11 +442,6 @@ class SourceManager:
         ret = msg.exec()
         return ret == QMessageBox.StandardButton.Yes
 
-    def refresh_current_source_view(self) -> None:
-        index = getattr(self.window, "current_display_index", -1)
-        if index >= 0:
-            self.window.update_source_view(index)
-
     def clear_image_stack(self) -> None:
         window = self.window
 

@@ -3,6 +3,28 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.65.3] — 2026-10-21
+
+### Changed
+- **Interactive display paths are 2.5–16× faster.** Frame scrubbing, window
+  and splitter resizing, zooming and the A/B wipe all rebuilt the full image
+  from numpy on every event. Measured on 40 × 12 MP frames with a result on
+  screen (medians, `tools/ui_perf_probe.py`): scrub 39.7 → 15.4 ms per step,
+  resize 63.7 → 10.8 ms per event, zoom one notch 9.2 → 1.0 ms, wipe frame
+  toggle 37.9 → 2.3 ms.
+
+### Fixed
+- **16-bit display conversion was 14× slower than needed.** `to_display_uint8`
+  went through float32 for uint16 input (232 ms on a 24 MP frame); it now uses
+  `cv2.convertScaleAbs` with byte-identical output (verified for all 65536
+  input values). 8-bit frames are passed through without a copy.
+- **Zoomed-in panning was soft.** The magnifier smooth-scaled the whole image
+  (19 MP at 4× on a 24 MP frame) and then downscaled it again to fit the
+  label. Only the visible region is resampled now, so zoomed-in views are
+  both cheaper and sharper.
+- **Enabling labels did not refresh the A/B wipe.** The two sides are cached
+  per frame; the label state is now part of the cache key.
+
 ## [v1.65.2] — 2026-10-21
 
 ### Fixed
