@@ -115,7 +115,7 @@ All PyInstaller commands MUST include these directories:
 | Directory | Purpose | Required |
 |-----------|---------|----------|
 | `assets` | Icons, images, UI resources | ✅ Yes |
-| `weights` | AI model files (StackMFF-V4) | ✅ Yes |
+| `weights` | AI model files (StackMFF-V3) | ✅ Yes |
 | `ui` | UI styles and resources (styles.py) | ✅ Yes |
 | `docs` | Documentation files | ✅ Yes |
 

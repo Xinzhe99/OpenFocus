@@ -16,10 +16,10 @@ def get_algorithm_from_checkboxes(
     rb_c: bool,
     rb_gfg: bool,
     rb_d: bool,
-    default: str = "guided_filter"
+    default: str = "stackmffv3"
 ) -> str:
     if rb_a:
-        return "guided_filter"
+        return "stackmffv3"
     elif rb_b:
         return "dct"
     elif rb_c:
@@ -27,7 +27,7 @@ def get_algorithm_from_checkboxes(
     elif rb_gfg:
         return "gfgfgf"
     elif rb_d:
-        return "stackmffv4"
+        return "stackmffv3"
     return default
 
 

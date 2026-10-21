@@ -12,7 +12,7 @@ per-pixel decision and are deliberately absent.
 - dtcwt:         argmax of the per-pixel DTCWT high-pass energy (the wavelet
                  activity level the fusion uses, on the gray channel)
 - gfgfgf:        argmax of the GFG + fast-guided-filter focus map (paper eqs 1-13)
-- stackmffv4:    the model's own focus-index output (tiled with the same
+- stackmffv3:    the model's own focus-index output (tiled with the same
                  memory budget as AI fusion)
 - openfocus_b:   argmax of the window local variance
                  (blur(x²) − blur(x)²); the kernel slider is the
@@ -33,7 +33,7 @@ import cv2
 import numpy as np
 
 # 与融合下拉同序（仅保留"按索引决策"的方法；加权平均类无逐像素决策）
-SUPPORTED_METHODS = ("dct", "dtcwt", "gfgfgf", "stackmffv4",
+SUPPORTED_METHODS = ("dct", "dtcwt", "gfgfgf", "stackmffv3",
                      "openfocus_b", "openfocus_c")
 
 
@@ -170,7 +170,7 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=4):
 
 
 # --------------------------------------------------------------------------
-# stackmffv4 — the model's own focus indices, tiled within the AI budget
+# stackmffv3 — the model's own focus indices, tiled within the AI budget
 # --------------------------------------------------------------------------
 def _tile_weight(x0, y0, x1, y1, fw, fh, W, H, overlap):
     """Linear ramp over the overlap band, zero outside — same feathering
@@ -194,72 +194,61 @@ def _tile_weight(x0, y0, x1, y1, fw, fh, W, H, overlap):
     return wgt
 
 
-def _measure_stackmffv4(images, progress, should_cancel,
-                        model_path=None, use_gpu=False):
-    from fusion_methods.stackmffv4 import _get_model_and_device
+def _measure_stackmffv3(images, progress, should_cancel,
+                       model_path=None, use_gpu=False):
+    """Focus index from the V3 probabilities.
+
+    The network classifies every pixel against the frames, so its softmax is
+    the probability of "this pixel comes from frame k". The expectation of
+    that distribution still lands on frame positions (measured: 5 distinct
+    levels for a 5-frame stack - 0, 0.25, 0.5, 0.75, 1.0), because a
+    classifier is confident at almost every pixel. The map therefore reports
+    *which frame* won at each pixel, expressed on the same 0..N-1 axis as the
+    classical measures so the colormaps and scale bar stay valid.
+    """
+    from fusion_methods.stackmffv3 import model_probabilities
 
     if model_path is None:
         from utils import resource_path
-        model_path = resource_path("weights", "stackmffv4.pth")
-    model, device = _get_model_and_device(model_path, use_gpu)
-
-    import torch
+        model_path = resource_path("weights", "stackmff_v3_final.pth")
 
     h, w = images[0].shape[:2]
     n = len(images)
-    from core.multi_focus_fusion import STACKMFFV4_IMAGE_BUDGET
-    budget_px = STACKMFFV4_IMAGE_BUDGET * 1024 * 1024  # 与融合路径同一预算
+    from core.multi_focus_fusion import AI_IMAGE_BUDGET
+    budget_px = AI_IMAGE_BUDGET * 1024 * 1024  # 与融合路径同一预算
 
-    def _gray01(f, y0, y1, x0, x1):
-        crop = images[f][y0:y1, x0:x1]
-        return torch.from_numpy(
-            cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0)
-
-    def forward_and_stitch(coords, block, batch, ov):
-        acc = np.zeros((h, w), np.float32)
-        wsum = np.zeros((h, w), np.float32)
-        padded = ((block - 1) // 128 + 1) * 128  # 网络要求 128 倍数
-        done = 0
-        for batch_start in range(0, len(coords), batch):
-            _tick(progress, done, len(coords), should_cancel)
-            chunk = coords[batch_start:batch_start + batch]
-            inp = torch.zeros(len(chunk), n, padded, padded)
-            for i, (x0, y0, x1, y1) in enumerate(chunk):
-                for f in range(n):
-                    inp[i, f, :y1 - y0, :x1 - x0] = _gray01(f, y0, y1, x0, x1)
-            with torch.no_grad():
-                _, focus = model(inp.to(device))
-            focus = focus.cpu().numpy()  # [B, Hp, Wp]
-            for i, (x0, y0, x1, y1) in enumerate(chunk):
-                fh, fw = y1 - y0, x1 - x0
-                fmap = focus[i, :fh, :fw].astype(np.float32)
-                wgt = _tile_weight(x0, y0, x1, y1, fw, fh, w, h, ov)
-                acc[y0:y1, x0:x1] += fmap * wgt
-                wsum[y0:y1, x0:x1] += wgt
-            done += len(chunk)
-            del inp, focus
-        wsum[wsum == 0] = 1.0
-        return acc / wsum
-
-    # 整栈一次前向就装得下预算时不要分块：小图上瓦片化还会让 overlap
-    # 逼近瓦片尺寸、step 退化成逐像素
+    # The network returns every pixel's probability distribution in ONE pass,
+    # so there are no per-frame steps to report. i=0/n would read "frame 0/13"
+    # for a method that never visits the frames one by one.
+    _tick(progress, 1, 1, should_cancel)
     if n * h * w <= budget_px:
-        _tick(progress, 0, 1, should_cancel)
-        padded_h = ((h - 1) // 128 + 1) * 128
-        padded_w = ((w - 1) // 128 + 1) * 128
-        inp = torch.zeros(1, n, padded_h, padded_w)
-        for f in range(n):
-            inp[0, f, :h, :w] = _gray01(f, 0, h, 0, w)
-        with torch.no_grad():
-            _, focus = model(inp.to(device))
-        idx = focus[0, :h, :w].cpu().numpy().astype(np.float32)
-        del inp, focus
-    else:
-        from core.multi_focus_fusion import _stackmffv4_effective_tiling
-        block, batch, coords = _stackmffv4_effective_tiling(n, 1024, h, w, 256, 2)
-        ov = max(0, min(256, block // 2))
-        idx = forward_and_stitch(coords, block, batch, ov)
-    return np.clip(idx.round(), 0, n - 1).astype(np.int32)
+        P = model_probabilities(images, model_path, use_gpu, sigma=0.5)
+        idx = (P * np.arange(n, dtype=np.float32)[:, None, None]).sum(0)
+        del P
+        return np.clip(idx.round(), 0, n - 1).astype(np.int32)
+
+    # 大图：按瓦片取概率，瓦片尺寸与融合路径同一预算
+    from core.multi_focus_fusion import _ai_effective_tiling
+    block, batch, coords = _ai_effective_tiling(n, 1024, h, w, 256, 2)
+    ov = max(0, min(256, block // 2))
+    acc = np.zeros((h, w), np.float32)
+    wsum = np.zeros((h, w), np.float32)
+    done = 0
+    for start in range(0, len(coords), batch):
+        _tick(progress, done, len(coords), should_cancel)
+        chunk = coords[start:start + batch]
+        for (x0, y0, x1, y1) in chunk:
+            crops = [img[y0:y1, x0:x1] for img in images]
+            P = model_probabilities(crops, model_path, use_gpu, sigma=0.5)
+            fmap = (P * np.arange(n, dtype=np.float32)[:, None, None]).sum(0)
+            del P
+            fh, fw = y1 - y0, x1 - x0
+            wgt = _tile_weight(x0, y0, x1, y1, fw, fh, w, h, ov)
+            acc[y0:y1, x0:x1] += fmap * wgt
+            wsum[y0:y1, x0:x1] += wgt
+        done += len(chunk)
+    wsum[wsum == 0] = 1.0
+    return np.clip((acc / wsum).round(), 0, n - 1).astype(np.int32)
 
 
 # --------------------------------------------------------------------------
@@ -356,8 +345,8 @@ def compute_focus_index(images: Sequence[np.ndarray],
                               kernel_size=kernel)
     elif method == "dtcwt":
         idx = _measure_dtcwt(images, progress_callback, should_cancel)
-    elif method == "stackmffv4":
-        idx = _measure_stackmffv4(images, progress_callback, should_cancel,
+    elif method == "stackmffv3":
+        idx = _measure_stackmffv3(images, progress_callback, should_cancel,
                                   model_path=model_path, use_gpu=use_gpu)
     elif method == "openfocus_b":
         idx = _measure_openfocus(images, progress_callback, should_cancel,

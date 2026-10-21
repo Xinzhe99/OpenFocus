@@ -129,9 +129,9 @@ class TestUpdaterDownloads:
 
 class TestFusionBits:
     def test_tiling_coords_have_no_duplicates(self):
-        from core.multi_focus_fusion import _stackmffv4_effective_tiling
+        from core.multi_focus_fusion import _ai_effective_tiling
         for n, h, w in ((120, 1637, 1783), (2, 1024, 1024), (300, 4096, 4096)):
-            blk, batch, coords = _stackmffv4_effective_tiling(n, 1024, h, w, 256, 2)
+            blk, batch, coords = _ai_effective_tiling(n, 1024, h, w, 256, 2)
             assert len(coords) == len(set(coords)), f"duplicate tiles at {n}x{h}x{w}"
 
 class TestCliReview:

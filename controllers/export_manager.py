@@ -82,7 +82,7 @@ class ExportManager:
         "dct": "DCT",
         "dtcwt": "DTCWT",
         "gfgfgf": "GFGFGF",
-        "stackmffv4": "StackMFFV4",
+        "stackmffv3": "StackMFFV3",
         "openfocus_a": "OpenFocusA",
         "openfocus_b": "OpenFocusB",
         "openfocus_c": "OpenFocusC",

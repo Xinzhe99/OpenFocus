@@ -17,8 +17,8 @@ The final soak pass caught and fixed two real defects:
    model at once: 2 tiles × 120 frames = 240 images → one 16 GB conv
    allocation → `DefaultCPUAllocator` OOM. Tiles and batch size now shrink
    automatically with depth so a single model call stays within an
-   empirically safe budget (`_stackmffv4_effective_tiling`, 80 units of
-   1024²-frames) — `TestStackMFFV4EffectiveTiling`. Tiles are also 128-aligned
+   empirically safe budget (`_ai_effective_tiling`, 80 units of
+   1024²-frames) — `TestAIEffectiveTiling`. Tiles are also 128-aligned
    because the network's total downsampling is ÷128: a 832 px tile came back
    as a 768 px focus map and crashed the pixel gather.
 
@@ -30,7 +30,7 @@ The final soak pass caught and fixed two real defects:
 | | 40 | 1783×1637 | dct | 2 s | tiled |
 | | 40 | 1783×1637 | dtcwt | 141 s | tiled |
 | | 40 | 1783×1637 | gfgfgf | 8 s | tiled |
-| | 40 | 1783×1637 | AI (StackMFF-V4) | 16.4 min | tiled, batch 2 |
+| | 40 | 1783×1637 | AI (StackMFF-V3) | 16.4 min | tiled, batch 2 |
 | + ECC registration | 40 | → 1775×1626 | ECC → guided / dtcwt / AI | +4–8 s reg | ECC crops to the common valid region by design |
 | High-resolution stack | 24 | 4756×3636 | guided_filter | 54 s | 35 tiles |
 | | 24 | 4756×3636 | dtcwt | 270 s | |

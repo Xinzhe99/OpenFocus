@@ -40,17 +40,17 @@ from utils.settings_store import get_last_dialog_dir, get_settings, set_last_dia
 # 仅收录"按索引决策"的融合方法（与融合下拉同序；加权平均类无逐像素
 # 决策，不提供深度图——guided_filter / openfocus_a 不在此列）
 _METHOD_KEYS = (
+    ("stackmffv3", "radio_stackmff"),
+    ("openfocus_b", "radio_openfocus_b"),
+    ("openfocus_c", "radio_openfocus_c"),
     ("dct", "radio_dct"),
     ("dtcwt", "radio_dtcwt"),
     ("gfgfgf", "radio_gfg"),
-    ("stackmffv4", "radio_stackmff"),
-    ("openfocus_b", "radio_openfocus_b"),
-    ("openfocus_c", "radio_openfocus_c"),
 )
 
 _DEFAULT_METHOD_COLORMAP = "turbo"
 
-# 打开对话框时自动计算的方法（秒级）；dtcwt/stackmffv4 分钟级，不自动跑
+# 打开对话框时自动计算的方法（秒级）；dtcwt/stackmffv3 分钟级，不自动跑
 _FAST_AUTO_METHODS = {"dct", "gfgfgf", "openfocus_b", "openfocus_c"}
 
 # 对话框关闭时仍在跑的 worker 放这里保活：QThread 对象被销毁而线程仍在
@@ -78,7 +78,7 @@ class DepthWorker(QThread):
         from core.depth_map import DepthMapCancelled, compute_focus_index
         try:
             model_path = None
-            if self._method == "stackmffv4":
+            if self._method == "stackmffv3":
                 from core.cli import _find_model_path
                 model_path = _find_model_path()
             m = compute_focus_index(
@@ -106,11 +106,14 @@ class _GradientBar(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._lut = None
+        self._right = "N-1"
         self.setMinimumHeight(26)
         self.setText("")
 
-    def set_lut(self, lut):
+    def set_lut(self, lut, right_label="N-1"):
         self._lut = lut
+        self._right = right_label
+        self.setToolTip("")
         self.update()
 
     def paintEvent(self, event):
@@ -135,7 +138,8 @@ class _GradientBar(QLabel):
         f.setPointSize(8)
         p.setFont(f)
         p.drawText(2, y + bar, "0")
-        p.drawText(self.width() - 24, y + bar, "N-1")
+        w_label = p.fontMetrics().horizontalAdvance(self._right)
+        p.drawText(self.width() - 8 - w_label, y + bar, self._right)
 
 
 class _CustomSchemeDialog(QDialog):
@@ -500,7 +504,16 @@ class DepthMapDialog(QDialog):
 
     def _update_kernel_info(self):
         """kernel 在不同方法里含义不同（与主面板滑块同源）——只读展示。"""
-        key = self._KERNEL_INFO_KEYS.get(self.method_combo.currentData())
+        method = self.method_combo.currentData()
+        if method == "stackmffv3":
+            # No kernel to show. State what the map actually is: the network
+            # picks a source frame per pixel (a classifier is confident at
+            # almost every pixel), so the values are still frame positions.
+            self.lbl_kernel_info.setText(trans.t("depth_ai_note"))
+            self.lbl_kernel_info.setToolTip(trans.t("depth_ai_note_hint"))
+            return
+        self.lbl_kernel_info.setToolTip("")
+        key = self._KERNEL_INFO_KEYS.get(method)
         if not key:
             self.lbl_kernel_info.setText("")
             return
@@ -578,13 +591,23 @@ class DepthMapDialog(QDialog):
         kernel_size = self._kernel_for(method)
         self._worker = DepthWorker(imgs, method, use_gpu, kernel_size, self)
         self._worker_method = method
-        self._worker.progress.connect(lambda i, n: self.status_lbl.setText(
-            trans.t("depth_computing").format(i=i, n=n)))
+        # The neural method classifies all frames in one pass, so "frame i/n"
+        # is meaningless there; it gets a plain working label instead.
+        if method == "stackmffv3":
+            self._worker.progress.connect(lambda i, n: self.status_lbl.setText(
+                trans.t("depth_computing_ai")))
+        else:
+            self._worker.progress.connect(lambda i, n: self.status_lbl.setText(
+                trans.t("depth_computing").format(i=i, n=n)))
         self._worker.ok.connect(self._computed)
         self._worker.failed.connect(self._failed)
         self.compute_btn.setVisible(False)
         self.cancel_btn.setVisible(True)
-        self.status_lbl.setText(trans.t("depth_computing").format(i=0, n=len(imgs)))
+        if method == "stackmffv3":
+            self.status_lbl.setText(trans.t("depth_computing_ai"))
+        else:
+            self.status_lbl.setText(
+                trans.t("depth_computing").format(i=0, n=len(imgs)))
         self._worker.start()
 
     def _cancel(self):
@@ -634,7 +657,10 @@ class DepthMapDialog(QDialog):
             lut = cmap.get_lut(*self._selected_colormap())
         except Exception:
             lut = cmap.get_lut(_DEFAULT_METHOD_COLORMAP)
-        self.legend.set_lut(lut)
+        # Both the classical measures and the neural one report a frame
+        # index, so the legend keeps the frame count at its right end.
+        frames = self._images() or []
+        self.legend.set_lut(lut, f"{max(0, len(frames) - 1)}")
         if self._index01 is None:
             self.legend.update()
             return

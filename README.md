@@ -17,9 +17,9 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **v1.64** — layout and localization fixes: clipped parameter values,
-> English help text in non-English UIs, elided checkbox labels, and a saved
-> window geometry that could hide the whole UI.
+> **v1.65** — the neural method is now StackMFF V3, with a choice of soft
+> (probability-weighted) or hard (per-pixel frame pick) output. Also fixes a
+> checked radio button that rendered larger than an unchecked one.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
@@ -46,7 +46,7 @@ Full details, including the portable mode and the log folder, are in the [User M
 Beyond the GUI, OpenFocus ships as a pip-installable CLI on [PyPI](https://pypi.org/project/openfocus/) — Windows, macOS and Linux, no Python GUI stack required:
 ```bash
 pip install openfocus          # all 8 fusion methods (4 classical + OpenFocus A/B/C)
-pip install "openfocus[ai]"    # + the AI (StackMFF-V4) model, weights included
+pip install "openfocus[ai]"    # + the AI (StackMFF-V3) model, weights included
 pip install "openfocus[raw]"   # + camera RAW input (rawpy / LibRaw)
 openfocus --input ./stack_folder --output ./result/fused.png
 ```
@@ -59,7 +59,7 @@ openfocus -i ./stack_folder -o ./result/fused.png
 openfocus -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
 # AI fusion forced to CPU with a custom tile size
-openfocus -i ./stack_folder -o ./result/fused.png -m stackmffv4 --cpu --tile-size 512
+openfocus -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Explicit file list instead of a folder; video files also work as input
 openfocus -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
@@ -106,11 +106,30 @@ Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.m
 
 <a id="overview"></a>
 ## 🔭 Overview
-OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that delivers commercial-grade alignment and blending results. The project is fully open source (MIT License) and runs on CPU by default with optional GPU acceleration for the StackMFF V4 neural model.
+OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that delivers commercial-grade alignment and blending results. The project is fully open source (MIT License) and runs on CPU by default with optional GPU acceleration for the StackMFF V3 neural model.
 
 <p align="center">
-	<img src="assets/ui.jpg" alt="OpenFocus UI" width="720">
+	<img src="assets/ui.png" alt="OpenFocus UI" width="820">
 </p>
+
+### AI fusion: StackMFF V3 vs. Guided Filter
+
+The default fusion method classifies every pixel by its most probable source
+frame. On a real 6-frame macro stack it keeps the letter boundaries crisp where
+Guided Filter leaves a halo (same registration, same stack, 3x zoom):
+
+<p align="center">
+	<img src="assets/comparison_ai_vs_gff.png" alt="Guided Filter vs StackMFF V3" width="820">
+</p>
+
+On a synthetic stack with known ground truth it leads every fusion method on
+both PSNR and SSIM, and leaves fewer ghost pixels than any classical method:
+
+<p align="center">
+	<img src="assets/benchmark.png" alt="Ground-truth benchmark" width="820">
+</p>
+
+<sub>Reproduce with <code>python tools/synthetic_benchmark.py --noise 3</code>.</sub>
 
 <a id="highlights"></a>
 ## ✨ Highlights
@@ -135,7 +154,7 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 - **DCT Multi-Focus Fusion**: Block-wise DCT variance with consistency verification — the fastest method.
 - **Dual-Tree Complex Wavelet Transform (DTCWT)**: Multi-scale, multi-orientation fusion with one consistent decision per pixel and level.
 - **GFG-FGF**: Gaussian-like four-neighbourhood gradient operator + fast guided filter (Fu et al., 2024), well suited to microscopy.
-- **StackMFF V4**: Pretrained deep model (GPU optional).
+- **[StackMFF V3](https://github.com/Xinzhe99/StackMFF-V3)**: Pretrained deep model that classifies every pixel by its most probable source frame, with soft (probability-weighted) and hard (per-pixel frame pick) outputs (GPU optional).
 - **OpenFocus A / B / C**: Variance-weighted average, variance depth-map pick, and Laplacian-pyramid fusion.
 
 ### Registration Algorithms
@@ -151,12 +170,16 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 - J. J. Lewis, R. J. O'Callaghan, S. G. Nikolov, D. R. Bull, and N. Canagarajah, "Pixel- and region-based image fusion with complex wavelets," *Information Fusion*, vol. 8, no. 2, pp. 119-130, 2007.
 - S. Li, X. Kang, and J. Hu, "Image fusion with guided filtering," *IEEE Transactions on Image Processing*, vol. 22, no. 7, pp. 2864-2875, 2013.
 - 付宏语, 巩岩, 汪路涵, 等. 多聚焦显微图像融合算法[J]. Laser & Optoelectronics Progress, 2024, 61(6): 0618022-0618022-9.
+- X. Xie, *StackMFF V3: Order-Invariant Focus Stacking via Pixel-Wise Source Classification*, 2026. Code, pretrained weights and benchmark: [github.com/Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3).
 
 <a id="contribution"></a>
 ## 🤝 Contribution
 We welcome community contributions of all kinds:
 1. **Issues**: Report bugs, request features, or propose UX enhancements.
 2. **Algorithm & Performance Work**: Share new fusion/registration ideas, optimizations.
+
+If you use the AI fusion mode, please also cite the underlying method:
+[StackMFF V3](https://github.com/Xinzhe99/StackMFF-V3).
 
 > Bug reports or suggestions? Please open an issue so we can follow up quickly.
 

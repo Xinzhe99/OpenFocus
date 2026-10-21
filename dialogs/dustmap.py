@@ -90,7 +90,9 @@ class DustMapDialog(QDialog):
         self.spin_sigma.setSingleStep(1.0)
         self.spin_sigma.setDecimals(1)
         self.spin_sigma.setValue(DEFAULT_SIGMA)
-        self.spin_sigma.setFixedWidth(80)
+        # 80 px was narrower than the widget needs with its arrows and QSS
+        # padding (112 px), so "4.0" lost its last digit.
+        self.spin_sigma.setMinimumWidth(112)
         self.spin_sigma.setToolTip(trans.t("dust_size_hint"))
         self.spin_sigma.valueChanged.connect(self._sigma_changed)
         size_row.addStretch()

@@ -243,7 +243,7 @@ class BatchProcessingDialog(QDialog):
                 "dct": 'radio_dct',
                 "dtcwt": 'radio_dtcwt',
                 "gfgfgf": 'radio_gfg',
-                "stackmffv4": 'radio_stackmff',
+                "stackmffv3": 'radio_stackmff',
                 "openfocus_a": 'radio_openfocus_a',
                 "openfocus_b": 'radio_openfocus_b',
                 "openfocus_c": 'radio_openfocus_c',

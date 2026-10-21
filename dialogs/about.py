@@ -95,9 +95,9 @@ class EnvironmentInfoDialog(QDialog):
             info_lines.append(f"  ✗ {trans.t('env_not_installed')}")
         info_lines.append("")
 
-        # 检测 PyTorch (StackMFF-V4)
+        # 检测 PyTorch (StackMFF-V3)
         info_lines.append("-" * 60)
-        info_lines.append("PyTorch (Required for StackMFF-V4)")
+        info_lines.append("PyTorch (Required for StackMFF-V3)")
         try:
             import torch
 

@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QPushButton,
+    QRadioButton,
     QSizePolicy,
     QSlider,
     QSplitter,
@@ -34,14 +35,14 @@ from widgets.output_list import OutputListWidget
 # "none" = 仅对齐不融合（v1.41 下拉化前的老能力：只跑配准、输出对齐帧）。
 FUSION_ITEMS = (
     ("none", "radio_no_fusion", "radio_no_fusion_hint"),
+    ("stackmffv3", "radio_stackmff", None),
+    ("openfocus_a", "radio_openfocus_a", "radio_openfocus_a_hint"),
+    ("openfocus_b", "radio_openfocus_b", "radio_openfocus_b_hint"),
+    ("openfocus_c", "radio_openfocus_c", "radio_openfocus_c_hint"),
     ("guided_filter", "radio_guided_filter", None),
     ("dct", "radio_dct", None),
     ("dtcwt", "radio_dtcwt", None),
     ("gfgfgf", "radio_gfg", None),
-    ("stackmffv4", "radio_stackmff", None),
-    ("openfocus_a", "radio_openfocus_a", "radio_openfocus_a_hint"),
-    ("openfocus_b", "radio_openfocus_b", "radio_openfocus_b_hint"),
-    ("openfocus_c", "radio_openfocus_c", "radio_openfocus_c_hint"),
 )
 
 # 对齐算法下拉项（单选语义）：none = 不对齐，直接融合原始帧。
@@ -52,7 +53,7 @@ ALIGN_ITEMS = (
     ("openfocus", "check_align_of", "check_align_of_hint"),
 )
 
-FUSION_DEFAULT = "guided_filter"
+FUSION_DEFAULT = "stackmffv3"
 ALIGN_DEFAULT = "ecc"
 
 
@@ -74,6 +75,9 @@ class RightPanelComponents:
     slider_smooth: QSlider
     smooth_value_label: QLabel
     smooth_widget: QWidget
+    ai_mode_widget: QWidget
+    radio_ai_soft: QRadioButton
+    radio_ai_hard: QRadioButton
 
     # Groups
     method_group: QGroupBox
@@ -142,6 +146,25 @@ def create_right_panel() -> RightPanelComponents:
     btn_method_help.setObjectName("helpButton")
     method_help_layout.addWidget(btn_method_help)
     method_layout.addLayout(method_help_layout)
+
+    # AI output mode: only meaningful for the neural method, so the row is
+    # hidden for every other algorithm (see update_slider_availability).
+    ai_mode_widget = QWidget()
+    ai_mode_layout = QVBoxLayout(ai_mode_widget)
+    ai_mode_layout.setContentsMargins(0, 2, 0, 2)
+    ai_mode_layout.setSpacing(4)
+    lbl_ai_mode = QLabel(trans.t('label_ai_mode'))
+    lbl_ai_mode.setToolTip(trans.t('label_ai_mode_hint'))
+    ai_mode_layout.addWidget(lbl_ai_mode)
+    radio_ai_soft = QRadioButton(trans.t('radio_ai_soft'))
+    radio_ai_soft.setChecked(True)
+    radio_ai_soft.setToolTip(trans.t('radio_ai_soft_hint'))
+    radio_ai_hard = QRadioButton(trans.t('radio_ai_hard'))
+    radio_ai_hard.setToolTip(trans.t('radio_ai_hard_hint'))
+    ai_mode_layout.addWidget(radio_ai_soft)
+    ai_mode_layout.addWidget(radio_ai_hard)
+    ai_mode_widget.setVisible(False)
+    method_layout.addWidget(ai_mode_widget)
 
     registration_group = QGroupBox(trans.t('group_registration'))
     registration_layout = QVBoxLayout(registration_group)
@@ -352,6 +375,9 @@ def create_right_panel() -> RightPanelComponents:
         chk_reverse_order=chk_reverse_order,
         slider_smooth=slider_smooth,
         smooth_value_label=lbl_smooth_value,
+        ai_mode_widget=ai_mode_widget,
+        radio_ai_soft=radio_ai_soft,
+        radio_ai_hard=radio_ai_hard,
         smooth_widget=smooth_widget,
 
         method_group=method_group,
@@ -390,6 +416,11 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.chk_exposure_match.toggled.connect(window.set_exposure_match)
     # 反转帧序（倒序栈）：仅影响 openfocus 族的帧序方向语义
     components.chk_reverse_order.toggled.connect(window.set_reverse_order)
+    # AI 输出模式：软融合（概率加权）/ 硬融合（逐像素取最可能帧）
+    components.radio_ai_soft.toggled.connect(
+        lambda checked: checked and window.set_ai_mode("soft"))
+    components.radio_ai_hard.toggled.connect(
+        lambda checked: checked and window.set_ai_mode("hard"))
 
     # 帮助对话框在点击时才导入：模块级导入 dialogs 会与 ui 包形成循环
     # (dialogs.about -> ui.styles -> ui/__init__ -> right_panel -> dialogs)

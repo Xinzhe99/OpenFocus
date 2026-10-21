@@ -28,7 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-ALL_METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv4",
+ALL_METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv3",
                "openfocus_a", "openfocus_b", "openfocus_c"]
 
 

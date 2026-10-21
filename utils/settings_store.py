@@ -1,7 +1,7 @@
 """QSettings-backed persistence for user preferences and recent files.
 
 All user-tunable state on the main window (thread count, tile parameters,
-registration downscale, StackMFF-V4 batch size, GPU toggle, UI language,
+registration downscale, AI batch size and output mode, GPU toggle, UI language,
 recently opened stacks) survives restarts through this module.
 """
 import os
@@ -39,7 +39,8 @@ _PERSISTED_FIELDS = {
     "tile_overlap": ("rendering/tile_overlap", 256, int),
     "tile_threshold": ("rendering/tile_threshold", 2048, int),
     "reg_downscale_width": ("registration/downscale_width", 1024, int),
-    "stackmffv4_batch_size": ("rendering/stackmffv4_batch_size", 2, int),
+    "ai_batch_size": ("rendering/ai_batch_size", 2, int),
+    "ai_mode": ("fusion/ai_mode", "soft", "str"),
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),

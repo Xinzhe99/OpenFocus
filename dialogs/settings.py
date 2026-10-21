@@ -141,7 +141,10 @@ class DownsampleDialog(QDialog):
         self.spinbox.setRange(1, self.max_percent)
         self.spinbox.setValue(self.scale_percent)
         self.spinbox.setSuffix("%")
-        self.spinbox.setFixedWidth(60)
+        # A fixed 60 px was narrower than the widget needs with its suffix and
+        # QSS padding (77 px minimum), so "100%" rendered as "10(". Let it
+        # size itself, with a floor that keeps the layout stable.
+        self.spinbox.setMinimumWidth(80)
 
         # 连接信号
         self.slider.valueChanged.connect(self.spinbox.setValue)
@@ -488,13 +491,13 @@ class ThreadSettingsDialog(QDialog):
         self.accept()
 
 
-class StackMFFV4BatchSettingsDialog(QDialog):
-    """StackMFF V4 Batch Size settings dialog for tile batch processing."""
+class AIBatchSettingsDialog(QDialog):
+    """StackMFF V3 Batch Size settings dialog for tile batch processing."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_window = parent
-        self.setWindowTitle(trans.t("dialog_stackmffv4_batch_title"))
+        self.setWindowTitle(trans.t("dialog_ai_batch_title"))
         self.resize(420, 160)
 
         # Apply the same dark dialog styling as other settings dialogs
@@ -503,10 +506,10 @@ class StackMFFV4BatchSettingsDialog(QDialog):
 
         from PyQt6.QtWidgets import QGroupBox
 
-        group = QGroupBox(trans.t("dialog_stackmffv4_batch_group"))
+        group = QGroupBox(trans.t("dialog_ai_batch_group"))
         g_layout = QHBoxLayout(group)
 
-        lbl = QLabel(trans.t("dialog_stackmffv4_batch_label"))
+        lbl = QLabel(trans.t("dialog_ai_batch_label"))
         lbl.setMinimumWidth(140)
         g_layout.addWidget(lbl)
 
@@ -524,7 +527,7 @@ class StackMFFV4BatchSettingsDialog(QDialog):
         # Buttons: help and OK/Cancel
         btn_layout = QHBoxLayout()
         help_btn = QPushButton("?")
-        help_btn.setToolTip("Show help for StackMFF V4 batch settings")
+        help_btn.setToolTip("Show help for StackMFF V3 batch settings")
         help_btn.setFixedSize(22, 22)
         # Text "?" styled by objectName: the old white SVG icon
         # vanished on the light dialog background.
@@ -547,13 +550,13 @@ class StackMFFV4BatchSettingsDialog(QDialog):
 
     def show_help(self):
         from dialogs.help import HelpDialog
-        help_text = trans.t("dialog_stackmffv4_batch_help_text")
-        dlg = HelpDialog(trans.t("dialog_stackmffv4_batch_help_title"), help_text, parent=self)
+        help_text = trans.t("dialog_ai_batch_help_text")
+        dlg = HelpDialog(trans.t("dialog_ai_batch_help_title"), help_text, parent=self)
         dlg.exec()
 
     def load_defaults(self):
         if self.parent_window:
-            val = getattr(self.parent_window, "stackmffv4_batch_size", 2)
+            val = getattr(self.parent_window, "ai_batch_size", 2)
             try:
                 self.spin_batch_size.setValue(int(val))
             except Exception:
@@ -564,7 +567,7 @@ class StackMFFV4BatchSettingsDialog(QDialog):
     def on_accept(self):
         val = int(self.spin_batch_size.value())
         if self.parent_window:
-            setattr(self.parent_window, "stackmffv4_batch_size", val)
+            setattr(self.parent_window, "ai_batch_size", val)
             if hasattr(self.parent_window, "persist_settings"):
                 self.parent_window.persist_settings()
         self.accept()

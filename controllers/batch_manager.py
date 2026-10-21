@@ -113,7 +113,8 @@ class BatchManager:
             tile_overlap=getattr(self.window, "tile_overlap", None),
             tile_threshold=getattr(self.window, "tile_threshold", None),
             thread_count=getattr(self.window, "thread_count", 4),
-            stackmffv4_batch_size=getattr(self.window, "stackmffv4_batch_size", 2),
+            ai_batch_size=getattr(self.window, "ai_batch_size", 2),
+            ai_mode=getattr(self.window, "ai_mode", "soft"),
             import_mode=import_mode,
             split_method=split_method,
             split_param=split_param,
@@ -207,7 +208,7 @@ class BatchManager:
                 widget.setEnabled(True)
             except Exception:
                 pass
-        # StackMFF-V4 stays disabled when torch is missing.
+        # StackMFF-V3 stays disabled when torch is missing.
         hook = getattr(self.window, "refresh_method_availability", None)
         if callable(hook):
             hook()

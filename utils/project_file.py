@@ -31,7 +31,8 @@ def _collect_state(window) -> Dict[str, Any]:
         "tile_overlap": getattr(window, "tile_overlap", 256),
         "tile_threshold": getattr(window, "tile_threshold", 2048),
         "reg_downscale_width": getattr(window, "reg_downscale_width", None),
-        "stackmffv4_batch_size": getattr(window, "stackmffv4_batch_size", 2),
+        "ai_batch_size": getattr(window, "ai_batch_size", 2),
+        "ai_mode": getattr(window, "ai_mode", "soft"),
         "quick_preview": getattr(window, "chk_quick_preview", None) is not None
         and window.chk_quick_preview.isChecked(),
         "current_index": getattr(window, "current_display_index", -1),
@@ -189,7 +190,9 @@ def validate_project(path: str) -> Tuple[bool, str, Dict[str, Any]]:
     _num("tile_overlap", int, 256)
     _num("tile_threshold", int, 2048)
     _num("reg_downscale_width", int, 1024)
-    _num("stackmffv4_batch_size", int, 2)
+    _num("ai_batch_size", int, 2)
+    if settings.get("ai_mode") not in ("soft", "hard"):
+        settings["ai_mode"] = "soft"
     _num("current_index", int, -1)
     try:
         state["scale_factor"] = float(state.get("scale_factor", 1.0))
@@ -264,8 +267,15 @@ def _apply_after_load(window, state: Dict[str, Any]) -> None:
     window.tile_threshold = int(settings.get("tile_threshold", 2048))
     if settings.get("reg_downscale_width"):
         window.reg_downscale_width = int(settings["reg_downscale_width"])
-    if settings.get("stackmffv4_batch_size"):
-        window.stackmffv4_batch_size = int(settings["stackmffv4_batch_size"])
+    if settings.get("ai_batch_size"):
+        window.ai_batch_size = int(settings["ai_batch_size"])
+    if settings.get("ai_mode") in ("soft", "hard"):
+        window.ai_mode = settings["ai_mode"]
+        radios = (getattr(window, "radio_ai_soft", None),
+                  getattr(window, "radio_ai_hard", None))
+        target = radios[0] if window.ai_mode == "soft" else radios[1]
+        if target is not None:
+            target.setChecked(True)
     qp = window.chk_quick_preview if hasattr(window, "chk_quick_preview") else None
     if qp is not None:
         qp.setChecked(bool(settings.get("quick_preview", False)))

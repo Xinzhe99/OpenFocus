@@ -62,6 +62,9 @@ class TranslationManager(QObject):
                 'msg_update_in_progress': 'An update download is already in progress.',
                 'depth_new_scheme_default': 'My scheme',
                 'depth_computing': 'Computing… frame {i}/{n}',
+                'depth_ai_note': 'Per-pixel source frame (AI classification)',
+                'depth_ai_note_hint': 'The network decides, for every pixel, which input frame it comes from, so the map is still read as a frame index (0..N-1) - the decision is just made by the model per pixel instead of by a sharpness measure.',
+                'depth_computing_ai': 'Classifying frames…',
                 'depth_ready': 'Done — preview updated. Save colorized or raw 16-bit below.',
                 'depth_saved': 'Saved: {path}',
                 'depth_save_color': 'Save Colorized…',
@@ -330,7 +333,7 @@ class TranslationManager(QObject):
                 'action_thread_settings': 'Thread Settings',
                 'action_reg_settings': 'Registration Settings',
                 'action_tile_settings': 'Tile Settings',
-                'action_stackmffv4_batch_settings': 'AI Batch Size',
+                'action_ai_batch_settings': 'AI Batch Size',
                 
                 # Menu Help
                 'menu_help': 'Help',
@@ -343,7 +346,13 @@ class TranslationManager(QObject):
                 'radio_dct': 'DCT',
                 'radio_dtcwt': 'DTCWT',
                 'radio_gfg': 'GFG-FGF',
-                'radio_stackmff': 'AI',
+                'radio_stackmff': 'AI (StackMFF-V3)',
+                'label_ai_mode': 'AI output',
+                'label_ai_mode_hint': 'How the neural network combines the frames',
+                'radio_ai_soft': 'Soft blend (weighted)',
+                'radio_ai_soft_hint': 'Each output pixel is a probability-weighted mix of the source frames: smooth transitions, no hard seams',
+                'radio_ai_hard': 'Hard pick (single frame)',
+                'radio_ai_hard_hint': 'Each output pixel is copied from the most probable frame: crisp per-pixel selection, can show seams at near-ties',
                 'group_registration': 'Registration',
                 'check_align_ecc': 'ECC',
                 'check_align_homography': 'Homography',
@@ -579,7 +588,7 @@ class TranslationManager(QObject):
 <p><b>DCT</b><br/>Block-wise DCT variance with consistency verification; the fastest method, fully CPU-based, crisp edges.</p>
 <p><b>DTCWT</b><br/>Dual-tree complex wavelet fusion across scales and orientations; best for intricate high-frequency content.</p>
 <p><b>GFG-FGF</b><br/>Gaussian-like four-neighbourhood gradient with fast guided-filter refinement (Fu et al., 2024); well suited to microscopy.</p>
-<p><b>StackMFF-V4</b><br/>Neural network trained on everyday focus stacks. Strongest results with minimal tuning; fastest with GPU. Avoid when domain shift is expected.</p>
+<p><b>StackMFF-V3</b><br/>Classifies every pixel by its most probable source frame, then blends (soft) or picks one frame (hard). Order-invariant, any stack length, strongest results with minimal tuning; fastest with a GPU.</p>
 <p><b>OpenFocus A / B / C</b><br/><b>A</b> variance-weighted average with a last-frame prior (fast, colour-stable). <b>B</b> variance depth-map pick (sharpest frame per pixel; smooth surfaces, microscopy). <b>C</b> Laplacian-pyramid per-band blend (natural on textures). A and B take a variance window; C has no radius, only Smoothing.</p>''',
                 'help_registration_body': '''<h3>Registration Methods</h3>
 <p>Alignment is a single choice: pick one method per render, or "No alignment" to fuse the frames as loaded.</p>
@@ -652,11 +661,11 @@ class TranslationManager(QObject):
         operations (e.g., guided filtering).</p>''',
 
                 # AI Batch settings dialog
-                'dialog_stackmffv4_batch_title': 'AI Batch Settings',
-                'dialog_stackmffv4_batch_group': 'Batch Processing',
-                'dialog_stackmffv4_batch_label': 'Batch Size:',
-                'dialog_stackmffv4_batch_help_title': 'AI Batch Settings Help',
-                'dialog_stackmffv4_batch_help_text': '''<h3>AI Batch Settings</h3>
+                'dialog_ai_batch_title': 'AI Batch Settings',
+                'dialog_ai_batch_group': 'Batch Processing',
+                'dialog_ai_batch_label': 'Batch Size:',
+                'dialog_ai_batch_help_title': 'AI Batch Settings Help',
+                'dialog_ai_batch_help_text': '''<h3>AI Batch Settings</h3>
         <p>This setting controls the batch size when processing tiles with the AI
         neural network fusion algorithm. Batch processing allows multiple tiles to be
         processed in parallel on the GPU, improving efficiency.</p>
@@ -756,6 +765,9 @@ class TranslationManager(QObject):
                 'msg_update_in_progress': '已有更新正在下载中。',
                 'depth_new_scheme_default': '我的配色',
                 'depth_computing': '计算中… 第 {i}/{n} 帧',
+                'depth_ai_note': '逐像素来源帧（AI 分类）',
+                'depth_ai_note_hint': '网络对每个像素判断它最可能来自哪一帧，因此深度图仍以帧序号（0..N-1）表示，只是这个判断由模型逐像素给出，而不是靠清晰度度量。',
+                'depth_computing_ai': '正在分类各帧…',
                 'depth_ready': '完成——预览已更新。可在下方保存伪彩图或 16-bit 原始图。',
                 'depth_saved': '已保存：{path}',
                 'depth_save_color': '保存伪彩图…',
@@ -1023,7 +1035,7 @@ class TranslationManager(QObject):
                 'action_thread_settings': '线程设置',
                 'action_reg_settings': '配准设置',
                 'action_tile_settings': '分块设置',
-                'action_stackmffv4_batch_settings': 'AI 批量大小',
+                'action_ai_batch_settings': 'AI 批量大小',
                 
                 # Menu Help
                 'menu_help': '帮助',
@@ -1036,7 +1048,13 @@ class TranslationManager(QObject):
                 'radio_dct': '余弦离散变换',
                 'radio_dtcwt': '双数复小波变换',
                 'radio_gfg': '引导滤波2',
-                'radio_stackmff': 'AI',
+                'radio_stackmff': 'AI (StackMFF-V3)',
+                'label_ai_mode': 'AI 输出方式',
+                'label_ai_mode_hint': '神经网络如何组合各帧',
+                'radio_ai_soft': '软融合（概率加权）',
+                'radio_ai_soft_hint': '每个像素由各帧按概率加权混合：过渡平滑，无硬接缝',
+                'radio_ai_hard': '硬融合（单帧选取）',
+                'radio_ai_hard_hint': '每个像素直接取自最可能的帧：选择锐利，概率接近时可能出现接缝',
                 'group_registration': '图像配准',
                 'check_align_ecc': 'ECC',
                 'check_align_homography': 'Homography',
@@ -1274,7 +1292,7 @@ class TranslationManager(QObject):
 <p><b>DCT</b><br/>分块 DCT 方差 + 一致性校验；速度最快，纯 CPU，边缘锐利。</p>
 <p><b>DTCWT</b><br/>双树复小波多尺度、多方向融合；适合细节密集的高频内容。</p>
 <p><b>GFG-FGF</b><br/>类高斯四邻域梯度 + 快速引导滤波（Fu 等，2024）；尤其适合显微图像。</p>
-<p><b>StackMFF-V4</b><br/>在日常对焦栈上训练的神经网络。调整少、效果强；有 GPU 时最快。题材差异较大时不建议使用。</p>
+<p><b>StackMFF-V3</b><br/>逐像素判断最可能来自哪一帧，再按概率混合（软融合）或直接取该帧（硬融合）。与帧序无关、支持任意栈长；调整少、效果强，有 GPU 时最快。</p>
 <p><b>OpenFocus A / B / C</b><br/><b>A</b> 方差加权平均 + 末帧先验（快、色彩稳定）。<b>B</b> 方差深度图选择（逐像素取最清晰帧；适合平滑表面与显微）。<b>C</b> 拉普拉斯金字塔逐带混合（纹理题材观感自然）。A、B 有方差窗口；C 没有半径，只有平滑。</p>''',
                 'help_registration_body': '''<h3>配准方法</h3>
 <p>对齐方式是单选：每次渲染只选一种，或选「不对齐」按加载原样融合。</p>
@@ -1356,11 +1374,11 @@ class TranslationManager(QObject):
         ''',
 
                 # AI Batch settings dialog
-                'dialog_stackmffv4_batch_title': 'AI 批量设置',
-                'dialog_stackmffv4_batch_group': '批量处理',
-                'dialog_stackmffv4_batch_label': '批量大小 (Batch Size):',
-                'dialog_stackmffv4_batch_help_title': 'AI 批量设置帮助',
-                'dialog_stackmffv4_batch_help_text': '''<h3>AI 批量设置</h3>
+                'dialog_ai_batch_title': 'AI 批量设置',
+                'dialog_ai_batch_group': '批量处理',
+                'dialog_ai_batch_label': '批量大小 (Batch Size):',
+                'dialog_ai_batch_help_title': 'AI 批量设置帮助',
+                'dialog_ai_batch_help_text': '''<h3>AI 批量设置</h3>
         <p>此设置控制使用 AI 神经网络融合算法处理分块时的批量大小。
         批量处理允许在 GPU 上并行处理多个分块，提高效率。</p>
 

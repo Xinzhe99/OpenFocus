@@ -6,11 +6,11 @@ Modules:
 - registration: Image registration algorithms
 - multi_focus_fusion: Multi-focus image fusion orchestrator
 - workers: Background thread workers for rendering
-- models: Neural network models (StackMFF-V4)
+- models: Neural network models (StackMFF-V3)
 """
 
 from core.image_loader import ImageStackLoader
-from core.multi_focus_fusion import MultiFocusFusion, is_stackmffv4_available
+from core.multi_focus_fusion import MultiFocusFusion, is_ai_fusion_available
 
 try:  # GUI stack; workers (and app below) need PyQt6, the headless CLI
     # package installs without it.
@@ -25,6 +25,6 @@ except ImportError:  # pragma: no cover - headless openfocus package
 __all__ = [
     'ImageStackLoader',
     'MultiFocusFusion',
-    'is_stackmffv4_available',
+    'is_ai_fusion_available',
     'RenderWorker',
 ]

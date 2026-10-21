@@ -109,7 +109,7 @@ class TestRecovery:
         w.current_scale_factor = 1.0
         w.thread_count, w.tile_enabled = 4, True
         w.tile_block_size, w.tile_overlap, w.tile_threshold = 1024, 256, 2048
-        w.reg_downscale_width, w.stackmffv4_batch_size = 1024, 2
+        w.reg_downscale_width, w.ai_batch_size = 1024, 2
         w.label_manager = _Mgr()
         # the real files must exist for validate_project
         for name in w.image_filenames:

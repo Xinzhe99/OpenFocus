@@ -31,6 +31,8 @@ def _asset_url(name: str) -> str:
 
 
 _CHECK_SVG = _asset_url("check_white.svg")
+_RADIO_DOT_LIGHT = _asset_url("radio_dot_blue.svg")
+_RADIO_DOT_DARK = _asset_url("radio_dot_dark.svg")
 _ARROW_DOWN_LIGHT = _asset_url("arrow_down_light.svg")
 _ARROW_UP_LIGHT = _asset_url("arrow_up_light.svg")
 _ARROW_DOWN_DARK = _asset_url("arrow_down_dark.svg")
@@ -86,6 +88,8 @@ def build_stylesheet(theme: str = "dark") -> str:
     s = SPACE
     f = FONT
     check = _CHECK_SVG
+    dot = _RADIO_DOT_DARK if theme == "dark" else _RADIO_DOT_LIGHT
+
 
     return f"""
 /* ===================== base ===================== */
@@ -315,10 +319,18 @@ QCheckBox, QRadioButton {{ spacing: {s['sm']}px; background: transparent; }}
 QCheckBox::indicator, QRadioButton::indicator {{
     width: 16px; height: 16px;
     border: 1px solid {t['controlBorder']};
-    background-color: {t['controlBg']};
+}}
+/* The unchecked radio must be a hollow ring. Any background colour here is
+   painted as a filled disc by Qt 6, which looked like a solid dot on the dark
+   theme (controlBg is only a few steps above the panel). The checked state
+   fills the same 18 px box, so toggling never resizes the control. */
+QCheckBox::indicator {{ background-color: {t['controlBg']}; }}
+QRadioButton::indicator {{
+    background: transparent;
+    border: 1px solid {t['controlBorder']};
+    border-radius: 8px;
 }}
 QCheckBox::indicator {{ border-radius: {r['xs']}px; }}
-QRadioButton::indicator {{ border-radius: 8px; }}
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
     border-color: {t['accent']};
 }}
@@ -328,8 +340,10 @@ QCheckBox::indicator:checked {{
     image: url("{check}");
 }}
 QRadioButton::indicator:checked {{
-    border: 5px solid {t['accent']};
-    background-color: {t['surface']};
+    background-color: {t['accent']};
+    border-color: {t['accent']};
+    border-radius: 8px;
+    image: url("{dot}");
 }}
 QCheckBox:disabled, QRadioButton:disabled {{ color: {t['textFaint']}; }}
 

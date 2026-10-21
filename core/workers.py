@@ -113,7 +113,8 @@ class RenderWorker(QThread):
         tile_threshold=None,
         reg_downscale_width=None,
         thread_count: int = DEFAULT_THREAD_COUNT,
-        stackmffv4_batch_size: int = 2,
+        ai_batch_size: int = 2,
+        ai_mode: str = "soft",
         roi_rect=None,
         roi_mode="crop", # 'crop' or 'paste'
         roi_base_index=0,
@@ -169,11 +170,13 @@ class RenderWorker(QThread):
         self.tile_block_size = tile_block_size
         self.tile_overlap = tile_overlap
         self.tile_threshold = tile_threshold
-        # StackMFF V4 批量处理大小
-        self.stackmffv4_batch_size = max(1, int(stackmffv4_batch_size)) if stackmffv4_batch_size else 2
+        # StackMFF V3 批量处理大小
+        self.ai_batch_size = max(1, int(ai_batch_size)) if ai_batch_size else 2
+        # StackMFF V3 输出模式：'soft' 概率加权混合 / 'hard' 逐像素取帧
+        self.ai_mode = ai_mode if ai_mode in ("soft", "hard") else "soft"
         # Registration downscale width passed from UI (optional)
         self.reg_downscale_width = reg_downscale_width
-        # GPU 加速开关（仅影响 StackMFF-V4；经典算法本身固定 CPU）
+        # GPU 加速开关（仅影响 StackMFF-V3；经典算法本身固定 CPU）
         self.use_gpu = bool(use_gpu)
         self.is_cancelled = False
         # 对比渲染模式：显式指定算法，覆盖 UI 单选按钮的选择
@@ -371,7 +374,8 @@ class RenderWorker(QThread):
             tile_block_size=(self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE),
             tile_overlap=(self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP),
             tile_threshold=(self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD),
-            stackmffv4_batch_size=self.stackmffv4_batch_size,
+            ai_batch_size=self.ai_batch_size,
+            ai_mode=self.ai_mode,
             base_frame=self.base_frame,
             sort_mode=self.sort_mode,
             exposure_match=self.exposure_match,
@@ -379,7 +383,7 @@ class RenderWorker(QThread):
 
         # Classical algorithms are CPU-only (see AGENTS.md); only the neural
         # model actually uses the GPU, so only query the device for it.
-        if algorithm == "stackmffv4":
+        if algorithm == "stackmffv3":
             info = fusion.get_info()
             device_name = info['device']
         else:
@@ -436,12 +440,13 @@ class RenderWorker(QThread):
                 **fuse_cancel,
             )
             result = quantize_fuse_output(result, is_16bit)
-        elif algorithm == "stackmffv4":
-            model_path = resource_path("weights", "stackmffv4.pth")
+        elif algorithm == "stackmffv3":
+            model_path = resource_path("weights", "stackmff_v3_final.pth")
             result = fusion.fuse(
                 input_source=images,
                 img_resize=None,
                 model_path=model_path,
+                mode=self.ai_mode,
                 thread_count=self.thread_count,
                 **fuse_cancel,
             )
@@ -471,7 +476,7 @@ class RenderWorker(QThread):
         elif self.rb_gfg_checked:
             return "gfgfgf"
         elif self.rb_d_checked:
-            return "stackmffv4"
+            return "stackmffv3"
         elif self.rb_ofa_checked:
             return "openfocus_a"
         elif self.rb_ofb_checked:
@@ -510,7 +515,8 @@ class BatchWorker(QThread):
 
     def __init__(self, folder_paths, output_type, output_path, processing_settings, reg_downscale_width=None,
                  tile_enabled=None, tile_block_size=None, tile_overlap=None, tile_threshold=None, thread_count: int = 4,
-                 stackmffv4_batch_size: int = 2,
+                 ai_batch_size: int = 2,
+                 ai_mode: str = "soft",
                  import_mode="multiple_folders", split_method=None, split_param=None,
                  single_folder_images_with_times=None, use_gpu: bool = True,
                  exposure_match: bool = False):
@@ -524,7 +530,7 @@ class BatchWorker(QThread):
         self.split_method = split_method
         self.split_param = split_param
         self.single_folder_images_with_times = single_folder_images_with_times or []
-        # GPU 加速开关（仅影响 StackMFF-V4）
+        # GPU 加速开关（仅影响 StackMFF-V3）
         self.use_gpu = bool(use_gpu)
         self.exposure_match = bool(exposure_match)
 
@@ -536,7 +542,9 @@ class BatchWorker(QThread):
         self.tile_block_size = tile_block_size
         self.tile_overlap = tile_overlap
         self.tile_threshold = tile_threshold
-        self.stackmffv4_batch_size = max(1, int(stackmffv4_batch_size)) if stackmffv4_batch_size else 2
+        self.ai_batch_size = max(1, int(ai_batch_size)) if ai_batch_size else 2
+        # StackMFF V3 输出模式
+        self.ai_mode = ai_mode if ai_mode in ("soft", "hard") else "soft"
         try:
             self.thread_count = max(1, int(thread_count))
         except Exception:
@@ -720,15 +728,16 @@ class BatchWorker(QThread):
             fusion_method = None
         if fusion_method:
             fusion_params = self.processing_settings.get('fusion_params', {}).copy()
-            if fusion_method == "stackmffv4" and "model_path" not in fusion_params:
-                fusion_params["model_path"] = resource_path("weights", "stackmffv4.pth")
+            if fusion_method == "stackmffv3" and "model_path" not in fusion_params:
+                fusion_params["model_path"] = resource_path("weights", "stackmff_v3_final.pth")
 
             tile_kwargs = {}
             tile_kwargs.setdefault('tile_enabled', self.tile_enabled if self.tile_enabled is not None else True)
             tile_kwargs.setdefault('tile_block_size', self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE)
             tile_kwargs.setdefault('tile_overlap', self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP)
             tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD)
-            tile_kwargs.setdefault('stackmffv4_batch_size', self.stackmffv4_batch_size)
+            tile_kwargs.setdefault('ai_batch_size', self.ai_batch_size)
+            tile_kwargs.setdefault('ai_mode', self.ai_mode)
 
             # 16-bit inputs are normalized to 0-1 float for fusion and
             # quantized back afterwards; aligned exports keep the original
@@ -802,12 +811,15 @@ class BatchWorker(QThread):
                     blend_smoothing=fusion_params.get('blend_smoothing'),
                     should_cancel=lambda: self.is_cancelled,
                 )
-            elif fusion_method == "stackmffv4":
-                model_path = fusion_params.get('model_path', resource_path("weights", "stackmffv4.pth"))
+            elif fusion_method == "stackmffv3":
+                model_path = fusion_params.get('model_path')
+                if not model_path:
+                    model_path = resource_path("weights", "stackmff_v3_final.pth")
                 result = fusion.fuse(
                     input_source=fusion_input,
                     img_resize=None,
                     model_path=model_path,
+                    mode=fusion_params.get('ai_mode', self.ai_mode),
                     thread_count=self.thread_count,
                     should_cancel=lambda: self.is_cancelled,
                 )
@@ -897,9 +909,9 @@ class BatchWorker(QThread):
             fusion_method = None
         if fusion_method:
             fusion_params = self.processing_settings.get('fusion_params', {})
-            if fusion_method == "stackmffv4" and "model_path" not in fusion_params:
+            if fusion_method == "stackmffv3" and "model_path" not in fusion_params:
                 fusion_params = dict(fusion_params)
-                fusion_params["model_path"] = resource_path("weights", "stackmffv4.pth")
+                fusion_params["model_path"] = resource_path("weights", "stackmff_v3_final.pth")
             
             # 创建相应算法的融合器实例
             # 优先使用 processing_settings 中的 fusion_params 中可能包含的 tile 覆盖值

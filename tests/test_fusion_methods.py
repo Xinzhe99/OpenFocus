@@ -240,14 +240,14 @@ class TestStackFootprintTiling:
         assert _stack_footprint_exceeds(f10, 2048)
 
 
-class TestStackMFFV4EffectiveTiling:
+class TestStackMFFV3EffectiveTiling:
     """The AI tiled path must shrink tiles/batches so one model call stays
     within frames x pixels budget (2 tiles x 120 frames used to request a
     16GB conv allocation -> DefaultCPUAllocator OOM)."""
 
     def _tiling(self, n, block=1024, h=1637, w=1783, ov=256, pref=2):
-        from core.multi_focus_fusion import _stackmffv4_effective_tiling
-        return _stackmffv4_effective_tiling(n, block, h, w, ov, pref)
+        from core.multi_focus_fusion import _ai_effective_tiling
+        return _ai_effective_tiling(n, block, h, w, ov, pref)
 
     def test_moderate_stack_unchanged(self):
         # 40 frames x 2 tiles x 1024^2 == budget exactly: keep user settings
@@ -279,8 +279,8 @@ class TestStackMFFV4EffectiveTiling:
         assert batch >= 1
 
     def test_budget_respected_across_range(self):
-        from core.multi_focus_fusion import STACKMFFV4_IMAGE_BUDGET
-        budget = STACKMFFV4_IMAGE_BUDGET * 1024 * 1024
+        from core.multi_focus_fusion import AI_IMAGE_BUDGET
+        budget = AI_IMAGE_BUDGET * 1024 * 1024
         for n in (40, 60, 80, 120, 200, 300, 600):
             blk, batch, coords = self._tiling(n)
             assert n * batch * blk * blk <= budget, f"budget blown at {n} frames"

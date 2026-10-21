@@ -369,10 +369,10 @@ def setup_menus(window: QMainWindow) -> None:
     settings_menu.addAction(thread_settings_action)
     window.ui_objs['action_thread_settings'] = thread_settings_action
 
-    stackmffv4_batch_action = QAction(trans.t('action_stackmffv4_batch_settings'), window)
-    stackmffv4_batch_action.triggered.connect(lambda: window.show_stackmffv4_batch_settings())
-    settings_menu.addAction(stackmffv4_batch_action)
-    window.ui_objs['action_stackmffv4_batch_settings'] = stackmffv4_batch_action
+    stackmffv3_batch_action = QAction(trans.t('action_ai_batch_settings'), window)
+    stackmffv3_batch_action.triggered.connect(lambda: window.show_ai_batch_settings())
+    settings_menu.addAction(stackmffv3_batch_action)
+    window.ui_objs['action_ai_batch_settings'] = stackmffv3_batch_action
 
     # --- Help Menu ---
     help_menu = menubar.addMenu(trans.t('menu_help'))

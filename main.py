@@ -36,7 +36,7 @@ from dialogs import (
     BatchProcessingDialog,
     TileSettingsDialog,
     ThreadSettingsDialog,
-    StackMFFV4BatchSettingsDialog,
+    AIBatchSettingsDialog,
     ROIRenderOptionsDialog,
 )
 from dialogs.help import RenderMethodHelpDialog
@@ -82,12 +82,12 @@ from controllers.update_manager import (
     STATE_READY,
     STATE_STAGING,
 )
-from core import is_stackmffv4_available
+from core import is_ai_fusion_available
 from constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     REG_DOWNSCALE_WIDTH, DEFAULT_THREAD_COUNT,
-    STACKMFFV4_BATCH_SIZE,
+    AI_BATCH_SIZE,
 )
 
 # QThreads still running when the app shuts down. They are kept alive at
@@ -201,8 +201,8 @@ class OpenFocus(QMainWindow):
         self.reg_downscale_width = REG_DOWNSCALE_WIDTH
         # 全局线程数设置，默认4（可在 Settings 中修改）
         self.thread_count = DEFAULT_THREAD_COUNT
-        # StackMFF V4 批量大小设置，默认2（可在 Settings 中修改）
-        self.stackmffv4_batch_size = STACKMFFV4_BATCH_SIZE
+        # StackMFF V3 批量大小设置，默认2（可在 Settings 中修改）
+        self.ai_batch_size = AI_BATCH_SIZE
         # GPU 加速开关（Settings 菜单可切换，QSettings 持久化）
         self.use_gpu = True
         # 基底校正（消除亮度漂移）：默认关闭，右面板开关控制
@@ -390,6 +390,11 @@ class OpenFocus(QMainWindow):
         self.lbl_kernel = right_panel_components.lbl_kernel
         self.lbl_smooth_value = right_panel_components.smooth_value_label
         self.smooth_widget = right_panel_components.smooth_widget
+        self.ai_mode_widget = right_panel_components.ai_mode_widget
+        self.radio_ai_soft = right_panel_components.radio_ai_soft
+        self.radio_ai_hard = right_panel_components.radio_ai_hard
+        # AI 输出模式：soft=概率加权混合（默认）/ hard=逐像素取最可能帧
+        self.ai_mode = "soft"
         self.depth_smooth_row = right_panel_components.depth_smooth_row
         self.lbl_depth_smooth = right_panel_components.lbl_depth_smooth
         self.spin_depth_smooth = right_panel_components.spin_depth_smooth
@@ -723,8 +728,8 @@ class OpenFocus(QMainWindow):
 
     def reset_to_default(self):
         """重置到默认状态"""
-        # 重置渲染方法 - 默认 Guided Filter
-        self.set_fusion_method("guided_filter")
+        # 重置渲染方法 - 默认 AI（StackMFF V3）
+        self.set_fusion_method("stackmffv3")
 
         # 重置配准选项 - 默认 ECC
         self.set_alignment_method("ecc")
@@ -755,7 +760,7 @@ class OpenFocus(QMainWindow):
 
     def _configure_fusion_method_availability(self) -> None:
         """Disable fusion methods whose dependencies are not installed."""
-        self._stackmff_available = bool(is_stackmffv4_available())
+        self._stackmff_available = bool(is_ai_fusion_available())
         self.refresh_method_availability()
 
     def _probe_stackmff_availability_async(self) -> None:
@@ -763,7 +768,7 @@ class OpenFocus(QMainWindow):
         import threading
 
         def worker():
-            available = is_stackmffv4_available()
+            available = is_ai_fusion_available()
             self._stackmff_probe_done.emit(available)
 
         threading.Thread(target=worker, daemon=True, name="stackmff-probe").start()
@@ -776,13 +781,13 @@ class OpenFocus(QMainWindow):
         """Re-apply the cached torch-probe result to the method controls.
 
         Other code paths (render restore, batch restore) blanket-enable the
-        fusion combo, which silently re-armed StackMFF-V4 on machines without
+        fusion combo, which silently re-armed StackMFF-V3 on machines without
         torch until the next restart."""
         available = getattr(self, '_stackmff_available', None)
         if available is None:
             return
         combo = self.combo_fusion
-        i = combo.findData("stackmffv4")
+        i = combo.findData("stackmffv3")
         if i < 0:
             return
         # 下拉项级禁用：模型项 setEnabled(False) 让它在弹出列表里置灰
@@ -794,8 +799,21 @@ class OpenFocus(QMainWindow):
             i,
             trans.t("msg_stackmff_unavailable_text") if not available else "",
             Qt.ItemDataRole.ToolTipRole)
-        if not available and combo.currentData() == "stackmffv4":
-            self.set_fusion_method("guided_filter")
+        if not available and combo.currentData() == "stackmffv3":
+            # Fall back to the first ENABLED entry: AI is the default now, so
+            # a torch-less machine would otherwise land on a disabled item.
+            self.set_fusion_method(self._first_available_method())
+
+    def _first_available_method(self) -> str:
+        """First selectable fusion method in the dropdown (skips disabled)."""
+        combo = self.combo_fusion
+        for row in range(combo.count()):
+            item = combo.model().item(row)
+            if item is not None and item.isEnabled():
+                code = combo.itemData(row)
+                if code:
+                    return code
+        return "guided_filter"
 
     # --- Update check ---
 
@@ -1079,6 +1097,12 @@ class OpenFocus(QMainWindow):
     def set_reverse_order(self, enabled: bool) -> None:
         """右面板开关：反转帧序（倒序栈，仅影响 OpenFocus A/B/C）。"""
         self.stack_reverse_order = bool(enabled)
+        self.persist_settings()
+
+    def set_ai_mode(self, mode: str) -> None:
+        """右面板单选：AI 输出模式（soft=概率加权，hard=逐像素取帧）。"""
+        mode = mode if mode in ("soft", "hard") else "soft"
+        self.ai_mode = mode
         self.persist_settings()
 
     # 两个亮度选项都按算法独立记忆：它们是"这次融合用哪条曝光策略"，
@@ -1581,10 +1605,10 @@ class OpenFocus(QMainWindow):
     
     def current_fusion_method(self) -> str:
         """当前选中的融合算法代码（下拉单选的唯一读取入口）。"""
-        from ui.right_panel import FUSION_ITEMS
+        from ui.right_panel import FUSION_ITEMS, FUSION_DEFAULT
         code = self.combo_fusion.currentData()
         codes = {c for c, _k, _h in FUSION_ITEMS}
-        return code if code in codes else "guided_filter"
+        return code if code in codes else FUSION_DEFAULT
 
     def current_alignment_method(self) -> str:
         """当前选中的对齐算法代码：none | homography | ecc | openfocus。"""
@@ -1698,6 +1722,9 @@ class OpenFocus(QMainWindow):
             self.spin_depth_smooth.blockSignals(False)
         # C 没有 Radius：隐藏滑块
         # 而不是留一个改了也不影响输出的控件。
+        # AI 输出模式只在选中神经网络时出现：其他算法没有概率图可分配。
+        if getattr(self, "ai_mode_widget", None) is not None:
+            self.ai_mode_widget.setVisible(method == "stackmffv3")
         if getattr(self, "smooth_widget", None) is not None:
             # 只在当前方法真的用得到 kernel 时显示：C 没有半径参数，AI
             # 也没有，留着只会显示一个改了不影响输出的数字。
@@ -2140,6 +2167,12 @@ class OpenFocus(QMainWindow):
                 apply_panel_theme(panel, theme)
             except RuntimeError:
                 pass
+        # The active theme must be recorded BEFORE any inline style is
+        # recomputed and before dialogs are constructed: help_button_style()
+        # with no argument reads CURRENT_THEME, so refreshing the "?" chips
+        # first re-applied the OLD theme's colours (the dark chip survived the
+        # switch to light). Dialogs opened later read the same global.
+        set_current_theme(theme)
         # Inline "?" button styles are captured at creation; re-apply them for
         # the new theme or the dark chip stays dark on the light panel.
         from ui.styles import help_button_style
@@ -2150,7 +2183,6 @@ class OpenFocus(QMainWindow):
             except RuntimeError:
                 pass
 
-        set_current_theme(theme)
         self._enable_dark_title_bar(dark=(theme != "light"))
         if hasattr(self, "ui_objs") and "menu_theme" in self.ui_objs:
             for act in self.ui_objs["menu_theme"].actions():
@@ -2249,9 +2281,9 @@ class OpenFocus(QMainWindow):
         dialog = ThreadSettingsDialog(self)
         dialog.exec()
 
-    def show_stackmffv4_batch_settings(self):
-        """显示 StackMFF V4 批量大小设置对话框"""
-        dialog = StackMFFV4BatchSettingsDialog(self)
+    def show_ai_batch_settings(self):
+        """显示 StackMFF V3 批量大小设置对话框"""
+        dialog = AIBatchSettingsDialog(self)
         dialog.exec()
 
     def rotate_stack(self, rotation_code):

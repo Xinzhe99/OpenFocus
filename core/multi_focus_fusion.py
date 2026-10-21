@@ -6,7 +6,8 @@ import numpy as np
 from typing import Union, List, Tuple, Optional
 from fusion_methods.dct import dct_focus_stack_fusion
 from fusion_methods.gff import gff_impl
-from fusion_methods.stackmffv4 import _stackmffv4_impl, _stackmffv4_batch_impl
+from fusion_methods.stackmffv3 import (_stackmffv3_impl, _stackmffv3_batch_impl,
+                                      normalize_mode)
 from fusion_methods.dtcwt import _dtcwt_impl
 from utils import resource_path
 from utils.image_utils import (apply_exposure_gain, exposure_gains,
@@ -21,7 +22,7 @@ _DEFAULT_TILE_ENABLED = True
 _DEFAULT_TILE_BLOCK_SIZE = 1024
 _DEFAULT_TILE_OVERLAP = 256
 _DEFAULT_TILE_THRESHOLD = 2048
-_DEFAULT_STACKMFFV4_BATCH_SIZE = 2
+_DEFAULT_AI_BATCH_SIZE = 2
 
 
 def set_tile_mode(enabled: bool):
@@ -66,8 +67,8 @@ _TORCH_PROBE_LOCK = threading.Lock()
 _TORCH_DEVICE_KIND = None  # 'CUDA' | 'MPS' | 'N/A'，探测后缓存
 
 
-def is_stackmffv4_available() -> bool:
-    """Return True when PyTorch is importable for the StackMFF-V4 fusion.
+def is_ai_fusion_available() -> bool:
+    """Return True when PyTorch is importable for the StackMFF-V3 fusion.
 
     The result is cached: importing torch costs seconds on Windows, so the
     startup probe must never pay it twice. The probe is serialized: two
@@ -87,11 +88,8 @@ def is_stackmffv4_available() -> bool:
             _STACKMFF_AVAILABLE_CACHE = False
             return False
         try:
+            # V3 is pure torch: no torchvision, so the probe only needs torch.
             torch = importlib.import_module("torch")
-            # The network module itself imports `from torchvision import models`
-            # — torch without torchvision used to pass the probe and then crash
-            # at fusion time. Probe what the code path actually needs.
-            importlib.import_module("torchvision")
         except Exception:  # ImportError, or a broken/mismatched install
             _TORCH_DEVICE_KIND = "N/A"
             _STACKMFF_AVAILABLE_CACHE = False
@@ -147,13 +145,13 @@ def _dtcwt_activity_bytes(frames) -> int:
     return int(len(frames) * per_frame)
 
 
-# 每次 StackMFF-V4 模型调用可承受的激活内存预算，单位为 1024x1024 帧。
+# 每次 StackMFF-V3 模型调用可承受的激活内存预算，单位为 1024x1024 帧。
 # 实测（soak，CPU）：2 瓦片 x 40 帧 ≈ 80 单位时峰值 ~6GB 可跑完；
 # 2 x 120 ≈ 240 单位时卷积要 16GB，DefaultCPUAllocator 直接 OOM。
-STACKMFFV4_IMAGE_BUDGET = 80
+AI_IMAGE_BUDGET = 80
 
 
-def _stackmffv4_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
+def _ai_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
     """为 AI 分块融合挑选瓦片尺寸/批量，使单次模型调用不超内存预算。
 
     模型输出的是逐像素选帧索引，帧轴不能拆分（拆了选择集就变了），
@@ -163,7 +161,7 @@ def _stackmffv4_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref
     n_frames = max(1, int(n_frames))
     block_size = max(1, min(int(block_size), int(h), int(w)))
     eff_block = block_size
-    budget_px = STACKMFFV4_IMAGE_BUDGET * 1024 * 1024
+    budget_px = AI_IMAGE_BUDGET * 1024 * 1024
     if n_frames * eff_block * eff_block > budget_px:
         safe = int((budget_px / n_frames) ** 0.5)
         # 128 对齐：网络下采样链路合计÷128，832 这类 32 倍数会让输出缩水
@@ -196,17 +194,18 @@ class MultiFocusFusion:
     - 'guided_filter': 引导滤波融合
     - 'dct': 基于DCT方差的一致性融合
     - 'dtcwt': 双树复小波融合
-    - 'stackmffv4': StackMFF-V4 神经网络融合
+    - 'stackmffv3': StackMFF-V3 神经网络融合（软/硬融合）
     """
     
     SUPPORTED_ALGORITHMS = ['guided_filter', 'dct', 'dtcwt', 'gfgfgf',
-                            'stackmffv4', 'openfocus_a', 'openfocus_b',
+                            'stackmffv3', 'openfocus_a', 'openfocus_b',
                             'openfocus_c']
 
     def __init__(self, algorithm: str = 'guided_filter', use_gpu: bool = False,
                  tile_enabled: bool = True, tile_block_size: int = 1024,
                  tile_overlap: int = 256, tile_threshold: int = 2048,
-                 stackmffv4_batch_size: int = 2,
+                 ai_batch_size: int = 2,
+                 ai_mode: str = "soft",
                  base_frame: str = "none",
                  sort_mode: str = "asc",
                  exposure_match: bool = True):
@@ -214,9 +213,11 @@ class MultiFocusFusion:
         初始化融合器
         
         Args:
-            algorithm (str): 融合算法名称,可选 'guided_filter', 'dct', 'dtcwt', 'stackmffv4'
+            algorithm (str): 融合算法名称,可选 'guided_filter', 'dct', 'dtcwt', 'stackmffv3'
             use_gpu (bool): 是否使用GPU加速(CUDA/MPS),默认为False
-            stackmffv4_batch_size (int): StackMFF V4 批量处理大小，默认为2
+            ai_batch_size (int): StackMFF V3 批量处理大小，默认为2
+            ai_mode (str): StackMFF V3 输出模式，'soft'（概率加权混合，
+                默认）或 'hard'（逐像素取最可能帧）
             exposure_match (bool): 融合前把每帧均值标定到末帧。整栈计算、
                 分块前应用；对所有算法生效。默认 True。
         """
@@ -229,8 +230,11 @@ class MultiFocusFusion:
         self.tile_block_size = int(tile_block_size)
         self.tile_overlap = int(tile_overlap)
         self.tile_threshold = int(tile_threshold)
-        # StackMFF V4 批量处理大小
-        self.stackmffv4_batch_size = max(1, int(stackmffv4_batch_size))
+        # StackMFF V3 批量处理大小
+        self.ai_batch_size = max(1, int(ai_batch_size))
+        # StackMFF V3 输出模式：soft = 概率加权混合（论文默认）；
+        # hard = 逐像素 argmax 取帧（无帧间插值，边缘更硬）
+        self.ai_mode = normalize_mode(ai_mode)
         # 基底校正（消除亮度漂移）：'none' | 'last' | 'first'。
         # 细节层来自融合决策，基底低频来自参考帧——
         # out += LP(I_base) − LP(out)，σ≈32，
@@ -261,7 +265,7 @@ class MultiFocusFusion:
             self._validate_dct_environment()
         elif self.algorithm == 'guided_filter':
             self._validate_spatial_environment()
-        elif self.algorithm == 'stackmffv4':
+        elif self.algorithm == 'stackmffv3':
             self._validate_ai_environment()
         elif self.algorithm == 'gfgfgf':
             pass  # pure NumPy implementation, no extra dependencies
@@ -539,16 +543,16 @@ class MultiFocusFusion:
 
     def _validate_ai_environment(self) -> None:
         """验证AI融合依赖"""
-        if not is_stackmffv4_available():
+        if not is_ai_fusion_available():
             raise RuntimeError(
-                "StackMFF-V4 fusion requires PyTorch. Install it with: pip install torch torchvision"
+                "StackMFF-V3 fusion requires PyTorch. Install it with: pip install torch"
             )
 
         import torch
 
         if self.use_gpu:
             if not torch.cuda.is_available() and not torch.backends.mps.is_available():
-                print("Warning: No GPU acceleration available (CUDA/MPS). Running StackMFF-V4 on CPU (slower).")
+                print("Warning: No GPU acceleration available (CUDA/MPS). Running StackMFF-V3 on CPU (slower).")
                 self.use_gpu = False
     
     def fuse(self, 
@@ -577,8 +581,8 @@ class MultiFocusFusion:
                 dtcwt算法参数:
                     - N (int): DTCWT分解层数,默认4
                 
-                stackmffv4算法参数:
-                    - model_path (str): 模型权重文件路径,默认'./weights/stackmffv4.pth'
+                stackmffv3算法参数:
+                    - model_path (str): 模型权重文件路径,默认'./weights/stackmff_v3_final.pth'
         
         Returns:
             numpy.ndarray: 融合后的图像 (uint8格式)
@@ -617,7 +621,7 @@ class MultiFocusFusion:
             # the same rule just tiles (and slows down) stacks that were
             # previously fused whole-image with byte-identical output.
             footprint_tiles = (
-                self.algorithm == 'stackmffv4'
+                self.algorithm == 'stackmffv3'
                 and _stack_footprint_exceeds(input_source, self.tile_threshold))
             dtcwt_tiles = (
                 self.algorithm == 'dtcwt'
@@ -664,7 +668,7 @@ class MultiFocusFusion:
                 fh, fw = first_img.shape[:2]
                 # same rule as list input: the footprint bound is neural-only
                 footprint_tiles = (
-                    self.algorithm == 'stackmffv4'
+                    self.algorithm == 'stackmffv3'
                     and _stack_footprint_exceeds(
                         [first_img] * len(files), self.tile_threshold))
                 dtcwt_tiles = (
@@ -695,6 +699,12 @@ class MultiFocusFusion:
         if exposure_gains_ is not None and isinstance(input_source, str):
             input_source = self._materialize_exposure(input_source,
                                                       exposure_gains_)
+        # The AI output mode lives on the instance (the GUI's hard/soft radio),
+        # so an explicit per-call override wins but the instance value is the
+        # default for both the whole-frame and tiled paths.
+        if self.algorithm == 'stackmffv3':
+            kwargs.setdefault('mode', self.ai_mode)
+
         if self.algorithm == 'guided_filter':
             result = self._fuse_guided_filter(input_source, img_resize, **kwargs)
         elif self.algorithm == 'dct':
@@ -703,8 +713,10 @@ class MultiFocusFusion:
             result = self._fuse_dtcwt(input_source, img_resize, **kwargs)
         elif self.algorithm == 'gfgfgf':
             result = self._fuse_gfgfgf(input_source, img_resize, **kwargs)
-        elif self.algorithm == 'stackmffv4':
-            result = self._fuse_stackmffv4(input_source, img_resize, **kwargs)
+        elif self.algorithm == 'stackmffv3':
+            result = self._fuse_stackmffv3(
+                input_source, img_resize, should_cancel=should_cancel,
+                progress_callback=progress_callback, **kwargs)
         elif self.algorithm == 'openfocus_a':
             result = self._fuse_openfocus_a(input_source, img_resize, **kwargs)
         elif self.algorithm == 'openfocus_b':
@@ -812,32 +824,39 @@ class MultiFocusFusion:
             self.use_gpu
         )
     
-    def _fuse_stackmffv4(self,
+    def _fuse_stackmffv3(self,
                          input_source: Union[str, List[np.ndarray]],
                          img_resize: Optional[Tuple[int, int]] = None,
-                         model_path: Optional[str] = 'weights/stackmffv4.pth',
+                         model_path: Optional[str] = 'weights/stackmff_v3_final.pth',
+                         mode: str = 'soft',
+                         should_cancel=None,
+                         progress_callback=None,
                          **kwargs) -> np.ndarray:
         """
-        StackMFF-V4 融合
+        StackMFF-V3 融合
         
         Args:
             input_source: 图像源
             img_resize: 目标尺寸
             model_path: 模型权重文件路径
+            mode: 'soft'（概率加权混合）| 'hard'（逐像素取最可能帧）
         
         Returns:
             融合后的图像
         """
         if not model_path:
-            model_path = 'weights/stackmffv4.pth'
+            model_path = 'weights/stackmff_v3_final.pth'
         if not os.path.isabs(model_path):
             model_path = resource_path(model_path)
 
-        return _stackmffv4_impl(
+        return _stackmffv3_impl(
             input_source,
             img_resize,
             model_path,
-            self.use_gpu
+            self.use_gpu,
+            mode=mode,
+            should_cancel=should_cancel,
+            progress_callback=progress_callback,
         )
 
     
@@ -846,7 +865,7 @@ class MultiFocusFusion:
         切换融合算法
         
         Args:
-            algorithm (str): 新的算法名称 ('guided_filter', 'dct', 'dtcwt', 'stackmffv4')
+            algorithm (str): 新的算法名称 ('guided_filter', 'dct', 'dtcwt', 'stackmffv3')
         """
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
@@ -989,7 +1008,7 @@ class MultiFocusFusion:
         - 将图像切成若干 `block_size` 大小的块，块间以 `overlap` 重叠。
         - 对每个块调用对应算法的融合函数，最后对重叠区域简单平均融合以消除边界伪影。
         - 支持多线程并行处理 tile，线程数根据系统内存自动计算（保守策略）。
-        - StackMFF V4 使用批量处理以利用 GPU 并行能力。
+        - StackMFF V3 使用批量处理以利用 GPU 并行能力。
         """
 
         imgs = None
@@ -1055,9 +1074,9 @@ class MultiFocusFusion:
                 x1 = x0 + block_size
                 tile_coords.append((x0, y0, x1, y1))
 
-        # StackMFF V4 使用批量处理
-        if algorithm == 'stackmffv4':
-            return self._fuse_tiled_stackmffv4_batched(
+        # StackMFF V3 使用批量处理
+        if algorithm == 'stackmffv3':
+            return self._fuse_tiled_ai_batched(
                 imgs, img_dir, tile_coords, h, w, channels,
                 block_size, overlap, **kwargs,
                 should_cancel=should_cancel,
@@ -1194,7 +1213,7 @@ class MultiFocusFusion:
             return fused[:, :, 0]
         return fused
 
-    def _fuse_tiled_stackmffv4_batched(self,
+    def _fuse_tiled_ai_batched(self,
                                         imgs: Optional[List[np.ndarray]],
                                         img_dir: Optional[str],
                                         tile_coords: List[Tuple[int, int, int, int]],
@@ -1206,7 +1225,7 @@ class MultiFocusFusion:
                                         exposure_gains=None,
                                         **kwargs):
         """
-        使用批量处理的 StackMFF V4 分块融合。
+        使用批量处理的 StackMFF V3 分块融合。
         
         通过将多个 tile 打包成一个 batch 进行 GPU 推理，提高效率。
         """
@@ -1219,26 +1238,40 @@ class MultiFocusFusion:
             files = [f for f in sorted(os.listdir(img_dir), key=natural_sort_key) if f.lower().endswith(exts)]
 
         n_frames = len(imgs) if imgs is not None else len(files)
-        eff_block, batch_size, tile_coords = _stackmffv4_effective_tiling(
-            n_frames, block_size, h, w, overlap, self.stackmffv4_batch_size)
+        eff_block, batch_size, tile_coords = _ai_effective_tiling(
+            n_frames, block_size, h, w, overlap, self.ai_batch_size)
         total_tiles = len(tile_coords)
-        if eff_block < block_size or batch_size < self.stackmffv4_batch_size:
+        if eff_block < block_size or batch_size < self.ai_batch_size:
             print(f"Info: deep stack ({n_frames} frames) - AI tiles auto-shrunk to "
                   f"{eff_block}px, batch_size={batch_size} to bound model memory")
 
-        print(f"StackMFF V4 batched tiled fusion: {total_tiles} tiles, batch_size={batch_size}")
+        print(f"StackMFF V3 batched tiled fusion: {total_tiles} tiles, batch_size={batch_size}")
 
         # 获取模型路径
-        model_path = kwargs.get('model_path', 'weights/stackmffv4.pth')
+        model_path = kwargs.get('model_path', 'weights/stackmff_v3_final.pth')
         if not model_path:
-            model_path = 'weights/stackmffv4.pth'
+            model_path = 'weights/stackmff_v3_final.pth'
         if not os.path.isabs(model_path):
             model_path = resource_path(model_path)
+        # The tile path must honour the same output mode as the whole-frame
+        # path, or a large stack would silently fall back to soft blending.
+        mode = normalize_mode(kwargs.get('mode', 'soft'))
+
+        # Load the checkpoint before the loop so the "First tile" wait is not
+        # invisible: a 21 s run spent 1.6 s here, and the bar sat at 0% with
+        # no explanation. The model is cached, so this is a no-op afterwards.
+        from fusion_methods.stackmffv3 import _get_model_and_device
+        _get_model_and_device(model_path, self.use_gpu)
+        if progress_callback is not None:
+            # done=0 keeps the bar at 0 % but tells the UI the real tile
+            # count, so it leaves indeterminate mode before the first tile
+            # (the model load above is 1-2 s and otherwise invisible).
+            progress_callback(0, total_tiles)
 
         acc = np.zeros((h, w, channels), dtype=np.float32)
         weight = np.zeros((h, w, 1), dtype=np.float32)
         
-        # 分批处理
+        # 分批处理（每个瓦片单独前向；batch_size 只决定进度粒度）
         from core.registration import RegistrationCancelled
         for batch_start in range(0, total_tiles, batch_size):
             if should_cancel is not None and should_cancel():
@@ -1247,9 +1280,7 @@ class MultiFocusFusion:
             batch_coords = tile_coords[batch_start:batch_end]
             current_batch_size = len(batch_coords)
             
-            print(f"  Processing batch {batch_start // batch_size + 1}/{(total_tiles + batch_size - 1) // batch_size} ({current_batch_size} tiles)")
-            if progress_callback is not None:
-                progress_callback(batch_start + current_batch_size, total_tiles)
+            print(f"  Processing tiles {batch_start + 1}-{batch_end}/{total_tiles}")
             
             # 准备这个 batch 的所有 tile 数据
             tiles_list = []
@@ -1271,8 +1302,23 @@ class MultiFocusFusion:
                     crops = normalize_fuse_input(crops)[0]
                 tiles_list.append(crops)
             
-            # 批量处理
-            fused_tiles = _stackmffv4_batch_impl(tiles_list, model_path, self.use_gpu)
+            # One model call per tile, not per batch.
+            #
+            # Batching looked cheaper but is not: a batch pads every tile up
+            # to the largest one and runs one big attention pass, which
+            # measured 19.3 s for two 1024x1021 tiles against 16.9 s for two
+            # separate calls. Per-tile calls also make progress real - a
+            # 2-tile stack used to be a single 20 s step that reported
+            # "done=total" BEFORE it started, so the bar froze at 100%.
+            fused_tiles = []
+            for tile_i, crops in enumerate(tiles_list):
+                if should_cancel is not None and should_cancel():
+                    raise RegistrationCancelled()
+                fused_tiles.append(
+                    _stackmffv3_batch_impl([crops], model_path,
+                                           self.use_gpu, mode)[0])
+                if progress_callback is not None:
+                    progress_callback(batch_start + tile_i + 1, total_tiles)
             
             # 将结果合并到累加器
             for idx, (x0, y0, x1, y1) in enumerate(batch_coords):
@@ -1328,11 +1374,14 @@ class MultiFocusFusion:
                 device_name = 'CPU'
         else:
             device_name = 'CPU'
-        return {
+        info = {
             'algorithm': self.algorithm,
             'use_gpu': self.use_gpu,
             'device': device_name
         }
+        if self.algorithm == 'stackmffv3':
+            info['mode'] = self.ai_mode
+        return info
     
     def __repr__(self) -> str:
         """字符串表示"""
@@ -1349,17 +1398,19 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
                 tile_block_size: Optional[int] = None,
                 tile_overlap: Optional[int] = None,
                 tile_threshold: Optional[int] = None,
-                stackmffv4_batch_size: Optional[int] = None,
+                ai_batch_size: Optional[int] = None,
+                mode: str = "soft",
                 **kwargs) -> np.ndarray:
     """
     便捷函数:一次性完成图像融合
     
     Args:
         input_source: 图像源(目录路径或图像列表)
-            algorithm: 融合算法 ('guided_filter', 'dct', 'dtcwt', 'stackmffv4')
+            algorithm: 融合算法 ('guided_filter', 'dct', 'dtcwt', 'stackmffv3')
         use_gpu: 是否使用GPU（当前版本将自动切换到CPU）
         img_resize: 目标尺寸
-        stackmffv4_batch_size: StackMFF V4 批量处理大小（默认2）
+        ai_batch_size: StackMFF V3 批量处理大小（默认2）
+        mode: StackMFF V3 输出模式，'soft'（概率加权，默认）或 'hard'（argmax）
         **kwargs: 算法特定参数
     
     Returns:
@@ -1372,16 +1423,17 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
         # 使用DTCWT算法
         result = fuse_images('./images', algorithm='dtcwt', use_gpu=False, N=4)
         
-        # 使用StackMFF-V4算法
-        result = fuse_images(image_list, algorithm='stackmffv4', use_gpu=False,
-                           model_path='./weights/stackmffv4.pth')
+        # 使用StackMFF-V3算法（mode='hard' 逐像素取最可能帧）
+        result = fuse_images(image_list, algorithm='stackmffv3', use_gpu=False,
+                           model_path='./weights/stackmff_v3_final.pth',
+                           mode='soft')
     """
     # Resolve tile parameters: explicit args take precedence, then module defaults
     te = _DEFAULT_TILE_ENABLED if tile_enabled is None else bool(tile_enabled)
     tbs = _DEFAULT_TILE_BLOCK_SIZE if tile_block_size is None else int(tile_block_size)
     to = _DEFAULT_TILE_OVERLAP if tile_overlap is None else int(tile_overlap)
     tt = _DEFAULT_TILE_THRESHOLD if tile_threshold is None else int(tile_threshold)
-    sbs = _DEFAULT_STACKMFFV4_BATCH_SIZE if stackmffv4_batch_size is None else int(stackmffv4_batch_size)
+    sbs = _DEFAULT_AI_BATCH_SIZE if ai_batch_size is None else int(ai_batch_size)
 
     fusion = MultiFocusFusion(
         algorithm=algorithm,
@@ -1390,7 +1442,8 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
         tile_block_size=tbs,
         tile_overlap=to,
         tile_threshold=tt,
-        stackmffv4_batch_size=sbs,
+        ai_batch_size=sbs,
+        ai_mode=mode,
     )
 
     return fusion.fuse(input_source, img_resize=img_resize, **kwargs)

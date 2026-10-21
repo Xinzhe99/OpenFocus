@@ -2,7 +2,7 @@
 
 Lets batch users and CI pipelines run registration + fusion without the GUI:
 
-    python main.py --input ./stack_folder --output ./out --method guided_filter
+    python main.py --input ./stack_folder --output ./out --method stackmffv3
     python main.py --input ./stackA ./stackB --output-dir ./results   (batch)
 
 Exit codes: 0 success, 1 processing error, 2 usage error.
@@ -17,7 +17,7 @@ from typing import List, Optional, Tuple
 
 from utils.sorting import natural_sort_key
 
-VALID_METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv4",
+VALID_METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv3",
                  "openfocus_a", "openfocus_b", "openfocus_c"]
 VALID_ALIGN = ["none", "homography", "ecc", "both", "openfocus"]
 VALID_FORMATS = [".png", ".jpg", ".webp", ".bmp", ".tif", ".tiff"]
@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
             "examples:\n"
             "  python main.py --input ./stack --output ./result/fused.png\n"
             "  python main.py --input ./stack --output ./result/fused.png --method dtcwt --align ecc --threads 8\n"
-            "  python main.py --input ./stackA ./stackB --output-dir ./results -m guided_filter\n"
+            "  python main.py --input ./stackA ./stackB --output-dir ./results -m stackmffv3\n"
             "  python main.py --input img1.jpg img2.jpg img3.jpg --output fused.png --method gfgfgf\n"
         ),
     )
@@ -46,8 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Output file for a single stack (default: fused.png)")
     parser.add_argument("--output-dir", "-d", default=None,
                         help="Batch mode: fuse every input folder, writing <folder>.<ext> here")
-    parser.add_argument("--method", "-m", default="guided_filter", choices=VALID_METHODS,
-                        help="Fusion method (default: guided_filter); openfocus_a/b/c select the "
+    parser.add_argument("--method", "-m", default="stackmffv3", choices=VALID_METHODS,
+                        help="Fusion method (default: stackmffv3); openfocus_a/b/c select the "
                              "OpenFocus family (A = variance-weighted average, B = variance depth-map pick, "
                              "C = Laplacian pyramid)")
     parser.add_argument("--align", "-a", default="none", choices=VALID_ALIGN,
@@ -87,7 +87,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threads", "-t", type=int, default=4,
                         help="Worker thread count (default: 4)")
     parser.add_argument("--batch-size", type=int, default=2,
-                        help="StackMFF-V4 tile batch size (default: 2)")
+                        help="StackMFF-V3 tile batch size (default: 2)")
+    parser.add_argument("--ai-mode", default="soft", choices=["soft", "hard"],
+                        metavar="{soft,hard}",
+                        help="StackMFF-V3 output: 'soft' blends the frames by "
+                             "their predicted probabilities (default); 'hard' "
+                             "takes the most probable frame per pixel")
     parser.add_argument("--cpu", action="store_true",
                         help="Force CPU even if CUDA/MPS is available")
     parser.add_argument("--downscale", type=int, default=None,
@@ -226,14 +231,24 @@ def _fuse_stack(images, args):
         images = reg.process(images, output_path=None, thread_count=args.threads)
         print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
 
+    # The default method is the neural one. On a machine without torch the
+    # CLI must still do something useful instead of dying in the model load:
+    # fall back to the first classical method and say so.
+    from core.multi_focus_fusion import is_ai_fusion_available
+    if args.method == "stackmffv3" and not is_ai_fusion_available():
+        print("AI fusion is unavailable (PyTorch missing); "
+              "falling back to guided_filter.")
+        args.method = "guided_filter"
+
     fusion_kwargs = dict(algorithm=args.method, use_gpu=not args.cpu,
                          base_frame=getattr(args, "base_frame", "none"),
                          sort_mode=getattr(args, "sort", "asc"),
                          exposure_match=getattr(args, "exposure_match", True))
     if args.tile_size:
         fusion_kwargs["tile_block_size"] = args.tile_size
-    if args.method == "stackmffv4":
-        fusion_kwargs["stackmffv4_batch_size"] = args.batch_size
+    if args.method == "stackmffv3":
+        fusion_kwargs["ai_batch_size"] = args.batch_size
+        fusion_kwargs["ai_mode"] = args.ai_mode
     fusion = MultiFocusFusion(**fusion_kwargs)
     info = fusion.get_info()
 
@@ -251,8 +266,9 @@ def _fuse_stack(images, args):
         if (args.method in ("openfocus_a", "openfocus_c")
                 and args.blend_smoothing is not None):
             fuse_kwargs["blend_smoothing"] = max(0.0, float(args.blend_smoothing))
-    elif args.method == "stackmffv4":
+    elif args.method == "stackmffv3":
         fuse_kwargs["model_path"] = _find_model_path()
+        print(f"AI output mode: {args.ai_mode}")
 
     fused = fusion.fuse(**fuse_kwargs)
     if fused is None:
@@ -307,7 +323,7 @@ def _save_depth(args, fused_out: str) -> None:
         kernel = _normalize_kernel(args.kernel, 11)
     idx = compute_focus_index(
         frames, args.method, kernel_size=kernel,
-        model_path=_find_model_path() if args.method == "stackmffv4" else None,
+        model_path=_find_model_path() if args.method == "stackmffv3" else None,
         use_gpu=not args.cpu)
     if not imwrite_auto(path, colorize(idx, args.depth_colormap)):
         raise RuntimeError(f"Failed to write depth map: {path}")
@@ -604,16 +620,16 @@ def run_cli(argv: List[str]) -> int:
 
 
 def _find_model_path() -> str:
-    """Locate stackmffv4.pth: repo checkout first, then the installed
+    """Locate stackmff_v3_final.pth: repo checkout first, then the installed
     weights package (pip-installed openfocus ships it as package data)."""
     repo = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "weights", "stackmffv4.pth")
+        "weights", "stackmff_v3_final.pth")
     if os.path.isfile(repo):
         return repo
     try:
         import weights
-        shipped = os.path.join(os.path.dirname(weights.__file__), "stackmffv4.pth")
+        shipped = os.path.join(os.path.dirname(weights.__file__), "stackmff_v3_final.pth")
         if os.path.isfile(shipped):
             return shipped
     except ImportError:

@@ -131,7 +131,7 @@ def fuse(imgs, algo, threads=4):
         kw["kernel_size"] = 31
     elif algo in ("dct", "gfgfgf"):
         kw["kernel_size"] = 7
-    elif algo == "stackmffv4":
+    elif algo == "stackmffv3":
         from core.cli import _find_model_path
         kw["model_path"] = _find_model_path()
     out = f.fuse(**kw)
@@ -168,7 +168,7 @@ def main():
     ap.add_argument("--json", default=None)
     ap.add_argument("--only", default="",
                     help="comma-separated substrings; run only matching case labels "
-                         "(e.g. 'synth120/stackmffv4,u16,io-roundtrip')")
+                         "(e.g. 'synth120/stackmffv3,u16,io-roundtrip')")
     args = ap.parse_args()
     wanted = [s.strip().lower() for s in args.only.split(",") if s.strip()]
 
@@ -195,7 +195,7 @@ def main():
         print(f"samples: not found under {photo_root} — section C skipped")
 
     results, failures = [], []
-    algos = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv4"]
+    algos = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv3"]
 
     if hetao and any(want(f"hetao40/{a}") for a in algos):
         print("\n== A. real 40-frame stack, each algorithm (no registration) ==")
@@ -203,22 +203,22 @@ def main():
             if want(f"hetao40/{a}"):
                 run_case(f"hetao40/{a}", hetao, a, failures, results)
 
-    if hetao and any(want(f"hetao40/ecc+{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
+    if hetao and any(want(f"hetao40/ecc+{a}") for a in ("guided_filter", "dtcwt", "stackmffv3")):
         print("\n== B. real 40-frame stack + ECC registration ==")
-        for a in ("guided_filter", "dtcwt", "stackmffv4"):
+        for a in ("guided_filter", "dtcwt", "stackmffv3"):
             if want(f"hetao40/ecc+{a}"):
                 run_case(f"hetao40/ecc+{a}", hetao, a, failures, results, reg="ecc")
 
-    if samples and any(want(f"samples24/{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
+    if samples and any(want(f"samples24/{a}") for a in ("guided_filter", "dtcwt", "stackmffv3")):
         print("\n== C. high-resolution stack (3636x4756 x24) ==")
-        for a in ("guided_filter", "dtcwt", "stackmffv4"):
+        for a in ("guided_filter", "dtcwt", "stackmffv3"):
             if want(f"samples24/{a}"):
                 run_case(f"samples24/{a}", samples, a, failures, results)
 
-    if not args.quick and hetao and any(want(f"synth120/{a}") for a in ("guided_filter", "dtcwt", "stackmffv4")):
+    if not args.quick and hetao and any(want(f"synth120/{a}") for a in ("guided_filter", "dtcwt", "stackmffv3")):
         print("\n== D. synthetic 120-frame stack (real frames cycled) ==")
         big = synth_big_stack(hetao, 120)
-        for a in ("guided_filter", "dtcwt", "stackmffv4"):
+        for a in ("guided_filter", "dtcwt", "stackmffv3"):
             if want(f"synth120/{a}"):
                 run_case(f"synth120/{a}", big, a, failures, results)
         del big

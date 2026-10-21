@@ -200,7 +200,7 @@ text. The CLI supports it via `--scale-bar` (auto calibration) and
 **Tools → Depth Map…** opens a viewer that computes, per pixel, which frame of
 the stack is in focus — the pseudo-depth signal the fusion itself decides
 on — using the selected method's own activity measure. Only
-index-deciding methods are offered (DCT, DTCWT, GFG-FGF, StackMFF-V4,
+index-deciding methods are offered (DCT, DTCWT, GFG-FGF, StackMFF-V3,
 OpenFocus B/C); weighted-average fusions (Guided Filter, OpenFocus A)
 have no per-pixel decision and are not listed. The
 map is shown pseudo-colored with a legend (frame 0 → N-1) and can be
@@ -427,12 +427,22 @@ OpenFocus offers eight fusion algorithms (plus an alignment-only mode). Each has
   with the number of frames
 - **Parameter**: Kernel = size of the mean filter of the coarse focus map
 
-### StackMFF-V4 (Deep Learning)
+### StackMFF-V3 (Deep Learning)
 
-- **Algorithm**: Neural network-based fusion (requires PyTorch)
+- **Algorithm**: Pixel-wise source classification (requires PyTorch). The
+  network predicts, for every pixel, which input frame it comes from, then
+  either blends the frames by those probabilities or picks one frame
+- **AI output mode** (right panel, only for this method):
+  - **Soft blend (weighted)** — default; each pixel is a probability-weighted
+    mix of the frames. Smooth transitions, no hard seams; matches the paper's
+    reported configuration
+  - **Hard pick (single frame)** — each pixel is copied from the most
+    probable frame. Crisper selection with no cross-frame interpolation; a
+    pixel-level seam can appear where two frames tie
 - **Best for**: Highest quality results when GPU is available
-- **Advantages**: State-of-the-art fusion quality, automatic optimization
-- **Requirements**: PyTorch installation, optional CUDA GPU
+- **Advantages**: Order-invariant (frame order never changes the result),
+  handles any stack length, no per-method tuning, automatic optimization
+- **Requirements**: PyTorch installation, optional CUDA GPU (no torchvision)
 - **Note**: May be unavailable if PyTorch is not installed
 
 ### OpenFocus A / B / C
@@ -497,7 +507,7 @@ inspect registration quality or export aligned frames.
 | DCT | Medium | Good | Textures |
 | DTCWT | Medium | Very Good | Complex scenes |
 | GFG-FGF | Fast | Good | Focus regions |
-| AI Fusion (StackMFF-V4) | Slow (GPU) | Excellent | Best quality |
+| AI Fusion (StackMFF-V3) | Slow (GPU) | Excellent | Best quality |
 | OpenFocus A | Very Fast | Very Good | Short stacks, colour stability |
 | OpenFocus B | Very Fast | Very Good | Smooth surfaces, microscopy |
 | OpenFocus C | Fast | Very Good | Textured subjects, natural look |
@@ -631,7 +641,7 @@ Access via **Settings → Thread Count Settings**:
 
 ### GPU Acceleration Toggle
 
-OpenFocus uses the GPU (CUDA/MPS) only for the AI neural model (StackMFF-V4); classical algorithms always run on CPU.
+OpenFocus uses the GPU (CUDA/MPS) only for the AI neural model (StackMFF-V3); classical algorithms always run on CPU.
 
 - Toggle via **Settings → GPU Acceleration**
 - Unchecking forces everything onto the CPU — useful when GPU drivers misbehave
@@ -695,7 +705,7 @@ Cache**; stale entries are replaced automatically.
 ### Persisted Settings
 
 All of the following survive an application restart automatically:
-thread count, tile parameters, registration downscale width, AI Fusion (StackMFF-V4)
+thread count, tile parameters, registration downscale width, AI Fusion (StackMFF-V3)
 batch size, the GPU acceleration toggle, the registration cache toggle,
 interface language, window size/panel layout, the drag-out export format
 and your recently opened stacks. Settings dialogs save the moment you confirm them;
@@ -798,8 +808,8 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT with ECC registration, 8 threads
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V4 forced to CPU with a custom tile size
-python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv4 --cpu --tile-size 512
+# StackMFF-V3 forced to CPU with a custom tile size
+python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Explicit file list; video files are also accepted as input
 python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
@@ -812,7 +822,7 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 |--------|-------------|
 | `--input, -i` | Image folder, video file, or one or more image files |
 | `--output, -o` | Output image path (extension sets the format) |
-| `--method, -m` | `guided_filter` (default), `dct`, `dtcwt`, `gfgfgf`, `stackmffv4`, `openfocus_a`, `openfocus_b`, `openfocus_c` |
+| `--method, -m` | `stackmffv3` (default), `none`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
 | `--align, -a` | `none` (default), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-shift-limit` | `openfocus` align only: max accepted shift as a fraction of the frame size (default 0.08; frames above it are left unaligned) |
 | `--exposure-match` | Match every frame's mean to the last frame before fusion (default: on; `--no-exposure-match` disables). Whole-stack gains, so tiled output stays seamless; applies to every method and to the OpenFocus aligner's brightness reference |
@@ -962,7 +972,7 @@ DTCWT provides multi-scale, multi-directional decomposition of images. It captur
 
 Implements Fu et al. (2024): the coarse focus map |I − mean(I)| is enriched with the Gaussian-like four-neighbourhood gradient — the 3×3 template T = [1 2 1; 2 4 2; 1 2 1]/16 gives P = I⊗T, and G = (|I(x±1,y) − P|)/2 + (|I(x,y±1) − P|)/2 with values below T0 = 0.005 dropped — then refined by a fast guided filter. Pixels pick the frame with the largest focus value (ties: 3×3 Sobel small-region measure), and the binary decision maps are smoothed by the fast guided filter before the weighted blend.
 
-### AI Fusion (StackMFF-V4)
+### AI Fusion (StackMFF-V3)
 
 A deep learning approach using a neural network trained on large datasets of multi-focus image pairs. The network learns optimal fusion strategies automatically, providing state-of-the-art results when properly configured.
 

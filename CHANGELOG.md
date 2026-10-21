@@ -3,6 +3,80 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.65] — 2026-10-21
+
+The neural back-end is StackMFF V3, and it can now emit two different kinds of
+output.
+
+### Added
+- **AI output mode: soft or hard.** With the AI method selected, the right
+  panel shows two options:
+  - *Soft blend (weighted)* — default; every pixel is a probability-weighted
+    mix of the input frames (the paper's configuration: probabilities averaged
+    over the 1.0 and 0.75 inference scales, Gaussian-smoothed at sigma 0.5).
+  - *Hard pick (single frame)* — every pixel is copied from the most probable
+    frame, with no interpolation between frames.
+  The choice persists in settings and project files, reaches the tiled path,
+  the batch worker and the depth-map estimator, and is available on the CLI as
+  `--ai-mode {soft,hard}`.
+- `THIRD_PARTY_NOTICES.md` records the vendored StackMFF V3 code and weights
+  (MIT, Copyright (c) 2026 Xinzhe Xie) and the modifications made here.
+
+### Changed
+- **AI is the default fusion method, and the dropdown order changed.** The
+  list now reads: alignment only, AI, OpenFocus A/B/C, then the classical
+  back-ends (guided filter, DCT, DTCWT, GFG-FGF). Alignment-only stays first
+  because it is the "no fusion" mode, but the default selection is AI. The AI
+  entry is labelled `AI (StackMFF-V3)` in every language so the method is
+  identifiable at a glance. The same order
+  applies to compare-all, the depth-map method list and the CLI default, so a
+  fresh launch, `--method` and a project that never saved a choice all agree.
+  On a machine without PyTorch the UI falls back to the first selectable
+  entry and the CLI prints a note before using guided filter instead of
+  failing on the model load.
+- **The AI method is StackMFF V3 instead of V4.** The network classifies each
+  pixel by its most probable source frame instead of regressing a focus index;
+  it is order-invariant, handles any stack length, and needs only `torch`
+  (torchvision is no longer required).
+- The shipped checkpoint drops from 3.97 MB to 0.66 MB
+  (`weights/stackmff_v3_final.pth`).
+- The algorithm id is `stackmffv3` (`-m stackmffv3` on the CLI); the settings
+  and project keys are now version-neutral (`ai_batch_size`, `ai_mode`).
+- The depth map for the AI method is the expectation of the frame
+  probabilities, a graded focus position rather than a hard argmax.
+
+### Fixed
+- **The depth-map dialog described the AI map as something it is not.** It
+  said "computing… frame 0/13" for a method that classifies the whole stack in
+  one pass, and the right end of the legend read "N-1" with no indication of
+  what the AI measure reports. The dialog now shows a plain "classifying
+  frames…" status for the neural method, and states that the AI map is the
+  per-pixel source frame chosen by the model - measured to be a frame index
+  like the other measures, not a continuous focus position (a 5-frame stack
+  yields exactly 5 levels).
+- **The AI progress bar froze at 100% for the whole inference.** The tiled
+  path reported `done == total` *before* starting each batch, so a 13-frame
+  1344x1021 stack (2 tiles, one batch) jumped to 100% after 1.6 s and then sat
+  still for 20 s. Progress is now emitted after each tile, tiles run one per
+  model call (measured faster than batching: 16.9 s vs 19.3 s for two
+  1024x1021 tiles, because a batch pads every tile to the largest), and the
+  whole-frame path no longer reports 1/1 up front.
+- **Two spin boxes were narrower than their own content.** The load-scale
+  field had a fixed 60 px width while "100%" needs 77 px (it rendered as
+  "10("), and the dust-map sigma had 80 px against 112 px ("4.0" → "4."). Both
+  now size themselves; a new test walks every dialog's spin boxes so a fixed
+  width cannot reintroduce the clipping.
+- **The "?" help chips stayed dark after switching to the light theme.** They
+  carry an inline style computed from the active theme, and `apply_theme`
+  refreshed them before recording the new theme in `CURRENT_THEME`, so
+  `help_button_style()` re-read the old one. The dialogs' chips had the same
+  problem, since they are built from the same global.
+- **A checked radio button was visibly larger than an unchecked one.** The
+  `:checked` rule used a 5 px border, growing the 18 px indicator to 26 px and
+  drawing an oversized ring. Both states now share one 18 px box, and the
+  unchecked state is a hollow ring rather than a filled disc (which read as a
+  solid dot on the dark theme).
+
 ## [v1.64] — 2026-10-21
 
 Layout and localization fixes found by looking at the running app.

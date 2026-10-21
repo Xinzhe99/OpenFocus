@@ -63,7 +63,7 @@ class TestComputeFocusIndex:
 
     def test_supported_list_complete(self):
         assert set(SUPPORTED_METHODS) == {
-            "dct", "dtcwt", "gfgfgf", "stackmffv4",
+            "dct", "dtcwt", "gfgfgf", "stackmffv3",
             "openfocus_b", "openfocus_c"}
 
     def test_openfocus_depth_maps_differ(self):
@@ -224,9 +224,11 @@ class TestReviewFixes:
             ui_theme = "dark"
             use_gpu = False
             fusion_result = None
+            # The dialog opens on the window's method; state a fast one so
+            # the auto-compute path under test actually runs (the AI default
+            # is deliberately slow and does not auto-compute).
+            current_fusion_method = lambda self: "dct"
 
-        # dct is a fast method -> construction auto-starts the
-        # (monkeypatched, slow) worker
         dlg = dm.DepthMapDialog(_Stub())
         assert started.wait(5), "auto-compute did not start"
         worker = dlg._worker
@@ -270,6 +272,7 @@ class TestReviewFixes:
             use_gpu = False
             fusion_result = None
             slider_smooth = type("S", (), {"value": lambda s: 7})()
+            current_fusion_method = lambda self: "dct"
 
         dlg = dm.DepthMapDialog(_Stub())
         assert started.wait(5), "auto-compute did not start on open"

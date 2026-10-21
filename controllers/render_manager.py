@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
 
 from utils import show_message_box, show_warning_box
 from utils.image_utils import to_display_uint8
-from core.multi_focus_fusion import is_stackmffv4_available
+from core.multi_focus_fusion import is_ai_fusion_available
 from core.workers import RenderWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
@@ -39,7 +39,7 @@ class RenderManager:
         "openfocus_a": "OpenFocus A",
         "openfocus_b": "OpenFocus B",
         "openfocus_c": "OpenFocus C",
-        "stackmffv4": "AI",
+        "stackmffv3": "StackMFF-V3",
     }
     # UI 展示（进度/输出列表/信息行）走 i18n 标签；ALGORITHM_DISPLAY 仅作
     # 非代码兜底与文件名无关
@@ -48,7 +48,7 @@ class RenderManager:
         "dct": "radio_dct",
         "dtcwt": "radio_dtcwt",
         "gfgfgf": "radio_gfg",
-        "stackmffv4": "radio_stackmff",
+        "stackmffv3": "radio_stackmff",
         "openfocus_a": "radio_openfocus_a",
         "openfocus_b": "radio_openfocus_b",
         "openfocus_c": "radio_openfocus_c",
@@ -99,7 +99,7 @@ class RenderManager:
             window.combo_fusion.setEnabled(True)
         except Exception:
             pass
-        # StackMFF-V4 availability is owned by the torch probe: blanket-enabling
+        # StackMFF-V3 availability is owned by the torch probe: blanket-enabling
         # it here re-armed an unavailable backend after every render.
         hook = getattr(window, "refresh_method_availability", None)
         if callable(hook):
@@ -148,11 +148,12 @@ class RenderManager:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             return
 
-        # 与融合下拉同序（stackmffv4 在 openfocus 族之前）
-        methods = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv4",
-                   "openfocus_a", "openfocus_b", "openfocus_c"]
-        if not is_stackmffv4_available():
-            methods.remove("stackmffv4")
+        # Same order as the fusion dropdown: AI, the OpenFocus family, then
+        # the classical back-ends.
+        methods = ["stackmffv3", "openfocus_a", "openfocus_b", "openfocus_c",
+                   "guided_filter", "dct", "dtcwt", "gfgfgf"]
+        if not is_ai_fusion_available():
+            methods.remove("stackmffv3")
 
         self._compare_queue = list(methods)
         self._compare_total = len(methods)
@@ -273,14 +274,15 @@ class RenderManager:
         if kernel_slider_value % 2 == 0:
             kernel_slider_value = max(1, kernel_slider_value - 1)
 
-        if force_algorithm is None and fusion_method == "stackmffv4" \
-                and not is_stackmffv4_available():
+        if force_algorithm is None and fusion_method == "stackmffv3" \
+                and not is_ai_fusion_available():
             show_warning_box(
                 window,
                 trans.t("msg_stackmff_unavailable_title"),
                 trans.t("msg_stackmff_unavailable_text"),
             )
-            window.set_fusion_method("guided_filter")
+            window.set_fusion_method(
+                getattr(window, "_first_available_method", lambda: "guided_filter")())
             self._restore_ui_controls()
             return
 
@@ -416,7 +418,7 @@ class RenderManager:
             fusion_method == "dct",
             fusion_method == "dtcwt",
             fusion_method == "gfgfgf",
-            fusion_method == "stackmffv4",
+            fusion_method == "stackmffv3",
             kernel_slider_value,
             tile_enabled=getattr(window, "tile_enabled", None),
             tile_block_size=getattr(window, "tile_block_size", None),
@@ -424,7 +426,8 @@ class RenderManager:
             tile_threshold=getattr(window, "tile_threshold", None),
             reg_downscale_width=getattr(window, "reg_downscale_width", None),
             thread_count=getattr(window, "thread_count", 4),
-            stackmffv4_batch_size=getattr(window, "stackmffv4_batch_size", 2),
+            ai_batch_size=getattr(window, "ai_batch_size", 2),
+            ai_mode=getattr(window, "ai_mode", "soft"),
             roi_rect=roi_rect,
             roi_mode=roi_mode,
             roi_base_index=roi_base_index,
@@ -784,6 +787,10 @@ class RenderManager:
         window = self.window
         bar = getattr(self, "_status_bar_progress", None)
         if bar is not None and total > 0:
+            # Range first, then value: Qt clamps a value outside the current
+            # range, so setting the value while the bar is still in its
+            # indeterminate (0..0) mode silently drops it and the bar looks
+            # frozen for the rest of the run.
             bar.setRange(0, int(total))
             bar.setValue(int(done))
         now = _time.time()

@@ -50,7 +50,7 @@ def test_settings_round_trip(qapp, clean_settings):
         tile_overlap = 256
         tile_threshold = 2048
         reg_downscale_width = 1024
-        stackmffv4_batch_size = 2
+        ai_batch_size = 2
         use_gpu = True
         recent_files = []
 
@@ -329,7 +329,11 @@ def _render_window(frames):
     w.combo_fusion = QComboBox()
     for code, _key, _hint in FUSION_ITEMS:
         w.combo_fusion.addItem(code, code)
-    w.combo_fusion.setCurrentIndex(0)
+    # These tests exercise the classical/AI-agnostic paths; pin a classical
+    # method instead of relying on whichever entry the product defaults to
+    # (the default is now the neural one, which needs torch).
+    w.combo_fusion.setCurrentIndex(
+        max(0, w.combo_fusion.findData("guided_filter")))
     w.combo_align = QComboBox()
     for code, _key, _hint in ALIGN_ITEMS:
         w.combo_align.addItem(code, code)
@@ -399,7 +403,7 @@ def _patched_render_manager(monkeypatch, window, ai_available=False):
     from utils import align_cache
 
     monkeypatch.setattr(render_module, "RenderWorker", _fake_worker_class())
-    monkeypatch.setattr(render_module, "is_stackmffv4_available", lambda: ai_available)
+    monkeypatch.setattr(render_module, "is_ai_fusion_available", lambda: ai_available)
     for name in ("show_message_box", "show_warning_box"):
         monkeypatch.setattr(render_module, name, lambda *a, **k: None)
 
@@ -549,10 +553,10 @@ def test_compare_all_second_click_cancels_the_run(qapp, monkeypatch):
 
     rm.start_compare_all()
     assert rm._compare_mode is True
-    # guided_filter runs first; the queue holds the rest (A/B/C included
-    # since v1.39)
+    # The queue follows the dropdown order: AI, OpenFocus A/B/C, then the
+    # classical methods. AI is filtered out here (ai_available=False).
     assert len(rm._compare_queue) == 6
-    assert rm._compare_current == "guided_filter"
+    assert rm._compare_current == "openfocus_a"
     assert not w.btn_render.isEnabled()
     assert not w.combo_align.isEnabled()
 
