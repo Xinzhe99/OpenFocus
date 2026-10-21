@@ -3,6 +3,29 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.64] — 2026-10-21
+
+Layout and localization fixes found by looking at the running app.
+
+### Fixed
+- **The smoothing value was clipped** ("2.0" rendered as "2.("): the spin box
+  had a fixed 80 px width while it needs 105 px with its arrows. It now sizes
+  itself, with a floor.
+- **Help dialogs showed English body text in every language.** Only their
+  titles were translated; the three bodies (fusion, registration, tile) were
+  hard-coded HTML. They are translated now, in all four languages.
+- **Option checkboxes elided long translations.** Two per row left ~170 px
+  each while Spanish needs 292 px for "Invertir orden de la pila
+  (barrido lejos→cerca)"; they are one per row now, so every language fits.
+- **An unusable saved window geometry made the app look like it never
+  started.** Qt restores whatever size the window had at close; a 79×1050
+  sliver came back as a strip with no visible UI. Any restored size below
+  640×480, or a position fully off-screen, is now rejected.
+
+### Added
+- `locales_help_texts.py` holds the ja/es help bodies, so multi-line HTML
+  never has to survive an edit inside the large locale tables.
+
 ## [v1.63] — 2026-10-21
 
 Finishes the design-system migration: no widget paints its own palette any

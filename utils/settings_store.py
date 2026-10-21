@@ -236,13 +236,39 @@ def save_window_layout(window) -> None:
         pass
 
 
+# A window smaller than this is unusable (no menu bar, no canvas).
+_MIN_RESTORABLE_WIDTH = 640
+_MIN_RESTORABLE_HEIGHT = 480
+
+
 def restore_window_layout(window) -> None:
-    """Restore window geometry and splitter positions saved on last close."""
+    """Restore window geometry and splitter positions saved on last close.
+
+    A saved geometry is rejected when it is unusable or off-screen. Qt stores
+    whatever size the window had when it closed, and a window created at a
+    tiny size (by a script, a screenshot harness, or a broken layout) would
+    otherwise be restored as a sliver the user cannot grab — the app looked
+    like it failed to start.
+    """
     settings = get_settings()
     try:
         geo = settings.value(WINDOW_GEOMETRY_KEY)
         if geo is not None:
             window.restoreGeometry(geo)
+            size = window.size()
+            screens = window.screen() or (
+                window.windowHandle().screen() if window.windowHandle() else None)
+            if (size.width() < _MIN_RESTORABLE_WIDTH
+                    or size.height() < _MIN_RESTORABLE_HEIGHT):
+                window.resize(max(size.width(), 1280),
+                              max(size.height(), 800))
+            if screens is not None:
+                available = screens.availableGeometry()
+                frame = window.frameGeometry()
+                if not available.intersects(frame):
+                    window.move(available.center() - window.rect().center())
+                    window.resize(min(1280, available.width()),
+                                  min(800, available.height()))
         main_state = settings.value(MAIN_SPLITTER_KEY)
         if main_state is not None and hasattr(window, "main_splitter"):
             window.main_splitter.restoreState(main_state)

@@ -17,9 +17,9 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **v1.63** — design-system migration complete: no widget paints its own
-> palette any more. Every dialog, hand-painted widget and banner reads the
-> shared tokens, so light and dark are one code path end to end.
+> **v1.64** — layout and localization fixes: clipped parameter values,
+> English help text in non-English UIs, elided checkbox labels, and a saved
+> window geometry that could hide the whole UI.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 

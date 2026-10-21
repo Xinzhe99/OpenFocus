@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSplitter,
     QVBoxLayout,
@@ -211,7 +212,9 @@ def create_right_panel() -> RightPanelComponents:
     spin_depth_smooth.setSingleStep(0.2)
     spin_depth_smooth.setDecimals(1)
     spin_depth_smooth.setValue(1.2)
-    spin_depth_smooth.setFixedWidth(80)
+    # A fixed 80 px was narrower than the widget needs (105 px with the
+    # arrows), so "2.0" rendered clipped. Let it size itself, with a floor.
+    spin_depth_smooth.setMinimumWidth(96)
     spin_depth_smooth.setToolTip(trans.t('label_depth_smoothing_hint'))
     ds_layout.addWidget(lbl_depth_smooth)
     ds_layout.addStretch()
@@ -236,41 +239,27 @@ def create_right_panel() -> RightPanelComponents:
     button_bar.addWidget(btn_compare)
     config_layout.addLayout(button_bar)
 
-    chk_quick_preview = QCheckBox(trans.t('chk_quick_preview'))
-    chk_quick_preview.setToolTip(trans.t('chk_quick_preview_hint'))
+    # One option per row. A two-column grid looked tidier but truncated long
+    # translations ("Invertir orden de la pila (barrid…"): the labels differ in
+    # length by language, and a 375 px panel cannot fit two of them.
+    def _option(key, checked):
+        # QCheckBox has no word wrap; give it the full row width instead so a
+        # long translation is never elided.
+        box = QCheckBox(trans.t(key))
+        box.setChecked(checked)
+        box.setToolTip(trans.t(key + '_hint'))
+        box.setSizePolicy(QSizePolicy.Policy.Expanding,
+                          QSizePolicy.Policy.Preferred)
+        box.setMinimumWidth(box.sizeHint().width())
+        config_layout.addWidget(box)
+        return box
 
-    # 三行两列：快速预览 | 反转帧序；融合前匹配曝光 | 消除亮度漂移。
-    # 旧布局是第一行两个、后两行各一个，右侧留空、行高不一致；把同属
-    # "输入侧"的帧序与输出侧开关混排也更难扫读。
-    row1 = QHBoxLayout()
-    row1.setSpacing(12)
-    row1.addWidget(chk_quick_preview)
-
+    chk_quick_preview = _option('chk_quick_preview', False)
     # 反转帧序（倒序栈）：远→近扫的栈勾选后按规范方向处理，仅影响
     # OpenFocus A/B/C 的 base 参考端 / 末帧先验 / 深度图标签方向
-    chk_reverse_order = QCheckBox(trans.t('chk_reverse_order'))
-    chk_reverse_order.setChecked(False)
-    chk_reverse_order.setToolTip(trans.t('chk_reverse_order_hint'))
-
-    row1.addWidget(chk_reverse_order)
-    row1.addStretch()
-    config_layout.addLayout(row1)
-
-    row2 = QHBoxLayout()
-    row2.setSpacing(12)
-    chk_exposure_match = QCheckBox(trans.t('chk_exposure_match'))
-    chk_exposure_match.setChecked(True)
-    chk_exposure_match.setToolTip(trans.t('chk_exposure_match_hint'))
-
-    row2.addWidget(chk_exposure_match)
-
-    chk_base_correct = QCheckBox(trans.t('chk_base_correct'))
-    chk_base_correct.setChecked(False)
-    chk_base_correct.setToolTip(trans.t('chk_base_correct_hint'))
-
-    row2.addWidget(chk_base_correct)
-    row2.addStretch()
-    config_layout.addLayout(row2)
+    chk_reverse_order = _option('chk_reverse_order', False)
+    chk_exposure_match = _option('chk_exposure_match', True)
+    chk_base_correct = _option('chk_base_correct', False)
 
     right_splitter.addWidget(config_widget)
 

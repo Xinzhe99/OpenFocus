@@ -1156,3 +1156,14 @@ EXTRA_TRANSLATIONS = {
         "wipe_side_b": "B:",
     },
 }
+
+# Help-dialog bodies live in their own module: multi-line HTML inside the big
+# tables above is fragile to edit and was the source of a broken string.
+try:
+    from locales_help_texts import JA as _JA_HELP, ES as _ES_HELP
+    EXTRA_TRANSLATIONS["ja"].update(_JA_HELP)
+    EXTRA_TRANSLATIONS["es"].update(_ES_HELP)
+except Exception as _exc:  # pragma: no cover - diagnostics only
+    import logging
+    logging.getLogger("openfocus").warning(
+        "help texts (ja/es) failed to load: %s", _exc)

@@ -574,6 +574,24 @@ class TranslationManager(QObject):
                 'help_render_title': 'Fusion Help',
                 'help_registration_title': 'Registration Help',
                 'help_tile_title': 'Tile Settings Help',
+                'help_render_body': '''<h3>Fusion Methods</h3>
+<p><b>Guided Filter</b><br/>Edge-preserving fusion tuned for practical scenes. Adjust the radius slider to trade sharpness for smoothness.</p>
+<p><b>DCT</b><br/>Block-wise DCT variance with consistency verification; the fastest method, fully CPU-based, crisp edges.</p>
+<p><b>DTCWT</b><br/>Dual-tree complex wavelet fusion across scales and orientations; best for intricate high-frequency content.</p>
+<p><b>GFG-FGF</b><br/>Gaussian-like four-neighbourhood gradient with fast guided-filter refinement (Fu et al., 2024); well suited to microscopy.</p>
+<p><b>StackMFF-V4</b><br/>Neural network trained on everyday focus stacks. Strongest results with minimal tuning; fastest with GPU. Avoid when domain shift is expected.</p>
+<p><b>OpenFocus A / B / C</b><br/><b>A</b> variance-weighted average with a last-frame prior (fast, colour-stable). <b>B</b> variance depth-map pick (sharpest frame per pixel; smooth surfaces, microscopy). <b>C</b> Laplacian-pyramid per-band blend (natural on textures). A and B take a variance window; C has no radius, only Smoothing.</p>''',
+                'help_registration_body': '''<h3>Registration Methods</h3>
+<p>Alignment is a single choice: pick one method per render, or "No alignment" to fuse the frames as loaded.</p>
+<p><b>No alignment</b><br/>Skips registration; fastest, and correct when the stack is already aligned (fixed rig).</p>
+<p><b>Homography</b><br/>Feature-based (SIFT + RANSAC) projective alignment; ideal for global geometric correction.</p>
+<p><b>ECC</b><br/>Enhanced Correlation Coefficient refinement at sub-pixel level; good for fine adjustments or when features are unreliable.</p>
+<p><b>OpenFocus (fast)</b><br/>Bounded similarity (translation + rotation + scale) with brightness equalization and auto-crop; sub-second per frame. Frames shifting more than 8% of the frame size are left unaligned rather than half-corrected. Use ECC or Homography for non-rigid or extreme geometry.</p>''',
+                'help_tile_body': '''<h3>Tile Settings</h3>
+<p><b>Enable tiled processing</b>: process large images in blocks to reduce peak memory.</p>
+<p><b>Block size</b>: side length of each square tile (512–2048 is typical).</p>
+<p><b>Overlap</b>: pixels shared between adjacent tiles so the seams blend instead of showing a hard edge.</p>
+<p><b>Threshold</b>: images whose longest side exceeds this are tiled; smaller ones are fused whole.</p>''',
 
                 'dialog_tile_title': 'Tile Settings',
                 'dialog_tile_group': 'Tile Options',
@@ -1251,6 +1269,24 @@ class TranslationManager(QObject):
                 'help_render_title': '融合帮助',
                 'help_registration_title': '配准帮助',
                 'help_tile_title': '分块设置帮助',
+                'help_render_body': '''<h3>融合方法</h3>
+<p><b>引导滤波</b><br/>保边融合，适合多数场景。调节半径滑块在锐度与平滑之间取舍。</p>
+<p><b>DCT</b><br/>分块 DCT 方差 + 一致性校验；速度最快，纯 CPU，边缘锐利。</p>
+<p><b>DTCWT</b><br/>双树复小波多尺度、多方向融合；适合细节密集的高频内容。</p>
+<p><b>GFG-FGF</b><br/>类高斯四邻域梯度 + 快速引导滤波（Fu 等，2024）；尤其适合显微图像。</p>
+<p><b>StackMFF-V4</b><br/>在日常对焦栈上训练的神经网络。调整少、效果强；有 GPU 时最快。题材差异较大时不建议使用。</p>
+<p><b>OpenFocus A / B / C</b><br/><b>A</b> 方差加权平均 + 末帧先验（快、色彩稳定）。<b>B</b> 方差深度图选择（逐像素取最清晰帧；适合平滑表面与显微）。<b>C</b> 拉普拉斯金字塔逐带混合（纹理题材观感自然）。A、B 有方差窗口；C 没有半径，只有平滑。</p>''',
+                'help_registration_body': '''<h3>配准方法</h3>
+<p>对齐方式是单选：每次渲染只选一种，或选「不对齐」按加载原样融合。</p>
+<p><b>不对齐</b><br/>跳过配准；最快，适用于已经对齐的栈（固定机位）。</p>
+<p><b>单应性</b><br/>基于特征（SIFT + RANSAC）的投影对齐；适合需要全局几何校正的场景。</p>
+<p><b>ECC</b><br/>增强相关系数，亚像素级精修；适合细微调整或特征不可靠时。</p>
+<p><b>OpenFocus（快速）</b><br/>有界相似变换（平移 + 旋转 + 缩放）+ 亮度均衡 + 自动裁边；每帧亚秒级。位移超过帧尺寸 8% 的帧放弃对齐而非半校正。非刚性或极端几何请改用 ECC 或单应性。</p>''',
+                'help_tile_body': '''<h3>分块设置</h3>
+<p><b>启用分块</b>：把大图切成小块处理，降低峰值内存。</p>
+<p><b>块大小</b>：每个正方形块的边长（常用 512–2048）。</p>
+<p><b>重叠</b>：相邻块共享的像素数，用于消除拼接缝。</p>
+<p><b>阈值</b>：长边超过该值的图才会分块，小图整幅融合。</p>''',
 
                 # Add Label Dialog
                 'add_label_title': '添加标签配置',
