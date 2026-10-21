@@ -57,6 +57,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   This also stopped a test module from aborting the suite mid-run, which is
   why the full suite could never complete.
 
+### Performance (DTCWT)
+- **DTCWT fusion is ~1.7x faster on the transform stage.** Profiling put 71%
+  of its time inside dtcwt's own forward transform, whose column convolution
+  is a Python loop over NumPy ufuncs — work that releases the GIL. The
+  per-frame luma transforms are independent, so they now run on two threads.
+  On a 5-frame 960x720 stack the stage drops from 4.64 s to 2.72 s for +7 MB
+  of peak RSS; end to end (including loading and the inverse transform) the
+  method goes from 3.42 s to 2.97 s (**1.15x**).
+- **Output is bit-identical.** Every fusion method's result is hashed by
+  `tools/algorithm_bench.py`; all eight digests match the pre-change run, and
+  `tests/test_dtcwt_determinism.py` compares the serial and threaded paths
+  byte for byte so a future refactor cannot quietly change the picture.
+- Parallelising the three colour channels was measured and rejected (3.06 s
+  vs 2.78 s, +68 MB), as was substituting `scipy.ndimage.correlate1d` for
+  dtcwt's convolution (slower *and* numerically different).
+
 ### Performance (memory, startup, download size)
 - **Torch is no longer imported at startup.** The availability probe only
   needed to know whether the package exists, but it imported it — costing
