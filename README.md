@@ -17,9 +17,10 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **v1.65** — the neural method is now StackMFF V3, with a choice of soft
-> (probability-weighted) or hard (per-pixel frame pick) output. Also fixes a
-> checked radio button that rendered larger than an unchecked one.
+> **v1.65.1** — rebuilt so the installers actually include the StackMFF V3
+> model (the v1.65 packages shipped without it). The release also brings the
+> neural method to the front: soft (probability-weighted) or hard (per-pixel
+> frame pick) output, and AI as the default method.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 

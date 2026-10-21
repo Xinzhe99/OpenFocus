@@ -3,6 +3,24 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.65.1] — 2026-10-21
+
+The v1.65 installers were built without the AI model.
+
+### Fixed
+- **The AI method was missing from the v1.65 builds.** The repository ignores
+  `*.pth`, so `weights/stackmff_v3_final.pth` never reached the remote: CI
+  checked out a tree holding only `weights/__init__.py`, and
+  `--add-data "weights;weights"` packaged a directory with no model. The
+  builds then carried the stale `stackmffv4.pth` while the code reads the V3
+  checkpoint, so choosing AI failed at load time. The checkpoint is now
+  tracked explicitly, and both build jobs fail early when it is missing or
+  truncated.
+
+### Changed
+- The Zenodo description now lists the eight current methods and names
+  StackMFF V3 as the default.
+
 ## [v1.65] — 2026-10-21
 
 The neural back-end is StackMFF V3, and it can now emit two different kinds of
@@ -21,6 +39,10 @@ output.
   `--ai-mode {soft,hard}`.
 - `THIRD_PARTY_NOTICES.md` records the vendored StackMFF V3 code and weights
   (MIT, Copyright (c) 2026 Xinzhe Xie) and the modifications made here.
+- The release workflow now fails early when `weights/stackmff_v3_final.pth` is
+  missing or truncated. The checkpoint is force-added past the repository's
+  `*.pth` ignore rule; without it the packaged builds would have had no AI
+  model at all.
 
 ### Changed
 - **AI is the default fusion method, and the dropdown order changed.** The
