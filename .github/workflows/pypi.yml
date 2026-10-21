@@ -27,10 +27,14 @@ jobs:
           import os, re, pathlib
           version = re.search(r'APP_VERSION\s*=\s*"([^"]+)"',
                               pathlib.Path('constants.py').read_text()).group(1)
-          tag = os.environ['GITHUB_REF_NAME'].lstrip('v')
-          if version != tag:
-              raise SystemExit(f'APP_VERSION {version} != tag {tag}')
-          print('version', version)
+          ref = os.environ['GITHUB_REF_NAME']
+          # A manual run has a branch name here, not a tag: there is nothing
+          # to compare against, so only report the version.
+          if os.environ.get('GITHUB_REF_TYPE') == 'tag':
+              tag = ref.lstrip('v')
+              if version != tag:
+                  raise SystemExit(f'APP_VERSION {version} != tag {tag}')
+          print('version', version, 'ref', ref)
           PY
 
       - name: Verify the AI model ships in the sdist
