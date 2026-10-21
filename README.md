@@ -81,8 +81,20 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Run `openfocus -
 
 <a id="documentation"></a>
 ## 📖 Documentation
-- [**User Manual (English)**](./docs/USER_MANUAL_EN.md) — full feature guide: interface, workflows, wipe compare, settings, batch, CLI, troubleshooting
-- [**用户手册（中文）**](./docs/USER_MANUAL_ZH.md) — 完整中文功能手册
+- **User Manual** — full feature guide (interface, workflows, wipe compare,
+  settings, batch, CLI, troubleshooting) in twelve languages:
+  [English](./docs/USER_MANUAL_EN.md) ·
+  [中文](./docs/USER_MANUAL_ZH.md) ·
+  [日本語](./docs/USER_MANUAL_JA.md) ·
+  [Español](./docs/USER_MANUAL_ES.md) ·
+  [Deutsch](./docs/USER_MANUAL_DE.md) ·
+  [Français](./docs/USER_MANUAL_FR.md) ·
+  [Русский](./docs/USER_MANUAL_RU.md) ·
+  [한국어](./docs/USER_MANUAL_KO.md) ·
+  [Português](./docs/USER_MANUAL_PT.md) ·
+  [Italiano](./docs/USER_MANUAL_IT.md) ·
+  [Nederlands](./docs/USER_MANUAL_NL.md) ·
+  [Polski](./docs/USER_MANUAL_PL.md)
 - [**Changelog**](./CHANGELOG.md) — release history and notable changes
 - [**Performance \& Large Stacks**](./docs/PERFORMANCE.md) — soak-test throughput/memory reference and tuning guidance
 - [**Build Commands**](./docs/BUILD_COMMANDS.md) — packaging from source with PyInstaller

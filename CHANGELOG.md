@@ -5,6 +5,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added (documentation)
+- **The user manual now ships in all twelve UI languages.** It existed only in
+  English and Chinese, so most of the newly supported readers had no
+  documentation at all. `tools/verify_manuals.py` compares each translation
+  against the English source (heading count and nesting, code fences, table
+  rows) so a translated manual cannot silently lose a section.
+- Corrected two long-standing manual errors: the menu is **Tools**, not
+  "Batch" (batch processing is one entry inside it), and the language list
+  still claimed four languages.
+
 ### Added (languages)
 - **Eight new UI languages: German, French, Russian, Korean, Portuguese,
   Italian, Dutch and Polish.** With English, Chinese, Japanese and Spanish

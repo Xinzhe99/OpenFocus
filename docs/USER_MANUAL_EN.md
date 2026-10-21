@@ -36,7 +36,7 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - **Depth Map**: per-pixel focus-position maps with custom pseudo-color schemes
 - **Scale Bar**: publication-grade scale bars with automatic µm/px calibration
 - **Crash Auto-Recovery**: the last working session is offered for restore after a crash
-- **Multi-language**: English, 中文, 日本語, Español with automatic system-language detection
+- **Multi-language**: twelve UI languages — English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski — with automatic system-language detection
 - **Headless CLI**: Script OpenFocus from the command line for automation and CI
 - **Flexible Export**: Save results as individual images, folders, or GIF animations
 - **Image Transformations**: Rotate, flip, and resize image stacks
@@ -114,7 +114,7 @@ The top menu bar provides access to all functions:
 
 - **File**: Import/export operations and the recent-files list
 - **Edit**: Image transformations and labels
-- **Batch**: Batch processing
+- **Tools**: Batch processing, depth map
 - **Settings**: GPU acceleration, language, tile, registration, and thread configurations
 - **Help**: Environment info, contact information, update check, and the log folder
 
@@ -734,7 +734,7 @@ You can also check manually anytime via **Help → Check for Updates**.
 
 Process multiple folders automatically:
 
-1. Go to **Batch → Batch Processing** or click the batch option
+1. Go to **Tools → Batch Processing**
 2. In the batch dialog:
    - **Add Folders**: Select folders containing image sequences
    - **Remove Folders**: Remove selected folders from the list

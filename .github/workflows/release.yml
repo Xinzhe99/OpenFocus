@@ -61,7 +61,11 @@ jobs:
             --add-data "weights;weights" `
             --add-data "ui;ui" `
             --add-data "docs;docs" `
-            --collect-all PyQt6 `
+            --collect-submodules PyQt6 `
+            --hidden-import PyQt6.QtCore `
+            --hidden-import PyQt6.QtGui `
+            --hidden-import PyQt6.QtWidgets `
+            --hidden-import PyQt6.QtNetwork `
             --collect-all scipy `
             --copy-metadata imageio `
             --collect-data dtcwt `
@@ -184,7 +188,10 @@ jobs:
             --add-data "weights:weights" \
             --add-data "ui:ui" \
             --add-data "docs:docs" \
-            --collect-all PyQt6 \
+            --hidden-import PyQt6.QtCore \
+            --hidden-import PyQt6.QtGui \
+            --hidden-import PyQt6.QtWidgets \
+            --hidden-import PyQt6.QtNetwork \
             --collect-all scipy \
             --copy-metadata imageio \
             --collect-data dtcwt \
