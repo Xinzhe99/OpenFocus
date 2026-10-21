@@ -6,11 +6,24 @@ the window opened, and the `[ai]`/`[heic]`/`[raw]` extras meant a user could
 not tell which capabilities they actually had. These tests pin the single
 install so it cannot quietly fragment again.
 """
-import tomllib
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = ROOT / "pyproject.toml"
+
+# tomllib is 3.11+; CI still tests 3.10, so fall back to tomli when present.
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - only on Python 3.10
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        tomllib = None
+
+pytestmark = pytest.mark.skipif(
+    tomllib is None, reason="no TOML parser available (pip install tomli)")
 
 
 def _project():

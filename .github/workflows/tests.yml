@@ -33,7 +33,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-timeout
+          # tomli lets the packaging-contract test parse pyproject.toml on
+          # Python 3.10, where tomllib does not exist yet.
+          pip install pytest pytest-timeout tomli
 
       - name: Run test suite
         timeout-minutes: 15
