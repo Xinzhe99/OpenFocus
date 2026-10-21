@@ -42,6 +42,15 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      - name: Verify the shipped AI model is present
+        shell: pwsh
+        run: |
+          $w = "weights/stackmff_v3_final.pth"
+          if (-not (Test-Path $w)) { throw "Missing $w - the release would ship without the AI model." }
+          $len = (Get-Item $w).Length
+          if ($len -lt 600000) { throw "$w is only $len bytes (expected ~658587)." }
+          Write-Output ("AI model present: {0:N0} bytes" -f $len)
+
       - name: Build with PyInstaller
         shell: pwsh
         run: |
@@ -125,6 +134,13 @@ jobs:
           sips -z 512 512   assets/OpenFocus.png --out icon.iconset/icon_512x512.png
           sips -z 1024 1024 assets/OpenFocus.png --out icon.iconset/icon_512x512@2x.png
           iconutil -c icns icon.iconset -o OpenFocus.icns
+
+      - name: Verify the shipped AI model is present
+        run: |
+          test -f weights/stackmff_v3_final.pth || { echo "Missing weights/stackmff_v3_final.pth - the release would ship without the AI model."; exit 1; }
+          size=$(wc -c < weights/stackmff_v3_final.pth)
+          if [ "$size" -lt 600000 ]; then echo "weights file is only $size bytes"; exit 1; fi
+          echo "AI model present: $size bytes"
 
       - name: Build with PyInstaller
         run: |
