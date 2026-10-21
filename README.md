@@ -113,24 +113,40 @@ OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that 
 	<img src="assets/ui.png" alt="OpenFocus UI" width="820">
 </p>
 
-### AI fusion: StackMFF V3 vs. Guided Filter
+### AI fusion: StackMFF V3
 
 The default fusion method classifies every pixel by its most probable source
-frame. On a real 6-frame macro stack it keeps the letter boundaries crisp where
-Guided Filter leaves a halo (same registration, same stack, 3x zoom):
+frame. Input is a real 10-frame macro stack of a PCB; the focus sweeps across
+the board between frames.
 
 <p align="center">
-	<img src="assets/comparison_ai_vs_gff.png" alt="Guided Filter vs StackMFF V3" width="820">
+	<img src="assets/demo_stack_sweep.gif" alt="Focus sweep through the input stack" width="440">
+</p>
+
+All ten frames differ in which part is sharp - frames 01-05 hold the switch and
+its lettering, 06-10 are defocused. The fused result has to keep the sharp
+version of every region:
+
+<p align="center">
+	<img src="assets/demo_stack_frames.png" alt="The ten input frames" width="880">
+</p>
+
+Compared with Guided Filter on the same registered stack, the AI result keeps
+the letter edges crisper and the board surface cleaner. Both crops come from
+the same region of the same stack (Laplacian sharpness 27.1 vs 28.5):
+
+<p align="center">
+	<img src="assets/comparison_ai_vs_gff.png" alt="Guided Filter vs StackMFF V3" width="880">
 </p>
 
 On a synthetic stack with known ground truth it leads every fusion method on
 both PSNR and SSIM, and leaves fewer ghost pixels than any classical method:
 
 <p align="center">
-	<img src="assets/benchmark.png" alt="Ground-truth benchmark" width="820">
+	<img src="assets/benchmark.png" alt="Ground-truth benchmark" width="880">
 </p>
 
-<sub>Reproduce with <code>python tools/synthetic_benchmark.py --noise 3</code>.</sub>
+<sub>Benchmark reproducible with <code>python tools/synthetic_benchmark.py --noise 3</code>.</sub>
 
 <a id="highlights"></a>
 ## ✨ Highlights
