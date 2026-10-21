@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openfocus"
-description = "Multi-focus image fusion from the command line: registration (ECC / homography / fast phase correlation) plus eight fusion algorithms — four classical, the OpenFocus A/B/C family and a neural model — in one pip-installable tool"
+description = "Multi-focus image fusion from the command line: registration (ECC / homography / fast phase correlation) plus eight fusion algorithms - four classical, the OpenFocus A/B/C family and the StackMFF V3 neural model - in one pip-installable tool"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "Xinzhe Xie", email = "xiexinzheyyy@163.com" }]
@@ -29,7 +29,7 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-ai = ["torch", "torchvision"]
+ai = ["torch"]
 heic = ["pillow-heif"]
 raw = ["rawpy"]
 
@@ -42,7 +42,8 @@ Documentation = "https://github.com/Xinzhe99/OpenFocus#command-line-usage"
 Changelog = "https://github.com/Xinzhe99/OpenFocus/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
-packages = ["core", "core.models", "fusion_methods", "utils", "weights"]
+packages = ["core", "core.models", "core.models.stackmff_v3",
+            "fusion_methods", "utils", "weights"]
 py-modules = ["constants"]
 
 [tool.setuptools.dynamic]

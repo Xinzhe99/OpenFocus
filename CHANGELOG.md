@@ -6,6 +6,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [v1.65.2] — 2026-10-21
 
 ### Fixed
+- **The PyPI package was 10 releases behind (1.55) and its wheel was
+  incomplete.** `packages` never listed `core.models.stackmff_v3`, so an
+  installed wheel had no network code; `pip wheel` also picked up the deleted
+  `core/models/stackmffv4_network.py` from a stale `build/` directory; the
+  `[ai]` extra still asked for torchvision, which the V3 back-end does not
+  use (it needs torch only).
 - **Tiled stacks ignored the AI output mode.** The mode default was applied
   after the tiled dispatch had already returned, so any stack large enough to
   tile fused in `soft` mode no matter what the user picked — a 999x750 demo
@@ -30,6 +36,10 @@ The v1.65 installers were built without the AI model.
 ### Changed
 - The Zenodo description now lists the eight current methods and names
   StackMFF V3 as the default.
+- Publishing to PyPI is now automated. `.github/workflows/pypi.yml` builds the
+  sdist and wheel on every `v*` tag, checks that the version matches the tag
+  and that the wheel contains the model and the V3 modules, then uploads via
+  PyPI Trusted Publishing (no API token in the repository).
 
 ## [v1.65] — 2026-10-21
 

@@ -1,0 +1,80 @@
+name: Publish to PyPI
+
+# Runs on every version tag. Publishing uses PyPI Trusted Publishing (OIDC),
+# so no API token lives in this repository: configure the publisher once at
+# https://pypi.org/manage/account/publishing/ with
+#   owner   Xinzhe99
+#   repo    OpenFocus
+#   workflow pypi.yml
+#   env     pypi
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Verify the version matches the tag
+        run: |
+          python - <<'PY'
+          import os, re, pathlib
+          version = re.search(r'APP_VERSION\s*=\s*"([^"]+)"',
+                              pathlib.Path('constants.py').read_text()).group(1)
+          tag = os.environ['GITHUB_REF_NAME'].lstrip('v')
+          if version != tag:
+              raise SystemExit(f'APP_VERSION {version} != tag {tag}')
+          print('version', version)
+          PY
+
+      - name: Verify the AI model ships in the sdist
+        run: |
+          test -f weights/stackmff_v3_final.pth || {
+            echo "weights/stackmff_v3_final.pth is missing"; exit 1; }
+          test "$(wc -c < weights/stackmff_v3_final.pth)" -gt 600000 || {
+            echo "weights file is truncated"; exit 1; }
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Check the wheel contents
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          wheel = glob.glob('dist/*.whl')[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          required = ['weights/stackmff_v3_final.pth',
+                      'core/models/stackmff_v3/network.py',
+                      'fusion_methods/stackmffv3.py']
+          missing = [r for r in required if r not in names]
+          stale = [n for n in names if 'stackmffv4' in n]
+          if missing: sys.exit(f'missing from wheel: {missing}')
+          if stale: sys.exit(f'stale modules in wheel: {stale}')
+          print(f'{wheel}: {len(names)} entries, all required files present')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
