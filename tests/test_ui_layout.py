@@ -191,3 +191,22 @@ def test_ai_label_names_the_algorithm_in_every_language(qapp):
     tables = TranslationManager().translations
     for lang in ("en", "zh", "ja", "es"):
         assert "StackMFF-V3" in tables[lang]["radio_stackmff"], lang
+
+
+def test_menus_have_an_opaque_background():
+    """A menu must not inherit `QWidget { background: transparent; }`.
+
+    The base rule made the popup paint its text over whatever was behind it:
+    on the dark theme a right-click menu showed the desktop through it, which
+    read as a translucent panel with unreadable labels. Both the frame and
+    every item need an explicit fill.
+    """
+    from ui.styles import build_stylesheet
+
+    for theme in ("dark", "light"):
+        qss = build_stylesheet(theme)
+        menu = qss[qss.index("QMenu {"):qss.index("QMenu::item {")]
+        item = qss[qss.index("QMenu::item {"):qss.index("QMenu::item:selected")]
+        assert "background-color:" in menu, theme
+        assert "background-color:" in item, theme
+        assert "background: transparent" not in item, theme

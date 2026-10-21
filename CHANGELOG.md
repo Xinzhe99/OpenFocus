@@ -3,6 +3,19 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v1.65.4] — 2026-10-21
+
+### Fixed
+- **Menus and their items were transparent.** The base rule
+  `QWidget { background: transparent; }` also applied to `QMenu`, and
+  `QMenu::item` set `background: transparent` explicitly, so a popup painted
+  its labels directly over whatever was behind it. On the dark theme a
+  right-click menu showed the desktop through it - reported as "some areas
+  are transparent" - and the text was barely readable. Both the frame and
+  every item now have an explicit fill. The menu's `border-radius` is gone
+  as well: Qt turns a rounded popup into a translucent window, which left a
+  pale fringe around it where no compositor is present.
+
 ## [v1.65.3] — 2026-10-21
 
 ### Changed

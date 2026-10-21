@@ -130,17 +130,24 @@ QMenuBar::item {{
 QMenuBar::item:selected {{ background-color: {t['surfaceHover']}; }}
 QMenuBar::item:pressed {{ background-color: {t['surfaceActive']}; }}
 
+/* Menus need an explicit opaque fill on BOTH the frame and every item.
+   The base rule `QWidget {{ background: transparent; }}` applies to QMenu
+   too, and QMenu::item inherits it: the popup then painted its text over
+   whatever was behind it, which on the dark theme looked like a white
+   translucent panel with unreadable labels. */
+/* No border-radius: Qt makes a rounded QMenu a translucent window, and
+   without a compositor the corner pixels show the desktop as a pale fringe
+   around the popup. A square menu paints cleanly on every platform. */
 QMenu {{
     background-color: {t['surface']};
     color: {t['text']};
     border: 1px solid {t['border']};
-    border-radius: {r['md']}px;
     padding: {s['xs']}px;
 }}
 QMenu::item {{
     padding: {s['sm'] - 2}px {s['xl']}px {s['sm'] - 2}px {s['md']}px;
     border-radius: {r['sm']}px;
-    background: transparent;
+    background-color: {t['surface']};
 }}
 QMenu::item:selected {{ background-color: {t['accentSoft']}; color: {t['accentSoftText']}; }}
 QMenu::item:disabled {{ color: {t['textFaint']}; }}
