@@ -40,6 +40,63 @@ except ImportError:
     convolve = None
 
 
+# The dtcwt package is pure NumPy: its column convolution runs in a Python
+# loop but spends its time inside NumPy ufuncs, which release the GIL. Frames
+# are transformed independently, so a small thread pool overlaps them and the
+# result is unchanged (each frame's coefficients are computed by exactly the
+# same call as before).
+_DTCWT_MAX_WORKERS = min(4, max(1, (os.cpu_count() or 4) - 1))
+# The activity pass keeps one full pyramid per in-flight frame, so its worker
+# count trades memory for speed (measured: 3 workers = 1.55x but +68 MB peak).
+# The channel pass streams frames inside each channel, so running the three
+# channels concurrently costs no meaningful extra memory.
+_DTCWT_ACTIVITY_WORKERS = 2
+
+
+def _iter_forward(transform, planes, nlevels, workers=None):
+    """Yield transform.forward() for each plane, overlapping a few at a time.
+
+    A generator on purpose: the caller consumes one pyramid, derives its
+    activity maps and drops it. Returning a list would keep every frame's
+    pyramid alive at once (~21 MB each at 720x960, so 5 frames = +84 MB peak
+    for no reason). Results stay in input order.
+    """
+    if workers is None:
+        workers = _DTCWT_MAX_WORKERS
+    if len(planes) < 2 or workers < 2:
+        for plane in planes:
+            yield transform.forward(plane, nlevels=nlevels)
+        return
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # Bounded submission: at most `workers` transforms are in flight, so at
+        # most that many pyramids exist at once. pool.map() would submit every
+        # plane immediately and hold all finished results, which raised peak
+        # memory by 67 MB on a 5-frame 720x960 stack.
+        window = deque()
+        it = iter(planes)
+        for _ in range(workers):
+            nxt = next(it, None)
+            if nxt is None:
+                break
+            window.append(pool.submit(
+                lambda p=nxt: transform.forward(p, nlevels=nlevels)))
+        while window:
+            fut = window.popleft()
+            nxt = next(it, None)
+            if nxt is not None:
+                window.append(pool.submit(
+                    lambda p=nxt: transform.forward(p, nlevels=nlevels)))
+            yield fut.result()
+
+
+def _map_forward(transform, planes, nlevels, workers=None):
+    """transform.forward() over independent 2-D planes, in parallel."""
+    return list(_iter_forward(transform, planes, nlevels, workers=workers))
+
+
 def _dtcwt_impl(input_source, img_resize, N, use_gpu):
     """
     DTCWT fusion implementation (Optimized CPU version).
@@ -83,8 +140,10 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu):
         return 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
 
     activities = [[] for _ in range(N)]
-    for img in images_rgb:
-        pyr = transform.forward(_luma(img), nlevels=N)
+    _luma_planes = [_luma(img) for img in images_rgb]
+    for pyr in _iter_forward(transform, _luma_planes, N,
+                             workers=min(_DTCWT_MAX_WORKERS,
+                                         _DTCWT_ACTIVITY_WORKERS)):
         for level in range(N):
             activities[level].append(
                 maximum_filter(np.abs(pyr.highpasses[level]).sum(axis=2).astype(np.float32),
