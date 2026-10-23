@@ -759,3 +759,64 @@ def test_output_label_to_filename():
     assert f("OpenFocus_20261015_GuidedFilter_ECC — DCT") == "OpenFocus_20261015_GuidedFilter_ECC_DCT"
     assert f('a/b:c*?"<>|') == "a_b_c_"
     assert f("") == "OpenFocus_result"
+
+
+def test_diameter_shortcut_updates_the_document(qapp):
+    """`[` / `]` must change the brush the next stroke actually uses.
+
+    `_NumberRow.setValue` is also used to seed the controls and therefore
+    suppresses valueChanged; calling it alone updated the number and left the
+    document at the old diameter.
+    """
+    from types import SimpleNamespace
+
+    from dialogs.retouch import RetouchDialog, _NumberRow
+
+    row = _NumberRow("Diameter", 1, 2048, 64)
+    applied = []
+
+    class Doc:
+        stroke_active = False
+
+    host = SimpleNamespace(
+        doc=Doc(),
+        num_diameter=row,
+        _on_brush_changed=lambda: applied.append(row.value()),
+    )
+    try:
+        RetouchDialog._bump_diameter(host, 1.25)
+        assert row.value() == 80
+        assert applied == [80], "the document must be told about the change"
+
+        applied.clear()
+        RetouchDialog._bump_diameter(host, 0.8)
+        assert row.value() == 64
+        assert applied == [64]
+    finally:
+        row.deleteLater()
+
+
+def test_apply_is_refused_during_preview(qapp):
+    """Ctrl+Enter must obey the same condition as the visible button."""
+    from types import SimpleNamespace
+
+    from dialogs.retouch import RetouchDialog
+
+    class Doc:
+        stroke_active = False
+        is_dirty = True
+
+    host = SimpleNamespace(
+        _applied=False, doc=Doc(), preview_mode="before",
+        btn_apply=None, apply_callback=lambda *a: (True, ""))
+    assert RetouchDialog._can_apply(host) is False
+
+    host.preview_mode = None
+    assert RetouchDialog._can_apply(host) is True
+
+    host.doc.stroke_active = True
+    assert RetouchDialog._can_apply(host) is False
+
+    host.doc.stroke_active = False
+    host.doc.is_dirty = False
+    assert RetouchDialog._can_apply(host) is False
