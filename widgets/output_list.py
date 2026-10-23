@@ -80,7 +80,9 @@ class OutputListWidget(QListWidget):
         else:
             return None
 
-        return window.label_manager.prepare_bgr_image("registered", image, 0)
+        # A dragged-out result is a single output image: caption number 1,
+        # and the output target rather than the registered-stack slot.
+        return window.label_manager.prepare_bgr_image("output", image, 0)
 
     def _write_temp_jpg(self, image, base_name: str) -> str | None:
         window = self._window

@@ -108,6 +108,30 @@ from constants import (
 _ORPHAN_THREADS: list = []
 
 
+def _capture_label_state(host):
+    """Label set as plain data for an undo snapshot (None when absent)."""
+    manager = getattr(host, "label_manager", None)
+    if manager is None or not hasattr(manager, "export_state"):
+        return None
+    try:
+        return manager.export_state()
+    except Exception:
+        return None
+
+
+def _restore_label_state(host, label_state) -> None:
+    """Apply a snapshot label state, ignoring hosts without a manager."""
+    if label_state is None:
+        return
+    manager = getattr(host, "label_manager", None)
+    if manager is None or not hasattr(manager, "import_state"):
+        return
+    try:
+        manager.import_state(label_state)
+    except Exception:
+        pass
+
+
 def _shutdown_worker(worker, timeout_ms=1500):
     """Ask a QThread to stop, then wait; never terminate it.
 
@@ -671,7 +695,52 @@ class OpenFocus(QMainWindow):
             "current": getattr(self, "current_img_index", 0),
             "scale": float(getattr(self, "current_scale_factor", 1.0) or 1.0),
             "base_scale": float(getattr(self, "base_scale_factor", 1.0) or 1.0),
+            "labels": _capture_label_state(self),
         }
+
+    def _capture_label_state(self):
+        """Label set as plain data, for undo snapshots.
+
+        Captions belong to the session state, so undoing a stack mutation
+        must not leave captions that were added against the old frames.
+        """
+        manager = getattr(self, "label_manager", None)
+        if manager is None:
+            return None
+        try:
+            return manager.export_state()
+        except Exception:
+            return None
+
+    def push_label_undo(self, previous) -> None:
+        """Record a label-only change as one undoable step.
+
+        The undo stack holds stack snapshots; a label edit captures the
+        current stack unchanged plus the previous label set, so undo/redo
+        walks captions without touching pixels.
+        """
+        if getattr(self, "_undo_guard", False):
+            return
+        state = self._capture_stack_state()
+        if previous is not None:
+            state["labels"] = previous.export_state()
+        self._mark_project_dirty()
+        self._undo_stack.append(state)
+        if len(self._undo_stack) > self.UNDO_LIMIT:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._refresh_undo_actions()
+
+    def invalidate_annotation_caches(self) -> None:
+        """Drop rendered views that depend on labels or the scale bar."""
+        cache = getattr(self, "_wipe_pix_cache", None)
+        if cache is not None:
+            cache.clear()
+        if hasattr(self, "get_or_create_source_pixmap"):
+            try:
+                self.get_or_create_source_pixmap.cache_clear()
+            except Exception:
+                pass
 
     def push_undo(self) -> None:
         """Snapshot the stack before a mutation.
@@ -700,6 +769,7 @@ class OpenFocus(QMainWindow):
         # reopened with the post-resize percentage while showing the old pixels.
         self.current_scale_factor = float(state.get("scale", 1.0) or 1.0)
         self.base_scale_factor = float(state.get("base_scale", 1.0) or 1.0)
+        _restore_label_state(self, state.get("labels"))
         # The restored stack invalidates every derived result, exactly like
         # rotate/flip do.
         self.transform_manager.invalidate_processing_results(
@@ -1951,7 +2021,8 @@ class OpenFocus(QMainWindow):
         if cache is None:
             cache = self._wipe_pix_cache = {}
         labeled = (kind == "right"
-                   and self.label_manager.is_enabled_for_target("registered"))
+                   and self.label_manager.is_enabled_for_target("output"))
+        label_revision = int(getattr(self.label_manager, "revision", 0))
         from utils import scalebar
         scale_cfg = scalebar.export_cfg(self) if kind == "right" else None
         # Include the scaled-bar configuration in the key: without it a
@@ -1961,16 +2032,18 @@ class OpenFocus(QMainWindow):
                      else tuple(sorted(scale_cfg.items())))
         entry = cache.get(kind)
         if (entry is not None and entry[0] is image and entry[1] == index
-                and entry[2] == labeled and entry[3] == scale_key):
-            return entry[4]
+                and entry[2] == labeled and entry[3] == scale_key
+                and entry[4] == label_revision):
+            return entry[5]
         display = image
         if labeled or scale_cfg:
             display = self.label_manager.display_bgr_image(
-                "registered", image, index, scale_cfg=scale_cfg)
+                "output", image, index, scale_cfg=scale_cfg)
         pixmap = self._bgr_to_pixmap(display)
         if len(cache) > 4:
             cache.clear()
-        cache[kind] = (image, index, labeled, scale_key, pixmap)
+        cache[kind] = (image, index, labeled, scale_key, label_revision,
+                       pixmap)
         return pixmap
 
     def set_wipe_mode(self, enabled: bool) -> None:
@@ -2061,6 +2134,13 @@ class OpenFocus(QMainWindow):
 
     def _wipe_right_index(self) -> int:
         if self.chk_wipe_follow_right.isChecked():
+            # Follow the result actually shown: the latest fused result is a
+            # single image (frame 1), a registration preview carries its own
+            # frame number.
+            if self.fusion_result is not None:
+                return 0
+            if self.registration_results:
+                return max(0, self.current_result_index)
             return 0
         return self.slider_wipe_right.value()
 

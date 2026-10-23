@@ -85,9 +85,15 @@ def test_delete_all_keeps_the_other_targets_entry_when_one_remains(qapp,
 
     monkeypatch.setattr(module, "show_warning_box", lambda *a, **k: None)
     monkeypatch.setattr(module, "show_success_box", lambda *a, **k: None)
+    from utils.label_model import Label
+    from utils.validators import LabelConfig
+
     window, manager = _annotated_manager(qapp, 1)
-    manager._input_enabled = True
-    manager._registered_enabled = True
+    for target in ("input", "registered"):
+        label = Label(LabelConfig())
+        label.config.target = target
+        label.config.format = "SAMPLE"
+        manager.labels.add(label)
     manager._sync_delete_actions()
 
     manager.delete_registered_labels()
