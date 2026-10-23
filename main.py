@@ -119,6 +119,16 @@ def _capture_label_state(host):
         return None
 
 
+def _restore_scalebar_state(host, saved) -> None:
+    """Apply a snapshot scale-bar state, ignoring hosts without one."""
+    if not isinstance(saved, dict) or not saved:
+        return
+    restore = getattr(host, "_restore_scalebar_state", None)
+    if restore is None:
+        return
+    restore(saved)
+
+
 def _restore_label_state(host, label_state) -> None:
     """Apply a snapshot label state, ignoring hosts without a manager."""
     if label_state is None:
@@ -712,6 +722,34 @@ class OpenFocus(QMainWindow):
         except Exception:
             return None
 
+    def push_scalebar_undo(self, previous: dict) -> None:
+        """Record a scale-bar configuration change as one undoable step."""
+        if getattr(self, "_undo_guard", False):
+            return
+        state = self._capture_stack_state()
+        state["scalebar"] = dict(previous or {})
+        self._mark_project_dirty()
+        self._undo_stack.append(state)
+        if len(self._undo_stack) > self.UNDO_LIMIT:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._refresh_undo_actions()
+
+    def _restore_scalebar_state(self, saved) -> None:
+        if not isinstance(saved, dict) or not saved:
+            return
+        self.scale_bar_enabled = bool(saved.get("enabled", False))
+        self.scale_um_per_px_manual = float(saved.get("manual", 0.0) or 0.0)
+        self.scale_bar_position = saved.get("position", "bottom-right")
+        self.scale_bar_color = saved.get("color", "auto")
+        self.scale_bar_font_family = saved.get("font_family", "")
+        self.scale_bar_font_size = float(saved.get("font_size", 0.0) or 0.0)
+        self.scale_bar_font_bold = bool(saved.get("font_bold", False))
+        self.scale_bar_text_align = saved.get("text_align", "auto")
+        self.scale_bar_target = saved.get("target", "all")
+        self.scale_bar_custom_x = float(saved.get("custom_x", 0.95) or 0.95)
+        self.scale_bar_custom_y = float(saved.get("custom_y", 0.95) or 0.95)
+
     def push_label_undo(self, previous) -> None:
         """Record a label-only change as one undoable step.
 
@@ -770,6 +808,7 @@ class OpenFocus(QMainWindow):
         self.current_scale_factor = float(state.get("scale", 1.0) or 1.0)
         self.base_scale_factor = float(state.get("base_scale", 1.0) or 1.0)
         _restore_label_state(self, state.get("labels"))
+        _restore_scalebar_state(self, state.get("scalebar"))
         # The restored stack invalidates every derived result, exactly like
         # rotate/flip do.
         self.transform_manager.invalidate_processing_results(
@@ -2024,7 +2063,8 @@ class OpenFocus(QMainWindow):
                    and self.label_manager.is_enabled_for_target("output"))
         label_revision = int(getattr(self.label_manager, "revision", 0))
         from utils import scalebar
-        scale_cfg = scalebar.export_cfg(self) if kind == "right" else None
+        scale_cfg = (scalebar.export_cfg(self, target="output")
+                     if kind == "right" else None)
         # Include the scaled-bar configuration in the key: without it a
         # cached pixmap kept showing a bar after it was removed (or kept
         # hiding one after it was added), until the frame changed.
