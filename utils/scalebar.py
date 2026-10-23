@@ -148,51 +148,29 @@ def format_length(um: float) -> str:
 def _load_font(size: int, family: str = None, bold: bool = False):
     """A PIL font at `size`, preferring `family` when one is named.
 
-    The cache key includes the family and the weight. Caching by size alone
-    meant the first font requested was reused for every later one, so picking
-    a typeface in the dialog had no effect on the drawn bar.
+    Resolution lives in utils.fonts so labels and scale bars agree on which
+    typeface a family name maps to. The cache key includes the family and the
+    weight: caching by size alone meant the first font requested was reused
+    for every later one, so picking a typeface in the dialog had no effect.
     """
-    key = (int(size), (family or "").strip().lower(), bool(bold))
-    if key in _font_cache:
-        return _font_cache[key]
-
-    font = None
-    try:
-        from PIL import ImageFont
-        wanted = (family or "").strip()
-        # A named family first: PIL resolves it against the system fonts and
-        # raises when the family is absent, which lets us fall through.
-        if wanted:
-            candidates = [f"{wanted}-Bold.ttf", f"{wanted}.ttf", wanted]
-            if not bold:
-                candidates = [f"{wanted}.ttf", wanted] + candidates[:1]
-            for name in candidates:
-                try:
-                    font = ImageFont.truetype(name, size)
-                    break
-                except Exception:
-                    continue
-        if font is None:
-            for path in _FONT_CANDIDATES:
-                try:
-                    font = ImageFont.truetype(path, size)
-                    break
-                except Exception:
-                    continue
-        if font is None and sys_platform() == "linux":
-            import glob
-            for path in sorted(glob.glob("/usr/share/fonts/**/*.ttf",
-                                         recursive=True))[:80]:
-                try:
-                    font = ImageFont.truetype(path, size)
-                    break
-                except Exception:
-                    continue
-    except Exception:
-        font = None
-
-    _font_cache[key] = font
+    from utils.fonts import load_font
+    font, _actual = load_font(size, family, bold)
     return font
+
+
+def font_substitution(size: int, family: str = None,
+                      bold: bool = False) -> str:
+    """Requested family vs the one actually used ("" when they agree)."""
+    from utils.fonts import load_font
+    _font, actual = load_font(size, family, bold)
+    wanted = (family or "").strip()
+    if not wanted:
+        return ""
+    if not actual or actual == "default":
+        return wanted
+    if actual.lower() != wanted.lower():
+        return wanted
+    return ""
 
 
 def sys_platform():

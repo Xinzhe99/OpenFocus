@@ -131,6 +131,7 @@ class TestWipePixmapCache:
             def __init__(self):
                 self.enabled = False
                 self.calls = 0
+                self.revision = 0
 
             def is_enabled_for_target(self, target):
                 return self.enabled
@@ -171,18 +172,33 @@ class TestWipePixmapCache:
         unlabeled = _rgb_array(window._wipe_pixmap("right", 0, image)).copy()
 
         window.label_manager.enabled = True
+        window.label_manager.revision += 1
         labeled = _rgb_array(window._wipe_pixmap("right", 0, image))
         assert not np.array_equal(unlabeled, labeled), (
             "labels were enabled but the cached pixmap was reused")
 
         window.label_manager.enabled = False
+        window.label_manager.revision += 1
         restored = _rgb_array(window._wipe_pixmap("right", 0, image))
         assert np.array_equal(unlabeled, restored)
+
+    def test_editing_an_enabled_label_invalidates_the_cache(self):
+        """Changing caption content must not serve the previously drawn one."""
+        window = self._window()
+        window.label_manager.enabled = True
+        image = np.full((40, 60, 3), 80, np.uint8)
+        _rgb_array(window._wipe_pixmap("right", 0, image))
+
+        window.label_manager.revision += 1
+        _rgb_array(window._wipe_pixmap("right", 0, image))
+        # The cache must have been recomputed, not reused.
+        assert window.label_manager.calls == 2
 
     def test_left_side_never_gets_registered_labels(self):
         window = self._window()
         image = np.full((40, 60, 3), 80, np.uint8)
         window.label_manager.enabled = True
+        window.label_manager.revision += 1
         plain = _rgb_array(window._wipe_pixmap("left", 0, image))
         assert window.label_manager.calls == 0
         assert tuple(plain[0, 0]) == (80, 80, 80)

@@ -834,249 +834,47 @@ def test_label_draws_with_float_geometry():
     assert not adder.last_error
 
 
-def test_add_label_dialog_has_a_live_preview(qapp):
-    """The dialog must show the label before it is confirmed."""
-    from dialogs.retouch import RetouchDialog  # noqa: F401  (import sanity)
-    from widgets.label_preview import LabelPreview
+def test_label_keeps_uint16_depth_and_leaves_other_pixels():
+    """A caption on a 16-bit frame must not down-convert the image.
 
-    preview = LabelPreview()
-    try:
-        preview.resize(320, 220)
-        preview.set_config({"format": "SAMPLE", "text": "", "font_size": 40,
-                            "x_location": 20, "y_location": 60,
-                            "transparent_bg": True, "font_color": (255,) * 3,
-                            "bg_color": (0,) * 3})
-        assert preview.message() == ""
-        pix = preview.grab()
-        assert pix.width() > 0 and pix.height() > 0
-        # Both fields empty -> the preview reports why nothing is drawn.
-        preview.set_config({"format": "", "text": ""})
-        assert preview.message() == "empty"
-    finally:
-        preview.deleteLater()
-
-
-def test_clear_stack_resets_the_sharpness_curve():
-    """Clearing the stack must remove the sharpness strip.
-
-    Checked at the source level: the curve belongs to the frames that were
-    just dropped, and leaving it drew the old bars under an empty list.
-    """
-    from pathlib import Path
-
-    src = Path("controllers/source_manager.py").read_text(encoding="utf-8")
-    block = src[src.index("def clear_image_stack(self) -> None:"):]
-    block = block[:block.index("def update_slider_range")]
-    assert "sharpness_curve" in block and ".clear()" in block, (
-        "clear_image_stack must reset the sharpness curve")
-
-
-def test_gpu_menu_follows_the_hardware(qapp):
-    """The GPU item must be unticked and disabled without a device."""
-    from PyQt6.QtGui import QAction
-
-    from utils import platform_utils
-
-    platform_utils.reset_gpu_probe_cache()
-    present = platform_utils.has_compute_gpu()
-    from pathlib import Path
-
-    src = Path("ui/menus.py").read_text(encoding="utf-8")
-    block = src[src.index("gpu_action = QAction("):]
-    block = block[:block.index("settings_menu.addAction(gpu_action)")]
-    assert "has_compute_gpu" in block, (
-        "the GPU menu item must ask the hardware")
-    assert "setEnabled(_gpu_present)" in block
-    if not present:
-        # And the setter refuses to turn it on.
-        main_src = Path("main.py").read_text(encoding="utf-8")
-        setter = main_src[main_src.index("def set_use_gpu("):]
-        setter = setter[:setter.index("def set_restore_last_stack")]
-        assert "has_compute_gpu" in setter
-    assert QAction is not None
-
-
-
-
-def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):
-    """The picker must not get a second, empty list widget.
-
-    Inserting a QListWidget into Qt's splitter put an empty column beside the
-    real place list - the blank box reported in the screenshot.
-    """
-    from PyQt6.QtWidgets import QApplication, QSplitter, QListView
-
-    from dialogs.batch import BatchProcessingDialog
-
-    stack = tmp_path / "stackA"
-    stack.mkdir()
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-
-    def probe():
-        from PyQt6.QtWidgets import QFileDialog
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    spl = wd.findChild(QSplitter)
-                    captured["count"] = spl.count() if spl else 0
-                    captured["sidebar"] = (type(spl.widget(0)).__name__
-                                           if spl else None)
-                    captured["widgets"] = [type(spl.widget(i)).__name__
-                                           for i in range(spl.count())] if spl else []
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folder_to_list(str(stack))
-        dlg.add_folders()
-        assert captured.get("count") == 2, captured
-        assert captured.get("sidebar") == "QListView"
-        # Only the sidebar and the file view; no extra list widget.
-        assert captured["widgets"].count("QListWidget") == 0, captured
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_picker_path_field_is_editable(qapp, tmp_path):
-    """Qt's "Look in" combo is a plain dropdown unless made editable."""
-    from PyQt6.QtWidgets import QApplication, QComboBox, QFileDialog
-
-    from dialogs.batch import BatchProcessingDialog
-
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-    target = tmp_path / "stackB"
-    target.mkdir()
-
-    def probe():
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    for combo in wd.findChildren(QComboBox):
-                        if combo.objectName() == "lookInCombo":
-                            captured["editable"] = combo.isEditable()
-                            line = combo.lineEdit()
-                            captured["line"] = line is not None
-                            if line is not None:
-                                line.setText(str(target))
-                                line.returnPressed.emit()
-                                QApplication.processEvents()
-                                captured["dir"] = wd.directory().absolutePath()
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folders()
-        assert captured.get("editable"), "the path combo must accept typing"
-        assert captured.get("line"), "no line edit to type into"
-        assert captured.get("dir", "").replace("\\", "/").lower() == \
-            str(target).replace("\\", "/").lower(), captured
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_picker_keeps_only_qt_places(qapp, tmp_path):
-    """No custom entries in the place sidebar.
-
-    "Last used" and "Queued: <name>" were appended to Qt's place model; they
-    duplicated what the picker already offers and pushed the useful entries
-    down. The sidebar must keep exactly the standard locations.
-    """
-    from PyQt6.QtWidgets import QApplication, QFileDialog, QSplitter
-
-    from dialogs.batch import BatchProcessingDialog
-
-    stack = tmp_path / "stackA"
-    stack.mkdir()
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-
-    def probe():
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    spl = wd.findChild(QSplitter)
-                    model = spl.widget(0).model()
-                    captured["places"] = [model.index(r, 0).data()
-                                          for r in range(model.rowCount())]
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folder_to_list(str(stack))
-        dlg.add_folders()
-        places = captured.get("places") or []
-        assert places, "the sidebar is empty"
-        joined = " ".join(str(p) for p in places).lower()
-        assert "queued" not in joined and "已排队" not in joined
-        assert "last used" not in joined and "上次使用" not in joined
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_list_shows_at_least_three_rows(qapp):
-    """The queued-stack list must not collapse to a single clipped row."""
-    from dialogs.batch import BatchProcessingDialog
-
-    dlg = BatchProcessingDialog(None)
-    try:
-        needed = dlg._folder_row_height() * 3
-        assert dlg.folder_list.minimumHeight() >= needed, (
-            f"min height {dlg.folder_list.minimumHeight()} < 3 rows "
-            f"({needed}px)")
-    finally:
-        dlg.deleteLater()
-
-
-def test_label_text_resolution_rules():
-    """`format` is the template; `text` is only a fallback.
-
-    The old rule was "if '{value}' is in format, use format, else use text",
-    so typing "SAMPLE" into the format field and leaving the separate custom
-    text box empty produced an EMPTY label: the dialog saved the settings,
-    reported success, and drew nothing.
-    """
-    from utils.validators import build_label_text
-
-    assert build_label_text("{value}", "", 3) == "3"
-    assert build_label_text("Fig {value}", "", 3) == "Fig 3"
-    assert build_label_text("SAMPLE", "", 3) == "SAMPLE"
-    assert build_label_text("", "FIGURE", 3) == "FIGURE"
-    assert build_label_text("", "", 3) == ""
-    # Steppers hand back floats; "Fig 3.0" is not what anyone typed.
-    assert build_label_text("Fig {value}", "", 3.0) == "Fig 3"
-
-
-def test_label_draws_with_float_geometry():
-    """cv2.putText rejects float coordinates ("Can't parse 'org'").
-
-    The dialog's steppers expose the QDoubleSpinBox API and return floats, and
-    the draw error was swallowed, so perfectly valid settings drew nothing.
+    Drawing used to round-trip through an 8-bit copy for the whole frame;
+    only the pixels the caption touches may change, and they must stay
+    representable at the original depth.
     """
     import numpy as np
 
     from utils.validators import LabelAdder
 
-    image = np.full((300, 400, 3), 80, np.uint8)
+    image = np.full((160, 260, 3), 40000, np.uint16)
+    image[0:4, 0:4] = 1234
     adder = LabelAdder()
     adder.config.update_config({
-        "format": "Fig {value}", "font_size": 70.0, "x_location": 30.0,
-        "y_location": 100.0, "starting_value": 1.0, "interval": 1.0,
-        "transparent_bg": True, "font_color": (255, 255, 255),
-        "bg_color": (0, 0, 0),
+        "format": "SAMPLE", "font_size": 28, "x_location": 12,
+        "y_location": 60, "range": "All", "transparent_bg": True,
+        "font_color": (255, 255, 255), "bg_color": (0, 0, 0),
+        "font_family": "Arial",
     })
     out = adder.add_label_to_image(image.copy(), 0)
-    assert (out != image).any(), "a label with valid settings drew nothing"
+    assert out.dtype == np.uint16
+    assert np.array_equal(out[0:4, 0:4], image[0:4, 0:4]), (
+        "pixels outside the caption changed")
+    assert not np.array_equal(out, image), "nothing was drawn"
+
+
+def test_label_outside_the_range_is_reported_not_drawn():
+    """Out-of-range is a state, not a failure and not a silent success."""
+    import numpy as np
+
+    from utils.validators import LabelAdder
+
+    adder = LabelAdder()
+    adder.config.update_config({"format": "SAMPLE", "range": "9-10",
+                                "font_size": 24, "x_location": 5,
+                                "y_location": 40})
+    image = np.full((80, 120, 3), 60, np.uint8)
+    out = adder.add_label_to_image(image.copy(), 0)
+    assert np.array_equal(out, image)
+    assert adder.last_out_of_range is True
     assert not adder.last_error
 
 
@@ -1326,6 +1124,50 @@ def test_label_draws_with_float_geometry():
     assert not adder.last_error
 
 
+def test_label_keeps_uint16_depth_and_leaves_other_pixels():
+    """A caption on a 16-bit frame must not down-convert the image.
+
+    Drawing used to round-trip through an 8-bit copy for the whole frame;
+    only the pixels the caption touches may change, and they must stay
+    representable at the original depth.
+    """
+    import numpy as np
+
+    from utils.validators import LabelAdder
+
+    image = np.full((160, 260, 3), 40000, np.uint16)
+    image[0:4, 0:4] = 1234
+    adder = LabelAdder()
+    adder.config.update_config({
+        "format": "SAMPLE", "font_size": 28, "x_location": 12,
+        "y_location": 60, "range": "All", "transparent_bg": True,
+        "font_color": (255, 255, 255), "bg_color": (0, 0, 0),
+        "font_family": "Arial",
+    })
+    out = adder.add_label_to_image(image.copy(), 0)
+    assert out.dtype == np.uint16
+    assert np.array_equal(out[0:4, 0:4], image[0:4, 0:4]), (
+        "pixels outside the caption changed")
+    assert not np.array_equal(out, image), "nothing was drawn"
+
+
+def test_label_outside_the_range_is_reported_not_drawn():
+    """Out-of-range is a state, not a failure and not a silent success."""
+    import numpy as np
+
+    from utils.validators import LabelAdder
+
+    adder = LabelAdder()
+    adder.config.update_config({"format": "SAMPLE", "range": "9-10",
+                                "font_size": 24, "x_location": 5,
+                                "y_location": 40})
+    image = np.full((80, 120, 3), 60, np.uint8)
+    out = adder.add_label_to_image(image.copy(), 0)
+    assert np.array_equal(out, image)
+    assert adder.last_out_of_range is True
+    assert not adder.last_error
+
+
 def test_add_label_dialog_has_a_live_preview(qapp):
     """The dialog must show the label before it is confirmed."""
     from dialogs.retouch import RetouchDialog  # noqa: F401  (import sanity)
@@ -1569,6 +1411,340 @@ def test_label_draws_with_float_geometry():
     })
     out = adder.add_label_to_image(image.copy(), 0)
     assert (out != image).any(), "a label with valid settings drew nothing"
+    assert not adder.last_error
+
+
+def test_label_keeps_uint16_depth_and_leaves_other_pixels():
+    """A caption on a 16-bit frame must not down-convert the image.
+
+    Drawing used to round-trip through an 8-bit copy for the whole frame;
+    only the pixels the caption touches may change, and they must stay
+    representable at the original depth.
+    """
+    import numpy as np
+
+    from utils.validators import LabelAdder
+
+    image = np.full((160, 260, 3), 40000, np.uint16)
+    image[0:4, 0:4] = 1234
+    adder = LabelAdder()
+    adder.config.update_config({
+        "format": "SAMPLE", "font_size": 28, "x_location": 12,
+        "y_location": 60, "range": "All", "transparent_bg": True,
+        "font_color": (255, 255, 255), "bg_color": (0, 0, 0),
+        "font_family": "Arial",
+    })
+    out = adder.add_label_to_image(image.copy(), 0)
+    assert out.dtype == np.uint16
+    assert np.array_equal(out[0:4, 0:4], image[0:4, 0:4]), (
+        "pixels outside the caption changed")
+    assert not np.array_equal(out, image), "nothing was drawn"
+
+
+def test_label_outside_the_range_is_reported_not_drawn():
+    """Out-of-range is a state, not a failure and not a silent success."""
+    import numpy as np
+
+    from utils.validators import LabelAdder
+
+    adder = LabelAdder()
+    adder.config.update_config({"format": "SAMPLE", "range": "9-10",
+                                "font_size": 24, "x_location": 5,
+                                "y_location": 40})
+    image = np.full((80, 120, 3), 60, np.uint8)
+    out = adder.add_label_to_image(image.copy(), 0)
+    assert np.array_equal(out, image)
+    assert adder.last_out_of_range is True
+    assert not adder.last_error
+
+
+def test_add_label_dialog_has_a_live_preview(qapp):
+    """The dialog must show the label before it is confirmed."""
+    from dialogs.retouch import RetouchDialog  # noqa: F401  (import sanity)
+    from widgets.label_preview import LabelPreview
+
+    preview = LabelPreview()
+    try:
+        preview.resize(320, 220)
+        preview.set_config({"format": "SAMPLE", "text": "", "font_size": 40,
+                            "x_location": 20, "y_location": 60,
+                            "transparent_bg": True, "font_color": (255,) * 3,
+                            "bg_color": (0,) * 3})
+        assert preview.message() == ""
+        pix = preview.grab()
+        assert pix.width() > 0 and pix.height() > 0
+        # Both fields empty -> the preview reports why nothing is drawn.
+        preview.set_config({"format": "", "text": ""})
+        assert preview.message() == "empty"
+    finally:
+        preview.deleteLater()
+
+
+def test_clear_stack_resets_the_sharpness_curve():
+    """Clearing the stack must remove the sharpness strip.
+
+    Checked at the source level: the curve belongs to the frames that were
+    just dropped, and leaving it drew the old bars under an empty list.
+    """
+    from pathlib import Path
+
+    src = Path("controllers/source_manager.py").read_text(encoding="utf-8")
+    block = src[src.index("def clear_image_stack(self) -> None:"):]
+    block = block[:block.index("def update_slider_range")]
+    assert "sharpness_curve" in block and ".clear()" in block, (
+        "clear_image_stack must reset the sharpness curve")
+
+
+def test_gpu_menu_follows_the_hardware(qapp):
+    """The GPU item must be unticked and disabled without a device."""
+    from PyQt6.QtGui import QAction
+
+    from utils import platform_utils
+
+    platform_utils.reset_gpu_probe_cache()
+    present = platform_utils.has_compute_gpu()
+    from pathlib import Path
+
+    src = Path("ui/menus.py").read_text(encoding="utf-8")
+    block = src[src.index("gpu_action = QAction("):]
+    block = block[:block.index("settings_menu.addAction(gpu_action)")]
+    assert "has_compute_gpu" in block, (
+        "the GPU menu item must ask the hardware")
+    assert "setEnabled(_gpu_present)" in block
+    if not present:
+        # And the setter refuses to turn it on.
+        main_src = Path("main.py").read_text(encoding="utf-8")
+        setter = main_src[main_src.index("def set_use_gpu("):]
+        setter = setter[:setter.index("def set_restore_last_stack")]
+        assert "has_compute_gpu" in setter
+    assert QAction is not None
+
+
+
+
+def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):
+    """The picker must not get a second, empty list widget.
+
+    Inserting a QListWidget into Qt's splitter put an empty column beside the
+    real place list - the blank box reported in the screenshot.
+    """
+    from PyQt6.QtWidgets import QApplication, QSplitter, QListView
+
+    from dialogs.batch import BatchProcessingDialog
+
+    stack = tmp_path / "stackA"
+    stack.mkdir()
+    dlg = BatchProcessingDialog(None)
+    captured = {}
+
+    def probe():
+        from PyQt6.QtWidgets import QFileDialog
+        for wd in QApplication.topLevelWidgets():
+            if isinstance(wd, QFileDialog) and wd.isVisible():
+                try:
+                    spl = wd.findChild(QSplitter)
+                    captured["count"] = spl.count() if spl else 0
+                    captured["sidebar"] = (type(spl.widget(0)).__name__
+                                           if spl else None)
+                    captured["widgets"] = [type(spl.widget(i)).__name__
+                                           for i in range(spl.count())] if spl else []
+                finally:
+                    wd.reject()
+                break
+
+    try:
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(400, probe)
+        dlg.add_folder_to_list(str(stack))
+        dlg.add_folders()
+        assert captured.get("count") == 2, captured
+        assert captured.get("sidebar") == "QListView"
+        # Only the sidebar and the file view; no extra list widget.
+        assert captured["widgets"].count("QListWidget") == 0, captured
+    finally:
+        dlg.deleteLater()
+
+
+def test_folder_picker_path_field_is_editable(qapp, tmp_path):
+    """Qt's "Look in" combo is a plain dropdown unless made editable."""
+    from PyQt6.QtWidgets import QApplication, QComboBox, QFileDialog
+
+    from dialogs.batch import BatchProcessingDialog
+
+    dlg = BatchProcessingDialog(None)
+    captured = {}
+    target = tmp_path / "stackB"
+    target.mkdir()
+
+    def probe():
+        for wd in QApplication.topLevelWidgets():
+            if isinstance(wd, QFileDialog) and wd.isVisible():
+                try:
+                    for combo in wd.findChildren(QComboBox):
+                        if combo.objectName() == "lookInCombo":
+                            captured["editable"] = combo.isEditable()
+                            line = combo.lineEdit()
+                            captured["line"] = line is not None
+                            if line is not None:
+                                line.setText(str(target))
+                                line.returnPressed.emit()
+                                QApplication.processEvents()
+                                captured["dir"] = wd.directory().absolutePath()
+                finally:
+                    wd.reject()
+                break
+
+    try:
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(400, probe)
+        dlg.add_folders()
+        assert captured.get("editable"), "the path combo must accept typing"
+        assert captured.get("line"), "no line edit to type into"
+        assert captured.get("dir", "").replace("\\", "/").lower() == \
+            str(target).replace("\\", "/").lower(), captured
+    finally:
+        dlg.deleteLater()
+
+
+def test_folder_picker_keeps_only_qt_places(qapp, tmp_path):
+    """No custom entries in the place sidebar.
+
+    "Last used" and "Queued: <name>" were appended to Qt's place model; they
+    duplicated what the picker already offers and pushed the useful entries
+    down. The sidebar must keep exactly the standard locations.
+    """
+    from PyQt6.QtWidgets import QApplication, QFileDialog, QSplitter
+
+    from dialogs.batch import BatchProcessingDialog
+
+    stack = tmp_path / "stackA"
+    stack.mkdir()
+    dlg = BatchProcessingDialog(None)
+    captured = {}
+
+    def probe():
+        for wd in QApplication.topLevelWidgets():
+            if isinstance(wd, QFileDialog) and wd.isVisible():
+                try:
+                    spl = wd.findChild(QSplitter)
+                    model = spl.widget(0).model()
+                    captured["places"] = [model.index(r, 0).data()
+                                          for r in range(model.rowCount())]
+                finally:
+                    wd.reject()
+                break
+
+    try:
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(400, probe)
+        dlg.add_folder_to_list(str(stack))
+        dlg.add_folders()
+        places = captured.get("places") or []
+        assert places, "the sidebar is empty"
+        joined = " ".join(str(p) for p in places).lower()
+        assert "queued" not in joined and "已排队" not in joined
+        assert "last used" not in joined and "上次使用" not in joined
+    finally:
+        dlg.deleteLater()
+
+
+def test_folder_list_shows_at_least_three_rows(qapp):
+    """The queued-stack list must not collapse to a single clipped row."""
+    from dialogs.batch import BatchProcessingDialog
+
+    dlg = BatchProcessingDialog(None)
+    try:
+        needed = dlg._folder_row_height() * 3
+        assert dlg.folder_list.minimumHeight() >= needed, (
+            f"min height {dlg.folder_list.minimumHeight()} < 3 rows "
+            f"({needed}px)")
+    finally:
+        dlg.deleteLater()
+
+
+def test_label_text_resolution_rules():
+    """`format` is the template; `text` is only a fallback.
+
+    The old rule was "if '{value}' is in format, use format, else use text",
+    so typing "SAMPLE" into the format field and leaving the separate custom
+    text box empty produced an EMPTY label: the dialog saved the settings,
+    reported success, and drew nothing.
+    """
+    from utils.validators import build_label_text
+
+    assert build_label_text("{value}", "", 3) == "3"
+    assert build_label_text("Fig {value}", "", 3) == "Fig 3"
+    assert build_label_text("SAMPLE", "", 3) == "SAMPLE"
+    assert build_label_text("", "FIGURE", 3) == "FIGURE"
+    assert build_label_text("", "", 3) == ""
+    # Steppers hand back floats; "Fig 3.0" is not what anyone typed.
+    assert build_label_text("Fig {value}", "", 3.0) == "Fig 3"
+
+
+def test_label_draws_with_float_geometry():
+    """cv2.putText rejects float coordinates ("Can't parse 'org'").
+
+    The dialog's steppers expose the QDoubleSpinBox API and return floats, and
+    the draw error was swallowed, so perfectly valid settings drew nothing.
+    """
+    import numpy as np
+
+    from utils.validators import LabelAdder
+
+    image = np.full((300, 400, 3), 80, np.uint8)
+    adder = LabelAdder()
+    adder.config.update_config({
+        "format": "Fig {value}", "font_size": 70.0, "x_location": 30.0,
+        "y_location": 100.0, "starting_value": 1.0, "interval": 1.0,
+        "transparent_bg": True, "font_color": (255, 255, 255),
+        "bg_color": (0, 0, 0),
+    })
+    out = adder.add_label_to_image(image.copy(), 0)
+    assert (out != image).any(), "a label with valid settings drew nothing"
+    assert not adder.last_error
+
+
+def test_label_keeps_uint16_depth_and_leaves_other_pixels():
+    """A caption on a 16-bit frame must not down-convert the image.
+
+    Drawing used to round-trip through an 8-bit copy for the whole frame;
+    only the pixels the caption touches may change, and they must stay
+    representable at the original depth.
+    """
+    import numpy as np
+
+    from utils.validators import LabelAdder
+
+    image = np.full((160, 260, 3), 40000, np.uint16)
+    image[0:4, 0:4] = 1234
+    adder = LabelAdder()
+    adder.config.update_config({
+        "format": "SAMPLE", "font_size": 28, "x_location": 12,
+        "y_location": 60, "range": "All", "transparent_bg": True,
+        "font_color": (255, 255, 255), "bg_color": (0, 0, 0),
+        "font_family": "Arial",
+    })
+    out = adder.add_label_to_image(image.copy(), 0)
+    assert out.dtype == np.uint16
+    assert np.array_equal(out[0:4, 0:4], image[0:4, 0:4]), (
+        "pixels outside the caption changed")
+    assert not np.array_equal(out, image), "nothing was drawn"
+
+
+def test_label_outside_the_range_is_reported_not_drawn():
+    """Out-of-range is a state, not a failure and not a silent success."""
+    import numpy as np
+
+    from utils.validators import LabelAdder
+
+    adder = LabelAdder()
+    adder.config.update_config({"format": "SAMPLE", "range": "9-10",
+                                "font_size": 24, "x_location": 5,
+                                "y_location": 40})
+    image = np.full((80, 120, 3), 60, np.uint8)
+    out = adder.add_label_to_image(image.copy(), 0)
+    assert np.array_equal(out, image)
+    assert adder.last_out_of_range is True
     assert not adder.last_error
 
 
