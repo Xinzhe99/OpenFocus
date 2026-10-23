@@ -1060,7 +1060,10 @@ class OpenFocus(QMainWindow):
         banner = getattr(self, "update_banner", None)
         if banner is None or not tag:
             return
-        if not ready and tag == self._banner_dismissed_tag():
+        # Hiding a version's reminder is a decision about that version, not
+        # about the download state: a READY build used to bypass it and pop
+        # the banner back up.
+        if tag == self._banner_dismissed_tag():
             return
         from constants import APP_VERSION
         banner.show_for(tag, APP_VERSION, ready=ready)
@@ -1215,8 +1218,9 @@ class OpenFocus(QMainWindow):
         if state == STATE_READY and tag:
             self._show_status_message(
                 trans.t('update_status_ready').format(version=tag), 8000)
-            # The build finished downloading: the banner's action flips from
-            # "update now" to "restart", even if the banner was hidden.
+            # The build finished downloading. The banner stays hidden if the
+            # user hid this version; the status bar and Help menu still lead
+            # to the restart, so the choice is not lost.
             self._show_update_banner(tag, ready=True)
         self._refresh_update_indicator()
 
@@ -1236,24 +1240,89 @@ class OpenFocus(QMainWindow):
             if manager.zip_url:
                 manager.download(manager.tag, manager.zip_url, manual=True)
             return
-        # Applying the update closes the app and terminates its workers, so a
-        # running render/batch would lose its result without a word.
-        if self._has_work_in_flight() and not self._confirm_update_quit():
-            return
+        # Applying the update closes the app and stops its workers. The
+        # manager runs the shared protection (tasks, unexported pixels,
+        # unsaved project, snapshot) before it starts the swap script.
         manager.apply_and_restart()
 
     def _confirm_update_quit(self) -> bool:
+        """Ask before a restart stops running tasks.
+
+        The safe choice is the default: the old dialog defaulted to quitting
+        and discarding the running work.
+        """
         from PyQt6.QtWidgets import QMessageBox
         box = QMessageBox(self)
         style_message_box(box)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle(trans.t('msg_warning'))
         box.setText(trans.t('msg_update_discards_work'))
-        yes = box.addButton(trans.t('btn_quit_anyway'), QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(trans.t('btn_continue'), QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(yes)
+        cancel_tasks = box.addButton(trans.t('btn_cancel_tasks_and_update'),
+                                     QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton(trans.t('btn_continue'),
+                             QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
         box.exec()
-        return box.clickedButton() is yes
+        if box.clickedButton() is not cancel_tasks:
+            return False
+        self._show_status_message(trans.t('msg_update_cancel_stopping'), 5000)
+        self._cancel_running_work()
+        return True
+
+    def prepare_for_update_restart(self) -> bool:
+        """Protect every kind of work before the swap script starts.
+
+        Used by all restart entries. Returns False when the user decided to
+        keep working, or when the session could not be saved; the staged build
+        stays available in both cases.
+        """
+        # 1) Running tasks: stop them cooperatively only after confirmation.
+        if self._has_work_in_flight() and not self._confirm_update_quit():
+            return False
+        # 2) Unexported result pixels: export, discard or cancel the restart.
+        if hasattr(self, "output_manager") \
+                and not self.output_manager.confirm_unexported_on_exit():
+            return False
+        # 3) Unsaved project state: save it, or let the user cancel.
+        if getattr(self, "_project_dirty", False):
+            if not self._confirm_discard_project_changes(
+                    "msg_discard_unsaved_project_quit"):
+                return False
+        # 4) Persist preferences and a fresh session snapshot. Without a
+        #    snapshot the relaunched build has nothing trustworthy to restore,
+        #    so the update must not proceed.
+        try:
+            self.persist_settings()
+        except Exception:
+            pass
+        from utils import recovery
+        if not recovery.write_snapshot(self):
+            show_warning_box(self, trans.t('update_check_failed_title'),
+                             trans.t('msg_update_snapshot_failed'))
+            return False
+        return True
+
+    def _cancel_running_work(self) -> None:
+        """Cooperative stop of every long-running job (no terminate())."""
+        render_manager = getattr(self, "render_manager", None)
+        worker = getattr(render_manager, "worker", None) if render_manager else None
+        if worker is not None and worker.isRunning():
+            try:
+                worker.is_cancelled = True
+            except Exception:
+                pass
+        batch_manager = getattr(self, "batch_manager", None)
+        if batch_manager is not None:
+            try:
+                batch_manager._cancel_running_batch()
+            except Exception:
+                pass
+        roi_worker = getattr(self, "roi_alignment_worker", None)
+        if roi_worker is not None:
+            try:
+                roi_worker.cancel()
+            except Exception:
+                pass
 
     def _open_releases_page(self) -> None:
         from utils.updater import RELEASES_PAGE_URL
@@ -3315,29 +3384,40 @@ if __name__ == "__main__":
     recovered = False
     if restore_hint is not None:
         from utils.project_file import apply_project, validate_project
-        state = None
-        project_loaded = False
-        if restore_hint:
+        # The snapshot written immediately before the restart is the newest
+        # state. The saved project is only the document association: preferring
+        # it reopened an older configuration and silently dropped the changes
+        # made after the last Ctrl+Alt+S.
+        state = recovery.load_snapshot_state()
+        snapshot_used = state is not None
+        if state is None and restore_hint:
             ok, _err, state = validate_project(restore_hint)
-            if ok:
-                project_loaded = True
-            else:
+            if not ok:
                 state = None
-                _log.warning("update restore: %s is no longer valid", restore_hint)
-        if state is None:
-            state = recovery.load_snapshot_state()
+                _log.warning("update restore: %s is no longer valid",
+                             restore_hint)
         if state is not None:
-            # Only claim the recorded project when that project itself loaded:
-            # pointing project_path at a stale file made the next Ctrl+S write
-            # the snapshot over it.
-            window.project_path = (restore_hint if project_loaded
-                                   else recovery.session_path())
-            apply_project(window, state)
-            recovered = True
-            _log.info("restored the session after an update (%s)",
-                      window.project_path)
-            QTimer.singleShot(1200, lambda: window._show_status_message(
-                trans.t('update_restored_session'), 8000))
+            # Only claim the recorded project when its own file is what we
+            # loaded; otherwise point at the snapshot that actually loaded.
+            window.project_path = (restore_hint if restore_hint and not
+                                   snapshot_used else recovery.session_path())
+
+            def _restored_ok():
+                window._show_status_message(
+                    trans.t('update_restored_session'), 8000)
+
+            def _restored_failed(reason: str):
+                _log.warning("update restore failed: %s", reason)
+                show_warning_box(window, trans.t('update_check_failed_title'),
+                                 trans.t('update_restore_failed'))
+
+            try:
+                apply_project(window, state, on_loaded=_restored_ok)
+                recovered = True
+                _log.info("restoring the session after an update (%s)",
+                          window.project_path)
+            except Exception as exc:
+                _restored_failed(str(exc))
         else:
             # Nothing to restore: do not consume the user's launch arguments
             # and do not claim a restore that did not happen.
