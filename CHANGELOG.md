@@ -5,6 +5,54 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed (UI/UX specification pass, docs/ux-specs)
+- **Labels are a managed list, not two overwritten slots.** Add/select/edit/
+  delete a caption by identity; explicit source / registered / output targets;
+  strict frame ranges (`3-5,x` is refused instead of silently meaning "all");
+  a real-font renderer that falls back visibly when the chosen family cannot
+  draw the text; preview and every export share one target and frame number,
+  so a result is `{value}` 1 in Save, Save As, drag-out and Export All.
+  Labels can be undone, mark the project dirty, and are written with the full
+  scale-bar style.
+- **Scale bar calibration is explicit and draft-only.** Metadata or manual
+  mode (manual wins), manual values are per original pixel and converted by
+  the working scale, Cancel no longer leaks a preview value into the main
+  window, and the drawn bar length always matches its printed length (an
+  image that cannot fit a legible bar now says so instead of drawing a
+  shorter bar with the old label). 16-bit drawing keeps every style argument.
+- **Export paths follow the chosen file-type filter**, never overwrite an
+  existing file in a directory export, report per-file failures, and mark a
+  result "changed since export" when its pixels were replaced afterwards.
+  Project saves now state their real scope (configuration, not result pixels)
+  and include excluded frames plus the complete scale-bar state.
+- **Method comparison uses the participating frames**, separates "compute
+  range" from "view" (detail crop vs whole result), shows queued/running/
+  stopping/done states, and can adopt parameters or a verified full-frame
+  result as a new protected output. The real render now passes DTCWT levels.
+- **Depth map and 3D** keep a request revision (a late result cannot become
+  current), block export of a stale map, record the source summary, convert
+  16-bit textures with the display rule, use the requested sampling for drag
+  frames, and fill surface gaps by nearest sample inside the silhouette
+  instead of a dot cloud.
+- **Updates** protect running tasks, unexported pixels, unsaved project state
+  and a fresh snapshot before any hand-off; the newest snapshot is restored
+  first and success is only reported after the frames load; staged builds
+  must be newer than the running version; hiding a version survives READY.
+- **Retouch** `[` / `]` now update the document brush, the restore tool has
+  correct help text, preview refuses publication, publication evicts history
+  only after success, and closing no longer blocks on the detail-map worker.
+- **Batch** split mode exports aligned frames when no fusion method is
+  selected, keeps OpenFocus alignment, no longer mutates the shared parameter
+  dict, reports success/partial/failed/cancelled/not-started per task,
+  preserves natural order and accepts the stepper's float count.
+- **Main workflow** shows "participating N of M" in the source header, names
+  the ROI base frame with its output size, and distinguishes "Render All
+  Methods…" from "Method Comparison…".
+- **Settings / tools**: the auto-download checkbox calls the real setter,
+  the advanced-settings description states that AI mode and registration
+  width affect results, flat-field correction commits atomically, and
+  standard dialog buttons are localized.
+
 ## [v1.67.0] — 2026-10-23
 
 ### Added (retouch workspace)
