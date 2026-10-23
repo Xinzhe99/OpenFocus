@@ -564,6 +564,7 @@ class RenderManager:
                 if callable(getattr(window, "smoothing_for_method", None))
                 else getattr(window, "of_blend_smoothing", None)),
             exposure_match=_brightness(window, "exposure_match", fusion_method),
+            dtcwt_levels=int(getattr(window, "dtcwt_levels", 4) or 4),
         )
 
         self._progress_first_t = None
