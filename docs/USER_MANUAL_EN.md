@@ -179,7 +179,7 @@ writes the entire stack back into a single `.tif`, preserving 16-bit depth.
 
 ### Scale Bar (Publication Figures)
 
-Settings → Scale Bar… configures a scale bar burned into exported images.
+Tools → Scale Bar… configures a scale bar burned into exported images.
 The pixel size (µm/px) is auto-detected from TIFF metadata — ImageJ's
 `unit=micron` convention, OME-TIFF's `PhysicalSizeX`, or an explicit
 centimetre resolution unit — so microscopy stacks (including multi-page
