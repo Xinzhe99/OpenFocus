@@ -500,6 +500,11 @@ class ImageStackLoader:
             'dtype': img.dtype
         }
 
+    @staticmethod
+    def missing_timestamps(images_with_times: list) -> int:
+        """How many frames in the group have no capture time."""
+        return sum(1 for item in images_with_times if item[2] is None)
+
     def get_image_timestamp(self, filepath: str) -> Optional[float]:
         if not PIL_AVAILABLE:
             return None
@@ -564,10 +569,12 @@ class ImageStackLoader:
         def get_sort_key(item):
             if sort_by == 'timestamp':
                 ts = item[3]
-                if ts is not None:
-                    return ts
-                return float('inf')
-            return natural_sort_key(item[0])
+                # Equal or missing timestamps must still have a stable,
+                # predictable order: without a filename tie-break, same-second
+                # bursts followed the directory enumeration.
+                return (0, ts, natural_sort_key(item[0])) \
+                    if ts is not None else (1, 0.0, natural_sort_key(item[0]))
+            return (0, 0.0, natural_sort_key(item[0]))
 
         loaded_data.sort(key=get_sort_key)
 
@@ -586,6 +593,13 @@ class ImageStackLoader:
         images_with_times: List[Tuple[str, np.ndarray, Optional[float]]],
         count_per_stack: int
     ) -> List[List[Tuple[str, np.ndarray, Optional[float]]]]:
+        # The dialog's stepper returns a float even with decimals=0; range()
+        # rejects it with TypeError. Normalise at this boundary rather than
+        # weakening the generic numeric widget.
+        try:
+            count_per_stack = int(round(float(count_per_stack)))
+        except (TypeError, ValueError):
+            count_per_stack = 1
         if count_per_stack <= 0:
             count_per_stack = 1
 
@@ -602,6 +616,17 @@ class ImageStackLoader:
         images_with_times: list,
         threshold_seconds: float
     ) -> list:
+        """Group by capture gaps; the last group keeps trailing frames.
+
+        Frames without a timestamp cannot be placed in time, so they start a
+        new group instead of being silently merged into whichever neighbour
+        happened to come first. `missing_timestamps()` lets the UI say how
+        many there are.
+        """
+        try:
+            threshold_seconds = float(threshold_seconds)
+        except (TypeError, ValueError):
+            threshold_seconds = 1.0
         if threshold_seconds <= 0:
             threshold_seconds = 1.0
 
@@ -614,7 +639,9 @@ class ImageStackLoader:
                 continue
 
             if timestamp is None:
-                current_stack.append((path, img, timestamp))
+                if current_stack:
+                    stacks.append(current_stack)
+                current_stack = [(path, img, timestamp)]
                 continue
 
             prev_timestamp = images_with_times[i - 1][2]
