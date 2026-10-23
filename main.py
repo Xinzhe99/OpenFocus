@@ -3193,7 +3193,7 @@ class OpenFocus(QMainWindow):
         # ElidingButton elides for the current width itself; setting the hint
         # after setText keeps the shortcut description rather than the label.
         c.btn_compare.setToolTip(
-            f"{c.btn_compare.full_text()}\n{trans.t('btn_compare_all_hint')}")
+            f"{trans.t('btn_compare_all')}\n{trans.t('btn_compare_all_hint')}")
         # Panel titles are QLabels built once at startup; without this they
         # kept the language the app was launched in ("Source Stack"/"Output"
         # stayed English after switching to Polish).
@@ -3219,7 +3219,12 @@ class OpenFocus(QMainWindow):
 
         # Lists labels
         count = self.file_list.count()
-        c.source_images_label.setText(trans.t('label_source_images').format(count))
+        try:
+            c.source_images_label.setText(
+                self.source_manager._source_count_text(count))
+        except Exception:
+            c.source_images_label.setText(
+                trans.t('label_source_images').format(count))
         
         out_count = self.output_list.count()
         c.output_label.setText(trans.t('label_output').format(out_count))

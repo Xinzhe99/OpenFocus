@@ -33,7 +33,26 @@ class SourceManager:
     # ------------------------------------------------------------------
     def update_source_images_count(self) -> None:
         count = self.window.file_list.count()
-        self.window.source_images_label.setText(trans.t("label_source_images").format(count))
+        self._refresh_source_count()
+
+    def _source_count_text(self, total: int = None) -> str:
+        """Header text: plain count, or "11 of 13 participating"."""
+        window = self.window
+        if total is None:
+            total = len(getattr(window, "raw_images", None) or [])
+        try:
+            included = len(window.included_indices())
+        except Exception:
+            included = total
+        if included == total:
+            return trans.t("label_source_images").format(total)
+        return trans.t("label_source_images_included").format(
+            included=included, total=total)
+
+    def _refresh_source_count(self) -> None:
+        label = getattr(self.window, "source_images_label", None)
+        if label is not None:
+            label.setText(self._source_count_text())
 
     def _confirm_mixed_sizes(self, images) -> bool:
         """Frames of different sizes in one dropped file set: ask whether to
@@ -636,6 +655,9 @@ class SourceManager:
             item.setFont(font)
         finally:
             window.file_list.blockSignals(was_blocked)
+        self._refresh_source_count()
+        if hasattr(window, "_mark_project_dirty"):
+            window._mark_project_dirty()
 
     def apply_list_order(self) -> None:
         """Reorder the underlying stacks to match a drag-drop in the list.

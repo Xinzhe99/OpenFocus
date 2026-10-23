@@ -71,12 +71,18 @@ class ElidingButton(QPushButton):
     def __init__(self, text: str = "", parent=None):
         super().__init__(text, parent)
         self._full_text = text
+        # Explicit tooltip text survives setText(); without this every label
+        # change replaced a real hint with the button's own caption.
+        self._explicit_tip = ""
 
     def setText(self, text: str) -> None:  # noqa: N802 (Qt casing)
         self._full_text = text or ""
-        if self._full_text:
-            self.setToolTip(self._full_text)
         super().setText(_elide_to_width(self, self._full_text))
+        self.setToolTip(self._explicit_tip or self._full_text)
+
+    def setToolTip(self, text: str) -> None:  # noqa: N802 (Qt casing)
+        self._explicit_tip = text or ""
+        super().setToolTip(self._explicit_tip or self._full_text)
 
     def full_text(self) -> str:
         return self._full_text
@@ -356,7 +362,8 @@ def create_right_panel() -> RightPanelComponents:
     btn_render.setObjectName("primaryButton")
     btn_compare = ElidingButton(trans.t('btn_compare_all'))
     btn_compare.setObjectName("secondaryButton")
-    btn_compare.setToolTip(trans.t('btn_compare_all_hint'))
+    btn_compare.setToolTip(
+        f"{trans.t('btn_compare_all')}\n{trans.t('btn_compare_all_hint')}")
     # A fixed panel width cannot fit every language's label (Polish needs
     # 343 px for the render button, the panel offers ~113 px per button).
     # Let each button shrink to an elided label and keep the full string in
@@ -364,7 +371,10 @@ def create_right_panel() -> RightPanelComponents:
     for _btn in (btn_reset, btn_render, btn_compare):
         _btn.setSizePolicy(QSizePolicy.Policy.Ignored,
                            QSizePolicy.Policy.Fixed)
-        _btn.setToolTip(_btn.text())
+        # Only give a fallback tooltip to buttons that have none: the compare
+        # button's hint was overwritten here with its own caption.
+        if not _btn.toolTip():
+            _btn.setToolTip(_btn.text())
 
     config_layout.addWidget(btn_render)
     secondary_bar = QHBoxLayout()
