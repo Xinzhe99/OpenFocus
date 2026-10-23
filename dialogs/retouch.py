@@ -395,13 +395,24 @@ class RetouchDialog(QDialog):
         self.lbl_title.setFont(font)
         self.lbl_title.setSizePolicy(QSizePolicy.Policy.Ignored,
                                      QSizePolicy.Policy.Preferred)
+        # Compact provenance line: the source domain must stay visible even
+        # in focus mode, where the source canvas is hidden.
+        self.lbl_source_summary = QLabel("")
+        self.lbl_source_summary.setObjectName("mutedLabel")
+        self.lbl_source_summary.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.lbl_unsaved = QLabel()
         self.lbl_unsaved.setObjectName("mutedLabel")
         self.btn_change = QPushButton(trans.t("retouch_change_result"))
         self.btn_change.clicked.connect(self._change_result)
         self.btn_fullscreen = QPushButton(trans.t("compare_fullscreen"))
         self.btn_fullscreen.clicked.connect(self._toggle_fullscreen)
-        top.addWidget(self.lbl_title, 1)
+        title_column = QVBoxLayout()
+        title_column.setContentsMargins(0, 0, 0, 0)
+        title_column.setSpacing(0)
+        title_column.addWidget(self.lbl_title)
+        title_column.addWidget(self.lbl_source_summary)
+        top.addLayout(title_column, 1)
         top.addWidget(self.lbl_unsaved)
         top.addWidget(self.btn_change)
         top.addWidget(self.btn_fullscreen)
@@ -492,6 +503,12 @@ class RetouchDialog(QDialog):
         self.lbl_help.setObjectName("mutedLabel")
         self.lbl_help.setToolTip(trans.t("retouch_shortcuts"))
         side.addWidget(self.lbl_help)
+        # The full key list is reachable as a visible entry, not only by
+        # hovering the help paragraph.
+        self.btn_shortcuts = QPushButton(trans.t("retouch_shortcuts_help"))
+        self.btn_shortcuts.setAutoDefault(False)
+        self.btn_shortcuts.clicked.connect(self._show_shortcuts)
+        side.addWidget(self.btn_shortcuts)
 
         lbl_tools = QLabel(trans.t("retouch_tools"))
         font = lbl_tools.font()
@@ -524,6 +541,11 @@ class RetouchDialog(QDialog):
         self.chk_sharp.setToolTip(trans.t("retouch_sharpness_legend"))
         self.chk_sharp.toggled.connect(self._toggle_sharpness)
         side.addWidget(self.chk_sharp)
+        self.lbl_sharp_state = QLabel("")
+        self.lbl_sharp_state.setObjectName("mutedLabel")
+        self.lbl_sharp_state.setWordWrap(True)
+        self.lbl_sharp_state.setVisible(False)
+        side.addWidget(self.lbl_sharp_state)
         self.lbl_heat_legend = QLabel(trans.t("retouch_sharpness_legend"))
         self.lbl_heat_legend.setWordWrap(True)
         self.lbl_heat_legend.setObjectName("mutedLabel")
@@ -540,8 +562,13 @@ class RetouchDialog(QDialog):
         self.lbl_apply_hint.setObjectName("mutedLabel")
         self.btn_apply = QPushButton(trans.t("retouch_apply"))
         self.btn_apply.setObjectName("primaryButton")
+        # Only the explicit shortcut may apply: an implicit default button
+        # would let a plain Enter publish while the visible button is disabled.
+        self.btn_apply.setAutoDefault(False)
+        self.btn_apply.setDefault(False)
         self.btn_apply.clicked.connect(self._apply)
         self.btn_cancel = QPushButton(trans.t("btn_cancel"))
+        self.btn_cancel.setAutoDefault(False)
         self.btn_cancel.clicked.connect(self.reject)
 
         self.side_scroll.setWidget(self.side_panel)
@@ -704,7 +731,40 @@ class RetouchDialog(QDialog):
         self.lbl_title.setToolTip(text)
         self.lbl_result_header.setText(trans.t("retouch_result_title"))
         self.lbl_result_header.setToolTip(self.record.label)
+        self._update_source_summary()
         self._update_dirty_ui()
+
+    def _update_source_summary(self) -> None:
+        """Compact provenance: method, registration, frame count and domain.
+
+        The information was already recorded in RenderContext, but the header
+        only showed the output name, size and depth, so a ROI paste and a full
+        registration looked identical.
+        """
+        label = getattr(self, "lbl_source_summary", None)
+        if label is None:
+            return
+        context = getattr(self.record, "context", None)
+        parts = []
+        algorithm = getattr(context, "algorithm", "") if context else ""
+        if algorithm:
+            parts.append(str(algorithm))
+        alignment = getattr(context, "alignment", "") if context else ""
+        parts.append(trans.t("retouch_source_aligned") if alignment
+                     and alignment != "none"
+                     else trans.t("retouch_source_unaligned"))
+        count = int(getattr(context, "source_count", 0) or 0) if context else 0
+        if count:
+            parts.append(trans.t("retouch_source_frames").format(n=count))
+        roi = getattr(context, "roi_rect", None) if context else None
+        parts.append(trans.t("retouch_source_roi") if roi
+                     else trans.t("retouch_source_full"))
+        label.setText(" · ".join(parts))
+        label.setToolTip(label.text())
+        if self.doc.frame_count:
+            frame = self.doc.active_frame
+            self.lbl_source_header.setToolTip(
+                f"{os.path.basename(frame.name)}")
 
     def _elide_title(self) -> None:
         if not hasattr(self, "_full_title"):
@@ -860,6 +920,14 @@ class RetouchDialog(QDialog):
         self.view.scale = 1.0 / dpr
         self._update_views()
 
+    def _zoom_step(self, direction: int) -> None:
+        """Keyboard zoom around the canvas centre (same clamp as the wheel)."""
+        if self.doc.stroke_active:
+            return
+        canvas = self.result_canvas
+        centre = QPointF(canvas.width() / 2.0, canvas.height() / 2.0)
+        self.zoom_at(canvas, centre, 1.25 if direction > 0 else 0.8)
+
     def zoom_at(self, canvas: _RetouchCanvas, pos: QPointF,
                 factor: float) -> None:
         if self.doc.stroke_active:
@@ -976,9 +1044,24 @@ class RetouchDialog(QDialog):
             self._sync_tool_buttons()
             return
         self._sync_tool_buttons()
+        self._refresh_help_text()
         self._update_status()
         self.source_canvas.update()
         self.result_canvas.update()
+
+    def _show_shortcuts(self) -> None:
+        from utils.ui_utils import show_message_box
+        show_message_box(
+            self, trans.t("retouch_shortcuts_help"),
+            trans.t("retouch_shortcuts"))
+
+    def _refresh_help_text(self) -> None:
+        """The help line follows the active tool (it used to stay on source)."""
+        if self.lbl_help is None:
+            return
+        key = ("retouch_help_restore" if self.doc.tool == "restore"
+               else "retouch_help")
+        self.lbl_help.setText(trans.t(key))
 
     def _sync_tool_buttons(self) -> None:
         self._syncing_tools = True
@@ -1003,11 +1086,25 @@ class RetouchDialog(QDialog):
             trans.t("retouch_opacity").format(self.num_opacity.value()))
 
     def _bump_diameter(self, factor: float) -> None:
+        """Resize the brush from the keyboard.
+
+        `_NumberRow.setValue` intentionally does not emit valueChanged (it is
+        also used to seed the controls), so calling it alone left the document
+        at the old diameter: the number changed, the next stroke did not.
+        """
+        if self.doc.stroke_active:
+            return
         value = self.num_diameter.value()
         new = int(round(value * factor))
         if factor > 1.0 and new <= value:
             new = value + 1
-        self.num_diameter.setValue(max(1, min(2048, new)))
+        if factor < 1.0 and new >= value:
+            new = value - 1
+        new = max(1, min(2048, new))
+        if new == value:
+            return
+        self.num_diameter.setValue(new)
+        self._on_brush_changed()
 
     # ------------------------------------------------------------- strokes
     def begin_stroke(self, x: float, y: float) -> bool:
@@ -1192,8 +1289,30 @@ class RetouchDialog(QDialog):
         self.lbl_heat_legend.setVisible(checked)
         if checked and not self._sharpness_started:
             self._start_sharpness_worker()
+        self._set_sharp_state(
+            "computing" if checked and not self._sharpness_maps
+            else ("ready" if checked else ""))
         if self._source_display is not None:
             self._refresh_source_display()
+
+    def _set_sharp_state(self, state: str) -> None:
+        """Visible state for the optional detail map: computing/ready/failed."""
+        label = self.lbl_sharp_state
+        if label is None:
+            return
+        if not state:
+            label.setVisible(False)
+            label.setText("")
+            return
+        key = {"computing": "retouch_sharp_computing",
+               "ready": "retouch_sharp_ready",
+               "failed": "retouch_sharp_failed"}.get(state)
+        if key is None:
+            label.setVisible(False)
+            return
+        label.setText(trans.t(key))
+        label.setStyleSheet("color:#c0392b;" if state == "failed" else "")
+        label.setVisible(True)
 
     def _start_sharpness_worker(self) -> None:
         self._sharpness_started = True
@@ -1201,20 +1320,43 @@ class RetouchDialog(QDialog):
         worker = _SharpnessWorker(self.doc.frames, self._sharpness_request)
         self._sharpness_worker = worker
         worker.ready.connect(self._on_sharpness_ready)
+        worker.finished.connect(
+            lambda req=self._sharpness_request: self._on_sharpness_finished(req))
         worker.finished.connect(worker.deleteLater)
         worker.start()
+
+    def _on_sharpness_finished(self, request: int) -> None:
+        if self._closing or request != self._sharpness_request:
+            return
+        if self._sharpness_worker is not None:
+            self._sharpness_worker = None
+        if not self._sharpness_maps:
+            # A finished worker without maps means the computation failed;
+            # the checkbox used to stay ticked with nothing drawn and no
+            # explanation, and there was no way to retry.
+            self._sharpness_started = False
+            self._set_sharp_state("failed")
+        else:
+            self._set_sharp_state(
+                "ready" if self.chk_sharp.isChecked() else "")
 
     def _on_sharpness_ready(self, request: int, maps) -> None:
         if self._closing or request != self._sharpness_request:
             return
         self._sharpness_maps = maps or {}
         if self.chk_sharp.isChecked() and self._source_display is not None:
+            self._set_sharp_state("ready")
             self._refresh_source_display()
 
-    def _on_focus_changed(self, _old, new) -> None:
+    def _on_focus_changed(self, old, new) -> None:
         if self._closing:
             return
-        if new is None or (new is not self and not self.isAncestorOf(new)):
+        left_canvas = old in (self.source_canvas, self.result_canvas)
+        if new is None or (new is not self and not self.isAncestorOf(new)) \
+                or left_canvas:
+            # A held preview/pan must not survive the move into a numeric
+            # field: the modifier release is ignored while typing, so the
+            # canvas would stay frozen on the "before" image.
             self._clear_preview()
             self.space_down = False
             self.source_canvas.setCursor(Qt.CursorShape.CrossCursor)
@@ -1234,10 +1376,11 @@ class RetouchDialog(QDialog):
             worker.ready.disconnect(self._on_sharpness_ready)
         except (TypeError, RuntimeError):
             pass
-        try:
-            worker.wait(5000)
-        except RuntimeError:
-            pass
+        # Do not block the GUI while native work finishes: the worker keeps
+        # itself alive through its own QThread lifetime and its late signal is
+        # already ignored (`_closing`), so the dialog can close immediately.
+        if worker.isRunning():
+            self._sharpness_request += 1
 
     # ----------------------------------------------------------- layout/fs
     def _set_focus_layout(self, focus: bool, user: bool) -> None:
@@ -1283,12 +1426,17 @@ class RetouchDialog(QDialog):
         QTimer.singleShot(0, self.canvas_resized)
 
     # ------------------------------------------------------------- apply
+    def _can_apply(self) -> bool:
+        """Single condition shared by the button and the shortcut.
+
+        Ctrl+Enter used to clear a held preview and publish, even though the
+        visible Apply button was disabled during preview.
+        """
+        return (not self._applied and not self.doc.stroke_active
+                and self.preview_mode is None and self.doc.is_dirty)
+
     def _apply(self):
-        if self._applied or self.doc.stroke_active:
-            return False
-        if self.preview_mode is not None:
-            self._clear_preview()
-        if not self.doc.is_dirty:
+        if not self._can_apply():
             return False
         self.btn_apply.setEnabled(False)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -1444,7 +1592,9 @@ class RetouchDialog(QDialog):
         if ctrl and key == Qt.Key.Key_Y:
             self._redo()
             return True
-        if key == Qt.Key.Key_Tab and self._canvas_focused():
+        # Shift+Tab must remain a normal focus-navigation key: the "hold to
+        # see the result before editing" preview is plain Tab on the canvas.
+        if key == Qt.Key.Key_Tab and not shift and self._canvas_focused():
             self._press_preview("before")
             return True
         if key == Qt.Key.Key_Alt:
@@ -1455,11 +1605,21 @@ class RetouchDialog(QDialog):
             self.source_canvas.setCursor(Qt.CursorShape.OpenHandCursor)
             self.result_canvas.setCursor(Qt.CursorShape.OpenHandCursor)
             return True
+        # Canvas letters and punctuation stay inside the canvas: typing in a
+        # numeric field must never resize the brush or change frames.
+        if not self._canvas_focused():
+            return False
         if key == Qt.Key.Key_F:
             self._fit()
             return True
         if key == Qt.Key.Key_1:
             self._zoom_100()
+            return True
+        if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self._zoom_step(1)
+            return True
+        if key == Qt.Key.Key_Minus:
+            self._zoom_step(-1)
             return True
         if key == Qt.Key.Key_B:
             self._set_tool("source")
@@ -1483,7 +1643,14 @@ class RetouchDialog(QDialog):
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
-            if not self._editing_text() and self._handle_key(event):
+            if event.type() == QEvent.Type.KeyRelease:
+                # Releasing a temporarily held key is cleanup, not editing:
+                # it must run even when a field grabbed focus meanwhile.
+                if event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Alt,
+                                   Qt.Key.Key_Space):
+                    self._handle_key(event)
+                    return True
+            elif not self._editing_text() and self._handle_key(event):
                 return True
         return super().eventFilter(obj, event)
 
