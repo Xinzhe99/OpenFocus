@@ -62,10 +62,14 @@ class OutputRecord:
                 and int(getattr(self.context, "source_count", 0)) > 0
                 and self.image is not None)
 
+    #: Outputs that exist only in this session and must not be discarded
+    #: silently: retouched buffers and results adopted from the compare view.
+    PROTECTED_KINDS = ("retouch", "compare")
+
     @property
     def protected(self) -> bool:
-        """A retouched output whose pixels have not been written to disk."""
-        return self.kind == "retouch" and not self.exported
+        """An output whose pixels have not been written to disk yet."""
+        return self.kind in self.PROTECTED_KINDS and not self.exported
 
     @property
     def changed_since_export(self) -> bool:
@@ -362,6 +366,40 @@ class OutputManager:
         except Exception:
             # Publication is atomic: a failed display must not leave a
             # half-created entry, a switched view, or a changed selection.
+            if item is not None:
+                row = window.output_list.row(item)
+                if row >= 0:
+                    self._remove_row(row)
+            window.fusion_result = previous
+            if previous_row >= 0:
+                window.output_list.setCurrentRow(previous_row)
+            self.update_output_count()
+            raise
+        self._trim_history()
+        self.update_output_count()
+        return record
+
+    def publish_compare_output(self, record: OutputRecord) -> OutputRecord:
+        """Add a full-frame result adopted from the method comparison.
+
+        Uses the same transactional insert as a retouch publication: the entry
+        and the view commit together, and history eviction happens only after
+        both succeeded.
+        """
+        if record is None or record.image is None:
+            raise ValueError("a result image is required")
+        window = self.window
+        previous = getattr(window, "fusion_result", None)
+        previous_row = window.output_list.currentRow()
+        item = None
+        try:
+            window.fusion_result = record.image
+            item = self._insert_output(
+                record.image, record.label, record,
+                tooltip=trans.t("retouch_unexported"), trim=False)
+            if self.display_specific_fusion_result(record.image) is False:
+                raise RuntimeError(trans.t("msg_display_fusion_failed_text"))
+        except Exception:
             if item is not None:
                 row = window.output_list.row(item)
                 if row >= 0:

@@ -1280,6 +1280,28 @@ class OpenFocus(QMainWindow):
         self.stack_reverse_order = bool(enabled)
         self.persist_settings()
 
+    def set_dtcwt_levels(self, levels: int) -> None:
+        """Remember the DTCWT decomposition level count (compare adoption)."""
+        self.dtcwt_levels = max(1, min(6, int(levels)))
+        self.persist_settings()
+
+    def set_smoothing_for_method(self, method: str, value: float) -> None:
+        """Set one method's smoothing sigma without switching the selection."""
+        self.__dict__.setdefault("_smoothing_by_method", {})[
+            str(method)] = float(value)
+        if str(method) == self.current_fusion_method():
+            self.set_ofb_depth_smoothing(float(value))
+        self.persist_settings()
+
+    def set_brightness_option(self, option: str, method: str,
+                              enabled: bool) -> None:
+        """Set exposure/base correction for a specific method."""
+        self.__dict__.setdefault("_brightness_by_method", {})[
+            (option, str(method))] = bool(enabled)
+        if str(method) == self.current_fusion_method():
+            self._set_brightness_option(option, enabled)
+        self.persist_settings()
+
     def set_ai_mode(self, mode: str) -> None:
         """右面板单选：AI 输出模式（soft=概率加权，hard=逐像素取帧）。"""
         mode = mode if mode in ("soft", "hard") else "soft"

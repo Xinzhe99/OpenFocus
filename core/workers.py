@@ -129,6 +129,7 @@ class RenderWorker(QThread):
         depth_smoothing: float = None,
         blend_smoothing: float = None,
         exposure_match: bool = False,
+        dtcwt_levels: int = 4,
     ):
         super().__init__()
         self.raw_images = raw_images
@@ -165,6 +166,10 @@ class RenderWorker(QThread):
         # 融合前曝光匹配：对齐与融合必须使用同一个亮度端（末帧）
         self.exposure_match = bool(exposure_match)
         self.kernel_slider_value = kernel_slider_value
+        # DTCWT decomposition levels: the comparison window lets the user set
+        # them, so the real render must accept the same value or an adopted
+        # parameter would silently fall back to 4.
+        self.dtcwt_levels = max(1, int(dtcwt_levels or 4))
         # Tile params passed from UI (may be None -> use fusion defaults)
         self.tile_enabled = tile_enabled
         self.tile_block_size = tile_block_size
@@ -416,6 +421,7 @@ class RenderWorker(QThread):
             result = fusion.fuse(
                 input_source=images,
                 img_resize=None,
+                N=self.dtcwt_levels,
                 thread_count=self.thread_count,
                 **fuse_cancel,
             )
