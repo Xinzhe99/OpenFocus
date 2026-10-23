@@ -48,7 +48,11 @@ def test_option_checkboxes_flow_and_wrap():
         boxes.append(box)
         panel.add(box)
     try:
-        panel.resize(620, 200)
+        # Font metrics differ across CI runners; derive the one-row width
+        # from the actual size hints instead of assuming 620 px fits.
+        one_row = (sum(b.sizeHint().width() for b in boxes)
+                   + 14 * (len(boxes) - 1) + 16)
+        panel.resize(one_row, 200)
         panel.show()
         app.processEvents()
         panel.relayout()
