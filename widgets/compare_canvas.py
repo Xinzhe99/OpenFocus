@@ -241,7 +241,41 @@ class DetailCanvas(_Canvas):
         self._bounds = None
         self._region = None
         self._status = ""
+        # "detail" crops to the inspection rectangle; "full" shows the whole
+        # computed result. Computing a full frame and only ever displaying a
+        # crop read as "the full frame was not really rendered".
+        self._view_mode = "detail"
+        self._selected = False
         self.setFixedSize(DEFAULT_DETAIL_SIZE, DEFAULT_DETAIL_SIZE)
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = bool(selected)
+        self.update()
+
+    def is_selected(self) -> bool:
+        return self._selected
+
+    def set_view_mode(self, mode: str) -> None:
+        self._view_mode = "full" if mode == "full" else "detail"
+        self.update()
+
+    def view_mode(self) -> str:
+        return self._view_mode
+
+    def can_show_full(self) -> bool:
+        """True when the stored pixmap IS the whole computed frame.
+
+        ROI results carry only a crop, so offering the overview for them would
+        present a zoomed crop as the complete image.
+        """
+        if self._pixmap is None or self._pixmap.isNull():
+            return False
+        if self._bounds is None:
+            return False
+        x, y, width, height = self._bounds
+        return (x == 0 and y == 0
+                and width == self._pixmap.width()
+                and height == self._pixmap.height())
 
     def set_result(self, pixmap, bounds):
         """Store pixels and their (x, y, width, height) image-space bounds."""
@@ -271,7 +305,19 @@ class DetailCanvas(_Canvas):
     def paintEvent(self, event):  # noqa: N802
         painter = QPainter(self)
         theme = self._background(painter)
-        if self.has_region():
+        if self._view_mode == "full" and self.can_show_full():
+            # Whole computed result, letterboxed to keep its aspect ratio.
+            source = QRectF(0, 0, self._pixmap.width(), self._pixmap.height())
+            area = QRectF(self.rect())
+            scale = min(area.width() / max(1.0, source.width()),
+                        area.height() / max(1.0, source.height()))
+            width = source.width() * scale
+            height = source.height() * scale
+            target = QRectF(area.center().x() - width / 2.0,
+                            area.center().y() - height / 2.0, width, height)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawPixmap(target, self._pixmap, source)
+        elif self.has_region():
             x, y, width, height = self._region
             bx, by, _, _ = self._bounds
             source = QRectF(x - bx, y - by, width, height)
@@ -279,5 +325,11 @@ class DetailCanvas(_Canvas):
             painter.drawPixmap(QRectF(self.rect()), self._pixmap, source)
         else:
             self._empty(painter, theme, self._status)
+        if self._selected:
+            # A visible border is the only selection cue; the title bar alone
+            # is easy to miss among several equally sized cards.
+            painter.setPen(QPen(QColor(theme["accent"]), 3))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
         self._label(painter, theme)
         painter.end()
