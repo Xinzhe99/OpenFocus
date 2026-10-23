@@ -5,7 +5,98 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.67.0] — 2026-10-23
+
+### Added (retouch workspace)
+- **Retouching is now a source-locked workspace, not a generic brush.** The
+  selected output opens with its name and bit depth in the header, a
+  read-only source frame on the left and the result on the right, one shared
+  zoom/position state, a thumbnail strip with editable frame number, numeric
+  diameter/hardness/opacity controls, hold-Tab "before" and hold-Alt source
+  previews, fullscreen, and a responsive side panel. Frame switches and
+  slider changes preserve the inspected position and magnification.
+- **Provenance is captured when a result is rendered.** `RenderContext`
+  records the actual aligned frames, ROI crop/paste offsets, DCT edge
+  trimming and bit depth; output entries carry a stable `output_id`, parent
+  id and that context. Retouching no longer searches the live window for a
+  stack of similar size, so later renders, exclusions or stack changes cannot
+  swap the pixels under an open session.
+- **A stroke is a transaction.** The source frame, tool and brush settings
+  are locked at pointer-down; overlapping dabs use maximum coverage instead
+  of compounding; undo/redo stores only touched 128 px tiles at full 8/16-bit
+  precision, with a 100-stroke / 512 MiB budget. An oversized stroke rolls
+  back entirely instead of committing a half-undoable edit.
+- **Unexported retouched outputs are protected.** The new output is named
+  `<name> · Retouched N`, keeps its parent link, and is marked *Not
+  exported* until saved. History eviction skips it, deletion/quit ask for an
+  export/discard decision, and `Save As`/`Ctrl+S`/Export All clear the mark.
+- **Batch files, legacy results and align-only folder entries are explicitly
+  non-retouchable** instead of being published with guessed frames. The
+  chooser shows which entries have recorded provenance and why the others
+  cannot be edited.
+
+### Fixed (retouch workspace)
+- **Numeric fields no longer clip their values.** The theme reserves 22 px
+  for the spin-box steppers; the 78 px fields left three-digit diameter and
+  opacity values running underneath them. They are now 108 px, and the frame
+  number field is 126 px so `9 / 13` and its stepper fit.
+- **The source-frame strip has a horizontal slider again**, synchronized
+  with the thumbnails, previous/next buttons and editable frame number.
+  Dragging it is equivalent to choosing a frame and preserves the shared
+  zoom/center.
+- **The close-confirmation dialog no longer truncates its primary action.**
+  It uses the short `Apply & Close` label and gives all three buttons a
+  120 px minimum width.
+
+### Fixed (method comparison)
+- Method names and their labelled parameter controls now wrap as a complete
+  group. Settings remain independent when methods are toggled. DTCWT exposes
+  decomposition levels; OpenFocus C exposes only its blend smoothing.
+- The right-hand preview panes now have a shared size slider and numeric
+  control (160–960 logical pixels), remembered between openings. They reflow
+  at the chosen size while the inspection square changes extent at the same
+  magnification; full-image results remain cached during size changes.
+- The comparison window supports fullscreen: the **Fullscreen (F11)** button
+  or F11 toggles it, the title bar can maximise, and Esc leaves fullscreen
+  first (a second Esc closes the dialog). The windowed size is restored
+  exactly, and the result grid reflows to the extra width.
+- The inspection square follows left-drag immediately and stays at the release
+  position. Source and detail panes share aligned-image coordinates; resizing,
+  panning and switching source frames preserve the selected region.
+- Parameter and region changes automatically refresh ROI previews. Full-image
+  fusion is also available; moving its inspection region reuses the rendered
+  pixels. ROI previews include surrounding context and can differ from a full
+  render because some algorithms use global image statistics.
+- Comparison runs one worker at a time, rejects superseded results, reports
+  method failures and waits for cooperative cancellation before closing. The
+  result panes are reused during layout changes, avoiding temporary windows.
+
+
+### Fixed (labels and scale bar)
+- **Adding a label now enables "Remove all labels".** The entry was only
+  enabled when a project with labels was loaded, so after adding a label the
+  one-click removal stayed greyed out. All three Remove entries now follow
+  the label state after every add, delete, reset and project import.
+- **"Remove scale bar → From everywhere" now actually removes it.** The
+  handler rewrote the "Apply to" scope back to both canvases, so the bar
+  stayed visible; scoped removal now narrows the scope and turns the bar off
+  when the last canvas is cleared. The status line names the result, and the
+  old placeholder message (which printed the kept scope) is gone.
+- **The A/B wipe redraws when the scale bar changes.** Its pixmap cache
+  ignored the bar configuration, so a removed (or added) bar stayed in the
+  cached image until the frame changed; the bar also appears there when
+  labels are off, matching the other canvases.
+- **Retouching no longer raises `NameError` after a successful edit.** The
+  multi-result retouch refactor left a reference to the removed `selected`
+  variable when naming the new output entry.
+
 ### Added (documentation)
+- **The README now has a twelve-language switcher** at the top of every
+  translation (`README.md`, `README.zh-CN.md`, `README.ja.md`, and so on), so
+  readers can jump between languages without leaving GitHub. The English
+  README keeps the full project reference; the other files are concise
+  language-matched introductions with the same download, quick-start,
+  documentation, citation and license links.
 - **The user manual now ships in all twelve UI languages.** It existed only in
   English and Chinese, so most of the newly supported readers had no
   documentation at all. `tools/verify_manuals.py` compares each translation

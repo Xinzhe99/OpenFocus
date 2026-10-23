@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox, QD
 from core.workers import StackLoadWorker
 from dialogs import DownsampleDialog
 from utils import show_message_box, show_warning_box
-from ui.styles import MESSAGE_BOX_STYLE
+from ui import styles as ui_styles
 from locales import trans
 
 
@@ -55,7 +55,7 @@ class SourceManager:
             yes_btn.setText(trans.t("btn_continue"))
         if no_btn:
             no_btn.setText(trans.t("btn_cancel_generic"))
-        msg.setStyleSheet(MESSAGE_BOX_STYLE)
+        msg.setStyleSheet(ui_styles.MESSAGE_BOX_STYLE)
         return msg.exec() == QMessageBox.StandardButton.Yes
 
     def _start_load_worker(self, folder=None, video=None, filepaths=None,
@@ -161,9 +161,8 @@ class SourceManager:
         if callable(dont_ask) and dont_ask():
             window.ask_load_scale = False
             window.load_scale_default = scale
-            action = getattr(window, "ui_objs", {}).get("action_ask_load_scale")
-            if action is not None:
-                action.setChecked(False)
+            # No menu action to mirror any more: the flag lives in the
+            # Advanced settings page and is read from the window attribute.
             persist = getattr(window, "persist_settings", None)
             if callable(persist):
                 persist()
@@ -171,6 +170,8 @@ class SourceManager:
 
     def load_image_stack(self, folder_path: str, append: bool = False) -> None:
         window = self.window
+        from utils.logging_setup import log_action
+        log_action("load_stack", folder=folder_path, append=append)
 
         # 同一文件夹再次导入按"重新加载"处理：追加只会得到帧数翻倍的
         # 重复栈（恢复会话后再导入、拖同一文件夹两次都触发过）
@@ -438,7 +439,7 @@ class SourceManager:
             yes_btn.setText(trans.t("btn_continue"))
         if no_btn:
             no_btn.setText(trans.t("btn_cancel_generic"))
-        msg.setStyleSheet(MESSAGE_BOX_STYLE)
+        msg.setStyleSheet(ui_styles.MESSAGE_BOX_STYLE)
         ret = msg.exec()
         return ret == QMessageBox.StandardButton.Yes
 
@@ -457,6 +458,13 @@ class SourceManager:
         window.current_display_index = -1
 
         window.label_manager.reset_labels()
+
+        # The sharpness strip belongs to the stack that was just dropped; left
+        # alone it kept drawing the old frame count's bars and highlight under
+        # an empty source list.
+        curve = getattr(window, "sharpness_curve", None)
+        if curve is not None:
+            curve.clear()
 
         window.transform_manager.reload_image_stack(initial_index=None)
 

@@ -17,6 +17,10 @@ APPLICATION = "OpenFocus"
 MAX_RECENT_FILES = 8
 MAX_RECENT_PROJECTS = 8
 
+# First-run theme. Light reads better on a fresh install for most users; a
+# saved preference always wins, so an existing dark-theme user stays dark.
+DEFAULT_THEME = "light"
+
 RECENT_FILES_KEY = "recent/files"
 RECENT_PROJECTS_KEY = "recent/projects"
 LANGUAGE_KEY = "ui/language"
@@ -47,10 +51,11 @@ _PERSISTED_FIELDS = {
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
-    "ui_theme": ("ui/theme", "dark", "str"),
+    "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),
     "scale_bar_enabled": ("export/scale_bar_enabled", False, "bool"),
     "scale_um_per_px_manual": ("export/scale_um_per_px_manual", 0.0, "float"),
     "scale_bar_position": ("export/scale_bar_position", "bottom-right", "str"),
+    "scale_bar_target": ("export/scale_bar_target", "all", "str"),
     "scale_bar_color": ("export/scale_bar_color", "auto", "str"),
     "base_frame_correct": ("fusion/base_frame_correct", False, "bool"),
     "exposure_match": ("fusion/exposure_match", True, "bool"),
@@ -182,7 +187,7 @@ def load_window_settings(window) -> None:
     """Restore persisted preferences onto window attributes (defaults kept)."""
     settings = get_settings()
     if getattr(window, "ui_theme", None) not in ("dark", "light"):
-        window.ui_theme = "dark"
+        window.ui_theme = DEFAULT_THEME
     for attr, (key, default, kind) in _PERSISTED_FIELDS.items():
         if settings.contains(key):
             setattr(window, attr, _cast(settings.value(key), kind, default))

@@ -195,26 +195,9 @@ def setup_menus(window: QMainWindow) -> None:
     window.ui_objs['action_retouch'] = retouch_action
     retouch_action.setProperty("trans_key", 'action_retouch')
 
-    window.add_label_action = QAction(trans.t('action_add_label'), window)
-    window.add_label_action.triggered.connect(window.label_manager.show_add_label_dialog)
-    window.add_label_action.setEnabled(False)
-    edit_menu.addAction(window.add_label_action)
-    window.ui_objs['action_add_label'] = window.add_label_action
-
-    delete_label_menu = edit_menu.addMenu(trans.t('menu_del_label'))
-    window.ui_objs['menu_del_label'] = delete_label_menu
-
-    window.del_reg_label_action = QAction(trans.t('action_del_reg_label'), window)
-    window.del_reg_label_action.triggered.connect(window.label_manager.delete_registered_labels)
-    window.del_reg_label_action.setEnabled(False)
-    delete_label_menu.addAction(window.del_reg_label_action)
-    window.ui_objs['action_del_reg_label'] = window.del_reg_label_action
-
-    window.del_input_label_action = QAction(trans.t('action_del_input_label'), window)
-    window.del_input_label_action.triggered.connect(window.label_manager.delete_input_labels)
-    window.del_input_label_action.setEnabled(False)
-    delete_label_menu.addAction(window.del_input_label_action)
-    window.ui_objs['action_del_input_label'] = window.del_input_label_action
+    # Labels live under Tools: adding and removing are two halves of one
+    # feature, so they share one submenu instead of a loose action here and a
+    # separate "delete" menu elsewhere.
 
     # --- Tools Menu ---
     batch_menu = menubar.addMenu(trans.t('menu_tools'))
@@ -224,6 +207,15 @@ def setup_menus(window: QMainWindow) -> None:
     batch_action.triggered.connect(window.show_batch_processing_dialog)
     batch_menu.addAction(batch_action)
     window.ui_objs['action_batch_process'] = batch_action
+
+    compare_action = QAction(trans.t('action_method_compare'), window)
+    compare_action.setToolTip(trans.t('action_method_compare_hint'))
+    compare_action.triggered.connect(window.show_compare_dialog)
+    batch_menu.addAction(compare_action)
+    window.ui_objs['action_method_compare'] = compare_action
+
+    # Rendering group | analysis group | annotation group
+    batch_menu.addSeparator()
 
     depth_action = QAction(trans.t('menu_depth_map'), window)
     depth_action.triggered.connect(window.show_depth_map_dialog)
@@ -237,82 +229,122 @@ def setup_menus(window: QMainWindow) -> None:
     batch_menu.addAction(dust_action)
     window.ui_objs['menu_dust_map'] = dust_action
 
+    batch_menu.addSeparator()
+
+    # Scale bar mirrors Labels: one submenu with "Add/Edit" and a "Remove"
+    # section, instead of a loose dialog entry.
+    scale_menu = batch_menu.addMenu(trans.t('menu_scale_bar'))
+    scale_menu.setProperty("trans_key", 'menu_scale_bar')
+    window.ui_objs['menu_scale_bar'] = scale_menu
+
+    scale_add_action = QAction(trans.t('action_scale_add'), window)
+    scale_add_action.triggered.connect(window.show_scale_bar_dialog)
+    scale_menu.addAction(scale_add_action)
+    window.ui_objs['action_scale_add'] = scale_add_action
+
+    scale_remove_menu = scale_menu.addMenu(trans.t('menu_scale_remove'))
+    scale_remove_menu.setProperty("trans_key", 'menu_scale_remove')
+    window.ui_objs['menu_scale_remove'] = scale_remove_menu
+
+    def _scale_target_action(text_key, where):
+        act = QAction(trans.t(text_key), window)
+        act.setProperty("trans_key", text_key)
+        act.triggered.connect(
+            lambda: window.remove_scale_bar(where))
+        scale_remove_menu.addAction(act)
+        window.ui_objs[f'action_scale_remove_{where}'] = act
+        return act
+
+    _scale_target_action('scalebar_remove_source', 'source')
+    _scale_target_action('scalebar_remove_output', 'output')
+    _scale_target_action('scalebar_remove_all', 'all')
+
+    batch_menu.addSeparator()
+    label_menu = batch_menu.addMenu(trans.t('menu_labels'))
+    label_menu.setProperty("trans_key", 'menu_labels')
+    window.ui_objs['menu_labels'] = label_menu
+
+    window.add_label_action = QAction(trans.t('action_add_label'), window)
+    window.add_label_action.triggered.connect(
+        window.label_manager.show_add_label_dialog)
+    window.add_label_action.setEnabled(False)
+    label_menu.addAction(window.add_label_action)
+
+    # "Remove" is a submenu at the same level as "Add", holding the two
+    # targets (source stack / registered stack) as its own two entries.
+    remove_menu = label_menu.addMenu(trans.t('menu_remove_labels'))
+    remove_menu.setProperty("trans_key", 'menu_remove_labels')
+    window.ui_objs['menu_remove_labels'] = remove_menu
+
+    window.del_reg_label_action = QAction(trans.t('action_del_reg_label'), window)
+    window.del_reg_label_action.triggered.connect(
+        window.label_manager.delete_registered_labels)
+    window.del_reg_label_action.setEnabled(False)
+    remove_menu.addAction(window.del_reg_label_action)
+    window.ui_objs['action_del_reg_label'] = window.del_reg_label_action
+
+    window.del_input_label_action = QAction(trans.t('action_del_input_label'), window)
+    window.del_input_label_action.triggered.connect(
+        window.label_manager.delete_input_labels)
+    window.del_input_label_action.setEnabled(False)
+    remove_menu.addAction(window.del_input_label_action)
+    window.ui_objs['action_del_input_label'] = window.del_input_label_action
+
+    window.del_all_labels_action = QAction(trans.t('action_del_all_labels'), window)
+    window.del_all_labels_action.triggered.connect(
+        window.label_manager.delete_all_labels)
+    window.del_all_labels_action.setEnabled(False)
+    remove_menu.addAction(window.del_all_labels_action)
+    window.ui_objs['action_del_all_labels'] = window.del_all_labels_action
+
     # --- Settings Menu ---
     settings_menu = menubar.addMenu(trans.t('menu_settings'))
     window.ui_objs['menu_settings'] = settings_menu
 
-    scalebar_action = QAction(trans.t('menu_scale_bar'), window)
-    scalebar_action.triggered.connect(window.show_scale_bar_dialog)
-    settings_menu.addAction(scalebar_action)
-    window.ui_objs['menu_scale_bar'] = scalebar_action
+    # Everything that is a tuning knob moved to one Advanced page: spread
+    # across the menu they were impossible to reason about (which one affects
+    # speed, which one affects output?), and each had its own dialog.
+    advanced_action = QAction(trans.t("advanced_settings_title"), window)
+    advanced_action.setToolTip(trans.t("advanced_settings_hint"))
+    advanced_action.triggered.connect(window.show_advanced_settings_dialog)
+    settings_menu.addAction(advanced_action)
+    window.ui_objs['action_advanced_settings'] = advanced_action
 
-    # GPU acceleration toggle (persisted via settings_store)
+    # GPU stays reachable here as a quick toggle; it is the one switch users
+    # flip often enough to deserve a click instead of two.
     gpu_action = QAction(trans.t('action_gpu_accel'), window)
     gpu_action.setCheckable(True)
-    gpu_action.setChecked(getattr(window, 'use_gpu', True))
-    gpu_action.setToolTip(trans.t('msg_gpu_accel_hint'))
+    from utils.platform_utils import has_compute_gpu
+    _gpu_present = has_compute_gpu()
+    gpu_action.setChecked(_gpu_present and getattr(window, 'use_gpu', True))
+    gpu_action.setEnabled(_gpu_present)
+    gpu_action.setToolTip(trans.t('msg_gpu_accel_hint') if _gpu_present
+                          else trans.t('msg_gpu_accel_unavailable'))
     gpu_action.triggered.connect(window.set_use_gpu)
     settings_menu.addAction(gpu_action)
     window.ui_objs['action_gpu_accel'] = gpu_action
 
-    # Registration disk cache toggle (persisted via settings_store)
-    cache_action = QAction(trans.t('action_align_cache'), window)
-    cache_action.setCheckable(True)
-    cache_action.setChecked(getattr(window, 'align_cache_enabled', True))
-    cache_action.setToolTip(trans.t('action_align_cache_hint'))
-    cache_action.triggered.connect(window.set_align_cache_enabled)
-    settings_menu.addAction(cache_action)
-    window.ui_objs['action_align_cache'] = cache_action
+    settings_menu.addSeparator()
 
-    # Theme submenu (dark / light, persisted)
+    # Theme: light first, it is the fresh-install default. This used to be
+    # further down and lost when the Advanced page absorbed the other items.
     theme_menu = settings_menu.addMenu(trans.t('menu_theme'))
     theme_group_theme = QActionGroup(window)
     theme_group_theme.setExclusive(True)
-    for theme_code, trans_key in (("dark", 'theme_dark'), ("light", 'theme_light')):
+    for theme_code, trans_key in (("light", 'theme_light'),
+                                  ("dark", 'theme_dark')):
         act = QAction(trans.t(trans_key), window)
         act.setCheckable(True)
-        act.setChecked(getattr(window, 'ui_theme', 'dark') == theme_code)
-        # data carries the theme code (display text changes with the
-        # language and must never identify the item); trans_key lets
-        # update_ui_text retranslate the label.
+        act.setChecked(getattr(window, 'ui_theme', 'light') == theme_code)
         act.setData(theme_code)
         act.setProperty("trans_key", trans_key)
-        act.triggered.connect(lambda _checked, code=theme_code: window.apply_theme(code))
+        act.triggered.connect(
+            lambda _checked, code=theme_code: window.apply_theme(code))
         theme_group_theme.addAction(act)
         theme_menu.addAction(act)
         window.ui_objs[f'theme_{theme_code}'] = act
     window.ui_objs['menu_theme'] = theme_menu
     window.ui_objs['menu_theme'].setProperty("trans_key", 'menu_theme')
-
-    settings_menu.addSeparator()
-
-    # Restore-last-stack toggle (persisted via settings_store)
-    restore_action = QAction(trans.t('action_restore_last_stack'), window)
-    restore_action.setCheckable(True)
-    restore_action.setChecked(getattr(window, 'restore_last_stack', False))
-    restore_action.triggered.connect(window.set_restore_last_stack)
-    settings_menu.addAction(restore_action)
-    window.ui_objs['action_restore_last_stack'] = restore_action
-
-    # Ask for the loading scale on every import (off = use the last choice)
-    ask_scale_action = QAction(trans.t('action_ask_load_scale'), window)
-    ask_scale_action.setCheckable(True)
-    ask_scale_action.setChecked(bool(getattr(window, 'ask_load_scale', True)))
-    ask_scale_action.setToolTip(trans.t('action_ask_load_scale_hint'))
-    ask_scale_action.triggered.connect(window.set_ask_load_scale)
-    settings_menu.addAction(ask_scale_action)
-    window.ui_objs['action_ask_load_scale'] = ask_scale_action
-
-    # Background update download toggle (persisted by the update manager)
-    auto_update_action = QAction(trans.t('action_auto_download'), window)
-    auto_update_action.setCheckable(True)
-    auto_update_action.setChecked(bool(window.update_manager.auto_download))
-    auto_update_action.setToolTip(trans.t('action_auto_download_hint'))
-    auto_update_action.triggered.connect(window.set_auto_download)
-    settings_menu.addAction(auto_update_action)
-    window.ui_objs['action_auto_download'] = auto_update_action
-
-    settings_menu.addSeparator()
 
     # Language Submenu
     lang_menu = settings_menu.addMenu(trans.t('menu_language'))
@@ -335,27 +367,6 @@ def setup_menus(window: QMainWindow) -> None:
         lang_menu.addAction(act)
         window.ui_objs[f'action_lang_{code}'] = act
 
-    tile_action = QAction(trans.t('action_tile_settings'), window)
-    # 打开瓦片设置对话框
-    tile_action.triggered.connect(lambda: window.show_tile_settings())
-    settings_menu.addAction(tile_action)
-    window.ui_objs['action_tile_settings'] = tile_action
-
-    registration_action = QAction(trans.t('action_reg_settings'), window)
-    registration_action.triggered.connect(lambda: window.show_registration_settings())
-    settings_menu.addAction(registration_action)
-    window.ui_objs['action_reg_settings'] = registration_action
-
-    thread_settings_action = QAction(trans.t('action_thread_settings'), window)
-    thread_settings_action.triggered.connect(lambda: window.show_thread_settings())
-    settings_menu.addAction(thread_settings_action)
-    window.ui_objs['action_thread_settings'] = thread_settings_action
-
-    stackmffv3_batch_action = QAction(trans.t('action_ai_batch_settings'), window)
-    stackmffv3_batch_action.triggered.connect(lambda: window.show_ai_batch_settings())
-    settings_menu.addAction(stackmffv3_batch_action)
-    window.ui_objs['action_ai_batch_settings'] = stackmffv3_batch_action
-
     # --- Help Menu ---
     help_menu = menubar.addMenu(trans.t('menu_help'))
     window.ui_objs['menu_help'] = help_menu
@@ -364,6 +375,12 @@ def setup_menus(window: QMainWindow) -> None:
     env_action.triggered.connect(window.show_environment_info)
     help_menu.addAction(env_action)
     window.ui_objs['action_env_info'] = env_action
+
+    feedback_action = QAction(trans.t('action_send_feedback'), window)
+    feedback_action.setToolTip(trans.t('action_send_feedback_hint'))
+    feedback_action.triggered.connect(window.show_feedback_dialog)
+    help_menu.addAction(feedback_action)
+    window.ui_objs['action_send_feedback'] = feedback_action
 
     help_menu.addSeparator()
 

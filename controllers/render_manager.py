@@ -9,20 +9,32 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
 from utils import show_message_box, show_warning_box
 from utils.image_utils import cv2_to_pixmap
 from core.multi_focus_fusion import is_ai_fusion_available
+from core.render_context import build_render_context
 from core.workers import RenderWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
 
-PREVIEW_MAX_SIDE = 1200
+# A quick preview must be *obviously* quicker, not marginally so. The old
+# absolute cap of 1200 px did almost nothing at the sizes people actually use:
+# a 1344 px stack shrank by 11%, and the extra downscale plus the forced
+# re-registration of the small frames made the "quick" path slower than the
+# full render (measured 7.7 s vs 6.1 s on a 1344x1021 stack with ECC). Scaling
+# by a fraction fixes the class of problem instead of one resolution: half the
+# linear size is a quarter of the pixels, so the transform-heavy methods really
+# do finish faster. The floor keeps the draft legible and avoids a preview that
+# is slower because of per-tile / per-batch overhead.
+PREVIEW_SCALE = 0.5
+PREVIEW_MIN_SIDE = 320
 
 
 def _downscale_for_preview(img):
-    """Scale a frame so its longest side is at most PREVIEW_MAX_SIDE."""
+    """Halve a frame (never below PREVIEW_MIN_SIDE on the long edge)."""
     h, w = img.shape[:2]
     longest = max(h, w)
-    if longest <= PREVIEW_MAX_SIDE:
+    target = max(PREVIEW_MIN_SIDE, int(round(longest * PREVIEW_SCALE)))
+    if target >= longest:
         return img
-    scale = PREVIEW_MAX_SIDE / float(longest)
+    scale = target / float(longest)
     return cv2.resize(img, (int(round(w * scale)), int(round(h * scale))),
                       interpolation=cv2.INTER_AREA)
 
@@ -375,10 +387,19 @@ class RenderManager:
         # excluded, effective_stack() returns the live lists unchanged.
         stack_images, stack_filenames, included_idx = window.effective_stack()
         preview_downscale = getattr(window, 'chk_quick_preview', None)
+        # Compare-all is a *producing* operation: the whole point is to fill the
+        # output history with one result per method so they can be compared.
+        # Honouring the quick-preview checkbox there rendered eight throwaway
+        # drafts, so the run completed with nothing added to the history - the
+        # user saw a fusion run and no output, with only the last draft left on
+        # the canvas. A draft per method is also unusable for comparison: each
+        # is downscaled and none survives.
+        compare = bool(getattr(self, '_compare_mode', False))
         self._preview_mode = bool(
             preview_downscale is not None
             and preview_downscale.isChecked()
             and not use_roi_aligned_images
+            and not compare
         )
         if use_roi_aligned_images:
             # ROI模式下使用已经对齐的图像栈，跳过额外的配准
@@ -392,14 +413,34 @@ class RenderManager:
             effective_last_alignment_options = (False, True, False)  # 表示ECC已完成
         elif self._preview_mode:
             # Quick preview: downscale the stack so the draft render finishes
-            # in a fraction of the time; alignment always reruns on the small
-            # frames (the full-resolution aligned cache does not apply).
+            # in a fraction of the time.
             source_images = [_downscale_for_preview(img) for img in stack_images]
-            effective_need_align_homography = need_align_homography
-            effective_need_align_ecc = need_align_ecc
-            effective_aligned_images = source_images
-            effective_is_aligned = False
-            effective_last_alignment_options = (False, False, False)
+            # Registration is usually the most expensive stage and it does not
+            # get cheaper in proportion: on a 1344x1021 stack with ECC the
+            # fusion itself is 0.2-0.5 s while ECC takes seconds, so forcing a
+            # fresh alignment for every draft made "quick preview" slower than
+            # the full render. When the current stack is already aligned, reuse
+            # that alignment (downscaled to the draft size) instead of rerunning
+            # it; the alignment is a global transform, so scaling it to the
+            # preview grid is exact.
+            reusable = (
+                window.is_images_aligned
+                and getattr(window, "aligned_images", None)
+                and len(window.aligned_images) == len(stack_images)
+            )
+            if reusable:
+                effective_need_align_homography = False
+                effective_need_align_ecc = False
+                effective_aligned_images = [
+                    _downscale_for_preview(img) for img in window.aligned_images]
+                effective_is_aligned = True
+                effective_last_alignment_options = (False, False, False)
+            else:
+                effective_need_align_homography = need_align_homography
+                effective_need_align_ecc = need_align_ecc
+                effective_aligned_images = source_images
+                effective_is_aligned = False
+                effective_last_alignment_options = (False, False, False)
         elif (need_align_homography or need_align_ecc) \
                 and not window.is_images_aligned \
                 and getattr(window, "align_cache_enabled", True):
@@ -463,10 +504,21 @@ class RenderManager:
                 need_align_openfocus),
             "preview": self._preview_mode,
             "roi": roi_rect is not None,
+            "roi_rect": ((float(roi_rect.x()), float(roi_rect.y()),
+                          float(roi_rect.width()), float(roi_rect.height()))
+                         if roi_rect is not None else None),
+            "roi_mode": roi_mode,
+            "roi_base_index": roi_base_index,
+            "algorithm": force_algorithm or fusion_method,
+            "aligned": bool(effective_is_aligned),
             "filenames": list(stack_filenames),
             "included": list(included_idx),
         }
 
+        from utils.logging_setup import log_action
+        log_action("render_start", method=fusion_method,
+                   align=alignment_method, preview=self._preview_mode,
+                   frames=len(window.raw_images or []))
         self.worker = RenderWorker(
             source_images,
             effective_aligned_images,
@@ -534,6 +586,10 @@ class RenderManager:
         device_name: str,
     ) -> None:
         window = self.window
+        from utils.logging_setup import log_action
+        log_action("render_finished", preview=bool(
+            (self._render_context or {}).get("preview")),
+            seconds=round(fusion_time, 2))
         self._hide_progress_bar()
         context = self._render_context
         preview = context["preview"] if context else getattr(self, '_preview_mode', False)
@@ -599,8 +655,37 @@ class RenderManager:
                         window.btn_preview_roi.blockSignals(False)
 
                 window.output_manager.show_fusion_result()
+                new_context = None
                 if not preview:
-                    window.output_manager.update_output_list_for_fusion()
+                    try:
+                        ctx = context or {}
+                        new_context = build_render_context(
+                            processed_images,
+                            fusion_result,
+                            filenames=ctx.get("filenames")
+                            or list(window.image_filenames or []),
+                            algorithm=((self._compare_current if compare else None)
+                                       or ctx.get("algorithm")
+                                       or window.current_fusion_method()),
+                            alignment_options=ctx.get("alignment_options"),
+                            # Only claim registration fill when the worker
+                            # actually fused warped frames. A stack that was
+                            # aligned earlier but rendered with no alignment
+                            # request uses the raw frames.
+                            aligned=bool(registration_performed
+                                         or (ctx.get("roi")
+                                             and ctx.get("aligned"))),
+                            roi_rect=ctx.get("roi_rect"),
+                            roi_mode=ctx.get("roi_mode"),
+                        )
+                        window.last_render_context = new_context
+                    except Exception:
+                        import logging
+                        logging.getLogger("openfocus").exception(
+                            "could not record render provenance; "
+                            "the output will not be retouchable")
+                    window.output_manager.update_output_list_for_fusion(
+                        context=new_context)
 
                 # Tag the newest output entry with the method that made it
                 method = getattr(self, '_compare_current', None) if compare else None
@@ -609,6 +694,7 @@ class RenderManager:
                     if item is not None:
                         item.setText(
                             f"{item.text()} — {self.algo_display_name(method)}")
+                        window.output_manager.update_record_label(0, item.text())
 
                 # New output: refresh the wipe B-side history, keep selection
                 if getattr(window, "wipe_active", False):
@@ -662,6 +748,13 @@ class RenderManager:
                         # wipe view may be scrubbing through
                         if getattr(window, "wipe_active", False):
                             window.refresh_wipe_controls()
+
+                        # Align-only runs have no fused image, so the output
+                        # list used to stay empty and the aligned frames were
+                        # unreachable. Publish them as a folder entry that can
+                        # be re-saved.
+                        if not preview:
+                            self._publish_aligned_stack(window, processed_images)
 
                         print("Registration completed successfully!")
                 else:
@@ -792,6 +885,17 @@ class RenderManager:
                 # 恢复 UI 控件
                 self._restore_ui_controls()
             self._dispose_worker()
+
+    def _publish_aligned_stack(self, window, frames) -> None:
+        """Stage an align-only result as a folder the output list can show."""
+        try:
+            from controllers.output_manager import publish_aligned_stack
+
+            publish_aligned_stack(window, frames)
+        except Exception as exc:  # never fail a render over the listing
+            import logging
+            logging.getLogger("openfocus").warning(
+                "could not publish the aligned stack: %s", exc)
 
     def _dispose_worker(self) -> None:
         """Release the finished RenderWorker without destroying a live QThread.

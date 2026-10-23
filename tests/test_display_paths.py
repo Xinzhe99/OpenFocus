@@ -135,7 +135,7 @@ class TestWipePixmapCache:
             def is_enabled_for_target(self, target):
                 return self.enabled
 
-            def display_bgr_image(self, target, image, index):
+            def display_bgr_image(self, target, image, index, scale_cfg=None):
                 self.calls += 1
                 out = image.copy()
                 if self.enabled:
@@ -186,4 +186,28 @@ class TestWipePixmapCache:
         plain = _rgb_array(window._wipe_pixmap("left", 0, image))
         assert window.label_manager.calls == 0
         assert tuple(plain[0, 0]) == (80, 80, 80)
+
+    def test_scale_bar_changes_invalidate_the_cache(self):
+        """A bar added or removed must not be served from the old cache."""
+        window = self._window()
+        window.scale_um_per_px_manual = 1.0
+        image = np.full((120, 200, 3), 80, np.uint8)
+
+        plain = window._wipe_pixmap("right", 0, image)
+        assert window.label_manager.calls == 0
+
+        window.scale_bar_enabled = True
+        window.scale_bar_target = "all"
+        with_bar = window._wipe_pixmap("right", 0, image)
+        assert window.label_manager.calls == 1
+        assert with_bar is not plain
+        assert window._wipe_pixmap("right", 0, image) is with_bar
+        assert window.label_manager.calls == 1
+
+        # Scoping the bar away from the result must redraw, not reuse.
+        window.scale_bar_target = "source"
+        restored = window._wipe_pixmap("right", 0, image)
+        assert restored is not with_bar
+        assert window.label_manager.calls == 1
+        assert np.array_equal(_rgb_array(restored), _rgb_array(plain))
 

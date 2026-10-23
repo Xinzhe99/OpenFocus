@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSlider,
     QSpinBox,
     QSplitter,
     QVBoxLayout,
@@ -288,7 +289,50 @@ class DepthMapDialog(QDialog):
             f"background: {_p['surfaceSunken']};"
             f" border: 1px solid {_p['border']};"
             f" color: {_p['textMuted']};")
-        pvlay.addWidget(self.preview_lbl, 1)
+        # The 3D surface lives on its own tab: it answers a different question
+        # ("what does this relief look like?") than the colourised map, and it
+        # used to require exporting an OBJ and opening another program.
+        from PyQt6.QtWidgets import QTabWidget
+        from widgets.depth_surface import DepthSurface
+        self.tabs = QTabWidget()
+        map_page = QWidget()
+        map_lay = QVBoxLayout(map_page)
+        map_lay.setContentsMargins(0, 0, 0, 0)
+        map_lay.addWidget(self.preview_lbl, 1)
+        self.tabs.addTab(map_page, trans.t("depth_tab_map"))
+
+        surf_page = QWidget()
+        surf_lay = QVBoxLayout(surf_page)
+        surf_lay.setContentsMargins(0, 0, 0, 0)
+        self.surface = DepthSurface()
+        surf_lay.addWidget(self.surface, 1)
+        # Detail slider: the surface is sampled at a working resolution to
+        # stay interactive; this exposes that trade-off instead of hiding it.
+        detail_row = QHBoxLayout()
+        detail_row.setContentsMargins(0, 0, 0, 0)
+        self.detail_slider = QSlider(Qt.Orientation.Horizontal)
+        self.detail_slider.setRange(20, 100)
+        self.detail_slider.setSingleStep(5)
+        self.detail_slider.setPageStep(10)
+        self.detail_slider.setValue(60)
+        self.detail_slider.setToolTip(trans.t("depth_3d_detail_hint"))
+        self.detail_value = QLabel("0.60x")
+        self.detail_value.setMinimumWidth(34)
+        self.detail_value.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.detail_slider.valueChanged.connect(
+            lambda v: (self.detail_value.setText(f"{v / 100.0:.2f}x"),
+                       self.surface.set_detail(v)))
+        detail_row.addWidget(QLabel(trans.t("depth_3d_detail")))
+        detail_row.addWidget(self.detail_slider, 1)
+        detail_row.addWidget(self.detail_value)
+        surf_lay.addLayout(detail_row)
+        self.btn_surface_reset = QPushButton(trans.t("depth_3d_reset"))
+        self.btn_surface_reset.clicked.connect(self.surface.reset_view)
+        surf_lay.addWidget(self.btn_surface_reset)
+        self.tabs.addTab(surf_page, trans.t("depth_tab_3d"))
+        pvlay.addWidget(self.tabs, 1)
+
         self.legend = _GradientBar()
         pvlay.addWidget(self.legend)
         splitter.addWidget(pv)
@@ -346,6 +390,9 @@ class DepthMapDialog(QDialog):
         self.relief_spin.setSuffix(" %")
         self.relief_spin.setValue(15)
         self.relief_spin.setToolTip(trans.t("depth_relief_hint"))
+        self.relief_spin.valueChanged.connect(
+            lambda v: self.surface.set_relief(v / 100.0)
+            if hasattr(self, "surface") else None)
         form.addRow(trans.t("depth_relief"), self.relief_spin)
 
         self.overlay_chk = QCheckBox(trans.t("depth_overlay"))
@@ -666,6 +713,9 @@ class DepthMapDialog(QDialog):
         if self._index01 is None:
             self.legend.update()
             return
+        # Keep the 3D tab in step with the same parameters the map uses, so
+        # dragging relief/smoothing/gamma shows the surface immediately.
+        self._refresh_surface()
         img = self._colorized_full()
         h, w = img.shape[:2]
         target = self.preview_lbl.size()
@@ -679,6 +729,36 @@ class DepthMapDialog(QDialog):
         qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0],
                       3 * rgb.shape[1], QImage.Format.Format_RGB888)
         self.preview_lbl.setPixmap(QPixmap.fromImage(qimg))
+
+    def _refresh_surface(self) -> None:
+        """Rebuild the height field for the 3D tab from the live parameters."""
+        if self._index01 is None or not hasattr(self, "surface"):
+            return
+        try:
+            from core.depth_map import smooth_index_map
+            from utils.mesh_export import build_height_field
+            index = smooth_index_map(self._index01, self.smooth_spin.value())
+            hf = build_height_field(index, max_side=220, smooth=1)
+            if self.invert_chk.isChecked():
+                hf = 1.0 - hf
+            # Texture with the fused image when there is one, otherwise with
+            # a source frame. Without a fallback the 3D view rendered as a
+            # dot cloud: every pixel was the flat accent colour, which read
+            # as "there is no texture at all".
+            tex = getattr(self.window_main, "fusion_result", None)
+            if tex is None or tex.shape[:2] != self._index01.shape[:2]:
+                imgs = self._images() or []
+                tex = (imgs[0] if imgs
+                       and imgs[0].shape[:2] == self._index01.shape[:2]
+                       else None)
+            if tex is not None:
+                tex = cv2.resize(tex, (hf.shape[1], hf.shape[0]),
+                                 interpolation=cv2.INTER_AREA)
+            self.surface.set_relief(self.relief_spin.value() / 100.0)
+            self.surface.set_surface(hf, tex)
+        except Exception:
+            # A preview must never break the dialog; the map tab still works.
+            pass
 
     def _save(self, colorized=True):
         if self._index01 is None:

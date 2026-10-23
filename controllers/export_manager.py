@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
 
 from dialogs import DurationDialog
-from ui.styles import PROGRESS_DIALOG_STYLE
+from ui import styles as ui_styles
 from utils import (
     show_error_box,
     show_message_box,
@@ -145,8 +145,35 @@ class ExportManager:
     # ------------------------------------------------------------------
     # Export helpers
     # ------------------------------------------------------------------
+    def _selected_aligned_dir(self):
+        """Folder of the selected align-only result, or None."""
+        window = self.window
+        lst = getattr(window, "output_list", None)
+        if lst is None:
+            return None
+        item = lst.currentItem()
+        if item is None:
+            return None
+        from controllers.output_manager import ALIGNED_DIR_ROLE
+        folder = item.data(ALIGNED_DIR_ROLE)
+        return folder if folder and os.path.isdir(folder) else None
+
     def save_result(self) -> None:
         window = self.window
+
+        # An align-only result is a folder, not a picture. There is no fused
+        # image, so both the selected entry and the plain fallback must export
+        # the whole staged stack (the old code fell through to the
+        # registration branch and wrote a single frame).
+        aligned_dir = self._selected_aligned_dir()
+        if aligned_dir is None and window.fusion_result is None:
+            staged = getattr(window, "aligned_stack_dir", None)
+            if staged and os.path.isdir(staged):
+                aligned_dir = staged
+        if aligned_dir is not None:
+            self._save_aligned_dir(aligned_dir)
+            return
+
         result_to_save = None
         title = ""
 
@@ -181,6 +208,8 @@ class ExportManager:
 
         file_path = self.normalize_export_path(file_path)
 
+        from utils.logging_setup import log_action
+        log_action("export_image", path=file_path)
         try:
             index = 0 if window.fusion_result is not None else window.current_result_index
             if index < 0:
@@ -189,6 +218,8 @@ class ExportManager:
             ext = os.path.splitext(file_path)[1].lower()
             params = get_imwrite_params(ext)
             if imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params):
+                if hasattr(window, "output_manager"):
+                    window.output_manager.mark_selected_exported()
                 # Non-blocking confirmation (errors still get a dialog)
                 window.statusBar().showMessage(
                     trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
@@ -218,6 +249,51 @@ class ExportManager:
                 QMessageBox.Icon.Critical,
             )
 
+    def save_aligned_stack_as(self, source_dir: str, label: str = "") -> None:
+        """Public entry: copy a staged align-only stack to a picked folder."""
+        self._save_aligned_dir(source_dir, label)
+
+    def _save_aligned_dir(self, source_dir: str, label: str = "") -> None:
+        """Copy a staged align-only stack to a folder the user picks."""
+        import shutil
+
+        window = self.window
+        # Suggest the folder that contains the staging directory, so the copy
+        # lands next to the user's other work. (`parent` here was a leftover
+        # name from the dialog that used to own this code — the NameError it
+        # raised inside the Qt slot made "Save as" do nothing at all.)
+        base = QFileDialog.getExistingDirectory(
+            window, trans.t("output_save_aligned_title"),
+            os.path.dirname(os.path.normpath(source_dir)),
+            QFileDialog.Option.ShowDirsOnly)
+        if not base:
+            return
+        # Create a named SUB-folder in the chosen location. Dumping the frames
+        # straight onto e.g. the Desktop was unusable and broke the naming
+        # contract: the sub-folder carries the same name the UI showed.
+        target = os.path.join(base, os.path.basename(source_dir))
+        os.makedirs(target, exist_ok=True)
+        if os.path.normcase(os.path.abspath(target)) == os.path.normcase(
+                os.path.abspath(source_dir)):
+            window.statusBar().showMessage(
+                trans.t("output_save_aligned_same"), 6000)
+            return
+        copied = 0
+        try:
+            for name in sorted(os.listdir(source_dir)):
+                src = os.path.join(source_dir, name)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(target, name))
+                    copied += 1
+        except Exception as exc:
+            show_message_box(window, trans.t("msg_error"),
+                             trans.t("msg_save_failed_text"), str(exc),
+                             QMessageBox.Icon.Critical)
+            return
+        window.statusBar().showMessage(
+            trans.t("output_save_aligned_done").format(
+                n=copied, path=target), 9000)
+
     def save_result_stack(self) -> None:
         window = self.window
         if not window.registration_results:
@@ -235,6 +311,8 @@ class ExportManager:
         if not folder_path:
             return
 
+        from utils.logging_setup import log_action
+        log_action("export_stack", folder=folder_path)
         try:
             saved_count = 0
             for index, image in enumerate(window.registration_results):
@@ -316,7 +394,8 @@ class ExportManager:
             window,
         )
         self.gif_progress_dialog.setWindowTitle(trans.t("msg_gif_processing_title"))
-        self.gif_progress_dialog.setStyleSheet(PROGRESS_DIALOG_STYLE)
+        self.gif_progress_dialog.setStyleSheet(
+            ui_styles.PROGRESS_DIALOG_STYLE)
         self.gif_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self.gif_progress_dialog.setMinimumDuration(0)
         self.gif_progress_dialog.setCancelButton(None)

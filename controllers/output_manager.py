@@ -1,19 +1,67 @@
 import os
-from typing import Any
+import re
+import uuid
+from dataclasses import dataclass
+from typing import Any, Optional
 
 import cv2
+import numpy as np
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QImage
 from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox
 
 from controllers.export_manager import get_imwrite_params
-from utils import show_error_box, show_message_box, show_success_box, show_warning_box
+from utils import (show_error_box, show_message_box, show_success_box,
+                   show_warning_box)
 from utils.settings_store import get_drag_export_format, set_drag_export_format
 from utils import scalebar
 from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
 from utils.image_utils import to_display_uint8, cv2_to_pixmap
 from utils.image_utils import imwrite_auto
 from locales import trans
+
+# Item-data roles: the folder of an align-only result, and the stable
+# provenance record of every output (identity, source context, export state).
+ALIGNED_DIR_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+OUTPUT_RECORD_ROLE = int(Qt.ItemDataRole.UserRole) + 2
+
+
+@dataclass
+class OutputRecord:
+    """Stable identity for one entry in the output history.
+
+    The list row is a view concern and changes when entries are deleted or
+    inserted; `output_id` is what a retouch session, a parent link and an
+    export decision refer to.  `context` is the immutable render provenance
+    (None for batch/legacy/aligned entries, which therefore cannot be
+    retouched by guessing).
+    """
+
+    output_id: str
+    image: Any
+    label: str
+    context: Any = None
+    kind: str = "fusion"
+    parent_id: Optional[str] = None
+    exported: bool = True
+
+    @classmethod
+    def create(cls, image, label: str, *, context=None, kind: str = "fusion",
+               parent_id: Optional[str] = None, exported: bool = True):
+        return cls(output_id=uuid.uuid4().hex, image=image, label=label,
+                   context=context, kind=kind, parent_id=parent_id,
+                   exported=exported)
+
+    @property
+    def retouchable(self) -> bool:
+        return (self.context is not None
+                and int(getattr(self.context, "source_count", 0)) > 0
+                and self.image is not None)
+
+    @property
+    def protected(self) -> bool:
+        """A retouched output whose pixels have not been written to disk."""
+        return self.kind == "retouch" and not self.exported
 
 
 def _thumbnail_bgr(image, size: int):
@@ -51,39 +99,306 @@ class OutputManager:
         count = self.window.output_list.count()
         self.window.output_label.setText(trans.t("label_output").format(count))
 
-    def update_output_list_for_fusion(self) -> None:
+    # ------------------------------------------------------------------
+    # Stable output identity
+    # ------------------------------------------------------------------
+    def record_for_item(self, item) -> Optional[OutputRecord]:
+        if item is None:
+            return None
+        record = item.data(OUTPUT_RECORD_ROLE)
+        return record if isinstance(record, OutputRecord) else None
+
+    def record_for_row(self, row: int) -> Optional[OutputRecord]:
+        if row < 0:
+            return None
+        return self.record_for_item(self.window.output_list.item(row))
+
+    def update_record_label(self, row: int, label: str) -> None:
+        record = self.record_for_row(row)
+        if record is not None:
+            record.label = label
+
+    def mark_exported(self, row: Optional[int] = None) -> None:
+        """Record that the output at `row` was written to a file."""
+        if row is None:
+            row = self.window.output_list.currentRow()
+        record = self.record_for_row(row)
+        if record is not None:
+            record.exported = True
+
+    def mark_selected_exported(self) -> None:
+        row = self.window.output_list.currentRow()
+        self.mark_exported(row if row >= 0 else 0)
+
+    def protected_records(self) -> list[OutputRecord]:
+        records = []
+        for row in range(self.window.output_list.count()):
+            record = self.record_for_row(row)
+            if record is not None and record.protected:
+                records.append(record)
+        return records
+
+    def _insert_output(self, image, label: str, record: Optional[OutputRecord],
+                       tooltip: str = "") -> QListWidgetItem:
+        """Insert one entry at row 0, keeping pixels, item and record aligned."""
         window = self.window
-
-        fusion_filename = window.export_manager.generate_default_filename()
-
-        if window.fusion_result is not None:
-            window.fusion_results.insert(0, window.fusion_result.copy())
-
-        item = QListWidgetItem(fusion_filename)
-
-        if window.fusion_result is not None:
+        if image is not None:
+            window.fusion_results.insert(0, image)
+        if record is not None:
+            record.label = label
+        item = QListWidgetItem(label)
+        if record is not None:
+            item.setData(OUTPUT_RECORD_ROLE, record)
+        if tooltip:
+            item.setToolTip(tooltip)
+        if image is not None:
             try:
                 # Thumbnail from a 40 px resample, not from the full frame:
                 # converting 12 MP just to fill a 40x40 icon cost ~35 ms of
                 # copy + colour convert + pixmap upload per render.
-                icon = QIcon(cv2_to_pixmap(_thumbnail_bgr(window.fusion_result, 40)))
+                icon = QIcon(cv2_to_pixmap(_thumbnail_bgr(image, 40)))
                 item.setIcon(icon)
             except Exception:
                 pass
-
         window.output_list.insertItem(0, item)
         # Select only the new entry: setCurrentRow() extends an existing
         # selection, which left every previous output highlighted too (and
         # disabled the single-item actions — Save As, Retouch).
         window.output_list.clearSelection()
         window.output_list.setCurrentRow(0)
-        # Drop the oldest entries beyond the cap so long sessions cannot grow
-        # without bound (list and data array stay 1:1).
-        while len(window.fusion_results) > self.MAX_HISTORY:
-            window.fusion_results.pop()
-            if window.output_list.count() > len(window.fusion_results):
-                window.output_list.takeItem(window.output_list.count() - 1)
+        self._trim_history()
         self.update_output_count()
+        return item
+
+    def _remove_row(self, row: int) -> None:
+        window = self.window
+        if row < 0 or row >= window.output_list.count():
+            return
+        window.output_list.takeItem(row)
+        if 0 <= row < len(window.fusion_results):
+            window.fusion_results.pop(row)
+        self.update_output_count()
+
+    def _trim_history(self) -> None:
+        """Enforce MAX_HISTORY without silently discarding protected work.
+
+        Retouched outputs that were never exported stay in the list even if
+        that leaves it above the cap; the user must decide to export or
+        discard them.  Unprotected entries are evicted oldest-first.
+        """
+        window = self.window
+        while window.output_list.count() > self.MAX_HISTORY:
+            row = window.output_list.count() - 1
+            while row >= 0:
+                record = self.record_for_row(row)
+                if record is None or not record.protected:
+                    break
+                row -= 1
+            if row < 0:
+                break
+            window.output_list.takeItem(row)
+            if 0 <= row < len(window.fusion_results):
+                window.fusion_results.pop(row)
+
+    def update_output_list_for_fusion(self, context=None) -> None:
+        window = self.window
+
+        fusion_filename = window.export_manager.generate_default_filename()
+
+        image = None
+        record = None
+        if window.fusion_result is not None:
+            image = window.fusion_result.copy()
+            record = OutputRecord.create(image, fusion_filename,
+                                         context=context, kind="fusion")
+        self._insert_output(image, fusion_filename, record)
+
+    def add_batch_outputs(self, paths) -> int:
+        """Append finished batch files to the output list.
+
+        A batch used to end in a message box only: the results were on disk but
+        the output panel stayed empty, so they could not be inspected, compared
+        with the wipe tool, or retouched like a normal render. Each file is
+        read back once (at a display-friendly size cap) so every existing
+        output action keeps working unchanged.
+
+        Returns how many entries were added.
+        """
+        import os
+
+        import cv2
+
+        window = self.window
+        added = 0
+        for path in paths:
+            try:
+                if not os.path.isfile(path):
+                    continue
+                image = cv2.imdecode(np.fromfile(path, np.uint8),
+                                     cv2.IMREAD_UNCHANGED)
+                if image is None:
+                    continue
+                label = os.path.basename(path)
+                # Batch files are already on disk and have no in-memory
+                # provenance; mark them as such instead of guessing frames.
+                record = OutputRecord.create(image, label, kind="batch",
+                                             exported=True)
+                self._insert_output(image, label, record, tooltip=path)
+                added += 1
+            except Exception:
+                continue
+        if added:
+            self.update_output_count()
+            self.display_specific_fusion_result(window.fusion_results[0])
+        return added
+
+    # ------------------------------------------------------------------
+    # Retouched outputs
+    # ------------------------------------------------------------------
+    def _retouch_label_parts(self):
+        """Localized prefix/suffix and regex for "name · retouch N"."""
+        suffix = trans.t("retouch_output_suffix")
+        prefix, sep, _rest = suffix.partition("{n}")
+        if not sep:
+            return suffix, None, None
+        prefix = prefix.strip()
+        pattern = re.compile(
+            r"^(.*) · " + re.escape(prefix) + r" (\d+)$")
+        return suffix, prefix, pattern
+
+    def next_retouch_label(self, base_label: str) -> str:
+        """Name the new output without making the number part of its identity."""
+        suffix, prefix, pattern = self._retouch_label_parts()
+        root = (base_label or trans.t("retouch_current")).strip()
+        if pattern is not None:
+            match = pattern.match(root)
+            if match:
+                root = match.group(1)
+        used = set()
+        if pattern is not None:
+            for row in range(self.window.output_list.count()):
+                item = self.window.output_list.item(row)
+                text = item.text() if item is not None else ""
+                match = pattern.match(text)
+                if match and match.group(1) == root:
+                    used.add(int(match.group(2)))
+        n = 1
+        while n in used:
+            n += 1
+        try:
+            return f"{root} · {suffix.format(n=n)}"
+        except (KeyError, ValueError, IndexError):
+            return f"{root} {n}"
+
+    def add_retouched_output(self, base_record: OutputRecord,
+                             image) -> OutputRecord:
+        """Publish a retouch buffer as a new output, leaving the base intact."""
+        if base_record is None or image is None:
+            raise ValueError("a base output and an edited image are required")
+        image = np.ascontiguousarray(image.copy())
+        label = self.next_retouch_label(base_record.label)
+        record = OutputRecord.create(
+            image, label, context=base_record.context, kind="retouch",
+            parent_id=base_record.output_id, exported=False)
+        previous = getattr(self.window, "fusion_result", None)
+        item = None
+        try:
+            self.window.fusion_result = image
+            item = self._insert_output(
+                image, label, record, tooltip=trans.t("retouch_unexported"))
+            if self.display_specific_fusion_result(image) is False:
+                raise RuntimeError(trans.t("msg_display_fusion_failed_text"))
+        except Exception:
+            # Publication is atomic: a failed display must not leave a
+            # half-created entry or a switched result view.
+            if item is not None:
+                row = self.window.output_list.row(item)
+                if row >= 0:
+                    self._remove_row(row)
+            self.window.fusion_result = previous
+            raise
+        return record
+
+    # ------------------------------------------------------------------
+    # Export protection for unexported retouched outputs
+    # ------------------------------------------------------------------
+    def export_records(self, records) -> bool:
+        """Write each record to a chosen folder; True only if all succeeded."""
+        records = [r for r in records if r is not None and r.image is not None]
+        if not records:
+            return True
+        window = self.window
+        folder = QFileDialog.getExistingDirectory(
+            window, trans.t("action_save"), get_last_dialog_dir(),
+            QFileDialog.Option.ShowDirsOnly)
+        if not folder:
+            return False
+        set_last_dialog_dir(folder)
+        used = set()
+        ok = True
+        for record in records:
+            name = window.export_manager.filename_from_label(record.label)
+            stem, ext = os.path.splitext(name)
+            ext = ext or ".png"
+            candidate = f"{stem}{ext}"
+            counter = 2
+            while candidate in used:
+                candidate = f"{stem}_{counter}{ext}"
+                counter += 1
+            path = os.path.join(folder, candidate)
+            try:
+                image = window.label_manager.prepare_bgr_image(
+                    "registered", record.image, 0)
+                image = scalebar.burn(image, scalebar.export_cfg(window))
+                success = imwrite_auto(path, image, get_imwrite_params(ext))
+            except Exception:
+                success = False
+            if success:
+                used.add(candidate)
+                record.exported = True
+            else:
+                ok = False
+        if ok:
+            window.statusBar().showMessage(
+                trans.t("msg_image_saved_info").format(path=folder).replace("\n", " "),
+                8000)
+        else:
+            show_error_box(window, trans.t("msg_save_failed_title"),
+                           trans.t("msg_save_failed_text"),
+                           trans.t("msg_save_failed_info_write"))
+        return ok
+
+    def _confirm_protected_removal(self, records) -> bool:
+        """Ask what to do with unexported retouched outputs before discarding."""
+        protected = [r for r in records if r is not None and r.protected]
+        if not protected:
+            return True
+        from utils.ui_utils import style_message_box
+        box = QMessageBox(self.window)
+        style_message_box(box)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(trans.t("msg_warning"))
+        box.setText(trans.t("retouch_unexported_text").format(
+            count=len(protected)))
+        export_btn = box.addButton(trans.t("action_save"),
+                                   QMessageBox.ButtonRole.AcceptRole)
+        discard_btn = box.addButton(trans.t("btn_discard_changes"),
+                                    QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton(trans.t("btn_cancel"),
+                                   QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is export_btn:
+            return self.export_records(protected)
+        return clicked is discard_btn
+
+    def confirm_unexported_on_exit(self) -> bool:
+        """Return False when the close must be cancelled to protect pixels."""
+        protected = self.protected_records()
+        if not protected:
+            return True
+        return self._confirm_protected_removal(protected)
 
     def sync_output_slider_from_list(self, row: int) -> None:
         if row >= 0:
@@ -100,15 +415,26 @@ class OutputManager:
         delete_action.triggered.connect(self.delete_selected_output_images)
         menu.addAction(delete_action)
 
+        target_item = window.output_list.itemAt(position)
+        if target_item is not None:
+            # The action must follow the entry that was right-clicked, not a
+            # different row that happened to stay selected.
+            window.output_list.clearSelection()
+            target_item.setSelected(True)
+            window.output_list.setCurrentItem(target_item)
+        else:
+            target_item = window.output_list.currentItem()
+
         save_as_action = QAction(trans.t("action_save_as"), window)
-        save_as_action.triggered.connect(lambda: self.save_output_image_as(window.output_list.currentItem()))
-        save_as_action.setEnabled(len(window.output_list.selectedItems()) == 1)
+        save_as_action.triggered.connect(
+            lambda: self.save_output_image_as(target_item))
+        save_as_action.setEnabled(target_item is not None)
         menu.addAction(save_as_action)
 
         retouch_action = QAction(trans.t("action_retouch"), window)
-        retouch_action.triggered.connect(window.show_retouch_dialog)
-        retouch_action.setEnabled(len(window.output_list.selectedItems()) == 1
-                                  and window.fusion_result is not None)
+        retouch_action.triggered.connect(
+            lambda: window.show_retouch_dialog(target_item))
+        retouch_action.setEnabled(target_item is not None)
         menu.addAction(retouch_action)
 
         # Drag-out export format submenu (persisted per user)
@@ -131,13 +457,11 @@ class OutputManager:
         row = window.output_list.row(item)
         if row < 0:
             return
+        record = self.record_for_item(item)
+        if record is not None and not self._confirm_protected_removal([record]):
+            return
 
-        window.output_list.takeItem(row)
-
-        if 0 <= row < len(window.fusion_results):
-            window.fusion_results.pop(row)
-
-        self.update_output_count()
+        self._remove_row(row)
 
         # Output history changed: resync the wipe B-side slider range
         if getattr(window, "wipe_active", False) and hasattr(window, "refresh_wipe_controls"):
@@ -178,6 +502,7 @@ class OutputManager:
             name = f"{base}_{total - i:02d}.png"
             from utils.image_utils import imwrite_auto
             if imwrite_auto(os.path.join(folder, name), scalebar.burn(labeled, scalebar.export_cfg(window))):
+                self.mark_exported(i)
                 count += 1
 
         show_success_box(
@@ -187,6 +512,14 @@ class OutputManager:
     def save_output_image_as(self, item: QListWidgetItem | None) -> None:
         window = self.window
         if item is None:
+            return
+
+        # An align-only entry stages a FOLDER: "Save as" must copy the whole
+        # stack. It used to fall through to the single-image path and offered
+        # a name like "已对齐图像栈（13 帧）.png".
+        folder = item.data(ALIGNED_DIR_ROLE)
+        if folder and os.path.isdir(folder):
+            window.export_manager.save_aligned_stack_as(folder, item.text())
             return
 
         row = window.output_list.row(item)
@@ -220,6 +553,7 @@ class OutputManager:
                 params = get_imwrite_params(ext)
                 success = imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params)
                 if success:
+                    self.mark_exported(row)
                     window.statusBar().showMessage(
                         trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
                         8000)
@@ -239,6 +573,7 @@ class OutputManager:
                 params = get_imwrite_params(ext)
                 success = imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params)
                 if success:
+                    self.mark_exported(row)
                     window.statusBar().showMessage(
                         trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
                         8000)
@@ -287,16 +622,15 @@ class OutputManager:
         if confirm.exec() != QMessageBox.StandardButton.Yes:
             return
 
+        records = [self.record_for_item(item) for item in selected_items]
+        if not self._confirm_protected_removal(records):
+            return
+
         rows = [window.output_list.row(item) for item in selected_items]
         rows.sort(reverse=True)
 
         for row in rows:
-            if row >= 0:
-                window.output_list.takeItem(row)
-                if 0 <= row < len(window.fusion_results):
-                    window.fusion_results.pop(row)
-
-        self.update_output_count()
+            self._remove_row(row)
 
         if window.fusion_results:
             min_row = min(rows) if rows else 0
@@ -313,15 +647,17 @@ class OutputManager:
     # ------------------------------------------------------------------
     # Display helpers
     # ------------------------------------------------------------------
-    def display_specific_fusion_result(self, fusion_image) -> None:
+    def display_specific_fusion_result(self, fusion_image) -> bool:
         if fusion_image is None:
-            return
+            return False
 
         window = self.window
 
         try:
             display_image = to_display_uint8(
-                window.label_manager.display_bgr_image("registered", fusion_image, 0))
+                window.label_manager.display_bgr_image(
+                    "registered", fusion_image, 0,
+                    scale_cfg=scalebar.export_cfg(window)))
             window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(display_image))
             window.result_control_bar.setVisible(False)
             window.lbl_result_info.setText("-- / --")
@@ -329,6 +665,7 @@ class OutputManager:
             # Keep the wipe view's right side following the latest result
             if getattr(window, "wipe_active", False):
                 window._update_wipe_images()
+            return True
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
@@ -337,6 +674,7 @@ class OutputManager:
                 f"Error: {str(exc)}",
                 QMessageBox.Icon.Critical,
             )
+            return False
 
     def display_output_image_in_result_view(self, item: QListWidgetItem) -> None:
         window = self.window
@@ -383,3 +721,86 @@ class OutputManager:
                 f"Error: {str(exc)}",
                 QMessageBox.Icon.Critical,
             )
+
+def publish_aligned_stack(window, frames) -> None:
+    """Stage aligned frames in a dated folder and list it as one entry.
+
+    An align-only render produces no fused image, so the output panel stayed
+    empty even though the aligned stack IS the result. The frames are written
+    once with labels and the scale bar burned in, exactly as a manual export
+    would; the folder name carries the stack, the alignment method and the
+    time, following the same convention as the fused-image names.
+
+    The first frame is also inserted into `fusion_results` so the existing
+    output actions keep working on it, and the entry carries the folder path
+    so "Save As" copies the whole stack.
+    """
+    import datetime
+    import os
+    import tempfile
+
+    import cv2
+
+    from utils import scalebar
+    from utils.image_utils import imwrite_auto
+
+    if not frames:
+        return
+
+    label_manager = getattr(window, "label_manager", None)
+    names = list(getattr(window, "image_filenames", []) or [])
+
+    # Same naming convention as the fused-image folders:
+    # <stack>_<timestamp>_<fusion>_<alignment>
+    stack_name = "Stack"
+    src = getattr(window, "current_folder_path", None)
+    if src:
+        stack_name = os.path.basename(src.rstrip("/\\")) or "Stack"
+    align = getattr(window, "current_alignment_method", lambda: "none")()
+    align_tag = {"homography": "Homo", "ecc": "ECC",
+                 "openfocus": "OF"}.get(align, "NoAlign")
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Name carries everything the user asked to identify a staged stack:
+    # frame count, source stack, alignment method, time. The output entry
+    # shows this exact name, and "Save As" creates a sub-folder with it.
+    folder_name = (f"OpenFocus_{stack_name}_{align_tag}_"
+                   f"{len(frames):03d}frames_{stamp}")
+    folder = os.path.join(tempfile.gettempdir(), folder_name)
+    os.makedirs(folder, exist_ok=True)
+
+    saved = 0
+    for index, frame in enumerate(frames):
+        image = frame
+        if label_manager is not None:
+            image = label_manager.prepare_bgr_image("input", image, index)
+        image = scalebar.burn(image, scalebar.export_cfg(window))
+        name = (names[index] if index < len(names)
+                else f"aligned_{index + 1:04d}.png")
+        if imwrite_auto(os.path.join(folder, name), image):
+            saved += 1
+    if not saved:
+        return
+
+    # The entry text IS the staged folder name: the UI label and the
+    # "Save As" sub-folder match exactly, which the user asked for.
+    item = QListWidgetItem(folder_name)
+    item.setToolTip(trans.t("output_aligned_stack").format(n=saved)
+                    + "\n" + folder)
+    item.setData(ALIGNED_DIR_ROLE, folder)
+    item.setData(OUTPUT_RECORD_ROLE, OutputRecord.create(
+        frames[0], folder_name, kind="aligned", exported=True))
+    try:
+        icon = QIcon(cv2_to_pixmap(_thumbnail_bgr(frames[0], 40)))
+        item.setIcon(icon)
+    except Exception:
+        pass
+    window.output_list.insertItem(0, item)
+    window.fusion_results.insert(0, frames[0])
+    window.output_list.clearSelection()
+    window.output_list.setCurrentRow(0)
+    # The "输出 (N)" header must count align-only results too, or the counter
+    # stayed at 0 while entries appeared.
+    window.output_manager.update_output_count()
+    window.aligned_stack_dir = folder
+    window.statusBar().showMessage(
+        trans.t("output_aligned_staged").format(path=folder), 8000)

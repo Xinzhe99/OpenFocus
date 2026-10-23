@@ -607,6 +607,10 @@ QFrame#rightPanel {{
     background-color: {t['surface']};
     border-left: 1px solid {t['border']};
 }}
+QWidget#dialogButtonBar {{
+    background-color: {t['surface']};
+    border-top: 1px solid {t['border']};
+}}
 QFrame#statusPanel {{
     background-color: {t['surfaceSunken']};
     border-top: 1px solid {t['border']};
@@ -719,11 +723,67 @@ QMessageBox QPushButton:default:hover {{ background-color: {t['accentHover']}; }
 """
 
 
-MESSAGE_BOX_STYLE = _message_box_qss("dark")
+def _add_label_dialog_qss(theme: str) -> str:
+    """Style for the "add label" dialog (controllers/label_manager.py).
+
+    The dialog is built inline rather than as a dialogs/ module, and it was the
+    one place still importing a constant that the v1.62 visual-layer rewrite
+    deleted. The import failed inside the action handler, so the menu entry did
+    nothing at all instead of opening the panel.
+    """
+    t = palette(theme)
+    r = RADIUS
+    s = SPACE
+    f = FONT
+    return f"""
+QDialog {{
+    background-color: {t['surface']};
+    color: {t['text']};
+    font-family: {_UI_FONT};
+    font-size: {f['body']}pt;
+}}
+QDialog QLabel {{ color: {t['text']}; }}
+QDialog QLineEdit, QDialog QComboBox {{
+    background-color: {t['controlBg']};
+    color: {t['text']};
+    border: 1px solid {t['controlBorder']};
+    padding: {s['xs']}px {s['sm']}px;
+    border-radius: {r['sm']}px;
+    min-height: 20px;
+}}
+QDialog QLineEdit:focus, QDialog QComboBox:focus {{
+    border-color: {t['borderFocus']};
+}}
+QDialog QComboBox QAbstractItemView {{
+    background-color: {t['surface']};
+    color: {t['text']};
+    selection-background-color: {t['accent']};
+    selection-color: {t['textOnAccent']};
+}}
+QDialog QPushButton {{
+    background-color: {t['surface']};
+    color: {t['text']};
+    border: 1px solid {t['controlBorder']};
+    border-radius: {r['sm']}px;
+    padding: {s['xs'] + 2}px {s['lg']}px;
+    min-height: 26px;
+}}
+QDialog QPushButton:hover {{ background-color: {t['surfaceHover']}; }}
+QDialog QCheckBox {{ color: {t['text']}; spacing: {s['sm']}px; }}
+"""
+
+
+ADD_LABEL_DIALOG_STYLE = _add_label_dialog_qss("dark")
+ADD_LABEL_DIALOG_STYLE_LIGHT = _add_label_dialog_qss("light")
+
+
+def get_add_label_dialog_style(theme: str) -> str:
+    return (ADD_LABEL_DIALOG_STYLE_LIGHT if theme == "light"
+            else ADD_LABEL_DIALOG_STYLE)
+
+
+MESSAGE_BOX_STYLE_DARK = _message_box_qss("dark")
 MESSAGE_BOX_STYLE_LIGHT = _message_box_qss("light")
-WARNING_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE
-ERROR_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE
-SUCCESS_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE
 
 
 def _progress_qss(theme: str) -> str:
@@ -755,7 +815,8 @@ QProgressBar::chunk {{ background-color: {t['accent']}; border-radius: {r['xs']}
 """
 
 
-PROGRESS_DIALOG_STYLE = _progress_qss("dark")
+PROGRESS_DIALOG_STYLE_DARK = _progress_qss("dark")
+PROGRESS_DIALOG_STYLE_LIGHT = _progress_qss("light")
 
 
 def _combo_qss(theme: str) -> str:
@@ -911,17 +972,53 @@ PRIMARY_BLUE = palette("light")["accent"]
 # Current theme state (read by widgets that paint by hand)
 # --------------------------------------------------------------------------
 CURRENT_THEME = "dark"
-CURRENT_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE
+CURRENT_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
 
 
 def get_message_box_style(theme: str) -> str:
-    return MESSAGE_BOX_STYLE_LIGHT if theme == "light" else MESSAGE_BOX_STYLE
+    return (MESSAGE_BOX_STYLE_LIGHT if theme == "light"
+            else MESSAGE_BOX_STYLE_DARK)
+
+
+def get_progress_dialog_style(theme: str) -> str:
+    return (PROGRESS_DIALOG_STYLE_LIGHT if theme == "light"
+            else PROGRESS_DIALOG_STYLE_DARK)
+
+
+def _theme_bound(getter):
+    """A module-level stylesheet constant that follows the active theme.
+
+    `MESSAGE_BOX_STYLE` and `PROGRESS_DIALOG_STYLE` used to be plain strings
+    built once for the dark palette. Five call sites import them by name, so
+    every message box and progress dialog stayed black in light mode - seen as
+    a dark "batch finished" panel over a light app.
+
+    A Qt stylesheet must be a real ``str`` (``setStyleSheet`` rejects anything
+    else), so the constants are rebindable module globals refreshed by
+    ``set_current_theme``. Same names, same type, always current.
+    """
+    return getter
+
+
+MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
+PROGRESS_DIALOG_STYLE = PROGRESS_DIALOG_STYLE_DARK
+WARNING_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
+ERROR_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
+SUCCESS_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
 
 
 def set_current_theme(theme: str) -> None:
     global CURRENT_THEME, CURRENT_MESSAGE_BOX_STYLE
+    global MESSAGE_BOX_STYLE, PROGRESS_DIALOG_STYLE
+    global WARNING_MESSAGE_BOX_STYLE, ERROR_MESSAGE_BOX_STYLE
+    global SUCCESS_MESSAGE_BOX_STYLE
     CURRENT_THEME = "light" if theme == "light" else "dark"
     CURRENT_MESSAGE_BOX_STYLE = get_message_box_style(CURRENT_THEME)
+    MESSAGE_BOX_STYLE = CURRENT_MESSAGE_BOX_STYLE
+    PROGRESS_DIALOG_STYLE = get_progress_dialog_style(CURRENT_THEME)
+    WARNING_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE
+    ERROR_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE
+    SUCCESS_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE
 
 
 def tokens(theme: str = None) -> Dict[str, str]:

@@ -231,6 +231,19 @@ class StepperSpinBox(QWidget):
         value = max(self._min, min(self._max, value))
         return round(value, self._decimals)
 
+    def reapply_theme(self) -> None:
+        """Rebuild the button sheets for the active theme.
+
+        The buttons carry inline stylesheets (built from the palette at
+        creation time), so switching dark -> light left them black: the global
+        stylesheet cannot override an inline one. apply_theme() calls this for
+        every stepper in the window.
+        """
+        self._minus.setStyleSheet(_button_qss("stepperMinusButton"))
+        self._plus.setStyleSheet(_button_qss("stepperPlusButton"))
+        self._minus.update()
+        self._plus.update()
+
     def _sync_text(self) -> None:
         if self._decimals:
             text = f"{self._value:.{self._decimals}f}"

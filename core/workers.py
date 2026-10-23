@@ -525,6 +525,10 @@ class BatchWorker(QThread):
         self.output_type = output_type
         self.output_path = output_path
         self.processing_settings = processing_settings
+        # Files this run actually wrote, newest last. The dialog surfaces them in
+        # the output list so a finished batch is inspectable like a manual
+        # render instead of vanishing into a message box.
+        self.written_paths = []
         self.is_cancelled = False
         self.import_mode = import_mode
         self.split_method = split_method
@@ -550,6 +554,22 @@ class BatchWorker(QThread):
         except Exception:
             self.thread_count = 4
 
+    def _registration_width(self, images) -> int | None:
+        """Registration downscale width for this stack.
+
+        The batch dialog exposes a *ratio* of the stack's own width, so a
+        4000 px folder and a 900 px folder are both scaled sensibly; 100%
+        keeps whatever the main window is configured with.
+        """
+        ratio = self.processing_settings.get('reg_scale_percent', 100)
+        if ratio is None or int(ratio) >= 100:
+            return self.reg_downscale_width
+        try:
+            widest = max(int(img.shape[1]) for img in images)
+        except Exception:
+            return self.reg_downscale_width
+        return max(64, int(round(widest * int(ratio) / 100.0)))
+
     def _save_image(self, path: str, image, extension: str, scale_cfg=None) -> bool:
         """Save with the user-selected JPG quality; other formats use defaults."""
         params = []
@@ -563,7 +583,10 @@ class BatchWorker(QThread):
         if scale_cfg:
             from utils import scalebar
             image = scalebar.burn(image, scale_cfg)
-        return imwrite_auto(path, image, params)
+        ok = imwrite_auto(path, image, params)
+        if ok and path not in self.written_paths:
+            self.written_paths.append(path)
+        return ok
 
     def run(self):
         """执行批处理"""
@@ -599,7 +622,8 @@ class BatchWorker(QThread):
                     'success': success_count,
                     'total': total_count,
                     'failed': failed_stacks,
-                    'cancelled': self.is_cancelled
+                    'cancelled': self.is_cancelled,
+                    'outputs': list(self.written_paths),
                 }
                 self.finished.emit(results)
             else:
@@ -625,7 +649,8 @@ class BatchWorker(QThread):
                     'success': success_count,
                     'total': total_count,
                     'failed': failed_folders,
-                    'cancelled': self.is_cancelled
+                    'cancelled': self.is_cancelled,
+                    'outputs': list(self.written_paths),
                 }
                 self.finished.emit(results)
 
@@ -712,8 +737,9 @@ class BatchWorker(QThread):
 
             if mode:
                 from core.registration import ImageRegistration
-                if self.reg_downscale_width is not None:
-                    registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
+                width = self._registration_width(aligned_images)
+                if width is not None:
+                    registration = ImageRegistration(method=mode, downscale_width=width)
                 else:
                     registration = ImageRegistration(method=mode)
                 aligned_images = registration.process(
@@ -749,10 +775,16 @@ class BatchWorker(QThread):
             if aligned_for_export is None:
                 del aligned_images  # 融合期间原 uint16 栈纯属悬挂占用
 
+            # The dialog writes these into fusion_params (they are per-method
+            # there); older callers put them at the top level. Read both.
             fusion = MultiFocusFusion(
                 algorithm=fusion_method, use_gpu=self.use_gpu,
-                base_frame=self.processing_settings.get('base_frame', 'none'),
-                sort_mode=self.processing_settings.get('sort_mode', 'asc'),
+                base_frame=fusion_params.pop(
+                    'base_frame',
+                    self.processing_settings.get('base_frame', 'none')),
+                sort_mode=fusion_params.pop(
+                    'sort_mode',
+                    self.processing_settings.get('sort_mode', 'asc')),
                 exposure_match=fusion_params.pop(
                     'exposure_match', self.exposure_match),
                 **tile_kwargs)
@@ -891,8 +923,9 @@ class BatchWorker(QThread):
                 mode = None
 
             if mode:
-                if getattr(self, 'reg_downscale_width', None) is not None:
-                    registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
+                width = self._registration_width(aligned_images)
+                if width is not None:
+                    registration = ImageRegistration(method=mode, downscale_width=width)
                 else:
                     registration = ImageRegistration(method=mode)
                 aligned_images = registration.process(

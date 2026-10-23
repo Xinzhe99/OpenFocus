@@ -86,6 +86,29 @@ def get_imwrite_params(extension: str) -> list:
     return []
 
 
+def thumbnail_bgr(img: np.ndarray, size: int) -> np.ndarray:
+    """Downscale first, then convert to display BGR.
+
+    The order matters: converting a 24 MP uint16 frame costs a full-size
+    temporary, while an INTER_AREA resize to 72 px costs almost nothing and
+    keeps the same visual range.  Used by the output list and the retouch
+    frame strip.
+    """
+    if img is None or getattr(img, "size", 0) == 0:
+        return np.zeros((1, 1, 3), np.uint8)
+    h, w = img.shape[:2]
+    target = max(1, int(size))
+    scale = min(target / float(max(1, w)), target / float(max(1, h)), 1.0)
+    if scale < 1.0:
+        img = cv2.resize(
+            img, (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+            interpolation=cv2.INTER_AREA)
+    display = to_display_uint8(img)
+    if display.ndim == 2:
+        display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
+    return display
+
+
 def to_display_uint8(img: np.ndarray) -> np.ndarray:
     """Convert any supported bit depth to uint8 for on-screen display.
 

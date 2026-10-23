@@ -1,4 +1,4 @@
-from typing import List, Tuple, Any, Optional, Dict
+from typing import List, Tuple, Any, Dict
 import cv2
 import numpy as np
 
@@ -104,9 +104,48 @@ class LabelConfig:
                 setattr(self, key, value)
 
 
+def _bgr_tuple(colour) -> tuple:
+    """Normalise a colour from Qt or the config into a cv2-safe tuple."""
+    try:
+        values = tuple(int(round(float(c))) for c in colour)
+    except (TypeError, ValueError):
+        return (0, 0, 0)
+    if len(values) < 3:
+        values = (values + (0, 0, 0))[:3]
+    return tuple(max(0, min(255, c)) for c in values[:3])
+
+
+def build_label_text(format_str: str, fallback_text: str,
+                     value: int) -> str:
+    """Resolve what a label actually says.
+
+    Rules, in order:
+      * "{value}" in the format string  -> substitute the frame's number
+        ("Fig {value}" on frame 3 gives "Fig 3").
+      * a non-empty format string        -> use it verbatim ("SAMPLE").
+      * an empty format string           -> fall back to the custom text.
+
+    Returning "" means "draw nothing", which the caller treats as a no-op.
+    """
+    fmt = (format_str or "").strip()
+    if "{value}" in fmt:
+        # Integral values print without a decimal tail: the steppers return
+        # floats, and "Fig 1.0" is not what anyone typed.
+        try:
+            number = int(round(float(value)))
+        except (TypeError, ValueError):
+            number = value
+        return fmt.replace("{value}", str(number))
+    if fmt:
+        return fmt
+    return (fallback_text or "").strip()
+
+
 class LabelAdder:
     def __init__(self) -> None:
         self.config = LabelConfig()
+        # Last draw failure, for the dialog to surface instead of guessing.
+        self.last_error = ""
         self.font_mapping: Dict[str, int] = {
             'Arial': cv2.FONT_HERSHEY_SIMPLEX,
             'Times New Roman': cv2.FONT_HERSHEY_SIMPLEX,
@@ -144,29 +183,49 @@ class LabelAdder:
 
             current_value = starting_value + index * interval
 
-            if '{value}' in format_str:
-                label_text = format_str.replace('{value}', str(current_value))
-            else:
-                label_text = text
+            # `format` IS the label template; `text` is only a legacy fallback.
+            # The old logic read:
+            #     if "{value}" in format:  use format (substituted)
+            #     else:                    use text
+            # so typing "SAMPLE" into the format field and leaving the separate
+            # "Custom Text" box empty produced an EMPTY label - the dialog
+            # accepted the settings, reported success, and drew nothing.
+            label_text = build_label_text(format_str, text, current_value)
+            if not label_text:
+                return image
 
             font = self.font_mapping.get(font_family, cv2.FONT_HERSHEY_SIMPLEX)
 
-            font_scale = font_size / 30.0
-            thickness = max(1, int(font_size / 15))
+            # cv2.putText/rectangle reject float coordinates ("Can't parse
+            # 'org'"), and the dialog's steppers return floats (they expose the
+            # QDoubleSpinBox API). Every geometry value is coerced here; the
+            # failure was swallowed by the except below, so a label with
+            # perfectly valid settings drew NOTHING and reported success.
+            x_location = int(round(x_location))
+            y_location = int(round(y_location))
+            font_scale = max(0.05, float(font_size) / 30.0)
+            thickness = max(1, int(float(font_size) / 15))
 
-            # Label colours are defined in the 0-255 domain; scale them up
-            # when annotating 16-bit frames, otherwise they draw near-black.
+            # Colours arrive from Qt as a tuple OR a list depending on the
+            # picker path, and cv2 wants a plain tuple of ints (a list raises
+            # "Can't parse 'org'" from the drawing routines).
+            bg_color = _bgr_tuple(bg_color)
+            font_color = _bgr_tuple(font_color)
+            # Labels are defined in the 0-255 domain; scale them up when
+            # annotating 16-bit frames, otherwise they draw near-black.
             if image.dtype == np.uint16:
-                bg_color = [min(65535, int(c) * 257) for c in bg_color]
-                font_color = [min(65535, int(c) * 257) for c in font_color]
+                bg_color = tuple(min(65535, c * 257) for c in bg_color)
+                font_color = tuple(min(65535, c * 257) for c in font_color)
 
             (text_width, text_height), baseline = cv2.getTextSize(label_text, font, font_scale, thickness)
 
             if not transparent_bg:
                 cv2.rectangle(
                     image,
-                    (x_location, y_location - text_height - 10),
-                    (x_location + text_width + 10, y_location + baseline + 5),
+                    (int(x_location),
+                     int(y_location - text_height - 10)),
+                    (int(x_location + text_width + 10),
+                     int(y_location + baseline + 5)),
                     bg_color,
                     -1
                 )
@@ -174,7 +233,7 @@ class LabelAdder:
             cv2.putText(
                 image,
                 label_text,
-                (x_location + 5, y_location),
+                (int(x_location + 5), int(y_location)),
                 font,
                 font_scale,
                 font_color,
@@ -183,7 +242,14 @@ class LabelAdder:
 
             return image
         except Exception as exc:
+            # Never silent: a swallowed draw error is indistinguishable from
+            # "labels are switched off" in the UI, which is exactly how a
+            # float-coordinate crash looked like a broken feature.
+            import logging
+            logging.getLogger("openfocus").exception(
+                "label draw failed on frame %s", index)
             print(f"LabelAdder: failed to draw label on image {index}: {exc}")
+            self.last_error = str(exc)
             return image
 
     @staticmethod

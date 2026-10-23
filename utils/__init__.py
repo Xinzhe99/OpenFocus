@@ -52,6 +52,7 @@ from utils.validators import (
     normalize_kernel_size,
     get_algorithm_from_checkboxes,
     LabelAdder,
+    build_label_text,
     LabelConfig,
 )
 
@@ -79,5 +80,6 @@ __all__ = [
     'normalize_kernel_size',
     'get_algorithm_from_checkboxes',
     'LabelAdder',
+    'build_label_text',
     'LabelConfig',
 ]

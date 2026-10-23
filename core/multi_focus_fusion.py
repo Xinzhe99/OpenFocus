@@ -9,7 +9,7 @@ from fusion_methods.gff import gff_impl
 from fusion_methods.stackmffv3 import (_stackmffv3_impl, _stackmffv3_batch_impl,
                                       normalize_mode)
 from fusion_methods.dtcwt import _dtcwt_impl
-from utils import resource_path
+from utils import memory, resource_path
 from utils.image_utils import (apply_exposure_gain, exposure_gains,
                                normalize_fuse_input)
 from utils.sorting import natural_sort_key
@@ -137,6 +137,76 @@ def torch_device_kind():
     """Cached accelerator kind from the availability probe, or None while the
     probe has not run yet (never imports torch itself — safe on the UI thread)."""
     return _TORCH_DEVICE_KIND
+
+# Measured peak working set per algorithm, as a multiple of the input stack
+# bytes (1600x2400, 10 frames, 110 MB stack, tiled at 1024/256, 8 workers).
+# Measured with utils.memory on Windows; see docs/PERFORMANCE.md.
+ALGORITHM_PEAK_FACTOR = {
+    "guided_filter": 31.0,
+    "openfocus_b": 13.0,
+    "openfocus_a": 13.0,
+    "openfocus_c": 13.0,
+    "dtcwt": 8.0,
+    "gfgfgf": 8.0,
+    "dct": 3.2,
+    "stackmffv3": 6.0,      # bounded separately by AI_IMAGE_BUDGET
+}
+
+# Fraction of the currently-free physical memory a fusion may plan to use.
+# 45% leaves the other half to the UI, Qt's image buffers and whatever else
+# the user has open; the reserve below is a floor on top of that.
+MEMORY_BUDGET_RATIO = 0.45
+# Never plan to leave the machine with less than this for the UI and the OS.
+MEMORY_RESERVE_MB = 512.0
+
+
+def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
+                        workers: int = 1) -> int:
+    """Rough peak working set for fusing `frames` with `algorithm`.
+
+    Two terms:
+      * the input stack itself (it is alive for the whole call), plus
+      * per-algorithm temporaries, measured as a multiple of the stack.
+
+    When tiled, only `workers` tiles exist at once, so the temporary term is
+    scaled by how much of the frame those tiles cover. This is deliberately
+    conservative: over-estimating costs a smaller tile, under-estimating costs
+    the user's session.
+    """
+    if not frames:
+        return 0
+    first = frames[0]
+    if getattr(first, "ndim", 0) < 2:
+        return 0
+    frame_bytes = first.itemsize * int(np.prod(first.shape))
+    stack_bytes = len(frames) * frame_bytes
+    factor = ALGORITHM_PEAK_FACTOR.get(algorithm, 8.0)
+
+    # The measured factor already includes a whole-frame tile set at 8
+    # workers; scale it by the share of the frame actually resident.
+    if block_size:
+        h, w = first.shape[:2]
+        area_ratio = min(1.0, (block_size * block_size * max(1, workers))
+                         / float(max(1, h * w)))
+        # Tiles overlap, and each worker keeps the full stack for its tile.
+        factor = 1.0 + (factor - 1.0) * max(area_ratio, 1.0 / max(1, workers))
+    return int(stack_bytes * factor)
+
+
+def memory_budget_bytes() -> int:
+    """Bytes a fusion may use right now without making the machine swap."""
+    avail = memory.available_memory_bytes()
+    if avail <= 0:
+        return int(2048 * 1024 ** 2)
+    return int(min(avail * MEMORY_BUDGET_RATIO,
+                   max(0, avail - MEMORY_RESERVE_MB * 1024 ** 2)))
+
+
+# Bound OpenCV's internal parallelism as soon as this module is imported:
+# every fusion goes through it, and the default (thread per core + OpenCL)
+# multiplied the peak working set by ~8x. See utils.memory.
+memory.configure_opencv_memory()
+
 
 def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
     """True when total stack bytes exceed a single threshold-sized frame.
@@ -667,9 +737,55 @@ class MultiFocusFusion:
                 needs_tiles = dtcwt_tiles
             else:
                 needs_tiles = max(h, w) > self.tile_threshold
+            # Memory guard, in order of preference:
+            #   1. fewer concurrent tiles  - bit-identical output, always safe
+            #   2. a smaller tile          - changes the result by <= 2/255
+            #      (measured), so it is a last resort and is announced.
+            # A 1024 px tile peaks at ~4.2 GB on a 1600x2400x8 stack while a
+            # 512 px tile peaks at ~1.3 GB, so the tile size is by far the
+            # biggest lever. It is only touched when the safer lever is not
+            # enough to fit the budget.
+            budget_mb = memory.mb(memory_budget_bytes())
+            safe_block = self.tile_block_size
+            safe_overlap = self.tile_overlap
+            if self.algorithm != 'stackmffv3' and is_list_of_arrays:
+                est_mb = memory.mb(estimate_peak_bytes(
+                    self.algorithm, input_source, safe_block,
+                    self._calculate_optimal_thread_count(
+                        h, w, input_source[0].shape[2]
+                        if input_source[0].ndim == 3 else 1,
+                        len(input_source), safe_block, 8)))
+                # Step down one size at a time; each halving cuts the peak by
+                # roughly 3x (measured: 1024 -> 4.2 GB, 512 -> 1.3 GB,
+                # 256 -> ~0.5 GB on 1600x2400x8).
+                if est_mb > budget_mb:
+                    chosen = safe_block
+                    for candidate in (512, 256):
+                        if chosen <= candidate:
+                            break
+                        candidate_mb = memory.mb(estimate_peak_bytes(
+                            self.algorithm, input_source, candidate,
+                            self._calculate_optimal_thread_count(
+                                h, w,
+                                input_source[0].shape[2]
+                                if input_source[0].ndim == 3 else 1,
+                                len(input_source), candidate, 8)))
+                        chosen = candidate
+                        if candidate_mb <= budget_mb:
+                            break
+                    if chosen < safe_block:
+                        safe_block = chosen
+                        safe_overlap = min(self.tile_overlap,
+                                           max(8, safe_block // 4))
+                        print(
+                            f"Info: Memory guard: estimated {est_mb:.0f} MB "
+                            f"> budget {budget_mb:.0f} MB; using a "
+                            f"{safe_block} px tile (overlap {safe_overlap}). "
+                            "A reduced tile can differ from the full-size "
+                            "tiling by a few levels per pixel.")
             if self.tile_enabled and (needs_tiles or footprint_tiles):
                 # 使用分块融合，块大小和重叠均由实例属性控制
-                print(f"Info: Large stack detected ({len(input_source)}x{w}x{h}). Using tiled fusion mode (block={self.tile_block_size}, overlap={self.tile_overlap}).")
+                print(f"Info: Large stack detected ({len(input_source)}x{w}x{h}). Using tiled fusion mode (block={safe_block}, overlap={safe_overlap}).")
                 kws = dict(kwargs)
                 # 防止外部 kwargs 中含有会与内部指定值冲突的同名参数
                 kws.pop('block_size', None)
@@ -678,8 +794,8 @@ class MultiFocusFusion:
                     input_source,
                     algorithm=self.algorithm,
                     img_resize=img_resize,
-                    block_size=self.tile_block_size,
-                    overlap=self.tile_overlap,
+                    block_size=safe_block,
+                    overlap=safe_overlap,
                     should_cancel=should_cancel,
                     progress_callback=progress_callback,
                     exposure_gains=exposure_gains_,
@@ -948,20 +1064,42 @@ class MultiFocusFusion:
         - fused_tile: block_size * block_size * channels * 4 bytes
         - weight2d: block_size * block_size * 4 bytes
         """
-        try:
-            import psutil
-            avail_memory_mb = psutil.virtual_memory().available // (1024**2)
-        except Exception:
-            avail_memory_mb = 4096
+        # Real available memory. This used to `import psutil`, which is not a
+        # dependency of the project: the import failed on every install and
+        # the guard silently used a hard-coded 4096 MB, so on a busy machine
+        # it allowed far more concurrent tiles than memory existed for.
+        avail_memory_mb = memory.mb(memory.available_memory_bytes())
+        if avail_memory_mb <= 0:
+            avail_memory_mb = 2048.0
 
-        tile_memory = (num_images + 2) * (block_size ** 2) * channels * 4 / (1024**2)
+        # Per-tile working set, CALIBRATED against measurements on
+        # 1600x2400x10 with 1024 px tiles (guided filter, the heaviest
+        # classical method):
+        #     1 worker  -> +1007 MB, 2 -> +1856, 4 -> +3501, 8 -> +5644
+        # i.e. ~850 MB per worker there, against a naive uint8+float32
+        # estimate of 150 MB: the filter keeps several float32 temporaries of
+        # the crop (guide, mean, variance, coefficients) for every frame at
+        # once. The factor below reproduces those numbers within 5%.
+        # Factor from measurement: 850 MB measured / 150 MB naive at
+        # 1024px x 10 frames = 5.6x.
+        per_tile_bytes = (num_images * (block_size ** 2) * channels
+                          * (1 + 4) * 5.6)
+        tile_memory_mb = max(1.0, per_tile_bytes / (1024 ** 2))
 
-        reserved_memory_mb = 2048
-        usable_memory_mb = max(tile_memory * 2, avail_memory_mb - reserved_memory_mb)
+        # Budget: a fixed share of the memory that is free RIGHT NOW, minus a
+        # reserve so the desktop and Qt's own buffers stay responsive.
+        budget_mb = memory.mb(memory_budget_bytes())
+        max_by_memory = max(1, int(budget_mb // tile_memory_mb))
 
-        max_by_memory = max(1, int(usable_memory_mb / tile_memory))
-
-        max_workers = min(max_by_memory, user_thread_count or 8, os.cpu_count() or 4)
+        # Cap at PHYSICAL cores (SMT siblings counted once):
+        # tile fusion is memory-bandwidth-bound, so hyper-threads raise the
+        # peak working set without adding throughput.
+        from utils.platform_utils import physical_core_count
+        max_workers = min(max_by_memory, user_thread_count or 8,
+                          physical_core_count())
+        if max_workers < (user_thread_count or 8):
+            print(f"Info: Memory guard: {max_workers} tile worker(s) "
+                  f"({tile_memory_mb:.0f} MB each, budget {budget_mb:.0f} MB)")
 
         return max(1, max_workers)
 

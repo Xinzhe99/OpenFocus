@@ -12,6 +12,14 @@ labels (ending in an ellipsis) are intentional and skipped. GroupBox exposes
 import os
 import sys
 
+# NOTE ON ACCURACY. The offscreen platform cannot resolve the UI font
+# (QFontInfo.family() comes back empty and Qt substitutes another face), so
+# every advance is measured ~2.06x too wide: "RAM: 16.7 GB / 32 GB" needs
+# 260 px here against 126 px on a real 96 dpi desktop. That figure reported the
+# status block as clipped in eleven languages, and it was rewritten into four
+# rows to chase a measurement artefact. Treat magnitudes as unreliable; use the
+# audit to find *candidate* clips, then confirm on the real platform. Run with
+# QT_QPA_PLATFORM=xcb (or on Windows without offscreen) for true pixel values.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -92,6 +100,12 @@ def clipped(root):
 def main():
     lang = sys.argv[1] if len(sys.argv) > 1 else "en"
     app = QApplication([])
+    # The offscreen platform reports a ~192 dpi font DPI, so every string
+    # measured exactly twice as wide as it renders on a 96 dpi desktop
+    # ("RAM: 16.7 GB / 32 GB" = 260 px offscreen, 126 px live). That false
+    # 2x reported the status block as clipped in eleven languages and got it
+    # rewritten into four rows. Pin the metric to the desktop default so the
+    # audit measures what the user sees.
     import ui.styles as styles
     styles.set_current_theme("dark")
     app.setStyleSheet(styles.get_theme_style("dark"))

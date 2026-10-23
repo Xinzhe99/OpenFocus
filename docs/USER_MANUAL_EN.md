@@ -194,6 +194,12 @@ a rounded 1-2-5 length (~12% of the image width) with stroked, readable
 text. The CLI supports it via `--scale-bar` (auto calibration) and
 `--scale-um <um/px>`.
 
+Remove it again from **Tools → Scale Bar → Remove scale bar**: *From the
+source stack* and *From the result* narrow the dialog's "Apply to" scope to
+the remaining canvas, while *From everywhere* turns the bar off. Both
+canvases and the A/B wipe redraw immediately; removing a canvas that never
+showed the bar leaves the setting unchanged.
+
 ### Depth Map (Focus Position)
 
 **Tools → Depth Map…** opens a viewer that computes, per pixel, which frame of
@@ -511,6 +517,35 @@ inspect registration quality or export aligned frames.
 | OpenFocus B | Very Fast | Very Good | Smooth surfaces, microscopy |
 | OpenFocus C | Fast | Very Good | Textured subjects, natural look |
 
+Open **Tools → Method comparison** to adjust several methods independently.
+Each method's name, parameter labels and controls stay together when the window
+narrows. Changes update the preview automatically. **ROI preview (fast)** fuses
+the selected area with surrounding context; **Full-image fusion** checks the
+whole-image result and lets you inspect another area without rendering again.
+ROI results can differ from full-image results because exposure statistics and
+some algorithms depend on the image extent.
+
+Use **Preview size (px)** above the right panes to choose a square size from
+160 to 960 pixels, by dragging the slider or entering a number. All methods
+use the same size and wrap to fit the available width. The size is remembered
+for the next opening. Changing it keeps the current magnification and adjusts
+the inspection square around its centre, clamped to the image boundaries.
+
+Press **F11** or the **Fullscreen (F11)** button to use the whole screen; the
+button text switches to **Exit fullscreen (F11)**. The title bar can also
+maximise the window. **Esc** leaves fullscreen first and only closes the dialog
+on a second press. Returning from fullscreen restores the previous window size,
+and the result grid reflows to the available width either way.
+
+Left-drag the source image to move the white inspection square; releasing the
+button keeps it in place. The right panes show exactly that region from the
+same aligned stack. Use the wheel to change the region's magnification,
+right-drag to pan the source, **Ctrl+wheel** to zoom the source, and **F** to fit.
+Switching source frames or resizing the window preserves the selection.
+Cancel stops further work; closing waits for the current native operation to
+return safely.
+
+
 ### Quick Preview (Draft Render)
 
 Tuning parameters on large stacks is slow at full resolution. Check
@@ -559,32 +594,43 @@ Transformations are applied to the entire image stack, maintaining alignment bet
 ### Retouching the Result (Edit → Retouch Result…, `Ctrl+T`)
 
 Fusion can still leave a local defect — a halo around a high-contrast edge,
-a bristle taken from the wrong frame, noise in a flat area. The retouch
-brush copies pixels from a source frame onto the result:
+a bristle taken from the wrong frame, noise in a flat area. The workspace
+copies pixels from the exact frames that produced the selected result:
 
-1. Render a result (or select one in the output list; right-click → *Retouch
-   Result…* works too) and press `Ctrl+T`.
-2. Paint over the defect with the left mouse button. With **Auto-pick
-   sharpest frame per stroke** on (default), every stroke first selects the
-   frame that has the most detail under the brush — fixing a halo is usually
-   a single drag. Turn it off to choose the frame yourself with the slider
-   or `,` / `.`.
-3. Adjust **radius** (`[` / `]`), **hardness** (soft edges hide the seam) and
-   **opacity**. Overlapping dabs within one stroke never compound.
-4. **Show source frame** (`Tab`) previews the frame you are painting from.
-   Wheel zooms, right/middle-drag pans, `F` fits the image.
-5. `Ctrl+Z` / `Ctrl+Y` undo and redo whole strokes. **Apply as New Output**
-   adds the retouched image to the output list (suffix `_Retouched`); the
-   original output stays untouched.
+1. Select one output in the output list (right-click → *Retouch Result…*
+   works too) and press `Ctrl+T`. With no selection, a chooser lists every
+   result and marks which ones have recorded source frames.
+2. The source frame is on the left, the result on the right. Both share zoom
+   and position: wheel zooms, right/middle-drag (or Space+drag) pans, `F`
+   fits, `1` shows 100 %.
+3. Pick a thumbnail, drag the frame slider, or press `,` / `.`. A stroke is locked
+   to that frame and the current brush settings; the frame cannot change
+   until the stroke ends.
+4. Choose **Source Brush** (`B`) or **Restore Brush** (`E`). Diameter,
+   hardness and opacity have both sliders and numeric fields; `[` / `]`
+   adjusts the diameter. The restore brush returns pixels to the image you
+   opened, not to an older output.
+5. Hold `Tab` to see the result before this session and `Alt` to peek at the
+   source frame. The sharpness reference is optional, covers only the source
+   canvas and uses one shared scale for every frame.
+6. `Ctrl+Z` / `Ctrl+Y` undo and redo whole strokes. **Restore All…** is one
+   undoable step. **Apply as New Output** adds an entry named
+   `<name> · Retouched N` and selects it; the original stays untouched. The
+   new entry is marked *Not exported* until you export it from the main
+   window, and OpenFocus protects it from automatic history eviction and
+   from quitting without a decision.
 
-The brush uses the aligned frames that produced the result, so it lines up
-with it; 16-bit results stay 16-bit. ROI renders and resized stacks cannot
-be retouched (their frames no longer match the result's geometry).
+Provenance travels with the output: the aligned frames, ROI crop/paste
+offsets, DCT edge trimming and bit depth are recorded when the result is
+rendered. Batch files, legacy results and align-only folder entries have no
+recorded source, so they are listed as unavailable instead of being guessed
+from the current stack. Unapplied strokes and undo history are session-only;
+saving a project does not store them.
 
 ### Adding Labels
 
 1. Ensure you have rendered results or loaded images
-2. Go to **Edit → Add Label**
+2. Go to **Tools → Labels → Add Label**
 3. Enter your label text in the dialog
 4. Labels are added to both registered stack and input stack
 
@@ -592,8 +638,12 @@ be retouched (their frames no longer match the result's geometry).
 
 - **Delete Registered Stack Labels**: Removes labels from aligned images
 - **Delete Input Stack Labels**: Removes labels from original images
+- **Remove All Labels**: Clears both stacks at once; it becomes available as
+  soon as either stack has labels
 
-Access these options via **Edit → Delete Label** submenu.
+Access these options via **Tools → Labels → Remove labels**. Every entry updates
+the canvas immediately, and the two per-stack entries stay enabled only while
+that stack actually carries labels.
 
 ---
 

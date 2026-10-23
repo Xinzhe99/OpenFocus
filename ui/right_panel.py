@@ -6,8 +6,8 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
     QFrame,
+    QScrollArea,
     QGroupBox,
     QHBoxLayout,
     QGridLayout,
@@ -29,6 +29,8 @@ from ui.styles import (
     SOURCE_LIST_STYLE,
 )
 from locales import trans
+from widgets.flow_layout import FlowPanel
+from widgets.stepper import StepperSpinBox
 
 # Usable text width inside the right panel (375 px minus card padding and the
 # check indicator). Labels that would exceed this are elided; the full string
@@ -167,6 +169,9 @@ class RightPanelComponents:
     lbl_kernel: QLabel
 
     source_images_label: QLabel
+    btn_select_all: QPushButton
+    btn_select_none: QPushButton
+    file_list: QListWidget
     file_list: QListWidget
     output_label: QLabel
     output_list: QListWidget
@@ -180,7 +185,7 @@ class RightPanelComponents:
     # OpenFocus B depth-transition smoothing (shown only for that method)
     depth_smooth_row: QWidget = None
     lbl_depth_smooth: QLabel = None
-    spin_depth_smooth: "QDoubleSpinBox" = None
+    spin_depth_smooth: "StepperSpinBox" = None
 
 
 def _fill_combo(combo: QComboBox, items) -> None:
@@ -243,15 +248,13 @@ def create_right_panel() -> RightPanelComponents:
     radio_ai_soft.setToolTip(trans.t('radio_ai_soft_hint'))
     radio_ai_hard = QRadioButton(trans.t('radio_ai_hard'))
     radio_ai_hard.setToolTip(trans.t('radio_ai_hard_hint'))
-    for _radio, _key in ((radio_ai_soft, 'radio_ai_soft'),
-                         (radio_ai_hard, 'radio_ai_hard')):
-        _radio.setSizePolicy(QSizePolicy.Policy.Ignored,
-                             QSizePolicy.Policy.Preferred)
-        _radio.setMinimumWidth(0)
-        _radio.setText(_radio.fontMetrics().elidedText(
-            trans.t(_key), Qt.TextElideMode.ElideRight, PANEL_TEXT_WIDTH))
-    ai_mode_layout.addWidget(radio_ai_soft)
-    ai_mode_layout.addWidget(radio_ai_hard)
+    # Radios flow like the checkboxes below: side by side when both fit, one
+    # per row when the translation is long. Eliding them to a fixed width was
+    # what forced them onto separate rows and hid the wording.
+    ai_mode_flow = FlowPanel(h_spacing=18, v_spacing=4)
+    ai_mode_flow.add(radio_ai_soft)
+    ai_mode_flow.add(radio_ai_hard)
+    ai_mode_layout.addWidget(ai_mode_flow)
     ai_mode_widget.setVisible(False)
     method_layout.addWidget(ai_mode_widget)
 
@@ -288,6 +291,11 @@ def create_right_panel() -> RightPanelComponents:
     config_layout.addWidget(method_group)
 
     smooth_widget = QWidget()
+    # Fixed height: a container with the default Preferred policy absorbed the
+    # column's leftover height (measured 480 px for ~40 px of content), which
+    # showed up as a blank block the splitter could not shrink.
+    smooth_widget.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                QSizePolicy.Policy.Fixed)
     smooth_layout = QVBoxLayout(smooth_widget)
     # 右侧留 6px：数值标签正好顶到容器边缘时，QSS 的边框/padding 会把
     # 最后一位吃掉（375px 面板下实测 "31" 只剩 "3"）。
@@ -315,17 +323,21 @@ def create_right_panel() -> RightPanelComponents:
     # Per-method smoothing row: B smooths its depth map, A/C smooth the
     # blend.
     depth_smooth_row = QWidget()
+    depth_smooth_row.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                   QSizePolicy.Policy.Fixed)
     ds_layout = QHBoxLayout(depth_smooth_row)
     ds_layout.setContentsMargins(0, 0, 0, 4)
     lbl_depth_smooth = QLabel(trans.t('label_depth_smoothing'))
     lbl_depth_smooth.setToolTip(trans.t('label_depth_smoothing_hint'))
-    spin_depth_smooth = QDoubleSpinBox()
-    spin_depth_smooth.setRange(0.0, 8.0)
-    spin_depth_smooth.setSingleStep(0.2)
-    spin_depth_smooth.setDecimals(1)
-    spin_depth_smooth.setValue(1.2)
-    # A fixed 80 px was narrower than the widget needs (105 px with the
-    # arrows), so "2.0" rendered clipped. Let it size itself, with a floor.
+    # A StepperSpinBox, not QDoubleSpinBox. Qt lays a spin box's two buttons
+    # out on the trailing edge and ignores subcontrol-position, so the control
+    # reads as "+ -" stacked on the right while the thing it adjusts is on the
+    # left; users expect "decrease on the left, increase on the right". The
+    # stepper builds the buttons explicitly. Same reasoning as dialogs/
+    # scalebar.py.
+    spin_depth_smooth = StepperSpinBox(
+        minimum=0.0, maximum=8.0, step=0.2, decimals=1, value=1.2)
+    # Keep a floor so the value never renders clipped.
     spin_depth_smooth.setMinimumWidth(96)
     spin_depth_smooth.setToolTip(trans.t('label_depth_smoothing_hint'))
     ds_layout.addWidget(lbl_depth_smooth)
@@ -361,37 +373,74 @@ def create_right_panel() -> RightPanelComponents:
     secondary_bar.addWidget(btn_compare, 1)
     config_layout.addLayout(secondary_bar)
 
-    # One option per row. A two-column grid looked tidier but truncated long
-    # translations ("Invertir orden de la pila (barrid…"): the labels differ in
-    # length by language, and a 375 px panel cannot fit two of them.
+    # Options flow instead of one-per-row. They used to be stacked because a
+    # 375 px column could not fit two long translations; the column is wider
+    # now and the window is resizable, so a fixed one-per-row rule just burned
+    # vertical space that the source and output lists need. FlowPanel packs as
+    # many as actually fit and re-flows on resize; a long translation still
+    # takes a whole row by itself, so nothing is clipped.
     def _option(key, checked):
-        # A QCheckBox cannot wrap its label, and forcing it to its sizeHint
-        # made the box wider than the 375 px panel: German
-        # "Stack-Reihenfolge umkehren (Fern-nah-Sweep)" needs 529 px, so the
-        # row overflowed and the following controls were pushed off-screen.
-        # The checkbox therefore carries a short label and the full sentence
-        # lives in the tooltip; the row never exceeds the panel width.
-        box = QCheckBox("")
+        box = QCheckBox(trans.t(key))
         box.setChecked(checked)
-        set_panel_label(box, trans.t(key), trans.t(key + '_hint'))
-        config_layout.addWidget(box)
+        box.setToolTip(trans.t(key + '_hint'))
         return box
 
-    chk_quick_preview = _option('chk_quick_preview', False)
+    options_flow = FlowPanel(h_spacing=14, v_spacing=6)
     # 反转帧序（倒序栈）：远→近扫的栈勾选后按规范方向处理，仅影响
     # OpenFocus A/B/C 的 base 参考端 / 末帧先验 / 深度图标签方向
-    chk_reverse_order = _option('chk_reverse_order', False)
-    chk_exposure_match = _option('chk_exposure_match', True)
-    chk_base_correct = _option('chk_base_correct', False)
+    chk_quick_preview = options_flow.add(_option('chk_quick_preview', False))
+    chk_reverse_order = options_flow.add(_option('chk_reverse_order', False))
+    chk_exposure_match = options_flow.add(_option('chk_exposure_match', True))
+    chk_base_correct = options_flow.add(_option('chk_base_correct', False))
+    config_layout.addWidget(options_flow)
 
-    right_splitter.addWidget(config_widget)
+    # Any leftover height goes to the bottom of the column instead of being
+    # shared between the parameter rows.
+    config_layout.addStretch()
+    # Let the splitter compress the block below its natural size: without a
+    # scroll area the config column's minimum height was the sum of every
+    # control, so the divider could not be dragged up.
+    config_scroll = QScrollArea()
+    config_scroll.setWidgetResizable(True)
+    config_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    config_scroll.setHorizontalScrollBarPolicy(
+        Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    config_scroll.setWidget(config_widget)
+    right_splitter.addWidget(config_scroll)
 
     # Source list -----------------------------------------
     source_list_widget = QWidget()
     source_list_layout = QVBoxLayout(source_list_widget)
     source_list_layout.setContentsMargins(10, 10, 10, 10)
     source_images_label = QLabel(trans.t('label_source_images').format(0))
-    source_list_layout.addWidget(source_images_label)
+    # Header row with select-all / clear-all: the per-frame checkboxes decide
+    # which frames join the render, and unticking 20 of them by hand was the
+    # only way to drop a bad tail.
+    source_header = QHBoxLayout()
+    source_header.addWidget(source_images_label)
+    source_header.addStretch()
+    btn_all = QPushButton(trans.t('btn_select_all'))
+    btn_all.setObjectName("secondaryButton")
+    btn_all.setFixedHeight(24)
+    btn_all.setToolTip(trans.t('btn_select_all_hint'))
+    btn_none = QPushButton(trans.t('btn_select_none'))
+    btn_none.setObjectName("secondaryButton")
+    btn_none.setFixedHeight(24)
+    btn_none.setToolTip(trans.t('btn_select_none_hint'))
+    source_header.addWidget(btn_all)
+    source_header.addWidget(btn_none)
+    source_list_layout.addLayout(source_header)
+
+    def _set_all_source_checks(checked: bool) -> None:
+        for row in range(file_list.count()):
+            item = file_list.item(row)
+            if item is not None and item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                item.setCheckState(
+                    Qt.CheckState.Checked if checked
+                    else Qt.CheckState.Unchecked)
+
+    btn_all.clicked.connect(lambda: _set_all_source_checks(True))
+    btn_none.clicked.connect(lambda: _set_all_source_checks(False))
     file_list = QListWidget()
     file_list.setIconSize(QSize(40, 40))
     file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -432,9 +481,13 @@ def create_right_panel() -> RightPanelComponents:
 
     right_splitter.addWidget(output_list_widget)
 
-    right_splitter.setStretchFactor(0, 1)
+    right_splitter.setStretchFactor(0, 0)
     right_splitter.setStretchFactor(1, 3)
     right_splitter.setStretchFactor(2, 3)
+    # Start with the config block fully readable and give the lists the rest.
+    # The user can drag it smaller now (it is inside a scroll area), which was
+    # impossible while its minimum height was the sum of every control.
+    right_splitter.setSizes([430, 300, 300])
 
     # Status Panel -----------------------------------------
     status_widget = QFrame()
@@ -449,17 +502,15 @@ def create_right_panel() -> RightPanelComponents:
     lbl_status_resolution = QLabel(trans.t('status_res').format('-'))
     lbl_status_memory = QLabel(trans.t('status_ram').format('-'))
 
-    # One label per row, spanning the full width. The old 2x2 grid could not
-    # fit the strings: "RAM: 15.0 GB / 32 GB" needs 260 px on its own while a
-    # half-width column gets ~212 px, so the memory figure was cut off in
-    # every language (and worse in German/French/Russian). Full-width rows
-    # also let the longest translation breathe.
+    # Two rows of two. Measured against every shipped language: the widest
+    # single statistic is 132 px (French "Memoire: 15.5 GB / 32 GB"), so a
+    # half of the 400 px panel leaves ~60 px of slack. Four rows were used
+    # briefly - they also fit, but the block grew from 56 to 107 px tall and
+    # ate the space of the source list above it for no gain.
     status_layout.addWidget(lbl_status_loaded, 0, 0)
+    status_layout.addWidget(lbl_status_gpu, 0, 1)
     status_layout.addWidget(lbl_status_resolution, 1, 0)
-    status_layout.addWidget(lbl_status_gpu, 2, 0)
-    status_layout.addWidget(lbl_status_memory, 3, 0)
-    status_layout.setColumnStretch(0, 1)
-
+    status_layout.addWidget(lbl_status_memory, 1, 1)
     status_layout.setColumnStretch(0, 1)
     status_layout.setColumnStretch(1, 1)
 
@@ -492,6 +543,8 @@ def create_right_panel() -> RightPanelComponents:
         lbl_kernel=lbl_kernel,
 
         source_images_label=source_images_label,
+        btn_select_all=btn_all,
+        btn_select_none=btn_none,
         file_list=file_list,
         output_label=output_label,
         output_list=output_list,

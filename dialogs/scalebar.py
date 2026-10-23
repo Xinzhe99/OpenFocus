@@ -1,22 +1,27 @@
 """Scale bar settings dialog with a live preview thumbnail."""
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QFontComboBox,
+    QWidget,
+    QSlider,
     QCheckBox,
     QComboBox,
     QDialog,
-    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSizePolicy,
     QVBoxLayout,
 )
 
 import cv2
 from locales import trans
 from utils import scalebar
+
+
+from widgets.stepper import StepperSpinBox
 
 
 class ScaleBarDialog(QDialog):
@@ -26,24 +31,23 @@ class ScaleBarDialog(QDialog):
         self.setMinimumWidth(520)
         self._apply_style()
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(14)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+        root.addLayout(layout, 0)
 
-        self.enable_chk = QCheckBox(trans.t("scalebar_enable"))
-        self.enable_chk.setChecked(getattr(parent, "scale_bar_enabled", False))
-        # A QCheckBox cannot wrap; the dialog is 520 px wide and the German /
-        # Russian label needs 620-750 px, so it was painted cut off. Elide to
-        # the dialog width and keep the full sentence in the tooltip.
-        self.enable_chk.setSizePolicy(QSizePolicy.Policy.Ignored,
-                                      QSizePolicy.Policy.Preferred)
-        self.enable_chk.setMinimumWidth(0)
-        self.enable_chk.setText(self.enable_chk.fontMetrics().elidedText(
-            self.enable_chk.text(), Qt.TextElideMode.ElideRight, 480))
-        self.enable_chk.setToolTip(trans.t("scalebar_enable"))
-        layout.addWidget(self.enable_chk)
+        preview_col = QVBoxLayout()
+        preview_col.setContentsMargins(0, 0, 0, 0)
+        preview_col.setSpacing(6)
 
+
+        layout.addWidget(self._section(trans.t("scalebar_section_calibration")))
         form = QFormLayout()
+        layout.addLayout(form)
         # µm/px spans several orders of magnitude in practice: 0.0001 for an
         # electron micrograph, 1-10 for light microscopy, up to ~1000 for a
         # macro/landscape shot (1 mm per pixel). A fixed 4-decimals/0-1000
@@ -53,7 +57,6 @@ class ScaleBarDialog(QDialog):
         # A StepperSpinBox, not QDoubleSpinBox: Qt lays a spin box's two
         # buttons out on the trailing edge and ignores subcontrol-position, so
         # a "- on the left, + on the right" layout is unreachable from CSS.
-        from widgets.stepper import StepperSpinBox
         self.px_spin = StepperSpinBox(
             minimum=0.0, maximum=1000.0, decimals=4, step=0.01)
         self.px_spin.setValue(
@@ -77,16 +80,92 @@ class ScaleBarDialog(QDialog):
         self.detect_lbl.setWordWrap(True)
         form.addRow("", self.detect_lbl)
 
+        # ---- Placement ------------------------------------------------
+        layout.addWidget(self._section(trans.t("scalebar_section_place")))
+        place_form = QFormLayout()
+        layout.addLayout(place_form)
         self.pos_combo = QComboBox()
         for code, label in (("bottom-right", trans.t("scalebar_pos_br")),
                             ("bottom-left", trans.t("scalebar_pos_bl")),
                             ("top-right", trans.t("scalebar_pos_tr")),
-                            ("top-left", trans.t("scalebar_pos_tl"))):
+                            ("top-left", trans.t("scalebar_pos_tl")),
+                            ("custom", trans.t("scalebar_pos_custom"))):
             self.pos_combo.addItem(label, code)
         pos = getattr(parent, "scale_bar_position", "bottom-right")
         idx = self.pos_combo.findData(pos)
         self.pos_combo.setCurrentIndex(max(0, idx))
-        form.addRow(trans.t("scalebar_position"), self.pos_combo)
+        place_form.addRow(trans.t("scalebar_position"), self.pos_combo)
+
+        # Custom offsets (0-100 % of the frame), only meaningful for "custom".
+        self.custom_row = QWidget()
+        custom_lay = QHBoxLayout(self.custom_row)
+        custom_lay.setContentsMargins(0, 0, 0, 0)
+        custom_lay.setSpacing(8)
+        custom_lay.addWidget(QLabel("X"))
+        self.custom_x = QSlider(Qt.Orientation.Horizontal)
+        self.custom_x.setRange(0, 100)
+        self.custom_x.setValue(int(getattr(parent, "scale_bar_custom_x",
+                                           0.95) * 100))
+        custom_lay.addWidget(self.custom_x, 1)
+        custom_lay.addWidget(QLabel("Y"))
+        self.custom_y = QSlider(Qt.Orientation.Horizontal)
+        self.custom_y.setRange(0, 100)
+        self.custom_y.setValue(int(getattr(parent, "scale_bar_custom_y",
+                                           0.95) * 100))
+        custom_lay.addWidget(self.custom_y, 1)
+        place_form.addRow("", self.custom_row)
+        self.custom_row.setVisible(pos == "custom")
+
+        # ---- Text style ------------------------------------------------
+        layout.addWidget(self._section(trans.t("scalebar_section_text")))
+        text_form = QFormLayout()
+        layout.addLayout(text_form)
+        self.font_combo = QFontComboBox()
+        fam = getattr(parent, "scale_bar_font_family", "") or ""
+        self.font_combo.setCurrentFont(QFont(fam or self.font().family()))
+        text_form.addRow(trans.t("scalebar_font"), self.font_combo)
+
+        size_row = QWidget()
+        size_lay = QHBoxLayout(size_row)
+        size_lay.setContentsMargins(0, 0, 0, 0)
+        size_lay.setSpacing(8)
+        self.size_spin = StepperSpinBox(
+            minimum=0, maximum=400, decimals=0, step=2)
+        self.size_spin.setValue(
+            float(getattr(parent, "scale_bar_font_size", 0.0) or 0.0))
+        self.size_spin.setMinimumWidth(96)
+        self.size_hint = QLabel(trans.t("scalebar_font_auto"))
+        self.size_hint.setObjectName("mutedLabel")
+        size_lay.addWidget(self.size_spin)
+        size_lay.addWidget(self.size_hint, 1)
+        text_form.addRow(trans.t("scalebar_font_size"), size_row)
+
+        self.bold_chk = QCheckBox(trans.t("scalebar_bold"))
+        self.bold_chk.setChecked(bool(getattr(parent, "scale_bar_font_bold",
+                                              False)))
+        text_form.addRow("", self.bold_chk)
+
+        self.align_combo = QComboBox()
+        for code, label in (("auto", trans.t("scalebar_align_auto")),
+                            ("left", trans.t("scalebar_align_left")),
+                            ("center", trans.t("scalebar_align_center")),
+                            ("right", trans.t("scalebar_align_right"))):
+            self.align_combo.addItem(label, code)
+        cur_align = getattr(parent, "scale_bar_text_align", "auto")
+        self.align_combo.setCurrentIndex(
+            max(0, self.align_combo.findData(cur_align)))
+        text_form.addRow(trans.t("scalebar_text_align"), self.align_combo)
+
+        self.target_combo = QComboBox()
+        for code, label in (
+                ("all", trans.t("scalebar_target_all")),
+                ("source", trans.t("scalebar_target_source")),
+                ("output", trans.t("scalebar_target_output"))):
+            self.target_combo.addItem(label, code)
+        cur_target = getattr(parent, "scale_bar_target", "all")
+        self.target_combo.setCurrentIndex(
+            max(0, self.target_combo.findData(cur_target)))
+        form.addRow(trans.t("scalebar_target"), self.target_combo)
 
         self.color_combo = QComboBox()
         for code, label in (("auto", trans.t("scalebar_color_auto")),
@@ -96,14 +175,15 @@ class ScaleBarDialog(QDialog):
         col = getattr(parent, "scale_bar_color", "auto")
         idx = self.color_combo.findData(col)
         self.color_combo.setCurrentIndex(max(0, idx))
-        form.addRow(trans.t("scalebar_color"), self.color_combo)
-        layout.addLayout(form)
+        text_form.addRow(trans.t("scalebar_color"), self.color_combo)
 
         self.preview_lbl = QLabel(trans.t("scalebar_preview"))
         self.preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_lbl.setMinimumHeight(240)
-        self.preview_lbl.setStyleSheet("background: #222; border: 1px solid #444;")
-        layout.addWidget(self.preview_lbl, 1)
+        self.preview_lbl.setMinimumSize(360, 300)
+        self.preview_lbl.setStyleSheet(
+            "background: #222; border: 1px solid #444;")
+        preview_col.addWidget(self.preview_lbl, 1)
+        root.addLayout(preview_col, 1)
 
         row = QHBoxLayout()
         row.addStretch()
@@ -117,11 +197,29 @@ class ScaleBarDialog(QDialog):
         row.addWidget(cancel_btn)
         layout.addLayout(row)
 
-        for signal in (self.enable_chk.toggled, self.px_spin.valueChanged,
+        self.pos_combo.currentIndexChanged.connect(
+            lambda: self.custom_row.setVisible(
+                self.pos_combo.currentData() == "custom"))
+        for signal in (self.px_spin.valueChanged,
                        self.pos_combo.currentIndexChanged,
-                       self.color_combo.currentIndexChanged):
+                       self.color_combo.currentIndexChanged,
+                       self.font_combo.currentFontChanged,
+                       self.size_spin.valueChanged,
+                       self.bold_chk.toggled,
+                       self.align_combo.currentIndexChanged,
+                       self.target_combo.currentIndexChanged,
+                       self.custom_x.valueChanged,
+                       self.custom_y.valueChanged):
             signal.connect(self._refresh_preview)
         self._refresh_preview()
+
+    def _section(self, text: str) -> QLabel:
+        """A small bold heading that separates the dialog's three concerns."""
+        lbl = QLabel(text)
+        f = lbl.font()
+        f.setBold(True)
+        lbl.setFont(f)
+        return lbl
 
     def _adapt_px_decimals(self, value: float) -> None:
         """Show enough decimals for sub-micron calibration, not more.
@@ -181,6 +279,11 @@ class ScaleBarDialog(QDialog):
             return detected
         return manual if manual > 0 else None
 
+    def _font_family(self) -> str:
+        """The chosen family, or "" when it is the dialog's own default."""
+        fam = self.font_combo.currentFont().family()
+        return "" if fam == self.font().family() else fam
+
     def _refresh_preview(self):
         img = self._preview_image()
         px_um = self._effective_px_um()
@@ -188,13 +291,25 @@ class ScaleBarDialog(QDialog):
         scale = 520.0 / w if w > 520 else 1.0
         small = cv2.resize(img, (int(w * scale), int(h * scale)),
                            interpolation=cv2.INTER_AREA) if scale < 1.0 else img
-        if px_um and self.enable_chk.isChecked():
-            # The bar length is a fraction of the *exported* width, so scale the
-            # calibration with the thumbnail — otherwise the preview labelled a
-            # 10x-too-short length for a 4000 px image.
+        # The preview always draws the bar: it previews the STYLE
+        # (font, size, position), while the checkbox only decides
+        # whether the app uses the bar at all.
+        if px_um:
+            # The preview draws on a downscaled copy, so EVERY absolute size
+            # must shrink by the same factor: the calibration (bar length) did,
+            # but the font did not — a 24 px label on the 520 px preview looked
+            # ~2.6x bigger than the same 24 px on the 1344 px export.
+            factor = scale if scale < 1.0 else 1.0
+            requested = float(self.size_spin.value() or 0.0)
             small = scalebar.draw_scale_bar(
-                small, px_um / (scale if scale < 1.0 else 1.0),
-                self.pos_combo.currentData(), self.color_combo.currentData())
+                small, px_um / (factor if factor > 0 else 1.0),
+                self.pos_combo.currentData(), self.color_combo.currentData(),
+                font_family=self._font_family(),
+                font_size=requested * factor if requested > 0 else 0.0,
+                font_bold=self.bold_chk.isChecked(),
+                text_align=self.align_combo.currentData(),
+                custom_x=self.custom_x.value() / 100.0,
+                custom_y=self.custom_y.value() / 100.0)
         rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0],
                       3 * rgb.shape[1], QImage.Format.Format_RGB888)
@@ -212,10 +327,26 @@ class ScaleBarDialog(QDialog):
     def _save_and_accept(self):
         parent = self.parent()
         if parent is not None:
-            parent.scale_bar_enabled = self.enable_chk.isChecked()
+            # Saving a configured bar means it is in use; removal lives in
+            # Tools > 比例尺 > 删除比例尺.
+            parent.scale_bar_enabled = True
             parent.scale_um_per_px_manual = float(self.px_spin.value() or 0.0)
             parent.scale_bar_position = self.pos_combo.currentData()
             parent.scale_bar_color = self.color_combo.currentData()
+            parent.scale_bar_font_family = self._font_family()
+            parent.scale_bar_font_size = float(self.size_spin.value() or 0.0)
+            parent.scale_bar_font_bold = self.bold_chk.isChecked()
+            parent.scale_bar_text_align = self.align_combo.currentData()
+            parent.scale_bar_target = self.target_combo.currentData()
+            parent.scale_bar_custom_x = self.custom_x.value() / 100.0
+            parent.scale_bar_custom_y = self.custom_y.value() / 100.0
             if hasattr(parent, "persist_settings"):
                 parent.persist_settings()
+            # Redraw every view NOW: the bar used to appear/disappear only
+            # after the next render, which read as "the scale bar does
+            # nothing" (and worse, "unchecking left it on the fused view").
+            if hasattr(parent, "refresh_annotation_views"):
+                parent.refresh_annotation_views()
+            elif getattr(parent, "current_display_index", None) is not None:
+                parent.update_source_view(parent.current_display_index)
         self.accept()

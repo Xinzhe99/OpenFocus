@@ -1,3 +1,18 @@
+<p align="center">
+  <strong>English</strong> ·
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="README.ja.md">日本語</a> ·
+  <a href="README.es.md">Español</a> ·
+  <a href="README.de.md">Deutsch</a> ·
+  <a href="README.fr.md">Français</a> ·
+  <a href="README.ru.md">Русский</a> ·
+  <a href="README.ko.md">한국어</a> ·
+  <a href="README.pt.md">Português</a> ·
+  <a href="README.it.md">Italiano</a> ·
+  <a href="README.nl.md">Nederlands</a> ·
+  <a href="README.pl.md">Polski</a>
+</p>
+
 # <img src="assets/OpenFocus.png" alt="OpenFocus Logo" width="120"> OpenFocus
 
 OpenFocus delivers focus stacking quality that rivals commercial-grade software, while staying fully open source and easy to extend.
@@ -17,10 +32,11 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **v1.65.3** — the interface is 2.5–16× more responsive: frame scrubbing,
-> window resizing, zooming and the A/B wipe no longer rebuild the full image
-> on every event (zoom is also sharper when zoomed in). 16-bit stacks display
-> through a conversion that is 14× faster with byte-identical output.
+> **v1.67.0** — the retouch brush is now a source-locked workspace with
+> render provenance, a synchronized source-frame slider, transactional
+> tile-based undo and protection for unexported outputs. This release also
+> adds the multi-method comparison window, reorganizes labels and scale bars
+> under Tools, and ships README translations in all twelve UI languages.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
@@ -174,8 +190,9 @@ both PSNR and SSIM, and leaves fewer ghost pixels than any classical method:
 
 - **Eight fusion methods** — four classical plus OpenFocus A/B/C, with three
   registration modes (fast similarity, ECC, homography).
-- **Focus-stack workflow** — stack browser, wipe compare, depth maps, retouch
-  brush, batch processing, quick preview.
+- **Focus-stack workflow** — stack browser, wipe compare, depth maps,
+  source-locked retouch workspace with provenance and frame slider, batch
+  processing, quick preview, and side-by-side method comparison.
 - **Microscopy-ready** — 16-bit end to end, µm/px from TIFF metadata, dust-map
   flat-field correction, publication scale bars, textured OBJ export.
 - **Headless CLI** — the same pipeline as `openfocus`, with batch mode,

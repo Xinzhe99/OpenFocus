@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
 )
 
 from locales import trans
-from ui.styles import CURRENT_MESSAGE_BOX_STYLE
 
 
 class WelcomeDialog(QDialog):
@@ -90,7 +89,9 @@ class WelcomeDialog(QDialog):
             self.accept()
 
     def _is_dark(self) -> bool:
-        theme = getattr(self._main_window, "ui_theme", "dark") if self._main_window else "dark"
+        from utils.settings_store import DEFAULT_THEME
+        theme = (getattr(self._main_window, "ui_theme", DEFAULT_THEME)
+                 if self._main_window else DEFAULT_THEME)
         return theme != "light"
 
     def _apply_dialog_style(self):
@@ -104,6 +105,8 @@ class WelcomeDialog(QDialog):
         self._sync_theme_buttons()
 
     def _sync_theme_buttons(self) -> None:
-        current = getattr(self._main_window, "ui_theme", "dark") if self._main_window else "dark"
+        from utils.settings_store import DEFAULT_THEME
+        current = (getattr(self._main_window, "ui_theme", DEFAULT_THEME)
+                   if self._main_window else DEFAULT_THEME)
         for code, btn in self._theme_buttons.items():
             btn.setChecked(code == current)
