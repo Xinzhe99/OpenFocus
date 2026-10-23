@@ -44,6 +44,10 @@ class OutputRecord:
     kind: str = "fusion"
     parent_id: Optional[str] = None
     exported: bool = True
+    # Identity of the pixels that were last written. Comparing it with the
+    # current image detects "changed since export" without hashing megapixels.
+    exported_image: Any = None
+    export_path: str = ""
 
     @classmethod
     def create(cls, image, label: str, *, context=None, kind: str = "fusion",
@@ -62,6 +66,19 @@ class OutputRecord:
     def protected(self) -> bool:
         """A retouched output whose pixels have not been written to disk."""
         return self.kind == "retouch" and not self.exported
+
+    @property
+    def changed_since_export(self) -> bool:
+        """True when the image differs from the one written to disk.
+
+        Fusion results are immutable, so identity is enough and costs nothing;
+        a retouched result whose buffer was replaced after export is the case
+        this reports.
+        """
+        if not self.exported:
+            return False
+        return (self.exported_image is not None
+                and self.exported_image is not self.image)
 
 
 def _thumbnail_bgr(image, size: int):
@@ -118,17 +135,39 @@ class OutputManager:
         if record is not None:
             record.label = label
 
-    def mark_exported(self, row: Optional[int] = None) -> None:
+    def mark_exported(self, row: Optional[int] = None,
+                      path: str = "") -> None:
         """Record that the output at `row` was written to a file."""
         if row is None:
             row = self.window.output_list.currentRow()
         record = self.record_for_row(row)
         if record is not None:
             record.exported = True
+            record.exported_image = record.image
+            if path:
+                record.export_path = path
+            self._refresh_output_tooltip(row)
 
-    def mark_selected_exported(self) -> None:
+    def mark_selected_exported(self, path: str = "") -> None:
         row = self.window.output_list.currentRow()
-        self.mark_exported(row if row >= 0 else 0)
+        self.mark_exported(row if row >= 0 else 0, path=path)
+
+    def _refresh_output_tooltip(self, row: int) -> None:
+        """Keep the tooltip in step with the record's export state."""
+        window = self.window
+        item = window.output_list.item(row) if row >= 0 else None
+        record = self.record_for_row(row) if row >= 0 else None
+        if item is None or record is None:
+            return
+        lines = []
+        if record.export_path:
+            lines.append(record.export_path)
+        if record.protected:
+            lines.append(trans.t("retouch_unexported"))
+        elif record.changed_since_export:
+            lines.append(trans.t("msg_export_after_change"))
+        if lines:
+            item.setToolTip("\n".join(lines))
 
     def protected_records(self) -> list[OutputRecord]:
         records = []
@@ -323,7 +362,13 @@ class OutputManager:
     # Export protection for unexported retouched outputs
     # ------------------------------------------------------------------
     def export_records(self, records) -> bool:
-        """Write each record to a chosen folder; True only if all succeeded."""
+        """Write each record into a chosen folder; True only if all succeeded.
+
+        Existing files on disk are never overwritten silently: a directory
+        export picks a free name instead (a protective export used to replace
+        an unrelated file that happened to share the generated name). Every
+        item's outcome is reported, not just a generic failure.
+        """
         records = [r for r in records if r is not None and r.image is not None]
         if not records:
             return True
@@ -335,39 +380,53 @@ class OutputManager:
             return False
         set_last_dialog_dir(folder)
         used = set()
-        ok = True
+        written = []
+        failed = []
         for record in records:
             name = window.export_manager.filename_from_label(record.label)
             stem, ext = os.path.splitext(name)
             ext = ext or ".png"
-            candidate = f"{stem}{ext}"
-            counter = 2
-            while candidate in used:
-                candidate = f"{stem}_{counter}{ext}"
-                counter += 1
-            path = os.path.join(folder, candidate)
+            path = _unique_path(folder, stem, ext, used)
+            candidate = os.path.basename(path)
             try:
                 image = window.label_manager.prepare_bgr_image(
                     "output", record.image, 0)
                 image = scalebar.burn(
                     image, scalebar.export_cfg(window, target="output"))
                 success = imwrite_auto(path, image, get_imwrite_params(ext))
-            except Exception:
+                record_error = ""
+            except Exception as exc:  # pylint: disable=broad-except
                 success = False
+                record_error = str(exc)
             if success:
                 used.add(candidate)
                 record.exported = True
+                record.exported_image = record.image
+                record.export_path = path
+                written.append(path)
             else:
-                ok = False
-        if ok:
+                # A name that failed to write stays unused so a retry of the
+                # same batch does not collide with it.
+                failed.append((path, record_error))
+        self._report_export_result(written, failed, folder)
+        return not failed
+
+    def _report_export_result(self, written, failed, folder) -> None:
+        """One summary for a multi-file export, with the failing paths."""
+        window = self.window
+        if not failed:
             window.statusBar().showMessage(
-                trans.t("msg_image_saved_info").format(path=folder).replace("\n", " "),
-                8000)
-        else:
-            show_error_box(window, trans.t("msg_save_failed_title"),
-                           trans.t("msg_save_failed_text"),
-                           trans.t("msg_save_failed_info_write"))
-        return ok
+                trans.t("msg_export_count_done").format(
+                    n=len(written), path=folder).replace("\n", " "), 8000)
+            return
+        detail = "\n".join(
+            f"{path}: {error or trans.t('msg_save_failed_info_write')}"
+            for path, error in failed)
+        show_error_box(
+            window, trans.t("msg_save_failed_title"),
+            trans.t("msg_export_partial_text").format(
+                ok=len(written), failed=len(failed)),
+            detail)
 
     def _confirm_protected_removal(self, records) -> bool:
         """Ask what to do with unexported retouched outputs before discarding."""
@@ -496,24 +555,34 @@ class OutputManager:
         base = window.export_manager.generate_default_filename()
         base = os.path.splitext(os.path.basename(base))[0] or "OpenFocus"
         count = 0
+        failed = []
         results = list(window.fusion_results)  # newest first
         total = len(results)
+        used = set()
         for i, image in enumerate(results):
             # A single output is one frame: its caption number must not
             # depend on where it sits in the history (it was the row index,
             # so "Fig 1" became "Fig 2" in Export All).
             labeled = window.label_manager.prepare_bgr_image(
                 "output", image, 0)
-            name = f"{base}_{total - i:02d}.png"
+            path = _unique_path(folder, f"{base}_{total - i:02d}", ".png",
+                                used)
             from utils.image_utils import imwrite_auto
-            if imwrite_auto(os.path.join(folder, name), scalebar.burn(
+            if imwrite_auto(path, scalebar.burn(
                     labeled, scalebar.export_cfg(window, target="output"))):
-                self.mark_exported(i)
+                used.add(os.path.basename(path))
+                self.mark_exported(i, path=path)
                 count += 1
-
-        show_success_box(
-            window, trans.t("msg_success"),
-            trans.t("msg_export_all_done_text").format(count=count, folder=folder))
+            else:
+                failed.append((path, ""))
+        if failed:
+            self._report_export_result(
+                [None] * count, failed, folder)
+        else:
+            show_success_box(
+                window, trans.t("msg_success"),
+                trans.t("msg_export_all_done_text").format(
+                    count=count, folder=folder))
 
     def save_output_image_as(self, item: QListWidgetItem | None) -> None:
         window = self.window
@@ -533,11 +602,13 @@ class OutputManager:
             return
 
         default_filename = window.export_manager.filename_from_label(item.text())
-        file_path, _selected_filter = QFileDialog.getSaveFileName(
+        file_path, selected_filter = QFileDialog.getSaveFileName(
             window,
             trans.t("action_save"),
             default_filename,
-            "PNG Files (*.png);;JPG Files (*.jpg);;WebP Files (*.webp);;Bitmap Files (*.bmp);;TIFF Files (*.tif *.tiff);;All Files (*)",
+            "PNG Files (*.png);;JPG Files (*.jpg);;WebP Files (*.webp);;"
+            "Bitmap Files (*.bmp);;TIFF Files (*.tif *.tiff);;"
+            "All Files (*)",
         )
 
         if not file_path:
@@ -547,6 +618,7 @@ class OutputManager:
         file_path = window.export_manager.normalize_export_path(
             file_path,
             fallback_extension=fallback_ext if fallback_ext else None,
+            selected_filter=selected_filter,
         )
 
         try:
@@ -561,7 +633,7 @@ class OutputManager:
                     image_to_save,
                     scalebar.export_cfg(window, target="output")), params)
                 if success:
-                    self.mark_exported(row)
+                    self.mark_exported(row, path=file_path)
                     window.statusBar().showMessage(
                         trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
                         8000)
@@ -583,7 +655,7 @@ class OutputManager:
                     image_to_save,
                     scalebar.export_cfg(window, target="output")), params)
                 if success:
-                    self.mark_exported(row)
+                    self.mark_exported(row, path=file_path)
                     window.statusBar().showMessage(
                         trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
                         8000)
@@ -816,3 +888,19 @@ def publish_aligned_stack(window, frames) -> None:
     window.aligned_stack_dir = folder
     window.statusBar().showMessage(
         trans.t("output_aligned_staged").format(path=folder), 8000)
+
+
+def _unique_path(folder: str, stem: str, ext: str, used: set) -> str:
+    """First free `<stem>[_N]<ext>` in `folder`.
+
+    `used` tracks names chosen during this call; the disk check prevents
+    overwriting a file that already exists (including one from a previous
+    run of the same protective export).
+    """
+    import os
+    candidate = f"{stem}{ext}"
+    counter = 2
+    while candidate in used or os.path.exists(os.path.join(folder, candidate)):
+        candidate = f"{stem}_{counter}{ext}"
+        counter += 1
+    return os.path.join(folder, candidate)
