@@ -1216,3 +1216,23 @@ class TestCpuAiWarning:
         monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
         result, _shown = self._manager(answer_accept=False)
         assert result is False
+
+
+def test_export_extension_follows_the_chosen_filter():
+    """Picking TIFF and typing a bare name must not write a PNG."""
+    from controllers.export_manager import extension_from_filter
+
+    assert extension_from_filter("TIFF Files (*.tif *.tiff)") == ".tif"
+    assert extension_from_filter("JPG Files (*.jpg)") == ".jpg"
+    assert extension_from_filter("All Files (*)") == ""
+
+
+def test_directory_export_does_not_overwrite_existing_files(tmp_path):
+    """A protective export must pick a free name on disk, not just in-batch."""
+    from controllers.output_manager import _unique_path
+
+    first = _unique_path(str(tmp_path), "result", ".png", set())
+    assert first.endswith("result.png")
+    (tmp_path / "result.png").write_bytes(b"x")
+    second = _unique_path(str(tmp_path), "result", ".png", set())
+    assert second.endswith("result_2.png"), second

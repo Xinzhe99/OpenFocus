@@ -36,6 +36,10 @@ def _collect_state(window) -> Dict[str, Any]:
         "quick_preview": getattr(window, "chk_quick_preview", None) is not None
         and window.chk_quick_preview.isChecked(),
         "current_index": getattr(window, "current_display_index", -1),
+        # Frames the user excluded from processing: without this a reopened
+        # project silently renders a different set than the one on screen.
+        "excluded_frames": sorted(
+            int(i) for i in (getattr(window, "excluded_frames", set()) or set())),
         # Scale-bar calibration & style (manual value only; metadata is
         # re-detected per stack on load)
         "scale_bar_enabled": bool(getattr(window, "scale_bar_enabled", False)),
@@ -308,6 +312,17 @@ def _apply_after_load(window, state: Dict[str, Any]) -> None:
     lm = getattr(window, "label_manager", None)
     if lm is not None and labels and hasattr(lm, "import_state"):
         lm.import_state(labels)
+
+    excluded = settings.get("excluded_frames")
+    if excluded is not None:
+        frame_count = len(getattr(window, "raw_images", None) or [])
+        window.excluded_frames = {
+            int(i) for i in excluded
+            if isinstance(i, (int, float)) and 0 <= int(i) < frame_count}
+        # Refresh the checkbox column so the list matches the restored set.
+        if hasattr(window, "source_manager") and hasattr(
+                window.source_manager, "decorate_source_items"):
+            window.source_manager.decorate_source_items()
 
     idx = int(settings.get("current_index", -1) or -1)
     if idx >= 0 and idx < len(window.raw_images):
