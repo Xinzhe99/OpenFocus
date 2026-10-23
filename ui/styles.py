@@ -769,6 +769,13 @@ QDialog QPushButton {{
     min-height: 26px;
 }}
 QDialog QPushButton:hover {{ background-color: {t['surfaceHover']}; }}
+/* Compact navigation buttons: the generic padding above is wider than a
+   34 px button, which clipped the glyph and left an empty box. */
+QDialog QPushButton#previewNavButton {{
+    padding: 0px;
+    min-width: 30px;
+    font-weight: bold;
+}}
 QDialog QCheckBox {{ color: {t['text']}; spacing: {s['sm']}px; }}
 """
 
