@@ -234,3 +234,46 @@ def test_resizing_all_previews_reuses_full_results(dialog, qapp):
         assert dialog._canvases[method].width() == 240
         assert dialog._canvases[method].has_region()
         assert dialog._results[method][1] is pixmap
+
+
+def test_excluded_frames_are_not_compared(qapp):
+    """The comparison must fuse the same frames a real render would."""
+    window = QWidget()
+    window.raw_images = make_two_focus_stack((120, 400)) + [
+        make_two_focus_stack((120, 400))[0]]
+    window.image_filenames = ["a.png", "b.png", "c.png"]
+    window.excluded_frames = {1}
+    window.current_fusion_method = lambda: "openfocus_a"
+    window.current_alignment_method = lambda: "none"
+    window.brightness_option_for = lambda *_: False
+    window.tile_enabled = False
+    window.thread_count = 1
+    window.effective_stack = lambda: (
+        [window.raw_images[i] for i in (0, 2)],
+        ["a.png", "c.png"], [0, 2])
+
+    instance = CompareDialog(window)
+    try:
+        instance._preview_timer.stop()
+        assert len(instance._raw_frames) == 2
+        assert instance._source_names == ["a.png", "c.png"]
+        summary = instance.source_summary.text()
+        assert "2" in summary and "3" in summary, summary
+    finally:
+        instance.reject()
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_view_mode_does_not_recompute(dialog, qapp):
+    """Switching between detail and whole-result only changes the display."""
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(False))
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog) and dialog._results)
+    before = dict(dialog._results)
+    dialog.view_combo.setCurrentIndex(dialog.view_combo.findData("full"))
+    qapp.processEvents()
+    assert dict(dialog._results) == before
+    assert dialog._canvases["openfocus_a"].view_mode() == "full"

@@ -48,6 +48,7 @@ _PERSISTED_FIELDS = {
     "reg_downscale_width": ("registration/downscale_width", 1024, int),
     "ai_batch_size": ("rendering/ai_batch_size", 2, int),
     "ai_mode": ("fusion/ai_mode", "soft", "str"),
+    "dtcwt_levels": ("fusion/dtcwt_levels", 4, int),
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),

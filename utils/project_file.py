@@ -33,6 +33,7 @@ def _collect_state(window) -> Dict[str, Any]:
         "reg_downscale_width": getattr(window, "reg_downscale_width", None),
         "ai_batch_size": getattr(window, "ai_batch_size", 2),
         "ai_mode": getattr(window, "ai_mode", "soft"),
+        "dtcwt_levels": int(getattr(window, "dtcwt_levels", 4) or 4),
         "quick_preview": getattr(window, "chk_quick_preview", None) is not None
         and window.chk_quick_preview.isChecked(),
         "current_index": getattr(window, "current_display_index", -1),
@@ -285,6 +286,8 @@ def _apply_after_load(window, state: Dict[str, Any]) -> None:
         window.reg_downscale_width = int(settings["reg_downscale_width"])
     if settings.get("ai_batch_size"):
         window.ai_batch_size = int(settings["ai_batch_size"])
+    if settings.get("dtcwt_levels"):
+        window.dtcwt_levels = max(1, min(6, int(settings["dtcwt_levels"])))
     if settings.get("ai_mode") in ("soft", "hard"):
         window.ai_mode = settings["ai_mode"]
         radios = (getattr(window, "radio_ai_soft", None),
