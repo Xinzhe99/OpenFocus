@@ -178,8 +178,13 @@ class OutputManager:
         return records
 
     def _insert_output(self, image, label: str, record: Optional[OutputRecord],
-                       tooltip: str = "") -> QListWidgetItem:
-        """Insert one entry at row 0, keeping pixels, item and record aligned."""
+                       tooltip: str = "", trim: bool = True) -> QListWidgetItem:
+        """Insert one entry at row 0, keeping pixels, item and record aligned.
+
+        `trim=False` lets a caller finish its own commit (for example a
+        publication that must restore the previous history exactly if the
+        display step fails) before older entries are evicted.
+        """
         window = self.window
         if image is not None:
             window.fusion_results.insert(0, image)
@@ -205,7 +210,8 @@ class OutputManager:
         # disabled the single-item actions — Save As, Retouch).
         window.output_list.clearSelection()
         window.output_list.setCurrentRow(0)
-        self._trim_history()
+        if trim:
+            self._trim_history()
         self.update_output_count()
         return item
 
@@ -339,23 +345,34 @@ class OutputManager:
         record = OutputRecord.create(
             image, label, context=base_record.context, kind="retouch",
             parent_id=base_record.output_id, exported=False)
-        previous = getattr(self.window, "fusion_result", None)
+        window = self.window
+        previous = getattr(window, "fusion_result", None)
+        previous_row = window.output_list.currentRow()
         item = None
         try:
-            self.window.fusion_result = image
+            window.fusion_result = image
+            # trim=False: history eviction happens only after the new result
+            # is committed. Evicting first meant a failed display could still
+            # have dropped an older output permanently.
             item = self._insert_output(
-                image, label, record, tooltip=trans.t("retouch_unexported"))
+                image, label, record, tooltip=trans.t("retouch_unexported"),
+                trim=False)
             if self.display_specific_fusion_result(image) is False:
                 raise RuntimeError(trans.t("msg_display_fusion_failed_text"))
         except Exception:
             # Publication is atomic: a failed display must not leave a
-            # half-created entry or a switched result view.
+            # half-created entry, a switched view, or a changed selection.
             if item is not None:
-                row = self.window.output_list.row(item)
+                row = window.output_list.row(item)
                 if row >= 0:
                     self._remove_row(row)
-            self.window.fusion_result = previous
+            window.fusion_result = previous
+            if previous_row >= 0:
+                window.output_list.setCurrentRow(previous_row)
+            self.update_output_count()
             raise
+        self._trim_history()
+        self.update_output_count()
         return record
 
     # ------------------------------------------------------------------
