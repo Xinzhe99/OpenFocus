@@ -42,6 +42,18 @@ def _collect_state(window) -> Dict[str, Any]:
         "scale_um_per_px_manual": float(getattr(window, "scale_um_per_px_manual", 0.0) or 0.0),
         "scale_bar_position": getattr(window, "scale_bar_position", "bottom-right"),
         "scale_bar_color": getattr(window, "scale_bar_color", "auto"),
+        # Full style and scope: reopening a project must reproduce the bar
+        # the user committed, not fall back to defaults for the rest.
+        "scale_bar_target": getattr(window, "scale_bar_target", "all"),
+        "scale_bar_font_family": getattr(window, "scale_bar_font_family", ""),
+        "scale_bar_font_size": float(getattr(window, "scale_bar_font_size", 0.0) or 0.0),
+        "scale_bar_font_bold": bool(getattr(window, "scale_bar_font_bold", False)),
+        "scale_bar_text_align": getattr(window, "scale_bar_text_align", "auto"),
+        "scale_bar_custom_x": float(getattr(window, "scale_bar_custom_x", 0.95) or 0.95),
+        "scale_bar_custom_y": float(getattr(window, "scale_bar_custom_y", 0.95) or 0.95),
+        "scale_bar_calibration_mode": (
+            "manual" if float(getattr(window, "scale_um_per_px_manual", 0.0) or 0.0) > 0
+            else "metadata"),
     }
     labels = {}
     lm = getattr(window, "label_manager", None)
@@ -284,6 +296,13 @@ def _apply_after_load(window, state: Dict[str, Any]) -> None:
     window.scale_um_per_px_manual = float(settings.get("scale_um_per_px_manual", 0.0) or 0.0)
     window.scale_bar_position = settings.get("scale_bar_position", "bottom-right")
     window.scale_bar_color = settings.get("scale_bar_color", "auto")
+    window.scale_bar_target = settings.get("scale_bar_target", "all")
+    window.scale_bar_font_family = settings.get("scale_bar_font_family", "")
+    window.scale_bar_font_size = float(settings.get("scale_bar_font_size", 0.0) or 0.0)
+    window.scale_bar_font_bold = bool(settings.get("scale_bar_font_bold", False))
+    window.scale_bar_text_align = settings.get("scale_bar_text_align", "auto")
+    window.scale_bar_custom_x = float(settings.get("scale_bar_custom_x", 0.95) or 0.95)
+    window.scale_bar_custom_y = float(settings.get("scale_bar_custom_y", 0.95) or 0.95)
 
     labels = state.get("labels", {})
     lm = getattr(window, "label_manager", None)
