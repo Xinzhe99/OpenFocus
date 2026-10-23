@@ -136,6 +136,12 @@ class AdvancedSettingsDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel)
+        # Qt's own button text follows the Qt translation catalog, which this
+        # app does not ship: every language showed "OK/Cancel".
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+            trans.t("btn_ok"))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+            trans.t("btn_cancel"))
         buttons.accepted.connect(self._apply)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)

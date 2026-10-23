@@ -1904,12 +1904,15 @@ class OpenFocus(QMainWindow):
         """
         import time as _time
         from utils.dust_map import apply_flat_field_stack
-        self.push_undo()
         t0 = _time.time()
+        # Apply to COPIES first: the previous order wrote raw_images and only
+        # then tried base_images, so a failure on the second call left the
+        # stack half-corrected with no way back.
         try:
-            self.raw_images = apply_flat_field_stack(self.raw_images, gain)
-            if getattr(self, "base_images", None):
-                self.base_images = apply_flat_field_stack(self.base_images, gain)
+            corrected_raw = apply_flat_field_stack(self.raw_images, gain)
+            corrected_base = (
+                apply_flat_field_stack(self.base_images, gain)
+                if getattr(self, "base_images", None) else None)
         except ValueError as exc:
             # A frame whose size disagrees with the white field must not die
             # silently in a Qt slot (the excepthook only writes a crash file).
@@ -1917,7 +1920,11 @@ class OpenFocus(QMainWindow):
             logging.getLogger("openfocus").warning("flat-field apply failed: %s", exc)
             show_warning_box(self, trans.t("msg_error"),
                              trans.t("dust_err_not_white"))
-            return
+            return False
+        self.push_undo()
+        self.raw_images = corrected_raw
+        if corrected_base is not None:
+            self.base_images = corrected_base
         if hasattr(self.get_or_create_source_pixmap, "cache_clear"):
             self.get_or_create_source_pixmap.cache_clear()
         self.transform_manager._invalidate_processing_results(
@@ -1927,6 +1934,7 @@ class OpenFocus(QMainWindow):
         self.statusBar().showMessage(
             trans.t('dust_applied').format(n=len(self.raw_images),
                                            t=_time.time() - t0), 5000)
+        return True
 
     def show_quick_start(self) -> None:
         from dialogs.welcome import WelcomeDialog

@@ -1904,3 +1904,38 @@ def test_gpu_status_shows_na_without_a_device(qapp):
     # The only paths left are N/A, CPU* (accelerator + classical), CUDA/MPS.
     assert "'N/A'" in block
     assert "elif not self._ai_method_selected()" in block
+
+
+def test_flat_field_failure_keeps_the_original_stack(qapp, monkeypatch):
+    """A failed base-stage correction must not leave a half-applied stack."""
+    import numpy as np
+    from types import SimpleNamespace
+    import main as main_module
+    from utils import dust_map
+
+    frames = [np.full((8, 8, 3), 10, np.uint8) for _ in range(2)]
+    base = [np.full((8, 8, 3), 20, np.uint8) for _ in range(2)]
+    host = SimpleNamespace(
+        raw_images=frames, base_images=base, _undo_guard=True,
+        push_undo=lambda: None,
+        get_or_create_source_pixmap=lambda *a, **k: None,
+        statusBar=lambda: SimpleNamespace(showMessage=lambda *a, **k: None),
+    )
+    warnings = []
+    monkeypatch.setattr(main_module, "show_warning_box",
+                        lambda *a, **k: warnings.append(a))
+
+    calls = {"n": 0}
+
+    def fail_on_second(images, gain):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise ValueError("size mismatch")
+        return [f + 1 for f in images]
+
+    monkeypatch.setattr(dust_map, "apply_flat_field_stack", fail_on_second)
+    result = main_module.OpenFocus.apply_flat_field_to_stack(host, object())
+    assert result is False
+    assert host.raw_images is frames, "raw frames were replaced on failure"
+    assert host.base_images is base, "base frames were replaced on failure"
+    assert warnings
