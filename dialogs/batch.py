@@ -773,7 +773,10 @@ class BatchProcessingDialog(QDialog):
         self.folder_group.setVisible(is_multiple)
         self.single_folder_group.setVisible(not is_multiple)
         
-        self.setFixedHeight(800)
+        # Do NOT pin the dialog to 800 px: on a shorter screen the fixed
+        # height put the button bar off-screen. The scroll area above the
+        # bar already adapts to the available space.
+        self.setMinimumHeight(min(640, self.height()))
         
         # 初始化质量滑块显示状态
         self.on_format_changed(self.format_combo.currentText())

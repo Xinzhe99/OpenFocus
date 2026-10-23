@@ -439,3 +439,55 @@ class TestLoaderFormatsAndOrder:
         ok, _msg, imgs, names = ImageStackLoader().load_from_folder(str(tmp_path))
         assert ok and len(imgs) == 2
         assert names == ["w0.webp", "w1.webp"]
+
+
+def test_split_count_accepts_the_stepper_float():
+    """The dialog's stepper returns a float; range() rejected it."""
+    from core.image_loader import ImageStackLoader
+
+    loader = ImageStackLoader()
+    items = [(f"f{i}.png", None, None) for i in range(5)]
+    groups = loader.split_by_count(items, 2.0)
+    assert [len(g) for g in groups] == [2, 2, 1]
+
+
+def test_missing_timestamps_are_counted():
+    from core.image_loader import ImageStackLoader
+
+    items = [("a.png", None, None), ("b.png", None, 1.0)]
+    assert ImageStackLoader.missing_timestamps(items) == 1
+
+
+def test_align_only_split_batch_writes_aligned_frames(tmp_path, qapp):
+    """Choosing no fusion method must still export the aligned frames."""
+    import numpy as np
+    from core.workers import BatchWorker
+
+    source = tmp_path / "src"
+    source.mkdir()
+    items = []
+    for i in range(3):
+        image = np.full((24, 32, 3), 40 + i * 20, np.uint8)
+        items.append((f"f{i}.png", image, None))
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    worker = BatchWorker(
+        folder_paths=[], output_type="custom", output_path=str(outdir),
+        processing_settings={"reg_methods": [], "fusion_method": "none",
+                             "save_aligned": True, "format": "png"},
+        import_mode="single_folder", split_method="count", split_param=2,
+        single_folder_images_with_times=items, use_gpu=False,
+        thread_count=1)
+    finished = {}
+    worker.finished.connect(lambda results: finished.update(results))
+    worker.run()
+
+    assert finished.get("success") == 2, finished
+    assert finished["counts"]["success"] == 2
+    written = sorted(p.name for p in outdir.iterdir())
+    # The stack prefix comes from the source folder name; only the count and
+    # the aligned suffix are contractual here.
+    assert [name.split("_", 1)[1] for name in written] == [
+        "001_aligned_001.png", "001_aligned_002.png",
+        "002_aligned_001.png"], written
