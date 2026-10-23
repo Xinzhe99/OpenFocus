@@ -371,7 +371,18 @@ class RenderManager:
             roi_rect = window.lbl_result_img.get_roi_rect() if hasattr(window.lbl_result_img, 'get_roi_rect') else None
             if roi_rect is not None:
                 use_roi_aligned_images = True
-                dialog = ROIRenderOptionsDialog(len(window.roi_aligned_images), window)
+                names = list(getattr(window, "image_filenames", None) or [])
+                roi = (window.lbl_result_img.get_roi_rect()
+                       if hasattr(window.lbl_result_img, "get_roi_rect")
+                       else None)
+                roi_size = (int(roi.width()), int(roi.height())) if roi else None
+                base = (window.roi_aligned_images[0]
+                        if getattr(window, "roi_aligned_images", None) else None)
+                output_size = (base.shape[1], base.shape[0]) if base is not None else None
+                dialog = ROIRenderOptionsDialog(
+                    len(window.roi_aligned_images), window,
+                    frame_names=names, roi_size=roi_size,
+                    output_size=output_size)
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     roi_mode = dialog.mode
                     roi_base_index = dialog.base_frame_index
