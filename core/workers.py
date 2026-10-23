@@ -823,7 +823,9 @@ class BatchWorker(QThread):
             fusion_method = None
 
         result = None
-        aligned_for_export = None
+        # The align-only mode exports these frames too; assigning the list
+        # inside the fusion branch left it None and wrote no files at all.
+        aligned_for_export = list(aligned_images)
         if fusion_method:
             fusion_params = dict(
                 self.processing_settings.get('fusion_params', {}) or {})
@@ -840,7 +842,8 @@ class BatchWorker(QThread):
 
             from utils.image_utils import normalize_fuse_input, quantize_fuse_output
             save_aligned = bool(self.processing_settings.get('save_aligned', False))
-            aligned_for_export = aligned_images if save_aligned else None
+            if not save_aligned:
+                aligned_for_export = None
             fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
             if aligned_for_export is None:
                 del aligned_images  # fusion does not need the originals
