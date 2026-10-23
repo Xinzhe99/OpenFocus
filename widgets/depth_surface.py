@@ -154,7 +154,7 @@ class DepthSurface(QWidget):
             self._cache = (key, image)
         return image
 
-    def _rasterise(self, mesh_step: int = 96):
+    def _rasterise(self, mesh_step: int = None):
         """Forward-map every texture pixel onto the canvas, per pixel.
 
         A quad mesh can only carry one colour per cell, so the picture came out
@@ -168,7 +168,8 @@ class DepthSurface(QWidget):
         import cv2
 
         hh, ww = self._height.shape[:2]
-        w, h = max(1, self.width()), max(1, self.height())
+        w = max(1, self.width())
+        h = max(1, self.height())
 
         # Working resolution = canvas x (detail / 96), capped by the source.
         # 96 (the default) is the 2x supersample that fills the forward-map
@@ -180,7 +181,10 @@ class DepthSurface(QWidget):
         # every setting above 96 hit that cap and rendered EXACTLY the same
         # image — the slider did nothing. A fraction of the source always
         # changes the working set.
-        ratio = max(0.2, min(1.0, self._mesh_step / 100.0))
+        # Use the step requested by the caller: the drag path passes a
+        # coarser one, and reading self._mesh_step here made that path a no-op.
+        step = self._mesh_step if mesh_step is None else int(mesh_step)
+        ratio = max(0.2, min(1.0, step / 100.0))
         target_h = max(64, int(hh * ratio))
         target_w = max(64, int(ww * ratio))
         if target_h < 8 or target_w < 8:
@@ -196,6 +200,12 @@ class DepthSurface(QWidget):
                              interpolation=cv2.INTER_AREA)
             if tex.ndim == 2:
                 tex = cv2.cvtColor(tex, cv2.COLOR_GRAY2BGR)
+            if tex.dtype != np.uint8:
+                # Direct astype(uint8) wraps 16-bit values (40000 -> 64),
+                # which made the 3D preview far darker than the same texture
+                # exported to PNG. Convert through the shared display rule.
+                from utils.image_utils import to_display_uint8
+                tex = to_display_uint8(tex)
             colours = tex.reshape(-1, 3)[:, ::-1].astype(np.uint8)  # BGR->RGB
         else:
             from ui.styles import CURRENT_THEME, tokens
@@ -274,18 +284,39 @@ class DepthSurface(QWidget):
         written = np.zeros((h, w), bool)
         written[py, px] = True
 
-        # The forward map leaves pinholes where the surface is stretched. Fill
-        # ONLY those pixels from a closed copy, so the picture itself keeps its
-        # detail instead of being blurred to hide the seams. (The earlier
-        # version tested all three channels against a single component and
-        # therefore never matched, which is why the streaks stayed.)
+        # The forward map writes one pixel per surface sample, so a stretched
+        # surface leaves gaps much wider than a 3x3 morphological close can
+        # bridge (the picture read as a dot cloud). Fill every unwritten pixel
+        # from its NEAREST written sample: a distance transform gives that
+        # mapping in C, keeps the real colours, and invents no gradient.
         if not written.all():
-            filled = cv2.morphologyEx(canvas, cv2.MORPH_CLOSE,
-                                      np.ones((3, 3), np.uint8))
-            holes = ~written
-            canvas[holes] = filled[holes]
+            # Only bridge gaps INSIDE the silhouette, and only short ones:
+            # an unbounded nearest-sample fill also painted the canvas
+            # background, turning the surface into a stretched sheet.
+            hull = cv2.convexHull(
+                np.stack([px, py], axis=1).astype(np.int32))
+            inside_surface = np.zeros((h, w), np.uint8)
+            cv2.fillConvexPoly(inside_surface, hull, 1)
+            holes = (~written) & (inside_surface.astype(bool))
+            if holes.any():
+                dist, labels = cv2.distanceTransformWithLabels(
+                    holes.astype(np.uint8), cv2.DIST_L2, 3,
+                    labelType=cv2.DIST_LABEL_PIXEL)
+                written_y, written_x = np.nonzero(written)
+                label_of_sample = labels[written_y, written_x]
+                lut_x = np.zeros(int(labels.max()) + 1, np.int32)
+                lut_y = np.zeros(int(labels.max()) + 1, np.int32)
+                lut_x[label_of_sample] = written_x
+                lut_y[label_of_sample] = written_y
+                # Pinhole-scale bridging only; wider gaps stay background so
+                # the silhouette reads as a surface, not a smear.
+                reach = max(2.0, 6.0 / max(0.2, ratio))
+                near = holes & (dist <= reach)
+                if near.any():
+                    near_labels = labels[near]
+                    canvas[near] = canvas[lut_y[near_labels],
+                                          lut_x[near_labels]]
 
-        rgb = cv2.resize(canvas, (w, h), interpolation=cv2.INTER_AREA)
-        rgb = np.ascontiguousarray(rgb)
+        rgb = np.ascontiguousarray(canvas)
         return QImage(rgb.data, w, h, 3 * w,
                       QImage.Format.Format_RGB888).copy()
