@@ -308,6 +308,10 @@ def setup_menus(window: QMainWindow) -> None:
     advanced_action.setToolTip(trans.t("advanced_settings_hint"))
     advanced_action.triggered.connect(window.show_advanced_settings_dialog)
     settings_menu.addAction(advanced_action)
+    # update_ui_text() falls back to the ui_objs key when no trans_key is set,
+    # so without this the menu item rendered as "action_advanced_settings"
+    # after any language switch.
+    advanced_action.setProperty("trans_key", 'advanced_settings_title')
     window.ui_objs['action_advanced_settings'] = advanced_action
 
     # GPU stays reachable here as a quick toggle; it is the one switch users
