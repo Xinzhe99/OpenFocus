@@ -80,3 +80,17 @@ def test_close_and_open_ask_before_discarding():
                    src.index("def save_project_dialog")]
     assert "_confirm_discard_project_changes" in open_fn
     assert "_clear_project_dirty()" in open_fn
+
+
+def test_discard_prompt_defaults_to_cancel_and_offers_save():
+    """The prompt used to default to discarding the unsaved project."""
+    from pathlib import Path
+
+    src = Path("main.py").read_text(encoding="utf-8")
+    block = src[src.index("def _confirm_discard_project_changes"):
+                src.index("def load_demo_stack")]
+    assert "setDefaultButton(cancel)" in block, (
+        "the safe choice must be the default")
+    assert "save_project_dialog" in block, (
+        "the user must be able to save before continuing")
+    assert "btn_cancel" in block

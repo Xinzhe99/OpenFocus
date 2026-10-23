@@ -170,3 +170,50 @@ def test_project_keeps_base_frame_correction(tmp_path):
     restored = _window(paths, src)
     project_file._apply_after_load(restored, state)
     assert restored.base_frame_correct is True
+
+
+def test_excluded_frames_round_trip(tmp_path):
+    """A reopened project must process the same frames that were on screen."""
+    stack_dir = str(tmp_path / "stack")
+    paths = _make_stack(stack_dir, n=3)
+    w = _window(paths, stack_dir)
+    w.excluded_frames = {1}
+    state = project_file._collect_state(w)
+    assert state["settings"]["excluded_frames"] == [1]
+
+    restored = _window(paths, stack_dir)
+    restored.excluded_frames = set()
+    restored.source_manager = type("SM", (), {
+        "decorate_source_items": lambda self: None})()
+    project_file._apply_after_load(restored, state)
+    assert restored.excluded_frames == {1}
+
+
+def test_scale_bar_style_round_trip(tmp_path):
+    stack_dir = str(tmp_path / "stack")
+    paths = _make_stack(stack_dir, n=2)
+    w = _window(paths, stack_dir)
+    w.scale_bar_enabled = True
+    w.scale_um_per_px_manual = 0.5
+    w.scale_bar_target = "source"
+    w.scale_bar_position = "custom"
+    w.scale_bar_font_family = "Arial"
+    w.scale_bar_font_size = 18.0
+    w.scale_bar_font_bold = True
+    w.scale_bar_text_align = "center"
+    w.scale_bar_custom_x = 0.2
+    w.scale_bar_custom_y = 0.7
+    state = project_file._collect_state(w)
+
+    restored = _window(paths, stack_dir)
+    restored.source_manager = type("SM", (), {
+        "decorate_source_items": lambda self: None})()
+    project_file._apply_after_load(restored, state)
+    assert restored.scale_bar_target == "source"
+    assert restored.scale_bar_position == "custom"
+    assert restored.scale_bar_font_family == "Arial"
+    assert restored.scale_bar_font_size == pytest.approx(18.0)
+    assert restored.scale_bar_font_bold is True
+    assert restored.scale_bar_text_align == "center"
+    assert restored.scale_bar_custom_x == pytest.approx(0.2)
+    assert restored.scale_bar_custom_y == pytest.approx(0.7)
