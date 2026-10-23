@@ -1463,8 +1463,18 @@ class OpenFocus(QMainWindow):
         if ok:
             self.project_path = target
             self._clear_project_dirty()
-            self._show_status_message(
-                trans.t('msg_project_saved').format(path=target), 5000)
+            # A project stores input references and restorable settings, not
+            # result pixels: say so, and keep the count of results that still
+            # need an image export visible in the same message.
+            message = trans.t('msg_project_saved_config').format(path=target)
+            try:
+                pending = len(self.output_manager.protected_records())
+            except Exception:
+                pending = 0
+            if pending:
+                message += " " + trans.t(
+                    'msg_project_unexported_note').format(n=pending)
+            self._show_status_message(message, 8000)
         else:
             show_warning_box(self, trans.t("msg_error"),
                              trans.t('msg_project_save_failed').format(err=err))
@@ -1503,13 +1513,22 @@ class OpenFocus(QMainWindow):
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle(trans.t("msg_warning"))
         box.setText(trans.t(action_key))
+        save_button = box.addButton(trans.t("menu_save_project"),
+                                    QMessageBox.ButtonRole.AcceptRole)
         discard = box.addButton(trans.t("btn_discard_changes"),
                                 QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton(trans.t("btn_continue"),
-                      QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(discard)
+        cancel = box.addButton(trans.t("btn_cancel"),
+                               QMessageBox.ButtonRole.RejectRole)
+        # Default to the safe choice: the old default discarded the work.
+        box.setDefaultButton(cancel)
         box.exec()
-        return box.clickedButton() is discard
+        clicked = box.clickedButton()
+        if clicked is save_button:
+            self.save_project_dialog(save_as=False)
+            # Saving may have been cancelled or failed; only continue when the
+            # project is actually clean.
+            return not getattr(self, "_project_dirty", False)
+        return clicked is discard
 
     def load_demo_stack(self) -> None:
         """Load the bundled demo stack (no downsample dialog)."""

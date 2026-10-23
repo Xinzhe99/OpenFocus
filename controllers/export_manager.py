@@ -28,6 +28,22 @@ ALLOWED_EXPORT_EXTENSION_MAP = {
     ".webp": ".webp",
 }
 
+def extension_from_filter(selected_filter: str) -> str:
+    """First extension offered by a QFileDialog filter string.
+
+    "TIFF Files (*.tif *.tiff)" -> ".tif"; "All Files (*)" -> "".
+    """
+    import re as _re
+    match = _re.search(r"\(([^)]*)\)", selected_filter or "")
+    if not match:
+        return ""
+    for token in match.group(1).split():
+        token = token.strip().lstrip("*").lower()
+        if token.startswith(".") and token in ALLOWED_EXPORT_EXTENSION_MAP:
+            return ALLOWED_EXPORT_EXTENSION_MAP[token]
+    return ""
+
+
 EXPORT_EXTENSION_ALIASES = {
     ".jpeg": ".jpg",
     ".jpe": ".jpg",
@@ -50,8 +66,16 @@ class ExportManager:
         self.gif_progress_dialog: Optional[QProgressDialog] = None
         self.gif_worker: Optional[GifSaverWorker] = None
 
-    def normalize_export_path(self, file_path: str, fallback_extension: str = DEFAULT_EXPORT_EXTENSION) -> str:
-        """Map user supplied paths onto the supported export extensions."""
+    def normalize_export_path(self, file_path: str,
+                              fallback_extension: str = DEFAULT_EXPORT_EXTENSION,
+                              selected_filter: str = "") -> str:
+        """Map a user supplied path onto a supported export extension.
+
+        The chosen file-type filter is used when the name has no extension:
+        picking "TIFF Files (*.tif *.tiff)" and typing a bare name used to
+        fall back to PNG, so the file on disk was a PNG while the dialog said
+        TIFF. An explicit, different extension keeps the user's choice.
+        """
         root, ext = os.path.splitext(file_path)
         ext_lower = ext.lower()
 
@@ -60,7 +84,8 @@ class ExportManager:
             fallback = DEFAULT_EXPORT_EXTENSION
 
         if not ext:
-            return root + fallback
+            from_filter = extension_from_filter(selected_filter)
+            return root + (from_filter or fallback)
 
         mapped = ALLOWED_EXPORT_EXTENSION_MAP.get(ext_lower)
         if mapped:
@@ -195,7 +220,7 @@ class ExportManager:
 
         if not default_filename:
             default_filename = self.generate_default_filename()
-        file_path, _ = QFileDialog.getSaveFileName(
+        file_path, selected_filter = QFileDialog.getSaveFileName(
             window,
             title,
             default_filename,
@@ -206,7 +231,8 @@ class ExportManager:
         if not file_path:
             return
 
-        file_path = self.normalize_export_path(file_path)
+        file_path = self.normalize_export_path(
+            file_path, selected_filter=selected_filter)
 
         from utils.logging_setup import log_action
         log_action("export_image", path=file_path)
@@ -229,7 +255,8 @@ class ExportManager:
                     scalebar.export_cfg(window, target=save_scale_target)),
                     params):
                 if hasattr(window, "output_manager"):
-                    window.output_manager.mark_selected_exported()
+                    window.output_manager.mark_selected_exported(
+                        path=file_path)
                 # Non-blocking confirmation (errors still get a dialog)
                 window.statusBar().showMessage(
                     trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
