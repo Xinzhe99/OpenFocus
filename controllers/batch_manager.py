@@ -179,23 +179,30 @@ class BatchManager:
                     self.window.statusBar().showMessage(
                         trans.t("batch_added_to_outputs").format(n=shown), 8000)
 
-            if not was_cancelled:
-                info_lines = [
-                    trans.t("batch_done_success").format(
-                        success=success_count, total=total_count),
-                ]
-                if failed_folders:
-                    info_lines.append("")
-                    info_lines.append(trans.t("batch_done_failed").format(
-                        count=len(failed_folders)))
-                    info_lines.extend(failed_folders)
-
-                self._show_message(
-                    title=trans.t("batch_done_title"),
-                    text=trans.t("batch_done_title"),
-                    info="\n".join(info_lines),
-                    icon=QMessageBox.Icon.Information,
-                )
+            # Cancelled runs still report what was written and what was not
+            # started; the old code suppressed the summary entirely.
+            counts = results.get("counts") or {
+                "success": success_count,
+                "partial": 0,
+                "failed": len(failed_folders),
+                "cancelled": 1 if was_cancelled else 0,
+                "not_started": max(0, total_count - success_count
+                                   - len(failed_folders)),
+            }
+            info_lines = [trans.t("batch_counts").format(**counts)]
+            if failed_folders:
+                info_lines.append("")
+                info_lines.extend(failed_folders)
+            problems = (counts.get("partial", 0) + counts.get("failed", 0))
+            self._show_message(
+                title=(trans.t("batch_partial_title") if problems
+                       else trans.t("batch_done_title")),
+                text=(trans.t("batch_partial_title") if problems
+                      else trans.t("batch_done_title")),
+                info="\n".join(info_lines),
+                icon=(QMessageBox.Icon.Warning if problems
+                      else QMessageBox.Icon.Information),
+            )
         finally:
             self._close_progress_dialog()
             self._teardown_worker()
