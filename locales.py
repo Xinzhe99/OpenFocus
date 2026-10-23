@@ -748,6 +748,10 @@ class TranslationManager(QObject):
                 'btn_close': 'Close',
 
                 # Batch Processing Dialog
+                'batch_progress_task': "Processing {i}/{n}: {name}",
+                'batch_counts': "Succeeded {success} · partial {partial} · failed {failed} · cancelled {cancelled} · not started {not_started}",
+                'batch_partial_title': "Batch finished with problems",
+                'batch_task_error': "{name}: {error}",
                 'batch_title': 'Batch Processing',
                 'batch_import_mode': 'Import Mode',
                 'batch_mode_multi': 'Multiple Folders (one stack per folder)',
@@ -1711,6 +1715,10 @@ class TranslationManager(QObject):
                 'btn_close': '关闭',
 
                 # Batch Processing Dialog
+                'batch_progress_task': "正在处理 {i}/{n}：{name}",
+                'batch_counts': "成功 {success} · 部分成功 {partial} · 失败 {failed} · 已取消 {cancelled} · 未开始 {not_started}",
+                'batch_partial_title': "批处理完成，但有部分问题",
+                'batch_task_error': "{name}：{error}",
                 'batch_title': '批处理',
                 'batch_import_mode': '导入模式',
                 'batch_mode_multi': '多个文件夹 (每个文件夹一组)',
