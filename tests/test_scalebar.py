@@ -123,3 +123,53 @@ def test_tiny_or_extreme_frames_do_not_crash(shape):
     img = np.full(shape + (3,), 128, np.uint8)
     out = burn(img, {"px_um": 0.5, "position": "bottom-right", "color": "auto"})
     assert out.shape == img.shape and out.dtype == np.uint8
+
+
+def test_drawn_length_matches_the_printed_length():
+    """A clamped bar must not keep the unclamped physical label.
+
+    The old code forced at least 8 px and printed the length computed before
+    clamping, so a 20x20 frame at 1 µm/px showed a "2 µm" bar that was 8 px
+    long — a 4x scale error in the exported figure.
+    """
+    from utils.scalebar import draw_scale_bar_ex
+
+    img = np.full((200, 400, 3), 90, np.uint8)
+    _out, info = draw_scale_bar_ex(img, 1.0)
+    assert info["too_small"] is False
+    assert info["bar_px"] == int(round(info["bar_um"] / 1.0))
+
+    tiny = np.full((20, 20, 3), 90, np.uint8)
+    out, info = draw_scale_bar_ex(tiny, 1.0)
+    assert info["too_small"] is True
+    assert np.array_equal(out, tiny), "a bar that cannot state its scale was drawn"
+
+
+def test_sixteen_bit_frame_keeps_style_arguments():
+    """The 16-bit branch used to recurse with position/colour only."""
+    from utils.scalebar import draw_scale_bar_ex
+
+    img = np.full((240, 400, 3), 40000, np.uint16)
+    out, info = draw_scale_bar_ex(
+        img, 1.0, "custom", "white", font_size=18, text_align="center",
+        custom_x=0.2, custom_y=0.7)
+    assert out.dtype == np.uint16
+    assert info["too_small"] is False
+    # The custom position must have been honoured: the lower-left band is
+    # touched while the default bottom-right corner is not.
+    assert (out[150:210, 40:200] != img[150:210, 40:200]).any()
+    assert np.array_equal(out[-40:, -120:], img[-40:, -120:])
+
+
+def test_manual_calibration_is_converted_to_working_pixels():
+    """0.5 µm/px loaded at 50% is 1 µm per working pixel."""
+    from types import SimpleNamespace
+    from utils.scalebar import effective_px_um
+
+    assert effective_px_um(SimpleNamespace(
+        scale_um_per_px_manual=0.5, current_scale_factor=0.5,
+        source_px_um=None)) == pytest.approx(1.0)
+    # Metadata is already expressed for the loaded pixels.
+    assert effective_px_um(SimpleNamespace(
+        scale_um_per_px_manual=0.0, current_scale_factor=0.5,
+        source_px_um=0.8)) == pytest.approx(0.8)

@@ -125,6 +125,18 @@ def detect_px_size_um(path: str) -> Optional[float]:
     return None
 
 
+def _next_shorter_nice(value: float) -> float:
+    """The next smaller 1-2-5 value (5 -> 2 -> 1 -> 0.5 ...)."""
+    if value <= 0:
+        return 0.0
+    k = math.floor(math.log10(value))
+    for mantissa in (5.0, 2.0, 1.0):
+        candidate = mantissa * 10 ** k
+        if candidate < value * 0.999:
+            return candidate
+    return 10 ** (k - 1)
+
+
 def nice_bar_um(target_um: float) -> float:
     """Round to the nearest 1-2-5 x 10^k value (>= 75% of the target)."""
     if target_um <= 0:
@@ -186,6 +198,32 @@ def _region_mean(img, x1: int, y1: int, x2: int, y2: int) -> float:
     return float(img[y1:y2, x1:x2].mean())
 
 
+def draw_scale_bar_ex(img: np.ndarray, px_um: float,
+                      position: str = "bottom-right",
+                      color: str = "auto",
+                      font_family: str = None,
+                      font_size: float = 0.0,
+                      font_bold: bool = False,
+                      text_align: str = "auto",
+                      custom_x: float = None,
+                      custom_y: float = None):
+    """Draw the bar and report what actually happened.
+
+    Returns ``(image, info)`` where info may contain ``bar_um``, ``bar_px``,
+    ``too_small`` (no legal length fits) and ``substituted_font`` (the
+    requested family could not draw the label). The preview needs these to
+    avoid showing a success state for a bar that was not drawn as requested.
+    """
+    info = {"bar_um": None, "bar_px": None, "too_small": False,
+            "substituted_font": ""}
+    drawn = draw_scale_bar(img, px_um, position, color,
+                           font_family=font_family, font_size=font_size,
+                           font_bold=font_bold, text_align=text_align,
+                           custom_x=custom_x, custom_y=custom_y,
+                           _info=info)
+    return drawn, info
+
+
 def draw_scale_bar(img: np.ndarray, px_um: float,
                    position: str = "bottom-right",
                    color: str = "auto",
@@ -194,12 +232,12 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
                    font_bold: bool = False,
                    text_align: str = "auto",
                    custom_x: float = None,
-                   custom_y: float = None) -> np.ndarray:
+                   custom_y: float = None,
+                   _info: Optional[dict] = None) -> np.ndarray:
     """Return a copy of ``img`` (BGR) with a scale bar burned into a corner.
 
     No-op (same array) when calibration is missing or implausible. Drawing
-    happens in RGB via PIL so the label can use a real font with a stroke;
-    the text falls back to cv2 "um" when no system font exists.
+    happens in RGB via PIL so the label can use a real font with a stroke.
     """
     if img is None or not px_um or px_um <= 0:
         return img
@@ -220,7 +258,11 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
             img8 = (img.astype(np.float32) * (255.0 / 65535.0)).round().astype(np.uint8)
         else:
             img8 = np.clip(img, 0, 255).astype(np.uint8)
-        drawn = draw_scale_bar(img8, px_um, position, color)
+        drawn = draw_scale_bar(
+            img8, px_um, position, color, font_family=font_family,
+            font_size=font_size,
+            font_bold=font_bold, text_align=text_align,
+            custom_x=custom_x, custom_y=custom_y, _info=_info)
         if drawn is img8:
             return img
         mask = np.any(drawn != img8, axis=2)
@@ -232,15 +274,35 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
         return out
 
     h, w = img.shape[:2]
-    bar_um = nice_bar_um(w * px_um * BAR_FRACTION)
-    bar_px = max(8, int(round(bar_um / px_um)))
     thickness = max(2, int(round(h * 0.004)))
     margin = max(10, int(round(min(h, w) * 0.02)))
     # Very small frames made the "tight frame" fallback below push bar_y1
     # past bar_y2, which PIL rejects with ValueError and turned every small
     # export into a failure. Keep the whole motif inside the canvas.
     margin = min(margin, max(1, h // 4), max(1, w // 4))
-    bar_px = min(bar_px, max(4, w - 2 * margin))
+    available_px = max(0, w - 2 * margin)
+    # The drawn length and the printed physical length must describe the same
+    # distance. A minimum pixel width with the original label (the old
+    # ``max(8, ...)``) silently changed the scale on small frames: a 2 um bar
+    # was drawn 8 px long at 1 um/px and still said "2 µm".
+    target_um = w * px_um * BAR_FRACTION
+    if available_px > 0:
+        target_um = min(target_um, available_px * px_um)
+    bar_um = nice_bar_um(target_um)
+    bar_px = int(round(bar_um / px_um))
+    # A length below ~4 px cannot carry a legible label; step down to the
+    # next shorter nice value while the label would still be honest.
+    while bar_px < 4 and bar_um > 0:
+        bar_um = _next_shorter_nice(bar_um)
+        bar_px = int(round(bar_um / px_um))
+    if bar_px < 4 or bar_px > available_px:
+        if _info is not None:
+            _info["too_small"] = True
+            _info["bar_um"] = bar_um if bar_um > 0 else None
+        return img
+    if _info is not None:
+        _info["bar_um"] = bar_um
+        _info["bar_px"] = bar_px
     thickness = min(thickness, max(1, h // 3))
     # Font size must leave room for the bar + gap + label inside the frame.
     # A hard floor of 14 px made the label taller than a 60 px frame, so it
@@ -256,8 +318,12 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     else:
         font_size = auto_size
 
-    font = _load_font(font_size, font_family, font_bold)
+    from utils.fonts import load_font_for_text
     label = format_length(bar_um)
+    font, _actual_family, substituted = load_font_for_text(
+        font_size, font_family, label, bold=font_bold)
+    if _info is not None and substituted:
+        _info["substituted_font"] = substituted
     if font is None:
         label = label.replace("µ", "u")
 
@@ -363,16 +429,23 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
 
 
 def effective_px_um(window) -> Optional[float]:
-    """Calibration for the current stack: an explicit manual value wins over
-    auto-detected metadata.
+    """Calibration for the CURRENT working pixels of this window.
 
-    The user typed that number for *this* stack because they know the optics;
-    metadata can be wrong (or left over from another file), and a
-    plausible-looking wrong scale bar in a publication is worse than none.
+    A manual value is stored in original-pixel units (that is what the user
+    typed and what a project stores), so it is divided by the working scale:
+    0.5 µm/px loaded at 50% is 1 µm per working pixel. Metadata is already
+    expressed for the loaded pixels by the loader.
+
+    The manual value wins over metadata: the user typed it for this stack
+    because they know the optics, and a plausible-looking wrong bar in a
+    publication is worse than none.
     """
     manual = getattr(window, "scale_um_per_px_manual", 0.0) or 0.0
     if manual > 0:
-        return manual
+        scale = float(getattr(window, "current_scale_factor", 1.0) or 1.0)
+        if scale <= 0:
+            scale = 1.0
+        return manual / scale
     source = getattr(window, "source_px_um", None)
     if source and source > 0:
         return source
