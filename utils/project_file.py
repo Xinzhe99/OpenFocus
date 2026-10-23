@@ -218,8 +218,14 @@ def validate_project(path: str) -> Tuple[bool, str, Dict[str, Any]]:
     return True, "", state
 
 
-def apply_project(window, state: Dict[str, Any]) -> None:
-    """Load the project's sources and restore settings/labels/index."""
+def apply_project(window, state: Dict[str, Any],
+                  on_loaded=None) -> None:
+    """Load the project's sources and restore settings/labels/index.
+
+    `on_loaded` runs only after the frames were actually decoded and the
+    settings applied — an update-restore must not report success when the
+    asynchronous load then fails.
+    """
     sources: List[str] = state.get("resolved_sources") or state["sources"]
 
     # The stack may span folders; the registration cache and the "save project"
@@ -231,7 +237,8 @@ def apply_project(window, state: Dict[str, Any]) -> None:
         filepaths=list(sources),
         scale=float(state.get("scale_factor", 1.0) or 1.0),
         append=False,
-        on_success=lambda: _apply_after_load(window, state),
+        on_success=lambda: (_apply_after_load(window, state),
+                            on_loaded() if on_loaded is not None else None),
     )
 
 

@@ -572,3 +572,52 @@ class TestStartupUpdateBanner:
         assert palette("light")["accentSoft"] in host.update_banner.styleSheet()
         host.update_banner.apply_theme("dark")
         assert palette("dark")["accentSoft"] in host.update_banner.styleSheet()
+
+
+def test_hidden_version_stays_hidden_when_ready(qapp):
+    """Dismissing a version is a decision about that version, not a state."""
+    import main as main_module
+
+    class _Banner:
+        tag = "v9.9"
+        shown = []
+
+        def show_for(self, tag, current, ready=False):
+            self.shown.append((tag, ready))
+
+    host = type("H", (), {})()
+    host.update_banner = _Banner()
+    host._banner_dismissed_tag = lambda: "v9.9"
+    main_module.OpenFocus._show_update_banner(host, "v9.9", ready=True)
+    assert host.update_banner.shown == [], "READY bypassed the hidden version"
+
+    main_module.OpenFocus._show_update_banner(host, "v10.0", ready=True)
+    assert host.update_banner.shown == [("v10.0", True)]
+
+
+def test_staged_build_must_be_newer_than_current(monkeypatch):
+    """A stale staged build must not be offered as a downgrade."""
+    from constants import APP_VERSION
+    from controllers.update_manager import UpdateManager
+
+    assert UpdateManager._is_newer_than_current("v999.0") is True
+    assert UpdateManager._is_newer_than_current(APP_VERSION) is False
+    assert UpdateManager._is_newer_than_current("v0.0.1") is False
+
+
+def test_restart_preparation_refuses_without_a_snapshot(qapp, monkeypatch):
+    """No snapshot means no hand-off: the app keeps running."""
+    import main as main_module
+    from utils import recovery
+
+    host = type("H", (), {})()
+    host._has_work_in_flight = lambda: False
+    host._project_dirty = False
+    host.persist_settings = lambda: None
+    warnings = []
+    monkeypatch.setattr(main_module, "show_warning_box",
+                        lambda *a, **k: warnings.append(a))
+    monkeypatch.setattr(recovery, "write_snapshot", lambda _w: False)
+
+    assert main_module.OpenFocus.prepare_for_update_restart(host) is False
+    assert warnings, "the user must be told why the restart stopped"
