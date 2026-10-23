@@ -211,13 +211,23 @@ class ExportManager:
         from utils.logging_setup import log_action
         log_action("export_image", path=file_path)
         try:
-            index = 0 if window.fusion_result is not None else window.current_result_index
-            if index < 0:
-                index = 0
-            image_to_save = window.label_manager.prepare_bgr_image("registered", result_to_save, index)
+            if window.fusion_result is not None:
+                # A fused result is one image; its caption number is 1 no
+                # matter which registration frame happened to be visible.
+                label_target, label_index = "output", 0
+            else:
+                label_target = "registered"
+                label_index = max(0, window.current_result_index)
+            image_to_save = window.label_manager.prepare_bgr_image(
+                label_target, result_to_save, label_index)
             ext = os.path.splitext(file_path)[1].lower()
             params = get_imwrite_params(ext)
-            if imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params):
+            save_scale_target = ("source" if label_target == "input"
+                                 else "output")
+            if imwrite_auto(file_path, scalebar.burn(
+                    image_to_save,
+                    scalebar.export_cfg(window, target=save_scale_target)),
+                    params):
                 if hasattr(window, "output_manager"):
                     window.output_manager.mark_selected_exported()
                 # Non-blocking confirmation (errors still get a dialog)
@@ -254,7 +264,12 @@ class ExportManager:
         self._save_aligned_dir(source_dir, label)
 
     def _save_aligned_dir(self, source_dir: str, label: str = "") -> None:
-        """Copy a staged align-only stack to a folder the user picks."""
+        """Write a staged align-only stack to a folder the user picks.
+
+        The staging folder holds unannotated working copies; annotations are
+        applied here with the configuration committed at save time, so a
+        label edited or removed after staging reaches the saved files.
+        """
         import shutil
 
         window = self.window
@@ -280,10 +295,34 @@ class ExportManager:
             return
         copied = 0
         try:
-            for name in sorted(os.listdir(source_dir)):
+            from utils import scalebar
+            from utils.image_utils import imwrite_auto
+            from utils.sorting import natural_sort_key
+            cfg = scalebar.export_cfg(window, target="output")
+            # Frame order must match the stack, not the byte order of names:
+            # img10 sorts before img2 alphabetically, which would shift every
+            # {value} caption after the ninth frame.
+            names = sorted(
+                (name for name in os.listdir(source_dir)
+                 if os.path.isfile(os.path.join(source_dir, name))),
+                key=natural_sort_key)
+            for index, name in enumerate(names):
                 src = os.path.join(source_dir, name)
-                if os.path.isfile(src):
-                    shutil.copy2(src, os.path.join(target, name))
+                dest = os.path.join(target, name)
+                image = _read_image_any(src)
+                if image is None:
+                    shutil.copy2(src, dest)
+                    copied += 1
+                    continue
+                labeled = window.label_manager.prepare_bgr_image(
+                    "registered", image, index)
+                if cfg:
+                    labeled = scalebar.burn(labeled, cfg)
+                if imwrite_auto(dest, labeled):
+                    copied += 1
+                else:
+                    # Keep the staged pixels rather than losing the frame.
+                    shutil.copy2(src, dest)
                     copied += 1
         except Exception as exc:
             show_message_box(window, trans.t("msg_error"),
@@ -325,7 +364,9 @@ class ExportManager:
                 file_path = self.normalize_export_path(file_path)
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                if imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params):
+                if imwrite_auto(file_path, scalebar.burn(
+                        image_to_save,
+                        scalebar.export_cfg(window, target="output")), params):
                     saved_count += 1
 
             show_message_box(
@@ -402,7 +443,11 @@ class ExportManager:
         self.gif_progress_dialog.show()
 
         duration_sec = duration_ms / 1000.0
-        self.gif_worker = GifSaverWorker(images_to_save, file_path, duration_sec, window.label_manager, target_type, scale_cfg=scalebar.export_cfg(window))
+        gif_scale_target = ("source" if target_type == "input" else "output")
+        self.gif_worker = GifSaverWorker(
+            images_to_save, file_path, duration_sec, window.label_manager,
+            target_type,
+            scale_cfg=scalebar.export_cfg(window, target=gif_scale_target))
         self.gif_worker.finished_signal.connect(
             lambda success, msg: self.on_gif_saved(success, msg, duration_ms)
         )
@@ -463,7 +508,9 @@ class ExportManager:
         set_last_dialog_dir(file_path)
 
         try:
-            cfg = scalebar.export_cfg(window)
+            cfg = scalebar.export_cfg(
+                window,
+                target="source" if label_target == "input" else "output")
             labeled = [scalebar.burn(
                            window.label_manager.prepare_bgr_image(label_target, img, i), cfg)
                        for i, img in enumerate(images)]
@@ -512,7 +559,9 @@ class ExportManager:
                 file_path = self.normalize_export_path(file_path)
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                if imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params):
+                if imwrite_auto(file_path, scalebar.burn(
+                        image_to_save,
+                        scalebar.export_cfg(window, target="source")), params):
                     saved_count += 1
 
             show_success_box(
@@ -539,3 +588,19 @@ class ExportManager:
                 trans.t("msg_save_stack_failed_text"),
                 trans.t("msg_save_stack_unexpected_info").format(error=str(exc)),
             )
+
+
+def _read_image_any(path: str):
+    """Read an image from a Unicode path (cv2.imread cannot on Windows)."""
+    import os
+
+    import cv2
+    import numpy as _np
+
+    try:
+        data = _np.fromfile(path, dtype=_np.uint8)
+    except OSError:
+        return None
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_UNCHANGED)

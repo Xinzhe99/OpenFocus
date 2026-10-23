@@ -348,8 +348,9 @@ class OutputManager:
             path = os.path.join(folder, candidate)
             try:
                 image = window.label_manager.prepare_bgr_image(
-                    "registered", record.image, 0)
-                image = scalebar.burn(image, scalebar.export_cfg(window))
+                    "output", record.image, 0)
+                image = scalebar.burn(
+                    image, scalebar.export_cfg(window, target="output"))
                 success = imwrite_auto(path, image, get_imwrite_params(ext))
             except Exception:
                 success = False
@@ -498,10 +499,15 @@ class OutputManager:
         results = list(window.fusion_results)  # newest first
         total = len(results)
         for i, image in enumerate(results):
-            labeled = window.label_manager.prepare_bgr_image("registered", image, i)
+            # A single output is one frame: its caption number must not
+            # depend on where it sits in the history (it was the row index,
+            # so "Fig 1" became "Fig 2" in Export All).
+            labeled = window.label_manager.prepare_bgr_image(
+                "output", image, 0)
             name = f"{base}_{total - i:02d}.png"
             from utils.image_utils import imwrite_auto
-            if imwrite_auto(os.path.join(folder, name), scalebar.burn(labeled, scalebar.export_cfg(window))):
+            if imwrite_auto(os.path.join(folder, name), scalebar.burn(
+                    labeled, scalebar.export_cfg(window, target="output"))):
                 self.mark_exported(i)
                 count += 1
 
@@ -546,12 +552,14 @@ class OutputManager:
         try:
             if row < len(window.fusion_results):
                 image_to_save = window.label_manager.prepare_bgr_image(
-                    "registered", window.fusion_results[row], 0
+                    "output", window.fusion_results[row], 0
                 )
 
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                success = imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params)
+                success = imwrite_auto(file_path, scalebar.burn(
+                    image_to_save,
+                    scalebar.export_cfg(window, target="output")), params)
                 if success:
                     self.mark_exported(row)
                     window.statusBar().showMessage(
@@ -566,12 +574,14 @@ class OutputManager:
                     )
             elif window.fusion_result is not None and row == 0:
                 image_to_save = window.label_manager.prepare_bgr_image(
-                    "registered", window.fusion_result, 0
+                    "output", window.fusion_result, 0
                 )
 
                 ext = os.path.splitext(file_path)[1].lower()
                 params = get_imwrite_params(ext)
-                success = imwrite_auto(file_path, scalebar.burn(image_to_save, scalebar.export_cfg(window)), params)
+                success = imwrite_auto(file_path, scalebar.burn(
+                    image_to_save,
+                    scalebar.export_cfg(window, target="output")), params)
                 if success:
                     self.mark_exported(row)
                     window.statusBar().showMessage(
@@ -656,8 +666,9 @@ class OutputManager:
         try:
             display_image = to_display_uint8(
                 window.label_manager.display_bgr_image(
-                    "registered", fusion_image, 0,
-                    scale_cfg=scalebar.export_cfg(window)))
+                    "output", fusion_image, 0,
+                    scale_cfg=scalebar.export_cfg(window,
+                                                 target="output")))
             window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(display_image))
             window.result_control_bar.setVisible(False)
             window.lbl_result_info.setText("-- / --")
@@ -770,10 +781,11 @@ def publish_aligned_stack(window, frames) -> None:
 
     saved = 0
     for index, frame in enumerate(frames):
+        # Staged WITHOUT annotations: this folder is a working copy that the
+        # user later saves as an aligned stack. Baking the current captions
+        # here meant editing or deleting a label never reached those files,
+        # because the save path only copied them.
         image = frame
-        if label_manager is not None:
-            image = label_manager.prepare_bgr_image("input", image, index)
-        image = scalebar.burn(image, scalebar.export_cfg(window))
         name = (names[index] if index < len(names)
                 else f"aligned_{index + 1:04d}.png")
         if imwrite_auto(os.path.join(folder, name), image):

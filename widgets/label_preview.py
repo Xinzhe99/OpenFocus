@@ -31,6 +31,8 @@ class LabelPreview(QLabel):
         self._adder = LabelAdder()
         self._frame = None
         self._status = ""
+        # Family actually used when the request could not be honoured.
+        self.substituted_font = ""
         # Which frame the preview pretends to be, so {value} resolves the way
         # the first real frame will.
         self._index = 0
@@ -52,6 +54,10 @@ class LabelPreview(QLabel):
     def message(self) -> str:
         """Why the preview shows no label, for the dialog's status line."""
         return self._status
+
+    def draw_error(self) -> str:
+        """Non-empty when the last draw attempt failed outright."""
+        return self._adder.last_error
 
     # ------------------------------------------------------------------ draw
     def _preview_value(self) -> int:
@@ -87,19 +93,28 @@ class LabelPreview(QLabel):
         config = self._adder.config
         text = build_label_text(config.format, config.text,
                                 self._preview_value())
-        if not text and not config.transparent_bg:
-            # An opaque box with no text is still a visible box; let it draw.
-            pass
-        if not text:
-            self._status = "empty"
-        else:
-            self._status = ""
-        # Preview the label at the frame's own resolution, then scale the
-        # result: the label keeps its proportion to the picture.
+        # Draw first: the status must describe *this* attempt, not the
+        # previous one (out-of-range and draw failures are per-frame).
         try:
             drawn = self._adder.add_label_to_image(canvas, self._index)
+            self.substituted_font = self._adder.last_substituted_font
+            error = self._adder.last_error
+            out_of_range = self._adder.last_out_of_range
         except Exception:
             drawn = canvas
+            self.substituted_font = ""
+            error = "draw_failed"
+            out_of_range = False
+
+        if error:
+            self._status = "error"
+        elif not text:
+            self._status = "empty"
+        elif out_of_range:
+            self._status = "out_of_range"
+        else:
+            self._status = ""
+
         drawn = to_display_uint8(drawn)
         h, w = drawn.shape[:2]
         rgb = np.ascontiguousarray(drawn[:, :, ::-1])
