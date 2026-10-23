@@ -126,6 +126,10 @@ class AdvancedSettingsDialog(QDialog):
         except Exception:
             self.chk_auto_update.setChecked(True)
         other.addRow(trans.t("action_auto_download"), self.chk_auto_update)
+        auto_hint = QLabel(trans.t("action_auto_download_hint"))
+        auto_hint.setObjectName("mutedLabel")
+        auto_hint.setWordWrap(True)
+        other.addRow("", auto_hint)
 
         page_lay.addStretch()
 
@@ -157,10 +161,11 @@ class AdvancedSettingsDialog(QDialog):
         w.ai_mode = self.combo_ai_mode.currentData()
         w.restore_last_stack = self.chk_restore.isChecked()
         w.ask_load_scale = self.chk_ask_scale.isChecked()
-        try:
-            w.update_manager.auto_download = self.chk_auto_update.isChecked()
-        except Exception:
-            pass
+        # `auto_download` is a read-only property; assigning it raised and the
+        # broad except swallowed the error, so the checkbox never took effect.
+        manager = getattr(w, "update_manager", None)
+        if manager is not None:
+            manager.set_auto_download(self.chk_auto_update.isChecked())
         if hasattr(w, "persist_settings"):
             w.persist_settings()
         self.accept()
