@@ -304,3 +304,95 @@ class TestReviewFixes:
             time.sleep(0.02)
         assert len(calls) == n_before, "slow method must not auto-compute"
         dlg.reject()
+
+
+def test_stale_map_cannot_be_exported(qapp, monkeypatch):
+    """Switching method keeps the old map visible but blocks its export."""
+    import os as _os
+    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QWidget
+    import dialogs.depthmap as dm
+
+    class _Stub(QWidget):
+        raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
+        ui_theme = "dark"
+        use_gpu = False
+        fusion_result = None
+        current_fusion_method = lambda self: "dtcwt"  # slow: no auto compute
+
+    dlg = dm.DepthMapDialog(_Stub())
+    try:
+        dlg._index01 = np.zeros((32, 32), np.float32)
+        dlg._map_method = "dct"
+        dlg._update_export_state()
+        assert dlg.btn_save_color.isEnabled()
+
+        dlg.method_combo.setCurrentIndex(
+            dlg.method_combo.findData("openfocus_b"))
+        dlg._mark_stale()
+        assert dlg._stale is True
+        assert not dlg.btn_save_color.isEnabled()
+        assert not dlg.btn_save_3d.isEnabled()
+        assert trans_depth_stale(dlg)
+    finally:
+        dlg.reject()
+
+
+def trans_depth_stale(dialog):
+    from locales import trans
+    return trans.t("depth_stale") in dialog.status_lbl.text()
+
+
+def test_late_result_from_an_older_request_is_ignored(qapp):
+    """A finished worker must not publish when its request was superseded."""
+    import os as _os
+    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QWidget
+    import dialogs.depthmap as dm
+
+    class _Stub(QWidget):
+        raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
+        ui_theme = "dark"
+        use_gpu = False
+        fusion_result = None
+        current_fusion_method = lambda self: "dtcwt"
+
+    dlg = dm.DepthMapDialog(_Stub())
+    try:
+        dlg._request = 5
+        dlg._computed(np.ones((8, 8), np.float32), request=4)
+        assert dlg._index01 is None, "a superseded result must be dropped"
+
+        dlg._computed(np.ones((8, 8), np.float32), request=5)
+        assert dlg._index01 is not None
+    finally:
+        dlg.reject()
+
+
+def test_raw_depth_export_requires_tiff(qapp, monkeypatch, tmp_path):
+    """The raw 16-bit exit must not silently become an 8-bit JPEG."""
+    import os as _os
+    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QWidget, QFileDialog
+    import dialogs.depthmap as dm
+
+    class _Stub(QWidget):
+        raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
+        ui_theme = "dark"
+        use_gpu = False
+        fusion_result = None
+        current_fusion_method = lambda self: "dtcwt"
+
+    dlg = dm.DepthMapDialog(_Stub())
+    try:
+        dlg._index01 = np.linspace(0, 1, 32 * 32, dtype=np.float32).reshape(32, 32)
+        target = tmp_path / "raw.jpg"
+        monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                            staticmethod(lambda *a, **k: (str(target), "")))
+        written = []
+        monkeypatch.setattr(dm, "imwrite_auto",
+                            lambda path, image, *a, **k: written.append(path) or True)
+        dlg._save(colorized=False)
+        assert written == [], "raw 16-bit data must not be written as JPEG"
+    finally:
+        dlg.reject()
