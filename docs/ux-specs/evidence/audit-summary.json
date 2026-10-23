@@ -1,0 +1,56 @@
+{
+  "baseline_version": "1.67.0",
+  "purpose": "Current implementation UX evidence; proposed specifications are not implemented",
+  "platform": "Windows native Qt",
+  "settings": "Isolated QSettings and temporary profile",
+  "data": {
+    "origin": "Synthetic arrays injected into the audit session; file import not exercised",
+    "frames": 3,
+    "width": 720,
+    "height": 480,
+    "dtype": "uint8",
+    "compute_device": "CPU"
+  },
+  "observations": {
+    "main_fusion": "DCT fuse called with kernel_size=7; result displayed",
+    "compare_results": ["openfocus_b", "dct"],
+    "compare_errors": {},
+    "compare_worker_active_at_observation": false,
+    "depth_ready": true,
+    "depth_method": "dct",
+    "depth_status": "完成——预览已更新。可在下方保存伪彩图或 16-bit 原始图。",
+    "update_scope": "Presentation only, using vNEXT (audit); no check/download/install requested"
+  },
+  "not_exercised": [
+    "File or video import",
+    "Retouch strokes and publication",
+    "Batch task execution",
+    "Flat-field application",
+    "ROI rendering",
+    "OBJ or image file export",
+    "Actual update, restart or restore",
+    "All languages, high DPI and performance timing",
+    "Permanent automated regression suite"
+  ],
+  "size_unit": "Qt-reported logical widget dimensions; display scaling not inferred",
+  "screens": [
+    {"file": "main_empty_zh.png", "size": [1280, 800], "language": "zh", "theme": "light", "scope": "layout"},
+    {"file": "main_loaded_zh.png", "size": [1280, 800], "language": "zh", "theme": "light", "scope": "DCT result display"},
+    {"file": "labels_zh.png", "size": [920, 658], "language": "zh", "theme": "light", "scope": "layout"},
+    {"file": "scalebar_zh.png", "size": [1030, 495], "language": "zh", "theme": "light", "scope": "layout"},
+    {"file": "compare_ready_zh.png", "size": [1280, 820], "language": "zh", "theme": "light", "scope": "completed comparison"},
+    {"file": "compare_small_zh.png", "size": [960, 640], "language": "zh", "theme": "light", "scope": "completed comparison layout"},
+    {"file": "depth_map_zh.png", "size": [880, 620], "language": "zh", "theme": "light", "scope": "completed depth map"},
+    {"file": "depth_3d_zh.png", "size": [880, 620], "language": "zh", "theme": "light", "scope": "3D display"},
+    {"file": "depth_3d_small_zh.png", "size": [960, 640], "language": "zh", "theme": "light", "scope": "3D display layout"},
+    {"file": "retouch_zh.png", "size": [1280, 820], "language": "zh", "theme": "light", "scope": "layout, no stroke or apply"},
+    {"file": "retouch_small_zh.png", "size": [960, 640], "language": "zh", "theme": "light", "scope": "layout, no stroke or apply"},
+    {"file": "batch_zh.png", "size": [800, 800], "language": "zh", "theme": "light", "scope": "empty configuration"},
+    {"file": "dust_zh.png", "size": [760, 562], "language": "zh", "theme": "light", "scope": "no white field selected"},
+    {"file": "advanced_zh.png", "size": [640, 620], "language": "zh", "theme": "light", "scope": "layout, cancelled"},
+    {"file": "roi_zh.png", "size": [400, 280], "language": "zh", "theme": "light", "scope": "paste option layout, no render"},
+    {"file": "update_ready_presentational_zh.png", "size": [1280, 800], "language": "zh", "theme": "light", "scope": "banner presentation only"},
+    {"file": "labels_dark_zh.png", "size": [920, 658], "language": "zh", "theme": "dark", "scope": "layout"},
+    {"file": "compare_small_dark_de.png", "size": [960, 640], "language": "de", "theme": "dark", "scope": "layout; completion not asserted"}
+  ]
+}
