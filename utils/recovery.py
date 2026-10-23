@@ -62,9 +62,19 @@ def mark_clean_exit() -> None:
 
 def write_snapshot(window) -> bool:
     """Persist the current session to the recovery slot. Best-effort:
-    never raises into callers (render/load handlers)."""
+    never raises into callers (render/load handlers).
+
+    An empty workspace is a real state: it removes any older snapshot so a
+    restart cannot resurrect a session the user had already cleared, and
+    reports success because there is nothing to save.
+    """
     if not getattr(window, "raw_images", None):
-        return False
+        try:
+            if os.path.isfile(session_path()):
+                os.remove(session_path())
+            return True
+        except OSError:
+            return False
     try:
         from utils.project_file import save_project
         os.makedirs(recovery_dir(), exist_ok=True)
@@ -98,7 +108,10 @@ def mark_pending_restore(window) -> bool:
     reopen the exact project rather than a reconstructed snapshot.
     """
     try:
-        write_snapshot(window)
+        if not write_snapshot(window):
+            # A snapshot that did not reach disk must not be promised as a
+            # restore target: the relaunched build would reopen stale state.
+            return False
         os.makedirs(recovery_dir(), exist_ok=True)
         project = str(getattr(window, "project_path", "") or "")
         with open(pending_restore_path(), "w", encoding="utf-8") as f:

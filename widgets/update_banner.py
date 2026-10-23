@@ -52,7 +52,7 @@ class UpdateBanner(QWidget):
         # theme, where the glyph colour did not carry over).
         self.btn_dismiss = QPushButton("\u2715", self)
         self.btn_dismiss.setFixedSize(22, 22)
-        self.btn_dismiss.setToolTip(trans.t("btn_later"))
+        self.btn_dismiss.setToolTip(trans.t("update_hide_version"))
         self.btn_dismiss.setFlat(True)
         self.btn_dismiss.setObjectName("updateBannerClose")
         self.btn_dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -138,7 +138,7 @@ class UpdateBanner(QWidget):
 
     def retranslate(self) -> None:
         """Re-apply every string after a language switch."""
-        self.btn_dismiss.setToolTip(trans.t("btn_later"))
+        self.btn_dismiss.setToolTip(trans.t("update_hide_version"))
         if self._tag:
             self.set_ready(self._ready)
 

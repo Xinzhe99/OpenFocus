@@ -142,12 +142,28 @@ class UpdateManager(QObject):
         self.percent = max(0, min(100, int(percent)))
         self.state_changed.emit(self.state, self.tag, self.percent)
 
+    @staticmethod
+    def _is_newer_than_current(tag: str) -> bool:
+        """A staged build must actually be an upgrade.
+
+        Without this a build staged before the user installed a newer release
+        was still offered as "restart to update" — a downgrade.
+        """
+        from constants import APP_VERSION
+        from utils.updater import is_newer
+        try:
+            return is_newer(tag, APP_VERSION)
+        except Exception:
+            return False
+
     def staged_tag(self) -> str:
-        """Tag of a complete, verified, staged build — '' when there is none."""
+        """Tag of a complete, verified, NEWER staged build — '' otherwise."""
         if not self.can_self_update():
             return ""
-        if self.state == STATE_READY and self.tag and self_update.staged_ready(
-                self_update.sanitize_tag(self.tag)):
+        if (self.state == STATE_READY and self.tag
+                and self._is_newer_than_current(self.tag)
+                and self_update.staged_ready(
+                    self_update.sanitize_tag(self.tag))):
             return self.tag
         return ""
 
@@ -236,7 +252,8 @@ class UpdateManager(QObject):
             tag = str(get_settings().value(LATEST_TAG_KEY, "") or "")
         except Exception:
             return False
-        if tag and self_update.staged_ready(self_update.sanitize_tag(tag)):
+        if (tag and self._is_newer_than_current(tag)
+                and self_update.staged_ready(self_update.sanitize_tag(tag))):
             self._set_state(STATE_READY, tag, 100)
             return True
         return False
@@ -487,17 +504,41 @@ class UpdateManager(QObject):
         self._staged_zip = zip_path
         self._set_state(STATE_READY, self.tag, 100)
         if self._apply_when_ready:
+            # The user asked for "download and restart", but the restart must
+            # still go through the same protection as every other entry. If
+            # they choose to keep working, the build stays staged and READY.
+            self._apply_when_ready = False
             self.apply_and_restart()
 
     # ------------------------------------------------------------ apply/quit
+
+    def prepare_restart(self) -> bool:
+        """Run every work-protection step before any hand-off.
+
+        Called by the window for EVERY restart entry (banner, status bar, help
+        menu, and the auto-apply path after a download). It returns False when
+        the user chose to keep working, or when the session snapshot could not
+        be written — in both cases the staged build stays available and the
+        swap script must not start.
+        """
+        window = self._window
+        prepare = getattr(window, "prepare_for_update_restart", None)
+        if prepare is None:
+            return True
+        return bool(prepare())
 
     def apply_and_restart(self) -> bool:
         """Swap in the staged build and restart; instant and offline."""
         self._apply_when_ready = False
         if not self.can_self_update():
             return False
+        if not self.prepare_restart():
+            return False
         safe_tag = self_update.sanitize_tag(self.tag)
-        if not self.tag or not self_update.staged_ready(safe_tag):
+        if not self.tag or not self._is_newer_than_current(self.tag):
+            self._fail("msg_update_not_newer")
+            return False
+        if not self_update.staged_ready(safe_tag):
             if self.zip_url:
                 return self.download(self.tag, self.zip_url, manual=True)
             self._fail("msg_update_stage_failed")
@@ -558,11 +599,18 @@ class UpdateManager(QObject):
 
         # The swap script can only replace unlocked binaries: close() stops
         # the workers, and the restart must not be blocked by the
-        # "work in flight" confirmation. The session snapshot + marker are
-        # written first so the relaunched build reopens the same project.
+        # "work in flight" confirmation. The caller has already protected the
+        # work (prepare_restart) and written the snapshot; the marker here
+        # records that this exit is a restart, not a normal quit.
         from utils import recovery
-        recovery.mark_pending_restore(self._window)
-        self._window._restart_for_update = True
+        if not recovery.mark_pending_restore(self._window):
+            self._fail("msg_update_snapshot_failed")
+            return False
+        # Duck-typed hosts (tests) and the real window both get the flag.
+        try:
+            self._window._restart_for_update = True
+        except AttributeError:
+            pass
         self._set_state(STATE_READY, tag, 100)
         self.restart_requested.emit()
         return True
