@@ -11,10 +11,14 @@ from locales import trans
 class ROIRenderOptionsDialog(QDialog):
     """Dialog to ask user how to handle ROI fusion result."""
 
-    def __init__(self, num_frames: int, parent=None):
+    def __init__(self, num_frames: int, parent=None, *,
+                 frame_names=None, roi_size=None, output_size=None):
         super().__init__(parent)
         self.setWindowTitle(trans.t("dialog_roi_title"))
-        self.resize(400, 250)
+        self.resize(460, 320)
+        self._frame_names = list(frame_names or [])
+        self._roi_size = tuple(roi_size) if roi_size else None
+        self._output_size = tuple(output_size) if output_size else None
 
         self.mode = "crop" # 'crop' or 'paste'
         self.base_frame_index = 0
@@ -47,16 +51,27 @@ class ROIRenderOptionsDialog(QDialog):
         
         self.combo_frames = QComboBox()
         for i in range(num_frames):
-            self.combo_frames.addItem(f"Frame {i+1}")
-        self.combo_frames.setCurrentIndex(0) # Default to Frame 1
-        
+            # Name the frame, not just its position: "Frame 3" was ambiguous
+            # once frames had been excluded or reordered.
+            name = (self._frame_names[i]
+                    if i < len(self._frame_names) else "")
+            label = (trans.t("dialog_roi_frame_named").format(
+                i=i + 1, name=name) if name
+                else trans.t("dialog_roi_frame_plain").format(i=i + 1))
+            self.combo_frames.addItem(label, i)
+        self.combo_frames.setCurrentIndex(0)
+
         hbox.addWidget(self.combo_frames)
         self.frame_container.setLayout(hbox)
         self.frame_container.setEnabled(False) # Default disabled
         layout.addWidget(self.frame_container)
 
-        # Logic
-        self.rb_crop.toggled.connect(lambda c: self.frame_container.setEnabled(not c))
+        # State what the two choices actually produce.
+        self.lbl_output = QLabel("")
+        self.lbl_output.setWordWrap(True)
+        self.lbl_output.setObjectName("mutedLabel")
+        layout.addWidget(self.lbl_output)
+        layout.addStretch(1)
 
         # Buttons
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -76,10 +91,30 @@ class ROIRenderOptionsDialog(QDialog):
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
+        # Logic (after every widget exists)
+        self.rb_crop.toggled.connect(self._sync_choice)
+        self.rb_paste.toggled.connect(self._sync_choice)
+        self.combo_frames.currentIndexChanged.connect(
+            lambda _i: self._sync_choice())
+        self._sync_choice()
+
+    def _sync_choice(self, *_args):
+        crop = self.rb_crop.isChecked()
+        self.frame_container.setEnabled(not crop)
+        size = self._roi_size if crop else self._output_size
+        text = trans.t("dialog_roi_size_crop") if crop else trans.t(
+            "dialog_roi_size_paste")
+        if size:
+            text += " " + trans.t("dialog_roi_size_px").format(
+                w=size[0], h=size[1])
+        self.lbl_output.setText(text)
+
     def accept(self):
         if self.rb_paste.isChecked():
             self.mode = "paste"
-            self.base_frame_index = self.combo_frames.currentIndex()
+            data = self.combo_frames.currentData()
+            self.base_frame_index = (int(data) if data is not None
+                                     else self.combo_frames.currentIndex())
         else:
             self.mode = "crop"
         super().accept()
