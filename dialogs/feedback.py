@@ -118,11 +118,15 @@ class FeedbackDialog(QDialog):
         ])
 
     def _copy_log(self):
+        """Copy the same report the issue/mail body would carry.
+
+        The button said "copy log" and copied only the log; the environment
+        facts were silently dropped. A status line is enough feedback — the
+        modal box demanded an extra click for a completed copy.
+        """
         from PyQt6.QtWidgets import QApplication
-        QApplication.clipboard().setText(
-            logging_setup.session_log_excerpt(200_000))
-        QMessageBox.information(self, trans.t("feedback_title"),
-                                trans.t("feedback_copied"))
+        QApplication.clipboard().setText(self._compose())
+        self.log_hint.setText(trans.t("feedback_copied"))
 
     # --------------------------------------------------------------- routes
     def _open_issues(self):
@@ -141,7 +145,13 @@ class FeedbackDialog(QDialog):
             "Zip (*.zip)")
         if not dest:
             return
-        path = logging_setup.export_feedback_package(dest)
+        try:
+            path = logging_setup.export_feedback_package(dest)
+        except Exception as exc:  # pragma: no cover - platform dependent
+            QMessageBox.warning(
+                self, trans.t("feedback_title"),
+                trans.t("feedback_export_failed").format(error=str(exc)))
+            return
         QMessageBox.information(
             self, trans.t("feedback_title"),
             trans.t("feedback_exported").format(path=str(path)))

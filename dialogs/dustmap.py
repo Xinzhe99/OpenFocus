@@ -172,9 +172,29 @@ class DustMapDialog(QDialog):
         self.btn_browse.setEnabled(from_file)
         self.lbl_path.setEnabled(from_file)
         self.combo_stack.setEnabled(not from_file)
+        # A different white source invalidates the computed gain field: the
+        # Apply button used to stay enabled with a field from the old source.
+        self._invalidate_gain()
+
+    def _invalidate_gain(self):
+        self._gain = None
+        self.btn_apply.setEnabled(False)
+        self.lbl_gain.setText(trans.t("dust_no_preview"))
+        self.lbl_before.setText(trans.t("dust_before"))
+        self.lbl_after.setText(trans.t("dust_after"))
+        self.lbl_status.setText("")
 
     def _sigma_changed(self, _value=None):
-        """Recompute the field for the new scale (only if a white field exists)."""
+        """Recompute the field for the new scale.
+
+        For a stack frame the cached `_white` is not the selected source, so
+        the field must be rebuilt from the current selection.
+        """
+        if self.rb_stack.isChecked():
+            white = self._current_white()
+            if white is not None:
+                self._compute(white)
+            return
         if self._white is not None:
             self._compute()
 
@@ -257,6 +277,9 @@ class DustMapDialog(QDialog):
     def _fail(self, message):
         self._gain = None
         self.btn_apply.setEnabled(False)
+        self.lbl_gain.setText(trans.t("dust_no_preview"))
+        self.lbl_before.setText(trans.t("dust_before"))
+        self.lbl_after.setText(trans.t("dust_after"))
         self.lbl_status.setStyleSheet("color: #c66;")
         self.lbl_status.setText(message)
 
@@ -266,7 +289,11 @@ class DustMapDialog(QDialog):
         remove_idx = None
         if self.rb_stack.isChecked() and self.chk_remove.isChecked():
             remove_idx = self.combo_stack.currentData()
-        self.window_main.apply_flat_field_to_stack(self._gain)
+        applied = self.window_main.apply_flat_field_to_stack(self._gain)
+        if applied is False:
+            # The stack is unchanged: keep the dialog open so the user can
+            # fix the white field instead of losing it to a silent close.
+            return
         if remove_idx is not None:
             # 删除复用 source_manager 的列表项删除路径
             lw = getattr(self.window_main, "file_list", None)
