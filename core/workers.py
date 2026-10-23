@@ -535,6 +535,7 @@ class BatchWorker(QThread):
         # the output list so a finished batch is inspectable like a manual
         # render instead of vanishing into a message box.
         self.written_paths = []
+        self.task_results = []
         self.is_cancelled = False
         self.import_mode = import_mode
         self.split_method = split_method
@@ -612,24 +613,53 @@ class BatchWorker(QThread):
 
                 for i, stack_images_with_times in enumerate(stacks):
                     if self.is_cancelled:
+                        for j in range(i, len(stacks)):
+                            self.task_results.append({
+                                "name": f"{source_folder_name}_{j + 1:03d}",
+                                "status": "not_started"})
                         break
 
                     stack_name = f"{source_folder_name}_{i + 1:03d}"
-                    self.progress_updated.emit(i, total_count, f"Processing {stack_name} ({i + 1}/{total_count})")
+                    self.progress_updated.emit(
+                        i, total_count,
+                        trans_batch_progress(i + 1, total_count, stack_name))
 
                     try:
                         self._process_single_stack(stack_images_with_times, output_dir, stack_name, i)
                         success_count += 1
+                        self.task_results.append(
+                            {"name": stack_name, "status": "success"})
+                    except RegistrationCancelled:
+                        self.task_results.append(
+                            {"name": stack_name, "status": "cancelled"})
+                        for j in range(i + 1, len(stacks)):
+                            self.task_results.append({
+                                "name": f"{source_folder_name}_{j + 1:03d}",
+                                "status": "not_started"})
+                        break
+                    except PartialWriteError as e:
+                        failed_stacks.append(f"{stack_name}: {str(e)}")
+                        self.task_results.append({
+                            "name": stack_name, "status": "partial",
+                            "error": str(e)})
+                        print(f"Partially written {stack_name}: {str(e)}")
                     except Exception as e:
                         failed_stacks.append(f"{stack_name}: {str(e)}")
+                        self.task_results.append({
+                            "name": stack_name, "status": "failed",
+                            "error": str(e)})
                         print(f"Error processing {stack_name}: {str(e)}")
 
+                self.progress_updated.emit(total_count, total_count, "")
                 results = {
                     'success': success_count,
                     'total': total_count,
                     'failed': failed_stacks,
                     'cancelled': self.is_cancelled,
                     'outputs': list(self.written_paths),
+                    'tasks': list(self.task_results),
+                    'counts': _count_task_states(self.task_results,
+                                                 total_count),
                 }
                 self.finished.emit(results)
             else:
@@ -639,24 +669,53 @@ class BatchWorker(QThread):
 
                 for i, folder_path in enumerate(self.folder_paths):
                     if self.is_cancelled:
+                        for j in range(i, len(self.folder_paths)):
+                            self.task_results.append({
+                                "name": os.path.basename(self.folder_paths[j]),
+                                "status": "not_started"})
                         break
 
                     folder_name = os.path.basename(folder_path)
-                    self.progress_updated.emit(i, total_count, f"Processing folder {i + 1}/{total_count}: {folder_name}")
+                    self.progress_updated.emit(
+                        i, total_count,
+                        trans_batch_progress(i + 1, total_count, folder_name))
 
                     try:
                         self.process_single_folder(folder_path)
                         success_count += 1
+                        self.task_results.append(
+                            {"name": folder_name, "status": "success"})
+                    except RegistrationCancelled:
+                        self.task_results.append(
+                            {"name": folder_name, "status": "cancelled"})
+                        for j in range(i + 1, len(self.folder_paths)):
+                            self.task_results.append({
+                                "name": os.path.basename(self.folder_paths[j]),
+                                "status": "not_started"})
+                        break
+                    except PartialWriteError as e:
+                        failed_folders.append(f"{folder_name}: {str(e)}")
+                        self.task_results.append({
+                            "name": folder_name, "status": "partial",
+                            "error": str(e)})
+                        print(f"Partially written {folder_name}: {str(e)}")
                     except Exception as e:
                         failed_folders.append(f"{folder_name}: {str(e)}")
+                        self.task_results.append({
+                            "name": folder_name, "status": "failed",
+                            "error": str(e)})
                         print(f"Error processing {folder_name}: {str(e)}")
 
+                self.progress_updated.emit(total_count, total_count, "")
                 results = {
                     'success': success_count,
                     'total': total_count,
                     'failed': failed_folders,
                     'cancelled': self.is_cancelled,
                     'outputs': list(self.written_paths),
+                    'tasks': list(self.task_results),
+                    'counts': _count_task_states(self.task_results,
+                                                 total_count),
                 }
                 self.finished.emit(results)
 
@@ -707,8 +766,14 @@ class BatchWorker(QThread):
         return {"px_um": px_um, "position": cfg.get("position", "bottom-right"),
                 "color": cfg.get("color", "auto")}
 
-    def _process_single_stack(self, stack_images_with_times, output_dir, stack_name, stack_index):
-        """处理单个图像栈（来自单文件夹分割）"""
+    def _process_single_stack(self, stack_images_with_times, output_dir,
+                              stack_name, stack_index):
+        """Process one stack produced by splitting a folder.
+
+        Alignment, optional fusion and the exports are separate steps: the
+        align-only mode used to be nested inside the fusion branch, so it
+        wrote no files at all while still being counted as a success.
+        """
         images = [item[1] for item in stack_images_with_times]
         original_paths = [item[0] for item in stack_images_with_times]
 
@@ -721,7 +786,7 @@ class BatchWorker(QThread):
             align_of = "openfocus" in reg_methods
 
             if align_of:
-                # OpenFocus 快速对齐先跑（全局平移，毫秒级）
+                # OpenFocus fast alignment first (bounded similarity).
                 from core.registration import ImageRegistration
                 fast = ImageRegistration(
                     method="openfocus",
@@ -755,11 +820,13 @@ class BatchWorker(QThread):
         output_format = self.processing_settings.get('format', 'jpg')
         fusion_method = self.processing_settings.get('fusion_method')
         if fusion_method == "none":
-            # 仅对齐批处理：跳过融合，输出=对齐后的帧（save_aligned 由
-            # 批处理对话框强制开启）
             fusion_method = None
+
+        result = None
+        aligned_for_export = None
         if fusion_method:
-            fusion_params = self.processing_settings.get('fusion_params', {}).copy()
+            fusion_params = dict(
+                self.processing_settings.get('fusion_params', {}) or {})
             if fusion_method == "stackmffv3" and "model_path" not in fusion_params:
                 fusion_params["model_path"] = resource_path("weights", "stackmff_v3_final.pth")
 
@@ -771,18 +838,13 @@ class BatchWorker(QThread):
             tile_kwargs.setdefault('ai_batch_size', self.ai_batch_size)
             tile_kwargs.setdefault('ai_mode', self.ai_mode)
 
-            # 16-bit inputs are normalized to 0-1 float for fusion and
-            # quantized back afterwards; aligned exports keep the original
-            # bit depth.
             from utils.image_utils import normalize_fuse_input, quantize_fuse_output
             save_aligned = bool(self.processing_settings.get('save_aligned', False))
             aligned_for_export = aligned_images if save_aligned else None
             fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
             if aligned_for_export is None:
-                del aligned_images  # 融合期间原 uint16 栈纯属悬挂占用
+                del aligned_images  # fusion does not need the originals
 
-            # The dialog writes these into fusion_params (they are per-method
-            # there); older callers put them at the top level. Read both.
             fusion = MultiFocusFusion(
                 algorithm=fusion_method, use_gpu=self.use_gpu,
                 base_frame=fusion_params.pop(
@@ -795,98 +857,94 @@ class BatchWorker(QThread):
                     'exposure_match', self.exposure_match),
                 **tile_kwargs)
 
-            if fusion_method == "guided_filter":
-                kernel_size = fusion_params.get('kernel_size', 31)
-                if kernel_size % 2 == 0:
-                    kernel_size = max(1, kernel_size - 1)
-                result = fusion.fuse(
-                    input_source=fusion_input,
-                    img_resize=None,
-                    kernel_size=kernel_size,
-                    thread_count=self.thread_count,
-                    should_cancel=lambda: self.is_cancelled,
-                )
-            elif fusion_method == "dct":
-                kernel_size = fusion_params.get('kernel_size', 7)
-                if kernel_size % 2 == 0:
-                    kernel_size = max(1, kernel_size - 1)
-                result = fusion.fuse(
-                    input_source=fusion_input,
-                    img_resize=None,
-                    block_size=8,
-                    kernel_size=kernel_size,
-                    thread_count=self.thread_count,
-                    should_cancel=lambda: self.is_cancelled,
-                )
-            elif fusion_method == "dtcwt":
-                result = fusion.fuse(
-                    input_source=fusion_input,
-                    img_resize=None,
-                    thread_count=self.thread_count,
-                    should_cancel=lambda: self.is_cancelled,
-                )
-            elif fusion_method == "gfgfgf":
-                kernel_size = fusion_params.get('kernel_size', 7)
-                if kernel_size % 2 == 0:
-                    kernel_size = max(1, kernel_size - 1)
-                result = fusion.fuse(
-                    input_source=fusion_input,
-                    img_resize=None,
-                    kernel_size=kernel_size,
-                    thread_count=self.thread_count,
-                    should_cancel=lambda: self.is_cancelled,
-                )
-            elif fusion_method in ("openfocus_a", "openfocus_b", "openfocus_c"):
-                kernel_size = fusion_params.get('kernel_size', 11)
-                if kernel_size % 2 == 0:
-                    kernel_size = max(1, kernel_size - 1)
-                result = fusion.fuse(
-                    input_source=fusion_input,
-                    img_resize=None,
-                    kernel_size=kernel_size,
-                    thread_count=self.thread_count,
-                    depth_smoothing=fusion_params.get('depth_smoothing'),
-                    blend_smoothing=fusion_params.get('blend_smoothing'),
-                    should_cancel=lambda: self.is_cancelled,
-                )
-            elif fusion_method == "stackmffv3":
-                model_path = fusion_params.get('model_path')
-                if not model_path:
-                    model_path = resource_path("weights", "stackmff_v3_final.pth")
-                result = fusion.fuse(
-                    input_source=fusion_input,
-                    img_resize=None,
-                    model_path=model_path,
-                    mode=fusion_params.get('ai_mode', self.ai_mode),
-                    thread_count=self.thread_count,
-                    should_cancel=lambda: self.is_cancelled,
-                )
-            else:
-                result = None
-
+            result = self._fuse_one_stack(
+                fusion, fusion_method, fusion_input, fusion_params,
+                self.ai_mode)
             result = quantize_fuse_output(result, is_16bit)
-            stack_cfg = self._stack_scale_cfg()
+        else:
+            save_aligned = True
 
-            saved = []
-            if result is not None:
-                output_path = os.path.join(output_dir, f"{stack_name}.{output_format}")
-                saved.append(self._save_image(output_path, result, output_format,
-                                              scale_cfg=stack_cfg))
+        stack_cfg = self._stack_scale_cfg()
+        saved = []
+        if result is not None:
+            output_path = os.path.join(
+                output_dir, f"{stack_name}.{output_format}")
+            saved.append(self._save_image(
+                output_path, result, output_format, scale_cfg=stack_cfg))
 
-            if self.processing_settings.get('save_aligned'):
-                for idx, img in enumerate(aligned_for_export):
-                    aligned_filename = f"{stack_name}_aligned_{idx + 1:03d}.{output_format}"
-                    aligned_path = os.path.join(output_dir, aligned_filename)
-                    saved.append(self._save_image(aligned_path, img, output_format,
-                                                  scale_cfg=stack_cfg))
+        if save_aligned and aligned_for_export is not None:
+            for idx, img in enumerate(aligned_for_export):
+                aligned_filename = (
+                    f"{stack_name}_aligned_{idx + 1:03d}.{output_format}")
+                aligned_path = os.path.join(output_dir, aligned_filename)
+                saved.append(self._save_image(
+                    aligned_path, img, output_format, scale_cfg=stack_cfg))
 
-            # A stack whose writes all failed (or that produced nothing at all)
-            # is a failure, not a success.
-            if not any(saved):
-                raise Exception(
-                    f"nothing was written for '{stack_name}'"
-                    + ("" if result is not None else " (no fusion method selected)"))
-    
+        expected = (1 if result is not None else 0) + (
+            len(aligned_for_export) if save_aligned and aligned_for_export
+            is not None else 0)
+        written = sum(1 for ok in saved if ok)
+        if written == 0:
+            raise Exception(
+                f"nothing was written for '{stack_name}'"
+                + ("" if result is not None
+                   else " (no fusion method selected)"))
+        if expected and written < expected:
+            raise PartialWriteError(
+                f"{written}/{expected} files were written for '{stack_name}'")
+
+    def _fuse_one_stack(self, fusion, fusion_method, fusion_input,
+                        fusion_params, ai_mode):
+        """Dispatch one prepared stack to the fusion back-end.
+
+        Every method keeps its own parameters here: a shared "kernel only"
+        call silently dropped DTCWT levels, AI mode and OpenFocus smoothing
+        from split-folder batches.
+        """
+        cancel = {"should_cancel": lambda: self.is_cancelled}
+        threads = self.thread_count
+
+        if fusion_method == "guided_filter":
+            return fusion.fuse(
+                input_source=fusion_input, img_resize=None,
+                kernel_size=normalize_kernel_size(
+                    fusion_params.get('kernel_size', 31)),
+                thread_count=threads, **cancel)
+        if fusion_method == "dct":
+            return fusion.fuse(
+                input_source=fusion_input, img_resize=None, block_size=8,
+                kernel_size=normalize_kernel_size(
+                    fusion_params.get('kernel_size', 7)),
+                thread_count=threads, **cancel)
+        if fusion_method == "dtcwt":
+            return fusion.fuse(
+                input_source=fusion_input, img_resize=None,
+                N=int(fusion_params.get('N', 4) or 4),
+                thread_count=threads, **cancel)
+        if fusion_method == "gfgfgf":
+            return fusion.fuse(
+                input_source=fusion_input, img_resize=None,
+                kernel_size=normalize_kernel_size(
+                    fusion_params.get('kernel_size', 7)),
+                thread_count=threads, **cancel)
+        if fusion_method in ("openfocus_a", "openfocus_b", "openfocus_c"):
+            return fusion.fuse(
+                input_source=fusion_input, img_resize=None,
+                kernel_size=normalize_kernel_size(
+                    fusion_params.get('kernel_size', 11)),
+                depth_smoothing=fusion_params.get('depth_smoothing'),
+                blend_smoothing=fusion_params.get('blend_smoothing'),
+                thread_count=threads, **cancel)
+        if fusion_method == "stackmffv3":
+            model_path = (fusion_params.get('model_path')
+                          or resource_path("weights", "stackmff_v3_final.pth"))
+            return fusion.fuse(
+                input_source=fusion_input, img_resize=None,
+                model_path=model_path,
+                mode=fusion_params.get('ai_mode', ai_mode),
+                thread_count=threads, **cancel)
+        return None
+
     def process_single_folder(self, folder_path):
         """处理单个文件夹"""
         # 1. 加载图像
@@ -937,8 +995,10 @@ class BatchWorker(QThread):
                 aligned_images = registration.process(
                     aligned_images, output_path=None, thread_count=self.thread_count,
                     should_cancel=lambda: self.is_cancelled)
-            else:
-                # 如果没有选择任何配准方法，直接使用原始图像
+            elif "openfocus" not in reg_methods:
+                # Nothing was selected at all: keep the originals. When the
+                # OpenFocus pass DID run, its result must be kept — this branch
+                # used to replace it with the unaligned frames.
                 aligned_images = images.copy()
         
         # 3. 图像融合
@@ -947,9 +1007,12 @@ class BatchWorker(QThread):
             # 仅对齐批处理：跳过融合（输出=对齐后的帧）
             fusion_method = None
         if fusion_method:
-            fusion_params = self.processing_settings.get('fusion_params', {})
+            # Copy unconditionally: the pops below used to mutate the shared
+            # settings dict, so the second task saw a different exposure/tile
+            # configuration than the first.
+            fusion_params = dict(
+                self.processing_settings.get('fusion_params', {}) or {})
             if fusion_method == "stackmffv3" and "model_path" not in fusion_params:
-                fusion_params = dict(fusion_params)
                 fusion_params["model_path"] = resource_path("weights", "stackmff_v3_final.pth")
             
             # 创建相应算法的融合器实例
@@ -992,25 +1055,31 @@ class BatchWorker(QThread):
             fusion_result = None
         
         # 4. 保存结果
-        wrote_something = False
+        expected = 0
+        written = 0
         if fusion_result is not None:
-            wrote_something = bool(self.save_fusion_result(folder_path, fusion_result))
+            expected += 1
+            if self.save_fusion_result(folder_path, fusion_result):
+                written += 1
 
         # 5. 如果需要，保存配准后的图像栈
         save_aligned = self.processing_settings.get('save_aligned', False)
         if save_aligned:
-            wrote_something = bool(
-                self.save_registered_stack(folder_path, aligned_images, filenames)
-            ) or wrote_something
+            expected += len(aligned_images)
+            written += self.save_registered_stack(
+                folder_path, aligned_images, filenames)
 
         # A folder that produced no file is a failure: it used to be counted as
         # a success and reported as "processed", while the output folder stayed
         # empty (no fusion method selected, or every write failed).
-        if not wrote_something:
+        if written == 0:
             raise Exception(
                 "nothing was written"
                 + ("" if fusion_result is not None
                    else " (no fusion method selected)"))
+        if expected and written < expected:
+            raise PartialWriteError(
+                f"{written}/{expected} files were written")
     
     def save_fusion_result(self, folder_path, fusion_result):
         """保存融合结果"""
@@ -1047,10 +1116,13 @@ class BatchWorker(QThread):
             candidate = f"{stem}_{n}{ext}"
             if not os.path.exists(candidate):
                 return candidate
-        return path
+        # Never return the occupied original: that silently overwrote an
+        # existing result after the numbered names ran out.
+        import uuid
+        return f"{stem}_{uuid.uuid4().hex[:8]}{ext}"
 
-    def save_registered_stack(self, folder_path, images, filenames):
-        """保存配准后的图像栈"""
+    def save_registered_stack(self, folder_path, images, filenames) -> int:
+        """Save the aligned stack; returns how many files were written."""
         # 确定输出路径
         if self.output_type == "custom":
             output_dir = self.output_path
@@ -1065,7 +1137,7 @@ class BatchWorker(QThread):
         extension = self.processing_settings.get('format', 'png')
         source_paths = {os.path.abspath(os.path.join(folder_path, name))
                         for name in (filenames or [])}
-        saved = False
+        saved = 0
 
         for i, image in enumerate(images):
             if i < len(filenames):
@@ -1087,9 +1159,9 @@ class BatchWorker(QThread):
                 output_path = self._unique_output_path(
                     os.path.join(output_dir,
                                  f"{os.path.splitext(filename)[0]}_registered.{extension}"))
-            self._save_image(output_path, image, extension,
-                             scale_cfg=self._stack_scale_cfg())
-            saved = True
+            if self._save_image(output_path, image, extension,
+                                scale_cfg=self._stack_scale_cfg()):
+                saved += 1
         return saved
 
     def _get_output_path_for_single_folder(self, source_folder_path):
@@ -1171,3 +1243,28 @@ class GifSaverWorker(QThread):
             self.finished_signal.emit(False, str(e))
 
 
+class PartialWriteError(Exception):
+    """Some, but not all, required artifacts of one task were written."""
+
+
+def trans_batch_progress(done: int, total: int, name: str) -> str:
+    """Localized progress text; the UI never parses this string."""
+    from locales import trans
+    if not name:
+        return ""
+    return trans.t("batch_progress_task").format(
+        i=done, n=total, name=name)
+
+
+def _count_task_states(tasks, total: int) -> dict:
+    """Success/partial/failed/cancelled/not-started counts for one batch."""
+    counts = {"success": 0, "partial": 0, "failed": 0,
+              "cancelled": 0, "not_started": 0}
+    for task in tasks:
+        status = task.get("status", "failed")
+        if status in counts:
+            counts[status] += 1
+    accounted = sum(counts.values())
+    if accounted < total:
+        counts["not_started"] += total - accounted
+    return counts
