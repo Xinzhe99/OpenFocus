@@ -118,6 +118,12 @@ class RenderContext:
     roi_mode: Optional[str] = None
     parent_output_id: Optional[str] = None
     created_at: float = field(default_factory=time.time)
+    pixel_size_um: Optional[float] = None
+    source_px_um: Optional[float] = None
+    source_scale_factor: float = 1.0
+    source_indices: Tuple[int, ...] = ()
+    source_revision: int = 0
+    parameters: dict = field(default_factory=dict)
 
     @property
     def source_count(self) -> int:
@@ -178,6 +184,13 @@ def build_render_context(
     roi_rect=None,
     roi_mode: Optional[str] = None,
     parent_output_id: Optional[str] = None,
+    pixel_size_um: Optional[float] = None,
+    source_px_um: Optional[float] = None,
+    source_scale_factor: float = 1.0,
+    source_indices: Optional[Sequence[int]] = None,
+    source_revision: int = 0,
+    parameters: Optional[dict] = None,
+    frame_ids: Optional[Sequence[str]] = None,
 ) -> Optional[RenderContext]:
     """Build the provenance context for one completed fusion.
 
@@ -226,7 +239,9 @@ def build_render_context(
         if source.size == 0:
             return None
         frames.append(SourceFrame(
-            frame_id=f"{index}:{_frame_name(names, index)}",
+            frame_id=(str(frame_ids[index]) if frame_ids is not None
+                      and index < len(frame_ids)
+                      else f"{index}:{_frame_name(names, index)}"),
             name=_frame_name(names, index),
             image=source,
             offset_x=ox,
@@ -245,4 +260,10 @@ def build_render_context(
         roi_rect=roi,
         roi_mode=roi_mode,
         parent_output_id=parent_output_id,
+        pixel_size_um=pixel_size_um,
+        source_px_um=source_px_um,
+        source_scale_factor=source_scale_factor,
+        source_indices=tuple(source_indices or range(len(frames))),
+        source_revision=source_revision,
+        parameters=dict(parameters or {}),
     )

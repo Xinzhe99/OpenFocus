@@ -1,27 +1,16 @@
-"""User feedback: GitHub issue, e-mail, or a packaged report.
+"""Inspect local logs, copy them, or export a report for manual submission.
 
-Goal: when something breaks, the report must carry enough context to act on —
-app version, OS, memory, and the session log showing what the user actually
-did. Typing all of that by hand never happens, so the dialog assembles it and
-offers three ways to send it:
-
-1. GitHub issue — opens the tracker with title and body prefilled. The user
-   attaches the exported report file.
-2. E-mail — opens the mail client with subject and body prefilled. Direct
-   SMTP from a desktop app would need a hard-coded account password, which is
-   not acceptable in an open-source binary, so the mail client carries the
-   send.
-3. Export package — writes a zip (description + system facts + session log +
-   full logs) the user can attach to either of the above.
+Opening the issue tracker sends no report, logs, or images.
 """
 import os
 import sys
 import webbrowser
 
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QUrl
+from PyQt6.QtGui import QDesktopServices, QFont
 from PyQt6.QtWidgets import (
     QDialog, QFileDialog, QHBoxLayout, QLabel,
-    QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout,
+    QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
 from constants import APP_VERSION
@@ -30,9 +19,8 @@ from utils import logging_setup
 from utils.platform_utils import has_compute_gpu
 
 ISSUES_URL = "https://github.com/Xinzhe99/OpenFocus/issues"
-CONTACT_EMAIL = "xiexinzheyyy@163.com"
 
-MAX_INLINE_LOG = 40_000  # characters embedded in the issue/mail body
+MAX_INLINE_LOG = 40_000
 
 
 def _system_facts() -> str:
@@ -54,7 +42,7 @@ def _system_facts() -> str:
 
 
 class FeedbackDialog(QDialog):
-    """Collect a bug report or suggestion and route it to the developer."""
+    """Review local diagnostics before choosing what to submit."""
 
     def __init__(self, window_main, parent=None):
         super().__init__(parent or window_main)
@@ -87,6 +75,22 @@ class FeedbackDialog(QDialog):
         self.log_hint.setWordWrap(True)
         self.log_hint.setObjectName("mutedLabel")
         root.addWidget(self.log_hint)
+        scope = QLabel(trans.t("feedback_package_scope"))
+        scope.setWordWrap(True)
+        root.addWidget(scope)
+        facts_button = QPushButton(trans.t("action_env_info"))
+        facts_button.setCheckable(True)
+        root.addWidget(facts_button)
+        self.facts_view = QPlainTextEdit()
+        self.facts_view.setReadOnly(True)
+        self.facts_view.setVisible(False)
+        root.addWidget(self.facts_view)
+        facts_button.toggled.connect(self._show_facts)
+        self.open_folder_button = QPushButton(trans.t("action_open_folder"))
+        self.open_folder_button.setVisible(False)
+        self.open_folder_button.clicked.connect(self._open_export_folder)
+        root.addWidget(self.open_folder_button)
+        self._export_path = ""
 
         buttons = QHBoxLayout()
         copy_btn = QPushButton(trans.t("feedback_copy_log"))
@@ -104,29 +108,19 @@ class FeedbackDialog(QDialog):
         buttons.addWidget(close_btn)
         root.addLayout(buttons)
 
-    # -------------------------------------------------------------- content
-    def _compose(self) -> str:
-        """Environment facts + session log, ready to paste into an issue."""
-        return "\n".join([
-            "### Environment",
-            _system_facts(),
-            "",
-            "### Session log (trimmed)",
-            "```",
-            logging_setup.session_log_excerpt(MAX_INLINE_LOG),
-            "```",
-        ])
+    def _show_facts(self, visible):
+        if visible and not self.facts_view.toPlainText():
+            self.facts_view.setPlainText(_system_facts())
+        self.facts_view.setVisible(visible)
 
     def _copy_log(self):
-        """Copy the same report the issue/mail body would carry.
-
-        The button said "copy log" and copied only the log; the environment
-        facts were silently dropped. A status line is enough feedback — the
-        modal box demanded an extra click for a completed copy.
-        """
         from PyQt6.QtWidgets import QApplication
-        QApplication.clipboard().setText(self._compose())
+        QApplication.clipboard().setText(self.log_view.toPlainText())
         self.log_hint.setText(trans.t("feedback_copied"))
+
+    def _open_export_folder(self):
+        if self._export_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(self._export_path)))
 
     # --------------------------------------------------------------- routes
     def _open_issues(self):
@@ -147,11 +141,10 @@ class FeedbackDialog(QDialog):
             return
         try:
             path = logging_setup.export_feedback_package(dest)
-        except Exception as exc:  # pragma: no cover - platform dependent
-            QMessageBox.warning(
-                self, trans.t("feedback_title"),
-                trans.t("feedback_export_failed").format(error=str(exc)))
+        except Exception as exc:
+            self.log_hint.setText(trans.t("feedback_export_failed").format(
+                error=f"{dest}: {exc}"))
             return
-        QMessageBox.information(
-            self, trans.t("feedback_title"),
-            trans.t("feedback_exported").format(path=str(path)))
+        self._export_path = os.path.abspath(str(path))
+        self.log_hint.setText(trans.t("feedback_exported").format(path=self._export_path))
+        self.open_folder_button.setVisible(True)

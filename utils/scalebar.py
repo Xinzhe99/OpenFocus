@@ -239,7 +239,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     No-op (same array) when calibration is missing or implausible. Drawing
     happens in RGB via PIL so the label can use a real font with a stroke.
     """
-    if img is None or not px_um or px_um <= 0:
+    if img is None or not px_um or not math.isfinite(px_um) or px_um <= 0:
         return img
     if position not in _VALID_POSITIONS:
         position = "bottom-right"
@@ -290,9 +290,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
         target_um = min(target_um, available_px * px_um)
     bar_um = nice_bar_um(target_um)
     bar_px = int(round(bar_um / px_um))
-    # A length below ~4 px cannot carry a legible label; step down to the
-    # next shorter nice value while the label would still be honest.
-    while bar_px < 4 and bar_um > 0:
+    while bar_px > available_px and bar_um > 0:
         bar_um = _next_shorter_nice(bar_um)
         bar_px = int(round(bar_um / px_um))
     if bar_px < 4 or bar_px > available_px:
@@ -323,7 +321,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     font, _actual_family, substituted = load_font_for_text(
         font_size, font_family, label, bold=font_bold)
     if _info is not None and substituted:
-        _info["substituted_font"] = substituted
+        _info["substituted_font"] = f"{substituted} → {_actual_family}"
     if font is None:
         label = label.replace("µ", "u")
 
@@ -331,12 +329,13 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil)
     if font is not None:
-        left, _top, right, bottom = font.getbbox(label)
-        text_w, text_h = right - left, bottom - _top
+        left, top, right, bottom = font.getbbox(label)
+        text_w, text_h = right - left, bottom - top
     else:
         (text_w, text_h), _baseline = cv2.getTextSize(
             label, cv2.FONT_HERSHEY_SIMPLEX, font_size / 30.0,
             max(1, font_size // 14))
+        left = top = 0
 
     # Gap between the label and the bar. PIL's getbbox() ignores the stroke
     # it draws around the glyphs, so a gap of a few pixels let the label sit
@@ -345,6 +344,10 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     stroke_w = max(1, font_size // 14)
     gap = max(4, font_size // 3) + stroke_w
     stroke = 1 if thickness <= 3 else 2
+    if text_w + 2 * stroke_w > w or text_h + gap + thickness + 2 * stroke_w > h:
+        if _info is not None:
+            _info["too_small"] = True
+        return img
 
     # Horizontal placement
     if position == "custom":
@@ -392,10 +395,19 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
         bar_y2 = bar_y1 + thickness
         text_y = bar_y2 + gap
 
-    # Clamp defensively: any negative/overflowing coordinate pair reaches PIL
-    # as an invalid rectangle (y1 < y0) and aborts the export.
-    bar_x1, bar_x2 = sorted((min(max(bar_x1, 0), w), min(max(bar_x2, 0), w)))
-    bar_y1, bar_y2 = sorted((min(max(bar_y1, 0), h), min(max(bar_y2, 0), h)))
+    # Translate the complete motif into the image; never shorten its bar.
+    bar_x1 = min(max(bar_x1, stroke), w - bar_px - stroke)
+    bar_x2 = bar_x1 + bar_px
+    lower = min(text_y - stroke_w, bar_y1 - stroke)
+    upper = max(text_y + text_h + stroke_w, bar_y2 + stroke)
+    if upper - lower > h:
+        if _info is not None:
+            _info["too_small"] = True
+        return img
+    shift = max(0, -lower) - max(0, upper - h)
+    text_y += shift
+    bar_y1 += shift
+    bar_y2 += shift
 
     if color == "auto":
         mean = _region_mean(img, bar_x1 - margin, bar_y1 - margin,
@@ -408,15 +420,14 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     # Outline pass then fill keeps the bar visible on same-color regions
     draw.rectangle((bar_x1 - stroke, bar_y1 - stroke,
                     bar_x2 + stroke, bar_y2 + stroke), fill=edge_rgb)
-    draw.rectangle((bar_x1, bar_y1, bar_x2, bar_y2), fill=bar_rgb)
+    draw.rectangle((bar_x1, bar_y1, bar_x2 - 1, bar_y2 - 1), fill=bar_rgb)
 
     # Keep the label inside the canvas: PIL clips silently, but a label cut
     # in half is worse than a nudged one.
-    text_x = max(0, min(int(text_x), max(0, w - text_w - 1)))
-    text_y = max(0, min(int(text_y), max(0, h - text_h - 1)))
+    text_x = max(stroke_w, min(int(text_x), w - text_w - stroke_w))
 
     if font is not None:
-        draw.text((text_x, text_y), label, font=font, fill=bar_rgb,
+        draw.text((text_x - left, text_y - top), label, font=font, fill=bar_rgb,
                   stroke_width=stroke_w, stroke_fill=edge_rgb)
         out = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
         return out
@@ -426,6 +437,53 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
                 cv2.FONT_HERSHEY_SIMPLEX, font_size / 30.0, bar_rgb,
                 stroke_w, cv2.LINE_AA)
     return out
+
+
+_STATE_FIELDS = {
+    "enabled": ("scale_bar_enabled", False),
+    "manual": ("scale_um_per_px_manual", 0.0),
+    "position": ("scale_bar_position", "bottom-right"),
+    "color": ("scale_bar_color", "auto"),
+    "font_family": ("scale_bar_font_family", ""),
+    "font_size": ("scale_bar_font_size", 0.0),
+    "font_bold": ("scale_bar_font_bold", False),
+    "text_align": ("scale_bar_text_align", "auto"),
+    "target": ("scale_bar_target", "all"),
+    "custom_x": ("scale_bar_custom_x", 0.95),
+    "custom_y": ("scale_bar_custom_y", 0.95),
+}
+
+
+def capture_state(window) -> dict:
+    state = {key: getattr(window, attr, default)
+             for key, (attr, default) in _STATE_FIELDS.items()}
+    manager = getattr(window, "output_manager", None)
+    outputs = getattr(window, "output_list", None)
+    if manager is not None and outputs is not None:
+        state["outputs"] = {
+            record.output_id: (dict(record.scale_bar_config)
+                               if record.scale_bar_config else None)
+            for row in range(outputs.count())
+            if (record := manager.record_for_row(row)) is not None
+        }
+    return state
+
+
+def restore_state(window, state) -> None:
+    if not isinstance(state, dict):
+        return
+    for key, (attr, default) in _STATE_FIELDS.items():
+        setattr(window, attr, state.get(key, default))
+    manager = getattr(window, "output_manager", None)
+    outputs = getattr(window, "output_list", None)
+    if manager is not None and outputs is not None:
+        saved_outputs = state.get("outputs", {})
+        for row in range(outputs.count()):
+            record = manager.record_for_row(row)
+            if record is not None and record.output_id in saved_outputs:
+                cfg = saved_outputs[record.output_id]
+                record.scale_bar_config = dict(cfg) if cfg else None
+                record.scale_bar_initialized = True
 
 
 def effective_px_um(window) -> Optional[float]:
@@ -441,29 +499,35 @@ def effective_px_um(window) -> Optional[float]:
     publication is worse than none.
     """
     manual = getattr(window, "scale_um_per_px_manual", 0.0) or 0.0
-    if manual > 0:
+    if math.isfinite(manual) and manual > 0:
         scale = float(getattr(window, "current_scale_factor", 1.0) or 1.0)
-        if scale <= 0:
-            scale = 1.0
+        if not math.isfinite(scale) or scale <= 0:
+            return None
         return manual / scale
     source = getattr(window, "source_px_um", None)
-    if source and source > 0:
+    if source and math.isfinite(source) and source > 0:
         return source
     return None
 
 
-def export_cfg(window, target: str = "output") -> Optional[dict]:
+def export_cfg(window, target: str = "output", *, record=None) -> Optional[dict]:
     """Config passed to burn() at export time; None when disabled/unknown.
 
     `target` honours the dialog's "apply to" choice: a bar scoped to the
     source stack must not appear on exported fused images, and vice versa.
     """
+    if record is not None and getattr(record, "annotations_baked", False):
+        return None
+    if record is not None and getattr(record, "scale_bar_initialized", False):
+        return record.scale_bar_config
     if not getattr(window, "scale_bar_enabled", False):
         return None
     where = getattr(window, "scale_bar_target", "all") or "all"
     if where != "all" and where != target:
         return None
     px_um = effective_px_um(window)
+    if record is not None and record.context is not None:
+        px_um = record.context.pixel_size_um
     if not px_um or px_um <= 0:
         return None
     cfg = {

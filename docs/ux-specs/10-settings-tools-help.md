@@ -105,3 +105,9 @@ P2可加入“恢复本组默认”，与主窗口“重置处理参数”范围
 `dialogs/advanced_settings.py`、`dialogs/dustmap.py`、`dialogs/welcome.py`、`dialogs/help.py`、`dialogs/about.py`、`dialogs/feedback.py`；`main.py`、source/transform managers、loader、MagnifierLabel、sharpness/wipe；CLI只同步受影响共用接口。
 
 优先白场事务/过时增益及设置真实生效，再改反馈与可发现性。验证真实窗口及上述异常路径，文案/位深/取消接现有回归；本轮没有运行视频、CLI或文件发送/导出验收。修订手册实际菜单、设置范围和反馈功能说明。
+
+### 本轮代码修复记录（尚未运行验证）
+
+高级设置重叠范围即时联动，提交前验证数字，取消不提交；自动下载经 setter 及读回，处理配置失败回滚，成功同步 AI 选择。白场预览和全栈准备在工作线程执行，来源/尺度/目标变化使旧增益失效，迟到结果按 revision 和数组身份丢弃。只有主窗口事务提交返回 True 才关闭，移除操作传递明确帧索引并归入同一撤销步骤；尺寸域不一致直接拒绝。
+
+反馈页说明包内日志/环境范围，复制内容与可见日志一致；ZIP 取消无动作，失败就地报告路径，成功可打开目录，临时 ZIP 成功后才替换目标。环境探测离开 GUI 线程并支持复制诊断，欢迎页主题切换刷新提示颜色。新增 `tests/test_settings_tools.py` 覆盖草稿、失败回滚、来源失效、半次准备失败与反馈取消/失败。十二语言和实际窗口仍由主集成验收；本记录不宣称 OT 全部验收完成。

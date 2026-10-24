@@ -29,7 +29,7 @@ OpenFocus est un poste de travail open source pour le recalage et la fusion d’
   <img src="assets/ui.png" alt="Interface d’OpenFocus" width="820">
 </p>
 
-> **v1.67.0** — nouvel espace de retouche lié à la provenance, curseur de source synchronisé, annulation transactionnelle par tuiles, fenêtre de comparaison des méthodes et README en douze langues.
+> **v1.68.0** — l'export par lots suit le mode choisi : l'alignement seul crée un dossier `<pile>_aligned` et l'affiche, la fusion n'affiche que l'image fusionnée, et sans export de l'alignement seule cette image est écrite. Les copies `*_registered*` restées dans le dossier source ne sont plus chargées comme images. Retouche également des libellés, barres d'échelle, comparaison de méthodes, export de profondeur/modèle, mises à jour et retouche d'après l'audit `docs/ux-specs`.
 
 ## Téléchargement et installation
 

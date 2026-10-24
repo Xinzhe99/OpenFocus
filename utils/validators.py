@@ -95,23 +95,29 @@ class LabelRange:
 
     valid: bool
     all_frames: bool
-    frames: tuple = ()
+    intervals: tuple = ()
     error: str = ""
 
+    @property
+    def frames(self):
+        """Enumerate only after the caller has validated the target count."""
+        return tuple(sorted({frame for start, end in self.intervals
+                             for frame in range(start, end + 1)}))
+
     def matches(self, index: int) -> bool:
-        if not self.valid:
+        if not self.valid or index < 0:
             return False
         if self.all_frames:
             return True
-        return (index + 1) in self.frames
+        return any(start <= index + 1 <= end for start, end in self.intervals)
 
 
-def parse_label_range(spec) -> LabelRange:
-    """Parse "All", "3-7", "1,4,9" or "1-3,7"; never guesses on bad input."""
+def parse_label_range(spec, total=None) -> LabelRange:
+    """Parse a one-based range; reject malformed or unavailable frame numbers."""
     text = ("" if spec is None else str(spec)).strip()
     if not text or text.lower() == "all":
         return LabelRange(True, True)
-    frames = set()
+    intervals = []
     for part in text.split(","):
         part = part.strip()
         if not part:
@@ -126,7 +132,9 @@ def parse_label_range(spec) -> LabelRange:
                 return LabelRange(False, False, (), "range_must_be_positive")
             if start > end:
                 start, end = end, start
-            frames.update(range(start, end + 1))
+            if total is not None and end > total:
+                return LabelRange(False, False, (), "range_out_of_bounds")
+            intervals.append((start, end))
         else:
             try:
                 value = int(part)
@@ -134,8 +142,10 @@ def parse_label_range(spec) -> LabelRange:
                 return LabelRange(False, False, (), "range_not_a_number")
             if value < 1:
                 return LabelRange(False, False, (), "range_must_be_positive")
-            frames.add(value)
-    return LabelRange(True, False, tuple(sorted(frames)))
+            if total is not None and value > total:
+                return LabelRange(False, False, (), "range_out_of_bounds")
+            intervals.append((value, value))
+    return LabelRange(True, False, tuple(intervals))
 
 
 class LabelConfig:
@@ -155,6 +165,8 @@ class LabelConfig:
         self.font_family: str = "Arial"
         self.text: str = ""
         self.range: str = "All"
+        self.frame_ids = None
+        self.output_id: str = ""
         self.transparent_bg: bool = True
         self.bg_color: Tuple[int, int, int] = (0, 0, 0)
         self.font_color: Tuple[int, int, int] = (255, 255, 255)
@@ -218,13 +230,19 @@ class LabelAdder:
         # True when the previous draw produced no pixels because the frame
         # was outside the configured range (not an error).
         self.last_out_of_range = False
+        self.last_bounds = None
 
-    def add_label_to_image(self, image: np.ndarray, index: int) -> np.ndarray:
+    def add_label_to_image(self, image: np.ndarray, index: int,
+                           *, validate_only: bool = False) -> np.ndarray:
         self.last_error = ""
         self.last_substituted_font = ""
         self.last_out_of_range = False
+        self.last_bounds = None
         try:
             cfg = self.config
+            if not cfg.enabled:
+                self.last_out_of_range = True
+                return image
             parsed_range = parse_label_range(cfg.range)
             if not parsed_range.valid:
                 self.last_error = parsed_range.error or "range_invalid"
@@ -241,7 +259,7 @@ class LabelAdder:
 
             x_location = int(round(float(cfg.x_location)))
             y_location = int(round(float(cfg.y_location)))
-            font_size = max(6, int(round(float(cfg.font_size))))
+            font_size = max(1, int(round(float(cfg.font_size))))
             bg_color = _bgr_tuple(cfg.bg_color)
             font_color = _bgr_tuple(cfg.font_color)
 
@@ -250,7 +268,8 @@ class LabelAdder:
                 cfg.font_family, bg_color, font_color,
                 transparent_bg=bool(cfg.transparent_bg),
                 on_font_substituted=self._note_substitution,
-                on_error=self._note_error)
+                on_error=self._note_error, on_bounds=self._note_bounds,
+                validate_only=validate_only)
         except Exception as exc:  # pragma: no cover - defensive
             import logging
             logging.getLogger("openfocus").exception(
@@ -258,11 +277,14 @@ class LabelAdder:
             self.last_error = str(exc)
             return image
 
-    def _note_substitution(self, requested: str) -> None:
-        self.last_substituted_font = requested
+    def _note_substitution(self, description: str) -> None:
+        self.last_substituted_font = description
 
     def _note_error(self, message: str) -> None:
         self.last_error = message
+
+    def _note_bounds(self, bounds) -> None:
+        self.last_bounds = bounds
 
     @staticmethod
     def _index_in_range(range_spec: str, index: int) -> bool:
@@ -280,7 +302,8 @@ def _draw_text_on_image(image: np.ndarray, label_text: str, x: int, y: int,
                         bg_color: tuple, font_color: tuple,
                         transparent_bg: bool = True,
                         on_font_substituted=None,
-                        on_error=None) -> np.ndarray:
+                        on_error=None, on_bounds=None,
+                        validate_only=False) -> np.ndarray:
     """Burn one line of text at (x, y) using the requested system family.
 
     Coordinates and colours are interpreted in the image's own value domain
@@ -289,24 +312,19 @@ def _draw_text_on_image(image: np.ndarray, label_text: str, x: int, y: int,
     """
     if image is None or not label_text:
         return image
-    if image.ndim == 2:
-        work = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        restore_gray = True
-    else:
-        work = image
-        restore_gray = False
+    if image.ndim not in (2, 3) or (image.ndim == 3 and image.shape[2] != 3):
+        raise ValueError("Unsupported label image shape")
 
-    is_16 = work.dtype == np.uint16
-    if is_16:
-        base = (work.astype(np.float32) * (255.0 / 65535.0)).round().astype(np.uint8)
-    elif work.dtype != np.uint8:
-        base = np.clip(work, 0, 255).astype(np.uint8)
-    else:
-        base = work
-
-    from utils.fonts import load_font_for_text
+    from utils.fonts import covers_text, load_font_for_text
     font, _actual_family, substituted = load_font_for_text(
         font_size, font_family, label_text)
+    if font is not None and not covers_text(font, label_text):
+        if on_error is not None:
+            on_error("font_missing_glyphs")
+        return image
+    requested = (font_family or "").strip()
+    if requested and _actual_family.casefold() != requested.casefold():
+        substituted = requested
     if font is None:
         if on_error is not None:
             on_error("font_unavailable")
@@ -315,46 +333,48 @@ def _draw_text_on_image(image: np.ndarray, label_text: str, x: int, y: int,
     # cannot draw this text (a Chinese caption in a Latin-only face used to
     # export as empty boxes with no warning).
     if substituted and on_font_substituted is not None:
-        on_font_substituted(substituted)
+        on_font_substituted(f"{requested} → {_actual_family}")
 
     from PIL import Image, ImageDraw
-    pil = Image.fromarray(cv2.cvtColor(base, cv2.COLOR_BGR2RGB))
-    draw = ImageDraw.Draw(pil)
-
-    try:
-        left, top, right, bottom = font.getbbox(label_text)
-    except Exception:
-        left = top = 0
-        right, bottom = draw.textsize(label_text, font=font)
+    left, top, right, bottom = font.getbbox(label_text)
     text_w, text_h = max(1, right - left), max(1, bottom - top)
-
-    # The caller's y is the text baseline-ish anchor used by the old cv2
-    # implementation; convert it into PIL's top-left origin.
-    draw_x = max(0, min(int(x), max(0, pil.width - text_w - 1)))
-    draw_y = max(0, min(int(y) - text_h, max(0, pil.height - text_h - 1)))
-
-    if not transparent_bg:
-        pad = max(3, font_size // 10)
-        draw.rectangle(
-            (max(0, draw_x - pad), max(0, draw_y - pad),
-             min(pil.width - 1, draw_x + text_w + pad),
-             min(pil.height - 1, draw_y + text_h + pad)),
-            fill=tuple(bg_color))
-
-    draw.text((draw_x, draw_y), label_text, font=font,
-              fill=tuple(font_color))
-
-    drawn = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-    if is_16:
-        mask = np.any(drawn != base, axis=2)
-        out = image.copy()
-        out[mask] = (drawn[mask].astype(np.float64) * 257.0).round().astype(np.uint16)
-        return out
-    if restore_gray:
-        return cv2.cvtColor(drawn, cv2.COLOR_BGR2GRAY)
-    if image.dtype != np.uint8:
-        out = image.copy()
-        mask = np.any(drawn != base, axis=2)
-        out[mask] = drawn[mask].astype(image.dtype)
-        return out
-    return drawn
+    height, width = image.shape[:2]
+    draw_x, draw_y = int(x), int(y) - text_h
+    if on_bounds is not None:
+        on_bounds((draw_x, draw_y, text_w, text_h))
+    pad = 0 if transparent_bg else max(3, font_size // 10)
+    x0, y0 = max(0, draw_x - pad), max(0, draw_y - pad)
+    x1 = min(width, draw_x + text_w + pad)
+    y1 = min(height, draw_y + text_h + pad)
+    if x0 >= x1 or y0 >= y1:
+        if on_error is not None:
+            on_error("label_outside_image")
+        return image
+    mask = Image.new("L", (x1 - x0, y1 - y0), 0)
+    ImageDraw.Draw(mask).text(
+        (draw_x - x0 - left, draw_y - y0 - top), label_text,
+        font=font, fill=255)
+    alpha = np.asarray(mask, dtype=np.float64) / 255.0
+    if not np.any(alpha):
+        if on_error is not None:
+            on_error("label_outside_image")
+        return image
+    if validate_only:
+        return image
+    scale = 257.0 if image.dtype == np.uint16 else 1.0
+    foreground = np.asarray(font_color, dtype=np.float64) * scale
+    background = np.asarray(bg_color, dtype=np.float64) * scale
+    if image.ndim == 2:
+        weights = np.asarray((0.114, 0.587, 0.299))
+        foreground = float(foreground @ weights)
+        background = float(background @ weights)
+    else:
+        alpha = alpha[:, :, None]
+    out = image.copy()
+    roi = out[y0:y1, x0:x1]
+    base = roi.astype(np.float64) if transparent_bg else background
+    values = base * (1.0 - alpha) + foreground * alpha
+    if np.issubdtype(image.dtype, np.integer):
+        values = np.rint(values)
+    roi[:] = values.astype(image.dtype)
+    return out

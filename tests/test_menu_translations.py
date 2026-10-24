@@ -42,6 +42,7 @@ def _menu_window(qapp):
         "show_add_label_dialog": staticmethod(stub),
         "delete_registered_labels": staticmethod(stub),
         "delete_input_labels": staticmethod(stub),
+        "delete_output_labels": staticmethod(stub),
         "delete_all_labels": staticmethod(stub),
     })()
     for name in (

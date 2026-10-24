@@ -251,15 +251,16 @@ class TestBatchWorkerBitDepth:
         }, thread_count=2, use_gpu=False)
         worker.process_single_folder(str(folder))
 
-        # 与源文件同名冲突时改名 "_registered" 保存（防覆盖保护）
-        aligned1 = cv2.imread(str(folder / "f1_registered.png"),
-                              cv2.IMREAD_UNCHANGED)
-        aligned2 = cv2.imread(str(folder / "f2_registered.png"),
-                              cv2.IMREAD_UNCHANGED)
+        # One folder artifact; original source basenames remain intact.
+        aligned1 = cv2.imread(str(folder / 'stack_aligned' / 'f1.png'), cv2.IMREAD_UNCHANGED)
+        aligned2 = cv2.imread(str(folder / 'stack_aligned' / 'f2.png'), cv2.IMREAD_UNCHANGED)
         assert aligned1 is not None and aligned2 is not None, \
             "alignment-only batch wrote no aligned frames"
         assert not (folder / "stack.png").exists(), \
             "alignment-only batch must not write a fused result"
+        assert not list(folder.glob('*_registered*'))
+        assert worker.written_paths == []
+        assert len(worker.aligned_stacks) == 1
 
 
 class TestGifDuration:
@@ -485,9 +486,9 @@ def test_align_only_split_batch_writes_aligned_frames(tmp_path, qapp):
 
     assert finished.get("success") == 2, finished
     assert finished["counts"]["success"] == 2
-    written = sorted(p.name for p in outdir.iterdir())
-    # The stack prefix comes from the source folder name; only the count and
-    # the aligned suffix are contractual here.
-    assert [name.split("_", 1)[1] for name in written] == [
-        "001_aligned_001.png", "001_aligned_002.png",
-        "002_aligned_001.png"], written
+    directories = sorted(outdir.iterdir())
+    assert len(directories) == 2 and all(path.is_dir() for path in directories)
+    assert sorted(path.name for path in directories[0].iterdir()) == ['f0.png', 'f1.png']
+    assert sorted(path.name for path in directories[1].iterdir()) == ['f2.png']
+    assert finished['outputs'] == []
+    assert len(finished['aligned_stacks']) == 2

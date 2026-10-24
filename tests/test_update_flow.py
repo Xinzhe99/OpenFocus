@@ -312,17 +312,20 @@ class TestPendingRestore:
         recovery.clear_pending_restore()
         assert recovery.pending_restore() is None
 
-    def test_project_path_is_remembered(self, tmp_path, monkeypatch):
+    def test_empty_workspace_does_not_restore_previous_project(self, tmp_path, monkeypatch):
         from utils import recovery
         monkeypatch.setattr(recovery, "recovery_dir", lambda: str(tmp_path))
         target = str(tmp_path / "my project.ofproj")
+        snapshot = tmp_path / recovery.SESSION_FILE
+        snapshot.write_text("previous snapshot", encoding="utf-8")
 
         class _Window:
             project_path = target
             raw_images = []
 
-        recovery.mark_pending_restore(_Window())
-        assert recovery.pending_restore() == target
+        assert recovery.mark_pending_restore(_Window()) is True
+        assert recovery.pending_restore() == ""
+        assert not snapshot.exists()
 
 
 class _StubSettings:
@@ -415,7 +418,7 @@ class TestUpdateManagerState:
         manager = um.UpdateManager(_Host())
         monkeypatch.setattr(manager, "is_busy", lambda: True)
         assert manager.download_and_apply("v9.9", "https://x/p.zip") is False
-        assert manager._apply_when_ready is False
+        assert manager.state == um.STATE_IDLE
 
     def test_already_staged_click_applies_immediately(self, tmp_path, monkeypatch, qapp):
         """The first click must restart the app, not silently flip to 'ready'."""

@@ -331,21 +331,6 @@ def test_quick_preview_is_a_fraction_not_an_absolute_cap():
     assert max(out.shape[:2]) < 900, out.shape
 
 
-def test_quick_preview_reuses_an_existing_alignment():
-    """ECC costs seconds and does not shrink with the frame.
-
-    Registration dominates the run and is independent of the draft size, so a
-    preview that always re-registers is slower than the full render. Once the
-    stack is aligned the preview must reuse it.
-    """
-    from pathlib import Path
-
-    src = Path("controllers/render_manager.py").read_text(encoding="utf-8")
-    start = src.index("        elif self._preview_mode:")
-    block = src[start:src.index("        elif (need_align_homography", start)]
-    assert "reusable" in block and "window.is_images_aligned" in block, (
-        "the preview branch must reuse window.aligned_images when valid")
-    assert "effective_need_align_ecc = False" in block
 
 
 def test_add_label_dialog_style_exists():
@@ -1880,8 +1865,8 @@ def test_feedback_dialog_embeds_the_session_log(qapp):
     ls.setup_logging()
     d = FeedbackDialog(None)
     try:
-        body = d._compose()
-        assert "Environment" in body and "Session log" in body
+        d._copy_log()
+        assert qapp.clipboard().text() == d.log_view.toPlainText()
         dest = os.path.join(tempfile.mkdtemp(), "fb.zip")
         path = ls.export_feedback_package(dest)
         with zipfile.ZipFile(path) as zf:

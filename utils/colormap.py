@@ -119,14 +119,17 @@ def colorize(index01: np.ndarray,
     frame axis before coloring. Values are clipped, never wrapped.
     """
     lut = get_lut(colormap_id, custom_stops)
-    x = np.clip(index01.astype(np.float32), 0.0, 1.0)
+    valid = np.isfinite(index01)
+    x = np.clip(np.where(valid, index01, 0).astype(np.float32), 0.0, 1.0)
     if invert:
         x = 1.0 - x
     if abs(gamma - 1.0) > 1e-6:
         x = np.power(x, max(0.05, gamma))
     u8 = np.clip(x * 255.0, 0, 255).astype(np.uint8)
     # numpy 行索引等价于按 LUT 上色，绕开 cv2.LUT 对多通道表的双义语义
-    return lut[u8]
+    colored = lut[u8]
+    colored[~valid] = (96, 96, 96)
+    return colored
 
 
 def lut_preview_bgr(lut: np.ndarray, width: int = 64, height: int = 12) -> np.ndarray:

@@ -43,7 +43,7 @@ def _signature(folder: str, filenames: List[str], align_options: Tuple[bool, boo
         path = os.path.join(folder, name)
         try:
             st = os.stat(path)
-            parts.append(f"{name}:{st.st_size}:{int(st.st_mtime)}")
+            parts.append(f'{name}:{st.st_size}:{st.st_mtime_ns}')
         except OSError:
             parts.append(f"{name}:missing")
     digest = hashlib.md5("|".join(parts).encode("utf-8", "ignore")).hexdigest()[:16]
@@ -91,28 +91,33 @@ def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndar
     Signature dirs from earlier signatures are pruned afterwards so stacks
     do not accumulate a full aligned copy per parameter tweak.
     """
-    if not folder or not os.path.isdir(folder):
+    if not folder or not os.path.isdir(folder) or len(filenames) != len(aligned_images):
         return
+    import tempfile
+    temporary = None
     try:
         sig = _signature(folder, filenames, align_options, downscale_width, scale_factor, frame_shape)
         root = os.path.join(folder, CACHE_DIR_NAME)
-        cdir = os.path.join(root, sig)
-        os.makedirs(cdir, exist_ok=True)
-        for i, img in enumerate(aligned_images):
-            frame_path = os.path.join(cdir, f"aligned_{i:04d}.png")
-            # cv2.imwrite/imread cannot handle non-ASCII paths on Windows
-            # (a stack under 中文目录 silently never cached); go through the
-            # project's unicode-safe helpers instead.
-            if not imwrite_auto(frame_path, img):
+        os.makedirs(root, exist_ok=True)
+        temporary = tempfile.mkdtemp(prefix='.pending-', dir=root)
+        for index, image in enumerate(aligned_images):
+            path = os.path.join(temporary, f'aligned_{index:04d}.png')
+            if not imwrite_auto(path, image, exif=b''):
                 return
-        with open(os.path.join(cdir, "meta.json"), "w", encoding="utf-8") as f:
-            json.dump({"signature": sig, "count": len(aligned_images),
-                       "align_options": list(align_options)}, f)
-        # Prune superseded signature dirs
+        with open(os.path.join(temporary, 'meta.json'), 'w', encoding='utf-8') as handle:
+            json.dump({'signature': sig, 'count': len(aligned_images),
+                       'align_options': list(align_options)}, handle)
+        cdir = os.path.join(root, sig)
+        if os.path.isdir(cdir):
+            shutil.rmtree(cdir)
+        os.replace(temporary, cdir)
+        temporary = None
         for entry in os.listdir(root):
-            if entry != sig:
-                stale = os.path.join(root, entry)
-                if os.path.isdir(stale):
-                    shutil.rmtree(stale, ignore_errors=True)
+            stale = os.path.join(root, entry)
+            if entry != sig and not entry.startswith('.pending-') and os.path.isdir(stale):
+                shutil.rmtree(stale, ignore_errors=True)
     except OSError:
         pass
+    finally:
+        if temporary:
+            shutil.rmtree(temporary, ignore_errors=True)

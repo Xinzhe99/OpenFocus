@@ -85,7 +85,12 @@ def find_installer_asset(release: dict) -> Optional[dict]:
     if sys.platform == "win32":
         return find_asset_by_keyword(release, "setup.exe")
     if sys.platform == "darwin":
-        return find_asset_by_keyword(release, "macos.dmg")
+        import platform
+        arch = platform.machine().lower()
+        if arch in ("arm64", "aarch64"):
+            return (find_asset_by_keyword(release, "macos-arm64.dmg")
+                    or find_asset_by_keyword(release, "macos.dmg"))
+        return find_asset_by_keyword(release, "macos-x86_64.dmg")
     return None
 
 
@@ -221,7 +226,7 @@ def download_to_file(url: str, dest_path: str,
     part_path = dest_path + ".part"
     req = urllib.request.Request(url, headers={"User-Agent": "OpenFocus"})
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
             total = int(resp.headers.get("Content-Length", 0) or 0)
             done = 0
             with open(part_path, "wb") as f:
@@ -233,7 +238,7 @@ def download_to_file(url: str, dest_path: str,
                         break
                     f.write(chunk)
                     done += len(chunk)
-                    if on_progress is not None and total:
+                    if on_progress is not None:
                         try:
                             on_progress(done, total)
                         except Exception:
@@ -243,6 +248,8 @@ def download_to_file(url: str, dest_path: str,
         if total and done != total:
             raise RuntimeError(
                 f"download truncated: {done} of {total} bytes")
+        if should_cancel is not None and should_cancel():
+            raise DownloadCancelled("download cancelled")
         os.replace(part_path, dest_path)
     except BaseException:
         # ANY failure (socket reset, disk full, truncation, cancel) must take
@@ -256,7 +263,8 @@ def download_to_file(url: str, dest_path: str,
     return True
 
 
-def verify_file_digest(path: str, digest: str) -> Optional[bool]:
+def verify_file_digest(path: str, digest: str,
+                       should_cancel: Callable[[], bool] = None) -> Optional[bool]:
     """Check a downloaded file against a GitHub asset digest ("sha256:<hex>").
 
     Returns True/False on a definite result, None when no usable digest was
@@ -279,6 +287,8 @@ def verify_file_digest(path: str, digest: str) -> Optional[bool]:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while True:
+            if should_cancel is not None and should_cancel():
+                raise DownloadCancelled("verification cancelled")
             chunk = f.read(1024 * 1024)
             if not chunk:
                 break

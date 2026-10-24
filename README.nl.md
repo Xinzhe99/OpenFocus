@@ -29,7 +29,7 @@ OpenFocus is een open-source werkstation voor het uitlijnen en fuseren van multi
   <img src="assets/ui.png" alt="OpenFocus-interface" width="820">
 </p>
 
-> **v1.67.0** — nieuwe bronvaste retoucheerwerkruimte, gesynchroniseerde bronframeslider, transactionele undo per tegel, methodevergelijking en README's in twaalf talen.
+> **v1.68.0** — batchexport volgt de gekozen modus: alleen uitlijnen maakt één `<stack>_aligned`-map en toont die in de lijst, fusie toont alleen het gefuseerde beeld, en zonder uitlijning exporteren wordt alleen dat beeld geschreven. Achtergebleven `*_registered*`-kopieën in de bronmap worden niet meer als frames geladen. Ook labels, schaalbalken, methodevergelijking, diepte-/modelexport, updates en retouche zijn herzien volgens de audit in `docs/ux-specs`.
 
 ## Download en installatie
 

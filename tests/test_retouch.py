@@ -807,7 +807,7 @@ def test_apply_is_refused_during_preview(qapp):
         is_dirty = True
 
     host = SimpleNamespace(
-        _applied=False, doc=Doc(), preview_mode="before",
+        _applied=False, _applying=False, _closing=False, doc=Doc(), preview_mode="before",
         btn_apply=None, apply_callback=lambda *a: (True, ""))
     assert RetouchDialog._can_apply(host) is False
 
@@ -820,3 +820,61 @@ def test_apply_is_refused_during_preview(qapp):
     host.doc.stroke_active = False
     host.doc.is_dirty = False
     assert RetouchDialog._can_apply(host) is False
+
+
+def test_source_peek_never_contains_sharpness_overlay(qapp):
+    dlg, _published = _dialog(qapp)
+    try:
+        dlg._sharpness_started = True
+        dlg._sharpness_maps = {0: np.full((96, 120, 3), (0, 0, 255), np.uint8)}
+        dlg.chk_sharp.setChecked(True)
+        dlg._press_preview("source")
+        peek = dlg.canvas_image("result")[0]
+        helper = dlg.canvas_image("source")[0]
+        assert peek.pixelColor(40, 40).red() == 20
+        assert helper.pixelColor(40, 40).red() > 20
+        assert not dlg.doc.is_dirty
+    finally:
+        dlg._allow_close = True
+        dlg.close()
+
+
+def test_apply_exception_preserves_dirty_document_and_allows_retry(qapp, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+    dlg, _published = _dialog(qapp)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: None)
+    def failing_callback(*args):
+        assert dlg._apply() is False, "publishing must refuse reentry"
+        raise RuntimeError("display failed")
+    try:
+        dlg.begin_stroke(40, 40)
+        dlg.end_stroke()
+        expected = dlg.doc.working.copy()
+        dlg.apply_callback = failing_callback
+        assert dlg._apply() is False
+        assert dlg.doc.is_dirty and dlg.btn_apply.isEnabled()
+        np.testing.assert_array_equal(dlg.doc.working, expected)
+        dlg.apply_callback = lambda *args: (True, "")
+        assert dlg._apply() is True
+    finally:
+        dlg._allow_close = True
+        dlg.close()
+
+
+def test_keyboard_diameter_changes_real_stroke_pixels(qapp):
+    dlg, _published = _dialog(qapp)
+    try:
+        dlg.num_diameter.setValue(16)
+        dlg.num_hardness.setValue(100)
+        dlg._on_brush_changed()
+        dlg._bump_diameter(2.0)
+        assert dlg.num_diameter.value() == dlg.doc.diameter == 32
+        dlg.begin_stroke(50, 45)
+        dlg.end_stroke()
+        assert np.all(dlg.doc.working[45, 63] == 20)
+        assert np.all(dlg.doc.working[45, 68] == 110)
+        dlg._undo()
+        assert not dlg.doc.is_dirty
+    finally:
+        dlg._allow_close = True
+        dlg.close()

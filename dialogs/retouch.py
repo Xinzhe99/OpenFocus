@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from PyQt6.QtCore import (QEvent, QPointF, QRect, QRectF, QSize, Qt, QThread,
                           QTimer, pyqtSignal)
-from PyQt6.QtGui import (QColor, QIcon, QImage, QPainter, QPen, QPixmap)
+from PyQt6.QtGui import (QBrush, QColor, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap)
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -28,6 +28,8 @@ from PyQt6.QtWidgets import (
 from locales import trans
 from utils.image_utils import thumbnail_bgr, to_display_uint8
 from utils.retouch import RetouchDocument
+
+_SHARPNESS_WORKERS = set()
 
 
 def _qimage_from_bgr(bgr8: np.ndarray, copy: bool = True) -> QImage:
@@ -116,6 +118,7 @@ class _SharpnessWorker(QThread):
     """Compute one shared-scale detail map for every source frame."""
 
     ready = pyqtSignal(int, object)
+    failed = pyqtSignal(int, str)
 
     def __init__(self, frames, request_id: int, preview_side: int = 768):
         super().__init__()
@@ -127,6 +130,8 @@ class _SharpnessWorker(QThread):
         try:
             detail = {}
             for index, frame in enumerate(self.frames):
+                if self.isInterruptionRequested():
+                    return
                 image = frame.image
                 if image is None or image.size == 0:
                     continue
@@ -153,12 +158,14 @@ class _SharpnessWorker(QThread):
             peak = max(1e-6, peak)
             maps = {}
             for index, energy in detail.items():
+                if self.isInterruptionRequested():
+                    return
                 norm = np.clip(energy / peak, 0.0, 1.0)
                 maps[index] = cv2.applyColorMap(
                     (norm * 255).astype(np.uint8), cv2.COLORMAP_TURBO)
             self.ready.emit(self.request_id, maps)
-        except Exception:
-            self.ready.emit(self.request_id, {})
+        except Exception as exc:
+            self.failed.emit(self.request_id, str(exc))
 
 
 class _RetouchCanvas(QWidget):
@@ -223,6 +230,13 @@ class _RetouchCanvas(QWidget):
             painter.drawImage(rect, qimage)
             painter.setPen(QPen(QColor(72, 72, 72), 1))
             painter.drawRect(rect.adjusted(0, 0, -1, -1))
+            if self.role == "source":
+                domain = QPainterPath()
+                domain.addRect(self.image_rect(self.dlg.doc.width, self.dlg.doc.height))
+                covered = QPainterPath()
+                covered.addRect(rect)
+                painter.fillPath(domain.subtracted(covered),
+                    QBrush(QColor(160, 160, 160, 150), Qt.BrushStyle.DiagCrossPattern))
         self._paint_cursor(painter)
         painter.end()
 
@@ -336,6 +350,7 @@ class RetouchDialog(QDialog):
         self.preview_mode = None
         self._preview_owner = None
         self._applied = False
+        self._applying = False
         self._allow_close = False
         self._closing = False
         self.change_requested = False
@@ -344,6 +359,7 @@ class RetouchDialog(QDialog):
         self._source_ready = False
         self._source_request = 0
         self._source_qimage = None
+        self._pure_source_qimage = None
         self._source_display = None
         self._before_qimage = None
         self._result_display = None
@@ -760,7 +776,12 @@ class RetouchDialog(QDialog):
         parts.append(trans.t("retouch_source_roi") if roi
                      else trans.t("retouch_source_full"))
         label.setText(" · ".join(parts))
-        label.setToolTip(label.text())
+        details = [self.record.label]
+        if context is not None:
+            details.extend(frame.name for frame in context.frames)
+            if context.roi_rect:
+                details.append(f"ROI: {context.roi_rect}")
+        label.setToolTip("\n".join(details))
         if self.doc.frame_count:
             frame = self.doc.active_frame
             self.lbl_source_header.setToolTip(
@@ -839,12 +860,17 @@ class RetouchDialog(QDialog):
         display = to_display_uint8(frame.image)
         if display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
+        self._pure_source_qimage = _qimage_from_bgr(display)
         if self.chk_sharp.isChecked() and self._sharpness_maps:
             heat = self._sharpness_maps.get(self.doc.frame_index)
             if heat is not None:
                 heat = cv2.resize(heat, (display.shape[1], display.shape[0]),
                                   interpolation=cv2.INTER_LINEAR)
                 display = cv2.addWeighted(display, 0.45, heat, 0.55, 0)
+        valid = self.doc.mask_for(self.doc.frame_index)
+        if valid is not None:
+            display = display.copy()
+            display[~valid] = (80, 80, 160)
         self._source_display = display
         self._source_qimage = _qimage_from_bgr(display)
         self.source_canvas.update()
@@ -893,7 +919,7 @@ class RetouchDialog(QDialog):
             if self._source_qimage is None:
                 return None, 0, 0, 0, 0
             frame = self.doc.active_frame
-            return (self._source_qimage, frame.width, frame.height,
+            return (self._pure_source_qimage, frame.width, frame.height,
                     frame.offset_x, frame.offset_y)
         return (self._result_qimage, self.doc.width, self.doc.height, 0, 0)
 
@@ -1022,6 +1048,10 @@ class RetouchDialog(QDialog):
             name=os.path.basename(frame.name)))
         tool = (trans.t("retouch_tool_source") if self.doc.tool == "source"
                 else trans.t("retouch_tool_restore"))
+        if self.cursor_pos is not None and self.doc.tool == "source" and not self.cursor_source_valid():
+            tool = (trans.t("retouch_source_roi") + " · "
+                    if not frame.contains(self.cursor_pos.x(), self.cursor_pos.y()) else "")
+            tool += trans.t("retouch_source_unavailable")
         self.lbl_state.setText(self._notice or tool)
 
     def _set_notice(self, text: str) -> None:
@@ -1320,10 +1350,19 @@ class RetouchDialog(QDialog):
         worker = _SharpnessWorker(self.doc.frames, self._sharpness_request)
         self._sharpness_worker = worker
         worker.ready.connect(self._on_sharpness_ready)
+        worker.failed.connect(self._on_sharpness_failed)
+        _SHARPNESS_WORKERS.add(worker)
+        worker.finished.connect(lambda w=worker: _SHARPNESS_WORKERS.discard(w))
         worker.finished.connect(
             lambda req=self._sharpness_request: self._on_sharpness_finished(req))
         worker.finished.connect(worker.deleteLater)
         worker.start()
+
+    def _on_sharpness_failed(self, request: int, error: str) -> None:
+        if self._closing or request != self._sharpness_request:
+            return
+        self._set_sharp_state("failed")
+        self.lbl_sharp_state.setToolTip(error)
 
     def _on_sharpness_finished(self, request: int) -> None:
         if self._closing or request != self._sharpness_request:
@@ -1376,11 +1415,8 @@ class RetouchDialog(QDialog):
             worker.ready.disconnect(self._on_sharpness_ready)
         except (TypeError, RuntimeError):
             pass
-        # Do not block the GUI while native work finishes: the worker keeps
-        # itself alive through its own QThread lifetime and its late signal is
-        # already ignored (`_closing`), so the dialog can close immediately.
-        if worker.isRunning():
-            self._sharpness_request += 1
+        worker.requestInterruption()
+        self._sharpness_request += 1
 
     # ----------------------------------------------------------- layout/fs
     def _set_focus_layout(self, focus: bool, user: bool) -> None:
@@ -1432,19 +1468,24 @@ class RetouchDialog(QDialog):
         Ctrl+Enter used to clear a held preview and publish, even though the
         visible Apply button was disabled during preview.
         """
-        return (not self._applied and not self.doc.stroke_active
-                and self.preview_mode is None and self.doc.is_dirty)
+        return (not self._applied and not self._applying and not self._closing
+                and not self.doc.stroke_active and self.preview_mode is None
+                and self.doc.is_dirty)
 
     def _apply(self):
         if not self._can_apply():
             return False
         self.btn_apply.setEnabled(False)
+        self._applying = True
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             image = np.ascontiguousarray(self.doc.working.copy())
             ok, error = self.apply_callback(self.record, image)
+        except Exception as exc:
+            ok, error = False, str(exc)
         finally:
             QApplication.restoreOverrideCursor()
+            self._applying = False
         if ok:
             self._applied = True
             self.accept()
@@ -1500,6 +1541,9 @@ class RetouchDialog(QDialog):
         self.close()
 
     def closeEvent(self, event) -> None:
+        if self._applying:
+            event.ignore()
+            return
         if self._closing:
             event.accept()
             return
@@ -1597,7 +1641,7 @@ class RetouchDialog(QDialog):
         if key == Qt.Key.Key_Tab and not shift and self._canvas_focused():
             self._press_preview("before")
             return True
-        if key == Qt.Key.Key_Alt:
+        if key == Qt.Key.Key_Alt and self._canvas_focused():
             self._press_preview("source")
             return True
         if key == Qt.Key.Key_Space and self._canvas_focused():
@@ -1655,6 +1699,11 @@ class RetouchDialog(QDialog):
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
+                event.modifiers() & (Qt.KeyboardModifier.ControlModifier
+                                     | Qt.KeyboardModifier.MetaModifier)):
+            event.accept()
+            return
         if not self._editing_text() and self._handle_key(event):
             event.accept()
             return

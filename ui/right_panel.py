@@ -441,16 +441,6 @@ def create_right_panel() -> RightPanelComponents:
     source_header.addWidget(btn_none)
     source_list_layout.addLayout(source_header)
 
-    def _set_all_source_checks(checked: bool) -> None:
-        for row in range(file_list.count()):
-            item = file_list.item(row)
-            if item is not None and item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
-                item.setCheckState(
-                    Qt.CheckState.Checked if checked
-                    else Qt.CheckState.Unchecked)
-
-    btn_all.clicked.connect(lambda: _set_all_source_checks(True))
-    btn_none.clicked.connect(lambda: _set_all_source_checks(False))
     file_list = QListWidget()
     file_list.setIconSize(QSize(40, 40))
     file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -573,6 +563,20 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
 
     if hasattr(components.output_list, "set_window"):
         components.output_list.set_window(window)
+
+    def _set_all_source_checks(checked: bool) -> None:
+        excluded = set() if checked else set(range(len(window.raw_images)))
+        if excluded == window.excluded_frames:
+            return
+        window.push_undo()
+        window.excluded_frames = excluded
+        window.source_manager.decorate_source_items()
+        window.source_manager.processing_selection_changed()
+
+    components.btn_select_all.clicked.connect(
+        lambda: _set_all_source_checks(True))
+    components.btn_select_none.clicked.connect(
+        lambda: _set_all_source_checks(False))
 
     # 下拉框本身就是单选，无需互斥处理；切换时刷新滑块联动
     components.combo_fusion.currentIndexChanged.connect(

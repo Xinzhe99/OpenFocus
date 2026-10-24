@@ -178,14 +178,22 @@ def export_feedback_package(dest_path, description: str = "",
     except Exception:
         pass
 
-    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("description.txt", description or "")
-        zf.writestr("system.txt", "\n".join(system_facts) + "\n")
-        zf.writestr("session_log.txt", session_log_excerpt(200_000))
-        if include_all_logs:
-            for log_file in all_log_files():
-                if log_file.is_file():
-                    arcname = f"logs/{log_file.name}"
-                    if arcname not in zf.namelist():
-                        zf.write(log_file, arcname)
+    import tempfile
+    fd, temporary = tempfile.mkstemp(prefix=".feedback-", suffix=".zip", dir=dest.parent)
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("description.txt", description or "")
+            zf.writestr("system.txt", "\n".join(system_facts) + "\n")
+            zf.writestr("session_log.txt", session_log_excerpt(200_000))
+            if include_all_logs:
+                for log_file in all_log_files():
+                    if log_file.is_file():
+                        arcname = f"logs/{log_file.name}"
+                        if arcname not in zf.namelist():
+                            zf.write(log_file, arcname)
+        os.replace(temporary, dest)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return dest

@@ -63,11 +63,8 @@ class WelcomeDialog(QDialog):
         # Theme-aware muted colour: the old hardcoded #57606a was ~2:1 on the
         # dark dialog background, effectively invisible.
         demo_hint.setObjectName("welcome_hint")
-        from ui.styles import CURRENT_THEME
-        from utils.design_tokens import palette
-        demo_hint.setStyleSheet(
-            f"color: {palette(CURRENT_THEME)['textMuted']};"
-            " background: transparent;")
+        self._demo_hint = demo_hint
+        self._refresh_hint_color()
         demo_row.addWidget(demo_hint)
         demo_row.addStretch()
         layout.addLayout(demo_row)
@@ -103,6 +100,13 @@ class WelcomeDialog(QDialog):
             self._main_window.apply_theme(code)
         self._apply_dialog_style()
         self._sync_theme_buttons()
+        self._refresh_hint_color()
+
+    def _refresh_hint_color(self):
+        from utils.design_tokens import palette
+        theme = "dark" if self._is_dark() else "light"
+        self._demo_hint.setStyleSheet(
+            f"color: {palette(theme)['textMuted']}; background: transparent;")
 
     def _sync_theme_buttons(self) -> None:
         from utils.settings_store import DEFAULT_THEME

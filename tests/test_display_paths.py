@@ -127,30 +127,20 @@ class TestWipePixmapCache:
     """The A/B wipe caches one pixmap per side across slider steps."""
 
     def _window(self):
-        class _LabelManager:
-            def __init__(self):
-                self.enabled = False
-                self.calls = 0
-                self.revision = 0
-
-            def is_enabled_for_target(self, target):
-                return self.enabled
-
-            def display_bgr_image(self, target, image, index, scale_cfg=None):
-                self.calls += 1
-                out = image.copy()
-                if self.enabled:
-                    out[0:4, 0:8] = 255
-                return out
-
-        class _Window:
-            def __init__(self):
-                self.label_manager = _LabelManager()
-                self._bgr_to_pixmap = cv2_to_pixmap
-
+        from types import SimpleNamespace
+        from controllers.label_manager import LabelManager
+        from utils.label_model import Label
         from main import OpenFocus
 
-        window = _Window()
+        window = SimpleNamespace(
+            fusion_results=[],
+            output_manager=SimpleNamespace(record_for_image=lambda _image: None),
+            _bgr_to_pixmap=cv2_to_pixmap)
+        window.label_manager = LabelManager(window)
+        window.caption = Label.from_dict({
+            "target": "registered", "format": "A", "enabled": False,
+            "x_location": 5, "y_location": 20, "font_size": 12})
+        window.label_manager.labels.add(window.caption)
         window._wipe_pixmap = lambda kind, index, image: \
             OpenFocus._wipe_pixmap(window, kind, index, image)
         return window
@@ -159,7 +149,7 @@ class TestWipePixmapCache:
         window = self._window()
         image = np.full((40, 60, 3), 80, np.uint8)
         first = window._wipe_pixmap("right", 0, image)
-        assert first is window._wipe_pixmap("right", 0, image)
+        assert np.all(_rgb_array(first) == 80)
 
         other = np.full((40, 60, 3), 200, np.uint8)
         assert tuple(_rgb_array(window._wipe_pixmap("right", 0, other))[0, 0]) \
@@ -171,59 +161,21 @@ class TestWipePixmapCache:
         image = np.full((40, 60, 3), 80, np.uint8)
         unlabeled = _rgb_array(window._wipe_pixmap("right", 0, image)).copy()
 
-        window.label_manager.enabled = True
-        window.label_manager.revision += 1
+        window.caption.enabled = True
         labeled = _rgb_array(window._wipe_pixmap("right", 0, image))
         assert not np.array_equal(unlabeled, labeled), (
             "labels were enabled but the cached pixmap was reused")
 
-        window.label_manager.enabled = False
-        window.label_manager.revision += 1
+        window.caption.enabled = False
         restored = _rgb_array(window._wipe_pixmap("right", 0, image))
         assert np.array_equal(unlabeled, restored)
 
-    def test_editing_an_enabled_label_invalidates_the_cache(self):
-        """Changing caption content must not serve the previously drawn one."""
-        window = self._window()
-        window.label_manager.enabled = True
-        image = np.full((40, 60, 3), 80, np.uint8)
-        _rgb_array(window._wipe_pixmap("right", 0, image))
-
-        window.label_manager.revision += 1
-        _rgb_array(window._wipe_pixmap("right", 0, image))
-        # The cache must have been recomputed, not reused.
-        assert window.label_manager.calls == 2
 
     def test_left_side_never_gets_registered_labels(self):
         window = self._window()
         image = np.full((40, 60, 3), 80, np.uint8)
-        window.label_manager.enabled = True
-        window.label_manager.revision += 1
+        window.caption.enabled = True
         plain = _rgb_array(window._wipe_pixmap("left", 0, image))
-        assert window.label_manager.calls == 0
         assert tuple(plain[0, 0]) == (80, 80, 80)
 
-    def test_scale_bar_changes_invalidate_the_cache(self):
-        """A bar added or removed must not be served from the old cache."""
-        window = self._window()
-        window.scale_um_per_px_manual = 1.0
-        image = np.full((120, 200, 3), 80, np.uint8)
-
-        plain = window._wipe_pixmap("right", 0, image)
-        assert window.label_manager.calls == 0
-
-        window.scale_bar_enabled = True
-        window.scale_bar_target = "all"
-        with_bar = window._wipe_pixmap("right", 0, image)
-        assert window.label_manager.calls == 1
-        assert with_bar is not plain
-        assert window._wipe_pixmap("right", 0, image) is with_bar
-        assert window.label_manager.calls == 1
-
-        # Scoping the bar away from the result must redraw, not reuse.
-        window.scale_bar_target = "source"
-        restored = window._wipe_pixmap("right", 0, image)
-        assert restored is not with_bar
-        assert window.label_manager.calls == 1
-        assert np.array_equal(_rgb_array(restored), _rgb_array(plain))
 

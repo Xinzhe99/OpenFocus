@@ -220,6 +220,9 @@ def save_window_settings(window) -> None:
     settings.setValue(LANGUAGE_KEY, trans.current_lang)
     settings.setValue(RECENT_FILES_KEY, list(getattr(window, "recent_files", [])))
     settings.setValue(RECENT_PROJECTS_KEY, list(getattr(window, "recent_projects", [])))
+    settings.sync()
+    if settings.status() != QSettings.Status.NoError:
+        raise OSError("Could not write OpenFocus settings")
 
 
 def _supported_languages():

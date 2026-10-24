@@ -10,6 +10,8 @@ from core.registration import ImageRegistration, RegistrationCancelled
 from core.multi_focus_fusion import MultiFocusFusion
 from utils import resource_path, normalize_kernel_size
 from utils.image_utils import to_display_uint8
+from copy import deepcopy
+from utils.export_paths import create_stack_directory, frame_export_name, unique_path
 from constants import (
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     DEFAULT_THREAD_COUNT
@@ -28,8 +30,16 @@ class StackLoadWorker(QThread):
         self.video = video
         self.filepaths = filepaths
         self.scale = scale
+        self.is_cancelled = False
+        self.loader.should_cancel = lambda: self.is_cancelled
+
+    def request_cancel(self):
+        self.is_cancelled = True
 
     def run(self):
+        if self.is_cancelled:
+            self.finished_load.emit(False, 'CANCELLED', [], [])
+            return
         try:
             if self.folder:
                 ok, msg, imgs, names = self.loader.load_from_folder(self.folder, scale_factor=self.scale)
@@ -39,6 +49,8 @@ class StackLoadWorker(QThread):
                 ok, msg, imgs, names = self.loader.load_from_filepaths(self.filepaths, scale_factor=self.scale)
         except Exception as e:
             ok, msg, imgs, names = False, str(e), [], []
+        if self.is_cancelled:
+            ok, msg, imgs, names = False, 'CANCELLED', [], []
         self.finished_load.emit(ok, msg, imgs, names)
 
 
@@ -527,15 +539,19 @@ class BatchWorker(QThread):
                  single_folder_images_with_times=None, use_gpu: bool = True,
                  exposure_match: bool = False):
         super().__init__()
-        self.folder_paths = folder_paths
+        self.folder_paths = list(folder_paths)
         self.output_type = output_type
         self.output_path = output_path
-        self.processing_settings = processing_settings
-        # Files this run actually wrote, newest last. The dialog surfaces them in
-        # the output list so a finished batch is inspectable like a manual
-        # render instead of vanishing into a message box.
+        settings = processing_settings or {}
+        self.processing_settings = deepcopy({key: value for key, value in settings.items()
+                                             if key != 'frozen_stacks'})
+        self._frozen_stacks = [list(stack) for stack in settings.get('frozen_stacks', [])]
         self.written_paths = []
+        self.aligned_stacks = []
         self.task_results = []
+        self._task_artifacts = []
+        self._task_failures = []
+        self._source_exif = b""
         self.is_cancelled = False
         self.import_mode = import_mode
         self.split_method = split_method
@@ -543,10 +559,12 @@ class BatchWorker(QThread):
         self.single_folder_images_with_times = single_folder_images_with_times or []
         # GPU 加速开关（仅影响 StackMFF-V3）
         self.use_gpu = bool(use_gpu)
-        self.exposure_match = bool(exposure_match)
+        self.exposure_match = bool(self.processing_settings.get(
+            'fusion_params', {}).get('exposure_match', exposure_match))
 
         from core.image_loader import ImageStackLoader
         self.image_loader = ImageStackLoader()
+        self.image_loader.should_cancel = lambda: self.is_cancelled
         from core.registration import ImageRegistration
         self.reg_downscale_width = reg_downscale_width
         self.tile_enabled = tile_enabled
@@ -578,152 +596,81 @@ class BatchWorker(QThread):
         return max(64, int(round(widest * int(ratio) / 100.0)))
 
     def _save_image(self, path: str, image, extension: str, scale_cfg=None) -> bool:
-        """Save with the user-selected JPG quality; other formats use defaults."""
+        """Commit a file and record only real, successful artifacts."""
+        if self.is_cancelled:
+            raise RegistrationCancelled()
         params = []
         if extension.lower().lstrip('.') in ('jpg', 'jpeg', 'jpe', 'jfif'):
-            try:
-                quality = int(self.processing_settings.get('jpg_quality', 100))
-            except (TypeError, ValueError):
-                quality = 100
+            quality = int(self.processing_settings.get('jpg_quality', 100))
             params = [cv2.IMWRITE_JPEG_QUALITY, max(0, min(100, quality))]
-        from utils.image_utils import imwrite_auto
-        if scale_cfg:
-            from utils import scalebar
-            image = scalebar.burn(image, scale_cfg)
-        ok = imwrite_auto(path, image, params)
-        if ok and path not in self.written_paths:
-            self.written_paths.append(path)
+        path = unique_path(path)
+        try:
+            from utils.image_utils import imwrite_auto
+            if scale_cfg:
+                from utils import scalebar
+                image = scalebar.burn(image, scale_cfg)
+            ok = imwrite_auto(path, image, params, exif=self._source_exif)
+        except Exception as exc:
+            self._task_failures.append({'path': path, 'error': str(exc)})
+            return False
+        if ok:
+            self._task_artifacts.append(path)
+        else:
+            self._task_failures.append({'path': path, 'error': 'Image write failed'})
         return ok
 
     def run(self):
-        """执行批处理"""
+        """Run both input modes with identical terminal-state accounting."""
         try:
-            if self.import_mode == "single_folder" and self.single_folder_images_with_times:
+            split = self.import_mode == 'single_folder'
+            if split:
                 stacks = self._split_images_for_processing()
-                total_count = len(stacks)
-                success_count = 0
-                failed_stacks = []
-
-                original_paths = [item[0] for item in self.single_folder_images_with_times]
-                source_folder = os.path.dirname(original_paths[0]) if original_paths else ""
-                source_folder_name = os.path.basename(source_folder) if source_folder else "Output"
-
-                output_dir = self._get_output_path_for_single_folder(source_folder)
-                os.makedirs(output_dir, exist_ok=True)
-
-                for i, stack_images_with_times in enumerate(stacks):
-                    if self.is_cancelled:
-                        for j in range(i, len(stacks)):
-                            self.task_results.append({
-                                "name": f"{source_folder_name}_{j + 1:03d}",
-                                "status": "not_started"})
-                        break
-
-                    stack_name = f"{source_folder_name}_{i + 1:03d}"
-                    self.progress_updated.emit(
-                        i, total_count,
-                        trans_batch_progress(i + 1, total_count, stack_name))
-
-                    try:
-                        self._process_single_stack(stack_images_with_times, output_dir, stack_name, i)
-                        success_count += 1
-                        self.task_results.append(
-                            {"name": stack_name, "status": "success"})
-                    except RegistrationCancelled:
-                        self.task_results.append(
-                            {"name": stack_name, "status": "cancelled"})
-                        for j in range(i + 1, len(stacks)):
-                            self.task_results.append({
-                                "name": f"{source_folder_name}_{j + 1:03d}",
-                                "status": "not_started"})
-                        break
-                    except PartialWriteError as e:
-                        failed_stacks.append(f"{stack_name}: {str(e)}")
-                        self.task_results.append({
-                            "name": stack_name, "status": "partial",
-                            "error": str(e)})
-                        print(f"Partially written {stack_name}: {str(e)}")
-                    except Exception as e:
-                        failed_stacks.append(f"{stack_name}: {str(e)}")
-                        self.task_results.append({
-                            "name": stack_name, "status": "failed",
-                            "error": str(e)})
-                        print(f"Error processing {stack_name}: {str(e)}")
-
-                self.progress_updated.emit(total_count, total_count, "")
-                results = {
-                    'success': success_count,
-                    'total': total_count,
-                    'failed': failed_stacks,
-                    'cancelled': self.is_cancelled,
-                    'outputs': list(self.written_paths),
-                    'tasks': list(self.task_results),
-                    'counts': _count_task_states(self.task_results,
-                                                 total_count),
-                }
-                self.finished.emit(results)
+                source = os.path.dirname(self.single_folder_images_with_times[0][0]) if stacks else ''
+                tasks = [(f'{os.path.basename(source)}_{i + 1:03d}', stack)
+                         for i, stack in enumerate(stacks)]
+                from core.image_loader import _read_exif_bytes
+                self._source_exif = _read_exif_bytes(self.single_folder_images_with_times[0][0]) if stacks else b''
+                from utils.scalebar import detect_px_size_um
+                self.image_loader.px_size_um = detect_px_size_um(self.single_folder_images_with_times[0][0]) if stacks else None
             else:
-                success_count = 0
-                total_count = len(self.folder_paths)
-                failed_folders = []
-
-                for i, folder_path in enumerate(self.folder_paths):
-                    if self.is_cancelled:
-                        for j in range(i, len(self.folder_paths)):
-                            self.task_results.append({
-                                "name": os.path.basename(self.folder_paths[j]),
-                                "status": "not_started"})
-                        break
-
-                    folder_name = os.path.basename(folder_path)
-                    self.progress_updated.emit(
-                        i, total_count,
-                        trans_batch_progress(i + 1, total_count, folder_name))
-
-                    try:
-                        self.process_single_folder(folder_path)
-                        success_count += 1
-                        self.task_results.append(
-                            {"name": folder_name, "status": "success"})
-                    except RegistrationCancelled:
-                        self.task_results.append(
-                            {"name": folder_name, "status": "cancelled"})
-                        for j in range(i + 1, len(self.folder_paths)):
-                            self.task_results.append({
-                                "name": os.path.basename(self.folder_paths[j]),
-                                "status": "not_started"})
-                        break
-                    except PartialWriteError as e:
-                        failed_folders.append(f"{folder_name}: {str(e)}")
-                        self.task_results.append({
-                            "name": folder_name, "status": "partial",
-                            "error": str(e)})
-                        print(f"Partially written {folder_name}: {str(e)}")
-                    except Exception as e:
-                        failed_folders.append(f"{folder_name}: {str(e)}")
-                        self.task_results.append({
-                            "name": folder_name, "status": "failed",
-                            "error": str(e)})
-                        print(f"Error processing {folder_name}: {str(e)}")
-
-                self.progress_updated.emit(total_count, total_count, "")
-                results = {
-                    'success': success_count,
-                    'total': total_count,
-                    'failed': failed_folders,
-                    'cancelled': self.is_cancelled,
-                    'outputs': list(self.written_paths),
-                    'tasks': list(self.task_results),
-                    'counts': _count_task_states(self.task_results,
-                                                 total_count),
-                }
-                self.finished.emit(results)
-
-        except Exception as e:
-            self.error.emit(f"Batch processing failed: {str(e)}")
+                tasks = [(os.path.basename(os.path.normpath(path)), path)
+                         for path in self.folder_paths]
+            total = len(tasks)
+            for index, (name, data) in enumerate(tasks):
+                task = {'name': name, 'status': 'not_started', 'artifacts': [], 'failures': []}
+                self.task_results.append(task)
+                if self.is_cancelled:
+                    continue
+                self._task_artifacts = task['artifacts']
+                self._task_failures = task['failures']
+                self.progress_updated.emit(index, total, trans_batch_progress(index + 1, total, name))
+                try:
+                    if split:
+                        self._process_single_stack(data, self._get_output_path_for_single_folder(source), name, index)
+                    else:
+                        self.process_single_folder(data)
+                    task['status'] = 'success'
+                except RegistrationCancelled:
+                    self.is_cancelled = True
+                    task['status'] = 'cancelled'
+                except Exception as exc:
+                    task['status'] = 'partial' if task['artifacts'] else 'failed'
+                    task['error'] = str(exc)
+                self.progress_updated.emit(index + 1, total, trans_batch_progress(index + 1, total, name))
+            counts = _count_task_states(self.task_results, total)
+            self.finished.emit({
+                'success': counts['success'], 'total': total,
+                'failed': [f"{task['name']}: {task['error']}" for task in self.task_results if 'error' in task],
+                'cancelled': self.is_cancelled, 'outputs': list(self.written_paths),
+                'aligned_stacks': [item for item in self.aligned_stacks if item['files']],
+                'tasks': list(self.task_results), 'counts': counts})
+        except Exception as exc:
+            self.error.emit(str(exc))
 
     def _split_images_for_processing(self):
         """分割单文件夹中的图像"""
+        if self._frozen_stacks:
+            return self._frozen_stacks
         if not self.single_folder_images_with_times:
             return []
 
@@ -740,31 +687,21 @@ class BatchWorker(QThread):
         else:
             return [self.single_folder_images_with_times]
 
-    def _stack_scale_cfg(self) -> Optional[dict]:
-        """Scale-bar config for this stack.
-
-        Same rule as every other export path (utils.scalebar.effective_px_um):
-        a manual value wins over the detected metadata, so a batch output
-        carries the same bar as a normal save. Otherwise a stack whose
-        metadata is wrong got a different bar in batch mode only.
-        """
-        cfg = self.processing_settings.get("scale_bar")
+    def _stack_scale_cfg(self, target='output') -> Optional[dict]:
+        cfg = dict(self.processing_settings.get('scale_bar') or {})
         if not cfg:
             return None
-        manual = cfg.get("manual_px_um") or 0
-        try:
-            manual = float(manual)
-        except (TypeError, ValueError):
-            manual = 0.0
-        detected = getattr(self.image_loader, "px_size_um", None)
-        if manual > 0:
-            px_um = manual
-        elif detected and detected > 0:
-            px_um = detected
-        else:
+        scope = cfg.pop('target', 'all')
+        if scope not in ('all', target):
             return None
-        return {"px_um": px_um, "position": cfg.get("position", "bottom-right"),
-                "color": cfg.get("color", "auto")}
+        manual = float(cfg.pop('manual_px_um', 0) or 0)
+        detected = getattr(self.image_loader, 'px_size_um', None)
+        scale = float(self.processing_settings.get('load_scale_factor', 1.0))
+        px_um = manual / scale if manual > 0 else (detected / scale if detected else None)
+        if not px_um:
+            return None
+        cfg['px_um'] = px_um
+        return cfg
 
     def _process_single_stack(self, stack_images_with_times, output_dir,
                               stack_name, stack_index):
@@ -775,7 +712,14 @@ class BatchWorker(QThread):
         wrote no files at all while still being counted as a success.
         """
         images = [item[1] for item in stack_images_with_times]
-        original_paths = [item[0] for item in stack_images_with_times]
+        original_paths = [item[3] if len(item) > 3 else item[0] for item in stack_images_with_times]
+        if self.is_cancelled:
+            raise RegistrationCancelled()
+        if not images:
+            raise ValueError('No frames to process')
+        method = self.processing_settings.get('fusion_method')
+        if method and method != 'none' and len(images) < 2:
+            raise ValueError('Fusion requires at least two frames')
 
         aligned_images = images.copy()
         reg_methods = self.processing_settings.get('reg_methods', [])
@@ -817,7 +761,7 @@ class BatchWorker(QThread):
                     aligned_images, output_path=None, thread_count=self.thread_count,
                     should_cancel=lambda: self.is_cancelled)
 
-        output_format = self.processing_settings.get('format', 'jpg')
+        output_format = self.processing_settings.get('format', 'png').lstrip('.').lower()
         fusion_method = self.processing_settings.get('fusion_method')
         if fusion_method == "none":
             fusion_method = None
@@ -833,6 +777,10 @@ class BatchWorker(QThread):
                 fusion_params["model_path"] = resource_path("weights", "stackmff_v3_final.pth")
 
             tile_kwargs = {}
+            for key in ('tile_enabled', 'tile_block_size', 'tile_overlap',
+                        'tile_threshold', 'ai_batch_size', 'ai_mode'):
+                if key in fusion_params:
+                    tile_kwargs[key] = fusion_params.pop(key)
             tile_kwargs.setdefault('tile_enabled', self.tile_enabled if self.tile_enabled is not None else True)
             tile_kwargs.setdefault('tile_block_size', self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE)
             tile_kwargs.setdefault('tile_overlap', self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP)
@@ -862,7 +810,7 @@ class BatchWorker(QThread):
 
             result = self._fuse_one_stack(
                 fusion, fusion_method, fusion_input, fusion_params,
-                self.ai_mode)
+                tile_kwargs['ai_mode'])
             result = quantize_fuse_output(result, is_16bit)
         else:
             save_aligned = True
@@ -870,31 +818,31 @@ class BatchWorker(QThread):
         stack_cfg = self._stack_scale_cfg()
         saved = []
         if result is not None:
-            output_path = os.path.join(
-                output_dir, f"{stack_name}.{output_format}")
-            saved.append(self._save_image(
-                output_path, result, output_format, scale_cfg=stack_cfg))
+            output_path = unique_path(os.path.join(output_dir, f'{stack_name}.{output_format}'))
+            ok = self._save_image(output_path, result, output_format, scale_cfg=stack_cfg)
+            saved.append(ok)
+            if ok:
+                self.written_paths.append(self._task_artifacts[-1])
 
         if save_aligned and aligned_for_export is not None:
-            for idx, img in enumerate(aligned_for_export):
-                aligned_filename = (
-                    f"{stack_name}_aligned_{idx + 1:03d}.{output_format}")
-                aligned_path = os.path.join(output_dir, aligned_filename)
-                saved.append(self._save_image(
-                    aligned_path, img, output_format, scale_cfg=stack_cfg))
+            stack_cfg = self._stack_scale_cfg('registered')
+            directory = create_stack_directory(output_dir, f'{stack_name}_aligned')
+            artifact = {'path': directory, 'name': stack_name, 'files': [],
+                        'annotations_baked': bool(stack_cfg)}
+            self.aligned_stacks.append(artifact)
+            for index, image in enumerate(aligned_for_export):
+                filename = frame_export_name(original_paths[index], index, output_format)
+                ok = self._save_image(os.path.join(directory, filename), image,
+                                      output_format, scale_cfg=stack_cfg)
+                saved.append(ok)
+                if ok:
+                    artifact['files'].append(self._task_artifacts[-1])
 
-        expected = (1 if result is not None else 0) + (
-            len(aligned_for_export) if save_aligned and aligned_for_export
-            is not None else 0)
-        written = sum(1 for ok in saved if ok)
-        if written == 0:
-            raise Exception(
-                f"nothing was written for '{stack_name}'"
-                + ("" if result is not None
-                   else " (no fusion method selected)"))
-        if expected and written < expected:
-            raise PartialWriteError(
-                f"{written}/{expected} files were written for '{stack_name}'")
+        written = sum(saved)
+        if not written:
+            raise OSError(f'No files were written for {stack_name}')
+        if written != len(saved):
+            raise PartialWriteError(f'{written}/{len(saved)} files were written for {stack_name}')
 
     def _fuse_one_stack(self, fusion, fusion_method, fusion_input,
                         fusion_params, ai_mode):
@@ -949,245 +897,32 @@ class BatchWorker(QThread):
         return None
 
     def process_single_folder(self, folder_path):
-        """处理单个文件夹"""
-        # 1. 加载图像
-        success, message, images, filenames = self.image_loader.load_from_folder(folder_path)
+        """Both entry points share the same registration/fusion/write pipeline."""
+        scale = float(self.processing_settings.get('load_scale_factor', 1.0))
+        success, message, images, filenames = self.image_loader.load_from_folder(
+            folder_path, scale_factor=scale)
+        if self.is_cancelled:
+            raise RegistrationCancelled()
+        if getattr(self.image_loader, 'failed_count', 0):
+            raise ValueError(message)
         if not success or not images:
-            raise Exception(f"Failed to load images: {message}")
-        
-        # 2. 图像配准（如果需要）
-        aligned_images = images.copy()
-        reg_methods = self.processing_settings.get('reg_methods', [])
-        
-        if reg_methods:
-            # 配准选项
-            align_homography = "homography" in reg_methods
-            align_ecc = "ecc" in reg_methods
-
-            # 执行配准
-            aligned_images = []
-
-            # OpenFocus 快速对齐先跑（若勾选）
-            if "openfocus" in reg_methods:
-                fast = ImageRegistration(
-                    method="openfocus",
-                    brightness_reference=("last" if self.exposure_match
-                                          else "first"))
-                aligned_images = fast.process(
-                    images, output_path=None, thread_count=self.thread_count,
-                    should_cancel=lambda: self.is_cancelled)
-            else:
-                aligned_images = list(images)
-
-            # 确定配准模式
-            if align_homography and align_ecc:
-                mode = "both"
-            elif align_homography:
-                mode = "homography"
-            elif align_ecc:
-                mode = "ecc"
-            else:
-                mode = None
-
-            if mode:
-                width = self._registration_width(aligned_images)
-                if width is not None:
-                    registration = ImageRegistration(method=mode, downscale_width=width)
-                else:
-                    registration = ImageRegistration(method=mode)
-                aligned_images = registration.process(
-                    aligned_images, output_path=None, thread_count=self.thread_count,
-                    should_cancel=lambda: self.is_cancelled)
-            elif "openfocus" not in reg_methods:
-                # Nothing was selected at all: keep the originals. When the
-                # OpenFocus pass DID run, its result must be kept — this branch
-                # used to replace it with the unaligned frames.
-                aligned_images = images.copy()
-        
-        # 3. 图像融合
-        fusion_method = self.processing_settings.get('fusion_method')
-        if fusion_method == "none":
-            # 仅对齐批处理：跳过融合（输出=对齐后的帧）
-            fusion_method = None
-        if fusion_method:
-            # Copy unconditionally: the pops below used to mutate the shared
-            # settings dict, so the second task saw a different exposure/tile
-            # configuration than the first.
-            fusion_params = dict(
-                self.processing_settings.get('fusion_params', {}) or {})
-            if fusion_method == "stackmffv3" and "model_path" not in fusion_params:
-                fusion_params["model_path"] = resource_path("weights", "stackmff_v3_final.pth")
-            
-            # 创建相应算法的融合器实例
-            # 优先使用 processing_settings 中的 fusion_params 中可能包含的 tile 覆盖值
-            tile_kwargs = {}
-            if isinstance(fusion_params, dict):
-                # allow explicit per-batch overrides
-                if 'tile_enabled' in fusion_params:
-                    tile_kwargs['tile_enabled'] = fusion_params.pop('tile_enabled')
-                if 'tile_block_size' in fusion_params:
-                    tile_kwargs['tile_block_size'] = fusion_params.pop('tile_block_size')
-                if 'tile_overlap' in fusion_params:
-                    tile_kwargs['tile_overlap'] = fusion_params.pop('tile_overlap')
-                if 'tile_threshold' in fusion_params:
-                    tile_kwargs['tile_threshold'] = fusion_params.pop('tile_threshold')
-
-            # Fallback to worker-level (window) settings if not provided
-            tile_kwargs.setdefault('tile_enabled', self.tile_enabled if self.tile_enabled is not None else True)
-            tile_kwargs.setdefault('tile_block_size', self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE)
-            tile_kwargs.setdefault('tile_overlap', self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP)
-            tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD)
-
-            fusion = MultiFocusFusion(
-                algorithm=fusion_method, use_gpu=self.use_gpu,
-                base_frame=self.processing_settings.get('base_frame', 'none'),
-                sort_mode=self.processing_settings.get('sort_mode', 'asc'),
-                exposure_match=fusion_params.pop(
-                    'exposure_match', self.exposure_match),
-                **tile_kwargs)
-
-            # 调用fuse方法执行融合：与单文件夹路径使用同一套 16-bit 输入/输出契约，
-            # 否则批处理会把 16-bit 栈压成 8-bit（甚至过曝）
-            from utils.image_utils import normalize_fuse_input, quantize_fuse_output
-            fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
-            fusion_result = quantize_fuse_output(
-                fusion.fuse(fusion_input, thread_count=self.thread_count,
-                            should_cancel=lambda: self.is_cancelled, **fusion_params),
-                is_16bit)
-        else:
-            fusion_result = None
-        
-        # 4. 保存结果
-        expected = 0
-        written = 0
-        if fusion_result is not None:
-            expected += 1
-            if self.save_fusion_result(folder_path, fusion_result):
-                written += 1
-
-        # 5. 如果需要，保存配准后的图像栈
-        save_aligned = self.processing_settings.get('save_aligned', False)
-        if save_aligned:
-            expected += len(aligned_images)
-            written += self.save_registered_stack(
-                folder_path, aligned_images, filenames)
-
-        # A folder that produced no file is a failure: it used to be counted as
-        # a success and reported as "processed", while the output folder stayed
-        # empty (no fusion method selected, or every write failed).
-        if written == 0:
-            raise Exception(
-                "nothing was written"
-                + ("" if fusion_result is not None
-                   else " (no fusion method selected)"))
-        if expected and written < expected:
-            raise PartialWriteError(
-                f"{written}/{expected} files were written")
-    
-    def save_fusion_result(self, folder_path, fusion_result):
-        """保存融合结果"""
-        # 确定输出路径
-        if self.output_type == "subfolder":
-            output_dir = os.path.join(folder_path, self.output_path)
-            os.makedirs(output_dir, exist_ok=True)
-        elif self.output_type == "same":
-            output_dir = folder_path
-        else:  # custom
-            output_dir = self.output_path
-            os.makedirs(output_dir, exist_ok=True)
-
-        # 生成文件名。两个同名文件夹（D:\run1\stack 与 D:\run2\stack）在
-        # custom 模式下会写到同一个文件，第二个静默覆盖第一个——加序号区分
-        folder_name = os.path.basename(folder_path)
-        extension = self.processing_settings.get('format', 'png')
-        filename = f"{folder_name}.{extension}"
-        output_path = os.path.join(output_dir, filename)
-        if self.output_type == "custom":
-            output_path = self._unique_output_path(output_path)
-
-        # 保存图像
-        return self._save_image(output_path, fusion_result, extension,
-                                scale_cfg=self._stack_scale_cfg())
-
-    @staticmethod
-    def _unique_output_path(path: str) -> str:
-        """Append _2, _3, ... when the target already exists."""
-        if not os.path.exists(path):
-            return path
-        stem, ext = os.path.splitext(path)
-        for n in range(2, 1000):
-            candidate = f"{stem}_{n}{ext}"
-            if not os.path.exists(candidate):
-                return candidate
-        # Never return the occupied original: that silently overwrote an
-        # existing result after the numbered names ran out.
-        import uuid
-        return f"{stem}_{uuid.uuid4().hex[:8]}{ext}"
-
-    def save_registered_stack(self, folder_path, images, filenames) -> int:
-        """Save the aligned stack; returns how many files were written."""
-        # 确定输出路径
-        if self.output_type == "custom":
-            output_dir = self.output_path
-            folder_name = os.path.basename(folder_path)
-            output_dir = os.path.join(output_dir, folder_name)
-            os.makedirs(output_dir, exist_ok=True)
-        else:  # same as source
-            output_dir = folder_path
-
-        # 保存每个图像
-        import cv2
-        extension = self.processing_settings.get('format', 'png')
-        source_paths = {os.path.abspath(os.path.join(folder_path, name))
-                        for name in (filenames or [])}
-        saved = 0
-
-        for i, image in enumerate(images):
-            if i < len(filenames):
-                # 使用原始文件名
-                filename = filenames[i]
-                if not filename.lower().endswith(f".{extension}"):
-                    # 更改扩展名
-                    base_name = os.path.splitext(filename)[0]
-                    filename = f"{base_name}.{extension}"
-            else:
-                # 生成默认文件名
-                filename = f"registered_{i+1:04d}.{extension}"
-
-            output_path = os.path.join(output_dir, filename)
-            # Aligned frames must never overwrite the frames they came from:
-            # with "same as source" and a matching output format the originals
-            # were replaced by the registered copies (irreversible).
-            if os.path.abspath(output_path) in source_paths:
-                output_path = self._unique_output_path(
-                    os.path.join(output_dir,
-                                 f"{os.path.splitext(filename)[0]}_registered.{extension}"))
-            if self._save_image(output_path, image, extension,
-                                scale_cfg=self._stack_scale_cfg()):
-                saved += 1
-        return saved
+            raise ValueError(message)
+        self._source_exif = getattr(self.image_loader, 'source_exif', b'') or b''
+        entries = [(os.path.join(folder_path, name), image, None)
+                   for name, image in zip(filenames, images)]
+        self._process_single_stack(entries, self._get_output_path_for_single_folder(folder_path),
+                                   os.path.basename(os.path.normpath(folder_path)), 0)
 
     def _get_output_path_for_single_folder(self, source_folder_path):
-        """获取单文件夹模式下的输出路径"""
-        if self.output_type == "subfolder":
-            output_dir = os.path.join(source_folder_path, self.output_path)
-        elif self.output_type == "same":
+        if self.output_type == 'subfolder':
+            root = os.path.realpath(source_folder_path)
+            output_dir = os.path.realpath(os.path.join(root, self.output_path))
+            if os.path.isabs(self.output_path) or os.path.commonpath((root, output_dir)) != root:
+                raise ValueError('Output subfolder must be inside the source folder')
+        elif self.output_type == 'same':
             output_dir = source_folder_path
         else:
             output_dir = self.output_path
-        os.makedirs(output_dir, exist_ok=True)
-        return output_dir
-
-    def _get_output_path(self, folder_path, stack_name=None):
-        """获取输出路径"""
-        if self.output_type == "subfolder":
-            output_dir = os.path.join(folder_path, self.output_path)
-        elif self.output_type == "same":
-            output_dir = folder_path
-        else:
-            output_dir = self.output_path
-            if stack_name:
-                output_dir = os.path.join(output_dir, stack_name)
         os.makedirs(output_dir, exist_ok=True)
         return output_dir
 
@@ -1202,48 +937,53 @@ class GifSaverWorker(QThread):
 
     def __init__(self, images, file_path, duration_sec, label_manager, target_type, scale_cfg=None):
         super().__init__()
-        self.images = images
+        self.images = tuple(images)
         self.file_path = file_path
         self.duration_sec = duration_sec
         self.label_manager = label_manager
         self.target_type = target_type
         self.scale_cfg = scale_cfg
+        self.is_cancelled = False
+
+    def cancel(self):
+        self.is_cancelled = True
 
     def run(self):
+        import tempfile
+        temporary = None
         try:
             normalized_images = []
-            for i, img in enumerate(self.images):
-                # 创建图像副本，并在需要时叠加标签
-                img_copy = self.label_manager.prepare_bgr_image(self.target_type, img, i)
-                
-                # 如果图像是灰度图，转换为RGB
-                if len(img_copy.shape) == 2:
-                    img_copy = cv2.cvtColor(img_copy, cv2.COLOR_GRAY2RGB)
-                # 如果是BGR格式（OpenCV格式），转换为RGB
-                elif len(img_copy.shape) == 3 and img_copy.shape[2] == 3:
-                    img_copy = cv2.cvtColor(img_copy, cv2.COLOR_BGR2RGB)
-                
-                # 确保图像是uint8格式（16-bit 按比例缩放，不是截断）
-                if img_copy.dtype != np.uint8:
-                    img_copy = to_display_uint8(img_copy)
+            for index, image in enumerate(self.images):
+                if self.is_cancelled:
+                    raise RegistrationCancelled()
+                if self.label_manager is not None:
+                    image = self.label_manager.prepare_bgr_image(self.target_type, image, index)
                 if self.scale_cfg:
                     from utils import scalebar
-                    img_copy = scalebar.burn(img_copy, self.scale_cfg)
-                
-                normalized_images.append(img_copy)
-            
-            # 使用imageio保存GIF
-            # imageio 把 duration 原样交给 Pillow，而 Pillow 的单位是毫秒；
-            # 这里传的是秒，不换算的话每帧时长会被截断成 0（播放速度失控）
-            imageio.mimsave(
-                self.file_path,
-                normalized_images,
-                duration=self.duration_sec * 1000.0,
-                loop=0  # 循环播放，0表示无限循环
-            )
-            self.finished_signal.emit(True, f"GIF animation saved to:\n{self.file_path}")
-        except Exception as e:
-            self.finished_signal.emit(False, str(e))
+                    image = scalebar.burn(image, self.scale_cfg)
+                image = to_display_uint8(image)
+                if image.ndim == 2:
+                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+                elif image.shape[2] == 3:
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                normalized_images.append(image)
+            handle, temporary = tempfile.mkstemp(suffix='.gif', prefix='.openfocus-',
+                                                 dir=os.path.dirname(os.path.abspath(self.file_path)))
+            os.close(handle)
+            imageio.mimsave(temporary, normalized_images,
+                            duration=self.duration_sec * 1000.0, loop=0)
+            if self.is_cancelled:
+                raise RegistrationCancelled()
+            os.replace(temporary, self.file_path)
+            temporary = None
+            self.finished_signal.emit(True, self.file_path)
+        except RegistrationCancelled:
+            self.finished_signal.emit(False, 'CANCELLED')
+        except Exception as exc:
+            self.finished_signal.emit(False, str(exc))
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.remove(temporary)
 
 
 class PartialWriteError(Exception):

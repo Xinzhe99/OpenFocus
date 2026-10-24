@@ -284,6 +284,9 @@ class TileSettingsDialog(QDialog):
 
         # load defaults from parent if available
         self.load_defaults()
+        self.spin_block.valueChanged.connect(
+            lambda value: self.spin_overlap.setMaximum(int(value) // 2))
+        self.spin_overlap.setMaximum(int(self.spin_block.value()) // 2)
 
     def load_defaults(self):
         if self.parent_window:

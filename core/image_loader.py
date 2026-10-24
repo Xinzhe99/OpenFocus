@@ -236,8 +236,35 @@ class ImageStackLoader:
         self.thumbnail_size = (600, 400)
         # µm/px auto-detected from the stack's TIFF metadata (None = unknown)
         self.px_size_um = None
+        self.should_cancel = lambda: False
+        self.failed_count = 0
+        # `*_registered*` copies found beside their originals and skipped
+        self.skipped_derived_count = 0
+
+    def _drop_derived_aligned_copies(self, image_files):
+        """Skip `*_registered*` files that duplicate an original in the folder.
+
+        Older builds wrote aligned copies beside the sources. Those copies are
+        not focus-stack frames: re-loading a folder after a batch turned 9
+        frames into 36 and fused each frame three times. A file is skipped
+        only when its original stem is present in the same folder, so a user
+        who genuinely named a file `_registered` keeps it.
+        """
+        from utils.export_paths import derived_aligned_source
+
+        stems = {os.path.splitext(name)[0].lower() for name, _ in image_files}
+        kept = []
+        for name, path in image_files:
+            original = derived_aligned_source(name)
+            if original and original.lower() in stems:
+                continue
+            kept.append((name, path))
+        self.skipped_derived_count = len(image_files) - len(kept)
+        return kept
 
     def load_from_folder(self, folder_path: str, scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
+        self.failed_count = 0
+        self.skipped_derived_count = 0
         if not os.path.isdir(folder_path):
             return False, "Selected path is not a valid directory", [], []
 
@@ -247,6 +274,7 @@ class ImageStackLoader:
             if ext in self.SUPPORTED_FORMATS:
                 full_path = os.path.join(folder_path, filename)
                 image_files.append((filename, full_path))
+        image_files = self._drop_derived_aligned_copies(image_files)
 
         if not image_files:
             return False, "No supported image files found in the folder", [], []
@@ -264,6 +292,8 @@ class ImageStackLoader:
         self.px_size_um = None
 
         for filename, full_path in image_files:
+            if self.should_cancel():
+                return False, 'CANCELLED', [], []
             try:
                 pages = _read_tiff_pages(full_path)
                 if pages is not None:
@@ -303,6 +333,7 @@ class ImageStackLoader:
             except Exception as e:
                 failed_count += 1
                 print(f"Failed to load image {filename}: {e}")
+        self.failed_count = failed_count
 
         if not loaded_images:
             return False, "Could not load any image files", [], []
@@ -317,6 +348,8 @@ class ImageStackLoader:
         message = f"Loaded {len(loaded_images)} image(s)"
         if failed_count > 0:
             message += f" (failed: {failed_count})"
+        if getattr(self, 'skipped_derived_count', 0):
+            message += f" (skipped {self.skipped_derived_count} aligned copies)"
 
         return True, message, loaded_images, filenames
 
@@ -341,6 +374,8 @@ class ImageStackLoader:
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
             while True:
+                if self.should_cancel():
+                    return False, 'CANCELLED', [], []
                 ret, frame = cap.read()
                 if not ret:
                     break
@@ -373,6 +408,7 @@ class ImageStackLoader:
         return ext in self.SUPPORTED_VIDEO_FORMATS
 
     def load_from_filepaths(self, filepaths: list[str], scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
+        self.failed_count = 0
         if not filepaths:
             return False, "No file paths provided", [], []
 
@@ -386,6 +422,8 @@ class ImageStackLoader:
         self.source_exif = b""
 
         for full_path in sources:
+            if self.should_cancel():
+                return False, 'CANCELLED', [], []
             try:
                 if not os.path.exists(full_path):
                     failed_count += 1
@@ -431,6 +469,7 @@ class ImageStackLoader:
             except Exception as e:
                 failed_count += 1
                 print(f"Failed to load image {full_path}: {e}")
+        self.failed_count = failed_count
 
         if not loaded_images:
             return False, "Could not load any image files", [], []
@@ -530,63 +569,23 @@ class ImageStackLoader:
 
         return None
 
-    def load_images_with_timestamps(
-        self,
-        folder_path: str,
-        sort_by: str = 'timestamp'
-    ) -> Tuple[bool, str, List[Tuple[str, np.ndarray, Optional[float]]], List[str]]:
-        if not os.path.isdir(folder_path):
-            return False, "Selected path is not a valid directory", [], []
+    def load_images_with_timestamps(self, folder_path: str, sort_by: str = 'filename',
+                                    scale_factor: float = 1.0):
+        """Decode through the normal loader, preserving all container pages.
 
-        image_files = []
-        for filename in os.listdir(folder_path):
-            ext = os.path.splitext(filename)[1].lower()
-            if ext in self.SUPPORTED_FORMATS:
-                full_path = os.path.join(folder_path, filename)
-                image_files.append((filename, full_path))
-
-        if not image_files:
-            return False, "No supported image files found in the folder", [], []
-
-        loaded_data = []
-        failed_count = 0
-
-        for filename, full_path in image_files:
-            try:
-                img = decode_image(full_path)
-                if img is not None:
-                    timestamp = self.get_image_timestamp(full_path)
-                    loaded_data.append((filename, full_path, img, timestamp))
-                else:
-                    failed_count += 1
-            except Exception as e:
-                failed_count += 1
-                print(f"Failed to load image {filename}: {e}")
-
-        if not loaded_data:
-            return False, "Could not load any image files", [], []
-
-        def get_sort_key(item):
-            if sort_by == 'timestamp':
-                ts = item[3]
-                # Equal or missing timestamps must still have a stable,
-                # predictable order: without a filename tie-break, same-second
-                # bursts followed the directory enumeration.
-                return (0, ts, natural_sort_key(item[0])) \
-                    if ts is not None else (1, 0.0, natural_sort_key(item[0]))
-            return (0, 0.0, natural_sort_key(item[0]))
-
-        loaded_data.sort(key=get_sort_key)
-
-        successful_count = len(loaded_data)
-        message = f"Loaded {successful_count} image(s)"
-        if failed_count > 0:
-            message += f" (failed: {failed_count})"
-
-        result = [(item[1], item[2], item[3]) for item in loaded_data]
-        filenames = [item[0] for item in loaded_data]
-
-        return True, message, result, filenames
+        Each entry retains its real source path and a separate export/page name.
+        """
+        ok, message, images, filenames = self.load_from_folder(folder_path, scale_factor)
+        if not ok:
+            return ok, message, [], []
+        timestamps = {path: self.get_image_timestamp(path) for path in dict.fromkeys(self.image_paths)}
+        data = [(path, image, timestamps[path], filename)
+                for path, image, filename in zip(self.image_paths, images, filenames)]
+        if sort_by == 'timestamp':
+            data.sort(key=lambda item: (item[2] is None, item[2] or 0, natural_sort_key(item[3])))
+        else:
+            data.sort(key=lambda item: natural_sort_key(item[3]))
+        return True, message, data, [item[3] for item in data]
 
     def split_by_count(
         self,
@@ -633,29 +632,31 @@ class ImageStackLoader:
         stacks = []
         current_stack = []
 
-        for i, (path, img, timestamp) in enumerate(images_with_times):
+        for i, item in enumerate(images_with_times):
+            timestamp = item[2]
             if i == 0:
-                current_stack.append((path, img, timestamp))
+                current_stack.append(item)
                 continue
 
             if timestamp is None:
                 if current_stack:
                     stacks.append(current_stack)
-                current_stack = [(path, img, timestamp)]
+                current_stack = [item]
                 continue
 
             prev_timestamp = images_with_times[i - 1][2]
             if prev_timestamp is None:
-                current_stack.append((path, img, timestamp))
+                stacks.append(current_stack)
+                current_stack = [item]
                 continue
 
             time_diff = timestamp - prev_timestamp
             if time_diff > threshold_seconds:
                 if current_stack:
                     stacks.append(current_stack)
-                current_stack = [(path, img, timestamp)]
+                current_stack = [item]
             else:
-                current_stack.append((path, img, timestamp))
+                current_stack.append(item)
 
         if current_stack:
             stacks.append(current_stack)
