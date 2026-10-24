@@ -5,6 +5,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.68.1] — 2026-10-24
+
+### Changed
+- **README hero is centred and scannable** in all twelve languages: logo,
+  name, one-line promise, a short summary, badges, a download/docs/CLI row and
+  the language switcher, then one screenshot. The download table, feature
+  list and quick start follow unchanged.
+- **macOS DMG creation retries from a staged copy.** `hdiutil create` failed
+  with "Resource busy" on the tag build because the freshly signed bundle was
+  still held; the release job then skipped every platform's assets.
+
 ## [v1.68.0] — 2026-10-24
 
 ### Changed (UI/UX specification pass, docs/ux-specs)

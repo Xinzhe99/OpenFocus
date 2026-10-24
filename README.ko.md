@@ -1,4 +1,40 @@
 <p align="center">
+  <a href="https://github.com/Xinzhe99/OpenFocus">
+    <img src="assets/OpenFocus.png" alt="OpenFocus" width="128">
+  </a>
+</p>
+
+<h1 align="center">OpenFocus</h1>
+
+<p align="center"><strong>모든 초점면을, 한 장의 완전 선명한 이미지로.</strong></p>
+
+<p align="center">
+  8가지 융합 알고리즘, 3가지 정합 모드, 그리고 매크로·현미경·산업용 스택을 위한 소스 고정 리터치 워크스페이스. 16비트 전 구간 유지, 헤드리스 CLI, 12개 언어 UI.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
+  <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
+  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
+</p>
+
+<p align="center">
+  <a href="#download">다운로드</a> ·
+  <a href="./docs/USER_MANUAL_KO.md">문서</a> ·
+  <a href="#command-line-usage">CLI</a> ·
+  <a href="./CHANGELOG.md">변경 기록</a> ·
+  <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
+</p>
+
+<p align="center">
   <a href="README.md">English</a> ·
   <a href="README.zh-CN.md">简体中文</a> ·
   <a href="README.ja.md">日本語</a> ·
@@ -13,24 +49,16 @@
   <a href="README.pl.md">Polski</a>
 </p>
 
-# <img src="assets/OpenFocus.png" alt="OpenFocus Logo" width="120"> OpenFocus
-
-OpenFocus는 다중 초점 이미지의 정렬과 합성을 위한 오픈 소스 워크스테이션입니다. 상용 포커스 스태킹 소프트웨어에 맞먹는 품질을 목표로 하며, 완전히 오픈 소스이고 확장하기 쉽습니다.
-
-<p align="left">
-  <a href="https://www.python.org/downloads/release/python-3100/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?logo=open-source-initiative&logoColor=white" alt="License: MIT" /></a>
-  <a href="https://github.com/Xinzhe99/OpenFocus"><img src="https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white" alt="GitHub Repository" /></a>
-  <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/badge/Windows%20%7C%20macOS-Download-0078D7?logo=github&logoColor=white" alt="Download" /></a>
-  <a href="https://doi.org/10.5281/zenodo.23050823"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.23050823-0078D7?logo=doi&logoColor=white" alt="DOI" /></a>
-</p>
-
 <p align="center">
-  <img src="assets/ui.png" alt="OpenFocus 인터페이스" width="820">
+  <img src="assets/ui.png" alt="OpenFocus 인터페이스" width="880">
 </p>
 
-> **v1.68.0** — 배치 출력이 선택한 모드을 따릅니다. 정렬만 하면 `<스택>_aligned` 폴더를 만들어 목록에 표시하고, 융합 시에는 융합 이미지만 표시하며, 정렬을 저장하지 않으면 융합 이미지만 기록합니다. 원본 폴더에 남은 `*_registered*` 사본은 프레임으로 로드되지 않습니다. `docs/ux-specs` 감사에 따라 라벨, 스케일 바, 방법 비교, 깊이/모델 내보내기, 업데이트, 리터치도 개편했습니다.
+## 📢 News
 
+> [!NOTE]
+> **v1.68.1** — 배치 출력이 선택한 모드을 따릅니다. 정렬만 하면 `<스택>_aligned` 폴더를 만들어 목록에 표시하고, 융합 시에는 융합 이미지만 표시하며, 정렬을 저장하지 않으면 융합 이미지만 기록합니다. 원본 폴더에 남은 `*_registered*` 사본은 프레임으로 로드되지 않습니다. `docs/ux-specs` 감사에 따라 라벨, 스케일 바, 방법 비교, 깊이/모델 내보내기, 업데이트, 리터치도 개편했습니다.
+
+<a id="download"></a>
 ## 다운로드 및 설치
 
 [Releases](https://github.com/Xinzhe99/OpenFocus/releases)에서 빌드를 받을 수 있습니다.
@@ -54,6 +82,7 @@ OpenFocus는 다중 초점 이미지의 정렬과 합성을 위한 오픈 소스
 - **헤드리스 CLI** — GUI와 동일한 파이프라인을 `openfocus`로 실행. 배치, `--dry-run`, `--resume`, JSON 출력 지원.
 - **12개 UI 언어** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski.
 
+<a id="command-line-usage"></a>
 ## 빠른 시작
 
 ```bash

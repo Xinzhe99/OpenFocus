@@ -1,4 +1,40 @@
 <p align="center">
+  <a href="https://github.com/Xinzhe99/OpenFocus">
+    <img src="assets/OpenFocus.png" alt="OpenFocus" width="128">
+  </a>
+</p>
+
+<h1 align="center">OpenFocus</h1>
+
+<p align="center"><strong>Tous les plans de mise au point. Une seule image nette partout.</strong></p>
+
+<p align="center">
+  Huit algorithmes de fusion, trois modes de recalage et un espace de retouche lié à la source pour la macro, la microscopie et les piles industrielles. 16 bits de bout en bout, une CLI sans interface et une UI en douze langues.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
+  <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
+  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
+</p>
+
+<p align="center">
+  <a href="#download">Télécharger</a> ·
+  <a href="./docs/USER_MANUAL_FR.md">Documentation</a> ·
+  <a href="#command-line-usage">CLI</a> ·
+  <a href="./CHANGELOG.md">Journal</a> ·
+  <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
+</p>
+
+<p align="center">
   <a href="README.md">English</a> ·
   <a href="README.zh-CN.md">简体中文</a> ·
   <a href="README.ja.md">日本語</a> ·
@@ -13,24 +49,16 @@
   <a href="README.pl.md">Polski</a>
 </p>
 
-# <img src="assets/OpenFocus.png" alt="OpenFocus Logo" width="120"> OpenFocus
-
-OpenFocus est un poste de travail open source pour le recalage et la fusion d’images à mise au point multiple, avec une qualité comparable aux logiciels commerciaux et une architecture facile à étendre.
-
-<p align="left">
-  <a href="https://www.python.org/downloads/release/python-3100/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?logo=open-source-initiative&logoColor=white" alt="License: MIT" /></a>
-  <a href="https://github.com/Xinzhe99/OpenFocus"><img src="https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white" alt="GitHub Repository" /></a>
-  <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/badge/Windows%20%7C%20macOS-Download-0078D7?logo=github&logoColor=white" alt="Download" /></a>
-  <a href="https://doi.org/10.5281/zenodo.23050823"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.23050823-0078D7?logo=doi&logoColor=white" alt="DOI" /></a>
-</p>
-
 <p align="center">
-  <img src="assets/ui.png" alt="Interface d’OpenFocus" width="820">
+  <img src="assets/ui.png" alt="Interface d’OpenFocus" width="880">
 </p>
 
-> **v1.68.0** — l'export par lots suit le mode choisi : l'alignement seul crée un dossier `<pile>_aligned` et l'affiche, la fusion n'affiche que l'image fusionnée, et sans export de l'alignement seule cette image est écrite. Les copies `*_registered*` restées dans le dossier source ne sont plus chargées comme images. Retouche également des libellés, barres d'échelle, comparaison de méthodes, export de profondeur/modèle, mises à jour et retouche d'après l'audit `docs/ux-specs`.
+## 📢 News
 
+> [!NOTE]
+> **v1.68.1** — l'export par lots suit le mode choisi : l'alignement seul crée un dossier `<pile>_aligned` et l'affiche, la fusion n'affiche que l'image fusionnée, et sans export de l'alignement seule cette image est écrite. Les copies `*_registered*` restées dans le dossier source ne sont plus chargées comme images. Retouche également des libellés, barres d'échelle, comparaison de méthodes, export de profondeur/modèle, mises à jour et retouche d'après l'audit `docs/ux-specs`.
+
+<a id="download"></a>
 ## Téléchargement et installation
 
 Téléchargez une version depuis [Releases](https://github.com/Xinzhe99/OpenFocus/releases) :
@@ -54,6 +82,7 @@ L’application n’est pas signée : au premier lancement, Windows peut demande
 - **CLI sans interface** — le même pipeline via `openfocus`, avec lots, `--dry-run`, `--resume` et sortie JSON.
 - **Douze langues d’interface** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski.
 
+<a id="command-line-usage"></a>
 ## Démarrage rapide
 
 ```bash

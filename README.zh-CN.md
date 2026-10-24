@@ -1,4 +1,40 @@
 <p align="center">
+  <a href="https://github.com/Xinzhe99/OpenFocus">
+    <img src="assets/OpenFocus.png" alt="OpenFocus" width="128">
+  </a>
+</p>
+
+<h1 align="center">OpenFocus</h1>
+
+<p align="center"><strong>每个焦平面，一张全清晰图像。</strong></p>
+
+<p align="center">
+  八种融合算法、三种配准模式，以及为微距、显微与工业图像栈准备的源帧修饰工作区。端到端 16 位、无界面 CLI，界面支持十二种语言。
+</p>
+
+<p align="center">
+  <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
+  <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
+  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
+</p>
+
+<p align="center">
+  <a href="#download">下载</a> ·
+  <a href="./docs/USER_MANUAL_ZH.md">文档</a> ·
+  <a href="#command-line-usage">命令行</a> ·
+  <a href="./CHANGELOG.md">更新日志</a> ·
+  <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
+</p>
+
+<p align="center">
   <a href="README.md">English</a> ·
   <strong>简体中文</strong> ·
   <a href="README.ja.md">日本語</a> ·
@@ -13,24 +49,16 @@
   <a href="README.pl.md">Polski</a>
 </p>
 
-# <img src="assets/OpenFocus.png" alt="OpenFocus Logo" width="120"> OpenFocus
-
-OpenFocus 是一套开源的多焦点图像配准与融合工作站，效果对标商业级景深合成软件，同时保持完全开源、易于扩展。
-
-<p align="left">
-  <a href="https://www.python.org/downloads/release/python-3100/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?logo=open-source-initiative&logoColor=white" alt="License: MIT" /></a>
-  <a href="https://github.com/Xinzhe99/OpenFocus"><img src="https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white" alt="GitHub Repository" /></a>
-  <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/badge/Windows%20%7C%20macOS-Download-0078D7?logo=github&logoColor=white" alt="Download" /></a>
-  <a href="https://doi.org/10.5281/zenodo.23050823"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.23050823-0078D7?logo=doi&logoColor=white" alt="DOI" /></a>
-</p>
-
 <p align="center">
-  <img src="assets/ui.png" alt="OpenFocus 界面" width="820">
+  <img src="assets/ui.png" alt="OpenFocus 界面" width="880">
 </p>
 
-> **v1.68.0** — 批处理按所选模式落盘：仅对齐输出 `<栈名>_aligned` 文件夹并在输出列表显示该文件夹，融合只显示融合图，不导出对齐时只写融合图；源文件夹里残留的 `*_registered*` 副本不再被当作帧载入。本次还按 `docs/ux-specs` 审查重做了标签、比例尺、方法对比、深度/模型导出、更新与修饰。
+## 📢 News
 
+> [!NOTE]
+> **v1.68.1** — 批处理按所选模式落盘：仅对齐输出 `<栈名>_aligned` 文件夹并在输出列表显示该文件夹，融合只显示融合图，不导出对齐时只写融合图；源文件夹里残留的 `*_registered*` 副本不再被当作帧载入。本次还按 `docs/ux-specs` 审查重做了标签、比例尺、方法对比、深度/模型导出、更新与修饰。
+
+<a id="download"></a>
 ## 下载与安装
 
 无需配置环境，直接从 [Releases](https://github.com/Xinzhe99/OpenFocus/releases) 下载：
@@ -54,6 +82,7 @@ OpenFocus 是一套开源的多焦点图像配准与融合工作站，效果对�
 - **无界面 CLI**：与 GUI 同一管线，支持批处理、`--dry-run`、`--resume` 和 JSON 输出。
 - **十二种界面语言**：English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski。
 
+<a id="command-line-usage"></a>
 ## 快速开始
 
 ```bash
