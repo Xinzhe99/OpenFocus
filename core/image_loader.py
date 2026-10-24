@@ -28,7 +28,7 @@ try:
 except ImportError:
     RAWPY_AVAILABLE = False
 
-from utils.image_utils import to_display_uint8
+from utils.image_utils import export_exif, to_display_uint8
 from utils.sorting import natural_sort_key
 
 RAW_FORMATS = {'.dng', '.cr2', '.cr3', '.crw', '.nef', '.nrw', '.arw', '.srf',
@@ -77,12 +77,35 @@ def decode_image(path: str) -> Optional[np.ndarray]:
     return img
 
 
+# TIFF-structured RAW variants: byte-order mark + magic other than 42.
+_RAW_TIFF_MAGICS = {b"II*\x00", b"MM\x00*", b"IIRO", b"IIRS", b"MMOR", b"IIU\x00"}
+
+
+def _read_raw_exif_bytes(path: str) -> bytes:
+    """EXIF of a TIFF-based camera RAW (ORF, NEF, CR2, ARW, DNG, RW2, ...).
+
+    Olympus/Panasonic use a private magic number in place of 42; patching
+    it lets Pillow walk the IFDs. CR3/RAF are not TIFF and yield b"".
+    """
+    with open(path, "rb") as fh:
+        data = bytearray(fh.read())
+    if bytes(data[:4]) not in _RAW_TIFF_MAGICS:
+        return b""
+    data[2:4] = b"*\x00" if data[:2] == b"II" else b"\x00*"
+    # IFD0 of a RAW is full of sensor-data pointers; keep only the export-safe
+    # subset so SOURCE_EXIF stays small and embeddable as-is.
+    exif = export_exif(bytes(data))
+    return exif.tobytes() if exif is not None else b""
+
+
 def _read_exif_bytes(path: str) -> bytes:
     """Raw EXIF block of an image (b"") when absent or unreadable."""
     if not PIL_AVAILABLE:
         return b""
     try:
         ext = os.path.splitext(path)[1].lower()
+        if ext in RAW_FORMATS:
+            return _read_raw_exif_bytes(path)
         if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif', '.tif', '.tiff', '.png', '.webp'):
             return b""
         with PILImage.open(path) as pil_img:
