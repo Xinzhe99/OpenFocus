@@ -16,14 +16,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Guided-Filter comparison, and the eight-method inventory moved to the
   algorithms section where it belongs. Scale bars and labels gained their own
   rows with light-theme captures of the real dialogs.
-- **Four feature rows now play real clips** instead of stills: the A/B wipe
-  divider sweeping the fused result, the method comparison cycling its
-  selection, the 3D surface rotating, and the retouch frame sweep. Each row is
-  a `<picture>` with an animated GIF plus a JPEG poster (and the MP4 one click
-  away), so the fallback stays a real screenshot. Frames were grabbed from the
-  running window in the light theme on the heliconsoft7 stack and encoded with
-  ffmpeg; the source frames are not committed. The remaining rows keep stills
-  until a clip is recorded for them.
+- **Every feature row now plays a real clip.** AI fusion sweeps the source
+  stack beside the fixed StackMFF V3 result; method comparison (recorded by
+  the maintainer) pans a shared crop across all eight methods; the 3D surface
+  rotates; the retouch workspace walks its source frames; batch cycles its
+  fusion method; the label preview advances frames at 1:1; the scale-bar
+  preview re-renders as the calibration changes. Each row is a `<picture>`
+  with an animated GIF, a JPEG poster and the MP4 one click away, so the
+  fallback stays a real screenshot.
 
 ## [v1.68.1] — 2026-10-24
 

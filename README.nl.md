@@ -74,7 +74,7 @@ De standaardmethode classificeert elke pixel met een neuraal netwerk naar het me
 </td>
 <td width="54%">
 
-<img src="assets/comparison_ai_vs_gff.png" alt="AI-fusie: StackMFF V3" width="100%" />
+<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="AI-fusie: StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@ Wijs een map met stapels aan, kies methode en bestemming en laat het lopen. Alle
 </td>
 <td width="54%">
 
-<img src="assets/readme/batch.png" alt="Dialoog voor batchverwerking" width="100%" />
+<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="Dialoog voor batchverwerking" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@ Gekalibreerd uit TIFF-metadata of handmatig, getekend met het echte lettertype o
 </td>
 <td width="54%">
 
-<img src="assets/readme/scalebar.png" alt="Schaalbalkdialoog met live voorbeeld" width="100%" />
+<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="Schaalbalkdialoog met live voorbeeld" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@ Bijschriften blijven een beheerde lijst: elk met een eigen bereik (bron, uitgeli
 </td>
 <td width="54%">
 
-<img src="assets/readme/labels.png" alt="Labels en bijschriften" width="100%" />
+<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="Labels en bijschriften" width="100%" /></picture></a>
 
 </td>
 </tr>

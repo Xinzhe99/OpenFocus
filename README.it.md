@@ -74,7 +74,7 @@ Il metodo predefinito classifica ogni pixel nel fotogramma sorgente più probabi
 </td>
 <td width="54%">
 
-<img src="assets/comparison_ai_vs_gff.png" alt="Fusione IA: StackMFF V3" width="100%" />
+<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="Fusione IA: StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@ Indica una cartella di pile, scegli metodo e destinazione, poi lascia lavorare. 
 </td>
 <td width="54%">
 
-<img src="assets/readme/batch.png" alt="Finestra di elaborazione batch" width="100%" />
+<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="Finestra di elaborazione batch" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@ Calibrate dai metadati TIFF o inserite a mano, disegnate con font e lunghezza re
 </td>
 <td width="54%">
 
-<img src="assets/readme/scalebar.png" alt="Finestra della barra di scala con anteprima" width="100%" />
+<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="Finestra della barra di scala con anteprima" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@ Le didascalie sono un elenco gestito: ognuna con il proprio ambito (sorgente, pi
 </td>
 <td width="54%">
 
-<img src="assets/readme/labels.png" alt="Etichette e didascalie" width="100%" />
+<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="Etichette e didascalie" width="100%" /></picture></a>
 
 </td>
 </tr>

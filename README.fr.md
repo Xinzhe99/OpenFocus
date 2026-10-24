@@ -74,7 +74,7 @@ La méthode par défaut classe chaque pixel selon son image source la plus proba
 </td>
 <td width="54%">
 
-<img src="assets/comparison_ai_vs_gff.png" alt="Fusion IA : StackMFF V3" width="100%" />
+<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="Fusion IA : StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@ Pointez un dossier de piles, choisissez méthode et destination, puis laissez to
 </td>
 <td width="54%">
 
-<img src="assets/readme/batch.png" alt="Boîte de dialogue de traitement par lots" width="100%" />
+<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="Boîte de dialogue de traitement par lots" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@ Calibrées depuis les métadonnées TIFF ou saisies à la main, dessinées avec 
 </td>
 <td width="54%">
 
-<img src="assets/readme/scalebar.png" alt="Boîte de dialogue de barre d'échelle avec aperçu" width="100%" />
+<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="Boîte de dialogue de barre d'échelle avec aperçu" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@ Les légendes forment une liste gérée : chacune a sa portée (source, pile rec
 </td>
 <td width="54%">
 
-<img src="assets/readme/labels.png" alt="Libellés et légendes" width="100%" />
+<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="Libellés et légendes" width="100%" /></picture></a>
 
 </td>
 </tr>

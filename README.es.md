@@ -74,7 +74,7 @@ El método predeterminado clasifica cada píxel según su fotograma de origen m�
 </td>
 <td width="54%">
 
-<img src="assets/comparison_ai_vs_gff.png" alt="Fusión con IA: StackMFF V3" width="100%" />
+<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="Fusión con IA: StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@ Apunta a una carpeta de pilas, elige método y destino, y déjalo trabajar. Solo
 </td>
 <td width="54%">
 
-<img src="assets/readme/batch.png" alt="Diálogo de procesamiento por lotes" width="100%" />
+<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="Diálogo de procesamiento por lotes" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@ Calibradas desde metadatos TIFF o a mano, dibujadas con la fuente y longitud rea
 </td>
 <td width="54%">
 
-<img src="assets/readme/scalebar.png" alt="Diálogo de barra de escala con vista previa" width="100%" />
+<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="Diálogo de barra de escala con vista previa" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@ Mantén las leyendas como una lista gestionada: cada una con su ámbito (fuente,
 </td>
 <td width="54%">
 
-<img src="assets/readme/labels.png" alt="Etiquetas y leyendas" width="100%" />
+<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="Etiquetas y leyendas" width="100%" /></picture></a>
 
 </td>
 </tr>

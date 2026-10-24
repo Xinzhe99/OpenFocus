@@ -85,7 +85,7 @@ truth — with fewer ghost pixels than any classical algorithm.
 </td>
 <td width="54%">
 
-<img src="assets/comparison_ai_vs_gff.png" alt="StackMFF V3 versus Guided Filter on the same stack" width="100%" />
+<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="StackMFF V3 versus Guided Filter on the same stack" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -167,7 +167,7 @@ image and list exactly that.
 </td>
 <td width="54%">
 
-<img src="assets/readme/batch.png" alt="Batch processing dialog" width="100%" />
+<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="Batch processing dialog" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -186,7 +186,7 @@ instead of printing a length it does not draw.
 </td>
 <td width="54%">
 
-<img src="assets/readme/scalebar.png" alt="Scale bar dialog with a live preview" width="100%" />
+<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="Scale bar dialog with a live preview" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -203,7 +203,7 @@ Save, Save As, drag-out and Export All.
 </td>
 <td width="54%">
 
-<img src="assets/readme/labels.png" alt="Label manager with a live preview" width="100%" />
+<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="Label manager with a live preview" width="100%" /></picture></a>
 
 </td>
 </tr>
