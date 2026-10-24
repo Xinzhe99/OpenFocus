@@ -79,16 +79,16 @@ La aplicación no está firmada, así que el primer inicio puede mostrar un avis
 <tr>
 <td width="46%" valign="middle">
 
-### Ocho algoritmos de fusión
+### Fusión con IA: StackMFF V3
 
-Cuatro clásicos más la familia OpenFocus A/B/C y el modelo neuronal StackMFF-V3, todos sobre la misma pila registrada: compara y elige por motivo en vez de confiar en un único valor por defecto.
+El método predeterminado clasifica cada píxel según su fotograma de origen más probable con una red neuronal. En la misma pila registrada mantiene los bordes de las letras más nítidos y las superficies más limpias que Guided Filter (nitidez laplaciana 27,1 frente a 28,5), y lidera todos los métodos en PSNR y SSIM frente a una verdad sintética, con menos píxeles fantasma que cualquier algoritmo clásico.
 
-[Algoritmos →](#algorithms)
+[Algoritmos →](#algorithms) · [Banco de pruebas →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/result.png" alt="Resultado de fusión en la ventana de OpenFocus" width="100%" />
+<img src="assets/comparison_ai_vs_gff.png" alt="Fusión con IA: StackMFF V3" width="100%" />
 
 </td>
 </tr>
@@ -175,7 +175,9 @@ Apunta a una carpeta de pilas, elige método y destino, y déjalo trabajar. Solo
 
 ### Barras de escala de publicación
 
-Calibradas desde metadatos TIFF o a mano, dibujadas con la fuente y longitud reales, e incrustadas en cada exportación: imagen, pila, TIFF, GIF y lote.
+Calibradas desde metadatos TIFF o a mano, dibujadas con la fuente y longitud reales, e incrustadas en cada exportación: imagen, pila, TIFF, GIF y lote. Si no cabe de forma legible lo indica, en lugar de dibujar una barra que no coincide con su etiqueta.
+
+[Manual →](./docs/USER_MANUAL_ES.md)
 
 </td>
 <td width="54%">
@@ -185,6 +187,20 @@ Calibradas desde metadatos TIFF o a mano, dibujadas con la fuente y longitud rea
 </td>
 </tr>
 
+<tr>
+<td width="46%" valign="middle">
+
+### Etiquetas y leyendas
+
+Mantén las leyendas como una lista gestionada: cada una con su ámbito (fuente, pila alineada o una salida concreta), rango de fotogramas y estilo. La vista previa y todas las exportaciones usan el mismo destino y número de fotograma, así que `{value}` se lee igual en Guardar, Guardar como, arrastrar y Exportar todo.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/labels.png" alt="Etiquetas y leyendas" width="100%" />
+
+</td>
+</tr>
 </table>
 
 **También incluye:**

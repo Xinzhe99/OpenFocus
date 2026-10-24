@@ -79,16 +79,16 @@ L’application n’est pas signée : au premier lancement, Windows peut demande
 <tr>
 <td width="46%" valign="middle">
 
-### Huit algorithmes de fusion
+### Fusion IA : StackMFF V3
 
-Quatre classiques, la famille OpenFocus A/B/C et le modèle neuronal StackMFF-V3, tous sur la même pile recalée : comparez et choisissez par sujet au lieu de faire confiance à une seule valeur par défaut.
+La méthode par défaut classe chaque pixel selon son image source la plus probable via un réseau de neurones. Sur la même pile recalée, les contours des lettres restent plus nets et les surfaces plus propres qu'avec Guided Filter (netteté laplacienne 27,1 contre 28,5) ; face à une vérité synthétique, elle devance toutes les méthodes en PSNR et SSIM, avec moins de pixels fantômes que tout algorithme classique.
 
-[Algorithmes →](#algorithms)
+[Algorithmes →](#algorithms) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/result.png" alt="Résultat de fusion dans la fenêtre OpenFocus" width="100%" />
+<img src="assets/comparison_ai_vs_gff.png" alt="Fusion IA : StackMFF V3" width="100%" />
 
 </td>
 </tr>
@@ -175,7 +175,9 @@ Pointez un dossier de piles, choisissez méthode et destination, puis laissez to
 
 ### Barres d'échelle de publication
 
-Calibrées depuis les métadonnées TIFF ou saisies à la main, dessinées avec la police et la longueur réelles, et gravées dans chaque export : image, pile, TIFF, GIF et lot.
+Calibrées depuis les métadonnées TIFF ou saisies à la main, dessinées avec la police et la longueur réelles, et gravées dans chaque export : image, pile, TIFF, GIF et lot. Si elle ne peut pas être lisible, le dialogue le signale au lieu de dessiner une barre plus courte que son étiquette.
+
+[Manuel →](./docs/USER_MANUAL_FR.md)
 
 </td>
 <td width="54%">
@@ -185,6 +187,20 @@ Calibrées depuis les métadonnées TIFF ou saisies à la main, dessinées avec 
 </td>
 </tr>
 
+<tr>
+<td width="46%" valign="middle">
+
+### Libellés et légendes
+
+Les légendes forment une liste gérée : chacune a sa portée (source, pile recalée ou sortie précise), sa plage d'images et son style. L'aperçu et tous les exports utilisent la même cible et le même numéro d'image, donc `{value}` se lit de la même façon dans Enregistrer, Enregistrer sous, le glisser-déposer et Tout exporter.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/labels.png" alt="Libellés et légendes" width="100%" />
+
+</td>
+</tr>
 </table>
 
 **Également inclus :**

@@ -160,7 +160,6 @@ Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.m
 - [📖 Documentation](#documentation)
 - [🛠️ Building from Source](#building-from-source)
 - [✨ Features](#features)
-- [🧠 AI fusion](#ai-fusion)
 - [🧪 Algorithms](#algorithms)
 - [📚 References](#references)
 - [🤝 Contribution](#contribution)
@@ -175,18 +174,20 @@ Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.m
 <tr>
 <td width="46%" valign="middle">
 
-### Eight fusion methods
+### AI fusion: StackMFF V3
 
-Four classical algorithms plus the OpenFocus A/B/C family and the StackMFF-V3
-neural model — all on one registered stack, so you can compare and pick per
-subject instead of trusting a single default.
+The default method classifies every pixel by its most probable source frame
+with a neural network. On the same registered stack it keeps letter edges
+crisper and surfaces cleaner than Guided Filter (Laplacian sharpness 27.1 vs
+28.5), and it leads every method on PSNR and SSIM against synthetic ground
+truth — with fewer ghost pixels than any classical algorithm.
 
-[Algorithms →](#algorithms)
+[Algorithms →](#algorithms) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/result.png" alt="A fused macro stack in the OpenFocus window" width="100%" />
+<img src="assets/comparison_ai_vs_gff.png" alt="StackMFF V3 versus Guided Filter on the same stack" width="100%" />
 
 </td>
 </tr>
@@ -278,13 +279,33 @@ image and list exactly that.
 ### Publication scale bars
 
 Calibrated from TIFF metadata or typed in, drawn with the real font at the
-real length, and burned into every export — single images, stacks, TIFF, GIF
-and batch output alike.
+real length, and burned into every export — single images, stacks, multi-page
+TIFF, GIF and batch output alike. A bar that cannot fit legibly says so
+instead of printing a length it does not draw.
+
+[Manual →](./docs/USER_MANUAL_EN.md)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/scalebar.png" alt="Scale bar dialog with live preview" width="100%" />
+<img src="assets/readme/scalebar.png" alt="Scale bar dialog with a live preview" width="100%" />
+
+</td>
+</tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Captions and labels
+
+Keep a managed list of captions, each with its own scope (source, aligned
+stack or a specific output), frame range and style. The preview and every
+export use the same target and frame number, so `{value}` reads the same in
+Save, Save As, drag-out and Export All.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/labels.png" alt="Label manager with a live preview" width="100%" />
 
 </td>
 </tr>
@@ -295,7 +316,7 @@ and batch output alike.
 - **Focus-stack workflow** — stack browser, sharpness curve, quick preview,
   ROI render, and per-method settings remembered across restarts.
 - **Microscopy-ready** — 16-bit end to end, µm/px from TIFF metadata, dust-map
-  flat-field correction, multi-page TIFF Z-stacks.
+  flat-field correction, multi-page TIFF Z-stacks, textured OBJ export.
 - **Headless CLI** — the same pipeline as `openfocus`, with batch mode,
   `--dry-run`, `--resume` and JSON output for scripting.
 - **Projects and recovery** — `.ofproj` sessions, crash auto-recovery,
@@ -305,39 +326,6 @@ and batch output alike.
   the system locale; a new language is one `locales_<code>.py` file.
 - **Light on memory** — the neural stack is loaded only when the neural method
   is used, so a classical-method session idles around 110 MB instead of 260 MB.
-
-<a id="ai-fusion"></a>
-## AI fusion: StackMFF V3
-
-The default method classifies every pixel by its most probable source frame.
-The input is a real 10-frame macro stack of a PCB; focus sweeps across the
-board between frames, so the fused result has to keep the sharp version of
-every region.
-
-<p align="center">
-	<img src="assets/demo_stack_sweep.gif" alt="Focus sweep through the input stack" width="440">
-</p>
-
-<p align="center">
-	<img src="assets/demo_stack_frames.png" alt="The ten input frames" width="880">
-</p>
-
-Against Guided Filter on the same registered stack, the AI result keeps the
-letter edges crisper and the board surface cleaner. Both crops come from the
-same region of the same stack (Laplacian sharpness 27.1 vs 28.5):
-
-<p align="center">
-	<img src="assets/comparison_ai_vs_gff.png" alt="Guided Filter vs StackMFF V3" width="880">
-</p>
-
-On a synthetic stack with known ground truth it leads every fusion method on
-both PSNR and SSIM, and leaves fewer ghost pixels than any classical method:
-
-<p align="center">
-	<img src="assets/benchmark.png" alt="Ground-truth benchmark" width="880">
-</p>
-
-<sub>Benchmark reproducible with <code>python tools/synthetic_benchmark.py --noise 3</code>.</sub>
 
 <a id="algorithms"></a>
 ## 🧪 Algorithms

@@ -79,16 +79,16 @@ De app is niet ondertekend. Bij de eerste start kan Windows vragen om “Meer in
 <tr>
 <td width="46%" valign="middle">
 
-### Acht fusiemethoden
+### AI-fusie: StackMFF V3
 
-Vier klassieke methoden plus de OpenFocus A/B/C-familie en het neurale StackMFF-V3-model, allemaal op dezelfde uitgelijnde stapel: vergelijk en kies per onderwerp in plaats van één standaardwaarde te vertrouwen.
+De standaardmethode classificeert elke pixel met een neuraal netwerk naar het meest waarschijnlijke bronframe. Op dezelfde uitgelijnde stapel blijven letterranden scherper en vlakken schoner dan bij Guided Filter (Laplaciaanse scherpte 27,1 tegen 28,5); tegen synthetische ground truth leidt het op PSNR en SSIM, met minder spookpixels dan welk klassiek algoritme ook.
 
-[Algoritmen →](#algorithms)
+[Algoritmen →](#algorithms) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/result.png" alt="Gefuseerd macroresultaat in het OpenFocus-venster" width="100%" />
+<img src="assets/comparison_ai_vs_gff.png" alt="AI-fusie: StackMFF V3" width="100%" />
 
 </td>
 </tr>
@@ -175,7 +175,9 @@ Wijs een map met stapels aan, kies methode en bestemming en laat het lopen. Alle
 
 ### Schaalbalken voor publicatie
 
-Gekalibreerd uit TIFF-metadata of handmatig, getekend met het echte lettertype op de echte lengte en ingebrand in elke export: losse afbeelding, stapel, TIFF, GIF en batch.
+Gekalibreerd uit TIFF-metadata of handmatig, getekend met het echte lettertype op de echte lengte en ingebrand in elke export: losse afbeelding, stapel, TIFF, GIF en batch. Past hij niet leesbaar, dan zegt de dialoog dat in plaats van een kortere balk met een verkeerd label te tekenen.
+
+[Handleiding →](./docs/USER_MANUAL_NL.md)
 
 </td>
 <td width="54%">
@@ -185,6 +187,20 @@ Gekalibreerd uit TIFF-metadata of handmatig, getekend met het echte lettertype o
 </td>
 </tr>
 
+<tr>
+<td width="46%" valign="middle">
+
+### Labels en bijschriften
+
+Bijschriften blijven een beheerde lijst: elk met een eigen bereik (bron, uitgelijnde stapel of een specifieke uitvoer), framebereik en stijl. Voorbeeld en elke export gebruiken hetzelfde doel en hetzelfde framenummer, dus `{value}` leest identiek in Opslaan, Opslaan als, slepen en Alles exporteren.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/labels.png" alt="Labels en bijschriften" width="100%" />
+
+</td>
+</tr>
 </table>
 
 **Ook inbegrepen:**
