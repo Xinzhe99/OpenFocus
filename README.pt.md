@@ -106,7 +106,7 @@ Renderize todos os métodos uma vez, compare lado a lado no mesmo recorte e adot
 </td>
 <td width="54%">
 
-<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="Oito métodos de fusão em paralelo" width="100%" /></picture></a>
+<a href="assets/readme/method-comparison.mp4"><picture><source srcset="assets/readme/method-comparison.gif" type="image/gif"><img src="assets/readme/method-comparison_poster.jpg" alt="Oito métodos de fusão em paralelo" width="100%" /></picture></a>
 
 </td>
 </tr>

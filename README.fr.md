@@ -106,7 +106,7 @@ Rendez toutes les méthodes une fois, comparez-les côte à côte sur le même r
 </td>
 <td width="54%">
 
-<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="Huit méthodes de fusion en parallèle" width="100%" /></picture></a>
+<a href="assets/readme/method-comparison.mp4"><picture><source srcset="assets/readme/method-comparison.gif" type="image/gif"><img src="assets/readme/method-comparison_poster.jpg" alt="Huit méthodes de fusion en parallèle" width="100%" /></picture></a>
 
 </td>
 </tr>
