@@ -74,15 +74,128 @@ L’application n’est pas signée : au premier lancement, Windows peut demande
 
 ## Fonctionnalités
 
-- **Huit méthodes de fusion** — Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF-V3 (réseau de neurones) et OpenFocus A/B/C.
-- **Trois modes de recalage** — similarité rapide, ECC et homographie ; la fusion sans recalage reste possible.
-- **Workflow focus stacking** — navigateur de pile, comparaison A/B, cartes de profondeur, comparaison de méthodes, traitement par lots et aperçu rapide.
-- **Retouche liée à la source** — pixels issus des images réellement fusionnées, zoom/position partagés, curseur de source, pinceau doux, pinceau de restauration, annulation/rétablissement par trait et protection des sorties non exportées.
-- **Prêt pour la microscopie et la publication** — 16 bits de bout en bout, µm/px depuis les TIFF, correction de champ plat, barres d’échelle, piles Z TIFF multipages et export OBJ texturé.
-- **CLI sans interface** — le même pipeline via `openfocus`, avec lots, `--dry-run`, `--resume` et sortie JSON.
-- **Douze langues d’interface** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski.
+<table>
 
-<a id="command-line-usage"></a>
+<tr>
+<td width="46%" valign="middle">
+
+### Huit algorithmes de fusion
+
+Quatre classiques, la famille OpenFocus A/B/C et le modèle neuronal StackMFF-V3, tous sur la même pile recalée : comparez et choisissez par sujet au lieu de faire confiance à une seule valeur par défaut.
+
+[Algorithmes →](#algorithms)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/result.png" alt="Résultat de fusion dans la fenêtre OpenFocus" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Comparaison A/B
+
+Faites glisser le séparateur entre une image source et le résultat : vous voyez immédiatement ce que la fusion a changé — dérive de recalage, halos sur les bords et détail perdu, à tout zoom.
+
+[Manuel →](./docs/USER_MANUAL_FR.md)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/wipe.png" alt="Comparaison A/B entre une image et le résultat" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Comparaison de méthodes
+
+Rendez toutes les méthodes une fois, comparez-les côte à côte sur le même recadrage, puis adoptez la gagnante comme nouvelle sortie ou copiez ses paramètres dans la fenêtre principale.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/compare.png" alt="Huit méthodes de fusion en parallèle" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Carte de profondeur et 3D
+
+Position de mise au point par pixel via cinq mesures, palettes scientifiques, calibration Z physique depuis les métadonnées TIFF et export OBJ texturé de la surface.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/depth.png" alt="Carte de profondeur et surface 3D de la même pile" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Retouche liée à la source
+
+Peignez depuis les images qui ont réellement produit le résultat : zoom et déplacement partagés, curseur d'image source, pinceau doux, pinceau de restauration, annulation par trait et protection des pixels non exportés.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/retouch.png" alt="Espace de retouche avec image source et résultat" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Traitement par lots
+
+Pointez un dossier de piles, choisissez méthode et destination, puis laissez tourner. L'alignement seul écrit un dossier par pile ; la fusion n'écrit et n'affiche que l'image fusionnée.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/batch.png" alt="Boîte de dialogue de traitement par lots" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Barres d'échelle de publication
+
+Calibrées depuis les métadonnées TIFF ou saisies à la main, dessinées avec la police et la longueur réelles, et gravées dans chaque export : image, pile, TIFF, GIF et lot.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/scalebar.png" alt="Boîte de dialogue de barre d'échelle avec aperçu" width="100%" />
+
+</td>
+</tr>
+
+</table>
+
+**Également inclus :**
+
+- **Flux de focus stacking** — navigateur de piles, courbe de netteté, aperçu rapide, rendu ROI et réglages par méthode mémorisés entre sessions.
+- **Prêt pour la microscopie** — 16 bits de bout en bout, µm/px depuis TIFF, correction de champ plat, Z-stacks TIFF multipages.
+- **CLI sans interface** — la même chaîne que `openfocus`, avec lots, `--dry-run`, `--resume` et sortie JSON.
+- **Projets et récupération** — sessions `.ofproj`, récupération après plantage, annuler/rétablir sur les piles et les annotations.
+- **Douze langues d'interface** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski ; détectées du système, une nouvelle langue est un fichier `locales_<code>.py`.
+- **Économe en mémoire** — les poids neuronaux ne se chargent qu'avec la méthode AI ; une session classique reste autour de 110 Mo au lieu de 260 Mo.
+
 ## Démarrage rapide
 
 ```bash

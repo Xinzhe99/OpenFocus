@@ -74,15 +74,128 @@ Aplikacja nie jest podpisana. Podczas pierwszego uruchomienia Windows może poka
 
 ## Najważniejsze funkcje
 
-- **Osiem metod fuzji** — Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF-V3 (sieć neuronowa) oraz OpenFocus A/B/C.
-- **Trzy tryby wyrównywania** — szybka transformacja podobieństwa, ECC i homografia; można też fuzować bez wyrównywania.
-- **Przepływ focus stackingu** — przeglądarka stosu, porównanie A/B, mapy głębi, porównanie metod, przetwarzanie wsadowe i szybki podgląd.
-- **Retusz ze źródłem** — piksele z klatek, które faktycznie utworzyły wynik; wspólny zoom/pozycja, suwak klatek źródłowych, miękki pędzel, pędzel przywracania, cofanie/ponawianie pociągnięć i ochrona nieeksportowanych wyników.
-- **Gotowe do mikroskopii i publikacji** — 16 bitów od początku do końca, µm/px z TIFF, korekcja flat-field, paski skali, wielostronicowe stosy Z TIFF i eksport teksturowanego OBJ.
-- **CLI bez interfejsu** — ten sam potok przez `openfocus`, z trybem wsadowym, `--dry-run`, `--resume` i wyjściem JSON.
-- **Dwanaście języków interfejsu** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski.
+<table>
 
-<a id="command-line-usage"></a>
+<tr>
+<td width="46%" valign="middle">
+
+### Osiem algorytmów fuzji
+
+Cztery klasyczne metody plus rodzina OpenFocus A/B/C i model neuronowy StackMFF-V3, wszystkie na tym samym wyrównanym stosie: porównuj i wybieraj pod temat zamiast ufać jednej wartości domyślnej.
+
+[Algorytmy →](#algorithms)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/result.png" alt="Wynik fuzji w oknie OpenFocus" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Porównanie A/B
+
+Przeciągnij podziałkę po klatce źródłowej i wyniku, aby zobaczyć, co zmieniła fuzja: dryf wyrównania, obwódki na krawędziach i utracony detal, przy dowolnym powiększeniu.
+
+[Podręcznik →](./docs/USER_MANUAL_PL.md)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/wipe.png" alt="Porównanie A/B klatki i wyniku" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Porównanie metod
+
+Wyrenderuj wszystkie metody raz, porównaj je obok siebie na tym samym kadrze i przyjmij zwycięzcę jako nowy wynik lub skopiuj jego parametry do okna głównego.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/compare.png" alt="Osiem metod fuzji obok siebie" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Mapa głębi i 3D
+
+Pozycja ostrości na piksel z pięciu miar, naukowe palety, fizyczna kalibracja Z z metadanych TIFF i eksport teksturowanego OBJ powierzchni.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/depth.png" alt="Mapa głębi i powierzchnia 3D tego samego stosu" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Retusz powiązany ze źródłem
+
+Maluj z klatek, które naprawdę utworzyły wynik: wspólny zoom i przesuwanie, suwak klatki źródłowej, miękki pędzel, pędzel przywracania, cofanie na pociągnięcie i ochrona niewyeksportowanych pikseli.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/retouch.png" alt="Obszar retuszu z klatką i wynikiem" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Przetwarzanie wsadowe
+
+Wskaż folder ze stosami, wybierz metodę i miejsce docelowe, a potem zostaw. Samo wyrównanie zapisuje folder na stos; fuzja zapisuje i pokazuje wyłącznie obraz wynikowy.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/batch.png" alt="Okno przetwarzania wsadowego" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Paski skali do publikacji
+
+Kalibrowane z metadanych TIFF lub ręcznie, rysowane prawdziwą czcionką w rzeczywistej długości i wypalane w każdym eksporcie: obraz, stos, TIFF, GIF i wsad.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/scalebar.png" alt="Okno paska skali z podglądem" width="100%" />
+
+</td>
+</tr>
+
+</table>
+
+**Dodatkowo w zestawie:**
+
+- **Przepływ focus stackingu** — przeglądarka stosów, krzywa ostrości, szybki podgląd, render ROI i ustawienia zapamiętywane dla każdej metody.
+- **Gotowe do mikroskopii** — 16 bitów na całej ścieżce, µm/px z TIFF, korekcja pola płaskiego, wielostronicowe stosy Z w TIFF.
+- **Bezgłowy CLI** — ten sam potok jako `openfocus`, z trybem wsadowym, `--dry-run`, `--resume` i wyjściem JSON.
+- **Projekty i odzyskiwanie** — sesje `.ofproj`, automatyczne odzyskiwanie po awarii, cofanie/ponawianie dla stosów i adnotacji.
+- **Dwanaście języków interfejsu** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; wykrywane z systemu, nowy język to jeden plik `locales_<code>.py`.
+- **Oszczędny w pamięci** — wagi neuronowe ładują się tylko przy metodzie AI, więc sesja klasyczna zajmuje około 110 MB zamiast 260 MB.
+
 ## Szybki start
 
 ```bash

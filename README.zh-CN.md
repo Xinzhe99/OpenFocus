@@ -72,17 +72,130 @@
 
 应用未签名，首次启动可能触发系统安全提示：Windows 选择“更多信息 → 仍要运行”；macOS 右键“打开”，或执行 `xattr -cr /Applications/OpenFocus.app`。
 
-## 主要功能
+## 功能
 
-- **八种融合算法**：Guided Filter、DCT、DTCWT、GFG-FGF、StackMFF-V3（神经网络）、OpenFocus A/B/C。
-- **三种配准模式**：快速相似变换、ECC、单应性；另可关闭配准直接融合。
-- **完整的景深合成流程**：图像栈浏览、A/B 擦除对比、深度图、方法对比、批处理与快速预览。
-- **源帧修饰工作区**：从生成结果的真实源帧取材，支持同步缩放/平移、源帧滑动条、软边画笔、还原画笔、整笔撤销/重做和未导出保护。
-- **显微与出版就绪**：端到端 16 位、TIFF µm/px、平场校正、比例尺、多页 TIFF Z 栈、纹理 OBJ 导出。
-- **无界面 CLI**：与 GUI 同一管线，支持批处理、`--dry-run`、`--resume` 和 JSON 输出。
-- **十二种界面语言**：English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski。
+<table>
 
-<a id="command-line-usage"></a>
+<tr>
+<td width="46%" valign="middle">
+
+### 八种融合算法
+
+四种经典算法，加上 OpenFocus A/B/C 与 StackMFF-V3 神经网络模型，全部跑在同一份配准结果上，可按题材对比选择，而不是只能相信一个默认值。
+
+[算法说明 →](#algorithms)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/result.png" alt="窗口中的融合结果" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### A/B 擦除对比
+
+拖动分割线横跨源帧与融合结果，直接看到混合改变了什么——配准漂移、边缘光晕与细节丢失一眼可见，任意缩放都成立。
+
+[用户手册 →](./docs/USER_MANUAL_ZH.md)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/wipe.png" alt="源帧与融合结果的 A/B 对比" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 方法对比
+
+一次渲染所有方法，在同一裁剪区域并排检查，再把胜出的结果采用为新输出，或把参数回填到主窗口。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/compare.png" alt="八种融合方法并排对比" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 深度图与 3D
+
+用五种活动度测量逐像素估计焦点位置，支持科研配色、从 TIFF 元数据读取物理 Z 标定，并可导出带纹理的 OBJ 曲面。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/depth.png" alt="同一图像栈的深度图与 3D 曲面" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 源帧修饰
+
+从真正生成该结果的帧取材：共享缩放与平移、源帧滑动条、软边画笔、还原画笔、整笔撤销，以及未导出新像素的保护。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/retouch.png" alt="源帧与结果并列的修饰工作区" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 批处理
+
+指向一个装满图像栈的文件夹，选好方法与目标，然后走开即可。仅对齐模式每个栈写一个文件夹，融合模式只写并只列融合图。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/batch.png" alt="批处理对话框" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 出版级比例尺
+
+从 TIFF 元数据或手动输入标定，用真实字体按真实长度绘制，并烙进所有导出——单张、图像栈、TIFF、GIF 与批处理输出。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/scalebar.png" alt="带实时预览的比例尺对话框" width="100%" />
+
+</td>
+</tr>
+
+</table>
+
+**另外还有：**
+
+- **完整景深合成流程**——图像栈浏览、清晰度曲线、快速预览、ROI 渲染，逐方法设置跨重启保留。
+- **显微就绪**——端到端 16 位、TIFF µm/px、平场校正、多页 TIFF Z 栈。
+- **无界面 CLI**——与 GUI 同一管线，支持批处理、`--dry-run`、`--resume` 与 JSON 输出。
+- **工程与恢复**——`.ofproj` 会话、崩溃自动恢复、图像栈编辑与标注的撤销/重做。
+- **十二种界面语言**——English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski；按系统区域自动检测，新增语言只需一个 `locales_<code>.py`。
+- **省内存**——神经网络权重只在使用 AI 方法时加载，经典方法会话常驻约 110 MB，而不是 260 MB。
+
 ## 快速开始
 
 ```bash

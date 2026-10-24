@@ -72,17 +72,130 @@
 
 アプリは未署名のため、初回起動時に警告が出る場合があります。Windows は「詳細情報 → 実行」、macOS は右クリック →「開く」、または `xattr -cr /Applications/OpenFocus.app` を実行してください。
 
-## 主な機能
+## 機能
 
-- **8 種類の合成アルゴリズム** — Guided Filter、DCT、DTCWT、GFG-FGF、StackMFF-V3（ニューラル）、OpenFocus A/B/C。
-- **3 種類の位置合わせ** — 高速相似変換、ECC、ホモグラフィ。位置合わせなしの合成も可能。
-- **フォーカススタック Workflow** — スタック表示、A/B ワイプ比較、深度マップ、手法比較、バッチ処理、クイックプレビュー。
-- **ソース固定のレタッチ** — 実際に合成に使ったフレームから取得。共有ズーム/位置、ソースフレームスライダー、軟らかいブラシ、復元ブラシ、ストローク単位の undo/redo、未書き出し保護。
-- **顕微鏡・出版向け** — 8/16 ビット、TIFF の µm/px、フラットフィールド補正、スケールバー、マルチページ TIFF Z スタック、テクスチャ付き OBJ 出力。
-- **ヘッドレス CLI** — GUI と同じ処理を `openfocus` で実行。バッチ、`--dry-run`、`--resume`、JSON 出力に対応。
-- **12 言語の UI** — English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski。
+<table>
 
-<a id="command-line-usage"></a>
+<tr>
+<td width="46%" valign="middle">
+
+### 8 つの合成アルゴリズム
+
+4 つの古典手法に OpenFocus A/B/C と StackMFF-V3 ニューラルモデルを加え、すべて同じ位置合わせ結果で実行。被写体ごとに比較して選べます。
+
+[アルゴリズム →](#algorithms)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/result.png" alt="OpenFocus ウィンドウの合成結果" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### A/B ワイプ比較
+
+分割線をソースフレームと合成結果の上で動かし、ブレンドが何を変えたかを確認。位置ずれ、縁のハロー、失われた細部が一目で分かります。
+
+[ユーザーマニュアル →](./docs/USER_MANUAL_JA.md)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/wipe.png" alt="ソースフレームと合成結果の A/B 比較" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 手法比較
+
+すべての手法を一度にレンダリングし、同じクロップで並べて確認。勝った結果を新しい出力として採用するか、パラメータをメインウィンドウに戻せます。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/compare.png" alt="8 つの合成手法の並列比較" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 深度マップと 3D
+
+5 つのフォーカス尺度で画素ごとの焦点位置を推定。研究用カラーマップ、TIFF メタデータからの物理 Z 校正、テクスチャ付き OBJ 曲面の書き出しに対応。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/depth.png" alt="同じスタックの深度マップと 3D 曲面" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### ソース固定レタッチ
+
+結果を実際に生成したフレームから描画。共有ズーム/パン、ソースフレームスライダー、軟らかいブラシ、復元ブラシ、ストローク単位の undo、未書き出しピクセルの保護。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/retouch.png" alt="ソースフレームと結果を並べたレタッチ作業領域" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### バッチ処理
+
+スタックの入ったフォルダを指定し、手法と出力先を選んで放置。位置合わせのみならスタックごとに 1 フォルダ、合成なら合成画像だけを書き出して一覧に表示します。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/batch.png" alt="バッチ処理ダイアログ" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 出版向けスケールバー
+
+TIFF メタデータまたは手入力で校正し、実際のフォントと実寸で描画。単体画像、スタック、TIFF、GIF、バッチ出力のすべてに焼き込みます。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/scalebar.png" alt="ライブプレビュー付きスケールバーダイアログ" width="100%" />
+
+</td>
+</tr>
+
+</table>
+
+**その他：**
+
+- **フォーカススタッキング作業フロー**——スタック閲覧、シャープネス曲線、クイックプレビュー、ROI レンダリング、手法ごとの設定を再起動後も保持。
+- **顕微鏡向け**——16 ビットを一貫保持、TIFF µm/px、フラットフィールド補正、複数ページ TIFF Z スタック。
+- **ヘッドレス CLI**——GUI と同じパイプラインを `openfocus` として提供。バッチ、`--dry-run`、`--resume`、JSON 出力に対応。
+- **プロジェクトと復元**——`.ofproj` セッション、クラッシュ自動復元、スタック編集と注釈の undo/redo。
+- **12 の UI 言語**——English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski。システムロケールから自動判定し、新しい言語は `locales_<code>.py` 1 ファイルで追加できます。
+- **省メモリ**——ニューラル重みは AI 手法を使うときだけ読み込み、古典手法のセッションは約 110 MB で待機します（260 MB ではなく）。
+
 ## クイックスタート
 
 ```bash
