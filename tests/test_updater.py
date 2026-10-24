@@ -276,7 +276,8 @@ class TestOneClickUpdateFlow:
         from PyQt6.QtWidgets import QWidget
 
         class _Host(QWidget):
-            pass
+            def prepare_for_update_restart(self):
+                return True
 
         window = _Host()
         window._apply_update_and_restart = (
@@ -286,10 +287,14 @@ class TestOneClickUpdateFlow:
         try:
             window._apply_update_and_restart("https://x/release.zip", "v9.9")
             deadline = time.time() + 30
-            while not launched and time.time() < deadline:
+            from controllers.update_manager import STATE_READY
+            while window.update_manager.state != STATE_READY and time.time() < deadline:
                 qapplication.processEvents()
                 time.sleep(0.01)
-            assert launched, "the swap script was never launched"
+            assert window.update_manager.state == STATE_READY
+            assert not launched, "download completion restarted the application"
+            assert window.update_manager.apply_and_restart()
+            assert launched, "the explicit restart did not launch the swap script"
 
             with open(launched[0], encoding="ascii") as fh:
                 text = fh.read()

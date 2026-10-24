@@ -29,7 +29,7 @@ OpenFocus to otwarte środowisko pracy do wyrównywania i fuzji obrazów o wielu
   <img src="assets/ui.png" alt="Interfejs OpenFocus" width="820">
 </p>
 
-> **v1.67.0** — nowe środowisko retuszu powiązane ze źródłem, zsynchronizowany suwak klatek źródłowych, transakcyjne cofanie kafelkowe, okno porównania metod i README w dwunastu językach.
+> **v1.68.0** — eksport wsadowy działa według wybranego trybu: samo wyrównanie tworzy folder `<stos>_aligned` i pokazuje go na liście, fuzja pokazuje tylko wynik, a bez eksportu wyrównania zapisywany jest wyłącznie obraz wynikowy. Pozostałe w folderze źródłowym kopie `*_registered*` nie są już wczytywane jako klatki. Przepracowano też etykiety, paski skali, porównanie metod, eksport głębi/modelu, aktualizacje i retusz zgodnie z audytem w `docs/ux-specs`.
 
 ## Pobieranie i instalacja
 

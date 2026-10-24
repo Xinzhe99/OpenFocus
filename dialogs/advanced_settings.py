@@ -4,7 +4,7 @@ Single scroll page with four sections (performance / registration / AI /
 startup), not a tab book: the whole point is to see everything at once instead
 of hunting through four dialogs and a menu.
 """
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSignalBlocker
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
     QLabel, QScrollArea, QVBoxLayout, QWidget,
@@ -77,6 +77,9 @@ class AdvancedSettingsDialog(QDialog):
             minimum=0, maximum=1024, step=32, decimals=0,
             value=int(getattr(w, "tile_overlap", 256)))
         perf.addRow(trans.t("advanced_tile_overlap"), self.spin_overlap)
+        self.spin_block.valueChanged.connect(
+            lambda value: self.spin_overlap.setMaximum(int(value) // 2))
+        self.spin_overlap.setMaximum(int(self.spin_block.value()) // 2)
         self.spin_threshold = StepperSpinBox(
             minimum=256, maximum=20000, step=256, decimals=0,
             value=int(getattr(w, "tile_threshold", 2048)))
@@ -132,6 +135,9 @@ class AdvancedSettingsDialog(QDialog):
         other.addRow("", auto_hint)
 
         page_lay.addStretch()
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        root.addWidget(self.status)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
@@ -155,23 +161,59 @@ class AdvancedSettingsDialog(QDialog):
 
     def _apply(self):
         w = self.window_main
-        w.tile_enabled = self.chk_tile.isChecked()
-        w.tile_block_size = int(self.spin_block.value())
-        overlap = int(self.spin_overlap.value())
-        w.tile_overlap = min(overlap, max(0, w.tile_block_size // 2))
-        w.tile_threshold = int(self.spin_threshold.value())
-        w.thread_count = max(1, int(self.spin_threads.value()))
-        w.reg_downscale_width = int(self.spin_reg_width.value())
-        w.align_cache_enabled = self.chk_align_cache.isChecked()
-        w.ai_batch_size = max(1, int(self.spin_ai_batch.value()))
-        w.ai_mode = self.combo_ai_mode.currentData()
-        w.restore_last_stack = self.chk_restore.isChecked()
-        w.ask_load_scale = self.chk_ask_scale.isChecked()
-        # `auto_download` is a read-only property; assigning it raised and the
-        # broad except swallowed the error, so the checkbox never took effect.
+        for spin in (self.spin_block, self.spin_overlap, self.spin_threshold,
+                     self.spin_threads, self.spin_reg_width, self.spin_ai_batch):
+            if not spin.lineEdit().hasAcceptableInput():
+                self.status.setText(trans.t("msg_error"))
+                spin.lineEdit().setFocus()
+                spin.lineEdit().selectAll()
+                return
+            spin.setValue(float(spin.lineEdit().text()))
+        draft = {
+            "tile_enabled": self.chk_tile.isChecked(),
+            "tile_block_size": int(self.spin_block.value()),
+            "tile_overlap": int(self.spin_overlap.value()),
+            "tile_threshold": int(self.spin_threshold.value()),
+            "thread_count": max(1, int(self.spin_threads.value())),
+            "reg_downscale_width": int(self.spin_reg_width.value()),
+            "align_cache_enabled": self.chk_align_cache.isChecked(),
+            "ai_batch_size": max(1, int(self.spin_ai_batch.value())),
+            "ai_mode": self.combo_ai_mode.currentData(),
+            "restore_last_stack": self.chk_restore.isChecked(),
+            "ask_load_scale": self.chk_ask_scale.isChecked(),
+        }
+        previous = {key: getattr(w, key, None) for key in draft}
         manager = getattr(w, "update_manager", None)
-        if manager is not None:
-            manager.set_auto_download(self.chk_auto_update.isChecked())
-        if hasattr(w, "persist_settings"):
-            w.persist_settings()
+        previous_auto = manager.auto_download if manager is not None else None
+        try:
+            if manager is not None:
+                manager.set_auto_download(self.chk_auto_update.isChecked())
+                if manager.auto_download != self.chk_auto_update.isChecked():
+                    raise RuntimeError(trans.t("action_auto_download"))
+            for key, value in draft.items():
+                setattr(w, key, value)
+            if hasattr(w, "persist_settings"):
+                w.persist_settings()
+        except Exception as exc:
+            for key, value in previous.items():
+                setattr(w, key, value)
+            try:
+                if manager is not None and manager.auto_download != previous_auto:
+                    manager.set_auto_download(previous_auto)
+                if hasattr(w, "persist_settings"):
+                    w.persist_settings()
+            except Exception:
+                pass
+            self.status.setText(str(exc))
+            return
+        for mode in ("soft", "hard"):
+            radio = getattr(w, "radio_ai_" + mode, None)
+            if radio is not None:
+                with QSignalBlocker(radio):
+                    radio.setChecked(draft["ai_mode"] == mode)
+        processing = set(draft) - {"restore_last_stack", "ask_load_scale"}
+        if any(previous[key] != draft[key] for key in processing):
+            mark_dirty = getattr(w, "_mark_project_dirty", None)
+            if mark_dirty is not None:
+                mark_dirty()
         self.accept()

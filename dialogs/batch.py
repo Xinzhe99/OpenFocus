@@ -73,6 +73,13 @@ class BatchProcessingDialog(QDialog):
 
         # 获取父窗口的融合和对齐设置
         self.parent_window = parent
+        self.load_scale_factor = float(getattr(parent, 'current_scale_factor', 1.0))
+        self._runtime_settings = {
+            key: getattr(parent, key, default) for key, default in (
+                ('reg_downscale_width', None), ('tile_enabled', True),
+                ('tile_block_size', None), ('tile_overlap', None),
+                ('tile_threshold', None), ('thread_count', 4),
+                ('ai_batch_size', 2), ('ai_mode', 'soft'), ('use_gpu', True))}
         
         # Dark palette only in dark mode: hard-coding it showed a dark slab in
         # light mode.
@@ -238,6 +245,7 @@ class BatchProcessingDialog(QDialog):
         format_row.addWidget(QLabel(trans.t('batch_format_label')))
         self.format_combo = QComboBox()
         self.format_combo.addItems(["JPG", "PNG", "BMP", "TIFF"])
+        self.format_combo.setCurrentText('PNG')
         self.format_combo.currentTextChanged.connect(self.on_format_changed)
         format_row.addWidget(self.format_combo)
 
@@ -258,6 +266,9 @@ class BatchProcessingDialog(QDialog):
         format_row.addLayout(self.quality_layout)
         format_row.addStretch()
         output_layout.addLayout(format_row)
+        depth_hint = QLabel(trans.t('export_depth_hint'))
+        depth_hint.setWordWrap(True)
+        output_layout.addWidget(depth_hint)
         self.quality_label.setVisible(False)
         self.quality_slider.setVisible(False)
         self.quality_value_label.setVisible(False)
@@ -810,10 +821,15 @@ class BatchProcessingDialog(QDialog):
             return
         
         split_method = self.split_method_combo.currentIndex()
-        param_value = self.param_spinbox.value()
+        param_value = (int(self.param_spinbox.value()) if split_method == 0
+                       else float(self.param_spinbox.value()))
         
         from core.image_loader import ImageStackLoader
         loader = ImageStackLoader()
+        from utils.sorting import natural_sort_key
+        self.single_folder_images_with_times.sort(key=lambda item:
+            natural_sort_key(item[3] if len(item) > 3 else item[0]) if split_method == 0 else
+            (item[2] is None, item[2] or 0, natural_sort_key(item[3] if len(item) > 3 else item[0])))
         
         if split_method == 0:
             stacks = loader.split_by_count(self.single_folder_images_with_times, param_value)
@@ -821,6 +837,7 @@ class BatchProcessingDialog(QDialog):
         else:
             stacks = loader.split_by_time_threshold(self.single_folder_images_with_times, param_value)
             self.preview_label.setText(trans.t('batch_preview_fmt_time').format(len(self.single_folder_images_with_times), len(stacks), param_value))
+        self.single_folder_stacks = stacks
     
     def add_single_folder(self):
         """添加单个文件夹（自动分割）"""
@@ -835,9 +852,10 @@ class BatchProcessingDialog(QDialog):
             return
         
         loader = ImageStackLoader()
-        success, message, images_with_times, filenames = loader.load_images_with_timestamps(folder_path)
+        success, message, images_with_times, filenames = loader.load_images_with_timestamps(
+            folder_path, scale_factor=self.load_scale_factor)
         
-        if not success or not images_with_times:
+        if not success or not images_with_times or loader.failed_count:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(
                 self,
@@ -871,8 +889,8 @@ class BatchProcessingDialog(QDialog):
         param_value = self.param_spinbox.value()
         
         if split_method == 0:
-            return "count", param_value
-        return "time_threshold", param_value
+            return 'count', int(param_value)
+        return 'time_threshold', float(param_value)
     
     def browse_output_folder(self):
         """浏览输出文件夹"""
@@ -1041,6 +1059,13 @@ class BatchProcessingDialog(QDialog):
                 "manual_px_um": manual if manual > 0 else None,
                 "position": getattr(self.parent_window, "scale_bar_position", "bottom-right"),
                 "color": getattr(self.parent_window, "scale_bar_color", "auto"),
+                'font_family': getattr(self.parent_window, 'scale_bar_font_family', ''),
+                'font_size': getattr(self.parent_window, 'scale_bar_font_size', 0),
+                'font_bold': getattr(self.parent_window, 'scale_bar_font_bold', False),
+                'text_align': getattr(self.parent_window, 'scale_bar_text_align', 'auto'),
+                'custom_x': getattr(self.parent_window, 'scale_bar_custom_x', None),
+                'custom_y': getattr(self.parent_window, 'scale_bar_custom_y', None),
+                'target': getattr(self.parent_window, 'scale_bar_target', 'all'),
             }
 
         # 仅对齐批处理：没有融合步骤，必须保存对齐帧（否则整个任务无输出）
@@ -1058,6 +1083,9 @@ class BatchProcessingDialog(QDialog):
             "reg_scale_percent": ratio,
             "save_aligned": save_aligned,  # 是否保存对齐后的图像栈
             "scale_bar": scale_cfg,
+            'load_scale_factor': self.load_scale_factor,
+            'runtime_settings': dict(self._runtime_settings),
+            'frozen_stacks': [list(stack) for stack in self.single_folder_stacks],
         }
 
     def preload_single_folder(self, folder_path: str, scale_factor: float = 1.0) -> None:
@@ -1080,9 +1108,11 @@ class BatchProcessingDialog(QDialog):
 
         # 3. 加载文件夹并应用缩放
         loader = ImageStackLoader()
-        success, message, images_with_times, filenames = loader.load_images_with_timestamps(folder_path)
+        self.load_scale_factor = scale_factor
+        success, message, images_with_times, filenames = loader.load_images_with_timestamps(
+            folder_path, scale_factor=scale_factor)
 
-        if not success or not images_with_times:
+        if not success or not images_with_times or loader.failed_count:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(
                 self,
@@ -1091,17 +1121,7 @@ class BatchProcessingDialog(QDialog):
             )
             return
 
-        # 应用缩放
-        if scale_factor != 1.0 and 0 < scale_factor < 1.0:
-            scaled_images = []
-            for path, img, ts in images_with_times:
-                w = int(img.shape[1] * scale_factor)
-                h = int(img.shape[0] * scale_factor)
-                scaled_img = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
-                scaled_images.append((path, scaled_img, ts))
-            self.single_folder_images_with_times = scaled_images
-        else:
-            self.single_folder_images_with_times = images_with_times
+        self.single_folder_images_with_times = images_with_times
 
         self.single_folder_folder_path = folder_path
 
@@ -1125,6 +1145,7 @@ class BatchProcessingDialog(QDialog):
 
         self.rb_multiple_folders.setChecked(True)
         self.on_import_mode_changed()
+        self.load_scale_factor = scale_factor
 
         loader = ImageStackLoader()
         for folder_path in folder_paths:
@@ -1151,6 +1172,7 @@ class BatchProcessingDialog(QDialog):
                 item.setIcon(QIcon(self.folder_thumbnails[-1]))
 
             self.folder_list.addItem(item)
+        self._update_folder_placeholder()
 
     def start_batch_processing(self):
         """开始批处理"""
@@ -1175,6 +1197,20 @@ class BatchProcessingDialog(QDialog):
             return
 
         processing_settings = self.get_processing_settings()
+        if import_mode == 'single_folder':
+            self.update_single_folder_preview()
+            if split_method == 'time_threshold':
+                from core.image_loader import ImageStackLoader
+                missing = ImageStackLoader.missing_timestamps(self.single_folder_images_with_times)
+                if missing:
+                    QMessageBox.warning(self, trans.t('msg_error'),
+                                        trans.t('batch_missing_times').format(n=missing))
+                    return
+            if processing_settings['fusion_method'] != 'none' and any(
+                    len(stack) < 2 for stack in self.single_folder_stacks):
+                QMessageBox.warning(self, trans.t('msg_error'),
+                                    trans.t('depth_need_two_frames').format(n=1))
+                return
 
         self.accept()
 
@@ -1194,7 +1230,8 @@ class BatchProcessingDialog(QDialog):
             target = (output_path or "").strip()
             if not target:
                 return trans.t("msg_no_folder_text")
-            # A not-yet-existing folder only needs a writable parent to create
+            if os.path.exists(target) and not os.path.isdir(target):
+                return f"{trans.t('msg_save_failed_info_write')}\n{target}"
             probe = target if os.path.isdir(target) else os.path.dirname(os.path.abspath(target))
             if not _is_writable_dir(probe):
                 return f"{trans.t('msg_save_failed_info_write')}\n{target}"
@@ -1203,10 +1240,18 @@ class BatchProcessingDialog(QDialog):
         if output_type == "subfolder" and not (output_path or "").strip():
             return trans.t("msg_no_folder_text")
 
-        # 'same' and 'subfolder' both write inside every source folder
         for folder in self._source_output_folders():
-            if not _is_writable_dir(folder):
+            if not os.path.isdir(folder):
                 return f"{trans.t('msg_save_failed_info_write')}\n{folder}"
+            target = os.path.realpath(os.path.join(folder, output_path)) if output_type == 'subfolder' else folder
+            root = os.path.realpath(folder)
+            if output_type == 'subfolder' and (os.path.isabs(output_path) or
+                    os.path.commonpath((root, target)) != root):
+                return f"{trans.t('msg_save_failed_info_write')}\n{target}"
+            if os.path.exists(target) and not os.path.isdir(target):
+                return f"{trans.t('msg_save_failed_info_write')}\n{target}"
+            if not _is_writable_dir(target if os.path.isdir(target) else folder):
+                return f"{trans.t('msg_save_failed_info_write')}\n{target}"
         return None
 
 

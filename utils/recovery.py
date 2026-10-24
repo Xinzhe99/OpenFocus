@@ -8,6 +8,7 @@ closeEvent (crash, kill, power loss) — the user is then offered a
 one-click restore of that snapshot.
 """
 import os
+import tempfile
 from typing import Optional
 
 RECOVERY_DIR_NAME = "recovery"
@@ -103,9 +104,8 @@ def load_snapshot_state() -> Optional[dict]:
 def mark_pending_restore(window) -> bool:
     """Snapshot the session and ask the next launch to restore it silently.
 
-    Called just before quitting to install an update. The project path (when
-    the user had a .ofproj open) is stored too, so the relaunched build can
-    reopen the exact project rather than a reconstructed snapshot.
+    Restore the freshly written snapshot; the marker retains only the saved
+    document association. An empty workspace has no project restore target.
     """
     try:
         if not write_snapshot(window):
@@ -113,9 +113,18 @@ def mark_pending_restore(window) -> bool:
             # restore target: the relaunched build would reopen stale state.
             return False
         os.makedirs(recovery_dir(), exist_ok=True)
-        project = str(getattr(window, "project_path", "") or "")
-        with open(pending_restore_path(), "w", encoding="utf-8") as f:
-            f.write(project)
+        fd, temporary = tempfile.mkstemp(dir=recovery_dir(), suffix=".pending.tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(str(getattr(window, "project_path", "") or "")
+                        if getattr(window, "raw_images", None) else "")
+            os.replace(temporary, pending_restore_path())
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
         return True
     except Exception:
         return False
@@ -158,4 +167,4 @@ def pending_recovery() -> Optional[dict]:
 def snapshot_frame_count(state: Optional[dict]) -> int:
     if not state:
         return 0
-    return len(state.get("resolved_sources") or state.get("sources") or [])
+    return len(state.get("frame_order") or state.get("resolved_sources") or state.get("sources") or [])

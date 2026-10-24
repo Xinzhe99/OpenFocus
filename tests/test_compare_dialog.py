@@ -277,3 +277,104 @@ def test_view_mode_does_not_recompute(dialog, qapp):
     qapp.processEvents()
     assert dict(dialog._results) == before
     assert dialog._canvases["openfocus_a"].view_mode() == "full"
+
+
+@pytest.mark.parametrize("included", [0, 1])
+def test_comparison_requires_two_effective_frames(qapp, included):
+    window = QWidget()
+    window.raw_images = make_two_focus_stack((40, 60))
+    window.effective_stack = lambda: (window.raw_images[:included],
+                                       ["a"][:included], list(range(included)))
+    window.current_fusion_method = lambda: "dct"
+    instance = CompareDialog(window)
+    try:
+        instance._preview_timer.stop()
+        instance._start_request()
+        assert instance._worker is None
+        assert not instance.btn_run.isEnabled()
+    finally:
+        instance.reject()
+
+
+def test_uncomputed_candidate_cannot_adopt_parameters(dialog):
+    dialog._select_method("openfocus_a")
+    assert not dialog.btn_adopt_params.isEnabled()
+    dialog._adopt_params()
+    assert not dialog._closing
+
+
+def test_retry_failed_method_keeps_successful_candidate(dialog, qapp, monkeypatch):
+    import numpy as np
+    calls = []
+    def fuse(worker, method):
+        calls.append(method)
+        if method == "dct" and calls.count(method) == 1:
+            raise ValueError("retry me")
+        return np.full((160, 560, 3), 12345, np.uint16), (0, 0, 560, 160)
+    monkeypatch.setattr(PreviewWorker, "_fuse", fuse)
+    dialog._checks["dct"].setChecked(True)
+    dialog.mode_combo.setCurrentIndex(1)
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog))
+    saved = dialog._full_results["openfocus_a"]["image"]
+    dialog.run_comparison()
+    _until(qapp, lambda: _finished(dialog))
+    assert calls.count("openfocus_a") == 1
+    assert calls.count("dct") == 2
+    assert dialog._full_results["openfocus_a"]["image"] is saved
+
+
+def test_roi_at_origin_is_never_adoptable_as_full_output(dialog, qapp, monkeypatch):
+    import numpy as np
+    monkeypatch.setattr(PreviewWorker, "_fuse", lambda worker, method:
+        (np.zeros((160, 160, 3), np.uint16), (0, 0, 160, 160)))
+    dialog.ref_canvas.set_region_centre(QPointF(80, 80))
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog))
+    dialog._select_method("openfocus_a")
+    assert "openfocus_a" not in dialog._full_results
+    assert not dialog.btn_adopt_output.isEnabled()
+
+
+def test_selected_roi_verification_computes_only_candidate(dialog, qapp, monkeypatch):
+    import numpy as np
+    calls = []
+    def fuse(worker, method):
+        calls.append((method, worker.roi_only))
+        return np.full((160, 560, 3), 40001, np.uint16), (0, 0, 560, 160)
+    monkeypatch.setattr(PreviewWorker, "_fuse", fuse)
+    dialog._checks["dct"].setChecked(True)
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog))
+    dialog._select_method("dct")
+    assert dialog.btn_verify.isEnabled()
+    dialog._verify_full()
+    _until(qapp, lambda: _finished(dialog))
+    assert [method for method, roi in calls if not roi] == ["dct"]
+    assert dialog._selected_methods() == ["dct"]
+    assert dialog.btn_adopt_output.isEnabled()
+
+
+def test_full_adoption_keeps_exact_uint16_pixels_and_source_snapshot(dialog, qapp, monkeypatch):
+    import numpy as np
+    from types import SimpleNamespace
+    image = np.arange(160 * 560 * 3, dtype=np.uint16).reshape(160, 560, 3)
+    monkeypatch.setattr(PreviewWorker, "_fuse", lambda worker, method:
+                        (image, (0, 0, 560, 160)))
+    records = []
+    dialog.window_main.output_manager = SimpleNamespace(publish_compare_output=records.append)
+    dialog.mode_combo.setCurrentIndex(1)
+    dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog))
+    dialog._select_method("openfocus_a")
+    dialog._adopt_output()
+    dialog._adopt_output()
+    assert len(records) == 1
+    assert records[0].image is image
+    np.testing.assert_array_equal(records[0].image, image)
+    assert records[0].context.source_indices == tuple(dialog._source_indices)
+    assert records[0].context.parameters["kernel_size"] == dialog._method_params["openfocus_a"]["kernel_size"]

@@ -270,20 +270,29 @@ def setup_menus(window: QMainWindow) -> None:
     window.add_label_action.setEnabled(False)
     label_menu.addAction(window.add_label_action)
 
-    # "Remove" is a submenu at the same level as "Add", holding the two
-    # targets (source stack / registered stack) as its own two entries.
+    # Each target can be cleared independently, including disabled labels.
     remove_menu = label_menu.addMenu(trans.t('menu_remove_labels'))
     remove_menu.setProperty("trans_key", 'menu_remove_labels')
     window.ui_objs['menu_remove_labels'] = remove_menu
 
-    window.del_reg_label_action = QAction(trans.t('action_del_reg_label'), window)
+    window.del_reg_label_action = QAction(trans.t('label_target_registered'), window)
+    window.del_reg_label_action.setProperty("trans_key", 'label_target_registered')
     window.del_reg_label_action.triggered.connect(
         window.label_manager.delete_registered_labels)
     window.del_reg_label_action.setEnabled(False)
     remove_menu.addAction(window.del_reg_label_action)
     window.ui_objs['action_del_reg_label'] = window.del_reg_label_action
 
-    window.del_input_label_action = QAction(trans.t('action_del_input_label'), window)
+    window.del_output_label_action = QAction(trans.t('label_target_output'), window)
+    window.del_output_label_action.setProperty("trans_key", 'label_target_output')
+    window.del_output_label_action.triggered.connect(
+        window.label_manager.delete_output_labels)
+    window.del_output_label_action.setEnabled(False)
+    remove_menu.addAction(window.del_output_label_action)
+    window.ui_objs['action_del_output_label'] = window.del_output_label_action
+
+    window.del_input_label_action = QAction(trans.t('label_target_input'), window)
+    window.del_input_label_action.setProperty("trans_key", 'label_target_input')
     window.del_input_label_action.triggered.connect(
         window.label_manager.delete_input_labels)
     window.del_input_label_action.setEnabled(False)
@@ -291,6 +300,7 @@ def setup_menus(window: QMainWindow) -> None:
     window.ui_objs['action_del_input_label'] = window.del_input_label_action
 
     window.del_all_labels_action = QAction(trans.t('action_del_all_labels'), window)
+    window.del_all_labels_action.setProperty("trans_key", 'action_del_all_labels')
     window.del_all_labels_action.triggered.connect(
         window.label_manager.delete_all_labels)
     window.del_all_labels_action.setEnabled(False)

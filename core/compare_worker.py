@@ -32,6 +32,27 @@ class _CancellableWorker(QThread):
         return self._cancelled.is_set() or self.isInterruptionRequested()
 
 
+def align_frames(images, alignment, shared, should_cancel):
+    """Register a captured stack without writing files or reading live UI state."""
+    from core.registration import ImageRegistration
+    frames = list(images)
+    if not frames:
+        raise ValueError("The image stack is empty.")
+    if should_cancel():
+        return None
+    if alignment != "none":
+        settings = {"method": alignment, "brightness_reference": shared.get(
+            "brightness_reference", "last" if shared.get("exposure_match", False) else "first")}
+        for source, target in (("reg_downscale_width", "downscale_width"),
+                               ("max_shift_ratio", "max_shift_ratio")):
+            if shared.get(source) is not None:
+                settings[target] = shared[source]
+        registration = ImageRegistration(**settings)
+        frames = registration.process(frames, output_path=None,
+            thread_count=max(1, int(shared.get("thread_count", 4))), should_cancel=should_cancel)
+    return None if should_cancel() else frames
+
+
 class AlignmentWorker(_CancellableWorker):
     """Register once; ready carries a list of aligned arrays without conversion."""
 
@@ -48,32 +69,8 @@ class AlignmentWorker(_CancellableWorker):
         if self._should_cancel():
             return
         try:
-            from core.registration import ImageRegistration
-
-            images = list(self.images)
-            if not images:
-                raise ValueError("The image stack is empty.")
-            if self.alignment != "none":
-                settings = {
-                    "method": self.alignment,
-                    "brightness_reference": self.shared.get(
-                        "brightness_reference",
-                        "last" if self.shared.get("exposure_match", False) else "first"),
-                }
-                width = self.shared.get("reg_downscale_width")
-                if width is not None:
-                    settings["downscale_width"] = width
-                shift = self.shared.get("max_shift_ratio")
-                if shift is not None:
-                    settings["max_shift_ratio"] = shift
-                registration = ImageRegistration(**settings)
-                if self._should_cancel():
-                    return
-                images = registration.process(
-                    images, output_path=None,
-                    thread_count=max(1, int(self.shared.get("thread_count", 4))),
-                    should_cancel=self._should_cancel)
-            if not self._should_cancel():
+            images = align_frames(self.images, self.alignment, self.shared, self._should_cancel)
+            if images is not None and not self._should_cancel():
                 self.ready.emit(images)
         except Exception as exc:
             if not self._should_cancel():

@@ -29,7 +29,7 @@ OpenFocus è una workstation open source per la registrazione e la fusione di im
   <img src="assets/ui.png" alt="Interfaccia di OpenFocus" width="820">
 </p>
 
-> **v1.67.0** — nuova area di ritocco legata alla provenienza, cursore dei frame sorgente sincronizzato, annullamento transazionale a blocchi, finestra di confronto metodi e README in dodici lingue.
+> **v1.68.0** — l'esportazione batch segue la modalità scelta: solo allineamento crea una cartella `<stack>_aligned` e la elenca, la fusione elenca solo l'immagine fusa, e senza esportare l'allineamento scrive solo quell'immagine. Le copie `*_registered*` rimaste nella cartella sorgente non vengono più caricate come fotogrammi. Rivisti anche etichette, barre di scala, confronto metodi, export di profondità/modello, aggiornamenti e ritocco secondo l'audit in `docs/ux-specs`.
 
 ## Download e installazione
 

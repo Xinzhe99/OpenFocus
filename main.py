@@ -92,6 +92,8 @@ from controllers.update_manager import (
     STATE_FAILED,
     STATE_READY,
     STATE_STAGING,
+    STATE_CANCELLING,
+    STATE_CANCELLED,
 )
 from core import is_ai_fusion_available
 from constants import (
@@ -450,7 +452,9 @@ class OpenFocus(QMainWindow):
         self.radio_ai_soft = right_panel_components.radio_ai_soft
         self.radio_ai_hard = right_panel_components.radio_ai_hard
         # AI 输出模式：soft=概率加权混合（默认）/ hard=逐像素取最可能帧
-        self.ai_mode = "soft"
+        self.ai_mode = "hard" if self.ai_mode == "hard" else "soft"
+        self.radio_ai_hard.setChecked(self.ai_mode == "hard")
+        self.radio_ai_soft.setChecked(self.ai_mode == "soft")
         self.depth_smooth_row = right_panel_components.depth_smooth_row
         self.lbl_depth_smooth = right_panel_components.lbl_depth_smooth
         self.spin_depth_smooth = right_panel_components.spin_depth_smooth
@@ -705,8 +709,18 @@ class OpenFocus(QMainWindow):
             "current": getattr(self, "current_img_index", 0),
             "scale": float(getattr(self, "current_scale_factor", 1.0) or 1.0),
             "base_scale": float(getattr(self, "base_scale_factor", 1.0) or 1.0),
+            "source_px_um": getattr(self, "source_px_um", None),
+            "source_transforms": list(getattr(self, "source_transforms", [])),
+            "unrecoverable_source_changes": list(getattr(
+                self, "unrecoverable_source_changes", []) or []),
+            "scalebar": self._capture_scalebar_state(),
             "labels": _capture_label_state(self),
+            "parameters": self._capture_parameter_state(),
         }
+
+    def _capture_scalebar_state(self) -> dict:
+        from utils.scalebar import capture_state
+        return capture_state(self)
 
     def _capture_label_state(self):
         """Label set as plain data, for undo snapshots.
@@ -728,6 +742,7 @@ class OpenFocus(QMainWindow):
             return
         state = self._capture_stack_state()
         state["scalebar"] = dict(previous or {})
+        state["annotations_only"] = True
         self._mark_project_dirty()
         self._undo_stack.append(state)
         if len(self._undo_stack) > self.UNDO_LIMIT:
@@ -736,19 +751,8 @@ class OpenFocus(QMainWindow):
         self._refresh_undo_actions()
 
     def _restore_scalebar_state(self, saved) -> None:
-        if not isinstance(saved, dict) or not saved:
-            return
-        self.scale_bar_enabled = bool(saved.get("enabled", False))
-        self.scale_um_per_px_manual = float(saved.get("manual", 0.0) or 0.0)
-        self.scale_bar_position = saved.get("position", "bottom-right")
-        self.scale_bar_color = saved.get("color", "auto")
-        self.scale_bar_font_family = saved.get("font_family", "")
-        self.scale_bar_font_size = float(saved.get("font_size", 0.0) or 0.0)
-        self.scale_bar_font_bold = bool(saved.get("font_bold", False))
-        self.scale_bar_text_align = saved.get("text_align", "auto")
-        self.scale_bar_target = saved.get("target", "all")
-        self.scale_bar_custom_x = float(saved.get("custom_x", 0.95) or 0.95)
-        self.scale_bar_custom_y = float(saved.get("custom_y", 0.95) or 0.95)
+        from utils.scalebar import restore_state
+        restore_state(self, saved)
 
     def push_label_undo(self, previous) -> None:
         """Record a label-only change as one undoable step.
@@ -761,13 +765,55 @@ class OpenFocus(QMainWindow):
             return
         state = self._capture_stack_state()
         if previous is not None:
-            state["labels"] = previous.export_state()
+            state["labels"] = previous
+        state["annotations_only"] = True
         self._mark_project_dirty()
         self._undo_stack.append(state)
         if len(self._undo_stack) > self.UNDO_LIMIT:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
         self._refresh_undo_actions()
+
+    def _capture_parameter_state(self) -> dict:
+        methods = ("guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv3",
+                   "openfocus_a", "openfocus_b", "openfocus_c")
+        return {
+            "method": self.current_fusion_method(),
+            "alignment": self.current_alignment_method(),
+            "stack_reverse_order": self.stack_reverse_order,
+            "dtcwt_levels": self.dtcwt_levels,
+            "ai_mode": self.ai_mode,
+            "kernels": {m: self.kernel_for_method(m) for m in methods},
+            "smoothing": {m: self.smoothing_for_method(m) for m in methods},
+            "brightness": {m: {key: self.brightness_option_for(key, m)
+                                for key in ("exposure_match", "base_correct")}
+                           for m in methods},
+        }
+
+    def push_parameter_undo(self, previous: dict) -> None:
+        self._undo_stack.append({"parameters": previous, "parameters_only": True})
+        if len(self._undo_stack) > self.UNDO_LIMIT:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._mark_project_dirty()
+        self._refresh_undo_actions()
+
+    def _restore_parameter_state(self, saved: dict) -> None:
+        self.set_fusion_method(saved["method"])
+        self.set_alignment_method(saved["alignment"])
+        for method, value in saved["kernels"].items():
+            if method in self._KERNEL_MODES:
+                self._kernel_by_mode[self._KERNEL_MODES[method][0]] = value
+        if saved["method"] in self._KERNEL_MODES:
+            self.slider_smooth.setValue(saved["kernels"][saved["method"]])
+        for method, value in saved["smoothing"].items():
+            self.set_smoothing_for_method(method, value)
+        for method, options in saved["brightness"].items():
+            for option, enabled in options.items():
+                self.set_brightness_option(option, method, enabled)
+        self.chk_reverse_order.setChecked(saved["stack_reverse_order"])
+        self.set_dtcwt_levels(saved["dtcwt_levels"])
+        self.set_ai_mode(saved["ai_mode"])
 
     def invalidate_annotation_caches(self) -> None:
         """Drop rendered views that depend on labels or the scale bar."""
@@ -797,6 +843,16 @@ class OpenFocus(QMainWindow):
         self._refresh_undo_actions()
 
     def _restore_stack_state(self, state: dict) -> None:
+        if state.get("parameters_only"):
+            self._restore_parameter_state(state["parameters"])
+            self._mark_project_dirty()
+            return
+        if state.get("annotations_only"):
+            _restore_label_state(self, state.get("labels"))
+            _restore_scalebar_state(self, state.get("scalebar"))
+            self.refresh_annotation_views()
+            self._mark_project_dirty()
+            return
         self.raw_images = list(state["raw"])
         self.image_filenames = list(state["filenames"])
         self.image_source_paths = list(state["source_paths"])
@@ -807,6 +863,10 @@ class OpenFocus(QMainWindow):
         # reopened with the post-resize percentage while showing the old pixels.
         self.current_scale_factor = float(state.get("scale", 1.0) or 1.0)
         self.base_scale_factor = float(state.get("base_scale", 1.0) or 1.0)
+        self.source_px_um = state.get("source_px_um")
+        self.source_transforms = list(state.get("source_transforms", []))
+        self.unrecoverable_source_changes = list(state.get(
+            "unrecoverable_source_changes", []) or [])
         _restore_label_state(self, state.get("labels"))
         _restore_scalebar_state(self, state.get("scalebar"))
         # The restored stack invalidates every derived result, exactly like
@@ -824,8 +884,11 @@ class OpenFocus(QMainWindow):
             return
         self._undo_guard = True
         try:
-            self._redo_stack.append(self._capture_stack_state())
             state = self._undo_stack.pop()
+            current = self._capture_stack_state()
+            current["annotations_only"] = state.get("annotations_only", False)
+            current["parameters_only"] = state.get("parameters_only", False)
+            self._redo_stack.append(current)
             self._restore_stack_state(state)
         finally:
             self._undo_guard = False
@@ -837,8 +900,11 @@ class OpenFocus(QMainWindow):
             return
         self._undo_guard = True
         try:
-            self._undo_stack.append(self._capture_stack_state())
             state = self._redo_stack.pop()
+            current = self._capture_stack_state()
+            current["annotations_only"] = state.get("annotations_only", False)
+            current["parameters_only"] = state.get("parameters_only", False)
+            self._undo_stack.append(current)
             self._restore_stack_state(state)
         finally:
             self._undo_guard = False
@@ -1163,27 +1229,35 @@ class OpenFocus(QMainWindow):
         manager = self.update_manager
         state, tag, percent = manager.state, manager.tag, manager.percent
         show = True
+        self.btn_update_action.setEnabled(state != STATE_CANCELLING)
         if state == STATE_DOWNLOADING:
             self.lbl_update_status.setText(
-                trans.t('update_bg_downloading').format(version=tag, percent=percent))
-            self.update_progress.setRange(0, 100)
-            self.update_progress.setValue(percent)
+                trans.t('update_bg_downloading').format(version=tag, percent=percent)
+                if percent >= 0 else trans.t('update_downloading'))
+            self.update_progress.setRange(0, 100 if percent >= 0 else 0)
+            if percent >= 0:
+                self.update_progress.setValue(percent)
             self.update_progress.show()
             self.btn_update_action.setText(trans.t('btn_cancel_download'))
             self.btn_update_action.show()
-        elif state == STATE_STAGING:
-            self.lbl_update_status.setText(trans.t('update_status_preparing'))
+        elif state in (STATE_STAGING, STATE_CANCELLING):
+            self.lbl_update_status.setText(
+                trans.t('msg_update_cancel_stopping') if state == STATE_CANCELLING
+                else trans.t('update_status_preparing'))
             self.update_progress.setRange(0, 0)  # busy indicator
             self.update_progress.show()
-            self.btn_update_action.hide()
+            self.btn_update_action.setText(trans.t('btn_cancel_download'))
+            self.btn_update_action.show()
         elif state == STATE_READY:
             self.lbl_update_status.setText(
                 trans.t('update_status_ready').format(version=tag))
             self.update_progress.hide()
             self.btn_update_action.setText(trans.t('btn_restart_now'))
             self.btn_update_action.show()
-        elif state == STATE_FAILED:
-            self.lbl_update_status.setText(trans.t('update_status_failed'))
+        elif state in (STATE_FAILED, STATE_CANCELLED):
+            self.lbl_update_status.setText(
+                trans.t('update_status_failed') if state == STATE_FAILED
+                else trans.t('msg_render_cancelled'))
             self.update_progress.hide()
             self.btn_update_action.setText(trans.t('btn_retry'))
             self.btn_update_action.show()
@@ -1226,9 +1300,9 @@ class OpenFocus(QMainWindow):
 
     def _on_update_action_clicked(self) -> None:
         manager = self.update_manager
-        if manager.state == STATE_DOWNLOADING:
+        if manager.state in (STATE_DOWNLOADING, STATE_STAGING):
             manager.cancel_download()
-        elif manager.state == STATE_FAILED and manager.zip_url:
+        elif manager.state in (STATE_FAILED, STATE_CANCELLED) and manager.zip_url:
             manager.download(manager.tag, manager.zip_url, manual=True)
         else:
             self.install_update_now()
@@ -1276,8 +1350,16 @@ class OpenFocus(QMainWindow):
         keep working, or when the session could not be saved; the staged build
         stays available in both cases.
         """
+        editor = QApplication.activeModalWidget()
+        if editor is not None and editor is not self:
+            editor.raise_()
+            editor.activateWindow()
+            return False
         # 1) Running tasks: stop them cooperatively only after confirmation.
         if self._has_work_in_flight() and not self._confirm_update_quit():
+            return False
+        if self._has_work_in_flight():
+            self._show_status_message(trans.t('msg_update_cancel_stopping'), 5000)
             return False
         # 2) Unexported result pixels: export, discard or cancel the restart.
         if hasattr(self, "output_manager") \
@@ -1293,8 +1375,10 @@ class OpenFocus(QMainWindow):
         #    so the update must not proceed.
         try:
             self.persist_settings()
-        except Exception:
-            pass
+        except OSError:
+            show_warning_box(self, trans.t('update_check_failed_title'),
+                             trans.t('msg_update_snapshot_failed'))
+            return False
         from utils import recovery
         if not recovery.write_snapshot(self):
             show_warning_box(self, trans.t('update_check_failed_title'),
@@ -1375,6 +1459,13 @@ class OpenFocus(QMainWindow):
         """右面板单选：AI 输出模式（soft=概率加权，hard=逐像素取帧）。"""
         mode = mode if mode in ("soft", "hard") else "soft"
         self.ai_mode = mode
+        from PyQt6.QtCore import QSignalBlocker
+        for name, selected in (("radio_ai_soft", mode == "soft"),
+                               ("radio_ai_hard", mode == "hard")):
+            control = getattr(self, name, None)
+            if control is not None:
+                with QSignalBlocker(control):
+                    control.setChecked(selected)
         self.persist_settings()
 
     # 两个亮度选项都按算法独立记忆：它们是"这次融合用哪条曝光策略"，
@@ -1511,7 +1602,7 @@ class OpenFocus(QMainWindow):
 
     def open_project_dialog(self) -> None:
         from PyQt6.QtWidgets import QFileDialog
-        from utils.project_file import validate_project, apply_project, PROJECT_SUFFIX
+        from utils.project_file import validate_project_for_open, apply_project, PROJECT_SUFFIX
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
         if not self._confirm_discard_project_changes(
                 "msg_discard_unsaved_project"):
@@ -1521,15 +1612,19 @@ class OpenFocus(QMainWindow):
             get_last_dialog_dir(), f"OpenFocus Project (*{PROJECT_SUFFIX})")
         if not path:
             return
-        ok, err, state = validate_project(path)
+        ok, err, state = validate_project_for_open(self, path)
         if not ok:
-            show_warning_box(self, trans.t("msg_error"), err)
+            if err:
+                show_warning_box(self, trans.t("msg_error"), err)
             return
         set_last_dialog_dir(path)
-        self.project_path = path
-        apply_project(self, state)
-        self._clear_project_dirty()
-        self.add_recent_project(path)
+        def loaded():
+            self.project_path = path
+            self._clear_project_dirty()
+            if state.get("sources_relocated"):
+                self._mark_project_dirty()
+            self.add_recent_project(path)
+        apply_project(self, state, on_loaded=loaded)
 
     def save_project_dialog(self, save_as: bool = False) -> None:
         from PyQt6.QtWidgets import QFileDialog
@@ -1746,14 +1841,24 @@ class OpenFocus(QMainWindow):
         bar off. The old handler only rewrote the scope, so "remove
         everywhere" set it back to `all` and the bar stayed visible.
         """
-        if not getattr(self, "scale_bar_enabled", False):
+        previous = self._capture_scalebar_state()
+        scope = getattr(self, "scale_bar_target", "all") or "all"
+        if getattr(self, "scale_bar_enabled", False):
+            if where == "all" or scope == where or (
+                    where == "output" and scope == "registered"):
+                self.scale_bar_enabled = False
+            elif scope == "all":
+                self.scale_bar_target = "output" if where == "source" else "source"
+        if where in ("all", "output"):
+            for row in range(self.output_list.count()):
+                record = self.output_manager.record_for_row(row)
+                if record is not None:
+                    record.scale_bar_config = None
+                    record.scale_bar_initialized = True
+        if self._capture_scalebar_state() == previous:
             self.statusBar().showMessage(trans.t("scalebar_none_msg"), 6000)
             return
-        scope = getattr(self, "scale_bar_target", "all") or "all"
-        if where == "all" or scope == where:
-            self.scale_bar_enabled = False
-        elif scope == "all":
-            self.scale_bar_target = "output" if where == "source" else "source"
+        self.push_scalebar_undo(previous)
         self.persist_settings()
         self.refresh_annotation_views()
         # Complete literals: the i18n scanner cannot resolve a computed key.
@@ -1766,6 +1871,8 @@ class OpenFocus(QMainWindow):
 
     def refresh_annotation_views(self) -> None:
         """Redraw both canvases after label or scale-bar state changes."""
+        self.invalidate_annotation_caches()
+        self.output_manager.refresh_annotation_export_state()
         try:
             if self.current_display_index is not None and self.stack_images:
                 self.update_source_view(self.current_display_index)
@@ -1777,8 +1884,13 @@ class OpenFocus(QMainWindow):
                 self.output_manager.display_output_image_in_result_view(item)
             elif self.fusion_result is not None:
                 self.output_manager.show_fusion_result()
+            elif self.registration_results:
+                self.output_manager.show_registration_result(
+                    getattr(self, "current_result_index", 0))
         except Exception:
             pass
+        if getattr(self, "wipe_active", False):
+            self._update_wipe_images()
 
     def show_scale_bar_dialog(self) -> None:
         """Configure the exported-image scale bar with a live preview."""
@@ -1895,13 +2007,8 @@ class OpenFocus(QMainWindow):
         from dialogs.dustmap import DustMapDialog
         DustMapDialog(self).exec()
 
-    def apply_flat_field_to_stack(self, gain) -> None:
-        """DustMapDialog 的应用回调：原地校正全栈并使派生结果失效。
-
-        校正同时写入 base_images——尘点/渐晕是物理校正而非视图变换，
-        必须在后续缩放重建时保留。复用 transform_manager 的失效+刷新
-        机制（与旋转/缩放同一条路径）。
-        """
+    def apply_flat_field_to_stack(self, gain, remove_index=None, prepared=None) -> bool:
+        """Commit corrected source/base frames and optional removal together."""
         import time as _time
         from utils.dust_map import apply_flat_field_stack
         t0 = _time.time()
@@ -1909,11 +2016,25 @@ class OpenFocus(QMainWindow):
         # then tried base_images, so a failure on the second call left the
         # stack half-corrected with no way back.
         try:
-            corrected_raw = apply_flat_field_stack(self.raw_images, gain)
-            corrected_base = (
-                apply_flat_field_stack(self.base_images, gain)
-                if getattr(self, "base_images", None) else None)
-        except ValueError as exc:
+            if prepared is None:
+                corrected_raw = apply_flat_field_stack(self.raw_images, gain)
+                corrected_base = (
+                    apply_flat_field_stack(self.base_images, gain)
+                    if getattr(self, "base_images", None) else None)
+            else:
+                corrected_raw, corrected_base = prepared
+            if len(corrected_raw) != len(self.raw_images):
+                return False
+            if corrected_base is not None and len(corrected_base) != len(self.base_images):
+                return False
+            if remove_index is not None and not 0 <= remove_index < len(corrected_raw):
+                return False
+            corrected_raw = [image for i, image in enumerate(corrected_raw)
+                             if i != remove_index]
+            if corrected_base is not None:
+                corrected_base = [image for i, image in enumerate(corrected_base)
+                                  if i != remove_index]
+        except (ValueError, MemoryError) as exc:
             # A frame whose size disagrees with the white field must not die
             # silently in a Qt slot (the excepthook only writes a crash file).
             import logging
@@ -1925,6 +2046,15 @@ class OpenFocus(QMainWindow):
         self.raw_images = corrected_raw
         if corrected_base is not None:
             self.base_images = corrected_base
+        if remove_index is not None:
+            self.image_filenames = [name for i, name in enumerate(self.image_filenames)
+                                    if i != remove_index]
+            self.image_source_paths = [path for i, path in enumerate(self.image_source_paths)
+                                       if i != remove_index]
+            self.excluded_frames = {i - (i > remove_index)
+                                    for i in self.excluded_frames if i != remove_index}
+        self.unrecoverable_source_changes = list(getattr(
+            self, "unrecoverable_source_changes", []) or []) + [trans.t('dust_title')]
         if hasattr(self.get_or_create_source_pixmap, "cache_clear"):
             self.get_or_create_source_pixmap.cache_clear()
         self.transform_manager._invalidate_processing_results(
@@ -2167,22 +2297,22 @@ class OpenFocus(QMainWindow):
         The cache holds the source array itself, so its identity cannot be
         recycled by a later allocation while an entry is alive.
 
-        Only the B side gets the registered labels burnt in — that is what
-        the pre-cache code did for each side, kept as-is. The label state is
-        part of the key: enabling labels must not keep serving the cached
-        unlabeled pixmap.
+        The label revision and each output's scale-bar configuration are
+        part of the cache key, so annotation edits invalidate both sides.
         """
         if image is None:
             return None
         cache = getattr(self, "_wipe_pix_cache", None)
         if cache is None:
             cache = self._wipe_pix_cache = {}
-        labeled = (kind == "right"
-                   and self.label_manager.is_enabled_for_target("output"))
+        record = self.output_manager.record_for_image(image) if kind == "right" else None
+        target = "output" if record is not None or kind == "right" and self.fusion_results else "registered" if kind == "right" else "input"
+        baked = record is not None and record.annotations_baked
+        labeled = not baked and self.label_manager.is_enabled_for_target(target)
         label_revision = int(getattr(self.label_manager, "revision", 0))
         from utils import scalebar
-        scale_cfg = (scalebar.export_cfg(self, target="output")
-                     if kind == "right" else None)
+        scale_cfg = scalebar.export_cfg(
+            self, target="source" if target == "input" else target, record=record)
         # Include the scaled-bar configuration in the key: without it a
         # cached pixmap kept showing a bar after it was removed (or kept
         # hiding one after it was added), until the frame changed.
@@ -2196,7 +2326,8 @@ class OpenFocus(QMainWindow):
         display = image
         if labeled or scale_cfg:
             display = self.label_manager.display_bgr_image(
-                "output", image, index, scale_cfg=scale_cfg)
+                target, image, index, scale_cfg=scale_cfg,
+                output_id=record.output_id if record else None)
         pixmap = self._bgr_to_pixmap(display)
         if len(cache) > 4:
             cache.clear()
@@ -2431,8 +2562,8 @@ class OpenFocus(QMainWindow):
         When enabled, first align images using ECC, then display aligned stack on result panel for ROI selection.
         """
         if enabled:
-            # 检查是否有足够的图像
-            if not self.raw_images or len(self.raw_images) < 2:
+            images, names, indices = self.effective_stack()
+            if len(images) < 2:
                 show_warning_box(self, trans.t("msg_warning"), trans.t("roi_need_images"))
                 self.btn_preview_roi.blockSignals(True)
                 self.btn_preview_roi.setChecked(False)
@@ -2445,9 +2576,9 @@ class OpenFocus(QMainWindow):
             
             # 检查是否可以复用已有的对齐图像
             can_reuse = (
-                len(self.roi_aligned_images) > 0 and
-                len(self.roi_aligned_images) == len(self.raw_images) and
-                self.roi_aligned_raw_count == len(self.raw_images)
+                bool(self.roi_aligned_images) and
+                getattr(self, "roi_included_indices", ()) == tuple(indices) and
+                getattr(self, "roi_source_revision", -1) == getattr(self, "source_revision", 0)
             )
             
             if can_reuse:
@@ -2476,9 +2607,11 @@ class OpenFocus(QMainWindow):
             # and capture the stack identity so a stale result — finished
             # after the user loaded/rotated/deleted — is discarded instead
             # of being published for the wrong stack.
-            self._roi_align_snapshot = list(self.raw_images)
-            self._roi_align_context = (len(self.raw_images),
-                                       tuple(self.image_filenames or []))
+            self._roi_align_snapshot = list(images)
+            self._roi_align_context = (getattr(self, "source_revision", 0),
+                                       tuple(indices), tuple(names))
+            self._roi_frame_ids = tuple(self.label_manager.frame_ids("input")[i]
+                                        for i in indices)
             self.roi_alignment_worker = ROIAlignmentWorker(
                 self._roi_align_snapshot,
                 reg_downscale_width=self.reg_downscale_width,
@@ -2506,8 +2639,8 @@ class OpenFocus(QMainWindow):
     def _on_roi_alignment_finished(self, aligned_images, alignment_time):
         """ROI配准完成的回调"""
         # Discard the result if the stack changed while ECC ran.
-        context_now = (len(self.raw_images),
-                       tuple(self.image_filenames or []))
+        _images, names, indices = self.effective_stack()
+        context_now = (getattr(self, "source_revision", 0), tuple(indices), tuple(names))
         if context_now != getattr(self, "_roi_align_context", None):
             self.btn_preview_roi.setEnabled(True)
             self.btn_preview_roi.setText(trans.t("btn_roi"))
@@ -2516,6 +2649,10 @@ class OpenFocus(QMainWindow):
 
         self.roi_aligned_images = aligned_images
         self.roi_aligned_raw_count = len(self._roi_align_snapshot)  # 对齐时快照的帧数
+        self.roi_source_revision = context_now[0]
+        self.roi_included_indices = tuple(indices)
+        self.roi_frame_ids = self._roi_frame_ids
+        self.roi_filenames = list(names)
         self.roi_mode_active = True
         
         # 恢复按钮状态
@@ -3053,7 +3190,7 @@ class OpenFocus(QMainWindow):
         menu.addAction(clear_action)
 
     def _open_recent_project(self, path: str) -> None:
-        from utils.project_file import validate_project, apply_project, PROJECT_SUFFIX
+        from utils.project_file import validate_project_for_open, apply_project
         if not os.path.exists(path):
             show_warning_box(self, trans.t('msg_recent_missing_title'),
                              trans.t('msg_recent_project_missing'))
@@ -3065,14 +3202,18 @@ class OpenFocus(QMainWindow):
         if not self._confirm_discard_project_changes(
                 "msg_discard_unsaved_project"):
             return
-        ok, err, state = validate_project(path)
+        ok, err, state = validate_project_for_open(self, path)
         if not ok:
-            show_warning_box(self, trans.t('msg_error'), err)
+            if err:
+                show_warning_box(self, trans.t('msg_error'), err)
             return
-        self.project_path = path
-        apply_project(self, state)
-        self._clear_project_dirty()
-        self.add_recent_project(path)
+        def loaded():
+            self.project_path = path
+            self._clear_project_dirty()
+            if state.get("sources_relocated"):
+                self._mark_project_dirty()
+            self.add_recent_project(path)
+        apply_project(self, state, on_loaded=loaded)
 
     def _clear_recent_projects(self) -> None:
         self.recent_projects = []
@@ -3191,6 +3332,10 @@ class OpenFocus(QMainWindow):
         # 滑块含义标签由 update_slider_availability 按当前算法写入
         self.update_slider_availability()
         c.btn_reset.setText(trans.t('btn_reset'))
+        c.btn_select_all.setText(trans.t('btn_select_all'))
+        c.btn_select_all.setToolTip(trans.t('btn_select_all_hint'))
+        c.btn_select_none.setText(trans.t('btn_select_none'))
+        c.btn_select_none.setToolTip(trans.t('btn_select_none_hint'))
         # Keep the cancel/progress affordance while a render runs — the
         # retranslation must not reset it to the idle "Render" label.
         busy = (getattr(self.render_manager, 'worker', None) is not None
@@ -3396,26 +3541,16 @@ if __name__ == "__main__":
         restore_hint = ""  # explicit request without a marker: use the snapshot
     recovered = False
     if restore_hint is not None:
-        from utils.project_file import apply_project, validate_project
-        # The snapshot written immediately before the restart is the newest
-        # state. The saved project is only the document association: preferring
-        # it reopened an older configuration and silently dropped the changes
-        # made after the last Ctrl+Alt+S.
+        from utils.project_file import apply_project
+        # Restore only the pre-restart snapshot. A saved project may predate
+        # unsaved changes and must never stand in for a failed snapshot.
         state = recovery.load_snapshot_state()
-        snapshot_used = state is not None
-        if state is None and restore_hint:
-            ok, _err, state = validate_project(restore_hint)
-            if not ok:
-                state = None
-                _log.warning("update restore: %s is no longer valid",
-                             restore_hint)
         if state is not None:
-            # Only claim the recorded project when its own file is what we
-            # loaded; otherwise point at the snapshot that actually loaded.
-            window.project_path = (restore_hint if restore_hint and not
-                                   snapshot_used else recovery.session_path())
+            # Preserve the document association without changing snapshot data.
+            window.project_path = restore_hint or None
 
             def _restored_ok():
+                recovery.clear_pending_restore()
                 window._show_status_message(
                     trans.t('update_restored_session'), 8000)
 
@@ -3425,7 +3560,8 @@ if __name__ == "__main__":
                                  trans.t('update_restore_failed'))
 
             try:
-                apply_project(window, state, on_loaded=_restored_ok)
+                apply_project(window, state, on_loaded=_restored_ok,
+                              on_error=_restored_failed)
                 recovered = True
                 _log.info("restoring the session after an update (%s)",
                           window.project_path)
@@ -3435,7 +3571,8 @@ if __name__ == "__main__":
             # Nothing to restore: do not consume the user's launch arguments
             # and do not claim a restore that did not happen.
             _log.warning("update restore requested but no valid snapshot exists")
-        recovery.clear_pending_restore()
+            if not restore_hint:
+                recovery.clear_pending_restore()
 
     # Report how the previous in-place update ended (a failed swap used to
     # look exactly like the user simply closing the app).

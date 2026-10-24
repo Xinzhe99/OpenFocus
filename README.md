@@ -32,11 +32,13 @@ OpenFocus delivers focus stacking quality that rivals commercial-grade software,
 ## 📢 News
 
 > [!NOTE]
-> **v1.67.0** — the retouch brush is now a source-locked workspace with
-> render provenance, a synchronized source-frame slider, transactional
-> tile-based undo and protection for unexported outputs. This release also
-> adds the multi-method comparison window, reorganizes labels and scale bars
-> under Tools, and ships README translations in all twelve UI languages.
+> **v1.68.0** — batch exports now follow the mode you pick: align-only
+> writes one `<stack>_aligned` folder and lists that folder, fusion writes the
+> fused image and lists only it, and fusion without alignment writes the image
+> alone. Leftover `*_registered*` copies in a source folder are no longer
+> loaded as frames. This release also reworks labels, scale bars, method
+> comparison, depth/mesh export, updates and retouch around the audit in
+> `docs/ux-specs`, with a UI in twelve languages.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 

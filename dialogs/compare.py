@@ -87,12 +87,19 @@ class CompareDialog(QDialog):
         self._active_revision = -1
         self._active_keys = {}
         self._results = {}
+        self._active_method = ""
+        self._stale_methods = set()
+        self._cancelled_methods = set()
+        self._cards = {}
+        self._card_status = {}
         self._errors = {}
         # Original (unquantised for display) arrays, keyed by method, so a
         # candidate can be adopted without reading pixels back from a pixmap.
         self._full_results = {}
         self._selected_method = ""
         self._published = False
+        self._publishing = False
+        self._cancel_requested = False
         self._method_params = {}
         self._param_rows = {}
         self.param_widgets = {}
@@ -105,6 +112,16 @@ class CompareDialog(QDialog):
         self._close_code = QDialog.DialogCode.Rejected
         self._ref_index = 0
         self._shared = self._collect_shared_settings()
+        self._source_revision = int(getattr(window_main, "source_revision", 0))
+        manager = getattr(window_main, "label_manager", None)
+        frame_ids = manager.frame_ids("input") if manager is not None else []
+        self._frame_ids = [frame_ids[i] for i in self._source_indices] if frame_ids else None
+        from utils.scalebar import effective_px_um
+        self._calibration = {
+            "pixel_size_um": effective_px_um(window_main),
+            "source_px_um": getattr(window_main, "source_px_um", None),
+            "source_scale_factor": getattr(window_main, "current_scale_factor", 1.0),
+        }
 
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
@@ -317,6 +334,16 @@ class CompareDialog(QDialog):
             canvas.installEventFilter(self)
             canvas.setProperty("compare_method", method)
             self._canvases[method] = canvas
+            card = QWidget(self.grid_host)
+            layout = QVBoxLayout(card)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(canvas)
+            state = QLabel()
+            state.setWordWrap(True)
+            state.setFixedWidth(self._detail_size)
+            layout.addWidget(state)
+            self._cards[method] = card
+            self._card_status[method] = state
 
         footer = QHBoxLayout()
         self.status_label = QLabel()
@@ -326,19 +353,27 @@ class CompareDialog(QDialog):
         self.progress.setMaximumWidth(180)
         self.progress.hide()
         footer.addWidget(self.progress)
+        root.addLayout(footer)
+        actions = FlowPanel(h_spacing=8, v_spacing=4)
+        self.btn_verify = QPushButton(trans.t("compare_verify_full"))
+        self.btn_verify.clicked.connect(self._verify_full)
+        actions.add(self.btn_verify)
+        self.btn_retry = QPushButton(trans.t("compare_retry_method"))
+        self.btn_retry.clicked.connect(self._retry_method)
+        actions.add(self.btn_retry)
         self.btn_adopt_params = QPushButton(trans.t("compare_adopt_params"))
         self.btn_adopt_params.clicked.connect(self._adopt_params)
         self.btn_adopt_params.setEnabled(False)
-        footer.addWidget(self.btn_adopt_params)
+        actions.add(self.btn_adopt_params)
         self.btn_adopt_output = QPushButton(trans.t("compare_adopt_output"))
         self.btn_adopt_output.setObjectName("primaryButton")
         self.btn_adopt_output.clicked.connect(self._adopt_output)
         self.btn_adopt_output.setEnabled(False)
-        footer.addWidget(self.btn_adopt_output)
+        actions.add(self.btn_adopt_output)
         close_button = QPushButton(trans.t("btn_close"))
         close_button.clicked.connect(self.reject)
-        footer.addWidget(close_button)
-        root.addLayout(footer)
+        actions.add(close_button)
+        root.addWidget(actions)
         self._layout_timer.start(0)
 
     def _initial_params(self, method):
@@ -350,6 +385,8 @@ class CompareDialog(QDialog):
                 value = window.kernel_for_method(method)
             elif key in ("blend_smoothing", "depth_smoothing") and hasattr(window, "smoothing_for_method"):
                 value = window.smoothing_for_method(method)
+            elif key == "N":
+                value = getattr(window, "dtcwt_levels", default)
             value = max(lo, min(hi, value))
             params[key] = float(value) if decimals else int(value)
             if key == "kernel_size":
@@ -435,6 +472,7 @@ class CompareDialog(QDialog):
             return
         self._method_params[method][key] = value
         self._results.pop(method, None)
+        self._stale_methods.add(method)
         self._full_results.pop(method, None)
         self._errors.pop(method, None)
         self._update_adopt_actions()
@@ -445,12 +483,15 @@ class CompareDialog(QDialog):
         self._aligned_frames = None
         self._frames = self._raw_frames
         self._results.clear()
+        self._full_results.clear()
         self._errors.clear()
         self._show_frame(self._ref_index)
+        self._update_adopt_actions()
         self._request_changed()
 
     def _mode_changed(self, _index):
         self.preview_note.setVisible(bool(self.mode_combo.currentData()))
+        self._stale_methods.update(self._results)
         self._results.clear()
         self._full_results.clear()
         self._errors.clear()
@@ -484,6 +525,8 @@ class CompareDialog(QDialog):
             self.preview_size_spin.setValue(size)
         for canvas in self._canvases.values():
             canvas.setFixedSize(size, size)
+        for label in self._card_status.values():
+            label.setFixedWidth(size)
         self.ref_canvas.set_detail_size(size)
         self._layout_timer.start(0)
 
@@ -511,6 +554,24 @@ class CompareDialog(QDialog):
         region = self.ref_canvas.region()
         for method in self._selected_methods():
             canvas = self._canvases[method]
+            if self._result_is_current(method):
+                status = trans.t("compare_state_current")
+            elif self._errors.get(method, (None,))[0] == self._result_key(method):
+                status = trans.t("msg_error") + ": " + self._errors[method][1]
+            elif self._worker is not None and self._active_revision != self._revision:
+                status = trans.t("compare_stopping")
+            elif self._worker is not None and method == self._active_method:
+                status = trans.t("render_stage_fuse")
+            elif self._auto_enabled:
+                status = trans.t("compare_state_queued")
+            elif method in self._cancelled_methods:
+                status = trans.t("compare_cancelled")
+            elif method in self._stale_methods:
+                status = trans.t("depth_stale")
+            else:
+                status = trans.t("compare_no_image")
+            self._card_status[method].setText(status)
+            self._card_status[method].setToolTip(status)
             canvas.set_region(region)
             result = self._results.get(method)
             key = self._result_key(method)
@@ -531,15 +592,19 @@ class CompareDialog(QDialog):
         if self._closing:
             return
         self._revision += 1  # Invalidate old work now, before the debounce expires.
-        self._auto_enabled = bool(self._raw_frames and self._selected_methods())
+        if len(self._raw_frames) < 2:
+            self.status_label.setText(trans.t("depth_need_two_frames").format(n=len(self._raw_frames)))
+        self._auto_enabled = len(self._raw_frames) >= 2 and bool(self._selected_methods())
         if self._worker is not None:
             self._worker.cancel()
         self._refresh_panes()
-        self.btn_run.setEnabled(bool(self._raw_frames and self._selected_methods()))
+        self.btn_run.setEnabled(len(self._raw_frames) >= 2 and bool(self._selected_methods()))
+        self._update_adopt_actions()
         self._preview_timer.start(180)
 
     def run_comparison(self):
         if self._worker is not None:
+            self._cancel_requested = True
             self._auto_enabled = False
             self._revision += 1
             self._preview_timer.stop()
@@ -551,7 +616,6 @@ class CompareDialog(QDialog):
             self._refresh_panes()
             return
         for method in self._selected_methods():
-            self._results.pop(method, None)
             self._errors.pop(method, None)
         self._request_changed()
         self._preview_timer.start(0)
@@ -560,7 +624,7 @@ class CompareDialog(QDialog):
         if self._closing or not self._auto_enabled or self._worker is not None:
             return
         methods = self._selected_methods()
-        if not methods or not self._raw_frames:
+        if not methods or len(self._raw_frames) < 2:
             self._set_idle()
             return
         if self._aligned_frames is None:
@@ -606,6 +670,9 @@ class CompareDialog(QDialog):
         self._worker = worker
         self._worker_kind = kind
         self._active_revision = self._revision
+        self._active_method = ""
+        self._cancelled_methods.clear()
+        self._refresh_panes()
         worker.finished.connect(self._worker_finished)
         self.btn_run.setText(trans.t("compare_cancel"))
         self.progress.show()
@@ -644,11 +711,43 @@ class CompareDialog(QDialog):
 
     def _update_adopt_actions(self) -> None:
         method = self._selected_method
-        has_params = bool(method)
-        self.btn_adopt_params.setEnabled(has_params)
+        available = bool(method) and self._worker is None and not self._closing
+        self.btn_verify.setVisible(bool(method) and bool(self.mode_combo.currentData()))
+        self.btn_verify.setEnabled(available and self._result_is_current(method))
+        self.btn_retry.setVisible(bool(method) and method in self._errors)
+        self.btn_retry.setEnabled(available and method in self._errors)
+        overview = self.view_combo.model().item(1)
+        if overview is not None:
+            overview.setEnabled(not bool(self.mode_combo.currentData()))
+        if self.mode_combo.currentData() and self.view_combo.currentData() == "full":
+            self.view_combo.setCurrentIndex(0)
+        eligible = (bool(method) and method in self._selected_methods()
+                    and self._result_is_current(method)
+                    and self._worker is None and not self._closing
+                    and not self._published and not self._publishing)
+        self.btn_adopt_params.setEnabled(eligible)
         result = self._full_results.get(method) if method else None
-        self.btn_adopt_output.setEnabled(
-            bool(result) and self._result_is_current(method))
+        self.btn_adopt_output.setEnabled(eligible and bool(result)
+                                        and result["key"] == self._result_key(method))
+
+    def _retry_method(self):
+        method = self._selected_method
+        if not method or self._worker is not None:
+            return
+        self._errors.pop(method, None)
+        self._request_changed()
+        self._preview_timer.start(0)
+
+    def _verify_full(self):
+        method = self._selected_method
+        if not method or self._worker is not None or not self._result_is_current(method):
+            return
+        for name, check in self._checks.items():
+            with QSignalBlocker(check):
+                check.setChecked(name == method)
+        self._methods_changed(True)
+        self.mode_combo.setCurrentIndex(self.mode_combo.findData(False))
+        self._preview_timer.start(0)
 
     def _result_is_current(self, method: str) -> bool:
         cached = self._results.get(method)
@@ -657,30 +756,58 @@ class CompareDialog(QDialog):
     def _adopt_params(self) -> None:
         """Copy the candidate's parameters to the main window; no render."""
         method = self._selected_method
-        if not method:
+        if (not method or not self.btn_adopt_params.isEnabled()
+                or not self._result_is_current(method)):
             return
         window = self.window_main
         params = dict(self._method_params.get(method, {}))
-        if hasattr(window, "set_fusion_method"):
-            window.set_fusion_method(method)
-        if "kernel_size" in params and hasattr(window, "slider_smooth"):
-            window.slider_smooth.setValue(int(params["kernel_size"]))
-        if "blend_smoothing" in params and hasattr(window, "set_smoothing_for_method"):
-            window.set_smoothing_for_method(method, params["blend_smoothing"])
-        if "depth_smoothing" in params and hasattr(window, "set_smoothing_for_method"):
-            window.set_smoothing_for_method(method, params["depth_smoothing"])
-        if "N" in params and hasattr(window, "set_dtcwt_levels"):
-            window.set_dtcwt_levels(int(params["N"]))
-        if "mode" in params and hasattr(window, "set_ai_mode"):
-            window.set_ai_mode(params["mode"])
-        if hasattr(window, "set_brightness_option"):
-            if "exposure_match" in params:
+        previous = {
+            "method": window.current_fusion_method(),
+            "alignment": window.current_alignment_method(),
+            "stack_reverse_order": bool(getattr(window, "stack_reverse_order", False)),
+            "dtcwt_levels": int(getattr(window, "dtcwt_levels", 4)),
+            "ai_mode": getattr(window, "ai_mode", "soft"),
+            "kernels": {m: window.kernel_for_method(m) for m in METHOD_PARAMS
+                        if hasattr(window, "kernel_for_method")},
+            "smoothing": {m: window.smoothing_for_method(m)
+                          for m in ("openfocus_a", "openfocus_b", "openfocus_c")
+                          if hasattr(window, "smoothing_for_method")},
+            "brightness": {m: {key: window.brightness_option_for(key, m)
+                               for key in ("exposure_match", "base_correct")}
+                           for m in METHOD_ORDER if hasattr(window, "brightness_option_for")},
+        }
+        try:
+            if hasattr(window, "set_alignment_method"):
+                window.set_alignment_method(self.align_combo.currentData())
+            if hasattr(window, "chk_reverse_order"):
+                window.chk_reverse_order.setChecked(self._shared["sort_mode"] == "desc")
+            if hasattr(window, "set_fusion_method"):
+                window.set_fusion_method(method)
+            if "kernel_size" in params and hasattr(window, "slider_smooth"):
+                window.slider_smooth.setValue(int(params["kernel_size"]))
+            for key in ("blend_smoothing", "depth_smoothing"):
+                if key in params and hasattr(window, "set_smoothing_for_method"):
+                    window.set_smoothing_for_method(method, params[key])
+            if "N" in params and hasattr(window, "set_dtcwt_levels"):
+                window.set_dtcwt_levels(int(params["N"]))
+            if "mode" in params and hasattr(window, "set_ai_mode"):
+                window.set_ai_mode(params["mode"])
+            if hasattr(window, "set_brightness_option"):
                 window.set_brightness_option("exposure_match", method,
                                              bool(params["exposure_match"]))
-            if "base_frame" in params:
-                window.set_brightness_option(
-                    "base_correct", method,
-                    str(params["base_frame"]) not in ("", "none"))
+                window.set_brightness_option("base_correct", method,
+                                             str(params["base_frame"]) not in ("", "none"))
+            if hasattr(window, "push_parameter_undo"):
+                window.push_parameter_undo(previous)
+        except Exception as exc:
+            if hasattr(window, "_restore_parameter_state"):
+                try:
+                    window._restore_parameter_state(previous)
+                except Exception as restore_error:
+                    self.status_label.setText(f"{exc}\n{restore_error}")
+                    return
+            self.status_label.setText(str(exc))
+            return
         if hasattr(window, "statusBar"):
             window.statusBar().showMessage(
                 trans.t("compare_params_adopted"), 6000)
@@ -689,20 +816,30 @@ class CompareDialog(QDialog):
     def _adopt_output(self) -> None:
         """Publish the selected full-frame result as a new output."""
         method = self._selected_method
-        if not method or self._published:
+        if not method or self._published or self._publishing or self._worker is not None:
             return
         entry = self._full_results.get(method)
-        if not entry or not self._result_is_current(method):
+        if (not entry or entry["key"] != self._result_key(method)
+                or not self._result_is_current(method)):
             return
         image = entry["image"]
         window = self.window_main
+        self._publishing = True
+        self._update_adopt_actions()
         try:
             from core.render_context import build_render_context
             from controllers.output_manager import OutputRecord
             label = f"{trans.t(METHOD_LABEL_KEYS[method])} · {trans.t('compare_output_suffix')}"
+            alignment = self.align_combo.currentData()
             context = build_render_context(
                 self._aligned_frames or self._raw_frames, image,
-                filenames=self._source_names, algorithm=method)
+                filenames=self._source_names, algorithm=method,
+                alignment_options=[alignment == name for name in
+                                   ("homography", "ecc", "openfocus")],
+                aligned=alignment != "none", source_indices=self._source_indices,
+                source_revision=self._source_revision, frame_ids=self._frame_ids,
+                parameters={**self._shared, **self._method_params[method]},
+                **self._calibration)
             record = OutputRecord.create(
                 image, label, context=context, kind="compare",
                 exported=False)
@@ -711,6 +848,9 @@ class CompareDialog(QDialog):
             self.accept()
         except Exception as exc:
             self.status_label.setText(f"{trans.t('msg_error')}: {exc}")
+        finally:
+            self._publishing = False
+            self._update_adopt_actions()
 
     def _preview_ready(self, method, image, bounds):
         if not self._current_worker() or method not in self._selected_methods():
@@ -726,8 +866,9 @@ class CompareDialog(QDialog):
         # Keep the original array for adoption: only a full-frame result may
         # become an output, and it must not round-trip through the pixmap.
         x, y, width, height = tuple(bounds)
-        if (x == 0 and y == 0 and width == image.shape[1]
-                and height == image.shape[0]):
+        if (not key[1] and x == 0 and y == 0
+                and (height, width) == self._raw_frames[0].shape[:2]
+                and (height, width) == image.shape[:2]):
             self._full_results[method] = {
                 "key": key, "image": image, "bounds": tuple(bounds)}
         else:
@@ -745,6 +886,8 @@ class CompareDialog(QDialog):
     def _progress_changed(self, done, total, method):
         if not self._current_worker():
             return
+        self._active_method = method
+        self._refresh_panes()
         self.progress.setRange(0, max(1, total))
         self.progress.setValue(done)
         if method:
@@ -760,14 +903,19 @@ class CompareDialog(QDialog):
         if self._closing:
             super().done(self._close_code)
             return
-        if not self._auto_enabled and not self._results:
+        if self._cancel_requested:
+            self._cancelled_methods.update(m for m in self._selected_methods()
+                                           if not self._result_is_current(m))
+            self._cancel_requested = False
             self.status_label.setText(trans.t("compare_cancelled"))
-            self.progress.hide()
-            self.btn_run.setEnabled(bool(self._raw_frames
-                                         and self._selected_methods()))
+            self._set_idle()
+            self.btn_run.setEnabled(len(self._raw_frames) >= 2
+                                    and bool(self._selected_methods()))
+            self._update_adopt_actions()
+            self._refresh_panes()
             return
-        self.btn_run.setEnabled(bool(self._raw_frames
-                                     and self._selected_methods()))
+        self.btn_run.setEnabled(len(self._raw_frames) >= 2
+                                and bool(self._selected_methods()))
         self._set_idle()
         if self._auto_enabled and not self._preview_timer.isActive():
             self._preview_timer.start(0)
@@ -859,8 +1007,9 @@ class CompareDialog(QDialog):
             self.grid.takeAt(0)
         for method, canvas in self._canvases.items():
             canvas.setVisible(method in selected)
+            self._cards[method].setVisible(method in selected)
         for index, method in enumerate(selected):
-            self.grid.addWidget(self._canvases[method], index // columns, index % columns)
+            self.grid.addWidget(self._cards[method], index // columns, index % columns)
 
     def done(self, result):
         get_settings().setValue("compare/preview_size", self._detail_size)

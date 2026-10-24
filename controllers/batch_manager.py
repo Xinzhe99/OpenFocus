@@ -65,15 +65,7 @@ class BatchManager:
             )
             return
 
-        # Without a method no fusion runs at all: the worker would report
-        # every folder as "successfully processed" while writing nothing.
-        if not (processing_settings or {}).get("fusion_method"):
-            self._show_message(
-                title=trans.t("batch_no_method_title"),
-                text=trans.t("batch_no_method_text"),
-                info="",
-                icon=QMessageBox.Icon.Warning,
-            )
+        if processing_settings is None:
             return
 
         if import_mode == "multiple_folders":
@@ -102,31 +94,35 @@ class BatchManager:
             self.window.btn_reset.setEnabled(False)
         except Exception:
             pass
+        runtime = processing_settings.get('runtime_settings', {})
         self._worker = BatchWorker(
             folder_paths=folder_paths,
             output_type=output_type,
             output_path=output_path,
             processing_settings=processing_settings,
-            reg_downscale_width=getattr(self.window, "reg_downscale_width", None),
-            tile_enabled=getattr(self.window, "tile_enabled", None),
-            tile_block_size=getattr(self.window, "tile_block_size", None),
-            tile_overlap=getattr(self.window, "tile_overlap", None),
-            tile_threshold=getattr(self.window, "tile_threshold", None),
-            thread_count=getattr(self.window, "thread_count", 4),
-            ai_batch_size=getattr(self.window, "ai_batch_size", 2),
-            ai_mode=getattr(self.window, "ai_mode", "soft"),
+            reg_downscale_width=runtime.get('reg_downscale_width', getattr(self.window, 'reg_downscale_width', None)),
+            tile_enabled=runtime.get('tile_enabled', getattr(self.window, 'tile_enabled', None)),
+            tile_block_size=runtime.get('tile_block_size', getattr(self.window, 'tile_block_size', None)),
+            tile_overlap=runtime.get('tile_overlap', getattr(self.window, 'tile_overlap', None)),
+            tile_threshold=runtime.get('tile_threshold', getattr(self.window, 'tile_threshold', None)),
+            thread_count=runtime.get('thread_count', getattr(self.window, 'thread_count', 4)),
+            ai_batch_size=runtime.get('ai_batch_size', getattr(self.window, 'ai_batch_size', 2)),
+            ai_mode=runtime.get('ai_mode', getattr(self.window, 'ai_mode', 'soft')),
             import_mode=import_mode,
             split_method=split_method,
             split_param=split_param,
             single_folder_images_with_times=single_folder_images_with_times,
-            use_gpu=getattr(self.window, "use_gpu", True),
-            exposure_match=bool(getattr(self.window, "exposure_match", True)),
+            use_gpu=runtime.get('use_gpu', getattr(self.window, 'use_gpu', True)),
+            exposure_match=bool(processing_settings.get('fusion_params', {}).get('exposure_match', False)),
         )
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
 
         self._worker.progress_updated.connect(self._handle_progress_update)
         self._worker.finished.connect(self._handle_finished)
+        self._worker.finished.connect(self._thread.quit, Qt.ConnectionType.DirectConnection)
+        self._worker.error.connect(self._thread.quit, Qt.ConnectionType.DirectConnection)
+        self._thread.finished.connect(self._thread_finished)
         self._worker.error.connect(self._handle_error)
 
         self._thread.started.connect(self._worker.run)
@@ -138,6 +134,8 @@ class BatchManager:
         dialog.setWindowTitle(trans.t("batch_title"))
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         # Read through the module: the constants are rebound on theme
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
         # change, so a from-import here would freeze the dark sheet.
         dialog.setStyleSheet(ui_styles.PROGRESS_DIALOG_STYLE)
         dialog.canceled.connect(self._cancel_running_batch)
@@ -157,8 +155,6 @@ class BatchManager:
         if self._progress_dialog.wasCanceled() and self._worker:
             self._worker.cancel()
 
-        if current >= total:
-            self._close_progress_dialog()
 
     def _handle_finished(self, results: dict) -> None:
         from utils.logging_setup import log_action
@@ -169,15 +165,24 @@ class BatchManager:
             total_count = results.get("total", 0)
             failed_folders = results.get("failed", [])
             was_cancelled = results.get("cancelled", False)
+            self.last_results = results
 
             outputs = results.get("outputs") or []
             if outputs and getattr(self.window, "output_manager", None) is not None:
-                # Show the files in the output panel so they behave like any
-                # other result (inspect, wipe-compare, retouch, save as).
+                # Only fused files enter pixel history; aligned stacks remain directories.
                 shown = self.window.output_manager.add_batch_outputs(outputs)
                 if shown:
                     self.window.statusBar().showMessage(
                         trans.t("batch_added_to_outputs").format(n=shown), 8000)
+            stacks = results.get('aligned_stacks') or []
+            # The output panel answers "what can I inspect and export from this
+            # run". A fused stack already has its result there, so listing its
+            # aligned frames too only buried it under per-stack folders. The
+            # folder still exists on disk and stays reachable from the batch
+            # summary; align-only runs list the folders because that is the
+            # only artifact they produce.
+            if not outputs and stacks and getattr(self.window, 'output_manager', None) is not None:
+                self.window.output_manager.add_batch_aligned_stacks(stacks)
 
             # Cancelled runs still report what was written and what was not
             # started; the old code suppressed the summary entirely.
@@ -195,18 +200,16 @@ class BatchManager:
                 info_lines.extend(failed_folders)
             problems = (counts.get("partial", 0) + counts.get("failed", 0))
             self._show_message(
-                title=(trans.t("batch_partial_title") if problems
-                       else trans.t("batch_done_title")),
-                text=(trans.t("batch_partial_title") if problems
-                      else trans.t("batch_done_title")),
+                title=(trans.t('compare_cancelled') if was_cancelled else
+                       trans.t('batch_partial_title') if problems else trans.t('batch_done_title')),
+                text=(trans.t('compare_cancelled') if was_cancelled else
+                      trans.t('batch_partial_title') if problems else trans.t('batch_done_title')),
                 info="\n".join(info_lines),
                 icon=(QMessageBox.Icon.Warning if problems
                       else QMessageBox.Icon.Information),
             )
         finally:
             self._close_progress_dialog()
-            self._teardown_worker()
-            self._restore_controls()
 
     def _render_owns_controls(self) -> bool:
         """True while a render/compare run owns the fusion controls."""
@@ -242,8 +245,6 @@ class BatchManager:
             icon=QMessageBox.Icon.Critical,
         )
         self._close_progress_dialog()
-        self._teardown_worker()
-        self._restore_controls()
 
     def _show_message(
         self,
@@ -264,50 +265,34 @@ class BatchManager:
     def _cancel_running_batch(self) -> None:
         if self._worker:
             self._worker.cancel()
-        self._close_progress_dialog()
-        # 若用户取消，也恢复 UI
-        # A render/compare run owns these controls; let its own restore path
-        # re-enable them instead of unlocking mid-run.
-        _rm = getattr(self.window, "render_manager", None)
-        if _rm is not None and (
-                (getattr(_rm, "worker", None) is not None and _rm.worker.isRunning())
-                or getattr(_rm, "_compare_mode", False)):
-            return
-        try:
-            self.window.slider_smooth.setEnabled(True)
-        except Exception:
-            pass
-        try:
-            self.window.combo_fusion.setEnabled(True)
-        except Exception:
-            pass
-        try:
-            self.window.combo_align.setEnabled(True)
-        except Exception:
-            pass
-        try:
-            self.window.btn_reset.setEnabled(True)
-        except Exception:
-            pass
+        if self._progress_dialog:
+            self._progress_dialog.setLabelText(trans.t('depth_cancelling'))
+            self._progress_dialog.setCancelButton(None)
+            self._progress_dialog.show()
 
     def _close_progress_dialog(self) -> None:
         if self._progress_dialog:
             self._progress_dialog.close()
             self._progress_dialog = None
 
-    def _teardown_worker(self) -> None:
+    def _thread_finished(self) -> None:
         thread, worker = self._thread, self._worker
         self._thread = None
         self._worker = None
         if worker is not None:
-            try:
-                worker.cancel()
-            except Exception:
-                pass
+            worker.deleteLater()
         if thread is not None:
-            thread.quit()
-            # The worker only checks is_cancelled between folders, so a folder
-            # in progress cannot be interrupted — never block the UI forever
-            # and never terminate() a thread inside native code.
-            if not thread.wait(5000):
-                _ORPHAN_WORKERS.append((thread, worker))
+            thread.deleteLater()
+        self._restore_controls()
+
+    def _teardown_worker(self) -> None:
+        """Request shutdown without blocking the GUI on native processing."""
+        if self._worker:
+            self._worker.cancel()
+        if self._thread:
+            self._thread.quit()
+            if self._thread.isRunning():
+                pair = (self._thread, self._worker)
+                if pair not in _ORPHAN_WORKERS:
+                    _ORPHAN_WORKERS.append(pair)
+                    self._thread.finished.connect(lambda: _ORPHAN_WORKERS.remove(pair))

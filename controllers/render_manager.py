@@ -84,6 +84,52 @@ class RenderManager:
         # What the *running* render was launched with; see start_render().
         self._render_context: Optional[dict] = None
 
+    def _alignment_key(self, included, method=None):
+        window = self.window
+        method = method or window.current_fusion_method()
+        getter = getattr(window, "brightness_option_for", None)
+        brightness = (bool(getter("exposure_match", method)) if callable(getter)
+                      else bool(getattr(window, "exposure_match", True)))
+        return (getattr(window, "source_revision", 0), tuple(included),
+                tuple(id(window.raw_images[i]) for i in included),
+                window.current_alignment_method(),
+                getattr(window, "reg_downscale_width", None), brightness,
+                bool(getattr(window, "stack_reverse_order", False)))
+
+    def _processing_parameters(self, method):
+        window = self.window
+        smoothing = getattr(window, "smoothing_for_method", None)
+        brightness = getattr(window, "brightness_option_for", None)
+        values = {key: getattr(window, key, None) for key in (
+            "tile_enabled", "tile_block_size", "tile_overlap", "tile_threshold",
+            "reg_downscale_width", "ai_batch_size", "ai_mode", "dtcwt_levels",
+            "ofb_depth_smoothing", "stack_reverse_order", "use_gpu")}
+        kernel_getter = getattr(window, "kernel_for_method", None)
+        kernel = max(1, kernel_getter(method) if callable(kernel_getter)
+                     else window.slider_smooth.value())
+        values["kernel_size"] = kernel if kernel % 2 else kernel - 1
+        values["smoothing"] = (smoothing(method) if callable(smoothing)
+                               else getattr(window, "of_blend_smoothing", None))
+        for option, attr, default in (("exposure_match", "exposure_match", True),
+                                      ("base_correct", "base_frame_correct", False)):
+            values[option] = bool(brightness(option, method) if callable(brightness)
+                                  else getattr(window, attr, default))
+        return values
+
+    def _disk_cache_eligible(self) -> bool:
+        window = self.window
+        if (getattr(window, "source_transforms", None)
+                or getattr(window, "unrecoverable_source_changes", None)):
+            return False
+        import os
+        paths = getattr(window, "image_source_paths", [])
+        names = getattr(window, "image_filenames", [])
+        folder = getattr(window, "current_folder_path", "")
+        return bool(paths) and len(paths) == len(names) and all(
+            os.path.normcase(os.path.abspath(path)) ==
+            os.path.normcase(os.path.abspath(os.path.join(folder, name)))
+            for path, name in zip(paths, names))
+
     def _confirm_cpu_ai_render(self, force_algorithm: str | None = None) -> bool:
         """Warn before starting a CPU-only AI render; True means go ahead.
 
@@ -208,12 +254,14 @@ class RenderManager:
                 # Between two queued renders nothing is running, so the UI has
                 # to be unlocked here instead of by the cancel callback.
                 self._restore_ui_controls()
-            window.statusBar().showMessage(trans.t('msg_render_cancelled'), 4000)
+            window.statusBar().showMessage(trans.t(
+                'depth_cancelling' if self.worker is not None and self.worker.isRunning()
+                else 'msg_render_cancelled'), 0)
             return
 
         if self.worker is not None and self.worker.isRunning():
             return
-        if not window.raw_images or len(window.raw_images) < 2:
+        if len(window.effective_stack()[0]) < 2:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             return
 
@@ -273,11 +321,12 @@ class RenderManager:
         if self.worker is not None and self.worker.isRunning():
             self.worker.is_cancelled = True
             window.btn_render.setEnabled(False)
-            window.btn_render.setText(trans.t('btn_cancel_render'))
+            window.btn_render.setText(trans.t('depth_cancelling'))
             QApplication.processEvents()
             return
 
-        if not window.raw_images or len(window.raw_images) < 2:
+        stack_images, stack_filenames, included_idx = window.effective_stack()
+        if len(stack_images) < 2:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             self._abort_compare_run()
             return
@@ -341,7 +390,9 @@ class RenderManager:
             or fusion_method != "none"
         )
 
-        kernel_slider_value = window.slider_smooth.value()
+        kernel_getter = getattr(window, "kernel_for_method", None)
+        kernel_slider_value = (kernel_getter(force_algorithm or fusion_method)
+                               if callable(kernel_getter) else window.slider_smooth.value())
         if kernel_slider_value <= 0:
             kernel_slider_value = 1
         if kernel_slider_value % 2 == 0:
@@ -359,6 +410,13 @@ class RenderManager:
             self._restore_ui_controls()
             return
 
+        alignment_key = self._alignment_key(included_idx, force_algorithm or fusion_method)
+        disk_alignment_options = (need_align_homography, need_align_ecc,
+                                  need_align_openfocus, alignment_key[-2], alignment_key[-1])
+        reusable = bool(window.is_images_aligned
+                        and getattr(window, "aligned_images", None)
+                        and len(window.aligned_images) == len(stack_images)
+                        and getattr(window, "alignment_request_key", None) == alignment_key)
         # Handle ROI options - check if ROI mode is active and we have aligned images
         roi_rect = None
         roi_mode = "crop"
@@ -367,11 +425,20 @@ class RenderManager:
         
         # 检查ROI模式是否激活，并从右侧面板获取ROI区域
         if getattr(window, 'roi_mode_active', False) and window.roi_aligned_images:
+            if (getattr(window, "roi_source_revision", None) !=
+                    getattr(window, "source_revision", 0)
+                    or list(getattr(window, "roi_included_indices", None) or []) != list(included_idx)
+                    or len(window.roi_aligned_images) != len(stack_images)):
+                window.transform_manager.reset_roi_selection()
+                self._restore_ui_controls()
+                self._abort_compare_run()
+                window.statusBar().showMessage(trans.t("msg_render_stack_changed"), 8000)
+                return
             # 从右侧结果面板获取ROI区域（因为ROI是在对齐后的图像上选择的）
             roi_rect = window.lbl_result_img.get_roi_rect() if hasattr(window.lbl_result_img, 'get_roi_rect') else None
             if roi_rect is not None:
                 use_roi_aligned_images = True
-                names = list(getattr(window, "image_filenames", None) or [])
+                names = list(stack_filenames)
                 roi = (window.lbl_result_img.get_roi_rect()
                        if hasattr(window.lbl_result_img, "get_roi_rect")
                        else None)
@@ -382,7 +449,8 @@ class RenderManager:
                 dialog = ROIRenderOptionsDialog(
                     len(window.roi_aligned_images), window,
                     frame_names=names, roi_size=roi_size,
-                    output_size=output_size)
+                    output_size=output_size, frames=window.roi_aligned_images,
+                    frame_indices=included_idx)
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     roi_mode = dialog.mode
                     roi_base_index = dialog.base_frame_index
@@ -392,11 +460,6 @@ class RenderManager:
                     self._abort_compare_run()
                     return
         
-        # 确定要使用的图像源
-        # Frames the user unticked in the source list are excluded here, so
-        # registration/fusion only see the included subset. With nothing
-        # excluded, effective_stack() returns the live lists unchanged.
-        stack_images, stack_filenames, included_idx = window.effective_stack()
         preview_downscale = getattr(window, 'chk_quick_preview', None)
         # Compare-all is a *producing* operation: the whole point is to fill the
         # output history with one result per method so they can be compared.
@@ -422,6 +485,7 @@ class RenderManager:
             effective_aligned_images = window.roi_aligned_images
             effective_is_aligned = True
             effective_last_alignment_options = (False, True, False)  # 表示ECC已完成
+            need_align_openfocus = False
         elif self._preview_mode:
             # Quick preview: downscale the stack so the draft render finishes
             # in a fraction of the time.
@@ -434,18 +498,16 @@ class RenderManager:
             # that alignment (downscaled to the draft size) instead of rerunning
             # it; the alignment is a global transform, so scaling it to the
             # preview grid is exact.
-            reusable = (
-                window.is_images_aligned
-                and getattr(window, "aligned_images", None)
-                and len(window.aligned_images) == len(stack_images)
-            )
+            # Reuse requires the exact frame selection and registration parameters.
             if reusable:
                 effective_need_align_homography = False
                 effective_need_align_ecc = False
                 effective_aligned_images = [
                     _downscale_for_preview(img) for img in window.aligned_images]
+                source_images = effective_aligned_images
                 effective_is_aligned = True
                 effective_last_alignment_options = (False, False, False)
+                need_align_openfocus = False
             else:
                 effective_need_align_homography = need_align_homography
                 effective_need_align_ecc = need_align_ecc
@@ -453,7 +515,7 @@ class RenderManager:
                 effective_is_aligned = False
                 effective_last_alignment_options = (False, False, False)
         elif (need_align_homography or need_align_ecc) \
-                and not window.is_images_aligned \
+                and not reusable and self._disk_cache_eligible() \
                 and getattr(window, "align_cache_enabled", True):
             # Try the on-disk registration cache before re-aligning.
             # (OpenFocus-only alignment is excluded: its result is a cheap
@@ -462,7 +524,7 @@ class RenderManager:
             cached = align_cache.load_aligned(
                 getattr(window, "current_folder_path", ""),
                 stack_filenames,
-                (need_align_homography, need_align_ecc),
+                disk_alignment_options,
                 getattr(window, "reg_downscale_width", None),
                 getattr(window, "current_scale_factor", 1.0),
                 tuple(stack_images[0].shape[:2]) if stack_images else None,
@@ -480,24 +542,16 @@ class RenderManager:
                 source_images = stack_images
                 effective_need_align_homography = need_align_homography
                 effective_need_align_ecc = need_align_ecc
-                effective_aligned_images = window.aligned_images
-                effective_is_aligned = window.is_images_aligned
-                effective_last_alignment_options = window.last_alignment_options
+                effective_aligned_images = []
+                effective_is_aligned = False
+                effective_last_alignment_options = None
         else:
             source_images = stack_images
             effective_need_align_homography = need_align_homography
             effective_need_align_ecc = need_align_ecc
-            effective_aligned_images = window.aligned_images
-            effective_is_aligned = window.is_images_aligned
-            effective_last_alignment_options = window.last_alignment_options
-
-        # Aligned stacks (cache or reused) cover the full source stack: filter
-        # them down to the included subset so they stay 1:1 with source_images.
-        if (len(stack_images) != len(window.raw_images)
-                and effective_aligned_images is not None
-                and len(effective_aligned_images) == len(window.raw_images)):
-            effective_aligned_images = [effective_aligned_images[i] for i in included_idx]
-            effective_is_aligned = window.is_images_aligned
+            effective_aligned_images = window.aligned_images if reusable else []
+            effective_is_aligned = reusable
+            effective_last_alignment_options = window.last_alignment_options if reusable else None
 
         # Record exactly what THIS render was launched with. on_render_finished
         # must not read self.worker (a newer render may already have replaced
@@ -524,7 +578,21 @@ class RenderManager:
             "aligned": bool(effective_is_aligned),
             "filenames": list(stack_filenames),
             "included": list(included_idx),
+            "source_revision": getattr(window, "source_revision", 0),
+            "alignment_key": alignment_key,
+            "disk_alignment_options": disk_alignment_options,
+            "full_filenames": list(window.image_filenames),
+            "parameters": self._processing_parameters(force_algorithm or fusion_method),
         }
+        from utils.scalebar import effective_px_um
+        frame_ids = getattr(getattr(window, "label_manager", None), "frame_ids", None)
+        if callable(frame_ids):
+            identities = frame_ids("input")
+            self._render_context["frame_ids"] = [identities[i] for i in included_idx]
+        self._render_context.update(
+            pixel_size_um=effective_px_um(window),
+            source_px_um=getattr(window, "source_px_um", None),
+            source_scale_factor=getattr(window, "current_scale_factor", 1.0))
 
         from utils.logging_setup import log_action
         log_action("render_start", method=fusion_method,
@@ -562,19 +630,21 @@ class RenderManager:
             rb_ofb_checked=fusion_method == "openfocus_b",
             rb_ofc_checked=fusion_method == "openfocus_c",
             base_frame="last" if _brightness(window, "base_correct",
-                                             fusion_method) else "none",
+                                             force_algorithm or fusion_method) else "none",
             sort_mode="desc" if getattr(window, "stack_reverse_order", False)
                 else "asc",
-            depth_smoothing=getattr(window, "ofb_depth_smoothing", None),
+            depth_smoothing=(window.smoothing_for_method("openfocus_b")
+                             if callable(getattr(window, "smoothing_for_method", None))
+                             else getattr(window, "ofb_depth_smoothing", None)),
             # Per-method smoothing: the spin box shows the sigma of the
             # selected method, so the render must use that method's value —
             # a shared field sent A's blend sigma to C after a switch.
             # Duck-typed hosts (tests, preview stubs) may not implement it.
             blend_smoothing=(
-                window.smoothing_for_method(fusion_method)
+                window.smoothing_for_method(force_algorithm or fusion_method)
                 if callable(getattr(window, "smoothing_for_method", None))
                 else getattr(window, "of_blend_smoothing", None)),
-            exposure_match=_brightness(window, "exposure_match", fusion_method),
+            exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),
             dtcwt_levels=int(getattr(window, "dtcwt_levels", 4) or 4),
         )
 
@@ -598,6 +668,9 @@ class RenderManager:
         device_name: str,
     ) -> None:
         window = self.window
+        if self.worker is not None and getattr(self.worker, "is_cancelled", False):
+            self.on_render_error("CANCELLED: render cancelled")
+            return
         from utils.logging_setup import log_action
         log_action("render_finished", preview=bool(
             (self._render_context or {}).get("preview")),
@@ -615,14 +688,14 @@ class RenderManager:
         # stricter guard below.
         stack_changed = (
             context is not None
-            and not context["preview"]
-            # ROI renders run on their own pre-aligned stack (its staleness is
-            # guarded in main.py's ROI flow), so the stack-identity check
-            # below does not apply to them.
-            and not context.get("roi")
             and (window.raw_images is not context.get("source_ref")
                  or window.included_indices() != context.get("included")
-                 or list(window.image_filenames or []) != context["filenames"])
+                 or getattr(window, "source_revision", 0) != context.get("source_revision", 0)
+                 or list(window.image_filenames or []) != context.get("full_filenames", context["filenames"])
+                 or ("alignment_key" in context and self._alignment_key(
+                     context["included"], context["algorithm"]) != context["alignment_key"])
+                 or ("parameters" in context and self._processing_parameters(
+                     context["algorithm"]) != context["parameters"]))
         )
         if stack_changed:
             import logging as _logging
@@ -652,6 +725,9 @@ class RenderManager:
                 # there.
                 if not preview:
                     window.registration_results = processed_images
+                    window.registered_source_indices = list((context or {}).get("included", []))
+                    window.registration_frame_ids = list((context or {}).get("frame_ids", []))
+                    window.registration_filenames = list((context or {}).get("filenames", []))
 
                 # 如果是ROI模式下的融合，退出ROI模式（但保留对齐图像供复用）
                 if getattr(window, 'roi_mode_active', False):
@@ -688,7 +764,14 @@ class RenderManager:
                                          or (ctx.get("roi")
                                              and ctx.get("aligned"))),
                             roi_rect=ctx.get("roi_rect"),
+                            frame_ids=ctx.get("frame_ids"),
                             roi_mode=ctx.get("roi_mode"),
+                            source_indices=ctx.get("included"),
+                            source_revision=ctx.get("source_revision", 0),
+                            parameters=ctx.get("parameters"),
+                            pixel_size_um=ctx.get("pixel_size_um"),
+                            source_px_um=ctx.get("source_px_um"),
+                            source_scale_factor=ctx.get("source_scale_factor", 1.0),
                         )
                         window.last_render_context = new_context
                     except Exception:
@@ -747,6 +830,9 @@ class RenderManager:
                     else:
                         window.fusion_result = None
                         window.registration_results = processed_images
+                        window.registered_source_indices = list((context or {}).get("included", []))
+                        window.registration_frame_ids = list((context or {}).get("frame_ids", []))
+                        window.registration_filenames = list((context or {}).get("filenames", []))
 
                         window.result_slider.setEnabled(True)
                         window.result_slider.setRange(0, len(window.registration_results) - 1)
@@ -784,28 +870,30 @@ class RenderManager:
                 context is not None
                 and not context["preview"]
                 and not context["roi"]
-                and window.raw_images is source_stack
-                and list(window.image_filenames or []) == context["filenames"]
-                and len(processed_images) == len(window.raw_images)
+                and window.raw_images is context.get("source_ref")
+                and not stack_changed
+                and len(processed_images) == len(context["included"])
             )
             if registration_performed and alignment_matches_ui:
                 window.aligned_images = processed_images
                 window.is_images_aligned = True
                 window.last_alignment_options = context["alignment_options"]
+                window.alignment_request_key = context["alignment_key"]
 
                 # Persist the alignment for future renders of the same stack.
                 # Keyed on the *source* frames (same signature load_aligned()
                 # looks up), not on the rendered ones.
-                if getattr(window, "align_cache_enabled", True) and getattr(
-                        window, "current_folder_path", None):
+                if (fusion_result is not None and self._disk_cache_eligible()
+                        and getattr(window, "align_cache_enabled", True)
+                        and getattr(window, "current_folder_path", None)):
                     from utils import align_cache
                     align_cache.save_aligned(
                         window.current_folder_path,
-                        window.image_filenames,
+                        context["filenames"],
                         processed_images,
-                        context["alignment_options"],
-                        getattr(window, "reg_downscale_width", None),
-                        getattr(window, "current_scale_factor", 1.0),
+                        context["disk_alignment_options"],
+                        context["parameters"].get("reg_downscale_width"),
+                        context["source_scale_factor"],
                         tuple(source_stack[0].shape[:2]) if source_stack else None,
                     )
 
@@ -903,7 +991,8 @@ class RenderManager:
         try:
             from controllers.output_manager import publish_aligned_stack
 
-            publish_aligned_stack(window, frames)
+            publish_aligned_stack(window, frames,
+                                  filenames=(self._render_context or {}).get("filenames"))
         except Exception as exc:  # never fail a render over the listing
             import logging
             logging.getLogger("openfocus").warning(
@@ -924,12 +1013,22 @@ class RenderManager:
         self.worker = None
         if worker is None:
             return
-        # deleteLater() is enough on its own: Qt posts the deferred delete to
-        # the event loop, which runs the destruction only after run() has
-        # returned. Never wait() here — this slot runs on the GUI thread and
-        # the worker is the thread that would have to finish first.
         dispose = getattr(worker, "deleteLater", None)
-        if dispose is not None:
+        if dispose is None:
+            return
+        if worker.isRunning():
+            retiring = getattr(self, "_retiring_workers", None)
+            if retiring is None:
+                retiring = self._retiring_workers = set()
+            retiring.add(worker)
+            def release():
+                if worker in retiring:
+                    retiring.remove(worker)
+                    worker.deleteLater()
+            worker.finished.connect(release)
+            if not worker.isRunning():
+                release()
+        else:
             dispose()
 
     def _progress_widgets(self):

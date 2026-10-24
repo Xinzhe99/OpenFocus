@@ -31,7 +31,7 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - **Multiple Fusion Algorithms**: Choose from Guided Filter, DCT, DTCWT, GFG-FGF, and AI Fusion (deep learning)
 - **Image Registration**: Align misaligned image sequences using ECC or Homography methods
 - **Wipe Compare View**: Inspect alignment and compare results with an A/B divider view
-- **Project Files**: save and restore complete working sessions
+- **Project Files**: restore input references and reproducible settings; export result pixels separately
 - **Multi-page TIFF**: single-file Z-stacks load page-by-page and export back into one file
 - **Depth Map**: per-pixel focus-position maps with custom pseudo-color schemes
 - **Scale Bar**: publication-grade scale bars with automatic µm/px calibration
@@ -148,11 +148,16 @@ The software will automatically:
 
 ### Project Files
 
-File → Save Project stores your whole working session as an `.ofproj`
-file: the exact source file list (in order), the load scale, fusion
-method, registration options, kernel size, tile/thread/registration
-settings, label configurations and the current frame. File → Open Project
-rebuilds that session exactly (source images are referenced, not copied — keep them in place). The window title shows the open project.
+File → Save Project stores input references and reproducible settings in an
+`.ofproj`: exact frame order (including TIFF pages and duplicate frames),
+exclusions, rotations/flips, load scale, per-method rendering parameters,
+labels, scale-bar style and current frame. Result and retouch pixels must be
+exported separately. Operations that cannot be reconstructed from the source
+files require saving a new input stack first.
+
+File → Open Project rebuilds the recorded frames before replacing the current
+stack. If sources moved, choose the new source root and confirm the complete
+old/new path mapping. Save the project again to retain the relocated references.
 
 ### Demo Stack
 
@@ -194,6 +199,11 @@ a rounded 1-2-5 length (~12% of the image width) with stroked, readable
 text. The CLI supports it via `--scale-bar` (auto calibration) and
 `--scale-um <um/px>`.
 
+The preview draws at the target's native pixel geometry before fitting it to
+the viewport. Fit, 100%, pan and frame navigation change only the view. Apply
+commits one undoable edit; Cancel preserves the previous calibration. Historical
+outputs retain their own calibration and style when another source stack loads.
+
 Remove it again from **Tools → Scale Bar → Remove scale bar**: *From the
 source stack* and *From the result* narrow the dialog's "Apply to" scope to
 the remaining canvas, while *From everywhere* turns the bar off. Both
@@ -202,14 +212,12 @@ showed the bar leaves the setting unchanged.
 
 ### Depth Map (Focus Position)
 
-**Tools → Depth Map…** opens a viewer that computes, per pixel, which frame of
-the stack is in focus — the pseudo-depth signal the fusion itself decides
-on — using the selected method's own activity measure. Only
-index-deciding methods are offered (DCT, DTCWT, GFG-FGF, StackMFF-V3,
-OpenFocus B/C); weighted-average fusions (Guided Filter, OpenFocus A)
-have no per-pixel decision and are not listed. The
-map is shown pseudo-colored with a legend (frame 0 → N-1) and can be
-customized live:
+**Tools → Depth Map…** estimates focus positions using the selected method's
+activity measure. This is not a measured surface or an exact pixel-source map:
+pyramid/wavelet methods estimate activity and AI reports an expected frame
+position. Choose either the current checked frames or the selected output's
+recorded source. Missing historical provenance is never replaced with the
+current stack. The source and texture stay bound to that snapshot.
 
 - **Color map**: grayscale (publication standard) plus 15 scientific
   palettes (Turbo, Viridis, Magma, …) and
@@ -219,20 +227,23 @@ customized live:
 - **Invert / Gamma / Smoothing**: flip the depth axis, re-balance tone
   (gamma < 1 brightens low indices), and remove speckle with an
   edge-aware pass.
-- **Overlay on fused image**: blend the colorized map over the fusion
-  result at an adjustable opacity to see exactly where each frame won.
-- **Export**: *Save Colorized…* (PNG/JPEG/TIFF/BMP) or *Save Raw 16-bit…*
-  (the normalized index map at full precision, ideal for downstream
-  analysis in ImageJ/Fiji/python).
-- **3D model**: *Export 3D (OBJ)…* writes a textured surface built from the
-  depth map and the fused result as `<name>.obj`, `<name>.mtl` and
-  `<name>_texture.png`, which open in Blender, MeshLab or Windows 3D Viewer.
-  The mesh is downsampled to at most 600 vertices on its longest side and
-  lightly despeckled, after the Smoothing value above is applied. *3D relief*
-  (1–100 %, default 15 %) sets the surface height as a percentage of the
-  image's longest side and is remembered. *Invert depth axis* flips which end
-  of the stack is near. The texture is the fused result, or the stack's first
-  frame if no result of the same size exists.
+- **Overlay**: available only for the associated output with matching coordinates.
+- **Raw export**: 16-bit TIFF stores a normalized index encoded from 0–65535;
+  it is not lossless float data or a physical distance. JPEG/BMP are refused.
+- **Physical depth**: enter Z start, positive step, unit and acquisition direction,
+  then confirm the original capture mapping. Excluded frames keep their gaps.
+  Float32 TIFF stores micrometres, NaN for missing data, and source metadata.
+  A physical OBJ also needs XY calibration; it uses a 1:1 physical Z scale.
+- **3D model**: choose the grid's longest side (600 vertices by default) and an
+  explicit texture: associated output, participating frame or depth colors.
+  The settled preview and export share the same sampled height field without
+  hidden extra smoothing. Interaction quality only simplifies camera motion.
+  Relative relief remains a visualization in image units.
+- **Model export**: OBJ, MTL, texture PNG and JSON metadata are a file group;
+  keep them together. Export runs in the background. Conflicts are checked for
+  every member, preparation is staged, cancellation keeps existing files, and
+  commit failures roll back replacements. Saving a model does not export its
+  parent fusion image or remove that image's unsaved protection.
 
 Computation runs in the background with progress and cancellation; the AI
 method reuses the same memory-safe tiling as AI fusion, so deep stacks
@@ -491,9 +502,11 @@ values.
 
 ### Alignment only (no fusion)
 
-Select **Alignment only (no fusion)** as the method to register the stack
-and send the aligned frames to the output list without fusing — handy to
-inspect registration quality or export aligned frames.
+Select **Alignment only (no fusion)** to register the stack and add one stack
+entry to the output list. The frames stay in memory until you export them;
+alignment-only does not create an extra cache or write beside the source files.
+Save the entry to create one folder inside your chosen destination. Original
+filename stems are retained, with the extension of the format you select.
 
 ### Selecting a Fusion Method
 
@@ -627,33 +640,53 @@ recorded source, so they are listed as unavailable instead of being guessed
 from the current stack. Unapplied strokes and undo history are session-only;
 saving a project does not store them.
 
-### Adding Labels
+### Managing Labels
 
-1. Ensure you have rendered results or loaded images
-2. Go to **Tools → Labels → Add Label**
-3. Enter your label text in the dialog
-4. Labels are added to both registered stack and input stack
+Open **Tools → Labels** after loading images or producing a result. Each label
+has its own target: the source stack, the registered stack, or output results.
+Output labels can apply to all results or to the selected result by its name;
+renaming or reordering that result does not change the association.
 
-### Deleting Labels
+Use **Add** to create another label, select an entry to edit it, and use its
+checkbox to enable or disable it. Enter fixed text or insert `{value}` for a
+frame number. The number is the starting value plus the zero-based frame index
+times the interval; a single output always uses the starting value.
 
-- **Delete Registered Stack Labels**: Removes labels from aligned images
-- **Delete Input Stack Labels**: Removes labels from original images
-- **Remove All Labels**: Clears both stacks at once; it becomes available as
-  soon as either stack has labels
+Choose all frames, the current frame, or a custom range such as `3-5,8`.
+Invalid or unavailable frame numbers prevent applying the draft. Current and
+custom ranges follow the selected source identities when the stack is reordered;
+all-frame labels also apply to appended frames. Missing targets stay associated
+with their original identities until you explicitly choose a new target.
 
-Access these options via **Tools → Labels → Remove labels**. Every entry updates
-the canvas immediately, and the two per-stack entries stay enabled only while
-that stack actually carries labels.
+The preview uses the actual target. Navigate with Previous/Next or type its frame
+number, choose **Fit** or **100%**, and drag the image to pan at 100%. Position and
+font size use image pixels. A fallback font or an unsuccessful draw is reported.
+Labels preserve the original bit depth when exported as PNG or TIFF.
+
+**Apply and Close** commits the complete draft as one undoable change. Cancel,
+Esc and closing the dialog discard it. Selecting another label keeps your draft
+edits. **Delete** removes only the selected entry, including the last entry.
+The menu removal actions clear source labels, registered-stack labels, output
+labels, or all labels independently and can also be undone. Applying labels changes the session display;
+export an image to write the annotations to a file.
 
 ---
 
 ## 11. Settings and Configuration
 
+Open **Settings → Advanced Settings** for performance, registration, StackMFF AI and startup preferences. Changes remain drafts until **OK**; Cancel, Esc and closing discard them. Reducing the tile size immediately updates the visible overlap limit to half a tile. AI output mode affects StackMFF only; registration width can change alignment accuracy.
+
+Automatic update downloads run while idle and never install automatically. A completed download remains ready until you explicitly choose **Restart and Update**. Restart protects active edits and unsaved work, then writes recovery data before launching replacement. Cancelling a download or preparation waits for the current safe boundary. An existing complete, newer staged build can be installed offline.
+
+Flat-field correction changes session working pixels without overwriting source files. Select the white reference and a preview frame, then generate the preview again after changing source or scale. Reference and working/base images must share a coordinate domain and size. Applying prepares both stacks before committing; optional reference-frame removal belongs to the same undo step. Export corrected source images when you need to preserve these pixels outside the session.
+
+**Help → Send feedback** opens local logs. Copy copies the visible session log; the feedback ZIP contains the session/full application logs and environment information. Review the package before submitting it yourself. Opening GitHub only opens the tracker. Export cancellation leaves files unchanged; an error keeps the previous destination file and shows the failed path.
+
 ### Tile Settings (Memory Optimization)
 
 For large images, OpenFocus uses tile-based processing to avoid memory issues.
 
-Access via **Settings → Tile**:
+Access via **Settings → Advanced Settings → Performance**:
 
 - **Tile Block Size**: Size of each processing tile (default: 1024px)
 - **Tile Overlap**: Overlap between tiles for seamless blending (default: 256px)
@@ -666,7 +699,7 @@ Access via **Settings → Tile**:
 
 ### Registration Settings
 
-Access via **Settings → Registration**:
+Access via **Settings → Advanced Settings → Registration**:
 
 - **Downscale Width**: Preprocessing resolution for registration
   - Default: 1024px
@@ -736,8 +769,8 @@ iPhone photos load directly. Requires the optional `pillow-heif` package
 Project files (`.ofproj`) behave like a document: the title bar shows the
 project name with a `*` while there are unsaved changes, and closing the app
 or opening another project asks before discarding them. The project stores
-the frame list, load scale, every rendering option, labels and the current
-frame — the images themselves are referenced, not copied.
+reconstructable input and settings; it does not store output pixels or remove
+their export protection. Source images are referenced, not copied.
 
 Help → Check for Updates compares your version against GitHub Releases.
 **Download and Install** fetches the new installer in-app (with progress)
@@ -791,7 +824,7 @@ Process multiple folders automatically:
    - **Clear All**: Remove all folders
 3. Configure output settings:
    - **Save to Subfolder**: Creates results in each input folder
-   - **Save to Same Folder**: Overwrites or saves alongside input
+   - **Save to Same Folder**: Saves alongside input while preserving existing files
    - **Custom Folder**: Specify output location
 4. Review current fusion/registration settings
 5. Click **Start Batch** to begin
@@ -800,9 +833,23 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 ### Batch Processing Notes
 
-- Uses the same fusion and registration settings as manual processing
-- Each folder is processed independently
-- Filenames include timestamp and parameters for identification
+- Starts from a snapshot of the main window settings; batch controls override it.
+- Each folder or split group is processed independently through the same pipeline.
+- **What lands where, by mode.** With **align only**, the selected destination
+  receives one `<stack>_aligned` folder per stack and the output panel lists
+  that folder. With **fusion + save aligned**, the fused image is written as
+  `<stack>.<ext>` in the destination and its aligned frames go to
+  `<stack>_aligned` beside it; the output panel lists only the fused result.
+  With **fusion and no alignment export**, only the fused image is written.
+  The output panel names folders exactly as they are on disk.
+- Aligned frames keep the original filename stems. Duplicate names and existing
+  folders receive numeric suffixes. Source files are never replaced.
+- Leftover `*_registered*` copies from older builds are not loaded as frames
+  when their original file is present in the same folder; the load message
+  reports how many were skipped.
+- PNG/TIFF preserve 16-bit data; explicitly choosing JPG/BMP converts to 8-bit.
+- Cancellation waits for the worker to stop. Committed files remain available;
+  partial, failed, cancelled and unstarted tasks are counted separately.
 
 ---
 
@@ -825,7 +872,7 @@ PNG or TIFF). The choice is remembered.
 
 1. Go to **File → Save Stack → Registered Stack**
 2. Choose save format:
-   - **Save as Folder**: Saves each aligned frame as separate image files
+   - **Save as Folder**: Choose a destination and encoding; each stack gets one new subfolder containing its original frame names
    - **Save as GIF**: Creates an animated GIF of the aligned sequence
 
 ### Saving the Input Stack
@@ -838,10 +885,10 @@ PNG or TIFF). The choice is remembered.
 ### Export Formats
 
 - **JPG**: Compressed, good quality-to-size ratio
-- **PNG**: Lossless, supports transparency
-- **BMP**: Uncompressed, maximum quality
-- **TIFF**: High quality, supports layers
-- **GIF**: Animation format
+- **PNG**: Lossless, preserves 8-bit and 16-bit image data
+- **BMP**: Uncompressed, converts 16-bit image data to 8-bit
+- **TIFF**: Preserves 8-bit and 16-bit data; multi-page export keeps the whole stack in one file
+- **GIF**: Animation with an 8-bit palette; cancellation leaves an existing destination intact
 
 ---
 

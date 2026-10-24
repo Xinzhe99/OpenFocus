@@ -149,9 +149,9 @@ def imwrite_multi_tiff(path: str, images) -> bool:
     dest_dir = os.path.dirname(os.path.abspath(path)) or "."
     try:
         fd, part = tempfile.mkstemp(suffix=".tif", dir=dest_dir)
+        os.close(fd)
     except OSError:
-        fd, part = tempfile.mkstemp(suffix=".tif")  # 目标目录不可写时退回
-    os.close(fd)
+        return False
     try:
         try:
             ok = cv2.imwritemulti(part, [np.asarray(i) for i in images])
@@ -171,12 +171,43 @@ def imwrite_multi_tiff(path: str, images) -> bool:
             return False
         os.replace(part, path)
         return True
+    except (OSError, cv2.error):
+        return False
     finally:
         try:
             if os.path.exists(part):
                 os.remove(part)
         except OSError:
             pass
+
+
+def imwrite_float_tiff(path: str, image: np.ndarray, metadata: dict) -> bool:
+    """Write physical depth as float32 TIFF, preserving NaN and unit metadata."""
+    import json
+    import tempfile
+    from PIL import Image, TiffImagePlugin
+
+    values = np.asarray(image, dtype=np.float32)
+    if values.ndim != 2 or not values.size:
+        return False
+    part = None
+    try:
+        fd, part = tempfile.mkstemp(
+            suffix=".tif", dir=os.path.dirname(os.path.abspath(path)))
+        os.close(fd)
+        tags = TiffImagePlugin.ImageFileDirectory_v2()
+        tags[270] = json.dumps(metadata, ensure_ascii=True, allow_nan=False)
+        Image.fromarray(values).save(part, format="TIFF", tiffinfo=tags)
+        os.replace(part, path)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    finally:
+        if part and os.path.exists(part):
+            try:
+                os.remove(part)
+            except OSError:
+                pass
 
 
 # Raw EXIF of the loaded source stack; set by the loaders, embedded into
@@ -191,56 +222,41 @@ def set_source_exif(exif: bytes) -> None:
 
 def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
                  exif: Optional[bytes] = None) -> bool:
-    """cv2.imwrite that accepts 16-bit images and can embed EXIF metadata.
+    """Encode beside the destination, then atomically replace a complete file."""
+    import tempfile
 
-    PNG/TIFF store uint16 natively; formats that cannot (JPG/BMP) are
-    converted to uint8 automatically instead of failing. EXIF (raw bytes
-    from the source file) is embedded into PNG/TIFF/WebP exports when
-    provided; the pixel data itself is never re-encoded.
-    """
+    path = os.fspath(path)
     ext = os.path.splitext(path)[1].lower()
     if image.dtype == np.uint16 and ext not in (".png", ".tif", ".tiff"):
         image = to_display_uint8(image)
-
-    # cv2.imwrite encodes paths as UTF-8 regardless of the ANSI codepage,
-    # silently creating mojibake filenames (中文.png -> 娓枃...) on Windows.
-    # imencode + ndarray.tofile handles unicode paths correctly, mirroring
-    # the np.fromfile workaround the loaders already use for reading.
+    part = None
     try:
-        path.encode("ascii")
-        try:
-            ok = cv2.imwrite(path, image, params if params else [])
-        except cv2.error:
-            # unknown extension / encoder unavailable: the documented
-            # contract is a bool, not an exception from a Qt slot.
-            ok = False
-    except UnicodeEncodeError:
-        ok = False
-        try:
-            ok, buf = cv2.imencode(ext, image, params if params else [])
-            if ok:
-                buf.tofile(path)
-        except cv2.error:
-            ok = False
-    # EXIF embed only for 8-bit lossless files; re-opening a 16-bit PNG with
-    # Pillow would downgrade it to 8-bit.
-    embed = SOURCE_EXIF if exif is None else exif
-    if ok and embed and image.dtype == np.uint8 and ext in (".png", ".tif", ".tiff", ".webp"):
-        try:
+        ok, encoded = cv2.imencode(ext, image, params or [])
+        if not ok:
+            return False
+        fd, part = tempfile.mkstemp(
+            suffix=ext, dir=os.path.dirname(os.path.abspath(path)))
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
+        embed = SOURCE_EXIF if exif is None else exif
+        if embed and image.dtype == np.uint8 and ext in (".png", ".tif", ".tiff", ".webp"):
             from PIL import Image
-            # The pixels written here are already upright (the loaders apply
-            # EXIF orientation), so the copied tag must be neutralized or
-            # every EXIF-aware viewer rotates the export a second time.
-            embed = _upright_exif(embed)
-            with Image.open(path) as pil_img:
-                # webp 默认有损：嵌入 EXIF 的重存必须保持无损
-                save_kw = {"exif": embed}
+            with Image.open(part) as source:
+                source.load()
+                metadata = {"exif": _upright_exif(embed)}
                 if ext == ".webp":
-                    save_kw["lossless"] = True
-                pil_img.save(path, **save_kw)
-        except Exception as exc:
-            print(f"EXIF embed skipped for {path}: {exc}")
-    return ok
+                    metadata["lossless"] = True
+                source.save(part, **metadata)
+        os.replace(part, path)
+        return True
+    except (OSError, ValueError, cv2.error):
+        return False
+    finally:
+        if part and os.path.exists(part):
+            try:
+                os.remove(part)
+            except OSError:
+                pass
 
 
 def _upright_exif(exif_bytes: bytes) -> bytes:

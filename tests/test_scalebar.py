@@ -173,3 +173,89 @@ def test_manual_calibration_is_converted_to_working_pixels():
     assert effective_px_um(SimpleNamespace(
         scale_um_per_px_manual=0.0, current_scale_factor=0.5,
         source_px_um=0.8)) == pytest.approx(0.8)
+
+
+def _scale_dialog_host(image):
+    from PyQt6.QtWidgets import QWidget
+    host = QWidget()
+    host.raw_images = [] if image is None else [image]
+    host.fusion_results = []
+    host.scale_bar_target = "source"
+    host.scale_um_per_px_manual = 0.5
+    host.current_scale_factor = 1.0
+    host.source_px_um = None
+    return host
+
+
+def test_preview_uses_native_geometry_and_uint16_display(qapp):
+    from dialogs.scalebar import ScaleBarDialog
+    from utils.image_utils import pixmap_to_cv2, to_display_uint8
+    from utils.scalebar import draw_scale_bar_ex
+
+    image = np.full((797, 1200, 3), 20000, np.uint16)
+    host = _scale_dialog_host(image)
+    dialog = ScaleBarDialog(host)
+    dialog.resize(960, 640)
+    dialog.show()
+    qapp.processEvents()
+    native, _info = draw_scale_bar_ex(image, **dialog._draw_config())
+    assert np.array_equal(pixmap_to_cv2(dialog.preview_lbl._base_pixmap),
+                          to_display_uint8(native))
+    scale, x, y = dialog.preview_lbl._get_layout_params()
+    assert x >= -1 and y >= -1
+    assert x + image.shape[1] * scale <= dialog.preview_lbl.width() + 1
+    assert y + image.shape[0] * scale <= dialog.preview_lbl.height() + 1
+    dialog.reject()
+    host.deleteLater()
+
+
+@pytest.mark.parametrize("image", [None, np.zeros((8, 8, 3), np.uint8)])
+def test_invalid_scale_target_cannot_commit(qapp, image):
+    from dialogs.scalebar import ScaleBarDialog
+    host = _scale_dialog_host(image)
+    dialog = ScaleBarDialog(host)
+    assert not dialog._ok_button.isEnabled()
+    dialog._save_and_accept()
+    assert not getattr(host, "scale_bar_enabled", False)
+    assert host.scale_um_per_px_manual == 0.5
+    dialog.reject()
+    host.deleteLater()
+
+
+def test_scale_draft_cancel_leaves_calibration_and_position(qapp):
+    from dialogs.scalebar import ScaleBarDialog
+    host = _scale_dialog_host(np.zeros((240, 400, 3), np.uint8))
+    host.scale_bar_custom_x = 0.0
+    dialog = ScaleBarDialog(host)
+    dialog.px_spin.setValue(2.0)
+    dialog.custom_x.setValue(100)
+    dialog.reject()
+    assert host.scale_um_per_px_manual == 0.5
+    assert host.scale_bar_custom_x == 0.0
+    host.deleteLater()
+
+
+def test_historical_output_keeps_its_calibration():
+    from types import SimpleNamespace
+    from controllers.output_manager import OutputRecord
+    from core.render_context import build_render_context
+    from utils.scalebar import export_cfg
+
+    image = np.zeros((240, 400, 3), np.uint8)
+    context = build_render_context([image], image, pixel_size_um=0.65)
+    record = OutputRecord.create(image, "A", context=context)
+    host = SimpleNamespace(scale_bar_enabled=True, scale_bar_target="all",
+                           source_px_um=3.0, scale_um_per_px_manual=0.0)
+    assert export_cfg(host, record=record)["px_um"] == 0.65
+    record.scale_bar_config = export_cfg(host, record=record)
+    record.scale_bar_initialized = True
+    host.source_px_um = 8.0
+    host.scale_um_per_px_manual = 11.0
+    assert export_cfg(host, record=record)["px_um"] == 0.65
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1.0])
+def test_invalid_calibration_never_draws_a_physical_claim(value):
+    from utils.scalebar import draw_scale_bar
+    image = np.zeros((100, 200, 3), np.uint8)
+    assert draw_scale_bar(image, value) is image

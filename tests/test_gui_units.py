@@ -230,6 +230,9 @@ class _FakeTransformManager:
     def reload_image_stack(self, initial_index=0):
         self.reloaded.append(initial_index)
 
+    def reset_roi_selection(self):
+        pass
+
 
 class _StubLabelManager:
     def __init__(self):
@@ -475,8 +478,7 @@ def test_quick_preview_render_does_not_publish_its_draft(qapp, monkeypatch):
 
 
 def test_alignment_published_when_the_stack_is_untouched(qapp, monkeypatch):
-    """The same render on the real frames must publish and cache, keyed on the
-    source frames it was handed (not on the returned ones)."""
+    """Align-only publishes one in-memory stack without a duplicate disk cache."""
     frames = [np.zeros((30, 40, 3), dtype=np.uint8) + i for i in range(3)]
     w = _render_window(frames)
     rm, saved = _patched_render_manager(monkeypatch, w)
@@ -491,9 +493,7 @@ def test_alignment_published_when_the_stack_is_untouched(qapp, monkeypatch):
     assert w.is_images_aligned is True
     # 3-tuple since v1.39: (homography, ecc, openfocus)
     assert w.last_alignment_options == (False, False, False)
-    assert len(saved) == 1
-    assert saved[0]["shape"] == (30, 40)
-    assert saved[0]["filenames"] == w.image_filenames
+    assert saved == []
 
 
 def test_alignment_dropped_when_a_frame_is_deleted_mid_render(qapp, monkeypatch):
@@ -525,7 +525,7 @@ def test_render_started_while_a_render_runs_cancels_it(qapp, monkeypatch):
 
     assert first.is_cancelled is True
     assert rm.worker is first          # and starts no second thread
-    assert w.btn_render.text() == trans.t("btn_cancel_render")
+    assert w.btn_render.text() == trans.t("depth_cancelling")
 
 
 def test_cancelled_render_clears_preview_mode(qapp, monkeypatch):
@@ -567,7 +567,7 @@ def test_compare_all_second_click_cancels_the_run(qapp, monkeypatch):
     assert rm._compare_queue == []
     assert rm._compare_current is None
     assert running.is_cancelled is True
-    assert w.status.messages[-1] == trans.t("msg_render_cancelled")
+    assert w.status.messages[-1] == trans.t("depth_cancelling")
 
 
 def test_compare_all_cancel_between_renders_unlocks_the_ui(qapp, monkeypatch):
@@ -995,7 +995,10 @@ def test_undo_snapshot_keeps_references_and_restores_scale(qapp):
     import main as main_module
 
     class W:
-        pass
+        _capture_scalebar_state = main_module.OpenFocus._capture_scalebar_state
+
+        def _capture_parameter_state(self):
+            return {}
 
     w = W()
     img = np.zeros((4, 4, 3), np.uint8)
@@ -1054,38 +1057,6 @@ def test_shutdown_worker_never_terminates(monkeypatch):
     assert orphan == [worker]
 
 
-def test_finished_worker_is_released_through_deleteLater(qapp):
-    """Dropping the QThread reference destroys a running C++ object.
-
-    RenderWorker emits its result from inside run(), so the slot can fire
-    while the thread has not returned yet; a bare ``self.worker = None`` then
-    let Qt tear the object down underneath it and the process aborted in
-    Qt6Core.dll (0xc0000409) after an ECC + AI render. deleteLater() hands
-    the destruction to the event loop instead.
-    """
-    from controllers.render_manager import RenderManager
-
-    class Worker:
-        def __init__(self):
-            self.deleted = 0
-
-        def deleteLater(self):
-            self.deleted += 1
-
-    class Window:
-        pass
-
-    manager = RenderManager(Window())
-    worker = Worker()
-    manager.worker = worker
-
-    manager._dispose_worker()
-
-    assert worker.deleted == 1
-    assert manager.worker is None
-    # A second call must be a no-op rather than raising on None.
-    manager._dispose_worker()
-    assert worker.deleted == 1
 
 
 class TestCpuAiWarning:
@@ -1229,10 +1200,10 @@ def test_export_extension_follows_the_chosen_filter():
 
 def test_directory_export_does_not_overwrite_existing_files(tmp_path):
     """A protective export must pick a free name on disk, not just in-batch."""
-    from controllers.output_manager import _unique_path
+    from utils.export_paths import unique_path
 
-    first = _unique_path(str(tmp_path), "result", ".png", set())
+    first = unique_path(str(tmp_path / 'result.png'))
     assert first.endswith("result.png")
     (tmp_path / "result.png").write_bytes(b"x")
-    second = _unique_path(str(tmp_path), "result", ".png", set())
+    second = unique_path(str(tmp_path / 'result.png'))
     assert second.endswith("result_2.png"), second

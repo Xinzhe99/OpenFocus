@@ -29,7 +29,7 @@ OpenFocus é uma estação de trabalho de código aberto para registro e fusão 
   <img src="assets/ui.png" alt="Interface do OpenFocus" width="820">
 </p>
 
-> **v1.67.0** — novo espaço de retoque com proveniência fixa, controle deslizante de quadros de origem, desfazer transacional por blocos, janela de comparação de métodos e README em doze idiomas.
+> **v1.68.0** — a exportação em lote segue o modo escolhido: apenas alinhamento cria uma pasta `<pilha>_aligned` e a lista, a fusão lista só a imagem fundida, e sem exportar o alinhamento grava apenas essa imagem. Cópias `*_registered*` deixadas na pasta de origem não são mais carregadas como quadros. Também foram refeitos rótulos, barras de escala, comparação de métodos, exportação de profundidade/modelo, atualizações e retoque conforme a auditoria em `docs/ux-specs`.
 
 ## Download e instalação
 

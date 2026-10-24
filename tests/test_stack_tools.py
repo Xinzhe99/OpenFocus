@@ -112,33 +112,48 @@ class TestDustMapDialog:
         stub.current_theme = "dark"
         return stub
 
+    def _complete_preview(self, dialog, qapp):
+        dialog._preview()
+        worker = dialog._worker
+        assert worker is not None
+        assert worker.wait(5000), "flat-field preparation did not finish"
+        qapp.processEvents()
+
     def test_from_stack_frame_preview_applies(self, qapp):
         from dialogs.dustmap import DustMapDialog
         stub = self._stub_window()
         dlg = DustMapDialog(stub)
         dlg.rb_stack.setChecked(True)
         assert dlg.combo_stack.count() == len(stub.raw_images)
-        dlg._preview()                       # 旧实现：这里必抛 ValueError
+        self._complete_preview(dlg, qapp)
         assert dlg._gain is not None
         assert dlg.btn_apply.isEnabled()
+        dlg.deleteLater()
+        stub.deleteLater()
 
     def test_size_mismatch_is_a_localized_error_not_a_crash(self, qapp):
         from dialogs.dustmap import DustMapDialog
         stub = self._stub_window(h=48, w=64)
         dlg = DustMapDialog(stub)
         big_white = np.full((96, 128, 3), 50000, np.uint16)
-        dlg._compute(big_white)              # 白场与栈尺寸不符
+        dlg._white = big_white
+        self._complete_preview(dlg, qapp)
         assert dlg._gain is None
         assert not dlg.btn_apply.isEnabled()
         assert dlg.lbl_status.text()         # 给的是文案，不是裸抛
+        dlg.deleteLater()
+        stub.deleteLater()
 
     def test_dark_white_field_is_rejected_with_message(self, qapp):
         from dialogs.dustmap import DustMapDialog
         stub = self._stub_window()
         dlg = DustMapDialog(stub)
-        dlg._compute(np.zeros((48, 64, 3), np.uint16))
+        dlg._white = np.zeros((48, 64, 3), np.uint16)
+        self._complete_preview(dlg, qapp)
         assert not dlg.btn_apply.isEnabled()
         assert dlg.lbl_status.text()
+        dlg.deleteLater()
+        stub.deleteLater()
 
 
 # ---------------------------------------------------------------- sort

@@ -45,8 +45,7 @@ class Label:
     def __post_init__(self) -> None:
         if not self.label_id:
             self.label_id = uuid.uuid4().hex
-        if not self.config.label_id:
-            self.config.label_id = self.label_id
+        self.config.label_id = self.label_id
         self.config.target = normalize_target(self.config.target)
         self.config.target_stack = _TARGET_STACK[self.config.target]
 
@@ -90,6 +89,9 @@ class Label:
     def from_dict(cls, data: dict) -> "Label":
         cfg = LabelConfig()
         cfg.update_config(data)
+        if not cfg.format.strip() and cfg.text:
+            cfg.format = cfg.text
+        cfg.text = ""
         if "target" not in data:
             # Legacy projects only stored target_stack (0=input, 1=registered).
             legacy = int(data.get("target_stack", 1) or 0)
@@ -149,7 +151,7 @@ class LabelSet:
         return False
 
     def set_enabled(self, target: str, enabled: bool) -> None:
-        for label in self.for_target(target) if enabled else self._labels:
+        for label in self._labels:
             if label.target == normalize_target(target):
                 label.enabled = bool(enabled)
 

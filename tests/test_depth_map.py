@@ -364,7 +364,8 @@ def test_late_result_from_an_older_request_is_ignored(qapp):
         assert dlg._index01 is None, "a superseded result must be dropped"
 
         dlg._computed(np.ones((8, 8), np.float32), request=5)
-        assert dlg._index01 is not None
+        assert dlg._index01 is None, "ready must wait for the worker's finished signal"
+        assert dlg._worker_outcome[0] == "ok"
     finally:
         dlg.reject()
 
@@ -396,3 +397,175 @@ def test_raw_depth_export_requires_tiff(qapp, monkeypatch, tmp_path):
         assert written == [], "raw 16-bit data must not be written as JPEG"
     finally:
         dlg.reject()
+
+
+@pytest.mark.parametrize("first_16bit", [False, True])
+def test_mixed_depth_frames_normalize_individually(first_16bit):
+    frames = _synthetic_thirds(64, 96)
+    baseline = compute_focus_index([f.astype(np.float32) for f in frames], "dct", kernel_size=1)
+    mixed = [frame.astype(np.uint16) * 257 if ((i == 0) == first_16bit)
+             else frame for i, frame in enumerate(frames)]
+    np.testing.assert_array_equal(compute_focus_index(mixed, "dct", kernel_size=1), baseline)
+
+
+def test_smoothing_preserves_sub_256_plane_precision():
+    index = np.full((24, 24), 257 / 1023, np.float32)
+    original = index.copy()
+    np.testing.assert_allclose(smooth_index_map(index, 1), index, atol=1e-7)
+    np.testing.assert_array_equal(index, original)
+
+
+def test_dct_depth_reconstructs_fusion_at_padded_edges():
+    from fusion_methods.dct import dct_focus_stack_fusion
+    frames = _synthetic_thirds(245, 321)
+    index = compute_focus_index(frames, "dct", kernel_size=1)
+    choice = np.rint(index * (len(frames) - 1)).astype(int)
+    expected = np.zeros_like(frames[0])
+    for i, frame in enumerate(frames):
+        expected[choice == i] = frame[choice == i]
+    np.testing.assert_array_equal(dct_focus_stack_fusion(frames, kernel_size=1), expected)
+
+
+def test_empty_effective_depth_stack_never_falls_back_to_registered(qapp):
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.depthmap import DepthMapDialog
+    window = QWidget()
+    window.raw_images = _synthetic_thirds(32, 48)
+    window.registration_results = window.raw_images
+    window.effective_stack = lambda: ([], [], [])
+    window.current_fusion_method = lambda: "dct"
+    dialog = DepthMapDialog(window)
+    try:
+        assert dialog._images() is None
+        assert dialog._worker is None
+        assert not dialog.btn_save_raw.isEnabled()
+    finally:
+        dialog.reject()
+
+
+def test_depth_source_and_texture_bind_selected_output(qapp):
+    from PyQt6.QtWidgets import QWidget, QListWidget, QListWidgetItem
+    from core.render_context import build_render_context
+    from controllers.output_manager import OutputRecord, OUTPUT_RECORD_ROLE, OutputManager
+    from dialogs.depthmap import DepthMapDialog
+    window = QWidget()
+    window.raw_images = _synthetic_thirds(32, 48)
+    window.effective_stack = lambda: (window.raw_images[:2], ["now-a", "now-b"], [0, 1])
+    window.current_fusion_method = lambda: "dtcwt"
+    window.output_list = QListWidget(window)
+    window.output_manager = OutputManager(window)
+    historical = [frame.copy() for frame in window.raw_images]
+    image = np.full((32, 48, 3), 32123, np.uint16)
+    record = OutputRecord.create(image, "historical", context=build_render_context(
+        historical, image, filenames=["A", "B", "C"], source_indices=[0, 2, 5]))
+    item = QListWidgetItem("historical", window.output_list)
+    item.setData(OUTPUT_RECORD_ROLE, record)
+    item.setSelected(True)
+    window.fusion_result = np.zeros_like(image)
+    dialog = DepthMapDialog(window)
+    try:
+        assert dialog._images()[0] is historical[0]
+        assert np.shares_memory(dialog._matching_texture(), image)
+        window.fusion_result = np.ones_like(image)
+        assert np.shares_memory(dialog._matching_texture(), image)
+        dialog.source_combo.setCurrentIndex(0)
+        assert len(dialog._images()) == 2
+        assert dialog._matching_texture() is None
+    finally:
+        dialog.reject()
+
+
+def test_parameter_change_waits_for_old_worker_then_runs_only_latest(qapp, monkeypatch):
+    from threading import Event
+    from PyQt6.QtWidgets import QWidget
+    from PyQt6.QtTest import QTest
+    import dialogs.depthmap as dm
+    from core import depth_map
+    entered, release = Event(), Event()
+    calls = []
+    def compute(images, method, **kwargs):
+        calls.append(method)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(5)
+        return np.full(images[0].shape[:2], len(calls) / 10, np.float32)
+    monkeypatch.setattr(depth_map, "compute_focus_index", compute)
+    window = QWidget()
+    window.raw_images = _synthetic_thirds(24, 32)
+    window.current_fusion_method = lambda: "dct"
+    dialog = dm.DepthMapDialog(window)
+    try:
+        assert entered.wait(5)
+        first = dialog._worker
+        dialog.method_combo.setCurrentIndex(dialog.method_combo.findData("openfocus_b"))
+        dialog.method_combo.setCurrentIndex(dialog.method_combo.findData("gfgfgf"))
+        assert dialog._worker is first and dialog._cancelling
+        assert not dialog.btn_save_raw.isEnabled()
+        release.set()
+        deadline = time.monotonic() + 5
+        while (dialog._worker is not None or len(calls) < 2) and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert calls == ["dct", "gfgfgf"]
+        assert dialog._map_method == "gfgfgf"
+        np.testing.assert_allclose(dialog._index01, 0.2)
+    finally:
+        release.set()
+        dialog.reject()
+
+
+def test_depth_registration_precedes_reverse_and_never_writes_files(monkeypatch):
+    from dialogs.depthmap import DepthWorker
+    import core.compare_worker as compare_worker
+    import core.depth_map as depth_map
+    frames = [np.full((8, 8, 3), i + 1, np.uint8) for i in range(3)]
+    seen = []
+    def align(images, method, settings, should_cancel):
+        seen.append((method, [int(image[0, 0, 0]) for image in images]))
+        return images
+    def compute(images, method, **kwargs):
+        seen.append((method, [int(image[0, 0, 0]) for image in images]))
+        return np.zeros((8, 8), np.float32)
+    monkeypatch.setattr(compare_worker, "align_frames", align)
+    monkeypatch.setattr(depth_map, "compute_focus_index", compute)
+    worker = DepthWorker(frames, "openfocus_b", False)
+    worker.alignment = "ecc"
+    worker.reverse_order = True
+    worker.run()
+    assert seen == [("ecc", [1, 2, 3]), ("openfocus_b", [3, 2, 1])]
+
+
+def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
+    from PyQt6.QtWidgets import QWidget, QListWidget, QListWidgetItem, QFileDialog
+    from controllers.output_manager import OutputManager, OutputRecord, OUTPUT_RECORD_ROLE
+    from core.render_context import build_render_context
+    from dialogs.depthmap import DepthMapDialog
+    from PIL import Image
+    window = QWidget()
+    frames = [np.full((12, 16, 3), value, np.uint8) for value in (20, 40)]
+    image = frames[0].copy()
+    context = build_render_context(frames, image, algorithm="dtcwt", roi_rect=(3, 2, 6, 5),
+                                   roi_mode="paste", source_indices=[0, 5])
+    window.raw_images = frames
+    window.output_list = QListWidget(window)
+    window.output_manager = OutputManager(window)
+    record = OutputRecord.create(image, "ROI", context=context)
+    item = QListWidgetItem("ROI", window.output_list)
+    item.setData(OUTPUT_RECORD_ROLE, record)
+    item.setSelected(True)
+    dialog = DepthMapDialog(window)
+    target = tmp_path / "物理.tif"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    try:
+        dialog._index01 = np.full((5, 6), 0.5, np.float32)
+        dialog._map_frames = [frame.image for frame in context.frames]
+        dialog._map_indices = [0, 5]
+        dialog.z_step.setValue(2)
+        dialog.z_mapping.setChecked(True)
+        dialog._save_physical()
+        with Image.open(target) as stored:
+            depth = np.asarray(stored)
+        assert depth.dtype == np.float32
+        assert np.isnan(depth[0, 0])
+        np.testing.assert_array_equal(depth[2:7, 3:9], np.full((5, 6), 5, np.float32))
+    finally:
+        dialog.reject()

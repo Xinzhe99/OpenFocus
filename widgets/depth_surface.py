@@ -39,10 +39,11 @@ class DepthSurface(QWidget):
         self._cache = None
 
     # ---------------------------------------------------------------- data
-    def set_surface(self, height, texture=None) -> None:
+    def set_surface(self, height, texture=None, extent=None) -> None:
         """`height` is (h, w) in [0, 1]; `texture` is optional BGR uint8."""
         self._height = None if height is None else np.asarray(height, np.float32)
         self._texture = texture
+        self._extent = extent
         self._cache = None
         self.update()
 
@@ -99,8 +100,9 @@ class DepthSurface(QWidget):
         p.fillRect(self.rect(), QColor(t["surfaceSunken"]))
         if self._height is None:
             p.setPen(QColor(t["textMuted"]))
+            from locales import trans
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                       "No depth map yet")
+                       trans.t("depth_no_map_yet"))
             p.end()
             return
 
@@ -146,8 +148,8 @@ class DepthSurface(QWidget):
         # on release it is rebuilt at full density.
         # While the camera moves the mesh is coarsened (fewer, larger quads);
         # on release it is rebuilt at full density.
-        divisor = 4 if self._dragging else 1
-        image = self._rasterise(mesh_step=max(24, self._mesh_step // divisor))
+        step = self._mesh_step if self._dragging else 100
+        image = self._rasterise(mesh_step=step)
         # Remember only settled frames; a drag would otherwise evict the cache
         # constantly with throwaway images.
         if not self._dragging:
@@ -185,13 +187,13 @@ class DepthSurface(QWidget):
         # coarser one, and reading self._mesh_step here made that path a no-op.
         step = self._mesh_step if mesh_step is None else int(mesh_step)
         ratio = max(0.2, min(1.0, step / 100.0))
-        target_h = max(64, int(hh * ratio))
-        target_w = max(64, int(ww * ratio))
-        if target_h < 8 or target_w < 8:
-            return None
+        target_h = max(2, min(hh, int(hh * ratio)))
+        target_w = max(2, min(ww, int(ww * ratio)))
 
         z = cv2.resize(self._height, (target_w, target_h),
                        interpolation=cv2.INTER_AREA)
+        valid = np.isfinite(z)
+        z = np.where(valid, z, 0)
         if self._invert:
             z = 1.0 - z
 
@@ -213,7 +215,8 @@ class DepthSurface(QWidget):
             colours = np.tile(np.array([base.red(), base.green(), base.blue()],
                                        np.uint8), (target_h * target_w, 1))
 
-        aspect = (ww / float(hh)) if hh else 1.0
+        eh, ew = getattr(self, "_extent", None) or (max(1, hh - 1), max(1, ww - 1))
+        aspect = ew / float(max(1, eh))
         half_w = 1.0 if aspect >= 1.0 else aspect
         half_h = 1.0 / aspect if aspect >= 1.0 else 1.0
         xs = np.linspace(-half_w, half_w, target_w, dtype=np.float32)
@@ -234,7 +237,7 @@ class DepthSurface(QWidget):
         py = np.rint(h * 0.5 - v[:, 1] * scale).astype(np.int32)
         depth = v[:, 2]
 
-        inside = (px >= 0) & (px < w) & (py >= 0) & (py < h)
+        inside = valid.ravel() & (px >= 0) & (px < w) & (py >= 0) & (py < h)
         if not inside.any():
             return None
         px, py = px[inside], py[inside]
@@ -289,7 +292,7 @@ class DepthSurface(QWidget):
         # bridge (the picture read as a dot cloud). Fill every unwritten pixel
         # from its NEAREST written sample: a distance transform gives that
         # mapping in C, keeps the real colours, and invents no gradient.
-        if not written.all():
+        if valid.all() and not written.all():
             # Only bridge gaps INSIDE the silhouette, and only short ones:
             # an unbounded nearest-sample fill also painted the canvas
             # background, turning the surface into a stretched sheet.

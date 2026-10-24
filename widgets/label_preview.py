@@ -12,7 +12,7 @@ the answer is visible before the dialog closes.
 import numpy as np
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 from utils.validators import LabelAdder, build_label_text
@@ -25,8 +25,8 @@ class LabelPreview(QLabel):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(280, 190)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding,
-                           QSizePolicy.Policy.Expanding)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Ignored)
         self.setObjectName("labelPreview")
         self._adder = LabelAdder()
         self._frame = None
@@ -36,6 +36,56 @@ class LabelPreview(QLabel):
         # Which frame the preview pretends to be, so {value} resolves the way
         # the first real frame will.
         self._index = 0
+        self._zoom_mode = "fit"
+        self._rendered = QPixmap()
+        self._pan = (0, 0)
+        self._drag_start = None
+
+    def set_preview(self, frame, config, index):
+        """Update all dependent state before drawing once."""
+        self._frame = None if frame is None else np.asarray(frame)
+        self._adder.config.update_config(config)
+        self._index = max(0, int(index))
+        self.refresh()
+
+    def set_zoom_mode(self, mode):
+        self._zoom_mode = mode
+        self._pan = (0, 0)
+        self._show_rendered()
+
+    def _show_rendered(self):
+        if self._rendered.isNull():
+            self.clear()
+            return
+        width, height = max(1, self.width() - 8), max(1, self.height() - 8)
+        if self._zoom_mode == "actual":
+            x = max(0, min(self._pan[0], max(0, self._rendered.width() - width)))
+            y = max(0, min(self._pan[1], max(0, self._rendered.height() - height)))
+            self._pan = (x, y)
+            pix = self._rendered.copy(x, y, min(width, self._rendered.width()),
+                                      min(height, self._rendered.height()))
+        else:
+            pix = self._rendered.scaled(width, height,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+        self.setPixmap(pix)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._zoom_mode == "actual":
+            self._drag_start = event.position()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is not None:
+            delta = event.position() - self._drag_start
+            self._pan = (self._pan[0] - int(delta.x()), self._pan[1] - int(delta.y()))
+            self._drag_start = event.position()
+            self._show_rendered()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
 
     # ------------------------------------------------------------------ data
     def set_frame(self, frame) -> None:
@@ -89,7 +139,7 @@ class LabelPreview(QLabel):
     def refresh(self) -> None:
         from utils.image_utils import to_display_uint8
 
-        canvas = self._canvas().copy()
+        canvas = self._canvas()
         config = self._adder.config
         text = build_label_text(config.format, config.text,
                                 self._preview_value())
@@ -116,15 +166,25 @@ class LabelPreview(QLabel):
             self._status = ""
 
         drawn = to_display_uint8(drawn)
+        if drawn.ndim == 2:
+            drawn = np.repeat(drawn[:, :, None], 3, axis=2)
         h, w = drawn.shape[:2]
         rgb = np.ascontiguousarray(drawn[:, :, ::-1])
         image = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
-        pix = QPixmap.fromImage(image).scaled(
-            max(1, self.width() - 8), max(1, self.height() - 8),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
-        self.setPixmap(pix)
+        self._rendered = QPixmap.fromImage(image)
+        bounds = self._adder.last_bounds
+        if bounds is not None:
+            painter = QPainter(self._rendered)
+            pen = QPen(QColor("#40c8d5"))
+            pen.setStyle(Qt.PenStyle.DashLine)
+            pen.setWidth(max(1, min(w, h) // 300))
+            painter.setPen(pen)
+            x, y, text_width, text_height = bounds
+            painter.drawRect(x, y, text_width, text_height)
+            painter.drawEllipse(x - 3, y + text_height - 3, 6, 6)
+            painter.end()
+        self._show_rendered()
 
     def resizeEvent(self, event):  # noqa: N802 (Qt casing)
         super().resizeEvent(event)
-        self.refresh()
+        self._show_rendered()

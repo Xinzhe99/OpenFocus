@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.68.0] — 2026-10-24
+
 ### Changed (UI/UX specification pass, docs/ux-specs)
 - **Labels are a managed list, not two overwritten slots.** Add/select/edit/
   delete a caption by identity; explicit source / registered / output targets;
@@ -52,6 +54,48 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the advanced-settings description states that AI mode and registration
   width affect results, flat-field correction commits atomically, and
   standard dialog buttons are localized.
+
+### Fixed (workflow verification)
+- **Align-only exports are stack folders.** Standard rendering keeps the stack
+  in memory until saved; batch produces one collision-safe folder per task,
+  retains original filename stems, and uses the selected encoding extension.
+  Save, Export All and drag-out handle each stack once, without duplicate
+  registration caches or per-frame history entries.
+- **Batch output layout follows the chosen mode.** Align-only writes one
+  `<stack>_aligned` folder under the selected destination and lists that folder
+  in the output panel; fusion writes `<stack>.<ext>` there and lists only the
+  fused result (its aligned folder stays on disk); fusion without alignment
+  writes the fused image alone. Panel entries carry the real directory name.
+- **Leftover aligned copies are not stack frames.** Older builds wrote
+  `*_registered*` files beside the sources; reloading such a folder treated
+  each copy as a frame (9 frames became 36 and every later batch fused
+  duplicates). Files whose original stem is present in the same folder are
+  skipped, and the load message reports how many.
+- **Label drafts commit before closing** and retain independent edits, disabled
+  labels, stable source ranges and explicit output bindings. Native 16-bit and
+  grayscale drawing preserves unaffected pixels; fallback-font messages show
+  the requested and actual families. Navigation has one editable frame index.
+- **Scale-bar preview uses the original image geometry**, with Fit/100% and
+  panning. Empty or too-small targets cannot be applied; per-output calibration,
+  style and zero-valued custom positions survive undo and project restoration.
+  Historical output bars can be removed after the source bar is disabled;
+  removal is undoable and an unchanged scope creates no undo entry.
+- **Export state includes annotations.** Changing an applicable label or scale
+  bar marks the output changed; undoing to the exported state clears that mark.
+  Saving freezes the selected output, pixels and annotations. Atomic image,
+  TIFF and GIF writes preserve an existing destination on failure or cancel.
+- **Source and project identity survive edits.** Exclusions, TIFF page order,
+  rotations/flips and per-method settings round-trip. Missing sources require
+  confirmation of a complete path mapping. Failed loads keep the previous stack;
+  update recovery never substitutes an older saved project for a failed snapshot.
+- **Depth and mesh export retain their source snapshot.** Physical Z uses the
+  confirmed capture indices, including excluded-frame gaps; float32 TIFF stores
+  micrometres and NaN. Physical OBJ requires XY calibration; its OBJ/MTL/PNG/JSON
+  group is staged together with cancellation and replacement rollback.
+- **Comparison and retouch reject stale or incomplete work.** Comparison supports
+  per-method retry and full validation before adopting a result, and parameter
+  adoption is undoable. Retouch shows unavailable source regions and retains
+  worker ownership while cancellation completes.
 
 ## [v1.67.0] — 2026-10-23
 
