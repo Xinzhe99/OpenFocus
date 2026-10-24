@@ -1,3 +1,4 @@
+import numbers
 import os
 
 import cv2
@@ -220,6 +221,154 @@ def set_source_exif(exif: bytes) -> None:
     SOURCE_EXIF = exif or b""
 
 
+# IFD0 tags worth carrying into an export. Everything else in a source IFD0
+# describes the *source* pixels (size, strips, compression, RAW sub-IFDs)
+# and would corrupt or misdescribe the fused image.
+_EXPORT_IFD0_TAGS = {
+    270,    # ImageDescription
+    271,    # Make
+    272,    # Model
+    282, 283, 296,  # X/YResolution, ResolutionUnit
+    305,    # Software
+    306,    # DateTime
+    315,    # Artist
+    33432,  # Copyright
+}
+_EXIF_IFD = 0x8769
+_GPS_IFD = 0x8825
+# Exif sub-IFD tags dropped on export: vendor MakerNotes can be megabytes
+# (Olympus embeds previews) and some use absolute offsets that break once
+# relocated; the pixel dimensions no longer match after cropping/alignment.
+_EXPORT_EXIF_DROP = {37500, 40962, 40963}
+# Exif 2.32 tags missing from Pillow's type table. Without these Pillow
+# infers from the Python value (int -> SHORT, bytes -> BYTE, float ->
+# RATIONAL), writing e.g. a negative TG-series water depth as unsigned.
+_EXIF_TAG_TYPES = {
+    0x8831: ("StandardOutputSensitivity", 4),
+    0x8832: ("RecommendedExposureIndex", 4),
+    0x8833: ("ISOSpeed", 4),
+    0x9286: ("UserComment", 7),
+    0x9400: ("AmbientTemperature", 10),
+    0x9401: ("Humidity", 5),
+    0x9402: ("Pressure", 5),
+    0x9403: ("WaterDepth", 10),
+    0x9404: ("Acceleration", 5),
+    0x9405: ("CameraElevationAngle", 10),
+    0xA300: ("FileSource", 7),
+    0xA301: ("SceneType", 7),
+    0xA302: ("CFAPattern", 7),
+}
+
+
+def _register_exif_tag_types() -> None:
+    from PIL import TiffTags
+    group = TiffTags.TAGS_V2_GROUPS[_EXIF_IFD]
+    for tag, (name, typ) in _EXIF_TAG_TYPES.items():
+        if tag not in group:  # never override Pillow's own definitions
+            group[tag] = TiffTags.TagInfo(tag, name, typ, 1 if typ != 7 else 0)
+
+
+def _blank(value) -> bool:
+    """Placeholder values cameras write in place of omitting a tag."""
+    if isinstance(value, str):
+        return not value.strip("\x00 ")
+    if isinstance(value, numbers.Real):
+        return value != value  # 0/0 rationals load as NaN
+    return False
+
+
+def export_exif(exif_bytes: bytes):
+    """Parse source EXIF into a PIL Exif that is safe to embed in an export.
+
+    Keeps camera, lens, exposure, date and GPS; drops source pixel-layout
+    tags and blank placeholder strings, and resets Orientation to 1 because
+    the loaders already rotated the pixels. Returns None when unparsable.
+    """
+    if not exif_bytes:
+        return None
+    try:
+        from PIL import Image
+        _register_exif_tag_types()
+        src = Image.Exif()
+        src.load(exif_bytes)
+        out = Image.Exif()
+        out.endian = "<"
+        for tag in _EXPORT_IFD0_TAGS:
+            if tag in src and not _blank(src[tag]):
+                out[tag] = src[tag]
+        out[274] = 1  # Orientation
+        exif_ifd = {k: v for k, v in src.get_ifd(_EXIF_IFD).items()
+                    if k not in _EXPORT_EXIF_DROP and k != 0xA005
+                    and not _blank(v)}
+        if exif_ifd:
+            out[_EXIF_IFD] = exif_ifd
+        gps_ifd = {k: v for k, v in src.get_ifd(_GPS_IFD).items()
+                   if not _blank(v)}
+        if 2 in gps_ifd and 4 in gps_ifd:  # cameras without a fix write stubs
+            out[_GPS_IFD] = gps_ifd
+        return out if len(out) > 1 else None  # nothing beyond Orientation
+    except Exception:
+        return None
+
+
+def _png_insert_exif(png: bytes, tiff_exif: bytes) -> bytes:
+    """Insert an eXIf chunk right after IHDR; the pixel data is untouched."""
+    import struct
+    import zlib
+    ihdr_end = 8 + 8 + 13 + 4  # signature + IHDR length/type + data + CRC
+    if png[12:16] != b"IHDR":
+        raise ValueError("not a PNG produced by cv2")
+    chunk = (struct.pack(">I", len(tiff_exif)) + b"eXIf" + tiff_exif
+             + struct.pack(">I", zlib.crc32(b"eXIf" + tiff_exif)))
+    return png[:ihdr_end] + chunk + png[ihdr_end:]
+
+
+def _encode_tiff_with_exif(image: np.ndarray, exif) -> bytes:
+    """Uncompressed TIFF (uint8/uint16, gray or BGR) with an EXIF sub-IFD.
+
+    Pillow cannot hold 16-bit RGB, so the file is assembled directly: an
+    IFD0 serialised by Pillow's TIFF writer (which also lays out the Exif
+    and GPS sub-IFDs) followed by the raw strips.
+    """
+    from PIL import TiffImagePlugin, TiffTags
+    if image.ndim == 3 and image.shape[2] == 3:
+        pixels = np.ascontiguousarray(image[:, :, ::-1])  # BGR -> RGB
+        samples, photometric = 3, 2
+    elif image.ndim == 2:
+        pixels = np.ascontiguousarray(image)
+        samples, photometric = 1, 1
+    else:
+        raise ValueError("unsupported channel layout for EXIF TIFF")
+    pixels = pixels.astype(pixels.dtype.newbyteorder("<"), copy=False)
+    height, width = pixels.shape[:2]
+    bits = pixels.dtype.itemsize * 8
+    row_bytes = width * samples * pixels.dtype.itemsize
+    rows_per_strip = max(1, min(height, (1 << 20) // row_bytes))
+    strip_offsets, strip_counts = [], []
+    for row in range(0, height, rows_per_strip):
+        strip_offsets.append(row * row_bytes)
+        strip_counts.append(min(rows_per_strip, height - row) * row_bytes)
+
+    head = b"II*\x00" + (8).to_bytes(4, "little")
+    ifd = TiffImagePlugin.ImageFileDirectory_v2(ifh=head)
+    for tag, value in exif.items():
+        ifd[tag] = value  # sub-IFDs are plain dicts (see export_exif)
+    ifd[256] = width
+    ifd[257] = height
+    ifd[258] = (bits,) * samples
+    ifd[259] = 1  # no compression
+    ifd[262] = photometric
+    ifd[277] = samples
+    ifd[278] = rows_per_strip
+    ifd[284] = 1  # chunky
+    # Strip offsets/counts are LONG regardless of magnitude; Pillow's writer
+    # rebases StripOffsets onto the end of the IFD, where the strips go.
+    ifd.tagtype[273] = ifd.tagtype[279] = TiffTags.LONG
+    ifd[273] = tuple(strip_offsets)
+    ifd[279] = tuple(strip_counts)
+    return head + ifd.tobytes(8) + pixels.tobytes()
+
+
 def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
                  exif: Optional[bytes] = None) -> bool:
     """Encode beside the destination, then atomically replace a complete file."""
@@ -229,17 +378,37 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
     ext = os.path.splitext(path)[1].lower()
     if image.dtype == np.uint16 and ext not in (".png", ".tif", ".tiff"):
         image = to_display_uint8(image)
+    embed = SOURCE_EXIF if exif is None else exif
+    # PNG/TIFF get EXIF spliced in at the byte level, so 16-bit exports keep
+    # their depth (a Pillow round-trip would cut them to 8-bit).
+    meta = export_exif(embed) if ext in (".png", ".tif", ".tiff") else None
     part = None
     try:
-        ok, encoded = cv2.imencode(ext, image, params or [])
-        if not ok:
-            return False
+        encoded = None
+        if meta is not None:
+            try:
+                if ext == ".png":
+                    ok, buf = cv2.imencode(ext, image, params or [])
+                    if not ok:
+                        return False
+                    encoded = _png_insert_exif(buf.tobytes(), meta.tobytes()[6:])
+                else:
+                    encoded = _encode_tiff_with_exif(image, meta)
+            except ValueError as exc:
+                print(f"EXIF embed skipped for {path}: {exc}")
+                meta = None
+        if encoded is None:
+            ok, encoded = cv2.imencode(ext, image, params or [])
+            if not ok:
+                return False
         fd, part = tempfile.mkstemp(
             suffix=ext, dir=os.path.dirname(os.path.abspath(path)))
         with os.fdopen(fd, "wb") as handle:
             handle.write(encoded)
-        embed = SOURCE_EXIF if exif is None else exif
-        if embed and image.dtype == np.uint8 and ext in (".png", ".tif", ".tiff", ".webp"):
+        # Pillow re-save fallback: 8-bit only, since re-opening a 16-bit file
+        # with Pillow would downgrade it. Covers WebP and unparsable EXIF.
+        if embed and meta is None and image.dtype == np.uint8 \
+                and ext in (".png", ".tif", ".tiff", ".webp"):
             from PIL import Image
             with Image.open(part) as source:
                 source.load()
