@@ -5,6 +5,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **`tools/launch_film.py` — a launch film generated entirely in code.** No
+  editor, no stock footage: typography, easing, glow, vignette and film grain
+  are drawn with PIL/NumPy, the soundtrack is synthesised from oscillators and
+  filtered noise, and ffmpeg muxes the result. Real product imagery is
+  composited in — the nine source frames of a macro stack, a genuine
+  detail-selection fusion of that stack computed by the script itself, and the
+  feature captures. `--preview N` renders stills for inspection.
+
 ### Changed
 - **README feature wall** in all twelve languages: each capability is a
   two-column row with copy on the left and a real screenshot on the right,
