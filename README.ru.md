@@ -74,7 +74,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/comparison_ai_vs_gff.png" alt="ИИ-фузия: StackMFF V3" width="100%" />
+<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="ИИ-фузия: StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/batch.png" alt="Диалог пакетной обработки" width="100%" />
+<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="Диалог пакетной обработки" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/scalebar.png" alt="Диалог масштабной линейки с предпросмотром" width="100%" />
+<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="Диалог масштабной линейки с предпросмотром" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/labels.png" alt="Подписи и легенды" width="100%" />
+<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="Подписи и легенды" width="100%" /></picture></a>
 
 </td>
 </tr>

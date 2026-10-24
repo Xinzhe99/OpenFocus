@@ -74,7 +74,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/comparison_ai_vs_gff.png" alt="AI 融合：StackMFF V3" width="100%" />
+<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="AI 融合：StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/batch.png" alt="批处理对话框" width="100%" />
+<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="批处理对话框" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/scalebar.png" alt="带实时预览的比例尺对话框" width="100%" />
+<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="带实时预览的比例尺对话框" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/labels.png" alt="标签与图注" width="100%" />
+<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="标签与图注" width="100%" /></picture></a>
 
 </td>
 </tr>

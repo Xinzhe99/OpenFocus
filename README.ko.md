@@ -74,7 +74,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/comparison_ai_vs_gff.png" alt="AI 융합: StackMFF V3" width="100%" />
+<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="AI 융합: StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/batch.png" alt="배치 처리 대화상자" width="100%" />
+<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="배치 처리 대화상자" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@ TIFF 메타데이터 또는 직접 입력으로 보정하고 실제 글꼴과 �
 </td>
 <td width="54%">
 
-<img src="assets/readme/scalebar.png" alt="실시간 미리보기가 있는 스케일 바 대화상자" width="100%" />
+<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="실시간 미리보기가 있는 스케일 바 대화상자" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@ TIFF 메타데이터 또는 직접 입력으로 보정하고 실제 글꼴과 �
 </td>
 <td width="54%">
 
-<img src="assets/readme/labels.png" alt="라벨과 캡션" width="100%" />
+<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="라벨과 캡션" width="100%" /></picture></a>
 
 </td>
 </tr>

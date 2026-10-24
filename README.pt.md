@@ -74,7 +74,7 @@ O método padrão classifica cada pixel pelo quadro de origem mais provável com
 </td>
 <td width="54%">
 
-<img src="assets/comparison_ai_vs_gff.png" alt="Fusão por IA: StackMFF V3" width="100%" />
+<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="Fusão por IA: StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@ Aponte para uma pasta de pilhas, escolha método e destino e deixe rodar. Soment
 </td>
 <td width="54%">
 
-<img src="assets/readme/batch.png" alt="Diálogo de processamento em lote" width="100%" />
+<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="Diálogo de processamento em lote" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@ Calibradas por metadados TIFF ou manualmente, desenhadas com a fonte e o comprim
 </td>
 <td width="54%">
 
-<img src="assets/readme/scalebar.png" alt="Diálogo de barra de escala com pré-visualização" width="100%" />
+<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="Diálogo de barra de escala com pré-visualização" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@ As legendas ficam numa lista gerenciada: cada uma com seu escopo (fonte, pilha a
 </td>
 <td width="54%">
 
-<img src="assets/readme/labels.png" alt="Rótulos e legendas" width="100%" />
+<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="Rótulos e legendas" width="100%" /></picture></a>
 
 </td>
 </tr>
