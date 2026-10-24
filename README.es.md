@@ -72,17 +72,130 @@ Descarga una compilación desde [Releases](https://github.com/Xinzhe99/OpenFocus
 
 La aplicación no está firmada, así que el primer inicio puede mostrar un aviso: en Windows, «Más información → Ejecutar de todos modos»; en macOS, clic derecho → Abrir, o `xattr -cr /Applications/OpenFocus.app`.
 
-## Características principales
+## Funciones
 
-- **Ocho métodos de fusión** — Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF-V3 (red neuronal), OpenFocus A/B/C.
-- **Tres modos de registro** — transformación de similitud rápida, ECC y homografía; también se puede fusionar sin registro.
-- **Flujo de trabajo de focus stacking** — explorador de pila, comparación A/B, mapas de profundidad, comparación de métodos, procesamiento por lotes y vista previa rápida.
-- **Retoque con procedencia** — toma píxeles de los fotogramas que produjeron el resultado, con zoom/posición compartidos, control deslizante de origen, pincel suave, pincel de restauración, deshacer/rehacer por trazo y protección de salidas sin exportar.
-- **Listo para microscopía y publicación** — 16 bits de extremo a extremo, µm/px desde TIFF, corrección de campo plano, barras de escala, Z-stack TIFF multipágina y exportación OBJ con textura.
-- **CLI sin interfaz** — el mismo pipeline que la GUI, con lotes, `--dry-run`, `--resume` y salida JSON.
-- **Doce idiomas de interfaz** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski.
+<table>
 
-<a id="command-line-usage"></a>
+<tr>
+<td width="46%" valign="middle">
+
+### Ocho algoritmos de fusión
+
+Cuatro clásicos más la familia OpenFocus A/B/C y el modelo neuronal StackMFF-V3, todos sobre la misma pila registrada: compara y elige por motivo en vez de confiar en un único valor por defecto.
+
+[Algoritmos →](#algorithms)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/result.png" alt="Resultado de fusión en la ventana de OpenFocus" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Comparación A/B
+
+Arrastra el divisor entre un fotograma y el resultado fusionado para ver qué cambió la mezcla: deriva de registro, halos en los bordes y detalle perdido, a cualquier zoom.
+
+[Manual →](./docs/USER_MANUAL_ES.md)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/wipe.png" alt="Comparación A/B entre un fotograma y el resultado" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Comparación de métodos
+
+Renderiza todos los métodos una vez, compáralos lado a lado en el mismo recorte y adopta el ganador como nueva salida o copia sus parámetros a la ventana principal.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/compare.png" alt="Ocho métodos de fusión en paralelo" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Mapa de profundidad y 3D
+
+Posición de foco por píxel con cinco medidas, mapas de color científicos, calibración Z física desde metadatos TIFF y exportación OBJ texturizada.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/depth.png" alt="Mapa de profundidad y superficie 3D de la misma pila" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Retoque ligado a la fuente
+
+Pinta desde los fotogramas que produjeron el resultado: zoom y desplazamiento compartidos, control de fotograma, pincel suave, pincel de restauración, deshacer por trazo y protección de píxeles sin exportar.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/retouch.png" alt="Espacio de retoque con fotograma y resultado" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Procesamiento por lotes
+
+Apunta a una carpeta de pilas, elige método y destino, y déjalo trabajar. Solo alineación escribe una carpeta por pila; la fusión escribe y lista solo la imagen fusionada.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/batch.png" alt="Diálogo de procesamiento por lotes" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Barras de escala de publicación
+
+Calibradas desde metadatos TIFF o a mano, dibujadas con la fuente y longitud reales, e incrustadas en cada exportación: imagen, pila, TIFF, GIF y lote.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/scalebar.png" alt="Diálogo de barra de escala con vista previa" width="100%" />
+
+</td>
+</tr>
+
+</table>
+
+**También incluye:**
+
+- **Flujo de focus stacking**——explorador de pilas, curva de nitidez, vista previa rápida, render ROI y ajustes por método recordados entre sesiones.
+- **Listo para microscopía**——16 bits de extremo a extremo, µm/px desde TIFF, corrección de campo plano, Z-stacks TIFF multipágina.
+- **CLI sin interfaz**——la misma tubería como `openfocus`, con lotes, `--dry-run`, `--resume` y salida JSON.
+- **Proyectos y recuperación**——sesiones `.ofproj`, recuperación tras fallos y deshacer/rehacer de ediciones y anotaciones.
+- **Doce idiomas de interfaz**——English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; detectados del sistema, un idioma nuevo es un archivo `locales_<code>.py`.
+- **Ligero en memoria**——los pesos neuronales se cargan solo al usar el método AI, así que una sesión clásica ronda 110 MB en vez de 260 MB.
+
 ## Inicio rápido
 
 ```bash

@@ -159,8 +159,8 @@ Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.m
 - [💻 Command Line Usage](#command-line-usage)
 - [📖 Documentation](#documentation)
 - [🛠️ Building from Source](#building-from-source)
-- [🔭 Overview](#overview)
-- [✨ Highlights](#highlights)
+- [✨ Features](#features)
+- [🧠 AI fusion](#ai-fusion)
 - [🧪 Algorithms](#algorithms)
 - [📚 References](#references)
 - [🤝 Contribution](#contribution)
@@ -168,31 +168,163 @@ Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.m
 - [📄 License](#license)
 - [⭐ Star History](#star-history)
 
-<a id="overview"></a>
-## 🔭 Overview
-OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that delivers commercial-grade alignment and blending results. The project is fully open source (MIT License) and runs on CPU by default with optional GPU acceleration for the StackMFF V3 neural model.
+<a id="features"></a>
+## Features
 
-### AI fusion: StackMFF V3
+<table>
+<tr>
+<td width="46%" valign="middle">
 
-The default fusion method classifies every pixel by its most probable source
-frame. Input is a real 10-frame macro stack of a PCB; the focus sweeps across
-the board between frames.
+### Eight fusion methods
+
+Four classical algorithms plus the OpenFocus A/B/C family and the StackMFF-V3
+neural model — all on one registered stack, so you can compare and pick per
+subject instead of trusting a single default.
+
+[Algorithms →](#algorithms)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/result.png" alt="A fused macro stack in the OpenFocus window" width="100%" />
+
+</td>
+</tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Wipe compare
+
+Drag the divider across a frame and the fused result to see exactly what the
+blend changed — alignment drift, haloed edges and lost detail are visible at a
+glance, at any zoom.
+
+[Manual →](./docs/USER_MANUAL_EN.md)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/wipe.png" alt="A/B wipe between a source frame and the fused result" width="100%" />
+
+</td>
+</tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Method comparison
+
+Render every method once, inspect them side by side at a shared crop, then
+adopt the winner as a new output or copy its parameters back to the main
+window.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/compare.png" alt="Side-by-side comparison of eight fusion methods" width="100%" />
+
+</td>
+</tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Depth map &amp; 3D
+
+Per-pixel focus position from five focus measures, with research colour maps,
+physical Z calibration from TIFF metadata, and a textured OBJ export of the
+surface.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/depth.png" alt="Depth map and 3D surface of the same stack" width="100%" />
+
+</td>
+</tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Source-locked retouch
+
+Paint from the frames that actually produced the result: shared zoom and pan,
+a source-frame slider, soft brush, restore brush, whole-stroke undo and a
+"not exported" guard for new pixels.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/retouch.png" alt="Retouch workspace with source frame and result" width="100%" />
+
+</td>
+</tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Batch processing
+
+Point it at a folder of stacks, choose a method and a destination, and walk
+away. Align-only runs write one folder per stack; fusion runs write the fused
+image and list exactly that.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/batch.png" alt="Batch processing dialog" width="100%" />
+
+</td>
+</tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Publication scale bars
+
+Calibrated from TIFF metadata or typed in, drawn with the real font at the
+real length, and burned into every export — single images, stacks, TIFF, GIF
+and batch output alike.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/scalebar.png" alt="Scale bar dialog with live preview" width="100%" />
+
+</td>
+</tr>
+</table>
+
+**Also in the box:**
+
+- **Focus-stack workflow** — stack browser, sharpness curve, quick preview,
+  ROI render, and per-method settings remembered across restarts.
+- **Microscopy-ready** — 16-bit end to end, µm/px from TIFF metadata, dust-map
+  flat-field correction, multi-page TIFF Z-stacks.
+- **Headless CLI** — the same pipeline as `openfocus`, with batch mode,
+  `--dry-run`, `--resume` and JSON output for scripting.
+- **Projects and recovery** — `.ofproj` sessions, crash auto-recovery,
+  undo/redo across stack edits and annotations.
+- **Twelve UI languages** — English, 中文, 日本語, Español, Deutsch, Français,
+  Русский, 한국어, Português, Italiano, Nederlands, Polski. Auto-detected from
+  the system locale; a new language is one `locales_<code>.py` file.
+- **Light on memory** — the neural stack is loaded only when the neural method
+  is used, so a classical-method session idles around 110 MB instead of 260 MB.
+
+<a id="ai-fusion"></a>
+## AI fusion: StackMFF V3
+
+The default method classifies every pixel by its most probable source frame.
+The input is a real 10-frame macro stack of a PCB; focus sweeps across the
+board between frames, so the fused result has to keep the sharp version of
+every region.
 
 <p align="center">
 	<img src="assets/demo_stack_sweep.gif" alt="Focus sweep through the input stack" width="440">
 </p>
 
-All ten frames differ in which part is sharp - frames 01-05 hold the switch and
-its lettering, 06-10 are defocused. The fused result has to keep the sharp
-version of every region:
-
 <p align="center">
 	<img src="assets/demo_stack_frames.png" alt="The ten input frames" width="880">
 </p>
 
-Compared with Guided Filter on the same registered stack, the AI result keeps
-the letter edges crisper and the board surface cleaner. Both crops come from
-the same region of the same stack (Laplacian sharpness 27.1 vs 28.5):
+Against Guided Filter on the same registered stack, the AI result keeps the
+letter edges crisper and the board surface cleaner. Both crops come from the
+same region of the same stack (Laplacian sharpness 27.1 vs 28.5):
 
 <p align="center">
 	<img src="assets/comparison_ai_vs_gff.png" alt="Guided Filter vs StackMFF V3" width="880">
@@ -206,27 +338,6 @@ both PSNR and SSIM, and leaves fewer ghost pixels than any classical method:
 </p>
 
 <sub>Benchmark reproducible with <code>python tools/synthetic_benchmark.py --noise 3</code>.</sub>
-
-<a id="highlights"></a>
-## ✨ Highlights
-
-- **Eight fusion methods** — four classical plus OpenFocus A/B/C, with three
-  registration modes (fast similarity, ECC, homography).
-- **Focus-stack workflow** — stack browser, wipe compare, depth maps,
-  source-locked retouch workspace with provenance and frame slider, batch
-  processing, quick preview, and side-by-side method comparison.
-- **Microscopy-ready** — 16-bit end to end, µm/px from TIFF metadata, dust-map
-  flat-field correction, publication scale bars, textured OBJ export.
-- **Headless CLI** — the same pipeline as `openfocus`, with batch mode,
-  `--dry-run`, `--resume` and JSON output for scripting.
-- **Projects and recovery** — `.ofproj` sessions, crash auto-recovery,
-  undo/redo, per-method settings remembered across restarts.
-- **Twelve UI languages** — English, 中文, 日本語, Español, Deutsch, Français,
-  Русский, 한국어, Português, Italiano, Nederlands, Polski. Auto-detected from
-  the system locale; a new language is one `locales_<code>.py` file. Every
-  language is checked for clipped labels by `tools/lang_ui_audit.py`.
-- **Light on memory** — the neural stack is loaded only when the neural method
-  is used, so a classical-method session idles around 110 MB instead of 260 MB.
 
 <a id="algorithms"></a>
 ## 🧪 Algorithms

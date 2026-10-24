@@ -74,15 +74,128 @@ O aplicativo não é assinado; no primeiro início o Windows pode pedir “Mais 
 
 ## Recursos principais
 
-- **Oito métodos de fusão** — Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF-V3 (rede neural) e OpenFocus A/B/C.
-- **Três modos de registro** — similaridade rápida, ECC e homografia; também é possível fundir sem registro.
-- **Fluxo de focus stacking** — navegador de pilha, comparação A/B, mapas de profundidade, comparação de métodos, processamento em lote e pré-visualização rápida.
-- **Retoque com proveniência** — pixels dos quadros que realmente produziram o resultado, zoom/posição compartilhados, controle de quadro de origem, pincel suave, pincel de restauração, desfazer/refazer por traço e proteção de saídas não exportadas.
-- **Pronto para microscopia e publicação** — 16 bits ponta a ponta, µm/px de TIFF, correção de campo plano, barras de escala, Z-stack TIFF multipágina e exportação OBJ texturizada.
-- **CLI sem interface** — o mesmo pipeline via `openfocus`, com lote, `--dry-run`, `--resume` e saída JSON.
-- **Doze idiomas de interface** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski.
+<table>
 
-<a id="command-line-usage"></a>
+<tr>
+<td width="46%" valign="middle">
+
+### Oito algoritmos de fusão
+
+Quatro clássicos mais a família OpenFocus A/B/C e o modelo neural StackMFF-V3, todos na mesma pilha registrada: compare e escolha por assunto em vez de confiar num único padrão.
+
+[Algoritmos →](#algorithms)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/result.png" alt="Resultado de fusão na janela do OpenFocus" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Comparação A/B
+
+Arraste o divisor entre um quadro e o resultado para ver o que a fusão mudou: desvio de registro, halos nas bordas e detalhe perdido, em qualquer zoom.
+
+[Manual →](./docs/USER_MANUAL_PT.md)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/wipe.png" alt="Comparação A/B entre um quadro e o resultado" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Comparação de métodos
+
+Renderize todos os métodos uma vez, compare lado a lado no mesmo recorte e adote o vencedor como nova saída ou copie seus parâmetros para a janela principal.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/compare.png" alt="Oito métodos de fusão em paralelo" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Mapa de profundidade e 3D
+
+Posição de foco por pixel com cinco medidas, mapas de cor científicos, calibração Z física dos metadados TIFF e exportação OBJ texturizada da superfície.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/depth.png" alt="Mapa de profundidade e superfície 3D da mesma pilha" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Retoque ligado à fonte
+
+Pinte a partir dos quadros que realmente produziram o resultado: zoom e deslocamento compartilhados, controle de quadro, pincel suave, pincel de restauração, desfazer por traço e proteção de pixels não exportados.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/retouch.png" alt="Espaço de retoque com quadro e resultado" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Processamento em lote
+
+Aponte para uma pasta de pilhas, escolha método e destino e deixe rodar. Somente alinhamento grava uma pasta por pilha; a fusão grava e lista apenas a imagem fundida.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/batch.png" alt="Diálogo de processamento em lote" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Barras de escala de publicação
+
+Calibradas por metadados TIFF ou manualmente, desenhadas com a fonte e o comprimento reais e gravadas em toda exportação: imagem, pilha, TIFF, GIF e lote.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/scalebar.png" alt="Diálogo de barra de escala com pré-visualização" width="100%" />
+
+</td>
+</tr>
+
+</table>
+
+**Também incluído:**
+
+- **Fluxo de focus stacking** — navegador de pilhas, curva de nitidez, pré-visualização rápida, render ROI e ajustes por método lembrados entre sessões.
+- **Pronto para microscopia** — 16 bits de ponta a ponta, µm/px do TIFF, correção de campo plano, Z-stacks TIFF multipágina.
+- **CLI sem interface** — a mesma linha de processamento como `openfocus`, com lotes, `--dry-run`, `--resume` e saída JSON.
+- **Projetos e recuperação** — sessões `.ofproj`, recuperação após falha, desfazer/refazer em pilhas e anotações.
+- **Doze idiomas de interface** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; detectados do sistema, um idioma novo é um arquivo `locales_<code>.py`.
+- **Leve na memória** — os pesos neurais só carregam ao usar o método AI, então uma sessão clássica fica em torno de 110 MB em vez de 260 MB.
+
 ## Início rápido
 
 ```bash

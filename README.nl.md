@@ -74,15 +74,128 @@ De app is niet ondertekend. Bij de eerste start kan Windows vragen om “Meer in
 
 ## Functies
 
-- **Acht fusiemethoden** — Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF-V3 (neuraal) en OpenFocus A/B/C.
-- **Drie uitlijnmodi** — snelle similariteitstransformatie, ECC en homografie; fuseren zonder uitlijning kan ook.
-- **Focus-stackingworkflow** — stackbrowser, A/B-veegvergelijking, dieptekaarten, methodevergelijking, batchverwerking en snelle preview.
-- **Retouche met herkomst** — pixels uit de frames die het resultaat werkelijk hebben gemaakt, gedeelde zoom/positie, bronframeslider, zachte penseel, herstelpenseel, undo/redo per streek en bescherming van niet-geëxporteerde uitvoer.
-- **Klaar voor microscopie en publicatie** — 16-bit van begin tot eind, µm/px uit TIFF, flat-fieldcorrectie, schaalbalken, meerbladige TIFF Z-stacks en getextureerde OBJ-export.
-- **Headless CLI** — dezelfde pipeline via `openfocus`, met batch, `--dry-run`, `--resume` en JSON-uitvoer.
-- **Twaalf UI-talen** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski.
+<table>
 
-<a id="command-line-usage"></a>
+<tr>
+<td width="46%" valign="middle">
+
+### Acht fusiemethoden
+
+Vier klassieke methoden plus de OpenFocus A/B/C-familie en het neurale StackMFF-V3-model, allemaal op dezelfde uitgelijnde stapel: vergelijk en kies per onderwerp in plaats van één standaardwaarde te vertrouwen.
+
+[Algoritmen →](#algorithms)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/result.png" alt="Gefuseerd macroresultaat in het OpenFocus-venster" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### A/B-wipe
+
+Sleep de scheiding tussen een bronframe en het resultaat om te zien wat de fusie veranderde: uitlijningsdrift, halo's langs randen en verloren detail, bij elke zoomstand.
+
+[Handleiding →](./docs/USER_MANUAL_NL.md)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/wipe.png" alt="A/B-vergelijking tussen bronframe en resultaat" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Methodenvergelijking
+
+Render alle methoden één keer, vergelijk ze naast elkaar op dezelfde uitsnede en neem de winnaar over als nieuwe uitvoer of kopieer de parameters terug naar het hoofdvenster.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/compare.png" alt="Acht fusiemethoden naast elkaar" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Dieptekaart en 3D
+
+Focuspositie per pixel uit vijf focusmaten, wetenschappelijke kleurenschalen, fysieke Z-kalibratie uit TIFF-metadata en getextureerde OBJ-export van het oppervlak.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/depth.png" alt="Dieptekaart en 3D-oppervlak van dezelfde stapel" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Bronvaste retouche
+
+Schilder vanuit de frames die het resultaat echt hebben gemaakt: gedeelde zoom en pan, bronframe-schuif, zachte penseel, herstelpenseel, undo per streek en bescherming van niet-geëxporteerde pixels.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/retouch.png" alt="Retoucheerwerkruimte met bronframe en resultaat" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Batchverwerking
+
+Wijs een map met stapels aan, kies methode en bestemming en laat het lopen. Alleen uitlijnen schrijft één map per stapel; fusie schrijft en toont alleen het gefuseerde beeld.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/batch.png" alt="Dialoog voor batchverwerking" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### Schaalbalken voor publicatie
+
+Gekalibreerd uit TIFF-metadata of handmatig, getekend met het echte lettertype op de echte lengte en ingebrand in elke export: losse afbeelding, stapel, TIFF, GIF en batch.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/scalebar.png" alt="Schaalbalkdialoog met live voorbeeld" width="100%" />
+
+</td>
+</tr>
+
+</table>
+
+**Ook inbegrepen:**
+
+- **Focus-stackingworkflow** — stapelbrowser, scherptecurve, snelle voorvertoning, ROI-render en per methode onthouden instellingen na herstart.
+- **Klaar voor microscopie** — 16-bit van begin tot eind, µm/px uit TIFF, flat-fieldcorrectie, meerbladige TIFF-Z-stacks.
+- **Headless CLI** — dezelfde pijplijn als `openfocus`, met batch, `--dry-run`, `--resume` en JSON-uitvoer.
+- **Projecten en herstel** — `.ofproj`-sessies, automatisch herstel na een crash, undo/redo voor stapels en annotaties.
+- **Twaalf UI-talen** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; automatisch gedetecteerd, een nieuwe taal is één `locales_<code>.py`-bestand.
+- **Zuining met geheugen** — de neurale gewichten laden alleen bij de AI-methode, dus een klassieke sessie blijft rond 110 MB in plaats van 260 MB.
+
 ## Snel starten
 
 ```bash

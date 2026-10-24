@@ -5,6 +5,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **README feature wall** in all twelve languages: each capability is a
+  two-column row with copy on the left and a real screenshot on the right,
+  followed by an "also in the box" list. Screenshots are captured from the
+  light theme on a 9-frame macro stack, and `assets/ui.png` — the hero image
+  used by every README — is now that same light-theme window.
+- Video slots for the feature rows are intentionally empty so a recorded clip
+  can be dropped in per row later.
+
 ## [v1.68.1] — 2026-10-24
 
 ### Changed

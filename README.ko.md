@@ -74,15 +74,128 @@
 
 ## 주요 기능
 
-- **8가지 합성 알고리즘** — Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF-V3(신경망), OpenFocus A/B/C.
-- **3가지 정렬 모드** — 빠른 유사 변환, ECC, 호모그래피. 정렬 없이 합성할 수도 있습니다.
-- **포커스 스태킹 워크플로** — 스택 탐색, A/B 와이프 비교, 깊이 맵, 방법 비교, 배치 처리, 빠른 미리보기.
-- **출처 고정 리터치** — 실제로 합성에 사용된 원본 프레임에서 픽셀을 가져오며, 공유 확대/위치, 원본 프레임 슬라이더, 부드러운 브러시, 복원 브러시, 획 단위 실행 취소/다시 실행, 미내보내기 보호를 제공합니다.
-- **현미경 및 출판 지원** — 8/16비트 전체 파이프라인, TIFF µm/px, 플랫 필드 보정, 스케일 바, 다중 페이지 TIFF Z 스택, 텍스처 OBJ 내보내기.
-- **헤드리스 CLI** — GUI와 동일한 파이프라인을 `openfocus`로 실행. 배치, `--dry-run`, `--resume`, JSON 출력 지원.
-- **12개 UI 언어** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski.
+<table>
 
-<a id="command-line-usage"></a>
+<tr>
+<td width="46%" valign="middle">
+
+### 8가지 융합 알고리즘
+
+4가지 고전 알고리즘에 OpenFocus A/B/C 제품군과 StackMFF-V3 신경망 모델까지, 모두 같은 정합 결과 위에서 실행됩니다. 피사체별로 비교해 고르세요.
+
+[알고리즘 →](#algorithms)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/result.png" alt="OpenFocus 창의 융합 결과" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### A/B 와이프 비교
+
+분할선을 소스 프레임과 융합 결과 위로 끌어 융합이 무엇을 바꿨는지 확인하세요. 정합 어긋남, 가장자리 번짐, 사라진 디테일이 어떤 배율에서도 한눈에 보입니다.
+
+[사용 설명서 →](./docs/USER_MANUAL_KO.md)
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/wipe.png" alt="소스 프레임과 결과의 A/B 비교" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 방법 비교
+
+모든 방법을 한 번에 렌더링하고 같은 크롭에서 나란히 확인한 뒤, 가장 좋은 결과를 새 출력으로 채택하거나 파라미터를 메인 창으로 복사하세요.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/compare.png" alt="8가지 융합 방법 나란히 비교" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 깊이 맵과 3D
+
+다섯 가지 초점 측정으로 픽셀별 초점 위치를 추정하고, 연구용 컬러맵, TIFF 메타데이터의 물리 Z 보정, 텍스처 OBJ 표면 내보내기를 지원합니다.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/depth.png" alt="같은 스택의 깊이 맵과 3D 표면" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 소스 고정 리터치
+
+결과를 실제로 만든 프레임에서 그립니다. 공유 줌/패닝, 소스 프레임 슬라이더, 부드러운 브러시, 복원 브러시, 획 단위 실행 취소, 미내보내기 픽셀 보호.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/retouch.png" alt="소스 프레임과 결과를 나란히 둔 리터치 작업 공간" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 배치 처리
+
+스택이 담긴 폴더를 지정하고 방법과 대상을 고른 뒤 그냥 두세요. 정렬만 하면 스택마다 폴더 하나, 융합은 융합 이미지만 기록하고 표시합니다.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/batch.png" alt="배치 처리 대화상자" width="100%" />
+
+</td>
+</tr>
+
+<tr>
+<td width="46%" valign="middle">
+
+### 출판용 스케일 바
+
+TIFF 메타데이터 또는 직접 입력으로 보정하고 실제 글꼴과 실제 길이로 그려 모든 내보내기에 새깁니다. 단일 이미지, 스택, TIFF, GIF, 배치 출력 모두 포함됩니다.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/scalebar.png" alt="실시간 미리보기가 있는 스케일 바 대화상자" width="100%" />
+
+</td>
+</tr>
+
+</table>
+
+**그 밖에도:**
+
+- **포커스 스태킹 워크플로** — 스택 탐색, 선명도 곡선, 빠른 미리보기, ROI 렌더, 재시작 후에도 유지되는 방법별 설정.
+- **현미경 대응** — 16비트 전 구간 유지, TIFF µm/px, 플랫 필드 보정, 다중 페이지 TIFF Z 스택.
+- **헤드리스 CLI** — GUI와 같은 파이프라인을 `openfocus`로 제공. 배치, `--dry-run`, `--resume`, JSON 출력 지원.
+- **프로젝트와 복구** — `.ofproj` 세션, 충돌 자동 복구, 스택 편집과 주석의 실행 취소/다시 실행.
+- **12개 UI 언어** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski. 시스템 로캘에서 자동 감지하며 새 언어는 `locales_<code>.py` 파일 하나로 추가됩니다.
+- **메모리 절약** — 신경망 가중치는 AI 방법을 쓸 때만 로드되어, 고전 방법 세션은 260MB가 아닌 약 110MB로 대기합니다.
+
 ## 빠른 시작
 
 ```bash
