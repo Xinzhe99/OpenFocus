@@ -58,20 +58,7 @@
 > [!NOTE]
 > **v1.68.1** — バッチ出力が選択モードに従います。位置合わせのみなら `<スタック名>_aligned` フォルダを作成して一覧に表示し、融合時は融合画像のみを表示、整列を保存しない場合は融合画像だけを書き出します。ソースフォルダに残る `*_registered*` コピーはフレームとして読み込まれません。`docs/ux-specs` の監査に沿ってラベル、スケールバー、手法比較、深度/モデル出力、更新、レタッチも改修しました。
 
-<a id="download"></a>
-## ダウンロードとインストール
-
-[Releases](https://github.com/Xinzhe99/OpenFocus/releases) からビルドを取得できます。
-
-| プラットフォーム | ファイル | 種類 |
-|------------------|----------|------|
-| Windows 10/11（64 ビット） | `OpenFocus-*-setup.exe` | **インストーラー**（推奨） |
-| Windows 10/11（64 ビット） | `OpenFocus-*-windows-x64.zip` | ポータブル（解凍して実行） |
-| macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | ディスクイメージ（Applications へドラッグ） |
-| macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | ポータブル（解凍して実行） |
-
-アプリは未署名のため、初回起動時に警告が出る場合があります。Windows は「詳細情報 → 実行」、macOS は右クリック →「開く」、または `xattr -cr /Applications/OpenFocus.app` を実行してください。
-
+<a id="features"></a>
 ## 機能
 
 <table>
@@ -211,6 +198,20 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 - **プロジェクトと復元**——`.ofproj` セッション、クラッシュ自動復元、スタック編集と注釈の undo/redo。
 - **12 の UI 言語**——English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski。システムロケールから自動判定し、新しい言語は `locales_<code>.py` 1 ファイルで追加できます。
 - **省メモリ**——ニューラル重みは AI 手法を使うときだけ読み込み、古典手法のセッションは約 110 MB で待機します（260 MB ではなく）。
+
+<a id="download"></a>
+## ダウンロードとインストール
+
+[Releases](https://github.com/Xinzhe99/OpenFocus/releases) からビルドを取得できます。
+
+| プラットフォーム | ファイル | 種類 |
+|------------------|----------|------|
+| Windows 10/11（64 ビット） | `OpenFocus-*-setup.exe` | **インストーラー**（推奨） |
+| Windows 10/11（64 ビット） | `OpenFocus-*-windows-x64.zip` | ポータブル（解凍して実行） |
+| macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | ディスクイメージ（Applications へドラッグ） |
+| macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | ポータブル（解凍して実行） |
+
+アプリは未署名のため、初回起動時に警告が出る場合があります。Windows は「詳細情報 → 実行」、macOS は右クリック →「開く」、または `xattr -cr /Applications/OpenFocus.app` を実行してください。
 
 ## クイックスタート
 
