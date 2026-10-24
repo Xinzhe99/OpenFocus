@@ -103,7 +103,7 @@ glance, at any zoom.
 </td>
 <td width="54%">
 
-<img src="assets/readme/wipe.png" alt="A/B wipe between a source frame and the fused result" width="100%" />
+<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="A/B wipe between a source frame and the fused result" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -119,7 +119,7 @@ window.
 </td>
 <td width="54%">
 
-<img src="assets/readme/compare.png" alt="Side-by-side comparison of eight fusion methods" width="100%" />
+<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="Side-by-side comparison of eight fusion methods" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -135,7 +135,7 @@ surface.
 </td>
 <td width="54%">
 
-<img src="assets/readme/depth.png" alt="Depth map and 3D surface of the same stack" width="100%" />
+<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="Depth map and 3D surface of the same stack" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@ a source-frame slider, soft brush, restore brush, whole-stroke undo and a
 </td>
 <td width="54%">
 
-<img src="assets/readme/retouch.png" alt="Retouch workspace with source frame and result" width="100%" />
+<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="Retouch workspace with source frame and result" width="100%" /></picture></a>
 
 </td>
 </tr>

@@ -91,7 +91,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/wipe.png" alt="ソースフレームと合成結果の A/B 比較" width="100%" />
+<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="ソースフレームと合成結果の A/B 比較" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/compare.png" alt="8 つの合成手法の並列比較" width="100%" />
+<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="8 つの合成手法の並列比較" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/depth.png" alt="同じスタックの深度マップと 3D 曲面" width="100%" />
+<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="同じスタックの深度マップと 3D 曲面" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/retouch.png" alt="ソースフレームと結果を並べたレタッチ作業領域" width="100%" />
+<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="ソースフレームと結果を並べたレタッチ作業領域" width="100%" /></picture></a>
 
 </td>
 </tr>

@@ -91,7 +91,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/wipe.png" alt="소스 프레임과 결과의 A/B 비교" width="100%" />
+<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="소스 프레임과 결과의 A/B 비교" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/compare.png" alt="8가지 융합 방법 나란히 비교" width="100%" />
+<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="8가지 융합 방법 나란히 비교" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/depth.png" alt="같은 스택의 깊이 맵과 3D 표면" width="100%" />
+<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="같은 스택의 깊이 맵과 3D 표면" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/retouch.png" alt="소스 프레임과 결과를 나란히 둔 리터치 작업 공간" width="100%" />
+<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="소스 프레임과 결과를 나란히 둔 리터치 작업 공간" width="100%" /></picture></a>
 
 </td>
 </tr>
