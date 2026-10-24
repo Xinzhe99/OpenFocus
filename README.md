@@ -1,4 +1,40 @@
 <p align="center">
+  <a href="https://github.com/Xinzhe99/OpenFocus">
+    <img src="assets/OpenFocus.png" alt="OpenFocus" width="128">
+  </a>
+</p>
+
+<h1 align="center">OpenFocus</h1>
+
+<p align="center"><strong>Every focus plane. One all-in-focus image.</strong></p>
+
+<p align="center">
+  Eight fusion algorithms, three registration modes and a source-locked retouch workspace for macro, microscopy and industrial stacks. 16-bit end to end, a headless CLI, and a UI in twelve languages.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
+  <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-10%2F11-0078D7?logo=windows&logoColor=white" alt="Windows 10/11">
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
+  <img src="https://img.shields.io/badge/Linux-CLI-FCC624?logo=linux&logoColor=black" alt="Linux CLI">
+  <a href="https://pypi.org/project/openfocus/"><img src="https://img.shields.io/badge/PyPI-openfocus-3775A9?logo=pypi&logoColor=white" alt="PyPI"></a>
+</p>
+
+<p align="center">
+  <a href="#download">Download</a> ·
+  <a href="./docs/USER_MANUAL_EN.md">Docs</a> ·
+  <a href="#command-line-usage">CLI</a> ·
+  <a href="./CHANGELOG.md">Changelog</a> ·
+  <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
+</p>
+
+<p align="center">
   <strong>English</strong> ·
   <a href="README.zh-CN.md">简体中文</a> ·
   <a href="README.ja.md">日本語</a> ·
@@ -13,26 +49,14 @@
   <a href="README.pl.md">Polski</a>
 </p>
 
-# <img src="assets/OpenFocus.png" alt="OpenFocus Logo" width="120"> OpenFocus
-
-OpenFocus delivers focus stacking quality that rivals commercial-grade software, while staying fully open source and easy to extend.
-
-<p align="left">
-  <a href="https://www.python.org/downloads/release/python-3100/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?logo=open-source-initiative&logoColor=white" alt="License: MIT" /></a>
-  <a href="https://github.com/Xinzhe99/OpenFocus"><img src="https://img.shields.io/badge/GitHub-Repository-181717?logo=github&logoColor=white" alt="GitHub Repository" /></a>
-  <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/badge/Windows%20%7C%20macOS-Download-0078D7?logo=github&logoColor=white" alt="Download" /></a>
-  <a href="https://doi.org/10.5281/zenodo.23050823"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.23050823-0078D7?logo=doi&logoColor=white" alt="DOI" /></a>
-</p>
-
-<p align="left">
-  <a href="https://github.com/Xinzhe99/OpenFocus"><img src="https://img.shields.io/badge/%E5%B9%BF%E5%91%8A%E4%BD%8D%E6%8B%9B%E7%A7%9F-Ad_Space_for_Rent-orange?style=for-the-badge" alt="广告位招租 / Ad Space for Rent" /></a>
+<p align="center">
+  <img src="assets/ui.png" alt="OpenFocus interface" width="880">
 </p>
 
 ## 📢 News
 
 > [!NOTE]
-> **v1.68.0** — batch exports now follow the mode you pick: align-only
+> **v1.68.1** — batch exports now follow the mode you pick: align-only
 > writes one `<stack>_aligned` folder and lists that folder, fusion writes the
 > fused image and lists only it, and fusion without alignment writes the image
 > alone. Leftover `*_registered*` copies in a source folder are no longer
@@ -147,10 +171,6 @@ Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.m
 <a id="overview"></a>
 ## 🔭 Overview
 OpenFocus is a PyQt6-based multi-focus registration and fusion workstation that delivers commercial-grade alignment and blending results. The project is fully open source (MIT License) and runs on CPU by default with optional GPU acceleration for the StackMFF V3 neural model.
-
-<p align="center">
-	<img src="assets/ui.png" alt="OpenFocus UI" width="820">
-</p>
 
 ### AI fusion: StackMFF V3
 

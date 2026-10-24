@@ -232,7 +232,28 @@ jobs:
 
       - name: Create DMG installer image
         run: |
-          hdiutil create -volname "OpenFocus" -srcfolder dist/OpenFocus.app -ov -format UDZO "OpenFocus-${{ github.ref_name }}-macos.dmg"
+          # `hdiutil create -srcfolder` fails with "Resource busy" when the
+          # bundle it walks is still held (codesign/Spotlight/antivirus on a
+          # freshly written .app). Stage a copy, detach anything left mounted,
+          # and retry: the same command succeeded on re-run but failed the tag
+          # build, which skipped the whole release job.
+          STAGE="$RUNNER_TEMP/dmg"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          ditto dist/OpenFocus.app "$STAGE/OpenFocus.app"
+          ln -s /Applications "$STAGE/Applications" || true
+          hdiutil detach /Volumes/OpenFocus 2>/dev/null || true
+          DMG="OpenFocus-${{ github.ref_name }}-macos.dmg"
+          for attempt in 1 2 3; do
+            if hdiutil create -volname "OpenFocus" -srcfolder "$STAGE" \
+                 -fs HFS+ -format UDZO -ov "$DMG"; then
+              echo "DMG created on attempt $attempt"
+              break
+            fi
+            echo "hdiutil attempt $attempt failed; retrying in 10s"
+            [ "$attempt" = 3 ] && { echo "DMG creation failed after 3 attempts"; exit 1; }
+            sleep 10
+          done
+          ls -lh "$DMG"
 
       - uses: actions/upload-artifact@v5
         with:
