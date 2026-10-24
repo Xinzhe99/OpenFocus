@@ -58,20 +58,7 @@
 > [!NOTE]
 > **v1.68.1** — batchexport volgt de gekozen modus: alleen uitlijnen maakt één `<stack>_aligned`-map en toont die in de lijst, fusie toont alleen het gefuseerde beeld, en zonder uitlijning exporteren wordt alleen dat beeld geschreven. Achtergebleven `*_registered*`-kopieën in de bronmap worden niet meer als frames geladen. Ook labels, schaalbalken, methodevergelijking, diepte-/modelexport, updates en retouche zijn herzien volgens de audit in `docs/ux-specs`.
 
-<a id="download"></a>
-## Download en installatie
-
-Download een build via [Releases](https://github.com/Xinzhe99/OpenFocus/releases):
-
-| Platform | Bestand | Type |
-|----------|---------|------|
-| Windows 10/11 (64-bit) | `OpenFocus-*-setup.exe` | **Installer** (aanbevolen) |
-| Windows 10/11 (64-bit) | `OpenFocus-*-windows-x64.zip` | Draagbaar (uitpakken en starten) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Schijfimage (naar Programma's slepen) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Draagbaar (uitpakken) |
-
-De app is niet ondertekend. Bij de eerste start kan Windows vragen om “Meer informatie → Toch uitvoeren”; op macOS: rechtermuisknop → Open of `xattr -cr /Applications/OpenFocus.app`.
-
+<a id="features"></a>
 ## Functies
 
 <table>
@@ -211,6 +198,20 @@ Bijschriften blijven een beheerde lijst: elk met een eigen bereik (bron, uitgeli
 - **Projecten en herstel** — `.ofproj`-sessies, automatisch herstel na een crash, undo/redo voor stapels en annotaties.
 - **Twaalf UI-talen** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; automatisch gedetecteerd, een nieuwe taal is één `locales_<code>.py`-bestand.
 - **Zuining met geheugen** — de neurale gewichten laden alleen bij de AI-methode, dus een klassieke sessie blijft rond 110 MB in plaats van 260 MB.
+
+<a id="download"></a>
+## Download en installatie
+
+Download een build via [Releases](https://github.com/Xinzhe99/OpenFocus/releases):
+
+| Platform | Bestand | Type |
+|----------|---------|------|
+| Windows 10/11 (64-bit) | `OpenFocus-*-setup.exe` | **Installer** (aanbevolen) |
+| Windows 10/11 (64-bit) | `OpenFocus-*-windows-x64.zip` | Draagbaar (uitpakken en starten) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Schijfimage (naar Programma's slepen) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Draagbaar (uitpakken) |
+
+De app is niet ondertekend. Bij de eerste start kan Windows vragen om “Meer informatie → Toch uitvoeren”; op macOS: rechtermuisknop → Open of `xattr -cr /Applications/OpenFocus.app`.
 
 ## Snel starten
 

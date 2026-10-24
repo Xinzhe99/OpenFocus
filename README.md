@@ -66,107 +66,6 @@
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
-<a id="download"></a>
-## ⬇️ Download & Install
-
-No setup needed — grab a build from the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page:
-
-| Platform | File | Type |
-|----------|------|------|
-| Windows 10/11 (64-bit) | `OpenFocus-*-setup.exe` | **Installer** (recommended) |
-| Windows 10/11 (64-bit) | `OpenFocus-*-windows-x64.zip` | Portable (unzip and run) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk image (drag to Applications) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portable (unzip) |
-
-The app is unsigned, so the first launch may show a security prompt:
-- **Windows**: SmartScreen → "More info" → "Run anyway". The first start may take 30–60 s.
-- **macOS**: right-click → Open, or run `xattr -cr /Applications/OpenFocus.app` in Terminal.
-
-Full details, including the portable mode and the log folder, are in the [User Manual](./docs/USER_MANUAL_EN.md).
-
-<a id="command-line-usage"></a>
-## 💻 Command Line Usage
-Beyond the GUI, OpenFocus ships as a pip-installable CLI on [PyPI](https://pypi.org/project/openfocus/) — Windows, macOS and Linux, no Python GUI stack required:
-```bash
-pip install openfocus          # everything: all 8 methods incl. the AI model,
-                               # HEIC and camera-RAW input
-openfocus --input ./stack_folder --output ./result/fused.png
-```
-
-The AI model, its pretrained weights, HEIC decoding and camera-RAW decoding
-are all part of that single install — there are no extras to choose from. The
-neural method is the default, so a plain `pip install openfocus` is a complete
-install; nothing reports "AI unavailable" afterwards.
-
-One caveat: `dtcwt` (the DTCWT method) ships only as source and has no wheels
-for Python 3.13+, so it is installed on 3.10–3.12 and skipped on newer
-interpreters. Every other method works everywhere; on 3.13 the DTCWT entry
-stays disabled with an explanatory tooltip.
-Examples:
-```bash
-# Fuse a folder of images with guided filter, no registration
-openfocus -i ./stack_folder -o ./result/fused.png
-
-# DTCWT with ECC registration, 8 threads
-openfocus -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
-
-# AI fusion forced to CPU with a custom tile size
-openfocus -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
-
-# Explicit file list instead of a folder; video files also work as input
-openfocus -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
-
-# Batch mode: fuse every folder into one output directory
-openfocus --input ./stackA ./stackB --output-dir ./results
-```
-Exit codes: `0` success, `1` processing error, `2` usage error. Run `openfocus --help` for all options. From a source checkout, the same interface works as `python main.py …`.
-
-<a id="documentation"></a>
-## 📖 Documentation
-- **User Manual** — full feature guide (interface, workflows, wipe compare,
-  settings, batch, CLI, troubleshooting) in twelve languages:
-  [English](./docs/USER_MANUAL_EN.md) ·
-  [中文](./docs/USER_MANUAL_ZH.md) ·
-  [日本語](./docs/USER_MANUAL_JA.md) ·
-  [Español](./docs/USER_MANUAL_ES.md) ·
-  [Deutsch](./docs/USER_MANUAL_DE.md) ·
-  [Français](./docs/USER_MANUAL_FR.md) ·
-  [Русский](./docs/USER_MANUAL_RU.md) ·
-  [한국어](./docs/USER_MANUAL_KO.md) ·
-  [Português](./docs/USER_MANUAL_PT.md) ·
-  [Italiano](./docs/USER_MANUAL_IT.md) ·
-  [Nederlands](./docs/USER_MANUAL_NL.md) ·
-  [Polski](./docs/USER_MANUAL_PL.md)
-- [**Changelog**](./CHANGELOG.md) — release history and notable changes
-- [**Performance \& Large Stacks**](./docs/PERFORMANCE.md) — soak-test throughput/memory reference and tuning guidance
-- [**Build Commands**](./docs/BUILD_COMMANDS.md) — packaging from source with PyInstaller
-- [**Algorithm Parity**](./docs/ALGORITHM_PARITY.md) — what matches Helicon Focus behaviourally, and what does not yet
-
-<a id="building-from-source"></a>
-## 🛠️ Building from Source
-
-For contributors and platforms without pre-built packages:
-```bash
-conda create -n openfocus python=3.10
-conda activate openfocus
-pip install -r requirements.txt
-python main.py
-```
-Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md).
-
-## Table of Contents
-- [⬇️ Download & Install](#download)
-- [💻 Command Line Usage](#command-line-usage)
-- [📖 Documentation](#documentation)
-- [🛠️ Building from Source](#building-from-source)
-- [✨ Features](#features)
-- [🧪 Algorithms](#algorithms)
-- [📚 References](#references)
-- [🤝 Contribution](#contribution)
-- [📚 Citing OpenFocus](#citation)
-- [📄 License](#license)
-- [⭐ Star History](#star-history)
-
 <a id="features"></a>
 ## Features
 
@@ -326,6 +225,107 @@ Save, Save As, drag-out and Export All.
   the system locale; a new language is one `locales_<code>.py` file.
 - **Light on memory** — the neural stack is loaded only when the neural method
   is used, so a classical-method session idles around 110 MB instead of 260 MB.
+
+<a id="download"></a>
+## ⬇️ Download & Install
+
+No setup needed — grab a build from the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page:
+
+| Platform | File | Type |
+|----------|------|------|
+| Windows 10/11 (64-bit) | `OpenFocus-*-setup.exe` | **Installer** (recommended) |
+| Windows 10/11 (64-bit) | `OpenFocus-*-windows-x64.zip` | Portable (unzip and run) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk image (drag to Applications) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portable (unzip) |
+
+The app is unsigned, so the first launch may show a security prompt:
+- **Windows**: SmartScreen → "More info" → "Run anyway". The first start may take 30–60 s.
+- **macOS**: right-click → Open, or run `xattr -cr /Applications/OpenFocus.app` in Terminal.
+
+Full details, including the portable mode and the log folder, are in the [User Manual](./docs/USER_MANUAL_EN.md).
+
+<a id="command-line-usage"></a>
+## 💻 Command Line Usage
+Beyond the GUI, OpenFocus ships as a pip-installable CLI on [PyPI](https://pypi.org/project/openfocus/) — Windows, macOS and Linux, no Python GUI stack required:
+```bash
+pip install openfocus          # everything: all 8 methods incl. the AI model,
+                               # HEIC and camera-RAW input
+openfocus --input ./stack_folder --output ./result/fused.png
+```
+
+The AI model, its pretrained weights, HEIC decoding and camera-RAW decoding
+are all part of that single install — there are no extras to choose from. The
+neural method is the default, so a plain `pip install openfocus` is a complete
+install; nothing reports "AI unavailable" afterwards.
+
+One caveat: `dtcwt` (the DTCWT method) ships only as source and has no wheels
+for Python 3.13+, so it is installed on 3.10–3.12 and skipped on newer
+interpreters. Every other method works everywhere; on 3.13 the DTCWT entry
+stays disabled with an explanatory tooltip.
+Examples:
+```bash
+# Fuse a folder of images with guided filter, no registration
+openfocus -i ./stack_folder -o ./result/fused.png
+
+# DTCWT with ECC registration, 8 threads
+openfocus -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
+
+# AI fusion forced to CPU with a custom tile size
+openfocus -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
+
+# Explicit file list instead of a folder; video files also work as input
+openfocus -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
+
+# Batch mode: fuse every folder into one output directory
+openfocus --input ./stackA ./stackB --output-dir ./results
+```
+Exit codes: `0` success, `1` processing error, `2` usage error. Run `openfocus --help` for all options. From a source checkout, the same interface works as `python main.py …`.
+
+<a id="documentation"></a>
+## 📖 Documentation
+- **User Manual** — full feature guide (interface, workflows, wipe compare,
+  settings, batch, CLI, troubleshooting) in twelve languages:
+  [English](./docs/USER_MANUAL_EN.md) ·
+  [中文](./docs/USER_MANUAL_ZH.md) ·
+  [日本語](./docs/USER_MANUAL_JA.md) ·
+  [Español](./docs/USER_MANUAL_ES.md) ·
+  [Deutsch](./docs/USER_MANUAL_DE.md) ·
+  [Français](./docs/USER_MANUAL_FR.md) ·
+  [Русский](./docs/USER_MANUAL_RU.md) ·
+  [한국어](./docs/USER_MANUAL_KO.md) ·
+  [Português](./docs/USER_MANUAL_PT.md) ·
+  [Italiano](./docs/USER_MANUAL_IT.md) ·
+  [Nederlands](./docs/USER_MANUAL_NL.md) ·
+  [Polski](./docs/USER_MANUAL_PL.md)
+- [**Changelog**](./CHANGELOG.md) — release history and notable changes
+- [**Performance \& Large Stacks**](./docs/PERFORMANCE.md) — soak-test throughput/memory reference and tuning guidance
+- [**Build Commands**](./docs/BUILD_COMMANDS.md) — packaging from source with PyInstaller
+- [**Algorithm Parity**](./docs/ALGORITHM_PARITY.md) — what matches Helicon Focus behaviourally, and what does not yet
+
+<a id="building-from-source"></a>
+## 🛠️ Building from Source
+
+For contributors and platforms without pre-built packages:
+```bash
+conda create -n openfocus python=3.10
+conda activate openfocus
+pip install -r requirements.txt
+python main.py
+```
+Packaging with PyInstaller: see [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md).
+
+## Table of Contents
+- [✨ Features](#features)
+- [⬇️ Download & Install](#download)
+- [💻 Command Line Usage](#command-line-usage)
+- [📖 Documentation](#documentation)
+- [🛠️ Building from Source](#building-from-source)
+- [🧪 Algorithms](#algorithms)
+- [📚 References](#references)
+- [🤝 Contribution](#contribution)
+- [📚 Citing OpenFocus](#citation)
+- [📄 License](#license)
+- [⭐ Star History](#star-history)
 
 <a id="algorithms"></a>
 ## 🧪 Algorithms

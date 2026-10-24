@@ -58,20 +58,7 @@
 > [!NOTE]
 > **v1.68.1** — l'esportazione batch segue la modalità scelta: solo allineamento crea una cartella `<stack>_aligned` e la elenca, la fusione elenca solo l'immagine fusa, e senza esportare l'allineamento scrive solo quell'immagine. Le copie `*_registered*` rimaste nella cartella sorgente non vengono più caricate come fotogrammi. Rivisti anche etichette, barre di scala, confronto metodi, export di profondità/modello, aggiornamenti e ritocco secondo l'audit in `docs/ux-specs`.
 
-<a id="download"></a>
-## Download e installazione
-
-Scarica una build dalla pagina [Releases](https://github.com/Xinzhe99/OpenFocus/releases):
-
-| Piattaforma | File | Tipo |
-|-------------|------|------|
-| Windows 10/11 (64 bit) | `OpenFocus-*-setup.exe` | **Installer** (consigliato) |
-| Windows 10/11 (64 bit) | `OpenFocus-*-windows-x64.zip` | Portabile (estrarre ed eseguire) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Immagine disco (trascinare in Applicazioni) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portabile (estrarre) |
-
-L’app non è firmata: al primo avvio Windows può chiedere “Ulteriori informazioni → Esegui comunque”; su macOS usa clic destro → Apri oppure `xattr -cr /Applications/OpenFocus.app`.
-
+<a id="features"></a>
 ## Funzionalità
 
 <table>
@@ -211,6 +198,20 @@ Le didascalie sono un elenco gestito: ognuna con il proprio ambito (sorgente, pi
 - **Progetti e recupero** — sessioni `.ofproj`, recupero dopo crash, annulla/ripeti su pile e annotazioni.
 - **Dodici lingue dell'interfaccia** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; rilevate dal sistema, una lingua nuova è un file `locales_<code>.py`.
 - **Leggero in memoria** — i pesi neurali si caricano solo usando il metodo AI, così una sessione classica resta intorno a 110 MB invece di 260 MB.
+
+<a id="download"></a>
+## Download e installazione
+
+Scarica una build dalla pagina [Releases](https://github.com/Xinzhe99/OpenFocus/releases):
+
+| Piattaforma | File | Tipo |
+|-------------|------|------|
+| Windows 10/11 (64 bit) | `OpenFocus-*-setup.exe` | **Installer** (consigliato) |
+| Windows 10/11 (64 bit) | `OpenFocus-*-windows-x64.zip` | Portabile (estrarre ed eseguire) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Immagine disco (trascinare in Applicazioni) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portabile (estrarre) |
+
+L’app non è firmata: al primo avvio Windows può chiedere “Ulteriori informazioni → Esegui comunque”; su macOS usa clic destro → Apri oppure `xattr -cr /Applications/OpenFocus.app`.
 
 ## Avvio rapido
 

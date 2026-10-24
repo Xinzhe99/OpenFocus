@@ -58,20 +58,7 @@
 > [!NOTE]
 > **v1.68.1** — 批处理按所选模式落盘：仅对齐输出 `<栈名>_aligned` 文件夹并在输出列表显示该文件夹，融合只显示融合图，不导出对齐时只写融合图；源文件夹里残留的 `*_registered*` 副本不再被当作帧载入。本次还按 `docs/ux-specs` 审查重做了标签、比例尺、方法对比、深度/模型导出、更新与修饰。
 
-<a id="download"></a>
-## 下载与安装
-
-无需配置环境，直接从 [Releases](https://github.com/Xinzhe99/OpenFocus/releases) 下载：
-
-| 平台 | 文件 | 类型 |
-|------|------|------|
-| Windows 10/11（64 位） | `OpenFocus-*-setup.exe` | **安装版**（推荐） |
-| Windows 10/11（64 位） | `OpenFocus-*-windows-x64.zip` | 便携版（解压即用） |
-| macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | 磁盘映像（拖入“应用程序”） |
-| macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | 便携版（解压即用） |
-
-应用未签名，首次启动可能触发系统安全提示：Windows 选择“更多信息 → 仍要运行”；macOS 右键“打开”，或执行 `xattr -cr /Applications/OpenFocus.app`。
-
+<a id="features"></a>
 ## 功能
 
 <table>
@@ -211,6 +198,20 @@
 - **工程与恢复**——`.ofproj` 会话、崩溃自动恢复、图像栈编辑与标注的撤销/重做。
 - **十二种界面语言**——English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski；按系统区域自动检测，新增语言只需一个 `locales_<code>.py`。
 - **省内存**——神经网络权重只在使用 AI 方法时加载，经典方法会话常驻约 110 MB，而不是 260 MB。
+
+<a id="download"></a>
+## 下载与安装
+
+无需配置环境，直接从 [Releases](https://github.com/Xinzhe99/OpenFocus/releases) 下载：
+
+| 平台 | 文件 | 类型 |
+|------|------|------|
+| Windows 10/11（64 位） | `OpenFocus-*-setup.exe` | **安装版**（推荐） |
+| Windows 10/11（64 位） | `OpenFocus-*-windows-x64.zip` | 便携版（解压即用） |
+| macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | 磁盘映像（拖入“应用程序”） |
+| macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | 便携版（解压即用） |
+
+应用未签名，首次启动可能触发系统安全提示：Windows 选择“更多信息 → 仍要运行”；macOS 右键“打开”，或执行 `xattr -cr /Applications/OpenFocus.app`。
 
 ## 快速开始
 

@@ -58,20 +58,7 @@
 > [!NOTE]
 > **v1.68.1** — der Batch-Export folgt dem gewählten Modus: Nur-Ausrichten erzeugt einen `<Stapel>_aligned`-Ordner und listet ihn, Fusion listet nur das fused Bild, und ohne Ausrichtungs-Export wird nur dieses geschrieben. Übrig gebliebene `*_registered*`-Kopien im Quellordner werden nicht mehr als Frames geladen. Ebenfalls überarbeitet: Labels, Maßstabsbalken, Methodenvergleich, Tiefen-/Modellexport, Updates und Retusche gemäß dem Audit in `docs/ux-specs`.
 
-<a id="download"></a>
-## Download & Installation
-
-Eine Build-Version gibt es auf der [Releases](https://github.com/Xinzhe99/OpenFocus/releases)-Seite:
-
-| Plattform | Datei | Typ |
-|-----------|-------|-----|
-| Windows 10/11 (64 Bit) | `OpenFocus-*-setup.exe` | **Installer** (empfohlen) |
-| Windows 10/11 (64 Bit) | `OpenFocus-*-windows-x64.zip` | Portabel (entpacken und starten) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk-Image (in „Programme“ ziehen) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portabel (entpacken) |
-
-Die App ist nicht signiert. Beim ersten Start kann ein Sicherheitshinweis erscheinen: unter Windows „Weitere Informationen → Trotzdem ausführen“, unter macOS Rechtsklick → Öffnen oder `xattr -cr /Applications/OpenFocus.app`.
-
+<a id="features"></a>
 ## Funktionen
 
 <table>
@@ -211,6 +198,20 @@ Beschriftungen bleiben eine verwaltete Liste: jede mit eigenem Geltungsbereich (
 - **Projekte und Wiederherstellung** — `.ofproj`-Sitzungen, automatische Absturzrettung, Undo/Redo für Stapel und Beschriftungen.
 - **Zwölf UI-Sprachen** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; automatisch aus dem System erkannt, eine neue Sprache ist eine `locales_<code>.py`-Datei.
 - **Speicherschonend** — die neuronalen Gewichte werden nur beim AI-Verfahren geladen; eine klassische Sitzung ruht bei rund 110 MB statt 260 MB.
+
+<a id="download"></a>
+## Download & Installation
+
+Eine Build-Version gibt es auf der [Releases](https://github.com/Xinzhe99/OpenFocus/releases)-Seite:
+
+| Plattform | Datei | Typ |
+|-----------|-------|-----|
+| Windows 10/11 (64 Bit) | `OpenFocus-*-setup.exe` | **Installer** (empfohlen) |
+| Windows 10/11 (64 Bit) | `OpenFocus-*-windows-x64.zip` | Portabel (entpacken und starten) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk-Image (in „Programme“ ziehen) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portabel (entpacken) |
+
+Die App ist nicht signiert. Beim ersten Start kann ein Sicherheitshinweis erscheinen: unter Windows „Weitere Informationen → Trotzdem ausführen“, unter macOS Rechtsklick → Öffnen oder `xattr -cr /Applications/OpenFocus.app`.
 
 ## Schnellstart
 

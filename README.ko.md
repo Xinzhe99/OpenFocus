@@ -58,20 +58,7 @@
 > [!NOTE]
 > **v1.68.1** — 배치 출력이 선택한 모드을 따릅니다. 정렬만 하면 `<스택>_aligned` 폴더를 만들어 목록에 표시하고, 융합 시에는 융합 이미지만 표시하며, 정렬을 저장하지 않으면 융합 이미지만 기록합니다. 원본 폴더에 남은 `*_registered*` 사본은 프레임으로 로드되지 않습니다. `docs/ux-specs` 감사에 따라 라벨, 스케일 바, 방법 비교, 깊이/모델 내보내기, 업데이트, 리터치도 개편했습니다.
 
-<a id="download"></a>
-## 다운로드 및 설치
-
-[Releases](https://github.com/Xinzhe99/OpenFocus/releases)에서 빌드를 받을 수 있습니다.
-
-| 플랫폼 | 파일 | 유형 |
-|--------|------|------|
-| Windows 10/11(64비트) | `OpenFocus-*-setup.exe` | **설치 프로그램**(권장) |
-| Windows 10/11(64비트) | `OpenFocus-*-windows-x64.zip` | 포터블(압축 해제 후 실행) |
-| macOS Apple Silicon(M1–M4) | `OpenFocus-*-macos.dmg` | 디스크 이미지(응용 프로그램으로 드래그) |
-| macOS Apple Silicon(M1–M4) | `OpenFocus-*-macos-arm64.zip` | 포터블(압축 해제) |
-
-앱은 서명되지 않았으므로 첫 실행 시 경고가 나타날 수 있습니다. Windows는 “추가 정보 → 실행”, macOS는 오른쪽 클릭 → 열기 또는 `xattr -cr /Applications/OpenFocus.app`을 사용하세요.
-
+<a id="features"></a>
 ## 주요 기능
 
 <table>
@@ -211,6 +198,20 @@ TIFF 메타데이터 또는 직접 입력으로 보정하고 실제 글꼴과 �
 - **프로젝트와 복구** — `.ofproj` 세션, 충돌 자동 복구, 스택 편집과 주석의 실행 취소/다시 실행.
 - **12개 UI 언어** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski. 시스템 로캘에서 자동 감지하며 새 언어는 `locales_<code>.py` 파일 하나로 추가됩니다.
 - **메모리 절약** — 신경망 가중치는 AI 방법을 쓸 때만 로드되어, 고전 방법 세션은 260MB가 아닌 약 110MB로 대기합니다.
+
+<a id="download"></a>
+## 다운로드 및 설치
+
+[Releases](https://github.com/Xinzhe99/OpenFocus/releases)에서 빌드를 받을 수 있습니다.
+
+| 플랫폼 | 파일 | 유형 |
+|--------|------|------|
+| Windows 10/11(64비트) | `OpenFocus-*-setup.exe` | **설치 프로그램**(권장) |
+| Windows 10/11(64비트) | `OpenFocus-*-windows-x64.zip` | 포터블(압축 해제 후 실행) |
+| macOS Apple Silicon(M1–M4) | `OpenFocus-*-macos.dmg` | 디스크 이미지(응용 프로그램으로 드래그) |
+| macOS Apple Silicon(M1–M4) | `OpenFocus-*-macos-arm64.zip` | 포터블(압축 해제) |
+
+앱은 서명되지 않았으므로 첫 실행 시 경고가 나타날 수 있습니다. Windows는 “추가 정보 → 실행”, macOS는 오른쪽 클릭 → 열기 또는 `xattr -cr /Applications/OpenFocus.app`을 사용하세요.
 
 ## 빠른 시작
 
