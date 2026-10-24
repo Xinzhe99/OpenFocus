@@ -91,7 +91,7 @@ Ziehen Sie den Trenner über Quellbild und Ergebnis: Sie sehen sofort, was die F
 </td>
 <td width="54%">
 
-<img src="assets/readme/wipe.png" alt="A/B-Vergleich zwischen Quellbild und Ergebnis" width="100%" />
+<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="A/B-Vergleich zwischen Quellbild und Ergebnis" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@ Alle Verfahren einmal rendern, nebeneinander am gleichen Ausschnitt prüfen und 
 </td>
 <td width="54%">
 
-<img src="assets/readme/compare.png" alt="Acht Fusionsverfahren im direkten Vergleich" width="100%" />
+<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="Acht Fusionsverfahren im direkten Vergleich" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@ Fokusposition pro Pixel aus fünf Fokusmaßen, wissenschaftliche Farbskalen, phy
 </td>
 <td width="54%">
 
-<img src="assets/readme/depth.png" alt="Tiefenkarte und 3D-Oberfläche desselben Stapels" width="100%" />
+<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="Tiefenkarte und 3D-Oberfläche desselben Stapels" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@ Malen aus den Bildern, die das Ergebnis tatsächlich erzeugt haben: gemeinsamer 
 </td>
 <td width="54%">
 
-<img src="assets/readme/retouch.png" alt="Retusche mit Quellbild und Ergebnis" width="100%" />
+<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="Retusche mit Quellbild und Ergebnis" width="100%" /></picture></a>
 
 </td>
 </tr>

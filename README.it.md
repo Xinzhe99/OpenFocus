@@ -91,7 +91,7 @@ Trascina il divisore tra un fotogramma e il risultato per vedere cosa ha cambiat
 </td>
 <td width="54%">
 
-<img src="assets/readme/wipe.png" alt="Confronto A/B tra un fotogramma e il risultato" width="100%" />
+<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="Confronto A/B tra un fotogramma e il risultato" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@ Renderizza tutti i metodi una volta, confrontali affiancati sullo stesso ritagli
 </td>
 <td width="54%">
 
-<img src="assets/readme/compare.png" alt="Otto metodi di fusione affiancati" width="100%" />
+<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="Otto metodi di fusione affiancati" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@ Posizione di fuoco per pixel con cinque misure, mappe colore scientifiche, calib
 </td>
 <td width="54%">
 
-<img src="assets/readme/depth.png" alt="Mappa di profondità e superficie 3D della stessa pila" width="100%" />
+<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="Mappa di profondità e superficie 3D della stessa pila" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@ Dipingi dai fotogrammi che hanno davvero prodotto il risultato: zoom e pan condi
 </td>
 <td width="54%">
 
-<img src="assets/readme/retouch.png" alt="Area di ritocco con fotogramma e risultato" width="100%" />
+<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="Area di ritocco con fotogramma e risultato" width="100%" /></picture></a>
 
 </td>
 </tr>

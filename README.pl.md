@@ -91,7 +91,7 @@ Przeciągnij podziałkę po klatce źródłowej i wyniku, aby zobaczyć, co zmie
 </td>
 <td width="54%">
 
-<img src="assets/readme/wipe.png" alt="Porównanie A/B klatki i wyniku" width="100%" />
+<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="Porównanie A/B klatki i wyniku" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@ Wyrenderuj wszystkie metody raz, porównaj je obok siebie na tym samym kadrze i 
 </td>
 <td width="54%">
 
-<img src="assets/readme/compare.png" alt="Osiem metod fuzji obok siebie" width="100%" />
+<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="Osiem metod fuzji obok siebie" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@ Pozycja ostrości na piksel z pięciu miar, naukowe palety, fizyczna kalibracja 
 </td>
 <td width="54%">
 
-<img src="assets/readme/depth.png" alt="Mapa głębi i powierzchnia 3D tego samego stosu" width="100%" />
+<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="Mapa głębi i powierzchnia 3D tego samego stosu" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@ Maluj z klatek, które naprawdę utworzyły wynik: wspólny zoom i przesuwanie, 
 </td>
 <td width="54%">
 
-<img src="assets/readme/retouch.png" alt="Obszar retuszu z klatką i wynikiem" width="100%" />
+<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="Obszar retuszu z klatką i wynikiem" width="100%" /></picture></a>
 
 </td>
 </tr>

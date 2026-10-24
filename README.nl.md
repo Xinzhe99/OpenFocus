@@ -91,7 +91,7 @@ Sleep de scheiding tussen een bronframe en het resultaat om te zien wat de fusie
 </td>
 <td width="54%">
 
-<img src="assets/readme/wipe.png" alt="A/B-vergelijking tussen bronframe en resultaat" width="100%" />
+<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="A/B-vergelijking tussen bronframe en resultaat" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@ Render alle methoden één keer, vergelijk ze naast elkaar op dezelfde uitsnede 
 </td>
 <td width="54%">
 
-<img src="assets/readme/compare.png" alt="Acht fusiemethoden naast elkaar" width="100%" />
+<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="Acht fusiemethoden naast elkaar" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@ Focuspositie per pixel uit vijf focusmaten, wetenschappelijke kleurenschalen, fy
 </td>
 <td width="54%">
 
-<img src="assets/readme/depth.png" alt="Dieptekaart en 3D-oppervlak van dezelfde stapel" width="100%" />
+<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="Dieptekaart en 3D-oppervlak van dezelfde stapel" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@ Schilder vanuit de frames die het resultaat echt hebben gemaakt: gedeelde zoom e
 </td>
 <td width="54%">
 
-<img src="assets/readme/retouch.png" alt="Retoucheerwerkruimte met bronframe en resultaat" width="100%" />
+<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="Retoucheerwerkruimte met bronframe en resultaat" width="100%" /></picture></a>
 
 </td>
 </tr>

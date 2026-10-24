@@ -91,7 +91,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/wipe.png" alt="源帧与融合结果的 A/B 对比" width="100%" />
+<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="源帧与融合结果的 A/B 对比" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/compare.png" alt="八种融合方法并排对比" width="100%" />
+<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="八种融合方法并排对比" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/depth.png" alt="同一图像栈的深度图与 3D 曲面" width="100%" />
+<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="同一图像栈的深度图与 3D 曲面" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@
 </td>
 <td width="54%">
 
-<img src="assets/readme/retouch.png" alt="源帧与结果并列的修饰工作区" width="100%" />
+<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="源帧与结果并列的修饰工作区" width="100%" /></picture></a>
 
 </td>
 </tr>

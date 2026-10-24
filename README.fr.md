@@ -91,7 +91,7 @@ Faites glisser le séparateur entre une image source et le résultat : vous voye
 </td>
 <td width="54%">
 
-<img src="assets/readme/wipe.png" alt="Comparaison A/B entre une image et le résultat" width="100%" />
+<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="Comparaison A/B entre une image et le résultat" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@ Rendez toutes les méthodes une fois, comparez-les côte à côte sur le même r
 </td>
 <td width="54%">
 
-<img src="assets/readme/compare.png" alt="Huit méthodes de fusion en parallèle" width="100%" />
+<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="Huit méthodes de fusion en parallèle" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@ Position de mise au point par pixel via cinq mesures, palettes scientifiques, ca
 </td>
 <td width="54%">
 
-<img src="assets/readme/depth.png" alt="Carte de profondeur et surface 3D de la même pile" width="100%" />
+<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="Carte de profondeur et surface 3D de la même pile" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@ Peignez depuis les images qui ont réellement produit le résultat : zoom et dé
 </td>
 <td width="54%">
 
-<img src="assets/readme/retouch.png" alt="Espace de retouche avec image source et résultat" width="100%" />
+<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="Espace de retouche avec image source et résultat" width="100%" /></picture></a>
 
 </td>
 </tr>

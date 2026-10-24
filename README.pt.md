@@ -91,7 +91,7 @@ Arraste o divisor entre um quadro e o resultado para ver o que a fusão mudou: d
 </td>
 <td width="54%">
 
-<img src="assets/readme/wipe.png" alt="Comparação A/B entre um quadro e o resultado" width="100%" />
+<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="Comparação A/B entre um quadro e o resultado" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@ Renderize todos os métodos uma vez, compare lado a lado no mesmo recorte e adot
 </td>
 <td width="54%">
 
-<img src="assets/readme/compare.png" alt="Oito métodos de fusão em paralelo" width="100%" />
+<a href="assets/readme/compare.mp4"><picture><source srcset="assets/readme/compare.gif" type="image/gif"><img src="assets/readme/compare_poster.jpg" alt="Oito métodos de fusão em paralelo" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@ Posição de foco por pixel com cinco medidas, mapas de cor científicos, calibr
 </td>
 <td width="54%">
 
-<img src="assets/readme/depth.png" alt="Mapa de profundidade e superfície 3D da mesma pilha" width="100%" />
+<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="Mapa de profundidade e superfície 3D da mesma pilha" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@ Pinte a partir dos quadros que realmente produziram o resultado: zoom e deslocam
 </td>
 <td width="54%">
 
-<img src="assets/readme/retouch.png" alt="Espaço de retoque com quadro e resultado" width="100%" />
+<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="Espaço de retoque com quadro e resultado" width="100%" /></picture></a>
 
 </td>
 </tr>
