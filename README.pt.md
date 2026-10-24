@@ -79,16 +79,16 @@ O aplicativo não é assinado; no primeiro início o Windows pode pedir “Mais 
 <tr>
 <td width="46%" valign="middle">
 
-### Oito algoritmos de fusão
+### Fusão por IA: StackMFF V3
 
-Quatro clássicos mais a família OpenFocus A/B/C e o modelo neural StackMFF-V3, todos na mesma pilha registrada: compare e escolha por assunto em vez de confiar num único padrão.
+O método padrão classifica cada pixel pelo quadro de origem mais provável com uma rede neural. Na mesma pilha registrada, mantém as bordas das letras mais nítidas e as superfícies mais limpas que o Guided Filter (nitidez laplaciana 27,1 contra 28,5) e lidera todos os métodos em PSNR e SSIM contra verdade sintética, com menos pixels fantasmas que qualquer algoritmo clássico.
 
-[Algoritmos →](#algorithms)
+[Algoritmos →](#algorithms) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/result.png" alt="Resultado de fusão na janela do OpenFocus" width="100%" />
+<img src="assets/comparison_ai_vs_gff.png" alt="Fusão por IA: StackMFF V3" width="100%" />
 
 </td>
 </tr>
@@ -175,7 +175,9 @@ Aponte para uma pasta de pilhas, escolha método e destino e deixe rodar. Soment
 
 ### Barras de escala de publicação
 
-Calibradas por metadados TIFF ou manualmente, desenhadas com a fonte e o comprimento reais e gravadas em toda exportação: imagem, pilha, TIFF, GIF e lote.
+Calibradas por metadados TIFF ou manualmente, desenhadas com a fonte e o comprimento reais e gravadas em toda exportação: imagem, pilha, TIFF, GIF e lote. Se não couber de forma legível, o diálogo avisa em vez de desenhar uma barra menor que o rótulo.
+
+[Manual →](./docs/USER_MANUAL_PT.md)
 
 </td>
 <td width="54%">
@@ -185,6 +187,20 @@ Calibradas por metadados TIFF ou manualmente, desenhadas com a fonte e o comprim
 </td>
 </tr>
 
+<tr>
+<td width="46%" valign="middle">
+
+### Rótulos e legendas
+
+As legendas ficam numa lista gerenciada: cada uma com seu escopo (fonte, pilha alinhada ou uma saída específica), faixa de quadros e estilo. A pré-visualização e todas as exportações usam o mesmo destino e número de quadro, então `{value}` lê igual em Salvar, Salvar como, arrastar e Exportar tudo.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/labels.png" alt="Rótulos e legendas" width="100%" />
+
+</td>
+</tr>
 </table>
 
 **Também incluído:**

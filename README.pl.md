@@ -79,16 +79,16 @@ Aplikacja nie jest podpisana. Podczas pierwszego uruchomienia Windows może poka
 <tr>
 <td width="46%" valign="middle">
 
-### Osiem algorytmów fuzji
+### Fuzja AI: StackMFF V3
 
-Cztery klasyczne metody plus rodzina OpenFocus A/B/C i model neuronowy StackMFF-V3, wszystkie na tym samym wyrównanym stosie: porównuj i wybieraj pod temat zamiast ufać jednej wartości domyślnej.
+Domyślna metoda klasyfikuje każdy piksel do najbardziej prawdopodobnej klatki źródłowej za pomocą sieci neuronowej. Na tym samym wyrównanym stosie krawędzie liter pozostają ostrzejsze, a powierzchnie czystsze niż w Guided Filter (ostrość laplasjanowa 27,1 vs 28,5); wobec syntetycznej prawdy prowadzi w PSNR i SSIM i zostawia mniej duchów niż jakikolwiek klasyczny algorytm.
 
-[Algorytmy →](#algorithms)
+[Algorytmy →](#algorithms) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/result.png" alt="Wynik fuzji w oknie OpenFocus" width="100%" />
+<img src="assets/comparison_ai_vs_gff.png" alt="Fuzja AI: StackMFF V3" width="100%" />
 
 </td>
 </tr>
@@ -175,7 +175,9 @@ Wskaż folder ze stosami, wybierz metodę i miejsce docelowe, a potem zostaw. Sa
 
 ### Paski skali do publikacji
 
-Kalibrowane z metadanych TIFF lub ręcznie, rysowane prawdziwą czcionką w rzeczywistej długości i wypalane w każdym eksporcie: obraz, stos, TIFF, GIF i wsad.
+Kalibrowane z metadanych TIFF lub ręcznie, rysowane prawdziwą czcionką w rzeczywistej długości i wypalane w każdym eksporcie: obraz, stos, TIFF, GIF i wsad. Jeśli pasek nie mieści się czytelnie, okno to zgłasza zamiast rysować krótszy pasek z niepasującym opisem.
+
+[Podręcznik →](./docs/USER_MANUAL_PL.md)
 
 </td>
 <td width="54%">
@@ -185,6 +187,20 @@ Kalibrowane z metadanych TIFF lub ręcznie, rysowane prawdziwą czcionką w rzec
 </td>
 </tr>
 
+<tr>
+<td width="46%" valign="middle">
+
+### Etykiety i podpisy
+
+Podpisy to zarządzana lista: każdy ma własny zakres (źródło, wyrównany stos lub konkretny wynik), zakres klatek i styl. Podgląd i każdy eksport używają tego samego celu i numeru klatki, więc `{value}` czyta się tak samo w Zapisz, Zapisz jako, przeciąganiu i Eksportuj wszystko.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/labels.png" alt="Etykiety i podpisy" width="100%" />
+
+</td>
+</tr>
 </table>
 
 **Dodatkowo w zestawie:**

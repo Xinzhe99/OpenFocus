@@ -79,16 +79,16 @@
 <tr>
 <td width="46%" valign="middle">
 
-### 8가지 융합 알고리즘
+### AI 융합: StackMFF V3
 
-4가지 고전 알고리즘에 OpenFocus A/B/C 제품군과 StackMFF-V3 신경망 모델까지, 모두 같은 정합 결과 위에서 실행됩니다. 피사체별로 비교해 고르세요.
+기본 방법은 신경망으로 각 픽셀을 가장 가능성 높은 소스 프레임에 분류합니다. 같은 정합 결과에서 글자 가장자리는 Guided Filter보다 선명하고 표면은 더 깨끗합니다(라플라시안 선명도 27.1 대 28.5). 합성 정답 데이터에서 PSNR과 SSIM 모두 모든 방법을 앞서며, 고스트 픽셀도 어떤 고전 알고리즘보다 적습니다.
 
-[알고리즘 →](#algorithms)
+[알고리즘 →](#algorithms) · [벤치마크 →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/result.png" alt="OpenFocus 창의 융합 결과" width="100%" />
+<img src="assets/comparison_ai_vs_gff.png" alt="AI 융합: StackMFF V3" width="100%" />
 
 </td>
 </tr>
@@ -175,7 +175,9 @@
 
 ### 출판용 스케일 바
 
-TIFF 메타데이터 또는 직접 입력으로 보정하고 실제 글꼴과 실제 길이로 그려 모든 내보내기에 새깁니다. 단일 이미지, 스택, TIFF, GIF, 배치 출력 모두 포함됩니다.
+TIFF 메타데이터 또는 직접 입력으로 보정하고 실제 글꼴과 실제 길이로 그려 모든 내보내기에 새깁니다. 단일 이미지, 스택, TIFF, GIF, 배치 출력 모두 포함됩니다. 읽을 수 있게 들어가지 않으면, 라벨과 다른 짧은 막대를 그리는 대신 그 사실을 알려 줍니다.
+
+[사용 설명서 →](./docs/USER_MANUAL_KO.md)
 
 </td>
 <td width="54%">
@@ -185,6 +187,20 @@ TIFF 메타데이터 또는 직접 입력으로 보정하고 실제 글꼴과 �
 </td>
 </tr>
 
+<tr>
+<td width="46%" valign="middle">
+
+### 라벨과 캡션
+
+캡션을 관리되는 목록으로 유지합니다. 각 항목은 대상(소스, 정합된 스택 또는 특정 출력), 프레임 범위, 스타일을 따로 가집니다. 미리보기와 모든 내보내기가 같은 대상과 프레임 번호를 쓰므로 `{value}`는 저장, 다른 이름으로 저장, 끌어내기, 모두 내보내기에서 동일하게 읽힙니다.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/labels.png" alt="라벨과 캡션" width="100%" />
+
+</td>
+</tr>
 </table>
 
 **그 밖에도:**

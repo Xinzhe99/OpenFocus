@@ -11,6 +11,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   followed by an "also in the box" list. Screenshots are captured from the
   light theme on a 9-frame macro stack, and `assets/ui.png` — the hero image
   used by every README — is now that same light-theme window.
+- **StackMFF V3 leads the feature wall.** The standalone "AI fusion" section
+  is gone; the neural method is now the first row, illustrated with the
+  Guided-Filter comparison, and the eight-method inventory moved to the
+  algorithms section where it belongs. Scale bars and labels gained their own
+  rows with light-theme captures of the real dialogs.
 - Video slots for the feature rows are intentionally empty so a recorded clip
   can be dropped in per row later.
 

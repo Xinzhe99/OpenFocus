@@ -79,16 +79,16 @@ L’app non è firmata: al primo avvio Windows può chiedere “Ulteriori inform
 <tr>
 <td width="46%" valign="middle">
 
-### Otto algoritmi di fusione
+### Fusione IA: StackMFF V3
 
-Quattro classici più la famiglia OpenFocus A/B/C e il modello neurale StackMFF-V3, tutti sulla stessa pila registrata: confronta e scegli per soggetto invece di fidarti di un solo valore predefinito.
+Il metodo predefinito classifica ogni pixel nel fotogramma sorgente più probabile con una rete neurale. Sulla stessa pila registrata mantiene i bordi delle lettere più nitidi e le superfici più pulite di Guided Filter (nitidezza laplaciana 27,1 contro 28,5) e guida tutti i metodi su PSNR e SSIM rispetto a una verità sintetica, con meno pixel fantasma di qualsiasi algoritmo classico.
 
-[Algoritmi →](#algorithms)
+[Algoritmi →](#algorithms) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/result.png" alt="Risultato di fusione nella finestra di OpenFocus" width="100%" />
+<img src="assets/comparison_ai_vs_gff.png" alt="Fusione IA: StackMFF V3" width="100%" />
 
 </td>
 </tr>
@@ -175,7 +175,9 @@ Indica una cartella di pile, scegli metodo e destinazione, poi lascia lavorare. 
 
 ### Barre di scala per pubblicazione
 
-Calibrate dai metadati TIFF o inserite a mano, disegnate con font e lunghezza reali e incise in ogni esportazione: immagine, pila, TIFF, GIF e batch.
+Calibrate dai metadati TIFF o inserite a mano, disegnate con font e lunghezza reali e incise in ogni esportazione: immagine, pila, TIFF, GIF e batch. Se non entra in modo leggibile lo dice, invece di disegnare una barra più corta della sua etichetta.
+
+[Manuale →](./docs/USER_MANUAL_IT.md)
 
 </td>
 <td width="54%">
@@ -185,6 +187,20 @@ Calibrate dai metadati TIFF o inserite a mano, disegnate con font e lunghezza re
 </td>
 </tr>
 
+<tr>
+<td width="46%" valign="middle">
+
+### Etichette e didascalie
+
+Le didascalie sono un elenco gestito: ognuna con il proprio ambito (sorgente, pila allineata o un output specifico), intervallo di fotogrammi e stile. Anteprima ed esportazioni usano lo stesso target e lo stesso numero di fotogramma, quindi `{value}` si legge allo stesso modo in Salva, Salva con nome, trascinamento ed Esporta tutto.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/labels.png" alt="Etichette e didascalie" width="100%" />
+
+</td>
+</tr>
 </table>
 
 **Inoltre:**

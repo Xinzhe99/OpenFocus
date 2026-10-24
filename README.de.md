@@ -79,16 +79,16 @@ Die App ist nicht signiert. Beim ersten Start kann ein Sicherheitshinweis ersche
 <tr>
 <td width="46%" valign="middle">
 
-### Acht Fusionsverfahren
+### KI-Fusion: StackMFF V3
 
-Vier klassische Verfahren plus die OpenFocus-A/B/C-Familie und das neuronale Modell StackMFF-V3 — alle auf demselben registrierten Stapel, sodass Sie je Motiv vergleichen statt einem einzigen Standardwert zu vertrauen.
+Das Standardverfahren ordnet jeden Pixel per neuronalem Netz dem wahrscheinlichsten Quellbild zu. Auf demselben registrierten Stapel bleiben Buchstabenkanten schärfer und Flächen sauberer als mit Guided Filter (Laplace-Schärfe 27,1 zu 28,5); gegen synthetische Ground Truth führt es bei PSNR und SSIM und hinterlässt weniger Geisterpixel als jedes klassische Verfahren.
 
-[Algorithmen →](#algorithms)
+[Algorithmen →](#algorithms) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/result.png" alt="Fusioniertes Makro-Ergebnis im OpenFocus-Fenster" width="100%" />
+<img src="assets/comparison_ai_vs_gff.png" alt="KI-Fusion: StackMFF V3" width="100%" />
 
 </td>
 </tr>
@@ -175,7 +175,9 @@ Auf einen Ordner voller Stapel zeigen, Verfahren und Ziel wählen, laufen lassen
 
 ### Publikations-Maßstabsbalken
 
-Aus TIFF-Metadaten oder manuell kalibriert, mit echter Schrift und echter Länge gezeichnet und in jeden Export eingebrannt — Einzelbild, Stapel, TIFF, GIF und Batch.
+Aus TIFF-Metadaten oder manuell kalibriert, mit echter Schrift und echter Länge gezeichnet und in jeden Export eingebrannt — Einzelbild, Stapel, TIFF, GIF und Batch. Passt sie nicht lesbar hinein, sagt das Dialogfeld das, statt einen kürzeren Balken mit falscher Beschriftung zu zeichnen.
+
+[Handbuch →](./docs/USER_MANUAL_DE.md)
 
 </td>
 <td width="54%">
@@ -185,6 +187,20 @@ Aus TIFF-Metadaten oder manuell kalibriert, mit echter Schrift und echter Länge
 </td>
 </tr>
 
+<tr>
+<td width="46%" valign="middle">
+
+### Beschriftungen und Legenden
+
+Beschriftungen bleiben eine verwaltete Liste: jede mit eigenem Geltungsbereich (Quelle, ausgerichteter Stapel oder ein bestimmtes Ergebnis), Bildbereich und Stil. Vorschau und jeder Export nutzen dasselbe Ziel und dieselbe Bildnummer, sodass `{value}` in Speichern, Speichern unter, Herausziehen und Alles exportieren identisch liest.
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/labels.png" alt="Beschriftungen und Legenden" width="100%" />
+
+</td>
+</tr>
 </table>
 
 **Außerdem enthalten:**

@@ -79,16 +79,16 @@
 <tr>
 <td width="46%" valign="middle">
 
-### 八种融合算法
+### AI 融合：StackMFF V3
 
-四种经典算法，加上 OpenFocus A/B/C 与 StackMFF-V3 神经网络模型，全部跑在同一份配准结果上，可按题材对比选择，而不是只能相信一个默认值。
+默认方法用神经网络按最可能的来源帧逐像素判定。在同一份配准结果上，它的文字边缘比引导滤波更锐利、板面更干净（拉普拉斯清晰度 27.1 对 28.5），在已知真值的合成栈上 PSNR 与 SSIM 全面领先，重影像素也少于任何经典算法。
 
-[算法说明 →](#algorithms)
+[算法说明 →](#algorithms) · [基准脚本 →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<img src="assets/readme/result.png" alt="窗口中的融合结果" width="100%" />
+<img src="assets/comparison_ai_vs_gff.png" alt="AI 融合：StackMFF V3" width="100%" />
 
 </td>
 </tr>
@@ -175,7 +175,9 @@
 
 ### 出版级比例尺
 
-从 TIFF 元数据或手动输入标定，用真实字体按真实长度绘制，并烙进所有导出——单张、图像栈、TIFF、GIF 与批处理输出。
+从 TIFF 元数据或手动输入标定，用真实字体按真实长度绘制，并烙进所有导出——单张、图像栈、TIFF、GIF 与批处理输出。 过小、无法清晰放置时明确提示，而不是画一条与标注不符的短条。
+
+[用户手册 →](./docs/USER_MANUAL_ZH.md)
 
 </td>
 <td width="54%">
@@ -185,6 +187,20 @@
 </td>
 </tr>
 
+<tr>
+<td width="46%" valign="middle">
+
+### 标签与图注
+
+把图注当成受管理的列表：每条都有自己的作用范围（源图、对齐栈或某个输出）、帧范围与样式。预览与所有导出共用同一目标与帧号，因此 `{value}` 在保存、另存为、拖出和导出全部中读数一致。
+
+</td>
+<td width="54%">
+
+<img src="assets/readme/labels.png" alt="标签与图注" width="100%" />
+
+</td>
+</tr>
 </table>
 
 **另外还有：**
