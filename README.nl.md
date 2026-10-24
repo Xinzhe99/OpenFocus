@@ -27,9 +27,8 @@
 </p>
 
 <p align="center">
-  <a href="#download">Download</a> ·
+  <a href="#install">Download</a> ·
   <a href="./docs/USER_MANUAL_NL.md">Documentatie</a> ·
-  <a href="#command-line-usage">CLI</a> ·
   <a href="./CHANGELOG.md">Wijzigingen</a> ·
   <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
 </p>
@@ -70,7 +69,7 @@
 
 De standaardmethode classificeert elke pixel met een neuraal netwerk naar het meest waarschijnlijke bronframe. Op dezelfde uitgelijnde stapel blijven letterranden scherper en vlakken schoner dan bij Guided Filter (Laplaciaanse scherpte 27,1 tegen 28,5); tegen synthetische ground truth leidt het op PSNR en SSIM, met minder spookpixels dan welk klassiek algoritme ook.
 
-[Algoritmen →](#algorithms) · [Benchmark →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -199,10 +198,10 @@ Bijschriften blijven een beheerde lijst: elk met een eigen bereik (bron, uitgeli
 - **Twaalf UI-talen** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; automatisch gedetecteerd, een nieuwe taal is één `locales_<code>.py`-bestand.
 - **Zuining met geheugen** — de neurale gewichten laden alleen bij de AI-methode, dus een klassieke sessie blijft rond 110 MB in plaats van 260 MB.
 
-<a id="download"></a>
-## Download en installatie
+<a id="install"></a>
+## ⬇️ Installatie
 
-Download een build via [Releases](https://github.com/Xinzhe99/OpenFocus/releases):
+Geen installatie nodig — haal een build van de [Releases](https://github.com/Xinzhe99/OpenFocus/releases)-pagina:
 
 | Platform | Bestand | Type |
 |----------|---------|------|
@@ -211,22 +210,31 @@ Download een build via [Releases](https://github.com/Xinzhe99/OpenFocus/releases
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Schijfimage (naar Programma's slepen) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Draagbaar (uitpakken) |
 
-De app is niet ondertekend. Bij de eerste start kan Windows vragen om “Meer informatie → Toch uitvoeren”; op macOS: rechtermuisknop → Open of `xattr -cr /Applications/OpenFocus.app`.
+De app is niet ondertekend, dus de eerste start kan een waarschuwing tonen: **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren); **macOS** rechtsklik → Open, of `xattr -cr /Applications/OpenFocus.app` in Terminal.
 
-## Snel starten
+### 💻 Opdrachtregel
+
+Of installeer de CLI op Windows, macOS en Linux — dezelfde pijplijn, zonder GUI-stack:
 
 ```bash
-# Volledige CLI: alle methoden, AI-model, HEIC en camera-RAW
 pip install openfocus
-
-# Een map met afbeeldingen fuseren
 openfocus -i ./stack_folder -o ./result/fused.png
-
-# DTCWT met ECC en 8 threads
-openfocus -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 ```
 
-GUI vanuit de broncode starten:
+Het AI-model, de gewichten, HEIC- en camera-RAW-decodering zitten allemaal in die ene installatie. Op Python 3.13+ vervalt `dtcwt` en blijft de DTCWT-optie uitgeschakeld met uitleg.
+
+<a id="community"></a>
+## Community en ondersteuning
+
+- **Documentatie** — [Handleiding](./docs/USER_MANUAL_NL.md) (twaalf talen) · [Wijzigingen](./CHANGELOG.md) · [Prestaties](./docs/PERFORMANCE.md) · [Algoritmepariteit](./docs/ALGORITHM_PARITY.md)
+- **Citeren** — [CITATION.cff](./CITATION.cff); elke versie wordt gearchiveerd op Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
+- **Feedback** — open een [issue](https://github.com/Xinzhe99/OpenFocus/issues) voor bugs, ideeën en algoritmewerk
+- **Credits** — elk fusie- en registratiealgoritme behoudt zijn oorspronkelijke onderzoekslicentie; StackMFF V3 staat op [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+
+<a id="developing"></a>
+## Ontwikkeling
+
+Uit de checkout starten:
 
 ```bash
 conda create -n openfocus python=3.10
@@ -235,18 +243,9 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## Documentatie
+Verpakken met PyInstaller: [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md).
 
-- [Gebruikershandleiding (Nederlands)](./docs/USER_MANUAL_NL.md)
-- [Wijzigingslog](./CHANGELOG.md)
-- [Prestaties en grote stacks](./docs/PERFORMANCE.md)
-- [Buildcommando's](./docs/BUILD_COMMANDS.md)
-- [Algoritmepariteit](./docs/ALGORITHM_PARITY.md)
+<a id="star-history"></a>
+## ⭐ Sterrengeschiedenis
 
-De volledige Engelse referentie staat in [README.md](./README.md).
-
-## Citatie en licentie
-
-Als OpenFocus je werk helpt, citeer het project via [CITATION.cff](./CITATION.cff).
-
-Het project valt onder de [MIT-licentie](./LICENSE). Elk fusie-/uitlijningsalgoritme behoudt daarnaast zijn oorspronkelijke licentie.
+[![Star History Chart](https://api.star-history.com/svg?repos=Xinzhe99/OpenFocus&type=Date)](https://star-history.com/#Xinzhe99/OpenFocus&Date)

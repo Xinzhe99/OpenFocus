@@ -27,9 +27,8 @@
 </p>
 
 <p align="center">
-  <a href="#download">Скачать</a> ·
+  <a href="#install">Скачать</a> ·
   <a href="./docs/USER_MANUAL_RU.md">Документация</a> ·
-  <a href="#command-line-usage">CLI</a> ·
   <a href="./CHANGELOG.md">История</a> ·
   <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
 </p>
@@ -70,7 +69,7 @@
 
 Метод по умолчанию относит каждый пиксель к наиболее вероятному исходному кадру с помощью нейросети. На том же выровненном стеке края букв остаются резче, а поверхности чище, чем у Guided Filter (резкость по Лапласу 27,1 против 28,5); на синтетических данных с известной истиной он лидирует по PSNR и SSIM и оставляет меньше артефактов-призраков, чем любой классический алгоритм.
 
-[Алгоритмы →](#algorithms) · [Бенчмарк →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Бенчмарк →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -199,10 +198,10 @@
 - **Двенадцать языков интерфейса** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; определяются по системе, новый язык — один файл `locales_<code>.py`.
 - **Экономия памяти** — нейросетевые веса загружаются только при использовании AI-метода, классическая сессия занимает около 110 МБ вместо 260 МБ.
 
-<a id="download"></a>
-## Скачивание и установка
+<a id="install"></a>
+## ⬇️ Установка
 
-Готовые сборки — на странице [Releases](https://github.com/Xinzhe99/OpenFocus/releases):
+Ничего настраивать не нужно — сборка на странице [Releases](https://github.com/Xinzhe99/OpenFocus/releases):
 
 | Платформа | Файл | Тип |
 |-----------|------|-----|
@@ -211,22 +210,31 @@
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Образ диска (перетащить в «Программы») |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Портативная версия (распаковать) |
 
-Приложение не подписано. При первом запуске Windows может предложить «Подробнее → Выполнить всё равно»; в macOS — правый клик → «Открыть» или `xattr -cr /Applications/OpenFocus.app`.
+Приложение не подписано, поэтому при первом запуске возможно предупреждение: **Windows** SmartScreen → «Подробнее» → «Выполнить всё равно» (первый запуск может занять 30–60 с); **macOS** правый клик → «Открыть» или `xattr -cr /Applications/OpenFocus.app` в терминале.
 
-## Быстрый старт
+### 💻 Командная строка
+
+Либо установите CLI на Windows, macOS и Linux — тот же конвейер без графического стека:
 
 ```bash
-# Полная CLI: все методы, ИИ-модель, HEIC и RAW камер
 pip install openfocus
-
-# Объединить папку изображений
 openfocus -i ./stack_folder -o ./result/fused.png
-
-# DTCWT с ECC и 8 потоками
-openfocus -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 ```
 
-Запуск GUI из исходников:
+Модель ИИ, веса, декодирование HEIC и RAW входят в эту установку. На Python 3.13+ `dtcwt` пропускается, и пункт DTCWT остаётся отключённым с пояснением.
+
+<a id="community"></a>
+## Сообщество и поддержка
+
+- **Документация** — [Руководство](./docs/USER_MANUAL_RU.md) (двенадцать языков) · [Изменения](./CHANGELOG.md) · [Производительность](./docs/PERFORMANCE.md) · [Соответствие алгоритмов](./docs/ALGORITHM_PARITY.md)
+- **Цитирование** — [CITATION.cff](./CITATION.cff); каждый релиз архивируется на Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
+- **Обратная связь** — [issue](https://github.com/Xinzhe99/OpenFocus/issues) для ошибок, идей и работы над алгоритмами
+- **Благодарности** — каждый алгоритм фузии и совмещения сохраняет свою исходную исследовательскую лицензию; StackMFF V3 — [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+
+<a id="developing"></a>
+## Разработка
+
+Запуск из репозитория:
 
 ```bash
 conda create -n openfocus python=3.10
@@ -235,18 +243,9 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## Документация
+Упаковка через PyInstaller: [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md).
 
-- [Руководство пользователя (русский)](./docs/USER_MANUAL_RU.md)
-- [История изменений](./CHANGELOG.md)
-- [Производительность и большие стеки](./docs/PERFORMANCE.md)
-- [Команды сборки](./docs/BUILD_COMMANDS.md)
-- [Соответствие алгоритмам](./docs/ALGORITHM_PARITY.md)
+<a id="star-history"></a>
+## ⭐ История звёзд
 
-Полная английская документация — в [README.md](./README.md).
-
-## Цитирование и лицензия
-
-Если OpenFocus помогает вашей работе, пожалуйста, цитируйте проект по [CITATION.cff](./CITATION.cff).
-
-Проект распространяется по [лицензии MIT](./LICENSE). Для каждого алгоритма объединения/совмещения также действуют условия его исходной лицензии.
+[![Star History Chart](https://api.star-history.com/svg?repos=Xinzhe99/OpenFocus&type=Date)](https://star-history.com/#Xinzhe99/OpenFocus&Date)

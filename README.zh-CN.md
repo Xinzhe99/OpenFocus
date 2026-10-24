@@ -27,9 +27,8 @@
 </p>
 
 <p align="center">
-  <a href="#download">下载</a> ·
+  <a href="#install">下载</a> ·
   <a href="./docs/USER_MANUAL_ZH.md">文档</a> ·
-  <a href="#command-line-usage">命令行</a> ·
   <a href="./CHANGELOG.md">更新日志</a> ·
   <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
 </p>
@@ -70,7 +69,7 @@
 
 默认方法用神经网络按最可能的来源帧逐像素判定。在同一份配准结果上，它的文字边缘比引导滤波更锐利、板面更干净（拉普拉斯清晰度 27.1 对 28.5），在已知真值的合成栈上 PSNR 与 SSIM 全面领先，重影像素也少于任何经典算法。
 
-[算法说明 →](#algorithms) · [基准脚本 →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [基准脚本 →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -199,8 +198,8 @@
 - **十二种界面语言**——English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski；按系统区域自动检测，新增语言只需一个 `locales_<code>.py`。
 - **省内存**——神经网络权重只在使用 AI 方法时加载，经典方法会话常驻约 110 MB，而不是 260 MB。
 
-<a id="download"></a>
-## 下载与安装
+<a id="install"></a>
+## ⬇️ 安装
 
 无需配置环境，直接从 [Releases](https://github.com/Xinzhe99/OpenFocus/releases) 下载：
 
@@ -211,22 +210,31 @@
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | 磁盘映像（拖入“应用程序”） |
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | 便携版（解压即用） |
 
-应用未签名，首次启动可能触发系统安全提示：Windows 选择“更多信息 → 仍要运行”；macOS 右键“打开”，或执行 `xattr -cr /Applications/OpenFocus.app`。
+应用未签名，首次启动可能触发系统安全提示：**Windows** 选择“更多信息 → 仍要运行”（首次启动约需 30–60 秒）；**macOS** 右键“打开”，或执行 `xattr -cr /Applications/OpenFocus.app`。
 
-## 快速开始
+### 💻 命令行
+
+也可以在 Windows、macOS 与 Linux 上安装 CLI——同一套管线，不需要图形栈：
 
 ```bash
-# 安装完整 CLI（含所有算法、AI 模型、HEIC 与相机 RAW 支持）
 pip install openfocus
-
-# 融合一个图像文件夹
 openfocus -i ./stack_folder -o ./result/fused.png
-
-# DTCWT + ECC 配准，8 线程
-openfocus -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 ```
 
-从源码运行 GUI：
+AI 模型、权重、HEIC 与相机 RAW 解码都包含在这一个安装包里。Python 3.13+ 会跳过 `dtcwt`，此时 DTCWT 项保持禁用并给出提示。
+
+<a id="community"></a>
+## 社区与支持
+
+- **文档** — [用户手册](./docs/USER_MANUAL_ZH.md)（十二种语言） · [更新日志](./CHANGELOG.md) · [性能](./docs/PERFORMANCE.md) · [算法对齐](./docs/ALGORITHM_PARITY.md)
+- **引用** — [CITATION.cff](./CITATION.cff)；每个版本都归档在 Zenodo（[DOI](https://doi.org/10.5281/zenodo.23050823)）
+- **反馈** — 通过 [issue](https://github.com/Xinzhe99/OpenFocus/issues) 报告缺陷、提出想法或算法改进
+- **致谢** — 各融合/配准算法遵循其原始研究许可；StackMFF V3 位于 [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+
+<a id="developing"></a>
+## 开发
+
+从源码运行：
 
 ```bash
 conda create -n openfocus python=3.10
@@ -235,18 +243,9 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## 文档
+使用 PyInstaller 打包见 [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md)。
 
-- [用户手册（中文）](./docs/USER_MANUAL_ZH.md) — 界面、工作流、修饰、设置、批处理、CLI 与故障排查
-- [更新日志](./CHANGELOG.md) — 版本历史与变更
-- [性能与大图像栈](./docs/PERFORMANCE.md) — 吞吐/内存参考与调优
-- [构建命令](./docs/BUILD_COMMANDS.md) — 使用 PyInstaller 打包
-- [算法对齐说明](./docs/ALGORITHM_PARITY.md) — 与 Helicon Focus 的行为对比
+<a id="star-history"></a>
+## ⭐ Star 历史
 
-完整英文说明与算法细节见 [README.md](./README.md)。
-
-## 引用与许可
-
-如果 OpenFocus 对你的研究或工作有帮助，请引用本项目；具体 BibTeX 与版本化 DOI 见 [CITATION.cff](./CITATION.cff)。
-
-本项目采用 [MIT License](./LICENSE)。各融合/配准算法的原始论文与实现仍遵循其各自许可。
+[![Star History Chart](https://api.star-history.com/svg?repos=Xinzhe99/OpenFocus&type=Date)](https://star-history.com/#Xinzhe99/OpenFocus&Date)

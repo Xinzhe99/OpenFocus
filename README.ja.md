@@ -27,9 +27,8 @@
 </p>
 
 <p align="center">
-  <a href="#download">ダウンロード</a> ·
+  <a href="#install">ダウンロード</a> ·
   <a href="./docs/USER_MANUAL_JA.md">ドキュメント</a> ·
-  <a href="#command-line-usage">CLI</a> ·
   <a href="./CHANGELOG.md">変更履歴</a> ·
   <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
 </p>
@@ -70,7 +69,7 @@
 
 既定の手法は、各画素を最も確からしいソースフレームにニューラルネットで分類します。同じ位置合わせ結果で、文字の輪郭はガイド付きフィルタより鋭く、面はより滑らか（ラプラシアン鮮鋭度 27.1 対 28.5）。真値のある合成スタックでは PSNR と SSIM の両方で全手法を上回り、ゴースト画素も古典手法より少なくなります。
 
-[アルゴリズム →](#algorithms) · [ベンチマーク →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [ベンチマーク →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -199,10 +198,10 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 - **12 の UI 言語**——English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski。システムロケールから自動判定し、新しい言語は `locales_<code>.py` 1 ファイルで追加できます。
 - **省メモリ**——ニューラル重みは AI 手法を使うときだけ読み込み、古典手法のセッションは約 110 MB で待機します（260 MB ではなく）。
 
-<a id="download"></a>
-## ダウンロードとインストール
+<a id="install"></a>
+## ⬇️ インストール
 
-[Releases](https://github.com/Xinzhe99/OpenFocus/releases) からビルドを取得できます。
+セットアップ不要 — [Releases](https://github.com/Xinzhe99/OpenFocus/releases) からビルドを取得してください：
 
 | プラットフォーム | ファイル | 種類 |
 |------------------|----------|------|
@@ -211,22 +210,31 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | ディスクイメージ（Applications へドラッグ） |
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | ポータブル（解凍して実行） |
 
-アプリは未署名のため、初回起動時に警告が出る場合があります。Windows は「詳細情報 → 実行」、macOS は右クリック →「開く」、または `xattr -cr /Applications/OpenFocus.app` を実行してください。
+アプリは未署名のため、初回起動で警告が出る場合があります：**Windows** は「詳細情報 → 実行」を選びます（初回は 30〜60 秒かかることがあります）。**macOS** は右クリック →「開く」、またはターミナルで `xattr -cr /Applications/OpenFocus.app` を実行します。
 
-## クイックスタート
+### 💻 コマンドライン
+
+Windows・macOS・Linux では CLI もインストールできます。同じパイプラインを GUI なしで動かせます：
 
 ```bash
-# すべてのアルゴリズム、AI モデル、HEIC/RAW 対応を含む CLI
 pip install openfocus
-
-# フォルダ内の画像を合成
 openfocus -i ./stack_folder -o ./result/fused.png
-
-# DTCWT + ECC、8 スレッド
-openfocus -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 ```
 
-ソースから GUI を起動：
+AI モデル、重み、HEIC とカメラ RAW のデコードはすべてこの 1 回のインストールに含まれます。Python 3.13 以降では `dtcwt` が省略され、DTCWT の項目は説明付きで無効になります。
+
+<a id="community"></a>
+## コミュニティとサポート
+
+- **ドキュメント** — [ユーザーマニュアル](./docs/USER_MANUAL_JA.md)（12 言語） · [変更履歴](./CHANGELOG.md) · [パフォーマンス](./docs/PERFORMANCE.md) · [アルゴリズム比較](./docs/ALGORITHM_PARITY.md)
+- **引用** — [CITATION.cff](./CITATION.cff)。各リリースは Zenodo に保存されています（[DOI](https://doi.org/10.5281/zenodo.23050823)）
+- **フィードバック** — 不具合、提案、アルゴリズムの改善は [issue](https://github.com/Xinzhe99/OpenFocus/issues) へ
+- **クレジット** — 各合成・位置合わせアルゴリズムは元の研究ライセンスに従います。StackMFF V3 は [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3) にあります
+
+<a id="developing"></a>
+## 開発
+
+チェックアウトから実行：
 
 ```bash
 conda create -n openfocus python=3.10
@@ -235,18 +243,9 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## ドキュメント
+PyInstaller でのパッケージングは [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md) を参照してください。
 
-- [ユーザーマニュアル（日本語）](./docs/USER_MANUAL_JA.md)
-- [変更履歴](./CHANGELOG.md)
-- [性能と大規模スタック](./docs/PERFORMANCE.md)
-- [ビルドコマンド](./docs/BUILD_COMMANDS.md)
-- [アルゴリズム互換性](./docs/ALGORITHM_PARITY.md)
+<a id="star-history"></a>
+## ⭐ Star 履歴
 
-詳細な英語版は [README.md](./README.md) を参照してください。
-
-## 引用とライセンス
-
-研究や業務で OpenFocus を利用する場合は、[CITATION.cff](./CITATION.cff) の引用情報をご利用ください。
-
-本プロジェクトは [MIT License](./LICENSE) で公開されています。各融合・位置合わせアルゴリズムの原論文と実装には、それぞれのライセンスが適用されます。
+[![Star History Chart](https://api.star-history.com/svg?repos=Xinzhe99/OpenFocus&type=Date)](https://star-history.com/#Xinzhe99/OpenFocus&Date)

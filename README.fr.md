@@ -27,9 +27,8 @@
 </p>
 
 <p align="center">
-  <a href="#download">Télécharger</a> ·
+  <a href="#install">Télécharger</a> ·
   <a href="./docs/USER_MANUAL_FR.md">Documentation</a> ·
-  <a href="#command-line-usage">CLI</a> ·
   <a href="./CHANGELOG.md">Journal</a> ·
   <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
 </p>
@@ -70,7 +69,7 @@
 
 La méthode par défaut classe chaque pixel selon son image source la plus probable via un réseau de neurones. Sur la même pile recalée, les contours des lettres restent plus nets et les surfaces plus propres qu'avec Guided Filter (netteté laplacienne 27,1 contre 28,5) ; face à une vérité synthétique, elle devance toutes les méthodes en PSNR et SSIM, avec moins de pixels fantômes que tout algorithme classique.
 
-[Algorithmes →](#algorithms) · [Benchmark →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -199,10 +198,10 @@ Les légendes forment une liste gérée : chacune a sa portée (source, pile rec
 - **Douze langues d'interface** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski ; détectées du système, une nouvelle langue est un fichier `locales_<code>.py`.
 - **Économe en mémoire** — les poids neuronaux ne se chargent qu'avec la méthode AI ; une session classique reste autour de 110 Mo au lieu de 260 Mo.
 
-<a id="download"></a>
-## Téléchargement et installation
+<a id="install"></a>
+## ⬇️ Installation
 
-Téléchargez une version depuis [Releases](https://github.com/Xinzhe99/OpenFocus/releases) :
+Aucune configuration — récupérez une version sur [Releases](https://github.com/Xinzhe99/OpenFocus/releases) :
 
 | Plateforme | Fichier | Type |
 |------------|---------|------|
@@ -211,22 +210,31 @@ Téléchargez une version depuis [Releases](https://github.com/Xinzhe99/OpenFocu
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Image disque (glisser dans Applications) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portable (décompresser) |
 
-L’application n’est pas signée : au premier lancement, Windows peut demander « Informations complémentaires → Exécuter quand même » ; sur macOS, clic droit → Ouvrir, ou `xattr -cr /Applications/OpenFocus.app`.
+L'application n'est pas signée : le premier lancement peut afficher un avertissement. **Windows** SmartScreen → « Informations complémentaires » → « Exécuter quand même » (le premier démarrage peut prendre 30–60 s) ; **macOS** clic droit → Ouvrir, ou `xattr -cr /Applications/OpenFocus.app` dans le Terminal.
 
-## Démarrage rapide
+### 💻 Ligne de commande
+
+Ou installez la CLI sous Windows, macOS et Linux — la même chaîne, sans pile graphique :
 
 ```bash
-# CLI complète : toutes les méthodes, modèle IA, HEIC et RAW appareil photo
 pip install openfocus
-
-# Fusionner un dossier d’images
 openfocus -i ./stack_folder -o ./result/fused.png
-
-# DTCWT avec recalage ECC et 8 threads
-openfocus -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 ```
 
-Lancer l’interface depuis les sources :
+Le modèle IA, ses poids, le décodage HEIC et RAW y sont tous inclus. Sous Python 3.13+, `dtcwt` est ignoré et l'entrée DTCWT reste désactivée avec une explication.
+
+<a id="community"></a>
+## Communauté et support
+
+- **Documentation** — [Manuel](./docs/USER_MANUAL_FR.md) (douze langues) · [Journal](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Parité des algorithmes](./docs/ALGORITHM_PARITY.md)
+- **Citation** — [CITATION.cff](./CITATION.cff) ; chaque version est archivée sur Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
+- **Retours** — ouvrez une [issue](https://github.com/Xinzhe99/OpenFocus/issues) pour les bugs, idées et travaux d'algorithmes
+- **Crédits** — chaque algorithme de fusion et de recalage conserve sa licence de recherche d'origine ; StackMFF V3 est sur [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+
+<a id="developing"></a>
+## Développement
+
+Lancer depuis le dépôt :
 
 ```bash
 conda create -n openfocus python=3.10
@@ -235,18 +243,9 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## Documentation
+Empaquetage avec PyInstaller : [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md).
 
-- [Manuel utilisateur (français)](./docs/USER_MANUAL_FR.md)
-- [Journal des modifications](./CHANGELOG.md)
-- [Performances et grandes piles](./docs/PERFORMANCE.md)
-- [Commandes de compilation](./docs/BUILD_COMMANDS.md)
-- [Parité des algorithmes](./docs/ALGORITHM_PARITY.md)
+<a id="star-history"></a>
+## ⭐ Historique des stars
 
-La référence complète en anglais se trouve dans [README.md](./README.md).
-
-## Citation et licence
-
-Si OpenFocus vous aide dans vos travaux, citez le projet via [CITATION.cff](./CITATION.cff).
-
-Le projet est distribué sous [licence MIT](./LICENSE). Chaque algorithme de fusion/recalage conserve également sa licence d’origine.
+[![Star History Chart](https://api.star-history.com/svg?repos=Xinzhe99/OpenFocus&type=Date)](https://star-history.com/#Xinzhe99/OpenFocus&Date)
