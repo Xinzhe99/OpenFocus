@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.68.1** — der Batch-Export folgt dem gewählten Modus: Nur-Ausrichten erzeugt einen `<Stapel>_aligned`-Ordner und listet ihn, Fusion listet nur das fused Bild, und ohne Ausrichtungs-Export wird nur dieses geschrieben. Übrig gebliebene `*_registered*`-Kopien im Quellordner werden nicht mehr als Frames geladen. Ebenfalls überarbeitet: Labels, Maßstabsbalken, Methodenvergleich, Tiefen-/Modellexport, Updates und Retusche gemäß dem Audit in `docs/ux-specs`.
+> **v1.69.0** — die Fusions-Engine plant ihre Arbeit, statt zu raten: ein Ausführungsplan pro Render legt Worker, Threads und Speicherbudget fest, die physischen Kerne werden von der Plattform gelesen statt aus der logischen Zahl halbiert, und jeder klassische Back-End streamt seine Zwischenpuffer, statt Temporäre für den ganzen Stapel zu halten. Die Ausgabe bleibt byte-identisch, gemessen sind es 1,47× bei OpenFocus C und 1,33× beim neuronalen Verfahren. Ein neuer **Ressourcenmodus** (Ausgeglichen / Reaktionsschnell / Maximal) hält den Desktop flüssig, ohne das Bild zu verändern.
 
 <a id="features"></a>
 ## Funktionen

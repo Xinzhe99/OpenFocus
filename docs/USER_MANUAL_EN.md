@@ -718,8 +718,27 @@ Control CPU parallel processing:
 Access via **Settings → Thread Count Settings**:
 
 - Set the number of worker threads (default: 4)
+- This is an upper bound: OpenFocus lowers it when memory is tight and never
+  raises it, so a busy machine stays usable
 - Match your CPU core count for optimal performance
 - Higher values = faster processing, more CPU usage
+
+### Resource Mode
+
+**Settings → Advanced Settings → Performance → Resource mode** decides how
+much of the machine a render may use. It never changes the fused image.
+
+| Mode | Behaviour |
+|---|---|
+| Balanced (default) | Keeps roughly 20% of the physical cores and a memory reserve free for the desktop |
+| Responsive | Uses about half the cores and a smaller in-flight window; slower renders, most responsive machine |
+| Maximum | Uses every physical core the memory budget allows |
+
+The planner counts *physical* cores (hyper-threads add peak memory without
+adding throughput for tile fusion) and only ever runs one parallel layer:
+either many single-threaded tile workers, or one worker that uses the whole
+thread budget. A render that would not fit in memory reports why instead of
+letting the OS swap or kill the process.
 
 ### GPU Acceleration Toggle
 

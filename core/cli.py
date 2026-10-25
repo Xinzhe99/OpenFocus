@@ -234,7 +234,8 @@ def _fuse_stack(images, args):
             method=args.align, downscale_width=args.downscale,
             max_shift_ratio=getattr(args, "align_shift_limit", None),
             brightness_reference=("last" if getattr(args, "exposure_match", True)
-                                  else "first"))
+                                  else "first"),
+            use_gpu=not args.cpu)
         images = reg.process(images, output_path=None, thread_count=args.threads)
         print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
 

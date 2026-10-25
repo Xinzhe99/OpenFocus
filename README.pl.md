@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.68.1** — eksport wsadowy działa według wybranego trybu: samo wyrównanie tworzy folder `<stos>_aligned` i pokazuje go na liście, fuzja pokazuje tylko wynik, a bez eksportu wyrównania zapisywany jest wyłącznie obraz wynikowy. Pozostałe w folderze źródłowym kopie `*_registered*` nie są już wczytywane jako klatki. Przepracowano też etykiety, paski skali, porównanie metod, eksport głębi/modelu, aktualizacje i retusz zgodnie z audytem w `docs/ux-specs`.
+> **v1.69.0** — silnik fuzji planuje teraz pracę zamiast zgadywać: jeden plan wykonania na render decyduje o liczbie workerów, wątkach i budżecie pamięci, rdzenie fizyczne są odczytywane z platformy zamiast połowienia liczby logicznej, a każdy klasyczny backend strumieniuje bufory pośrednie zamiast trzymać tymczasowe dla całego stosu. Wynik pozostaje identyczny bajt w bajt, z zmierzonym przyspieszeniem 1,47× dla OpenFocus C i 1,33× dla metody neuronowej. Nowy **tryb zasobów** (Zrównoważony / Responsywny / Maksymalny) utrzymuje płynność pulpitu bez zmiany obrazu.
 
 <a id="features"></a>
 ## Najważniejsze funkcje

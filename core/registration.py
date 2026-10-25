@@ -705,6 +705,44 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
     eh, ew = ref_est.shape[:2]
     patch_frac = min(0.7, max(0.34, 1.0 - 2.0 * float(max_shift_ratio) - 0.02))
 
+    def _prepare(i):
+        """Everything about frame i that does not depend on the state machine.
+
+        Greyscale, the σ32 brightness low-pass and the estimation-resolution
+        grey are per-frame and read-only, so they are computed for a bounded
+        window in parallel. The acceptance logic below still consumes the
+        results strictly in frame order.
+        """
+        gain = 1.0
+        if equalize_brightness:
+            cur_gray = _gray_float(images[i])
+            cur_low = cv2.GaussianBlur(cur_gray, (0, 0), 32.0)
+            cur_mean = float(cur_low.mean())
+            if cur_mean > 1e-3:
+                gain = float(np.clip(ref_low_mean / cur_mean, 0.5, 2.0))
+        return i, gain, _of_gray_est(images[i], est_width)
+
+    prepared = {}
+    prep_pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, int(thread_count or 4)))
+    prep_pending = {}
+    prep_next = [0]
+
+    def _prep_window(limit):
+        """Keep at most a small window of prepared frames ahead of `limit`."""
+        window = 2 * max(1, int(thread_count or 4))
+        while len(prep_pending) < window and prep_next[0] < limit:
+            idx = prep_next[0]
+            prep_pending[idx] = prep_pool.submit(_prepare, idx)
+            prep_next[0] += 1
+
+    def _prepared(i):
+        fut = prep_pending.pop(i, None)
+        if fut is not None:
+            _, gain, est = fut.result()
+            prepared[i] = (gain, est)
+        return prepared[i]
+
     def _compose_full(ncc_pack):
         """估计分辨率下的校正参数 → 全分辨率 3x3（warpAffine 直接可用）。
 
@@ -733,79 +771,84 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
     corrections[ref_idx] = np.eye(3, dtype=np.float64)
     prev_est = ref_est
     print("Aligning %d images using OpenFocus (reference: first frame)..." % n)
-    for i in range(n):
-        if should_cancel is not None and should_cancel():
-            raise RegistrationCancelled()
-        # 亮度标定对参考帧同样生效：几何锚点在前，曝光锚点可以在另一端
-        # （融合默认标定到末帧），参考帧的 gain 不是恒等。
-        gain = 1.0
-        if equalize_brightness:
-            cur_gray = _gray_float(images[i])
-            cur_low = cv2.GaussianBlur(cur_gray, (0, 0), 32.0)
-            cur_mean = float(cur_low.mean())
-            if cur_mean > 1e-3:
-                gain = float(np.clip(ref_low_mean / cur_mean, 0.5, 2.0))
-        gains[i] = gain
-        if i == ref_idx:
-            continue
+    try:
+        _prep_window(n)
+        for i in range(n):
+            if should_cancel is not None and should_cancel():
+                raise RegistrationCancelled()
+            # 亮度标定对参考帧同样生效：几何锚点在前，曝光锚点可以在另一端
+            # （融合默认标定到末帧），参考帧的 gain 不是恒等。
+            gain, cur_est = _prepared(i)
+            gains[i] = gain
+            if i == ref_idx:
+                continue
 
-        cur_est = _of_gray_est(images[i], est_width)
-        # 模板必须给可接受的位移留出搜索余量：patch_frac=0.7 最多覆盖
-        # 单边 15% 的位移；用户把上限放宽到 25% 时若不缩小模板，真位移
-        # 落在搜索窗外，估计器只能返回窗内的伪峰（并真的平移该帧）。
-        est = _of_estimate_similarity(ref_est, cur_est,
-                                      patch_frac=patch_frac)
-        chained = False
-        if est[0] < chain_ncc and i >= 2:
-            # 失焦/弱纹理帧：与相邻帧（模糊程度接近）更相关——链式估计
-            est2 = _of_estimate_similarity(prev_est, cur_est,
-                                           patch_frac=patch_frac)
-            if est2[0] > est[0] + 0.02:
-                M = corrections[i - 1] @ _compose_full(est2)
-                chained = True
-                est = (est2[0],) + est[1:]
-        if not chained:
-            M = _compose_full(est)
+            # 模板必须给可接受的位移留出搜索余量：patch_frac=0.7 最多覆盖
+            # 单边 15% 的位移；用户把上限放宽到 25% 时若不缩小模板，真位移
+            # 落在搜索窗外，估计器只能返回窗内的伪峰（并真的平移该帧）。
+            est = _of_estimate_similarity(ref_est, cur_est,
+                                          patch_frac=patch_frac)
+            chained = False
+            if est[0] < chain_ncc and i >= 2:
+                # 失焦/弱纹理帧：与相邻帧（模糊程度接近）更相关——链式估计
+                est2 = _of_estimate_similarity(prev_est, cur_est,
+                                               patch_frac=patch_frac)
+                if est2[0] > est[0] + 0.02:
+                    M = corrections[i - 1] @ _compose_full(est2)
+                    chained = True
+                    est = (est2[0],) + est[1:]
+            if not chained:
+                M = _compose_full(est)
 
-        ncc = est[0]
-        if ncc < min_ncc:
-            M = np.eye(3)
-        # 平移分量取“画面中心的净位移”：矩阵的 M[:,2] 还包含绕中心旋转/缩放
-        # 诱导的项（480×360 上 2.5° 就有 ~8-11px），直接拿它判上限会把合法
-        # 的旋转校正误杀成“位移超限”。t_c = b + (A − I)·c。
-        A2 = M[:2, :2]
-        tc = M[:2, 2] + A2 @ np.array([w / 2.0, h / 2.0]) - np.array(
-            [w / 2.0, h / 2.0])
-        tx = float(tc[0])
-        ty = float(tc[1])
-        # 位移上限：超限**放弃该帧对齐**——较大的位移估计不可靠，
-        # 旧的"钳制到上限"会把大位移校正成半错位，还让有效区交集被裁掉
-        # 一大块（25% 上限意味着单边最多裁 1/4 画面）。
-        over = (abs(tx) > max_shift[0] or abs(ty) > max_shift[1])
-        # 旋转/放大率各自独立设限（Helicon 的 Rotation / Magnification
-        # adjustment）：搜索范围本身就是这两个值，超出即说明估计不可信，
-        # 与位移超限同样放弃整帧而不是半校正。
-        rot_deg = float(np.degrees(np.arctan2(M[1, 0], M[0, 0])))
-        scale_now = float(np.sqrt(abs(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])))
-        if (abs(rot_deg) > max_rotation_deg + 1e-6
-                or abs(scale_now - 1.0) > max_scale_delta + 1e-6):
-            over = True
-        if over:
-            M = np.eye(3)
-            tx = ty = 0.0
-            rot_deg, scale_now = 0.0, 1.0
-        # 死区：整体运动可忽略 → 恒等（不产生裁边/插值损失）
-        if (abs(tx) < dead_t and abs(ty) < dead_t
-                and abs(rot_deg) < dead_rot
-                and abs(scale_now - 1.0) < dead_scale):
-            M = np.eye(3)
-        corrections[i] = M
-        prev_est = cur_est
-        print("  frame %d/%d: rot %+.2f° scale %.3f shift (%+.2f, %+.2f)"
-              " ncc %.2f%s%s" % (i + 1, n, rot_deg, scale_now, tx, ty, ncc,
-                                 " (chained)" if chained else "",
-                                 " (DROPPED: shift over %.0f%% of frame)"
-                                 % (100.0 * max_shift_ratio) if over else ""))
+            ncc = est[0]
+            if ncc < min_ncc:
+                M = np.eye(3)
+            # 平移分量取“画面中心的净位移”：矩阵的 M[:,2] 还包含绕中心旋转/缩放
+            # 诱导的项（480×360 上 2.5° 就有 ~8-11px），直接拿它判上限会把合法
+            # 的旋转校正误杀成“位移超限”。t_c = b + (A − I)·c。
+            A2 = M[:2, :2]
+            tc = M[:2, 2] + A2 @ np.array([w / 2.0, h / 2.0]) - np.array(
+                [w / 2.0, h / 2.0])
+            tx = float(tc[0])
+            ty = float(tc[1])
+            # 位移上限：超限**放弃该帧对齐**——较大的位移估计不可靠，
+            # 旧的"钳制到上限"会把大位移校正成半错位，还让有效区交集被裁掉
+            # 一大块（25% 上限意味着单边最多裁 1/4 画面）。
+            over = (abs(tx) > max_shift[0] or abs(ty) > max_shift[1])
+            # 旋转/放大率各自独立设限（Helicon 的 Rotation / Magnification
+            # adjustment）：搜索范围本身就是这两个值，超出即说明估计不可信，
+            # 与位移超限同样放弃整帧而不是半校正。
+            rot_deg = float(np.degrees(np.arctan2(M[1, 0], M[0, 0])))
+            scale_now = float(np.sqrt(abs(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])))
+            if (abs(rot_deg) > max_rotation_deg + 1e-6
+                    or abs(scale_now - 1.0) > max_scale_delta + 1e-6):
+                over = True
+            if over:
+                M = np.eye(3)
+                tx = ty = 0.0
+                rot_deg, scale_now = 0.0, 1.0
+            # 死区：整体运动可忽略 → 恒等（不产生裁边/插值损失）
+            if (abs(tx) < dead_t and abs(ty) < dead_t
+                    and abs(rot_deg) < dead_rot
+                    and abs(scale_now - 1.0) < dead_scale):
+                M = np.eye(3)
+            corrections[i] = M
+            prev_est = cur_est
+            # Only a small window of prepared frames may stay alive; the
+            # state machine never needs an earlier frame again.
+            prepared.pop(i - 1, None)
+            _prep_window(n)
+            print("  frame %d/%d: rot %+.2f° scale %.3f shift (%+.2f, %+.2f)"
+                  " ncc %.2f%s%s" % (i + 1, n, rot_deg, scale_now, tx, ty, ncc,
+                                     " (chained)" if chained else "",
+                                     " (DROPPED: shift over %.0f%% of frame)"
+                                     % (100.0 * max_shift_ratio) if over else ""))
+    finally:
+        for pending in prep_pending.values():
+            pending.cancel()
+        prep_pool.shutdown(wait=True)
+        prepared.clear()
+        prep_pending.clear()
 
     def _warp(args):
         idx, img, M, gain = args
@@ -859,7 +902,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
 
 # ========== ECC对齐算法实现（高精度） ==========
 
-def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000, thread_count: int = 4, should_cancel=None):
+def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000, thread_count: int = 4, should_cancel=None, use_gpu: bool = False):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -1036,15 +1079,22 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     # 构造裁切平移矩阵
     T_crop = np.array([[1, 0, offset_x], [0, 1, offset_y], [0, 0, 1]], dtype=np.float32)
 
-    # 尝试导入 cupy
-    try:
-        import cupy as cp
-        import cupyx.scipy.ndimage
-        HAS_CUPY = True
-        print("    [Info] Cupy detected. GPU acceleration enabled for warping.")
-    except ImportError:
-        HAS_CUPY = False
-        print("    [Info] Cupy not found. Using CPU for warping.")
+    # 尝试导入 cupy。仅当调用方显式要求 GPU 时才使用——以前只要机器上
+    # 装了 CuPy 就静默切到 GPU，`use_gpu=False` / CLI `--cpu` 无法关闭它，
+    # 而且这条路径用双线性插值、CPU 路径用 Lanczos4，两者本来就不等价。
+    HAS_CUPY = False
+    cp = None
+    if use_gpu:
+        try:
+            import cupy as cp
+            import cupyx.scipy.ndimage
+            HAS_CUPY = True
+            print("    [Info] Cupy detected. GPU acceleration enabled for warping.")
+        except ImportError:
+            HAS_CUPY = False
+            print("    [Info] Cupy not requested or unavailable. Using CPU for warping.")
+    else:
+        print("    [Info] GPU warping disabled. Using CPU for warping.")
 
     def warp_task(args):
         idx, img, H = args
@@ -1338,7 +1388,8 @@ class ImageRegistration:
     
     def __init__(self, method: str = 'homography', downscale_width: int = 1024,
                  max_shift_ratio: Optional[float] = None,
-                 brightness_reference: str = "first"):
+                 brightness_reference: str = "first",
+                 use_gpu: bool = False):
         """
         初始化配准器
         
@@ -1347,6 +1398,9 @@ class ImageRegistration:
             downscale_width (int): 特征/估计阶段的下采样宽度
             max_shift_ratio (float): 仅 'openfocus' 生效——位移上限（帧尺寸
                 比例，0–1）。None 用 _OF_MAX_SHIFT_RATIO（8%）。
+            use_gpu (bool): 允许 ECC 的像素 warp 使用 CuPy。默认 False：
+                以前只要机器装了 CuPy 就静默启用，用户和 CLI 的 --cpu 都
+                关不掉，而且它与 CPU 的 Lanczos4 路径并不等价。
         """
         if method not in self.SUPPORTED_METHODS:
             raise ValueError(
@@ -1363,6 +1417,7 @@ class ImageRegistration:
         self.brightness_reference = (brightness_reference
                                      if brightness_reference in ("first", "last")
                                      else "first")
+        self.use_gpu = bool(use_gpu)
     
     def process(self, 
                 input_source: Union[str, List[np.ndarray]], 
@@ -1430,7 +1485,7 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel)
+        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu)
 
     def _process_openfocus(self,
                            input_source: Union[str, List[np.ndarray]],

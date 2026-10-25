@@ -3,8 +3,9 @@
 """
 
 import os
-import sys
 import platform
+import struct
+import sys
 
 
 def get_os_type() -> str:
@@ -163,18 +164,118 @@ def reset_gpu_probe_cache() -> None:
 _PHYSICAL_CORES = None
 
 
+def _windows_physical_cores() -> int:
+    """Count RelationProcessorCore records via GetLogicalProcessorInformationEx.
+
+    Each record starts with ``DWORD Relationship; DWORD Size`` followed by the
+    relationship-specific union; walking by the record's own Size avoids
+    hard-coding that union layout. (Reading the header as two WORDs — the
+    mistake behind the older SYSTEM_LOGICAL_PROCESSOR_INFORMATION attempt —
+    yields Size 0 and misreads the strides on x64, reporting 10 cores for a
+    12-core machine.)
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    func = kernel32.GetLogicalProcessorInformationEx
+    func.argtypes = [wintypes.DWORD, ctypes.c_void_p,
+                     ctypes.POINTER(wintypes.DWORD)]
+    func.restype = wintypes.BOOL
+    RELATION_PROCESSOR_CORE = 0
+    length = wintypes.DWORD(0)
+    # First call sizes the buffer; ERROR_INSUFFICIENT_BUFFER is expected.
+    func(RELATION_PROCESSOR_CORE, None, ctypes.byref(length))
+    if length.value <= 0:
+        return 0
+    buffer = ctypes.create_string_buffer(length.value)
+    if not func(RELATION_PROCESSOR_CORE, ctypes.byref(buffer),
+                ctypes.byref(length)):
+        return 0
+    raw = bytes(buffer[:length.value])
+    cores = 0
+    offset = 0
+    while offset + 8 <= len(raw):
+        relationship, size = struct.unpack_from("<II", raw, offset)
+        if size < 8 or offset + size > len(raw):
+            break
+        if relationship == RELATION_PROCESSOR_CORE:
+            cores += 1
+        offset += size
+    return cores
+
+
+def _linux_physical_cores() -> int:
+    """/proc/cpuinfo (physical id, core id) pairs, else the affinity count."""
+    try:
+        pairs = set()
+        physical_id = core_id = None
+        with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                key, _, value = line.partition(":")
+                key = key.strip()
+                if key == "physical id":
+                    physical_id = value.strip()
+                elif key == "core id":
+                    core_id = value.strip()
+                elif not line.strip():
+                    if physical_id is not None and core_id is not None:
+                        pairs.add((physical_id, core_id))
+                    physical_id = core_id = None
+        if pairs:
+            return len(pairs)
+    except OSError:
+        pass
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return 0
+
+
+def _macos_physical_cores() -> int:
+    """sysctl hw.physicalcpu (Apple silicon reports P+E cores)."""
+    import ctypes
+    try:
+        libc = ctypes.CDLL(None)
+        size = ctypes.c_size_t(0)
+        if libc.sysctlbyname(b"hw.physicalcpu", None,
+                             ctypes.byref(size), None, 0) != 0:
+            return 0
+        value = ctypes.c_uint32(0)
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        if libc.sysctlbyname(b"hw.physicalcpu", ctypes.byref(value),
+                             ctypes.byref(size), None, 0) != 0:
+            return 0
+        return int(value.value)
+    except (AttributeError, OSError):
+        return 0
+
+
 def physical_core_count() -> int:
     """Physical cores (SMT siblings counted once).
 
     Tile fusion is memory-bandwidth-bound: hyper-threads add peak memory
     without adding throughput, which is why Helicon-style engines size their
-    worker pool from physical cores. Modern multi-core desktops are all SMT,
-    so the logical count halved is the reliable estimate (win32 structure
-    walking was tried and misread stride sizes on x64); floor 1.
+    worker pool from physical cores. A mixed P/E laptop has no SMT on its
+    efficiency cores, so ``logical // 2`` undercounts it (an i7-12700 has 12
+    physical cores behind 20 logical processors); the platform API answers
+    the real topology and the halved count is only the fallback.
     """
     global _PHYSICAL_CORES
     if _PHYSICAL_CORES is not None:
         return _PHYSICAL_CORES
     logical = os.cpu_count() or 4
-    _PHYSICAL_CORES = max(1, logical // 2)
+    detected = 0
+    try:
+        if is_windows():
+            detected = _windows_physical_cores()
+        elif is_linux():
+            detected = _linux_physical_cores()
+        elif is_macos():
+            detected = _macos_physical_cores()
+    except Exception:
+        detected = 0
+    if detected <= 0:
+        detected = max(1, logical // 2)
+    _PHYSICAL_CORES = max(1, min(int(detected), logical))
     return _PHYSICAL_CORES

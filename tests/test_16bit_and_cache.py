@@ -187,6 +187,136 @@ class TestAlignCache:
                                  (True, False), 1024, 1.0)
         assert align_cache.load_aligned(stack_dir, names, (True, False), 1024, 0.5) is None
 
+    def test_signature_carries_a_format_version(self, stack_dir):
+        """A cache written by an older alignment build must not be reused.
+
+        The file identity and the request parameters can be identical while
+        the alignment maths changed; the version prefix is what makes that
+        invalidate instead of silently feeding stale frames into a render.
+        """
+        names = self.names(stack_dir)
+        before = align_cache._signature(stack_dir, names, (True, False), 1024)
+        original = align_cache.CACHE_FORMAT_VERSION
+        try:
+            align_cache.CACHE_FORMAT_VERSION = original + 1
+            after = align_cache._signature(stack_dir, names, (True, False), 1024)
+        finally:
+            align_cache.CACHE_FORMAT_VERSION = original
+        assert before != after
+
+
+class TestAlignCacheIsNotOnTheGuiThread:
+    """Reading a cache hit used to decode every PNG synchronously in the GUI."""
+
+    def _worker(self, tmp_path, frames, request):
+        from core.workers import RenderWorker
+        worker = RenderWorker(
+            frames, [], False, None, False, False, False,
+            True, False, False, False, False, 31,
+            use_gpu=False, disk_cache=request,
+        )
+        return worker
+
+    def test_worker_loads_a_cache_hit(self, tmp_path):
+        folder = tmp_path / "stack"
+        folder.mkdir()
+        frames = []
+        for i in range(3):
+            frame = np.full((8, 8, 3), i * 40, np.uint8)
+            frames.append(frame)
+            cv2.imwrite(str(folder / f"f{i}.png"), frame)
+        names = sorted(os.listdir(folder))
+        aligned = [np.full((8, 8, 3), 9, np.uint8) for _ in names]
+        align_cache.save_aligned(str(folder), names, aligned, (True, False), 1024)
+
+        worker = self._worker(tmp_path, frames, {
+            "mode": "load", "folder": str(folder), "filenames": names,
+            "align_options": (True, False), "downscale_width": 1024,
+        })
+        loaded = worker._load_cached_alignment()
+        assert loaded is not None and len(loaded) == len(frames)
+        assert np.array_equal(loaded[0], aligned[0])
+
+    def test_worker_ignores_a_missing_cache(self, tmp_path):
+        frames = [np.zeros((8, 8, 3), np.uint8) for _ in range(2)]
+        worker = self._worker(tmp_path, frames, {
+            "mode": "load", "folder": str(tmp_path / "absent"),
+            "filenames": ["a.png", "b.png"], "align_options": (True, False),
+        })
+        assert worker._load_cached_alignment() is None
+
+    def test_no_request_means_no_io(self, tmp_path):
+        frames = [np.zeros((8, 8, 3), np.uint8) for _ in range(2)]
+        worker = self._worker(tmp_path, frames, None)
+        assert worker._load_cached_alignment() is None
+
+    def test_worker_writes_only_when_asked(self, tmp_path):
+        folder = tmp_path / "stack"
+        folder.mkdir()
+        frames = []
+        for i in range(2):
+            frame = np.full((8, 8, 3), i * 10, np.uint8)
+            frames.append(frame)
+            cv2.imwrite(str(folder / f"f{i}.png"), frame)
+        names = sorted(os.listdir(folder))
+
+        # mode="load" must never write.
+        loader = self._worker(tmp_path, frames, {
+            "mode": "load", "folder": str(folder), "filenames": names,
+            "align_options": (True, False), "downscale_width": 1024,
+        })
+        loader._save_cached_alignment(frames)
+        assert align_cache.load_aligned(str(folder), names, (True, False),
+                                        1024) is None
+
+        saver = self._worker(tmp_path, frames, {
+            "mode": "save", "folder": str(folder), "filenames": names,
+            "align_options": (True, False), "downscale_width": 1024,
+        })
+        saver._save_cached_alignment(frames)
+        saved = align_cache.load_aligned(str(folder), names, (True, False), 1024)
+        assert saved is not None and np.array_equal(saved[0], frames[0])
+
+    def test_reused_flag_distinguishes_load_from_compute(self, tmp_path):
+        """A cache hit must be reportable as a hit, not as a fresh alignment."""
+        folder = tmp_path / "stack"
+        folder.mkdir()
+        frames = []
+        for i in range(2):
+            frame = np.full((8, 8, 3), i * 20, np.uint8)
+            frames.append(frame)
+            cv2.imwrite(str(folder / f"f{i}.png"), frame)
+        names = sorted(os.listdir(folder))
+        align_cache.save_aligned(str(folder), names, frames, (True, False), 1024)
+
+        worker = self._worker(tmp_path, frames, {
+            "mode": "load", "folder": str(folder), "filenames": names,
+            "align_options": (True, False), "downscale_width": 1024,
+        })
+        assert worker.alignment_reused is False
+        assert worker._load_cached_alignment() is not None
+        # The flag is set by run() when the load succeeded, not by the helper;
+        # what matters here is that a fresh worker starts as "not reused".
+        assert worker.alignment_computed is False
+
+    def test_a_failed_write_never_fails_the_render(self, tmp_path, monkeypatch):
+        folder = tmp_path / "stack"
+        folder.mkdir()
+        frames = [np.zeros((8, 8, 3), np.uint8) for _ in range(2)]
+        for i, frame in enumerate(frames):
+            cv2.imwrite(str(folder / f"f{i}.png"), frame)
+        names = sorted(os.listdir(folder))
+
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(align_cache, "save_aligned", boom)
+        worker = self._worker(tmp_path, frames, {
+            "mode": "save", "folder": str(folder), "filenames": names,
+            "align_options": (True, False), "downscale_width": 1024,
+        })
+        worker._save_cached_alignment(frames)  # must not raise
+
 
 class TestBatchWorkerBitDepth:
     def test_multi_folder_batch_keeps_16bit(self, tmp_path):

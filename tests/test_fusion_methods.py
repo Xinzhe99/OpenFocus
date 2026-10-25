@@ -105,6 +105,87 @@ def test_tiled_fusion_cancels_promptly(two_focus_stack):
     assert seen["done"] < seen["total"], "every tile ran despite the cancel"
 
 
+def test_tiled_reduction_order_is_deterministic(two_focus_stack):
+    """Tile results must be accumulated in tile order, not completion order.
+
+    The old loop reduced in ``as_completed`` order, so float32 addition made
+    the output depend on which worker happened to finish first. The bounded
+    window consumes results in tile-coordinate order, which is the same order
+    a single-worker run uses.
+    """
+    stack = make_two_focus_stack((160, 200))
+    results = []
+    for threads in (1, 3):
+        fusion = MultiFocusFusion(algorithm="guided_filter", use_gpu=False,
+                                  tile_enabled=True, tile_block_size=64,
+                                  tile_overlap=16, tile_threshold=10)
+        results.append(fusion.fuse(input_source=list(stack), img_resize=None,
+                                   kernel_size=31, thread_count=threads))
+    assert np.array_equal(results[0], results[1]), \
+        "tile accumulation still depends on the worker schedule"
+
+
+def test_tiled_fusion_bounds_in_flight_tiles(two_focus_stack):
+    """At most `workers` tiles may be alive at once, whatever the tile count.
+
+    The old loop submitted every tile immediately and held each finished
+    result until it was reduced, so peak memory grew with the tile count.
+    """
+    from core import multi_focus_fusion as mff
+
+    stack = make_two_focus_stack((256, 256))
+    original = mff.MultiFocusFusion._calculate_optimal_thread_count
+    observations = []
+    running = {"now": 0, "peak": 0}
+    lock = __import__("threading").Lock()
+
+    def counting(self, *args, **kwargs):
+        return 2
+
+    def tracked(call_algo):
+        return call_algo
+
+    fusion = mff.MultiFocusFusion(algorithm="guided_filter", use_gpu=False,
+                                  tile_enabled=True, tile_block_size=64,
+                                  tile_overlap=16, tile_threshold=10)
+    real_process = fusion._fuse_guided_filter
+
+    def wrapped(input_source, *args, **kwargs):
+        with lock:
+            running["now"] += 1
+            running["peak"] = max(running["peak"], running["now"])
+        try:
+            return real_process(input_source, *args, **kwargs)
+        finally:
+            with lock:
+                running["now"] -= 1
+
+    mff.MultiFocusFusion._calculate_optimal_thread_count = counting
+    fusion._fuse_guided_filter = wrapped
+    try:
+        fusion.fuse(input_source=list(stack), img_resize=None, kernel_size=31)
+    finally:
+        mff.MultiFocusFusion._calculate_optimal_thread_count = original
+    observations.append(running["peak"])
+    assert observations[0] <= 2, observations
+
+
+def test_tiled_progress_reports_every_tile_once(two_focus_stack):
+    stack = make_two_focus_stack((192, 192))
+    seen = []
+    fusion = MultiFocusFusion(algorithm="openfocus_a", use_gpu=False,
+                              tile_enabled=True, tile_block_size=64,
+                              tile_overlap=16, tile_threshold=10)
+    out = fusion.fuse(input_source=list(stack), img_resize=None, kernel_size=7,
+                      progress_callback=lambda done, total: seen.append((done, total)))
+    assert out.shape[:2] == (192, 192)
+    assert seen, "tiled fusion reported no progress"
+    totals = {total for _done, total in seen}
+    assert len(totals) == 1
+    total = totals.pop()
+    assert [done for done, _t in seen] == list(range(1, total + 1))
+
+
 @pytest.mark.parametrize("shape", [(120, 40), (40, 160)])
 def test_tiled_fusion_handles_axis_shorter_than_block(two_focus_stack, shape):
     """A tile must be clamped to the image, not to a negative start.

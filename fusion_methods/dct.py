@@ -101,9 +101,10 @@ def dct_focus_stack_fusion(
     orig_h, orig_w = h, w
     pad_h = ((h + block_size - 1) // block_size) * block_size
     pad_w = ((w + block_size - 1) // block_size) * block_size
+    pad_rows, pad_cols = pad_h - h, pad_w - w
     if (pad_h, pad_w) != (h, w):
         normalized_images = [
-            cv2.copyMakeBorder(img, 0, pad_h - h, 0, pad_w - w,
+            cv2.copyMakeBorder(img, 0, pad_rows, 0, pad_cols,
                                cv2.BORDER_REPLICATE)
             for img in normalized_images
         ]
@@ -131,23 +132,28 @@ def dct_focus_stack_fusion(
         
         # 转灰度并转 float32 以防止平方溢出
         gray = cv2.cvtColor(img_trim, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        
-        # 1. 计算 E[X^2] (平方的均值)
-        # cv2.resize 使用 INTER_AREA 实际上就是在做块平均，速度极快
-        mean_sq = cv2.resize(gray ** 2, (map_w, map_h), interpolation=cv2.INTER_AREA)
-        
+
         # 2. 计算 (E[X])^2 (均值的平方)
         mean_val = cv2.resize(gray, (map_w, map_h), interpolation=cv2.INTER_AREA)
-        sq_mean = mean_val ** 2
-        
+        np.square(mean_val, out=mean_val)
+
+        # 1. 计算 E[X^2] (平方的均值)
+        # cv2.resize 使用 INTER_AREA 实际上就是在做块平均，速度极快
+        # Squaring in place reuses the one float frame buffer instead of
+        # allocating a second full-size temporary per frame.
+        np.square(gray, out=gray)
+        mean_sq = cv2.resize(gray, (map_w, map_h), interpolation=cv2.INTER_AREA)
+
         # 3. 方差 Var(X) = E[X^2] - (E[X])^2
         # 这在数学上严格等价于 DCT 交流分量的能量和
-        var_map = mean_sq - sq_mean
+        var_map = mean_sq
+        var_map -= mean_val
         
         # 更新最大方差图
         mask = var_map > max_variance_map
         max_variance_map[mask] = var_map[mask]
         best_index_map[mask] = idx
+        del gray, mean_sq, mean_val, var_map, mask
 
     # --- 3. 一致性验证 (中值滤波) ---
     # cv2.medianBlur 在 ksize > 5 时只接受 CV_8U，帧数 >= 256 的索引图会直接报错。

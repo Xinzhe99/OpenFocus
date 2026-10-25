@@ -19,7 +19,6 @@ in ``core/models/stackmff_v3`` (MIT, see ``THIRD_PARTY_NOTICES.md``) and the
 weights are a 0.66 MB self-contained checkpoint shipped in ``weights/``.
 """
 torch = None
-F = None
 
 import os
 import cv2
@@ -50,13 +49,11 @@ VALID_MODES = ("soft", "hard")
 
 def _ensure_torch():
     """Import torch on first use and probe available accelerators once."""
-    global torch, F, MT
+    global torch, MT
     if torch is not None:
         return
     import torch as _torch
-    import torch.nn.functional as _F
     torch = _torch
-    F = _F
     try:
         if torch.cuda.is_available():
             MT = 'CUDA'
@@ -123,7 +120,7 @@ def _gray01(bgr):
 def _probabilities(batch_input, model, device, mode):
     """Probability stack [B, N, Hp, Wp] for one padded batch."""
     sigma = 0.0 if mode == 'hard' else SOFT_SIGMA
-    with torch.no_grad():
+    with torch.inference_mode():
         return model.forward_probs(batch_input.to(device), sigma=sigma)
 
 
@@ -182,21 +179,23 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft'):
     ph, pw = (-h) % PAD_ALIGN, (-w) % PAD_ALIGN
     hp, wp = h + ph, w + pw
 
-    # Build at the frame size and pad once: allocating at the padded size and
-    # padding again produced 136x224 probabilities for a 120x160 tile.
-    batch_input = torch.zeros(len(tiles_list), n, h, w)
+    # Build the padded staging tensor directly: the previous version filled a
+    # zero tensor at (h, w) and then allocated a second (hp, wp) tensor to
+    # replicate-pad it, i.e. two full batch allocations per call. The padded
+    # border is filled by replicating the last row/column, which is what
+    # F.pad(..., mode='replicate') did, so the model sees the same input.
+    batch_input = torch.zeros(len(tiles_list), n, hp, wp)
     for b, tile in enumerate(tiles_list):
         for f, bgr in enumerate(tile):
             if bgr.shape[:2] != (h, w):
                 raise ValueError(
                     f"Tile {b} frame {f} is {bgr.shape[:2]}, "
                     f"expected {(h, w)}")
-            batch_input[b, f] = torch.from_numpy(_gray01(bgr))
-    if ph or pw:
-        # Replicate rather than zeros: a zero band would drag the soft weights
-        # of the padded pixels toward whichever frame is dark, and the band is
-        # cropped afterwards anyway.
-        batch_input = F.pad(batch_input, (0, pw, 0, ph), mode='replicate')
+            batch_input[b, f, :h, :w] = torch.from_numpy(_gray01(bgr))
+    if ph:
+        batch_input[:, :, h:, :] = batch_input[:, :, h - 1:h, :]
+    if pw:
+        batch_input[:, :, :, w:] = batch_input[:, :, :, w - 1:w]
 
     probs = _probabilities(batch_input, model, device, mode)
     del batch_input
@@ -284,12 +283,19 @@ def model_probabilities(frames, model_path, use_gpu, sigma=0.0):
     h, w = frames[0].shape[:2]
     ph, pw = (-h) % PAD_ALIGN, (-w) % PAD_ALIGN
 
+    # One allocation at the padded size with a replicated border, exactly like
+    # _stackmffv3_batch_impl. The old version allocated (h+ph, w+pw) and then
+    # called F.pad on it again, which added a second border (and a second
+    # full-tensor copy) — the padded pixels the network saw differed from the
+    # fusion path's.
     batch = torch.zeros(1, len(frames), h + ph, w + pw)
     for f, bgr in enumerate(frames):
         batch[0, f, :h, :w] = torch.from_numpy(_gray01(bgr))
-    if ph or pw:
-        batch = F.pad(batch, (0, pw, 0, ph), mode='replicate')
+    if ph:
+        batch[:, :, h:, :] = batch[:, :, h - 1:h, :]
+    if pw:
+        batch[:, :, :, w:] = batch[:, :, :, w - 1:w]
 
-    with torch.no_grad():
+    with torch.inference_mode():
         P = model.forward_probs(batch.to(device), sigma=sigma)
     return P[0].cpu().numpy()[:, :h, :w]

@@ -18,6 +18,11 @@ from utils.image_utils import imwrite_auto
 
 CACHE_DIR_NAME = ".openfocus_cache"
 
+# Bump when the alignment maths changes in a way that makes older cached
+# frames wrong. The signature below already covers the file identity and the
+# request parameters; this covers code changes that keep both unchanged.
+CACHE_FORMAT_VERSION = 2
+
 
 def _read_frame(path: str) -> Optional[np.ndarray]:
     """Read a cached frame through np.fromfile (unicode-safe on Windows)."""
@@ -38,7 +43,9 @@ def _signature(folder: str, filenames: List[str], align_options: Tuple[bool, boo
     frame_shape covers rotate/flip/resize mutations and load-time
     downsampling, which file mtimes alone cannot detect.
     """
-    parts = [f"opts={align_options}|downscale={downscale_width}|scale={scale_factor}|shape={frame_shape}"]
+    parts = [f"v={CACHE_FORMAT_VERSION}",
+             f"opts={tuple(align_options)}|downscale={downscale_width}"
+             f"|scale={scale_factor}|shape={frame_shape}"]
     for name in filenames:
         path = os.path.join(folder, name)
         try:

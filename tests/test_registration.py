@@ -27,6 +27,49 @@ def _shifted_stack(dx=12, dy=6, size=(140, 180), n=2):
     return frames, (dx, dy)
 
 
+class TestEccBackendSelection:
+    """CuPy warp must be opt-in: ``use_gpu=False`` has to mean CPU."""
+
+    def test_gpu_is_off_by_default(self):
+        reg = ImageRegistration(method="ecc")
+        assert reg.use_gpu is False
+
+    def test_explicit_flag_is_kept(self):
+        assert ImageRegistration(method="ecc", use_gpu=True).use_gpu is True
+
+    def test_cpu_path_does_not_touch_cupy(self, monkeypatch):
+        """A machine with CuPy installed must still warp on the CPU."""
+        import core.registration as regmod
+
+        calls = []
+        monkeypatch.setattr(
+            regmod, "_align_ecc_impl",
+            lambda *a, **k: calls.append(k.get("use_gpu")) or [np.zeros((4, 4, 3), np.uint8)])
+
+        reg = ImageRegistration(method="ecc", use_gpu=False)
+        reg.process([np.zeros((4, 4, 3), np.uint8)] * 2)
+        assert calls == [False]
+
+    def test_gpu_flag_reaches_the_implementation(self, monkeypatch):
+        import core.registration as regmod
+
+        calls = []
+        monkeypatch.setattr(
+            regmod, "_align_ecc_impl",
+            lambda *a, **k: calls.append(k.get("use_gpu")) or [np.zeros((4, 4, 3), np.uint8)])
+
+        ImageRegistration(method="ecc", use_gpu=True).process(
+            [np.zeros((4, 4, 3), np.uint8)] * 2)
+        assert calls == [True]
+
+    def test_use_gpu_false_prints_the_cpu_path(self, capsys):
+        from core.registration import _align_ecc_impl
+        frames, _ = _shifted_stack(size=(60, 80), n=2)
+        _align_ecc_impl(list(frames), thread_count=1, use_gpu=False)
+        out = capsys.readouterr().out
+        assert "GPU warping disabled" in out
+
+
 def _sharpness_gap(a, b):
     """Mean absolute difference between two aligned frames."""
     return float(np.abs(a.astype(np.int16) - b.astype(np.int16)).mean())

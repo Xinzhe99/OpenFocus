@@ -142,6 +142,8 @@ class RenderWorker(QThread):
         blend_smoothing: float = None,
         exposure_match: bool = False,
         dtcwt_levels: int = 4,
+        disk_cache: dict | None = None,
+        resource_preference: str = "balanced",
     ):
         super().__init__()
         self.raw_images = raw_images
@@ -205,6 +207,20 @@ class RenderWorker(QThread):
             self.thread_count = 4
         # 对比渲染模式：显式指定算法，覆盖 UI 单选按钮的选择
         self.algorithm_override = algorithm_override
+        # 配准磁盘缓存的读写请求（None = 不查不写）。GUI 只负责描述请求，
+        # 解码/编码整栈 PNG 的 I/O 一律发生在工作线程里——命中缓存的读取
+        # 以前是在界面线程同步做的，大栈会冻结窗口数秒。
+        self.disk_cache = dict(disk_cache) if disk_cache else None
+        from core.resource_policy import PREFERENCES
+        self.resource_preference = (resource_preference
+                                    if resource_preference in PREFERENCES
+                                    else "balanced")
+        # True when this run used frames read back from the cache instead of
+        # computing them, so the caller can report "reused" honestly.
+        self.alignment_reused = False
+        # True only when this run actually ran the registration, which is the
+        # one case where writing the cache has new data to store.
+        self.alignment_computed = False
 
     def cancel(self):
         """Request cancellation; checked between registration/fusion stages."""
@@ -248,11 +264,22 @@ class RenderWorker(QThread):
                     if self.is_cancelled:
                         self.error_signal.emit("CANCELLED: render cancelled")
                         return
-                    alignment_start_time = time.time()
-                    self.stage_signal.emit("align")
-                    processed_images, alignment_time = self._run_registration(
-                        processed_images, should_cancel=lambda: self.is_cancelled)
-                    registration_performed = True
+                    # Disk cache lookup happens here, on the worker thread:
+                    # the GUI used to decode every cached PNG synchronously
+                    # before starting a render.
+                    cached = self._load_cached_alignment()
+                    if cached is not None:
+                        processed_images = cached
+                        registration_performed = True
+                        self.alignment_reused = True
+                        alignment_time = 0.0
+                    else:
+                        alignment_start_time = time.time()
+                        self.stage_signal.emit("align")
+                        processed_images, alignment_time = self._run_registration(
+                            processed_images, should_cancel=lambda: self.is_cancelled)
+                        registration_performed = True
+                        self.alignment_computed = True
 
             # 2. ROI裁剪阶段
             cropped_images, base_full_image, roi_rect_int = self._apply_roi_cropping(processed_images)
@@ -277,6 +304,12 @@ class RenderWorker(QThread):
 
                 fusion_time = time.time() - fusion_start_time
 
+            # Persist a freshly computed alignment before reporting the
+            # result, so the next render of this stack skips registration.
+            # Best-effort: _save_cached_alignment swallows write failures.
+            if self.alignment_computed:
+                self._save_cached_alignment(processed_images)
+
             self.finished_signal.emit(
                 processed_images,
                 fusion_result,
@@ -295,6 +328,67 @@ class RenderWorker(QThread):
             self.error_signal.emit(str(e))
             import traceback
             traceback.print_exc()
+
+    def _load_cached_alignment(self):
+        """Cached aligned frames for this request, or None.
+
+        Runs on the worker thread. Every guard that used to live in the GUI
+        (eligibility, cache toggle, OpenFocus-only exclusion) is resolved
+        before the request is built, so this only performs the I/O.
+        """
+        request = self.disk_cache
+        if not request or request.get("mode") != "load":
+            return None
+        from utils import align_cache
+        try:
+            cached = align_cache.load_aligned(
+                request.get("folder", ""),
+                list(request.get("filenames") or []),
+                tuple(request.get("align_options") or ()),
+                request.get("downscale_width"),
+                request.get("scale_factor", 1.0),
+                request.get("frame_shape"),
+            )
+        except Exception:
+            import logging
+            logging.getLogger("openfocus").exception(
+                "could not read the alignment cache")
+            return None
+        if cached is None:
+            return None
+        if len(cached) != len(self.raw_images):
+            return None
+        if self.is_cancelled:
+            return None
+        print("Registration cache hit — skipping alignment")
+        return cached
+
+    def _save_cached_alignment(self, images) -> None:
+        """Persist the alignment produced by this run (worker thread only).
+
+        The cache holds the *source* frames' alignment; a preview or ROI run
+        must never write it, which the request's mode already encodes.
+        """
+        request = self.disk_cache
+        if not request or request.get("mode") != "save" or not images:
+            return
+        from utils import align_cache
+        try:
+            align_cache.save_aligned(
+                request.get("folder", ""),
+                list(request.get("filenames") or []),
+                list(images),
+                tuple(request.get("align_options") or ()),
+                request.get("downscale_width"),
+                request.get("scale_factor", 1.0),
+                request.get("frame_shape"),
+            )
+        except Exception:
+            # A cache write failure must never turn a finished fusion into a
+            # failed one.
+            import logging
+            logging.getLogger("openfocus").exception(
+                "could not write the alignment cache")
 
     def _run_registration(self, images, should_cancel=None):
         """执行图像配准"""
@@ -325,9 +419,10 @@ class RenderWorker(QThread):
             return images, time.time() - alignment_start_time
 
         if self.reg_downscale_width is not None:
-            registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
+            registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width,
+                                             use_gpu=self.use_gpu)
         else:
-            registration = ImageRegistration(method=mode)
+            registration = ImageRegistration(method=mode, use_gpu=self.use_gpu)
 
         processed = registration.process(images, output_path=None, thread_count=self.thread_count, should_cancel=should_cancel)
         alignment_time = time.time() - alignment_start_time
@@ -396,6 +491,7 @@ class RenderWorker(QThread):
             base_frame=self.base_frame,
             sort_mode=self.sort_mode,
             exposure_match=self.exposure_match,
+            resource_preference=self.resource_preference,
         )
 
         # Classical algorithms are CPU-only (see AGENTS.md); only the neural
@@ -754,9 +850,11 @@ class BatchWorker(QThread):
                 from core.registration import ImageRegistration
                 width = self._registration_width(aligned_images)
                 if width is not None:
-                    registration = ImageRegistration(method=mode, downscale_width=width)
+                    registration = ImageRegistration(method=mode, downscale_width=width,
+                                                     use_gpu=self.use_gpu)
                 else:
-                    registration = ImageRegistration(method=mode)
+                    registration = ImageRegistration(method=mode,
+                                                     use_gpu=self.use_gpu)
                 aligned_images = registration.process(
                     aligned_images, output_path=None, thread_count=self.thread_count,
                     should_cancel=lambda: self.is_cancelled)

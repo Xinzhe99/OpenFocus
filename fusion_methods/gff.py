@@ -147,6 +147,7 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None)
         
         base_layers = [res[0] for res in decompose_results]
         detail_layers = [res[1] for res in decompose_results]
+        del decompose_results
             
         # 2. 计算显著性图 (Saliency Map)
         # Saliency = Gaussian(abs(Laplacian(Sum_Channels)))
@@ -160,15 +161,23 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None)
             sal = cv2.GaussianBlur(lap, (0, 0), sigmaX=DEFAULT_SIGMA_R, sigmaY=DEFAULT_SIGMA_R, borderType=cv2.BORDER_REFLECT)
             return sal
 
-        # 并行处理显著性图计算
+        # 3. 初始决策图 (Decision Map)：逐帧在线求 argmax。
+        # 严格 `>` 更新保持 np.argmax 的首帧平局行为，且不再物化整栈
+        # (N, H, W) 显著性堆栈——那是一个只用于一次 argmax 的全栈 float32。
+        max_indices = np.zeros((rows, cols), dtype=np.int32)
+        best_saliency = None
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            saliency_maps = list(executor.map(process_saliency, images))
-            
-        # 3. 生成初始决策图 (Decision Map)
-        # 在每个像素位置选择显著性最大的图像索引
-        saliency_stack = np.stack(saliency_maps, axis=0) # (N, H, W)
-        max_indices = np.argmax(saliency_stack, axis=0)  # (H, W)
-        
+            for k, sal in enumerate(executor.map(process_saliency, images)):
+                if best_saliency is None:
+                    best_saliency = sal
+                    continue
+                win = sal > best_saliency
+                if win.any():
+                    best_saliency[win] = sal[win]
+                    max_indices[win] = k
+                del win
+        del best_saliency
+
         # 4. 权重图细化与融合 (Weight Refinement & Fusion)
         # 初始化累加器
         fused_base_numerator = np.zeros((rows, cols, channels), dtype=np.float32)
@@ -176,7 +185,7 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None)
         
         fused_detail_numerator = np.zeros((rows, cols, channels), dtype=np.float32)
         fused_detail_denominator = np.zeros((rows, cols), dtype=np.float32) # 优化为单通道
-        
+
         def process_weight_fusion(k):
             # 生成第 k 张图的二值掩膜
             mask_k = (max_indices == k).astype(np.float32) # (H, W)
@@ -234,7 +243,7 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None)
             futures = [executor.submit(process_weight_fusion, k) for k in range(num_images)]
             # 按帧序号固定顺序累加：as_completed 的完成顺序取决于线程调度，
             # float32 加法不满足结合律，同输入不同运行会产生不同的输出像素。
-            for future in futures:
+            for k, future in enumerate(futures):
                 # 抛出来，不再只 print 后跳过：吞掉某一帧的异常会"成功"产出一张
                 # 缺帧的融合图，用户看不出结果已经被破坏。
                 bn, bd, dn, dd = future.result()
@@ -244,6 +253,11 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None)
                 fused_detail_denominator += dd
                 # 显式删除引用，帮助垃圾回收
                 del bn, bd, dn, dd
+                # 该帧的分解层只服务这一次权重计算：累加完就释放，避免
+                # base/detail 两套全栈 float32 一直活到重建阶段。
+                base_layers[k] = None
+                detail_layers[k] = None
+        del base_layers, detail_layers
 
             
         # 5. 重建图像

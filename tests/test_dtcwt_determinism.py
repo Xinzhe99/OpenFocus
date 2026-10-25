@@ -82,3 +82,40 @@ def test_parallel_helper_preserves_order():
 
     assert [float(o[0, 0]) for o in out] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
     assert sorted(calls) == calls, "planes were submitted out of order"
+
+def test_thread_count_argument_caps_the_frame_pool():
+    """A tiled render passes thread_count=1; DTCWT must not open its own pool.
+
+    The parameter used to be accepted and ignored, so every tile started two
+    activity workers inside an already-parallel tile loop.
+    """
+    frames = _stack()
+    seen = []
+    original = dtcwt_mod._iter_forward
+
+    def spy(transform, planes, nlevels, workers=None):
+        seen.append(workers)
+        return original(transform, planes, nlevels, workers=workers)
+
+    dtcwt_mod._iter_forward = spy
+    try:
+        dtcwt_mod._dtcwt_impl(frames, None, 3, False, thread_count=1)
+    finally:
+        dtcwt_mod._iter_forward = original
+    assert seen == [1], seen
+
+
+def test_thread_count_does_not_change_pixels():
+    frames = _stack()
+    baseline = dtcwt_mod._dtcwt_impl(frames, None, 3, False, thread_count=1)
+    for threads in (2, 4):
+        out = dtcwt_mod._dtcwt_impl(frames, None, 3, False, thread_count=threads)
+        assert np.array_equal(baseline, out), threads
+
+
+def test_cancellation_is_honoured_before_the_transform_pass():
+    frames = _stack()
+    from core.registration import RegistrationCancelled
+    with pytest.raises(RegistrationCancelled):
+        dtcwt_mod._dtcwt_impl(frames, None, 3, False,
+                              should_cancel=lambda: True)

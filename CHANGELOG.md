@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.69.0] — 2026-10-25
+
 ### Added
 - **`tools/launch_film.py` — a launch film generated entirely in code.** No
   editor, no stock footage: typography, easing, glow, vignette and film grain
@@ -14,7 +16,79 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   detail-selection fusion of that stack computed by the script itself, and the
   feature captures. `--preview N` renders stills for inspection.
 
+### Performance
+- **One execution plan for every heavy stage.** `core/resource_policy.py` turns
+  a resource snapshot and a workload into one immutable plan: outer workers,
+  native threads, in-flight results and RAM/VRAM budget. The fusion
+  orchestrator, the tile loop and the alignment passes all read it, so they
+  can no longer disagree about how much of the machine a render may use.
+  Exactly one parallel layer runs (many single-threaded tile workers, or one
+  worker with the whole thread budget), which is what the old
+  `thread_count=1` per-tile call was approximating by hand.
+- **Physical cores are detected, not guessed.** `physical_core_count()` read
+  `logical // 2`, which reports 10 cores for this 12-core i7-12700 (mixed P/E
+  laptops have no SMT on their efficiency cores). It now walks
+  `GetLogicalProcessorInformationEx` on Windows, `/proc/cpuinfo` on Linux and
+  `hw.physicalcpu` on macOS, falling back to the halved count only when the
+  platform cannot answer.
+- **OpenFocus A/B/C stream their intermediate buffers.** A held an
+  `(N, H, W)` variance stack plus an equally large weight stack and converted
+  the whole stack to float32 before using it; B held the variance stack and
+  then built an `(N, H, W, C)` float stack just to gather one pixel per
+  position; C held every frame's pyramid, band stack and weight stack. All
+  three now keep only the running accumulator (or winner) and one frame's
+  temporaries. Verified bit-identical on 8-bit, derived-16-bit, greyscale and
+  flat-tie inputs.
+- **GFF computes its saliency decision online.** The per-frame saliency maps
+  were stacked into an `(N, H, W)` float32 array only to call `np.argmax`
+  once; the base/detail layers are now released as each frame is accumulated.
+  Verified bit-identical at every thread count.
+- **DCT reuses one float frame buffer** instead of allocating `gray ** 2` and
+  the padding copy twice per frame.
+- **DTCWT streams its activity decision and honours `thread_count`.** The
+  activity pass kept one map per frame and level; it now keeps the running
+  maximum and its frame index per level, and the majority vote is consumed one
+  frame at a time. `thread_count` used to be accepted and ignored, so every
+  tile opened two activity workers inside an already-parallel tile loop. The
+  pass now also polls `should_cancel`.
+- **Tiled fusion runs a bounded window.** Every tile used to be submitted at
+  once and reduced in completion order: memory held up to `total_tiles`
+  finished results, and float32 addition made the output depend on thread
+  scheduling. At most `workers` tiles are in flight and results are reduced in
+  tile order, so the output is reproducible across worker counts.
+- **The neural tile path no longer allocates two unused full-image
+  accumulators**, builds its padded staging tensor once (instead of allocating
+  at frame size and padding into a second tensor), and uses
+  `torch.inference_mode()`. Real batching is enabled only on CUDA, where the
+  measured cost is lower; on the CPU a batched forward measured slower
+  (19.3 s vs 16.9 s for two 1024x1021 tiles), so tiles are inferred one at a
+  time and progress now advances only after the call that produced the tile
+  returned.
+- **The depth-map estimator no longer pads twice.** It allocated at
+  `(h+ph, w+pw)` and then called `F.pad` again, adding a second border — the
+  padded pixels the network saw differed from the fusion path's.
+- **OpenFocus alignment prepares frames in parallel** while keeping the
+  acceptance state machine strictly serial and in frame order, so the
+  confidence gate, the chained fallback, the shift/rotation/scale limits and
+  the dead zone all behave exactly as before.
+- **The registration disk cache is read and written by the worker.** A cache
+  hit used to decode every cached PNG on the GUI thread before the render
+  started, and a finished render re-encoded the whole stack there. The GUI now
+  only describes the request; preview and ROI runs are excluded by
+  construction and the cache signature carries a format version.
+
 ### Changed
+- **`--cpu` and the GPU toggle now really disable GPU alignment.** The ECC
+  path imported CuPy and switched to a GPU warp whenever the package was
+  installed, regardless of the flag — and that warp used bilinear
+  interpolation where the CPU path uses Lanczos4, so it was never an
+  equivalent backend. `ImageRegistration(use_gpu=...)` is explicit and
+  defaults to off; the CLI, the render worker, the batch worker and the
+  compare worker pass it through.
+- **New Resource mode setting** (Settings → Advanced Settings → Performance):
+  Balanced, Responsive or Maximum. It scales the core budget and the
+  in-flight window and never changes the fused image. `thread_count` is now an
+  upper bound rather than a fixed count.
 - **README feature wall** in all twelve languages: each capability is a
   two-column row with copy on the left and a real screenshot on the right,
   followed by an "also in the box" list. Screenshots are captured from the

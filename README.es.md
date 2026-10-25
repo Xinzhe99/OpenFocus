@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.68.1** — la exportación por lotes sigue el modo elegido: solo alineación crea una carpeta `<pila>_aligned` y la lista, la fusión lista solo la imagen fusionada, y sin exportar la alineación solo se escribe esa imagen. Las copias `*_registered*` que quedan en la carpeta de origen ya no se cargan como fotogramas. También se rehicieron etiquetas, barras de escala, comparación de métodos, exportación de profundidad/modelo, actualizaciones y retoque según la auditoría de `docs/ux-specs`.
+> **v1.69.0** — el motor de fusión ahora planifica su trabajo en vez de adivinarlo: un plan de ejecución por render decide workers, hilos y presupuesto de memoria, los núcleos físicos se leen de la plataforma en lugar de dividir el recuento lógico, y cada backend clásico hace streaming de sus búferes intermedios en vez de retener temporales de toda la pila. La salida es idéntica byte a byte, con mejoras medidas de 1,47× en OpenFocus C y 1,33× en el método neuronal. Un nuevo **modo de recursos** (Equilibrado / Priorizar respuesta / Máximo) mantiene el escritorio fluido sin tocar la imagen.
 
 <a id="features"></a>
 ## Funciones

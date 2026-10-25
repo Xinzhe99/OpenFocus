@@ -195,6 +195,10 @@ def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
 
 def memory_budget_bytes() -> int:
     """Bytes a fusion may use right now without making the machine swap."""
+    from core.resource_policy import probe_resources, ram_budget
+    budget = ram_budget(probe_resources())
+    if budget > 0:
+        return budget
     avail = memory.available_memory_bytes()
     if avail <= 0:
         return int(2048 * 1024 ** 2)
@@ -304,7 +308,8 @@ class MultiFocusFusion:
                  ai_mode: str = "soft",
                  base_frame: str = "none",
                  sort_mode: str = "asc",
-                 exposure_match: bool = True):
+                 exposure_match: bool = True,
+                 resource_preference: str = "balanced"):
         """
         初始化融合器
         
@@ -343,6 +348,12 @@ class MultiFocusFusion:
         # 融合前曝光匹配：把整栈每帧均值标定到末帧，再交给任何后端。
         # 必须在分块之前按整栈计算，否则每个 tile 各自归一化会出现亮度接缝。
         self.exposure_match = bool(exposure_match)
+        # 资源偏好（'balanced' | 'responsive' | 'maximum'）：只影响并发、
+        # 预取和预算，不改变任何输出几何或数值路径。
+        from core.resource_policy import PREFERENCES
+        self.resource_preference = (resource_preference
+                                    if resource_preference in PREFERENCES
+                                    else "balanced")
         self._validate_environment()
     
     def _ensure_supported_algorithm(self, algorithm: str) -> None:
@@ -749,12 +760,18 @@ class MultiFocusFusion:
             safe_block = self.tile_block_size
             safe_overlap = self.tile_overlap
             if self.algorithm != 'stackmffv3' and is_list_of_arrays:
+                channels = (input_source[0].shape[2]
+                            if input_source[0].ndim == 3 else 1)
+                # The estimate must use the concurrency the planner will
+                # actually run, not a fixed 8: after this change a tight
+                # machine runs fewer workers, and charging it for 8 would
+                # shrink the tile for no reason.
+                planned_workers = self._calculate_optimal_thread_count(
+                    h, w, channels, len(input_source), safe_block,
+                    kwargs.get('thread_count', None))
                 est_mb = memory.mb(estimate_peak_bytes(
                     self.algorithm, input_source, safe_block,
-                    self._calculate_optimal_thread_count(
-                        h, w, input_source[0].shape[2]
-                        if input_source[0].ndim == 3 else 1,
-                        len(input_source), safe_block, 8)))
+                    planned_workers))
                 # Step down one size at a time; each halving cuts the peak by
                 # roughly 3x (measured: 1024 -> 4.2 GB, 512 -> 1.3 GB,
                 # 256 -> ~0.5 GB on 1600x2400x8).
@@ -763,13 +780,12 @@ class MultiFocusFusion:
                     for candidate in (512, 256):
                         if chosen <= candidate:
                             break
+                        candidate_workers = self._calculate_optimal_thread_count(
+                            h, w, channels, len(input_source), candidate,
+                            kwargs.get('thread_count', None))
                         candidate_mb = memory.mb(estimate_peak_bytes(
                             self.algorithm, input_source, candidate,
-                            self._calculate_optimal_thread_count(
-                                h, w,
-                                input_source[0].shape[2]
-                                if input_source[0].ndim == 3 else 1,
-                                len(input_source), candidate, 8)))
+                            candidate_workers))
                         chosen = candidate
                         if candidate_mb <= budget_mb:
                             break
@@ -967,7 +983,9 @@ class MultiFocusFusion:
             input_source,
             img_resize,
             N,
-            self.use_gpu
+            self.use_gpu,
+            thread_count=kwargs.get('thread_count', None),
+            should_cancel=kwargs.get('should_cancel', None),
         )
     
     def _fuse_stackmffv3(self,
@@ -1059,49 +1077,27 @@ class MultiFocusFusion:
         """
         根据系统内存和图像属性计算最优线程数（保守策略）。
 
-        内存估算:
-        - 单个tile的crops: num_images * block_size * block_size * channels * 4 bytes
-        - fused_tile: block_size * block_size * channels * 4 bytes
-        - weight2d: block_size * block_size * 4 bytes
+        统一走 core.resource_policy：内存预算、物理核心上限和“只允许一层
+        并行”的规则集中在那里，避免这里与 AI 预算各算一套。
         """
-        # Real available memory. This used to `import psutil`, which is not a
-        # dependency of the project: the import failed on every install and
-        # the guard silently used a hard-coded 4096 MB, so on a busy machine
-        # it allowed far more concurrent tiles than memory existed for.
-        avail_memory_mb = memory.mb(memory.available_memory_bytes())
-        if avail_memory_mb <= 0:
-            avail_memory_mb = 2048.0
-
-        # Per-tile working set, CALIBRATED against measurements on
-        # 1600x2400x10 with 1024 px tiles (guided filter, the heaviest
-        # classical method):
-        #     1 worker  -> +1007 MB, 2 -> +1856, 4 -> +3501, 8 -> +5644
-        # i.e. ~850 MB per worker there, against a naive uint8+float32
-        # estimate of 150 MB: the filter keeps several float32 temporaries of
-        # the crop (guide, mean, variance, coefficients) for every frame at
-        # once. The factor below reproduces those numbers within 5%.
-        # Factor from measurement: 850 MB measured / 150 MB naive at
-        # 1024px x 10 frames = 5.6x.
-        per_tile_bytes = (num_images * (block_size ** 2) * channels
-                          * (1 + 4) * 5.6)
-        tile_memory_mb = max(1.0, per_tile_bytes / (1024 ** 2))
-
-        # Budget: a fixed share of the memory that is free RIGHT NOW, minus a
-        # reserve so the desktop and Qt's own buffers stay responsive.
-        budget_mb = memory.mb(memory_budget_bytes())
-        max_by_memory = max(1, int(budget_mb // tile_memory_mb))
-
-        # Cap at PHYSICAL cores (SMT siblings counted once), Helicon-style:
-        # tile fusion is memory-bandwidth-bound, so hyper-threads raise the
-        # peak working set without adding throughput.
-        from utils.platform_utils import physical_core_count
-        max_workers = min(max_by_memory, user_thread_count or 8,
-                          physical_core_count())
-        if max_workers < (user_thread_count or 8):
-            print(f"Info: Memory guard: {max_workers} tile worker(s) "
-                  f"({tile_memory_mb:.0f} MB each, budget {budget_mb:.0f} MB)")
-
-        return max(1, max_workers)
+        from core import resource_policy as policy
+        workload = policy.Workload(
+            algorithm=self.algorithm,
+            frames=max(1, int(num_images)),
+            height=int(h), width=int(w),
+            channels=max(1, int(channels)),
+            block_size=max(1, int(block_size)),
+        )
+        snapshot = policy.probe_resources()
+        plan = policy.plan_execution(
+            workload, snapshot,
+            preference=self.resource_preference,
+            user_threads=user_thread_count,
+            ram_budget_override=memory_budget_bytes(),
+        )
+        for reason in plan.reasons:
+            print(f"Info: resource plan: {reason}")
+        return max(1, int(plan.workers))
 
     def _compute_tile_weights(self, x0: int, y0: int, x1: int, y1: int,
                                fw: int, fh: int, w: int, h: int,
@@ -1217,9 +1213,6 @@ class MultiFocusFusion:
         # uint8 就把调用方要还原的深度丢掉了。
         out_dtype = np.uint8 if src_dtype == np.uint8 else np.float32
 
-        acc = np.zeros((h, w, channels), dtype=np.float32)
-        weight = np.zeros((h, w, 1), dtype=np.float32)
-
         # A tile can never be larger than the image. Clamping only the start
         # position is not enough: on a 5000x1000 stack with block_size 1024 the
         # y start went negative and every crop came out empty.
@@ -1244,6 +1237,9 @@ class MultiFocusFusion:
 
         # StackMFF V3 使用批量处理
         if algorithm == 'stackmffv3':
+            # The neural path owns its own accumulators: allocating a second
+            # pair here only to return before using it cost 16 bytes per pixel
+            # of address space (and RSS once touched) for nothing.
             return self._fuse_tiled_ai_batched(
                 imgs, img_dir, tile_coords, h, w, channels,
                 block_size, overlap, **kwargs,
@@ -1252,6 +1248,9 @@ class MultiFocusFusion:
                 out_dtype=out_dtype,
                 exposure_gains=exposure_gains,
             )
+
+        acc = np.zeros((h, w, channels), dtype=np.float32)
+        weight = np.zeros((h, w, 1), dtype=np.float32)
 
         # 其他算法使用原有的多线程处理
         optimal_threads = self._calculate_optimal_thread_count(
@@ -1347,27 +1346,43 @@ class MultiFocusFusion:
 
             return (x0, y0, fh, fw, fused_tile, weight2d)
 
+        # Bounded submission with deterministic reduction.
+        #
+        # The old loop submitted every tile at once and reduced in completion
+        # order: memory held up to `total_tiles` finished tiles, and float32
+        # addition made the output depend on thread scheduling. Here at most
+        # `optimal_threads` tiles are in flight and results are consumed in
+        # tile-coordinate order — the same order a single-worker run uses, so
+        # the accumulation is reproducible while the pool still overlaps work.
+        from collections import deque
+        from core.registration import RegistrationCancelled
+
+        def _check_cancel():
+            if should_cancel is not None and should_cancel():
+                raise RegistrationCancelled()
+
+        def _reduce(result):
+            x0, y0, fh, fw, fused_tile, weight2d = result
+            acc[y0:y0 + fh, x0:x0 + fw, :channels] += (
+                fused_tile.astype(np.float32) * weight2d[:, :, np.newaxis])
+            weight[y0:y0 + fh, x0:x0 + fw, 0] += weight2d
+            del fused_tile, weight2d
+
+        completed_tiles = 0
+        total_tiles = len(tile_coords)
+        window = deque()
+        next_to_submit = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=optimal_threads) as executor:
-            futures = {executor.submit(process_single_tile, coords): coords 
-                       for coords in tile_coords}
-            completed_tiles = 0
-            total_tiles = len(futures)
-            for future in concurrent.futures.as_completed(futures):
-                # 取消必须在这个循环里检查：以前所有分块都会被跑完才回到
-                # worker 的取消判定，大图上点"取消"看起来毫无反应。
-                if should_cancel is not None and should_cancel():
-                    for pending in futures:
-                        pending.cancel()
-                    from core.registration import RegistrationCancelled
-                    raise RegistrationCancelled()
-                x0, y0, fh, fw, fused_tile, weight2d = future.result()
-                # 立刻累加并释放，不在 results 里攒下所有分块：重叠分块的
-                # 总面积可达整图的两倍，攒起来会翻倍峰值内存。
-                acc[y0:y0+fh, x0:x0+fw, :channels] += fused_tile.astype(np.float32) * weight2d[:, :, np.newaxis]
-                weight[y0:y0+fh, x0:x0+fw, 0] += weight2d
-                del fused_tile, weight2d
+            while next_to_submit < total_tiles or window:
+                _check_cancel()
+                while (next_to_submit < total_tiles
+                       and len(window) < optimal_threads):
+                    window.append(executor.submit(
+                        process_single_tile, tile_coords[next_to_submit]))
+                    next_to_submit += 1
+                _reduce(window.popleft().result())
+                completed_tiles += 1
                 if progress_callback is not None:
-                    completed_tiles += 1
                     try:
                         progress_callback(completed_tiles, total_tiles)
                     except Exception:
@@ -1413,8 +1428,6 @@ class MultiFocusFusion:
             print(f"Info: deep stack ({n_frames} frames) - AI tiles auto-shrunk to "
                   f"{eff_block}px, batch_size={batch_size} to bound model memory")
 
-        print(f"StackMFF V3 batched tiled fusion: {total_tiles} tiles, batch_size={batch_size}")
-
         # 获取模型路径
         model_path = kwargs.get('model_path', 'weights/stackmff_v3_final.pth')
         if not model_path:
@@ -1429,7 +1442,7 @@ class MultiFocusFusion:
         # invisible: a 21 s run spent 1.6 s here, and the bar sat at 0% with
         # no explanation. The model is cached, so this is a no-op afterwards.
         from fusion_methods.stackmffv3 import _get_model_and_device
-        _get_model_and_device(model_path, self.use_gpu)
+        _, device = _get_model_and_device(model_path, self.use_gpu)
         if progress_callback is not None:
             # done=0 keeps the bar at 0 % but tells the UI the real tile
             # count, so it leaves indeterminate mode before the first tile
@@ -1438,19 +1451,35 @@ class MultiFocusFusion:
 
         acc = np.zeros((h, w, channels), dtype=np.float32)
         weight = np.zeros((h, w, 1), dtype=np.float32)
-        
-        # 分批处理（每个瓦片单独前向；batch_size 只决定进度粒度）
+
+        # Real batching is GPU-only. On the CPU a batched forward pads every
+        # tile to the largest one and runs one bigger attention pass, which
+        # measured 19.3 s for two 1024x1021 tiles against 16.9 s for two
+        # separate calls; on CUDA the same batch amortizes kernel launches.
+        # The batch size still comes from _ai_effective_tiling, so a deep
+        # stack's activation budget is what decides how many tiles may share
+        # one call.
+        chunk = batch_size if str(device).startswith("cuda") else 1
+        # Report what actually happens: the tiling budget still bounds the
+        # request, but a CPU run infers one tile per call.
+        if chunk > 1:
+            print(f"StackMFF V3 tiled fusion: {total_tiles} tiles, "
+                  f"{chunk} per model call")
+        else:
+            print(f"StackMFF V3 tiled fusion: {total_tiles} tiles, "
+                  f"one model call each (CPU)")
+
+        # Progress advances per tile only after the call that produced it
+        # returned, so the bar never reports work that has not happened.
         from core.registration import RegistrationCancelled
-        for batch_start in range(0, total_tiles, batch_size):
+        for batch_start in range(0, total_tiles, chunk):
             if should_cancel is not None and should_cancel():
                 raise RegistrationCancelled()
-            batch_end = min(batch_start + batch_size, total_tiles)
+            batch_end = min(batch_start + chunk, total_tiles)
             batch_coords = tile_coords[batch_start:batch_end]
-            current_batch_size = len(batch_coords)
-            
+
             print(f"  Processing tiles {batch_start + 1}-{batch_end}/{total_tiles}")
-            
-            # 准备这个 batch 的所有 tile 数据
+
             tiles_list = []
             for (x0, y0, x1, y1) in batch_coords:
                 if imgs is not None:
@@ -1469,26 +1498,13 @@ class MultiFocusFusion:
                         crops.append(crop)
                     crops = normalize_fuse_input(crops)[0]
                 tiles_list.append(crops)
-            
-            # One model call per tile, not per batch.
-            #
-            # Batching looked cheaper but is not: a batch pads every tile up
-            # to the largest one and runs one big attention pass, which
-            # measured 19.3 s for two 1024x1021 tiles against 16.9 s for two
-            # separate calls. Per-tile calls also make progress real - a
-            # 2-tile stack used to be a single 20 s step that reported
-            # "done=total" BEFORE it started, so the bar froze at 100%.
-            fused_tiles = []
-            for tile_i, crops in enumerate(tiles_list):
-                if should_cancel is not None and should_cancel():
-                    raise RegistrationCancelled()
-                fused_tiles.append(
-                    _stackmffv3_batch_impl([crops], model_path,
-                                           self.use_gpu, mode)[0])
-                if progress_callback is not None:
-                    progress_callback(batch_start + tile_i + 1, total_tiles)
-            
-            # 将结果合并到累加器
+
+            fused_tiles = _stackmffv3_batch_impl(
+                tiles_list, model_path, self.use_gpu, mode)
+            if should_cancel is not None and should_cancel():
+                raise RegistrationCancelled()
+
+            # 将结果合并到累加器，按 tile 顺序释放
             for idx, (x0, y0, x1, y1) in enumerate(batch_coords):
                 fused_tile = fused_tiles[idx]
                 if fused_tile is None:
@@ -1503,6 +1519,10 @@ class MultiFocusFusion:
                 
                 acc[y0:y0+fh, x0:x0+fw, :channels] += fused_tile.astype(np.float32) * w_exp
                 weight[y0:y0+fh, x0:x0+fw, 0] += weight2d
+                fused_tiles[idx] = None
+                if progress_callback is not None:
+                    progress_callback(batch_start + idx + 1, total_tiles)
+            del fused_tiles, tiles_list
         
         weight[weight == 0] = 1.0
         fused = acc / weight
