@@ -177,14 +177,38 @@ def test_physical_cores_are_real():
 
 
 def test_planner_agrees_with_the_pipeline_budget(monkeypatch):
-    """``memory_budget_bytes`` stays the single authoritative number."""
+    """``memory_budget_bytes`` stays the single authoritative number.
+
+    The comparison is against the *planner's own* result on a fixed snapshot:
+    asserting ``tight < roomy`` on whatever machine runs the test made it
+    depend on the host's core count (a 2-core runner caps both at 2 and the
+    memory lever is invisible). What must hold everywhere is that the pipeline
+    helper returns exactly the planner's worker count for the same budget.
+    """
     from core import multi_focus_fusion as mff
 
-    monkeypatch.setattr(mff, "memory_budget_bytes",
-                        lambda: 2000 * 1024 ** 2)
+    budget = 2000 * 1024 ** 2
+    monkeypatch.setattr(mff, "memory_budget_bytes", lambda: budget)
     fusion = mff.MultiFocusFusion(algorithm="guided_filter", use_gpu=False)
-    tight = fusion._calculate_optimal_thread_count(1600, 2400, 3, 10, 1024, 8)
-    monkeypatch.setattr(mff, "memory_budget_bytes",
-                        lambda: 64000 * 1024 ** 2)
-    roomy = fusion._calculate_optimal_thread_count(1600, 2400, 3, 10, 1024, 8)
-    assert tight < roomy
+    actual = fusion._calculate_optimal_thread_count(1600, 2400, 3, 10, 1024, 8)
+
+    expected = policy.plan_execution(
+        policy.Workload(algorithm="guided_filter", frames=10, height=2400,
+                        width=1600, channels=3, block_size=1024),
+        policy.probe_resources(),
+        user_threads=8,
+        ram_budget_override=budget,
+    ).workers
+    assert actual == expected
+    assert actual >= 1
+
+
+def test_memory_lowers_workers_on_a_fixed_snapshot(monkeypatch):
+    """The lever itself, measured on a snapshot rather than the host."""
+    snapshot = _snapshot(cores=16)
+    workload = _workload()
+    roomy = policy.plan_execution(workload, snapshot,
+                                  ram_budget_override=64 * 1024 ** 3)
+    tight = policy.plan_execution(workload, snapshot,
+                                  ram_budget_override=1500 * 1024 ** 2)
+    assert tight.workers < roomy.workers
