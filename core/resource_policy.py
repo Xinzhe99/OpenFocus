@@ -17,6 +17,7 @@ Deliberately boring: plain dataclasses, no plugin registry, no per-algorithm
 policy classes. Ratios here are conservative starting points to be calibrated
 by the soak harness, not measured constants.
 """
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -29,8 +30,6 @@ from utils.platform_utils import physical_core_count
 BUDGET_RATIO = 0.45
 # Never plan to leave the machine with less than this for the desktop.
 RESERVE_BYTES = 512 * 1024 ** 2
-# Share of physical cores the default "balanced" mode may occupy.
-CPU_HEADROOM = 0.8
 
 # GPU reserves: the allocator keeps freed blocks, so free VRAM is what matters.
 VRAM_RESERVE_RATIO = 0.15
@@ -171,15 +170,20 @@ def vram_budget(snapshot: ResourceSnapshot) -> int:
 
 
 def cpu_capacity(snapshot: ResourceSnapshot, preference: str) -> int:
-    """Physical cores this stage may occupy in the given preference mode."""
+    """Physical cores this stage may occupy in the given preference mode.
+
+    The share is rounded *up*: ``int(cores * 0.8)`` truncated a 2-core CI
+    runner to a single worker, so the Balanced default used half of a small
+    machine and memory pressure had no concurrency left to lower.
+    """
     cores = max(1, snapshot.physical_cores)
     if preference == PREFERENCE_RESPONSIVE:
         share = 0.5
     elif preference == PREFERENCE_MAXIMUM:
         share = 1.0
     else:
-        share = CPU_HEADROOM
-    return max(1, min(cores, int(cores * share) or 1))
+        share = 0.8
+    return max(1, min(cores, math.ceil(cores * share)))
 
 
 def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = None,
