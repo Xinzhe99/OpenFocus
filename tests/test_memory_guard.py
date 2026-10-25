@@ -31,21 +31,23 @@ def test_opencv_is_configured_for_low_memory():
     assert not cv2.ocl.useOpenCL()
 
 
-def test_budget_leaves_headroom():
-    from core.multi_focus_fusion import memory_budget_bytes
+def test_unknown_memory_is_not_replaced_by_an_invented_budget(monkeypatch):
+    from core import multi_focus_fusion as mff, resource_policy as policy
 
-    budget = memory_budget_bytes()
-    avail = memory.available_memory_bytes()
-    if avail <= 0:
-        pytest.skip("no memory information on this platform")
-    assert 0 < budget < avail, "the budget must leave memory for the desktop"
-    # At least the reserve, and never more than 60% of what is free.
-    assert avail - budget >= min(512 * 1024 ** 2, avail * 0.4)
+    monkeypatch.setattr(policy, "probe_resources", lambda: policy.ResourceSnapshot())
+    frames = [np.full((32, 48, 3), value, np.uint8) for value in (40, 80)]
+    with pytest.raises(policy.ResourceLimitError):
+        mff.MultiFocusFusion("dct", tile_enabled=False).fuse(frames)
 
 
 def test_worker_count_scales_with_the_budget(monkeypatch):
     """A tight budget must reduce concurrency, which is bit-identical."""
     from core import multi_focus_fusion as mff
+    from core import resource_policy as policy
+
+    monkeypatch.setattr(policy, "probe_resources", lambda: policy.ResourceSnapshot(
+        available_ram=48 * 1024 ** 3, total_ram=64 * 1024 ** 3,
+        physical_cores=16, logical_cpus=32))
 
     fusion = mff.MultiFocusFusion(algorithm="guided_filter", use_gpu=False)
     monkeypatch.setattr(mff, "memory_budget_bytes",
@@ -58,14 +60,43 @@ def test_worker_count_scales_with_the_budget(monkeypatch):
     assert tight >= 1
 
 
-def test_peak_estimate_tracks_reality():
-    """The estimate must be the right order of magnitude.
+@pytest.mark.parametrize("tiled", [False, True])
+def test_zero_budget_refuses_fusion(monkeypatch, tiled):
+    from core import multi_focus_fusion as mff, resource_policy as policy
 
-    Measured on this stack: 1 worker ~1.0 GB, 8 workers ~5.6 GB. An estimate
-    that is 5x too low is how the guard let the app run out of memory.
-    """
-    from core import multi_focus_fusion as mff
+    frames = [np.full((64, 80, 3), value, np.uint8) for value in (40, 80)]
+    monkeypatch.setattr(mff, "memory_budget_bytes", lambda: 0)
+    fusion = mff.MultiFocusFusion("dct", tile_enabled=tiled,
+                                  tile_threshold=32, tile_block_size=32)
+    with pytest.raises(policy.ResourceLimitError):
+        fusion.fuse(frames)
 
-    frames = [np.zeros((1600, 2400, 3), np.uint8) for _ in range(10)]
-    est = mff.estimate_peak_bytes("guided_filter", frames, 1024, 8)
-    assert 3.0e9 < est < 9.0e9, f"estimate {est / 1e9:.1f} GB is off"
+
+def test_insufficient_memory_does_not_silently_shrink_manual_tiles(monkeypatch):
+    from core import multi_focus_fusion as mff, resource_policy as policy
+
+    rng = np.random.default_rng(42)
+    frames = [rng.integers(0, 256, (600, 600, 3), dtype=np.uint8) for _ in range(2)]
+    monkeypatch.setattr(mff, "memory_budget_bytes", lambda: 12 * 1024 ** 2)
+    fusion = mff.MultiFocusFusion("openfocus_a", exposure_match=False,
+                                  tile_threshold=100, tile_block_size=512,
+                                  tile_overlap=128)
+    with pytest.raises(policy.ResourceLimitError):
+        fusion.fuse(frames, thread_count=1)
+
+
+def test_memory_limited_tile_concurrency_preserves_pixels(monkeypatch):
+    from core import multi_focus_fusion as mff, resource_policy as policy
+    from conftest import make_two_focus_stack
+
+    monkeypatch.setattr(policy, "probe_resources", lambda: policy.ResourceSnapshot(
+        available_ram=24 * 1024 ** 3, total_ram=32 * 1024 ** 3,
+        physical_cores=8, logical_cpus=16))
+    frames = make_two_focus_stack((128, 160))
+    fusion = mff.MultiFocusFusion("guided_filter", exposure_match=False,
+                                  tile_threshold=50, tile_block_size=64,
+                                  tile_overlap=16)
+    roomy = fusion.fuse(frames, thread_count=4)
+    monkeypatch.setattr(mff, "memory_budget_bytes", lambda: 2 * 1024 ** 2)
+    tight = fusion.fuse(frames, thread_count=4)
+    assert np.array_equal(tight, roomy)

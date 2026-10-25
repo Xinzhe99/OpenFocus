@@ -1578,6 +1578,7 @@
     "branch": "perf/acceleration-spec",
     "date": "2026-10-25",
     "method": "Fresh subprocess per condition, alternating base commit (4659b7b) and the branch, 4 runs each, median of the warm runs; the same demo stack and parameters as the baseline table above.",
+    "scope": "Historical pre-review implementation timings; not remeasured after the resource-policy correctness review.",
     "results": [
       {
         "algorithm": "guided_filter",
@@ -1659,5 +1660,28 @@
       "No GPU was available: CUDA/MPS paths are implemented but not measured.",
       "Peak RSS is dominated by the interpreter and the source stack on this input size; the memory win is in live full-stack temporaries, which this metric does not isolate."
     ]
+  },
+  "implementation_review": {
+    "date": "2026-10-25",
+    "platform": "Windows, Python 3.12, CPU",
+    "tests": {"passed": 1021, "skipped": 12, "warnings": 2},
+    "pixel_reference_commit": "4659b7bc0be1d9bf99405d40b8940dccf1a6a90f",
+    "pixel_settings": {"threads": 1, "tiling": false, "exposure_match": false, "neural_mode": "soft"},
+    "pixel_cases": [
+      {"input": "assets/demo_stack, six real uint8 frames", "shape": [750, 999, 3]},
+      {"input": "six uint16 crops with independently populated low bits", "shape": [97, 130, 3]}
+    ],
+    "pixel_comparisons": 16,
+    "pixel_mismatches": 0,
+    "algorithms": ["guided_filter", "dct", "dtcwt", "gfgfgf", "openfocus_a", "openfocus_b", "openfocus_c", "stackmffv3"],
+    "cli_uint8_png_export": "passed",
+    "cli_uint16_tiff_export": "passed, nonzero low bits retained",
+    "final_tile_cancellation": "passed, no successful return",
+    "gui_render": "passed, six demo frames loaded and DCT output displayed",
+    "gui_settings": "passed, automatic threads and responsive mode persisted and reopened",
+    "gui_visual_capture": "Qt QWidget.grab inspected; desktop capture returned black pixels",
+    "new_performance_measurement": false,
+    "cuda_mps_hardware_validated": false,
+    "true_gpu_batching_enabled": false
   }
 }

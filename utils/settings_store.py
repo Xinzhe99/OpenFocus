@@ -40,7 +40,7 @@ AI_CPU_WARNING_DISMISSED_KEY = "rendering/ai_cpu_warning_dismissed"
 
 # window attribute -> (settings key, default, cast)
 _PERSISTED_FIELDS = {
-    "thread_count": ("rendering/thread_count", 4, int),
+    "thread_count": ("rendering/thread_count", 0, int),
     "resource_preference": ("rendering/resource_preference", "balanced", "str"),
     "tile_enabled": ("rendering/tile_enabled", True, "bool"),
     "tile_block_size": ("rendering/tile_block_size", 1024, int),

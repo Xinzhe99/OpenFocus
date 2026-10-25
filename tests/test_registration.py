@@ -38,29 +38,34 @@ class TestEccBackendSelection:
         assert ImageRegistration(method="ecc", use_gpu=True).use_gpu is True
 
     def test_cpu_path_does_not_touch_cupy(self, monkeypatch):
-        """A machine with CuPy installed must still warp on the CPU."""
-        import core.registration as regmod
+        """Run real ECC while rejecting any accidental CuPy import."""
+        import builtins
+        original_import = builtins.__import__
 
-        calls = []
-        monkeypatch.setattr(
-            regmod, "_align_ecc_impl",
-            lambda *a, **k: calls.append(k.get("use_gpu")) or [np.zeros((4, 4, 3), np.uint8)])
+        def cpu_import(name, *args, **kwargs):
+            if name.split('.')[0] in ('cupy', 'cupyx'):
+                pytest.fail("CPU registration imported CuPy")
+            return original_import(name, *args, **kwargs)
 
-        reg = ImageRegistration(method="ecc", use_gpu=False)
-        reg.process([np.zeros((4, 4, 3), np.uint8)] * 2)
-        assert calls == [False]
+        monkeypatch.setattr(builtins, '__import__', cpu_import)
+        frames, _ = _shifted_stack(size=(60, 80), n=2)
+        result = ImageRegistration(method="ecc", use_gpu=False).process(frames)
+        assert len(result) == 2
+        assert result[0].shape == result[1].shape
 
-    def test_gpu_flag_reaches_the_implementation(self, monkeypatch):
-        import core.registration as regmod
+    def test_explicit_unavailable_backend_does_not_silently_change_pixels(self, monkeypatch):
+        import builtins
+        original_import = builtins.__import__
 
-        calls = []
-        monkeypatch.setattr(
-            regmod, "_align_ecc_impl",
-            lambda *a, **k: calls.append(k.get("use_gpu")) or [np.zeros((4, 4, 3), np.uint8)])
+        def without_cupy(name, *args, **kwargs):
+            if name.split('.')[0] in ('cupy', 'cupyx'):
+                raise ImportError("CuPy unavailable in this test")
+            return original_import(name, *args, **kwargs)
 
-        ImageRegistration(method="ecc", use_gpu=True).process(
-            [np.zeros((4, 4, 3), np.uint8)] * 2)
-        assert calls == [True]
+        monkeypatch.setattr(builtins, '__import__', without_cupy)
+        frames, _ = _shifted_stack(size=(60, 80), n=2)
+        with pytest.raises(RuntimeError, match="CuPy.*unavailable"):
+            ImageRegistration(method="ecc", use_gpu=True).process(frames)
 
     def test_use_gpu_false_prints_the_cpu_path(self, capsys):
         from core.registration import _align_ecc_impl

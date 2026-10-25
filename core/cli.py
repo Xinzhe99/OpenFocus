@@ -23,6 +23,7 @@ import numpy as np
 from typing import List, Optional, Tuple
 
 from utils.sorting import natural_sort_key
+from core.resource_policy import heavy_job, require_memory
 
 VALID_METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv3",
                  "openfocus_a", "openfocus_b", "openfocus_c"]
@@ -91,8 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="openfocus_a / openfocus_c only: blend smoothing (Gaussian sigma "
                              "of the per-frame weight map; defaults 2.0 for A and 3.0 for C; "
                              "0 = crispest per-pixel choice, larger = softer transitions)")
-    parser.add_argument("--threads", "-t", type=int, default=4,
-                        help="Worker thread count (default: 4)")
+    parser.add_argument("--threads", "-t", type=int, default=0,
+                        help="Worker thread upper limit (0 = automatic; default: 0)")
+    parser.add_argument("--resource-preference", default="balanced",
+                        choices=["balanced", "responsive", "maximum"],
+                        help="Resource scheduling preference (default: balanced)")
     parser.add_argument("--batch-size", type=int, default=2,
                         help="StackMFF-V3 tile batch size (default: 2)")
     parser.add_argument("--ai-mode", default="soft", choices=["soft", "hard"],
@@ -202,6 +206,11 @@ def _normalize_kernel(kernel: Optional[int], default: int) -> int:
 
 
 def _fuse_stack(images, args):
+    with heavy_job():
+        return _fuse_stack_admitted(images, args)
+
+
+def _fuse_stack_admitted(images, args):
     """Register and fuse one stack; returns the fused image."""
     import cv2
     from core.registration import ImageRegistration
@@ -222,8 +231,10 @@ def _fuse_stack(images, args):
         images = apply_flat_field_stack(images, gain)
         print(f"Flat-field (dust map) correction applied from {dust_white}")
 
-    # 16-bit sources are normalized to 0-1 float for the back-ends and
-    # quantized back to uint16 afterwards, preserving the extra depth.
+    # Normalize uint16 to the float32 0–255 working domain before registration.
+    if any(image.dtype == np.uint16 for image in images):
+        require_memory(sum(image.size * 4 for image in images if image.dtype != np.float32)
+                       + max(image.size * 4 for image in images if image.dtype == np.uint16))
     images, is_16bit = normalize_fuse_input(images)
 
     if args.align != "none":
@@ -235,8 +246,9 @@ def _fuse_stack(images, args):
             max_shift_ratio=getattr(args, "align_shift_limit", None),
             brightness_reference=("last" if getattr(args, "exposure_match", True)
                                   else "first"),
-            use_gpu=not args.cpu)
-        images = reg.process(images, output_path=None, thread_count=args.threads)
+            use_gpu=False)
+        images = reg.process(images, output_path=None, thread_count=args.threads,
+                             resource_preference=getattr(args, "resource_preference", "balanced"))
         print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
 
     # The default method is the neural one. On a machine without torch the
@@ -249,6 +261,7 @@ def _fuse_stack(images, args):
         args.method = "guided_filter"
 
     fusion_kwargs = dict(algorithm=args.method, use_gpu=not args.cpu,
+                         resource_preference=getattr(args, "resource_preference", "balanced"),
                          base_frame=getattr(args, "base_frame", "none"),
                          sort_mode=getattr(args, "sort", "asc"),
                          exposure_match=getattr(args, "exposure_match", True))
@@ -332,6 +345,8 @@ def _save_depth(args, fused_out: str) -> None:
     idx = compute_focus_index(
         frames, args.method, kernel_size=kernel,
         model_path=_find_model_path() if args.method == "stackmffv3" else None,
+        thread_count=getattr(args, "threads", 0),
+        resource_preference=getattr(args, "resource_preference", "balanced"),
         use_gpu=not args.cpu)
     if not imwrite_auto(path, colorize(idx, args.depth_colormap)):
         raise RuntimeError(f"Failed to write depth map: {path}")
@@ -481,10 +496,19 @@ def _run_batch(args, _emit_json=None) -> int:
 
 
 def run_cli(argv: List[str]) -> int:
+    try:
+        with heavy_job():
+            return _run_cli_admitted(argv)
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return EXIT_ERROR
+
+
+def _run_cli_admitted(argv: List[str]) -> int:
     args = build_parser().parse_args(argv)
 
-    if args.threads < 1:
-        print("error: --threads must be >= 1", file=sys.stderr)
+    if args.threads < 0:
+        print("error: --threads must be >= 0 (0 = automatic)", file=sys.stderr)
         return EXIT_USAGE
     if args.downscale is not None and args.downscale < 1:
         print("error: --downscale must be >= 1", file=sys.stderr)

@@ -12,6 +12,8 @@ from threading import Event
 
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
+from core.resource_policy import heavy_job, require_memory
+from core.registration import RegistrationCancelled
 
 
 _KERNEL_METHODS = {"guided_filter", "dct", "gfgfgf", "openfocus_a", "openfocus_b"}
@@ -43,14 +45,16 @@ def align_frames(images, alignment, shared, should_cancel):
     if alignment != "none":
         settings = {"method": alignment, "brightness_reference": shared.get(
             "brightness_reference", "last" if shared.get("exposure_match", False) else "first"),
-            "use_gpu": bool(shared.get("use_gpu", False))}
+            "use_gpu": False}
         for source, target in (("reg_downscale_width", "downscale_width"),
                                ("max_shift_ratio", "max_shift_ratio")):
             if shared.get(source) is not None:
                 settings[target] = shared[source]
         registration = ImageRegistration(**settings)
         frames = registration.process(frames, output_path=None,
-            thread_count=max(1, int(shared.get("thread_count", 4))), should_cancel=should_cancel)
+            thread_count=max(0, int(shared.get("thread_count", 0))),
+            resource_preference=shared.get("resource_preference", "balanced"),
+            should_cancel=should_cancel)
     return None if should_cancel() else frames
 
 
@@ -70,7 +74,8 @@ class AlignmentWorker(_CancellableWorker):
         if self._should_cancel():
             return
         try:
-            images = align_frames(self.images, self.alignment, self.shared, self._should_cancel)
+            with heavy_job(self._should_cancel):
+                images = align_frames(self.images, self.alignment, self.shared, self._should_cancel)
             if images is not None and not self._should_cancel():
                 self.ready.emit(images)
         except Exception as exc:
@@ -109,6 +114,7 @@ class PreviewWorker(_CancellableWorker):
         constructor = {
             "algorithm": method,
             "use_gpu": bool(shared.get("use_gpu", False)),
+            "resource_preference": shared.get("resource_preference", "balanced"),
             "tile_enabled": bool(shared.get("tile_enabled", True)),
             "ai_batch_size": int(shared.get("ai_batch_size", 2)),
             "ai_mode": mode,
@@ -121,7 +127,7 @@ class PreviewWorker(_CancellableWorker):
             if shared.get(key) is not None:
                 constructor[key] = shared[key]
         params = {
-            "thread_count": max(1, int(shared.get("thread_count", 4))),
+            "thread_count": max(0, int(shared.get("thread_count", 0))),
         }
         if method in _KERNEL_METHODS:
             params["kernel_size"] = normalize_kernel_size(
@@ -217,6 +223,9 @@ class PreviewWorker(_CancellableWorker):
             inputs = [frame[y0:y0 + ch, x0:x0 + cw] for frame in self.images]
         # Normalize only the context; uint8 slices remain views until a backend
         # needs contiguous storage, and uint16 never passes through uint8.
+        if any(image.dtype == np.uint16 for image in inputs):
+            require_memory(sum(image.size * 4 for image in inputs if image.dtype != np.float32)
+                           + max(image.size * 4 for image in inputs if image.dtype == np.uint16))
         inputs, is_16bit = normalize_fuse_input(inputs)
         # DCT needs at least one 8x8 block, including for one-pixel-wide stacks.
         # Its normal edge extension is otherwise handled by the backend.
@@ -243,6 +252,13 @@ class PreviewWorker(_CancellableWorker):
         return quantize_fuse_output(result, is_16bit), bounds
 
     def run(self):
+        try:
+            with heavy_job(self._should_cancel):
+                self._run_admitted()
+        except RegistrationCancelled:
+            return
+
+    def _run_admitted(self):
         total = len(self.methods)
         for index, method in enumerate(self.methods):
             if self._should_cancel():

@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.69.0** — de fusion-engine plant zijn werk in plaats van het te gokken: één uitvoeringsplan per render bepaalt workers, threads en geheugenbudget, fysieke cores worden van het platform gelezen in plaats van het logische aantal te halveren, en elke klassieke back-end streamt zijn tussenbuffers in plaats van tijdelijke buffers voor de hele stapel vast te houden. De uitvoer blijft byte-identiek, met gemeten winst van 1,47× op OpenFocus C en 1,33× op de neurale methode. Een nieuwe **resourcemodus** (Gebalanceerd / Responsief / Maximaal) houdt de desktop vloeiend zonder het beeld te wijzigen.
+> **v1.70.0** — elke zware fase deelt nu één toelatingslease van voorbereiding tot publicatie: annuleren wacht tot de lopende native aanroep echt klaar is in plaats van een tweede render eroverheen te starten. Geheugen wordt gecontroleerd vóór allocatie (onleesbaar of te klein is een duidelijke fout, geen stilletjes kleinere tegels), de uitlijningscache legt atomair vast en codeert niet opnieuw bij een treffer, 16-bit neurale uitvoer behoudt zijn lage bits, en de nieuwe **resourcemodus** met automatische threads (`0`) geeft het bureaublad ruimte. De acht algoritmen blijven byte-identiek aan v1.69.0.
 
 <a id="features"></a>
 ## Functies

@@ -76,3 +76,53 @@ def test_small_sharp_object_is_not_discarded():
     # 3.5 with opencv-contrib's guidedFilter, 6.7 with the pure-NumPy fast
     # guided filter fallback (CI); the old frame pre-filter gave 23.5.
     assert err < 12.0, err
+
+
+def test_near_tie_uses_sobel_even_when_current_value_is_lower():
+    first = np.full((9, 9), 0.25, np.float32)
+    second = first.copy()
+    second[4, 4] -= 5e-7
+    second[4, 5] += 0.1
+    decision = gfg_decision_index([first, second])
+    assert decision[4, 4] == 1
+    # Away from the edge, equal activity and Sobel retain the first label.
+    assert decision[1, 1] == 0
+    second[4, 4] = first[4, 4] - 2e-6
+    assert gfg_decision_index([first, second])[4, 4] == 0
+
+
+def test_last_activity_batch_is_released_before_weight_filtering(monkeypatch):
+    import weakref
+    from fusion_methods import gfg_fgf as module
+
+    refs = []
+    phase = {"weights": False, "checked": False}
+    original_focus = module.gfg_focus_map
+    original_update = module.GfgDecision.update
+    original_filter = module._run_guided_filter
+    rng = np.random.default_rng(18)
+    frames = [rng.integers(0, 256, (25, 29, 3), dtype=np.uint8) for _ in range(5)]
+
+    def record_focus(*args, **kwargs):
+        activity = original_focus(*args, **kwargs)
+        refs.append(weakref.ref(activity))
+        return activity
+
+    def update(self, i, activity):
+        original_update(self, i, activity)
+        if i == len(frames) - 1:
+            phase["weights"] = True
+
+    def guided(*args, **kwargs):
+        if phase["weights"]:
+            assert len(refs) == len(frames)
+            assert all(ref() is None for ref in refs)
+            phase["checked"] = True
+        return original_filter(*args, **kwargs)
+
+    monkeypatch.setattr(module, "gfg_focus_map", record_focus)
+    monkeypatch.setattr(module.GfgDecision, "update", update)
+    monkeypatch.setattr(module, "_run_guided_filter", guided)
+    result = module.gfgfgf_impl(frames, thread_count=2)
+    assert phase["checked"]
+    assert result.shape == frames[0].shape

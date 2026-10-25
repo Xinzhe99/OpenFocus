@@ -491,7 +491,7 @@ PACK = {
     "advanced_tile_overlap": "Kachelüberlappung (px)",
     "advanced_tile_threshold": "Kacheln ab (px)",
     "advanced_tile_note": "Kleinere Kacheln sparen Speicher, können das Ergebnis aber um einige Stufen verschieben; die Überlappung muss deutlich kleiner bleiben.",
-    "advanced_threads": "Arbeits-Threads",
+    "advanced_threads": "Thread-Limit (0 = automatisch)",
     "advanced_resource_mode": "Ressourcenmodus",
     "advanced_resource_balanced": "Ausgeglichen",
     "advanced_resource_responsive": "Reaktionsschnell",

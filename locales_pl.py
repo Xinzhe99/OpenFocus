@@ -491,7 +491,7 @@ PACK = {
     "advanced_tile_overlap": "Nakładka kafelków (px)",
     "advanced_tile_threshold": "Kafelkuj powyżej (px)",
     "advanced_tile_note": "Mniejszy kafelek oszczędza pamięć, ale może przesunąć wynik o kilka poziomów; nakładka musi być znacznie mniejsza.",
-    "advanced_threads": "Wątki robocze",
+    "advanced_threads": "Limit wątków (0 = automatycznie)",
     "advanced_resource_mode": "Tryb zasobów",
     "advanced_resource_balanced": "Zrównoważony",
     "advanced_resource_responsive": "Responsywny",

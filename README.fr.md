@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.69.0** — le moteur de fusion planifie désormais son travail au lieu de le deviner : un plan d'exécution par rendu décide des workers, des threads et du budget mémoire, les cœurs physiques sont lus depuis la plateforme au lieu d'être déduits du nombre logique, et chaque backend classique diffuse ses tampons intermédiaires au lieu de retenir des temporaires de toute la pile. La sortie reste identique octet pour octet, avec des gains mesurés de 1,47× sur OpenFocus C et 1,33× sur la méthode neuronale. Un nouveau **mode de ressources** (Équilibré / Réactif / Maximal) garde le bureau fluide sans toucher à l'image.
+> **v1.70.0** — chaque étape lourde partage désormais un même bail d'admission, de la préparation à la publication : une annulation attend la fin réelle de l'appel natif en cours au lieu de lancer un second rendu par-dessus. La mémoire est vérifiée avant d'être allouée (illisible ou insuffisante donne une erreur claire, pas des tuiles réduites en silence), le cache de recalage valide de façon atomique et ne ré-encode plus lors d'un succès, la sortie neuronale 16 bits conserve ses bits de poids faible, et le nouveau **mode de ressources** avec threads automatiques (`0`) laisse respirer le bureau. Les huit algorithmes restent identiques octet pour octet à la v1.69.0.
 
 <a id="features"></a>
 ## Fonctionnalités

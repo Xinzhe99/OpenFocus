@@ -398,11 +398,18 @@ class StackMFFV3(nn.Module):
             raise ValueError(f"unknown fusion mode {mode}")
         return fused, focus
 
-    def forward_probs(self, x, sigma=0.0):
+    def forward_probs(self, x, sigma=0.0, should_cancel=None):
         """Softmax probabilities over the N layers: [B, N, H, W]. sigma > 0: each probability map is smoothed by a
         Gaussian of that standard deviation (pixels) and renormalised, which removes the 4x4 block structure of the
         pixel-shuffle head; the operation acts on every layer alike, so equivariance is preserved."""
+        def check_cancel():
+            if should_cancel is not None and should_cancel():
+                from core.registration import RegistrationCancelled
+                raise RegistrationCancelled()
+
+        check_cancel()
         P = torch.softmax(self.forward_logits(x).float(), dim=1)
+        check_cancel()
         scales = tuple(float(s) for s in getattr(self, 'ms_scales', (1.0,)))
         if not scales or len(set(scales)) != len(scales) or any(not (0 < s < float('inf')) for s in scales):
             raise ValueError('inference scales must be nonempty, distinct, positive and finite')
@@ -412,11 +419,16 @@ class StackMFFV3(nn.Module):
             for s_ in scales:
                 if s_ == 1.0:
                     continue
+                check_cancel()
                 xs = F.interpolate(x, scale_factor=s_, mode='bilinear', align_corners=False, antialias=s_ < 1)
                 Ps = torch.softmax(self.forward_logits(xs).float(), dim=1)
+                check_cancel()
                 acc = acc + F.interpolate(Ps, size=(H, W), mode='bilinear', align_corners=False)
             P = acc / len(scales)
-        return smooth_probs(P, sigma) if sigma > 0 else P
+        check_cancel()
+        result = smooth_probs(P, sigma) if sigma > 0 else P
+        check_cancel()
+        return result
 
     def fuse(self, x, mode='hard'):
         """mode='hard': pick the argmax layer per pixel; 'soft': probability-weighted sum."""

@@ -55,14 +55,14 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.69.0** — the fusion engine now plans its work instead of guessing:
-> one execution plan per render decides workers, threads and memory, physical
-> cores are read from the platform rather than halved from the logical count,
-> and every classical back-end streams its intermediate buffers instead of
-> holding whole-stack temporaries. Output is byte-identical, with measured
-> gains of 1.47× on OpenFocus C and 1.33× on the neural method. A new
-> **Resource mode** (Balanced / Responsive / Maximum) keeps the desktop
-> responsive without touching the image.
+> **v1.70.0** — every heavy stage now shares one admission lease from
+> preparation to publication, so cancellation waits for the native call to
+> finish instead of starting a second render on top of it. Memory is checked
+> before it is allocated (an unreadable or too-small budget is a clear error,
+> not a silent tile shrink), alignment caches commit atomically and are no
+> longer re-encoded on a hit, 16-bit neural output keeps its low-order bits,
+> and the new **Resource mode** plus automatic threads (`0`) let a render give
+> the desktop room back. Eight algorithms stay byte-identical to v1.69.0.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 

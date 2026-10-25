@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.69.0** — il motore di fusione ora pianifica il lavoro invece di indovinarlo: un piano di esecuzione per render decide worker, thread e budget di memoria, i core fisici vengono letti dalla piattaforma invece di dimezzare il conteggio logico, e ogni backend classico trasmette i propri buffer intermedi invece di trattenere temporanei dell'intero stack. L'output resta identico byte per byte, con guadagni misurati di 1,47× su OpenFocus C e 1,33× sul metodo neurale. Una nuova **modalità risorse** (Bilanciata / Reattiva / Massima) mantiene il desktop fluido senza toccare l'immagine.
+> **v1.70.0** — ogni fase pesante condivide ora un contratto di ammissione dalla preparazione alla pubblicazione: l'annullamento attende la fine reale della chiamata nativa in corso invece di avviare un secondo render sopra di essa. La memoria viene verificata prima di allocarla (illeggibile o insufficiente è un errore chiaro, non tasselli ridotti in silenzio), la cache di allineamento conferma in modo atomico e non ricodifica in caso di successo, l'output neurale a 16 bit conserva i bit bassi, e la nuova **modalità risorse** con thread automatici (`0`) lascia respiro al desktop. Gli otto algoritmi restano identici byte per byte alla v1.69.0.
 
 <a id="features"></a>
 ## Funzionalità

@@ -7,7 +7,7 @@ import glob
 import re
 import cv2
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 from fusion_methods.dct import _ensure_color_image
 from utils.image_utils import fuse_output_dtype
@@ -161,10 +161,16 @@ def gfg_decision_index(afms, tie_eps=1e-6):
 
 
 def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int = None,
-                min_frame_focus=0.0):
+                min_frame_focus=0.0, should_cancel=None):
     """
     GFG-FGF 优化实现版。
     """
+    def check_cancel():
+        if should_cancel is not None and should_cancel():
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
+
+    check_cancel()
     # -------------------------------------------------------------------------
     # 1. 图像加载与预处理
     # -------------------------------------------------------------------------
@@ -190,7 +196,10 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         except Exception:
             img_paths.sort()
 
-        stack_ori = [cv2.imread(p) for p in img_paths]
+        stack_ori = []
+        for path in img_paths:
+            check_cancel()
+            stack_ori.append(cv2.imread(path, cv2.IMREAD_UNCHANGED))
     else:
         # 列表输入
         stack_ori = input_source
@@ -198,15 +207,18 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     if not stack_ori:
         raise ValueError("Input stack is empty")
 
-    # 灰度栈会在按通道取索引时崩溃，BGRA 栈会把引导通道选成 Alpha 从而得到全黑
-    # 结果；统一先转成 3 通道 BGR
-    stack_ori = [_ensure_color_image(np.ascontiguousarray(img)) for img in stack_ori]
-
-    # Resize 处理
-    if img_resize is not None:
-        # 检查是否需要 resize，避免无用操作
-        if (stack_ori[0].shape[1], stack_ori[0].shape[0]) != img_resize:
-            stack_ori = [cv2.resize(img, img_resize) for img in stack_ori]
+    # Convert channels and resize at cancellable frame boundaries.
+    prepared = []
+    resize = (img_resize is not None
+              and (stack_ori[0].shape[1], stack_ori[0].shape[0]) != img_resize)
+    for img in stack_ori:
+        check_cancel()
+        img = _ensure_color_image(np.ascontiguousarray(img))
+        if resize:
+            img = cv2.resize(img, img_resize)
+        prepared.append(img)
+    stack_ori = prepared
+    del prepared
 
     # -------------------------------------------------------------------------
     # 2. 数据准备：统一转为 Float32 (0.0 - 1.0)
@@ -220,10 +232,15 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # Every back-end takes 0-255 scaled input regardless of bit depth, so a
     # plain /255 is correct for uint8 and for the float32 16-bit stacks.
     out_dtype = fuse_output_dtype(stack_ori)
-    imgs_f32 = [img.astype(np.float32) / 255.0 for img in stack_ori]
+    imgs_f32 = []
+    for img in stack_ori:
+        check_cancel()
+        if img.dtype == np.uint16:
+            img = img.astype(np.float32) * (255.0 / 65535.0)
+        imgs_f32.append(img.astype(np.float32) / 255.0)
     
     # 原始 uint8 数据不再需要，释放引用（如果外部未持有）
-    del stack_ori
+    del stack_ori, img
 
     # 确定用于计算焦点的通道 (Channel Selection)
     # 计算第一张图各通道和，取最大的通道索引
@@ -245,6 +262,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     focus_vals = np.zeros(num_imgs, dtype=np.float32)
 
     def compute_focus_score(idx):
+        check_cancel()
         gray_img = grays[idx]
         # filter2D 内部并行优化较好，但在大量小图时 ThreadPool 仍有优势
         gx = cv2.filter2D(gray_img, cv2.CV_32F, kx, borderType=cv2.BORDER_REFLECT)
@@ -270,10 +288,12 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
 
     if min_frame_focus > 0:  # 整帧分数只服务于可选的跳帧
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(compute_focus_score, i) for i in range(num_imgs)]
-            for fut in as_completed(futures):
-                i, val = fut.result()
-                focus_vals[i] = val
+            for start in range(0, num_imgs, max_workers):
+                check_cancel()
+                for i, val in executor.map(compute_focus_score,
+                                           range(start, min(num_imgs, start + max_workers))):
+                    check_cancel()
+                    focus_vals[i] = val
 
     max_focus = np.max(focus_vals) if num_imgs > 0 else 1.0
     if max_focus == 0: max_focus = 1.0 # 避免除零
@@ -287,6 +307,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     g_eps = 0.3
 
     def compute_afm_map(i):
+        check_cancel()
         # 整帧清晰度过低的帧可选跳过（默认关闭：论文无此步，且会丢掉只有
         # 一小块物体清晰的帧——tools/synthetic_benchmark.py --scene small）
         if scale > 0 and focus_vals[i] < scale * max_focus:
@@ -300,11 +321,13 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     decision = GfgDecision()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for start in range(0, num_imgs, max_workers):
-            batch = list(executor.map(compute_afm_map,
-                                      range(start, min(num_imgs, start + max_workers))))
-            for i, res in batch:
+            check_cancel()
+            for i, res in executor.map(compute_afm_map,
+                                       range(start, min(num_imgs, start + max_workers))):
+                check_cancel()
                 if res is not None:
                     decision.update(i, res)
+                del res
     if decision.idx is None:  # 全部被跳过：退化为首帧
         decision.update(0, np.zeros((h, w), np.float32))
 
@@ -324,12 +347,11 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # 由于 GuidedFilter 比较耗时，我们还是并行计算 Filter，主线程累加。
     
     def compute_fusion_component(i):
-        if not (idm_map == i).any():
+        check_cancel()
+        mask = idm_map == i
+        if not mask.any():
             return None
-            
-        # 生成二值 Mask (float)
-        # 这一步比较快
-        maxfm_binary = (idm_map == i).astype(np.float32)
+        maxfm_binary = mask.astype(np.float32)
         
         # 再次导向滤波平滑权重
         # 这里的 maxfm_binary 也是 0-1，guided filter 输出也是 0-1
@@ -341,13 +363,16 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # 固定顺序保证同输入同输出；每批只持有 max_workers 张权重图）
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for start in range(0, num_imgs, max_workers):
+            check_cancel()
             for res in executor.map(compute_fusion_component,
                                     range(start, min(num_imgs, start + max_workers))):
+                check_cancel()
                 if res is None:
                     continue
                 i, fdm_weight = res
                 sum_fdms += fdm_weight
                 imfu_result += imgs_f32[i] * fdm_weight[:, :, None]
+                del res, fdm_weight
 
     # -------------------------------------------------------------------------
     # 6. 归一化与输出
@@ -370,6 +395,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     out = np.zeros((h, w, 3), dtype=out_dtype)
     
     for c in range(3):
+        check_cancel()
         # 提取通道
         ch_data = imfu_result[:, :, c]
         # 除法
@@ -385,6 +411,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         np.clip(ch_data * 255.0, 0, 255, out=ch_data)
         out[:, :, c] = ch_data
 
+    check_cancel()
     return out
 
 # -----------------------------------------------------------------------------

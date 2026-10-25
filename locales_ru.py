@@ -491,7 +491,7 @@ PACK = {
     "advanced_tile_overlap": "Перекрытие (px)",
     "advanced_tile_threshold": "Дробить свыше (px)",
     "advanced_tile_note": "Меньший блок экономит память, но может сдвинуть результат на несколько уровней; перекрытие должно быть заметно меньше.",
-    "advanced_threads": "Рабочие потоки",
+    "advanced_threads": "Лимит потоков (0 = автоматически)",
     "advanced_resource_mode": "Режим ресурсов",
     "advanced_resource_balanced": "Сбалансированный",
     "advanced_resource_responsive": "Отзывчивый",

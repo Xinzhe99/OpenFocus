@@ -1,214 +1,305 @@
-"""Execution planning: one budget, one worker count, one parallel layer.
+"""Admission and lease regressions using deterministic resource snapshots."""
+import io
+import queue
+import struct
+import threading
+from dataclasses import replace
 
-These pin the behaviour the fusion pipeline relies on:
-  * the plan never exceeds the physical-core budget or the caller's cap;
-  * memory pressure lowers concurrency, never raises it;
-  * one parallel layer only (many outer workers with single-threaded native
-    calls, or a single worker that may use the whole native budget);
-  * an explicit budget override is honoured, because the pipeline's
-    ``memory_budget_bytes`` remains the single authoritative number.
-"""
-import numpy as np
 import pytest
 
 from core import resource_policy as policy
+from core.registration import RegistrationCancelled
+from utils import memory, platform_utils
+
+GiB = 1024 ** 3
 
 
-def _snapshot(available=8 * 1024 ** 3, total=16 * 1024 ** 3, cores=8,
-              device="CPU", free_vram=0, total_vram=0):
-    return policy.ResourceSnapshot(
-        available_ram=available, total_ram=total,
-        process_rss=512 * 1024 ** 2,
-        physical_cores=cores, logical_cpus=cores * 2,
-        free_vram=free_vram, total_vram=total_vram,
-        device_kind=device)
+def _snapshot(**changes):
+    snapshot = policy.ResourceSnapshot(available_ram=8 * GiB, total_ram=16 * GiB,
+                                       physical_cores=8, logical_cpus=16)
+    return replace(snapshot, **changes)
 
 
-def _workload(frames=10, block=1024, channels=3):
-    return policy.Workload(algorithm="guided_filter", frames=frames,
-                           height=2400, width=1600, channels=channels,
-                           block_size=block)
+def _workload(**changes):
+    workload = policy.Workload(algorithm="guided_filter", frames=10,
+                               height=200, width=300, fixed_bytes=200,
+                               per_worker_bytes=300, outer_tasks=10)
+    return replace(workload, **changes)
 
 
-def test_plan_never_exceeds_physical_cores():
-    plan = policy.plan_execution(_workload(), _snapshot(cores=6),
-                                 ram_budget_override=64 * 1024 ** 3)
-    assert plan.workers <= 6
-    assert plan.workers >= 1
+@pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (3, 2), (4, 3),
+                                            (5, 4), (8, 6), (12, 9), (20, 16)])
+def test_balanced_preserves_spare_core(cores, expected):
+    assert policy.cpu_capacity(_snapshot(physical_cores=cores, logical_cpus=cores),
+                               policy.PREFERENCE_BALANCED) == expected
 
 
-def test_user_thread_count_is_an_upper_bound():
-    generous = _snapshot(cores=16)
-    plan = policy.plan_execution(_workload(), generous, user_threads=3,
-                                 ram_budget_override=64 * 1024 ** 3)
-    assert plan.workers <= 3
-    # A larger cap must not be invented on a roomy machine either.
-    capped = policy.plan_execution(_workload(), generous, user_threads=2,
-                                   ram_budget_override=64 * 1024 ** 3)
-    assert capped.workers <= 2
+def test_affinity_and_fractional_quota_limit_all_preferences():
+    limited = _snapshot(physical_cores=12, logical_cpus=4, cpu_limit=2.5)
+    assert policy.cpu_capacity(limited, policy.PREFERENCE_MAXIMUM) == 2
+    assert policy.cpu_capacity(limited, policy.PREFERENCE_BALANCED) == 1
+    assert policy.cpu_capacity(limited, policy.PREFERENCE_RESPONSIVE) == 1
 
 
-def test_memory_pressure_reduces_workers():
-    """A tight budget must reduce concurrency — the bit-identical lever."""
-    snapshot = _snapshot(cores=16)
-    roomy = policy.plan_execution(_workload(), snapshot,
-                                  ram_budget_override=32 * 1024 ** 3)
-    tight = policy.plan_execution(_workload(), snapshot,
-                                  ram_budget_override=1200 * 1024 ** 2)
-    assert tight.workers < roomy.workers
-    assert tight.workers >= 1
+def test_fixed_allocations_reduce_concurrency_before_workers():
+    plan = policy.plan_execution(_workload(), _snapshot(), ram_budget_override=1100)
+    assert (plan.workers, plan.native_threads, plan.max_in_flight) == (3, 1, 3)
+    tighter = policy.plan_execution(_workload(), _snapshot(), ram_budget_override=500)
+    assert (tighter.workers, tighter.max_in_flight) == (1, 1)
+    with pytest.raises(policy.ResourceLimitError):
+        policy.plan_execution(_workload(), _snapshot(), ram_budget_override=499)
 
 
-def test_single_parallel_layer():
-    """Either many single-threaded workers, or one worker with threads."""
-    snapshot = _snapshot(cores=12)
-    many = policy.plan_execution(_workload(), snapshot,
-                                 ram_budget_override=64 * 1024 ** 3)
-    if many.workers > 1:
-        assert many.native_threads == 1
-    one = policy.plan_execution(_workload(), snapshot, user_threads=1,
-                                ram_budget_override=64 * 1024 ** 3)
-    assert one.workers == 1
-    assert one.native_threads >= 1
+def test_threads_and_batch_are_caps_and_zero_means_auto():
+    auto = policy.plan_execution(_workload(), _snapshot(), user_threads=0)
+    assert auto.workers == 6
+    capped = policy.plan_execution(_workload(), _snapshot(), user_threads=3,
+                                    user_batch=2)
+    assert (capped.workers, capped.native_threads) == (2, 1)
+    native = policy.plan_execution(_workload(parallel_layer="native"), _snapshot(),
+                                    user_threads=3, user_batch=8)
+    assert (native.workers, native.native_threads) == (1, 3)
 
 
-def test_preference_scales_the_core_budget():
-    snapshot = _snapshot(cores=20)
-    balanced = policy.cpu_capacity(snapshot, policy.PREFERENCE_BALANCED)
-    responsive = policy.cpu_capacity(snapshot, policy.PREFERENCE_RESPONSIVE)
-    maximum = policy.cpu_capacity(snapshot, policy.PREFERENCE_MAXIMUM)
-    assert responsive <= balanced <= maximum
-    assert maximum == 20
-    assert responsive >= 1
+@pytest.mark.parametrize("snapshot", [policy.ResourceSnapshot(),
+    _snapshot(available_ram=GiB, total_ram=4 * GiB)])
+def test_unknown_or_no_headroom_refuses_even_with_large_override(snapshot):
+    with pytest.raises(policy.ResourceLimitError):
+        policy.plan_execution(_workload(), snapshot, ram_budget_override=100 * GiB)
+    with pytest.raises(policy.ResourceLimitError):
+        policy.require_memory(1, snapshot, user_limit=100 * GiB)
 
 
-@pytest.mark.parametrize("cores,expected", [
-    (1, 1), (2, 2), (3, 3), (4, 4), (5, 4), (8, 7), (12, 10), (20, 16),
-])
-def test_balanced_rounds_up_so_a_small_machine_keeps_parallelism(cores, expected):
-    """A 2-physical-core CI runner must not collapse to a single worker.
-
-    ``int(cores * 0.8)`` truncated 2 -> 1, so the Balanced default used half of
-    a small machine and memory pressure had no concurrency left to lower —
-    which is exactly what the tight/roomy budget test measures.
-    """
-    snapshot = _snapshot(cores=cores)
-    assert policy.cpu_capacity(snapshot, policy.PREFERENCE_BALANCED) == expected
+def test_override_cannot_raise_detected_headroom():
+    snapshot = _snapshot(available_ram=2 * GiB, total_ram=4 * GiB)
+    plan = policy.plan_execution(_workload(), snapshot, ram_budget_override=100 * GiB)
+    assert plan.ram_budget == int(0.9 * GiB)
+    with pytest.raises(policy.ResourceLimitError):
+        policy.plan_execution(_workload(fixed_bytes=GiB), snapshot,
+                              ram_budget_override=100 * GiB)
 
 
-@pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (3, 2), (5, 3)])
-def test_responsive_rounds_up_not_down(cores, expected):
-    snapshot = _snapshot(cores=cores)
-    assert policy.cpu_capacity(snapshot, policy.PREFERENCE_RESPONSIVE) == expected
+def test_one_gib_reserve_and_resident_buffers_not_recharged():
+    snapshot = _snapshot(available_ram=GiB + GiB // 4, total_ram=2 * GiB)
+    assert policy.ram_budget(snapshot) == GiB // 4
+    assert policy.ram_budget(replace(snapshot, process_rss=GiB)) == GiB // 4
 
 
-def test_small_machine_still_has_a_memory_lever():
-    """The budget test's premise: two workers on a roomy 2-core machine."""
-    snapshot = _snapshot(cores=2)
-    roomy = policy.plan_execution(_workload(), snapshot,
-                                  ram_budget_override=64 * 1024 ** 3)
-    tight = policy.plan_execution(_workload(), snapshot,
-                                  ram_budget_override=1200 * 1024 ** 2)
-    assert roomy.workers > 1, "balanced mode collapsed to one worker"
-    assert tight.workers < roomy.workers
+@pytest.mark.parametrize("required,budget,expected", [(100, 0, False),
+    (100, -1, False), (0, 0, True), (100, 100, True), (101, 100, False)])
+def test_budget_check_never_treats_zero_as_unlimited(required, budget, expected):
+    assert policy.fits_in_budget(required, budget) is expected
 
 
-def test_unknown_memory_does_not_grow_concurrency():
-    """No readable memory information must fail closed, not open."""
-    blind = policy.ResourceSnapshot(available_ram=0, total_ram=0,
-                                    physical_cores=8, logical_cpus=16)
-    plan = policy.plan_execution(_workload(), blind)
-    assert plan.workers == 1
-    assert plan.native_threads >= 1
+def test_whole_frame_admission_accounts_for_worker_scratch():
+    workload = policy.Workload(algorithm="registration", frames=4, height=10,
+                               width=20, channels=3, itemsize=2)
+    # Output stack: 4*10*20*3*2=4800; each worker's six float buffers: 14400.
+    plan = policy.plan_execution(workload, _snapshot(), ram_budget_override=33600)
+    assert plan.workers == 2
+    with pytest.raises(policy.ResourceLimitError):
+        policy.plan_execution(workload, _snapshot(), ram_budget_override=19199)
 
 
-def test_budget_leaves_headroom():
-    snapshot = _snapshot(available=4 * 1024 ** 3, total=8 * 1024 ** 3)
-    budget = policy.ram_budget(snapshot)
-    assert 0 < budget < snapshot.available_ram
-    # At least the reserve (or 15% of total) stays free.
-    assert snapshot.available_ram - budget >= min(policy.RESERVE_BYTES,
-                                                  snapshot.available_ram * 0.4)
+def test_tile_estimate_includes_fixed_accumulators_and_retained_result():
+    workload = policy.Workload(frames=2, height=100, width=100, channels=3,
+                               block_size=10, itemsize=2)
+    fixed, worker = policy.estimate_working_set(workload)
+    assert fixed == 160000
+    assert worker == 21760
+    with pytest.raises(policy.ResourceLimitError):
+        policy.plan_execution(workload, _snapshot(), ram_budget_override=181759)
+    assert workload.block_size == 10
 
 
-def test_budget_is_new_allocation_not_the_stack():
-    """The budget bounds *new* allocations; a resident stack is not re-charged."""
-    snapshot = _snapshot(available=4 * 1024 ** 3, total=16 * 1024 ** 3)
-    assert policy.ram_budget(snapshot) == int(
-        min(policy.BUDGET_RATIO * snapshot.available_ram,
-            snapshot.available_ram - max(policy.RESERVE_BYTES,
-                                         int(0.15 * snapshot.total_ram))))
+def test_cuda_requires_known_vram_and_accounts_for_fixed_model():
+    workload = _workload(algorithm="stackmff", parallel_layer="native",
+                         fixed_vram_bytes=GiB, per_worker_vram_bytes=GiB)
+    cuda = _snapshot(device_kind="CUDA", free_vram=4 * GiB, total_vram=8 * GiB)
+    plan = policy.plan_execution(workload, cuda, user_threads=3)
+    assert (plan.workers, plan.native_threads) == (1, 3)
+    with pytest.raises(policy.ResourceLimitError):
+        policy.plan_execution(workload, replace(cuda, free_vram=2 * GiB))
+    with pytest.raises(policy.ResourceLimitError):
+        policy.plan_execution(workload, replace(cuda, free_vram=0))
 
 
-def test_vram_budget_only_with_a_gpu():
-    cpu = _snapshot(device="CPU")
-    assert policy.vram_budget(cpu) == 0
-    gpu = _snapshot(device="CUDA", free_vram=8 * 1024 ** 3,
-                    total_vram=12 * 1024 ** 3)
-    budget = policy.vram_budget(gpu)
-    assert 0 < budget < gpu.free_vram
+def test_ai_requires_explicit_estimate():
+    with pytest.raises(policy.ResourceLimitError):
+        policy.plan_execution(policy.Workload(algorithm="ai", frames=2,
+                                               height=20, width=30), _snapshot())
 
 
-def test_plan_is_immutable():
-    plan = policy.plan_execution(_workload(), _snapshot(),
-                                 ram_budget_override=8 * 1024 ** 3)
-    with pytest.raises(Exception):
-        plan.workers = 99
+def _thread_call(function):
+    result = queue.Queue()
+    def run():
+        try:
+            result.put((True, function()))
+        except BaseException as error:
+            result.put((False, error))
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, result
 
 
-def test_fits_in_budget_refuses_only_when_known():
-    assert policy.fits_in_budget(100, 0)      # unknown budget: allow
-    assert policy.fits_in_budget(0, 100)      # nothing required
-    assert policy.fits_in_budget(100, 200)
-    assert not policy.fits_in_budget(300, 200)
+def _result(call):
+    thread, result = call
+    thread.join(2)
+    assert not thread.is_alive(), "heavy-job waiter failed to finish"
+    ok, value = result.get_nowait()
+    if not ok:
+        raise value
+    return value
 
 
-def test_physical_cores_are_real():
-    """The old ``logical // 2`` estimate undercounts mixed P/E machines."""
-    import os
-    from utils.platform_utils import physical_core_count
-
-    cores = physical_core_count()
-    logical = os.cpu_count() or cores
-    assert 1 <= cores <= logical
-    # The detection must not simply echo half the logical count when the
-    # platform can answer exactly (this machine has 12 cores / 20 threads).
-    assert cores >= 1
-
-
-def test_planner_agrees_with_the_pipeline_budget(monkeypatch):
-    """``memory_budget_bytes`` stays the single authoritative number.
-
-    The comparison is against the *planner's own* result on a fixed snapshot:
-    asserting ``tight < roomy`` on whatever machine runs the test made it
-    depend on the host's core count (a 2-core runner caps both at 2 and the
-    memory lever is invisible). What must hold everywhere is that the pipeline
-    helper returns exactly the planner's worker count for the same budget.
-    """
-    from core import multi_focus_fusion as mff
-
-    budget = 2000 * 1024 ** 2
-    monkeypatch.setattr(mff, "memory_budget_bytes", lambda: budget)
-    fusion = mff.MultiFocusFusion(algorithm="guided_filter", use_gpu=False)
-    actual = fusion._calculate_optimal_thread_count(1600, 2400, 3, 10, 1024, 8)
-
-    expected = policy.plan_execution(
-        policy.Workload(algorithm="guided_filter", frames=10, height=2400,
-                        width=1600, channels=3, block_size=1024),
-        policy.probe_resources(),
-        user_threads=8,
-        ram_budget_override=budget,
-    ).workers
-    assert actual == expected
-    assert actual >= 1
+def test_heavy_job_contention_holds_until_outermost_owner_exits():
+    waiting, entered = threading.Event(), threading.Event()
+    def contender():
+        with policy.heavy_job(lambda: waiting.set() or False):
+            entered.set()
+    with policy.heavy_job():
+        with policy.heavy_job():
+            call = _thread_call(contender)
+            assert waiting.wait(2)
+            assert not entered.wait(0.1)
+        assert not entered.wait(0.1)
+    _result(call)
+    assert entered.is_set()
 
 
-def test_memory_lowers_workers_on_a_fixed_snapshot(monkeypatch):
-    """The lever itself, measured on a snapshot rather than the host."""
-    snapshot = _snapshot(cores=16)
-    workload = _workload()
-    roomy = policy.plan_execution(workload, snapshot,
-                                  ram_budget_override=64 * 1024 ** 3)
-    tight = policy.plan_execution(workload, snapshot,
-                                  ram_budget_override=1500 * 1024 ** 2)
-    assert tight.workers < roomy.workers
+def test_waiting_cancellation_does_not_enter_or_release_running_owner():
+    waiting, cancelled, entered = threading.Event(), threading.Event(), threading.Event()
+    def waiter():
+        def should_cancel():
+            waiting.set()
+            return cancelled.is_set()
+        with policy.heavy_job(should_cancel):
+            entered.set()
+    with policy.heavy_job():
+        call = _thread_call(waiter)
+        assert waiting.wait(2)
+        cancelled.set()
+        with pytest.raises(RegistrationCancelled):
+            _result(call)
+        assert not entered.is_set()
+        next_call = _thread_call(lambda: _enter(entered))
+        assert not entered.wait(0.1)
+    _result(next_call)
+    assert entered.is_set()
+
+
+def _enter(event):
+    with policy.heavy_job():
+        event.set()
+
+
+def test_heavy_job_releases_on_exception_and_preentry_cancellation():
+    with pytest.raises(RuntimeError, match="native failure"):
+        with policy.heavy_job():
+            with policy.heavy_job():
+                raise RuntimeError("native failure")
+    with pytest.raises(RegistrationCancelled):
+        with policy.heavy_job(lambda: True):
+            pytest.fail("cancelled work was admitted")
+    entered = threading.Event()
+    _result(_thread_call(lambda: _enter(entered)))
+    assert entered.is_set()
+
+
+def test_cancellation_after_acquiring_lease_releases_it():
+    checks = iter((False, True))
+    with pytest.raises(RegistrationCancelled):
+        with policy.heavy_job(lambda: next(checks)):
+            pytest.fail("work started after cancellation at admission")
+    entered = threading.Event()
+    _result(_thread_call(lambda: _enter(entered)))
+    assert entered.is_set()
+
+
+def _files(monkeypatch, contents):
+    def fake_open(path, *args, **kwargs):
+        if str(path) not in contents:
+            raise FileNotFoundError(path)
+        return io.StringIO(contents[str(path)])
+    monkeypatch.setattr("builtins.open", fake_open)
+
+
+def test_linux_affinity_counts_smt_siblings_once(monkeypatch):
+    _files(monkeypatch, {"/proc/cpuinfo":
+        "processor : 0\nphysical id : 0\ncore id : 0\n\n"
+        "processor : 1\nphysical id : 0\ncore id : 0\n\n"
+        "processor : 2\nphysical id : 0\ncore id : 1\n\n"
+        "processor : 3\nphysical id : 1\ncore id : 0"})
+    monkeypatch.setattr(platform_utils.os, "sched_getaffinity", lambda pid: {0, 1}, raising=False)
+    assert platform_utils._linux_physical_cores() == 1
+    monkeypatch.setattr(platform_utils.os, "sched_getaffinity", lambda pid: {1, 3}, raising=False)
+    assert platform_utils._linux_physical_cores() == 2
+
+
+def test_windows_topology_respects_affinity_and_hybrid_cores():
+    pointer = struct.calcsize("P")
+    def record(mask):
+        body = bytes(22) + struct.pack("<H", 1)
+        body += mask.to_bytes(pointer, "little") + bytes(8)
+        return struct.pack("<II", 0, len(body) + 8) + body
+    raw = record(0b11) + record(0b1100) + record(0b10000)
+    assert platform_utils._windows_core_records(raw) == 3
+    assert platform_utils._windows_core_records(raw, 0b11, 0) == 1
+    assert platform_utils._windows_core_records(raw, 0b10010, 0) == 2
+    assert platform_utils._windows_core_records(raw[:-1]) == 0
+
+
+def test_cgroup_v2_nested_quota_uses_tightest_parent(monkeypatch):
+    _files(monkeypatch, {
+        "/proc/self/cgroup": "0::/tenant/job\n",
+        "/proc/self/mountinfo": "30 20 0:27 /tenant /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+        "/sys/fs/cgroup/job/cpu.max": "350000 100000\n",
+        "/sys/fs/cgroup/cpu.max": "150000 100000\n",
+    })
+    assert platform_utils._linux_cpu_quota() == 1.5
+
+
+def test_cgroup_v1_quota_and_unlimited_parent(monkeypatch):
+    _files(monkeypatch, {
+        "/proc/self/cgroup": "4:cpu,cpuacct:/job\n",
+        "/proc/self/mountinfo": "30 20 0:27 / /sys/fs/cgroup/cpu rw - cgroup cgroup rw,cpu,cpuacct\n",
+        "/sys/fs/cgroup/cpu/job/cpu.cfs_quota_us": "250000",
+        "/sys/fs/cgroup/cpu/job/cpu.cfs_period_us": "100000",
+        "/sys/fs/cgroup/cpu/cpu.cfs_quota_us": "-1",
+        "/sys/fs/cgroup/cpu/cpu.cfs_period_us": "100000",
+    })
+    assert platform_utils._linux_cpu_quota() == 2.5
+
+
+def test_cpu_probe_rechecks_limits_and_marks_unknown_topology(monkeypatch):
+    monkeypatch.setattr(platform_utils, "is_windows", lambda: False)
+    monkeypatch.setattr(platform_utils, "is_linux", lambda: True)
+    monkeypatch.setattr(platform_utils.os, "cpu_count", lambda: 20)
+    monkeypatch.setattr(platform_utils, "_affinity_cpu_count", lambda: 8)
+    monkeypatch.setattr(platform_utils, "_linux_physical_cores", lambda: 6)
+    monkeypatch.setattr(platform_utils, "_linux_cpu_quota", lambda: 2.5)
+    assert platform_utils.cpu_limits() == (2, 8, 2.5, True)
+    monkeypatch.setattr(platform_utils, "_linux_cpu_quota", lambda: 0)
+    assert platform_utils.cpu_limits() == (6, 8, 0, True)
+    monkeypatch.setattr(platform_utils, "_linux_physical_cores", lambda: 0)
+    assert platform_utils.cpu_limits() == (1, 8, 0, False)
+
+
+def test_linux_available_memory_is_bounded_by_cgroup_occupancy(monkeypatch):
+    monkeypatch.setattr(memory.sys, "platform", "linux")
+    _files(monkeypatch, {
+        "/proc/meminfo": "MemTotal: 16777216 kB\nMemAvailable: 8388608 kB\n",
+        "/proc/self/cgroup": "0::/job\n",
+        "/proc/self/mountinfo": "30 20 0:27 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+        "/sys/fs/cgroup/job/memory.max": str(4 * GiB),
+        "/sys/fs/cgroup/job/memory.current": str(3 * GiB),
+        "/sys/fs/cgroup/memory.max": "max",
+    })
+    assert memory._posix_memory() == (GiB, 4 * GiB)
+
+
+def test_missing_memory_availability_is_never_invented(monkeypatch):
+    monkeypatch.setattr(memory.sys, "platform", "linux")
+    _files(monkeypatch, {"/proc/meminfo": "MemTotal: 8388608 kB\n"})
+    assert memory.available_memory_bytes() == 0
+    assert memory.total_memory_bytes() == 8 * GiB

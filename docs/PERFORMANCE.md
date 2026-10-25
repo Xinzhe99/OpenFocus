@@ -1,26 +1,14 @@
 # OpenFocus Performance & Large-Stack Reference
 
-Measured by the soak harness `tools/soak_test.py` (rerunnable, sanity-checks
-every output). Reference machine: Windows 11, i7-12700 (12C/20T), 32 GB RAM,
-CPU-only (no CUDA), 4 worker threads, Python 3.10.
+The historical soak measurements below come from `tools/soak_test.py` on
+Windows 11, i7-12700 (12C/20T), 32 GB RAM, CPU-only, four worker threads and
+Python 3.10. They describe the older tiling policy, including its 80-unit
+neural heuristic and 128-pixel tile alignment; they are not measurements of
+the current resource planner. Current neural staging pads to 64 pixels.
 
-The final soak pass caught and fixed two real defects:
-
-1. **Tiling ignored stack depth.** The decision checked only per-frame
-   dimensions, so a deep stack of sub-threshold frames (40 × 1783 × 1637)
-   bypassed tiling and the neural path attempted a ~7.6 GB convolution
-   allocation. Tiling now also triggers on the **total stack footprint**
-   (`frames × H × W × bytes`) — `tests/test_fusion_methods.py::
-   TestStackFootprintTiling`.
-2. **The AI tiled path batched by tiles, not by frames × pixels.** Even in
-   tiled mode it sent every frame of every tile in the batch through the
-   model at once: 2 tiles × 120 frames = 240 images → one 16 GB conv
-   allocation → `DefaultCPUAllocator` OOM. Tiles and batch size now shrink
-   automatically with depth so a single model call stays within an
-   empirically safe budget (`_ai_effective_tiling`, 80 units of
-   1024²-frames) — `TestAIEffectiveTiling`. Tiles are also 128-aligned
-   because the network's total downsampling is ÷128: a 832 px tile came back
-   as a 768 px focus map and crashed the pixel gather.
+The reviewed policy preserves the selected spatial grid and rejects work
+that cannot fit its minimum working set. It does not shrink tiles in response
+to memory pressure: changing tile geometry can change the fused image.
 
 ## Measured throughput (CPU-only)
 
@@ -57,14 +45,12 @@ Rules the planner enforces:
   native calls, or one worker that may use the whole thread budget. The old
   tile loop passed `thread_count=1` per tile by hand; the planner makes that
   a property of the plan instead of a convention.
-- **`thread_count` is an upper bound.** Memory pressure lowers it, never
-  raises it. A machine where memory cannot be read runs a single worker.
-- **Physical cores, not hyper-threads.** Tile fusion is memory-bandwidth
-  bound; hyper-threads raise peak memory without adding throughput.
-  `physical_core_count()` now asks the platform (Win32
-  `GetLogicalProcessorInformationEx`, `/proc/cpuinfo`, `hw.physicalcpu`)
-  instead of halving the logical count — the old estimate reported 10 cores
-  on the 12-core reference machine.
+- **`thread_count` is an upper bound.** Zero selects automatic; saved positive
+  limits are preserved. Memory and available CPU capacity may lower concurrency.
+  Unknown or insufficient RAM rejects admission instead of assuming spare memory.
+- **Available CPU capacity.** Physical-core discovery uses platform topology;
+  affinity and cgroup quotas constrain the usable budget. Unknown topology is
+  handled conservatively rather than reported as a measured core count.
 - **Resource mode** (Balanced / Responsive / Maximum) scales the core share
   (80% / 50% / 100%) and never touches the numeric path.
 
@@ -90,9 +76,10 @@ code, which also changes B, C, GFF and DTCWT.
 
 ### Measured result of the branch
 
-Fresh subprocess per condition, base commit vs the branch, alternating, four
-runs each, median of the warm runs. Same 6-frame 999×750 8-bit demo stack,
-`thread_count=4`, exposure matching on, whole-frame path.
+These are historical, pre-review branch measurements: fresh subprocess per
+condition, base commit vs branch, alternating, four runs each, median of warm
+runs. Input: six 999×750 8-bit demo frames, `thread_count=4`, exposure matching
+on, whole-frame path. The review below did not remeasure these timings.
 
 | Algorithm | Before | After | Ratio | Output |
 |---|---:|---:|---:|---|
@@ -105,27 +92,60 @@ runs each, median of the warm runs. Same 6-frame 999×750 8-bit demo stack,
 | openfocus_c | 0.838 s | 0.572 s | 1.47× | identical |
 | stackmffv3 | 13.82 s | 10.37 s | 1.33× | identical |
 
-Every digest matched, so the ratios are speed at unchanged output. Small
-stacks are dominated by per-call overhead, which is why the largest wins are
-the two methods with the most removed per-frame/per-tile allocation. DTCWT is
-neutral: its activity pass was restored to the stacked form after a running
-max measured no faster, and only the vote-map stream and the thread cap remain.
-No GPU was available, so the CUDA/MPS paths are implemented but unmeasured.
+Every recorded digest matched. These small-stack timings do not establish
+large-stack or GPU performance. The measured DTCWT revision retained stacked
+activity maps; the reviewed revision streams the activity winners as well as
+the vote maps. CUDA/MPS hardware was unavailable; true GPU tile batching is
+disabled, with one tile per inference call on every device.
+
+### Review corrections (2026-10-25)
+
+- A shared cancellable lease covers preparation, normalization, registration,
+  fusion and publication for render, ROI, compare, depth, CLI and batch workers.
+  Cancellation waits for native work before another heavy job can proceed.
+- Admission checks fixed and in-flight allocations, including raw16 conversion,
+  exposure copies, registration outputs, fusion accumulators and neural model
+  loading/activations. CPU/GPU estimates are conservative admission models,
+  not measured upper bounds for every runtime or checkpoint.
+- Registration and tile work use bounded ordered submission. Consumed futures
+  release results; cancellation and errors stop replenishment and publication.
+- Alignment cache identity includes decoded pixels and effective processing
+  parameters. Immutable generations and atomic manifests preserve the old
+  cache on failure/cancellation; byte-based eviction defaults to 2 GiB. Cache
+  hits are not re-encoded, cache write errors do not discard valid results,
+  and cache I/O plus preview resizing run outside the GUI thread.
+- Neural fusion/depth share single-padding preparation and admission. uint16
+  and normalized float inputs remain float32 in the 0–255 work domain until
+  the caller restores source depth. General GPU preferences no longer select
+  the numerically different CuPy registration backend.
+- New settings and CLI use automatic threads (`0`); saved positive limits are
+  preserved. CLI accepts `--resource-preference balanced|responsive|maximum`.
+
+Verification on Windows/Python 3.12: **1021 passed, 12 skipped**. The eight
+fusion algorithms matched baseline `4659b7b` byte-for-byte on both the real
+six-frame 999×750 uint8 stack and 97×130 uint16 crops with independent low bits
+(16 comparisons). Real CLI PNG/TIFF export preserved source depth; cancellation
+after the final tile raised cancellation instead of returning a result.
+The visible GUI loaded the six demo frames and displayed a DCT result.
+Automatic threads and Responsive mode persisted and appeared in the reopened
+settings dialog. Native widget screenshots were inspected; desktop capture
+returned black pixels, so it was not used as visual evidence.
+
+No new speedup, peak-RSS, CUDA/MPS quality or cross-platform runtime claim is
+made by this review. The full stress/latency matrix in the specification remains
+a release acceptance requirement, not a result implied by the unit suite.
 
 ## Memory
 
-- Classical tiled fusion stays bounded by the tile size regardless of depth,
-  and now also by the in-flight window: at most `workers` finished tiles are
-  held, reduced in tile order, instead of every tile that happened to finish.
-- The AI path bounds its **per-call activations** (frames × tile-pixels),
-  but total process memory still grows with the stack itself: the 120-frame
-  case peaked at ~24 GB working set on a 32 GB machine (stack + activations
-  + allocator retention; the pagefile absorbs spikes). For deep AI stacks,
-  16 GB RAM + a healthy pagefile is a practical floor; classical methods
-  are far lighter.
-- GPU: the AI path automatically uses CUDA/MPS when available and falls
-  back to CPU otherwise (Settings → GPU Acceleration can force CPU). The
-  same per-call budget applies on GPU to protect small VRAMs.
+- Tiled fusion holds a bounded window of in-flight results and reduces them
+  in grid order. Source stacks, full-image accumulators, per-tile workspaces
+  and neural stage state still grow with image dimensions or frame count.
+- Physical RAM headroom is checked before known allocations. The pagefile is
+  not treated as available RAM; if even one work unit does not fit, the job
+  reports a resource error without silently reducing image quality.
+- CUDA budgets include model and padded inference workspace against free VRAM.
+  MPS shares physical RAM and its working-set constraint with the CPU. These
+  paths require target-hardware validation; CPU measurements do not prove them.
 
 ## Practical guidance
 
@@ -135,8 +155,9 @@ No GPU was available, so the CUDA/MPS paths are implemented but unmeasured.
 - **Very deep stacks (100+ frames)**: AI works but is a coffee-break run
   (~1 h/120 frames at 3 MP on this machine). guided_filter or gfgfgf give
   a full-quality result in minutes; dtcwt is the quality/time middle ground.
-- **High-resolution input** is handled by automatic tiling (default block
-  1024 px, overlap 256 px). Both size *and* stack depth trigger it.
+- **High-resolution input** uses the configured tiling policy (default block
+  1024 px, overlap 256 px). Insufficient resources reduce concurrency or reject
+  the job; manually choosing a different tile grid can change output pixels.
 
 ## Rerun the soak any time
 

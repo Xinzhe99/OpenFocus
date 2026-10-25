@@ -18,18 +18,20 @@ policy classes. Ratios here are conservative starting points to be calibrated
 by the soak harness, not measured constants.
 """
 import math
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
 
 from utils import memory
-from utils.platform_utils import physical_core_count
+from utils.platform_utils import cpu_limits
 
 # Share of currently-available physical memory one stage may plan to allocate.
 BUDGET_RATIO = 0.45
 # Never plan to leave the machine with less than this for the desktop.
-RESERVE_BYTES = 512 * 1024 ** 2
+RESERVE_BYTES = 1024 ** 3
 
 # GPU reserves: the allocator keeps freed blocks, so free VRAM is what matters.
 VRAM_RESERVE_RATIO = 0.15
@@ -54,6 +56,8 @@ class ResourceSnapshot:
     free_vram: int = 0
     total_vram: int = 0
     device_kind: str = "CPU"
+    cpu_limit: float = 0
+    physical_cores_known: bool = False
 
     @property
     def ram_known(self) -> bool:
@@ -76,6 +80,13 @@ class Workload:
     itemsize: int = 1
     block_size: Optional[int] = None
     tile_overlap: int = 0
+    # Newly allocated bytes only: resident inputs belong to the snapshot.
+    fixed_bytes: Optional[int] = None
+    per_worker_bytes: Optional[int] = None
+    fixed_vram_bytes: int = 0
+    per_worker_vram_bytes: int = 0
+    outer_tasks: Optional[int] = None
+    parallel_layer: str = "outer"
 
 
 @dataclass(frozen=True)
@@ -122,16 +133,14 @@ def _gpu_memory() -> tuple:
 
 def probe_resources(device_kind: Optional[str] = None) -> ResourceSnapshot:
     """Read the machine once. Every field may be zero when unknowable."""
-    import os
+    cores, logical, limit, topology_known = cpu_limits()
 
     available = memory.available_memory_bytes()
     total = memory.total_memory_bytes()
     rss = memory.process_rss_bytes()
-    cores = physical_core_count()
-    logical = os.cpu_count() or cores
     kind = device_kind or "CPU"
     free_vram = total_vram = 0
-    if kind in ("CUDA", "MPS"):
+    if kind == "CUDA":
         free_vram, total_vram = _gpu_memory()
     return ResourceSnapshot(
         available_ram=int(available or 0),
@@ -142,6 +151,8 @@ def probe_resources(device_kind: Optional[str] = None) -> ResourceSnapshot:
         free_vram=free_vram,
         total_vram=total_vram,
         device_kind=kind,
+        cpu_limit=limit,
+        physical_cores_known=topology_known,
     )
 
 
@@ -170,20 +181,66 @@ def vram_budget(snapshot: ResourceSnapshot) -> int:
 
 
 def cpu_capacity(snapshot: ResourceSnapshot, preference: str) -> int:
-    """Physical cores this stage may occupy in the given preference mode.
-
-    The share is rounded *up*: ``int(cores * 0.8)`` truncated a 2-core CI
-    runner to a single worker, so the Balanced default used half of a small
-    machine and memory pressure had no concurrency left to lower.
-    """
-    cores = max(1, snapshot.physical_cores)
+    """Usable capacity, retaining at least one spare core in balanced mode."""
+    cores = min(max(1, snapshot.physical_cores), max(1, snapshot.logical_cpus))
+    if snapshot.cpu_limit > 0:
+        cores = min(cores, max(1, math.floor(snapshot.cpu_limit)))
+    if preference == PREFERENCE_MAXIMUM:
+        return cores
     if preference == PREFERENCE_RESPONSIVE:
-        share = 0.5
-    elif preference == PREFERENCE_MAXIMUM:
-        share = 1.0
+        return max(1, math.floor(cores * 0.5))
+    return max(1, min(cores - 1, math.floor(cores * 0.8)))
+
+
+class ResourceLimitError(MemoryError):
+    """The minimum working set cannot safely be admitted."""
+
+
+def require_memory(required_bytes: int, snapshot: Optional[ResourceSnapshot] = None,
+                   user_limit: Optional[int] = None) -> int:
+    """Admit a known new allocation; return its capped available RAM budget."""
+    if required_bytes < 0:
+        raise ValueError("required_bytes must be nonnegative")
+    snapshot = snapshot or probe_resources()
+    budget = ram_budget(snapshot)
+    if user_limit is not None:
+        budget = min(budget, max(0, int(user_limit)))
+    if not snapshot.ram_known:
+        raise ResourceLimitError("Available physical memory could not be determined")
+    if budget <= 0 or required_bytes > budget:
+        raise ResourceLimitError(
+            f"Insufficient memory: need {memory.mb(required_bytes):.0f} MB "
+            f"of new allocations; budget is {memory.mb(budget):.0f} MB")
+    return budget
+
+
+def estimate_working_set(workload: Workload) -> tuple:
+    """Conservative fixed and per-worker allocation estimates for CPU stages."""
+    pixels = max(0, workload.height) * max(0, workload.width)
+    channels = max(1, workload.channels)
+    frames = max(1, workload.frames)
+    frame_float = pixels * channels * np.dtype(np.float32).itemsize
+    if workload.block_size:
+        fixed = pixels * (channels + 1) * 4
+        per_worker = math.ceil(frames * int(workload.block_size) ** 2 * channels
+                               * (max(1, workload.itemsize) + 4) * 5.6)
+        # A completed tile and its weight remain live until ordered reduction.
+        per_worker += int(workload.block_size) ** 2 * (channels + 1) * 4
+    elif workload.algorithm == "registration":
+        fixed = frames * pixels * channels * max(1, workload.itemsize)
+        per_worker = frame_float * 6
     else:
-        share = 0.8
-    return max(1, min(cores, math.ceil(cores * share)))
+        fixed = (frames + 1) * frame_float
+        per_worker = frame_float * 6
+    if workload.fixed_bytes is not None:
+        fixed = int(workload.fixed_bytes)
+    if workload.per_worker_bytes is not None:
+        per_worker = int(workload.per_worker_bytes)
+    if fixed < 0 or per_worker < 0:
+        raise ValueError("Working-set estimates must be nonnegative")
+    if fixed + per_worker <= 0:
+        raise ResourceLimitError("The stage's minimum working set is unknown")
+    return fixed, per_worker
 
 
 def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = None,
@@ -191,73 +248,57 @@ def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = No
                    user_threads: Optional[int] = None,
                    user_batch: Optional[int] = None,
                    ram_budget_override: Optional[int] = None) -> ExecutionPlan:
-    """Turn a workload and a snapshot into one bounded plan.
+    """Admit fixed buffers plus concurrent workers without changing geometry.
 
-    ``user_threads`` is an *upper bound*: memory pressure may lower it, never
-    raise it. ``user_batch`` bounds the neural batch the same way.
-    ``ram_budget_override`` lets a caller that already computed the budget
-    (``multi_focus_fusion.memory_budget_bytes``) pass it in, so there is one
-    authoritative budget function rather than two.
+    Explicit footprints replace the default CPU estimates. Native stages such
+    as AI must provide their own estimates and set ``parallel_layer='native'``.
+    Thread and batch values are upper bounds; None/zero selects automatic.
+    A RAM override is an additional cap, never permission to exceed headroom.
     """
-    if preference not in PREFERENCES:
-        preference = PREFERENCE_BALANCED
+    if workload.parallel_layer not in ("outer", "native"):
+        raise ValueError("parallel_layer must be 'outer' or 'native'")
+    if workload.algorithm in ("ai", "stackmff", "stackmff_v3", "stackmffv3"):
+        if workload.fixed_bytes is None or workload.per_worker_bytes is None:
+            raise ResourceLimitError("AI requires an explicit working-set estimate")
     snapshot = snapshot or probe_resources()
-
     capacity = cpu_capacity(snapshot, preference)
-    ceiling = capacity if user_threads is None else min(capacity,
-                                                        max(1, int(user_threads)))
-    reasons = []
-
-    ram = (int(ram_budget_override) if ram_budget_override is not None
-           else ram_budget(snapshot))
-    vram = vram_budget(snapshot) if snapshot.device_kind in ("CUDA", "MPS") else 0
-
-    # Per-worker working set of the classical tile pipeline, calibrated on
-    # 1600x2400x10 at 1024 px (guided filter, the heaviest method): ~850 MB
-    # per worker against a 150 MB naive estimate, i.e. 5.6x, because several
-    # float32 temporaries of the crop live at once for every frame.
-    block = workload.block_size
-    workers = ceiling
-    if block and workload.frames > 0:
-        naive = (workload.frames * (int(block) ** 2) * max(1, workload.channels)
-                 * (1 + np.dtype(np.float32).itemsize) * 5.6)
-        per_worker = max(1, int(naive))
-        if ram > 0:
-            by_memory = max(1, ram // per_worker)
-            if by_memory < workers:
-                reasons.append(f"memory: {by_memory} worker(s) fit in "
-                               f"{memory.mb(ram):.0f} MB")
-                workers = by_memory
-        elif not snapshot.ram_known:
-            # Unknown memory: fail closed. Assuming there is room is exactly
-            # how the old psutil-less guard let a machine swap.
-            workers = 1
-            reasons.append("memory: unavailable, single worker")
-    if snapshot.ram_known and ram <= 0:
-        # No headroom at all: refuse to grow concurrency.
+    ceiling = (min(capacity, int(user_threads))
+               if user_threads is not None and user_threads > 0 else capacity)
+    fixed, per_worker = estimate_working_set(workload)
+    ram = require_memory(fixed + per_worker, snapshot, ram_budget_override)
+    tasks = workload.outer_tasks
+    if tasks is None:
+        tasks = ceiling if workload.block_size else max(1, workload.frames)
+    workers = min(ceiling, max(1, int(tasks)))
+    if workload.parallel_layer == "native":
         workers = 1
-        reasons.append("memory: no headroom, single worker")
+    if user_batch is not None and user_batch > 0:
+        workers = min(workers, int(user_batch))
+    reasons = []
+    if per_worker:
+        by_memory = (ram - fixed) // per_worker
+        if by_memory < workers:
+            workers = by_memory
+            reasons.append(f"memory: {workers} worker(s) fit after fixed buffers")
 
-    workers = max(1, min(workers, ceiling))
-
-    # One parallel layer only: many outer workers with single-threaded
-    # native calls, or one worker that may use the whole native budget.
-    if workers > 1:
-        native = 1
-    else:
-        native = max(1, min(ceiling, snapshot.physical_cores))
-        if native > 1:
-            reasons.append(f"threads: single worker uses {native} native thread(s)")
-
-    return ExecutionPlan(
-        workers=workers,
-        native_threads=native,
-        max_in_flight=workers,
-        ram_budget=ram,
-        vram_budget=vram,
-        device_kind=snapshot.device_kind,
-        reasons=tuple(reasons),
-    )
+    vram = vram_budget(snapshot) if snapshot.device_kind == "CUDA" else 0
+    gpu_fixed = workload.fixed_vram_bytes
+    gpu_worker = workload.per_worker_vram_bytes
+    if gpu_fixed < 0 or gpu_worker < 0:
+        raise ValueError("VRAM estimates must be nonnegative")
+    if snapshot.device_kind == "CUDA":
+        if gpu_fixed + gpu_worker <= 0:
+            raise ResourceLimitError("CUDA requires an explicit working-set estimate")
+        if not fits_in_budget(gpu_fixed + gpu_worker, vram):
+            raise ResourceLimitError("Insufficient or unknown available GPU memory")
+        if gpu_worker:
+            workers = min(workers, (vram - gpu_fixed) // gpu_worker)
+        # GPU inference has one owner and one stream; no parallel submissions.
+        workers = 1
+    native = ceiling if workers == 1 else 1
+    return ExecutionPlan(workers=workers, native_threads=native,
+                         max_in_flight=workers, ram_budget=ram, vram_budget=vram,
+                         device_kind=snapshot.device_kind, reasons=tuple(reasons))
 
 
 def fits_in_budget(required_bytes: int, budget: int) -> bool:
@@ -266,4 +307,32 @@ def fits_in_budget(required_bytes: int, budget: int) -> bool:
     Callers use this to refuse work *before* allocating, with a message the
     user can act on, instead of being killed by the OS mid-fusion.
     """
-    return required_bytes <= 0 or budget <= 0 or required_bytes <= budget
+    return required_bytes >= 0 and (required_bytes == 0 or
+                                    budget > 0 and required_bytes <= budget)
+
+
+_HEAVY_JOB_LOCK = threading.RLock()
+
+
+@contextmanager
+def heavy_job(should_cancel=None):
+    """Serialize heavy job lifetimes, allowing same-thread nested stages.
+
+    Waiting is cooperative. Cancellation never revokes a running owner's
+    lease: callers must finish/join native work before leaving this context.
+    Nested pool workers must use their owner's plan, not acquire this lease.
+    """
+    def check_cancel():
+        if should_cancel is not None and should_cancel():
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
+
+    while True:
+        check_cancel()
+        if _HEAVY_JOB_LOCK.acquire(timeout=0.05):
+            break
+    try:
+        check_cancel()
+        yield
+    finally:
+        _HEAVY_JOB_LOCK.release()

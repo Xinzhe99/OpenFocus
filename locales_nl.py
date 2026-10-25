@@ -491,7 +491,7 @@ PACK = {
     "advanced_tile_overlap": "Tegeloverlap (px)",
     "advanced_tile_threshold": "Tegels boven (px)",
     "advanced_tile_note": "Een kleinere tegel kost minder geheugen maar kan het resultaat enkele niveaus verschuiven; de overlap moet ruim kleiner blijven.",
-    "advanced_threads": "Werkthreads",
+    "advanced_threads": "Threadlimiet (0 = automatisch)",
     "advanced_resource_mode": "Resourcemodus",
     "advanced_resource_balanced": "Gebalanceerd",
     "advanced_resource_responsive": "Responsief",

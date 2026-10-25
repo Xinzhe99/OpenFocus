@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.69.0** — el motor de fusión ahora planifica su trabajo en vez de adivinarlo: un plan de ejecución por render decide workers, hilos y presupuesto de memoria, los núcleos físicos se leen de la plataforma en lugar de dividir el recuento lógico, y cada backend clásico hace streaming de sus búferes intermedios en vez de retener temporales de toda la pila. La salida es idéntica byte a byte, con mejoras medidas de 1,47× en OpenFocus C y 1,33× en el método neuronal. Un nuevo **modo de recursos** (Equilibrado / Priorizar respuesta / Máximo) mantiene el escritorio fluido sin tocar la imagen.
+> **v1.70.0** — todas las etapas pesadas comparten ahora un contrato de admisión desde la preparación hasta la publicación: cancelar espera a que la llamada nativa en curso termine de verdad, en lugar de lanzar otro render encima. La memoria se comprueba antes de reservarla (si no se puede leer o no cabe, es un error claro y no un mosaico más pequeño en silencio), la caché de alineación confirma de forma atómica y no vuelve a codificar en un acierto, la salida neuronal de 16 bits conserva sus bits bajos, y el nuevo **modo de recursos** con hilos automáticos (`0`) deja aire al escritorio. Los ocho algoritmos siguen siendo idénticos byte a byte a v1.69.0.
 
 <a id="features"></a>
 ## Funciones
