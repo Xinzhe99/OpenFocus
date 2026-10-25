@@ -18,6 +18,7 @@ def settings_window(qapp):
     window.align_cache_enabled = True
     window.ai_batch_size = 2
     window.ai_mode = "soft"
+    window.resource_preference = "balanced"
     window.restore_last_stack = False
     window.ask_load_scale = True
     window.saved = []
@@ -58,6 +59,38 @@ def test_settings_submit_commits_visible_values_and_update_preference(settings_w
     assert settings_window.ai_mode == "hard"
     assert settings_window.update_manager.auto_download is False
     assert settings_window.saved == [256]
+    dialog.deleteLater()
+
+
+def test_resource_mode_is_a_visible_draft(settings_window):
+    """Resource mode commits like every other field and defaults to balanced."""
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    dialog = AdvancedSettingsDialog(settings_window)
+    assert dialog.combo_resources.currentData() == "balanced"
+    dialog.combo_resources.setCurrentIndex(
+        dialog.combo_resources.findData("responsive"))
+    dialog.reject()
+    assert settings_window.resource_preference == "balanced"
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.combo_resources.setCurrentIndex(
+        dialog.combo_resources.findData("maximum"))
+    dialog._apply()
+    assert settings_window.resource_preference == "maximum"
+    dialog.deleteLater()
+
+
+def test_resource_mode_only_changes_concurrency(settings_window):
+    """It must never reach the fusion parameters that shape the image."""
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.combo_resources.setCurrentIndex(
+        dialog.combo_resources.findData("responsive"))
+    dialog.spin_block.setValue(512)
+    dialog._apply()
+    assert settings_window.resource_preference == "responsive"
+    assert settings_window.tile_block_size == 512
+    assert settings_window.ai_mode == "soft"
     dialog.deleteLater()
 
 

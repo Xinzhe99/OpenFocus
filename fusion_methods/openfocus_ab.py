@@ -84,13 +84,6 @@ def _window_variance(gray: np.ndarray, radius: int) -> np.ndarray:
     return np.maximum(mean_sq - mean * mean, 0.0)
 
 
-def _variance_stack(frames_f: List[np.ndarray], radius: int) -> np.ndarray:
-    """逐帧方差堆栈 (N, H, W) float32。"""
-    return np.stack([
-        _window_variance(_luminance(f), radius) for f in frames_f
-    ], axis=0)
-
-
 def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
                      thread_count: int = None, blend_smoothing: float = 2.0):
     """OpenFocus - A（方差加权平均，末帧先验）。
@@ -111,21 +104,24 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
     frames_f = _as_float(frames)
 
     radius = max(1, int(kernel_size) // 2) if kernel_size else 3
-    var = _variance_stack(frames_f, radius)
     # Smoothing：对权重图做轻度高斯（深度过渡平滑参数）
     sigma = max(0.0, float(2.0 if blend_smoothing is None
                           else blend_smoothing))
-    weights = np.stack([
-        cv2.GaussianBlur(v, (0, 0), sigmaX=sigma) if sigma > 1e-3 else v
-        for v in var
-    ], axis=0)
 
     h, w = frames_f[0].shape[:2]
     channels = frames_f[0].shape[2] if frames_f[0].ndim == 3 else 1
     acc = np.zeros((h, w, channels), dtype=np.float32)
     wsum = np.zeros((h, w, 1), dtype=np.float32)
-    for i, frame in enumerate(frames_f):
-        w2d = weights[i][:, :, np.newaxis]
+    # One frame at a time: the variance map, its smoothed weights and the
+    # float frame are added and dropped inside the loop. Holding the whole
+    # (N, H, W) variance stack plus the whole weight stack (what this used to
+    # do) is three extra full-stack float32 buffers for no result change —
+    # the arithmetic per frame and the accumulation order are identical.
+    for frame in frames_f:
+        w2d = _window_variance(_luminance(frame), radius)
+        if sigma > 1e-3:
+            w2d = cv2.GaussianBlur(w2d, (0, 0), sigmaX=sigma)
+        w2d = w2d[:, :, np.newaxis]
         # 2D 灰度帧统一到 (h, w, 1)：直接 (h,w)*(h,w,1) 会广播成 (h,w,w)
         f3 = frame[:, :, np.newaxis] if frame.ndim == 2 else frame
         acc += f3 * w2d
@@ -159,10 +155,22 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 11,
     frames_f = _as_float(frames)
 
     radius = max(1, int(kernel_size) // 2) if kernel_size else 3
-    var = _variance_stack(frames_f, radius)
     n = len(frames_f)
+    h, w = frames_f[0].shape[:2]
 
-    depth = np.argmax(var, axis=0).astype(np.float32)
+    # Pass 1: running argmax. ``strict`` greater-than keeps np.argmax's
+    # first-frame tie-break, and only the current maximum and its index stay
+    # alive instead of the whole (N, H, W) variance stack.
+    best = np.full((h, w), -np.inf, dtype=np.float32)
+    winner = np.zeros((h, w), dtype=np.int32)
+    for i, frame in enumerate(frames_f):
+        var = _window_variance(_luminance(frame), radius)
+        win = var > best
+        best[win] = var[win]
+        winner[win] = i
+    del best
+
+    depth = winner.astype(np.float32)
     # 深度图平滑：先中值去噪点，再高斯做边界过渡（约 ±3 帧），
     # 最后取整——硬拾取（软混合会降低局部对比度）。
     # 注意用 float32 做中值：转 uint8 会在帧数 >256 时截断深度索引
@@ -177,15 +185,22 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 11,
     if sigma > 0.05:
         depth = cv2.GaussianBlur(depth, (0, 0), sigmaX=sigma)
     idx = np.clip(np.rint(depth), 0, n - 1).astype(np.int32)
+    del depth, winner
 
-    h, w = frames_f[0].shape[:2]
-    # 按深度图逐像素硬拾取（含彩色/灰度）
-    stack = np.stack(
-        [f if f.ndim == 3 else f[:, :, np.newaxis] for f in frames_f], axis=0)
-    fused = np.take_along_axis(stack, idx[np.newaxis, :, :, np.newaxis], axis=0)[0]
+    # Pass 2: hard pick straight out of the selected source frame. Building
+    # an (N, H, W, C) float stack just to gather one pixel per position cost
+    # a full-stack buffer; this touches each needed frame once.
+    out_dtype = fuse_output_dtype(frames)
+    fused = np.empty((h, w, frames_f[0].shape[2]
+                      if frames_f[0].ndim == 3 else 1), dtype=np.float32)
+    for i in np.unique(idx):
+        sel = idx == i
+        frame = frames_f[i]
+        src = frame if frame.ndim == 3 else frame[:, :, np.newaxis]
+        fused[sel] = src[sel]
     if frames_f[0].ndim == 2:
         fused = fused[:, :, 0]
-    return np.clip(fused, 0, 255).astype(fuse_output_dtype(frames))
+    return np.clip(fused, 0, 255).astype(out_dtype)
 
 
 # ------------------------------------------------------------------
@@ -239,46 +254,43 @@ def openfocus_c_impl(input_source, img_resize=None, kernel_size: int = 7,
     h, w = frames_f[0].shape[:2]
     # 小图保护：每层减半，至少留 2px；levels 至少 2（一层带通 + 基带）
     usable = max(2, min(levels, int(np.log2(max(2, min(h, w)))) - 1))
-    pyrs = [_pyramid_gauss(f, usable) for f in frames_f]
+    sigma = max(0.0, float(3.0 if blend_smoothing is None
+                          else blend_smoothing))
 
-    out_bands = []
-    for k in range(usable):
-        # band: (N, hk, wk[, C]) —— 各帧第 k 层的带通/基带
-        if k < usable - 1:
-            bands = []
-            for p in pyrs:
-                up = _pyramid_expand(p[k + 1], p[k].shape[:2])
-                bands.append(p[k] - up)
-        else:
-            bands = [p[k] for p in pyrs]
-        band = np.stack(bands, axis=0).astype(np.float32)
-
-        if k == usable - 1:
-            # 基带：整带取末帧（低频来自参考帧）
-            out_bands.append(band[-1].copy())
-            continue
-
-        # 权重：亮度域带通幅值，σ=3 平滑（opacity 平滑）。
-        # 注意：cv2.GaussianBlur 会把 (N,h,w) 当成多通道图跨 N 轴混合，
-        # 必须逐帧模糊。
-        if band.ndim == 4:
-            lum = (band * np.array([0.114, 0.587, 0.299],
-                                   np.float32)).sum(axis=3)
-        else:
-            lum = band
-        sigma = max(0.0, float(3.0 if blend_smoothing is None
-                              else blend_smoothing))
-        W = np.stack([cv2.GaussianBlur(np.abs(w), (0, 0), sigma)
-                      if sigma > 1e-3 else np.abs(w) for w in lum], axis=0)
-        # max-pick 硬拾取：逐像素选能量最大帧（无除法，平坦带贡献≈0，
-        # 无需除零回退）
-        idx = W.argmax(axis=0)
-        if band.ndim == 4:
-            mixed = np.take_along_axis(
-                band, idx[np.newaxis, :, :, np.newaxis], axis=0)[0]
-        else:
-            mixed = np.take_along_axis(band, idx[np.newaxis], axis=0)[0]
-        out_bands.append(mixed.astype(np.float32))
+    # 逐帧流式决策：每层只保留当前最优带与最优能量，而不是整栈金字塔 +
+    # 整栈带通堆栈 + 整栈权重堆栈。严格 `>` 更新保持 np.argmax 的首帧
+    # 平局行为；每帧的分解、层间减法和 σ 平滑与原来逐位相同。
+    best_energy = [None] * usable
+    out_bands = [None] * usable
+    for frame_index, frame in enumerate(frames_f):
+        pyr = _pyramid_gauss(frame, usable)
+        for k in range(usable):
+            if k < usable - 1:
+                up = _pyramid_expand(pyr[k + 1], pyr[k].shape[:2])
+                band = pyr[k] - up
+                del up
+                # 权重：亮度域带通幅值，σ 平滑（opacity 平滑）。
+                if band.ndim == 3:
+                    lum = (band * np.array([0.114, 0.587, 0.299],
+                                           np.float32)).sum(axis=2)
+                else:
+                    lum = band
+                energy = (cv2.GaussianBlur(np.abs(lum), (0, 0), sigma)
+                          if sigma > 1e-3 else np.abs(lum))
+                if best_energy[k] is None:
+                    best_energy[k] = energy
+                    out_bands[k] = band.astype(np.float32, copy=True)
+                else:
+                    win = energy > best_energy[k]
+                    if win.any():
+                        best_energy[k][win] = energy[win]
+                        out_bands[k][win] = band[win]
+                    del win
+            elif frame_index == len(frames_f) - 1:
+                # 基带：整带取末帧（低频来自参考帧）
+                out_bands[k] = np.array(pyr[k], dtype=np.float32, copy=True)
+        del pyr
+    del best_energy
 
     # 自顶向下重建：expand + 累加
     img = out_bands[-1]

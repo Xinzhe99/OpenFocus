@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.68.1** — l'esportazione batch segue la modalità scelta: solo allineamento crea una cartella `<stack>_aligned` e la elenca, la fusione elenca solo l'immagine fusa, e senza esportare l'allineamento scrive solo quell'immagine. Le copie `*_registered*` rimaste nella cartella sorgente non vengono più caricate come fotogrammi. Rivisti anche etichette, barre di scala, confronto metodi, export di profondità/modello, aggiornamenti e ritocco secondo l'audit in `docs/ux-specs`.
+> **v1.69.0** — il motore di fusione ora pianifica il lavoro invece di indovinarlo: un piano di esecuzione per render decide worker, thread e budget di memoria, i core fisici vengono letti dalla piattaforma invece di dimezzare il conteggio logico, e ogni backend classico trasmette i propri buffer intermedi invece di trattenere temporanei dell'intero stack. L'output resta identico byte per byte, con guadagni misurati di 1,47× su OpenFocus C e 1,33× sul metodo neurale. Una nuova **modalità risorse** (Bilanciata / Reattiva / Massima) mantiene il desktop fluido senza toccare l'immagine.
 
 <a id="features"></a>
 ## Funzionalità

@@ -42,7 +42,8 @@ def align_frames(images, alignment, shared, should_cancel):
         return None
     if alignment != "none":
         settings = {"method": alignment, "brightness_reference": shared.get(
-            "brightness_reference", "last" if shared.get("exposure_match", False) else "first")}
+            "brightness_reference", "last" if shared.get("exposure_match", False) else "first"),
+            "use_gpu": bool(shared.get("use_gpu", False))}
         for source, target in (("reg_downscale_width", "downscale_width"),
                                ("max_shift_ratio", "max_shift_ratio")):
             if shared.get(source) is not None:

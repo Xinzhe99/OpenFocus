@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.68.1** — batchexport volgt de gekozen modus: alleen uitlijnen maakt één `<stack>_aligned`-map en toont die in de lijst, fusie toont alleen het gefuseerde beeld, en zonder uitlijning exporteren wordt alleen dat beeld geschreven. Achtergebleven `*_registered*`-kopieën in de bronmap worden niet meer als frames geladen. Ook labels, schaalbalken, methodevergelijking, diepte-/modelexport, updates en retouche zijn herzien volgens de audit in `docs/ux-specs`.
+> **v1.69.0** — de fusion-engine plant zijn werk in plaats van het te gokken: één uitvoeringsplan per render bepaalt workers, threads en geheugenbudget, fysieke cores worden van het platform gelezen in plaats van het logische aantal te halveren, en elke klassieke back-end streamt zijn tussenbuffers in plaats van tijdelijke buffers voor de hele stapel vast te houden. De uitvoer blijft byte-identiek, met gemeten winst van 1,47× op OpenFocus C en 1,33× op de neurale methode. Een nieuwe **resourcemodus** (Gebalanceerd / Responsief / Maximaal) houdt de desktop vloeiend zonder het beeld te wijzigen.
 
 <a id="features"></a>
 ## Functies

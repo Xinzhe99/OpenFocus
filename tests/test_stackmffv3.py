@@ -90,3 +90,56 @@ def test_tiled_path_honours_the_output_mode():
     assert not np.array_equal(outs["soft"], outs["hard"]), (
         "the tiled path ignored ai_mode: soft and hard produced the same "
         "image")
+
+def test_cpu_tiles_are_inferred_one_at_a_time(monkeypatch):
+    """Real batching is GPU-only; the CPU path must keep B=1 per call.
+
+    A batched CPU forward measured slower (19.3 s vs 16.9 s for two
+    1024x1021 tiles), so the batch size may only change how many tiles are
+    prepared, never how many are inferred together.
+    """
+    from fusion_methods import stackmffv3 as ai
+
+    shapes = []
+    original = ai._stackmffv3_batch_impl
+
+    def spy(tiles_list, *args, **kwargs):
+        shapes.append(len(tiles_list))
+        return original(tiles_list, *args, **kwargs)
+
+    monkeypatch.setattr(ai, "_stackmffv3_batch_impl", spy)
+    fusion = MultiFocusFusion(
+        algorithm="stackmffv3", use_gpu=False, ai_mode="soft",
+        exposure_match=False, tile_enabled=True,
+        tile_block_size=256, tile_overlap=64, ai_batch_size=2)
+    fusion.fuse(input_source=make_two_focus_stack(), img_resize=None,
+                model_path=WEIGHTS, thread_count=1)
+    assert shapes, "the neural tiled path made no model call"
+    assert set(shapes) == {1}, f"CPU tiles were batched: {shapes}"
+
+
+def test_ai_tile_progress_never_skips_ahead(monkeypatch):
+    """Progress may only report tiles whose inference already happened."""
+    from fusion_methods import stackmffv3 as ai
+
+    finished = []
+    original = ai._stackmffv3_batch_impl
+
+    def spy(tiles_list, *args, **kwargs):
+        out = original(tiles_list, *args, **kwargs)
+        finished.append(len(out))
+        return out
+
+    monkeypatch.setattr(ai, "_stackmffv3_batch_impl", spy)
+    seen = []
+    fusion = MultiFocusFusion(
+        algorithm="stackmffv3", use_gpu=False, ai_mode="soft",
+        exposure_match=False, tile_enabled=True,
+        tile_block_size=256, tile_overlap=64)
+    fusion.fuse(input_source=make_two_focus_stack(), img_resize=None,
+                model_path=WEIGHTS,
+                progress_callback=lambda done, total: seen.append((done, total)))
+    assert seen
+    totals = {total for _done, total in seen}
+    assert len(totals) == 1
+    assert [done for done, _t in seen] == list(range(0, totals.pop() + 1))

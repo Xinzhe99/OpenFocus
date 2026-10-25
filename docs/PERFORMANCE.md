@@ -43,9 +43,80 @@ The final soak pass caught and fixed two real defects:
 Wall times vary with machine load; treat them as stable orders of magnitude.
 Per-run values land in a JSON file via `--json`.
 
+## Execution planning (v1.69)
+
+Every heavy stage now reads one immutable plan from `core/resource_policy.py`:
+outer workers, native threads, in-flight results, RAM budget and (on a GPU)
+VRAM budget. The plan is derived from a resource snapshot (available RAM,
+physical cores, free VRAM) and a workload (algorithm, frames, tile size,
+channels).
+
+Rules the planner enforces:
+
+- **One parallel layer.** Either many outer workers with single-threaded
+  native calls, or one worker that may use the whole thread budget. The old
+  tile loop passed `thread_count=1` per tile by hand; the planner makes that
+  a property of the plan instead of a convention.
+- **`thread_count` is an upper bound.** Memory pressure lowers it, never
+  raises it. A machine where memory cannot be read runs a single worker.
+- **Physical cores, not hyper-threads.** Tile fusion is memory-bandwidth
+  bound; hyper-threads raise peak memory without adding throughput.
+  `physical_core_count()` now asks the platform (Win32
+  `GetLogicalProcessorInformationEx`, `/proc/cpuinfo`, `hw.physicalcpu`)
+  instead of halving the logical count — the old estimate reported 10 cores
+  on the 12-core reference machine.
+- **Resource mode** (Balanced / Responsive / Maximum) scales the core share
+  (80% / 50% / 100%) and never touches the numeric path.
+
+## Streaming back-ends (v1.69)
+
+The OpenFocus A/B/C, GFF and DTCWT back-ends no longer materialise whole-stack
+temporaries. The arithmetic per frame and the accumulation order are
+unchanged, so outputs stay bit-identical (verified on 8-bit, derived 16-bit,
+greyscale and flat-tie inputs, and across thread counts).
+
+| Back-end | What used to be live | What is live now |
+|---|---|---|
+| OpenFocus A | `(N,H,W)` variance stack + `(N,H,W)` weight stack + float copy of the stack | accumulator + `(H,W)` weights for one frame |
+| OpenFocus B | `(N,H,W)` variance stack + `(N,H,W,C)` float stack for the gather | running max/argmax + one frame's mask gather |
+| OpenFocus C | every frame's pyramid + band stack + weight stack | one pyramid + best band/energy per level |
+| GFF | `(N,H,W)` saliency stack + all base/detail layers | running argmax + layers released per frame |
+| DTCWT | one activity map per frame and level + all N vote maps | running max/winner per level, votes consumed one at a time |
+
+A temporary streaming prototype of OpenFocus A measured ~8.4% shorter wall
+time on the small demo stack (0.312 s → 0.286 s median of five alternating
+pairs); that figure is a feasibility signal, not a benchmark of the shipped
+code, which also changes B, C, GFF and DTCWT.
+
+### Measured result of the branch
+
+Fresh subprocess per condition, base commit vs the branch, alternating, four
+runs each, median of the warm runs. Same 6-frame 999×750 8-bit demo stack,
+`thread_count=4`, exposure matching on, whole-frame path.
+
+| Algorithm | Before | After | Ratio | Output |
+|---|---:|---:|---:|---|
+| guided_filter | 0.515 s | 0.512 s | 1.01× | identical |
+| dct | 0.154 s | 0.131 s | 1.18× | identical |
+| dtcwt | 5.86 s | 5.90 s | 0.99× | identical |
+| gfgfgf | 0.573 s | 0.498 s | 1.15× | identical |
+| openfocus_a | 0.271 s | 0.251 s | 1.08× | identical |
+| openfocus_b | 0.245 s | 0.256 s | 0.96× | identical |
+| openfocus_c | 0.838 s | 0.572 s | 1.47× | identical |
+| stackmffv3 | 13.82 s | 10.37 s | 1.33× | identical |
+
+Every digest matched, so the ratios are speed at unchanged output. Small
+stacks are dominated by per-call overhead, which is why the largest wins are
+the two methods with the most removed per-frame/per-tile allocation. DTCWT is
+neutral: its activity pass was restored to the stacked form after a running
+max measured no faster, and only the vote-map stream and the thread cap remain.
+No GPU was available, so the CUDA/MPS paths are implemented but unmeasured.
+
 ## Memory
 
-- Classical tiled fusion stays bounded by the tile size regardless of depth.
+- Classical tiled fusion stays bounded by the tile size regardless of depth,
+  and now also by the in-flight window: at most `workers` finished tiles are
+  held, reduced in tile order, instead of every tile that happened to finish.
 - The AI path bounds its **per-call activations** (frames × tile-pixels),
   but total process memory still grows with the stack itself: the 120-frame
   case peaked at ~24 GB working set on a 32 GB machine (stack + activations

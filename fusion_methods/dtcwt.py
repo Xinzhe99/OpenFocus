@@ -97,7 +97,8 @@ def _map_forward(transform, planes, nlevels, workers=None):
     return list(_iter_forward(transform, planes, nlevels, workers=workers))
 
 
-def _dtcwt_impl(input_source, img_resize, N, use_gpu):
+def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
+                should_cancel=None):
     """
     DTCWT fusion implementation (Optimized CPU version).
     
@@ -106,6 +107,8 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu):
         img_resize: Tuple (width, height) or None.
         N: Number of wavelet decomposition levels.
         use_gpu: Ignored in this optimized NumPy version (CPU is used).
+        thread_count: Upper bound on concurrent frame transforms.
+        should_cancel: Cooperative cancellation callback.
     """
     if dtcwt is None or maximum_filter is None or convolve is None:
         raise RuntimeError(
@@ -113,6 +116,11 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu):
             "Please install them via: pip install dtcwt scipy "
             "(dtcwt has no wheels for Python 3.13+; it installs on 3.10-3.12)"
         )
+
+    def _check_cancel():
+        if should_cancel is not None and should_cancel():
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
 
     # 1. Load and Preprocess Images
     images = _load_images(input_source, img_resize)
@@ -133,6 +141,20 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu):
     n_frames = len(images_rgb)
     transform = dtcwt.Transform2d()
 
+    # Respect the caller's concurrency cap instead of the module default: a
+    # tiled render already runs one transform per worker, so the activity
+    # pass must not open its own pool on top of that.
+    if thread_count is None:
+        activity_workers = _DTCWT_ACTIVITY_WORKERS
+        max_workers = _DTCWT_MAX_WORKERS
+    else:
+        try:
+            cap = max(1, int(thread_count))
+        except (TypeError, ValueError):
+            cap = _DTCWT_ACTIVITY_WORKERS
+        activity_workers = max(1, min(_DTCWT_ACTIVITY_WORKERS, cap))
+        max_workers = max(1, min(_DTCWT_MAX_WORKERS, cap))
+
     # 2. Activity per frame and level from the luminance transform. Only the
     # (real, |coeff| summed over the 6 orientations) activity maps are kept —
     # never all frames' complex pyramids, so memory stays near one pyramid.
@@ -142,29 +164,58 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu):
     activities = [[] for _ in range(N)]
     _luma_planes = [_luma(img) for img in images_rgb]
     for pyr in _iter_forward(transform, _luma_planes, N,
-                             workers=min(_DTCWT_MAX_WORKERS,
-                                         _DTCWT_ACTIVITY_WORKERS)):
+                             workers=activity_workers):
+        _check_cancel()
         for level in range(N):
             activities[level].append(
                 maximum_filter(np.abs(pyr.highpasses[level]).sum(axis=2).astype(np.float32),
                                size=3, mode='reflect'))
         del pyr
+    del _luma_planes
 
-    def _consistent_argmax(act):
-        """N-way argmax + 3x3 majority consistency check on the index map.
+    # np.argmax over the stacked maps stays: a running max with boolean
+    # fancy-index assignment measured no faster than stacking (the extra pass
+    # over the mask costs about what the stack costs) and the stack is what
+    # ``np.argmax``'s first-frame tie-break is defined on.
+    frame_indices = [np.argmax(np.stack(act), axis=0) for act in activities]
+    del activities
+
+    def _consistent_argmax(idx, count):
+        """3x3 majority consistency check on the index map.
 
         One decision per pixel and level, shared by all six orientations and
         all three channels: deciding each orientation/channel separately (the
         previous pairwise rule) mixed frames inside one pixel — colour fringes
-        and ghosted edges."""
-        idx = np.argmax(np.stack(act), axis=0)
-        votes = np.stack([convolve((idx == i).astype(np.float32),
-                                   np.ones((3, 3), np.float32), mode='nearest')
-                          for i in range(n_frames)])
-        return np.argmax(votes, axis=0)
+        and ghosted edges.
 
-    decisions = [_consistent_argmax(activities[level]) for level in range(N)]
-    del activities
+        The per-frame vote maps are consumed one at a time: only the best
+        count and its label stay alive, which is the same argmax result as
+        stacking all N vote maps (strict ``>`` keeps the first-label tie) at
+        one map instead of N.
+        """
+        best_count = None
+        best_label = None
+        kernel = np.ones((3, 3), np.float32)
+        for i in range(count):
+            votes = convolve((idx == i).astype(np.float32), kernel,
+                             mode='nearest')
+            if best_count is None:
+                best_count = votes
+                best_label = np.full(idx.shape, i, np.int32)
+                continue
+            win = votes > best_count
+            if win.any():
+                best_count[win] = votes[win]
+                best_label[win] = i
+            del win, votes
+        return best_label
+
+    decisions = []
+    for level in range(N):
+        _check_cancel()
+        decisions.append(_consistent_argmax(frame_indices[level], n_frames))
+        frame_indices[level] = None
+    del frame_indices
 
     # 3. Low-pass weights: soft selection driven by the coarsest decision. A
     # plain mean over all frames (the previous rule) washed the defocused
@@ -180,6 +231,7 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu):
         fused_high = None
         lp = None
         for i, img in enumerate(images_rgb):
+            _check_cancel()
             pyr = transform.forward(img[:, :, c], nlevels=N)
             if fused_high is None:
                 fused_high = [np.zeros_like(hp) for hp in pyr.highpasses]

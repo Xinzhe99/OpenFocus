@@ -55,13 +55,14 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.68.1** — batch exports now follow the mode you pick: align-only
-> writes one `<stack>_aligned` folder and lists that folder, fusion writes the
-> fused image and lists only it, and fusion without alignment writes the image
-> alone. Leftover `*_registered*` copies in a source folder are no longer
-> loaded as frames. This release also reworks labels, scale bars, method
-> comparison, depth/mesh export, updates and retouch around the audit in
-> `docs/ux-specs`, with a UI in twelve languages.
+> **v1.69.0** — the fusion engine now plans its work instead of guessing:
+> one execution plan per render decides workers, threads and memory, physical
+> cores are read from the platform rather than halved from the logical count,
+> and every classical back-end streams its intermediate buffers instead of
+> holding whole-stack temporaries. Output is byte-identical, with measured
+> gains of 1.47× on OpenFocus C and 1.33× on the neural method. A new
+> **Resource mode** (Balanced / Responsive / Maximum) keeps the desktop
+> responsive without touching the image.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 

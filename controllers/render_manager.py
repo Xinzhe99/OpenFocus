@@ -475,6 +475,8 @@ class RenderManager:
             and not use_roi_aligned_images
             and not compare
         )
+        # None = this render neither reads nor writes the alignment cache.
+        disk_cache_request = None
         if use_roi_aligned_images:
             # ROI模式下使用已经对齐的图像栈，跳过额外的配准
             source_images = window.roi_aligned_images
@@ -514,37 +516,28 @@ class RenderManager:
                 effective_aligned_images = source_images
                 effective_is_aligned = False
                 effective_last_alignment_options = (False, False, False)
-        elif (need_align_homography or need_align_ecc) \
+        elif (need_align_homography or need_align_ecc or need_align_openfocus) \
                 and not reusable and self._disk_cache_eligible() \
                 and getattr(window, "align_cache_enabled", True):
-            # Try the on-disk registration cache before re-aligning.
-            # (OpenFocus-only alignment is excluded: its result is a cheap
-            # translation — re-running costs less than a cache-key mismatch.)
-            from utils import align_cache
-            cached = align_cache.load_aligned(
-                getattr(window, "current_folder_path", ""),
-                stack_filenames,
-                disk_alignment_options,
-                getattr(window, "reg_downscale_width", None),
-                getattr(window, "current_scale_factor", 1.0),
-                tuple(stack_images[0].shape[:2]) if stack_images else None,
-            )
-            if cached is not None and len(cached) == len(stack_images):
-                print("Registration cache hit — skipping alignment")
-                source_images = stack_images
-                effective_need_align_homography = need_align_homography
-                effective_need_align_ecc = need_align_ecc
-                effective_aligned_images = cached
-                effective_is_aligned = True
-                effective_last_alignment_options = (
-                    need_align_homography, need_align_ecc, need_align_openfocus)
-            else:
-                source_images = stack_images
-                effective_need_align_homography = need_align_homography
-                effective_need_align_ecc = need_align_ecc
-                effective_aligned_images = []
-                effective_is_aligned = False
-                effective_last_alignment_options = None
+            # Ask the worker to look in the on-disk registration cache.
+            # The lookup itself (stat + decode every cached PNG) runs on the
+            # worker thread; the GUI only describes the request.
+            source_images = stack_images
+            effective_need_align_homography = need_align_homography
+            effective_need_align_ecc = need_align_ecc
+            effective_aligned_images = []
+            effective_is_aligned = False
+            effective_last_alignment_options = None
+            disk_cache_request = {
+                "mode": "load",
+                "folder": getattr(window, "current_folder_path", ""),
+                "filenames": list(stack_filenames),
+                "align_options": disk_alignment_options,
+                "downscale_width": getattr(window, "reg_downscale_width", None),
+                "scale_factor": getattr(window, "current_scale_factor", 1.0),
+                "frame_shape": (tuple(stack_images[0].shape[:2])
+                                if stack_images else None),
+            }
         else:
             source_images = stack_images
             effective_need_align_homography = need_align_homography
@@ -552,6 +545,25 @@ class RenderManager:
             effective_aligned_images = window.aligned_images if reusable else []
             effective_is_aligned = reusable
             effective_last_alignment_options = window.last_alignment_options if reusable else None
+            # A fresh full-resolution render may persist its alignment. Preview
+            # and ROI runs are excluded by construction (they never reach this
+            # branch), and the worker only writes when it actually aligned.
+            if (not reusable
+                    and (need_align_homography or need_align_ecc
+                         or need_align_openfocus)
+                    and self._disk_cache_eligible()
+                    and getattr(window, "align_cache_enabled", True)
+                    and getattr(window, "current_folder_path", None)):
+                disk_cache_request = {
+                    "mode": "save",
+                    "folder": window.current_folder_path,
+                    "filenames": list(stack_filenames),
+                    "align_options": disk_alignment_options,
+                    "downscale_width": getattr(window, "reg_downscale_width", None),
+                    "scale_factor": getattr(window, "current_scale_factor", 1.0),
+                    "frame_shape": (tuple(stack_images[0].shape[:2])
+                                    if stack_images else None),
+                }
 
         # Record exactly what THIS render was launched with. on_render_finished
         # must not read self.worker (a newer render may already have replaced
@@ -618,6 +630,7 @@ class RenderManager:
             tile_threshold=getattr(window, "tile_threshold", None),
             reg_downscale_width=getattr(window, "reg_downscale_width", None),
             thread_count=getattr(window, "thread_count", 4),
+            resource_preference=getattr(window, "resource_preference", "balanced"),
             ai_batch_size=getattr(window, "ai_batch_size", 2),
             ai_mode=getattr(window, "ai_mode", "soft"),
             roi_rect=roi_rect,
@@ -646,6 +659,7 @@ class RenderManager:
                 else getattr(window, "of_blend_smoothing", None)),
             exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),
             dtcwt_levels=int(getattr(window, "dtcwt_levels", 4) or 4),
+            disk_cache=disk_cache_request,
         )
 
         self._progress_first_t = None
@@ -879,23 +893,9 @@ class RenderManager:
                 window.is_images_aligned = True
                 window.last_alignment_options = context["alignment_options"]
                 window.alignment_request_key = context["alignment_key"]
-
-                # Persist the alignment for future renders of the same stack.
-                # Keyed on the *source* frames (same signature load_aligned()
-                # looks up), not on the rendered ones.
-                if (fusion_result is not None and self._disk_cache_eligible()
-                        and getattr(window, "align_cache_enabled", True)
-                        and getattr(window, "current_folder_path", None)):
-                    from utils import align_cache
-                    align_cache.save_aligned(
-                        window.current_folder_path,
-                        context["filenames"],
-                        processed_images,
-                        context["disk_alignment_options"],
-                        context["parameters"].get("reg_downscale_width"),
-                        context["source_scale_factor"],
-                        tuple(source_stack[0].shape[:2]) if source_stack else None,
-                    )
+                # The disk cache was written by the worker (it owns the PNG
+                # encode); writing it here again re-encoded the whole stack on
+                # the GUI thread for nothing.
 
             total_time = alignment_time + fusion_time
 
@@ -903,7 +903,14 @@ class RenderManager:
 
             if preview:
                 info_lines.append(trans.t("info_preview_quality"))
-            if registration_performed:
+            cache_hit = bool(getattr(self.worker, "alignment_reused", False))
+            if registration_performed and cache_hit:
+                # The frames are aligned, but this run did not align them:
+                # reporting 0.00 s under the method name read as "aligned
+                # instantly" instead of "reused the cached result".
+                info_lines.append(trans.t("info_align_none_cached"))
+                info_lines.append(trans.t("info_align_time").format(0.0))
+            elif registration_performed:
                 alignment_method = window.current_alignment_method()
                 label_map = {
                     "homography": trans.t("check_align_homography"),

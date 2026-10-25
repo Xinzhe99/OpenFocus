@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.68.1** — a exportação em lote segue o modo escolhido: apenas alinhamento cria uma pasta `<pilha>_aligned` e a lista, a fusão lista só a imagem fundida, e sem exportar o alinhamento grava apenas essa imagem. Cópias `*_registered*` deixadas na pasta de origem não são mais carregadas como quadros. Também foram refeitos rótulos, barras de escala, comparação de métodos, exportação de profundidade/modelo, atualizações e retoque conforme a auditoria em `docs/ux-specs`.
+> **v1.69.0** — o motor de fusão agora planeja o trabalho em vez de adivinhá-lo: um plano de execução por render decide workers, threads e orçamento de memória, os núcleos físicos são lidos da plataforma em vez de dividir a contagem lógica, e cada backend clássico faz streaming dos seus buffers intermediários em vez de reter temporários de toda a pilha. A saída permanece idêntica byte a byte, com ganhos medidos de 1,47× no OpenFocus C e 1,33× no método neural. Um novo **modo de recursos** (Equilibrado / Priorizar resposta / Máximo) mantém a área de trabalho fluida sem alterar a imagem.
 
 <a id="features"></a>
 ## Recursos principais

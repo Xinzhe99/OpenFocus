@@ -88,6 +88,16 @@ class AdvancedSettingsDialog(QDialog):
             minimum=1, maximum=64, step=1, decimals=0,
             value=int(getattr(w, "thread_count", 4)))
         perf.addRow(trans.t("advanced_threads"), self.spin_threads)
+        self.combo_resources = QComboBox()
+        for mode in ("balanced", "responsive", "maximum"):
+            self.combo_resources.addItem(
+                trans.t(f"advanced_resource_{mode}"), mode)
+        current = getattr(w, "resource_preference", "balanced")
+        index = self.combo_resources.findData(current)
+        self.combo_resources.setCurrentIndex(max(0, index))
+        self.combo_resources.setToolTip(
+            trans.t("advanced_resource_hint"))
+        perf.addRow(trans.t("advanced_resource_mode"), self.combo_resources)
         _note(page_lay, trans.t("advanced_tile_note"))
 
         # ---- Registration ------------------------------------------------
@@ -175,6 +185,7 @@ class AdvancedSettingsDialog(QDialog):
             "tile_overlap": int(self.spin_overlap.value()),
             "tile_threshold": int(self.spin_threshold.value()),
             "thread_count": max(1, int(self.spin_threads.value())),
+            "resource_preference": self.combo_resources.currentData(),
             "reg_downscale_width": int(self.spin_reg_width.value()),
             "align_cache_enabled": self.chk_align_cache.isChecked(),
             "ai_batch_size": max(1, int(self.spin_ai_batch.value())),

@@ -1,0 +1,1663 @@
+{
+  "streaming_a_prototype": {
+    "checks": [
+      {
+        "case": "real8",
+        "smoothing": 0.0,
+        "identical": true,
+        "max_error": 0.0
+      },
+      {
+        "case": "real8",
+        "smoothing": 2.0,
+        "identical": true,
+        "max_error": 0.0
+      },
+      {
+        "case": "derived16_nonzero_lowbits",
+        "smoothing": 0.0,
+        "identical": true,
+        "max_error": 0.0
+      },
+      {
+        "case": "derived16_nonzero_lowbits",
+        "smoothing": 2.0,
+        "identical": true,
+        "max_error": 0.0
+      },
+      {
+        "case": "grayscale8",
+        "smoothing": 0.0,
+        "identical": true,
+        "max_error": 0.0
+      },
+      {
+        "case": "grayscale8",
+        "smoothing": 2.0,
+        "identical": true,
+        "max_error": 0.0
+      },
+      {
+        "case": "flat_tie",
+        "smoothing": 0.0,
+        "identical": true,
+        "max_error": 0.0
+      },
+      {
+        "case": "flat_tie",
+        "smoothing": 2.0,
+        "identical": true,
+        "max_error": 0.0
+      }
+    ],
+    "timing_seconds": {
+      "original": [
+        0.3760474000009708,
+        0.3457192999776453,
+        0.2978208999847993,
+        0.30042769998544827,
+        0.3118318999768235
+      ],
+      "streaming": [
+        0.5240765999769792,
+        0.2855345999705605,
+        0.28420319996075705,
+        0.2881475000176579,
+        0.2849731000023894
+      ]
+    },
+    "medians": {
+      "original": 0.3118318999768235,
+      "streaming": 0.2855345999705605
+    },
+    "note": "Temporary prototype only; no repository implementation changed. Alternating order; one warm pair discarded, five measured pairs. Not a production-wide equivalence proof."
+  },
+  "schema_version": 1,
+  "date": "2026-10-25",
+  "baseline_commit": "4659b7bc0be1d9bf99405d40b8940dccf1a6a90f",
+  "hardware": {
+    "python": "3.12.6",
+    "logical_cpus": 20,
+    "repo_physical_estimate": 10,
+    "ram_gib": 31.696025848388672,
+    "available_gib": 18.21039581298828,
+    "cv2": "5.0.0",
+    "numpy": "2.2.3",
+    "nvidia_smi": null,
+    "cpu": "12th Gen Intel(R) Core(TM) i7-12700",
+    "torch_installed": true,
+    "dtcwt_installed": true,
+    "scipy_installed": true,
+    "PyQt6_installed": true,
+    "psutil_installed": false,
+    "cupy_installed": false,
+    "torch": "2.14.1+cpu",
+    "torch_threads": 12,
+    "torch_interop_threads": 12,
+    "cuda": false,
+    "torch_cuda_build": null,
+    "mps": false,
+    "mkldnn": true
+  },
+  "verified_cpu_topology": {
+    "physical_cores": 12,
+    "logical_processors": 20,
+    "source": "Win32_Processor via Get-CimInstance"
+  },
+  "protocol": {
+    "stack": "6 x 999 x 750 BGR uint8 real demo images",
+    "isolation": "Fresh subprocess per condition; sequential conditions; three repetitions inside each subprocess",
+    "timing": "perf_counter; excludes imports, image decoding, output hashing; first run reported separately; warm statistic median of remaining two runs",
+    "memory": "process RSS sampled every 10 ms from Win32 APIs; includes interpreter/libraries/input; lifetime peak also recorded; no sampling guarantee for shorter allocations",
+    "fusion_parameters": {
+      "exposure_match": true,
+      "base_frame": "none",
+      "sort_mode": "asc",
+      "guided_kernel": 31,
+      "dct_kernel": 7,
+      "gfg_kernel": 7,
+      "openfocus_ab_kernel": 11,
+      "dtcwt_N": 4,
+      "ai_mode": "soft",
+      "use_gpu": false,
+      "whole_cases_tile_enabled": false,
+      "tile_cases_tile_threshold": 1
+    },
+    "registration_parameters": "ImageRegistration(method=...), other constructor defaults, no disk cache",
+    "limits": [
+      "One desktop, one small 8-bit real stack; not representative of deep/16-bit/12-24MP stacks",
+      "No GPU execution available",
+      "Only two warm observations per condition; visible time variability; no claims of new implementation speedup",
+      "QCoreApplication timer is not a visible GUI or other applications responsiveness test",
+      "Output comparisons use quantized uint8; do not prove 16-bit or unquantized-float equivalence"
+    ]
+  },
+  "cases": [
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "guided_filter",
+        "threads": 1
+      },
+      "seconds": [
+        1.0926559999934398,
+        1.5411265000002459,
+        1.3948797000339255
+      ],
+      "median_warm_seconds": 1.4680031000170857,
+      "cpu_seconds": [
+        1.078125,
+        1.1875,
+        0.9375
+      ],
+      "hashes": [
+        "f6b8406c9f4de308f37e673f225a226c69b083aae1273b1991f4226843afbdc4",
+        "f6b8406c9f4de308f37e673f225a226c69b083aae1273b1991f4226843afbdc4",
+        "f6b8406c9f4de308f37e673f225a226c69b083aae1273b1991f4226843afbdc4"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.57421875,
+      "rss_sample_peak_mib": 501.5,
+      "process_lifetime_peak_mib": 510.21484375,
+      "available_end_gib": 16.721797943115234,
+      "log": "",
+      "case_process_seconds": 8.948363500006963
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "guided_filter",
+        "threads": 4
+      },
+      "seconds": [
+        0.37251029995968565,
+        0.39551689999643713,
+        0.45273590000579134
+      ],
+      "median_warm_seconds": 0.42412640000111423,
+      "cpu_seconds": [
+        0.90625,
+        0.96875,
+        1.0
+      ],
+      "hashes": [
+        "f6b8406c9f4de308f37e673f225a226c69b083aae1273b1991f4226843afbdc4",
+        "f6b8406c9f4de308f37e673f225a226c69b083aae1273b1991f4226843afbdc4",
+        "f6b8406c9f4de308f37e673f225a226c69b083aae1273b1991f4226843afbdc4"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.5078125,
+      "rss_sample_peak_mib": 508.0625,
+      "process_lifetime_peak_mib": 516.84765625,
+      "available_end_gib": 16.74593734741211,
+      "log": "",
+      "case_process_seconds": 2.0576561000198126
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "dct",
+        "threads": 4
+      },
+      "seconds": [
+        0.1340465000248514,
+        0.1404204999562353,
+        0.1338433000491932
+      ],
+      "median_warm_seconds": 0.13713190000271425,
+      "cpu_seconds": [
+        0.140625,
+        0.140625,
+        0.140625
+      ],
+      "hashes": [
+        "4bd03f3508ba4dba5159342b1f07e646d6e7a1f7c181140061f8643dde04969d",
+        "4bd03f3508ba4dba5159342b1f07e646d6e7a1f7c181140061f8643dde04969d",
+        "4bd03f3508ba4dba5159342b1f07e646d6e7a1f7c181140061f8643dde04969d"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.33203125,
+      "rss_sample_peak_mib": 134.41796875,
+      "process_lifetime_peak_mib": 136.078125,
+      "available_end_gib": 16.635719299316406,
+      "log": "",
+      "case_process_seconds": 1.3098198999650776
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "dtcwt",
+        "threads": 4
+      },
+      "seconds": [
+        4.3063559999573044,
+        6.182419499964453,
+        4.20629810000537
+      ],
+      "median_warm_seconds": 5.1943587999849115,
+      "cpu_seconds": [
+        4.390625,
+        4.921875,
+        4.203125
+      ],
+      "hashes": [
+        "69501251268bef282e300e7cea8b9bed9b42f50c56779b8b3ad4b49e29956a47",
+        "69501251268bef282e300e7cea8b9bed9b42f50c56779b8b3ad4b49e29956a47",
+        "69501251268bef282e300e7cea8b9bed9b42f50c56779b8b3ad4b49e29956a47"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.3828125,
+      "rss_sample_peak_mib": 246.0078125,
+      "process_lifetime_peak_mib": 250.50390625,
+      "available_end_gib": 16.562782287597656,
+      "log": "",
+      "stderr": "ARNING:root:The image entered is now a 750x1000 NOT a 750x999.\nWARNING:root:The rightmost column has been duplicated, prior to decomposition.\nWARNING:root:The image entered is now a 750x1000 NOT a 750x999.\nWARNING:root:The rightmost column has been duplicated, prior to decomposition.\nWARNING:root:The image entered is now a 750x1000 NOT a 750x999.\nWARNING:root:The rightmost column has been duplicated, prior to decomposition.\nWARNING:root:The image entered is now a 750x1000 NOT a 750x999.\nWARNING:root:The rightmost column has been duplicated, prior to decomposition.\nWARNING:root:The image entered is now a 750x1000 NOT a 750x999.\nWARNING:root:The rightmost column has been duplicated, prior to decomposition.\nWARNING:root:The image entered is now a 750x1000 NOT a 750x999.\nWARNING:root:The rightmost column has been duplicated, prior to decomposition.\nWARNING:root:The image entered is now a 750x1000 NOT a 750x999.\nWARNING:root:The rightmost column has been duplicated, prior to decomposition.\n",
+      "case_process_seconds": 15.637196899973787
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "gfgfgf",
+        "threads": 1
+      },
+      "seconds": [
+        0.6311808999744244,
+        0.604980300005991,
+        0.6035738999489695
+      ],
+      "median_warm_seconds": 0.6042770999774802,
+      "cpu_seconds": [
+        0.625,
+        0.578125,
+        0.59375
+      ],
+      "hashes": [
+        "8798754776c002ba7a49544c74e765cdc124198fa3884faf5b479d4f105c1680",
+        "8798754776c002ba7a49544c74e765cdc124198fa3884faf5b479d4f105c1680",
+        "8798754776c002ba7a49544c74e765cdc124198fa3884faf5b479d4f105c1680"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 97.19140625,
+      "rss_sample_peak_mib": 198.66796875,
+      "process_lifetime_peak_mib": 198.875,
+      "available_end_gib": 16.605575561523438,
+      "log": "",
+      "case_process_seconds": 2.719324800011236
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "gfgfgf",
+        "threads": 4
+      },
+      "seconds": [
+        0.45361819997197017,
+        0.45024979999288917,
+        0.44376409996766597
+      ],
+      "median_warm_seconds": 0.44700694998027757,
+      "cpu_seconds": [
+        0.828125,
+        0.796875,
+        0.75
+      ],
+      "hashes": [
+        "8798754776c002ba7a49544c74e765cdc124198fa3884faf5b479d4f105c1680",
+        "8798754776c002ba7a49544c74e765cdc124198fa3884faf5b479d4f105c1680",
+        "8798754776c002ba7a49544c74e765cdc124198fa3884faf5b479d4f105c1680"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.42578125,
+      "rss_sample_peak_mib": 237.6640625,
+      "process_lifetime_peak_mib": 248.26953125,
+      "available_end_gib": 17.677806854248047,
+      "log": "",
+      "case_process_seconds": 2.289359999995213
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "openfocus_a",
+        "threads": 4
+      },
+      "seconds": [
+        0.29472889995668083,
+        0.30099800002062693,
+        0.31655899999896064
+      ],
+      "median_warm_seconds": 0.3087785000097938,
+      "cpu_seconds": [
+        0.265625,
+        0.296875,
+        0.3125
+      ],
+      "hashes": [
+        "04fc21dff6f6beaa43ca0c007c7f4a9920f3aaea3fdf0a396b2914e038285974",
+        "04fc21dff6f6beaa43ca0c007c7f4a9920f3aaea3fdf0a396b2914e038285974",
+        "04fc21dff6f6beaa43ca0c007c7f4a9920f3aaea3fdf0a396b2914e038285974"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.4921875,
+      "rss_sample_peak_mib": 225.98828125,
+      "process_lifetime_peak_mib": 226.94921875,
+      "available_end_gib": 18.022010803222656,
+      "log": "",
+      "case_process_seconds": 2.3989402999868616
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "openfocus_b",
+        "threads": 4
+      },
+      "seconds": [
+        0.1911493000225164,
+        0.20065850001992658,
+        0.20043629995780066
+      ],
+      "median_warm_seconds": 0.20054739998886362,
+      "cpu_seconds": [
+        0.1875,
+        0.1875,
+        0.203125
+      ],
+      "hashes": [
+        "ddf23df5ba79ae72862da8e95b11c066b69f633d05713fdc582c3ebcd85e5fb6",
+        "ddf23df5ba79ae72862da8e95b11c066b69f633d05713fdc582c3ebcd85e5fb6",
+        "ddf23df5ba79ae72862da8e95b11c066b69f633d05713fdc582c3ebcd85e5fb6"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 97.10546875,
+      "rss_sample_peak_mib": 242.40625,
+      "process_lifetime_peak_mib": 255.796875,
+      "available_end_gib": 18.175838470458984,
+      "log": "",
+      "case_process_seconds": 1.9800090999924578
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "openfocus_c",
+        "threads": 4
+      },
+      "seconds": [
+        0.4674247999791987,
+        0.5085899999830872,
+        0.5590534000075422
+      ],
+      "median_warm_seconds": 0.5338216999953147,
+      "cpu_seconds": [
+        0.53125,
+        0.515625,
+        0.53125
+      ],
+      "hashes": [
+        "34ffa00f45efd22be32cc00c56e8a03f5669962467457b6f1f3a7515ab5a4dad",
+        "34ffa00f45efd22be32cc00c56e8a03f5669962467457b6f1f3a7515ab5a4dad",
+        "34ffa00f45efd22be32cc00c56e8a03f5669962467457b6f1f3a7515ab5a4dad"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.6328125,
+      "rss_sample_peak_mib": 463.1171875,
+      "process_lifetime_peak_mib": 463.1171875,
+      "available_end_gib": 18.30126953125,
+      "log": "",
+      "case_process_seconds": 3.225618599972222
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "stackmffv3",
+        "threads": 4
+      },
+      "seconds": [
+        8.395264299993869,
+        7.12870760000078,
+        6.1831904000137
+      ],
+      "median_warm_seconds": 6.65594900000724,
+      "cpu_seconds": [
+        12.671875,
+        13.15625,
+        13.046875
+      ],
+      "hashes": [
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d",
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d",
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 252.81640625,
+      "rss_sample_peak_mib": 1400.79296875,
+      "process_lifetime_peak_mib": 1402.48046875,
+      "available_end_gib": 17.761756896972656,
+      "log": "Running StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nLoading StackMFF-V3 model (once)...\nRunning StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nRunning StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\n",
+      "case_process_seconds": 25.342006699997
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "stackmffv3",
+        "threads": 4,
+        "torch_threads": 1
+      },
+      "seconds": [
+        13.947621700004674,
+        12.276529800030403,
+        11.493645799986552
+      ],
+      "median_warm_seconds": 11.885087800008478,
+      "cpu_seconds": [
+        11.515625,
+        11.09375,
+        10.359375
+      ],
+      "hashes": [
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d",
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d",
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 252.5625,
+      "rss_sample_peak_mib": 1276.75,
+      "process_lifetime_peak_mib": 1276.75,
+      "available_end_gib": 18.596221923828125,
+      "log": "Running StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nLoading StackMFF-V3 model (once)...\nRunning StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nRunning StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\n",
+      "case_process_seconds": 41.37673240003642
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "stackmffv3",
+        "threads": 4,
+        "torch_threads": 4
+      },
+      "seconds": [
+        6.10059360001469,
+        11.149137599975802,
+        11.323633699968923
+      ],
+      "median_warm_seconds": 11.236385649972362,
+      "cpu_seconds": [
+        12.296875,
+        12.640625,
+        12.703125
+      ],
+      "hashes": [
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d",
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d",
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 252.59765625,
+      "rss_sample_peak_mib": 1311.7265625,
+      "process_lifetime_peak_mib": 1338.76953125,
+      "available_end_gib": 16.75513458251953,
+      "log": "Running StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nLoading StackMFF-V3 model (once)...\nRunning StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nRunning StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\n",
+      "case_process_seconds": 34.17947729997104
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "stackmffv3",
+        "threads": 4,
+        "torch_threads": 8
+      },
+      "seconds": [
+        8.166121099959128,
+        13.223523699969519,
+        11.961935799976345
+      ],
+      "median_warm_seconds": 12.592729749972932,
+      "cpu_seconds": [
+        12.09375,
+        13.125,
+        12.125
+      ],
+      "hashes": [
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d",
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d",
+        "17e68003344a99b0d91e4751151fa5489b2f6b22d6d8df64a3fa65f11c77812d"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 251.3671875,
+      "rss_sample_peak_mib": 1364.203125,
+      "process_lifetime_peak_mib": 1364.390625,
+      "available_end_gib": 16.09185028076172,
+      "log": "Running StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nLoading StackMFF-V3 model (once)...\nRunning StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nRunning StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\n",
+      "case_process_seconds": 42.23994210001547
+    },
+    {
+      "case": {
+        "kind": "registration",
+        "method": "homography",
+        "threads": 1
+      },
+      "seconds": [
+        1.2415593000478111,
+        1.3667243999661878,
+        2.1777919000014663
+      ],
+      "median_warm_seconds": 1.772258149983827,
+      "cpu_seconds": [
+        1.265625,
+        1.34375,
+        2.046875
+      ],
+      "hashes": [
+        "9bffd96489a23737ed7ce00c48514f7fb00f35e110e9cece0638c77004a0e070",
+        "9bffd96489a23737ed7ce00c48514f7fb00f35e110e9cece0638c77004a0e070",
+        "9bffd96489a23737ed7ce00c48514f7fb00f35e110e9cece0638c77004a0e070"
+      ],
+      "output_shapes": [
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.47265625,
+      "rss_sample_peak_mib": 284.90234375,
+      "process_lifetime_peak_mib": 284.9140625,
+      "available_end_gib": 16.731616973876953,
+      "log": "Aligning 6 images using Sequential Homography (Parallel Optimized)...\n  - Step 1/3: Extracting features concurrently...\n  - Step 2/3: Calculating transform matrices...\n  - Step 3/3: Warping images concurrently...\n    Optimized: Warping directly to cropped region (995x746)...\nAligning 6 images using Sequential Homography (Parallel Optimized)...\n  - Step 1/3: Extracting features concurrently...\n  - Step 2/3: Calculating transform matrices...\n  - Step 3/3: Warping images concurrently...\n    Optimized: Warping directly to cropped region (995x746)...\nAligning 6 images using Sequential Homography (Parallel Optimized)...\n  - Step 1/3: Extracting features concurrently...\n  - Step 2/3: Calculating transform matrices...\n  - Step 3/3: Warping images concurrently...\n    Optimized: Warping directly to cropped region (995x746)...\n",
+      "case_process_seconds": 6.085907700005919
+    },
+    {
+      "case": {
+        "kind": "registration",
+        "method": "homography",
+        "threads": 4
+      },
+      "seconds": [
+        0.6027115999604575,
+        0.6073693999787793,
+        0.5464498000219464
+      ],
+      "median_warm_seconds": 0.5769096000003628,
+      "cpu_seconds": [
+        1.59375,
+        1.53125,
+        1.40625
+      ],
+      "hashes": [
+        "9bffd96489a23737ed7ce00c48514f7fb00f35e110e9cece0638c77004a0e070",
+        "9bffd96489a23737ed7ce00c48514f7fb00f35e110e9cece0638c77004a0e070",
+        "9bffd96489a23737ed7ce00c48514f7fb00f35e110e9cece0638c77004a0e070"
+      ],
+      "output_shapes": [
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.64453125,
+      "rss_sample_peak_mib": 786.6015625,
+      "process_lifetime_peak_mib": 787.19921875,
+      "available_end_gib": 16.90412139892578,
+      "log": "Aligning 6 images using Sequential Homography (Parallel Optimized)...\n  - Step 1/3: Extracting features concurrently...\n  - Step 2/3: Calculating transform matrices...\n  - Step 3/3: Warping images concurrently...\n    Optimized: Warping directly to cropped region (995x746)...\nAligning 6 images using Sequential Homography (Parallel Optimized)...\n  - Step 1/3: Extracting features concurrently...\n  - Step 2/3: Calculating transform matrices...\n  - Step 3/3: Warping images concurrently...\n    Optimized: Warping directly to cropped region (995x746)...\nAligning 6 images using Sequential Homography (Parallel Optimized)...\n  - Step 1/3: Extracting features concurrently...\n  - Step 2/3: Calculating transform matrices...\n  - Step 3/3: Warping images concurrently...\n    Optimized: Warping directly to cropped region (995x746)...\n",
+      "case_process_seconds": 2.7931153000099584
+    },
+    {
+      "case": {
+        "kind": "registration",
+        "method": "ecc",
+        "threads": 1
+      },
+      "seconds": [
+        1.176925099978689,
+        1.1211106999544427,
+        2.578055099991616
+      ],
+      "median_warm_seconds": 1.8495828999730293,
+      "cpu_seconds": [
+        1.234375,
+        1.234375,
+        1.65625
+      ],
+      "hashes": [
+        "6ed6b7e1b6ee0cd0f191bf4446c8ba3041da800a8b7cbd899c34d9eb06a32f76",
+        "6ed6b7e1b6ee0cd0f191bf4446c8ba3041da800a8b7cbd899c34d9eb06a32f76",
+        "6ed6b7e1b6ee0cd0f191bf4446c8ba3041da800a8b7cbd899c34d9eb06a32f76"
+      ],
+      "output_shapes": [
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.484375,
+      "rss_sample_peak_mib": 207.77734375,
+      "process_lifetime_peak_mib": 208.7265625,
+      "available_end_gib": 17.329727172851562,
+      "log": "Aligning 6 images using ECC (Parallel Optimized)...\n    [Info] Cupy not found. Using CPU for warping.\nAligning 6 images using ECC (Parallel Optimized)...\n    [Info] Cupy not found. Using CPU for warping.\nAligning 6 images using ECC (Parallel Optimized)...\n    [Info] Cupy not found. Using CPU for warping.\n",
+      "case_process_seconds": 5.7960599999642
+    },
+    {
+      "case": {
+        "kind": "registration",
+        "method": "ecc",
+        "threads": 4
+      },
+      "seconds": [
+        0.6981187000055797,
+        0.8875889999908395,
+        0.8148771999985911
+      ],
+      "median_warm_seconds": 0.8512330999947153,
+      "cpu_seconds": [
+        2.015625,
+        2.71875,
+        2.4375
+      ],
+      "hashes": [
+        "6ed6b7e1b6ee0cd0f191bf4446c8ba3041da800a8b7cbd899c34d9eb06a32f76",
+        "6ed6b7e1b6ee0cd0f191bf4446c8ba3041da800a8b7cbd899c34d9eb06a32f76",
+        "6ed6b7e1b6ee0cd0f191bf4446c8ba3041da800a8b7cbd899c34d9eb06a32f76"
+      ],
+      "output_shapes": [
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ],
+        [
+          746,
+          995,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.4140625,
+      "rss_sample_peak_mib": 421.015625,
+      "process_lifetime_peak_mib": 431.6484375,
+      "available_end_gib": 17.672012329101562,
+      "log": "Aligning 6 images using ECC (Parallel Optimized)...\n    [Info] Cupy not found. Using CPU for warping.\nAligning 6 images using ECC (Parallel Optimized)...\n    [Info] Cupy not found. Using CPU for warping.\nAligning 6 images using ECC (Parallel Optimized)...\n    [Info] Cupy not found. Using CPU for warping.\n",
+      "case_process_seconds": 3.4614350000047125
+    },
+    {
+      "case": {
+        "kind": "registration",
+        "method": "openfocus",
+        "threads": 1
+      },
+      "seconds": [
+        3.917589600023348,
+        7.12855679995846,
+        6.0274892000015825
+      ],
+      "median_warm_seconds": 6.578022999980021,
+      "cpu_seconds": [
+        3.578125,
+        6.125,
+        5.3125
+      ],
+      "hashes": [
+        "5407a3547043791b23f254d3f5fad1ac4197fe4f642086ab293e0f530c15d948",
+        "5407a3547043791b23f254d3f5fad1ac4197fe4f642086ab293e0f530c15d948",
+        "5407a3547043791b23f254d3f5fad1ac4197fe4f642086ab293e0f530c15d948"
+      ],
+      "output_shapes": [
+        [
+          705,
+          943,
+          3
+        ],
+        [
+          705,
+          943,
+          3
+        ],
+        [
+          705,
+          943,
+          3
+        ],
+        [
+          705,
+          943,
+          3
+        ],
+        [
+          705,
+          943,
+          3
+        ],
+        [
+          705,
+          943,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.30078125,
+      "rss_sample_peak_mib": 149.84765625,
+      "process_lifetime_peak_mib": 156.94140625,
+      "available_end_gib": 18.873268127441406,
+      "log": "Aligning 6 images using OpenFocus (reference: first frame)...\n  frame 2/6: rot -0.00° scale 1.000 shift (+2.83, -0.16) ncc 0.97\n  frame 3/6: rot -0.25° scale 1.020 shift (+0.12, +0.25) ncc 0.99\n  frame 4/6: rot -0.00° scale 1.030 shift (-0.02, +0.47) ncc 0.99\n  frame 5/6: rot -0.00° scale 1.040 shift (+0.50, +0.55) ncc 0.98\n  frame 6/6: rot -0.25° scale 1.050 shift (+0.30, +0.15) ncc 0.97\nAligning 6 images using OpenFocus (reference: first frame)...\n  frame 2/6: rot -0.00° scale 1.000 shift (+2.83, -0.16) ncc 0.97\n  frame 3/6: rot -0.25° scale 1.020 shift (+0.12, +0.25) ncc 0.99\n  frame 4/6: rot -0.00° scale 1.030 shift (-0.02, +0.47) ncc 0.99\n  frame 5/6: rot -0.00° scale 1.040 shift (+0.50, +0.55) ncc 0.98\n  frame 6/6: rot -0.25° scale 1.050 shift (+0.30, +0.15) ncc 0.97\nAligning 6 images using OpenFocus (reference: first frame)...\n  frame 2/6: rot -0.00° scale 1.000 shift (+2.83, -0.16) ncc 0.97\n  frame 3/6: rot -0.25° scale 1.020 shift (+0.12, +0.25) ncc 0.99\n  frame 4/6: rot -0.00° scale 1.030 shift (-0.02, +0.47) ncc 0.99\n  frame 5/6: rot -0.00° scale 1.040 shift (+0.50, +0.55) ncc 0.98\n  frame 6/6: rot -0.25° scale 1.050 shift (+0.30, +0.15) ncc 0.97\n",
+      "case_process_seconds": 18.087244800000917
+    },
+    {
+      "case": {
+        "kind": "registration",
+        "method": "openfocus",
+        "threads": 4
+      },
+      "seconds": [
+        2.6891364000039175,
+        6.26474260003306,
+        6.081101599964313
+      ],
+      "median_warm_seconds": 6.1729220999986865,
+      "cpu_seconds": [
+        2.984375,
+        5.59375,
+        5.359375
+      ],
+      "hashes": [
+        "5407a3547043791b23f254d3f5fad1ac4197fe4f642086ab293e0f530c15d948",
+        "5407a3547043791b23f254d3f5fad1ac4197fe4f642086ab293e0f530c15d948",
+        "5407a3547043791b23f254d3f5fad1ac4197fe4f642086ab293e0f530c15d948"
+      ],
+      "output_shapes": [
+        [
+          705,
+          943,
+          3
+        ],
+        [
+          705,
+          943,
+          3
+        ],
+        [
+          705,
+          943,
+          3
+        ],
+        [
+          705,
+          943,
+          3
+        ],
+        [
+          705,
+          943,
+          3
+        ],
+        [
+          705,
+          943,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.3046875,
+      "rss_sample_peak_mib": 179.62109375,
+      "process_lifetime_peak_mib": 198.99609375,
+      "available_end_gib": 18.518611907958984,
+      "log": "Aligning 6 images using OpenFocus (reference: first frame)...\n  frame 2/6: rot -0.00° scale 1.000 shift (+2.83, -0.16) ncc 0.97\n  frame 3/6: rot -0.25° scale 1.020 shift (+0.12, +0.25) ncc 0.99\n  frame 4/6: rot -0.00° scale 1.030 shift (-0.02, +0.47) ncc 0.99\n  frame 5/6: rot -0.00° scale 1.040 shift (+0.50, +0.55) ncc 0.98\n  frame 6/6: rot -0.25° scale 1.050 shift (+0.30, +0.15) ncc 0.97\nAligning 6 images using OpenFocus (reference: first frame)...\n  frame 2/6: rot -0.00° scale 1.000 shift (+2.83, -0.16) ncc 0.97\n  frame 3/6: rot -0.25° scale 1.020 shift (+0.12, +0.25) ncc 0.99\n  frame 4/6: rot -0.00° scale 1.030 shift (-0.02, +0.47) ncc 0.99\n  frame 5/6: rot -0.00° scale 1.040 shift (+0.50, +0.55) ncc 0.98\n  frame 6/6: rot -0.25° scale 1.050 shift (+0.30, +0.15) ncc 0.97\nAligning 6 images using OpenFocus (reference: first frame)...\n  frame 2/6: rot -0.00° scale 1.000 shift (+2.83, -0.16) ncc 0.97\n  frame 3/6: rot -0.25° scale 1.020 shift (+0.12, +0.25) ncc 0.99\n  frame 4/6: rot -0.00° scale 1.030 shift (-0.02, +0.47) ncc 0.99\n  frame 5/6: rot -0.00° scale 1.040 shift (+0.50, +0.55) ncc 0.98\n  frame 6/6: rot -0.25° scale 1.050 shift (+0.30, +0.15) ncc 0.97\n",
+      "case_process_seconds": 15.8111655000248
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "dct",
+        "threads": 2,
+        "tile": 512,
+        "overlap": 128
+      },
+      "seconds": [
+        0.13829949998762459,
+        0.14024420001078397,
+        0.13358530000550672
+      ],
+      "median_warm_seconds": 0.13691475000814535,
+      "cpu_seconds": [
+        0.234375,
+        0.25,
+        0.25
+      ],
+      "hashes": [
+        "218ea17cf3303925aba284d335dcecd3dff31acb4e4201f6a55a67419e656e96",
+        "218ea17cf3303925aba284d335dcecd3dff31acb4e4201f6a55a67419e656e96",
+        "218ea17cf3303925aba284d335dcecd3dff31acb4e4201f6a55a67419e656e96"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.16796875,
+      "rss_sample_peak_mib": 143.3125,
+      "process_lifetime_peak_mib": 151.96484375,
+      "available_end_gib": 18.50782012939453,
+      "log": "Info: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\n",
+      "case_process_seconds": 1.09393569995882
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "dct",
+        "threads": 2,
+        "tile": 256,
+        "overlap": 64
+      },
+      "seconds": [
+        0.13519530004123226,
+        0.12917309999465942,
+        0.1306793999974616
+      ],
+      "median_warm_seconds": 0.1299262499960605,
+      "cpu_seconds": [
+        0.203125,
+        0.234375,
+        0.234375
+      ],
+      "hashes": [
+        "0fa6963ca832afa661b3c58b3fb7d7cca1753edf4d560ee5e674ff3580644e94",
+        "0fa6963ca832afa661b3c58b3fb7d7cca1753edf4d560ee5e674ff3580644e94",
+        "0fa6963ca832afa661b3c58b3fb7d7cca1753edf4d560ee5e674ff3580644e94"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.29296875,
+      "rss_sample_peak_mib": 153.87890625,
+      "process_lifetime_peak_mib": 153.87890625,
+      "available_end_gib": 18.712909698486328,
+      "log": "Info: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\n",
+      "case_process_seconds": 1.071611399995163
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "guided_filter",
+        "threads": 2,
+        "tile": 512,
+        "overlap": 128
+      },
+      "seconds": [
+        0.837359800003469,
+        0.9791572999674827,
+        1.3058233000338078
+      ],
+      "median_warm_seconds": 1.1424903000006452,
+      "cpu_seconds": [
+        1.578125,
+        1.78125,
+        2.0
+      ],
+      "hashes": [
+        "46b9c45b63151faf42f7330feacf38ad87ab48b63416adc0b2f03c8d6c84440d",
+        "46b9c45b63151faf42f7330feacf38ad87ab48b63416adc0b2f03c8d6c84440d",
+        "46b9c45b63151faf42f7330feacf38ad87ab48b63416adc0b2f03c8d6c84440d"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.33203125,
+      "rss_sample_peak_mib": 396.99609375,
+      "process_lifetime_peak_mib": 411.29296875,
+      "available_end_gib": 18.669281005859375,
+      "log": "Info: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\n",
+      "case_process_seconds": 3.8995524999918416
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "guided_filter",
+        "threads": 2,
+        "tile": 256,
+        "overlap": 64
+      },
+      "seconds": [
+        0.7640866999863647,
+        0.757589699991513,
+        0.9371722000068985
+      ],
+      "median_warm_seconds": 0.8473809499992058,
+      "cpu_seconds": [
+        1.4375,
+        1.34375,
+        1.671875
+      ],
+      "hashes": [
+        "904879f4c9d45805c7750570f3cb6d649f3993ee5be984718ac959124081d184",
+        "904879f4c9d45805c7750570f3cb6d649f3993ee5be984718ac959124081d184",
+        "904879f4c9d45805c7750570f3cb6d649f3993ee5be984718ac959124081d184"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.23828125,
+      "rss_sample_peak_mib": 201.859375,
+      "process_lifetime_peak_mib": 211.84375,
+      "available_end_gib": 18.558364868164062,
+      "log": "Info: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\n",
+      "case_process_seconds": 3.376649299985729
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "openfocus_b",
+        "threads": 2,
+        "tile": 512,
+        "overlap": 128
+      },
+      "seconds": [
+        0.33849609998287633,
+        0.3335003000102006,
+        0.3604048999841325
+      ],
+      "median_warm_seconds": 0.34695259999716654,
+      "cpu_seconds": [
+        0.59375,
+        0.578125,
+        0.609375
+      ],
+      "hashes": [
+        "4f2c58d73d0f2e99321560b2bc9cca237a27a706fec2c476c7eb79f369944fe6",
+        "4f2c58d73d0f2e99321560b2bc9cca237a27a706fec2c476c7eb79f369944fe6",
+        "4f2c58d73d0f2e99321560b2bc9cca237a27a706fec2c476c7eb79f369944fe6"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.3046875,
+      "rss_sample_peak_mib": 231.1875,
+      "process_lifetime_peak_mib": 236.47265625,
+      "available_end_gib": 18.371261596679688,
+      "log": "Info: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\n",
+      "case_process_seconds": 2.0502720000222325
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "openfocus_b",
+        "threads": 2,
+        "tile": 256,
+        "overlap": 64
+      },
+      "seconds": [
+        0.2799305999651551,
+        0.24146039999322966,
+        0.2274918999755755
+      ],
+      "median_warm_seconds": 0.23447614998440258,
+      "cpu_seconds": [
+        0.453125,
+        0.421875,
+        0.40625
+      ],
+      "hashes": [
+        "533c19d5621466c528dd16507d1acd8252e2bd97f92ffc9dd8e1626d1d5c8018",
+        "533c19d5621466c528dd16507d1acd8252e2bd97f92ffc9dd8e1626d1d5c8018",
+        "533c19d5621466c528dd16507d1acd8252e2bd97f92ffc9dd8e1626d1d5c8018"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.68359375,
+      "rss_sample_peak_mib": 158.61328125,
+      "process_lifetime_peak_mib": 160.24609375,
+      "available_end_gib": 18.28388214111328,
+      "log": "Info: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\n",
+      "case_process_seconds": 1.8655654999893159
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "openfocus_c",
+        "threads": 2,
+        "tile": 512,
+        "overlap": 128
+      },
+      "seconds": [
+        0.6119733999948949,
+        0.5937015999807045,
+        0.581458400003612
+      ],
+      "median_warm_seconds": 0.5875799999921583,
+      "cpu_seconds": [
+        1.140625,
+        1.0625,
+        1.015625
+      ],
+      "hashes": [
+        "5fabc696530e1a38370f491ab2b70ba0a57db1a5fdd678e0ab383230d74a2c76",
+        "5fabc696530e1a38370f491ab2b70ba0a57db1a5fdd678e0ab383230d74a2c76",
+        "5fabc696530e1a38370f491ab2b70ba0a57db1a5fdd678e0ab383230d74a2c76"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 96.609375,
+      "rss_sample_peak_mib": 387.53125,
+      "process_lifetime_peak_mib": 387.53125,
+      "available_end_gib": 18.12137222290039,
+      "log": "Info: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=512, overlap=128).\nTiled fusion: 2 parallel workers (memory-optimized)\n",
+      "case_process_seconds": 2.572373199975118
+    },
+    {
+      "case": {
+        "kind": "fusion",
+        "method": "openfocus_c",
+        "threads": 2,
+        "tile": 256,
+        "overlap": 64
+      },
+      "seconds": [
+        0.614489900006447,
+        0.6906977000180632,
+        0.6693442999967374
+      ],
+      "median_warm_seconds": 0.6800210000074003,
+      "cpu_seconds": [
+        1.03125,
+        1.265625,
+        1.203125
+      ],
+      "hashes": [
+        "f9bb23831540fc6be83c09dae56fb7dd9d685aeff18b2c16e59471d7985f9ab9",
+        "f9bb23831540fc6be83c09dae56fb7dd9d685aeff18b2c16e59471d7985f9ab9",
+        "f9bb23831540fc6be83c09dae56fb7dd9d685aeff18b2c16e59471d7985f9ab9"
+      ],
+      "output_shapes": [
+        [
+          750,
+          999,
+          3
+        ]
+      ],
+      "rss_start_mib": 97.16796875,
+      "rss_sample_peak_mib": 197.3828125,
+      "process_lifetime_peak_mib": 198.76171875,
+      "available_end_gib": 17.699153900146484,
+      "log": "Info: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\nInfo: Large stack detected (6x999x750). Using tiled fusion mode (block=256, overlap=64).\nTiled fusion: 2 parallel workers (memory-optimized)\n",
+      "case_process_seconds": 2.7760569999809377
+    }
+  ],
+  "input_files": [
+    {
+      "path": "assets/demo_stack/demo_01.jpg",
+      "sha256": "33002b62f4f228ef0600ae7a60209cd1dc968fd9215cf94cf1a8321e90545bf9"
+    },
+    {
+      "path": "assets/demo_stack/demo_02.jpg",
+      "sha256": "09732916523cad337569716a7645df00a9b15f45c36d01c49e6c2a2858a972de"
+    },
+    {
+      "path": "assets/demo_stack/demo_03.jpg",
+      "sha256": "92394d96f29347345a54a9abd7d0d92aacca9b2a6e838c0a966a81f275a8d740"
+    },
+    {
+      "path": "assets/demo_stack/demo_04.jpg",
+      "sha256": "f40d2fb3a2d2380ed01fc7461eaf034ce3ed4c2f124d552c0df63976786567c5"
+    },
+    {
+      "path": "assets/demo_stack/demo_05.jpg",
+      "sha256": "0d99c80ae539b686e9858015c199d5773a202dd827c9d3e079e4ea3329d5b2c6"
+    },
+    {
+      "path": "assets/demo_stack/demo_06.jpg",
+      "sha256": "e768ef7dcc12f521245a3d4547cdc7ebeac41245d3955331e5c8d0b2f0a9d148"
+    }
+  ],
+  "output_differences": [
+    {
+      "pair": "guided_filter threads1 vs4",
+      "max": 0.0,
+      "mean": 0.0,
+      "p99": 0.0,
+      "changed_channel_percent": 0.0,
+      "changed_pixel_percent": 0.0
+    },
+    {
+      "pair": "gfgfgf threads1 vs4",
+      "max": 0.0,
+      "mean": 0.0,
+      "p99": 0.0,
+      "changed_channel_percent": 0.0,
+      "changed_pixel_percent": 0.0
+    },
+    {
+      "pair": "AI default12 vs1",
+      "max": 0.0,
+      "mean": 0.0,
+      "p99": 0.0,
+      "changed_channel_percent": 0.0,
+      "changed_pixel_percent": 0.0
+    },
+    {
+      "pair": "AI default12 vs4",
+      "max": 0.0,
+      "mean": 0.0,
+      "p99": 0.0,
+      "changed_channel_percent": 0.0,
+      "changed_pixel_percent": 0.0
+    },
+    {
+      "pair": "AI default12 vs8",
+      "max": 0.0,
+      "mean": 0.0,
+      "p99": 0.0,
+      "changed_channel_percent": 0.0,
+      "changed_pixel_percent": 0.0
+    },
+    {
+      "pair": "dct whole vs512",
+      "max": 158.0,
+      "mean": 0.47661350239128014,
+      "p99": 11.0,
+      "changed_channel_percent": 13.699165832499165,
+      "changed_pixel_percent": 16.988455121788455
+    },
+    {
+      "pair": "dct whole vs256",
+      "max": 129.0,
+      "mean": 0.2678407296185074,
+      "p99": 4.0,
+      "changed_channel_percent": 9.96752307863419,
+      "changed_pixel_percent": 12.296563229896563
+    },
+    {
+      "pair": "dct tile512 vs256",
+      "max": 134.0,
+      "mean": 0.39430319208096987,
+      "p99": 9.0,
+      "changed_channel_percent": 11.30027805583361,
+      "changed_pixel_percent": 14.87580914247581
+    },
+    {
+      "pair": "guided_filter whole vs512",
+      "max": 1.0,
+      "mean": 0.03788499610721833,
+      "p99": 1.0,
+      "changed_channel_percent": 3.788499610721833,
+      "changed_pixel_percent": 6.692025358692025
+    },
+    {
+      "pair": "guided_filter whole vs256",
+      "max": 6.0,
+      "mean": 0.07325547769992215,
+      "p99": 1.0,
+      "changed_channel_percent": 6.982315648982315,
+      "changed_pixel_percent": 12.318985652318986
+    },
+    {
+      "pair": "guided_filter tile512 vs256",
+      "max": 6.0,
+      "mean": 0.08283661439216995,
+      "p99": 1.0,
+      "changed_channel_percent": 7.940874207540874,
+      "changed_pixel_percent": 14.425892559225892
+    },
+    {
+      "pair": "openfocus_b whole vs512",
+      "max": 5.0,
+      "mean": 0.0034870425981537094,
+      "p99": 0.0,
+      "changed_channel_percent": 0.34038482927371816,
+      "changed_pixel_percent": 0.4640640640640641
+    },
+    {
+      "pair": "openfocus_b whole vs256",
+      "max": 21.0,
+      "mean": 0.010517628739850963,
+      "p99": 0.0,
+      "changed_channel_percent": 0.9055722389055723,
+      "changed_pixel_percent": 1.256856856856857
+    },
+    {
+      "pair": "openfocus_b tile512 vs256",
+      "max": 21.0,
+      "mean": 0.012876431987543098,
+      "p99": 1.0,
+      "changed_channel_percent": 1.1328661995328662,
+      "changed_pixel_percent": 1.5476810143476811
+    },
+    {
+      "pair": "openfocus_c whole vs512",
+      "max": 90.0,
+      "mean": 0.6647585363140919,
+      "p99": 11.0,
+      "changed_channel_percent": 25.825870314759204,
+      "changed_pixel_percent": 39.19079079079079
+    },
+    {
+      "pair": "openfocus_c whole vs256",
+      "max": 74.0,
+      "mean": 0.5665683461239017,
+      "p99": 7.0,
+      "changed_channel_percent": 29.18020242464687,
+      "changed_pixel_percent": 46.35035035035035
+    },
+    {
+      "pair": "openfocus_c tile512 vs256",
+      "max": 65.0,
+      "mean": 0.6507053720387054,
+      "p99": 9.0,
+      "changed_channel_percent": 28.011967523078635,
+      "changed_pixel_percent": 43.420754087420754
+    },
+    {
+      "pair": "homography registration threads1 vs4",
+      "max": 0,
+      "mean": 0.0
+    },
+    {
+      "pair": "ecc registration threads1 vs4",
+      "max": 0,
+      "mean": 0.0
+    },
+    {
+      "pair": "openfocus registration threads1 vs4",
+      "max": 0,
+      "mean": 0.0
+    }
+  ],
+  "worker_event_loop": [
+    {
+      "method": "stackmffv3",
+      "torch_threads": 4,
+      "cancel_requested_ms": 0,
+      "timer_interval_ms": 16,
+      "note": "QCoreApplication + actual RenderWorker; no visible GUI or desktop-wide responsiveness measurement",
+      "published": true,
+      "result_shape": [
+        750,
+        999,
+        3
+      ],
+      "elapsed_seconds": 5.026425999996718,
+      "timer_gap_p50_ms": 16.015100030926988,
+      "timer_gap_p95_ms": 17.127059990889393,
+      "timer_gap_max_ms": 23.153499991167337,
+      "timer_ticks": 314,
+      "log": "Running StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nLoading StackMFF-V3 model (once)...\n"
+    },
+    {
+      "method": "stackmffv3",
+      "torch_threads": 12,
+      "cancel_requested_ms": 0,
+      "timer_interval_ms": 16,
+      "note": "QCoreApplication + actual RenderWorker; no visible GUI or desktop-wide responsiveness measurement",
+      "published": true,
+      "result_shape": [
+        750,
+        999,
+        3
+      ],
+      "elapsed_seconds": 15.697598500002641,
+      "timer_gap_p50_ms": 16.028399986680597,
+      "timer_gap_p95_ms": 17.05099998798687,
+      "timer_gap_max_ms": 127.66450003255159,
+      "timer_ticks": 966,
+      "log": "Running StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nLoading StackMFF-V3 model (once)...\n"
+    },
+    {
+      "method": "dtcwt",
+      "torch_threads": 4,
+      "cancel_requested_ms": 100,
+      "timer_interval_ms": 16,
+      "note": "QCoreApplication + actual RenderWorker; no visible GUI or desktop-wide responsiveness measurement",
+      "actual_cancel_at_ms": 100.50330002559349,
+      "error": "CANCELLED: render cancelled",
+      "elapsed_seconds": 4.393851100001484,
+      "cancel_to_finished_seconds": 4.293347799975891,
+      "timer_gap_p50_ms": 16.025449993321672,
+      "timer_gap_p95_ms": 17.12509503122419,
+      "timer_gap_max_ms": 21.06410003034398,
+      "timer_ticks": 274,
+      "log": ""
+    },
+    {
+      "method": "stackmffv3",
+      "torch_threads": 4,
+      "cancel_requested_ms": 100,
+      "timer_interval_ms": 16,
+      "note": "QCoreApplication + actual RenderWorker; no visible GUI or desktop-wide responsiveness measurement",
+      "actual_cancel_at_ms": 100.23659997386858,
+      "error": "CANCELLED: render cancelled",
+      "elapsed_seconds": 5.173501799989026,
+      "cancel_to_finished_seconds": 5.0732652000151575,
+      "timer_gap_p50_ms": 15.977900009602308,
+      "timer_gap_p95_ms": 16.919959988445044,
+      "timer_gap_max_ms": 18.052300030831248,
+      "timer_ticks": 323,
+      "log": "Running StackMFF-V3 fusion on CPU (soft)...\nLoaded 6 images\nLoading StackMFF-V3 model (once)...\n"
+    }
+  ],
+  "coordinate_counts": [
+    {
+      "height": 750,
+      "width": 999,
+      "block": 750,
+      "overlap": 256,
+      "submitted": 6,
+      "unique": 2,
+      "duplicate_percent": 66.7
+    },
+    {
+      "height": 750,
+      "width": 999,
+      "block": 512,
+      "overlap": 128,
+      "submitted": 6,
+      "unique": 6,
+      "duplicate_percent": 0.0
+    },
+    {
+      "height": 750,
+      "width": 999,
+      "block": 256,
+      "overlap": 64,
+      "submitted": 24,
+      "unique": 20,
+      "duplicate_percent": 16.7
+    },
+    {
+      "height": 3000,
+      "width": 4000,
+      "block": 1024,
+      "overlap": 256,
+      "submitted": 24,
+      "unique": 20,
+      "duplicate_percent": 16.7
+    },
+    {
+      "height": 3000,
+      "width": 4000,
+      "block": 512,
+      "overlap": 128,
+      "submitted": 88,
+      "unique": 88,
+      "duplicate_percent": 0.0
+    }
+  ],
+  "implementation_outcome": {
+    "branch": "perf/acceleration-spec",
+    "date": "2026-10-25",
+    "method": "Fresh subprocess per condition, alternating base commit (4659b7b) and the branch, 4 runs each, median of the warm runs; the same demo stack and parameters as the baseline table above.",
+    "results": [
+      {
+        "algorithm": "guided_filter",
+        "threads": 4,
+        "before_s": 0.515,
+        "after_s": 0.512,
+        "speedup": 1.006,
+        "identical_output": true
+      },
+      {
+        "algorithm": "guided_filter",
+        "threads": 1,
+        "before_s": 0.835,
+        "after_s": 0.802,
+        "speedup": 1.041,
+        "identical_output": true
+      },
+      {
+        "algorithm": "dct",
+        "threads": 4,
+        "before_s": 0.154,
+        "after_s": 0.131,
+        "speedup": 1.176,
+        "identical_output": true
+      },
+      {
+        "algorithm": "dtcwt",
+        "threads": 4,
+        "before_s": 5.859,
+        "after_s": 5.902,
+        "speedup": 0.993,
+        "identical_output": true,
+        "note": "Interleaved old/new measurement on an idle machine; an earlier concurrent run reported 0.52x, which was load pollution. The DTCWT change is the vote-map stream plus the thread cap."
+      },
+      {
+        "algorithm": "gfgfgf",
+        "threads": 4,
+        "before_s": 0.573,
+        "after_s": 0.498,
+        "speedup": 1.151,
+        "identical_output": true
+      },
+      {
+        "algorithm": "openfocus_a",
+        "threads": 4,
+        "before_s": 0.271,
+        "after_s": 0.251,
+        "speedup": 1.077,
+        "identical_output": true
+      },
+      {
+        "algorithm": "openfocus_b",
+        "threads": 4,
+        "before_s": 0.245,
+        "after_s": 0.256,
+        "speedup": 0.955,
+        "identical_output": true
+      },
+      {
+        "algorithm": "openfocus_c",
+        "threads": 4,
+        "before_s": 0.838,
+        "after_s": 0.572,
+        "speedup": 1.466,
+        "identical_output": true
+      },
+      {
+        "algorithm": "stackmffv3",
+        "threads": 4,
+        "before_s": 13.822,
+        "after_s": 10.374,
+        "speedup": 1.332,
+        "identical_output": true
+      }
+    ],
+    "limits": [
+      "One 6-frame 999x750 8-bit stack on one CPU-only machine.",
+      "Small stacks spend their time in per-call overhead, so the large wins here (openfocus_c, stackmffv3) are the ones with real per-frame or per-tile allocations removed.",
+      "No GPU was available: CUDA/MPS paths are implemented but not measured.",
+      "Peak RSS is dominated by the interpreter and the source stack on this input size; the memory win is in live full-stack temporaries, which this metric does not isolate."
+    ]
+  }
+}

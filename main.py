@@ -256,6 +256,8 @@ class OpenFocus(QMainWindow):
         self.reg_downscale_width = REG_DOWNSCALE_WIDTH
         # 全局线程数设置，默认4（可在 Settings 中修改）
         self.thread_count = DEFAULT_THREAD_COUNT
+        # 资源偏好：只影响并发/预算，不改变任何融合结果
+        self.resource_preference = "balanced"
         # StackMFF V3 批量大小设置，默认2（可在 Settings 中修改）
         self.ai_batch_size = AI_BATCH_SIZE
         # GPU 加速开关（Settings 菜单可切换，QSettings 持久化）

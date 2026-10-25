@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.68.1** — l'export par lots suit le mode choisi : l'alignement seul crée un dossier `<pile>_aligned` et l'affiche, la fusion n'affiche que l'image fusionnée, et sans export de l'alignement seule cette image est écrite. Les copies `*_registered*` restées dans le dossier source ne sont plus chargées comme images. Retouche également des libellés, barres d'échelle, comparaison de méthodes, export de profondeur/modèle, mises à jour et retouche d'après l'audit `docs/ux-specs`.
+> **v1.69.0** — le moteur de fusion planifie désormais son travail au lieu de le deviner : un plan d'exécution par rendu décide des workers, des threads et du budget mémoire, les cœurs physiques sont lus depuis la plateforme au lieu d'être déduits du nombre logique, et chaque backend classique diffuse ses tampons intermédiaires au lieu de retenir des temporaires de toute la pile. La sortie reste identique octet pour octet, avec des gains mesurés de 1,47× sur OpenFocus C et 1,33× sur la méthode neuronale. Un nouveau **mode de ressources** (Équilibré / Réactif / Maximal) garde le bureau fluide sans toucher à l'image.
 
 <a id="features"></a>
 ## Fonctionnalités
