@@ -82,6 +82,37 @@ def test_preference_scales_the_core_budget():
     assert responsive >= 1
 
 
+@pytest.mark.parametrize("cores,expected", [
+    (1, 1), (2, 2), (3, 3), (4, 4), (5, 4), (8, 7), (12, 10), (20, 16),
+])
+def test_balanced_rounds_up_so_a_small_machine_keeps_parallelism(cores, expected):
+    """A 2-physical-core CI runner must not collapse to a single worker.
+
+    ``int(cores * 0.8)`` truncated 2 -> 1, so the Balanced default used half of
+    a small machine and memory pressure had no concurrency left to lower —
+    which is exactly what the tight/roomy budget test measures.
+    """
+    snapshot = _snapshot(cores=cores)
+    assert policy.cpu_capacity(snapshot, policy.PREFERENCE_BALANCED) == expected
+
+
+@pytest.mark.parametrize("cores,expected", [(1, 1), (2, 1), (3, 2), (5, 3)])
+def test_responsive_rounds_up_not_down(cores, expected):
+    snapshot = _snapshot(cores=cores)
+    assert policy.cpu_capacity(snapshot, policy.PREFERENCE_RESPONSIVE) == expected
+
+
+def test_small_machine_still_has_a_memory_lever():
+    """The budget test's premise: two workers on a roomy 2-core machine."""
+    snapshot = _snapshot(cores=2)
+    roomy = policy.plan_execution(_workload(), snapshot,
+                                  ram_budget_override=64 * 1024 ** 3)
+    tight = policy.plan_execution(_workload(), snapshot,
+                                  ram_budget_override=1200 * 1024 ** 2)
+    assert roomy.workers > 1, "balanced mode collapsed to one worker"
+    assert tight.workers < roomy.workers
+
+
 def test_unknown_memory_does_not_grow_concurrency():
     """No readable memory information must fail closed, not open."""
     blind = policy.ResourceSnapshot(available_ram=0, total_ram=0,
