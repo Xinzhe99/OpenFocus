@@ -115,12 +115,22 @@ def test_settings_failure_does_not_partially_commit(settings_window):
 def test_settings_invalid_text_prevents_any_commit(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
     dialog = AdvancedSettingsDialog(settings_window)
-    dialog.spin_threads.lineEdit().setText("0")
+    dialog.spin_threads.lineEdit().setText("-1")
     dialog.chk_auto_update.setChecked(False)
     dialog._apply()
     assert settings_window.thread_count == 4
     assert settings_window.update_manager.auto_download
     assert not settings_window.saved
+    dialog.deleteLater()
+
+
+def test_automatic_thread_limit_commits(settings_window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.spin_threads.setValue(0)
+    dialog._apply()
+    assert settings_window.thread_count == 0
+    assert settings_window.saved
     dialog.deleteLater()
 
 

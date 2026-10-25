@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.69.0** — o motor de fusão agora planeja o trabalho em vez de adivinhá-lo: um plano de execução por render decide workers, threads e orçamento de memória, os núcleos físicos são lidos da plataforma em vez de dividir a contagem lógica, e cada backend clássico faz streaming dos seus buffers intermediários em vez de reter temporários de toda a pilha. A saída permanece idêntica byte a byte, com ganhos medidos de 1,47× no OpenFocus C e 1,33× no método neural. Um novo **modo de recursos** (Equilibrado / Priorizar resposta / Máximo) mantém a área de trabalho fluida sem alterar a imagem.
+> **v1.70.0** — todo estágio pesado compartilha agora uma admissão desde a preparação até a publicação: cancelar espera a chamada nativa em curso terminar de fato, em vez de iniciar outro render por cima. A memória é verificada antes de ser alocada (ilegível ou insuficiente é um erro claro, não blocos menores em silêncio), o cache de alinhamento confirma atomicamente e não recodifica em um acerto, a saída neural de 16 bits preserva os bits baixos, e o novo **modo de recursos** com threads automáticas (`0`) dá folga à área de trabalho. Os oito algoritmos continuam idênticos byte a byte à v1.69.0.
 
 <a id="features"></a>
 ## Recursos principais

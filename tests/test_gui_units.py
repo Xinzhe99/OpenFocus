@@ -75,6 +75,17 @@ def test_settings_round_trip(qapp, clean_settings):
     assert w2.recent_files == [os.path.abspath(demo)]
 
 
+@pytest.mark.parametrize("saved_threads", [None, 4, 11, 0])
+def test_thread_default_migration_preserves_saved_caps(qapp, clean_settings, saved_threads):
+    from types import SimpleNamespace
+    from utils.settings_store import get_settings, load_window_settings
+    if saved_threads is not None:
+        get_settings().setValue("rendering/thread_count", saved_threads)
+    window = SimpleNamespace(thread_count=0)
+    load_window_settings(window)
+    assert window.thread_count == (0 if saved_threads is None else saved_threads)
+
+
 def test_recent_files_cap(qapp, clean_settings):
     from utils.settings_store import load_window_settings, add_recent_file, MAX_RECENT_FILES
 
@@ -463,13 +474,7 @@ def test_quick_preview_render_does_not_publish_its_draft(qapp, monkeypatch):
     w.chk_quick_preview.setChecked(True)
     rm.start_render()
 
-    handed = rm.worker.args[0]
-    assert handed is not w.raw_images
-    assert max(handed[0].shape[:2]) <= 1200
-    assert rm._render_context["source"] is handed
-    assert rm._preview_mode is True
-
-    _finish_alignment(rm, w, handed)
+    _finish_alignment(rm, w, rm.worker.args[0])
 
     assert w.aligned_images == []
     assert w.is_images_aligned is False

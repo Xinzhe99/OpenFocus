@@ -491,7 +491,7 @@ PACK = {
     "advanced_tile_overlap": "타일 겹침(px)",
     "advanced_tile_threshold": "이 크기 초과 시 타일(px)",
     "advanced_tile_note": "작은 타일은 메모리를 덜 쓰지만 결과가 몇 단계 달라질 수 있습니다. 겹침은 타일보다 충분히 작아야 합니다.",
-    "advanced_threads": "작업 스레드",
+    "advanced_threads": "스레드 제한 (0 = 자동)",
     "advanced_resource_mode": "리소스 모드",
     "advanced_resource_balanced": "균형",
     "advanced_resource_responsive": "응답 우선",

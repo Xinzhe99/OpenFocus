@@ -5,6 +5,48 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v1.70.0] — 2026-10-25
+
+### Fixed
+- **Resource admission covers the complete job.** Render, ROI, compare, depth,
+  CLI and each batch stack share a cancellable lease from preparation through
+  publication. Cancellation retains ownership until native work finishes.
+  RAM checks include normalization, exposure, registration and output buffers;
+  unknown or insufficient physical memory rejects the minimum working set.
+- **Scheduling preserves image geometry.** Resource pressure limits concurrency
+  or reports insufficient memory; it no longer silently selects smaller tiles.
+  Registration uses bounded ordered work and releases consumed futures.
+- **Alignment caches commit atomically.** OpenFocus cache reads and writes use
+  the same identity, including decoded pixels and processing parameters. Hits
+  are not rewritten, failed/cancelled commits retain the previous generation,
+  and cache-write failure leaves a valid fusion result available. Preview
+  resizing and cache I/O run on workers.
+- **Neural fusion preserves 16-bit low-order information.** Raw uint16 and
+  normalized float input stay in the float32 0–255 work domain until the caller
+  restores source depth. Fusion and depth share single-padding preparation,
+  cancellation checks and architecture-based RAM/VRAM admission.
+
+### Changed
+- **Automatic threads for new settings and CLI.** `0` selects automatic;
+  saved positive values remain upper bounds. CLI adds
+  `--resource-preference balanced|responsive|maximum`. All twelve languages
+  explain the automatic value.
+- **Registration keeps the CPU baseline across application entrypoints.** The
+  general GPU preference applies to neural fusion. Explicit low-level CuPy
+  registration is separately identified and fails if that backend is unavailable.
+- **Neural inference uses one tile per call on every device.** True GPU batching
+  is not enabled without target-hardware numerical and performance evidence.
+
+### Verification
+- Full Windows CPU suite: 1021 passed, 12 skipped. Eight fusion algorithms
+  matched baseline `4659b7b` exactly on the six-frame 999×750 demo stack and
+  97×130 uint16 crops with nonzero low bits (16 comparisons). CLI 8/16-bit
+  export and cancellation after the final tile also passed.
+- Real GUI load/render and persisted automatic-thread/resource-mode settings
+  passed, with native widget screenshots inspected.
+- Earlier timing tables describe the pre-review branch; they are not new
+  measurements of these corrections. CUDA/MPS hardware remains unverified.
+
 ## [v1.69.0] — 2026-10-25
 
 ### Added
@@ -59,11 +101,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The neural tile path no longer allocates two unused full-image
   accumulators**, builds its padded staging tensor once (instead of allocating
   at frame size and padding into a second tensor), and uses
-  `torch.inference_mode()`. Real batching is enabled only on CUDA, where the
-  measured cost is lower; on the CPU a batched forward measured slower
-  (19.3 s vs 16.9 s for two 1024x1021 tiles), so tiles are inferred one at a
-  time and progress now advances only after the call that produced the tile
-  returned.
+  `torch.inference_mode()`. A CPU batched forward measured slower
+  (19.3 s vs 16.9 s for two 1024x1021 tiles). There was no target-GPU
+  measurement; the review above disables true batching on every device.
+  Progress advances after the call producing each tile returns.
 - **The depth-map estimator no longer pads twice.** It allocated at
   `(h+ph, w+pw)` and then called `F.pad` again, adding a second border — the
   padded pixels the network saw differed from the fusion path's.

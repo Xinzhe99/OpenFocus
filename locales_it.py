@@ -491,7 +491,7 @@ PACK = {
     "advanced_tile_overlap": "Sovrapposizione (px)",
     "advanced_tile_threshold": "Tasselli oltre (px)",
     "advanced_tile_note": "Tasselli più piccoli usano meno memoria ma possono spostare il risultato di qualche livello; la sovrapposizione deve restare ben inferiore.",
-    "advanced_threads": "Thread di lavoro",
+    "advanced_threads": "Limite thread (0 = automatico)",
     "advanced_resource_mode": "Modalità risorse",
     "advanced_resource_balanced": "Bilanciata",
     "advanced_resource_responsive": "Reattiva",

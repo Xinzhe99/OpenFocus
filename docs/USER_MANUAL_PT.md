@@ -663,9 +663,9 @@ Controle o processamento paralelo na CPU:
 
 Acesse em **Configurações → Configurações de threads**:
 
-- Defina o número de threads de trabalho (padrão: 4)
-- Use o número de núcleos da sua CPU para o melhor desempenho
-- Valores maiores = processamento mais rápido, mais uso de CPU
+- `0` seleciona o agendamento automático e é o padrão para novas configurações.
+- Valores positivos limitam as threads; os limites salvos são preservados.
+- Capacidade da CPU, modo de recursos e memória disponível podem reduzir a concorrência.
 
 ### Aceleração por GPU
 
@@ -681,8 +681,8 @@ algoritmos clássicos sempre rodam na CPU.
 
 Acesse em **Configurações → Tamanho do lote de IA**:
 
-- Controla quantos blocos o modelo neural processa por lote (padrão: 2)
-- Valores maiores são mais rápidos, mas usam mais memória
+- O limite de lote salvo é 2 por padrão; atualmente é processado um bloco por chamada em todos os dispositivos.
+- Aumentar esse limite não ativa lotes paralelos na GPU.
 
 ### Temas
 
@@ -864,8 +864,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--kernel, -k` | Tamanho do kernel (forçado a ímpar; na família openfocus é a origem do raio da janela de variância) |
 | `--depth-smoothing SIGMA` | apenas `openfocus_b`: sigma gaussiano da transição de profundidade entre quadros (padrão 1,2; 0 preserva o máximo de detalhe) |
 | `--blend-smoothing SIGMA` | apenas `openfocus_a` / `openfocus_c`: sigma gaussiano do mapa de pesos por quadro (padrões 2,0 para A e 3,0 para C; 0 mantém a escolha mais nítida por pixel) |
-| `--threads, -t` | Número de threads de trabalho (padrão 4) |
-| `--batch-size` | Tamanho do lote de blocos da IA (padrão 2) |
+| `--threads, -t` | Limite de threads; `0` = automático (padrão), valores positivos limitam a concorrência |
+| `--resource-preference` | Modo de recursos: `balanced` (padrão), `responsive` ou `maximum` |
+| `--batch-size` | Limite do lote de blocos de IA (padrão 2); atualmente um bloco por chamada |
 | `--cpu` | Força o uso da CPU mesmo quando há GPU disponível |
 | `--downscale` | Largura de redução para detecção de feições do registro |
 | `--tile-size` | Tamanho do bloco para imagens grandes |

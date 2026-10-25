@@ -6,8 +6,8 @@ try/except and silently fell back to a hard-coded 4096 MB. On a machine with
 less free memory than that, the guard allowed far too much work and the app
 was killed by the OS — the "it freezes on big stacks" report.
 
-Everything here uses the standard library plus the platform APIs that ship
-with Python, so the numbers are always real.
+Everything here uses the standard library and platform APIs. Unknown readings
+remain zero so admission can refuse work rather than inventing spare RAM.
 """
 import os
 import sys
@@ -40,17 +40,81 @@ def _windows_memory():
     return int(stat.ullAvailPhys), int(stat.ullTotalPhys)
 
 
+def _macos_memory():
+    """Physical total and reclaimable pages from Darwin's native VM counters."""
+    import ctypes
+    libc = ctypes.CDLL(None)
+    total = ctypes.c_uint64()
+    size = ctypes.c_size_t(ctypes.sizeof(total))
+    if libc.sysctlbyname(b"hw.memsize", ctypes.byref(total),
+                         ctypes.byref(size), None, 0) != 0:
+        return 0, 0
+    libc.mach_host_self.restype = ctypes.c_uint
+    host = libc.mach_host_self()
+    try:
+        page_size = ctypes.c_uint()
+        if libc.host_page_size(host, ctypes.byref(page_size)) != 0:
+            return 0, int(total.value)
+        # HOST_VM_INFO uses integer_t fields: free, active, inactive, wired,
+        # then fault/pageout counters. Speculative pages are already free.
+        stats = (ctypes.c_uint * 15)()
+        count = ctypes.c_uint(15)
+        if libc.host_statistics(host, 2, stats, ctypes.byref(count)) != 0:
+            return 0, int(total.value)
+        available = (int(stats[0]) + int(stats[2])) * page_size.value
+        return available, int(total.value)
+    finally:
+        # mach_init.h defines mach_task_self() as this cached exported port.
+        task = ctypes.c_uint.in_dll(libc, "mach_task_self_").value
+        libc.mach_port_deallocate(task, host)
+
+
+def _linux_memory_limit(available, total):
+    from utils.platform_utils import _linux_cgroup_paths
+    for path, version in _linux_cgroup_paths("memory"):
+        limit_file = "memory.max" if version == "cgroup2" else "memory.limit_in_bytes"
+        usage_file = "memory.current" if version == "cgroup2" else "memory.usage_in_bytes"
+        limit = 0
+        try:
+            with open(path + "/" + limit_file, encoding="ascii") as fh:
+                value = fh.read().strip()
+            if value == "max":
+                continue
+            limit = int(value)
+            if limit <= 0:
+                continue
+            total = min(total, limit)
+            with open(path + "/" + usage_file, encoding="ascii") as fh:
+                usage = int(fh.read().strip())
+            available = min(available, max(0, limit - usage))
+        except (OSError, ValueError):
+            # A known limit with unknown occupancy cannot prove headroom.
+            if limit > 0:
+                available = 0
+    return available, total
+
+
 def _posix_memory():
-    total = avail = 0
+    if sys.platform == "darwin":
+        return _macos_memory()
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/meminfo", encoding="ascii") as fh:
+                fields = dict(line.split(":", 1) for line in fh if ":" in line)
+            total = int(fields["MemTotal"].split()[0]) * 1024
+            # MemFree is conservative on older kernels without MemAvailable.
+            avail = int(fields.get("MemAvailable", fields.get("MemFree", "0"))
+                        .split()[0]) * 1024
+            return _linux_memory_limit(avail, total)
+        except (OSError, ValueError, KeyError, IndexError):
+            return 0, 0
     try:
         page = os.sysconf("SC_PAGE_SIZE")
-        total = os.sysconf("SC_PHYS_PAGES") * page
-        avail = os.sysconf("SC_AVPHYS_PAGES") * page
+        total = max(0, os.sysconf("SC_PHYS_PAGES")) * page
+        avail = max(0, os.sysconf("SC_AVPHYS_PAGES")) * page
+        return avail, total
     except (ValueError, OSError, AttributeError):
-        total = avail = 0
-    if total and not avail:
-        avail = total // 2
-    return avail, total
+        return 0, 0
 
 
 def available_memory_bytes() -> int:

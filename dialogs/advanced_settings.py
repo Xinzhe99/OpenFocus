@@ -85,8 +85,8 @@ class AdvancedSettingsDialog(QDialog):
             value=int(getattr(w, "tile_threshold", 2048)))
         perf.addRow(trans.t("advanced_tile_threshold"), self.spin_threshold)
         self.spin_threads = StepperSpinBox(
-            minimum=1, maximum=64, step=1, decimals=0,
-            value=int(getattr(w, "thread_count", 4)))
+            minimum=0, maximum=64, step=1, decimals=0,
+            value=int(getattr(w, "thread_count", 0)))
         perf.addRow(trans.t("advanced_threads"), self.spin_threads)
         self.combo_resources = QComboBox()
         for mode in ("balanced", "responsive", "maximum"):
@@ -184,7 +184,7 @@ class AdvancedSettingsDialog(QDialog):
             "tile_block_size": int(self.spin_block.value()),
             "tile_overlap": int(self.spin_overlap.value()),
             "tile_threshold": int(self.spin_threshold.value()),
-            "thread_count": max(1, int(self.spin_threads.value())),
+            "thread_count": max(0, int(self.spin_threads.value())),
             "resource_preference": self.combo_resources.currentData(),
             "reg_downscale_width": int(self.spin_reg_width.value()),
             "align_cache_enabled": self.chk_align_cache.isChecked(),

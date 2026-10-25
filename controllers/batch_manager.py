@@ -106,6 +106,7 @@ class BatchManager:
             tile_overlap=runtime.get('tile_overlap', getattr(self.window, 'tile_overlap', None)),
             tile_threshold=runtime.get('tile_threshold', getattr(self.window, 'tile_threshold', None)),
             thread_count=runtime.get('thread_count', getattr(self.window, 'thread_count', 4)),
+            resource_preference=runtime.get('resource_preference', getattr(self.window, 'resource_preference', 'balanced')),
             ai_batch_size=runtime.get('ai_batch_size', getattr(self.window, 'ai_batch_size', 2)),
             ai_mode=runtime.get('ai_mode', getattr(self.window, 'ai_mode', 'soft')),
             import_mode=import_mode,

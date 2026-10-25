@@ -8,6 +8,7 @@ import numpy as np
 import imageio.v2 as imageio
 from core.registration import ImageRegistration, RegistrationCancelled
 from core.multi_focus_fusion import MultiFocusFusion
+from core.resource_policy import heavy_job, require_memory
 from utils import resource_path, normalize_kernel_size
 from utils.image_utils import to_display_uint8
 from copy import deepcopy
@@ -16,6 +17,32 @@ from constants import (
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     DEFAULT_THREAD_COUNT
 )
+
+
+# A quick preview must be *obviously* quicker, not marginally so. The old
+# absolute cap of 1200 px did almost nothing at the sizes people actually use:
+# a 1344 px stack shrank by 11%, and the extra downscale plus the forced
+# re-registration of the small frames made the "quick" path slower than the
+# full render (measured 7.7 s vs 6.1 s on a 1344x1021 stack with ECC). Scaling
+# by a fraction fixes the class of problem instead of one resolution: half the
+# linear size is a quarter of the pixels, so the transform-heavy methods really
+# do finish faster. The floor keeps the draft legible and avoids a preview that
+# is slower because of per-tile / per-batch overhead.
+PREVIEW_SCALE = 0.5
+PREVIEW_MIN_SIDE = 320
+
+
+def _downscale_for_preview(img):
+    """Halve a frame (never below PREVIEW_MIN_SIDE on the long edge)."""
+    h, w = img.shape[:2]
+    longest = max(h, w)
+    target = max(PREVIEW_MIN_SIDE, int(round(longest * PREVIEW_SCALE)))
+    if target >= longest:
+        return img
+    scale = target / float(longest)
+    width, height = int(round(w * scale)), int(round(h * scale))
+    require_memory(width * height * (img.size // (h * w)) * img.dtype.itemsize)
+    return cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
 
 
 class StackLoadWorker(QThread):
@@ -60,20 +87,29 @@ class ROIAlignmentWorker(QThread):
     finished_signal = pyqtSignal(object, float)  # aligned_images, alignment_time
     error_signal = pyqtSignal(str)
 
-    def __init__(self, raw_images, reg_downscale_width=None, thread_count: int = DEFAULT_THREAD_COUNT):
+    def __init__(self, raw_images, reg_downscale_width=None, thread_count: int = DEFAULT_THREAD_COUNT,
+                 resource_preference="balanced"):
         super().__init__()
         self.raw_images = raw_images
         self.reg_downscale_width = reg_downscale_width
         self._cancelled = False
+        self.resource_preference = resource_preference
         try:
-            self.thread_count = max(1, int(thread_count))
-        except Exception:
-            self.thread_count = 4
+            self.thread_count = max(0, int(thread_count))
+        except (TypeError, ValueError):
+            self.thread_count = 0
 
     def cancel(self):
         self._cancelled = True
 
     def run(self):
+        try:
+            with heavy_job(lambda: self._cancelled):
+                self._run_admitted()
+        except RegistrationCancelled:
+            self.error_signal.emit("CANCELLED: alignment cancelled")
+
+    def _run_admitted(self):
         """在线程中执行ECC配准"""
         try:
             alignment_start_time = time.time()
@@ -86,10 +122,15 @@ class ROIAlignmentWorker(QThread):
 
             aligned_images = registration.process(
                 self.raw_images, output_path=None, thread_count=self.thread_count,
+                resource_preference=self.resource_preference,
                 should_cancel=lambda: self._cancelled)
             alignment_time = time.time() - alignment_start_time
+            if self._cancelled:
+                raise RegistrationCancelled()
 
             self.finished_signal.emit(aligned_images, alignment_time)
+        except RegistrationCancelled:
+            self.error_signal.emit("CANCELLED: alignment cancelled")
         except Exception as e:
             self.error_signal.emit(str(e))
             import traceback
@@ -144,10 +185,12 @@ class RenderWorker(QThread):
         dtcwt_levels: int = 4,
         disk_cache: dict | None = None,
         resource_preference: str = "balanced",
+        preview: bool = False,
     ):
         super().__init__()
         self.raw_images = raw_images
         self.aligned_images = aligned_images
+        self.preview = bool(preview)
         self.is_images_aligned = is_images_aligned
         self.last_alignment_options = last_alignment_options
         self.roi_rect = roi_rect
@@ -202,15 +245,18 @@ class RenderWorker(QThread):
         self.algorithm_override = algorithm_override
         # 用户配置的线程数（用于控制内部 ThreadPool 大小）
         try:
-            self.thread_count = max(1, int(thread_count))
-        except Exception:
-            self.thread_count = 4
+            self.thread_count = max(0, int(thread_count))
+        except (TypeError, ValueError):
+            self.thread_count = 0
         # 对比渲染模式：显式指定算法，覆盖 UI 单选按钮的选择
         self.algorithm_override = algorithm_override
         # 配准磁盘缓存的读写请求（None = 不查不写）。GUI 只负责描述请求，
         # 解码/编码整栈 PNG 的 I/O 一律发生在工作线程里——命中缓存的读取
         # 以前是在界面线程同步做的，大栈会冻结窗口数秒。
         self.disk_cache = dict(disk_cache) if disk_cache else None
+        self._cache_identity_prepared = False
+        if self.disk_cache is not None and self.disk_cache.get("identity") is not None:
+            self.disk_cache["identity"] = dict(self.disk_cache["identity"])
         from core.resource_policy import PREFERENCES
         self.resource_preference = (resource_preference
                                     if resource_preference in PREFERENCES
@@ -227,6 +273,13 @@ class RenderWorker(QThread):
         self.is_cancelled = True
 
     def run(self):
+        try:
+            with heavy_job(lambda: self.is_cancelled):
+                self._run_admitted()
+        except RegistrationCancelled:
+            self.error_signal.emit("CANCELLED: render cancelled")
+
+    def _run_admitted(self):
         """在线程中执行图像处理流程"""
         try:
             if self.is_cancelled:
@@ -256,8 +309,15 @@ class RenderWorker(QThread):
             if need_registration and can_reuse_aligned_images:
                 processed_images = self.aligned_images
                 registration_performed = True
+                self.alignment_reused = True
             else:
                 processed_images = self.raw_images.copy()
+                if self.preview:
+                    processed_images = []
+                    for image in self.raw_images:
+                        if self.is_cancelled:
+                            raise RegistrationCancelled()
+                        processed_images.append(_downscale_for_preview(image))
                 registration_performed = False
 
                 if need_registration:
@@ -281,6 +341,8 @@ class RenderWorker(QThread):
                         registration_performed = True
                         self.alignment_computed = True
 
+            if self.is_cancelled:
+                raise RegistrationCancelled()
             # 2. ROI裁剪阶段
             cropped_images, base_full_image, roi_rect_int = self._apply_roi_cropping(processed_images)
 
@@ -303,12 +365,17 @@ class RenderWorker(QThread):
                     fusion_result = self._apply_roi_pasting(fusion_result, base_full_image, roi_rect_int)
 
                 fusion_time = time.time() - fusion_start_time
+            if self.is_cancelled:
+                raise RegistrationCancelled()
 
             # Persist a freshly computed alignment before reporting the
             # result, so the next render of this stack skips registration.
             # Best-effort: _save_cached_alignment swallows write failures.
             if self.alignment_computed:
+                self.stage_signal.emit("finish")
                 self._save_cached_alignment(processed_images)
+            if self.is_cancelled:
+                raise RegistrationCancelled()
 
             self.finished_signal.emit(
                 processed_images,
@@ -329,6 +396,26 @@ class RenderWorker(QThread):
             import traceback
             traceback.print_exc()
 
+    def _prepare_cache_identity(self):
+        request = self.disk_cache
+        if self._cache_identity_prepared or request.get("identity") is None:
+            return
+        import hashlib
+        digest = hashlib.sha256()
+        for image in self.raw_images:
+            if self.is_cancelled:
+                raise RegistrationCancelled()
+            digest.update(str((image.shape, image.dtype.str)).encode("ascii"))
+            if image.flags.c_contiguous:
+                digest.update(memoryview(image))
+            else:
+                for row in image:
+                    if self.is_cancelled:
+                        raise RegistrationCancelled()
+                    digest.update(memoryview(np.ascontiguousarray(row)))
+        request["identity"]["source_pixels_sha256"] = digest.hexdigest()
+        self._cache_identity_prepared = True
+
     def _load_cached_alignment(self):
         """Cached aligned frames for this request, or None.
 
@@ -339,8 +426,12 @@ class RenderWorker(QThread):
         request = self.disk_cache
         if not request or request.get("mode") != "load":
             return None
+        is_current = request.get("is_current", lambda: True)
         from utils import align_cache
         try:
+            if self.is_cancelled or not is_current():
+                raise RegistrationCancelled()
+            self._prepare_cache_identity()
             cached = align_cache.load_aligned(
                 request.get("folder", ""),
                 list(request.get("filenames") or []),
@@ -348,7 +439,11 @@ class RenderWorker(QThread):
                 request.get("downscale_width"),
                 request.get("scale_factor", 1.0),
                 request.get("frame_shape"),
+                identity=request.get("identity"),
+                should_cancel=lambda: self.is_cancelled or not is_current(),
             )
+        except RegistrationCancelled:
+            raise
         except Exception:
             import logging
             logging.getLogger("openfocus").exception(
@@ -370,10 +465,14 @@ class RenderWorker(QThread):
         must never write it, which the request's mode already encodes.
         """
         request = self.disk_cache
-        if not request or request.get("mode") != "save" or not images:
+        if not request or not request.get("save", request.get("mode") == "save") or not images or self.is_cancelled:
             return
+        is_current = request.get("is_current", lambda: True)
+        if not is_current():
+            raise RegistrationCancelled()
         from utils import align_cache
         try:
+            self._prepare_cache_identity()
             align_cache.save_aligned(
                 request.get("folder", ""),
                 list(request.get("filenames") or []),
@@ -382,7 +481,11 @@ class RenderWorker(QThread):
                 request.get("downscale_width"),
                 request.get("scale_factor", 1.0),
                 request.get("frame_shape"),
+                identity=request.get("identity"),
+                should_cancel=lambda: self.is_cancelled or not is_current(),
             )
+        except RegistrationCancelled:
+            raise
         except Exception:
             # A cache write failure must never turn a finished fusion into a
             # failed one.
@@ -394,8 +497,7 @@ class RenderWorker(QThread):
         """执行图像配准"""
         alignment_start_time = time.time()
 
-        # OpenFocus 快速对齐先跑（全局平移，毫秒级）；勾选了 ECC/单应性时
-        # 在其结果上继续精配准——粗对齐让后续特征匹配更稳。
+        # OpenFocus similarity registration precedes optional ECC/homography.
         if self.need_align_openfocus:
             bright_ref = "last" if self.exposure_match else "first"
             if self.reg_downscale_width is not None:
@@ -407,6 +509,7 @@ class RenderWorker(QThread):
                                          brightness_reference=bright_ref)
             images = fast.process(images, output_path=None,
                                   thread_count=self.thread_count,
+                                  resource_preference=self.resource_preference,
                                   should_cancel=should_cancel)
 
         if self.need_align_homography and self.need_align_ecc:
@@ -419,12 +522,13 @@ class RenderWorker(QThread):
             return images, time.time() - alignment_start_time
 
         if self.reg_downscale_width is not None:
-            registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width,
-                                             use_gpu=self.use_gpu)
+            registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
         else:
-            registration = ImageRegistration(method=mode, use_gpu=self.use_gpu)
+            registration = ImageRegistration(method=mode)
 
-        processed = registration.process(images, output_path=None, thread_count=self.thread_count, should_cancel=should_cancel)
+        processed = registration.process(
+            images, output_path=None, thread_count=self.thread_count,
+            resource_preference=self.resource_preference, should_cancel=should_cancel)
         alignment_time = time.time() - alignment_start_time
 
         return processed, alignment_time
@@ -474,9 +578,11 @@ class RenderWorker(QThread):
         """执行图像融合，返回(融合结果, 设备名称)"""
         algorithm = self._get_fusion_algorithm()
 
-        # 16-bit sources are normalized to 0-1 float for the back-ends and
-        # quantized back to uint16 afterwards, preserving the extra depth.
+        # Preserve the float32 0–255 working domain and final uint16 quantization.
         from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+        if any(image.dtype == np.uint16 for image in images):
+            require_memory(sum(image.size * 4 for image in images if image.dtype != np.float32)
+                           + max(image.size * 4 for image in images if image.dtype == np.uint16))
         images, is_16bit = normalize_fuse_input(list(images))
 
         fusion = MultiFocusFusion(
@@ -633,8 +739,9 @@ class BatchWorker(QThread):
                  ai_mode: str = "soft",
                  import_mode="multiple_folders", split_method=None, split_param=None,
                  single_folder_images_with_times=None, use_gpu: bool = True,
-                 exposure_match: bool = False):
+                 exposure_match: bool = False, resource_preference="balanced"):
         super().__init__()
+        self.resource_preference = resource_preference
         self.folder_paths = list(folder_paths)
         self.output_type = output_type
         self.output_path = output_path
@@ -671,9 +778,9 @@ class BatchWorker(QThread):
         # StackMFF V3 输出模式
         self.ai_mode = ai_mode if ai_mode in ("soft", "hard") else "soft"
         try:
-            self.thread_count = max(1, int(thread_count))
-        except Exception:
-            self.thread_count = 4
+            self.thread_count = max(0, int(thread_count))
+        except (TypeError, ValueError):
+            self.thread_count = 0
 
     def _registration_width(self, images) -> int | None:
         """Registration downscale width for this stack.
@@ -741,10 +848,13 @@ class BatchWorker(QThread):
                 self._task_failures = task['failures']
                 self.progress_updated.emit(index, total, trans_batch_progress(index + 1, total, name))
                 try:
-                    if split:
-                        self._process_single_stack(data, self._get_output_path_for_single_folder(source), name, index)
-                    else:
-                        self.process_single_folder(data)
+                    with heavy_job(lambda: self.is_cancelled):
+                        if split:
+                            self._process_single_stack(data, self._get_output_path_for_single_folder(source), name, index)
+                        else:
+                            self.process_single_folder(data)
+                        if self.is_cancelled:
+                            raise RegistrationCancelled()
                     task['status'] = 'success'
                 except RegistrationCancelled:
                     self.is_cancelled = True
@@ -835,6 +945,7 @@ class BatchWorker(QThread):
                 aligned_images = fast.process(
                     aligned_images, output_path=None,
                     thread_count=self.thread_count,
+                    resource_preference=self.resource_preference,
                     should_cancel=lambda: self.is_cancelled)
 
             if align_homography and align_ecc:
@@ -850,13 +961,12 @@ class BatchWorker(QThread):
                 from core.registration import ImageRegistration
                 width = self._registration_width(aligned_images)
                 if width is not None:
-                    registration = ImageRegistration(method=mode, downscale_width=width,
-                                                     use_gpu=self.use_gpu)
+                    registration = ImageRegistration(method=mode, downscale_width=width)
                 else:
-                    registration = ImageRegistration(method=mode,
-                                                     use_gpu=self.use_gpu)
+                    registration = ImageRegistration(method=mode)
                 aligned_images = registration.process(
                     aligned_images, output_path=None, thread_count=self.thread_count,
+                    resource_preference=self.resource_preference,
                     should_cancel=lambda: self.is_cancelled)
 
         output_format = self.processing_settings.get('format', 'png').lstrip('.').lower()
@@ -890,12 +1000,16 @@ class BatchWorker(QThread):
             save_aligned = bool(self.processing_settings.get('save_aligned', False))
             if not save_aligned:
                 aligned_for_export = None
+            if any(image.dtype == np.uint16 for image in aligned_images):
+                require_memory(sum(image.size * 4 for image in aligned_images if image.dtype != np.float32)
+                               + max(image.size * 4 for image in aligned_images if image.dtype == np.uint16))
             fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
             if aligned_for_export is None:
                 del aligned_images  # fusion does not need the originals
 
             fusion = MultiFocusFusion(
                 algorithm=fusion_method, use_gpu=self.use_gpu,
+                resource_preference=self.resource_preference,
                 base_frame=fusion_params.pop(
                     'base_frame',
                     self.processing_settings.get('base_frame', 'none')),

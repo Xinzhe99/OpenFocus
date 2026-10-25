@@ -672,9 +672,9 @@ Bepaal de parallelle verwerking op de CPU:
 
 Bereikbaar via **Instellingen → Threadinstellingen**:
 
-- Stel het aantal werkthreads in (standaard: 4)
-- Stem dit af op het aantal CPU-kernen voor optimale prestaties
-- Hogere waarden = snellere verwerking, meer CPU-gebruik
+- `0` kiest automatische planning en is de standaard voor nieuwe instellingen.
+- Positieve waarden begrenzen het aantal threads; opgeslagen grenzen blijven behouden.
+- CPU-capaciteit, resourcemodus en beschikbaar geheugen kunnen de gelijktijdigheid verlagen.
 
 ### GPU-versnelling
 
@@ -690,8 +690,8 @@ OpenFocus gebruikt de GPU (CUDA/MPS) alleen voor het neurale AI-model
 
 Bereikbaar via **Instellingen → AI-batchinstellingen**:
 
-- Bepaalt hoeveel tegels het neurale model per batch verwerkt (standaard: 2)
-- Hogere waarden zijn sneller, maar gebruiken meer geheugen
+- De opgeslagen batchlimiet is standaard 2; momenteel wordt op elk apparaat één tegel per aanroep verwerkt.
+- Een hogere limiet schakelt geen parallelle GPU-batches in.
 
 ### Thema's
 
@@ -874,8 +874,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--kernel, -k` | Kernelgrootte (oneven gemaakt; voor de openfocus-familie bepaalt deze de straal van het variantievenster) |
 | `--depth-smoothing SIGMA` | Alleen `openfocus_b`: Gaussische sigma van de diepteovergang tussen frames (standaard 1,2; 0 behoudt het fijnste detail) |
 | `--blend-smoothing SIGMA` | Alleen `openfocus_a` / `openfocus_c`: Gaussische sigma van de gewichtsmap per frame (standaard 2,0 voor A, 3,0 voor C; 0 behoudt de scherpste keuze per pixel) |
-| `--threads, -t` | Aantal werkthreads (standaard 4) |
-| `--batch-size` | Batchgrootte voor AI-tegels (standaard 2) |
+| `--threads, -t` | Threadlimiet; `0` = automatisch (standaard), positieve waarden beperken de gelijktijdigheid |
+| `--resource-preference` | Resourcemodus: `balanced` (standaard), `responsive` of `maximum` |
+| `--batch-size` | Batchlimiet voor AI-tegels (standaard 2); momenteel één tegel per aanroep |
 | `--cpu` | Dwing de CPU af, ook als er een GPU beschikbaar is |
 | `--downscale` | Verkleiningsbreedte voor kenmerkdetectie bij registratie |
 | `--tile-size` | Blokgrootte van tegels voor grote afbeeldingen |

@@ -321,7 +321,7 @@ def test_quick_preview_is_a_fraction_not_an_absolute_cap():
     quick path slower than the full render (7.7 s vs 6.1 s on 1344x1021 with
     ECC), so the constant is a fraction of the source size now.
     """
-    from controllers.render_manager import PREVIEW_SCALE, _downscale_for_preview
+    from core.workers import PREVIEW_SCALE, _downscale_for_preview
     import numpy as np
 
     assert 0.0 < PREVIEW_SCALE <= 0.6, (

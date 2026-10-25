@@ -9,6 +9,7 @@ from typing import Union, List, Tuple, Optional
 import cv2
 
 from utils.image_utils import fuse_output_dtype
+from fusion_methods.dct import _ensure_color_image
 
 # NumPy 2.0 compatibility shims
 if not hasattr(np, "asfarray"):
@@ -40,61 +41,66 @@ except ImportError:
     convolve = None
 
 
-# The dtcwt package is pure NumPy: its column convolution runs in a Python
-# loop but spends its time inside NumPy ufuncs, which release the GIL. Frames
-# are transformed independently, so a small thread pool overlaps them and the
-# result is unchanged (each frame's coefficients are computed by exactly the
-# same call as before).
+# Activity transforms are the only parallel layer. Each worker owns its
+# transform and pyramid; channel reconstruction remains serial.
 _DTCWT_MAX_WORKERS = min(4, max(1, (os.cpu_count() or 4) - 1))
-# The activity pass keeps one full pyramid per in-flight frame, so its worker
-# count trades memory for speed (measured: 3 workers = 1.55x but +68 MB peak).
-# The channel pass streams frames inside each channel, so running the three
-# channels concurrently costs no meaningful extra memory.
 _DTCWT_ACTIVITY_WORKERS = 2
 
 
-def _iter_forward(transform, planes, nlevels, workers=None):
-    """Yield transform.forward() for each plane, overlapping a few at a time.
+def _iter_forward(transform, planes, nlevels, workers=None, should_cancel=None,
+                  transform_factory=None):
+    """Yield ordered pyramids from a bounded, cancellation-aware window."""
+    def check_cancel():
+        if should_cancel is not None and should_cancel():
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
 
-    A generator on purpose: the caller consumes one pyramid, derives its
-    activity maps and drops it. Returning a list would keep every frame's
-    pyramid alive at once (~21 MB each at 720x960, so 5 frames = +84 MB peak
-    for no reason). Results stay in input order.
-    """
-    if workers is None:
-        workers = _DTCWT_MAX_WORKERS
-    if len(planes) < 2 or workers < 2:
+    workers = max(1, int(_DTCWT_MAX_WORKERS if workers is None else workers))
+    if workers == 1:
         for plane in planes:
+            check_cancel()
             yield transform.forward(plane, nlevels=nlevels)
         return
     from collections import deque
     from concurrent.futures import ThreadPoolExecutor
+    from threading import local
+
+    state = local()
+
+    def forward(plane):
+        check_cancel()
+        if not hasattr(state, "transform"):
+            state.transform = transform_factory() if transform_factory else transform
+        return state.transform.forward(plane, nlevels=nlevels)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        # Bounded submission: at most `workers` transforms are in flight, so at
-        # most that many pyramids exist at once. pool.map() would submit every
-        # plane immediately and hold all finished results, which raised peak
-        # memory by 67 MB on a 5-frame 720x960 stack.
         window = deque()
         it = iter(planes)
-        for _ in range(workers):
-            nxt = next(it, None)
-            if nxt is None:
-                break
-            window.append(pool.submit(
-                lambda p=nxt: transform.forward(p, nlevels=nlevels)))
-        while window:
-            fut = window.popleft()
-            nxt = next(it, None)
-            if nxt is not None:
-                window.append(pool.submit(
-                    lambda p=nxt: transform.forward(p, nlevels=nlevels)))
-            yield fut.result()
+        try:
+            for _ in range(workers):
+                check_cancel()
+                plane = next(it, None)
+                if plane is None:
+                    break
+                window.append(pool.submit(forward, plane))
+            while window:
+                check_cancel()
+                future = window.popleft()
+                result = future.result()
+                del future
+                check_cancel()
+                yield result
+                del result
+                check_cancel()
+                plane = next(it, None)
+                if plane is not None:
+                    window.append(pool.submit(forward, plane))
+        finally:
+            for future in window:
+                future.cancel()
+            window.clear()
 
 
-def _map_forward(transform, planes, nlevels, workers=None):
-    """transform.forward() over independent 2-D planes, in parallel."""
-    return list(_iter_forward(transform, planes, nlevels, workers=workers))
 
 
 def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
@@ -122,38 +128,34 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
             from core.registration import RegistrationCancelled
             raise RegistrationCancelled()
 
-    # 1. Load and Preprocess Images
-    images = _load_images(input_source, img_resize)
+    _check_cancel()
+    # 1. Load and preprocess one frame at a time.
+    images = _load_images(input_source, img_resize, should_cancel=should_cancel)
     
     if len(images) < 2:
         raise ValueError("At least two images are required for fusion.")
 
-    # Convert to float32 RGB [0, 1]
-    # Processing images as a batch is not easily possible with standard dtcwt library 
-    # (which expects 2D inputs), so we prepare them for channel-wise processing.
     out_dtype = fuse_output_dtype(images)
-    images_rgb = [
-        cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        for img in images
-    ]
 
-    h, w = images_rgb[0].shape[:2]
-    n_frames = len(images_rgb)
+    def prepare_frame(index):
+        _check_cancel()
+        image = _ensure_color_image(images[index])
+        if image.dtype == np.uint16:
+            image = image.astype(np.float32) * (255.0 / 65535.0)
+        return cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+
+    h, w = images[0].shape[:2]
+    n_frames = len(images)
     transform = dtcwt.Transform2d()
 
     # Respect the caller's concurrency cap instead of the module default: a
     # tiled render already runs one transform per worker, so the activity
     # pass must not open its own pool on top of that.
-    if thread_count is None:
-        activity_workers = _DTCWT_ACTIVITY_WORKERS
-        max_workers = _DTCWT_MAX_WORKERS
-    else:
-        try:
-            cap = max(1, int(thread_count))
-        except (TypeError, ValueError):
-            cap = _DTCWT_ACTIVITY_WORKERS
-        activity_workers = max(1, min(_DTCWT_ACTIVITY_WORKERS, cap))
-        max_workers = max(1, min(_DTCWT_MAX_WORKERS, cap))
+    try:
+        cap = max(1, int(thread_count)) if thread_count is not None else _DTCWT_MAX_WORKERS
+    except (TypeError, ValueError):
+        cap = 1
+    activity_workers = max(1, min(_DTCWT_ACTIVITY_WORKERS, _DTCWT_MAX_WORKERS, cap))
 
     # 2. Activity per frame and level from the luminance transform. Only the
     # (real, |coeff| summed over the 6 orientations) activity maps are kept —
@@ -161,24 +163,32 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
     def _luma(img):
         return 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
 
-    activities = [[] for _ in range(N)]
-    _luma_planes = [_luma(img) for img in images_rgb]
-    for pyr in _iter_forward(transform, _luma_planes, N,
-                             workers=activity_workers):
-        _check_cancel()
-        for level in range(N):
-            activities[level].append(
-                maximum_filter(np.abs(pyr.highpasses[level]).sum(axis=2).astype(np.float32),
-                               size=3, mode='reflect'))
-        del pyr
-    del _luma_planes
-
-    # np.argmax over the stacked maps stays: a running max with boolean
-    # fancy-index assignment measured no faster than stacking (the extra pass
-    # over the mask costs about what the stack costs) and the stack is what
-    # ``np.argmax``'s first-frame tie-break is defined on.
-    frame_indices = [np.argmax(np.stack(act), axis=0) for act in activities]
-    del activities
+    best_activity = [None] * N
+    frame_indices = [None] * N
+    planes = (_luma(prepare_frame(i)) for i in range(n_frames))
+    pyramids = _iter_forward(transform, planes, N, workers=activity_workers,
+                              should_cancel=should_cancel,
+                              transform_factory=dtcwt.Transform2d)
+    try:
+        for i, pyr in enumerate(pyramids):
+            for level in range(N):
+                _check_cancel()
+                activity = maximum_filter(
+                    np.abs(pyr.highpasses[level]).sum(axis=2).astype(np.float32),
+                    size=3, mode='reflect')
+                if best_activity[level] is None:
+                    best_activity[level] = activity
+                    frame_indices[level] = np.zeros(activity.shape, np.int32)
+                else:
+                    win = activity > best_activity[level]
+                    best_activity[level][win] = activity[win]
+                    frame_indices[level][win] = i
+                    del win
+                del activity
+            del pyr
+    finally:
+        pyramids.close()
+    del best_activity
 
     def _consistent_argmax(idx, count):
         """3x3 majority consistency check on the index map.
@@ -197,6 +207,7 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
         best_label = None
         kernel = np.ones((3, 3), np.float32)
         for i in range(count):
+            _check_cancel()
             votes = convolve((idx == i).astype(np.float32), kernel,
                              mode='nearest')
             if best_count is None:
@@ -230,8 +241,9 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
     for c in range(3):
         fused_high = None
         lp = None
-        for i, img in enumerate(images_rgb):
-            _check_cancel()
+        _check_cancel()
+        for i in range(n_frames):
+            img = prepare_frame(i)
             pyr = transform.forward(img[:, :, c], nlevels=N)
             if fused_high is None:
                 fused_high = [np.zeros_like(hp) for hp in pyr.highpasses]
@@ -240,22 +252,27 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
                     lp_shape = pyr.lowpass.shape
                     ws = []
                     for k in range(n_frames):
+                        _check_cancel()
                         m = cv2.resize((coarse_idx == k).astype(np.float32),
                                        (lp_shape[1], lp_shape[0]),
                                        interpolation=cv2.INTER_LINEAR)
                         ws.append(cv2.GaussianBlur(m, (0, 0), 1.5))
                     ws = np.stack(ws)
                     lp_weights = ws / np.maximum(ws.sum(axis=0, keepdims=True), 1e-6)
+                    del ws
             for level in range(N):
+                _check_cancel()
                 sel = decisions[level] == i
                 fused_high[level][sel] = pyr.highpasses[level][sel]
             lp += lp_weights[i] * pyr.lowpass
             del pyr
+        _check_cancel()
         rec = transform.inverse(dtcwt.Pyramid(lp, tuple(fused_high)))
         # dtcwt pads odd sizes by duplicating the last row/column
         fused_channels.append(rec[:h, :w])
 
     # 5. Reconstruct Final Image
+    _check_cancel()
     fused_img = np.stack(fused_channels, axis=-1)
 
     # Clip and Convert
@@ -265,7 +282,8 @@ def _dtcwt_impl(input_source, img_resize, N, use_gpu, thread_count=None,
     return fused_img
 
 
-def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optional[Tuple[int, int]]) -> List[np.ndarray]:
+def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optional[Tuple[int, int]],
+                 should_cancel=None) -> List[np.ndarray]:
     """Helper to load images from a path or list."""
     images = []
     if isinstance(input_source, str):
@@ -291,13 +309,19 @@ def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optiona
         img_paths.sort(key=sort_key)
 
         for p in img_paths:
-            img = cv2.imread(p)
+            if should_cancel is not None and should_cancel():
+                from core.registration import RegistrationCancelled
+                raise RegistrationCancelled()
+            img = cv2.imread(p, cv2.IMREAD_UNCHANGED)
             if img is not None:
                 if img_resize:
                     img = cv2.resize(img, img_resize)
                 images.append(img)
     else:
         for img in input_source:
+            if should_cancel is not None and should_cancel():
+                from core.registration import RegistrationCancelled
+                raise RegistrationCancelled()
             if img_resize:
                 img = cv2.resize(img, img_resize)
             images.append(img)

@@ -1,7 +1,6 @@
 import traceback
 from typing import Any, List, Optional
 
-import cv2
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
@@ -14,29 +13,6 @@ from core.workers import RenderWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
 
-# A quick preview must be *obviously* quicker, not marginally so. The old
-# absolute cap of 1200 px did almost nothing at the sizes people actually use:
-# a 1344 px stack shrank by 11%, and the extra downscale plus the forced
-# re-registration of the small frames made the "quick" path slower than the
-# full render (measured 7.7 s vs 6.1 s on a 1344x1021 stack with ECC). Scaling
-# by a fraction fixes the class of problem instead of one resolution: half the
-# linear size is a quarter of the pixels, so the transform-heavy methods really
-# do finish faster. The floor keeps the draft legible and avoids a preview that
-# is slower because of per-tile / per-batch overhead.
-PREVIEW_SCALE = 0.5
-PREVIEW_MIN_SIDE = 320
-
-
-def _downscale_for_preview(img):
-    """Halve a frame (never below PREVIEW_MIN_SIDE on the long edge)."""
-    h, w = img.shape[:2]
-    longest = max(h, w)
-    target = max(PREVIEW_MIN_SIDE, int(round(longest * PREVIEW_SCALE)))
-    if target >= longest:
-        return img
-    scale = target / float(longest)
-    return cv2.resize(img, (int(round(w * scale)), int(round(h * scale))),
-                      interpolation=cv2.INTER_AREA)
 
 
 class RenderManager:
@@ -428,6 +404,7 @@ class RenderManager:
             if (getattr(window, "roi_source_revision", None) !=
                     getattr(window, "source_revision", 0)
                     or list(getattr(window, "roi_included_indices", None) or []) != list(included_idx)
+                    or getattr(window, "roi_reg_downscale_width", None) != window.reg_downscale_width
                     or len(window.roi_aligned_images) != len(stack_images)):
                 window.transform_manager.reset_roi_selection()
                 self._restore_ui_controls()
@@ -491,7 +468,7 @@ class RenderManager:
         elif self._preview_mode:
             # Quick preview: downscale the stack so the draft render finishes
             # in a fraction of the time.
-            source_images = [_downscale_for_preview(img) for img in stack_images]
+            source_images = stack_images
             # Registration is usually the most expensive stage and it does not
             # get cheaper in proportion: on a 1344x1021 stack with ECC the
             # fusion itself is 0.2-0.5 s while ECC takes seconds, so forcing a
@@ -504,8 +481,7 @@ class RenderManager:
             if reusable:
                 effective_need_align_homography = False
                 effective_need_align_ecc = False
-                effective_aligned_images = [
-                    _downscale_for_preview(img) for img in window.aligned_images]
+                effective_aligned_images = window.aligned_images
                 source_images = effective_aligned_images
                 effective_is_aligned = True
                 effective_last_alignment_options = (False, False, False)
@@ -530,6 +506,7 @@ class RenderManager:
             effective_last_alignment_options = None
             disk_cache_request = {
                 "mode": "load",
+                "save": bool(need_fusion),
                 "folder": getattr(window, "current_folder_path", ""),
                 "filenames": list(stack_filenames),
                 "align_options": disk_alignment_options,
@@ -545,25 +522,24 @@ class RenderManager:
             effective_aligned_images = window.aligned_images if reusable else []
             effective_is_aligned = reusable
             effective_last_alignment_options = window.last_alignment_options if reusable else None
-            # A fresh full-resolution render may persist its alignment. Preview
-            # and ROI runs are excluded by construction (they never reach this
-            # branch), and the worker only writes when it actually aligned.
-            if (not reusable
-                    and (need_align_homography or need_align_ecc
-                         or need_align_openfocus)
-                    and self._disk_cache_eligible()
-                    and getattr(window, "align_cache_enabled", True)
-                    and getattr(window, "current_folder_path", None)):
-                disk_cache_request = {
-                    "mode": "save",
-                    "folder": window.current_folder_path,
-                    "filenames": list(stack_filenames),
-                    "align_options": disk_alignment_options,
-                    "downscale_width": getattr(window, "reg_downscale_width", None),
-                    "scale_factor": getattr(window, "current_scale_factor", 1.0),
-                    "frame_shape": (tuple(stack_images[0].shape[:2])
-                                    if stack_images else None),
-                }
+        if disk_cache_request is not None:
+            parameters = self._processing_parameters(force_algorithm or fusion_method)
+            disk_cache_request["identity"] = {
+                "source_revision": getattr(window, "source_revision", 0),
+                "included": list(included_idx),
+                "frames": [{"name": name, "shape": list(image.shape),
+                            "dtype": image.dtype.str}
+                           for name, image in zip(stack_filenames, stack_images)],
+                "brightness_reference": "last" if parameters["exposure_match"] else "first",
+                "exposure_match": parameters["exposure_match"],
+                "registration_backend": "opencv",
+                "interpolation": "lanczos4",
+            }
+            source_ref = window.raw_images
+            revision = getattr(window, "source_revision", 0)
+            disk_cache_request["is_current"] = lambda: (
+                window.raw_images is source_ref
+                and getattr(window, "source_revision", 0) == revision)
 
         # Record exactly what THIS render was launched with. on_render_finished
         # must not read self.worker (a newer render may already have replaced
@@ -660,6 +636,7 @@ class RenderManager:
             exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),
             dtcwt_levels=int(getattr(window, "dtcwt_levels", 4) or 4),
             disk_cache=disk_cache_request,
+            preview=self._preview_mode,
         )
 
         self._progress_first_t = None
@@ -1079,7 +1056,8 @@ class RenderManager:
 
 
     def on_render_stage(self, stage: str) -> None:
-        text = trans.t('render_stage_align') if stage == "align" else trans.t('render_stage_fuse')
+        key = {"align": "render_stage_align", "fuse": "render_stage_fuse"}.get(stage, "render_progress")
+        text = trans.t(key)
         self._progress_first_t = None
         self._show_progress_bar(text)
 

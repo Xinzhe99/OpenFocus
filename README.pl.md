@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.69.0** — silnik fuzji planuje teraz pracę zamiast zgadywać: jeden plan wykonania na render decyduje o liczbie workerów, wątkach i budżecie pamięci, rdzenie fizyczne są odczytywane z platformy zamiast połowienia liczby logicznej, a każdy klasyczny backend strumieniuje bufory pośrednie zamiast trzymać tymczasowe dla całego stosu. Wynik pozostaje identyczny bajt w bajt, z zmierzonym przyspieszeniem 1,47× dla OpenFocus C i 1,33× dla metody neuronowej. Nowy **tryb zasobów** (Zrównoważony / Responsywny / Maksymalny) utrzymuje płynność pulpitu bez zmiany obrazu.
+> **v1.70.0** — każdy ciężki etap współdzieli teraz jedną zgodę na wykonanie od przygotowania po publikację: anulowanie czeka na faktyczne zakończenie bieżącego wywołania natywnego, zamiast uruchamiać na nim drugi render. Pamięć jest sprawdzana przed alokacją (nieczytelna lub zbyt mała to jasny błąd, a nie po cichu mniejsze kafelki), pamięć podręczna wyrównania zatwierdza atomowo i nie koduje ponownie przy trafieniu, 16-bitowe wyjście neuronowe zachowuje dolne bity, a nowy **tryb zasobów** z automatycznymi wątkami (`0`) zostawia pulpitowi zapas. Osiem algorytmów pozostaje identycznych bajt w bajt z v1.69.0.
 
 <a id="features"></a>
 ## Najważniejsze funkcje

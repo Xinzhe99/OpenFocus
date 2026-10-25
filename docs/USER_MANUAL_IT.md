@@ -654,9 +654,9 @@ Controllano l'elaborazione parallela sulla CPU:
 
 Accesso tramite **Impostazioni → Impostazioni thread**:
 
-- Imposta il numero di thread di lavoro (predefinito: 4)
-- Allinealo al numero di core della CPU per prestazioni ottimali
-- Valori più alti = elaborazione più rapida, maggiore uso della CPU
+- `0` seleziona la pianificazione automatica ed è il valore iniziale delle nuove impostazioni.
+- I valori positivi limitano i thread; i limiti salvati vengono conservati.
+- Capacità della CPU, modalità risorse e memoria disponibile possono ridurre la concorrenza.
 
 ### Interruttore dell'accelerazione GPU
 
@@ -671,8 +671,8 @@ OpenFocus usa la GPU (CUDA/MPS) solo per il modello neurale AI (StackMFF-V3); gl
 
 Accesso tramite **Impostazioni → Dimensione batch AI**:
 
-- Controlla quanti tasselli il modello neurale elabora per batch (predefinito: 2)
-- Valori più alti sono più veloci ma usano più memoria
+- Il limite batch salvato è 2 per impostazione predefinita; attualmente viene elaborato un tassello per chiamata su ogni dispositivo.
+- Aumentare il limite non abilita batch paralleli sulla GPU.
 
 ### Temi
 
@@ -853,8 +853,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--kernel, -k` | Dimensione del kernel (forzata dispari; per la famiglia openfocus è l'origine del raggio della finestra di varianza) |
 | `--depth-smoothing SIGMA` | Solo `openfocus_b`: sigma gaussiano della transizione di profondità tra un frame e l'altro (predefinito 1.2; 0 mantiene il dettaglio più fine) |
 | `--blend-smoothing SIGMA` | Solo `openfocus_a` / `openfocus_c`: sigma gaussiano della mappa dei pesi per frame (predefinito 2.0 per A, 3.0 per C; 0 mantiene la scelta per pixel più nitida) |
-| `--threads, -t` | Numero di thread di lavoro (predefinito 4) |
-| `--batch-size` | Dimensione batch dei tasselli AI (predefinito 2) |
+| `--threads, -t` | Limite dei thread; `0` = automatico (predefinito), i valori positivi limitano la concorrenza |
+| `--resource-preference` | Modalità risorse: `balanced` (predefinito), `responsive` o `maximum` |
+| `--batch-size` | Limite batch dei tasselli AI (predefinito 2); attualmente un tassello per chiamata |
 | `--cpu` | Forza la CPU anche se una GPU è disponibile |
 | `--downscale` | Larghezza di ridimensionamento per il rilevamento delle feature di registrazione |
 | `--tile-size` | Dimensione del blocco dei tasselli per immagini grandi |

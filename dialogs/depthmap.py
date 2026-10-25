@@ -85,7 +85,17 @@ class DepthWorker(QThread):
         self._cancelled = True
 
     def run(self):
+        from core.resource_policy import heavy_job
+        from core.registration import RegistrationCancelled
+        try:
+            with heavy_job(lambda: self._cancelled):
+                self._run_admitted()
+        except RegistrationCancelled:
+            self.failed.emit("cancelled")
+
+    def _run_admitted(self):
         from core.depth_map import DepthMapCancelled, compute_focus_index
+        from core.registration import RegistrationCancelled
         try:
             if self.alignment != "none":
                 from core.compare_worker import align_frames
@@ -113,6 +123,8 @@ class DepthWorker(QThread):
                 progress_callback=lambda i, n: self.progress.emit(i, n),
                 should_cancel=lambda: self._cancelled,
                 nlevels=self.nlevels,
+                thread_count=self.registration_settings.get("thread_count", 0),
+                resource_preference=self.registration_settings.get("resource_preference", "balanced"),
             )
             for frame in self.source_frames:
                 if self._cancelled:
@@ -125,7 +137,7 @@ class DepthWorker(QThread):
                 self.failed.emit("cancelled")
                 return
             self.ok.emit(m)
-        except DepthMapCancelled:
+        except (DepthMapCancelled, RegistrationCancelled):
             self.failed.emit("cancelled")
         except Exception as exc:  # surface to the dialog status line
             self.failed.emit(str(exc))
@@ -615,6 +627,8 @@ class DepthMapDialog(QDialog):
         self._use_gpu = bool(getattr(win, "use_gpu", False))
         self._nlevels = int(getattr(win, "dtcwt_levels", 4))
         self._registration_settings = {"thread_count": int(getattr(win, "thread_count", 4)),
+            "resource_preference": getattr(win, "resource_preference", "balanced"),
+            "use_gpu": self._use_gpu,
             "reg_downscale_width": int(getattr(win, "reg_downscale_width", 1024)),
             "exposure_match": bool(getattr(win, "exposure_match", False))}
         getter = getattr(win, "kernel_for_method", None)

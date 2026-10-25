@@ -491,7 +491,7 @@ PACK = {
     "advanced_tile_overlap": "Sobreposição (px)",
     "advanced_tile_threshold": "Blocos acima de (px)",
     "advanced_tile_note": "Um bloco menor usa menos memória mas pode deslocar o resultado alguns níveis; a sobreposição deve ser bem menor.",
-    "advanced_threads": "Threads de trabalho",
+    "advanced_threads": "Limite de threads (0 = automático)",
     "advanced_resource_mode": "Modo de recursos",
     "advanced_resource_balanced": "Equilibrado",
     "advanced_resource_responsive": "Priorizar resposta",

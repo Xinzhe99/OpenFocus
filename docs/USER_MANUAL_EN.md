@@ -715,13 +715,12 @@ high-resolution input.
 
 Control CPU parallel processing:
 
-Access via **Settings → Thread Count Settings**:
+Access via **Settings → Advanced Settings → Performance**:
 
-- Set the number of worker threads (default: 4)
-- This is an upper bound: OpenFocus lowers it when memory is tight and never
-  raises it, so a busy machine stays usable
-- Match your CPU core count for optimal performance
-- Higher values = faster processing, more CPU usage
+- `0` selects automatic scheduling and is the default for new settings.
+- Positive values are upper limits; saved limits survive upgrades.
+- CPU capacity, resource mode and memory headroom may lower concurrency.
+  More threads do not necessarily make a render faster.
 
 ### Resource Mode
 
@@ -734,15 +733,15 @@ much of the machine a render may use. It never changes the fused image.
 | Responsive | Uses about half the cores and a smaller in-flight window; slower renders, most responsive machine |
 | Maximum | Uses every physical core the memory budget allows |
 
-The planner counts *physical* cores (hyper-threads add peak memory without
-adding throughput for tile fusion) and only ever runs one parallel layer:
-either many single-threaded tile workers, or one worker that uses the whole
-thread budget. A render that would not fit in memory reports why instead of
-letting the OS swap or kill the process.
+The planner considers physical cores, CPU affinity and quotas, and runs one
+parallel layer at a time. Heavy jobs share admission through preparation and
+publication; cancelling waits for the active native call to finish. Unknown or
+insufficient memory produces a resource error. The selected tile grid stays
+unchanged; choosing smaller tiles yourself can change output pixels.
 
 ### GPU Acceleration Toggle
 
-OpenFocus uses the GPU (CUDA/MPS) only for the AI neural model (StackMFF-V3); classical algorithms always run on CPU.
+OpenFocus uses the GPU (CUDA/MPS) for the AI neural model (StackMFF-V3); classical algorithms and application registration run on CPU. Explicit low-level CuPy registration is a separate numerical backend.
 
 - Toggle via **Settings → GPU Acceleration**
 - Unchecking forces everything onto the CPU — useful when GPU drivers misbehave
@@ -751,10 +750,12 @@ OpenFocus uses the GPU (CUDA/MPS) only for the AI neural model (StackMFF-V3); cl
 
 ### AI Batch Size
 
-Access via **Settings → AI Batch Settings**:
+Access via **Settings → Advanced Settings → AI**:
 
-- Controls how many tiles the neural model processes per batch (default: 2)
-- Higher values are faster but use more memory
+- The saved batch limit defaults to 2; the current execution policy caps actual
+  inference at one tile per call on every device.
+- Increasing this limit does not enable unvalidated GPU batching or reduce
+  spatial tile size.
 
 ### Themes
 
@@ -947,8 +948,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--kernel, -k` | Kernel size (forced odd; for the openfocus family it is the source of the variance-window radius) |
 | `--depth-smoothing SIGMA` | `openfocus_b` only: Gaussian sigma of the frame-to-frame depth transition (default 1.2; 0 keeps the finest detail) |
 | `--blend-smoothing SIGMA` | `openfocus_a` / `openfocus_c` only: Gaussian sigma of the per-frame weight map (defaults 2.0 for A, 3.0 for C; 0 keeps the crispest per-pixel choice) |
-| `--threads, -t` | Worker thread count (default 4) |
-| `--batch-size` | AI tile batch size (default 2) |
+| `--threads, -t` | Worker thread upper limit; `0` = automatic (default), positive values cap concurrency |
+| `--resource-preference` | `balanced` (default), `responsive`, or `maximum`; controls resource scheduling |
+| `--batch-size` | AI tile batch upper limit (default 2); actual inference currently uses one tile per call |
 | `--cpu` | Force CPU even if a GPU is available |
 | `--downscale` | Registration feature-detection downscale width |
 | `--tile-size` | Tile block size for large images |

@@ -491,7 +491,7 @@ PACK = {
     "advanced_tile_overlap": "Chevauchement (px)",
     "advanced_tile_threshold": "Mosaïque au-delà de (px)",
     "advanced_tile_note": "Des tuiles plus petites économisent la mémoire mais peuvent décaler le résultat de quelques niveaux ; le chevauchement doit rester bien inférieur.",
-    "advanced_threads": "Threads de travail",
+    "advanced_threads": "Limite de threads (0 = automatique)",
     "advanced_resource_mode": "Mode de ressources",
     "advanced_resource_balanced": "Équilibré",
     "advanced_resource_responsive": "Réactif",

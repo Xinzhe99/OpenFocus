@@ -59,7 +59,7 @@ def test_fusion_rejects_unknown_algorithm():
         MultiFocusFusion(algorithm="does_not_exist")
 
 
-def test_fusion_dtcwt_tiled_matches_reference_within_tolerance(two_focus_stack):
+def test_fusion_guided_filter_tiled_matches_reference_within_tolerance(two_focus_stack):
     """Tiled rendering must stay close to the whole-image result."""
     full = MultiFocusFusion(algorithm="guided_filter", use_gpu=False).fuse(
         input_source=two_focus_stack, img_resize=None, kernel_size=31)
@@ -103,6 +103,33 @@ def test_tiled_fusion_cancels_promptly(two_focus_stack):
 
     assert seen["total"] > 2, "stack produced no tiles; test needs bigger input"
     assert seen["done"] < seen["total"], "every tile ran despite the cancel"
+
+
+def test_last_tile_cancellation_never_returns_a_result(two_focus_stack):
+    from core.registration import RegistrationCancelled
+
+    cancelled = False
+
+    def progress(done, total):
+        nonlocal cancelled
+        cancelled = done == total
+
+    fusion = MultiFocusFusion("dct", tile_threshold=32,
+                              tile_block_size=32, tile_overlap=8)
+    with pytest.raises(RegistrationCancelled):
+        fusion.fuse(two_focus_stack, thread_count=1,
+                    should_cancel=lambda: cancelled, progress_callback=progress)
+
+
+@pytest.mark.parametrize("algorithm", ["guided_filter", "dct", "gfgfgf"])
+def test_tiled_grayscale_matches_repeated_bgr(two_focus_stack, algorithm):
+    gray = [frame[:, :, 0] for frame in two_focus_stack]
+    bgr = [np.repeat(frame[:, :, None], 3, axis=2) for frame in gray]
+    fusion = MultiFocusFusion(algorithm, tile_threshold=32,
+                              tile_block_size=64, tile_overlap=16)
+    expected = fusion.fuse(bgr, thread_count=1)
+    actual = fusion.fuse(gray, thread_count=1)
+    assert np.array_equal(actual, expected)
 
 
 def test_tiled_reduction_order_is_deterministic(two_focus_stack):
@@ -321,68 +348,22 @@ class TestStackFootprintTiling:
         assert _stack_footprint_exceeds(f10, 2048)
 
 
-class TestStackMFFV3EffectiveTiling:
-    """The AI tiled path must shrink tiles/batches so one model call stays
-    within frames x pixels budget (2 tiles x 120 frames used to request a
-    16GB conv allocation -> DefaultCPUAllocator OOM)."""
+@pytest.mark.parametrize("shape,block,overlap", [
+    ((1637, 1783), 1024, 256), ((81, 29), 64, 32), ((73, 91), 32, 8),
+])
+def test_neural_grid_is_complete_and_independent_of_stack_depth(shape, block, overlap):
+    from core.multi_focus_fusion import _ai_effective_tiling
 
-    def _tiling(self, n, block=1024, h=1637, w=1783, ov=256, pref=2):
-        from core.multi_focus_fusion import _ai_effective_tiling
-        return _ai_effective_tiling(n, block, h, w, ov, pref)
-
-    def test_moderate_stack_unchanged(self):
-        # 40 frames x 2 tiles x 1024^2 == budget exactly: keep user settings
-        blk, batch, _ = self._tiling(40)
-        assert (blk, batch) == (1024, 2)
-
-    def test_batch_never_exceeds_preference(self):
-        # 24 frames would allow batch 3; the user preference (2) wins
-        blk, batch, _ = self._tiling(24)
-        assert (blk, batch) == (1024, 2)
-
-    def test_deep_stack_shrinks_tiles_and_batch(self):
-        # 120 frames: tile shrinks to 768 (128-aligned sqrt of budget/n) and
-        # only one tile per model call
-        blk, batch, _ = self._tiling(120)
-        assert blk == 768
-        assert batch == 1
-        assert 120 * batch * blk * blk <= 80 * 1024 * 1024
-
-    def test_very_deep_stack_floor_256(self):
-        blk, batch, _ = self._tiling(300)
-        assert blk == 512
-        assert batch == 1
-
-    def test_user_small_tiles_never_grow(self):
-        # user chose 128px tiles: never enlarged even on deep stacks
-        blk, batch, _ = self._tiling(400, block=128)
-        assert blk == 128
-        assert batch >= 1
-
-    def test_budget_respected_across_range(self):
-        from core.multi_focus_fusion import AI_IMAGE_BUDGET
-        budget = AI_IMAGE_BUDGET * 1024 * 1024
-        for n in (40, 60, 80, 120, 200, 300, 600):
-            blk, batch, coords = self._tiling(n)
-            assert n * batch * blk * blk <= budget, f"budget blown at {n} frames"
-            if blk < 1024:
-                # the network downsamples by 128x in total; non-128 tiles
-                # come back spatially shrunk (832 -> 768 focus map)
-                assert blk % 128 == 0, f"tile {blk} not 128-aligned at {n} frames"
-            # tiles must cover the image and never exceed the block size
-            cover = np.zeros((1637, 1783), bool)
-            for x0, y0, x1, y1 in coords:
-                assert x1 - x0 == blk and y1 - y0 == blk
-                assert 0 <= y0 and y1 <= 1637 and 0 <= x0 and x1 <= 1783
-                cover[y0:y1, x0:x1] = True
-            assert cover.all(), f"tile gap at {n} frames"
-
-    def test_tiny_image_clamps(self):
-        # image smaller than the block: tiles clamp to the image itself
-        blk, batch, coords = self._tiling(120, block=1024, h=300, w=400)
-        assert blk <= 300
-        assert all(y1 <= 300 and x1 <= 400 for _, _, x1, y1 in
-                   ((a, b, c, d) for (a, b, c, d) in coords))
+    h, w = shape
+    shallow_block, _, shallow = _ai_effective_tiling(2, block, h, w, overlap, 2)
+    deep_block, _, deep = _ai_effective_tiling(600, block, h, w, overlap, 2)
+    assert shallow_block == deep_block == min(block, h, w)
+    assert shallow == deep
+    cover = np.zeros(shape, dtype=bool)
+    for x0, y0, x1, y1 in deep:
+        assert 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h
+        cover[y0:y1, x0:x1] = True
+    assert cover.all()
 
 
 def test_dtcwt_keeps_odd_frame_size():

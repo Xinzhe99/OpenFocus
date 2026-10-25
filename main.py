@@ -254,8 +254,8 @@ class OpenFocus(QMainWindow):
         self.tile_threshold = TILE_THRESHOLD
         # Registration downscale default (用户可在 Settings -> Registration 中修改)
         self.reg_downscale_width = REG_DOWNSCALE_WIDTH
-        # 全局线程数设置，默认4（可在 Settings 中修改）
-        self.thread_count = DEFAULT_THREAD_COUNT
+        # Zero selects automatic concurrency; saved positive values remain caps.
+        self.thread_count = 0
         # 资源偏好：只影响并发/预算，不改变任何融合结果
         self.resource_preference = "balanced"
         # StackMFF V3 批量大小设置，默认2（可在 Settings 中修改）
@@ -2564,6 +2564,9 @@ class OpenFocus(QMainWindow):
         When enabled, first align images using ECC, then display aligned stack on result panel for ROI selection.
         """
         if enabled:
+            worker = getattr(self, "roi_alignment_worker", None)
+            if worker is not None and worker.isRunning():
+                return
             images, names, indices = self.effective_stack()
             if len(images) < 2:
                 show_warning_box(self, trans.t("msg_warning"), trans.t("roi_need_images"))
@@ -2580,7 +2583,8 @@ class OpenFocus(QMainWindow):
             can_reuse = (
                 bool(self.roi_aligned_images) and
                 getattr(self, "roi_included_indices", ()) == tuple(indices) and
-                getattr(self, "roi_source_revision", -1) == getattr(self, "source_revision", 0)
+                getattr(self, "roi_source_revision", -1) == getattr(self, "source_revision", 0) and
+                getattr(self, "roi_reg_downscale_width", None) == self.reg_downscale_width
             )
             
             if can_reuse:
@@ -2611,18 +2615,24 @@ class OpenFocus(QMainWindow):
             # of being published for the wrong stack.
             self._roi_align_snapshot = list(images)
             self._roi_align_context = (getattr(self, "source_revision", 0),
-                                       tuple(indices), tuple(names))
+                                       tuple(indices), tuple(names), self.reg_downscale_width)
             self._roi_frame_ids = tuple(self.label_manager.frame_ids("input")[i]
                                         for i in indices)
             self.roi_alignment_worker = ROIAlignmentWorker(
                 self._roi_align_snapshot,
                 reg_downscale_width=self.reg_downscale_width,
-                thread_count=self.thread_count
+                thread_count=self.thread_count,
+                resource_preference=self.resource_preference,
             )
             self.roi_alignment_worker.finished_signal.connect(self._on_roi_alignment_finished)
             self.roi_alignment_worker.error_signal.connect(self._on_roi_alignment_error)
+            worker = self.roi_alignment_worker
+            worker.finished.connect(lambda w=worker: self._release_roi_worker(w))
             self.roi_alignment_worker.start()
         else:
+            worker = getattr(self, "roi_alignment_worker", None)
+            if worker is not None and worker.isRunning():
+                worker.cancel()
             # 退出ROI模式
             self.roi_mode_active = False
             if hasattr(self, 'lbl_result_img'):
@@ -2642,8 +2652,10 @@ class OpenFocus(QMainWindow):
         """ROI配准完成的回调"""
         # Discard the result if the stack changed while ECC ran.
         _images, names, indices = self.effective_stack()
-        context_now = (getattr(self, "source_revision", 0), tuple(indices), tuple(names))
-        if context_now != getattr(self, "_roi_align_context", None):
+        context_now = (getattr(self, "source_revision", 0), tuple(indices), tuple(names),
+                       self.reg_downscale_width)
+        if (context_now != getattr(self, "_roi_align_context", None)
+                or getattr(self.roi_alignment_worker, "_cancelled", False)):
             self.btn_preview_roi.setEnabled(True)
             self.btn_preview_roi.setText(trans.t("btn_roi"))
             self._show_status_message(trans.t("msg_render_cancelled"), 4000)
@@ -2652,6 +2664,7 @@ class OpenFocus(QMainWindow):
         self.roi_aligned_images = aligned_images
         self.roi_aligned_raw_count = len(self._roi_align_snapshot)  # 对齐时快照的帧数
         self.roi_source_revision = context_now[0]
+        self.roi_reg_downscale_width = context_now[3]
         self.roi_included_indices = tuple(indices)
         self.roi_frame_ids = self._roi_frame_ids
         self.roi_filenames = list(names)
@@ -2684,7 +2697,6 @@ class OpenFocus(QMainWindow):
                 QMessageBox.Icon.Information
             )
         
-        self.roi_alignment_worker = None
 
     def _on_roi_alignment_error(self, error_message):
         """ROI配准错误的回调"""
@@ -2693,6 +2705,9 @@ class OpenFocus(QMainWindow):
         self.btn_preview_roi.blockSignals(True)
         self.btn_preview_roi.setChecked(False)
         self.btn_preview_roi.blockSignals(False)
+        if error_message.startswith("CANCELLED"):
+            self._show_status_message(trans.t("msg_render_cancelled"), 4000)
+            return
         
         show_error_box(
             self,
@@ -2701,7 +2716,10 @@ class OpenFocus(QMainWindow):
             error_message
         )
         
-        self.roi_alignment_worker = None
+    def _release_roi_worker(self, worker):
+        if self.roi_alignment_worker is worker:
+            self.roi_alignment_worker = None
+        worker.deleteLater()
 
     def _display_roi_aligned_image(self, index: int):
         """在右侧结果面板显示ROI模式下对齐后的图像"""

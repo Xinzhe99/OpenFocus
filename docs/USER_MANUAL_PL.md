@@ -645,9 +645,9 @@ Kontrola równoległego przetwarzania na CPU:
 
 Dostęp przez **Ustawienia → Ustawienia wątków**:
 
-- Ustaw liczbę wątków roboczych (domyślnie: 4)
-- Dopasuj ją do liczby rdzeni CPU, aby uzyskać najlepszą wydajność
-- Wyższe wartości = szybsze przetwarzanie, większe użycie CPU
+- `0` wybiera automatyczne planowanie i jest wartością domyślną nowych ustawień.
+- Wartości dodatnie ograniczają liczbę wątków; zapisane limity pozostają zachowane.
+- Dostępna moc CPU, tryb zasobów i wolna pamięć mogą zmniejszyć współbieżność.
 
 ### Przełącznik akceleracji GPU
 
@@ -662,8 +662,8 @@ OpenFocus używa GPU (CUDA/MPS) tylko dla neuronowego modelu AI (StackMFF-V3); a
 
 Dostęp przez **Ustawienia → Rozmiar partii AI**:
 
-- Określa, ile kafelków model neuronowy przetwarza w jednej partii (domyślnie: 2)
-- Wyższe wartości są szybsze, ale zużywają więcej pamięci
+- Zapisany limit partii wynosi domyślnie 2; obecnie każde urządzenie przetwarza jeden kafelek na wywołanie.
+- Zwiększenie limitu nie włącza równoległych partii GPU.
 
 ### Motywy
 
@@ -843,8 +843,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--kernel, -k` | rozmiar jądra (wymuszany na nieparzysty; dla rodziny openfocus jest źródłem promienia okna wariancji) |
 | `--depth-smoothing SIGMA` | tylko `openfocus_b`: sigma gaussowska przejścia głębi między klatkami (domyślnie 1.2; 0 zachowuje najdrobniejsze szczegóły) |
 | `--blend-smoothing SIGMA` | tylko `openfocus_a` / `openfocus_c`: sigma gaussowska mapy wag każdej klatki (domyślnie 2.0 dla A, 3.0 dla C; 0 zachowuje najostrzejszy wybór na piksel) |
-| `--threads, -t` | liczba wątków roboczych (domyślnie 4) |
-| `--batch-size` | rozmiar partii kafelków AI (domyślnie 2) |
+| `--threads, -t` | Limit wątków; `0` = automatycznie (domyślnie), wartości dodatnie ograniczają współbieżność |
+| `--resource-preference` | Tryb zasobów: `balanced` (domyślnie), `responsive` lub `maximum` |
+| `--batch-size` | Limit partii kafelków AI (domyślnie 2); obecnie jeden kafelek na wywołanie |
 | `--cpu` | wymusza CPU nawet jeśli GPU jest dostępny |
 | `--downscale` | szerokość zmniejszania przy detekcji cech rejestracji |
 | `--tile-size` | rozmiar bloku kafelka dla dużych obrazów |

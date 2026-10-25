@@ -639,9 +639,9 @@ Contrôlez le traitement parallèle sur le CPU :
 
 Accessibles via **Paramètres → Paramètres des threads** :
 
-- Définissez le nombre de threads de travail (4 par défaut)
-- Alignez-le sur le nombre de cœurs de votre CPU pour des performances optimales
-- Des valeurs plus élevées = traitement plus rapide, utilisation CPU plus importante
+- `0` sélectionne la planification automatique, valeur initiale des nouveaux réglages.
+- Les valeurs positives plafonnent les threads ; les limites enregistrées sont conservées.
+- La capacité CPU, le mode de ressources et la mémoire disponible peuvent réduire la concurrence.
 
 ### Activation de l'accélération GPU
 
@@ -656,8 +656,8 @@ OpenFocus n'utilise le GPU (CUDA/MPS) que pour le modèle de réseau de neurones
 
 Accessible via **Paramètres → Taille de lot IA** :
 
-- Contrôle le nombre de tuiles traitées par lot par le modèle de réseau de neurones (2 par défaut)
-- Des valeurs plus élevées sont plus rapides mais consomment plus de mémoire
+- Le plafond enregistré est de 2 par défaut ; une seule tuile est actuellement traitée par appel sur chaque appareil.
+- Augmenter ce plafond n'active pas les lots parallèles sur GPU.
 
 ### Thèmes
 
@@ -836,8 +836,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--kernel, -k` | Taille du noyau (forcée impaire ; pour la famille openfocus, c'est la source du rayon de la fenêtre de variance) |
 | `--depth-smoothing SIGMA` | `openfocus_b` uniquement : sigma gaussien de la transition de profondeur entre images (1,2 par défaut ; 0 conserve le détail le plus fin) |
 | `--blend-smoothing SIGMA` | `openfocus_a` / `openfocus_c` uniquement : sigma gaussien de la carte de pondération par image (2,0 par défaut pour A, 3,0 pour C ; 0 conserve le choix le plus net par pixel) |
-| `--threads, -t` | Nombre de threads de travail (4 par défaut) |
-| `--batch-size` | Taille de lot des tuiles IA (2 par défaut) |
+| `--threads, -t` | Plafond de threads ; `0` = automatique (par défaut), les valeurs positives limitent la concurrence |
+| `--resource-preference` | Mode de ressources : `balanced` (par défaut), `responsive` ou `maximum` |
+| `--batch-size` | Plafond de tuiles IA par lot (2 par défaut) ; actuellement une tuile par appel |
 | `--cpu` | Force le CPU même si un GPU est disponible |
 | `--downscale` | Largeur de réduction pour la détection de caractéristiques du recalage |
 | `--tile-size` | Taille des blocs de tuilage pour les grandes images |

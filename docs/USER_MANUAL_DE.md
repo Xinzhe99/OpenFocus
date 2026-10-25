@@ -658,9 +658,9 @@ Steuert die parallele Verarbeitung auf der CPU:
 
 Zugriff über **Einstellungen → Thread-Einstellungen**:
 
-- Anzahl der Arbeitsthreads festlegen (Standard: 4)
-- Für optimale Leistung an die Anzahl der CPU-Kerne anpassen
-- Höhere Werte = schnellere Verarbeitung, mehr CPU-Last
+- `0` bedeutet automatisch und ist die Vorgabe für neue Einstellungen.
+- Positive Werte begrenzen die Thread-Anzahl; gespeicherte Grenzen bleiben erhalten.
+- CPU-Kapazität, Ressourcenmodus und freier Speicher können die Parallelität verringern.
 
 ### GPU-Beschleunigung
 
@@ -675,8 +675,8 @@ OpenFocus nutzt die GPU (CUDA/MPS) nur für das neuronale KI-Modell (StackMFF-V3
 
 Zugriff über **Einstellungen → KI-Batchgröße**:
 
-- Legt fest, wie viele Kacheln das neuronale Modell pro Batch verarbeitet (Standard: 2)
-- Höhere Werte sind schneller, brauchen aber mehr Speicher
+- Die gespeicherte Batch-Obergrenze ist standardmäßig 2; tatsächlich wird derzeit auf jedem Gerät eine Kachel pro Aufruf verarbeitet.
+- Ein höherer Wert aktiviert keine parallele GPU-Batch-Verarbeitung.
 
 ### Oberflächendesign
 
@@ -857,8 +857,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--kernel, -k` | Kernelgröße (ungerade erzwungen; bei der OpenFocus-Familie die Quelle für den Radius des Varianzfensters) |
 | `--depth-smoothing SIGMA` | Nur `openfocus_b`: Gauß-Sigma des Tiefenübergangs von Bild zu Bild (Standard 1,2; 0 behält das feinste Detail) |
 | `--blend-smoothing SIGMA` | Nur `openfocus_a` / `openfocus_c`: Gauß-Sigma der Gewichtskarte pro Bild (Standard 2,0 für A, 3,0 für C; 0 behält die schärfste Auswahl pro Pixel) |
-| `--threads, -t` | Anzahl der Arbeitsthreads (Standard 4) |
-| `--batch-size` | Kachel-Batchgröße der KI (Standard 2) |
+| `--threads, -t` | Thread-Obergrenze; `0` = automatisch (Standard), positive Werte begrenzen die Parallelität |
+| `--resource-preference` | Ressourcenmodus: `balanced` (Standard), `responsive` oder `maximum` |
+| `--batch-size` | KI-Kachel-Batch-Obergrenze (Standard 2); tatsächlich derzeit eine Kachel pro Aufruf |
 | `--cpu` | CPU erzwingen, auch wenn eine GPU verfügbar ist |
 | `--downscale` | Verkleinerungsbreite der Merkmalserkennung bei der Registrierung |
 | `--tile-size` | Kachelblockgröße für große Bilder |

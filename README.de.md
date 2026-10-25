@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.69.0** — die Fusions-Engine plant ihre Arbeit, statt zu raten: ein Ausführungsplan pro Render legt Worker, Threads und Speicherbudget fest, die physischen Kerne werden von der Plattform gelesen statt aus der logischen Zahl halbiert, und jeder klassische Back-End streamt seine Zwischenpuffer, statt Temporäre für den ganzen Stapel zu halten. Die Ausgabe bleibt byte-identisch, gemessen sind es 1,47× bei OpenFocus C und 1,33× beim neuronalen Verfahren. Ein neuer **Ressourcenmodus** (Ausgeglichen / Reaktionsschnell / Maximal) hält den Desktop flüssig, ohne das Bild zu verändern.
+> **v1.70.0** — jede rechenintensive Stufe teilt sich jetzt eine Zulassungs-Lease von der Vorbereitung bis zur Veröffentlichung: Ein Abbruch wartet, bis der laufende native Aufruf wirklich beendet ist, statt einen zweiten Render darüber zu starten. Speicher wird vor der Allokation geprüft (nicht lesbar oder zu klein ist ein klarer Fehler statt heimlich kleinerer Kacheln), Ausrichtungs-Caches schreiben atomar und kodieren bei einem Treffer nicht erneut, 16-Bit-Neuralausgaben behalten ihre niedrigen Bits, und der neue **Ressourcenmodus** samt automatischen Threads (`0`) gibt dem Desktop Luft. Die acht Algorithmen bleiben byte-identisch zu v1.69.0.
 
 <a id="features"></a>
 ## Funktionen

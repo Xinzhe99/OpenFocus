@@ -658,9 +658,9 @@ Controla el procesamiento paralelo de la CPU:
 
 Accede en **Ajustes → Ajustes de hilos**:
 
-- Define el número de hilos de trabajo (4 por defecto)
-- Ajusta el valor al número de núcleos de tu CPU para un rendimiento óptimo
-- Valores mayores = procesamiento más rápido y más uso de CPU
+- `0` selecciona la planificación automática y es el valor inicial para ajustes nuevos.
+- Los valores positivos limitan los hilos; se conservan los límites guardados.
+- La capacidad de CPU, el modo de recursos y la memoria disponible pueden reducir la concurrencia.
 
 ### Activación de la aceleración por GPU
 
@@ -675,8 +675,8 @@ OpenFocus usa la GPU (CUDA/MPS) solo para el modelo neuronal de IA (StackMFF-V3)
 
 Accede en **Ajustes → Tamaño de lote de IA**:
 
-- Controla cuántos mosaicos procesa el modelo neuronal por lote (2 por defecto)
-- Los valores mayores son más rápidos pero consumen más memoria
+- El límite de lote guardado es 2 por defecto; actualmente se procesa un mosaico por llamada en todos los dispositivos.
+- Aumentarlo no activa lotes paralelos en la GPU.
 
 ### Temas
 
@@ -862,8 +862,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--kernel, -k` | Tamaño de núcleo (se fuerza a impar; en la familia openfocus es el origen del radio de la ventana de varianza) |
 | `--depth-smoothing SIGMA` | Solo `openfocus_b`: sigma gaussiana de la transición de profundidad entre fotogramas (1,2 por defecto; 0 conserva el detalle más fino) |
 | `--blend-smoothing SIGMA` | Solo `openfocus_a` / `openfocus_c`: sigma gaussiana del mapa de pesos por fotograma (2,0 para A y 3,0 para C por defecto; 0 conserva la elección por píxel más nítida) |
-| `--threads, -t` | Número de hilos de trabajo (4 por defecto) |
-| `--batch-size` | Tamaño de lote de mosaicos de IA (2 por defecto) |
+| `--threads, -t` | Límite de hilos; `0` = automático (por defecto), los valores positivos limitan la concurrencia |
+| `--resource-preference` | Modo de recursos: `balanced` (por defecto), `responsive` o `maximum` |
+| `--batch-size` | Límite de lote de mosaicos de IA (2 por defecto); actualmente un mosaico por llamada |
 | `--cpu` | Fuerza la CPU aunque haya una GPU disponible |
 | `--downscale` | Ancho de reducción para la detección de características del registro |
 | `--tile-size` | Tamaño de bloque de mosaico para imágenes grandes |

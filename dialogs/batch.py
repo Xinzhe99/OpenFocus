@@ -79,6 +79,7 @@ class BatchProcessingDialog(QDialog):
                 ('reg_downscale_width', None), ('tile_enabled', True),
                 ('tile_block_size', None), ('tile_overlap', None),
                 ('tile_threshold', None), ('thread_count', 4),
+                ('resource_preference', 'balanced'),
                 ('ai_batch_size', 2), ('ai_mode', 'soft'), ('use_gpu', True))}
         
         # Dark palette only in dark mode: hard-coding it showed a dark slab in

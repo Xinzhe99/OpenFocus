@@ -300,7 +300,7 @@ def test_alignment_runs_real_registration_on_background_thread(monkeypatch):
     aligned = results[0]
     assert all(frame.dtype == np.uint16 for frame in aligned)
     assert observations[0][0] != main_thread
-    assert observations[0][1:] == (96, 0.1, "first", 1, True)
+    assert observations[0][1:] == (96, 0.1, "first", 0, True)
     before = np.mean(np.abs(frames[0].astype(float) - frames[1]))
     after = np.mean(np.abs(aligned[0].astype(float) - aligned[1]))
     assert after < before * 0.5

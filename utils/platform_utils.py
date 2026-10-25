@@ -161,9 +161,6 @@ def reset_gpu_probe_cache() -> None:
     _GPU_PRESENT_CACHE = None
 
 
-_PHYSICAL_CORES = None
-
-
 def _windows_physical_cores() -> int:
     """Count RelationProcessorCore records via GetLogicalProcessorInformationEx.
 
@@ -192,43 +189,59 @@ def _windows_physical_cores() -> int:
     if not func(RELATION_PROCESSOR_CORE, ctypes.byref(buffer),
                 ctypes.byref(length)):
         return 0
-    raw = bytes(buffer[:length.value])
+    return _windows_core_records(bytes(buffer[:length.value]), *_windows_affinity())
+
+
+def _windows_core_records(raw, affinity_mask=0, affinity_group=0):
+    """Decode processor-core records, intersecting the process affinity mask."""
     cores = 0
     offset = 0
     while offset + 8 <= len(raw):
         relationship, size = struct.unpack_from("<II", raw, offset)
         if size < 8 or offset + size > len(raw):
-            break
-        if relationship == RELATION_PROCESSOR_CORE:
-            cores += 1
+            return 0
+        if relationship == 0:
+            if not affinity_mask:
+                cores += 1
+            elif size >= 32:
+                groups = struct.unpack_from("<H", raw, offset + 30)[0]
+                pointer_size = struct.calcsize("P")
+                stride = pointer_size + 8
+                for index in range(groups):
+                    start = offset + 32 + index * stride
+                    if start + stride > offset + size:
+                        return 0
+                    mask = int.from_bytes(raw[start:start + pointer_size], "little")
+                    group = struct.unpack_from("<H", raw, start + pointer_size)[0]
+                    if group == affinity_group and mask & affinity_mask:
+                        cores += 1
+                        break
         offset += size
     return cores
 
 
 def _linux_physical_cores() -> int:
-    """/proc/cpuinfo (physical id, core id) pairs, else the affinity count."""
+    """Count physical/core pairs only for processors in this process's affinity."""
     try:
-        pairs = set()
-        physical_id = core_id = None
-        with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                key, _, value = line.partition(":")
-                key = key.strip()
-                if key == "physical id":
-                    physical_id = value.strip()
-                elif key == "core id":
-                    core_id = value.strip()
-                elif not line.strip():
-                    if physical_id is not None and core_id is not None:
-                        pairs.add((physical_id, core_id))
-                    physical_id = core_id = None
-        if pairs:
-            return len(pairs)
-    except OSError:
-        pass
-    try:
-        return len(os.sched_getaffinity(0))
+        affinity = set(os.sched_getaffinity(0))
     except (AttributeError, OSError):
+        affinity = None
+    try:
+        with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as fh:
+            records = fh.read().strip().split("\n\n")
+        pairs = set()
+        for record in records:
+            fields = dict(line.split(":", 1) for line in record.splitlines()
+                          if ":" in line)
+            fields = {key.strip(): value.strip() for key, value in fields.items()}
+            processor = int(fields.get("processor", "-1"))
+            if affinity is not None and processor not in affinity:
+                continue
+            if "physical id" not in fields or "core id" not in fields:
+                return 0
+            pairs.add((fields["physical id"], fields["core id"]))
+        return len(pairs)
+    except (OSError, ValueError):
         return 0
 
 
@@ -251,31 +264,155 @@ def _macos_physical_cores() -> int:
         return 0
 
 
-def physical_core_count() -> int:
-    """Physical cores (SMT siblings counted once).
+def _linux_cgroup_paths(controller):
+    """Yield this cgroup and its ancestors on matching v1/v2 mounts."""
+    from pathlib import PurePosixPath
+    try:
+        with open("/proc/self/cgroup", encoding="utf-8") as fh:
+            memberships = [line.strip().split(":", 2) for line in fh]
+        with open("/proc/self/mountinfo", encoding="utf-8") as fh:
+            mounts = fh.readlines()
+    except OSError:
+        return
+    seen = set()
+    for line in mounts:
+        before, separator, after = line.partition(" - ")
+        left, right = before.split(), after.split()
+        if not separator or len(left) < 5 or len(right) < 3:
+            continue
+        version = right[0]
+        if version not in ("cgroup", "cgroup2"):
+            continue
+        if version == "cgroup" and controller not in right[2].split(","):
+            continue
+        # mountinfo encodes whitespace and backslashes as octal escapes.
+        def unescape(value):
+            for encoded, decoded in (("\\040", " "), ("\\011", "\t"),
+                                     ("\\012", "\n"), ("\\134", "\\")):
+                value = value.replace(encoded, decoded)
+            return value
+        root = PurePosixPath(unescape(left[3]))
+        mount = PurePosixPath(unescape(left[4]))
+        for membership in memberships:
+            if len(membership) != 3:
+                continue
+            _, controllers, location = membership
+            if (version == "cgroup2" and controllers or
+                    version == "cgroup" and controller not in controllers.split(",")):
+                continue
+            location = PurePosixPath(location)
+            try:
+                relative = location.relative_to(root)
+            except ValueError:
+                # A cgroup namespace may expose its mount root as '/'.
+                if location != PurePosixPath("/"):
+                    continue
+                relative = PurePosixPath(".")
+            current = mount / relative
+            if ".." in current.parts:
+                continue
+            while True:
+                key = (str(current), version)
+                if key not in seen:
+                    seen.add(key)
+                    yield key
+                if current == mount:
+                    break
+                current = current.parent
 
-    Tile fusion is memory-bandwidth-bound: hyper-threads add peak memory
-    without adding throughput, which is why Helicon-style engines size their
-    worker pool from physical cores. A mixed P/E laptop has no SMT on its
-    efficiency cores, so ``logical // 2`` undercounts it (an i7-12700 has 12
-    physical cores behind 20 logical processors); the platform API answers
-    the real topology and the halved count is only the fallback.
+
+def _linux_cpu_quota():
+    """Tightest inherited CPU quota in cores, or zero when unrestricted/unknown."""
+    limits = []
+    for path, version in _linux_cgroup_paths("cpu"):
+        try:
+            if version == "cgroup2":
+                with open(path + "/cpu.max", encoding="ascii") as fh:
+                    quota, period = fh.read().split()
+                if quota == "max":
+                    continue
+            else:
+                with open(path + "/cpu.cfs_quota_us", encoding="ascii") as fh:
+                    quota = fh.read().strip()
+                with open(path + "/cpu.cfs_period_us", encoding="ascii") as fh:
+                    period = fh.read().strip()
+            quota, period = int(quota), int(period)
+            if quota > 0 and period > 0:
+                limits.append(quota / period)
+        except (OSError, ValueError):
+            continue
+    return min(limits) if limits else 0
+
+
+def _windows_affinity():
+    import ctypes
+    from ctypes import wintypes
+
+    class GroupAffinity(ctypes.Structure):
+        _fields_ = [("mask", ctypes.c_size_t), ("group", wintypes.WORD),
+                    ("reserved", wintypes.WORD * 3)]
+
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.GetCurrentThread.restype = wintypes.HANDLE
+        kernel.GetProcessAffinityMask.argtypes = [wintypes.HANDLE,
+            ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+        kernel.GetProcessAffinityMask.restype = wintypes.BOOL
+        kernel.GetThreadGroupAffinity.argtypes = [wintypes.HANDLE,
+                                                   ctypes.POINTER(GroupAffinity)]
+        kernel.GetThreadGroupAffinity.restype = wintypes.BOOL
+        process_mask, system_mask = ctypes.c_size_t(), ctypes.c_size_t()
+        group = GroupAffinity()
+        if (kernel.GetProcessAffinityMask(kernel.GetCurrentProcess(),
+                ctypes.byref(process_mask), ctypes.byref(system_mask)) and
+                kernel.GetThreadGroupAffinity(kernel.GetCurrentThread(),
+                                               ctypes.byref(group))):
+            return int(process_mask.value), int(group.group)
+    except (OSError, AttributeError):
+        pass
+    return 0, 0
+
+
+def _affinity_cpu_count():
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
+    if is_windows():
+        return _windows_affinity()[0].bit_count()
+    return 0
+
+
+def cpu_limits():
+    """Return physical capacity, allowed logical CPUs, quota and topology validity.
+
+    Probe per job: affinity and cgroup limits can change during a session.
+    Unknown topology uses one core, never presents logical//2 as measured.
     """
-    global _PHYSICAL_CORES
-    if _PHYSICAL_CORES is not None:
-        return _PHYSICAL_CORES
-    logical = os.cpu_count() or 4
+    logical = max(1, os.cpu_count() or 1)
+    affinity = _affinity_cpu_count()
+    if affinity > 0:
+        logical = min(logical, affinity)
     detected = 0
+    quota = 0
     try:
         if is_windows():
             detected = _windows_physical_cores()
         elif is_linux():
             detected = _linux_physical_cores()
+            quota = _linux_cpu_quota()
         elif is_macos():
             detected = _macos_physical_cores()
-    except Exception:
+    except (OSError, AttributeError, ValueError):
         detected = 0
-    if detected <= 0:
-        detected = max(1, logical // 2)
-    _PHYSICAL_CORES = max(1, min(int(detected), logical))
-    return _PHYSICAL_CORES
+    known = detected > 0
+    cores = min(logical, detected) if known else 1
+    if quota > 0:
+        cores = min(cores, max(1, int(quota)))
+    return cores, logical, quota, known
+
+
+def physical_core_count() -> int:
+    """Usable physical-core capacity; one conservative core if topology is unknown."""
+    return cpu_limits()[0]
