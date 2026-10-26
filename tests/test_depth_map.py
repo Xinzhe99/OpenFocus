@@ -439,3 +439,20 @@ def test_neural_depth_cancels_at_final_progress():
     with pytest.raises(DepthMapCancelled):
         compute_focus_index(frames, 'stackmffv3', thread_count=1,
                             progress_callback=progress, should_cancel=lambda: cancelled)
+
+
+def test_dct_depth_block_size_is_a_legacy_input():
+    """``block_size`` selects the DCT depth grid and stays accepted.
+
+    The registry migration replaced the named depth arguments with declared
+    parameters; ``block_size`` has no descriptor of its own, so it must still
+    be translated at the entry point instead of raising "unknown parameter".
+    """
+    frames = _synthetic_thirds()
+    coarse = compute_focus_index(frames, "dct", block_size=4)
+    fine = compute_focus_index(frames, "dct", block_size=16)
+    assert coarse.shape == fine.shape == (240, 320)
+    assert not np.array_equal(coarse, fine), "block_size did not change the grid"
+    # It remains a DCT-only argument: other measures must reject it.
+    with pytest.raises(ValueError):
+        compute_focus_index(frames, "gfgfgf", block_size=4)

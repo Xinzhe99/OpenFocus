@@ -69,7 +69,9 @@ def registration_openfocus(registration, images, thread_count=4, should_cancel=N
 
 def depth_dct(images, progress_callback=None, should_cancel=None, **parameters):
     from core.depth_map import _measure_dct
-    return _measure_dct(images, progress_callback, should_cancel, kernel_size=parameters['kernel_size'])
+    return _measure_dct(images, progress_callback, should_cancel,
+                        kernel_size=parameters['kernel_size'],
+                        block_size=parameters.get('block_size', 8))
 
 
 def depth_gfg(images, progress_callback=None, should_cancel=None, **parameters):
