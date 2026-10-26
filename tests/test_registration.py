@@ -157,3 +157,22 @@ def test_stabilisation_folder_with_mixed_filenames(tmp_path):
 
     stabilized = _stabilisation_impl(str(folder))
     assert len(stabilized) == 3
+
+
+def test_shift_limit_argument_stays_method_scoped():
+    """The historical constructor argument only applies to the OpenFocus aligner.
+
+    It used to be stored unconditionally and read only by that back-end, so
+    passing it with ECC/Homography was harmless. The registry migration made
+    it an unknown parameter there and raised instead.
+    """
+    assert ImageRegistration(method="openfocus",
+                             max_shift_ratio=0.25).parameters["max_shift_ratio"] == 0.25
+    assert ImageRegistration(method="ecc", max_shift_ratio=0.25).parameters == {}
+    assert ImageRegistration(method="homography",
+                             max_shift_ratio=0.25).parameters == {}
+    # An explicit registry value still wins over the legacy argument.
+    explicit = ImageRegistration(method="openfocus",
+                                 parameters={"max_shift_ratio": 0.1},
+                                 max_shift_ratio=0.3)
+    assert explicit.parameters["max_shift_ratio"] == 0.3

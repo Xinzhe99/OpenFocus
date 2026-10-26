@@ -328,10 +328,15 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
     for key, value in legacy_parameters.items():
         target = {'nlevels': 'N', 'ai_mode': 'mode'}.get(key, key)
         if target not in declared_keys:
+            # ``block_size`` selects the DCT depth grid without being a declared
+            # descriptor parameter; it is forwarded to the DCT runner below.
+            if key == 'block_size' and method == 'dct':
+                continue
             raise ValueError(f'Unknown depth parameter: {key}')
         if value is not None:
             values[target] = value
     values = resolve_fusion_parameters(method, values, depth=True)
+    depth_block = legacy_parameters.get('block_size')
     try:
         with heavy_job(should_cancel):
             n = len(images)
@@ -353,6 +358,8 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
             runtime = {'progress_callback': progress_callback, 'should_cancel': should_cancel,
                        'thread_count': plan.native_threads, 'use_gpu': use_gpu,
                        'model_path': model_path, 'execution_plan': plan}
+            if depth_block is not None:
+                runtime['block_size'] = depth_block
             idx = resolve_runner(spec.depth.runner)(images, **runtime, **values)
             _tick(None, n, n, should_cancel)
             result = _norm_index(idx, n)

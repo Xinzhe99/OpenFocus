@@ -1392,12 +1392,16 @@ class ImageRegistration:
     def __init__(self, method='homography', downscale_width=1024,
                  max_shift_ratio=None, brightness_reference='first',
                  use_gpu=False, parameters=None):
-        from core.algorithms import alignment_steps, resolve_registration_parameters
+        from core.algorithms import (alignment_steps, registration_parameter_specs,
+                                     resolve_registration_parameters)
         self.method = method
         self.steps = alignment_steps(method)
         values = resolve_registration_parameters(method, parameters)
         if max_shift_ratio is not None:
-            values['max_shift_ratio'] = max_shift_ratio
+            # Historical constructor argument: only the OpenFocus aligner
+            # consumes it, and it used to be ignored for other methods.
+            if 'max_shift_ratio' in {item.key for item in registration_parameter_specs(method)}:
+                values['max_shift_ratio'] = max_shift_ratio
         self.parameters = resolve_registration_parameters(method, values)
         self.downscale_width = int(downscale_width) if downscale_width is not None else 1024
         self.brightness_reference = brightness_reference if brightness_reference in ('first', 'last') else 'first'

@@ -18,6 +18,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   registered lazy modules through `hooks/hook-core.algorithms.py`.
 
 ### Fixed
+- **DCT depth maps accept their block size again.** `compute_focus_index`'s
+  public `block_size` argument was rejected as an unknown depth parameter after
+  the registry migration; it is now translated at the entry point and forwarded
+  to the DCT measure, and still rejected for measures that do not use it.
+- **`ImageRegistration` keeps its historical shift-limit argument.** Passing
+  `max_shift_ratio` with a method that does not declare it (ECC, homography)
+  raised "unknown parameter"; it is ignored there again, exactly as before,
+  while an explicit registry value still wins for the OpenFocus aligner.
 - **AI depth maps offer the same soft/hard output choice as AI fusion.** The
   measure dialog shows Soft blend (the default) or Hard pick beside the AI
   explanation. Soft reports the probability-weighted continuous frame position;
