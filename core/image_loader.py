@@ -6,6 +6,7 @@
 import os
 import cv2
 import numpy as np
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Tuple, Optional, Dict, Any
 
@@ -219,6 +220,182 @@ def _collapse_repeats(paths: list) -> list:
     return out
 
 
+# Parallel decoding is limited to plain single-frame formats whose decoder
+# releases the GIL. TIFF containers, RAW and HEIF stay serial: their decoders
+# own the whole container, and running them beside another large decode only
+# doubles the peak without a measured gain.
+_PARALLEL_DECODE_FORMATS = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.bmp',
+                            '.webp'}
+_MAX_DECODE_WORKERS = 4
+
+
+@dataclass
+class DecodedSource:
+    """One input path's contribution, in input order."""
+
+    path: str
+    pages: List[np.ndarray] = field(default_factory=list)
+    error: Optional[BaseException] = None
+
+
+def _source_is_parallel(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in _PARALLEL_DECODE_FORMATS
+
+
+def _decode_one_source(path: str, scale_factor: float,
+                       should_cancel=None) -> DecodedSource:
+    """Decode one source exactly as the serial loaders do (pages included)."""
+    try:
+        if should_cancel is not None and should_cancel():
+            raise _DecodeCancelled()
+        pages = _read_tiff_pages(path)
+        if pages is not None:
+            return DecodedSource(path, [_downscale_page(p, scale_factor)
+                                        for p in pages])
+        image = decode_image(path)
+        if image is None:
+            return DecodedSource(path, error=ValueError("decode failed"))
+        return DecodedSource(path, [_downscale_page(image, scale_factor)])
+    except _DecodeCancelled:
+        raise
+    except Exception as exc:  # noqa: BLE001 - reported per source
+        return DecodedSource(path, error=exc)
+
+
+class _DecodeCancelled(Exception):
+    """Internal marker: a cancelled decode is not a failed file."""
+
+
+def _downscale_page(image: np.ndarray, scale_factor: float) -> np.ndarray:
+    if scale_factor != 1.0 and 0 < scale_factor < 1.0:
+        width = int(image.shape[1] * scale_factor)
+        height = int(image.shape[0] * scale_factor)
+        return cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+    return image
+
+
+def _peek_source_size(path: str) -> Optional[Tuple[int, int, int, int]]:
+    """(width, height, channels, itemsize) from the header, or None.
+
+    Used only to size the decode budget; a header we cannot read reliably
+    means "do not parallelise this source", never a guessed allocation.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in _PARALLEL_DECODE_FORMATS or not PIL_AVAILABLE:
+        return None
+    try:
+        with PILImage.open(path) as image:
+            width, height = image.size
+            bands = len(image.getbands())
+            itemsize = 1 if image.mode in ("L", "RGB", "P", "CMYK") else 2
+        return int(width), int(height), max(1, min(3, bands)), itemsize
+    except Exception:
+        return None
+
+
+def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
+                         thread_count: int = 0,
+                         resource_preference: str = "balanced",
+                         should_cancel=None):
+    """Yield DecodedSource objects in input order, with bounded parallelism.
+
+    Plain single-frame formats decode in a window of at most the admitted
+    worker count; every other source is decoded alone, after the window is
+    drained. Results are consumed in input order, so names, paths and TIFF
+    page identities line up with the serial loaders.
+
+    The caller decides what a failed source means (GUI counts it, the CLI
+    aborts); this iterator only reports it in place.
+    """
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor, wait
+
+    sources = list(sources)
+    if not sources:
+        return
+
+    def check_cancel():
+        if should_cancel is not None and should_cancel():
+            raise _DecodeCancelled()
+
+    workers = 1
+    if sum(1 for p in sources if _source_is_parallel(p)) > 1:
+        try:
+            requested = max(0, int(thread_count or 0))
+        except (TypeError, ValueError):
+            requested = 0
+        from core import resource_policy as policy
+        from core.resource_policy import ResourceLimitError
+        peeked = [s for s in (_peek_source_size(p) for p in sources)
+                  if s is not None]
+        if peeked:
+            # Final resident pixels plus one decoded frame per worker.
+            width = max(s[0] for s in peeked)
+            height = max(s[1] for s in peeked)
+            channels = max(s[2] for s in peeked)
+            itemsize = max(s[3] for s in peeked)
+            fixed = sum(w * h * c * i for w, h, c, i in peeked)
+            per_worker = width * height * channels * itemsize * 3
+            plan = policy.plan_execution(
+                policy.Workload(
+                    algorithm="decode", frames=len(peeked),
+                    height=height, width=width, channels=channels,
+                    itemsize=itemsize, fixed_bytes=fixed,
+                    per_worker_bytes=per_worker,
+                    outer_tasks=min(_MAX_DECODE_WORKERS, len(peeked))),
+                preference=resource_preference,
+                user_threads=requested)
+            workers = max(1, min(_MAX_DECODE_WORKERS, plan.workers,
+                                 len(peeked)))
+        elif requested != 1 and sources and not any(
+                _source_is_parallel(p) for p in sources):
+            workers = 1
+
+    check_cancel()
+    if workers == 1:
+        for path in sources:
+            check_cancel()
+            yield _decode_one_source(path, scale_factor, should_cancel)
+        return
+
+    pool = ThreadPoolExecutor(max_workers=workers)
+    window = deque()
+    index = 0
+    try:
+        while index < len(sources) or window:
+            check_cancel()
+            while (index < len(sources) and len(window) < workers
+                   and _source_is_parallel(sources[index])):
+                window.append((sources[index],
+                               pool.submit(_decode_one_source, sources[index],
+                                           scale_factor, should_cancel)))
+                index += 1
+            if not window:
+                # A serial source: decode it alone, then continue.
+                path = sources[index]
+                yield _decode_one_source(path, scale_factor, should_cancel)
+                index += 1
+                continue
+            path, future = window[0]
+            for pending in window:
+                if pending[1].done() and pending[1].exception() is not None:
+                    pending[1].result()
+            if not future.done():
+                wait((future,), timeout=0.05)
+                continue
+            window.popleft()
+            result = future.result()
+            del future
+            check_cancel()
+            yield result
+            del result
+    finally:
+        for _path, future in window:
+            future.cancel()
+        window.clear()
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
 class ImageStackLoader:
     """图像栈加载器"""
 
@@ -262,7 +439,10 @@ class ImageStackLoader:
         self.skipped_derived_count = len(image_files) - len(kept)
         return kept
 
-    def load_from_folder(self, folder_path: str, scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
+    def load_from_folder(self, folder_path: str, scale_factor: float = 1.0, *,
+                         thread_count: int = 0,
+                         resource_preference: str = "balanced",
+                         ) -> Tuple[bool, str, List[np.ndarray], List[str]]:
         self.failed_count = 0
         self.skipped_derived_count = 0
         if not os.path.isdir(folder_path):
@@ -291,48 +471,38 @@ class ImageStackLoader:
         # one (every later export would carry the wrong scale bar).
         self.px_size_um = None
 
-        for filename, full_path in image_files:
-            if self.should_cancel():
-                return False, 'CANCELLED', [], []
+        sources = [full_path for _filename, full_path in image_files]
+        names = {full_path: filename for filename, full_path in image_files}
+        try:
+            decoded = iter_decoded_sources(
+                sources, scale_factor, thread_count=thread_count,
+                resource_preference=resource_preference,
+                should_cancel=self.should_cancel)
             try:
-                pages = _read_tiff_pages(full_path)
-                if pages is not None:
-                    # One multi-page TIFF = one whole stack
+                for item in decoded:
+                    if item.error is not None:
+                        failed_count += 1
+                        print(f"Failed to load image {names[item.path]}: {item.error}")
+                        continue
+                    # Metadata follows input order, so it cannot depend on
+                    # which decode finished first.
                     if not self.source_exif:
-                        self.source_exif = _read_exif_bytes(full_path)
+                        self.source_exif = _read_exif_bytes(item.path)
                     if self.px_size_um is None:
                         from utils.scalebar import detect_px_size_um
-                        self.px_size_um = detect_px_size_um(full_path)
-                    stem = os.path.splitext(filename)[0]
-                    for page_no, page in enumerate(pages, start=1):
-                        if scale_factor != 1.0 and 0 < scale_factor < 1.0:
-                            width = int(page.shape[1] * scale_factor)
-                            height = int(page.shape[0] * scale_factor)
-                            page = cv2.resize(page, (width, height), interpolation=cv2.INTER_AREA)
+                        self.px_size_um = detect_px_size_um(item.path)
+                    stem = os.path.splitext(names[item.path])[0]
+                    multipage = len(item.pages) > 1
+                    for page_no, page in enumerate(item.pages, start=1):
                         loaded_images.append(page)
-                        loaded_paths.append(full_path)
-                        filenames.append(f"{stem}_page_{page_no:03d}.tif")
-                    continue
-
-                img = decode_image(full_path)
-                if img is not None:
-                    if not self.source_exif:
-                        self.source_exif = _read_exif_bytes(full_path)
-                    if self.px_size_um is None:
-                        from utils.scalebar import detect_px_size_um
-                        self.px_size_um = detect_px_size_um(full_path)
-                    if scale_factor != 1.0 and 0 < scale_factor < 1.0:
-                        width = int(img.shape[1] * scale_factor)
-                        height = int(img.shape[0] * scale_factor)
-                        img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
-                    loaded_images.append(img)
-                    loaded_paths.append(full_path)
-                    filenames.append(filename)
-                else:
-                    failed_count += 1
-            except Exception as e:
-                failed_count += 1
-                print(f"Failed to load image {filename}: {e}")
+                        loaded_paths.append(item.path)
+                        filenames.append(f"{stem}_page_{page_no:03d}.tif"
+                                         if multipage else names[item.path])
+                    del item
+            finally:
+                decoded.close()
+        except _DecodeCancelled:
+            return False, 'CANCELLED', [], []
         self.failed_count = failed_count
 
         if not loaded_images:
@@ -407,7 +577,10 @@ class ImageStackLoader:
         ext = os.path.splitext(filepath)[1].lower()
         return ext in self.SUPPORTED_VIDEO_FORMATS
 
-    def load_from_filepaths(self, filepaths: list[str], scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
+    def load_from_filepaths(self, filepaths: list[str], scale_factor: float = 1.0, *,
+                            thread_count: int = 0,
+                            resource_preference: str = "balanced",
+                            ) -> Tuple[bool, str, List[np.ndarray], List[str]]:
         self.failed_count = 0
         if not filepaths:
             return False, "No file paths provided", [], []
@@ -421,54 +594,38 @@ class ImageStackLoader:
         self.px_size_um = None
         self.source_exif = b""
 
-        for full_path in sources:
-            if self.should_cancel():
-                return False, 'CANCELLED', [], []
+        missing = [path for path in sources if not os.path.exists(path)]
+        sources = [path for path in sources if os.path.exists(path)]
+        failed_count += len(missing)
+        try:
+            decoded = iter_decoded_sources(
+                sources, scale_factor, thread_count=thread_count,
+                resource_preference=resource_preference,
+                should_cancel=self.should_cancel)
             try:
-                if not os.path.exists(full_path):
-                    failed_count += 1
-                    continue
-
-                pages = _read_tiff_pages(full_path)
-                if pages is not None:
+                for item in decoded:
+                    if item.error is not None:
+                        failed_count += 1
+                        print(f"Failed to load image {item.path}: {item.error}")
+                        continue
                     if not self.source_exif:
-                        self.source_exif = _read_exif_bytes(full_path)
+                        self.source_exif = _read_exif_bytes(item.path)
                     if self.px_size_um is None:
                         from utils.scalebar import detect_px_size_um
-                        self.px_size_um = detect_px_size_um(full_path)
-                    stem = os.path.splitext(os.path.basename(full_path))[0]
-                    for page_no, page in enumerate(pages, start=1):
-                        if scale_factor != 1.0 and 0 < scale_factor < 1.0:
-                            width = int(page.shape[1] * scale_factor)
-                            height = int(page.shape[0] * scale_factor)
-                            page = cv2.resize(page, (width, height), interpolation=cv2.INTER_AREA)
+                        self.px_size_um = detect_px_size_um(item.path)
+                    stem = os.path.splitext(os.path.basename(item.path))[0]
+                    multipage = len(item.pages) > 1
+                    for page_no, page in enumerate(item.pages, start=1):
                         loaded_images.append(page)
-                        loaded_paths.append(full_path)
-                        filenames.append(f"{stem}_page_{page_no:03d}.tif")
-                    continue
-
-                img = decode_image(full_path)
-                if img is not None:
-                    if not self.source_exif:
-                        self.source_exif = _read_exif_bytes(full_path)
-                    if self.px_size_um is None:
-                        from utils.scalebar import detect_px_size_um
-                        self.px_size_um = detect_px_size_um(full_path)
-                if img is None:
-                    failed_count += 1
-                    continue
-
-                if scale_factor != 1.0 and 0 < scale_factor < 1.0:
-                    width = int(img.shape[1] * scale_factor)
-                    height = int(img.shape[0] * scale_factor)
-                    img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
-
-                loaded_images.append(img)
-                loaded_paths.append(full_path)
-                filenames.append(os.path.basename(full_path))
-            except Exception as e:
-                failed_count += 1
-                print(f"Failed to load image {full_path}: {e}")
+                        loaded_paths.append(item.path)
+                        filenames.append(f"{stem}_page_{page_no:03d}.tif"
+                                         if multipage
+                                         else os.path.basename(item.path))
+                    del item
+            finally:
+                decoded.close()
+        except _DecodeCancelled:
+            return False, 'CANCELLED', [], []
         self.failed_count = failed_count
 
         if not loaded_images:
@@ -570,12 +727,16 @@ class ImageStackLoader:
         return None
 
     def load_images_with_timestamps(self, folder_path: str, sort_by: str = 'filename',
-                                    scale_factor: float = 1.0):
+                                    scale_factor: float = 1.0, *,
+                                    thread_count: int = 0,
+                                    resource_preference: str = "balanced"):
         """Decode through the normal loader, preserving all container pages.
 
         Each entry retains its real source path and a separate export/page name.
         """
-        ok, message, images, filenames = self.load_from_folder(folder_path, scale_factor)
+        ok, message, images, filenames = self.load_from_folder(
+            folder_path, scale_factor, thread_count=thread_count,
+            resource_preference=resource_preference)
         if not ok:
             return ok, message, [], []
         timestamps = {path: self.get_image_timestamp(path) for path in dict.fromkeys(self.image_paths)}

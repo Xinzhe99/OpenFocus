@@ -10,6 +10,7 @@ PACK = {
     "label_target_missing": "O destino salvo não está carregado. Selecione um destino disponível para vincular novamente.",
     "label_range_err_bounds": "O intervalo inclui um número maior que o total de quadros do destino.",
     "batch_missing_times": "{n} imagens não têm hora de captura. Use grupos com quantidade fixa para incluí-las.",
+    "batch_import_in_progress": "A importação da pasta ainda está em andamento. Aguarde ou cancele.",
     "export_depth_hint": "PNG/TIFF preservam dados de 16 bits. JPG/BMP/GIF convertem para 8 bits.",
     "feedback_package_scope": "O ZIP contém os registos da sessão e da aplicação, as versões da aplicação, do sistema e do Python, e informações de memória e GPU. Reveja o conteúdo antes de partilhar; nada é enviado automaticamente.",
     "env_copy": "Copiar diagnóstico",

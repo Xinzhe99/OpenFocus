@@ -50,13 +50,16 @@ class StackLoadWorker(QThread):
 
     finished_load = pyqtSignal(bool, str, object, object)  # ok, message, images, filenames
 
-    def __init__(self, loader, folder=None, video=None, filepaths=None, scale=1.0):
+    def __init__(self, loader, folder=None, video=None, filepaths=None, scale=1.0,
+                 thread_count: int = 0, resource_preference: str = "balanced"):
         super().__init__()
         self.loader = loader
         self.folder = folder
         self.video = video
         self.filepaths = filepaths
         self.scale = scale
+        self.thread_count = thread_count
+        self.resource_preference = resource_preference
         self.is_cancelled = False
         self.loader.should_cancel = lambda: self.is_cancelled
 
@@ -68,12 +71,16 @@ class StackLoadWorker(QThread):
             self.finished_load.emit(False, 'CANCELLED', [], [])
             return
         try:
+            options = dict(thread_count=self.thread_count,
+                           resource_preference=self.resource_preference)
             if self.folder:
-                ok, msg, imgs, names = self.loader.load_from_folder(self.folder, scale_factor=self.scale)
+                ok, msg, imgs, names = self.loader.load_from_folder(
+                    self.folder, scale_factor=self.scale, **options)
             elif self.video:
                 ok, msg, imgs, names = self.loader.load_from_video(self.video, scale_factor=self.scale)
             else:
-                ok, msg, imgs, names = self.loader.load_from_filepaths(self.filepaths, scale_factor=self.scale)
+                ok, msg, imgs, names = self.loader.load_from_filepaths(
+                    self.filepaths, scale_factor=self.scale, **options)
         except Exception as e:
             ok, msg, imgs, names = False, str(e), [], []
         if self.is_cancelled:
@@ -726,6 +733,88 @@ class RenderWorker(QThread):
         return base_image
 
 
+class BatchImportWorker(QThread):
+    """Decode folders for the batch dialog without touching the GUI thread.
+
+    The dialog used to call ImageStackLoader synchronously to build thumbnails
+    and split previews; with bounded parallel decoding and the heavy-job lease
+    that would freeze the window (or block behind a running render). This
+    worker returns plain NumPy data only — QPixmap/QIcon creation stays in the
+    dialog's slot.
+    """
+
+    folder_loaded = pyqtSignal(str, object)   # folder path, first image or None
+    folders_loaded = pyqtSignal(object)       # [(folder, first image or None)]
+    stack_loaded = pyqtSignal(str, object, str)  # folder, entries, message
+
+    def __init__(self, mode: str, folder_paths=None, folder_path=None,
+                 scale_factor: float = 1.0, sort_by: str = 'filename',
+                 thread_count: int = 0, resource_preference: str = "balanced",
+                 parent=None):
+        super().__init__(parent)
+        self.mode = mode
+        self.folder_paths = list(folder_paths or [])
+        self.folder_path = folder_path
+        self.scale_factor = scale_factor
+        self.sort_by = sort_by
+        self.thread_count = thread_count
+        self.resource_preference = resource_preference
+        self.is_cancelled = False
+
+    def cancel(self):
+        self.is_cancelled = True
+
+    def _loader(self):
+        from core.image_loader import ImageStackLoader
+        loader = ImageStackLoader()
+        loader.should_cancel = lambda: self.is_cancelled
+        return loader
+
+    def run(self):
+        try:
+            if self.mode == 'stack':
+                self._load_stack()
+            else:
+                self._load_thumbnails()
+        except Exception as exc:  # noqa: BLE001 - surfaced by the dialog
+            if self.mode == 'stack':
+                self.stack_loaded.emit(self.folder_path or "", [], str(exc))
+            else:
+                self.folders_loaded.emit([])
+
+    def _load_thumbnails(self):
+        loader = self._loader()
+        results = []
+        for folder in self.folder_paths:
+            if self.is_cancelled:
+                break
+            ok, _message, images, _names = loader.load_from_folder(
+                folder, scale_factor=self.scale_factor,
+                thread_count=self.thread_count,
+                resource_preference=self.resource_preference)
+            first = images[0] if ok and images else None
+            results.append((folder, first))
+            # Release the rest of the stack before the next folder.
+            del images
+        if not self.is_cancelled:
+            self.folders_loaded.emit(results)
+
+    def _load_stack(self):
+        loader = self._loader()
+        ok, message, entries, _names = loader.load_images_with_timestamps(
+            self.folder_path, sort_by=self.sort_by,
+            scale_factor=self.scale_factor,
+            thread_count=self.thread_count,
+            resource_preference=self.resource_preference)
+        if self.is_cancelled:
+            return
+        if not ok or loader.failed_count:
+            self.stack_loaded.emit(self.folder_path or "", [],
+                                   message or "load failed")
+            return
+        self.stack_loaded.emit(self.folder_path or "", entries, "")
+
+
 class BatchWorker(QThread):
     """批处理工作线程"""
 
@@ -1111,8 +1200,11 @@ class BatchWorker(QThread):
     def process_single_folder(self, folder_path):
         """Both entry points share the same registration/fusion/write pipeline."""
         scale = float(self.processing_settings.get('load_scale_factor', 1.0))
+        self.image_loader.should_cancel = lambda: self.is_cancelled
         success, message, images, filenames = self.image_loader.load_from_folder(
-            folder_path, scale_factor=scale)
+            folder_path, scale_factor=scale,
+            thread_count=self.thread_count,
+            resource_preference=getattr(self, 'resource_preference', 'balanced'))
         if self.is_cancelled:
             raise RegistrationCancelled()
         if getattr(self.image_loader, 'failed_count', 0):

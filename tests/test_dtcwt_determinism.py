@@ -110,8 +110,12 @@ def test_real_transforms_obey_thread_cap(monkeypatch, cap):
                 active -= 1
 
     monkeypatch.setattr(module.dtcwt.Transform2d, "forward", observed)
-    module._dtcwt_impl(_stack(), None, 3, False, thread_count=cap)
-    assert peak <= min(cap, module._DTCWT_ACTIVITY_WORKERS, module._DTCWT_MAX_WORKERS)
+    frames = _stack()
+    module._dtcwt_impl(frames, None, 3, False, thread_count=cap)
+    # The activity pass stays at its smaller cap, but the colour
+    # reconstruction may use the full granted budget; neither may exceed the
+    # caller's cap or the frame count.
+    assert peak <= min(cap, module._DTCWT_MAX_WORKERS, len(frames))
     if cap == 1:
         assert threads == {caller}
     assert active == 0

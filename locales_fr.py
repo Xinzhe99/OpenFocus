@@ -10,6 +10,7 @@ PACK = {
     "label_target_missing": "La cible enregistrée n’est pas chargée. Sélectionnez une cible disponible pour la réassocier.",
     "label_range_err_bounds": "La plage contient un numéro supérieur au nombre d’images de la cible.",
     "batch_missing_times": "{n} images n’ont pas d’heure de prise de vue. Utilisez des groupes de taille fixe pour les inclure.",
+    "batch_import_in_progress": "L’importation du dossier est encore en cours. Attendez la fin ou annulez-la.",
     "export_depth_hint": "PNG/TIFF conservent les données 16 bits. JPG/BMP/GIF les convertissent en 8 bits.",
     "feedback_package_scope": "Le ZIP contient les journaux de session et de l’application, les versions de l’application, du système et de Python, ainsi que les informations sur la mémoire et le GPU. Vérifiez son contenu avant de le partager ; rien n’est envoyé automatiquement.",
     "env_copy": "Copier le diagnostic",

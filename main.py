@@ -100,7 +100,7 @@ from constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     REG_DOWNSCALE_WIDTH, DEFAULT_THREAD_COUNT,
-    AI_BATCH_SIZE,
+    AI_BATCH_SIZE, KERNEL_MODES, METHOD_KERNEL_MODES,
 )
 
 # QThreads still running when the app shuts down. They are kept alive at
@@ -801,21 +801,28 @@ class OpenFocus(QMainWindow):
         self._refresh_undo_actions()
 
     def _restore_parameter_state(self, saved: dict) -> None:
-        self.set_fusion_method(saved["method"])
-        self.set_alignment_method(saved["alignment"])
-        for method, value in saved["kernels"].items():
-            if method in self._KERNEL_MODES:
-                self._kernel_by_mode[self._KERNEL_MODES[method][0]] = value
-        if saved["method"] in self._KERNEL_MODES:
-            self.slider_smooth.setValue(saved["kernels"][saved["method"]])
-        for method, value in saved["smoothing"].items():
-            self.set_smoothing_for_method(method, value)
-        for method, options in saved["brightness"].items():
-            for option, enabled in options.items():
-                self.set_brightness_option(option, method, enabled)
-        self.chk_reverse_order.setChecked(saved["stack_reverse_order"])
-        self.set_dtcwt_levels(saved["dtcwt_levels"])
-        self.set_ai_mode(saved["ai_mode"])
+        """Apply a parameter snapshot as one persisted step (compare/undo)."""
+        with self._restore_scope():
+            self.set_fusion_method(saved["method"])
+            self.set_alignment_method(saved["alignment"])
+            for method, value in saved["kernels"].items():
+                if method in self._KERNEL_MODES:
+                    self._kernel_by_mode[self._KERNEL_MODES[method][0]] = value
+            if saved["method"] in self._KERNEL_MODES:
+                from PyQt6.QtCore import QSignalBlocker
+                with QSignalBlocker(self.slider_smooth):
+                    self.slider_smooth.setValue(saved["kernels"][saved["method"]])
+            for method, value in saved["smoothing"].items():
+                self.set_smoothing_for_method(method, value)
+            for method, options in saved["brightness"].items():
+                for option, enabled in options.items():
+                    self.set_brightness_option(option, method, enabled)
+            self.chk_reverse_order.setChecked(saved["stack_reverse_order"])
+            self.set_dtcwt_levels(saved["dtcwt_levels"])
+            self.set_ai_mode(saved["ai_mode"])
+            self.update_slider_availability()
+        self.persist_settings()
+
 
     def invalidate_annotation_caches(self) -> None:
         """Drop rendered views that depend on labels or the scale bar."""
@@ -947,23 +954,30 @@ class OpenFocus(QMainWindow):
     def reset_to_default(self):
         """重置到默认状态"""
         # 重置渲染方法 - 默认 AI（StackMFF V3）
-        self.set_fusion_method("stackmffv3")
+        with self._restore_scope():
+            self.set_fusion_method("stackmffv3")
 
-        # 重置配准选项 - 默认 ECC
-        self.set_alignment_method("ecc")
+            # 重置配准选项 - 默认 ECC
+            self.set_alignment_method("ecc")
 
-        # 基底校正默认关闭；帧序默认文件序（不反转）
-        self.chk_base_correct.setChecked(False)
-        self.chk_reverse_order.setChecked(False)
-        
-        # 重置滑块值到默认值（含每个方法记住的值）
-        self._kernel_by_mode = {}
-        if getattr(self, "spin_depth_smooth", None) is not None:
-            self.spin_depth_smooth.setValue(1.2)
-        self.slider_smooth.setValue(31)
-        
-        # 更新滑块可用性
-        self.update_slider_availability()
+            # 基底校正默认关闭；帧序默认文件序（不反转）
+            self.chk_base_correct.setChecked(False)
+            self.chk_reverse_order.setChecked(False)
+
+            # Every per-method override goes, not just the kernel table: the
+            # smoothing and brightness memories used to survive a reset, so
+            # "reset" kept rendering with the user's old sigmas.
+            self.reset_parameter_memories()
+            self.base_frame_correct = False
+            self.exposure_match = True
+            if getattr(self, "spin_depth_smooth", None) is not None:
+                self.spin_depth_smooth.setValue(
+                    float(self.smoothing_for_method("openfocus_b")))
+            self.slider_smooth.setValue(31)
+
+            # 更新滑块可用性
+            self.update_slider_availability()
+        self.persist_settings()
 
         # 重置图像显示缩放与放大镜状态
         self.lbl_source_img.reset_view()
@@ -2180,6 +2194,10 @@ class OpenFocus(QMainWindow):
             self.slider_smooth.blockSignals(False)
 
         self.lbl_smooth_value.setText(str(adjusted))
+        # Remember the value now: waiting for a method switch lost the last
+        # edit whenever the user closed the app on that same method.
+        self._sync_kernel_memory()
+        self.persist_settings()
 
     # 滑块含义按算法不同：模式 → (i18n 标签键, 默认值)
     _KERNEL_LABELS = {
@@ -2191,14 +2209,13 @@ class OpenFocus(QMainWindow):
 
     # 方法 → (滑块模式, 范围上限, 默认 kernel)。OpenFocus A/B/C：滑块是方差
     # 窗口（kernel = 2r+1）；判别性探针（报告 §6.7/§6.8）定 r=5 → 11，范围 1–21。
+    # The table lives in constants.py so the settings/project codecs validate
+    # against the same ranges the UI enforces.
     _KERNEL_MODES = {
-        "guided_filter": ("guided", 51, 31),
-        "dct": ("dct", 51, 7),
-        "gfgfgf": ("gfg", 51, 7),
-        "openfocus_a": ("ofab", 21, 11),
-        "openfocus_b": ("ofab", 21, 11),
-        "openfocus_c": ("ofab", 21, 11),
+        method: (mode, KERNEL_MODES[mode][0], KERNEL_MODES[mode][1])
+        for method, mode in METHOD_KERNEL_MODES.items()
     }
+
 
     def kernel_for_method(self, method: str) -> int:
         """Kernel the user has set for *method* (its own remembered value,
@@ -2228,16 +2245,24 @@ class OpenFocus(QMainWindow):
         if spec is not None:
             mode, hi, default = spec
             self.smooth_widget.setEnabled(True)
-            self.slider_smooth.setRange(1, hi)
-            if previous != mode:
-                self.slider_smooth.setValue(min(hi, memory.get(mode, default)))
+            # Programmatic range/value updates must not look like user edits:
+            # the handler would file the new method's value under the mode
+            # that is still current here.
+            from PyQt6.QtCore import QSignalBlocker
+            with QSignalBlocker(self.slider_smooth):
+                self.slider_smooth.setRange(1, hi)
+                if previous != mode:
+                    self.slider_smooth.setValue(min(hi, memory.get(mode, default)))
             self.current_kernel_mode = mode
         else:
             # AI has no kernel: leaving the row visible showed "Kernel: 11"
             # next to a slider that changed nothing.
             self.smooth_widget.setEnabled(False)
-            self.slider_smooth.setRange(1, 51)
+            from PyQt6.QtCore import QSignalBlocker
+            with QSignalBlocker(self.slider_smooth):
+                self.slider_smooth.setRange(1, 51)
             self.current_kernel_mode = None
+
         # 平滑行：B 平滑深度图；A/C 平滑混合（Helicon 的 A/C 只有
         # Smoothing 一个参数）。三种方法共用同一行，标签与取值各自独立。
         if getattr(self, "depth_smooth_row", None) is not None:
@@ -2255,8 +2280,11 @@ class OpenFocus(QMainWindow):
             self.spin_depth_smooth.setToolTip(trans.t(hint_key))
             value = self.smoothing_for_method(method)
             self.spin_depth_smooth.blockSignals(True)
-            self.spin_depth_smooth.setValue(float(value))
-            self.spin_depth_smooth.blockSignals(False)
+            try:
+                self.spin_depth_smooth.setValue(float(value))
+            finally:
+                self.spin_depth_smooth.blockSignals(False)
+
         # C 没有 Radius（Helicon 的 Method C 只有 Smoothing）：隐藏滑块
         # 而不是留一个改了也不影响输出的控件。
         # AI 输出模式只在选中神经网络时出现：其他算法没有概率图可分配。
@@ -3111,7 +3139,48 @@ class OpenFocus(QMainWindow):
 
     def persist_settings(self) -> None:
         """Write user preferences (thread count, tile params, GPU, language...)."""
+        if getattr(self, "_restore_depth", 0):
+            # A multi-field restore is in progress; its caller saves once.
+            return
+        self._sync_kernel_memory()
         save_window_settings(self)
+
+    # Restores (startup defaults, project load, compare adoption, undo) write
+    # many fields in a row. Inside this scope the setters update memory and the
+    # UI but do not touch QSettings, so a half-applied state can never be
+    # persisted; the caller saves once at the end.
+    def _restore_scope(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def scope():
+            depth = getattr(self, "_restore_depth", 0)
+            self._restore_depth = depth + 1
+            try:
+                yield
+            finally:
+                self._restore_depth = depth
+
+        return scope()
+
+    def _sync_kernel_memory(self) -> None:
+        """Store the live slider under its mode; it may not have been switched."""
+        mode = getattr(self, "current_kernel_mode", None)
+        slider = getattr(self, "slider_smooth", None)
+        if mode is None or slider is None:
+            return
+        spec = KERNEL_MODES.get(mode)
+        if spec is None:
+            return
+        high, _default = spec
+        self.__dict__.setdefault("_kernel_by_mode", {})[mode] = int(
+            min(max(int(slider.value()), 1), high))
+
+    def reset_parameter_memories(self) -> None:
+        """Drop every per-method override; defaults apply again next switch."""
+        self.__dict__["_kernel_by_mode"] = {}
+        self.__dict__["_smoothing_by_method"] = {}
+        self.__dict__["_brightness_by_method"] = {}
 
     def set_use_gpu(self, enabled: bool) -> None:
         """Toggle GPU acceleration (Settings menu); applies to future renders."""

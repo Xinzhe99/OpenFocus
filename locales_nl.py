@@ -10,6 +10,7 @@ PACK = {
     "label_target_missing": "Het opgeslagen doel is niet geladen. Selecteer een beschikbaar doel om opnieuw te koppelen.",
     "label_range_err_bounds": "Het bereik bevat een nummer hoger dan het aantal beelden van het doel.",
     "batch_missing_times": "{n} beelden hebben geen opnametijd. Gebruik groepen met een vast aantal om ze op te nemen.",
+    "batch_import_in_progress": "Het importeren van mappen is nog bezig. Wacht tot het klaar is of annuleer het.",
     "export_depth_hint": "PNG/TIFF behouden 16-bits gegevens. JPG/BMP/GIF zetten deze om naar 8 bits.",
     "feedback_package_scope": "Het ZIP-bestand bevat sessie- en volledige toepassingslogboeken, app-, OS- en Python-versies en informatie over geheugen en GPU. Controleer de inhoud voordat u deze deelt; er wordt niets automatisch verzonden.",
     "env_copy": "Diagnostiek kopiëren",

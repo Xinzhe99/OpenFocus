@@ -10,6 +10,7 @@ PACK = {
     "label_target_missing": "Zapisany cel nie został wczytany. Wybierz dostępny cel, aby powiązać go ponownie.",
     "label_range_err_bounds": "Zakres zawiera numer większy niż liczba klatek celu.",
     "batch_missing_times": "{n} klatek nie ma czasu wykonania. Użyj grupowania według stałej liczby, aby je uwzględnić.",
+    "batch_import_in_progress": "Importowanie folderu nadal trwa. Poczekaj na zakończenie lub anuluj je.",
     "export_depth_hint": "PNG/TIFF zachowują dane 16-bitowe. JPG/BMP/GIF konwertują je na 8 bitów.",
     "feedback_package_scope": "ZIP zawiera dziennik sesji i pełne dzienniki aplikacji, wersje aplikacji, systemu i Pythona oraz informacje o pamięci i GPU. Sprawdź zawartość przed udostępnieniem; nic nie jest wysyłane automatycznie.",
     "env_copy": "Kopiuj diagnostykę",

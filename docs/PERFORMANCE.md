@@ -31,6 +31,62 @@ to memory pressure: changing tile geometry can change the fused image.
 Wall times vary with machine load; treat them as stable orders of magnitude.
 Per-run values land in a JSON file via `--json`.
 
+## Bounded parallel stages (unreleased)
+
+Two stages now overlap independent work without changing what they compute.
+
+### DTCWT colour reconstruction
+
+The activity pass already ran its luminance transforms in a small pool. The
+per-channel reconstruction used to transform one frame at a time; it now uses
+the same ordered, bounded mechanism for the colour forwards.
+
+- Channels stay in R→G→B order and each channel's frames are consumed in frame
+  order, so every float32 low-pass addition happens in the same sequence as
+  before. Only the independent forward transforms overlap.
+- The window never exceeds the admitted plan; a later failure stops
+  replenishment while the earlier native call finishes, and the whole channel
+  is inverted before the next one starts.
+- `fusion_methods/dtcwt.estimate_working_set()` supplies the explicit
+  fixed/per-worker footprint (pyramid envelope, activity/winner maps, the
+  low-pass weight block, prepared RGB and the inverse overlap). The whole-image
+  path plans from it; a tiled render passes a serial child plan, so the outer
+  tile pool and the inner forward pool never stack.
+
+Measured on the six-frame 999×750 demo stack, whole-image path, one warm-up
+and seven interleaved pairs:
+
+| Workers | Median | p95 | Output |
+|---|---:|---:|---|
+| 1 (serial) | 4.56 s | 4.78 s | reference |
+| 4 | 3.13 s | 3.41 s | SHA-256 identical |
+
+That is a 1.46× wall-time reduction on this stack. It is a single-machine
+measurement, not a promise for other sizes or CPU counts.
+
+### Frame decoding
+
+`core/image_loader.iter_decoded_sources()` decodes plain single-frame
+JPEG/PNG/BMP/WebP files in a pool of at most four workers (further capped by
+the resource plan), while TIFF containers, RAW and HEIF stay serial. It is the
+single path used by the folder loader, the explicit-file loader, the CLI and
+the batch worker.
+
+Order is part of the contract: results are consumed in input order, so names,
+real paths, TIFF page identities, the first usable EXIF block and the first
+µm/px calibration all follow the input sequence. A failed file is reported in
+place and counted, so it cannot shift later frames. Cancelling stops
+replenishment and joins the workers before the loader reports a result.
+
+The batch dialog's folder thumbnails, split preview and drag-and-drop preloads
+now run on `BatchImportWorker`; the GUI thread only builds QPixmap/QIcon from
+the returned NumPy data.
+
+Measured on twelve 2000×1400 JPEG frames (quality 92), one warm-up and seven
+interleaved folder loads: serial median 73 ms, four workers 32 ms (2.27×), with
+identical frame order and pixel values. Small stacks are dominated by
+per-file overhead, so the gain grows with the number of frames.
+
 ## Execution planning (v1.69)
 
 Every heavy stage now reads one immutable plan from `core/resource_policy.py`:

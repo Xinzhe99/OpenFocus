@@ -95,6 +95,8 @@ class SourceManager:
         self._load_worker = StackLoadWorker(
             window.image_loader, folder=folder, video=video,
             filepaths=filepaths, scale=scale,
+            thread_count=getattr(window, "thread_count", 0),
+            resource_preference=getattr(window, "resource_preference", "balanced"),
         )
         self._load_accept_event = accept_event
         # Remembered so the frames just decoded can be traced back to the files

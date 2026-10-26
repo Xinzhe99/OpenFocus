@@ -10,6 +10,7 @@ PACK = {
     "label_target_missing": "La destinazione salvata non è caricata. Selezionane una disponibile per ricollegarla.",
     "label_range_err_bounds": "L’intervallo contiene un numero superiore al totale dei fotogrammi della destinazione.",
     "batch_missing_times": "{n} fotogrammi non hanno un orario di scatto. Usa gruppi di dimensione fissa per includerli.",
+    "batch_import_in_progress": "L’importazione della cartella è ancora in corso. Attendi o annullala.",
     "export_depth_hint": "PNG/TIFF mantengono i dati a 16 bit. JPG/BMP/GIF li convertono a 8 bit.",
     "feedback_package_scope": "Lo ZIP contiene i registri della sessione e dell’applicazione, le versioni dell’app, del sistema e di Python, e le informazioni su memoria e GPU. Controllalo prima di condividerlo: nulla viene inviato automaticamente.",
     "env_copy": "Copia diagnostica",
