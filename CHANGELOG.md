@@ -47,14 +47,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `BatchImportWorker`; QPixmap/QIcon are created in the dialog's slot. A late
   result from a superseded request is discarded, and closing or cancelling
   stops the import.
+- **Batch stack folders can be dragged straight into the dialog.** Dropping
+  one or more folders queues each as a stack, switches the dialog to
+  multi-folder mode, and fills thumbnails as they decode. Loose image files
+  are not accepted there: the list stays a queue of stacks. Registration is
+  synchronous (26 folders in ~8 ms) and the first drop no longer pays a
+  0.6 s module import, which is warmed when the dialog opens.
 
 ### Verification
 - New `tests/test_parameter_memory.py` (14 cases), `tests/test_dtcwt_parallel.py`
-  (9) and `tests/test_loader_parallel.py` (13) cover the codecs, restart and
-  project precedence, bit-identical DTCWT output at 1/2/4 workers, the tiled
-  serial child plan, cancellation and worker joins, input order with a slow
-  first file, TIFF page identity, 16-bit depth and the strict/lenient error
-  split.
+  (9), `tests/test_loader_parallel.py` (13) and `tests/test_batch_drag_drop.py`
+  (5) cover the codecs, restart and project precedence, bit-identical DTCWT
+  output at 1/2/4 workers, the tiled serial child plan, cancellation and
+  worker joins, input order with a slow first file, TIFF page identity, 16-bit
+  depth, the strict/lenient error split, and multi-folder drops into the batch
+  dialog (order, mode switch, duplicate suppression, files rejected).
 - Measured on the six-frame 999×750 demo stack, whole-image DTCWT, seven
   interleaved pairs after one warm-up: serial median 4.56 s, four workers
   3.13 s (1.46×), identical SHA-256 output.
