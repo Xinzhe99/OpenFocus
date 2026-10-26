@@ -196,13 +196,31 @@ to przez `--scale-bar` (automatyczna kalibracja) oraz `--scale-um <um/px>`.
 
 ### Mapa głębi (położenie ostrości)
 
-**Narzędzia → Mapa głębi…** otwiera przeglądarkę, która wylicza dla każdego
-piksela, która klatka stosu jest ostra — czyli pseudo-głębię, na której opiera
-się sama fuzja — używając miary aktywności właściwej wybranej metodzie. Oferowane
-są tylko metody decydujące o indeksie (DCT, DTCWT, GFG-FGF, StackMFF-V3,
-OpenFocus B/C); fuzje uśredniające z wagami (filtr sterowany, OpenFocus A)
-nie podejmują decyzji na piksel i nie są na liście. Mapa jest pokazywana
-w pseudo-kolorach z legendą (klatka 0 → N-1) i można ją dostosowywać na żywo:
+**Narzędzia → Mapa głębi…** szacuje położenie ostrości miarą aktywności wybranej metody
+(DCT, DTCWT, GFG-FGF, StackMFF V3, OpenFocus B/C). Nie jest to zmierzona powierzchnia
+ani dokładna mapa pochodzenia pikseli wyniku fuzji. Wybierz obecnie zaznaczone klatki
+lub zapisane źródło wybranego wyniku. Brakujących danych pochodzenia nie zastępuje się
+bieżącym stosem. Obliczenia, tekstura i eksport pozostają związane z tą samą migawką źródła.
+
+Wszystkie sześć metod wymaga jawnego kliknięcia **Oblicz**. Otwarcie okna oraz zmiana
+miary, źródła, rejestracji lub parametrów nie rozpoczynają obliczeń. Edytor parametrów
+znajduje się tuż pod wyborem miary: jądra medianowe DCT i początkowe GFG przyjmują wartości
+nieparzyste 1–51 (domyślnie 7); B używa okna wariancji, a C okna energii pasmowej,
+nieparzystych 1–21 px (domyślnie 11). DTCWT nie udostępnia tu poziomów: używa głębokości
+dekompozycji z okna głównego, tak jak zwykłe renderowanie. StackMFF V3 zamiast pola
+liczbowego pokazuje własny tryb wyjścia AI (domyślnie miękkie mieszanie lub twardy wybór)
+i objaśnienie: miękkie mieszanie szacuje ważoną prawdopodobieństwem ciągłą pozycję klatki,
+twardy wybór bierze najbardziej prawdopodobną klatkę dla każdego piksela. Żadne nie jest
+odległością fizyczną. Wartości robocze zaczynają się od parametrów
+pasującego wyniku lub zapamiętanych ustawień metody w oknie głównym. Są zachowywane
+osobno dla źródła i metody podczas tego otwarcia, bez zmiany okna głównego, projektu
+lub zapisanego wyniku.
+
+Zmiana ustawień obliczeń trwale oznacza poprzednią mapę 2D jako **nieaktualną**, czyści
+powierzchnię 3D i blokuje każdy eksport, w tym dane surowe, głębię fizyczną i OBJ, aż do
+udanego ponownego obliczenia. Bieżące zadanie jest anulowane kooperacyjnie. Po zakończeniu
+trzeba ponownie nacisnąć **Oblicz**; nic nie jest kolejkowane ani wznawiane automatycznie.
+Oblicz pozostaje widoczne i jest wyłączone podczas obliczania, anulowania i eksportu modelu.
 
 - **Mapa kolorów**: skala szarości (standard publikacyjny) oraz 15 palet
   naukowych (Turbo, Viridis, Magma, …) i własne — *Nowa paleta własna…*
@@ -212,21 +230,23 @@ w pseudo-kolorach z legendą (klatka 0 → N-1) i można ją dostosowywać na ż
 - **Odwrócenie / Gamma / Wygładzanie**: odwrócenie osi głębi, ponowne
   zrównoważenie tonu (gamma < 1 rozjaśnia niskie indeksy) i usuwanie plamek
   przebiegiem świadomym krawędzi.
-- **Nałóż na obraz złożony**: nałożenie kolorowej mapy na wynik fuzji z
-  regulowanym kryciem, aby dokładnie zobaczyć, gdzie wygrała każda klatka.
-- **Eksport**: *Zapisz kolorową…* (PNG/JPEG/TIFF/BMP) lub *Zapisz surową 16-bit…*
-  (znormalizowana mapa indeksów w pełnej precyzji, idealna do dalszej analizy
-  w ImageJ/Fiji/python).
-- **Model 3D**: *Eksport 3D (OBJ)…* zapisuje teksturowaną powierzchnię zbudowaną
-  z mapy głębi i wyniku fuzji jako `<name>.obj`, `<name>.mtl` oraz
-  `<name>_texture.png`, które otwierają się w Blenderze, MeshLabie lub Windows
-  3D Viewer. Siatka jest zmniejszana do maksymalnie 600 wierzchołków na
-  najdłuższym boku i lekko odszumiana, po zastosowaniu wartości Wygładzanie
-  podanej powyżej. *Relief 3D* (1–100 %, domyślnie 15 %) określa wysokość
-  powierzchni jako procent najdłuższego boku obrazu i jest zapamiętywany.
-  *Odwróć oś głębi* zmienia, który koniec stosu jest bliski. Teksturą jest
-  wynik fuzji albo pierwsza klatka stosu, jeśli nie istnieje wynik o tym samym
-  rozmiarze.
+- **Nakładka**: miesza mapę 2D z powiązanym wynikiem przy regulowanym kryciu, tylko gdy
+  ich obszary współrzędnych są zgodne.
+- **Eksport**: wersja kolorowa obsługuje PNG/JPEG/TIFF/BMP. Surowy TIFF 16-bit koduje
+  znormalizowane indeksy ostrości jako 0–65535; nie są to bezstratne dane zmiennoprzecinkowe
+  ani odległości fizyczne. JPEG/BMP są odrzucane przy zapisie danych surowych.
+- **Model 3D / Tekstura 3D**: dłuższy bok siatki ma domyślnie 600 wierzchołków.
+  Każde nowe otwarcie wybiera **Automatyczna (rzeczywiste kolory)**: powiązany wynik jest
+  używany tylko wtedy, gdy jego tożsamość i obszar współrzędnych/ROI pasują do ukończonej
+  mapy. W przeciwnym razie używana jest pierwsza klatka uczestnicząca w zakończonych
+  obliczeniach, po rejestracji i w faktycznej kolejności. Widoczna jest nazwa użytego wyniku
+  lub klatki. Można jawnie wybrać pasujący wynik, klatkę uczestniczącą lub **Pseudokolory
+  głębi**; brak dostępnej tekstury jest sygnalizowany. Podgląd 3D i tekstura PNG modelu OBJ
+  korzystają z tego samego obrazu. Mapa 2D zachowuje własną paletę i nakładkę; zmiana palety
+  lub Gammy nie zmienia kolorów zdjęcia. Tylko jawnie wybrana tekstura pseudokolorowa
+  reaguje na paletę, Gammę i odwrócenie. Nieruchomy podgląd i eksport korzystają z tego
+  samego próbkowanego pola wysokości bez dodatkowego ukrytego wygładzania. Względny relief
+  to wizualizacja w jednostkach obrazu.
 
 Obliczenia działają w tle z postępem i możliwością anulowania; metoda AI
 wykorzystuje to samo bezpieczne pamięciowo kafelkowanie co fuzja AI, więc
@@ -419,7 +439,8 @@ OpenFocus oferuje osiem algorytmów fuzji (oraz tryb tylko wyrównania). Każdy 
 - **Reguła fuzji**: jedna decyzja na piksel i poziom dla wszystkich orientacji i
   kanałów koloru (N-kierunkowa, ze sprawdzeniem spójności większości); pasmo
   dolnoprzepustowe podąża za najgrubszą decyzją zamiast uśredniać wszystkie klatki
-- **Parametr**: brak (suwak jądra jest wyłączony)
+- **Parametr**: poziomy falkowe (1–6, domyślnie 4) w panelu po prawej. Metoda nie
+  ma jądra przestrzennego, więc suwak jądra jest dla niej ukryty.
 
 ### GFG-FGF (gradient quasi-gaussowski w czterech sąsiedztwach + szybki filtr sterowany)
 

@@ -200,14 +200,30 @@ e contornado. A CLI oferece suporte por `--scale-bar` (calibração automática)
 
 ### Mapa de profundidade (posição de foco)
 
-**Ferramentas → Mapa de profundidade…** abre um visualizador que calcula, para
-cada pixel, qual quadro da pilha está em foco — o sinal de pseudoprofundidade
-sobre o qual a própria fusão decide — usando a medida de atividade do método
-selecionado. Só são oferecidos métodos que decidem por índice (DCT, DTCWT,
-GFG-FGF, StackMFF-V3, OpenFocus B/C); as fusões por média ponderada (filtro
-guiado, OpenFocus A) não têm decisão por pixel e não aparecem na lista. O mapa é
-exibido com pseudocor e uma legenda (quadro 0 → N-1) e pode ser personalizado ao
-vivo:
+**Ferramentas → Mapa de profundidade…** estima posições de foco com a medida de atividade
+do método escolhido (DCT, DTCWT, GFG-FGF, StackMFF V3, OpenFocus B/C). Não é uma superfície
+medida nem um mapa exato da origem dos pixels fusionados. Escolha os quadros marcados
+atuais ou a origem registrada da saída selecionada; a falta de procedência não é substituída
+pela pilha atual. Cálculo, textura e exportação ficam vinculados ao mesmo instantâneo da origem.
+
+Os seis métodos exigem um clique explícito em **Calcular**. Abrir o diálogo ou mudar
+a medida, a origem, o registro ou os parâmetros não inicia o cálculo. O editor fica logo
+abaixo do seletor de medida: os kernels mediano DCT e inicial GFG aceitam ímpares de 1 a 51
+(padrão 7); B usa uma janela de variância e C uma de energia passa-faixa, ímpares de 1 a 21 px
+(padrão 11). DTCWT não oferece níveis aqui: segue a profundidade de decomposição da
+janela principal, como num render. StackMFF V3 mostra o próprio modo de saída de IA
+(mistura suave por padrão, ou seleção rígida) e uma explicação, sem kernel numérico: a
+mistura suave estima uma posição contínua ponderada por probabilidade, a seleção rígida usa
+o quadro mais provável por pixel. Nenhuma é uma distância física. Os rascunhos começam com os parâmetros da saída correspondente
+ou os valores lembrados por método na janela principal. Ficam guardados por origem e
+método durante esta abertura, sem alterar a janela principal, o projeto ou a saída registrada.
+
+Mudar os ajustes de cálculo marca o mapa 2D anterior como **não atualizado**, limpa a
+superfície 3D e bloqueia todas as exportações, inclusive dados brutos, profundidade física
+e OBJ, até um novo cálculo terminar com sucesso. O trabalho ativo é cancelado de forma
+cooperativa. Depois, pressione **Calcular** novamente; nenhum cálculo é enfileirado ou
+reiniciado automaticamente. Calcular permanece visível e fica desativado durante cálculo,
+cancelamento e exportação do modelo.
 
 - **Mapa de cores**: escala de cinza (padrão de publicação), 15 paletas
   científicas (Turbo, Viridis, Magma, …) e a sua própria — *Novo esquema
@@ -217,21 +233,23 @@ vivo:
 - **Inverter / Gama / Suavização**: inverte o eixo de profundidade, reequilibra o
   tom (gama < 1 clareia índices baixos) e remove ruído pontual com uma passagem
   sensível a bordas.
-- **Sobrepor à imagem fusionada**: mistura o mapa colorido sobre o resultado da
-  fusão com opacidade ajustável, para ver exatamente onde cada quadro venceu.
-- **Exportar**: *Salvar colorido…* (PNG/JPEG/TIFF/BMP) ou *Salvar 16 bits bruto…*
-  (o mapa de índices normalizado em precisão total, ideal para análise posterior
-  em ImageJ/Fiji/python).
-- **Modelo 3D**: *Exportar 3D (OBJ)…* grava uma superfície texturizada construída
-  a partir do mapa de profundidade e do resultado fusionado como `<name>.obj`,
-  `<name>.mtl` e `<name>_texture.png`, que abrem no Blender, MeshLab ou no
-  Visualizador 3D do Windows. A malha é reduzida a no máximo 600 vértices no lado
-  mais longo e passa por uma leve limpeza de ruído, depois de aplicado o valor de
-  Suavização acima. *Relevo 3D* (1–100 %, padrão 15 %) define a altura da
-  superfície como porcentagem do lado mais longo da imagem e é memorizado.
-  *Inverter eixo de profundidade* troca qual extremidade da pilha está perto. A
-  textura é o resultado fusionado, ou o primeiro quadro da pilha se não existir
-  um resultado de mesmo tamanho.
+- **Sobreposição**: mistura o mapa 2D com a saída associada em opacidade ajustável,
+  somente quando os domínios de coordenadas correspondem.
+- **Exportar**: a versão colorida aceita PNG/JPEG/TIFF/BMP. O TIFF bruto de 16 bits
+  codifica índices de foco normalizados de 0 a 65535; não são dados de ponto flutuante
+  sem perdas nem distâncias físicas. JPEG/BMP são recusados para os dados brutos.
+- **Modelo 3D / Textura 3D**: o lado maior da malha tem 600 vértices por padrão.
+  Cada nova abertura escolhe **Automática (cores reais)**: usa a saída associada somente
+  quando sua identidade e domínio de coordenadas/ROI correspondem ao mapa concluído.
+  Caso contrário, usa o primeiro quadro participante do cálculo concluído, após o registro
+  e na ordem efetivamente usada. O nome da saída ou quadro utilizado é mostrado.
+  Também é possível escolher explicitamente a saída correspondente, um quadro participante
+  ou **Pseudocor de profundidade**; uma textura indisponível é informada. A prévia 3D e o PNG
+  de textura do OBJ compartilham a mesma imagem. O mapa 2D mantém sua própria paleta e
+  sobreposição; mudanças de paleta ou Gama não recolorem fotos. Só a textura em pseudocor
+  responde à paleta, ao Gama e à inversão. A prévia parada e a exportação compartilham o
+  mesmo campo de alturas amostrado, sem suavização extra oculta. O relevo relativo é uma
+  visualização em unidades de imagem.
 
 O cálculo roda em segundo plano, com progresso e cancelamento; o método de IA
 reusa o mesmo processamento em blocos econômico em memória da fusão por IA, então
@@ -435,7 +453,8 @@ Cada um tem características próprias, adequadas a diferentes tipos de imagem.
 - **Regra de fusão**: uma decisão por pixel e por nível para todas as orientações e
   canais de cor (N-vias, com verificação de consistência por maioria); a faixa
   passa-baixa segue a decisão mais grosseira em vez de fazer a média de todos os quadros
-- **Parâmetro**: nenhum (o controle de kernel fica desativado)
+- **Parâmetro**: níveis de wavelet (1–6, padrão 4) no painel direito. O método
+  não usa kernel espacial, então o controle de kernel fica oculto.
 
 ### GFG-FGF (Gradiente de quatro vizinhanças do tipo gaussiano + filtro guiado rápido)
 

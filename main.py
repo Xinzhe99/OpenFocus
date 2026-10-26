@@ -460,6 +460,11 @@ class OpenFocus(QMainWindow):
         self.depth_smooth_row = right_panel_components.depth_smooth_row
         self.lbl_depth_smooth = right_panel_components.lbl_depth_smooth
         self.spin_depth_smooth = right_panel_components.spin_depth_smooth
+        self.levels_row = right_panel_components.levels_row
+        self.lbl_levels = right_panel_components.lbl_levels
+        self.spin_levels = right_panel_components.spin_levels
+        self.spin_levels.setValue(int(getattr(self, "dtcwt_levels", 4)))
+        self.spin_levels.valueChanged.connect(self.set_dtcwt_levels)
         # 先按当前方法显示它自己的 σ（A/B/C 各有默认与记忆值）
         self.spin_depth_smooth.setValue(
             float(self.smoothing_for_method(self.current_fusion_method())))
@@ -970,6 +975,7 @@ class OpenFocus(QMainWindow):
             self.reset_parameter_memories()
             self.base_frame_correct = False
             self.exposure_match = True
+            self.set_dtcwt_levels(4)
             if getattr(self, "spin_depth_smooth", None) is not None:
                 self.spin_depth_smooth.setValue(
                     float(self.smoothing_for_method("openfocus_b")))
@@ -1450,8 +1456,14 @@ class OpenFocus(QMainWindow):
         self.persist_settings()
 
     def set_dtcwt_levels(self, levels: int) -> None:
-        """Remember the DTCWT decomposition level count (compare adoption)."""
-        self.dtcwt_levels = max(1, min(6, int(levels)))
+        """DTCWT decomposition depth, editable in the right panel."""
+        levels = max(1, min(6, int(levels)))
+        self.dtcwt_levels = levels
+        control = getattr(self, "spin_levels", None)
+        if control is not None and int(control.value()) != levels:
+            from PyQt6.QtCore import QSignalBlocker
+            with QSignalBlocker(control):
+                control.setValue(levels)
         self.persist_settings()
 
     def set_smoothing_for_method(self, method: str, value: float) -> None:
@@ -2287,6 +2299,15 @@ class OpenFocus(QMainWindow):
 
         # C 没有 Radius（Helicon 的 Method C 只有 Smoothing）：隐藏滑块
         # 而不是留一个改了也不影响输出的控件。
+        # DTCWT 的分解层数是它真正消费的参数；其它算法不显示该行。
+        if getattr(self, "levels_row", None) is not None:
+            self.levels_row.setVisible(method == "dtcwt")
+            if method == "dtcwt":
+                self.spin_levels.blockSignals(True)
+                try:
+                    self.spin_levels.setValue(int(getattr(self, "dtcwt_levels", 4)))
+                finally:
+                    self.spin_levels.blockSignals(False)
         # AI 输出模式只在选中神经网络时出现：其他算法没有概率图可分配。
         if getattr(self, "ai_mode_widget", None) is not None:
             self.ai_mode_widget.setVisible(method == "stackmffv3")

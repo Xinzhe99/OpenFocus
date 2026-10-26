@@ -192,6 +192,10 @@ class RightPanelComponents:
     depth_smooth_row: QWidget = None
     lbl_depth_smooth: QLabel = None
     spin_depth_smooth: "StepperSpinBox" = None
+    # DTCWT decomposition depth (shown only for that method)
+    levels_row: QWidget = None
+    lbl_levels: QLabel = None
+    spin_levels: "StepperSpinBox" = None
 
 
 def _fill_combo(combo: QComboBox, items) -> None:
@@ -351,6 +355,26 @@ def create_right_panel() -> RightPanelComponents:
     ds_layout.addWidget(spin_depth_smooth)
     depth_smooth_row.setVisible(False)
     config_layout.addWidget(depth_smooth_row)
+
+    # DTCWT decomposition depth: a real algorithm parameter, so it belongs in
+    # the same panel as the kernel and smoothing rows instead of being fixed at
+    # 4 behind the user's back. Hidden for every other method.
+    levels_row = QWidget()
+    levels_row.setSizePolicy(QSizePolicy.Policy.Preferred,
+                             QSizePolicy.Policy.Fixed)
+    lv_layout = QHBoxLayout(levels_row)
+    lv_layout.setContentsMargins(0, 0, 0, 4)
+    lbl_levels = QLabel(trans.t('compare_levels'))
+    lbl_levels.setToolTip(trans.t('label_levels_hint'))
+    spin_levels = StepperSpinBox(minimum=1, maximum=6, step=1, decimals=0, value=4)
+    spin_levels.setMinimumWidth(96)
+    spin_levels.setToolTip(trans.t('label_levels_hint'))
+    spin_levels.lineEdit().setAccessibleName(trans.t('compare_levels'))
+    lv_layout.addWidget(lbl_levels)
+    lv_layout.addStretch()
+    lv_layout.addWidget(spin_levels)
+    levels_row.setVisible(False)
+    config_layout.addWidget(levels_row)
 
     # Primary action on its own row, the two secondary actions underneath.
     # One row of three does not fit the panel: "▶ Rozpocznij renderowanie"
@@ -555,6 +579,9 @@ def create_right_panel() -> RightPanelComponents:
         depth_smooth_row=depth_smooth_row,
         lbl_depth_smooth=lbl_depth_smooth,
         spin_depth_smooth=spin_depth_smooth,
+        levels_row=levels_row,
+        lbl_levels=lbl_levels,
+        spin_levels=spin_levels,
     )
 
 
@@ -633,6 +660,9 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         window.source_manager.apply_list_order)
     components.output_list.customContextMenuRequested.connect(window.output_manager.show_output_context_menu)
     components.output_list.currentRowChanged.connect(window.output_manager.sync_output_slider_from_list)
+    # Keyboard navigation must show the row too, not only a mouse click.
+    components.output_list.currentRowChanged.connect(
+        window.output_manager.display_current_output_row)
     components.output_list.itemClicked.connect(window.output_manager.display_output_image_in_result_view)
 
     delete_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), components.file_list)

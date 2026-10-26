@@ -1180,13 +1180,19 @@ class BatchWorker(QThread):
                     fusion_params.get('kernel_size', 7)),
                 thread_count=threads, **cancel)
         if fusion_method in ("openfocus_a", "openfocus_b", "openfocus_c"):
+            from constants import METHOD_FUSION_PARAMS
+            keys = {key for key, *_rest in METHOD_FUSION_PARAMS.get(
+                fusion_method, ())}
+            kwargs = {"thread_count": threads, **cancel}
+            if "kernel_size" in keys:
+                kwargs["kernel_size"] = normalize_kernel_size(
+                    fusion_params.get('kernel_size', 11))
+            if "depth_smoothing" in keys:
+                kwargs["depth_smoothing"] = fusion_params.get('depth_smoothing')
+            if "blend_smoothing" in keys:
+                kwargs["blend_smoothing"] = fusion_params.get('blend_smoothing')
             return fusion.fuse(
-                input_source=fusion_input, img_resize=None,
-                kernel_size=normalize_kernel_size(
-                    fusion_params.get('kernel_size', 11)),
-                depth_smoothing=fusion_params.get('depth_smoothing'),
-                blend_smoothing=fusion_params.get('blend_smoothing'),
-                thread_count=threads, **cancel)
+                input_source=fusion_input, img_resize=None, **kwargs)
         if fusion_method == "stackmffv3":
             model_path = (fusion_params.get('model_path')
                           or resource_path("weights", "stackmff_v3_final.pth"))

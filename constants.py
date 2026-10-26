@@ -62,3 +62,45 @@ METHOD_KERNEL_MODES = {
     "openfocus_c": "ofab",
 }
 SMOOTHING_MAX = 8.0
+
+# Single source of truth for the parameters a fusion method actually consumes.
+# Every algorithm-selecting surface (main window, batch dialog, compare dialog)
+# reads this table, so a method can never expose a control its back-end ignores
+# or hide one it needs. key -> (label_key, minimum, maximum, step, decimals,
+# default). StackMFF V3 has a categorical output mode instead of a number and is
+# listed separately.
+METHOD_FUSION_PARAMS = {
+    "guided_filter": (("kernel_size", "label_kernel_guided", 1, 51, 2, 0, 31),),
+    "dct": (("kernel_size", "label_kernel_dct", 1, 51, 2, 0, 7),),
+    "dtcwt": (("N", "compare_levels", 1, 6, 1, 0, 4),),
+    "gfgfgf": (("kernel_size", "label_kernel_gfg", 1, 51, 2, 0, 7),),
+    "stackmffv3": (),
+    "openfocus_a": (
+        ("kernel_size", "label_kernel_of", 1, 21, 2, 0, 11),
+        ("blend_smoothing", "label_blend_smoothing", 0, 8, .2, 1, 2.0),
+    ),
+    "openfocus_b": (
+        ("kernel_size", "label_kernel_of", 1, 21, 2, 0, 11),
+        ("depth_smoothing", "label_depth_smoothing", 0, 8, .2, 1, 1.2),
+    ),
+    # OpenFocus C has no radius: its only parameter is the blending smoothing.
+    "openfocus_c": (
+        ("blend_smoothing", "label_blend_smoothing", 0, 8, .2, 1, 3.0),
+    ),
+}
+
+# Methods whose output mode is a soft/hard choice rather than a number.
+METHOD_OUTPUT_MODES = ("stackmffv3",)
+AI_MODES = ("soft", "hard")
+
+# Parameters the depth estimator actually consumes, per measure. Smoothing is
+# a display setting there, so it is deliberately absent; DTCWT does use its
+# decomposition depth, and AI uses its output mode.
+METHOD_DEPTH_PARAMS = {
+    "dct": ("kernel_size",),
+    "gfgfgf": ("kernel_size",),
+    "openfocus_b": ("kernel_size",),
+    "openfocus_c": ("kernel_size",),
+    "dtcwt": ("N",),
+    "stackmffv3": ("mode",),
+}

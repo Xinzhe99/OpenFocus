@@ -113,13 +113,7 @@ class DepthSurface(QWidget):
 
     # ------------------------------------------------------------ rendering
     def set_detail(self, percent: int) -> None:
-        """Working resolution as a percentage of the source (20-100).
-
-        Above 100% the extra samples land beyond the source resolution, so
-        the picture was IDENTICAL for every higher step — that is why the
-        slider looked dead. The value is stored as-is; _rasterise() divides
-        by 100 for the ratio.
-        """
+        """Sampling resolution as a percentage of the preview source (20-100)."""
         self._mesh_step = max(20, min(100, int(percent)))
         self._cache = None
         self.update()
@@ -129,7 +123,8 @@ class DepthSurface(QWidget):
         # geometry for every pixel of mouse movement.
         return (round(self._yaw, 1), round(self._pitch, 1),
                 round(self._zoom, 3), self.width(), self.height(),
-                round(self._relief, 4), bool(self._invert), id(self._texture))
+                round(self._relief, 4), bool(self._invert), id(self._texture),
+                self._mesh_step, self._dragging)
 
     def _render_cached(self):
         """Rasterise the surface, reusing the last frame when nothing changed.
@@ -144,11 +139,9 @@ class DepthSurface(QWidget):
         if cached is not None and cached[0] == key:
             return cached[1]
 
-        # While the camera moves the mesh is coarsened (fewer, larger quads);
-        # on release it is rebuilt at full density.
-        # While the camera moves the mesh is coarsened (fewer, larger quads);
-        # on release it is rebuilt at full density.
-        step = self._mesh_step if self._dragging else 100
+        # Keep the selected resolution at rest; use fewer samples while the
+        # camera moves, then restore that same selection on release.
+        step = max(20, self._mesh_step // 2) if self._dragging else self._mesh_step
         image = self._rasterise(mesh_step=step)
         # Remember only settled frames; a drag would otherwise evict the cache
         # constantly with throwaway images.
@@ -173,18 +166,8 @@ class DepthSurface(QWidget):
         w = max(1, self.width())
         h = max(1, self.height())
 
-        # Working resolution = canvas x (detail / 96), capped by the source.
-        # 96 (the default) is the 2x supersample that fills the forward-map
-        # pinholes; the detail slider scales this so higher values resolve
-        # more of the source and lower values trade detail for speed. This is
-        # what makes the slider visibly change the model.
-        # The detail slider is a fraction OF THE SOURCE resolution. It used to
-        # be "canvas x N" with the source as the cap, so for a 1344x1021 map
-        # every setting above 96 hit that cap and rendered EXACTLY the same
-        # image — the slider did nothing. A fraction of the source always
-        # changes the working set.
-        # Use the step requested by the caller: the drag path passes a
-        # coarser one, and reading self._mesh_step here made that path a no-op.
+        # Sample the source at the selected percentage. Camera motion may
+        # request a coarser percentage without changing the user's setting.
         step = self._mesh_step if mesh_step is None else int(mesh_step)
         ratio = max(0.2, min(1.0, step / 100.0))
         target_h = max(2, min(hh, int(hh * ratio)))

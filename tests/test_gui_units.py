@@ -993,6 +993,79 @@ def test_output_history_is_capped(qapp):
     assert w.output_list.count() == 3
 
 
+def test_keyboard_output_navigation_shows_the_selected_result(qapp):
+    """Up/Down changes the current row without a click; the result view must
+    follow it instead of keeping the previously clicked output."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLabel, QListWidget, QSlider
+    from controllers.output_manager import OutputManager
+
+    shown = []
+
+    class ResultView:
+        def set_display_pixmap(self, pixmap):
+            pass
+
+        def setText(self, text):
+            pass
+
+        def clear(self):
+            pass
+
+        def width(self):
+            return 100
+
+        def height(self):
+            return 100
+
+    class W:
+        pass
+
+    w = W()
+    w.output_list = QListWidget()
+    w.output_label = QLabel()
+    w.result_slider = QSlider()
+    w.result_control_bar = QLabel()
+    w.lbl_result_img = ResultView()
+    w.fusion_results = []
+    w.fusion_result = None
+    w.registration_results = []
+    w.current_result_index = 0
+    w.wipe_active = False
+    w.refresh_annotation_views = lambda: None
+
+    class E:
+        @staticmethod
+        def generate_default_filename():
+            return "out"
+
+    w.export_manager = E()
+    mgr = OutputManager(w)
+    w.output_manager = mgr
+
+    def track(image):
+        shown.append(int(image[0, 0, 0]))
+        return True
+
+    mgr.display_specific_fusion_result = track
+    w.output_list.currentRowChanged.connect(mgr.display_current_output_row)
+    for value in (10, 20, 30):
+        w.fusion_result = np.full((4, 4, 3), value, np.uint8)
+        mgr.update_output_list_for_fusion()
+    w.output_list.setCurrentRow(0)
+    shown.clear()
+    w.output_list.setFocus()
+    QTest.keyClick(w.output_list, Qt.Key.Key_Down)
+    qapp.processEvents()
+    assert w.output_list.currentRow() == 1
+    assert shown == [20]
+    QTest.keyClick(w.output_list, Qt.Key.Key_Up)
+    qapp.processEvents()
+    assert w.output_list.currentRow() == 0
+    assert shown == [20, 30]
+
+
 def test_undo_snapshot_keeps_references_and_restores_scale(qapp):
     """Snapshots used to copy every frame twice (raw + base); they now hold
     references because mutations replace arrays. Resize must undo its scale

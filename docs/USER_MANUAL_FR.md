@@ -201,14 +201,32 @@ contouré et lisible. La CLI la prend en charge via `--scale-bar` (calibration a
 
 ### Carte de profondeur (position de mise au point)
 
-**Outils → Carte de profondeur…** ouvre une visionneuse qui calcule, pour chaque pixel, quelle image de
-la pile est nette — le signal de pseudo-profondeur sur lequel la fusion elle-même se décide
-— à partir de la mesure d'activité propre à la méthode sélectionnée. Seules
-les méthodes qui décident d'un indice sont proposées (DCT, DTCWT, GFG-FGF, StackMFF-V3,
-OpenFocus B/C) ; les fusions par moyenne pondérée (Filtre guidé, OpenFocus A)
-n'ont pas de décision par pixel et ne sont pas listées. La
-carte est affichée en pseudo-couleur avec une légende (image 0 → N-1) et peut être
-personnalisée en direct :
+**Outils → Carte de profondeur…** estime les positions de mise au point avec la mesure
+d’activité de la méthode choisie (DCT, DTCWT, GFG-FGF, StackMFF V3, OpenFocus B/C).
+Ce n’est ni une surface mesurée ni une carte exacte de l’origine des pixels fusionnés.
+Choisissez les images actuellement cochées ou la source enregistrée de la sortie sélectionnée.
+Une provenance manquante n’est jamais remplacée par la pile actuelle. Calcul, texture et
+export restent liés au même instantané de la source.
+
+Les six méthodes exigent un clic explicite sur **Calculer**. Ouvrir la fenêtre ou changer
+la mesure, la source, le recalage ou les paramètres ne lance aucun calcul. L’éditeur se
+trouve juste sous le sélecteur de mesure : les noyaux médian DCT et initial GFG prennent
+des valeurs impaires de 1 à 51 (7 par défaut) ; B utilise une fenêtre de variance et C une
+fenêtre d’énergie passe-bande, impaires de 1 à 21 px (11 par défaut). DTCWT n’offre pas
+ici de niveaux : il suit la profondeur de décomposition de la fenêtre principale, comme un
+rendu. StackMFF V3 affiche son propre mode de sortie IA (mélange doux par défaut, ou
+sélection dure) et une explication, sans noyau numérique : le mélange doux estime une
+position continue pondérée par les probabilités, la sélection dure prend l’image la plus
+probable par pixel. Ni l’une ni l’autre n’est une distance physique. Les brouillons partent des paramètres de la sortie correspondante ou
+des valeurs mémorisées par méthode dans la fenêtre principale. Ils sont conservés par
+source et méthode pendant cette ouverture, sans modifier fenêtre principale, projet ni sortie.
+
+Modifier les réglages de calcul marque durablement l’ancienne carte 2D comme **non à jour**,
+efface la surface 3D et bloque tous les exports, y compris les données brutes, la profondeur
+physique et l’OBJ, jusqu’à la réussite d’un nouveau calcul. Le travail actif est annulé de
+façon coopérative. Ensuite, cliquez à nouveau sur **Calculer** : aucun calcul n’est mis en
+attente ou relancé automatiquement. Calculer reste visible et est désactivé pendant le
+calcul, l’annulation et l’export du modèle.
 
 - **Palette** : niveaux de gris (standard de publication) plus 15 palettes
   scientifiques (Turbo, Viridis, Magma, …) et
@@ -218,20 +236,23 @@ personnalisée en direct :
 - **Inverser / Gamma / Lissage** : inversez l'axe de profondeur, rééquilibrez la tonalité
   (gamma < 1 éclaircit les indices faibles) et supprimez le grain avec une passe
   préservant les contours.
-- **Superposer à l'image fusionnée** : superposez la carte colorisée au résultat de
-  fusion avec une opacité réglable pour voir exactement où chaque image l'emporte.
-- **Export** : *Enregistrer la version colorisée…* (PNG/JPEG/TIFF/BMP) ou *Enregistrer le 16 bits brut…*
-  (la carte d'indices normalisée en pleine précision, idéale pour une analyse
-  ultérieure dans ImageJ/Fiji/python).
-- **Modèle 3D** : *Exporter en 3D (OBJ)…* écrit une surface texturée construite à partir de la
-  carte de profondeur et du résultat fusionné sous la forme `<nom>.obj`, `<nom>.mtl` et
-  `<nom>_texture.png`, qui s'ouvrent dans Blender, MeshLab ou la Visionneuse 3D Windows.
-  Le maillage est sous-échantillonné à 600 sommets au maximum sur son côté le plus long et
-  légèrement débruité, après application de la valeur de Lissage ci-dessus. *Relief 3D*
-  (1–100 %, 15 % par défaut) définit la hauteur de la surface en pourcentage du
-  côté le plus long de l'image et est mémorisé. *Inverser l'axe de profondeur*
-  échange l'extrémité proche de la pile. La texture est le résultat fusionné, ou la
-  première image de la pile si aucun résultat de la même taille n'existe.
+- **Superposition** : mélange la carte 2D avec la sortie associée à opacité réglable,
+  uniquement si leurs domaines de coordonnées correspondent.
+- **Export** : la version colorisée accepte PNG/JPEG/TIFF/BMP. Le TIFF brut 16 bits
+  code les indices de mise au point normalisés de 0 à 65535, sans être des données
+  flottantes sans perte ni des distances physiques. JPEG/BMP sont refusés pour les données brutes.
+- **Modèle 3D / Texture 3D** : le grand côté du maillage compte 600 sommets par défaut.
+  Chaque nouvelle ouverture choisit **Automatique (couleurs réelles)** : la sortie associée
+  est utilisée uniquement si son identité et son domaine de coordonnées/ROI correspondent
+  à la carte terminée. Sinon, la texture vient de la première image participante du calcul
+  terminé, après recalage et selon l’ordre effectivement utilisé. Le nom de la sortie ou
+  de l’image utilisée est affiché. Vous pouvez choisir explicitement la sortie correspondante,
+  une image participante ou **Pseudo-couleurs de profondeur** ; une texture indisponible est
+  signalée. L’aperçu 3D et le PNG de texture OBJ partagent la même image. La carte 2D garde sa
+  propre palette et sa superposition ; palette et Gamma ne recolorent pas les photos.
+  Seule la texture en pseudo-couleurs suit la palette, le Gamma et l’inversion. L’aperçu au
+  repos et l’export partagent le même champ de hauteurs échantillonné, sans lissage caché
+  supplémentaire. Le relief relatif s’exprime en unités d’image.
 
 Le calcul s'exécute en arrière-plan avec progression et annulation ; la méthode
 IA réutilise le même traitement par tuiles économe en mémoire que la fusion IA,
@@ -417,7 +438,8 @@ OpenFocus propose huit algorithmes de fusion (plus un mode d'alignement seul). C
 - **Règle de fusion** : une décision par pixel et par niveau pour toutes les orientations et
   canaux de couleur (à N voies, avec vérification de cohérence majoritaire) ; la bande passe-bas
   suit la décision la plus grossière au lieu de moyenner toutes les images
-- **Paramètre** : aucun (le curseur de noyau est désactivé)
+- **Paramètre** : niveaux d’ondelettes (1–6, 4 par défaut) dans le panneau
+  droit. La méthode n’a pas de noyau spatial : le curseur de noyau est masqué.
 
 ### GFG-FGF (Gaussian-like Four-neighbourhood Gradient + Fast Guided Filter)
 

@@ -200,13 +200,33 @@ mit konturierter, gut lesbarer Beschriftung. Die CLI unterstützt ihn über
 
 ### Tiefenkarte (Fokusposition)
 
-**Werkzeuge → Tiefenkarte…** öffnet einen Betrachter, der pro Pixel berechnet,
-welches Einzelbild des Stapels scharf ist – das Pseudotiefensignal, auf das sich die
-Fusion selbst stützt –, und zwar über das Aktivitätsmaß der gewählten Methode. Es
-werden nur Methoden angeboten, die pro Pixel entscheiden (DCT, DTCWT, GFG-FGF,
-StackMFF-V3, OpenFocus B/C); gewichtete Mittelwert-Fusionen (Guided Filter, OpenFocus A)
-treffen keine Entscheidung pro Pixel und fehlen deshalb in der Liste. Die Karte wird
-pseudokoloriert mit Legende angezeigt (Bild 0 → N-1) und lässt sich live anpassen:
+**Werkzeuge → Tiefenkarte…** schätzt Fokuspositionen mit dem Aktivitätsmaß der gewählten
+Methode (DCT, DTCWT, GFG-FGF, StackMFF V3, OpenFocus B/C). Die Karte ist weder eine
+gemessene Oberfläche noch eine genaue Zuordnung der Pixel des Fusionsergebnisses.
+Als Quelle dienen die aktuell markierten Bilder oder die aufgezeichnete Quelle der
+gewählten Ausgabe; fehlende Herkunftsdaten werden nicht durch den aktuellen Stapel
+ersetzt. Berechnung, Textur und Export bleiben an denselben Quellstand gebunden.
+
+Alle sechs Methoden erfordern einen ausdrücklichen Klick auf **Berechnen**. Öffnen,
+Wechsel von Maß, Quelle oder Registrierung und Parameteränderungen starten keine
+Berechnung. Direkt unter der Maßauswahl stehen die editierbaren Parameter: DCT-Median-
+und GFG-Anfangskernel sind ungerade 1–51 (Standard 7), das Varianzfenster von B und das
+Bandpassenergiefenster von C ungerade 1–21 px (Standard 11). DTCWT bietet hier keine
+Ebenenwahl: Es folgt der Zerlegungstiefe des Hauptfensters wie beim Rendern. StackMFF V3
+zeigt stattdessen einen eigenen KI-Ausgabemodus (standardmäßig weiche Mischung oder harte
+Auswahl) und eine Erläuterung: Weiche Mischung schätzt eine wahrscheinlichkeitsgewichtete
+kontinuierliche Fokusposition, harte Auswahl nimmt pro Pixel das wahrscheinlichste Bild.
+Beides ist keine physikalische Entfernung.
+Die Entwürfe beginnen mit den Parametern der passenden Ausgabe oder den gespeicherten
+Methodenwerten des Hauptfensters. Sie bleiben während dieses Dialogs pro Quelle und
+Methode erhalten, ohne Hauptfenster, Projekt oder Ausgabeprotokoll zu ändern.
+
+Geänderte Berechnungseinstellungen markieren die alte 2D-Karte dauerhaft als **nicht
+aktuell**, leeren die 3D-Oberfläche und sperren alle Exporte, auch Rohdaten, physikalische
+Tiefe und OBJ, bis eine neue Berechnung gelingt. Laufende Arbeit wird kooperativ
+abgebrochen. Danach erneut **Berechnen** drücken; es gibt keine automatische Fortsetzung
+oder Warteschlange. Berechnen bleibt sichtbar und ist bei Berechnung, Abbruch und
+Modellexport deaktiviert.
 
 - **Farbtabelle**: Graustufen (Publikationsstandard) sowie 15 wissenschaftliche
   Paletten (Turbo, Viridis, Magma, …) und eigene – *Neues eigenes Schema…* baut
@@ -216,21 +236,23 @@ pseudokoloriert mit Legende angezeigt (Bild 0 → N-1) und lässt sich live anpa
 - **Tiefenachse umkehren / Gamma / Glättung**: die Tiefenachse umdrehen, den
   Tonwert neu ausbalancieren (Gamma < 1 hellt niedrige Indizes auf) und Sprenkel
   mit einem kantenbewahrenden Durchgang entfernen.
-- **Über fusioniertem Bild einblenden**: die kolorierte Karte mit einstellbarer
-  Deckkraft über das Fusionsergebnis legen, um genau zu sehen, welches Bild wo
-  gewonnen hat.
-- **Export**: *Koloriert speichern…* (PNG/JPEG/TIFF/BMP) oder *Rohdaten 16 Bit speichern…*
-  (die normalisierte Indexkarte in voller Genauigkeit, ideal für die Weiterverarbeitung
-  in ImageJ/Fiji/python).
-- **3D-Modell**: *3D exportieren (OBJ)…* schreibt eine texturierte Oberfläche aus
-  Tiefenkarte und Fusionsergebnis als `<name>.obj`, `<name>.mtl` und
-  `<name>_texture.png`, die sich in Blender, MeshLab oder dem Windows-3D-Viewer öffnen
-  lassen. Das Gitter wird auf höchstens 600 Knoten an der längsten Kante reduziert und
-  leicht entrauscht, nachdem der obige Glättungswert angewendet wurde. *3D-Relief*
-  (1–100 %, Standard 15 %) legt die Oberflächenhöhe als Prozentwert der längsten
-  Bildseite fest und wird gespeichert. *Tiefenachse umkehren* vertauscht, welches Ende
-  des Stapels nah liegt. Die Textur ist das Fusionsergebnis oder, falls kein Ergebnis
-  gleicher Größe vorliegt, das erste Einzelbild des Stapels.
+- **Überlagerung**: Die 2D-Karte lässt sich mit einstellbarer Deckkraft über die
+  zugehörige Ausgabe legen, wenn deren Koordinatenbereich übereinstimmt.
+- **Export**: *Koloriert speichern…* bietet PNG/JPEG/TIFF/BMP. Der rohe 16-Bit-TIFF
+  kodiert normalisierte Fokusindizes als 0–65535, keine verlustfreien Fließkommawerte
+  oder physikalischen Entfernungen. JPEG/BMP werden für Rohdaten abgelehnt.
+- **3D-Modell / 3D-Textur**: Die längste Netzseite hat standardmäßig 600 Knoten.
+  Jeder neue Dialog beginnt mit **Automatisch (Echtfarben)**: Die zugehörige Ausgabe
+  wird nur verwendet, wenn Identität und Koordinatenbereich/ROI zur fertigen Karte
+  passen. Sonst dient das erste beteiligte Bild der abgeschlossenen Berechnung als
+  Textur, nach Registrierung und tatsächlicher Bildsortierung. Der verwendete Ausgabe-
+  oder Bildname wird angezeigt. Passende Ausgabe, einzelnes beteiligtes Bild und
+  **Tiefenpseudofarben** sind ausdrücklich wählbar; fehlende Texturen werden gemeldet.
+  3D-Vorschau und OBJ-Textur-PNG nutzen dieselbe Bildquelle. Die 2D-Karte behält ihre
+  eigene Farbkarte und Überlagerung; Palette und Gamma färben Echtfotos nicht um.
+  Nur die gewählte Pseudofarbtextur folgt Palette, Gamma und Umkehrung.
+  Ruhende Vorschau und Export verwenden dasselbe abgetastete Höhenfeld ohne zusätzliche
+  versteckte Glättung. Das relative Relief ist eine Darstellung in Bildeinheiten.
 
 Die Berechnung läuft im Hintergrund mit Fortschritt und Abbruchmöglichkeit; die
 KI-Methode nutzt dieselbe speicherschonende Kachelung wie die KI-Fusion, sodass auch
@@ -433,7 +455,8 @@ hat eigene Eigenschaften, die zu unterschiedlichen Bildtypen passen.
 - **Fusionsregel**: eine Entscheidung pro Pixel und Stufe für alle Orientierungen und
   Farbkanäle (N-fach, mit Mehrheitskonsistenzprüfung); das Tiefpassband
   folgt der gröbsten Entscheidung, statt alle Bilder zu mitteln
-- **Parameter**: keiner (der Kernelregler ist deaktiviert)
+- **Parameter**: Wavelet-Ebenen (1–6, Standard 4) im rechten Bereich. Die
+  Methode hat keinen räumlichen Kernel, daher ist der Kernelregler ausgeblendet.
 
 ### GFG-FGF (Gaußartiger Vier-Nachbarschafts-Gradient + schneller Guided Filter)
 

@@ -192,12 +192,3 @@ class TestTilingTrigger:
         fusion.fuse(input_source=frames, img_resize=None)
         assert tiled == [1], "neural path no longer tiles on stack footprint"
 
-
-class TestDepthMapMeasureParity:
-    def test_dtcwt_uses_the_fusions_decomposition_depth(self):
-        """The map claims to mirror the fusion's own activity measure; the
-        fusion runs DTCWT at N=4."""
-        import inspect
-        from core import depth_map
-        params = inspect.signature(depth_map._measure_dtcwt).parameters
-        assert params["nlevels"].default == 4

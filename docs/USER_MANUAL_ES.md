@@ -203,14 +203,33 @@ admite mediante `--scale-bar` (calibración automática) y
 
 ### Mapa de profundidad (posición de enfoque)
 
-**Herramientas → Mapa de profundidad…** abre un visor que calcula, píxel a
-píxel, qué fotograma de la pila está enfocado (la señal de pseudoprofundidad
-sobre la que decide la propia fusión), usando la medida de actividad del
-método seleccionado. Solo se ofrecen los métodos que deciden por índices
-(DCT, DTCWT, GFG-FGF, StackMFF-V3, OpenFocus B/C); las fusiones por media
-ponderada (Filtro guiado, OpenFocus A) no toman una decisión por píxel y no
-aparecen en la lista. El mapa se muestra en pseudocolor con una leyenda
-(fotograma 0 → N-1) y se puede personalizar en vivo:
+**Herramientas → Mapa de profundidad…** estima posiciones de enfoque mediante la medida
+de actividad del método elegido (DCT, DTCWT, GFG-FGF, StackMFF V3, OpenFocus B/C).
+No es una superficie medida ni un mapa exacto del origen de los píxeles fusionados.
+Elija los fotogramas marcados actuales o el origen registrado de la salida seleccionada;
+si faltan datos de procedencia, no se sustituyen por la pila actual. Cálculo, textura
+y exportación permanecen vinculados a la misma instantánea del origen.
+
+Los seis métodos requieren pulsar **Calcular** expresamente. Abrir el diálogo o cambiar
+la medida, el origen, el registro o los parámetros no inicia el cálculo. El editor aparece
+justo debajo del selector de medida: los núcleos de mediana DCT e inicial GFG aceptan
+impares de 1 a 51 (7 por defecto); B usa una ventana de varianza y C una de energía de paso
+de banda, impares de 1 a 21 px (11 por defecto). DTCWT no ofrece aquí niveles: usa la
+profundidad de descomposición de la ventana principal, igual que un render. StackMFF V3
+muestra su propio modo de salida de IA (mezcla suave por defecto o selección dura) y una
+explicación, sin núcleo numérico: la mezcla suave estima una posición continua ponderada
+por probabilidad; la dura toma el fotograma más probable por píxel. Ninguna es una
+distancia física.
+Los borradores se inicializan con los parámetros de la salida coincidente o los valores
+recordados por método en la ventana principal. Se conservan por origen y método mientras
+el diálogo está abierto, sin modificar la ventana principal, el proyecto ni la salida.
+
+Cambiar ajustes de cálculo marca el mapa 2D anterior como **no actualizado**, vacía la
+superficie 3D y bloquea todas las exportaciones, incluidas las de datos, profundidad física
+y OBJ, hasta que un nuevo cálculo termine correctamente. El trabajo activo se cancela de
+forma cooperativa. Después hay que pulsar **Calcular** de nuevo; no se encola ni se reinicia
+ningún cálculo. Calcular permanece visible y se desactiva durante el cálculo, la cancelación
+y la exportación del modelo.
 
 - **Mapa de color**: escala de grises (el estándar de publicación), 15
   paletas científicas (Turbo, Viridis, Magma, …) y las tuyas propias:
@@ -221,22 +240,23 @@ aparecen en la lista. El mapa se muestra en pseudocolor con una leyenda
 - **Invertir / Gamma / Suavizado**: invierte el eje de profundidad,
   reequilibra el tono (gamma < 1 aclara los índices bajos) y elimina las
   motas con una pasada que respeta los bordes.
-- **Superponer sobre la fusión**: mezcla el mapa coloreado sobre el resultado
-  de fusión con una opacidad ajustable para ver exactamente dónde ganó cada
-  fotograma.
-- **Exportar**: *Guardar en color…* (PNG/JPEG/TIFF/BMP) o *Guardar 16 bits…*
-  (el mapa de índices normalizado con toda su precisión, ideal para analizarlo
-  después en ImageJ/Fiji/python).
-- **Modelo 3D**: *Exportar 3D (OBJ)…* escribe una superficie texturizada
-  construida a partir del mapa de profundidad y el resultado de la fusión como
-  `<name>.obj`, `<name>.mtl` y `<name>_texture.png`, que se abren en Blender,
-  MeshLab o el Visor 3D de Windows. La malla se submuestrea a un máximo de 600
-  vértices en su lado más largo y se le aplica un suavizado ligero, después del
-  valor de Suavizado indicado arriba. *Relieve 3D* (1–100 %, 15 % por defecto)
-  fija la altura de la superficie como porcentaje del lado más largo de la
-  imagen y se recuerda. *Invertir eje de profundidad* cambia qué extremo de la
-  pila queda cerca. La textura es el resultado de la fusión o, si no existe un
-  resultado del mismo tamaño, el primer fotograma de la pila.
+- **Superposición**: mezcla el mapa 2D sobre la salida asociada con opacidad ajustable,
+  solo cuando coinciden sus dominios de coordenadas.
+- **Exportar**: *Guardar en color…* ofrece PNG/JPEG/TIFF/BMP. El TIFF de datos de 16 bits
+  codifica índices de enfoque normalizados de 0 a 65535; no son valores flotantes sin
+  pérdida ni distancias físicas. JPEG/BMP se rechazan para estos datos.
+- **Modelo 3D / Textura 3D**: el lado mayor de la malla tiene 600 vértices por defecto.
+  Cada diálogo nuevo empieza en **Automática (color real)**: usa la salida asociada solo
+  si su identidad y dominio de coordenadas/ROI coinciden con el mapa terminado. En caso
+  contrario usa el primer fotograma participante del cálculo completado, tras el registro
+  y en el orden real utilizado. Se muestra el nombre de la salida o del fotograma empleado.
+  También puede elegir la salida coincidente, un fotograma participante o **Pseudocolor de
+  profundidad**; si no hay textura disponible, se indica. La vista 3D y el PNG de textura
+  del OBJ comparten la misma imagen. El mapa 2D conserva su propia paleta y superposición;
+  sus cambios de paleta o Gamma no recolorean fotos. Solo el pseudocolor explícito sigue
+  la paleta, Gamma e inversión. La vista en reposo y la exportación comparten el mismo
+  campo de alturas muestreado, sin suavizado oculto adicional. El relieve relativo se
+  representa en unidades de imagen.
 
 El cálculo se ejecuta en segundo plano con progreso y opción de cancelación;
 el método de IA reutiliza el mismo procesamiento por mosaicos seguro para la
@@ -430,7 +450,8 @@ OpenFocus ofrece ocho algoritmos de fusión (además de un modo de solo alineaci
   orientaciones y canales de color (N vías, con comprobación de consistencia
   mayoritaria); la banda de paso bajo sigue la decisión más gruesa en lugar de
   promediar todos los fotogramas
-- **Parámetro**: ninguno (el deslizador de núcleo está desactivado)
+- **Parámetro**: niveles de ondícula (1–6, 4 por defecto) en el panel derecho.
+  El método no usa núcleo espacial, así que el deslizador de núcleo se oculta.
 
 ### GFG-FGF (gradiente de cuatro vecinos tipo gaussiano + filtro guiado rápido)
 

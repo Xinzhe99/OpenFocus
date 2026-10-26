@@ -1,5 +1,4 @@
 """Depth-map (focus-position index) and pseudo-color colormap tests."""
-import time
 
 import cv2
 import numpy as np
@@ -201,174 +200,6 @@ class TestReviewFixes:
         assert rc == 2  # EXIT_USAGE
         assert "--depth-colormap" in capsys.readouterr().err
 
-    def test_close_detaches_running_worker(self, monkeypatch, qapp):
-        import threading
-        import os as _os
-        _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PyQt6.QtWidgets import QWidget
-        app = qapp  # noqa: F841
-        import dialogs.depthmap as dm
-        from core import depth_map
-
-        started = threading.Event()
-
-        def slow_compute(images, method, **kw):
-            started.set()
-            time.sleep(0.8)
-            return np.zeros(images[0].shape[:2], np.float32)
-
-        monkeypatch.setattr(depth_map, "compute_focus_index", slow_compute)
-
-        class _Stub(QWidget):
-            raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
-            ui_theme = "dark"
-            use_gpu = False
-            fusion_result = None
-            # The dialog opens on the window's method; state a fast one so
-            # the auto-compute path under test actually runs (the AI default
-            # is deliberately slow and does not auto-compute).
-            current_fusion_method = lambda self: "dct"
-
-        dlg = dm.DepthMapDialog(_Stub())
-        assert started.wait(5), "auto-compute did not start"
-        worker = dlg._worker
-        assert worker is not None and worker.isRunning()
-        dlg.reject()
-        # the dialog must not keep (and later destroy) a running QThread:
-        # it detaches it, keeps a module-level reference, and lets it
-        # self-clean on finish
-        assert dlg._worker is None
-        assert worker in dm._ORPHAN_WORKERS
-        deadline = time.time() + 5
-        while dm._ORPHAN_WORKERS and time.time() < deadline:
-            app.processEvents()
-            time.sleep(0.02)
-        assert worker not in dm._ORPHAN_WORKERS
-
-    def test_switching_to_fast_method_auto_computes(self, monkeypatch, qapp):
-        """切换到秒级方法时自动重算（与打开即算一致）——v1.44 前切换后
-        只给一条"按计算刷新"提示，秒级方法也要手动点。"""
-        import threading
-        import os as _os
-        _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PyQt6.QtWidgets import QWidget
-        app = qapp  # noqa: F841
-        import dialogs.depthmap as dm
-        from core import depth_map
-
-        calls = []
-        started = threading.Event()
-
-        def counting_compute(images, method, **kw):
-            calls.append(method)
-            started.set()
-            return np.zeros(images[0].shape[:2], np.float32)
-
-        monkeypatch.setattr(depth_map, "compute_focus_index", counting_compute)
-
-        class _Stub(QWidget):
-            raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
-            ui_theme = "dark"
-            use_gpu = False
-            fusion_result = None
-            slider_smooth = type("S", (), {"value": lambda s: 7})()
-            current_fusion_method = lambda self: "dct"
-
-        dlg = dm.DepthMapDialog(_Stub())
-        assert started.wait(5), "auto-compute did not start on open"
-        # 等首个计算完成（线程退出）：计算进行中切换方法会跳过自动重算
-        # （一次只允许一个 worker），CI 慢机上此处不等待就是时序脆弱点
-        deadline = time.time() + 10
-        while (dlg._worker is not None and dlg._worker.isRunning()
-               and time.time() < deadline):
-            app.processEvents()
-            time.sleep(0.01)
-        app.processEvents()
-        n_on_open = len(calls)
-
-        # 切换到另一个秒级方法 → 自动重算
-        dlg.method_combo.setCurrentIndex(dlg.method_combo.findData("gfgfgf"))
-        deadline = time.time() + 10
-        while len(calls) == n_on_open and time.time() < deadline:
-            app.processEvents()
-            time.sleep(0.02)
-        assert len(calls) > n_on_open, "fast method switch did not auto-compute"
-        assert calls[-1] == "gfgfgf"
-
-        # 切换到慢速方法（dtcwt）→ 不自动算，只提示
-        n_before = len(calls)
-        dlg.method_combo.setCurrentIndex(dlg.method_combo.findData("dtcwt"))
-        deadline = time.time() + 3
-        while len(calls) > n_before and time.time() < deadline:
-            app.processEvents()
-            time.sleep(0.02)
-        assert len(calls) == n_before, "slow method must not auto-compute"
-        dlg.reject()
-
-
-def test_stale_map_cannot_be_exported(qapp, monkeypatch):
-    """Switching method keeps the old map visible but blocks its export."""
-    import os as _os
-    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtWidgets import QWidget
-    import dialogs.depthmap as dm
-
-    class _Stub(QWidget):
-        raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
-        ui_theme = "dark"
-        use_gpu = False
-        fusion_result = None
-        current_fusion_method = lambda self: "dtcwt"  # slow: no auto compute
-
-    dlg = dm.DepthMapDialog(_Stub())
-    try:
-        dlg._index01 = np.zeros((32, 32), np.float32)
-        dlg._map_method = "dct"
-        dlg._update_export_state()
-        assert dlg.btn_save_color.isEnabled()
-
-        dlg.method_combo.setCurrentIndex(
-            dlg.method_combo.findData("openfocus_b"))
-        dlg._mark_stale()
-        assert dlg._stale is True
-        assert not dlg.btn_save_color.isEnabled()
-        assert not dlg.btn_save_3d.isEnabled()
-        assert trans_depth_stale(dlg)
-    finally:
-        dlg.reject()
-
-
-def trans_depth_stale(dialog):
-    from locales import trans
-    return trans.t("depth_stale") in dialog.status_lbl.text()
-
-
-def test_late_result_from_an_older_request_is_ignored(qapp):
-    """A finished worker must not publish when its request was superseded."""
-    import os as _os
-    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtWidgets import QWidget
-    import dialogs.depthmap as dm
-
-    class _Stub(QWidget):
-        raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
-        ui_theme = "dark"
-        use_gpu = False
-        fusion_result = None
-        current_fusion_method = lambda self: "dtcwt"
-
-    dlg = dm.DepthMapDialog(_Stub())
-    try:
-        dlg._request = 5
-        dlg._computed(np.ones((8, 8), np.float32), request=4)
-        assert dlg._index01 is None, "a superseded result must be dropped"
-
-        dlg._computed(np.ones((8, 8), np.float32), request=5)
-        assert dlg._index01 is None, "ready must wait for the worker's finished signal"
-        assert dlg._worker_outcome[0] == "ok"
-    finally:
-        dlg.reject()
-
 
 def test_raw_depth_export_requires_tiff(qapp, monkeypatch, tmp_path):
     """The raw 16-bit exit must not silently become an 8-bit JPEG."""
@@ -376,6 +207,9 @@ def test_raw_depth_export_requires_tiff(qapp, monkeypatch, tmp_path):
     _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtWidgets import QWidget, QFileDialog
     import dialogs.depthmap as dm
+    from core import depth_map
+    from tests.test_depth_dialog import _ramp, _wait
+    monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
 
     class _Stub(QWidget):
         raw_images = [np.zeros((32, 32, 3), np.uint8) for _ in range(2)]
@@ -386,7 +220,9 @@ def test_raw_depth_export_requires_tiff(qapp, monkeypatch, tmp_path):
 
     dlg = dm.DepthMapDialog(_Stub())
     try:
-        dlg._index01 = np.linspace(0, 1, 32 * 32, dtype=np.float32).reshape(32, 32)
+        dlg.compute_btn.click()
+        _wait(qapp, lambda: dlg._worker is None)
+        assert dlg._has_current_map()
         target = tmp_path / "raw.jpg"
         monkeypatch.setattr(QFileDialog, "getSaveFileName",
                             staticmethod(lambda *a, **k: (str(target), "")))
@@ -475,42 +311,6 @@ def test_depth_source_and_texture_bind_selected_output(qapp):
         dialog.reject()
 
 
-def test_parameter_change_waits_for_old_worker_then_runs_only_latest(qapp, monkeypatch):
-    from threading import Event
-    from PyQt6.QtWidgets import QWidget
-    from PyQt6.QtTest import QTest
-    import dialogs.depthmap as dm
-    from core import depth_map
-    entered, release = Event(), Event()
-    calls = []
-    def compute(images, method, **kwargs):
-        calls.append(method)
-        if len(calls) == 1:
-            entered.set()
-            assert release.wait(5)
-        return np.full(images[0].shape[:2], len(calls) / 10, np.float32)
-    monkeypatch.setattr(depth_map, "compute_focus_index", compute)
-    window = QWidget()
-    window.raw_images = _synthetic_thirds(24, 32)
-    window.current_fusion_method = lambda: "dct"
-    dialog = dm.DepthMapDialog(window)
-    try:
-        assert entered.wait(5)
-        first = dialog._worker
-        dialog.method_combo.setCurrentIndex(dialog.method_combo.findData("openfocus_b"))
-        dialog.method_combo.setCurrentIndex(dialog.method_combo.findData("gfgfgf"))
-        assert dialog._worker is first and dialog._cancelling
-        assert not dialog.btn_save_raw.isEnabled()
-        release.set()
-        deadline = time.monotonic() + 5
-        while (dialog._worker is not None or len(calls) < 2) and time.monotonic() < deadline:
-            QTest.qWait(10)
-        assert calls == ["dct", "gfgfgf"]
-        assert dialog._map_method == "gfgfgf"
-        np.testing.assert_allclose(dialog._index01, 0.2)
-    finally:
-        release.set()
-        dialog.reject()
 
 
 def test_depth_registration_precedes_reverse_and_never_writes_files(monkeypatch):
@@ -540,6 +340,10 @@ def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
     from core.render_context import build_render_context
     from dialogs.depthmap import DepthMapDialog
     from PIL import Image
+    from core import depth_map
+    from tests.test_depth_dialog import _wait
+    monkeypatch.setattr(depth_map, "compute_focus_index",
+                        lambda images, method, **kwargs: np.full(images[0].shape[:2], 0.5, np.float32))
     window = QWidget()
     frames = [np.full((12, 16, 3), value, np.uint8) for value in (20, 40)]
     image = frames[0].copy()
@@ -556,9 +360,9 @@ def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
     target = tmp_path / "物理.tif"
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
     try:
-        dialog._index01 = np.full((5, 6), 0.5, np.float32)
-        dialog._map_frames = [frame.image for frame in context.frames]
-        dialog._map_indices = [0, 5]
+        dialog.compute_btn.click()
+        _wait(qapp, lambda: dialog._worker is None)
+        assert dialog._has_current_map()
         dialog.z_step.setValue(2)
         dialog.z_mapping.setChecked(True)
         dialog._save_physical()
