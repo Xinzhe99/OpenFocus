@@ -201,13 +201,31 @@ ondersteunt dit met `--scale-bar` (automatische kalibratie) en
 
 ### Dieptekaart (focuspositie)
 
-**Extra → Dieptekaart…** opent een viewer die per pixel berekent welk frame van
-de stapel scherp is — het pseudo-dieptesignaal waarop de fusie zelf besluit —
-met de activiteitsmaat van de gekozen methode. Alleen methoden die een index
-bepalen worden aangeboden (DCT, DTCWT, GFG-FGF, StackMFF-V3, OpenFocus B/C);
-gewogen gemiddelden (Guided Filter, OpenFocus A) hebben geen beslissing per
-pixel en staan niet in de lijst. De kaart wordt pseudo-gekleurd getoond met een
-legenda (frame 0 → N-1) en kan live worden aangepast:
+**Extra → Dieptekaart…** schat focusposities met de activiteitsmaat van de gekozen
+methode (DCT, DTCWT, GFG-FGF, StackMFF V3, OpenFocus B/C). Dit is geen gemeten oppervlak
+of exacte herkomstkaart van de gefuseerde pixels. Kies de huidige aangevinkte frames of
+de vastgelegde bron van de geselecteerde uitvoer. Ontbrekende herkomst wordt niet vervangen
+door de huidige stapel. Berekening, textuur en export blijven aan dezelfde bronopname gebonden.
+
+Alle zes methoden vereisen een expliciete klik op **Berekenen**. Openen of wijzigen van
+maat, bron, registratie of parameters start geen berekening. De parametereditor staat
+direct onder de maatkeuze: DCT-mediaankernel en GFG-basiskernel gebruiken oneven waarden
+1–51 (standaard 7); B gebruikt een variantievenster en C een venster voor banddoorlaatenergie,
+beide oneven 1–21 px (standaard 11). DTCWT heeft hier geen niveauregeling: het volgt de
+decompositiediepte van het hoofdvenster, net als een render. StackMFF V3 toont een eigen
+AI-uitvoermodus (standaard zachte menging, of harde selectie) en uitleg in plaats van een
+getalsveld: zachte menging schat een kansgewogen continue framepositie, harde selectie
+neemt per pixel het waarschijnlijkste frame. Geen van beide is een fysieke afstand. Conceptwaarden beginnen met de parameters
+van de overeenkomende uitvoer of de per methode onthouden waarden in het hoofdvenster.
+Ze worden tijdens deze opening per bron en methode bewaard en wijzigen het hoofdvenster,
+project of de vastgelegde uitvoer niet.
+
+Gewijzigde berekeningsinstellingen markeren de vorige 2D-kaart blijvend als **niet actueel**,
+wissen het 3D-oppervlak en blokkeren alle exports, ook ruwe gegevens, fysieke diepte en
+OBJ, totdat een nieuwe berekening slaagt. Actief werk wordt coöperatief geannuleerd.
+Druk daarna opnieuw op **Berekenen**; er wordt geen volgende berekening ingepland of
+automatisch gestart. Berekenen blijft zichtbaar en is uitgeschakeld tijdens berekenen,
+annuleren en modelexport.
 
 - **Kleurenkaart**: grijswaarden (publicatiestandaard) plus 15
   wetenschappelijke paletten (Turbo, Viridis, Magma, …) en je eigen palet —
@@ -217,21 +235,23 @@ legenda (frame 0 → N-1) en kan live worden aangepast:
 - **Omkeren / Gamma / Vervaging**: draai de diepteas om, herbalanceer de toon
   (gamma < 1 maakt lage indices helderder) en verwijder spikkels met een
   randbewuste stap.
-- **Overlay op gefuseerd beeld**: meng de gekleurde kaart met instelbare
-  dekking over het fuseresultaat om precies te zien waar welk frame won.
-- **Exporteren**: *Gekleurd opslaan…* (PNG/JPEG/TIFF/BMP) of *Ruw 16-bit
-  opslaan…* (de genormaliseerde indexkaart op volledige precisie, ideaal voor
-  verdere analyse in ImageJ/Fiji/python).
-- **3D-model**: *3D exporteren (OBJ)…* schrijft een getextureerd oppervlak
-  op basis van de dieptekaart en het gefuseerde resultaat als `<naam>.obj`,
-  `<naam>.mtl` en `<naam>_texture.png`, die openen in Blender, MeshLab of
-  Windows 3D Viewer. Het raster wordt teruggebracht tot maximaal 600
-  hoekpunten langs de langste zijde en licht ontspikkeld, nadat de waarde
-  Vervaging hierboven is toegepast. *3D-reliëf* (1–100 %, standaard 15 %) stelt
-  de hoogte van het oppervlak in als percentage van de langste zijde van het
-  beeld en wordt onthouden. *Diepteas omkeren* wisselt welk uiteinde van de
-  stapel dichtbij ligt. De textuur is het gefuseerde resultaat, of het eerste
-  frame van de stapel als er geen resultaat met dezelfde grootte bestaat.
+- **Overlay**: meng de 2D-kaart met instelbare dekking over de gekoppelde uitvoer,
+  alleen als hun coördinatengebieden overeenkomen.
+- **Exporteren**: de gekleurde versie ondersteunt PNG/JPEG/TIFF/BMP. De ruwe 16-bit TIFF
+  codeert genormaliseerde focusindices als 0–65535; dit zijn geen verliesvrije drijvende-
+  kommagetallen of fysieke afstanden. JPEG/BMP worden voor ruwe gegevens geweigerd.
+- **3D-model / 3D-textuur**: de langste maaszijde telt standaard 600 hoekpunten.
+  Elke nieuwe opening kiest **Automatisch (ware kleuren)**: de gekoppelde uitvoer wordt
+  alleen gebruikt als identiteit en coördinatengebied/ROI overeenkomen met de voltooide
+  kaart. Anders wordt het eerste deelnemende frame van de voltooide berekening gebruikt,
+  na registratie en in de werkelijk gebruikte volgorde. De naam van de gebruikte uitvoer
+  of het frame wordt getoond. Je kunt expliciet de overeenkomende uitvoer, een deelnemend
+  frame of **Diepte in pseudokleuren** kiezen; ontbrekende texturen worden gemeld.
+  Het 3D-voorbeeld en de OBJ-textuur-PNG gebruiken dezelfde afbeelding. De 2D-kaart behoudt
+  zijn eigen kleurenkaart en overlay; palet en Gamma kleuren echte foto's niet opnieuw.
+  Alleen de expliciete pseudokleurtextuur volgt palet, Gamma en omkering. Stilstaand
+  voorbeeld en export delen hetzelfde bemonsterde hoogteveld zonder verborgen extra
+  vervaging. Relatief reliëf is een weergave in beeldeenheden.
 
 De berekening loopt op de achtergrond met voortgang en de mogelijkheid tot
 annuleren; de AI-methode hergebruikt dezelfde geheugenveilige tegelverwerking
@@ -438,7 +458,8 @@ Elk heeft andere eigenschappen en past bij andere soorten afbeeldingen.
   kleurkanalen (N-weg, met controle op meerderheidsconsistentie); de
   laagdoorlaatband volgt de grofste beslissing in plaats van elk frame te
   middelen
-- **Parameter**: geen (de kernelschuif is uitgeschakeld)
+- **Parameter**: waveletniveaus (1–6, standaard 4) in het rechterpaneel. De
+  methode heeft geen ruimtelijke kernel, dus de kernelschuif is verborgen.
 
 ### GFG-FGF (Gaussian-like Four-neighbourhood Gradient + Fast Guided Filter)
 

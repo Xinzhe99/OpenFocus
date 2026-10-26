@@ -29,25 +29,8 @@ METHOD_LABEL_KEYS = {
     "guided_filter": "radio_guided_filter", "dct": "radio_dct",
     "dtcwt": "radio_dtcwt", "gfgfgf": "radio_gfg",
 }
-# Only parameters consumed by the actual algorithm belong in the editor.
-# (key, caption, minimum, maximum, step, decimals, default)
-METHOD_PARAMS = {
-    "guided_filter": (("kernel_size", "label_kernel_guided", 1, 51, 2, 0, 31),),
-    "dct": (("kernel_size", "label_kernel_dct", 1, 51, 2, 0, 7),),
-    "gfgfgf": (("kernel_size", "label_kernel_gfg", 1, 51, 2, 0, 7),),
-    "dtcwt": (("N", "compare_levels", 1, 6, 1, 0, 4),),
-    "openfocus_a": (
-        ("kernel_size", "label_kernel_of", 1, 21, 2, 0, 11),
-        ("blend_smoothing", "label_blend_smoothing", 0, 8, .2, 1, 2.),
-    ),
-    "openfocus_b": (
-        ("kernel_size", "label_kernel_of", 1, 21, 2, 0, 11),
-        ("depth_smoothing", "label_depth_smoothing", 0, 8, .2, 1, 1.2),
-    ),
-    "openfocus_c": (
-        ("blend_smoothing", "label_blend_smoothing", 0, 8, .2, 1, 3.),
-    ),
-}
+from constants import METHOD_FUSION_PARAMS
+from utils.validators import normalize_kernel_size
 
 
 class CompareDialog(QDialog):
@@ -380,7 +363,7 @@ class CompareDialog(QDialog):
     def _initial_params(self, method):
         window = self.window_main
         params = {}
-        for key, _label, lo, hi, _step, decimals, default in METHOD_PARAMS.get(method, ()):
+        for key, _label, lo, hi, _step, decimals, default in METHOD_FUSION_PARAMS.get(method, ()):
             value = default
             if key == "kernel_size" and hasattr(window, "kernel_for_method"):
                 value = window.kernel_for_method(method)
@@ -419,7 +402,7 @@ class CompareDialog(QDialog):
             title.setFont(font)
             row.addWidget(title)
             self.param_widgets[method] = {}
-            for key, label_key, lo, hi, step, decimals, _default in METHOD_PARAMS.get(method, ()):
+            for key, label_key, lo, hi, step, decimals, _default in METHOD_FUSION_PARAMS.get(method, ()):
                 caption = QLabel(trans.t(label_key), group)
                 spin = StepperSpinBox(group, minimum=lo, maximum=hi, step=step,
                                       decimals=decimals, value=params[key])
@@ -768,7 +751,7 @@ class CompareDialog(QDialog):
             "stack_reverse_order": bool(getattr(window, "stack_reverse_order", False)),
             "dtcwt_levels": int(getattr(window, "dtcwt_levels", 4)),
             "ai_mode": getattr(window, "ai_mode", "soft"),
-            "kernels": {m: window.kernel_for_method(m) for m in METHOD_PARAMS
+            "kernels": {m: window.kernel_for_method(m) for m in METHOD_FUSION_PARAMS
                         if hasattr(window, "kernel_for_method")},
             "smoothing": {m: window.smoothing_for_method(m)
                           for m in ("openfocus_a", "openfocus_b", "openfocus_c")

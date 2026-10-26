@@ -434,24 +434,6 @@ def test_retouch_paints_a_locked_frame(qapp):
         dlg.deleteLater()
 
 
-def test_depth_dialog_has_a_live_3d_tab(qapp):
-    """The 3D surface renders inside the dialog, not only on export."""
-    import numpy as np
-
-    from widgets.depth_surface import DepthSurface
-
-    surf = DepthSurface()
-    try:
-        surf.resize(300, 220)
-        assert surf._height is None
-        yy, xx = np.mgrid[0:60, 0:80]
-        height = ((np.sin(xx / 8.0) + 1) / 2).astype(np.float32)
-        surf.set_surface(height)
-        surf.set_relief(0.4)
-        surf.set_invert(True)
-        surf.grab()  # must not raise
-    finally:
-        surf.deleteLater()
 
 
 def test_theme_bound_styles_are_strings_and_follow_the_theme():
@@ -574,11 +556,87 @@ def test_batch_hides_parameters_the_method_ignores(qapp):
         qapp.processEvents()
         assert not dlg.kernel_spin.isVisible()
         assert not dlg.smooth_spin.isVisible()
+        assert not dlg.levels_spin.isVisible()
+        assert dlg.ai_mode_combo.isVisible()
         dlg.fusion_combo.setCurrentIndex(
             dlg.fusion_combo.findData("openfocus_b"))
         qapp.processEvents()
         assert dlg.kernel_spin.isVisible()
         assert dlg.smooth_spin.isVisible()
+        assert not dlg.levels_spin.isVisible()
+        assert not dlg.ai_mode_combo.isVisible()
+        dlg.fusion_combo.setCurrentIndex(
+            dlg.fusion_combo.findData("dtcwt"))
+        qapp.processEvents()
+        assert dlg.levels_spin.isVisible()
+        assert not dlg.kernel_spin.isVisible()
+        assert not dlg.smooth_spin.isVisible()
+    finally:
+        dlg.close()
+        dlg.deleteLater()
+
+
+def test_every_surface_exposes_the_same_algorithm_parameters(qapp):
+    """Main window, batch, compare and depth must agree with one contract.
+
+    Each surface used to decide for itself: DTCWT levels were editable only in
+    compare and depth, batch hid AI mode and levels, and batch offered OpenFocus
+    C a kernel its back-end ignores.
+    """
+    from constants import METHOD_FUSION_PARAMS
+    from dialogs.batch import BatchProcessingDialog
+    from dialogs.compare import METHOD_FUSION_PARAMS as COMPARE_PARAMS
+    from ui.right_panel import create_right_panel
+
+    methods = tuple(METHOD_FUSION_PARAMS)
+    assert COMPARE_PARAMS is METHOD_FUSION_PARAMS
+
+    components = create_right_panel()
+    dlg = BatchProcessingDialog(None)
+    try:
+        dlg.show()
+        qapp.processEvents()
+        for method in methods:
+            keys = {key for key, *_rest in METHOD_FUSION_PARAMS[method]}
+            dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData(method))
+            qapp.processEvents()
+            assert dlg.kernel_spin.isVisible() is ("kernel_size" in keys), method
+            assert dlg.smooth_spin.isVisible() is bool(
+                keys & {"blend_smoothing", "depth_smoothing"}), method
+            assert dlg.levels_spin.isVisible() is ("N" in keys), method
+            assert dlg.ai_mode_combo.isVisible() is (method == "stackmffv3"), method
+    finally:
+        dlg.close()
+        dlg.deleteLater()
+    for widget in (components.widget, components.splitter,
+                   components.smooth_widget, components.ai_mode_widget,
+                   components.depth_smooth_row, components.levels_row):
+        widget.deleteLater()
+
+
+def test_batch_ai_mode_survives_a_method_switch(qapp):
+    """Picking hard then visiting another method must not reset the choice."""
+    from dialogs.batch import BatchProcessingDialog
+
+    dlg = BatchProcessingDialog(None)
+    try:
+        dlg.show()
+        qapp.processEvents()
+        dlg.fusion_combo.setCurrentIndex(
+            dlg.fusion_combo.findData("stackmffv3"))
+        qapp.processEvents()
+        dlg.ai_mode_combo.setCurrentIndex(dlg.ai_mode_combo.findData("hard"))
+        dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("dtcwt"))
+        dlg.fusion_combo.setCurrentIndex(
+            dlg.fusion_combo.findData("stackmffv3"))
+        qapp.processEvents()
+        assert dlg.ai_mode_combo.currentData() == "hard"
+        params = dlg.get_processing_settings()["fusion_params"]
+        assert params["ai_mode"] == "hard"
+        dlg.fusion_combo.setCurrentIndex(
+            dlg.fusion_combo.findData("openfocus_c"))
+        qapp.processEvents()
+        assert "kernel_size" not in dlg.get_processing_settings()["fusion_params"]
     finally:
         dlg.close()
         dlg.deleteLater()
@@ -1826,28 +1884,68 @@ def test_menus_match_the_new_information_architecture():
                  "action_thread_settings", "action_ai_batch_settings"):
         assert gone not in settings, gone
 
-def test_depth_surface_detail_is_user_controlled():
-    """The 3D detail slider must change the working resolution live."""
-    from PyQt6.QtWidgets import QApplication
-
+def _checkerboard_depth_surface(block_size=1):
+    import numpy as np
     from widgets.depth_surface import DepthSurface
 
-    srf = DepthSurface()
+    yy, xx = np.indices((120, 160))
+    texture = np.zeros((120, 160, 3), np.uint8)
+    texture[..., 0] = ((xx // block_size + yy // block_size) % 2) * 240
+    texture[..., 2] = 240 - texture[..., 0]
+    surface = DepthSurface()
+    surface.resize(420, 320)
+    surface.set_surface(np.full((120, 160), 0.5, np.float32), texture)
+    surface.show()
+    return surface
+
+
+def _depth_texture_contrast(image):
+    import numpy as np
+    sample = image[100:220, 120:300].astype(np.int16)
+    return np.abs(sample[..., 0] - sample[..., 2])
+
+
+def test_depth_surface_detail_changes_settled_preview_pixels(qapp):
+    import numpy as np
+    from utils.image_utils import pixmap_to_cv2
+
+    surface = _checkerboard_depth_surface()
     try:
-        srf.resize(400, 300)
-        import numpy as np
-        srf.set_surface(np.full((300, 400), 0.5, np.float32))
-        srf.set_detail(40)
-        assert srf._mesh_step == 40
-        srf.set_detail(100)
-        assert srf._mesh_step == 100
-        # The cache must be dropped when detail changes, or the slider would
-        # have no visible effect.
-        srf._cache = None
-        srf.set_detail(64)
-        assert srf._cache is None
+        surface.set_detail(20)
+        low = pixmap_to_cv2(surface.grab())
+        surface.set_detail(100)
+        high = pixmap_to_cv2(surface.grab())
+        assert _depth_texture_contrast(low).max() < 20
+        sharp = _depth_texture_contrast(high)
+        assert np.count_nonzero(sharp > 100) > sharp.size // 3
+        surface.set_detail(20)
+        np.testing.assert_array_equal(pixmap_to_cv2(surface.grab()), low)
     finally:
-        srf.deleteLater()
+        surface.close()
+        surface.deleteLater()
+
+
+def test_depth_surface_drag_restores_selected_preview_detail(qapp):
+    import numpy as np
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from utils.image_utils import pixmap_to_cv2
+
+    for detail, block_size in ((40, 2), (100, 1)):
+        surface = _checkerboard_depth_surface(block_size)
+        try:
+            surface.set_detail(detail)
+            settled = pixmap_to_cv2(surface.grab())
+            position = surface.rect().center()
+            QTest.mousePress(surface, Qt.MouseButton.LeftButton, pos=position)
+            moving = pixmap_to_cv2(surface.grab())
+            assert (_depth_texture_contrast(settled).max()
+                    > 2 * _depth_texture_contrast(moving).max() + 5)
+            QTest.mouseRelease(surface, Qt.MouseButton.LeftButton, pos=position)
+            np.testing.assert_array_equal(pixmap_to_cv2(surface.grab()), settled)
+        finally:
+            surface.close()
+            surface.deleteLater()
 
 
 def test_feedback_dialog_embeds_the_session_log(qapp):

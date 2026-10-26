@@ -402,9 +402,32 @@ class BatchProcessingDialog(QDialog):
         params.addWidget(self.smooth_spin, 1, 1,
                          Qt.AlignmentFlag.AlignLeft)
 
+        # DTCWT decomposition depth: a real parameter of that method, so batch
+        # exposes it instead of silently rendering at the default.
+        self.levels_label = QLabel(trans.t('compare_levels'))
+        self.levels_label.setToolTip(trans.t('label_levels_hint'))
+        params.addWidget(self.levels_label, 2, 0)
+        self.levels_spin = StepperSpinBox(
+            minimum=1, maximum=6, step=1, decimals=0, value=4)
+        self.levels_spin.setMinimumWidth(96)
+        self.levels_spin.setToolTip(trans.t('label_levels_hint'))
+        params.addWidget(self.levels_spin, 2, 1,
+                         Qt.AlignmentFlag.AlignLeft)
+
+        # StackMFF V3 output mode: soft probability blend or hard frame pick.
+        self.ai_mode_label = QLabel(trans.t('label_ai_mode'))
+        self.ai_mode_label.setToolTip(trans.t('label_ai_mode_hint'))
+        params.addWidget(self.ai_mode_label, 3, 0)
+        self.ai_mode_combo = QComboBox()
+        self.ai_mode_combo.addItem(trans.t('radio_ai_soft'), "soft")
+        self.ai_mode_combo.addItem(trans.t('radio_ai_hard'), "hard")
+        self.ai_mode_combo.setToolTip(trans.t('label_ai_mode_hint'))
+        params.addWidget(self.ai_mode_combo, 3, 1,
+                         Qt.AlignmentFlag.AlignLeft)
+
         self.downscale_label = QLabel(trans.t('batch_downscale'))
         self.downscale_label.setToolTip(trans.t('batch_downscale_hint'))
-        params.addWidget(self.downscale_label, 2, 0)
+        params.addWidget(self.downscale_label, 4, 0)
         scale_row = QHBoxLayout()
         self.downscale_slider = QSlider(Qt.Orientation.Horizontal)
         self.downscale_slider.setRange(20, 100)
@@ -419,7 +442,7 @@ class BatchProcessingDialog(QDialog):
             lambda v: self.downscale_value.setText(f"{v}%"))
         scale_row.addWidget(self.downscale_slider, 1)
         scale_row.addWidget(self.downscale_value)
-        params.addLayout(scale_row, 2, 1)
+        params.addLayout(scale_row, 4, 1)
         options_layout.addLayout(params)
 
         # --- Options -----------------------------------------------------
@@ -1129,9 +1152,11 @@ class BatchProcessingDialog(QDialog):
         """Start from the main window's current settings (it is a batch run by
         default), but let the user change every one of them here."""
         window = self.parent_window
+        self._ai_mode = "soft"
         if window is None:
             self.kernel_spin.setValue(11)
             self.smooth_spin.setValue(2.0)
+            self.levels_spin.setValue(4)
             return
         try:
             code = window.current_fusion_method()
@@ -1145,15 +1170,22 @@ class BatchProcessingDialog(QDialog):
             align = "none"
         aidx = self.align_combo.findData(align)
         self.align_combo.setCurrentIndex(max(0, aidx))
-        slider = getattr(window, "slider_smooth", None)
-        if slider is not None:
-            self.kernel_spin.setValue(float(slider.value()))
+        kernel_for = getattr(window, "kernel_for_method", None)
+        if callable(kernel_for):
+            try:
+                self.kernel_spin.setValue(float(kernel_for(code)))
+            except Exception:
+                pass
         smoothing_for = getattr(window, "smoothing_for_method", None)
         if callable(smoothing_for):
             try:
                 self.smooth_spin.setValue(float(smoothing_for(code)))
             except Exception:
                 pass
+        self.levels_spin.setValue(int(getattr(window, "dtcwt_levels", 4)))
+        self._ai_mode = str(getattr(window, "ai_mode", "soft") or "soft")
+        self.ai_mode_combo.setCurrentIndex(
+            max(0, self.ai_mode_combo.findData(self._ai_mode)))
         self.chk_reverse_order.setChecked(
             bool(getattr(window, "stack_reverse_order", False)))
         getter = getattr(window, "brightness_option_for", None)
@@ -1173,11 +1205,13 @@ class BatchProcessingDialog(QDialog):
 
     def _sync_method_controls(self) -> None:
         """Show only the parameters the chosen method actually uses."""
+        from constants import METHOD_FUSION_PARAMS, METHOD_OUTPUT_MODES
         method = self.fusion_combo.currentData()
-        uses_kernel = method in ("guided_filter", "dct", "gfgfgf",
-                                 "openfocus_a", "openfocus_b", "openfocus_c")
-        uses_smoothing = method in ("openfocus_a", "openfocus_b",
-                                    "openfocus_c")
+        keys = {key for key, *_rest in METHOD_FUSION_PARAMS.get(method, ())}
+        uses_kernel = "kernel_size" in keys
+        uses_smoothing = bool(keys & {"blend_smoothing", "depth_smoothing"})
+        uses_levels = "N" in keys
+        uses_ai_mode = method in METHOD_OUTPUT_MODES
         # Hide the rows outright rather than grey them out: a disabled stepper
         # still shows a value ("Kernel: 31") for a parameter the chosen method
         # never reads, which invites the user to try to change it.
@@ -1187,17 +1221,30 @@ class BatchProcessingDialog(QDialog):
         self.smooth_label.setVisible(uses_smoothing)
         self.smooth_spin.setVisible(uses_smoothing)
         self.smooth_spin.setEnabled(uses_smoothing)
+        self.levels_label.setVisible(uses_levels)
+        self.levels_spin.setVisible(uses_levels)
+        self.levels_spin.setEnabled(uses_levels)
+        self.ai_mode_label.setVisible(uses_ai_mode)
+        self.ai_mode_combo.setVisible(uses_ai_mode)
+        self.ai_mode_combo.setEnabled(uses_ai_mode)
         # The "Parameters" heading only earns its line when a method-specific
         # parameter is on screen; with just the downscale slider it was a
         # section title above a single row.
         rule = getattr(self, "params_rule", None)
         if rule is not None:
-            rule.setVisible(uses_kernel or uses_smoothing)
+            rule.setVisible(uses_kernel or uses_smoothing or uses_levels
+                            or uses_ai_mode)
         if uses_smoothing:
             is_b = method == "openfocus_b"
             key = ("label_depth_smoothing" if is_b
                    else "label_blend_smoothing")
             self.smooth_label.setText(trans.t(key))
+        if uses_kernel:
+            label_key = next(label for key, label, *_rest
+                             in METHOD_FUSION_PARAMS[method] if key == "kernel_size")
+            self.kernel_label.setText(trans.t(label_key))
+        # The AI mode combo keeps the user's selection: only _seed_from_parent
+        # initialises it, so switching methods cannot silently reset it.
         # Align-only output IS the aligned frames, so the option is forced on.
         # Reflecting that in the widget keeps the dialog honest: unticking it
         # used to change nothing in the result.
@@ -1221,18 +1268,24 @@ class BatchProcessingDialog(QDialog):
         fusion_method = self.fusion_combo.currentData() or "none"
         fusion_params = {}
 
+        from constants import METHOD_FUSION_PARAMS
+        method_keys = {key for key, *_rest in METHOD_FUSION_PARAMS.get(
+            fusion_method, ())}
         kernel_value = max(1, int(self.kernel_spin.value()))
         if kernel_value % 2 == 0:
             kernel_value = max(1, kernel_value - 1)
-        if fusion_method in ("guided_filter", "dct", "gfgfgf",
-                             "openfocus_a", "openfocus_b", "openfocus_c"):
+        if "kernel_size" in method_keys:
             fusion_params["kernel_size"] = kernel_value
+        if "N" in method_keys:
+            fusion_params["N"] = int(self.levels_spin.value())
+        if fusion_method in ("stackmffv3",):
+            fusion_params["ai_mode"] = self.ai_mode_combo.currentData() or "soft"
         fusion_params["base_frame"] = ("last" if self.chk_base_correct.isChecked()
                                        else "none")
         fusion_params["exposure_match"] = self.chk_exposure_match.isChecked()
-        if fusion_method == "openfocus_b":
+        if "depth_smoothing" in method_keys:
             fusion_params["depth_smoothing"] = float(self.smooth_spin.value())
-        elif fusion_method in ("openfocus_a", "openfocus_c"):
+        elif "blend_smoothing" in method_keys:
             fusion_params["blend_smoothing"] = float(self.smooth_spin.value())
         fusion_params["sort_mode"] = ("desc" if self.chk_reverse_order.isChecked()
                                       else "asc")

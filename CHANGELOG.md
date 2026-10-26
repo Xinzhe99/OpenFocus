@@ -6,6 +6,45 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **AI depth maps offer the same soft/hard output choice as AI fusion.** The
+  measure dialog shows Soft blend (the default) or Hard pick beside the AI
+  explanation. Soft reports the probability-weighted continuous frame position;
+  Hard reports the most probable frame per pixel. The choice is local to the
+  depth dialog and does not change the main window's AI output mode. On the
+  six-frame demo stack the soft map had 727,729 distinct values against 6 for
+  the hard pick (one per frame), confirming both modes reach the measurement.
+- **DTCWT depth maps follow the main window's decomposition depth.** The dialog
+  no longer offers a wavelet-level control the main window does not have; the
+  level used for a render is the level used for its depth map.
+- **Keyboard navigation in the output list updates the result view.** Moving
+  with Up/Down changes the current output row and now displays that output, as
+  a mouse click already did, including its recorded source and annotations.
+- **3D preview detail applies while stationary as well as during rotation.**
+  Settled frames use the selected sampling percentage instead of forcing
+  100%. Camera motion temporarily uses a coarser sample and restores the
+  selected quality on release; the cache distinguishes those states.
+  The depth map, exported mesh dimensions and texture are unchanged by this
+  display control. Image-based regressions cover the visible detail change,
+  drag/release restoration and export-data invariants.
+- **Depth maps require Compute for every measure.** Opening the dialog, changing
+  sources or registration, switching measures and editing parameters no longer
+  starts or queues a calculation. Per-source, per-method parameter drafts sit
+  directly below the measure selector, use the displayed kernel/window (DTCWT
+  follows the main window's depth instead of adding a level control), and leave
+  the main window's persisted parameters unchanged.
+  Changes cancel active work cooperatively, label the previous 2D map as stale,
+  clear its 3D surface and block every export until a current computation succeeds.
+  Compute remains visible, with calculation, cancellation and export sharing
+  consistent busy states and protection against late worker signals.
+  Closing now connects idempotent worker retirement before checking for exit,
+  so a thread finishing during detach cannot leave an orphan reference behind.
+- **3D depth textures default to true image colors.** Automatic selection uses
+  the associated output only when its identity and image domain/ROI match the
+  completed map, otherwise the first participating frame in the completed
+  calculation's actual order and registration domain. The resolved image is named in the UI
+  and shared by the 3D preview and OBJ texture PNG. Depth pseudocolor remains an
+  explicit choice; the independent 2D palette and Gamma do not recolor photos.
+  The depth controls and workflow documentation are updated in all twelve languages.
 - **Per-method parameters survive a restart.** The brightness options
   (exposure match / base correction), the OpenFocus A/B/C smoothing sigma and
   the per-mode kernel size are remembered in QSettings
@@ -28,6 +67,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (it used to keep the smoothing and brightness overrides).
 
 ### Changed
+- **Every algorithm-selecting surface exposes the same parameters.** The main
+  window, batch dialog, compare dialog and depth dialog now read one table
+  (`constants.METHOD_FUSION_PARAMS`). DTCWT levels became editable in the main
+  window, which previously fixed them at 4 while the render consumed the value;
+  batch gained DTCWT levels and the AI soft/hard output mode, and no longer shows
+  OpenFocus C a kernel its back-end ignores. Batch dispatch also stops passing a
+  kernel to OpenFocus C. Depth maps keep their own smaller table because they
+  consume measurement parameters, not fusion post-processing.
 - **DTCWT colour reconstruction runs in a bounded, ordered pool.** The three
   channels still run in order and each channel's frames are consumed in frame
   order, so every float32 addition happens in the same sequence as before;
@@ -55,6 +102,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   0.6 s module import, which is warmed when the dialog opens.
 
 ### Verification
+- After the depth-dialog repair, the complete Windows CPU suite passed:
+  **1105 passed, 12 skipped**, with two Pillow TIFF metadata warnings.
+  Six real depth backends, native Chinese/English/German/Japanese layouts in
+  both themes, 150% DPI, cooperative cancellation/close, and Unicode OBJ
+  texture round-trips were exercised.
 - New `tests/test_parameter_memory.py` (14 cases), `tests/test_dtcwt_parallel.py`
   (9), `tests/test_loader_parallel.py` (13) and `tests/test_batch_drag_drop.py`
   (5) cover the codecs, restart and project precedence, bit-identical DTCWT

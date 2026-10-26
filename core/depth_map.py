@@ -211,38 +211,39 @@ def _plan_neural_depth(images, model_path, use_gpu, thread_count,
 
 
 def _measure_stackmffv3(images, progress, should_cancel,
-                       model_path=None, use_gpu=False, execution_plan=None):
-    """Continuous expected frame position; retain both inference scales."""
-    from fusion_methods.stackmffv3 import model_probabilities
+                       model_path=None, use_gpu=False, execution_plan=None,
+                       mode="soft"):
+    """Soft: expected frame position. Hard: per-pixel most probable frame."""
+    from fusion_methods.stackmffv3 import model_probabilities, normalize_mode
 
+    mode = normalize_mode(mode)
     h, w = images[0].shape[:2]
     n = len(images)
     overlap, coords = _neural_depth_tiles(images)
     indices = np.arange(n, dtype=np.float32)[:, None, None]
+
+    def measure(crops):
+        probabilities = model_probabilities(
+            crops, model_path, use_gpu, sigma=0.0 if mode == "hard" else 0.5,
+            should_cancel=should_cancel, execution_plan=execution_plan)
+        if mode == "hard":
+            return probabilities.argmax(0).astype(np.float32)
+        return (probabilities * indices).sum(0).astype(np.float32)
+
     _tick(progress, 0, len(coords), should_cancel)
     if len(coords) == 1:
-        probabilities = model_probabilities(
-            images, model_path, use_gpu, sigma=0.5,
-            should_cancel=should_cancel, execution_plan=execution_plan)
-        _tick(None, 0, 1, should_cancel)
-        idx = (probabilities * indices).sum(0)
-        result = np.clip(idx, 0, n - 1).astype(np.float32)
+        result = measure(images)
         _tick(progress, 1, 1, should_cancel)
-        return result
+        return np.clip(result, 0, n - 1).astype(np.float32)
 
     acc = np.zeros((h, w), np.float32)
     wsum = np.zeros((h, w), np.float32)
     for done, (x0, y0, x1, y1) in enumerate(coords):
         _tick(None, done, len(coords), should_cancel)
         crops = [img[y0:y1, x0:x1] for img in images]
-        probabilities = model_probabilities(
-            crops, model_path, use_gpu, sigma=0.5,
-            should_cancel=should_cancel, execution_plan=execution_plan)
-        fmap = (probabilities * indices).sum(0)
-        del probabilities
+        fmap = measure(crops)
         fh, fw = y1 - y0, x1 - x0
         weight = _tile_weight(x0, y0, x1, y1, fw, fh, w, h, overlap)
-        _tick(None, done, len(coords), should_cancel)
         acc[y0:y1, x0:x1] += fmap * weight
         wsum[y0:y1, x0:x1] += weight
         _tick(progress, done + 1, len(coords), should_cancel)
@@ -323,6 +324,7 @@ def compute_focus_index(images: Sequence[np.ndarray],
                          progress_callback: Optional[Callable] = None,
                          should_cancel: Optional[Callable[[], bool]] = None,
                          nlevels: int = 4,
+                         ai_mode: str = "soft",
                          thread_count: Optional[int] = None,
                          resource_preference: str = 'balanced',
                          ) -> np.ndarray:
@@ -373,7 +375,7 @@ def compute_focus_index(images: Sequence[np.ndarray],
             elif method == "stackmffv3":
                 idx = _measure_stackmffv3(
                     images, progress_callback, should_cancel, model_path=model_path,
-                    use_gpu=use_gpu, execution_plan=plan)
+                    use_gpu=use_gpu, execution_plan=plan, mode=ai_mode)
             elif method == "openfocus_b":
                 idx = _measure_openfocus(images, progress_callback, should_cancel,
                                          kernel_size=kernel)

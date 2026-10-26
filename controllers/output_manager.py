@@ -636,6 +636,14 @@ class OutputManager:
         if row >= 0:
             self.window.result_slider.setValue(row)
 
+    def display_current_output_row(self, row: int) -> None:
+        """Show the row selected with the keyboard, as a click already does."""
+        if row < 0:
+            return
+        item = self.window.output_list.item(row)
+        if item is not None:
+            self.display_output_image_in_result_view(item)
+
     # ------------------------------------------------------------------
     # Context menu & list operations
     # ------------------------------------------------------------------

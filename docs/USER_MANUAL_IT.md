@@ -197,13 +197,33 @@ automatica) e `--scale-um <um/px>`.
 
 ### Mappa di profondità (posizione di fuoco)
 
-**Strumenti → Mappa di profondità…** apre un visualizzatore che calcola, per ogni pixel,
-quale frame dello stack è a fuoco — il segnale di pseudo-profondità su cui la fusione
-stessa decide — usando la misura di attività del metodo selezionato. Sono disponibili
-solo i metodi che decidono un indice (DCT, DTCWT, GFG-FGF, StackMFF-V3, OpenFocus B/C);
-le fusioni a media ponderata (Filtro guidato, OpenFocus A) non hanno una decisione per
-pixel e non compaiono nell'elenco. La mappa è mostrata in falsi colori con una legenda
-(frame 0 → N-1) e può essere personalizzata in tempo reale:
+**Strumenti → Mappa di profondità…** stima le posizioni di fuoco con la misura di attività
+del metodo scelto (DCT, DTCWT, GFG-FGF, StackMFF V3, OpenFocus B/C). Non è una superficie
+misurata né una mappa esatta dell’origine dei pixel fusi. Scegli i fotogrammi attualmente
+selezionati o la sorgente registrata dell’output scelto; una provenienza mancante non viene
+sostituita con lo stack attuale. Calcolo, trama ed esportazione restano legati alla stessa
+istantanea della sorgente.
+
+Tutti e sei i metodi richiedono un clic esplicito su **Calcola**. Aprire la finestra o
+cambiare misura, sorgente, registrazione o parametri non avvia il calcolo. L’editor si
+trova subito sotto il selettore della misura: i kernel mediano DCT e iniziale GFG accettano
+dispari da 1 a 51 (predefinito 7); B usa una finestra di varianza e C una di energia
+passa-banda, dispari da 1 a 21 px (predefinito 11). DTCWT qui non offre livelli: segue la
+profondità di decomposizione della finestra principale, come in un render. StackMFF V3
+mostra invece una propria modalità di output IA (miscelazione morbida per impostazione
+predefinita, o selezione netta) e una spiegazione, senza kernel numerico: la miscelazione
+morbida stima una posizione continua ponderata per probabilità, la selezione netta prende
+il fotogramma più probabile per pixel. Nessuna delle due è una distanza fisica.
+Le bozze partono dai parametri dell’output corrispondente o dai valori memorizzati per
+metodo nella finestra principale. Restano memorizzate per sorgente e metodo durante questa
+apertura, senza modificare la finestra principale, il progetto o l’output registrato.
+
+Cambiare le impostazioni di calcolo contrassegna la vecchia mappa 2D come **non aggiornata**,
+svuota la superficie 3D e blocca ogni esportazione, inclusi dati grezzi, profondità fisica
+e OBJ, finché un nuovo calcolo non riesce. Il lavoro in corso viene annullato in modo
+cooperativo. Poi occorre premere di nuovo **Calcola**: non si accodano né si riavviano
+calcoli automaticamente. Calcola resta visibile ed è disattivato durante calcolo,
+annullamento ed esportazione del modello.
 
 - **Mappa colori**: scala di grigi (standard per le pubblicazioni) più 15 palette
   scientifiche (Turbo, Viridis, Magma, …) e le tue — *Nuovo schema personalizzato…*
@@ -213,20 +233,23 @@ pixel e non compaiono nell'elenco. La mappa è mostrata in falsi colori con una 
 - **Inverti / Gamma / Levigatura**: inverti l'asse di profondità, ribilancia il tono
   (gamma < 1 schiarisce gli indici bassi) e rimuovi la maculatura con un passaggio
   che tiene conto dei bordi.
-- **Sovrapponi all'immagine fusa**: miscela la mappa colorata sul risultato della
-  fusione con opacità regolabile, per vedere esattamente dove ha vinto ciascun frame.
-- **Esportazione**: *Salva colorata…* (PNG/JPEG/TIFF/BMP) oppure *Salva grezza a 16 bit…*
-  (la mappa degli indici normalizzata a piena precisione, ideale per analisi successive
-  in ImageJ/Fiji/python).
-- **Modello 3D**: *Esporta 3D (OBJ)…* scrive una superficie texturizzata costruita dalla
-  mappa di profondità e dal risultato fuso come `<name>.obj`, `<name>.mtl` e
-  `<name>_texture.png`, file che si aprono in Blender, MeshLab o Windows 3D Viewer.
-  La mesh viene ridotta a non più di 600 vertici sul lato più lungo e leggermente
-  ripulita dalla maculatura, dopo aver applicato il valore Levigatura indicato sopra.
-  *Rilievo 3D* (1–100 %, predefinito 15 %) imposta l'altezza della superficie come
-  percentuale rispetto al lato più lungo dell'immagine e viene ricordato. *Inverti asse
-  di profondità* scambia quale estremità dello stack è vicina. La texture è il risultato
-  fuso, oppure il primo frame dello stack se non esiste un risultato della stessa dimensione.
+- **Sovrapposizione**: miscela la mappa 2D sull’output associato con opacità regolabile,
+  solo quando i domini delle coordinate corrispondono.
+- **Esportazione**: la versione colorata supporta PNG/JPEG/TIFF/BMP. Il TIFF grezzo a
+  16 bit codifica indici di fuoco normalizzati da 0 a 65535; non è un dato in virgola mobile
+  senza perdita né una distanza fisica. JPEG/BMP vengono rifiutati per i dati grezzi.
+- **Modello 3D / Trama 3D**: il lato maggiore della mesh ha 600 vertici per impostazione
+  predefinita. Ogni nuova apertura seleziona **Automatica (colori reali)**: usa l’output
+  associato solo se identità e dominio delle coordinate/ROI corrispondono alla mappa
+  completata. Altrimenti usa il primo fotogramma partecipante al calcolo terminato, dopo
+  la registrazione e nell’ordine effettivamente usato. Il nome dell’output o fotogramma
+  utilizzato è visibile. Si possono scegliere esplicitamente l’output corrispondente,
+  un fotogramma partecipante o **Falsi colori di profondità**; una trama non disponibile
+  viene segnalata. Anteprima 3D e PNG della trama OBJ condividono la stessa immagine.
+  La mappa 2D mantiene la propria palette e sovrapposizione: palette e Gamma non ricolorano
+  le foto. Solo la trama in falsi colori segue palette, Gamma e inversione. L’anteprima
+  ferma e l’esportazione condividono lo stesso campo di altezze campionato, senza ulteriore
+  levigatura nascosta. Il rilievo relativo è espresso in unità dell’immagine.
 
 Il calcolo avviene in background, con avanzamento e possibilità di annullamento; il
 metodo AI riutilizza la stessa tassellatura sicura per la memoria della fusione AI, così
@@ -429,7 +452,8 @@ ha caratteristiche diverse, adatte a tipi di immagine differenti.
 - **Regola di fusione**: una decisione per pixel e per livello, valida per tutti gli
   orientamenti e i canali di colore (a N vie, con verifica di coerenza a maggioranza);
   la banda passa-basso segue la decisione più grossolana invece di mediare tutti i frame
-- **Parametro**: nessuno (il cursore del kernel è disattivato)
+- **Parametro**: livelli wavelet (1–6, predefinito 4) nel pannello destro.
+  Il metodo non usa un kernel spaziale, quindi il cursore è nascosto.
 
 ### GFG-FGF (Gradient a quattro vicinati di tipo gaussiano + filtro guidato rapido)
 

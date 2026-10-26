@@ -219,6 +219,27 @@ position. Choose either the current checked frames or the selected output's
 recorded source. Missing historical provenance is never replaced with the
 current stack. The source and texture stay bound to that snapshot.
 
+All six methods — DCT, DTCWT, GFG-FGF, OpenFocus B, OpenFocus C and StackMFF V3 —
+require an explicit **Compute** click. Opening the dialog or changing the measure,
+source, registration or parameters never starts computation. The parameter editor
+appears directly below the measure selector: DCT median kernel and GFG initial kernel
+use odd values 1–51 (default 7); OpenFocus B uses a variance window and OpenFocus C a
+band-pass energy window, both odd 1–21 px (default 11). DTCWT has no level control
+here: it follows the main window's decomposition depth, as in a render. StackMFF V3
+shows its own AI output mode (Soft blend by default, or Hard pick) and an explanation
+instead of a numeric kernel: the map reports a continuous frame position, not a
+physical distance. Soft uses the probability-weighted position; Hard uses the most
+probable frame per pixel.
+Drafts start from the matching output's parameters or the main window's remembered
+method settings. They are remembered per source and method while this dialog is
+open; editing them does not change the main window, project or recorded output.
+
+Changing calculation settings marks the previous 2D map as **not current**, clears
+the 3D surface and blocks every export, including colorized, raw, physical and OBJ,
+until a new computation succeeds. An active calculation is cancelled cooperatively;
+after cancellation finishes, press **Compute** again. No next calculation is queued.
+Compute stays visible and is disabled while computing, cancelling or exporting.
+
 - **Color map**: grayscale (publication standard) plus 15 scientific
   palettes (Turbo, Viridis, Magma, …) and
   your own — *New Custom Scheme…* builds a gradient from any number of
@@ -234,11 +255,18 @@ current stack. The source and texture stay bound to that snapshot.
   then confirm the original capture mapping. Excluded frames keep their gaps.
   Float32 TIFF stores micrometres, NaN for missing data, and source metadata.
   A physical OBJ also needs XY calibration; it uses a 1:1 physical Z scale.
-- **3D model**: choose the grid's longest side (600 vertices by default) and an
-  explicit texture: associated output, participating frame or depth colors.
-  The settled preview and export share the same sampled height field without
-  hidden extra smoothing. Interaction quality only simplifies camera motion.
-  Relative relief remains a visualization in image units.
+- **3D model / 3D texture**: choose the grid's longest side (600 vertices by default).
+  Each newly opened dialog defaults to **Automatic (true color)**: use the associated
+  output only when its identity and coordinates/ROI match the completed map;
+  otherwise use the first participating frame from that completed calculation,
+  after registration and any frame reordering. The resolved output or frame name
+  is shown. You can explicitly choose the matching output, a participating frame,
+  or **Depth pseudocolor**; unavailable images are reported, never replaced with
+  unrelated outputs. This texture is shared by the 3D preview and the OBJ texture
+  PNG. The 2D map keeps its own color map and overlay: changing its palette or Gamma
+  does not recolor a true-color texture. Explicit pseudocolor follows the palette,
+  Gamma and inversion. The settled preview and export share the sampled height
+  field without hidden extra smoothing. Relative relief is in image units.
 - **Model export**: OBJ, MTL, texture PNG and JSON metadata are a file group;
   keep them together. Export runs in the background. Conflicts are checked for
   every member, preparation is staged, cancellation keeps existing files, and
@@ -428,7 +456,8 @@ OpenFocus offers eight fusion algorithms (plus an alignment-only mode). Each has
 - **Fusion rule**: one decision per pixel and level for all orientations and
   colour channels (N-way, majority-consistency checked); the low-pass band
   follows the coarsest decision instead of averaging every frame
-- **Parameter**: none (the kernel slider is disabled)
+- **Parameter**: Wavelet levels (1–6, default 4) in the right panel. There is
+  no spatial kernel, so the kernel slider is hidden for this method.
 
 ### GFG-FGF (Gaussian-like Four-neighbourhood Gradient + Fast Guided Filter)
 

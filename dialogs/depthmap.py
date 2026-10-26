@@ -11,7 +11,7 @@ import os
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QThread, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QSignalBlocker, QThread, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -35,11 +35,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from constants import KERNEL_MODES, METHOD_KERNEL_MODES
 from locales import trans
 from widgets.stepper import StepperSpinBox
 from utils import colormap as cmap
 from utils.image_utils import imwrite_auto
 from utils.settings_store import get_last_dialog_dir, get_settings, set_last_dialog_dir
+from utils.validators import normalize_kernel_size
 
 # 仅收录"按索引决策"的融合方法（与融合下拉同序；加权平均类无逐像素
 # 决策，不提供深度图——guided_filter / openfocus_a 不在此列）
@@ -54,12 +56,29 @@ _METHOD_KEYS = (
 
 _DEFAULT_METHOD_COLORMAP = "turbo"
 
-# 打开对话框时自动计算的方法（秒级）；dtcwt/stackmffv3 分钟级，不自动跑
-_FAST_AUTO_METHODS = {"dct", "gfgfgf", "openfocus_b", "openfocus_c"}
 
 # 对话框关闭时仍在跑的 worker 放这里保活：QThread 对象被销毁而线程仍在
 # 运行会直接 abort 整个进程（AI 推理可达数分钟，用户关窗很正常）。
 _ORPHAN_WORKERS = set()
+
+
+def _orphan_worker(worker):
+    if worker is None:
+        return
+    worker.setParent(None)
+    _ORPHAN_WORKERS.add(worker)
+
+    def release():
+        if worker in _ORPHAN_WORKERS:
+            _ORPHAN_WORKERS.discard(worker)
+            worker.deleteLater()
+
+    # Connect before observing completion: the thread may finish at any point
+    # during detach. Both paths may fire, so release must be idempotent.
+    worker.finished.connect(release)
+    worker.cancel()
+    if not worker.isRunning():
+        release()
 
 
 class DepthWorker(QThread):
@@ -75,6 +94,7 @@ class DepthWorker(QThread):
         self._kernel_size = int(kernel_size) if kernel_size else 7
         self._cancelled = False
         self.nlevels = 4
+        self.ai_mode = "soft"
         self.source_frames = ()
         self.valid_mask = None
         self.alignment = "none"
@@ -92,6 +112,8 @@ class DepthWorker(QThread):
                 self._run_admitted()
         except RegistrationCancelled:
             self.failed.emit("cancelled")
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
     def _run_admitted(self):
         from core.depth_map import DepthMapCancelled, compute_focus_index
@@ -123,6 +145,7 @@ class DepthWorker(QThread):
                 progress_callback=lambda i, n: self.progress.emit(i, n),
                 should_cancel=lambda: self._cancelled,
                 nlevels=self.nlevels,
+                ai_mode=self.ai_mode,
                 thread_count=self.registration_settings.get("thread_count", 0),
                 resource_preference=self.registration_settings.get("resource_preference", "balanced"),
             )
@@ -337,7 +360,6 @@ class DepthMapDialog(QDialog):
         self._cancelling = False
         self._worker = None
         self._closing = False
-        self._pending_compute = False
         self._worker_outcome = None
         self._export_worker = None
         self._mesh_height = None
@@ -345,6 +367,15 @@ class DepthMapDialog(QDialog):
         self._map_valid_mask = None
         self._map_frames = []
         self._map_indices = []
+        self._map_names = []
+        self._map_context = None
+        self._map_output_texture = None
+        self._map_output_label = ""
+        self._map_source_mode = None
+        self._map_source_id = None
+        self._texture_description = ""
+        self._texture_identity = None
+        self._method_drafts = {}
         self._capture_sources()
         self._custom = self._load_custom_schemes()
         self._resize_timer = QTimer(self)
@@ -419,6 +450,11 @@ class DepthMapDialog(QDialog):
         surf_lay.addWidget(self.btn_surface_reset)
         self.tabs.addTab(surf_page, trans.t("depth_tab_3d"))
         pvlay.addWidget(self.tabs, 1)
+        self.lbl_map_state = QLabel(trans.t("depth_previous_map"))
+        self.lbl_map_state.setWordWrap(True)
+        self.lbl_map_state.setObjectName("mutedLabel")
+        self.lbl_map_state.hide()
+        pvlay.addWidget(self.lbl_map_state)
 
         self.legend = _GradientBar()
         pvlay.addWidget(self.legend)
@@ -426,6 +462,7 @@ class DepthMapDialog(QDialog):
 
         # ---- controls side ----
         side = QWidget()
+        self._side_controls = side
         form = QFormLayout(side)
         form.setContentsMargins(8, 0, 0, 0)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -451,16 +488,28 @@ class DepthMapDialog(QDialog):
         self.method_combo.setCurrentIndex(max(0, i))
         form.addRow(trans.t("depth_method"), self.method_combo)
 
-        # kernel 含义随方法不同（与主面板滑块同源语义）——只读说明行
-        self.lbl_kernel_info = QLabel("")
-        # Muted but readable: #999 on white is ~2.8:1, below the 4.5:1 needed
-        # Muted but readable: uses the palette's secondary text colour.
-        from ui.styles import CURRENT_THEME
-        from utils.design_tokens import palette
-        self.lbl_kernel_info.setStyleSheet(
-            f"color: {palette(CURRENT_THEME)['textMuted']};")
-        form.addRow("", self.lbl_kernel_info)
-        self._update_kernel_info()
+        self.kernel_label = QLabel()
+        self.kernel_spin = StepperSpinBox(minimum=1, maximum=51, step=2, value=7)
+        self.kernel_label.setBuddy(self.kernel_spin.lineEdit())
+        form.addRow(self.kernel_label, self.kernel_spin)
+        self.ai_mode_combo = QComboBox()
+        self.ai_mode_combo.addItem(trans.t("radio_ai_soft"), "soft")
+        self.ai_mode_combo.addItem(trans.t("radio_ai_hard"), "hard")
+        self.ai_mode_combo.setToolTip(trans.t("depth_ai_mode_hint"))
+        self.ai_mode_label = QLabel(trans.t("label_ai_mode"))
+        self.ai_mode_label.setBuddy(self.ai_mode_combo)
+        self.ai_mode_combo.setAccessibleName(trans.t("label_ai_mode"))
+        form.addRow(self.ai_mode_label, self.ai_mode_combo)
+        self.ai_note = QLabel(trans.t("depth_ai_note"))
+        self.ai_note.setToolTip(trans.t("depth_ai_note_hint"))
+        self.ai_note.setWordWrap(True)
+        self.ai_note.setObjectName("mutedLabel")
+        form.addRow(self.ai_note)
+        manual_hint = QLabel(trans.t("depth_manual_compute_hint"))
+        manual_hint.setWordWrap(True)
+        manual_hint.setObjectName("mutedLabel")
+        form.addRow(manual_hint)
+        self._sync_method_controls()
 
         self.map_combo = QComboBox()
         self._fill_colormaps()
@@ -516,8 +565,14 @@ class DepthMapDialog(QDialog):
                                         step=20, value=600)
         form.addRow(trans.t("depth_mesh_size"), self.mesh_size)
         self.texture_combo = QComboBox()
+        self.texture_combo.setToolTip(trans.t("depth_texture_hint"))
+        self.texture_combo.setAccessibleName(trans.t("depth_texture"))
         self._fill_textures()
         form.addRow(trans.t("depth_texture"), self.texture_combo)
+        self.lbl_texture_source = QLabel(trans.t("depth_no_map_yet"))
+        self.lbl_texture_source.setWordWrap(True)
+        self.lbl_texture_source.setObjectName("mutedLabel")
+        form.addRow(self.lbl_texture_source)
         self.btn_save_physical = QPushButton(trans.t("depth_save_physical"))
         self.btn_save_physical.clicked.connect(self._save_physical)
         form.addRow(self.btn_save_physical)
@@ -545,9 +600,6 @@ class DepthMapDialog(QDialog):
         self.lbl_source.setWordWrap(True)
         form.addRow(self.lbl_source)
 
-        self.status_lbl = QLabel("")
-        self.status_lbl.setWordWrap(True)
-        form.addRow(self.status_lbl)
         for combo in side.findChildren(QComboBox):
             combo.setSizeAdjustPolicy(
                 QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -561,6 +613,9 @@ class DepthMapDialog(QDialog):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         layout.addWidget(splitter, 1)
+        self.status_lbl = QLabel(trans.t("depth_no_map_yet"))
+        self.status_lbl.setWordWrap(True)
+        layout.addWidget(self.status_lbl)
 
         # ---- actions ----
         btns = QHBoxLayout()
@@ -568,7 +623,6 @@ class DepthMapDialog(QDialog):
         self.compute_btn.clicked.connect(self._compute)
         self.cancel_btn = QPushButton(trans.t("btn_cancel_compute"))
         self.cancel_btn.clicked.connect(self._cancel)
-        self.cancel_btn.setVisible(False)
         self.btn_save_color = QPushButton(trans.t("depth_save_color"))
         self.btn_save_color.clicked.connect(lambda: self._save(colorized=True))
         self.btn_save_raw = QPushButton(trans.t("depth_save_raw"))
@@ -595,15 +649,13 @@ class DepthMapDialog(QDialog):
         self.method_combo.currentIndexChanged.connect(self._on_method_changed)
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
         self.align_combo.currentIndexChanged.connect(self._on_method_changed)
+        self.kernel_spin.valueChanged.connect(self._on_parameter_changed)
+        self.ai_mode_combo.currentIndexChanged.connect(self._on_parameter_changed)
 
         self._load_prefs()
         self._update_overlay_availability()
         self._update_source_summary()
-        self._update_export_state()
-        # 打开即出图：经典方法秒级完成，直接算；DTCWT/AI 分钟级，留给用户决定
-        if (self._index01 is None and self._images()
-                and self.method_combo.currentData() in _FAST_AUTO_METHODS):
-            self._compute()
+        self._reconcile_controls()
 
     # ------------------------------------------------------------------
     def _apply_style(self):
@@ -634,8 +686,10 @@ class DepthMapDialog(QDialog):
         getter = getattr(win, "kernel_for_method", None)
         from utils.scalebar import effective_px_um
         self._current_pixel_size = effective_px_um(win)
-        self._kernels = {method: int(getter(method)) if callable(getter) else 7
-                         for method, _key in _METHOD_KEYS}
+        self._kernels = {
+            method: int(getter(method)) if callable(getter) else
+                    KERNEL_MODES[METHOD_KERNEL_MODES[method]][1]
+            for method, _key in _METHOD_KEYS if method in METHOD_KERNEL_MODES}
         output_list = getattr(win, "output_list", None)
         selected = output_list.selectedItems() if output_list is not None else []
         self._output_selected = bool(selected)
@@ -659,15 +713,23 @@ class DepthMapDialog(QDialog):
         self._update_overlay_availability()
 
     def _fill_textures(self):
-        self.texture_combo.blockSignals(True)
-        self.texture_combo.clear()
-        self.texture_combo.addItem(trans.t("depth_colormap"), "color")
-        if self._source_context() is not None:
-            self.texture_combo.addItem(trans.t("depth_source_from_output"), "output")
-        for index in range(len(self._images() or [])):
-            self.texture_combo.addItem(trans.t("compare_frame_of").format(
-                i=index + 1, n=len(self._images()), name=""), index)
-        self.texture_combo.blockSignals(False)
+        choice = self.texture_combo.currentData()
+        with QSignalBlocker(self.texture_combo):
+            self.texture_combo.clear()
+            self.texture_combo.addItem(trans.t("depth_texture_auto"), "auto")
+            if self._has_current_map():
+                if self._matching_texture() is not None:
+                    self.texture_combo.addItem(trans.t("depth_source_from_output"), "output")
+                for index, capture_index in enumerate(self._map_indices):
+                    name = self._map_names[index] if index < len(self._map_names) else ""
+                    self.texture_combo.addItem(trans.t("compare_frame_of").format(
+                        i=index + 1, n=len(self._map_frames), name=name),
+                        ("frame", self._map_source_id, capture_index))
+            self.texture_combo.addItem(trans.t("depth_texture_colormap"), "color")
+            selected = self.texture_combo.findData(choice)
+            self.texture_combo.setCurrentIndex(max(0, selected))
+        if hasattr(self, "lbl_texture_source") and not self._has_current_map():
+            self.lbl_texture_source.setText(trans.t("depth_no_map_yet"))
 
     def _capture_indices(self):
         context = self._source_context()
@@ -685,28 +747,50 @@ class DepthMapDialog(QDialog):
                               self.z_step.value() * unit, self.z_direction.currentData())
 
     def _pixel_size(self):
-        context = self._source_context()
+        context = self._map_context if self._index01 is not None else self._source_context()
         return context.pixel_size_um if context is not None else self._current_pixel_size
 
     def _texture_for_map(self, index):
         choice = self.texture_combo.currentData()
-        if choice == "output":
-            texture = self._matching_texture()
-            if texture is None:
-                raise ValueError(trans.t("depth_overlay_missing"))
-            return texture
-        if isinstance(choice, int):
-            return self._map_frames[choice]
-        cid, stops = self._selected_colormap()
-        return cmap.colorize(index, cid, invert=self.invert_chk.isChecked(),
-                             gamma=self.gamma_spin.value(), custom_stops=stops)
+        if choice == "color":
+            cid, stops = self._selected_colormap()
+            self._texture_description = trans.t("depth_texture_colormap")
+            self._texture_identity = {"kind": "colormap", "colormap": cid}
+            texture = cmap.colorize(index, cid, invert=self.invert_chk.isChecked(),
+                                    gamma=self.gamma_spin.value(), custom_stops=stops)
+        else:
+            texture = self._matching_texture() if choice in ("auto", "output") else None
+            if texture is not None:
+                self._texture_description = trans.t("depth_texture_output_resolved").format(
+                    name=self._map_output_label)
+                self._texture_identity = {"kind": "output", "context_id": self._map_source_id,
+                                          "name": self._map_output_label}
+            else:
+                frame_index = 0 if choice == "auto" and self._map_frames else None
+                if isinstance(choice, tuple) and choice[:2] == ("frame", self._map_source_id):
+                    try:
+                        frame_index = self._map_indices.index(choice[2])
+                    except ValueError:
+                        frame_index = None
+                if frame_index is None:
+                    raise ValueError(trans.t("depth_texture_unavailable"))
+                texture = self._map_frames[frame_index]
+                name = self._map_names[frame_index] if frame_index < len(self._map_names) else ""
+                self._texture_description = trans.t("depth_texture_frame_resolved").format(
+                    i=frame_index + 1, n=len(self._map_frames), name=name)
+                self._texture_identity = {"kind": "frame", "source_id": self._map_source_id,
+                    "capture_index": self._map_indices[frame_index], "name": name}
+        if texture.shape[:2] != index.shape[:2]:
+            raise ValueError(trans.t("depth_texture_unavailable"))
+        self.lbl_texture_source.setText(self._texture_description)
+        return texture
 
     def _save_physical(self):
         if not self._require_current_map():
             return
         try:
             depth, positions = self._physical_values(self._index01)
-            context = self._source_context()
+            context = self._map_context
             if context is not None and context.roi_mode == "paste":
                 frame = context.frames[0]
                 full = np.full((context.height, context.width), np.nan, np.float32)
@@ -729,7 +813,7 @@ class DepthMapDialog(QDialog):
             self.status_lbl.setText(str(exc))
 
     def _domain_metadata(self):
-        context = self._source_context()
+        context = self._map_context
         frame = context.frames[0] if context is not None and context.frames else None
         return {"offset": [frame.offset_x, frame.offset_y] if frame else [0, 0],
                 "shape": list(self._index01.shape) if self._index01 is not None else None}
@@ -810,84 +894,119 @@ class DepthMapDialog(QDialog):
         label = getattr(self, "lbl_source", None)
         if label is None:
             return
-        images = self._images() or []
+        context = self._source_context()
+        images = ([frame.image for frame in context.frames] if context is not None
+                  else self._current_images if self._source_mode == "current" else [])
         source = (trans.t("depth_source_from_output") if self._source_mode == "output"
                   else trans.t("depth_source_current"))
         total = self._total_frames if self._source_mode == "current" else len(images)
         parts = [source, f"{len(images)}/{total}"]
         if self._source_mode == "current":
             parts.append(self.align_combo.currentText())
-        context = self._source_context()
         if context is not None:
             parts.extend((self._source_record.label, context.alignment))
             label.setToolTip("\n".join(frame.name for frame in context.frames))
         else:
             label.setToolTip("\n".join(self._current_names))
-        label.setText(" · ".join(parts) if images else
+        label.setText(" · ".join(parts) if len(images) >= 2 else
                       trans.t("depth_need_two_frames").format(n=len(images)))
         if self._source_mode == "output" and context is None:
             label.setText(trans.t("retouch_source_not_recorded"))
 
     def _mark_stale(self):
-        if self._index01 is None:
-            return
-        self._stale = True
-        self.status_lbl.setText(trans.t("depth_stale"))
-        if hasattr(self, "surface"):
-            try:
-                self.surface.set_surface(None, None)
-            except Exception:
-                pass
-        self._update_export_state()
+        if self._index01 is not None:
+            self._stale = True
+            self.status_lbl.setText(trans.t("depth_stale"))
+        self._mesh_height = None
+        self._mesh_texture = None
+        self.surface.set_surface(None, None)
 
     def _on_method_changed(self):
-        self._update_kernel_info()
+        self._sync_method_controls()
         self._update_source_summary()
+        self._invalidate_computation()
+
+    def _invalidate_computation(self):
         self._request += 1
         self._mark_stale()
-        self._pending_compute = (self.method_combo.currentData() in _FAST_AUTO_METHODS
-                                 and bool(self._images()))
         if self._worker is not None:
             self._cancelling = True
             self._worker.cancel()
             self.status_lbl.setText(trans.t("depth_cancelling"))
-        elif self._pending_compute:
-            self._pending_compute = False
-            self._compute()
-        self._update_export_state()
+        elif self._index01 is None:
+            self.status_lbl.setText(trans.t("depth_no_map_yet"))
+        self._reconcile_controls()
 
-    _KERNEL_INFO_KEYS = {"dct": "label_kernel_dct",
-                         "gfgfgf": "label_kernel_gfg",
-                         "openfocus_b": "label_kernel_of",
-                         "openfocus_c": "label_kernel_of"}
+    def _parameters_for(self, method):
+        from constants import METHOD_DEPTH_PARAMS
+        key = (self._source_mode, method)
+        if key not in self._method_drafts:
+            parameters = {}
+            context = self._source_context()
+            saved = context.parameters if context is not None and context.algorithm == method else {}
+            keys = METHOD_DEPTH_PARAMS.get(method, ())
+            if "kernel_size" in keys:
+                high, default = KERNEL_MODES[METHOD_KERNEL_MODES[method]]
+                value = saved.get("kernel_size", self._kernels.get(method, default))
+                parameters["kernel_size"] = normalize_kernel_size(min(high, int(value)))
+            if "N" in keys:
+                # Follow the main window: it has no user-facing level control,
+                # so a cached draft would silently freeze an old depth.
+                parameters["N"] = int(getattr(self.window_main, "dtcwt_levels", 4))
+            if "mode" in keys:
+                mode = saved.get("mode", getattr(self.window_main, "ai_mode", "soft"))
+                parameters["mode"] = "hard" if mode == "hard" else "soft"
+            self._method_drafts[key] = parameters
+        elif "N" in METHOD_DEPTH_PARAMS.get(method, ()):
+            self._method_drafts[key]["N"] = int(
+                getattr(self.window_main, "dtcwt_levels", 4))
+        return self._method_drafts[key]
 
-    def _update_kernel_info(self):
-        """kernel 在不同方法里含义不同（与主面板滑块同源）——只读展示。"""
+    def _sync_method_controls(self):
         method = self.method_combo.currentData()
-        if method == "stackmffv3":
-            # No kernel to show. State what the map actually is: the network
-            # picks a source frame per pixel (a classifier is confident at
-            # almost every pixel), so the values are still frame positions.
-            self.lbl_kernel_info.setText(trans.t("depth_ai_note"))
-            self.lbl_kernel_info.setToolTip(trans.t("depth_ai_note_hint"))
+        parameters = self._parameters_for(method)
+        kernel_keys = {"dct": "label_kernel_dct", "gfgfgf": "label_kernel_gfg",
+                       "openfocus_b": "label_kernel_of", "openfocus_c": "depth_kernel_energy"}
+        uses_kernel = method in kernel_keys
+        is_ai = method == "stackmffv3"
+        self.kernel_label.setVisible(uses_kernel)
+        self.kernel_spin.setVisible(uses_kernel)
+        self.ai_mode_label.setVisible(is_ai)
+        self.ai_mode_combo.setVisible(is_ai)
+        self.ai_note.setVisible(is_ai)
+        if uses_kernel:
+            label = trans.t(kernel_keys[method])
+            self.kernel_label.setText(label)
+            self.kernel_spin.lineEdit().setAccessibleName(label)
+            with QSignalBlocker(self.kernel_spin):
+                self.kernel_spin.setRange(1, KERNEL_MODES[METHOD_KERNEL_MODES[method]][0])
+                self.kernel_spin.setValue(parameters["kernel_size"])
+        elif is_ai:
+            with QSignalBlocker(self.ai_mode_combo):
+                self.ai_mode_combo.setCurrentIndex(
+                    max(0, self.ai_mode_combo.findData(parameters["mode"])))
+
+    def _on_parameter_changed(self):
+        method = self.method_combo.currentData()
+        parameters = self._parameters_for(method)
+        if "kernel_size" in parameters:
+            value = normalize_kernel_size(int(self.kernel_spin.value()))
+            with QSignalBlocker(self.kernel_spin):
+                self.kernel_spin.setValue(value)
+            key = "kernel_size"
+        elif method == "stackmffv3":
+            key = "mode"
+            value = self.ai_mode_combo.currentData()
+            if value not in ("soft", "hard"):
+                return
+        else:
             return
-        self.lbl_kernel_info.setToolTip("")
-        key = self._KERNEL_INFO_KEYS.get(method)
-        if not key:
-            self.lbl_kernel_info.setText("")
-            return
-        k = self._kernel_for(self.method_combo.currentData())
-        self.lbl_kernel_info.setText(f"{trans.t(key)} {k}")
+        if parameters[key] != value:
+            parameters[key] = value
+            self._invalidate_computation()
 
     def _kernel_for(self, method):
-        """The kernel the user set for *this* method in the main window (each
-        method remembers its own slider value), forced odd."""
-        k = self._kernels.get(method, 7)
-        context = self._source_context()
-        parameters = getattr(context, "parameters", {}) or {}
-        if context is not None and context.algorithm == method:
-            k = int(parameters.get("kernel_size", k))
-        return k + 1 if k % 2 == 0 else k
+        return self._parameters_for(method).get("kernel_size", 7)
 
     def _update_overlay_availability(self):
         base = self._matching_texture()
@@ -913,142 +1032,154 @@ class DepthMapDialog(QDialog):
             frames = self._current_images
         return frames if len(frames) >= 2 else None
 
+    def _has_current_map(self):
+        return (self._index01 is not None and not self._stale
+                and self._map_request == self._request and not self._closing
+                and self._worker is None and self._export_worker is None)
+
+    def _reconcile_controls(self):
+        busy = self._worker is not None or self._export_worker is not None
+        self.compute_btn.setVisible(True)
+        self.compute_btn.setEnabled(not self._closing and not busy and bool(self._images()))
+        self.cancel_btn.setVisible(busy and not self._closing)
+        self.cancel_btn.setEnabled(not self._closing and busy and not self._cancelling)
+        self._side_controls.setEnabled(not self._closing and self._export_worker is None)
+        self.align_combo.setEnabled(self._source_mode == "current")
+        self.texture_combo.setEnabled(self._has_current_map())
+        self.lbl_map_state.setVisible(self._index01 is not None and
+            (self._stale or self._map_request != self._request))
+        self._update_overlay_availability()
+        self._update_export_state()
+
     def _compute(self):
-        # One worker at a time: a second _compute would overwrite the reference
-        # and leave the first worker parented to this dialog, so closing it
-        # aborted the process ("QThread destroyed while running").
         if self._closing or self._worker is not None or self._export_worker is not None:
             return
+        method = self.method_combo.currentData()
+        if method in METHOD_KERNEL_MODES:
+            self.kernel_spin.lineEdit().editingFinished.emit()
         imgs = self._images()
         if not imgs:
             self.status_lbl.setText(trans.t("depth_need_stack"))
+            self._reconcile_controls()
             return
-        method = self.method_combo.currentData()
         context = self._source_context()
+        parameters = dict(self._parameters_for(method))
         reverse = (context.parameters.get("sort_mode") == "desc" if context is not None
                    else self._reverse_order)
-        self._request_indices = self._capture_indices()
-        self._request_names = ([frame.name for frame in context.frames] if context
-                               else list(self._current_names))
-        if method in ("openfocus_b", "openfocus_c") and reverse:
-            self._request_indices.reverse()
-            self._request_names.reverse()
-        use_gpu = self._use_gpu
-        # The depth map uses the kernel the user set for that method (DCT's
-        # median window / GFG-FGF's blur / variance window), never another
-        # method's slider value.
-        kernel_size = self._kernel_for(method)
         self._request += 1
-        request = self._request
+        self._mark_stale()
         self._cancelling = False
-        self._stale = self._index01 is not None
         self._worker_outcome = None
-        self._worker = DepthWorker(imgs, method, use_gpu, kernel_size, self)
-        self._worker.reverse_order = method in ("openfocus_b", "openfocus_c") and reverse
-        self._worker.nlevels = int(context.parameters.get("N", self._nlevels)) if context else self._nlevels
-        self._worker.source_frames = context.frames if context is not None else ()
-        self._worker.alignment = self.align_combo.currentData() if context is None else "none"
-        self._worker.registration_settings = self._registration_settings
-        self._worker.request = request
-        self._worker_method = method
-        self._worker.progress.connect(
-            lambda i, n, req=request: self._progress(i, n, req))
-        self._worker.ok.connect(lambda index, req=request: self._computed(index, req))
-        self._worker.failed.connect(lambda msg, req=request: self._failed(msg, req))
-        self._worker.finished.connect(self._worker_finished)
-        self.compute_btn.setVisible(False)
-        self.cancel_btn.setVisible(True)
-        if method == "stackmffv3":
-            self.status_lbl.setText(trans.t("depth_computing_ai"))
-        else:
-            self.status_lbl.setText(
-                trans.t("depth_computing").format(i=0, n=len(imgs)))
-        self._update_export_state()
-        self._worker.start()
+        worker = DepthWorker(imgs, method, self._use_gpu,
+                             parameters.get("kernel_size", 7), self)
+        worker.reverse_order = method in ("openfocus_b", "openfocus_c") and reverse
+        worker.nlevels = parameters.get("N", self._nlevels)
+        worker.ai_mode = parameters.get("mode", "soft")
+        worker.source_frames = context.frames if context is not None else ()
+        worker.alignment = self.align_combo.currentData() if context is None else "none"
+        worker.registration_settings = dict(self._registration_settings)
+        worker.request = self._request
+        worker.parameters = parameters
+        worker.context = context
+        worker.output_texture = self._output_texture if context is not None else None
+        worker.output_label = self._source_record.label if context is not None else ""
+        worker.source_mode = self._source_mode
+        worker.source_id = context.context_id if context is not None else "current"
+        worker.source_indices = self._capture_indices()
+        names = [frame.name for frame in context.frames] if context else self._current_names
+        worker.source_names = [names[i] if i < len(names) else "" for i in range(len(imgs))]
+        if worker.reverse_order:
+            worker.source_indices.reverse()
+            worker.source_names.reverse()
+        self._worker = worker
+        worker.progress.connect(lambda i, n, w=worker: self._progress(i, n, w))
+        worker.ok.connect(lambda index, w=worker: self._computed(index, w))
+        worker.failed.connect(lambda message, w=worker: self._failed(message, w))
+        worker.finished.connect(lambda w=worker: self._worker_finished(w))
+        self.status_lbl.setText(trans.t("depth_computing_ai") if method == "stackmffv3"
+            else trans.t("depth_computing").format(i=0, n=len(imgs)))
+        self._reconcile_controls()
+        try:
+            worker.start()
+        except Exception as exc:
+            self._worker = None
+            worker.deleteLater()
+            self.status_lbl.setText(str(exc))
+            self._reconcile_controls()
 
     def _cancel(self):
-        self._pending_compute = False
-        if self._export_worker is not None:
-            self._export_worker.cancel()
-            self.cancel_btn.setEnabled(False)
-            self.status_lbl.setText(trans.t("depth_cancelling"))
+        worker = self._export_worker or self._worker
+        if worker is None or self._closing:
             return
-        if self._worker is None:
-            return
-        # A native step cannot be interrupted; say so instead of pretending
-        # the map is gone. The result is discarded when it returns.
         self._cancelling = True
-        self.cancel_btn.setEnabled(False)
+        worker.cancel()
         self.status_lbl.setText(trans.t("depth_cancelling"))
-        self._worker.cancel()
+        self._reconcile_controls()
 
-    def _progress(self, i, n, request):
-        if self._closing or self._cancelling or request != self._request:
+    def _accepts_worker(self, worker):
+        return (not self._closing and not self._cancelling and worker is not None
+                and worker is self._worker and worker.request == self._request)
+
+    def _progress(self, i, n, worker):
+        if not self._accepts_worker(worker):
             return
         self.status_lbl.setText(trans.t("depth_computing_ai")
-            if self._worker_method == "stackmffv3" else
+            if worker._method == "stackmffv3" else
             trans.t("depth_computing").format(i=i, n=n))
 
-    def _computed(self, index01, request=None):
-        if (self._closing or self._cancelling
-                or (request is not None and request != self._request)):
-            return
-        self._worker_outcome = ("ok", np.asarray(index01, np.float32))
+    def _computed(self, index01, worker):
+        if self._accepts_worker(worker):
+            self._worker_outcome = ("ok", np.asarray(index01, np.float32))
 
-    def _failed(self, msg, request=None):
-        if self._closing or (request is not None and request != self._request):
-            return
-        self._worker_outcome = ("failed", msg)
+    def _failed(self, msg, worker):
+        if self._accepts_worker(worker):
+            self._worker_outcome = ("failed", msg)
 
-    def _worker_finished(self):
-        worker = self.sender()
+    def _worker_finished(self, worker):
         if worker is not self._worker:
             return
         self._worker = None
         worker.deleteLater()
         if self._closing:
             return
-        outcome = self._worker_outcome
-        if (worker.request == self._request and not self._cancelling
-                and outcome is not None and outcome[0] == "ok"):
-            self._index01 = outcome[1]
-            self._map_valid_mask = worker.valid_mask
-            self._map_frames = list(worker._images)
-            self._map_indices = self._request_indices
-            self._map_names = self._request_names
-            self._map_parameters = {"kernel_size": worker._kernel_size, "N": worker.nlevels,
-                                    "reverse_order": worker.reverse_order}
-            self._map_alignment = worker.alignment if not self._source_context() else self._source_context().alignment
-            self.z_mapping.setToolTip(trans.t("depth_axis_hint") + "\n" +
-                ", ".join(str(i + 1) for i in self._map_indices))
-            self._map_method = self._worker_method
-            self._map_request = self._request
-            self._stale = False
-            self.status_lbl.setText(trans.t("depth_ready"))
-            self._refresh_preview()
-        elif outcome is not None and outcome[0] == "failed" and outcome[1] != "cancelled":
-            self.status_lbl.setText(outcome[1])
-        else:
-            self.status_lbl.setText(trans.t("depth_cancelled"))
+        outcome, self._worker_outcome = self._worker_outcome, None
+        cancelled = self._cancelling or worker._cancelled or worker.request != self._request
         self._cancelling = False
-        self.compute_btn.setVisible(True)
-        self.cancel_btn.setVisible(False)
-        self.cancel_btn.setEnabled(True)
-        self._update_export_state()
-        self._update_overlay_availability()
-        if self._pending_compute:
-            self._pending_compute = False
-            self._compute()
+        try:
+            if not cancelled and outcome is not None and outcome[0] == "ok":
+                self._index01 = outcome[1]
+                self._map_valid_mask = worker.valid_mask
+                self._map_frames = list(worker._images)
+                self._map_indices = worker.source_indices
+                self._map_names = worker.source_names
+                self._map_parameters = {**worker.parameters, "reverse_order": worker.reverse_order}
+                self._map_context = worker.context
+                self._map_output_texture = worker.output_texture
+                self._map_output_label = worker.output_label
+                self._map_source_mode = worker.source_mode
+                self._map_source_id = worker.source_id
+                self._map_alignment = worker.context.alignment if worker.context else worker.alignment
+                self.z_mapping.setToolTip(trans.t("depth_axis_hint") + "\n" +
+                    ", ".join(str(i + 1) for i in self._map_indices))
+                self._map_method = worker._method
+                self._map_request = worker.request
+                self._stale = False
+                self.status_lbl.setText(trans.t("depth_ready"))
+                self._fill_textures()
+                self._refresh_preview()
+            elif cancelled or outcome is not None and outcome == ("failed", "cancelled"):
+                self.status_lbl.setText(trans.t("depth_cancelled"))
+            elif outcome is not None and outcome[0] == "failed":
+                self.status_lbl.setText(outcome[1])
+            else:
+                self.status_lbl.setText(trans.t("depth_no_outcome"))
+        finally:
+            self._reconcile_controls()
 
     def _update_export_state(self):
-        """Export only a current, successful map."""
-        running = self._worker is not None
-        current = (self._index01 is not None and not self._stale
-                   and not running and not self._closing and self._export_worker is None)
+        current = self._has_current_map()
         for name in ("btn_save_color", "btn_save_raw", "btn_save_3d"):
-            widget = getattr(self, name, None)
-            if widget is not None:
-                widget.setEnabled(current)
+            getattr(self, name).setEnabled(current)
         self.btn_save_physical.setEnabled(current and self.physical_chk.isChecked())
 
     # ------------------------------------------------------------------
@@ -1080,7 +1211,7 @@ class DepthMapDialog(QDialog):
 
     def _refresh_preview(self):
         self._refresh_visuals()
-        self._update_export_state()
+        self._reconcile_controls()
 
     def _refresh_visuals(self):
         if self._stale:
@@ -1128,7 +1259,7 @@ class DepthMapDialog(QDialog):
 
     def _refresh_surface(self) -> None:
         """Rebuild the height field for the 3D tab from the live parameters."""
-        if self._index01 is None or not hasattr(self, "surface"):
+        if self._index01 is None or self._stale or self._map_request != self._request:
             return
         try:
             from core.depth_map import smooth_index_map
@@ -1154,6 +1285,8 @@ class DepthMapDialog(QDialog):
                 relief = self.relief_spin.value() / 100.0
             from utils.image_utils import to_display_uint8
             self._mesh_texture = to_display_uint8(self._texture_for_map(index))
+            if self._mesh_texture.ndim == 2:
+                self._mesh_texture = cv2.cvtColor(self._mesh_texture, cv2.COLOR_GRAY2BGR)
             tex = cv2.resize(self._mesh_texture, (hf.shape[1], hf.shape[0]),
                              interpolation=cv2.INTER_AREA)
             self.surface.set_relief(relief)
@@ -1170,6 +1303,7 @@ class DepthMapDialog(QDialog):
             self._surface_error = str(exc)
             self._mesh_height = None
             self._mesh_texture = None
+            self.lbl_texture_source.setText(trans.t("depth_texture_unavailable"))
             if getattr(self, "lbl_surface_state", None) is not None:
                 self.lbl_surface_state.setText(
                     trans.t("depth_3d_failed").format(error=exc))
@@ -1179,17 +1313,13 @@ class DepthMapDialog(QDialog):
                 pass
 
     def _require_current_map(self) -> bool:
-        """Exports are only valid for a map that matches current settings."""
+        if self._closing:
+            return False
         if self._index01 is None:
             self.status_lbl.setText(trans.t("depth_no_map_yet"))
-            return False
-        if self._stale:
+        elif self._stale or self._map_request != self._request:
             self.status_lbl.setText(trans.t("depth_stale"))
-            return False
-        if self._worker is not None:
-            self.status_lbl.setText(trans.t("depth_computing_ai"))
-            return False
-        return True
+        return self._has_current_map()
 
     def _save(self, colorized=True):
         if not self._require_current_map():
@@ -1251,7 +1381,8 @@ class DepthMapDialog(QDialog):
                 return
         metadata = {"method": self._map_method, "source_indices": self._map_indices,
                     "domain": self._domain_metadata(), "smooth": self.smooth_spin.value(),
-                    "invert": self.invert_chk.isChecked(), "texture": self.texture_combo.currentText()}
+                    "invert": self.invert_chk.isChecked(), "texture": self._texture_description,
+                    "texture_source": dict(self._texture_identity or {})}
         metadata.update(source_names=getattr(self, "_map_names", []),
                         parameters=getattr(self, "_map_parameters", {}),
                         alignment=getattr(self, "_map_alignment", "none"),
@@ -1265,62 +1396,65 @@ class DepthMapDialog(QDialog):
         worker = MeshExportWorker(path, self._index01, self._mesh_texture, options, self)
         self._export_worker = worker
         self._export_outcome = None
-        worker.ok.connect(lambda info: self._set_export_outcome((True, info)))
-        worker.failed.connect(lambda error: self._set_export_outcome((False, error)))
-        worker.finished.connect(self._export_finished)
+        self._cancelling = False
+        worker.ok.connect(lambda info, w=worker: self._set_export_outcome((True, info), w))
+        worker.failed.connect(lambda error, w=worker: self._set_export_outcome((False, error), w))
+        worker.finished.connect(lambda w=worker: self._export_finished(w))
         self.status_lbl.setText(trans.t("depth_export_3d"))
         self.status_lbl.setToolTip("\n".join(obj_paths(path)))
-        self.compute_btn.setEnabled(False)
-        self.cancel_btn.setVisible(True)
-        self._update_export_state()
+        self._reconcile_controls()
         set_last_dialog_dir(path)
-        worker.start()
+        try:
+            worker.start()
+        except Exception as exc:
+            self._export_worker = None
+            worker.deleteLater()
+            self.status_lbl.setText(str(exc))
+            self._reconcile_controls()
 
-    def _set_export_outcome(self, outcome):
-        if not self._closing:
+    def _set_export_outcome(self, outcome, worker):
+        if not self._closing and worker is self._export_worker:
             self._export_outcome = outcome
 
-    def _export_finished(self):
-        worker = self.sender()
+    def _export_finished(self, worker):
         if worker is not self._export_worker:
             return
         self._export_worker = None
         worker.deleteLater()
         if self._closing:
             return
-        ok, result = self._export_outcome or (False, "cancelled")
-        self.status_lbl.setText(trans.t("depth_saved").format(path="\n".join(result["files"]))
-            if ok else trans.t("depth_cancelled") if result == "cancelled" else result)
-        self.compute_btn.setEnabled(True)
-        self.cancel_btn.setVisible(False)
-        self.cancel_btn.setEnabled(True)
-        self._update_export_state()
+        outcome, self._export_outcome = self._export_outcome, None
+        if outcome is not None and outcome[0]:
+            self.status_lbl.setText(trans.t("depth_saved").format(path="\n".join(outcome[1]["files"])))
+        elif self._cancelling or outcome is not None and outcome[1] == "cancelled":
+            self.status_lbl.setText(trans.t("depth_cancelled"))
+        else:
+            self.status_lbl.setText(outcome[1] if outcome else trans.t("depth_no_outcome"))
+        self._cancelling = False
+        self._reconcile_controls()
 
     def _detach_export(self):
         worker, self._export_worker = self._export_worker, None
-        if worker is None:
-            return
-        if not worker.isRunning():
-            worker.deleteLater()
-            return
-        worker.cancel()
-        worker.setParent(None)
-        _ORPHAN_WORKERS.add(worker)
-        worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(lambda w=worker: _ORPHAN_WORKERS.discard(w))
+        _orphan_worker(worker)
 
     def _matching_texture(self):
-        context = self._source_context()
-        if context is None or not context.frames:
+        if self._index01 is not None:
+            if self._stale or self._map_request != self._request:
+                return None
+            context, result = self._map_context, self._map_output_texture
+        else:
+            context, result = self._source_context(), self._output_texture
+        if context is None or not context.frames or result is None:
             return None
-        result = self._output_texture
         frame = context.frames[0]
         if any((f.offset_x, f.offset_y, f.width, f.height) !=
                (frame.offset_x, frame.offset_y, frame.width, frame.height)
                for f in context.frames):
             return None
-        texture = result[frame.offset_y:frame.offset_y + frame.height,
-                         frame.offset_x:frame.offset_x + frame.width]
+        x, y, width, height = frame.offset_x, frame.offset_y, frame.width, frame.height
+        if x < 0 or y < 0 or x + width > result.shape[1] or y + height > result.shape[0]:
+            return None
+        texture = result[y:y + height, x:x + width]
         if self._index01 is not None and texture.shape[:2] != self._index01.shape:
             return None
         return texture
@@ -1352,26 +1486,12 @@ class DepthMapDialog(QDialog):
         s.setValue("depthmap/relief", self.relief_spin.value())
 
     def _detach_worker(self):
-        """关闭对话框时后台线程可能正处在长推理中——QThread 被销毁而线程
-        仍在运行会让整个进程 abort。让它脱离对话框的生命周期，取消后
-        自行跑完/退出并自我清理；信号在接收者销毁后由 Qt 自动断开。"""
-        w = self._worker
-        self._worker = None
-        if w is None:
-            return
-        if not w.isRunning():
-            w.deleteLater()
-            return
-        w.cancel()
-        w.setParent(None)
-        _ORPHAN_WORKERS.add(w)
-        w.finished.connect(w.deleteLater)
-        w.finished.connect(lambda ww=w: _ORPHAN_WORKERS.discard(ww))
+        worker, self._worker = self._worker, None
+        _orphan_worker(worker)
 
     def reject(self):
         self._closing = True
         self._request += 1
-        self._pending_compute = False
         self._detach_export()
         self._detach_worker()
         self._save_prefs()
@@ -1380,7 +1500,6 @@ class DepthMapDialog(QDialog):
     def closeEvent(self, event):
         self._closing = True
         self._request += 1
-        self._pending_compute = False
         self._detach_export()
         self._detach_worker()
         self._save_prefs()
