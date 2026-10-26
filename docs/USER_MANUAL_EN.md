@@ -842,6 +842,9 @@ Process multiple folders automatically:
 1. Go to **Tools → Batch Processing**
 2. In the batch dialog:
    - **Add Folders**: Select folders containing image sequences
+   - **Drag folders in**: Drop one or more stack folders anywhere on the
+     dialog (or on the folder list) to queue them all at once; dropping
+     switches to multi-folder mode and the thumbnails appear as they decode
    - **Remove Folders**: Remove selected folders from the list
    - **Clear All**: Remove all folders
 3. Configure output settings:

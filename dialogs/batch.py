@@ -37,12 +37,23 @@ from widgets.stepper import StepperSpinBox
 
 BATCH_PICK_DIR_KEY = "batch/last_pick_dir"
 
-# Import workers still stopping when the dialog is destroyed. Dropping the
+# Import workers still running when their dialog is destroyed. Dropping the
 # last reference to a running QThread aborts the process ("QThread: Destroyed
-# while thread is still running"), and blocking the GUI thread on wait() would
-# freeze the window. Park the worker until it really finishes, like
-# controllers/batch_manager does for its batch thread.
-_ORPHAN_IMPORT_WORKERS: list = []
+# while thread is still running"), and waiting on the GUI thread would freeze
+# the window. Track them here until they finish on their own; the cleanup
+# connection belongs to the worker, not the dialog, so it still runs after the
+# dialog is gone.
+_TRACKED_IMPORT_WORKERS: set = set()
+
+
+def _track_import_worker(worker) -> None:
+    _TRACKED_IMPORT_WORKERS.add(worker)
+
+    def release(w=worker):
+        _TRACKED_IMPORT_WORKERS.discard(w)
+        w.deleteLater()
+
+    worker.finished.connect(release)
 
 
 def _section_rule(text: str) -> QLabel:
@@ -171,6 +182,12 @@ class BatchProcessingDialog(QDialog):
         self.folder_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
         self.folder_list.setIconSize(QSize(60, 60))
+        # Dropping folders anywhere on this dialog queues them as stacks. The
+        # list deliberately does NOT accept drops: an accepting widget would
+        # consume them (QListWidget handles drag events internally), while a
+        # non-accepting one lets Qt bubble them up to the dialog's handler.
+        self.folder_list.setAcceptDrops(False)
+        self.setAcceptDrops(True)
         # Height follows the content between three and six rows: a fixed
         # minimum left a large empty block under two queued stacks (the list
         # was stretched by the scroll page). _fit_folder_list() reapplies it
@@ -510,6 +527,74 @@ class BatchProcessingDialog(QDialog):
         self.folder_list.setVisible(not empty)
         self._fit_folder_list()
 
+    def _drop_drag_enter(self, event) -> None:
+        """Accept a drag that carries at least one local directory."""
+        if self._dragged_folders(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragEnterEvent(self, event) -> None:
+        self._drop_drag_enter(event)
+
+    def dragMoveEvent(self, event) -> None:
+        self._drop_drag_enter(event)
+
+    def dropEvent(self, event) -> None:
+        self._drop_event(event)
+
+    @staticmethod
+    def _dragged_folders(event) -> list:
+        """Local directory paths in a drag, in the order they were dropped.
+
+        Files are ignored here on purpose: the folder list is a queue of
+        stacks, and silently turning loose images into a stack would make the
+        list mean two different things.
+        """
+        mime = event.mimeData()
+        if mime is None or not mime.hasUrls():
+            return []
+        folders = []
+        for url in mime.urls():
+            path = url.toLocalFile()
+            if path and os.path.isdir(path):
+                folders.append(os.path.normpath(path))
+        return folders
+
+    def _drop_event(self, event) -> None:
+        folders = self._dragged_folders(event)
+        if not folders:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        # Dropping folders is the multi-folder workflow; switching the radio
+        # here avoids "I dropped five stacks but nothing will be processed"
+        # when the dialog was left on single-folder mode.
+        if not self.rb_multiple_folders.isChecked():
+            self.rb_multiple_folders.setChecked(True)
+            self.on_import_mode_changed()
+        self.add_folders_to_list(folders)
+
+    def showEvent(self, event):
+        """Warm the import worker module before the first drop or pick.
+
+        Importing core.workers pulls in the fusion pipeline (~0.6 s). Doing it
+        here, while the dialog is appearing, keeps the first folder drop from
+        stalling on module import; the work itself is still on the worker.
+        """
+        super().showEvent(event)
+        if not getattr(self, "_import_module_ready", False):
+            self._import_module_ready = True
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, self._warm_import_module)
+
+    @staticmethod
+    def _warm_import_module() -> None:
+        try:
+            from core.workers import BatchImportWorker  # noqa: F401
+        except Exception:
+            pass
+
     def add_path_from_field(self) -> None:
         """Add whatever path was typed, expanding env vars and quotes.
 
@@ -688,6 +773,7 @@ class BatchProcessingDialog(QDialog):
         self._import_busy = True
         self._import_callbacks = {'thumbnails': on_thumbnails,
                                   'stack': on_stack}
+        _track_import_worker(worker)
         self._set_import_busy(True)
 
         # Bound methods of this QObject, not lambdas: Qt disconnects them
@@ -723,8 +809,6 @@ class BatchProcessingDialog(QDialog):
         self._import_callbacks = {}
         self._import_busy = False
         self._set_import_busy(False)
-        if worker is not None:
-            worker.deleteLater()
 
     def _set_import_busy(self, busy: bool) -> None:
         """Disable the actions that would need the data still decoding."""
@@ -740,23 +824,9 @@ class BatchProcessingDialog(QDialog):
         self._import_busy = False
         self._import_worker = None
         if worker is not None:
+            # The worker is tracked at module level, so it stays alive until
+            # it really stops even if this dialog is being destroyed.
             worker.cancel()
-            if worker.isRunning():
-                # Do not let the dialog's destruction drop the last reference
-                # to a running thread: park it until it finishes on its own.
-                _ORPHAN_IMPORT_WORKERS.append(worker)
-                worker.finished.connect(
-                    lambda w=worker: self._release_orphan(w))
-            else:
-                worker.deleteLater()
-
-    @staticmethod
-    def _release_orphan(worker) -> None:
-        try:
-            _ORPHAN_IMPORT_WORKERS.remove(worker)
-        except ValueError:
-            pass
-        worker.deleteLater()
 
     def closeEvent(self, event):
         self.cancel_imports()
