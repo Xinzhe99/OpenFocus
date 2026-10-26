@@ -211,8 +211,8 @@ Alle zes methoden vereisen een expliciete klik op **Berekenen**. Openen of wijzi
 maat, bron, registratie of parameters start geen berekening. De parametereditor staat
 direct onder de maatkeuze: DCT-mediaankernel en GFG-basiskernel gebruiken oneven waarden
 1–51 (standaard 7); B gebruikt een variantievenster en C een venster voor banddoorlaatenergie,
-beide oneven 1–21 px (standaard 11). DTCWT heeft hier geen niveauregeling: het volgt de
-decompositiediepte van het hoofdvenster, net als een render. StackMFF V3 toont een eigen
+beide oneven 1–21 px (standaard 11). DTCWT-decompositieniveaus zijn hier te bewerken
+als lokaal concept, geïnitialiseerd met de bronparameters. StackMFF V3 toont een eigen
 AI-uitvoermodus (standaard zachte menging, of harde selectie) en uitleg in plaats van een
 getalsveld: zachte menging schat een kansgewogen continue framepositie, harde selectie
 neemt per pixel het waarschijnlijkste frame. Geen van beide is een fysieke afstand. Conceptwaarden beginnen met de parameters

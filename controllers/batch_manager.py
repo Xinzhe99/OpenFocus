@@ -69,23 +69,11 @@ class BatchManager:
             total_items = 1
 
         self._initialise_progress_dialog(total_items)
-        # 禁用在批处理运行时不应被修改的 UI 控件
-        try:
-            self.window.slider_smooth.setEnabled(False)
-        except Exception:
-            pass
-        try:
-            self.window.combo_fusion.setEnabled(False)
-        except Exception:
-            pass
-        try:
-            self.window.combo_align.setEnabled(False)
-        except Exception:
-            pass
-        try:
-            self.window.btn_reset.setEnabled(False)
-        except Exception:
-            pass
+        for name in ("fusion_parameter_panel", "registration_parameter_panel",
+                     "combo_fusion", "combo_align", "btn_reset"):
+            widget = getattr(self.window, name, None)
+            if widget is not None:
+                widget.setEnabled(False)
         runtime = processing_settings.get('runtime_settings', {})
         self._worker = BatchWorker(
             folder_paths=folder_paths,
@@ -100,13 +88,14 @@ class BatchManager:
             thread_count=runtime.get('thread_count', getattr(self.window, 'thread_count', 4)),
             resource_preference=runtime.get('resource_preference', getattr(self.window, 'resource_preference', 'balanced')),
             ai_batch_size=runtime.get('ai_batch_size', getattr(self.window, 'ai_batch_size', 2)),
-            ai_mode=runtime.get('ai_mode', getattr(self.window, 'ai_mode', 'soft')),
             import_mode=import_mode,
             split_method=split_method,
             split_param=split_param,
             single_folder_images_with_times=single_folder_images_with_times,
             use_gpu=runtime.get('use_gpu', getattr(self.window, 'use_gpu', True)),
-            exposure_match=bool(processing_settings.get('fusion_params', {}).get('exposure_match', False)),
+            exposure_match=bool(runtime.get('exposure_match', False)),
+            runtime_settings=runtime,
+            registration_parameters=processing_settings.get('registration_parameters', {}),
         )
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
@@ -216,8 +205,8 @@ class BatchManager:
         """Re-enable the controls a batch job disabled (unless a render owns them)."""
         if self._render_owns_controls():
             return
-        for name in ("slider_smooth", "combo_fusion", "combo_align",
-                     "btn_reset"):
+        for name in ("fusion_parameter_panel", "registration_parameter_panel",
+                     "combo_fusion", "combo_align", "btn_reset"):
             widget = getattr(self.window, name, None)
             if widget is None:
                 continue

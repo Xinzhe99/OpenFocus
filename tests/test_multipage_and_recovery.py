@@ -101,7 +101,10 @@ class TestRecovery:
         w.current_alignment_method = lambda: w._alignment
         w.set_fusion_method = lambda code: setattr(w, "_fusion", code)
         w.set_alignment_method = lambda code: setattr(w, "_alignment", code)
-        w.slider_smooth = type("S", (), {"value": lambda s: 21})()
+        from core.algorithms import resolve_fusion_parameters
+        w.fusion_parameters_for = lambda method, depth=False: resolve_fusion_parameters(
+            method, {"kernel_size": 21} if method == "guided_filter" and not depth else None,
+            depth=depth)
         w.chk_quick_preview = type("Q", (), {"isChecked": lambda s: False})()
         w.current_display_index = 0
         w.image_filenames = [f"f{i}.png" for i in range(n)]

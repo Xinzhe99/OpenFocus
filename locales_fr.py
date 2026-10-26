@@ -299,6 +299,8 @@ PACK = {
     "check_align_none": "Aucun alignement",
     "check_align_none_hint": "Fusionner les images telles que chargées, sans aucun recalage.",
     "check_align_of": "OpenFocus (rapide)",
+    "check_align_both": "Homographie → ECC",
+    "label_align_shift_limit": "Décalage maximal (fraction de l’image)",
     "check_align_of_hint": "Alignement rapide par similarité bornée (translation + rotation + échelle) avec égalisation de la luminosité et recadrage automatique. Moins d'une seconde par image ; les images décalées de plus de 8 % de leur taille restent non alignées plutôt que partiellement corrigées. Choisissez ECC ou Homographie pour une géométrie non rigide ou extrême.",
     "chk_base_correct": "Supprimer la dérive de luminosité",
     "chk_exposure_match": "Harmoniser l'exposition avant la fusion",

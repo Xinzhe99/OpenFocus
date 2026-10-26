@@ -215,8 +215,8 @@ def test_partial_writes_and_cancel_preserve_only_committed_files(qapp, tmp_path,
 def test_both_batch_entries_export_same_scaled_16bit_fusion(qapp, tmp_path):
     source = make_stack(tmp_path / 'stack')
     settings = {'format': 'png', 'fusion_method': 'guided_filter', 'reg_methods': [],
-                'load_scale_factor': .5, 'fusion_params': {'kernel_size': 3,
-                    'base_frame': 'last', 'sort_mode': 'desc', 'exposure_match': False}}
+                'load_scale_factor': .5, 'fusion_params': {'kernel_size': 3},
+                'runtime_settings': {'base_frame': 'last', 'sort_mode': 'desc', 'exposure_match': False}}
     normal = BatchWorker([str(source)], 'custom', str(tmp_path / 'normal'), settings,
                          exposure_match=True, use_gpu=False, thread_count=1)
     normal_result = {}
@@ -347,11 +347,11 @@ def test_failed_cache_write_keeps_previous_complete_cache(qapp, tmp_path, monkey
     source = make_stack(tmp_path / 'source')
     frames = [np.full((8, 8, 3), 45, np.uint8)] * 2
     names = ['img1.png', 'img2.png']
-    align_cache.save_aligned(str(source), names, frames, (True, False), 1024)
+    align_cache.save_aligned(str(source), names, frames, ("homography",), 1024)
     monkeypatch.setattr(align_cache, 'imwrite_auto', lambda *args, **kwargs: False)
-    align_cache.save_aligned(str(source), names, frames, (False, True), 1024)
-    assert align_cache.load_aligned(str(source), names, (True, False), 1024) is not None
-    assert align_cache.load_aligned(str(source), names, (False, True), 1024) is None
+    align_cache.save_aligned(str(source), names, frames, ("ecc",), 1024)
+    assert align_cache.load_aligned(str(source), names, ("homography",), 1024) is not None
+    assert align_cache.load_aligned(str(source), names, ("ecc",), 1024) is None
     assert not list((source / '.openfocus_cache').glob('.pending-*'))
 
 

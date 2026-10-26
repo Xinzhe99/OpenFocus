@@ -46,8 +46,10 @@ class TestMultipageProjectMapping:
         w.set_fusion_method = lambda code: setattr(w, "_fusion", code)
         w.set_alignment_method = lambda code: setattr(w, "_alignment", code)
         w.chk_quick_preview = type("Q", (), {"isChecked": lambda s: False})()
-        w.slider_smooth = type("S", (), {})()  # 桩：补 value()
-        w.slider_smooth.value = lambda: 7
+        from core.algorithms import resolve_fusion_parameters
+        w.fusion_parameters_for = lambda method, depth=False: resolve_fusion_parameters(
+            method, {"kernel_size": 7} if method == "guided_filter" and not depth else None,
+            depth=depth)
         w.raw_images = pages
         w.image_filenames = [f"zstack_page_{i:03d}.tif" for i in range(3)]
         w.image_source_paths = [str(tif)] * 3  # loader 真实路径记录

@@ -56,12 +56,17 @@ jobs:
         run: |
           pyinstaller --clean --noconfirm --onedir --noconsole --noupx `
             --name OpenFocus `
+            --additional-hooks-dir hooks `
             --icon "assets/OpenFocus.ico" `
             --add-data "assets;assets" `
             --add-data "weights;weights" `
             --add-data "ui;ui" `
             --add-data "docs;docs" `
             --collect-submodules PyQt6 `
+            --collect-submodules fusion_methods `
+            --hidden-import core.algorithm_adapters `
+            --hidden-import core.depth_map `
+            --hidden-import core.registration `
             --hidden-import PyQt6.QtCore `
             --hidden-import PyQt6.QtGui `
             --hidden-import PyQt6.QtWidgets `
@@ -183,11 +188,16 @@ jobs:
         run: |
           pyinstaller --clean --noconfirm --windowed \
             --name OpenFocus \
+            --additional-hooks-dir hooks \
             --icon OpenFocus.icns \
             --add-data "assets:assets" \
             --add-data "weights:weights" \
             --add-data "ui:ui" \
             --add-data "docs:docs" \
+            --collect-submodules fusion_methods \
+            --hidden-import core.algorithm_adapters \
+            --hidden-import core.depth_map \
+            --hidden-import core.registration \
             --hidden-import PyQt6.QtCore \
             --hidden-import PyQt6.QtGui \
             --hidden-import PyQt6.QtWidgets \

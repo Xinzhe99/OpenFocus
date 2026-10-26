@@ -77,6 +77,10 @@ def depth_dialog(qapp, monkeypatch, tmp_path):
         window.use_gpu = False
         window.thread_count = 1
         window.fusion_result = np.full_like(window.raw_images[0], 231)
+        from core.algorithms import resolve_fusion_parameters, resolve_registration_parameters
+        window.current_alignment_method = lambda: 'none'
+        window.fusion_parameters_for = lambda selected, depth=False: resolve_fusion_parameters(selected, depth=depth)
+        window.registration_parameters_for = resolve_registration_parameters
         for key, value in attributes.items():
             setattr(window, key, value)
         if output is not None:
@@ -142,11 +146,9 @@ def test_depth_open_and_switch_require_explicit_compute(depth_dialog, qapp, monk
                 dialog.align_combo.setCurrentIndex(index)
         for selected in ("dct", "gfgfgf", "openfocus_b", "openfocus_c", "dtcwt", "stackmffv3"):
             _select(dialog.method_combo, selected)
-            assert dialog.kernel_spin.isHidden() is (selected in ("dtcwt", "stackmffv3"))
-            assert dialog.kernel_label.isHidden() is dialog.kernel_spin.isHidden()
-            assert dialog.ai_mode_combo.isHidden() is (selected != "stackmffv3")
-            assert dialog.ai_mode_label.isHidden() is dialog.ai_mode_combo.isHidden()
-            assert dialog.ai_note.isHidden() is (selected != "stackmffv3")
+            from core.algorithms import get_fusion
+            assert set(dialog.fusion_parameter_panel.editors) == {
+                spec.key for spec in get_fusion(selected).depth.parameters}
             _idle_actions(dialog)
     dialog.gamma_spin.setValue(1.7)
     dialog.smooth_spin.setValue(2)
@@ -173,7 +175,7 @@ def test_depth_compute_click_publishes_only_one_current_result(depth_dialog, mon
 
     monkeypatch.setattr(depth_map, "compute_focus_index", compute)
     dialog, _ = depth_dialog()
-    dialog.kernel_spin.setValue(13)
+    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(13)
     QTest.mouseClick(dialog.compute_btn, Qt.MouseButton.LeftButton)
     _wait(qapp, entered.is_set)
     worker = dialog._worker
@@ -228,7 +230,7 @@ def test_depth_parameter_edits_change_measurement(depth_dialog, qapp, method):
     """DM-A03: actual backend decisions in a predefined image region."""
     frames, values, region, expected = _measurement_case(method)
     dialog, _ = depth_dialog(method, frames)
-    control = dialog.kernel_spin
+    control = dialog.fusion_parameter_panel.editors['kernel_size']
     for value, winning_frame in zip(values, expected):
         control.setValue(value)
         _click_and_finish(qapp, dialog)
@@ -243,48 +245,37 @@ def test_depth_parameter_drafts_are_local_and_not_overridden(depth_dialog, monke
     """DM-A04: context seeds once; B/C and each source have local drafts."""
     from core import depth_map
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
-    from tests.test_parameter_memory import _window
-    from utils import settings_store
-    settings = depth_dialog.settings
-    monkeypatch.setattr(settings_store, "get_settings", lambda: settings)
-    saved = _window()
-    saved._kernel_by_mode = {"guided": 21, "dct": 9, "gfg": 13, "ofab": 15}
-    saved._brightness_by_method = {("exposure_match", "dct"): False}
-    saved._smoothing_by_method = {"openfocus_b": 0.8, "openfocus_c": 3.6}
-    saved.dtcwt_levels = 5
-    settings_store.save_window_settings(saved)
-    restored = _window()
-    settings_store.load_window_settings(restored)
-    kernels = {method: restored.kernel_for_method(method)
-               for method in ("dct", "gfgfgf", "openfocus_b", "openfocus_c")}
-    slider_before = restored.slider_smooth.value()
-    memories_before = (dict(restored._kernel_by_mode), dict(restored._brightness_by_method),
-                       dict(restored._smoothing_by_method))
-    original_prefs = {key: settings.value(key) for key in settings.allKeys() if key.startswith("fusion/")}
+    from copy import deepcopy
+    from core.algorithms import resolve_fusion_parameters
+    drafts = {'dct': {'kernel_size': 9}, 'openfocus_b': {'kernel_size': 15},
+              'openfocus_c': {'kernel_size': 15}, 'dtcwt': {'N': 5}}
+    before = deepcopy(drafts)
+    def parameters_for(method, depth=False):
+        return resolve_fusion_parameters(method, drafts.get(method), depth=depth)
     frames = _synthetic_thirds(48, 64)
     output = frames[0].copy()
     context = _output_context(frames, output, parameters={"kernel_size": 19})
     dialog, window = depth_dialog("dct", frames, output, context,
-        kernel_for_method=restored.kernel_for_method, dtcwt_levels=restored.dtcwt_levels)
-    assert dialog.kernel_spin.value() == 19
-    dialog.kernel_spin.setValue(23)
+        fusion_parameters_for=parameters_for)
+    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 19
+    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(23)
     _select(dialog.method_combo, "openfocus_b")
-    assert dialog.kernel_spin.value() == 15
-    dialog.kernel_spin.setValue(3)
+    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 15
+    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(3)
     _select(dialog.method_combo, "openfocus_c")
-    assert dialog.kernel_spin.value() == 15
-    dialog.kernel_spin.setValue(5)
+    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 15
+    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(5)
     _select(dialog.method_combo, "openfocus_b")
-    assert dialog.kernel_spin.value() == 3
+    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 3
     _select(dialog.method_combo, "dtcwt")
-    assert not dialog.ai_mode_combo.isVisibleTo(dialog)
+    assert 'mode' not in dialog.fusion_parameter_panel.editors
     _select(dialog.method_combo, "dct")
-    assert dialog.kernel_spin.value() == 23
+    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 23
     _select(dialog.source_combo, "current")
-    assert dialog.kernel_spin.value() == 9
-    dialog.kernel_spin.setValue(11)
+    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 9
+    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(11)
     _select(dialog.source_combo, "output")
-    assert dialog.kernel_spin.value() == 23
+    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 23
     _click_and_finish(qapp, dialog)
     assert dialog._map_parameters["kernel_size"] == 23
     assert context.parameters == {"kernel_size": 19}
@@ -295,14 +286,9 @@ def test_depth_parameter_drafts_are_local_and_not_overridden(depth_dialog, monke
     dialog.invert_chk.setChecked(True)
     dialog.relief_spin.setValue(27)
     dialog.reject()
-    assert {method: window.kernel_for_method(method) for method in kernels} == kernels
-    assert window.dtcwt_levels == 5
-    assert restored.slider_smooth.value() == slider_before
-    assert (restored._kernel_by_mode, restored._brightness_by_method,
-            restored._smoothing_by_method) == memories_before
-    assert {key: settings.value(key) for key in settings.allKeys() if key.startswith("fusion/")} == original_prefs
-    reopened, _ = depth_dialog("dct", kernel_for_method=window.kernel_for_method, dtcwt_levels=5)
-    assert reopened.kernel_spin.value() == 9
+    assert drafts == before
+    reopened, _ = depth_dialog('dct', fusion_parameters_for=parameters_for)
+    assert reopened.fusion_parameter_panel.editors['kernel_size'].value() == 9
     assert reopened.texture_combo.currentData() == "auto"
     assert reopened.map_combo.currentData() == "gray"
     assert reopened.gamma_spin.value() == pytest.approx(1.8)
@@ -317,8 +303,8 @@ def test_depth_kernel_editor_normalizes_once(depth_dialog, qapp, commit):
     from PyQt6.QtTest import QTest
     from utils.validators import normalize_kernel_size
     dialog, _ = depth_dialog()
-    editor = dialog.kernel_spin.lineEdit()
-    dialog.kernel_spin.setValue(9)
+    editor = dialog.fusion_parameter_panel.editors['kernel_size'].lineEdit()
+    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(9)
     before = dialog._request
     if commit in ("enter", "focus"):
         editor.setFocus()
@@ -330,15 +316,15 @@ def test_depth_kernel_editor_normalizes_once(depth_dialog, qapp, commit):
             dialog.method_combo.setFocus()
         expected = normalize_kernel_size(12)
     else:
-        getattr(dialog.kernel_spin, "step_up" if commit == "plus" else "step_down")()
+        getattr(dialog.fusion_parameter_panel.editors['kernel_size'], "step_up" if commit == "plus" else "step_down")()
         expected = 11 if commit == "plus" else 7
     qapp.processEvents()
-    assert dialog.kernel_spin.value() == expected
+    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == expected
     assert int(editor.text()) == expected
-    assert dialog._kernel_for("dct") == expected
+    assert dialog._parameters_for("dct")['kernel_size'] == expected
     assert dialog._request == before + 1
     revision = dialog._request
-    dialog.kernel_spin.setValue(expected)
+    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(expected)
     qapp.processEvents()
     assert dialog._request == revision
     assert dialog._worker is None
@@ -364,7 +350,7 @@ def test_depth_change_cancels_without_restart(depth_dialog, monkeypatch, qapp):
     _wait(qapp, entered.is_set)
     first = dialog._worker
     _select(dialog.method_combo, "openfocus_b")
-    dialog.kernel_spin.setValue(3)
+    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(3)
     _select(dialog.method_combo, "dtcwt")
     _select(dialog.method_combo, "stackmffv3")
     assert dialog._worker is first
@@ -378,12 +364,12 @@ def test_depth_change_cancels_without_restart(depth_dialog, monkeypatch, qapp):
     _click_and_finish(qapp, dialog)
     assert calls == ["dct", "stackmffv3"]
     assert dialog._map_method == "stackmffv3"
-    # DTCWT has no user-editable levels; the window's value is used.
+    # DTCWT follows the parent parameter value when the draft is first created.
     _select(dialog.method_combo, "dtcwt")
     assert calls == ["dct", "stackmffv3"]
     _click_and_finish(qapp, dialog)
     assert calls == ["dct", "stackmffv3", "dtcwt"]
-    assert dialog._map_parameters["N"] == dialog._nlevels
+    assert dialog._map_parameters['N'] == dialog.window_main.fusion_parameters_for('dtcwt', depth=True)['N']
 
 
 def test_depth_late_signals_cannot_replace_active_result(depth_dialog, monkeypatch, qapp):
@@ -421,7 +407,7 @@ def test_depth_late_signals_cannot_replace_active_result(depth_dialog, monkeypat
         np.testing.assert_array_equal(dialog._index01, previous)
         assert dialog._worker_outcome is None
         _busy_actions(dialog)
-    dialog.kernel_spin.setValue(3)
+    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(3)
     assert active.request != dialog._request
     release.set()
     _wait(qapp, lambda: dialog._worker is None)
@@ -493,7 +479,7 @@ def test_depth_stale_map_blocks_every_export(depth_dialog, monkeypatch, qapp, ch
     _click_and_finish(qapp, dialog)
     previous = dialog._index01.copy()
     if change == "kernel":
-        dialog.kernel_spin.setValue(3)
+        dialog.fusion_parameter_panel.editors['kernel_size'].setValue(3)
     elif change == "levels":
         dialog._sync_method_controls()
         dialog._invalidate_computation()
@@ -920,26 +906,30 @@ def test_depth_ai_mode_defaults_soft_and_uses_selected_mode(depth_dialog, monkey
         return _ramp(images, "stackmffv3")
 
     monkeypatch.setattr(depth_map, "_measure_stackmffv3", measure)
-    dialog, window = depth_dialog("stackmffv3", ai_mode="hard")
-    assert dialog.ai_mode_combo.currentData() == "hard"
-    dialog.ai_mode_combo.setCurrentIndex(dialog.ai_mode_combo.findData("soft"))
+    from core.algorithms import resolve_fusion_parameters
+    def parameters_for(method, depth=False):
+        values = {'mode': 'hard'} if method == 'stackmffv3' else None
+        return resolve_fusion_parameters(method, values, depth=depth)
+    dialog, window = depth_dialog('stackmffv3', fusion_parameters_for=parameters_for)
+    assert dialog.fusion_parameter_panel.editors['mode'].currentData() == "hard"
+    dialog.fusion_parameter_panel.editors['mode'].setCurrentIndex(dialog.fusion_parameter_panel.editors['mode'].findData("soft"))
     _click_and_finish(qapp, dialog)
     assert seen == ["soft"]
     assert dialog._map_parameters["mode"] == "soft"
-    assert window.ai_mode == "hard"
+    assert window.fusion_parameters_for('stackmffv3', depth=True)['mode'] == 'hard'
     assert dialog.btn_save_3d.isEnabled()
     _select(dialog.method_combo, "dct")
-    assert dialog.ai_mode_combo.isHidden()
+    assert 'mode' not in dialog.fusion_parameter_panel.editors
     _select(dialog.method_combo, "stackmffv3")
-    assert dialog.ai_mode_combo.currentData() == "soft"
-    dialog.ai_mode_combo.setCurrentIndex(dialog.ai_mode_combo.findData("hard"))
+    assert dialog.fusion_parameter_panel.editors['mode'].currentData() == "soft"
+    dialog.fusion_parameter_panel.editors['mode'].setCurrentIndex(dialog.fusion_parameter_panel.editors['mode'].findData("hard"))
     assert dialog._stale and dialog._map_parameters["mode"] == "soft"
     _click_and_finish(qapp, dialog)
     assert seen == ["soft", "hard"]
     assert dialog._map_parameters["mode"] == "hard"
 
 
-def test_depth_dtcwt_levels_follow_main_window(depth_dialog, monkeypatch, qapp):
+def test_depth_dtcwt_levels_seed_from_main_and_preserve_local_draft(depth_dialog, monkeypatch, qapp):
     from core import depth_map
     seen = []
 
@@ -948,12 +938,17 @@ def test_depth_dtcwt_levels_follow_main_window(depth_dialog, monkeypatch, qapp):
         return _ramp(images, "dtcwt")
 
     monkeypatch.setattr(depth_map, "_measure_dtcwt", measure)
-    dialog, window = depth_dialog("dtcwt", dtcwt_levels=3)
-    assert not hasattr(dialog, "levels_spin")
+    from core.algorithms import resolve_fusion_parameters
+    def parameters_for(method, depth=False):
+        values = {'N': 3} if method == 'dtcwt' else None
+        return resolve_fusion_parameters(method, values, depth=depth)
+    dialog, window = depth_dialog('dtcwt', fusion_parameters_for=parameters_for)
+    assert dialog.fusion_parameter_panel.editors['N'].value() == 3
     _click_and_finish(qapp, dialog)
     assert seen == [3]
-    window.dtcwt_levels = 5
-    dialog._sync_method_controls()
+    dialog.fusion_parameter_panel.editors['N'].setValue(5)
+    _select(dialog.method_combo, 'dct')
+    _select(dialog.method_combo, 'dtcwt')
     _click_and_finish(qapp, dialog)
     assert seen == [3, 5]
     assert dialog._map_parameters["N"] == 5

@@ -17,7 +17,11 @@ def settings_window(qapp):
     window.reg_downscale_width = 1024
     window.align_cache_enabled = True
     window.ai_batch_size = 2
-    window.ai_mode = "soft"
+    window._fusion_parameters_by_method = {"stackmffv3": {"mode": "soft"}}
+    window.fusion_parameters_for = lambda method, depth=False: dict(
+        window._fusion_parameters_by_method.get(method, {}))
+    window.set_fusion_parameters = lambda method, values: window._fusion_parameters_by_method.__setitem__(
+        method, dict(values))
     window.resource_preference = "balanced"
     window.restore_last_stack = False
     window.ask_load_scale = True
@@ -51,12 +55,10 @@ def test_settings_submit_commits_visible_values_and_update_preference(settings_w
     dialog = AdvancedSettingsDialog(settings_window)
     dialog.spin_block.setValue(256)
     dialog.chk_auto_update.setChecked(False)
-    dialog.combo_ai_mode.setCurrentIndex(dialog.combo_ai_mode.findData("hard"))
     dialog._apply()
     assert dialog.result() == QDialog.DialogCode.Accepted
     assert settings_window.tile_block_size == 256
     assert settings_window.tile_overlap == 128
-    assert settings_window.ai_mode == "hard"
     assert settings_window.update_manager.auto_download is False
     assert settings_window.saved == [256]
     dialog.deleteLater()
@@ -90,7 +92,7 @@ def test_resource_mode_only_changes_concurrency(settings_window):
     dialog._apply()
     assert settings_window.resource_preference == "responsive"
     assert settings_window.tile_block_size == 512
-    assert settings_window.ai_mode == "soft"
+    assert settings_window.fusion_parameters_for("stackmffv3") == {"mode": "soft"}
     dialog.deleteLater()
 
 

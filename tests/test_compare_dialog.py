@@ -377,4 +377,178 @@ def test_full_adoption_keeps_exact_uint16_pixels_and_source_snapshot(dialog, qap
     assert records[0].image is image
     np.testing.assert_array_equal(records[0].image, image)
     assert records[0].context.source_indices == tuple(dialog._source_indices)
-    assert records[0].context.parameters["kernel_size"] == dialog._method_params["openfocus_a"]["kernel_size"]
+    assert records[0].context.parameters['fusion_parameters']['kernel_size'] == dialog._method_params['openfocus_a']['kernel_size']
+
+
+def _registered_fusion(fusion, input_source, img_resize=None, lift=0, selection='first', **execution):
+    import numpy as np
+    frame = input_source[0 if selection == 'first' else -1]
+    return np.clip(frame.astype(np.float32) + lift, 0, 255).astype(frame.dtype)
+
+
+def _registered_depth(images, threshold=0.5, **options):
+    import numpy as np
+    return (images[-1][..., 0] / 255 > threshold).astype(np.float32)
+
+
+def _registered_alignment(registration, images, shift=0, **options):
+    import numpy as np
+    return [np.roll(frame, shift, axis=1) for frame in images]
+
+
+@pytest.fixture
+def extra_algorithms(monkeypatch):
+    from core import algorithms
+    monkeypatch.setattr(algorithms, '_FUSION', dict(algorithms._FUSION))
+    monkeypatch.setattr(algorithms, '_REGISTRATION', dict(algorithms._REGISTRATION))
+    lift = algorithms.ParameterSpec('lift', 'compare_levels', 2, 0, 30)
+    selection = algorithms.ParameterSpec('selection', 'label_ai_mode', 'first', choices=('first', 'last'))
+    threshold = algorithms.ParameterSpec('threshold', 'depth_gamma', 0.5, 0, 1, .1, 2)
+    shift = algorithms.ParameterSpec('shift', 'compare_levels', 1, 0, 10)
+    algorithms.register_fusion(algorithms.FusionAlgorithm(
+        'dialog_extra', 'radio_dct', 'Dialog Extra', 'DialogExtra',
+        __name__ + ':_registered_fusion', (lift, selection),
+        depth=algorithms.DepthSpec(__name__ + ':_registered_depth', (threshold,)),
+        default_exposure_match=False))
+    algorithms.register_registration(algorithms.RegistrationAlgorithm(
+        'dialog_shift', 'check_align_ecc', 'Shift', __name__ + ':_registered_alignment', (shift,)))
+    return algorithms
+
+
+def test_parameter_panel_reuses_editors_and_only_reports_edits(qapp, extra_algorithms):
+    from ui.algorithm_parameters import AlgorithmParameterPanel
+    specs = extra_algorithms.get_fusion('dialog_extra').parameters
+    panel = AlgorithmParameterPanel()
+    changes = []
+    panel.valuesChanged.connect(changes.append)
+    panel.set_parameters(specs, {'lift': 7, 'selection': 'last'})
+    editor = panel.editors['lift']
+    panel.set_parameters(specs, {'lift': 9, 'selection': 'first'})
+    assert panel.editors['lift'] is editor
+    assert changes == []
+    editor.setValue(13)
+    assert changes == [{'lift': 13, 'selection': 'first'}]
+    assert type(panel.values()['lift']) is int
+    with pytest.raises(ValueError):
+        panel.set_parameters(specs, {'lift': float('nan')})
+    with pytest.raises(ValueError):
+        panel.set_parameters(specs, {'selection': 'unknown'})
+    panel.close()
+
+
+def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms, tmp_path, monkeypatch):
+    import numpy as np
+    from copy import deepcopy
+    from PyQt6.QtCore import QSettings
+    from dialogs.batch import BatchProcessingDialog
+    import dialogs.depthmap as depthmap
+    monkeypatch.setattr(depthmap, 'get_settings', lambda: QSettings(
+        str(tmp_path / 'depth.ini'), QSettings.Format.IniFormat))
+    window = QWidget()
+    window.raw_images = [np.full((24, 32, 3), value, np.uint8) for value in (20, 180)]
+    window.raw_images[-1][:, :8] = 50
+    window.current_fusion_method = lambda: 'dialog_extra'
+    window.current_alignment_method = lambda: 'dialog_shift'
+    window.thread_count = 1
+    window.tile_enabled = False
+    window.brightness_option_for = lambda *_: False
+    saved = {'dialog_extra': {'lift': 7, 'selection': 'last'}}
+    registration = {'dialog_shift': {'shift': 3}}
+    window.fusion_parameters_for = lambda method, depth=False: extra_algorithms.resolve_fusion_parameters(
+        method, None if depth else saved.get(method), depth=depth)
+    window.registration_parameters_for = lambda method: extra_algorithms.resolve_registration_parameters(
+        method, registration.get(method))
+    window._capture_parameter_state = lambda: deepcopy({'fusion': saved, 'registration': registration})
+    from contextlib import contextmanager
+    active_scope = False
+    persisted = []
+    @contextmanager
+    def restore_scope():
+        nonlocal active_scope
+        active_scope = True
+        try:
+            yield
+        finally:
+            active_scope = False
+    def persist_settings():
+        if not active_scope:
+            persisted.append(window._capture_parameter_state())
+    def set_fusion_parameters(method, values):
+        saved[method] = dict(values)
+        window.persist_settings()
+    def set_registration_parameters(method, values):
+        registration[method] = dict(values)
+        window.persist_settings()
+    window._restore_scope = restore_scope
+    window.persist_settings = persist_settings
+    window.set_fusion_parameters = set_fusion_parameters
+    window.set_registration_parameters = set_registration_parameters
+    undo = []
+    window.push_parameter_undo = undo.append
+    batch = BatchProcessingDialog(window)
+    compare = CompareDialog(window)
+    depth = depthmap.DepthMapDialog(window)
+    compare._preview_timer.stop()
+    try:
+        assert batch.fusion_parameter_panel.values() == saved['dialog_extra']
+        assert compare._method_params['dialog_extra'] == saved['dialog_extra']
+        assert depth.fusion_parameter_panel.values() == {'threshold': .5}
+        for dialog in (batch, compare, depth):
+            assert dialog.registration_parameter_panel.values() == {'shift': 3}
+        batch.fusion_parameter_panel.editors['lift'].setValue(11)
+        batch.fusion_combo.setCurrentIndex(batch.fusion_combo.findData('dct'))
+        batch.fusion_combo.setCurrentIndex(batch.fusion_combo.findData('dialog_extra'))
+        assert batch.get_processing_settings()['fusion_params'] == {'lift': 11, 'selection': 'last'}
+        assert batch.get_processing_settings()['registration_parameters'] == {'shift': 3}
+        compare.param_widgets['dialog_extra']['lift'].setValue(13)
+        compare.registration_parameter_panel.editors['shift'].setValue(4)
+        compare.mode_combo.setCurrentIndex(compare.mode_combo.findData(False))
+        compare._preview_timer.stop()
+        compare._start_request()
+        _until(qapp, lambda: _finished(compare) and compare._results)
+        image = compare._full_results['dialog_extra']['image']
+        np.testing.assert_array_equal(image, np.roll(window.raw_images[-1], 4, axis=1) + 13)
+        depth.fusion_parameter_panel.editors['threshold'].setValue(.8)
+        assert depth._worker is None
+        depth._compute()
+        _until(qapp, lambda: depth._worker is None)
+        assert np.all(depth._index01 == 0)
+        depth.fusion_parameter_panel.editors['threshold'].setValue(.4)
+        depth._compute()
+        _until(qapp, lambda: depth._worker is None)
+        expected = np.roll(window.raw_images[-1][..., 0], 3, axis=1) / 255 > .4
+        np.testing.assert_array_equal(depth._index01, expected)
+        compare._select_method('dialog_extra')
+        previous = window._capture_parameter_state()
+        def restore_previous(state):
+            saved.clear()
+            saved.update(deepcopy(state['fusion']))
+            registration.clear()
+            registration.update(deepcopy(state['registration']))
+            window.persist_settings()
+        def reject_registration(method, values):
+            set_registration_parameters(method, values)
+            raise ValueError('registration rejected')
+        window._restore_parameter_state = restore_previous
+        window.set_registration_parameters = reject_registration
+        compare._adopt_params()
+        assert not compare._closing
+        assert window._capture_parameter_state() == previous
+        assert persisted == [previous]
+        assert undo == []
+        persisted.clear()
+        window.set_registration_parameters = set_registration_parameters
+        compare._adopt_params()
+        assert saved['dialog_extra'] == {'lift': 13, 'selection': 'last'}
+        assert registration['dialog_shift'] == {'shift': 4}
+        assert undo[0]['fusion']['dialog_extra'] == {'lift': 7, 'selection': 'last'}
+        assert len(persisted) == 1
+        assert persisted[0]['fusion']['dialog_extra'] == saved['dialog_extra']
+        assert persisted[0]['registration']['dialog_shift'] == registration['dialog_shift']
+    finally:
+        batch.reject()
+        compare.reject()
+        depth.reject()
+        _until(qapp, lambda: compare._worker is None)
+        _until(qapp, lambda: not depthmap._ORPHAN_WORKERS)
+        window.close()

@@ -116,29 +116,17 @@ class ExportManager:
     # ------------------------------------------------------------------
     # Filename helpers
     # ------------------------------------------------------------------
-    _FUSION_FILE_TAGS = {
-        "guided_filter": "GuidedFilter",
-        "dct": "DCT",
-        "dtcwt": "DTCWT",
-        "gfgfgf": "GFGFGF",
-        "stackmffv3": "StackMFFV3",
-        "openfocus_a": "OpenFocusA",
-        "openfocus_b": "OpenFocusB",
-        "openfocus_c": "OpenFocusC",
-    }
-    _ALIGN_FILE_TAGS = {
-        "homography": "Homography",
-        "ecc": "ECC",
-        "openfocus": "OpenFocusAlign",
-    }
-
     def _fusion_tag(self) -> str:
-        return self._FUSION_FILE_TAGS.get(
-            self.window.current_fusion_method(), "None")
+        from core.algorithms import get_fusion
+
+        method = self.window.current_fusion_method()
+        return "None" if method == "none" else get_fusion(method).file_tag
 
     def _align_tag(self) -> str:
-        return self._ALIGN_FILE_TAGS.get(
-            self.window.current_alignment_method(), "NoAlign")
+        from core.algorithms import get_registration
+
+        method = self.window.current_alignment_method()
+        return "NoAlign" if method == "none" else get_registration(method).file_tag
 
     def generate_default_filename(self) -> str:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -338,10 +338,10 @@ def _render_window(frames):
     w.btn_render = QPushButton("Render")
     w.btn_reset = QPushButton("Reset")
     # 下拉单选的融合/对齐选择 + 统一读取助手（与真实窗口同契约）
-    from ui.right_panel import FUSION_ITEMS, ALIGN_ITEMS
+    from ui.right_panel import fusion_items, alignment_items
 
     w.combo_fusion = QComboBox()
-    for code, _key, _hint in FUSION_ITEMS:
+    for code, _key, _hint in fusion_items():
         w.combo_fusion.addItem(code, code)
     # These tests exercise the classical/AI-agnostic paths; pin a classical
     # method instead of relying on whichever entry the product defaults to
@@ -349,7 +349,7 @@ def _render_window(frames):
     w.combo_fusion.setCurrentIndex(
         max(0, w.combo_fusion.findData("guided_filter")))
     w.combo_align = QComboBox()
-    for code, _key, _hint in ALIGN_ITEMS:
+    for code, _key, _hint in alignment_items():
         w.combo_align.addItem(code, code)
     # 桩默认 none（等价旧测试里三个对齐框全不勾），对齐路径走“无配准”分支
     w.combo_align.setCurrentIndex(
@@ -361,8 +361,18 @@ def _render_window(frames):
     w.set_alignment_method = lambda code: w.combo_align.setCurrentIndex(
         max(0, w.combo_align.findData(code)))
     w.chk_quick_preview = QCheckBox()
-    w.slider_smooth = QSlider()
-    w.slider_smooth.setValue(31)
+    from core.algorithms import fusion_defaults, registration_defaults, get_fusion
+    w.fusion_parameters_for = lambda method, depth=False: (
+        {} if method == "none" else fusion_defaults(method, depth=depth))
+    w.registration_parameters_for = lambda method: (
+        {} if method == "none" else registration_defaults(method))
+    w.brightness_option_for = lambda option, method=None: (
+        (option == "exposure_match") if (method or w.current_fusion_method()) == "none"
+        else getattr(get_fusion(method or w.current_fusion_method()),
+                     "default_exposure_match" if option == "exposure_match"
+                     else "default_base_correct"))
+    w.fusion_parameter_panel = QWidget()
+    w.registration_parameter_panel = QWidget()
     w.result_slider = QSlider()
     w.result_control_bar = QWidget()
     w.add_label_action = QAction()
@@ -496,8 +506,7 @@ def test_alignment_published_when_the_stack_is_untouched(qapp, monkeypatch):
 
     assert w.aligned_images == processed
     assert w.is_images_aligned is True
-    # 3-tuple since v1.39: (homography, ecc, openfocus)
-    assert w.last_alignment_options == (False, False, False)
+    assert w.last_alignment_options == ((), {})
     assert saved == []
 
 
@@ -586,7 +595,7 @@ def test_compare_all_cancel_between_renders_unlocks_the_ui(qapp, monkeypatch):
 
     assert rm._compare_queue == [] and rm._compare_mode is False
     assert w.btn_render.isEnabled()
-    assert w.combo_align.isEnabled() and w.slider_smooth.isEnabled()
+    assert w.combo_align.isEnabled() and w.fusion_parameter_panel.isEnabled()
 
 
 def test_roi_reset_clears_rect_button_and_state(qapp):
@@ -823,46 +832,31 @@ def test_downsample_dialog_respects_max_scale(qapp):
     assert over.get_scale_factor() == 0.4
 
 
-def test_kernel_slider_remembers_value_per_method(qapp):
-    """Switching fusion methods used to reset the slider to the method's
-    default, losing the user's tuned value; and the depth dialog read the
-    slider whatever method it belonged to (GF radius 31 as DCT median)."""
-    from PyQt6.QtWidgets import QLabel, QSlider, QWidget
-    import main as main_module
+def test_algorithm_parameters_survive_method_switches(qapp):
+    """Editing one method cannot change another method's render parameters."""
+    from types import SimpleNamespace, MethodType
+    from main import OpenFocus
+    from ui.algorithm_parameters import AlgorithmParameterPanel
 
-    cls = main_module.OpenFocus
-
-    class W:
-        _KERNEL_MODES = cls._KERNEL_MODES
-        _KERNEL_LABELS = cls._KERNEL_LABELS
-        update_slider_availability = cls.update_slider_availability
-        kernel_for_method = cls.kernel_for_method
-
-        def __init__(self):
-            self.slider_smooth = QSlider()
-            self.smooth_widget = QWidget()
-            self.lbl_kernel = QLabel()
-            self.current_kernel_mode = None
-            self.method = "guided_filter"
-
-        def current_fusion_method(self):
-            return self.method
-
-    w = W()
-    w.update_slider_availability()
-    assert w.slider_smooth.value() == 31
-    w.slider_smooth.setValue(21)
-    w.method = "dct"
-    w.update_slider_availability()
-    assert w.slider_smooth.value() == 7
-    assert w.kernel_for_method("guided_filter") == 21
-    assert w.kernel_for_method("dct") == 7
-    w.slider_smooth.setValue(9)
-    w.method = "guided_filter"
-    w.update_slider_availability()
-    assert w.slider_smooth.value() == 21
-    assert w.kernel_for_method("dct") == 9
-    assert w.kernel_for_method("openfocus_b") == 11
+    host = SimpleNamespace(method="guided_filter", _fusion_parameters_by_method={})
+    host.current_fusion_method = lambda: host.method
+    host.persist_settings = lambda: None
+    host._sync_brightness_checkboxes = lambda *_: None
+    host.fusion_parameter_panel = AlgorithmParameterPanel()
+    for name in ("fusion_parameters_for", "set_fusion_parameters", "refresh_algorithm_parameters"):
+        setattr(host, name, MethodType(getattr(OpenFocus, name), host))
+    host.fusion_parameter_panel.valuesChanged.connect(
+        lambda values: host.set_fusion_parameters(host.method, values))
+    host.refresh_algorithm_parameters()
+    host.fusion_parameter_panel.editors["kernel_size"].setValue(21)
+    host.method = "dct"
+    host.refresh_algorithm_parameters()
+    host.fusion_parameter_panel.editors["kernel_size"].setValue(9)
+    host.method = "guided_filter"
+    host.refresh_algorithm_parameters()
+    assert host.fusion_parameter_panel.values()["kernel_size"] == 21
+    assert host.fusion_parameters_for("dct")["kernel_size"] == 9
+    host.fusion_parameter_panel.deleteLater()
 
 
 def test_load_scale_prompt_can_be_skipped(monkeypatch):
@@ -946,7 +940,7 @@ def test_stack_change_during_compare_unlocks_controls(qapp, monkeypatch):
     rm._render_context = {
         "source": list(w.raw_images),
         "source_ref": object(),
-        "alignment_options": (False, False, False),
+        "alignment_options": (),
         "preview": False,
         "roi": False,
         "filenames": list(w.image_filenames),

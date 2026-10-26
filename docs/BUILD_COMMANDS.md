@@ -23,6 +23,7 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --add-data "ui;ui" `
   --add-data "docs;docs" `
   --collect-all PyQt6 `
+  --additional-hooks-dir hooks `
   --collect-all scipy `
   --copy-metadata imageio `
   --collect-data dtcwt `
@@ -53,6 +54,7 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --add-data "ui;ui" `
   --add-data "docs;docs" `
   --collect-all PyQt6 `
+  --additional-hooks-dir hooks `
   --collect-all scipy `
   --copy-metadata imageio `
   --collect-data dtcwt `
@@ -81,6 +83,7 @@ pyinstaller --clean --noconfirm --onedir --noconsole `
   --add-data "ui;ui" `
   --add-data "docs;docs" `
   --collect-all PyQt6 `
+  --additional-hooks-dir hooks `
   --collect-all scipy `
   --copy-metadata imageio `
   --collect-data dtcwt `
@@ -132,6 +135,12 @@ The repo root `OpenFocus.spec` is the PyInstaller 6 equivalent of mode 3
 python -m PyInstaller --clean --noconfirm OpenFocus.spec
 ```
 
+`hooks/hook-core.algorithms.py` derives hidden imports from every registered
+fusion, depth, registration and capability entry point. Keep
+`--additional-hooks-dir hooks` in release commands: a new descriptor then bundles
+its backend automatically, including modules outside `fusion_methods`. Source
+execution alone cannot establish that a frozen distribution includes it.
+
 It is **not** used by CI (the release workflow passes the flags explicitly) and
 it is gitignored, so treat it as a convenience for local builds. The older
 `docs/OpenFocus.spec` was removed: it used the PyInstaller 4/5 API
@@ -149,6 +158,7 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --add-data "ui;ui" `
   --add-data "docs;docs" `
   --collect-all PyQt6 `
+  --additional-hooks-dir hooks `
   --collect-all scipy `
   --copy-metadata imageio `
   --collect-data dtcwt `
@@ -168,6 +178,7 @@ pyinstaller --clean --noconfirm --onedir --noconsole \
   --add-data "ui:ui" \
   --add-data "docs:docs" \
   --collect-all PyQt6 \
+  --additional-hooks-dir hooks \
   --collect-all scipy \
   --copy-metadata imageio \
   --collect-data dtcwt \
@@ -188,6 +199,7 @@ pyinstaller --clean --noconfirm --onedir --noconsole \
   --add-data "ui:ui" \
   --add-data "docs:docs" \
   --collect-all PyQt6 \
+  --additional-hooks-dir hooks \
   --collect-all scipy \
   --copy-metadata imageio \
   --collect-data dtcwt \

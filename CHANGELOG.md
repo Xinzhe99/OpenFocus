@@ -5,6 +5,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **One explicit registry for fusion and registration algorithms.** Immutable
+  descriptors declare lazy runners, typed numeric/enum parameters, optional depth
+  measures and execution capabilities. New methods appear in rendering, batch,
+  comparison, depth selection and the CLI from their descriptor. Generic
+  `--param KEY=JSON_VALUE` and `--align-param KEY=JSON_VALUE` options execute new
+  parameters without adding dedicated command-line flags.
+- **An algorithm contributor guide and implementation spec.** `CONTRIBUTING.md`
+  includes a working fusion/depth example and the registration, resource,
+  cancellation, translation and verification contracts. PyInstaller discovers
+  registered lazy modules through `hooks/hook-core.algorithms.py`.
+
 ### Fixed
 - **AI depth maps offer the same soft/hard output choice as AI fusion.** The
   measure dialog shows Soft blend (the default) or Hard pick beside the AI
@@ -13,9 +25,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   depth dialog and does not change the main window's AI output mode. On the
   six-frame demo stack the soft map had 727,729 distinct values against 6 for
   the hard pick (one per frame), confirming both modes reach the measurement.
-- **DTCWT depth maps follow the main window's decomposition depth.** The dialog
-  no longer offers a wavelet-level control the main window does not have; the
-  level used for a render is the level used for its depth map.
+- **DTCWT depth maps initialize from the source's decomposition depth.** The
+  shared parameter editor exposes levels as a local draft; editing the depth
+  calculation leaves the main window and recorded output parameters unchanged.
 - **Keyboard navigation in the output list updates the result view.** Moving
   with Up/Down changes the current output row and now displays that output, as
   a mouse click already did, including its recorded source and annotations.
@@ -29,9 +41,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Depth maps require Compute for every measure.** Opening the dialog, changing
   sources or registration, switching measures and editing parameters no longer
   starts or queues a calculation. Per-source, per-method parameter drafts sit
-  directly below the measure selector, use the displayed kernel/window (DTCWT
-  follows the main window's depth instead of adding a level control), and leave
-  the main window's persisted parameters unchanged.
+  directly below the measure selector, use the declared kernel, window, levels or
+  output mode, and leave the main window's persisted parameters unchanged.
   Changes cancel active work cooperatively, label the previous 2D map as stale,
   clear its 3D surface and block every export until a current computation succeeds.
   Compute remains visible, with calculation, cancellation and export sharing
@@ -67,14 +78,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (it used to keep the smoothing and brightness overrides).
 
 ### Changed
-- **Every algorithm-selecting surface exposes the same parameters.** The main
-  window, batch dialog, compare dialog and depth dialog now read one table
-  (`constants.METHOD_FUSION_PARAMS`). DTCWT levels became editable in the main
-  window, which previously fixed them at 4 while the render consumed the value;
-  batch gained DTCWT levels and the AI soft/hard output mode, and no longer shows
-  OpenFocus C a kernel its back-end ignores. Batch dispatch also stops passing a
-  kernel to OpenFocus C. Depth maps keep their own smaller table because they
-  consume measurement parameters, not fusion post-processing.
+- **Every algorithm-selecting surface exposes declared parameters.** The main
+  window, batch, comparison and depth dialogs use `core.algorithms` and the same
+  integer, float and enum editor. Depth schemas are declared independently from
+  fusion schemas; OpenFocus C's unused fusion kernel is absent. Settings and
+  format-3 projects persist parameter dictionaries and migrate old values only
+  while reading. Render workers receive explicit method ids; registration steps
+  and parameters remain intact in cache and provenance identities. Unknown or
+  unavailable selections fail explicitly, and local comparison falls back to a
+  full-frame computation when an algorithm declares no proven halo/grid.
 - **DTCWT colour reconstruction runs in a bounded, ordered pool.** The three
   channels still run in order and each channel's frames are consumed in frame
   order, so every float32 addition happens in the same sequence as before;
@@ -102,11 +114,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   0.6 s module import, which is warmed when the dialog opens.
 
 ### Verification
-- After the depth-dialog repair, the complete Windows CPU suite passed:
-  **1105 passed, 12 skipped**, with two Pillow TIFF metadata warnings.
-  Six real depth backends, native Chinese/English/German/Japanese layouts in
-  both themes, 150% DPI, cooperative cancellation/close, and Unicode OBJ
-  texture round-trips were exercised.
+- After the algorithm-registry migration, the complete Windows CPU suite passed:
+  **1126 passed, 12 skipped**, with two Pillow TIFF metadata warnings.
+  A native Windows session exercised an additional fusion and aligner with new
+  numeric/enum parameters through uint16 rendering, Unicode TIFF read-back,
+  comparison adoption, undo/redo, project reopening, manual depth and batch.
+  The depth result matched the requested 0.4 frame position and no unhandled
+  Qt exceptions were recorded.
+- A minimal Windows program built with PyInstaller 6.22.3 loaded an additional
+  registered backend from inside its bundle and produced the requested results
+  for two parameter values. This verifies lazy-module collection with the actual
+  hook; the full Windows/macOS installers were not rebuilt.
+- The contributor guide's backend and descriptor were executed verbatim:
+  temperature changed pixels, hard selection kept source pixels, soft depth
+  matched fusion weights, uint16 low bits survived the shared boundaries, and
+  both fusion and depth responded to cancellation.
 - New `tests/test_parameter_memory.py` (14 cases), `tests/test_dtcwt_parallel.py`
   (9), `tests/test_loader_parallel.py` (13) and `tests/test_batch_drag_drop.py`
   (5) cover the codecs, restart and project precedence, bit-identical DTCWT

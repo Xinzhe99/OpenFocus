@@ -23,6 +23,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.algorithms import fusion_algorithms, get_fusion
+
 
 class _PeakMemoryWindows:
     """Working-set tracker via GetProcessMemoryInfo.
@@ -127,11 +129,7 @@ def fuse(imgs, algo, threads=4):
     norm, is16 = normalize_fuse_input(list(imgs))
     f = MultiFocusFusion(algorithm=algo, use_gpu=False)
     kw = dict(input_source=norm, img_resize=None, thread_count=threads)
-    if algo == "guided_filter":
-        kw["kernel_size"] = 31
-    elif algo in ("dct", "gfgfgf"):
-        kw["kernel_size"] = 7
-    elif algo == "stackmffv3":
+    if get_fusion(algo).neural:
         from core.cli import _find_model_path
         kw["model_path"] = _find_model_path()
     out = f.fuse(**kw)
@@ -195,7 +193,7 @@ def main():
         print(f"samples: not found under {photo_root} — section C skipped")
 
     results, failures = [], []
-    algos = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv3"]
+    algos = [spec.id for spec in fusion_algorithms()]
 
     if hetao and any(want(f"hetao40/{a}") for a in algos):
         print("\n== A. real 40-frame stack, each algorithm (no registration) ==")
@@ -203,30 +201,30 @@ def main():
             if want(f"hetao40/{a}"):
                 run_case(f"hetao40/{a}", hetao, a, failures, results)
 
-    if hetao and any(want(f"hetao40/ecc+{a}") for a in ("guided_filter", "dtcwt", "stackmffv3")):
+    if hetao and any(want(f"hetao40/ecc+{a}") for a in algos):
         print("\n== B. real 40-frame stack + ECC registration ==")
-        for a in ("guided_filter", "dtcwt", "stackmffv3"):
+        for a in algos:
             if want(f"hetao40/ecc+{a}"):
                 run_case(f"hetao40/ecc+{a}", hetao, a, failures, results, reg="ecc")
 
-    if samples and any(want(f"samples24/{a}") for a in ("guided_filter", "dtcwt", "stackmffv3")):
+    if samples and any(want(f"samples24/{a}") for a in algos):
         print("\n== C. high-resolution stack (3636x4756 x24) ==")
-        for a in ("guided_filter", "dtcwt", "stackmffv3"):
+        for a in algos:
             if want(f"samples24/{a}"):
                 run_case(f"samples24/{a}", samples, a, failures, results)
 
-    if not args.quick and hetao and any(want(f"synth120/{a}") for a in ("guided_filter", "dtcwt", "stackmffv3")):
+    if not args.quick and hetao and any(want(f"synth120/{a}") for a in algos):
         print("\n== D. synthetic 120-frame stack (real frames cycled) ==")
         big = synth_big_stack(hetao, 120)
-        for a in ("guided_filter", "dtcwt", "stackmffv3"):
+        for a in algos:
             if want(f"synth120/{a}"):
                 run_case(f"synth120/{a}", big, a, failures, results)
         del big
 
-    if not args.quick and hetao and any(want(f"u16-hetao40/{a}") for a in ("guided_filter", "dtcwt")):
+    if not args.quick and hetao and any(want(f"u16-hetao40/{a}") for a in algos):
         print("\n== E. 16-bit variants ==")
         u16 = [im.astype(np.uint16) * 257 for im in hetao]
-        for a in ("guided_filter", "dtcwt"):
+        for a in algos:
             if want(f"u16-hetao40/{a}"):
                 run_case(f"u16-hetao40/{a}", u16, a, failures, results)
         del u16

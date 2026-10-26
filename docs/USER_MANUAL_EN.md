@@ -224,8 +224,8 @@ require an explicit **Compute** click. Opening the dialog or changing the measur
 source, registration or parameters never starts computation. The parameter editor
 appears directly below the measure selector: DCT median kernel and GFG initial kernel
 use odd values 1–51 (default 7); OpenFocus B uses a variance window and OpenFocus C a
-band-pass energy window, both odd 1–21 px (default 11). DTCWT has no level control
-here: it follows the main window's decomposition depth, as in a render. StackMFF V3
+band-pass energy window, both odd 1–21 px (default 11). DTCWT decomposition levels
+are editable here as a local draft, initialized from the source parameters. StackMFF V3
 shows its own AI output mode (Soft blend by default, or Hard pick) and an explanation
 instead of a numeric kernel: the map reports a continuous frame position, not a
 physical distance. Soft uses the probability-weighted position; Hard uses the most

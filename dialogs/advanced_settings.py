@@ -4,7 +4,7 @@ Single scroll page with four sections (performance / registration / AI /
 startup), not a tab book: the whole point is to see everything at once instead
 of hunting through four dialogs and a menu.
 """
-from PyQt6.QtCore import Qt, QSignalBlocker
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
     QLabel, QScrollArea, QVBoxLayout, QWidget,
@@ -117,12 +117,6 @@ class AdvancedSettingsDialog(QDialog):
             minimum=1, maximum=16, step=1, decimals=0,
             value=int(getattr(w, "ai_batch_size", 2)))
         ai.addRow(trans.t("advanced_ai_batch"), self.spin_ai_batch)
-        self.combo_ai_mode = QComboBox()
-        self.combo_ai_mode.addItem(trans.t("radio_ai_soft"), "soft")
-        self.combo_ai_mode.addItem(trans.t("radio_ai_hard"), "hard")
-        idx = self.combo_ai_mode.findData(getattr(w, "ai_mode", "soft"))
-        self.combo_ai_mode.setCurrentIndex(max(0, idx))
-        ai.addRow(trans.t("advanced_ai_mode"), self.combo_ai_mode)
 
         # ---- Startup & updates -------------------------------------------
         other = _section(page_lay, trans.t("advanced_tab_other"))
@@ -189,7 +183,6 @@ class AdvancedSettingsDialog(QDialog):
             "reg_downscale_width": int(self.spin_reg_width.value()),
             "align_cache_enabled": self.chk_align_cache.isChecked(),
             "ai_batch_size": max(1, int(self.spin_ai_batch.value())),
-            "ai_mode": self.combo_ai_mode.currentData(),
             "restore_last_stack": self.chk_restore.isChecked(),
             "ask_load_scale": self.chk_ask_scale.isChecked(),
         }
@@ -217,11 +210,6 @@ class AdvancedSettingsDialog(QDialog):
                 pass
             self.status.setText(str(exc))
             return
-        for mode in ("soft", "hard"):
-            radio = getattr(w, "radio_ai_" + mode, None)
-            if radio is not None:
-                with QSignalBlocker(radio):
-                    radio.setChecked(draft["ai_mode"] == mode)
         processing = set(draft) - {"restore_last_stack", "ask_load_scale"}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)

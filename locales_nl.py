@@ -299,6 +299,8 @@ PACK = {
     "check_align_none": "Geen uitlijning",
     "check_align_none_hint": "Fuseer de frames zoals geladen, zonder enige registratie.",
     "check_align_of": "OpenFocus (snel)",
+    "check_align_both": "Homografie → ECC",
+    "label_align_shift_limit": "Maximale verschuiving (fractie van frame)",
     "check_align_of_hint": "Snelle begrensde similariteitsuitlijning (translatie + rotatie + schaal) met helderheidsvereffening en automatisch bijsnijden. Minder dan een seconde per frame; frames die meer dan 8% van de beeldgrootte verschuiven, blijven onuitgelijnd in plaats van half gecorrigeerd. Kies ECC of Homografie voor niet-rigide of extreme geometrie.",
     "chk_base_correct": "Helderheidsdrift verwijderen",
     "chk_exposure_match": "Belichting afstemmen vóór fusie",

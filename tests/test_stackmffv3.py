@@ -16,7 +16,7 @@ pytestmark = pytest.mark.skipif(not is_ai_fusion_available(),
 def _fuse(mode, frames=None, exposure_match=True, **kwargs):
     frames = make_two_focus_stack() if frames is None else frames
     fusion = MultiFocusFusion(algorithm="stackmffv3", use_gpu=False,
-                              ai_mode=mode, exposure_match=exposure_match)
+                              fusion_parameters={'mode': mode}, exposure_match=exposure_match)
     out = fusion.fuse(input_source=frames, img_resize=None,
                       model_path=WEIGHTS, thread_count=2, **kwargs)
     assert out is not None
@@ -48,13 +48,14 @@ def test_hard_mode_values_come_from_the_source_frames():
     assert covered.all()
 
 
-def test_unknown_mode_falls_back_to_soft():
-    assert _fuse("nonsense").shape[:2] == make_two_focus_stack()[0].shape[:2]
+def test_unknown_mode_is_rejected():
+    with pytest.raises(ValueError, match='mode'):
+        _fuse('nonsense')
 
 
 def test_get_info_reports_device_and_mode():
     info = MultiFocusFusion(algorithm="stackmffv3", use_gpu=False,
-                            ai_mode="hard").get_info()
+                            fusion_parameters={'mode': 'hard'}).get_info()
     assert info["algorithm"] == "stackmffv3"
     assert "CPU" in info["device"]
     assert info["mode"] == "hard"
@@ -81,7 +82,7 @@ def test_tiled_path_honours_the_output_mode():
     outs = {}
     for mode in ("soft", "hard"):
         fusion = MultiFocusFusion(
-            algorithm="stackmffv3", use_gpu=False, ai_mode=mode,
+            algorithm='stackmffv3', use_gpu=False, fusion_parameters={'mode': mode},
             exposure_match=False, tile_enabled=True,
             tile_block_size=512, tile_overlap=128)
         outs[mode] = fusion.fuse(input_source=list(frames), img_resize=None,
@@ -104,7 +105,7 @@ def test_cpu_tiles_are_inferred_one_at_a_time(monkeypatch):
 
     monkeypatch.setattr(ai, "_stackmffv3_batch_impl", spy)
     fusion = MultiFocusFusion(
-        algorithm="stackmffv3", use_gpu=False, ai_mode="soft",
+        algorithm='stackmffv3', use_gpu=False, fusion_parameters={'mode': 'soft'},
         exposure_match=False, tile_enabled=True,
         tile_block_size=256, tile_overlap=64, ai_batch_size=2)
     fusion.fuse(input_source=make_two_focus_stack(), img_resize=None,
@@ -128,7 +129,7 @@ def test_ai_tile_progress_never_skips_ahead(monkeypatch):
     monkeypatch.setattr(ai, "_stackmffv3_batch_impl", spy)
     seen = []
     fusion = MultiFocusFusion(
-        algorithm="stackmffv3", use_gpu=False, ai_mode="soft",
+        algorithm='stackmffv3', use_gpu=False, fusion_parameters={'mode': 'soft'},
         exposure_match=False, tile_enabled=True,
         tile_block_size=256, tile_overlap=64)
     fusion.fuse(input_source=make_two_focus_stack(), img_resize=None,
@@ -341,11 +342,8 @@ def test_real_neural_render_worker_preserves_uint16_low_bits(qapp, tiled):
     frame = np.repeat(values[..., None], 3, axis=2)
     worker = RenderWorker(
         raw_images=[frame, frame.copy()], aligned_images=[], is_images_aligned=False,
-        last_alignment_options=(False, False), need_align_homography=False,
-        need_align_ecc=False, need_fusion=True, rb_a_checked=False,
-        rb_b_checked=False, rb_c_checked=False, rb_gfg_checked=False,
-        rb_d_checked=True, kernel_slider_value=7, algorithm_override='stackmffv3',
-        use_gpu=False, thread_count=1, ai_mode='hard', exposure_match=False,
+        algorithm='stackmffv3', fusion_parameters={'mode': 'hard'},
+        use_gpu=False, thread_count=1, exposure_match=False,
         tile_enabled=tiled, tile_block_size=64, tile_overlap=16, tile_threshold=32)
     emitted = {}
     worker.finished_signal.connect(lambda *args: emitted.setdefault('result', args[1]))

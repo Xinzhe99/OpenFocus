@@ -210,8 +210,8 @@ Os seis métodos exigem um clique explícito em **Calcular**. Abrir o diálogo o
 a medida, a origem, o registro ou os parâmetros não inicia o cálculo. O editor fica logo
 abaixo do seletor de medida: os kernels mediano DCT e inicial GFG aceitam ímpares de 1 a 51
 (padrão 7); B usa uma janela de variância e C uma de energia passa-faixa, ímpares de 1 a 21 px
-(padrão 11). DTCWT não oferece níveis aqui: segue a profundidade de decomposição da
-janela principal, como num render. StackMFF V3 mostra o próprio modo de saída de IA
+(padrão 11). Os níveis de decomposição DTCWT são editáveis aqui como rascunho local,
+inicializado com os parâmetros da origem. StackMFF V3 mostra o próprio modo de saída de IA
 (mistura suave por padrão, ou seleção rígida) e uma explicação, sem kernel numérico: a
 mistura suave estima uma posição contínua ponderada por probabilidade, a seleção rígida usa
 o quadro mais provável por pixel. Nenhuma é uma distância física. Os rascunhos começam com os parâmetros da saída correspondente

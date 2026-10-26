@@ -49,6 +49,18 @@ def _window(paths, folder, scale=1.0):
     w.current_alignment_method = lambda: w._alignment
     w.set_fusion_method = lambda code: setattr(w, "_fusion", code)
     w.set_alignment_method = lambda code: setattr(w, "_alignment", code)
+    from core.algorithms import resolve_fusion_parameters, resolve_registration_parameters
+    w._fusion_parameters_by_method = {}
+    w._registration_parameters_by_method = {}
+    w._brightness_by_method = {}
+    w.fusion_parameters_for = lambda method, depth=False: resolve_fusion_parameters(
+        method, w._fusion_parameters_by_method.get(method), depth=depth)
+    w.registration_parameters_for = lambda method: resolve_registration_parameters(
+        method, w._registration_parameters_by_method.get(method))
+    w.set_fusion_parameters = lambda method, values: w._fusion_parameters_by_method.__setitem__(
+        method, resolve_fusion_parameters(method, values))
+    w.set_registration_parameters = lambda method, values: w._registration_parameters_by_method.__setitem__(
+        method, resolve_registration_parameters(method, values))
     w.slider_smooth = _Slider()
     w.chk_quick_preview = None
     w.raw_images = [np.zeros((8, 8, 3), np.uint8) for _ in paths]

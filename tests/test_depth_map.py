@@ -5,11 +5,11 @@ import numpy as np
 import pytest
 
 from core.depth_map import (
-    SUPPORTED_METHODS,
     DepthMapCancelled,
     compute_focus_index,
     smooth_index_map,
 )
+from core.algorithms import depth_algorithms
 from utils.colormap import (
     build_lut_from_stops,
     builtin_choices,
@@ -61,7 +61,7 @@ class TestComputeFocusIndex:
             compute_focus_index([np.zeros((10, 10, 3), np.uint8)], "dct")
 
     def test_supported_list_complete(self):
-        assert set(SUPPORTED_METHODS) == {
+        assert {spec.id for spec in depth_algorithms()} == {
             "dct", "dtcwt", "gfgfgf", "stackmffv3",
             "openfocus_b", "openfocus_c"}
 

@@ -21,8 +21,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf",
-           "openfocus_a", "openfocus_b", "openfocus_c", "stackmffv3"]
+from core.algorithms import fusion_algorithms
 
 STACK_DIR = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "_perf", "stack")
@@ -76,7 +75,7 @@ print(f"stack: {len(frames)} x {frames[0].shape[1]}x{frames[0].shape[0]}", flush
 from core.multi_focus_fusion import MultiFocusFusion
 
 rows = []
-for method in METHODS:
+for method in (spec.id for spec in fusion_algorithms()):
     try:
         fuser = MultiFocusFusion(algorithm=method, use_gpu=False,
                                  tile_enabled=False)

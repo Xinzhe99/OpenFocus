@@ -9,7 +9,7 @@ import imageio.v2 as imageio
 from core.registration import ImageRegistration, RegistrationCancelled
 from core.multi_focus_fusion import MultiFocusFusion
 from core.resource_policy import heavy_job, require_memory
-from utils import resource_path, normalize_kernel_size
+from utils import resource_path
 from utils.image_utils import to_display_uint8
 from copy import deepcopy
 from utils.export_paths import create_stack_directory, frame_export_name, unique_path
@@ -17,6 +17,8 @@ from constants import (
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     DEFAULT_THREAD_COUNT
 )
+from core.algorithms import (get_fusion, alignment_steps, resolve_fusion_parameters,
+                             resolve_registration_parameters)
 
 
 # A quick preview must be *obviously* quicker, not marginally so. The old
@@ -152,127 +154,53 @@ class RenderWorker(QThread):
     stage_signal = pyqtSignal(str)  # "align" | "fuse"
     error_signal = pyqtSignal(str)
 
-    def __init__(
-        self,
-        raw_images,
-        aligned_images,
-        is_images_aligned,
-        last_alignment_options,
-        need_align_homography,
-        need_align_ecc,
-        need_fusion,
-        rb_a_checked,
-        rb_b_checked,
-        rb_c_checked,
-        rb_gfg_checked,
-        rb_d_checked,
-        kernel_slider_value,
-        tile_enabled=None,
-        tile_block_size=None,
-        tile_overlap=None,
-        tile_threshold=None,
-        reg_downscale_width=None,
-        thread_count: int = DEFAULT_THREAD_COUNT,
-        ai_batch_size: int = 2,
-        ai_mode: str = "soft",
-        roi_rect=None,
-        roi_mode="crop", # 'crop' or 'paste'
-        roi_base_index=0,
-        use_gpu: bool = True,
-        algorithm_override: str | None = None,
-        need_align_openfocus: bool = False,
-        rb_ofa_checked: bool = False,
-        rb_ofb_checked: bool = False,
-        rb_ofc_checked: bool = False,
-        base_frame: str = "none",
-        sort_mode: str = "asc",
-        depth_smoothing: float = None,
-        blend_smoothing: float = None,
-        exposure_match: bool = False,
-        dtcwt_levels: int = 4,
-        disk_cache: dict | None = None,
-        resource_preference: str = "balanced",
-        preview: bool = False,
-    ):
+    def __init__(self, raw_images, aligned_images=None, is_images_aligned=False,
+                 last_alignment_options=None, *, algorithm, alignment='none',
+                 fusion_parameters=None, registration_parameters=None, need_fusion=True,
+                 tile_enabled=None, tile_block_size=None, tile_overlap=None,
+                 tile_threshold=None, reg_downscale_width=None,
+                 thread_count=DEFAULT_THREAD_COUNT, ai_batch_size=2,
+                 roi_rect=None, roi_mode='crop', roi_base_index=0, use_gpu=True,
+                 base_frame='none', sort_mode='asc', exposure_match=False,
+                 disk_cache=None, resource_preference='balanced', preview=False):
         super().__init__()
+        if algorithm is None:
+            if need_fusion or fusion_parameters:
+                raise ValueError("A fusion render requires an explicit registered algorithm")
+            self.fusion_parameters = {}
+        else:
+            get_fusion(algorithm)
+            self.fusion_parameters = resolve_fusion_parameters(algorithm, fusion_parameters)
+        self.algorithm = algorithm
+        self.alignment = alignment_steps(alignment)
+        self.registration_parameters = resolve_registration_parameters(alignment, registration_parameters)
         self.raw_images = raw_images
-        self.aligned_images = aligned_images
-        self.preview = bool(preview)
-        self.is_images_aligned = is_images_aligned
+        self.aligned_images = [] if aligned_images is None else aligned_images
+        self.is_images_aligned = bool(is_images_aligned)
         self.last_alignment_options = last_alignment_options
+        self.need_fusion = bool(need_fusion)
+        self.preview = bool(preview)
         self.roi_rect = roi_rect
         self.roi_mode = roi_mode
         self.roi_base_index = roi_base_index
-
-        # 配准选项
-        self.need_align_homography = need_align_homography
-        self.need_align_ecc = need_align_ecc
-        self.need_align_openfocus = bool(need_align_openfocus)
-
-        # 融合选项
-        self.need_fusion = need_fusion
-        self.rb_a_checked = rb_a_checked
-        self.rb_b_checked = rb_b_checked
-        self.rb_c_checked = rb_c_checked
-        self.rb_gfg_checked = rb_gfg_checked
-        self.rb_d_checked = rb_d_checked
-        self.rb_ofa_checked = bool(rb_ofa_checked)
-        self.rb_ofb_checked = bool(rb_ofb_checked)
-        self.rb_ofc_checked = bool(rb_ofc_checked)
-        # 基底校正（消除亮度漂移）：'none' | 'last' | 'first'
-        self.base_frame = base_frame if base_frame in ("none", "last", "first") else "none"
-        # 帧序方向（仅 openfocus 族生效）：'asc'（默认）| 'desc' | 'off'
-        self.sort_mode = sort_mode if sort_mode in ("asc", "desc", "off") else "asc"
-        # OpenFocus B 深度图过渡 σ（None = 默认 1.2）
-        self.depth_smoothing = depth_smoothing
-        # OpenFocus A/C 混合平滑 σ（None = 各自默认：A 2.0 / C 3.0）
-        self.blend_smoothing = blend_smoothing
-        # 融合前曝光匹配：对齐与融合必须使用同一个亮度端（末帧）
-        self.exposure_match = bool(exposure_match)
-        self.kernel_slider_value = kernel_slider_value
-        # DTCWT decomposition levels: the comparison window lets the user set
-        # them, so the real render must accept the same value or an adopted
-        # parameter would silently fall back to 4.
-        self.dtcwt_levels = max(1, int(dtcwt_levels or 4))
-        # Tile params passed from UI (may be None -> use fusion defaults)
         self.tile_enabled = tile_enabled
         self.tile_block_size = tile_block_size
         self.tile_overlap = tile_overlap
         self.tile_threshold = tile_threshold
-        # StackMFF V3 批量处理大小
-        self.ai_batch_size = max(1, int(ai_batch_size)) if ai_batch_size else 2
-        # StackMFF V3 输出模式：'soft' 概率加权混合 / 'hard' 逐像素取帧
-        self.ai_mode = ai_mode if ai_mode in ("soft", "hard") else "soft"
-        # Registration downscale width passed from UI (optional)
         self.reg_downscale_width = reg_downscale_width
-        # GPU 加速开关（仅影响 StackMFF-V3；经典算法本身固定 CPU）
+        self.thread_count = max(0, int(thread_count))
+        self.ai_batch_size = max(1, int(ai_batch_size))
         self.use_gpu = bool(use_gpu)
+        self.base_frame = base_frame
+        self.sort_mode = sort_mode
+        self.exposure_match = bool(exposure_match)
         self.is_cancelled = False
-        # 对比渲染模式：显式指定算法，覆盖 UI 单选按钮的选择
-        self.algorithm_override = algorithm_override
-        # 用户配置的线程数（用于控制内部 ThreadPool 大小）
-        try:
-            self.thread_count = max(0, int(thread_count))
-        except (TypeError, ValueError):
-            self.thread_count = 0
-        # 对比渲染模式：显式指定算法，覆盖 UI 单选按钮的选择
-        self.algorithm_override = algorithm_override
-        # 配准磁盘缓存的读写请求（None = 不查不写）。GUI 只负责描述请求，
-        # 解码/编码整栈 PNG 的 I/O 一律发生在工作线程里——命中缓存的读取
-        # 以前是在界面线程同步做的，大栈会冻结窗口数秒。
-        self.disk_cache = dict(disk_cache) if disk_cache else None
+        self.disk_cache = deepcopy(disk_cache) if disk_cache else None
+        if self.disk_cache is not None and self.registration_parameters:
+            self.disk_cache['identity'] = dict(self.disk_cache.get('identity') or {})
         self._cache_identity_prepared = False
-        if self.disk_cache is not None and self.disk_cache.get("identity") is not None:
-            self.disk_cache["identity"] = dict(self.disk_cache["identity"])
-        from core.resource_policy import PREFERENCES
-        self.resource_preference = (resource_preference
-                                    if resource_preference in PREFERENCES
-                                    else "balanced")
-        # True when this run used frames read back from the cache instead of
-        # computing them, so the caller can report "reused" honestly.
+        self.resource_preference = resource_preference
         self.alignment_reused = False
-        # True only when this run actually ran the registration, which is the
-        # one case where writing the cache has new data to store.
         self.alignment_computed = False
 
     def cancel(self):
@@ -296,19 +224,11 @@ class RenderWorker(QThread):
             fusion_time = 0
             device_name = "CPU"
 
-            current_alignment_options = (
-                self.need_align_homography,
-                self.need_align_ecc,
-                self.need_align_openfocus,
-            )
-            need_registration = (
-                self.need_align_homography
-                or self.need_align_ecc
-                or self.need_align_openfocus
-            )
+            current_alignment_options = (self.alignment, self.registration_parameters)
+            need_registration = bool(self.alignment)
             can_reuse_aligned_images = (
                 self.is_images_aligned
-                and len(self.aligned_images) > 0
+                and bool(self.aligned_images)
                 and self.last_alignment_options == current_alignment_options
             )
 
@@ -361,11 +281,15 @@ class RenderWorker(QThread):
                     return
                 fusion_start_time = time.time()
                 self.stage_signal.emit("fuse")
-                # 使用裁剪后的图像进行融合（如果ROI已启用）
-                fusion_images = cropped_images if cropped_images is not None else processed_images
+                full_frame_roi = roi_rect_int is not None and get_fusion(self.algorithm).roi is None
+                fusion_images = (processed_images if full_frame_roi or cropped_images is None
+                                 else cropped_images)
                 fusion_result, device_name = self._run_fusion(
                     fusion_images, should_cancel=lambda: self.is_cancelled,
                     progress_callback=lambda done, total: self.progress_signal.emit(done, total))
+                if full_frame_roi:
+                    x, y, width, height = roi_rect_int
+                    fusion_result = fusion_result[y:y + height, x:x + width].copy()
 
                 # ROI粘贴阶段
                 if self.roi_mode == "paste" and base_full_image is not None and fusion_result is not None and roi_rect_int is not None:
@@ -407,6 +331,9 @@ class RenderWorker(QThread):
         request = self.disk_cache
         if self._cache_identity_prepared or request.get("identity") is None:
             return
+        request['align_options'] = self.alignment
+        request['identity']['alignment_steps'] = list(self.alignment)
+        request['identity']['registration_parameters'] = dict(self.registration_parameters)
         import hashlib
         digest = hashlib.sha256()
         for image in self.raw_images:
@@ -501,44 +428,15 @@ class RenderWorker(QThread):
                 "could not write the alignment cache")
 
     def _run_registration(self, images, should_cancel=None):
-        """执行图像配准"""
-        alignment_start_time = time.time()
-
-        # OpenFocus similarity registration precedes optional ECC/homography.
-        if self.need_align_openfocus:
-            bright_ref = "last" if self.exposure_match else "first"
-            if self.reg_downscale_width is not None:
-                fast = ImageRegistration(method="openfocus",
-                                         downscale_width=self.reg_downscale_width,
-                                         brightness_reference=bright_ref)
-            else:
-                fast = ImageRegistration(method="openfocus",
-                                         brightness_reference=bright_ref)
-            images = fast.process(images, output_path=None,
-                                  thread_count=self.thread_count,
-                                  resource_preference=self.resource_preference,
-                                  should_cancel=should_cancel)
-
-        if self.need_align_homography and self.need_align_ecc:
-            mode = "both"
-        elif self.need_align_homography:
-            mode = "homography"
-        elif self.need_align_ecc:
-            mode = "ecc"
-        else:
-            return images, time.time() - alignment_start_time
-
-        if self.reg_downscale_width is not None:
-            registration = ImageRegistration(method=mode, downscale_width=self.reg_downscale_width)
-        else:
-            registration = ImageRegistration(method=mode)
-
-        processed = registration.process(
-            images, output_path=None, thread_count=self.thread_count,
+        started = time.time()
+        registration = ImageRegistration(method=self.alignment,
+            parameters=self.registration_parameters,
+            downscale_width=self.reg_downscale_width,
+            brightness_reference='last' if self.exposure_match else 'first',
+            use_gpu=False)
+        images = registration.process(images, thread_count=self.thread_count,
             resource_preference=self.resource_preference, should_cancel=should_cancel)
-        alignment_time = time.time() - alignment_start_time
-
-        return processed, alignment_time
+        return images, time.time() - started
 
     def _apply_roi_cropping(self, images):
         """应用ROI裁剪，返回(裁剪后图像栈, 基准图像, ROI矩形)"""
@@ -582,136 +480,25 @@ class RenderWorker(QThread):
         return rx, ry, rw, rh
 
     def _run_fusion(self, images, should_cancel=None, progress_callback=None):
-        """执行图像融合，返回(融合结果, 设备名称)"""
-        algorithm = self._get_fusion_algorithm()
-
-        # Preserve the float32 0–255 working domain and final uint16 quantization.
+        """Run the selected descriptor with its complete parameter mapping."""
         from utils.image_utils import normalize_fuse_input, quantize_fuse_output
         if any(image.dtype == np.uint16 for image in images):
             require_memory(sum(image.size * 4 for image in images if image.dtype != np.float32)
                            + max(image.size * 4 for image in images if image.dtype == np.uint16))
         images, is_16bit = normalize_fuse_input(list(images))
-
-        fusion = MultiFocusFusion(
-            algorithm=algorithm,
-            use_gpu=self.use_gpu,
-            tile_enabled=(self.tile_enabled if self.tile_enabled is not None else True),
-            tile_block_size=(self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE),
-            tile_overlap=(self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP),
-            tile_threshold=(self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD),
-            ai_batch_size=self.ai_batch_size,
-            ai_mode=self.ai_mode,
-            base_frame=self.base_frame,
-            sort_mode=self.sort_mode,
-            exposure_match=self.exposure_match,
-            resource_preference=self.resource_preference,
-        )
-
-        # Classical algorithms are CPU-only (see AGENTS.md); only the neural
-        # model actually uses the GPU, so only query the device for it.
-        if algorithm == "stackmffv3":
-            info = fusion.get_info()
-            device_name = info['device']
-        else:
-            device_name = "CPU"
-
-        kernel_size = normalize_kernel_size(self.kernel_slider_value)
-        fuse_cancel = {"should_cancel": should_cancel,
-                       "progress_callback": progress_callback}
-
-        if algorithm == "guided_filter":
-            result = fusion.fuse(
-                input_source=images,
-                img_resize=None,
-                kernel_size=kernel_size,
-                thread_count=self.thread_count,
-                **fuse_cancel,
-            )
-            result = quantize_fuse_output(result, is_16bit)
-        elif algorithm == "dct":
-            result = fusion.fuse(
-                input_source=images,
-                img_resize=None,
-                block_size=8,
-                kernel_size=kernel_size,
-                thread_count=self.thread_count,
-                **fuse_cancel,
-            )
-            result = quantize_fuse_output(result, is_16bit)
-        elif algorithm == "dtcwt":
-            result = fusion.fuse(
-                input_source=images,
-                img_resize=None,
-                N=self.dtcwt_levels,
-                thread_count=self.thread_count,
-                **fuse_cancel,
-            )
-            result = quantize_fuse_output(result, is_16bit)
-        elif algorithm == "gfgfgf":
-            result = fusion.fuse(
-                input_source=images,
-                img_resize=None,
-                kernel_size=kernel_size,
-                thread_count=self.thread_count,
-                **fuse_cancel,
-            )
-            result = quantize_fuse_output(result, is_16bit)
-        elif algorithm in ("openfocus_a", "openfocus_b", "openfocus_c"):
-            result = fusion.fuse(
-                input_source=images,
-                img_resize=None,
-                kernel_size=kernel_size,
-                thread_count=self.thread_count,
-                depth_smoothing=self.depth_smoothing,
-                blend_smoothing=self.blend_smoothing,
-                **fuse_cancel,
-            )
-            result = quantize_fuse_output(result, is_16bit)
-        elif algorithm == "stackmffv3":
-            model_path = resource_path("weights", "stackmff_v3_final.pth")
-            result = fusion.fuse(
-                input_source=images,
-                img_resize=None,
-                model_path=model_path,
-                mode=self.ai_mode,
-                thread_count=self.thread_count,
-                **fuse_cancel,
-            )
-            result = quantize_fuse_output(result, is_16bit)
-        else:
-            result = fusion.fuse(
-                input_source=images,
-                img_resize=None,
-                kernel_size=kernel_size,
-                thread_count=self.thread_count,
-                **fuse_cancel,
-            )
-            result = quantize_fuse_output(result, is_16bit)
-
-        return result, device_name
-
-    def _get_fusion_algorithm(self):
-        """根据UI选择获取融合算法名称"""
-        if self.algorithm_override:
-            return self.algorithm_override
-        if self.rb_a_checked:
-            return "guided_filter"
-        elif self.rb_b_checked:
-            return "dct"
-        elif self.rb_c_checked:
-            return "dtcwt"
-        elif self.rb_gfg_checked:
-            return "gfgfgf"
-        elif self.rb_d_checked:
-            return "stackmffv3"
-        elif self.rb_ofa_checked:
-            return "openfocus_a"
-        elif self.rb_ofb_checked:
-            return "openfocus_b"
-        elif self.rb_ofc_checked:
-            return "openfocus_c"
-        else:
-            return "guided_filter"
+        fusion = MultiFocusFusion(algorithm=self.algorithm,
+            fusion_parameters=self.fusion_parameters, use_gpu=self.use_gpu,
+            tile_enabled=self.tile_enabled if self.tile_enabled is not None else True,
+            tile_block_size=self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE,
+            tile_overlap=self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP,
+            tile_threshold=self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD,
+            ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
+            sort_mode=self.sort_mode, exposure_match=self.exposure_match,
+            resource_preference=self.resource_preference)
+        result = fusion.fuse(images, thread_count=self.thread_count,
+            should_cancel=should_cancel, progress_callback=progress_callback)
+        device = fusion.get_info()['device'] if get_fusion(self.algorithm).neural else 'CPU'
+        return quantize_fuse_output(result, is_16bit), device
 
     def _apply_roi_pasting(self, fusion_result, base_image, roi_rect_int):
         """将融合结果粘贴回基准图像"""
@@ -825,10 +612,10 @@ class BatchWorker(QThread):
     def __init__(self, folder_paths, output_type, output_path, processing_settings, reg_downscale_width=None,
                  tile_enabled=None, tile_block_size=None, tile_overlap=None, tile_threshold=None, thread_count: int = 4,
                  ai_batch_size: int = 2,
-                 ai_mode: str = "soft",
                  import_mode="multiple_folders", split_method=None, split_param=None,
                  single_folder_images_with_times=None, use_gpu: bool = True,
-                 exposure_match: bool = False, resource_preference="balanced"):
+                 exposure_match: bool = False, resource_preference="balanced",
+                 runtime_settings=None, registration_parameters=None):
         super().__init__()
         self.resource_preference = resource_preference
         self.folder_paths = list(folder_paths)
@@ -851,8 +638,11 @@ class BatchWorker(QThread):
         self.single_folder_images_with_times = single_folder_images_with_times or []
         # GPU 加速开关（仅影响 StackMFF-V3）
         self.use_gpu = bool(use_gpu)
-        self.exposure_match = bool(self.processing_settings.get(
-            'fusion_params', {}).get('exposure_match', exposure_match))
+        self.runtime_settings = dict(self.processing_settings.get('runtime_settings') or {})
+        self.runtime_settings.update(runtime_settings or {})
+        self.registration_parameters = dict(registration_parameters if registration_parameters is not None
+            else self.processing_settings.get('registration_parameters') or {})
+        self.exposure_match = bool(self.runtime_settings.get('exposure_match', exposure_match))
 
         from core.image_loader import ImageStackLoader
         self.image_loader = ImageStackLoader()
@@ -864,8 +654,6 @@ class BatchWorker(QThread):
         self.tile_overlap = tile_overlap
         self.tile_threshold = tile_threshold
         self.ai_batch_size = max(1, int(ai_batch_size)) if ai_batch_size else 2
-        # StackMFF V3 输出模式
-        self.ai_mode = ai_mode if ai_mode in ("soft", "hard") else "soft"
         try:
             self.thread_count = max(0, int(thread_count))
         except (TypeError, ValueError):
@@ -1017,46 +805,17 @@ class BatchWorker(QThread):
             raise ValueError('Fusion requires at least two frames')
 
         aligned_images = images.copy()
-        reg_methods = self.processing_settings.get('reg_methods', [])
-
-        if reg_methods:
-            align_homography = "homography" in reg_methods
-            align_ecc = "ecc" in reg_methods
-            align_of = "openfocus" in reg_methods
-
-            if align_of:
-                # OpenFocus fast alignment first (bounded similarity).
-                from core.registration import ImageRegistration
-                fast = ImageRegistration(
-                    method="openfocus",
-                    brightness_reference=("last" if self.exposure_match
-                                          else "first"))
-                aligned_images = fast.process(
-                    aligned_images, output_path=None,
-                    thread_count=self.thread_count,
-                    resource_preference=self.resource_preference,
-                    should_cancel=lambda: self.is_cancelled)
-
-            if align_homography and align_ecc:
-                mode = "both"
-            elif align_homography:
-                mode = "homography"
-            elif align_ecc:
-                mode = "ecc"
-            else:
-                mode = None
-
-            if mode:
-                from core.registration import ImageRegistration
-                width = self._registration_width(aligned_images)
-                if width is not None:
-                    registration = ImageRegistration(method=mode, downscale_width=width)
-                else:
-                    registration = ImageRegistration(method=mode)
-                aligned_images = registration.process(
-                    aligned_images, output_path=None, thread_count=self.thread_count,
-                    resource_preference=self.resource_preference,
-                    should_cancel=lambda: self.is_cancelled)
+        alignment = self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ()))
+        steps = alignment_steps(alignment)
+        if steps:
+            registration = ImageRegistration(method=alignment,
+                parameters=self.registration_parameters,
+                downscale_width=self._registration_width(aligned_images),
+                brightness_reference='last' if self.exposure_match else 'first',
+                use_gpu=False)
+            aligned_images = registration.process(aligned_images,
+                thread_count=self.thread_count, resource_preference=self.resource_preference,
+                should_cancel=lambda: self.is_cancelled)
 
         output_format = self.processing_settings.get('format', 'png').lstrip('.').lower()
         fusion_method = self.processing_settings.get('fusion_method')
@@ -1068,22 +827,18 @@ class BatchWorker(QThread):
         # inside the fusion branch left it None and wrote no files at all.
         aligned_for_export = list(aligned_images)
         if fusion_method:
-            fusion_params = dict(
-                self.processing_settings.get('fusion_params', {}) or {})
-            if fusion_method == "stackmffv3" and "model_path" not in fusion_params:
-                fusion_params["model_path"] = resource_path("weights", "stackmff_v3_final.pth")
-
-            tile_kwargs = {}
-            for key in ('tile_enabled', 'tile_block_size', 'tile_overlap',
-                        'tile_threshold', 'ai_batch_size', 'ai_mode'):
-                if key in fusion_params:
-                    tile_kwargs[key] = fusion_params.pop(key)
-            tile_kwargs.setdefault('tile_enabled', self.tile_enabled if self.tile_enabled is not None else True)
-            tile_kwargs.setdefault('tile_block_size', self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE)
-            tile_kwargs.setdefault('tile_overlap', self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP)
-            tile_kwargs.setdefault('tile_threshold', self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD)
-            tile_kwargs.setdefault('ai_batch_size', self.ai_batch_size)
-            tile_kwargs.setdefault('ai_mode', self.ai_mode)
+            fusion_params = resolve_fusion_parameters(fusion_method,
+                self.processing_settings.get('fusion_params'))
+            runtime = self.runtime_settings
+            tile_kwargs = {
+                'tile_enabled': self.tile_enabled if self.tile_enabled is not None else True,
+                'tile_block_size': self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE,
+                'tile_overlap': self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP,
+                'tile_threshold': self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD,
+                'ai_batch_size': self.ai_batch_size}
+            for key in tile_kwargs:
+                if runtime.get(key) is not None:
+                    tile_kwargs[key] = runtime[key]
 
             from utils.image_utils import normalize_fuse_input, quantize_fuse_output
             save_aligned = bool(self.processing_settings.get('save_aligned', False))
@@ -1097,21 +852,12 @@ class BatchWorker(QThread):
                 del aligned_images  # fusion does not need the originals
 
             fusion = MultiFocusFusion(
-                algorithm=fusion_method, use_gpu=self.use_gpu,
+                algorithm=fusion_method, fusion_parameters=fusion_params, use_gpu=self.use_gpu,
                 resource_preference=self.resource_preference,
-                base_frame=fusion_params.pop(
-                    'base_frame',
-                    self.processing_settings.get('base_frame', 'none')),
-                sort_mode=fusion_params.pop(
-                    'sort_mode',
-                    self.processing_settings.get('sort_mode', 'asc')),
-                exposure_match=fusion_params.pop(
-                    'exposure_match', self.exposure_match),
-                **tile_kwargs)
-
-            result = self._fuse_one_stack(
-                fusion, fusion_method, fusion_input, fusion_params,
-                tile_kwargs['ai_mode'])
+                base_frame=runtime.get('base_frame', 'none'),
+                sort_mode=runtime.get('sort_mode', 'asc'),
+                exposure_match=self.exposure_match, **tile_kwargs)
+            result = self._fuse_one_stack(fusion, fusion_method, fusion_input, fusion_params)
             result = quantize_fuse_output(result, is_16bit)
         else:
             save_aligned = True
@@ -1145,63 +891,11 @@ class BatchWorker(QThread):
         if written != len(saved):
             raise PartialWriteError(f'{written}/{len(saved)} files were written for {stack_name}')
 
-    def _fuse_one_stack(self, fusion, fusion_method, fusion_input,
-                        fusion_params, ai_mode):
-        """Dispatch one prepared stack to the fusion back-end.
-
-        Every method keeps its own parameters here: a shared "kernel only"
-        call silently dropped DTCWT levels, AI mode and OpenFocus smoothing
-        from split-folder batches.
-        """
-        cancel = {"should_cancel": lambda: self.is_cancelled}
-        threads = self.thread_count
-
-        if fusion_method == "guided_filter":
-            return fusion.fuse(
-                input_source=fusion_input, img_resize=None,
-                kernel_size=normalize_kernel_size(
-                    fusion_params.get('kernel_size', 31)),
-                thread_count=threads, **cancel)
-        if fusion_method == "dct":
-            return fusion.fuse(
-                input_source=fusion_input, img_resize=None, block_size=8,
-                kernel_size=normalize_kernel_size(
-                    fusion_params.get('kernel_size', 7)),
-                thread_count=threads, **cancel)
-        if fusion_method == "dtcwt":
-            return fusion.fuse(
-                input_source=fusion_input, img_resize=None,
-                N=int(fusion_params.get('N', 4) or 4),
-                thread_count=threads, **cancel)
-        if fusion_method == "gfgfgf":
-            return fusion.fuse(
-                input_source=fusion_input, img_resize=None,
-                kernel_size=normalize_kernel_size(
-                    fusion_params.get('kernel_size', 7)),
-                thread_count=threads, **cancel)
-        if fusion_method in ("openfocus_a", "openfocus_b", "openfocus_c"):
-            from constants import METHOD_FUSION_PARAMS
-            keys = {key for key, *_rest in METHOD_FUSION_PARAMS.get(
-                fusion_method, ())}
-            kwargs = {"thread_count": threads, **cancel}
-            if "kernel_size" in keys:
-                kwargs["kernel_size"] = normalize_kernel_size(
-                    fusion_params.get('kernel_size', 11))
-            if "depth_smoothing" in keys:
-                kwargs["depth_smoothing"] = fusion_params.get('depth_smoothing')
-            if "blend_smoothing" in keys:
-                kwargs["blend_smoothing"] = fusion_params.get('blend_smoothing')
-            return fusion.fuse(
-                input_source=fusion_input, img_resize=None, **kwargs)
-        if fusion_method == "stackmffv3":
-            model_path = (fusion_params.get('model_path')
-                          or resource_path("weights", "stackmff_v3_final.pth"))
-            return fusion.fuse(
-                input_source=fusion_input, img_resize=None,
-                model_path=model_path,
-                mode=fusion_params.get('ai_mode', ai_mode),
-                thread_count=threads, **cancel)
-        return None
+    def _fuse_one_stack(self, fusion, fusion_method, fusion_input, fusion_params):
+        """Dispatch every declared parameter through the common entry point."""
+        return fusion.fuse(fusion_input,
+            parameters=resolve_fusion_parameters(fusion_method, fusion_params),
+            thread_count=self.thread_count, should_cancel=lambda: self.is_cancelled)
 
     def process_single_folder(self, folder_path):
         """Both entry points share the same registration/fusion/write pipeline."""

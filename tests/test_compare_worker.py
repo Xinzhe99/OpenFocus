@@ -58,9 +58,11 @@ def _run(worker):
 
 def _expected(frames, method, **params):
     inputs, is_16bit = normalize_fuse_input(frames)
+    params.pop('block_size', None)
+    model_path = params.pop('model_path', None)
     result = MultiFocusFusion(algorithm=method, tile_enabled=False,
-                              exposure_match=False).fuse(
-        inputs, thread_count=1, **params)
+        exposure_match=False, fusion_parameters=params).fuse(
+            inputs, thread_count=1, model_path=model_path)
     return quantize_fuse_output(result, is_16bit)
 
 
@@ -153,8 +155,7 @@ def test_own_method_settings_and_configuration_snapshot():
     own = {
         "openfocus_a": {"kernel_size": 3, "blend_smoothing": 0.0},
         "openfocus_b": {"kernel_size": 5, "depth_smoothing": 0.0},
-        # C has no kernel setting: this value must never reach normalization.
-        "openfocus_c": {"kernel_size": "unused", "blend_smoothing": 0.0},
+        'openfocus_c': {'blend_smoothing': 0.0},
     }
     shared = {"kernel_size": 31, "blend_smoothing": 8.0,
               "depth_smoothing": 8.0, "tile_enabled": False}
@@ -173,18 +174,17 @@ def test_own_method_settings_and_configuration_snapshot():
         np.testing.assert_array_equal(result, _expected(frames, method, **settings))
 
 
-def test_method_brightness_overrides_shared_settings():
+def test_shared_brightness_settings_are_separate_from_algorithm_parameters():
     frames = _stack()
     frames[0] //= 2
-    own = {"openfocus_a": {"kernel_size": 5, "exposure_match": False,
-                            "base_frame": "none"}}
+    own = {'openfocus_a': {'kernel_size': 5}}
     results, errors, _ = _run(PreviewWorker(
-        frames, ["openfocus_a"], own,
-        {"exposure_match": True, "base_frame": "last", "tile_enabled": False},
+        frames, ['openfocus_a'], own,
+        {'exposure_match': False, 'base_frame': 'none', 'tile_enabled': False},
         None, roi_only=False))
     assert errors == []
     np.testing.assert_array_equal(results[0][1],
-                                  _expected(frames, "openfocus_a", kernel_size=5))
+        _expected(frames, 'openfocus_a', kernel_size=5))
 
 
 def test_dtcwt_uses_own_decomposition_depth():
@@ -202,7 +202,7 @@ def test_error_is_reported_per_method_and_later_methods_continue():
         _stack(), ["unknown", "openfocus_a"], {},
         {"tile_enabled": False}, None, roi_only=False))
     assert errors[0][0] == "unknown"
-    assert "Unsupported algorithm" in errors[0][1]
+    assert 'unknown' in errors[0][1]
     assert [row[0] for row in results] == ["openfocus_a"]
     assert progress[-1] == (2, 2, "")
 
@@ -279,8 +279,8 @@ def test_unrequested_cancellation_exception_is_not_silently_swallowed(monkeypatc
 def test_alignment_runs_real_registration_on_background_thread(monkeypatch):
     frames = _stack(96, 128, np.uint16)
     frames[1] = np.roll(frames[0], (2, -3), axis=(0, 1))
-    shared = {"reg_downscale_width": 96, "max_shift_ratio": 0.1,
-              "thread_count": 0, "exposure_match": False}
+    shared = {'reg_downscale_width': 96, 'registration_parameters': {'max_shift_ratio': .1},
+              'thread_count': 0, 'exposure_match': False}
     worker = AlignmentWorker(frames, "openfocus", shared)
     shared["reg_downscale_width"] = 8
     original = ImageRegistration.process
@@ -289,7 +289,7 @@ def test_alignment_runs_real_registration_on_background_thread(monkeypatch):
 
     def observe(self, input_source, *args, **kwargs):
         observations.append((get_ident(), self.downscale_width,
-                             self.max_shift_ratio, self.brightness_reference,
+                             self.parameters['max_shift_ratio'], self.brightness_reference,
                              kwargs["thread_count"], callable(kwargs["should_cancel"])))
         return original(self, input_source, *args, **kwargs)
 
@@ -351,7 +351,7 @@ def test_neural_method_uses_own_mode_and_preserves_uint16():
     frames = _stack(32, 48, np.uint16)
     results, errors, _ = _run(PreviewWorker(
         frames, ["stackmffv3"], {"stackmffv3": {"mode": "hard"}},
-        {"ai_mode": "soft", "tile_enabled": False, "thread_count": 1},
+        {'tile_enabled': False, 'thread_count': 1},
         None, roi_only=False))
     assert errors == []
     assert results[0][1].dtype == np.uint16
@@ -359,3 +359,38 @@ def test_neural_method_uses_own_mode_and_preserves_uint16():
         results[0][1], _expected(frames, "stackmffv3", mode="hard", model_path=model_path))
     # Hard selection retains an actual source sample at every channel/pixel.
     assert np.all((results[0][1] == frames[0]) | (results[0][1] == frames[1]))
+
+
+def _global_average_fusion(fusion, input_source, img_resize=None, offset=0, source='first', **execution):
+    frame = input_source[0 if source == 'first' else -1]
+    value = np.clip(round(float(frame.mean())) + offset, 0, 255)
+    return np.full_like(frame, value)
+
+
+def test_missing_roi_capability_fuses_full_frame_before_crop(monkeypatch):
+    from core import algorithms
+    monkeypatch.setattr(algorithms, '_FUSION', dict(algorithms._FUSION))
+    algorithms.register_fusion(algorithms.FusionAlgorithm(
+        'global_average', 'radio_dct', 'Global Average', 'Average',
+        __name__ + ':_global_average_fusion', (
+            algorithms.ParameterSpec('offset', 'compare_levels', 0, 0, 30),
+            algorithms.ParameterSpec('source', 'label_ai_mode', 'first', choices=('first', 'last')),
+        ), default_exposure_match=False))
+    gradient = np.broadcast_to(np.arange(240, dtype=np.uint8), (80, 240)).copy()
+    frames = [gradient, gradient // 2]
+    region = (0, 0, 20, 20)
+    outputs = []
+    for parameters in ({'offset': 0, 'source': 'first'},
+                       {'offset': 7, 'source': 'first'},
+                       {'offset': 7, 'source': 'last'}):
+        results, errors, _ = _run(PreviewWorker(
+            frames, ['global_average'], {'global_average': parameters},
+            {'tile_enabled': False, 'exposure_match': False}, region))
+        assert errors == []
+        image = results[0][1]
+        assert image.shape == (20, 20)
+        full = _expected(frames, 'global_average', **parameters)
+        np.testing.assert_array_equal(image, full[:20, :20])
+        outputs.append(image)
+    assert not np.array_equal(outputs[0], outputs[1])
+    assert not np.array_equal(outputs[1], outputs[2])

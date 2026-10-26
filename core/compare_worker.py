@@ -7,7 +7,6 @@ allowed to finish when cancelled; their output is never published afterwards.
 """
 
 from copy import deepcopy
-from math import ceil, log2
 from threading import Event
 
 import numpy as np
@@ -16,7 +15,7 @@ from core.resource_policy import heavy_job, require_memory
 from core.registration import RegistrationCancelled
 
 
-_KERNEL_METHODS = {"guided_filter", "dct", "gfgfgf", "openfocus_a", "openfocus_b"}
+from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
 
 
 class _CancellableWorker(QThread):
@@ -45,11 +44,9 @@ def align_frames(images, alignment, shared, should_cancel):
     if alignment != "none":
         settings = {"method": alignment, "brightness_reference": shared.get(
             "brightness_reference", "last" if shared.get("exposure_match", False) else "first"),
-            "use_gpu": False}
-        for source, target in (("reg_downscale_width", "downscale_width"),
-                               ("max_shift_ratio", "max_shift_ratio")):
-            if shared.get(source) is not None:
-                settings[target] = shared[source]
+            "use_gpu": False, "parameters": shared.get('registration_parameters')}
+        if shared.get('reg_downscale_width') is not None:
+            settings['downscale_width'] = shared['reg_downscale_width']
         registration = ImageRegistration(**settings)
         frames = registration.process(frames, output_path=None,
             thread_count=max(0, int(shared.get("thread_count", 0))),
@@ -106,51 +103,24 @@ class PreviewWorker(_CancellableWorker):
         self.roi_only = bool(roi_only)
 
     def _settings(self, method):
-        from utils.validators import normalize_kernel_size
-
         own = self.per_method.get(method, {})
         shared = self.shared
-        mode = own.get("mode", shared.get("ai_mode", "soft"))
+        options = shared.get('method_options', {}).get(method, shared)
         constructor = {
-            "algorithm": method,
-            "use_gpu": bool(shared.get("use_gpu", False)),
-            "resource_preference": shared.get("resource_preference", "balanced"),
-            "tile_enabled": bool(shared.get("tile_enabled", True)),
-            "ai_batch_size": int(shared.get("ai_batch_size", 2)),
-            "ai_mode": mode,
-            "base_frame": own.get("base_frame", shared.get("base_frame", "none")),
-            "sort_mode": shared.get("sort_mode", "asc"),
-            "exposure_match": bool(own.get(
-                "exposure_match", shared.get("exposure_match", False))),
+            'algorithm': method,
+            'fusion_parameters': resolve_fusion_parameters(method, own),
+            'use_gpu': bool(shared.get('use_gpu', False)),
+            'resource_preference': shared.get('resource_preference', 'balanced'),
+            'tile_enabled': bool(shared.get('tile_enabled', True)),
+            'ai_batch_size': int(shared.get('ai_batch_size', 2)),
+            'base_frame': options.get('base_frame', 'none'),
+            'sort_mode': shared.get('sort_mode', 'asc'),
+            'exposure_match': bool(options.get('exposure_match', False)),
         }
-        for key in ("tile_block_size", "tile_overlap", "tile_threshold"):
+        for key in ('tile_block_size', 'tile_overlap', 'tile_threshold'):
             if shared.get(key) is not None:
                 constructor[key] = shared[key]
-        params = {
-            "thread_count": max(0, int(shared.get("thread_count", 0))),
-        }
-        if method in _KERNEL_METHODS:
-            params["kernel_size"] = normalize_kernel_size(
-                own.get("kernel_size", shared.get("kernel_size", 11)))
-        if method == "dct":
-            params["block_size"] = 8
-        elif method == "dtcwt":
-            params["N"] = int(own.get("N", shared.get("N", 4)))
-            if params["N"] < 1:
-                raise ValueError("DTCWT decomposition depth must be positive.")
-        elif method in ("openfocus_a", "openfocus_c"):
-            default = 2.0 if method == "openfocus_a" else 3.0
-            params["blend_smoothing"] = own.get(
-                "blend_smoothing", shared.get("blend_smoothing", default))
-        elif method == "openfocus_b":
-            params["depth_smoothing"] = own.get(
-                "depth_smoothing", shared.get("depth_smoothing", 1.2))
-        elif method == "stackmffv3":
-            from utils import resource_path
-
-            params["model_path"] = resource_path("weights", "stackmff_v3_final.pth")
-            params["mode"] = mode
-        return constructor, params
+        return constructor, {'thread_count': max(0, int(shared.get('thread_count', 0)))}
 
     def _input_bounds(self, method, params, width, height):
         if not self.roi_only:
@@ -163,39 +133,12 @@ class PreviewWorker(_CancellableWorker):
         if x < 0 or y < 0 or w < 1 or h < 1 or x + w > width or y + h > height:
             raise ValueError("The comparison region lies outside the aligned image.")
 
-        # Keep each selection intact, even on a very wide or tall image. The
-        # halo grows per method; only its unavailable part is clipped at edges.
-        kernel = params.get("kernel_size", 11)
-        halo, grid = 96, 1
-        if method == "guided_filter":
-            # Two radius-45 guided boxes after sigma-5 saliency, plus base blur.
-            halo = max(halo, 2 * 45 + 4 * 5 + 1 + kernel // 2)
-        elif method == "dct":
-            grid = 8
-            # The block decision map is median-filtered twice.
-            halo = max(halo, grid * (kernel + 1))
-        elif method == "dtcwt":
-            grid = 2 ** params["N"]
-            halo = max(halo, 16 * grid)
-        elif method == "gfgfgf":
-            grid = 4  # The fallback fast guided filter subsamples by four.
-            halo = max(halo, kernel // 2 + 48)
-        elif method == "openfocus_c":
-            levels = max(2, min(7, int(log2(max(2, min(width, height)))) - 1))
-            grid = 2 ** (levels - 1)
-            sigma = params["blend_smoothing"]
-            sigma = 3.0 if sigma is None else max(0.0, float(sigma))
-            halo = max(halo, ceil((8 + 4 * sigma) * grid))
-        elif method in ("openfocus_a", "openfocus_b"):
-            key = "blend_smoothing" if method == "openfocus_a" else "depth_smoothing"
-            default = 2.0 if method == "openfocus_a" else 1.2
-            sigma = params[key]
-            sigma = default if sigma is None else max(0.0, float(sigma))
-            halo = max(halo, kernel // 2 + ceil(4 * sigma) + 2)
-        elif method == "stackmffv3":
-            grid, halo = 128, 256
-        base_frame = self.per_method.get(method, {}).get(
-            "base_frame", self.shared.get("base_frame", "none"))
+        spec = get_fusion(method)
+        if spec.roi is None:
+            return (0, 0, width, height), (x, y, w, h)
+        parameters = resolve_fusion_parameters(method, self.per_method.get(method))
+        halo, grid = resolve_runner(spec.roi)(parameters, width, height)
+        base_frame = self.shared.get('method_options', {}).get(method, self.shared).get('base_frame', 'none')
         if base_frame in ("first", "last"):
             halo += 4 * 32  # Low-pass base correction follows fusion.
 
@@ -227,14 +170,6 @@ class PreviewWorker(_CancellableWorker):
             require_memory(sum(image.size * 4 for image in inputs if image.dtype != np.float32)
                            + max(image.size * 4 for image in inputs if image.dtype == np.uint16))
         inputs, is_16bit = normalize_fuse_input(inputs)
-        # DCT needs at least one 8x8 block, including for one-pixel-wide stacks.
-        # Its normal edge extension is otherwise handled by the backend.
-        input_h, input_w = ch, cw
-        if method == "dct" and (ch < 8 or cw < 8):
-            input_h, input_w = max(8, ch), max(8, cw)
-            inputs = [np.pad(frame, ((0, input_h - ch), (0, input_w - cw))
-                             + ((0, 0),) * (frame.ndim - 2), mode="edge")
-                      for frame in inputs]
         fusion = MultiFocusFusion(**constructor)
         if self._should_cancel():
             return None
@@ -242,10 +177,10 @@ class PreviewWorker(_CancellableWorker):
                              should_cancel=self._should_cancel, **params)
         if self._should_cancel():
             return None
-        if not isinstance(result, np.ndarray) or result.shape[:2] != (input_h, input_w):
+        if not isinstance(result, np.ndarray) or result.shape[:2] != (ch, cw):
             raise ValueError("Fusion returned an invalid comparison image size.")
         x, y, w, h = bounds
-        if context != bounds or (input_h, input_w) != (ch, cw):
+        if context != bounds:
             result = result[y - y0:y - y0 + h, x - x0:x - x0 + w]
             if not is_16bit:
                 result = result.copy()

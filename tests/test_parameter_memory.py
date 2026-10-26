@@ -1,105 +1,58 @@
-"""Per-method parameter memories must survive a restart, a project and reset.
-
-The three memories (`_brightness_by_method`, `_smoothing_by_method`,
-`_kernel_by_mode`) are the authority for what a method renders with; the
-global scalars only mirror the method that was last touched. A restart used
-to revert every one of them, so a deliberately disabled exposure match or a
-tuned OpenFocus sigma silently came back at its default.
-"""
+"""Canonical parameter memories preserve declared values across settings/projects."""
 import json
-import math
+from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("PyQt6")
 
-from utils.settings_store import (  # noqa: E402
-    BRIGHTNESS_BY_METHOD_KEY, KERNEL_BY_MODE_KEY, SMOOTHING_BY_METHOD_KEY,
-    brightness_memory_from_json, brightness_memory_to_json,
-    get_settings, kernel_memory_from_json, kernel_memory_to_json,
-    load_window_settings, reset_settings_singleton, save_window_settings,
-    smoothing_memory_from_json, smoothing_memory_to_json,
+from core import algorithms
+from core.algorithms import (FusionAlgorithm, ParameterSpec, RegistrationAlgorithm,
+                             resolve_fusion_parameters, resolve_registration_parameters)
+from utils.settings_store import (
+    BRIGHTNESS_BY_METHOD_KEY, KERNEL_BY_MODE_KEY, METHOD_PARAMETERS_KEY,
+    REGISTRATION_PARAMETERS_KEY, SMOOTHING_BY_METHOD_KEY,
+    brightness_memory_from_json, brightness_memory_to_json, get_settings,
+    load_window_settings, parameter_memory_from_json, parameter_memory_to_json,
+    reset_settings_singleton, save_window_settings,
 )
 
 
-class _Slider:
-    def __init__(self, value=31):
-        self._value = value
-
-    def value(self):
-        return self._value
-
-    def setValue(self, value):
-        self._value = value
-
-    def blockSignals(self, blocked):
-        return False
-
-
 def _window():
-    from main import OpenFocus
-
-    w = type("W", (), {
-        "_BRIGHTNESS_DEFAULTS": OpenFocus._BRIGHTNESS_DEFAULTS,
-        "_SMOOTHING_DEFAULTS": OpenFocus._SMOOTHING_DEFAULTS,
-        "_KERNEL_MODES": OpenFocus._KERNEL_MODES,
-        "brightness_option_for": OpenFocus.brightness_option_for,
-        "smoothing_for_method": OpenFocus.smoothing_for_method,
-        "kernel_for_method": OpenFocus.kernel_for_method,
-    })()
-    w._fusion = "guided_filter"
+    w = SimpleNamespace(_fusion="guided_filter", _alignment="none",
+                        _fusion_parameters_by_method={},
+                        _registration_parameters_by_method={}, _brightness_by_method={},
+                        raw_images=[], image_filenames=[], chk_quick_preview=None)
     w.current_fusion_method = lambda: w._fusion
+    w.current_alignment_method = lambda: w._alignment
     w.set_fusion_method = lambda code: setattr(w, "_fusion", code)
-    w.current_alignment_method = lambda: "none"
-    w.set_alignment_method = lambda code: None
-    w.slider_smooth = _Slider()
-    w.current_kernel_mode = None
-    w._kernel_by_mode = {}
-    w._smoothing_by_method = {}
-    w._brightness_by_method = {}
-    w.ofb_depth_smoothing = 1.2
-    w.of_blend_smoothing = 3.0
-    w.chk_quick_preview = None
-    w.chk_base_correct = None
-    w.chk_exposure_match = None
-    w.chk_reverse_order = None
-    w.raw_images = []
-    w.image_filenames = []
-    w.recent_files = []
-    w.recent_projects = []
-    w.thread_count = 0
-    w.use_gpu = True
-    w.tile_enabled = True
-    w.tile_block_size = 1024
-    w.tile_overlap = 256
-    w.tile_threshold = 2048
-    w.resource_preference = "balanced"
-    w.reg_downscale_width = 1024
-    w.ai_batch_size = 2
-    w.ai_mode = "soft"
-    w.dtcwt_levels = 4
-    w.align_cache_enabled = True
-    w.restore_last_stack = False
-    w.ui_theme = "light"
-    w.scale_bar_enabled = False
-    w.scale_um_per_px_manual = 0.0
-    w.scale_bar_position = "bottom-right"
-    w.scale_bar_target = "all"
-    w.scale_bar_color = "auto"
-    w.scale_bar_font_family = ""
-    w.scale_bar_font_size = 0.0
-    w.scale_bar_font_bold = False
-    w.scale_bar_text_align = "auto"
-    w.scale_bar_custom_x = 0.95
-    w.scale_bar_custom_y = 0.95
-    w.ask_load_scale = True
-    w.load_scale_default = 1.0
+    w.set_alignment_method = lambda code: setattr(w, "_alignment", code)
+    w.fusion_parameters_for = lambda method, depth=False: resolve_fusion_parameters(
+        method, w._fusion_parameters_by_method.get(method), depth=depth)
+    w.registration_parameters_for = lambda method: resolve_registration_parameters(
+        method, w._registration_parameters_by_method.get(method))
+    w.set_fusion_parameters = lambda method, values: w._fusion_parameters_by_method.__setitem__(
+        method, resolve_fusion_parameters(method, values))
+    w.set_registration_parameters = lambda method, values: w._registration_parameters_by_method.__setitem__(
+        method, resolve_registration_parameters(method, values))
     return w
 
 
 @pytest.fixture
+def extra_methods(monkeypatch):
+    monkeypatch.setattr(algorithms, "_FUSION", dict(algorithms._FUSION))
+    monkeypatch.setattr(algorithms, "_REGISTRATION", dict(algorithms._REGISTRATION))
+    algorithms.register_fusion(FusionAlgorithm(
+        "memory_extra", "memory_extra", "Memory extra", "ME", "tests.test_parameter_memory:_window",
+        parameters=(ParameterSpec("gain", "gain", 1.0, 0.0, 3.0, .1, 2),
+                    ParameterSpec("selection", "selection", "first", choices=("first", "last")))))
+    algorithms.register_registration(RegistrationAlgorithm(
+        "memory_align", "memory_align", "MA", "tests.test_parameter_memory:_window",
+        parameters=(ParameterSpec("offset", "offset", 0, -10, 10),)))
+
+
+@pytest.fixture
 def clean_store(qapp):
-    """Empty QSettings around each test; never touch the real profile."""
     reset_settings_singleton()
     get_settings().clear()
     get_settings().sync()
@@ -109,202 +62,208 @@ def clean_store(qapp):
     reset_settings_singleton()
 
 
-# ---------------------------------------------------------------------------
-# Codec: malformed entries are dropped locally, never coerced
-# ---------------------------------------------------------------------------
-
-def test_brightness_codec_rejects_coercible_but_invalid_values():
-    memory = {("exposure_match", "guided_filter"): False,
-              ("base_correct", "openfocus_b"): True}
-    assert brightness_memory_from_json(
-        brightness_memory_to_json(memory)) == memory
-    # "false" is truthy; bool() would silently turn it into True.
-    assert brightness_memory_from_json(
-        '{"exposure_match": {"dct": "false"},'
-        ' "base_correct": {"dct": 0}}') == {}
-    assert brightness_memory_from_json(
-        '{"exposure_match": {"unknown_method": false}}') == {}
-    assert brightness_memory_from_json("not json") == {}
-    assert brightness_memory_from_json("[1, 2]") == {}
+def test_brightness_rejects_coercions_and_keeps_adjacent_valid_values():
+    raw = {"exposure_match": {"dct": False, "dtcwt": "false"},
+           "base_correct": {"gfgfgf": True, "unknown": False}}
+    expected = {("exposure_match", "dct"): False, ("base_correct", "gfgfgf"): True}
+    assert brightness_memory_from_json(raw) == expected
+    assert brightness_memory_from_json(brightness_memory_to_json(expected)) == expected
 
 
-def test_brightness_codec_keeps_valid_entries_beside_invalid_ones():
-    raw = json.dumps({"exposure_match": {"dct": False, "dtcwt": "yes"},
-                      "base_correct": {"gfgfgf": True}})
-    assert brightness_memory_from_json(raw) == {
-        ("exposure_match", "dct"): False,
-        ("base_correct", "gfgfgf"): True}
+def test_generic_codec_validates_per_field(extra_methods):
+    raw = {"memory_extra": {"gain": 1.75, "selection": "invalid", "unknown": 2},
+           "missing_method": {"gain": 1}, "dct": {"kernel_size": True}}
+    assert parameter_memory_from_json(raw) == {
+        "memory_extra": {"gain": 1.75}, "dct": {}}
+    assert parameter_memory_from_json({"memory_extra": {"gain": float("nan")}}) == {
+        "memory_extra": {}}
+    assert parameter_memory_from_json("[1]") == {}
+    with pytest.raises(ValueError):
+        parameter_memory_to_json({"memory_extra": {"selection": "invalid"}})
 
 
-def test_smoothing_codec_clamps_and_drops_non_finite():
-    memory = smoothing_memory_from_json(
-        '{"openfocus_a": 2.4, "openfocus_b": -1, "openfocus_c": 99,'
-        ' "guided_filter": 3.0}')
-    assert memory == {"openfocus_a": 2.4, "openfocus_b": 0.0,
-                      "openfocus_c": 8.0}
-    assert smoothing_memory_from_json(
-        '{"openfocus_a": NaN, "openfocus_b": true}') == {}
-
-
-def test_smoothing_codec_serialises_without_nan():
-    text = smoothing_memory_to_json(
-        {"openfocus_a": float("nan"), "openfocus_b": 1.5})
-    assert math.isfinite(json.loads(text)["openfocus_b"])
-    assert "openfocus_a" not in json.loads(text)
-
-
-def test_kernel_codec_normalises_per_mode_range():
-    assert kernel_memory_from_json(
-        '{"guided": 20, "dct": 8, "gfg": 7, "ofab": 999}') == {
-        "guided": 19, "dct": 7, "gfg": 7, "ofab": 21}
-    assert kernel_memory_from_json(
-        '{"guided": true, "dct": "9", "gfg": 0, "unknown": 5}') == {}
-
-
-# ---------------------------------------------------------------------------
-# QSettings round trip: a restart keeps every remembered value
-# ---------------------------------------------------------------------------
-
-def test_all_three_memories_survive_a_restart(clean_store):
+def test_new_numeric_enum_and_registration_survive_restart(clean_store, extra_methods):
     saved = _window()
-    saved._brightness_by_method = {
-        ("exposure_match", "guided_filter"): False,
-        ("base_correct", "openfocus_b"): False,
-        ("exposure_match", "openfocus_a"): True,
-    }
-    saved._smoothing_by_method = {"openfocus_a": 2.4, "openfocus_b": 0.8,
-                                  "openfocus_c": 3.6}
-    saved._kernel_by_mode = {"guided": 21, "dct": 9, "gfg": 7, "ofab": 15}
+    saved.set_fusion_parameters("memory_extra", {"gain": 1.75, "selection": "last"})
+    saved.set_registration_parameters("memory_align", {"offset": -3})
+    saved._brightness_by_method = {("exposure_match", "memory_extra"): False}
     save_window_settings(saved)
-
+    reset_settings_singleton()
     restored = _window()
     load_window_settings(restored)
+    assert restored._fusion_parameters_by_method == saved._fusion_parameters_by_method
+    assert restored._registration_parameters_by_method == saved._registration_parameters_by_method
     assert restored._brightness_by_method == saved._brightness_by_method
-    assert restored._smoothing_by_method == saved._smoothing_by_method
-    assert restored._kernel_by_mode == saved._kernel_by_mode
+    assert not get_settings().contains(KERNEL_BY_MODE_KEY)
+    assert not get_settings().contains("fusion/ai_mode")
 
 
-def test_empty_memory_is_authoritative_after_reset(clean_store):
-    """An empty stored object means "reset"; the old scalar must not revive."""
-    get_settings().setValue(BRIGHTNESS_BY_METHOD_KEY, "{}")
-    get_settings().setValue(SMOOTHING_BY_METHOD_KEY, "{}")
-    get_settings().setValue(KERNEL_BY_MODE_KEY, "{}")
-    get_settings().setValue("fusion/exposure_match", False)
-    get_settings().setValue("fusion/base_frame_correct", True)
-    get_settings().setValue("fusion/ofb_depth_smoothing", 0.4)
-    get_settings().sync()
-
+def test_generic_empty_memory_prevents_legacy_resurrection(clean_store):
+    get_settings().setValue(METHOD_PARAMETERS_KEY, "{}")
+    get_settings().setValue("fusion/ai_mode", "hard")
+    get_settings().setValue("fusion/ofb_depth_smoothing", .4)
     restored = _window()
     load_window_settings(restored)
-    assert restored._brightness_by_method == {}
-    assert restored._smoothing_by_method == {}
-    assert restored._kernel_by_mode == {}
+    assert restored._fusion_parameters_by_method == {}
 
 
-def test_legacy_smoothing_scalar_only_migrates_to_b(clean_store):
-    get_settings().setValue("fusion/ofb_depth_smoothing", 0.6)
-    get_settings().sync()
-
+def test_legacy_shared_kernel_migration_is_deterministic(clean_store):
+    get_settings().setValue(KERNEL_BY_MODE_KEY, '{"ofab": 14, "dct": 8}')
+    get_settings().setValue(SMOOTHING_BY_METHOD_KEY,
+                           '{"openfocus_a": 2.4, "openfocus_b": 0.8, "openfocus_c": 3.6}')
+    get_settings().setValue("fusion/ai_mode", "hard")
+    get_settings().setValue("fusion/dtcwt_levels", 3)
     restored = _window()
     load_window_settings(restored)
-    assert restored._smoothing_by_method == {"openfocus_b": 0.6}
-    # A and C shared the other scalar, so their old value is not recoverable.
-    assert restored.smoothing_for_method("openfocus_a") == 2.0
-    assert restored.smoothing_for_method("openfocus_c") == 3.0
+    memory = restored._fusion_parameters_by_method
+    assert memory["openfocus_a"]["kernel_size"] == 13
+    assert memory["openfocus_b"]["kernel_size"] == 13
+    assert memory["openfocus_c"] == {"blend_smoothing": 3.6}
+    assert memory["dct"]["kernel_size"] == 7
+    assert memory["stackmffv3"]["mode"] == "hard"
+    assert memory["dtcwt"]["N"] == 3
 
 
-def test_malformed_stored_json_does_not_break_startup(clean_store):
-    get_settings().setValue(BRIGHTNESS_BY_METHOD_KEY, "{not json")
-    get_settings().setValue(SMOOTHING_BY_METHOD_KEY, '"text"')
-    get_settings().setValue(KERNEL_BY_MODE_KEY, "[1]")
-    get_settings().sync()
-
+def test_malformed_setting_does_not_discard_neighbors(clean_store, extra_methods):
+    get_settings().setValue(METHOD_PARAMETERS_KEY,
+                           '{"memory_extra": {"gain": 2.25, "selection": "bad"}}')
+    get_settings().setValue(REGISTRATION_PARAMETERS_KEY, '{"memory_align": {"offset": -4}}')
     restored = _window()
     load_window_settings(restored)
-    assert restored._brightness_by_method == {}
-    assert restored._smoothing_by_method == {}
-    assert restored._kernel_by_mode == {}
+    assert restored.fusion_parameters_for("memory_extra") == {"gain": 2.25, "selection": "first"}
+    assert restored.registration_parameters_for("memory_align") == {"offset": -4}
 
 
-# ---------------------------------------------------------------------------
-# Project files: structured values win, old scalars stay method-scoped
-# ---------------------------------------------------------------------------
-
-def test_project_structured_kernel_beats_legacy_scalar():
+def test_project_layers_only_recorded_method_parameters(extra_methods):
     from utils import project_file
-
     restored = _window()
+    restored.set_fusion_parameters("openfocus_c", {"blend_smoothing": 5.5})
     project_file._apply_after_load(restored, {"settings": {
-        "fusion_method": "dct",
-        "kernel_size": 31,
-        "method_parameters": {"dct": {"kernel_size": 9}},
+        "fusion_method": "memory_extra", "alignment_method": "memory_align",
+        "method_parameters": {"memory_extra": {"gain": 2.5, "selection": "last"}},
+        "registration_parameters": {"memory_align": {"offset": 3}},
+        "brightness_by_method": {"exposure_match": {"memory_extra": False}},
     }})
-    assert restored.kernel_for_method("dct") == 9
+    assert restored.fusion_parameters_for("memory_extra") == {"gain": 2.5, "selection": "last"}
+    assert restored.fusion_parameters_for("openfocus_c") == {"blend_smoothing": 5.5}
+    assert restored.registration_parameters_for("memory_align") == {"offset": 3}
+    assert restored._brightness_by_method[("exposure_match", "memory_extra")] is False
 
 
-def test_project_does_not_wipe_other_methods_memories():
+def test_old_project_scalar_is_selected_method_only():
     from utils import project_file
-
     restored = _window()
-    restored._smoothing_by_method = {"openfocus_c": 5.5}
-    restored._kernel_by_mode = {"gfg": 13}
     project_file._apply_after_load(restored, {"settings": {
-        "fusion_method": "dct",
-        "method_parameters": {"dct": {"kernel_size": 9,
-                                      "smoothing": 1.0}},
+        "fusion_method": "dct", "kernel_size": 31,
+        "method_parameters": {"dct": {"kernel_size": 9}}, "exposure_match": False,
+        "align_homography": True, "align_ecc": True,
     }})
-    assert restored._smoothing_by_method["openfocus_c"] == 5.5
-    assert restored._kernel_by_mode["gfg"] == 13
-    assert restored.kernel_for_method("dct") == 9
+    assert restored.fusion_parameters_for("dct")["kernel_size"] == 9
+    assert "guided_filter" not in restored._fusion_parameters_by_method
+    assert restored._brightness_by_method[("exposure_match", "dct")] is False
+    assert restored.current_alignment_method() == "both"
 
 
-def test_old_project_brightness_applies_only_to_its_own_method():
+@pytest.mark.parametrize("settings", [
+    {"fusion_method": "missing"}, {"alignment_method": "missing"},
+    {"method_parameters": {"dct": {"kernel_size": True}}},
+    {"method_parameters": {"dct": {"unknown": 2}}},
+    {"method_parameters": {"stackmffv3": {"mode": "invalid"}}},
+    {"brightness_by_method": {"exposure_match": {"dct": "false"}}},
+    {"registration_parameters": {"ecc": {"unknown": 1}}},
+])
+def test_project_rejects_invalid_algorithms_and_fields(tmp_path, settings):
+    from utils import project_file
+    source = tmp_path / "source.png"
+    source.write_bytes(b"reference")
+    path = tmp_path / "bad.ofproj"
+    path.write_text(json.dumps({"openfocus_project": 2, "sources": [str(source)],
+                                "settings": settings, "labels": {}}), encoding="utf-8")
+    ok, error, state = project_file.validate_project(str(path))
+    assert not ok and error and state == {}
+
+
+def test_new_method_project_file_roundtrip(tmp_path, extra_methods):
+    from utils import project_file
+    from tests.test_project_file import _window as project_window
+    source = tmp_path / "源图.png"
+    source.write_bytes(b"reference")
+    saved = project_window([str(source)], str(tmp_path))
+    saved.set_fusion_method("memory_extra")
+    saved.set_alignment_method("memory_align")
+    saved.set_fusion_parameters("memory_extra", {"gain": 1.75, "selection": "last"})
+    saved.set_registration_parameters("memory_align", {"offset": -2})
+    target = tmp_path / "参数.ofproj"
+    ok, error = project_file.save_project(saved, str(target))
+    assert ok, error
+    ok, error, state = project_file.validate_project(str(target))
+    assert ok, error
+    assert state["openfocus_project"] == 3
+    for legacy in ("kernel_size", "ai_mode", "dtcwt_levels", "align_ecc", "align_homography"):
+        assert legacy not in state["settings"]
+    restored = project_window([str(source)], str(tmp_path))
+    project_file._apply_after_load(restored, state)
+    assert restored.current_fusion_method() == "memory_extra"
+    assert restored.current_alignment_method() == "memory_align"
+    assert restored.fusion_parameters_for("memory_extra") == {"gain": 1.75, "selection": "last"}
+    assert restored.registration_parameters_for("memory_align") == {"offset": -2}
+
+
+def test_legacy_smoothing_scalars_migrate_without_creating_new_scalar_state(clean_store):
+    get_settings().setValue("fusion/ofb_depth_smoothing", .6)
+    get_settings().setValue("fusion/of_blend_smoothing", 2.4)
+    restored = _window()
+    load_window_settings(restored)
+    assert restored.fusion_parameters_for("openfocus_b")["depth_smoothing"] == .6
+    assert restored.fusion_parameters_for("openfocus_a")["blend_smoothing"] == 2.4
+    assert restored.fusion_parameters_for("openfocus_c")["blend_smoothing"] == 2.4
+    assert not hasattr(restored, "ofb_depth_smoothing")
+
+
+def test_canonical_project_rejects_legacy_parameter_aliases(tmp_path):
+    from utils import project_file
+    source = tmp_path / "source.png"
+    source.write_bytes(b"reference")
+    path = tmp_path / "strict.ofproj"
+    path.write_text(json.dumps({"openfocus_project": 3, "sources": [str(source)],
+                                "settings": {"method_parameters": {
+                                    "openfocus_a": {"smoothing": 2.0}}}}), encoding="utf-8")
+    ok, error, _ = project_file.validate_project(str(path))
+    assert not ok and "smoothing" in error
+
+
+@pytest.mark.parametrize("structured,mode,levels", [
+    ({}, "hard", 3),
+    ({"stackmffv3": {"mode": "soft"}, "dtcwt": {"N": 2}}, "soft", 2),
+])
+def test_legacy_project_retains_other_methods_modes(structured, mode, levels):
     from utils import project_file
 
     restored = _window()
-    project_file._apply_after_load(restored, {"settings": {
-        "fusion_method": "openfocus_b",
-        "exposure_match": False, "base_frame_correct": False}})
-    assert restored.brightness_option_for("exposure_match", "openfocus_b") is False
-    assert restored.brightness_option_for("base_correct", "openfocus_b") is False
-    assert restored.brightness_option_for("exposure_match", "openfocus_a") is True
+    project_file._apply_after_load(restored, {"openfocus_project": 2, "settings": {
+        "fusion_method": "dct", "ai_mode": "hard", "dtcwt_levels": 3,
+        "method_parameters": structured,
+    }})
+    assert restored.fusion_parameters_for("stackmffv3")["mode"] == mode
+    assert restored.fusion_parameters_for("dtcwt")["N"] == levels
 
 
-def _project_with_settings(tmp_path, name, settings):
-    """A project whose source exists, so settings validation is what fails."""
-    import numpy as np
-    import cv2
-
-    source = tmp_path / f"{name}.png"
-    assert cv2.imwrite(str(source), np.zeros((8, 8, 3), np.uint8))
-    path = tmp_path / f"{name}.ofproj"
-    path.write_text(json.dumps({
-        "openfocus_project": 2,
-        "sources": [str(source)],
-        "settings": settings,
-    }), encoding="utf-8")
-    return str(path)
-
-
-def test_project_rejects_conflicting_shared_kernels(tmp_path):
+def test_partial_project_keeps_unspecified_method_preferences(extra_methods):
     from utils import project_file
 
-    path = _project_with_settings(tmp_path, "conflict", {
-        "method_parameters": {
-            "openfocus_a": {"kernel_size": 11},
-            "openfocus_b": {"kernel_size": 15},
-        }})
-    ok, error, _state = project_file.validate_project(path)
-    assert not ok
-    assert "shared" in error
-
-
-def test_project_rejects_string_booleans(tmp_path):
-    from utils import project_file
-
-    path = _project_with_settings(tmp_path, "bad_bool", {
-        "method_parameters": {"dct": {"exposure_match": "false"}}})
-    ok, error, _state = project_file.validate_project(path)
-    assert not ok
-    assert "brightness" in error
-
+    algorithms.register_registration(RegistrationAlgorithm(
+        "memory_pair", "pair", "Pair", "tests.test_parameter_memory:_window",
+        parameters=(ParameterSpec("offset", "offset", 0, -10, 10),
+                    ParameterSpec("policy", "policy", "nearest", choices=("nearest", "reflect")))))
+    restored = _window()
+    restored.set_fusion_parameters("openfocus_a", {"blend_smoothing": 5.5})
+    restored.set_registration_parameters("memory_pair", {"offset": 2, "policy": "reflect"})
+    project_file._apply_after_load(restored, {"openfocus_project": 2, "settings": {
+        "fusion_method": "openfocus_a", "alignment_method": "memory_pair",
+        "method_parameters": {"openfocus_a": {"kernel_size": 9}},
+        "registration_parameters": {"memory_pair": {"offset": 7}},
+    }})
+    assert restored.fusion_parameters_for("openfocus_a") == {
+        "kernel_size": 9, "blend_smoothing": 5.5}
+    assert restored.registration_parameters_for("memory_pair") == {
+        "offset": 7, "policy": "reflect"}

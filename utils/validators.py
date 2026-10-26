@@ -11,25 +11,6 @@ def normalize_kernel_size(value: int) -> int:
     return value
 
 
-def get_algorithm_from_checkboxes(
-    rb_a: bool,
-    rb_b: bool,
-    rb_c: bool,
-    rb_gfg: bool,
-    rb_d: bool,
-    default: str = "stackmffv3"
-) -> str:
-    if rb_a:
-        return "stackmffv3"
-    elif rb_b:
-        return "dct"
-    elif rb_c:
-        return "dtcwt"
-    elif rb_gfg:
-        return "gfgfgf"
-    elif rb_d:
-        return "stackmffv3"
-    return default
 
 
 def crop_roi(

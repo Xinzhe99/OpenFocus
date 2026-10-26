@@ -52,10 +52,13 @@ def _read_frame(path: str) -> Optional[np.ndarray]:
     return cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
 
 
-def _signature(folder: str, filenames: List[str], align_options: Tuple[bool, bool],
+def _signature(folder: str, filenames: List[str], align_options: Tuple[str, ...],
                downscale_width: Optional[int], scale_factor: float = 1.0,
                frame_shape: Optional[Tuple[int, int]] = None, *, identity=None) -> str:
     """Hash ordered source files and the complete effective alignment request."""
+    from core.algorithms import alignment_steps
+
+    align_options = alignment_steps(align_options)
     parts = [f"v={CACHE_FORMAT_VERSION}",
              f"opts={tuple(align_options)}|downscale={downscale_width}"
              f"|scale={scale_factor}|shape={frame_shape}",
@@ -75,7 +78,7 @@ def cache_dir(folder: str) -> str:
     return os.path.join(folder, CACHE_DIR_NAME)
 
 
-def load_aligned(folder: str, filenames: List[str], align_options: Tuple[bool, bool],
+def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ...],
                  downscale_width: Optional[int], scale_factor: float = 1.0,
                  frame_shape: Optional[Tuple[int, int]] = None, *, identity=None,
                  should_cancel=None) -> Optional[List[np.ndarray]]:
@@ -166,7 +169,7 @@ def _prune(root, keep, max_bytes):
 
 
 def save_aligned(folder: str, filenames: List[str], aligned_images: List[np.ndarray],
-                 align_options: Tuple[bool, bool], downscale_width: Optional[int],
+                 align_options: Tuple[str, ...], downscale_width: Optional[int],
                  scale_factor: float = 1.0,
                  frame_shape: Optional[Tuple[int, int]] = None, *, identity=None,
                  should_cancel=None, max_cache_bytes=DEFAULT_CACHE_BYTES) -> None:
