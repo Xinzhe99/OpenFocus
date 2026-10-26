@@ -4,13 +4,17 @@ All user-tunable state on the main window (thread count, tile parameters,
 registration downscale, AI batch size and output mode, GPU toggle, UI language,
 recently opened stacks) survives restarts through this module.
 """
+import json
+import math
 import os
 import sys
-from typing import Any
+from typing import Any, Optional
 
 from PyQt6.QtCore import QSettings
 
+from constants import KERNEL_MODES, SMOOTHING_MAX
 from locales import trans
+from utils.validators import normalize_kernel_size
 
 ORGANIZATION = "OpenFocus"
 APPLICATION = "OpenFocus"
@@ -37,6 +41,20 @@ LAST_DIALOG_DIR_KEY = "ui/last_dialog_dir"
 # The "AI runs on the CPU" warning is informational and repeat-per-launch
 # annoying; once the user says "don't show again" it must stay gone.
 AI_CPU_WARNING_DISMISSED_KEY = "rendering/ai_cpu_warning_dismissed"
+# The per-method parameter memories are the authority for what a method
+# renders with; the global exposure_match / base_frame_correct fields only
+# mirror the method that was last touched. Each memory is stored as JSON so
+# a restart no longer reverts the user's per-algorithm choices.
+BRIGHTNESS_BY_METHOD_KEY = "fusion/brightness_by_method"
+SMOOTHING_BY_METHOD_KEY = "fusion/smoothing_by_method"
+KERNEL_BY_MODE_KEY = "fusion/kernel_by_mode"
+BRIGHTNESS_OPTIONS = ("exposure_match", "base_correct")
+SMOOTHING_METHODS = ("openfocus_a", "openfocus_b", "openfocus_c")
+# Every fusion method the GUI can select; a value stored for anything else is
+# ignored rather than creating an unreachable preference.
+FUSION_METHODS = ("none", "stackmffv3", "openfocus_a", "openfocus_b",
+                  "openfocus_c", "guided_filter", "dct", "dtcwt", "gfgfgf")
+
 
 # window attribute -> (settings key, default, cast)
 _PERSISTED_FIELDS = {
@@ -191,6 +209,151 @@ def _cast(raw: Any, kind: Any, default: Any) -> Any:
         return default
 
 
+# --- Per-method parameter memories -------------------------------------------
+#
+# The three helpers below are the single validation point for those memories:
+# QSettings reads them at startup, project files reuse the same rules, and a
+# hand-edited value must never reach a spin box or a render as-is. Anything
+# malformed is dropped locally; one bad entry must not discard the rest.
+
+def _loads_object(raw: Any) -> dict:
+    """JSON object from *raw*, or {} for absent/malformed/non-object input."""
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _finite_number(value: Any) -> Optional[float]:
+    """A finite, non-boolean number, else None (bools are ints in Python)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def brightness_memory_from_json(raw: Any) -> dict:
+    """{(option, method): bool} from the stored JSON; malformed parts dropped."""
+    nested = _loads_object(raw)
+    memory = {}
+    for option in BRIGHTNESS_OPTIONS:
+        per_method = nested.get(option)
+        if not isinstance(per_method, dict):
+            continue
+        for method, enabled in per_method.items():
+            # bool(enabled) would turn the string "false" into True, which is
+            # exactly the silent revert this persistence exists to prevent.
+            if isinstance(method, str) and method in FUSION_METHODS \
+                    and isinstance(enabled, bool):
+                memory[(option, method)] = enabled
+    return memory
+
+
+def brightness_memory_to_json(memory: Any) -> str:
+    """Stable JSON text {option: {method: bool}} for the brightness memory."""
+    nested = {option: {} for option in BRIGHTNESS_OPTIONS}
+    for (option, method), enabled in (memory or {}).items():
+        if option in BRIGHTNESS_OPTIONS and method in FUSION_METHODS \
+                and isinstance(enabled, bool):
+            nested[option][method] = enabled
+    return json.dumps(nested, sort_keys=True)
+
+
+def smoothing_memory_from_json(raw: Any) -> dict:
+    """{method: sigma} for OpenFocus A/B/C, clamped to the control's range."""
+    nested = _loads_object(raw)
+    memory = {}
+    for method, value in nested.items():
+        if method not in SMOOTHING_METHODS:
+            continue
+        number = _finite_number(value)
+        if number is None:
+            continue
+        memory[method] = min(max(number, 0.0), SMOOTHING_MAX)
+    return memory
+
+
+def smoothing_memory_to_json(memory: Any) -> str:
+    """Stable JSON text for the per-method smoothing memory."""
+    values = {}
+    for method, value in (memory or {}).items():
+        number = _finite_number(value)
+        if method in SMOOTHING_METHODS and number is not None:
+            values[method] = min(max(number, 0.0), SMOOTHING_MAX)
+    return json.dumps(values, sort_keys=True)
+
+
+def kernel_memory_from_json(raw: Any) -> dict:
+    """{mode: odd kernel} with each value normalised to its mode's range."""
+    nested = _loads_object(raw)
+    memory = {}
+    for mode, value in nested.items():
+        if mode not in KERNEL_MODES:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        high, _default = KERNEL_MODES[mode]
+        if value < 1:
+            continue
+        memory[mode] = normalize_kernel_size(min(value, high))
+    return memory
+
+
+def kernel_memory_to_json(memory: Any) -> str:
+    """Stable JSON text for the per-mode kernel memory."""
+    values = {}
+    for mode, value in (memory or {}).items():
+        if mode not in KERNEL_MODES or isinstance(value, bool) \
+                or not isinstance(value, int) or value < 1:
+            continue
+        high, _default = KERNEL_MODES[mode]
+        values[mode] = normalize_kernel_size(min(value, high))
+    return json.dumps(values, sort_keys=True)
+
+
+def load_parameter_memories(window) -> None:
+    """Restore the three per-method memories onto *window*.
+
+    A stored key always wins over the legacy scalars, including when it holds
+    an empty object: that is what "reset to defaults" writes, and falling back
+    to the old scalar there would resurrect a value the user just cleared.
+    """
+    settings = get_settings()
+    if settings.contains(BRIGHTNESS_BY_METHOD_KEY):
+        window._brightness_by_method = brightness_memory_from_json(
+            settings.value(BRIGHTNESS_BY_METHOD_KEY))
+    if settings.contains(SMOOTHING_BY_METHOD_KEY):
+        window._smoothing_by_method = smoothing_memory_from_json(
+            settings.value(SMOOTHING_BY_METHOD_KEY))
+    else:
+        # The old scalar is unambiguous for B (A/C shared the other one), so
+        # it is the only legacy value that can be migrated without guessing.
+        legacy = _finite_number(getattr(window, "ofb_depth_smoothing", None))
+        if legacy is not None:
+            window._smoothing_by_method = {
+                "openfocus_b": min(max(legacy, 0.0), SMOOTHING_MAX)}
+    if settings.contains(KERNEL_BY_MODE_KEY):
+        window._kernel_by_mode = kernel_memory_from_json(
+            settings.value(KERNEL_BY_MODE_KEY))
+
+
+def save_parameter_memories(window) -> None:
+    """Write the three memories (callers sync the live slider first)."""
+    settings = get_settings()
+    settings.setValue(BRIGHTNESS_BY_METHOD_KEY, brightness_memory_to_json(
+        getattr(window, "_brightness_by_method", {})))
+    settings.setValue(SMOOTHING_BY_METHOD_KEY, smoothing_memory_to_json(
+        getattr(window, "_smoothing_by_method", {})))
+    settings.setValue(KERNEL_BY_MODE_KEY, kernel_memory_to_json(
+        getattr(window, "_kernel_by_mode", {})))
+
+
+
 def load_window_settings(window) -> None:
     """Restore persisted preferences onto window attributes (defaults kept)."""
     settings = get_settings()
@@ -201,6 +364,10 @@ def load_window_settings(window) -> None:
             setattr(window, attr, _cast(settings.value(key), kind, default))
         else:
             setattr(window, attr, getattr(window, attr, default))
+
+    # Must run after the scalar fields: the smoothing migration reads the
+    # legacy ofb_depth_smoothing value restored just above.
+    load_parameter_memories(window)
 
     raw_recent = settings.value(RECENT_FILES_KEY, []) or []
     if not isinstance(raw_recent, list):
@@ -221,6 +388,7 @@ def save_window_settings(window) -> None:
     settings.setValue(LANGUAGE_KEY, trans.current_lang)
     settings.setValue(RECENT_FILES_KEY, list(getattr(window, "recent_files", [])))
     settings.setValue(RECENT_PROJECTS_KEY, list(getattr(window, "recent_projects", [])))
+    save_parameter_memories(window)
     settings.sync()
     if settings.status() != QSettings.Status.NoError:
         raise OSError("Could not write OpenFocus settings")

@@ -30,20 +30,12 @@ class BatchManager:
         """Add a folder to the batch processing dialog when it opens."""
         from dialogs import BatchProcessingDialog
         dialog = self.window.findChild(BatchProcessingDialog)
-        if dialog and hasattr(dialog, 'folder_paths'):
+        if dialog is not None and hasattr(dialog, 'folder_paths'):
             if folder_path not in dialog.folder_paths:
-                dialog.folder_paths.append(folder_path)
-                folder_name = os.path.basename(folder_path)
-                from PyQt6.QtWidgets import QListWidgetItem
-                from PyQt6.QtGui import QIcon
-                from core.image_loader import ImageStackLoader
-                item = QListWidgetItem(f"{folder_name}\n{folder_path}")
-                loader = ImageStackLoader()
-                success, _, images, _ = loader.load_from_folder(folder_path)
-                if success and images:
-                    thumbnail = loader.create_thumbnails([images[0]], thumb_size=60)[0]
-                    item.setIcon(QIcon(thumbnail))
-                dialog.folder_list.addItem(item)
+                # The dialog registers the row synchronously and decodes the
+                # thumbnail on its import worker; loading here would freeze
+                # the GUI thread (and wait behind a running render's lease).
+                dialog.add_folders_to_list([folder_path])
 
     def start_batch_processing(
         self,

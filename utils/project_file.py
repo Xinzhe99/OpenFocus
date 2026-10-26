@@ -10,6 +10,8 @@ import re
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
+from constants import KERNEL_MODES, METHOD_KERNEL_MODES, SMOOTHING_MAX
+
 PROJECT_SUFFIX = ".ofproj"
 FORMAT_VERSION = 2
 
@@ -17,13 +19,22 @@ FORMAT_VERSION = 2
 def _collect_state(window) -> Dict[str, Any]:
     """Snapshot everything restorable from the main window."""
     from constants import APP_VERSION
+    method = window.current_fusion_method()
+    brightness = getattr(window, "brightness_option_for", None)
+    smoothing = getattr(window, "smoothing_for_method", None)
+    kernel = getattr(window, "kernel_for_method", None)
     settings = {
-        "fusion_method": window.current_fusion_method(),
+        "fusion_method": method,
         "alignment_method": window.current_alignment_method(),
-        "kernel_size": window.slider_smooth.value(),
+        "kernel_size": int(kernel(method)) if callable(kernel) else
+        int(window.slider_smooth.value()),
         "stack_reverse_order": bool(getattr(window, "stack_reverse_order", False)),
-        "base_frame_correct": bool(getattr(window, "base_frame_correct", False)),
-        "exposure_match": bool(getattr(window, "exposure_match", True)),
+        # The top-level flags describe *this* method; the per-method memory
+        # below is what a reopen actually restores.
+        "base_frame_correct": bool(brightness("base_correct", method))
+        if callable(brightness) else bool(getattr(window, "base_frame_correct", False)),
+        "exposure_match": bool(brightness("exposure_match", method))
+        if callable(brightness) else bool(getattr(window, "exposure_match", True)),
         "thread_count": getattr(window, "thread_count", 4),
         "tile_enabled": getattr(window, "tile_enabled", True),
         "tile_block_size": getattr(window, "tile_block_size", 1024),
@@ -61,9 +72,6 @@ def _collect_state(window) -> Dict[str, Any]:
     }
     methods = ("guided_filter", "dct", "dtcwt", "gfgfgf", "openfocus_a",
                "openfocus_b", "openfocus_c", "stackmffv3")
-    brightness = getattr(window, "brightness_option_for", None)
-    smoothing = getattr(window, "smoothing_for_method", None)
-    kernel = getattr(window, "kernel_for_method", None)
     settings["method_parameters"] = {
         method: {
             **({option: bool(brightness(option, method))
@@ -268,16 +276,36 @@ def validate_project(path: str, source_root: Optional[str] = None) -> Tuple[bool
         return False, "invalid excluded frame list", {}
     if not isinstance(settings.get("method_parameters", {}), dict):
         return False, "invalid method parameters", {}
-    for values in settings.get("method_parameters", {}).values():
+    parameters = settings.get("method_parameters", {})
+    for method, values in parameters.items():
         if not isinstance(values, dict):
             return False, "invalid method parameters", {}
         if "kernel_size" in values and (not isinstance(values["kernel_size"], int)
+                                        or isinstance(values["kernel_size"], bool)
                                         or values["kernel_size"] < 1):
             return False, "invalid method kernel", {}
-        if "smoothing" in values and (not isinstance(values["smoothing"], (int, float))
-                                      or not math.isfinite(values["smoothing"])
-                                      or values["smoothing"] < 0):
-            return False, "invalid method smoothing", {}
+        if "smoothing" in values:
+            value = values["smoothing"]
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or not 0 <= value <= SMOOTHING_MAX):
+                return False, "invalid method smoothing", {}
+        for option in ("exposure_match", "base_correct"):
+            if option in values and not isinstance(values[option], bool):
+                return False, "invalid method brightness", {}
+    # A/B/C share one kernel mode: contradictory values would be resolved by
+    # JSON key order, which is not a decision this app can defend.
+    shared = {}
+    for method, values in parameters.items():
+        mode = METHOD_KERNEL_MODES.get(method)
+        if mode is None or "kernel_size" not in values:
+            continue
+        shared.setdefault(mode, set()).add(int(values["kernel_size"]))
+    for mode, values in shared.items():
+        if len(values) > 1:
+            return False, "conflicting kernel values for a shared method family", {}
+        high = KERNEL_MODES[mode][0]
+        if not 1 <= min(values) <= high:
+            return False, "invalid method kernel", {}
     if settings.get("ai_mode") not in ("soft", "hard"):
         settings["ai_mode"] = "soft"
     _num("current_index", int, -1)
@@ -405,24 +433,46 @@ def _prepare_project_load(window, state, options):
 
 
 def _apply_after_load(window, state: Dict[str, Any]) -> None:
+    """Apply saved settings; persist once, after the whole restore."""
+    scope = getattr(window, "_restore_scope", None)
+    if callable(scope):
+        with scope():
+            _apply_settings(window, state)
+    else:
+        _apply_settings(window, state)
+    persist = getattr(window, "persist_settings", None)
+    if callable(persist):
+        persist()
+
+
+def _apply_settings(window, state: Dict[str, Any]) -> None:
     settings = state.get("settings", {})
     window.source_transforms = list(state.get("source_transforms", []))
     window.unrecoverable_source_changes = list(state.get("unrecoverable_source_changes", []))
     parameters = settings.get("method_parameters", {})
-    window._brightness_by_method = {
-        (option, method): bool(values[option])
-        for method, values in parameters.items()
-        for option in ("exposure_match", "base_correct") if option in values}
-    window._smoothing_by_method = {
-        method: float(values["smoothing"]) for method, values in parameters.items()
-        if "smoothing" in values}
+    method = settings.get("fusion_method")
+    # Project values are layered over the user's saved per-method memory: a
+    # project only speaks for the methods it actually records, so reopening
+    # one must not wipe the preferences of every other algorithm.
+    brightness_memory = dict(getattr(window, "_brightness_by_method", {}) or {})
+    for name, values in parameters.items():
+        for option in ("exposure_match", "base_correct"):
+            if option in values:
+                brightness_memory[(option, name)] = bool(values[option])
+    window._brightness_by_method = brightness_memory
+    smoothing_memory = dict(getattr(window, "_smoothing_by_method", {}) or {})
+    for name, values in parameters.items():
+        if "smoothing" in values:
+            smoothing_memory[name] = float(values["smoothing"])
+    window._smoothing_by_method = smoothing_memory
+    kernel_memory = dict(getattr(window, "_kernel_by_mode", {}) or {})
     modes = getattr(window, "_KERNEL_MODES", {})
-    window._kernel_by_mode = {
-        modes[method][0]: int(values["kernel_size"])
-        for method, values in parameters.items() if method in modes and "kernel_size" in values}
+    for name, values in parameters.items():
+        if name in modes and "kernel_size" in values:
+            kernel_memory[modes[name][0]] = int(values["kernel_size"])
+    window._kernel_by_mode = kernel_memory
     window.current_kernel_mode = None
 
-    method = settings.get("fusion_method")
     if method:
         window.set_fusion_method(method)
         update_kernel = getattr(window, "update_slider_availability", None)
@@ -450,10 +500,23 @@ def _apply_after_load(window, state: Dict[str, Any]) -> None:
             else "none")
     window.set_alignment_method(alignment)
 
-    kernel = int(settings.get("kernel_size", 31) or 31)
+    # The top-level kernel scalar is a legacy field. A structured value for
+    # the current method is authoritative; only an old project (no entry for
+    # this method) falls back to it.
+    current_values = parameters.get(method, {}) if method else {}
+    if "kernel_size" in current_values:
+        kernel = int(current_values["kernel_size"])
+    else:
+        kernel = int(settings.get("kernel_size", 31) or 31)
     if kernel % 2 == 0:
         kernel = max(1, kernel - 1)
+    # Duck-typed hosts in tests provide a plain object here, not a QSlider.
+    block = getattr(window.slider_smooth, "blockSignals", None)
+    blocked = block(True) if callable(block) else None
     window.slider_smooth.setValue(kernel)
+    if callable(block):
+        block(blocked)
+
 
     # 反转帧序开关（v1.42）：属性 + 复选框同步
     reverse = bool(settings.get("stack_reverse_order", False))
@@ -462,17 +525,23 @@ def _apply_after_load(window, state: Dict[str, Any]) -> None:
     if chk is not None:
         chk.setChecked(reverse)
 
-    base_correct = bool(parameters.get(method, {}).get(
+    # Old projects carry only these two scalars, and they describe the method
+    # the project was saved on. They must not be broadcast to other methods,
+    # and a structured value for the current method wins.
+    current_values = parameters.get(method, {}) if method else {}
+    base_correct = bool(current_values.get(
         "base_correct", settings.get("base_frame_correct", False)))
-    window._brightness_by_method[("base_correct", method)] = base_correct
+    if method:
+        window._brightness_by_method[("base_correct", method)] = base_correct
     window.base_frame_correct = base_correct
     base_chk = getattr(window, "chk_base_correct", None)
     if base_chk is not None:
         base_chk.setChecked(base_correct)
 
-    exposure_match = bool(parameters.get(method, {}).get(
+    exposure_match = bool(current_values.get(
         "exposure_match", settings.get("exposure_match", True)))
-    window._brightness_by_method[("exposure_match", method)] = exposure_match
+    if method:
+        window._brightness_by_method[("exposure_match", method)] = exposure_match
     window.exposure_match = exposure_match
     exp_chk = getattr(window, "chk_exposure_match", None)
     if exp_chk is not None:

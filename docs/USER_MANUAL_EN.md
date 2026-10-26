@@ -498,7 +498,8 @@ because they answer a per-stack question rather than a global preference.
 Both default to on for OpenFocus A/B/C (which have no built-in exposure
 calibration); the other methods keep the historical defaults (exposure
 matching on, drift removal off). Switching methods shows that method's own
-values.
+values, and those values survive a restart. **Reset** clears the remembered
+brightness, smoothing and Radius values of every method.
 
 ### Alignment only (no fusion)
 
@@ -809,7 +810,8 @@ Cache**; stale entries are replaced automatically.
 All of the following survive an application restart automatically:
 thread count, tile parameters, registration downscale width, AI Fusion (StackMFF-V3)
 batch size, the GPU acceleration toggle, the registration cache toggle,
-interface language, window size/panel layout, the drag-out export format
+interface language, window size/panel layout, the drag-out export format,
+the per-method brightness options, smoothing sigma and Radius values,
 and your recently opened stacks. Settings dialogs save the moment you confirm them;
 everything is also saved when the application closes. Preferences are
 stored per user in `OpenFocus/OpenFocus.ini` (QSettings INI format).

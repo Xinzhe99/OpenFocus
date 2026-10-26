@@ -180,21 +180,28 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
     return ", ".join(args.input), paths
 
 
-def _load_images(paths: List[str]):
-    from core.image_loader import _read_tiff_pages, decode_image
+def _load_images(paths: List[str], thread_count: int = 0,
+                 resource_preference: str = "balanced",
+                 should_cancel=None):
+    from core.image_loader import iter_decoded_sources, _DecodeCancelled
     images = []
-    for p in paths:
-        # A multi-page TIFF is a whole stack in one file
-        pages = _read_tiff_pages(p)
-        if pages is not None:
-            images.extend(pages)
-            continue
-        # Same decoder as the GUI: EXIF orientation, HEIC and camera RAW
-        # (the CLI used a bare cv2.imdecode and fused unrotated frames)
-        img = decode_image(p)
-        if img is None:
-            raise RuntimeError(f"Failed to decode image: {p}")
-        images.append(img)
+    try:
+        decoded = iter_decoded_sources(
+            paths, 1.0, thread_count=thread_count,
+            resource_preference=resource_preference,
+            should_cancel=should_cancel)
+        try:
+            for item in decoded:
+                if item.error is not None:
+                    # The CLI is strict: one unreadable frame is an error,
+                    # never a silently shorter stack.
+                    raise RuntimeError(f"Failed to decode image: {item.path}")
+                images.extend(item.pages)
+                del item
+        finally:
+            decoded.close()
+    except _DecodeCancelled:
+        raise RuntimeError("Loading cancelled")
     return images
 
 
@@ -463,7 +470,10 @@ def _run_batch(args, _emit_json=None) -> int:
             if frame_count < 2:
                 raise RuntimeError(
                     f"need at least 2 frames, found {frame_count}")
-            images = _load_images(paths)
+            images = _load_images(
+                paths, thread_count=getattr(args, "threads", 0) or 0,
+                resource_preference=getattr(args, "resource_preference",
+                                            "balanced"))
             fused = _fuse_stack(images, folder_args)
             _save(out_path, fused, _resolve_scale_cfg(folder_args, paths))
             print(f"Saved: {out_path}")
@@ -620,7 +630,10 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 return EXIT_OK
 
             _progress(event="load", done=1, total=1, frames=len(paths))
-            images = _load_images(paths)
+            images = _load_images(
+                paths, thread_count=getattr(args, "threads", 0) or 0,
+                resource_preference=getattr(args, "resource_preference",
+                                            "balanced"))
             if paths:
                 from utils.image_utils import set_source_exif
                 from core.image_loader import _read_exif_bytes

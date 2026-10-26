@@ -41,3 +41,24 @@ KERNEL_SIZE_MAX = 51
 KERNEL_SIZE_DEFAULT_DCT = 7
 KERNEL_SIZE_DEFAULT_GFF = 31
 KERNEL_SIZE_DEFAULT_GFG = 7
+
+# One slider means a different parameter per method family, so each family
+# remembers its own value. mode -> (maximum, default); the GUI, the settings
+# codec and project validation all read this table instead of keeping copies.
+KERNEL_MODES = {
+    "guided": (51, 31),
+    "dct": (51, 7),
+    "gfg": (51, 7),
+    # OpenFocus A/B/C share the variance window (kernel = 2r+1); the
+    # discriminative probe put r=5 -> 11 with a 1-21 range.
+    "ofab": (21, 11),
+}
+METHOD_KERNEL_MODES = {
+    "guided_filter": "guided",
+    "dct": "dct",
+    "gfgfgf": "gfg",
+    "openfocus_a": "ofab",
+    "openfocus_b": "ofab",
+    "openfocus_c": "ofab",
+}
+SMOOTHING_MAX = 8.0

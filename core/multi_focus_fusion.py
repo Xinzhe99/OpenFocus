@@ -696,17 +696,35 @@ class MultiFocusFusion:
             check_cancel()
             if self.algorithm != 'stackmffv3':
                 parallel = self.algorithm in ('guided_filter', 'gfgfgf', 'dtcwt')
-                plan = policy.plan_execution(
-                    policy.Workload(
-                        algorithm=self.algorithm, frames=count,
-                        height=max(h, img_resize[1]) if img_resize else h,
-                        width=max(w, img_resize[0]) if img_resize else w,
-                        channels=3, itemsize=first.itemsize,
-                        outer_tasks=count if parallel else 1),
-                    preference=self.resource_preference,
-                    user_threads=kwargs.get('thread_count'),
-                    ram_budget_override=memory_budget_bytes())
+                height = max(h, img_resize[1]) if img_resize else h
+                width = max(w, img_resize[0]) if img_resize else w
+                if self.algorithm == 'dtcwt':
+                    from fusion_methods.dtcwt import estimate_working_set
+                    fixed, per_worker = estimate_working_set(
+                        height, width, kwargs.get('N', 4), count)
+                    plan = policy.plan_execution(
+                        policy.Workload(
+                            algorithm='dtcwt', frames=count,
+                            height=height, width=width, channels=3,
+                            itemsize=first.itemsize,
+                            fixed_bytes=fixed, per_worker_bytes=per_worker,
+                            outer_tasks=count),
+                        preference=self.resource_preference,
+                        user_threads=kwargs.get('thread_count'),
+                        ram_budget_override=memory_budget_bytes())
+                else:
+                    plan = policy.plan_execution(
+                        policy.Workload(
+                            algorithm=self.algorithm, frames=count,
+                            height=height, width=width,
+                            channels=3, itemsize=first.itemsize,
+                            outer_tasks=count if parallel else 1),
+                        preference=self.resource_preference,
+                        user_threads=kwargs.get('thread_count'),
+                        ram_budget_override=memory_budget_bytes())
                 kwargs['thread_count'] = plan.workers
+                if self.algorithm == 'dtcwt':
+                    kwargs['execution_plan'] = plan
             kwargs['should_cancel'] = should_cancel
             if self.algorithm == 'stackmffv3':
                 kwargs['progress_callback'] = progress_callback
@@ -810,6 +828,7 @@ class MultiFocusFusion:
             self.use_gpu,
             thread_count=kwargs.get('thread_count', None),
             should_cancel=kwargs.get('should_cancel', None),
+            execution_plan=kwargs.get('execution_plan'),
         )
     
     def _fuse_stackmffv3(self,
@@ -1083,11 +1102,34 @@ class MultiFocusFusion:
                 exposure_gains=exposure_gains,
             )
 
-        optimal_threads = self._calculate_optimal_thread_count(
-            h, w, channels, num_images, block_size, thread_count,
-            itemsize=np.dtype(src_dtype).itemsize,
-        )
-        optimal_threads = min(optimal_threads, len(tile_coords))
+        if algorithm == 'dtcwt':
+            # Each tile is fused with a serial inner plan, so the parent's
+            # concurrency cost is one tile's DTCWT working set — not the whole
+            # image's. The parent already holds the lease; admission here only
+            # decides how many tiles may run at once.
+            from core import resource_policy as policy
+            from fusion_methods.dtcwt import estimate_working_set
+            fixed, per_worker = estimate_working_set(
+                block_size, block_size, kwargs.get('N', 4), num_images)
+            acc_bytes = int(h) * int(w) * (channels + 1) * 4
+            plan = policy.plan_execution(
+                policy.Workload(
+                    algorithm='dtcwt', frames=num_images, height=h, width=w,
+                    channels=channels, block_size=block_size,
+                    itemsize=np.dtype(src_dtype).itemsize,
+                    fixed_bytes=fixed + acc_bytes + 2 * acc_bytes,
+                    per_worker_bytes=per_worker,
+                    outer_tasks=len(tile_coords)),
+                preference=self.resource_preference,
+                user_threads=thread_count,
+                ram_budget_override=memory_budget_bytes())
+            optimal_threads = max(1, min(int(plan.workers), len(tile_coords)))
+        else:
+            optimal_threads = self._calculate_optimal_thread_count(
+                h, w, channels, num_images, block_size, thread_count,
+                itemsize=np.dtype(src_dtype).itemsize,
+            )
+            optimal_threads = min(optimal_threads, len(tile_coords))
         acc = np.zeros((h, w, channels), dtype=np.float32)
         weight = np.zeros((h, w, 1), dtype=np.float32)
 
@@ -1102,12 +1144,20 @@ class MultiFocusFusion:
             # oversubscribed the machine.
             algo_kwargs['thread_count'] = 1
             algo_kwargs['should_cancel'] = should_cancel
+            if algorithm == 'dtcwt':
+                # This tile runs inside the parent's pool and under its
+                # lease: hand the backend a serial child plan instead of
+                # letting it open a second layer of workers.
+                from core.resource_policy import ExecutionPlan
+                algo_kwargs['execution_plan'] = ExecutionPlan(
+                    workers=1, native_threads=1, max_in_flight=1,
+                    ram_budget=0, vram_budget=0,
+                    device_kind='CPU', reasons=('tiled child',))
+                return self._fuse_dtcwt(crops, img_resize, **algo_kwargs)
             if algorithm == 'guided_filter':
                 return self._fuse_guided_filter(crops, img_resize, **algo_kwargs)
             elif algorithm == 'dct':
                 return self._fuse_dct(crops, img_resize, **algo_kwargs)
-            elif algorithm == 'dtcwt':
-                return self._fuse_dtcwt(crops, img_resize, **algo_kwargs)
             elif algorithm == 'gfgfgf':
                 return self._fuse_gfgfgf(crops, img_resize, **algo_kwargs)
             elif algorithm == 'openfocus_a':

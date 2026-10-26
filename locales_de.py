@@ -10,6 +10,7 @@ PACK = {
     "label_target_missing": "Das gespeicherte Ziel ist nicht geladen. Zum Neuverknüpfen ein verfügbares Ziel auswählen.",
     "label_range_err_bounds": "Der Bereich enthält eine Nummer über der Bildanzahl des Ziels.",
     "batch_missing_times": "{n} Bilder haben keine Aufnahmezeit. Verwenden Sie eine feste Bildanzahl pro Gruppe, um sie einzubeziehen.",
+    "batch_import_in_progress": "Der Ordnerimport läuft noch. Warten Sie auf das Ende oder brechen Sie ihn ab.",
     "export_depth_hint": "PNG/TIFF erhalten 16-Bit-Daten. JPG/BMP/GIF wandeln sie in 8 Bit um.",
     "feedback_package_scope": "Die ZIP-Datei enthält Sitzungs- und vollständige Anwendungsprotokolle, App-, Betriebssystem- und Python-Versionen sowie Speicher- und GPU-Informationen. Prüfen Sie den Inhalt vor dem Teilen. Es wird nichts automatisch gesendet.",
     "env_copy": "Diagnose kopieren",

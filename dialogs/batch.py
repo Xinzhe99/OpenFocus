@@ -37,6 +37,13 @@ from widgets.stepper import StepperSpinBox
 
 BATCH_PICK_DIR_KEY = "batch/last_pick_dir"
 
+# Import workers still stopping when the dialog is destroyed. Dropping the
+# last reference to a running QThread aborts the process ("QThread: Destroyed
+# while thread is still running"), and blocking the GUI thread on wait() would
+# freeze the window. Park the worker until it really finishes, like
+# controllers/batch_manager does for its batch thread.
+_ORPHAN_IMPORT_WORKERS: list = []
+
 
 def _section_rule(text: str) -> QLabel:
     """A short heading that separates sections inside one group box.
@@ -81,6 +88,12 @@ class BatchProcessingDialog(QDialog):
                 ('tile_threshold', None), ('thread_count', 4),
                 ('resource_preference', 'balanced'),
                 ('ai_batch_size', 2), ('ai_mode', 'soft'), ('use_gpu', True))}
+        # Folder decoding runs on BatchImportWorker; these track the live
+        # request so a late result cannot mutate a replaced preview.
+        self._import_worker = None
+        self._import_generation = 0
+        self._import_busy = False
+
         
         # Dark palette only in dark mode: hard-coding it showed a dark slab in
         # light mode.
@@ -146,6 +159,7 @@ class BatchProcessingDialog(QDialog):
         add_row.addWidget(self.path_input, 1)
         add_folder_btn = QPushButton(trans.t('batch_btn_add'))
         add_folder_btn.clicked.connect(self.add_folders)
+        self.btn_add_folder = add_folder_btn
         add_row.addWidget(add_folder_btn)
         folder_layout.addLayout(add_row)
         
@@ -230,6 +244,7 @@ class BatchProcessingDialog(QDialog):
 
         add_single_folder_btn = QPushButton(trans.t('batch_btn_select_split'))
         add_single_folder_btn.clicked.connect(self.add_single_folder)
+        self.btn_add_single_folder = add_single_folder_btn
         single_folder_layout.addWidget(add_single_folder_btn)
 
         layout.addWidget(self.single_folder_group)
@@ -429,6 +444,7 @@ class BatchProcessingDialog(QDialog):
         start_btn = QPushButton(trans.t('batch_btn_start'))
         start_btn.setObjectName("primaryButton")
         start_btn.clicked.connect(self.start_batch_processing)
+        self.btn_start = start_btn
         button_layout.addWidget(start_btn)
         
         cancel_btn = QPushButton(trans.t('batch_btn_cancel'))
@@ -561,38 +577,12 @@ class BatchProcessingDialog(QDialog):
         if dialog.exec():
             selected_dirs = dialog.selectedFiles()
             selected_dirs = [d for d in selected_dirs if os.path.isdir(d)]
-            
-            # 处理选中的文件夹
-            if selected_dirs:
-                for folder_path in selected_dirs:
-                    if folder_path not in self.folder_paths:
-                        # 添加到路径列表
-                        self.folder_paths.append(folder_path)
-                        
-                        # 获取文件夹中的第一张图像作为缩略图
-                        from core.image_loader import ImageStackLoader
-                        loader = ImageStackLoader()
-                        success, _, images, _ = loader.load_from_folder(folder_path)
-                        
-                        if success and images:
-                            # 创建缩略图
-                            thumbnail = loader.create_thumbnails([images[0]], thumb_size=60)[0]
-                            self.folder_thumbnails.append(thumbnail)
-                        else:
-                            # 如果没有图像，使用空图标
-                            self.folder_thumbnails.append(None)
-                        
-                        # 添加到列表显示
-                        folder_name = os.path.basename(folder_path)
-                        item_text = f"{folder_name}\n{folder_path}"
-                        
-                        item = QListWidgetItem(item_text)
-                        if self.folder_thumbnails[-1]:
-                            item.setIcon(QIcon(self.folder_thumbnails[-1]))
-                        
-                        self.folder_list.addItem(item)
-                        self._update_folder_placeholder()
 
+            # Rows appear immediately; only the thumbnails decode on the
+            # worker, so validation and Start see the selection right away.
+            self.add_folders_to_list(selected_dirs)
+
+            if selected_dirs:
                 # Remember this pick so the next "Add" opens nearby. Stored
                 # under a batch-only key: the shared ui/last_dialog_dir belongs
                 # to single-file dialogs, and a batch folder there would make
@@ -669,32 +659,169 @@ class BatchProcessingDialog(QDialog):
         value = str(get_settings().value(BATCH_PICK_DIR_KEY, "") or "")
         return value if value and os.path.isdir(value) else ""
 
+    # --- Background folder import ---------------------------------------
+    #
+    # Every entry point that needs decoded pixels (thumbnails, split previews,
+    # drag-and-drop preload) goes through one worker. The dialog keeps only
+    # request state; QPixmap/QIcon are built in the slot because Qt GUI
+    # objects cannot be created off the GUI thread.
+
+    def _start_import(self, mode: str, on_thumbnails=None, on_stack=None,
+                      folder_paths=None, folder_path=None,
+                      sort_by: str = 'filename', scale_factor=None) -> bool:
+        if self._import_busy:
+            return False
+        from core.workers import BatchImportWorker
+        self._import_generation += 1
+        worker = BatchImportWorker(
+            mode,
+            folder_paths=folder_paths,
+            folder_path=folder_path,
+            scale_factor=(self.load_scale_factor if scale_factor is None
+                          else scale_factor),
+            sort_by=sort_by,
+            thread_count=self._runtime_settings.get('thread_count', 0),
+            resource_preference=self._runtime_settings.get(
+                'resource_preference', 'balanced'),
+        )
+        self._import_worker = worker
+        self._import_busy = True
+        self._import_callbacks = {'thumbnails': on_thumbnails,
+                                  'stack': on_stack}
+        self._set_import_busy(True)
+
+        # Bound methods of this QObject, not lambdas: Qt disconnects them
+        # automatically when the dialog is destroyed, so a worker finishing
+        # after the dialog closed cannot call into a deleted window.
+        if mode == 'stack':
+            worker.stack_loaded.connect(self._on_import_stack_ready)
+        else:
+            worker.folders_loaded.connect(self._on_import_folders_ready)
+        worker.finished.connect(self._on_import_finished)
+        worker.start()
+        return True
+
+    def _on_import_folders_ready(self, results) -> None:
+        callback = self._import_callbacks.get('thumbnails')
+        self._import_busy = False
+        self._set_import_busy(False)
+        if callback is not None:
+            callback(results)
+
+    def _on_import_stack_ready(self, folder, entries, message) -> None:
+        callback = self._import_callbacks.get('stack')
+        self._import_busy = False
+        self._set_import_busy(False)
+        if callback is not None:
+            callback(folder, entries, message)
+
+    def _on_import_finished(self) -> None:
+        worker = self.sender()
+        if worker is not self._import_worker:
+            return
+        self._import_worker = None
+        self._import_callbacks = {}
+        self._import_busy = False
+        self._set_import_busy(False)
+        if worker is not None:
+            worker.deleteLater()
+
+    def _set_import_busy(self, busy: bool) -> None:
+        """Disable the actions that would need the data still decoding."""
+        for name in ("btn_start", "btn_add_folder", "btn_add_single_folder"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(not busy)
+
+    def cancel_imports(self) -> None:
+        """Ask the live import to stop and drop its result."""
+        worker = self._import_worker
+        self._import_generation += 1
+        self._import_busy = False
+        self._import_worker = None
+        if worker is not None:
+            worker.cancel()
+            if worker.isRunning():
+                # Do not let the dialog's destruction drop the last reference
+                # to a running thread: park it until it finishes on its own.
+                _ORPHAN_IMPORT_WORKERS.append(worker)
+                worker.finished.connect(
+                    lambda w=worker: self._release_orphan(w))
+            else:
+                worker.deleteLater()
+
+    @staticmethod
+    def _release_orphan(worker) -> None:
+        try:
+            _ORPHAN_IMPORT_WORKERS.remove(worker)
+        except ValueError:
+            pass
+        worker.deleteLater()
+
+    def closeEvent(self, event):
+        self.cancel_imports()
+        super().closeEvent(event)
+
+    def reject(self):
+        self.cancel_imports()
+        super().reject()
+
+    def accept(self):
+        if self._import_busy:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, trans.t('batch_title'),
+                                    trans.t('batch_import_in_progress'))
+            return
+        self.cancel_imports()
+        super().accept()
+
+    def _append_folder_row(self, folder_path: str) -> None:
+        """Show the folder immediately; its icon arrives with the worker."""
+        item = QListWidgetItem(
+            f"{os.path.basename(folder_path)}\n{folder_path}")
+        self.folder_list.addItem(item)
+        self.folder_thumbnails.append(None)
+        self._update_folder_placeholder()
+
+    def add_folders_to_list(self, folder_paths) -> None:
+        """Register folders now, decode their thumbnails in the background.
+
+        The paths and rows are recorded synchronously so the rest of the
+        dialog (validation, Start) sees the selection immediately; only the
+        preview icon depends on the worker.
+        """
+        pending = []
+        for folder_path in folder_paths:
+            if folder_path in self.folder_paths:
+                continue
+            self.folder_paths.append(folder_path)
+            self._append_folder_row(folder_path)
+            pending.append(folder_path)
+        if pending:
+            self._start_import('thumbnails', folder_paths=pending,
+                               on_thumbnails=self._apply_thumbnails)
+
+    def _apply_thumbnails(self, results) -> None:
+        """Attach decoded first frames to the rows that already exist."""
+        from core.image_loader import ImageStackLoader
+        loader = ImageStackLoader()
+        for folder_path, first in results:
+            if folder_path not in self.folder_paths or first is None:
+                continue
+            index = self.folder_paths.index(folder_path)
+            thumbnail = loader.create_thumbnails([first], thumb_size=60)[0]
+            if index < len(self.folder_thumbnails):
+                self.folder_thumbnails[index] = thumbnail
+            item = self.folder_list.item(index)
+            if item is not None:
+                item.setIcon(QIcon(thumbnail))
+        self._fit_folder_list()
+
     def add_folder_to_list(self, folder_path: str) -> None:
         """添加文件夹到批处理列表（用于拖入场景）"""
         if folder_path in self.folder_paths:
             return
-
-        self.folder_paths.append(folder_path)
-
-        from core.image_loader import ImageStackLoader
-        loader = ImageStackLoader()
-        success, _, images, _ = loader.load_from_folder(folder_path)
-
-        if success and images:
-            thumbnail = loader.create_thumbnails([images[0]], thumb_size=60)[0]
-            self.folder_thumbnails.append(thumbnail)
-        else:
-            self.folder_thumbnails.append(None)
-
-        folder_name = os.path.basename(folder_path)
-        item_text = f"{folder_name}\n{folder_path}"
-
-        item = QListWidgetItem(item_text)
-        if self.folder_thumbnails[-1]:
-            item.setIcon(QIcon(self.folder_thumbnails[-1]))
-
-        self.folder_list.addItem(item)
-        self._update_folder_placeholder()
+        self.add_folders_to_list([folder_path])
 
     def add_single_folder_to_list(self, folder_list):
         """添加单个文件夹到列表"""
@@ -843,20 +970,22 @@ class BatchProcessingDialog(QDialog):
     def add_single_folder(self):
         """添加单个文件夹（自动分割）"""
         from PyQt6.QtWidgets import QFileDialog
-        from core.image_loader import ImageStackLoader
-        
+
         folder_path = QFileDialog.getExistingDirectory(
             self, "Select Folder with Multiple Image Stacks", ""
         )
-        
+
         if not folder_path:
             return
-        
-        loader = ImageStackLoader()
-        success, message, images_with_times, filenames = loader.load_images_with_timestamps(
-            folder_path, scale_factor=self.load_scale_factor)
-        
-        if not success or not images_with_times or loader.failed_count:
+
+        self._start_import(
+            'stack', folder_path=folder_path,
+            on_stack=self._apply_single_folder_import)
+        return
+
+    def _apply_single_folder_import(self, folder_path, entries, message):
+        """Show a decoded split preview, or report why it could not load."""
+        if not entries:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(
                 self,
@@ -864,8 +993,7 @@ class BatchProcessingDialog(QDialog):
                 trans.t("msg_load_images_failed_text").format(message=message),
             )
             return
-        
-        self.single_folder_images_with_times = images_with_times
+        self.single_folder_images_with_times = entries
         self.single_folder_folder_path = folder_path
 
         # 更新路径显示
@@ -874,6 +1002,7 @@ class BatchProcessingDialog(QDialog):
         self.single_folder_path_label.setToolTip(folder_path)
 
         self.update_single_folder_preview()
+
     
     def get_import_mode(self):
         """获取导入模式"""
@@ -1094,9 +1223,6 @@ class BatchProcessingDialog(QDialog):
         预加载单个文件夹（用于拖入场景）
         自动切换到单文件夹模式、加载文件夹、设置默认划分参数
         """
-        import cv2
-        from core.image_loader import ImageStackLoader
-
         # 1. 切换到单文件夹模式
         self.rb_single_folder.setChecked(True)
         self.on_import_mode_changed()
@@ -1107,32 +1233,11 @@ class BatchProcessingDialog(QDialog):
         self.param_unit_label.setText(trans.t('batch_unit_images'))
         self.on_split_method_changed(0)
 
-        # 3. 加载文件夹并应用缩放
-        loader = ImageStackLoader()
+        # 3. 加载文件夹并应用缩放（后台，结果到达后更新预览）
         self.load_scale_factor = scale_factor
-        success, message, images_with_times, filenames = loader.load_images_with_timestamps(
-            folder_path, scale_factor=scale_factor)
-
-        if not success or not images_with_times or loader.failed_count:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                self,
-                trans.t("msg_load_failed"),
-                trans.t("msg_load_images_failed_text").format(message=message),
-            )
-            return
-
-        self.single_folder_images_with_times = images_with_times
-
-        self.single_folder_folder_path = folder_path
-
-        # 更新路径显示
-        folder_name = os.path.basename(folder_path)
-        self.single_folder_path_label.setText(f"Folder: {folder_name}")
-        self.single_folder_path_label.setToolTip(folder_path)
-
-        # 4. 更新preview
-        self.update_single_folder_preview()
+        self._start_import(
+            'stack', folder_path=folder_path, scale_factor=scale_factor,
+            on_stack=self._apply_single_folder_import)
 
     def preload_multiple_folders(self, folder_paths: list[str], scale_factor: float = 1.0) -> None:
         """预加载多个文件夹（用于拖入场景）
@@ -1141,39 +1246,10 @@ class BatchProcessingDialog(QDialog):
             folder_paths: 文件夹路径列表
             scale_factor: 缩放因子（统一应用到所有文件夹）
         """
-        import cv2
-        from core.image_loader import ImageStackLoader
-
         self.rb_multiple_folders.setChecked(True)
         self.on_import_mode_changed()
         self.load_scale_factor = scale_factor
-
-        loader = ImageStackLoader()
-        for folder_path in folder_paths:
-            if folder_path in self.folder_paths:
-                continue
-
-            self.folder_paths.append(folder_path)
-
-            success, message, full_res_images, filenames = loader.load_from_folder(
-                folder_path, scale_factor=scale_factor
-            )
-
-            if success and full_res_images:
-                thumbnail = loader.create_thumbnails([full_res_images[0]], thumb_size=60)[0]
-                self.folder_thumbnails.append(thumbnail)
-            else:
-                self.folder_thumbnails.append(None)
-
-            folder_name = os.path.basename(folder_path)
-            item_text = f"{folder_name}\n{folder_path}"
-
-            item = QListWidgetItem(item_text)
-            if self.folder_thumbnails[-1]:
-                item.setIcon(QIcon(self.folder_thumbnails[-1]))
-
-            self.folder_list.addItem(item)
-        self._update_folder_placeholder()
+        self.add_folders_to_list(folder_paths)
 
     def start_batch_processing(self):
         """开始批处理"""

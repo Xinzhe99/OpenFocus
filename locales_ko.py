@@ -10,6 +10,7 @@ PACK = {
     "label_target_missing": "저장된 대상을 불러오지 않았습니다. 사용 가능한 대상을 선택하여 다시 연결하세요.",
     "label_range_err_bounds": "범위에 대상의 전체 프레임 수를 초과하는 번호가 있습니다.",
     "batch_missing_times": "프레임 {n}개에 촬영 시간이 없습니다. 포함하려면 고정 개수로 그룹화하세요.",
+    "batch_import_in_progress": "폴더 가져오기가 아직 진행 중입니다. 완료될 때까지 기다리거나 취소하세요.",
     "export_depth_hint": "PNG/TIFF는 16비트 데이터를 유지합니다. JPG/BMP/GIF는 8비트로 변환합니다.",
     "feedback_package_scope": "ZIP에는 세션 및 전체 앱 로그, 앱/OS/Python 버전, 메모리 및 GPU 정보가 포함됩니다. 공유하기 전에 내용을 확인하세요. 어떤 데이터도 자동으로 전송되지 않습니다.",
     "env_copy": "진단 정보 복사",

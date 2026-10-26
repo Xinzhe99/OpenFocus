@@ -5,6 +5,62 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Per-method parameters survive a restart.** The brightness options
+  (exposure match / base correction), the OpenFocus A/B/C smoothing sigma and
+  the per-mode kernel size are remembered in QSettings
+  (`fusion/brightness_by_method`, `fusion/smoothing_by_method`,
+  `fusion/kernel_by_mode`). Before, only the global scalars were saved, so a
+  deliberately disabled exposure match or a tuned sigma silently reverted on
+  the next launch. Values are validated on load (JSON booleans only, finite
+  sigma in 0–8, odd kernel inside its mode's range); a malformed entry is
+  dropped without discarding its neighbours, and a stored empty object means
+  "reset" rather than "fall back to the old scalar".
+- **Projects layer over the user's own preferences.** A project only sets the
+  methods it records; other methods keep the saved values. A structured
+  `method_parameters` kernel beats the legacy top-level scalar, an old
+  project's two brightness flags apply to its own method only, and
+  contradictory kernels for the A/B/C family are rejected instead of being
+  resolved by JSON key order.
+- **Compare adoption, parameter undo and Reset are one persisted step.**
+  Restores run inside a scope that suspends QSettings writes, so a failure
+  cannot leave half a state on disk. Reset now clears all three memories
+  (it used to keep the smoothing and brightness overrides).
+
+### Changed
+- **DTCWT colour reconstruction runs in a bounded, ordered pool.** The three
+  channels still run in order and each channel's frames are consumed in frame
+  order, so every float32 addition happens in the same sequence as before;
+  only the independent forward transforms overlap. The window never exceeds
+  the admitted plan, a later failure stops replenishment, and one channel is
+  inverted before the next starts. The whole-image path plans from an explicit
+  DTCWT working-set estimate; a tiled render hands each tile a serial child
+  plan so the two parallel layers never stack.
+- **Loading decodes plain frames in a bounded pool.** JPEG/PNG/BMP/WebP decode
+  concurrently (at most four, capped by the resource plan); TIFF containers,
+  RAW and HEIF stay serial. Results are consumed in input order, so names,
+  real paths, TIFF page identities, the first usable EXIF block and the first
+  µm/px calibration still follow the input sequence. A failed file is reported
+  in place, so it cannot shift later frames.
+- **The batch dialog no longer decodes folders on the GUI thread.** Folder
+  thumbnails, the split preview and drag-and-drop preloads run on a new
+  `BatchImportWorker`; QPixmap/QIcon are created in the dialog's slot. A late
+  result from a superseded request is discarded, and closing or cancelling
+  stops the import.
+
+### Verification
+- New `tests/test_parameter_memory.py` (14 cases), `tests/test_dtcwt_parallel.py`
+  (9) and `tests/test_loader_parallel.py` (13) cover the codecs, restart and
+  project precedence, bit-identical DTCWT output at 1/2/4 workers, the tiled
+  serial child plan, cancellation and worker joins, input order with a slow
+  first file, TIFF page identity, 16-bit depth and the strict/lenient error
+  split.
+- Measured on the six-frame 999×750 demo stack, whole-image DTCWT, seven
+  interleaved pairs after one warm-up: serial median 4.56 s, four workers
+  3.13 s (1.46×), identical SHA-256 output.
+- Measured on twelve 2000×1400 JPEG frames: folder load serial median 73 ms,
+  four workers 32 ms (2.27×), identical order and pixels.
+
 ## [v1.70.0] — 2026-10-25
 
 ### Fixed
