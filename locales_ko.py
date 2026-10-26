@@ -299,6 +299,8 @@ PACK = {
     "check_align_none": "정렬 안 함",
     "check_align_none_hint": "불러온 상태 그대로 프레임을 합성하며 정합을 하지 않습니다.",
     "check_align_of": "OpenFocus (고속)",
+    "check_align_both": "호모그래피 → ECC",
+    "label_align_shift_limit": "최대 이동량 (프레임 비율)",
     "check_align_of_hint": "제한된 유사 변환(이동 + 회전 + 크기) 정렬에 밝기 균등화와 자동 자르기를 더했습니다. 프레임당 1초 미만이며, 프레임 크기의 8%를 넘게 이동한 프레임은 반쯤 보정하지 않고 정렬하지 않은 채로 둡니다. 비강체나 극단적인 기하에는 ECC나 호모그래피를 쓰세요.",
     "chk_base_correct": "밝기 드리프트 제거",
     "chk_exposure_match": "합성 전 노출 맞추기",

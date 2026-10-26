@@ -208,8 +208,8 @@ Tutti e sei i metodi richiedono un clic esplicito su **Calcola**. Aprire la fine
 cambiare misura, sorgente, registrazione o parametri non avvia il calcolo. L’editor si
 trova subito sotto il selettore della misura: i kernel mediano DCT e iniziale GFG accettano
 dispari da 1 a 51 (predefinito 7); B usa una finestra di varianza e C una di energia
-passa-banda, dispari da 1 a 21 px (predefinito 11). DTCWT qui non offre livelli: segue la
-profondità di decomposizione della finestra principale, come in un render. StackMFF V3
+passa-banda, dispari da 1 a 21 px (predefinito 11). I livelli di decomposizione DTCWT
+si modificano qui in una bozza locale, inizializzata dai parametri della sorgente. StackMFF V3
 mostra invece una propria modalità di output IA (miscelazione morbida per impostazione
 predefinita, o selezione netta) e una spiegazione, senza kernel numerico: la miscelazione
 morbida stima una posizione continua ponderata per probabilità, la selezione netta prende

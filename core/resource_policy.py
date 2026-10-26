@@ -27,6 +27,7 @@ import numpy as np
 
 from utils import memory
 from utils.platform_utils import cpu_limits
+from core.algorithms import get_fusion
 
 # Share of currently-available physical memory one stage may plan to allocate.
 BUDGET_RATIO = 0.45
@@ -257,7 +258,11 @@ def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = No
     """
     if workload.parallel_layer not in ("outer", "native"):
         raise ValueError("parallel_layer must be 'outer' or 'native'")
-    if workload.algorithm in ("ai", "stackmff", "stackmff_v3", "stackmffv3"):
+    try:
+        requires_estimate = get_fusion(workload.algorithm).neural
+    except ValueError:
+        requires_estimate = False
+    if requires_estimate:
         if workload.fixed_bytes is None or workload.per_worker_bytes is None:
             raise ResourceLimitError("AI requires an explicit working-set estimate")
     snapshot = snapshot or probe_resources()

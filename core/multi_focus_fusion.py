@@ -6,13 +6,13 @@ import numpy as np
 from typing import Union, List, Tuple, Optional
 from fusion_methods.dct import dct_focus_stack_fusion
 from fusion_methods.gff import gff_impl
-from fusion_methods.stackmffv3 import (_stackmffv3_impl, _stackmffv3_batch_impl,
-                                      normalize_mode)
+from fusion_methods.stackmffv3 import _stackmffv3_impl, normalize_mode
 from fusion_methods.dtcwt import _dtcwt_impl
 from utils import memory, resource_path
 from utils.image_utils import (apply_exposure_gain, exposure_gains,
                                normalize_fuse_input)
 from utils.sorting import natural_sort_key
+from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
 
 
 # Tile 参数已改为 MultiFocusFusion 实例属性，见类构造函数中的默认值和访问器方法。
@@ -229,19 +229,18 @@ class MultiFocusFusion:
     - 'stackmffv3': StackMFF-V3 神经网络融合（软/硬融合）
     """
     
-    SUPPORTED_ALGORITHMS = ['guided_filter', 'dct', 'dtcwt', 'gfgfgf',
-                            'stackmffv3', 'openfocus_a', 'openfocus_b',
-                            'openfocus_c']
+    @property
+    def descriptor(self):
+        return get_fusion(self.algorithm)
 
     def __init__(self, algorithm: str = 'guided_filter', use_gpu: bool = False,
                  tile_enabled: bool = True, tile_block_size: int = 1024,
                  tile_overlap: int = 256, tile_threshold: int = 2048,
                  ai_batch_size: int = 2,
-                 ai_mode: str = "soft",
                  base_frame: str = "none",
                  sort_mode: str = "asc",
                  exposure_match: bool = True,
-                 resource_preference: str = "balanced"):
+                 resource_preference: str = "balanced", fusion_parameters=None):
         """
         初始化融合器
         
@@ -249,13 +248,12 @@ class MultiFocusFusion:
             algorithm (str): 融合算法名称,可选 'guided_filter', 'dct', 'dtcwt', 'stackmffv3'
             use_gpu (bool): 是否使用GPU加速(CUDA/MPS),默认为False
             ai_batch_size (int): StackMFF V3 批量处理大小，默认为2
-            ai_mode (str): StackMFF V3 输出模式，'soft'（概率加权混合，
-                默认）或 'hard'（逐像素取最可能帧）
             exposure_match (bool): 融合前把每帧均值标定到末帧。整栈计算、
                 分块前应用；对所有算法生效。默认 True。
         """
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
+        self.fusion_parameters = resolve_fusion_parameters(algorithm, fusion_parameters)
         self.use_gpu = bool(use_gpu)
         # Tile (tiled fusion) related instance-level settings
         # 当图片最大边大于 tile_threshold 时，可在 tile_enabled 为 True 时启用分块融合
@@ -265,9 +263,6 @@ class MultiFocusFusion:
         self.tile_threshold = int(tile_threshold)
         # StackMFF V3 批量处理大小
         self.ai_batch_size = max(1, int(ai_batch_size))
-        # StackMFF V3 输出模式：soft = 概率加权混合（论文默认）；
-        # hard = 逐像素 argmax 取帧（无帧间插值，边缘更硬）
-        self.ai_mode = normalize_mode(ai_mode)
         # 基底校正（消除亮度漂移）：'none' | 'last' | 'first'。
         # 细节层来自融合决策，基底低频来自参考帧——
         # out += LP(I_base) − LP(out)，σ≈32，
@@ -290,24 +285,12 @@ class MultiFocusFusion:
     
     def _ensure_supported_algorithm(self, algorithm: str) -> None:
         """验证算法是否受支持"""
-        if algorithm not in self.SUPPORTED_ALGORITHMS:
-            raise ValueError(
-                f"Unsupported algorithm: {algorithm}. "
-                f"Supported algorithms: {', '.join(self.SUPPORTED_ALGORITHMS)}"
-            )
+        get_fusion(algorithm)
 
     def _validate_environment(self):
-        """验证运行环境"""
-        if self.algorithm == 'dtcwt':
-            self._validate_transform_environment()
-        elif self.algorithm == 'dct':
-            self._validate_dct_environment()
-        elif self.algorithm == 'guided_filter':
-            self._validate_spatial_environment()
-        elif self.algorithm == 'stackmffv3':
-            self._validate_ai_environment()
-        elif self.algorithm == 'gfgfgf':
-            pass  # pure NumPy implementation, no extra dependencies
+        """Validate only the selected descriptor's dependencies."""
+        if self.descriptor.environment is not None:
+            resolve_runner(self.descriptor.environment)(self)
 
     def _fuse_gfgfgf(self,
                      input_source: Union[str, List[np.ndarray]],
@@ -330,9 +313,6 @@ class MultiFocusFusion:
         except Exception as exc:
             raise RuntimeError("GFG-FGF fusion requires the gfg_fgf module.") from exc
 
-        kernel_size = max(1, int(kernel_size or 31))
-        if kernel_size % 2 == 0:
-            kernel_size = max(1, kernel_size - 1)
 
         thread_count = kwargs.get('thread_count', None)
         return gfgfgf_impl(input_source, img_resize, kernel_size=kernel_size,
@@ -346,9 +326,6 @@ class MultiFocusFusion:
                           **kwargs) -> np.ndarray:
         """OpenFocus - A：方差加权平均（末帧先验）。"""
         from fusion_methods.openfocus_ab import openfocus_a_impl
-        kernel_size = max(1, int(kernel_size or 11))
-        if kernel_size % 2 == 0:
-            kernel_size = max(1, kernel_size - 1)
         return openfocus_a_impl(input_source, img_resize,
                                 kernel_size=kernel_size,
                                 thread_count=kwargs.get('thread_count', None),
@@ -362,9 +339,6 @@ class MultiFocusFusion:
                           **kwargs) -> np.ndarray:
         """OpenFocus - B：方差深度图选择。"""
         from fusion_methods.openfocus_ab import openfocus_b_impl
-        kernel_size = max(1, int(kernel_size or 11))
-        if kernel_size % 2 == 0:
-            kernel_size = max(1, kernel_size - 1)
         return openfocus_b_impl(input_source, img_resize,
                                 kernel_size=kernel_size,
                                 thread_count=kwargs.get('thread_count', None),
@@ -374,13 +348,10 @@ class MultiFocusFusion:
     def _fuse_openfocus_c(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
-                          kernel_size: int = 11,
                           **kwargs) -> np.ndarray:
         """OpenFocus - C：拉普拉斯金字塔融合。
 
-        C has no radius: its only user parameter is the blending Smoothing
-        (`blend_smoothing`), matching Helicon's Method C. `kernel_size` is
-        accepted for signature parity with A/B and ignored.
+        C exposes only the blending smoothing parameter.
         """
         from fusion_methods.openfocus_ab import openfocus_c_impl
         return openfocus_c_impl(input_source, img_resize,
@@ -441,11 +412,11 @@ class MultiFocusFusion:
     # ------------------------------------------------------------------
     # 帧序规范化（Sort automatically，仅 openfocus 族生效）
     # ------------------------------------------------------------------
-    OPENFOCUS_FAMILY = ('openfocus_a', 'openfocus_b', 'openfocus_c')
+    # Frame-order sensitivity is declared by the selected descriptor.
 
     def _maybe_sort_input(self, input_source):
         if (self.sort_mode == "off"
-                or self.algorithm not in self.OPENFOCUS_FAMILY):
+                or not self.descriptor.sort_frames):
             return input_source
         from fusion_methods.openfocus_ab import (
             sort_frames_for_openfocus, _collect_images)
@@ -623,6 +594,20 @@ class MultiFocusFusion:
                 raise RegistrationCancelled()
 
         check_cancel()
+        supplied = kwargs.pop('parameters', None)
+        values = dict(self.fusion_parameters)
+        if supplied is not None:
+            resolve_fusion_parameters(self.algorithm, supplied)
+            values.update(supplied)
+        parameter_keys = {parameter.key for parameter in self.descriptor.parameters}
+        for key in tuple(kwargs):
+            if key in parameter_keys:
+                values[key] = kwargs.pop(key)
+        runtime_keys = {'thread_count', 'model_path', 'execution_plan', 'block_size'}
+        unknown = set(kwargs) - runtime_keys
+        if unknown:
+            raise ValueError(f'Unknown fusion parameters: {sorted(unknown)}')
+        kwargs.update(resolve_fusion_parameters(self.algorithm, values))
         # Inspect one frame before directory materialisation or exposure copies.
         if isinstance(input_source, str) and os.path.isdir(input_source):
             import cv2
@@ -671,13 +656,9 @@ class MultiFocusFusion:
             first = input_source[0]
         h, w = first.shape[:2]
         geometry_frames = [first] * count
-        if self.algorithm == 'dtcwt':
-            needs_tiles = _dtcwt_activity_bytes(geometry_frames) > DTCWT_ACTIVITY_BUDGET
-        else:
-            needs_tiles = max(h, w) > self.tile_threshold
-        if self.algorithm == 'stackmffv3':
-            kwargs.setdefault('mode', self.ai_mode)
-            needs_tiles |= _stack_footprint_exceeds(geometry_frames, self.tile_threshold)
+        spec = self.descriptor
+        needs_tiles = (resolve_runner(spec.tile_decider)(geometry_frames, self.tile_threshold)
+                       if spec.tile_decider else max(h, w) > self.tile_threshold)
 
         check_cancel()
         if self.tile_enabled and needs_tiles:
@@ -694,42 +675,27 @@ class MultiFocusFusion:
             if exposure_gains_ is not None and isinstance(input_source, str):
                 input_source = self._materialize_exposure(input_source, exposure_gains_)
             check_cancel()
-            if self.algorithm != 'stackmffv3':
-                parallel = self.algorithm in ('guided_filter', 'gfgfgf', 'dtcwt')
+            if not spec.neural:
                 height = max(h, img_resize[1]) if img_resize else h
                 width = max(w, img_resize[0]) if img_resize else w
-                if self.algorithm == 'dtcwt':
-                    from fusion_methods.dtcwt import estimate_working_set
-                    fixed, per_worker = estimate_working_set(
-                        height, width, kwargs.get('N', 4), count)
-                    plan = policy.plan_execution(
-                        policy.Workload(
-                            algorithm='dtcwt', frames=count,
-                            height=height, width=width, channels=3,
-                            itemsize=first.itemsize,
-                            fixed_bytes=fixed, per_worker_bytes=per_worker,
-                            outer_tasks=count),
-                        preference=self.resource_preference,
-                        user_threads=kwargs.get('thread_count'),
-                        ram_budget_override=memory_budget_bytes())
-                else:
-                    plan = policy.plan_execution(
-                        policy.Workload(
-                            algorithm=self.algorithm, frames=count,
-                            height=height, width=width,
-                            channels=3, itemsize=first.itemsize,
-                            outer_tasks=count if parallel else 1),
-                        preference=self.resource_preference,
-                        user_threads=kwargs.get('thread_count'),
-                        ram_budget_override=memory_budget_bytes())
+                estimates = {}
+                if spec.resource_estimator:
+                    fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
+                    estimates = {'fixed_bytes': fixed, 'per_worker_bytes': per_worker}
+                plan = policy.plan_execution(
+                    policy.Workload(algorithm=self.algorithm, frames=count,
+                        height=height, width=width, channels=3, itemsize=first.itemsize,
+                        outer_tasks=count if spec.parallel_frames else 1, **estimates),
+                    preference=self.resource_preference,
+                    user_threads=kwargs.get('thread_count'),
+                    ram_budget_override=memory_budget_bytes())
                 kwargs['thread_count'] = plan.workers
-                if self.algorithm == 'dtcwt':
+                if spec.ordered_plan:
                     kwargs['execution_plan'] = plan
             kwargs['should_cancel'] = should_cancel
-            if self.algorithm == 'stackmffv3':
+            if spec.neural:
                 kwargs['progress_callback'] = progress_callback
-            result = getattr(self, f'_fuse_{self.algorithm}')(
-                input_source, img_resize, **kwargs)
+            result = resolve_runner(spec.runner)(self, input_source, img_resize, **kwargs)
 
         check_cancel()
         result = self._apply_base_correction(result, input_source, exposure_gains_)
@@ -752,13 +718,6 @@ class MultiFocusFusion:
         Returns:
             融合后的图像
         """
-        kernel_size = max(1, int(kernel_size or 31))
-        if kernel_size % 2 == 0:
-            kernel_size += 1
-
-        # allow optional thread_count forwarded via kwargs in fuse
-        # (handled by fuse caller). Here simply pass through if present in kwargs
-        # Note: _fuse_guided_filter is invoked with explicit kernel_size only
         thread_count = kwargs.get('thread_count', None)
         return gff_impl(
             input_source,
@@ -795,8 +754,15 @@ class MultiFocusFusion:
         # odd-kernel normalizations elsewhere.
         if block_size and block_size % 8 != 0:
             block_size = max(8, (block_size // 8) * 8)
+        original_shape = None
+        if isinstance(input_source, (list, tuple)) and input_source:
+            h, w = input_source[0].shape[:2]
+            if h < 8 or w < 8:
+                original_shape = (h, w)
+                input_source = [np.pad(frame, ((0, max(0, 8 - h)), (0, max(0, 8 - w)))
+                    + ((0, 0),) * (frame.ndim - 2), mode='edge') for frame in input_source]
 
-        return dct_focus_stack_fusion(
+        result = dct_focus_stack_fusion(
             input_source,
             output_path=None,
             block_size=block_size,
@@ -804,6 +770,7 @@ class MultiFocusFusion:
             thread_count=kwargs.get('thread_count'),
             should_cancel=kwargs.get('should_cancel'),
         )
+        return result[:original_shape[0], :original_shape[1]] if original_shape else result
     
     def _fuse_dtcwt(self,
                     input_source: Union[str, List[np.ndarray]],
@@ -866,6 +833,7 @@ class MultiFocusFusion:
             progress_callback=progress_callback,
             thread_count=kwargs.get('thread_count'),
             resource_preference=self.resource_preference,
+            execution_plan=kwargs.get('execution_plan'),
         )
 
     
@@ -878,6 +846,7 @@ class MultiFocusFusion:
         """
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
+        self.fusion_parameters = resolve_fusion_parameters(algorithm)
         self._validate_environment()
 
     # Tile control API (实例级)
@@ -1056,7 +1025,7 @@ class MultiFocusFusion:
         else:
             raise ValueError("_fuse_tiled input_source must be a list of arrays or a directory path string")
 
-        if algorithm not in self.OPENFOCUS_FAMILY:
+        if get_fusion(algorithm).promotes_color:
             channels = 3  # These backends promote grayscale input to BGR.
 
         # 输出位深跟随源栈：16-bit 的分块结果是 float32 (0-255)，在这里压成
@@ -1088,12 +1057,12 @@ class MultiFocusFusion:
                 tile_coords.append((x0, y0, x1, y1))
 
         # StackMFF V3 使用批量处理
-        if algorithm == 'stackmffv3':
+        if get_fusion(algorithm).tile_runner:
             # The neural path owns its own accumulators: allocating a second
             # pair here only to return before using it cost 16 bytes per pixel
             # of address space (and RSS once touched) for nothing.
-            return self._fuse_tiled_ai_batched(
-                imgs, img_dir, tile_coords, h, w, channels,
+            return resolve_runner(get_fusion(algorithm).tile_runner)(
+                self, imgs, img_dir, tile_coords, h, w, channels,
                 block_size, overlap, **kwargs,
                 thread_count=thread_count,
                 should_cancel=should_cancel,
@@ -1102,19 +1071,18 @@ class MultiFocusFusion:
                 exposure_gains=exposure_gains,
             )
 
-        if algorithm == 'dtcwt':
+        if get_fusion(algorithm).resource_estimator:
             # Each tile is fused with a serial inner plan, so the parent's
             # concurrency cost is one tile's DTCWT working set — not the whole
             # image's. The parent already holds the lease; admission here only
             # decides how many tiles may run at once.
             from core import resource_policy as policy
-            from fusion_methods.dtcwt import estimate_working_set
-            fixed, per_worker = estimate_working_set(
-                block_size, block_size, kwargs.get('N', 4), num_images)
+            fixed, per_worker = resolve_runner(get_fusion(algorithm).resource_estimator)(
+                block_size, block_size, kwargs, num_images)
             acc_bytes = int(h) * int(w) * (channels + 1) * 4
             plan = policy.plan_execution(
                 policy.Workload(
-                    algorithm='dtcwt', frames=num_images, height=h, width=w,
+                    algorithm=algorithm, frames=num_images, height=h, width=w,
                     channels=channels, block_size=block_size,
                     itemsize=np.dtype(src_dtype).itemsize,
                     fixed_bytes=fixed + acc_bytes + 2 * acc_bytes,
@@ -1144,7 +1112,7 @@ class MultiFocusFusion:
             # oversubscribed the machine.
             algo_kwargs['thread_count'] = 1
             algo_kwargs['should_cancel'] = should_cancel
-            if algorithm == 'dtcwt':
+            if get_fusion(algorithm).ordered_plan:
                 # This tile runs inside the parent's pool and under its
                 # lease: hand the backend a serial child plan instead of
                 # letting it open a second layer of workers.
@@ -1153,25 +1121,7 @@ class MultiFocusFusion:
                     workers=1, native_threads=1, max_in_flight=1,
                     ram_budget=0, vram_budget=0,
                     device_kind='CPU', reasons=('tiled child',))
-                return self._fuse_dtcwt(crops, img_resize, **algo_kwargs)
-            if algorithm == 'guided_filter':
-                return self._fuse_guided_filter(crops, img_resize, **algo_kwargs)
-            elif algorithm == 'dct':
-                return self._fuse_dct(crops, img_resize, **algo_kwargs)
-            elif algorithm == 'gfgfgf':
-                return self._fuse_gfgfgf(crops, img_resize, **algo_kwargs)
-            elif algorithm == 'openfocus_a':
-                return self._fuse_openfocus_a(crops, img_resize, **algo_kwargs)
-            elif algorithm == 'openfocus_b':
-                return self._fuse_openfocus_b(crops, img_resize, **algo_kwargs)
-            elif algorithm == 'openfocus_c':
-                return self._fuse_openfocus_c(crops, img_resize, **algo_kwargs)
-            else:
-                method_name = f"_fuse_{algorithm}"
-                method = getattr(self, method_name, None)
-                if callable(method):
-                    return method(crops, img_resize, **kwargs)
-                raise ValueError(f"Unsupported algorithm for tiled fusion: {algorithm}")
+            return resolve_runner(get_fusion(algorithm).runner)(self, crops, img_resize, **algo_kwargs)
 
         def _crop_frames(coords):
             import cv2
@@ -1317,7 +1267,7 @@ class MultiFocusFusion:
         model_path = kwargs.get('model_path') or 'weights/stackmff_v3_final.pth'
         if not os.path.isabs(model_path):
             model_path = resource_path(model_path)
-        mode = normalize_mode(kwargs.get('mode', self.ai_mode))
+        mode = normalize_mode(kwargs.get('mode', self.fusion_parameters.get('mode', 'soft')))
 
         def crop_frames(coords):
             check_cancel()
@@ -1355,12 +1305,11 @@ class MultiFocusFusion:
             check_cancel()
             if index:
                 crops = crop_frames(coords)
-            fused_tiles = _stackmffv3_batch_impl(
-                [crops], model_path, self.use_gpu, mode,
-                should_cancel=should_cancel, thread_count=thread_count,
-                resource_preference=self.resource_preference, execution_plan=plan)
+            runner_parameters = dict(kwargs)
+            runner_parameters.update(model_path=model_path, mode=mode,
+                should_cancel=should_cancel, thread_count=thread_count, execution_plan=plan)
+            fused_tile = resolve_runner(self.descriptor.runner)(self, crops, None, **runner_parameters)
             check_cancel()
-            fused_tile = fused_tiles[0]
             if fused_tile is None:
                 raise RuntimeError("Fusion returned None for a tile")
             if fused_tile.ndim == 2:
@@ -1371,7 +1320,7 @@ class MultiFocusFusion:
                 x0, y0, x1, y1, fw, fh, w, h, overlap)
             acc[y0:y1, x0:x1] += fused_tile.astype(np.float32) * weight2d[:, :, None]
             weight[y0:y1, x0:x1, 0] += weight2d
-            del fused_tile, fused_tiles, crops, weight2d
+            del fused_tile, crops, weight2d
             check_cancel()
             if progress_callback is not None:
                 progress_callback(index + 1, total)
@@ -1419,8 +1368,8 @@ class MultiFocusFusion:
             'use_gpu': self.use_gpu,
             'device': device_name
         }
-        if self.algorithm == 'stackmffv3':
-            info['mode'] = self.ai_mode
+        if self.descriptor.neural:
+            info['mode'] = self.fusion_parameters.get('mode', 'soft')
         return info
     
     def __repr__(self) -> str:
@@ -1439,7 +1388,7 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
                 tile_overlap: Optional[int] = None,
                 tile_threshold: Optional[int] = None,
                 ai_batch_size: Optional[int] = None,
-                mode: str = "soft",
+                mode: str | None = None,
                 **kwargs) -> np.ndarray:
     """
     便捷函数:一次性完成图像融合
@@ -1483,7 +1432,7 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
         tile_overlap=to,
         tile_threshold=tt,
         ai_batch_size=sbs,
-        ai_mode=mode,
+        fusion_parameters={'mode': mode} if mode is not None else None,
     )
 
     return fusion.fuse(input_source, img_resize=img_resize, **kwargs)

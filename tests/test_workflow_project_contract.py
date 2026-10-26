@@ -60,7 +60,8 @@ def test_alignment_identity_changes_with_equal_count_selection_and_parameters():
     window = SimpleNamespace(raw_images=images, source_revision=4,
                              current_fusion_method=lambda: "guided_filter",
                              current_alignment_method=lambda: "ecc",
-                             reg_downscale_width=1024, exposure_match=True)
+                             reg_downscale_width=1024, exposure_match=True,
+                             registration_parameters_for=lambda method: {})
     manager = RenderManager(window)
     initial = manager._alignment_key([0, 1])
     assert manager._alignment_key([0, 2]) != initial
@@ -141,17 +142,19 @@ def test_project_replays_rotate_and_flip_and_preserves_zero_coordinates(tmp_path
 def test_project_roundtrips_per_method_parameters(tmp_path):
     paths = _make_stack(str(tmp_path / "source"), 1)
     window = _window(paths, str(tmp_path))
-    window.brightness_option_for = lambda option, method: option == "base_correct" and method == "openfocus_b"
-    window.smoothing_for_method = lambda method: 3.5 if method == "openfocus_c" else 1.25
-    window.kernel_for_method = lambda method: 11 if method == "dct" else 31
+    window._brightness_by_method = {("base_correct", "openfocus_b"): True,
+                                    ("exposure_match", "openfocus_b"): False}
+    window.set_fusion_parameters("openfocus_c", {"blend_smoothing": 3.5})
+    window.set_fusion_parameters("dct", {"kernel_size": 11})
+    window.set_registration_parameters("openfocus", {"max_shift_ratio": .12})
     state = project_file._collect_state(window)
     restored = _window(paths, str(tmp_path))
-    restored._KERNEL_MODES = {"dct": ("dct", 99, 7), "guided_filter": ("guided", 99, 31)}
     project_file._apply_after_load(restored, state)
     assert restored._brightness_by_method[("base_correct", "openfocus_b")] is True
     assert restored._brightness_by_method[("exposure_match", "openfocus_b")] is False
-    assert restored._smoothing_by_method["openfocus_c"] == 3.5
-    assert restored._kernel_by_mode == {"dct": 11, "guided": 31}
+    assert restored.fusion_parameters_for("openfocus_c") == {"blend_smoothing": 3.5}
+    assert restored.fusion_parameters_for("dct") == {"kernel_size": 11}
+    assert restored.registration_parameters_for("openfocus") == {"max_shift_ratio": .12}
 
 
 def test_project_does_not_rebind_missing_absolute_source_to_same_basename(tmp_path):
@@ -213,7 +216,7 @@ def test_preview_reuses_only_matching_alignment_pixels(qapp, monkeypatch):
     window.alignment_request_key = manager._alignment_key([0, 1])
     manager.start_render()
     assert int(manager.worker.args[0][0][0, 0, 0]) == 77
-    assert manager.worker.args[4:6] == (False, False)
+    assert manager.worker.kwargs["alignment"] == "none"
 
 
 def test_preview_completion_is_discarded_after_source_revision_change(qapp, monkeypatch):

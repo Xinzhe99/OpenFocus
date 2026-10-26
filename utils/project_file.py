@@ -10,10 +10,11 @@ import re
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
-from constants import KERNEL_MODES, METHOD_KERNEL_MODES, SMOOTHING_MAX
+from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
+                             resolve_fusion_parameters, resolve_registration_parameters)
 
 PROJECT_SUFFIX = ".ofproj"
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 
 def _collect_state(window) -> Dict[str, Any]:
@@ -21,13 +22,13 @@ def _collect_state(window) -> Dict[str, Any]:
     from constants import APP_VERSION
     method = window.current_fusion_method()
     brightness = getattr(window, "brightness_option_for", None)
-    smoothing = getattr(window, "smoothing_for_method", None)
-    kernel = getattr(window, "kernel_for_method", None)
+    alignment = window.current_alignment_method()
+    if method != "none":
+        get_fusion(method)
+    get_registration(alignment)
     settings = {
         "fusion_method": method,
-        "alignment_method": window.current_alignment_method(),
-        "kernel_size": int(kernel(method)) if callable(kernel) else
-        int(window.slider_smooth.value()),
+        "alignment_method": alignment,
         "stack_reverse_order": bool(getattr(window, "stack_reverse_order", False)),
         # The top-level flags describe *this* method; the per-method memory
         # below is what a reopen actually restores.
@@ -42,8 +43,6 @@ def _collect_state(window) -> Dict[str, Any]:
         "tile_threshold": getattr(window, "tile_threshold", 2048),
         "reg_downscale_width": getattr(window, "reg_downscale_width", None),
         "ai_batch_size": getattr(window, "ai_batch_size", 2),
-        "ai_mode": getattr(window, "ai_mode", "soft"),
-        "dtcwt_levels": int(getattr(window, "dtcwt_levels", 4) or 4),
         "quick_preview": getattr(window, "chk_quick_preview", None) is not None
         and window.chk_quick_preview.isChecked(),
         "current_index": getattr(window, "current_display_index", -1),
@@ -70,15 +69,15 @@ def _collect_state(window) -> Dict[str, Any]:
             "manual" if float(getattr(window, "scale_um_per_px_manual", 0.0) or 0.0) > 0
             else "metadata"),
     }
-    methods = ("guided_filter", "dct", "dtcwt", "gfgfgf", "openfocus_a",
-               "openfocus_b", "openfocus_c", "stackmffv3")
     settings["method_parameters"] = {
-        method: {
-            **({option: bool(brightness(option, method))
-                for option in ("exposure_match", "base_correct")} if callable(brightness) else {}),
-            **({"smoothing": float(smoothing(method))} if callable(smoothing) else {}),
-            **({"kernel_size": int(kernel(method))} if callable(kernel) else {}),
-        } for method in methods}
+        spec.id: resolve_fusion_parameters(spec.id, window.fusion_parameters_for(spec.id))
+        for spec in fusion_algorithms()}
+    settings["registration_parameters"] = {
+        name: resolve_registration_parameters(name, values)
+        for name, values in getattr(window, "_registration_parameters_by_method", {}).items()}
+    from utils.settings_store import brightness_memory_to_json
+    settings["brightness_by_method"] = json.loads(brightness_memory_to_json(
+        getattr(window, "_brightness_by_method", {})))
     labels = {}
     lm = getattr(window, "label_manager", None)
     if lm is not None and hasattr(lm, "export_state"):
@@ -259,14 +258,16 @@ def validate_project(path: str, source_root: Optional[str] = None) -> Tuple[bool
             settings[key] = default
 
     settings = state.setdefault("settings", {})
-    _num("kernel_size", int, 31)
+    try:
+        _normalize_algorithm_settings(settings, legacy=version < 3)
+    except (TypeError, ValueError) as exc:
+        return False, str(exc), {}
     _num("thread_count", int, 4)
     _num("tile_block_size", int, 1024)
     _num("tile_overlap", int, 256)
     _num("tile_threshold", int, 2048)
     _num("reg_downscale_width", int, 1024)
     _num("ai_batch_size", int, 2)
-    _num("dtcwt_levels", int, 4)
     for key, default in (("scale_um_per_px_manual", 0.0), ("scale_bar_font_size", 0.0),
                          ("scale_bar_custom_x", 0.95), ("scale_bar_custom_y", 0.95)):
         _num(key, float, default)
@@ -274,40 +275,6 @@ def validate_project(path: str, source_root: Optional[str] = None) -> Tuple[bool
             settings[key] = default
     if not isinstance(settings.get("excluded_frames", []), list):
         return False, "invalid excluded frame list", {}
-    if not isinstance(settings.get("method_parameters", {}), dict):
-        return False, "invalid method parameters", {}
-    parameters = settings.get("method_parameters", {})
-    for method, values in parameters.items():
-        if not isinstance(values, dict):
-            return False, "invalid method parameters", {}
-        if "kernel_size" in values and (not isinstance(values["kernel_size"], int)
-                                        or isinstance(values["kernel_size"], bool)
-                                        or values["kernel_size"] < 1):
-            return False, "invalid method kernel", {}
-        if "smoothing" in values:
-            value = values["smoothing"]
-            if (isinstance(value, bool) or not isinstance(value, (int, float))
-                    or not math.isfinite(value) or not 0 <= value <= SMOOTHING_MAX):
-                return False, "invalid method smoothing", {}
-        for option in ("exposure_match", "base_correct"):
-            if option in values and not isinstance(values[option], bool):
-                return False, "invalid method brightness", {}
-    # A/B/C share one kernel mode: contradictory values would be resolved by
-    # JSON key order, which is not a decision this app can defend.
-    shared = {}
-    for method, values in parameters.items():
-        mode = METHOD_KERNEL_MODES.get(method)
-        if mode is None or "kernel_size" not in values:
-            continue
-        shared.setdefault(mode, set()).add(int(values["kernel_size"]))
-    for mode, values in shared.items():
-        if len(values) > 1:
-            return False, "conflicting kernel values for a shared method family", {}
-        high = KERNEL_MODES[mode][0]
-        if not 1 <= min(values) <= high:
-            return False, "invalid method kernel", {}
-    if settings.get("ai_mode") not in ("soft", "hard"):
-        settings["ai_mode"] = "soft"
     _num("current_index", int, -1)
     try:
         state["scale_factor"] = float(state.get("scale_factor", 1.0))
@@ -316,6 +283,100 @@ def validate_project(path: str, source_root: Optional[str] = None) -> Tuple[bool
     if not math.isfinite(state["scale_factor"]) or not 0 < state["scale_factor"] <= 1:
         return False, "invalid working scale", {}
     return True, "", state
+
+
+def _normalize_algorithm_settings(settings, *, legacy=True):
+    """Strict canonical validation with legacy fields translated only on read."""
+    method = settings.get("fusion_method", "none")
+    if method != "none":
+        get_fusion(method)
+    alignment = settings.get("alignment_method")
+    if alignment is None:
+        alignment = ("both" if settings.get("align_homography") and settings.get("align_ecc")
+                     else "ecc" if settings.get("align_ecc")
+                     else "homography" if settings.get("align_homography") else "none")
+    get_registration(alignment)
+    settings["alignment_method"] = alignment
+    parameters = settings.get("method_parameters", {})
+    registrations = settings.get("registration_parameters", {})
+    brightness = settings.get("brightness_by_method", {})
+    if not all(isinstance(value, dict) for value in (parameters, registrations, brightness)):
+        raise ValueError("invalid method, registration or brightness parameters")
+    canonical = {}
+    brightness = {option: dict(values) if isinstance(values, dict) else values
+                  for option, values in brightness.items()}
+    for name, values in parameters.items():
+        get_fusion(name)
+        if not isinstance(values, dict):
+            raise ValueError(f"invalid method parameters: {name}")
+        values = dict(values)
+        if legacy:
+            if "kernel_size" in values:
+                kernel = values["kernel_size"]
+                if isinstance(kernel, bool) or not isinstance(kernel, int) or kernel < 1:
+                    raise ValueError("invalid legacy method kernel")
+            if "smoothing" in values:
+                smoothing = values["smoothing"]
+                if isinstance(smoothing, bool) or not isinstance(smoothing, (int, float)) \
+                        or not math.isfinite(smoothing) or not 0 <= smoothing <= 8:
+                    raise ValueError("invalid legacy method smoothing")
+            declared = {parameter.key for parameter in get_fusion(name).parameters}
+            # Historical snapshots emitted unused kernel/smoothing copies.
+            if "kernel_size" not in declared:
+                values.pop("kernel_size", None)
+            if name not in ("openfocus_a", "openfocus_b", "openfocus_c"):
+                values.pop("smoothing", None)
+            for option in ("exposure_match", "base_correct"):
+                if option in values:
+                    brightness.setdefault(option, {})[name] = values.pop(option)
+            if "smoothing" in values:
+                smoothing = values.pop("smoothing")
+                key = "depth_smoothing" if name == "openfocus_b" else "blend_smoothing"
+                values.setdefault(key, smoothing)
+        canonical[name] = values
+    if legacy:
+        for old, owner, key in (("ai_mode", "stackmffv3", "mode"),
+                                ("dtcwt_levels", "dtcwt", "N")):
+            if old in settings:
+                canonical.setdefault(owner, {}).setdefault(key, settings[old])
+    # The selected legacy scalar describes only the selected method.
+    if method != "none":
+        spec = get_fusion(method)
+        values = canonical.setdefault(method, {})
+        declared = {parameter.key for parameter in spec.parameters}
+        if legacy and "kernel_size" in settings and "kernel_size" in declared:
+            kernel = settings["kernel_size"]
+            if isinstance(kernel, bool) or not isinstance(kernel, int) or kernel < 1:
+                raise ValueError("invalid legacy method kernel")
+            values.setdefault("kernel_size", kernel - 1 if kernel % 2 == 0 else kernel)
+        for old, key in (("ofb_depth_smoothing", "depth_smoothing"),
+                         ("of_blend_smoothing", "blend_smoothing")):
+            if legacy and old in settings and key in declared:
+                values.setdefault(key, settings[old])
+        for old, option in (("base_frame_correct", "base_correct"),
+                            ("exposure_match", "exposure_match")):
+            if old in settings:
+                brightness.setdefault(option, {}).setdefault(method, settings[old])
+    for option, values in brightness.items():
+        if option not in ("exposure_match", "base_correct") or not isinstance(values, dict):
+            raise ValueError("invalid method brightness")
+        for name, value in values.items():
+            if name != "none":
+                get_fusion(name)
+            if not isinstance(value, bool):
+                raise ValueError("invalid method brightness")
+    settings["method_parameters"] = {}
+    for name, values in canonical.items():
+        resolved = resolve_fusion_parameters(name, values)
+        settings["method_parameters"][name] = {key: resolved[key] for key in values}
+    for name, values in registrations.items():
+        if not isinstance(values, dict):
+            raise ValueError(f"invalid registration parameters: {name}")
+    settings["registration_parameters"] = {}
+    for name, values in registrations.items():
+        resolved = resolve_registration_parameters(name, values)
+        settings["registration_parameters"][name] = {key: resolved[key] for key in values}
+    settings["brightness_by_method"] = brightness
 
 
 def _relocated_sources(state, root, project_dir):
@@ -449,73 +510,23 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
     settings = state.get("settings", {})
     window.source_transforms = list(state.get("source_transforms", []))
     window.unrecoverable_source_changes = list(state.get("unrecoverable_source_changes", []))
-    parameters = settings.get("method_parameters", {})
+    _normalize_algorithm_settings(settings, legacy=state.get("openfocus_project", 2) < 3)
     method = settings.get("fusion_method")
-    # Project values are layered over the user's saved per-method memory: a
-    # project only speaks for the methods it actually records, so reopening
-    # one must not wipe the preferences of every other algorithm.
-    brightness_memory = dict(getattr(window, "_brightness_by_method", {}) or {})
-    for name, values in parameters.items():
-        for option in ("exposure_match", "base_correct"):
-            if option in values:
-                brightness_memory[(option, name)] = bool(values[option])
-    window._brightness_by_method = brightness_memory
-    smoothing_memory = dict(getattr(window, "_smoothing_by_method", {}) or {})
-    for name, values in parameters.items():
-        if "smoothing" in values:
-            smoothing_memory[name] = float(values["smoothing"])
-    window._smoothing_by_method = smoothing_memory
-    kernel_memory = dict(getattr(window, "_kernel_by_mode", {}) or {})
-    modes = getattr(window, "_KERNEL_MODES", {})
-    for name, values in parameters.items():
-        if name in modes and "kernel_size" in values:
-            kernel_memory[modes[name][0]] = int(values["kernel_size"])
-    window._kernel_by_mode = kernel_memory
-    window.current_kernel_mode = None
-
+    for name, values in settings["method_parameters"].items():
+        window.set_fusion_parameters(name, {**window.fusion_parameters_for(name), **values})
+    for name, values in settings["registration_parameters"].items():
+        window.set_registration_parameters(name, {**window.registration_parameters_for(name), **values})
+    memory = dict(getattr(window, "_brightness_by_method", {}) or {})
+    for option, values in settings["brightness_by_method"].items():
+        memory.update({(option, name): enabled for name, enabled in values.items()})
+    window._brightness_by_method = memory
     if method:
         window.set_fusion_method(method)
-        update_kernel = getattr(window, "update_slider_availability", None)
-        if callable(update_kernel):
-            update_kernel()
-    if "openfocus_b" in window._smoothing_by_method:
-        window.ofb_depth_smoothing = window._smoothing_by_method["openfocus_b"]
-    if method in window._smoothing_by_method:
-        value = window._smoothing_by_method[method]
-        if method in ("openfocus_a", "openfocus_c"):
-            window.of_blend_smoothing = value
-        spin = getattr(window, "spin_depth_smooth", None)
-        if spin is not None:
-            blocked = spin.blockSignals(True)
-            spin.setValue(value)
-            spin.blockSignals(blocked)
-
-    # 对齐方法：新格式是 alignment_method 单选代码；旧格式（v1.39 及以前）
-    # 是 align_homography/align_ecc 两个布尔，按 ECC > Homography 优先迁移
-    alignment = settings.get("alignment_method")
-    if alignment not in ("none", "homography", "ecc", "openfocus"):
-        alignment = (
-            "ecc" if settings.get("align_ecc")
-            else "homography" if settings.get("align_homography")
-            else "none")
-    window.set_alignment_method(alignment)
-
-    # The top-level kernel scalar is a legacy field. A structured value for
-    # the current method is authoritative; only an old project (no entry for
-    # this method) falls back to it.
-    current_values = parameters.get(method, {}) if method else {}
-    if "kernel_size" in current_values:
-        kernel = int(current_values["kernel_size"])
-    else:
-        kernel = int(settings.get("kernel_size", 31) or 31)
-    if kernel % 2 == 0:
-        kernel = max(1, kernel - 1)
-    # Duck-typed hosts in tests provide a plain object here, not a QSlider.
-    block = getattr(window.slider_smooth, "blockSignals", None)
-    blocked = block(True) if callable(block) else None
-    window.slider_smooth.setValue(kernel)
-    if callable(block):
-        block(blocked)
+    window.set_alignment_method(settings["alignment_method"])
+    for hook in ("refresh_algorithm_parameters", "refresh_registration_parameters"):
+        refresh = getattr(window, hook, None)
+        if callable(refresh):
+            refresh()
 
 
     # 反转帧序开关（v1.42）：属性 + 复选框同步
@@ -528,9 +539,8 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
     # Old projects carry only these two scalars, and they describe the method
     # the project was saved on. They must not be broadcast to other methods,
     # and a structured value for the current method wins.
-    current_values = parameters.get(method, {}) if method else {}
-    base_correct = bool(current_values.get(
-        "base_correct", settings.get("base_frame_correct", False)))
+    base_correct = window._brightness_by_method.get(
+        ("base_correct", method), settings.get("base_frame_correct", False))
     if method:
         window._brightness_by_method[("base_correct", method)] = base_correct
     window.base_frame_correct = base_correct
@@ -538,8 +548,8 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
     if base_chk is not None:
         base_chk.setChecked(base_correct)
 
-    exposure_match = bool(current_values.get(
-        "exposure_match", settings.get("exposure_match", True)))
+    exposure_match = window._brightness_by_method.get(
+        ("exposure_match", method), settings.get("exposure_match", True))
     if method:
         window._brightness_by_method[("exposure_match", method)] = exposure_match
     window.exposure_match = exposure_match
@@ -557,15 +567,6 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
         window.reg_downscale_width = int(settings["reg_downscale_width"])
     if settings.get("ai_batch_size"):
         window.ai_batch_size = int(settings["ai_batch_size"])
-    if settings.get("dtcwt_levels"):
-        window.dtcwt_levels = max(1, min(6, int(settings["dtcwt_levels"])))
-    if settings.get("ai_mode") in ("soft", "hard"):
-        window.ai_mode = settings["ai_mode"]
-        radios = (getattr(window, "radio_ai_soft", None),
-                  getattr(window, "radio_ai_hard", None))
-        target = radios[0] if window.ai_mode == "soft" else radios[1]
-        if target is not None:
-            target.setChecked(True)
     qp = window.chk_quick_preview if hasattr(window, "chk_quick_preview") else None
     if qp is not None:
         qp.setChecked(bool(settings.get("quick_preview", False)))

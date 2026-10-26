@@ -206,8 +206,8 @@ Wszystkie sześć metod wymaga jawnego kliknięcia **Oblicz**. Otwarcie okna ora
 miary, źródła, rejestracji lub parametrów nie rozpoczynają obliczeń. Edytor parametrów
 znajduje się tuż pod wyborem miary: jądra medianowe DCT i początkowe GFG przyjmują wartości
 nieparzyste 1–51 (domyślnie 7); B używa okna wariancji, a C okna energii pasmowej,
-nieparzystych 1–21 px (domyślnie 11). DTCWT nie udostępnia tu poziomów: używa głębokości
-dekompozycji z okna głównego, tak jak zwykłe renderowanie. StackMFF V3 zamiast pola
+nieparzystych 1–21 px (domyślnie 11). Poziomy dekompozycji DTCWT można tu edytować
+jako lokalne wartości robocze, inicjalizowane parametrami źródła. StackMFF V3 zamiast pola
 liczbowego pokazuje własny tryb wyjścia AI (domyślnie miękkie mieszanie lub twardy wybór)
 i objaśnienie: miękkie mieszanie szacuje ważoną prawdopodobieństwem ciągłą pozycję klatki,
 twardy wybór bierze najbardziej prawdopodobną klatkę dla każdego piksela. Żadne nie jest

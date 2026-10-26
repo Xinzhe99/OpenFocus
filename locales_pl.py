@@ -299,6 +299,8 @@ PACK = {
     "check_align_none": "Bez wyrównania",
     "check_align_none_hint": "Złóż klatki tak, jak zostały wczytane, bez rejestracji.",
     "check_align_of": "OpenFocus (szybko)",
+    "check_align_both": "Homografia → ECC",
+    "label_align_shift_limit": "Maksymalne przesunięcie (ułamek klatki)",
     "check_align_of_hint": "Szybkie ograniczone dopasowanie podobieństwa (przesunięcie + obrót + skala) z wyrównaniem jasności i automatycznym przycięciem. Poniżej sekundy na klatkę; klatki przesunięte o więcej niż 8% rozmiaru pozostają niewyrównane zamiast częściowo poprawionych. Wybierz ECC lub homografię dla geometrii nieodkształcalnej lub ekstremalnej.",
     "chk_base_correct": "Usuń dryf jasności",
     "chk_exposure_match": "Dopasuj ekspozycję przed fuzją",

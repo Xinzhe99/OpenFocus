@@ -211,8 +211,8 @@ Alle sechs Methoden erfordern einen ausdrücklichen Klick auf **Berechnen**. Öf
 Wechsel von Maß, Quelle oder Registrierung und Parameteränderungen starten keine
 Berechnung. Direkt unter der Maßauswahl stehen die editierbaren Parameter: DCT-Median-
 und GFG-Anfangskernel sind ungerade 1–51 (Standard 7), das Varianzfenster von B und das
-Bandpassenergiefenster von C ungerade 1–21 px (Standard 11). DTCWT bietet hier keine
-Ebenenwahl: Es folgt der Zerlegungstiefe des Hauptfensters wie beim Rendern. StackMFF V3
+Bandpassenergiefenster von C ungerade 1–21 px (Standard 11). Die DTCWT-Zerlegungstiefe
+ist hier als lokaler Entwurf bearbeitbar und beginnt mit den Quellparametern. StackMFF V3
 zeigt stattdessen einen eigenen KI-Ausgabemodus (standardmäßig weiche Mischung oder harte
 Auswahl) und eine Erläuterung: Weiche Mischung schätzt eine wahrscheinlichkeitsgewichtete
 kontinuierliche Fokusposition, harte Auswahl nimmt pro Pixel das wahrscheinlichste Bild.

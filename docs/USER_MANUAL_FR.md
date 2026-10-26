@@ -212,9 +212,9 @@ Les six méthodes exigent un clic explicite sur **Calculer**. Ouvrir la fenêtre
 la mesure, la source, le recalage ou les paramètres ne lance aucun calcul. L’éditeur se
 trouve juste sous le sélecteur de mesure : les noyaux médian DCT et initial GFG prennent
 des valeurs impaires de 1 à 51 (7 par défaut) ; B utilise une fenêtre de variance et C une
-fenêtre d’énergie passe-bande, impaires de 1 à 21 px (11 par défaut). DTCWT n’offre pas
-ici de niveaux : il suit la profondeur de décomposition de la fenêtre principale, comme un
-rendu. StackMFF V3 affiche son propre mode de sortie IA (mélange doux par défaut, ou
+fenêtre d’énergie passe-bande, impaires de 1 à 21 px (11 par défaut). Les niveaux DTCWT
+sont modifiables ici dans un brouillon local initialisé avec les paramètres de la source.
+StackMFF V3 affiche son propre mode de sortie IA (mélange doux par défaut, ou
 sélection dure) et une explication, sans noyau numérique : le mélange doux estime une
 position continue pondérée par les probabilités, la sélection dure prend l’image la plus
 probable par pixel. Ni l’une ni l’autre n’est une distance physique. Les brouillons partent des paramètres de la sortie correspondante ou

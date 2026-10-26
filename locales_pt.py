@@ -299,6 +299,8 @@ PACK = {
     "check_align_none": "Sem alinhamento",
     "check_align_none_hint": "Fusiona os quadros como carregados, sem qualquer registro.",
     "check_align_of": "OpenFocus (rápido)",
+    "check_align_both": "Homografia → ECC",
+    "label_align_shift_limit": "Deslocamento máximo (fração do quadro)",
     "check_align_of_hint": "Alinhamento rápido por similaridade limitada (translação + rotação + escala) com equalização de brilho e corte automático. Menos de um segundo por quadro; quadros que se deslocam mais de 8% do tamanho são deixados sem alinhar em vez de corrigidos pela metade. Use ECC ou Homografia para geometrias não rígidas ou extremas.",
     "chk_base_correct": "Remover deriva de brilho",
     "chk_exposure_match": "Igualar exposição antes da fusão",

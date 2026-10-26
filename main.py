@@ -100,7 +100,12 @@ from constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT,
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     REG_DOWNSCALE_WIDTH, DEFAULT_THREAD_COUNT,
-    AI_BATCH_SIZE, KERNEL_MODES, METHOD_KERNEL_MODES,
+    AI_BATCH_SIZE,
+)
+from core.algorithms import (
+    fusion_algorithms, registration_algorithms, get_fusion, get_registration,
+    fusion_defaults, resolve_fusion_parameters, resolve_registration_parameters,
+    registration_parameter_specs,
 )
 
 # QThreads still running when the app shuts down. They are kept alive at
@@ -239,7 +244,6 @@ class OpenFocus(QMainWindow):
         self.aligned_images = []  # 存储已对齐的图像栈，避免重复对齐
         self.is_images_aligned = False  # 标记图像是否已对齐
         self.last_alignment_options = None  # 存储上次使用的对齐选项
-        self.current_kernel_mode = None
         
         # ROI模式相关属性
         self.roi_aligned_images = []  # 存储ROI模式下对齐的图像栈
@@ -443,32 +447,8 @@ class OpenFocus(QMainWindow):
         self.chk_base_correct = right_panel_components.chk_base_correct
         self.chk_exposure_match = right_panel_components.chk_exposure_match
         self.chk_reverse_order = right_panel_components.chk_reverse_order
-        # 帧序方向：False=asc（文件序，默认）/ True=desc（倒序栈）
-        self.stack_reverse_order = False
-        self.slider_smooth = right_panel_components.slider_smooth
-        self.lbl_kernel = right_panel_components.lbl_kernel
-        self.lbl_smooth_value = right_panel_components.smooth_value_label
-        self.smooth_widget = right_panel_components.smooth_widget
-        self.ai_mode_widget = right_panel_components.ai_mode_widget
-        self.lbl_ai_mode = right_panel_components.lbl_ai_mode
-        self.radio_ai_soft = right_panel_components.radio_ai_soft
-        self.radio_ai_hard = right_panel_components.radio_ai_hard
-        # AI 输出模式：soft=概率加权混合（默认）/ hard=逐像素取最可能帧
-        self.ai_mode = "hard" if self.ai_mode == "hard" else "soft"
-        self.radio_ai_hard.setChecked(self.ai_mode == "hard")
-        self.radio_ai_soft.setChecked(self.ai_mode == "soft")
-        self.depth_smooth_row = right_panel_components.depth_smooth_row
-        self.lbl_depth_smooth = right_panel_components.lbl_depth_smooth
-        self.spin_depth_smooth = right_panel_components.spin_depth_smooth
-        self.levels_row = right_panel_components.levels_row
-        self.lbl_levels = right_panel_components.lbl_levels
-        self.spin_levels = right_panel_components.spin_levels
-        self.spin_levels.setValue(int(getattr(self, "dtcwt_levels", 4)))
-        self.spin_levels.valueChanged.connect(self.set_dtcwt_levels)
-        # 先按当前方法显示它自己的 σ（A/B/C 各有默认与记忆值）
-        self.spin_depth_smooth.setValue(
-            float(self.smoothing_for_method(self.current_fusion_method())))
-        self.spin_depth_smooth.valueChanged.connect(self.set_ofb_depth_smoothing)
+        self.fusion_parameter_panel = right_panel_components.fusion_parameter_panel
+        self.registration_parameter_panel = right_panel_components.registration_parameter_panel
         self.source_images_label = right_panel_components.source_images_label
         self.file_list = right_panel_components.file_list
         self.output_label = right_panel_components.output_label
@@ -687,7 +667,8 @@ class OpenFocus(QMainWindow):
 
     def _ai_method_selected(self) -> bool:
         try:
-            return self.combo_fusion.currentData() == "stackmffv3"
+            method = self.combo_fusion.currentData()
+            return method != "none" and get_fusion(method).neural
         except Exception:
             return False
 
@@ -782,19 +763,16 @@ class OpenFocus(QMainWindow):
         self._refresh_undo_actions()
 
     def _capture_parameter_state(self) -> dict:
-        methods = ("guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv3",
-                   "openfocus_a", "openfocus_b", "openfocus_c")
         return {
             "method": self.current_fusion_method(),
             "alignment": self.current_alignment_method(),
             "stack_reverse_order": self.stack_reverse_order,
-            "dtcwt_levels": self.dtcwt_levels,
-            "ai_mode": self.ai_mode,
-            "kernels": {m: self.kernel_for_method(m) for m in methods},
-            "smoothing": {m: self.smoothing_for_method(m) for m in methods},
-            "brightness": {m: {key: self.brightness_option_for(key, m)
-                                for key in ("exposure_match", "base_correct")}
-                           for m in methods},
+            "fusion_parameters": {spec.id: self.fusion_parameters_for(spec.id)
+                                  for spec in fusion_algorithms()},
+            "registration_parameters": {
+                spec.id: self.registration_parameters_for(spec.id)
+                for spec in registration_algorithms()},
+            "brightness": dict(getattr(self, "_brightness_by_method", {})),
         }
 
     def push_parameter_undo(self, previous: dict) -> None:
@@ -806,26 +784,20 @@ class OpenFocus(QMainWindow):
         self._refresh_undo_actions()
 
     def _restore_parameter_state(self, saved: dict) -> None:
-        """Apply a parameter snapshot as one persisted step (compare/undo)."""
+        """Restore arbitrary registered parameters in one persisted operation."""
+        fusion = {method: resolve_fusion_parameters(method, values)
+                  for method, values in saved["fusion_parameters"].items()}
+        registration = {method: resolve_registration_parameters(method, values)
+                        for method, values in saved["registration_parameters"].items()}
         with self._restore_scope():
+            self._fusion_parameters_by_method = fusion
+            self._registration_parameters_by_method = registration
+            self._brightness_by_method = dict(saved["brightness"])
             self.set_fusion_method(saved["method"])
             self.set_alignment_method(saved["alignment"])
-            for method, value in saved["kernels"].items():
-                if method in self._KERNEL_MODES:
-                    self._kernel_by_mode[self._KERNEL_MODES[method][0]] = value
-            if saved["method"] in self._KERNEL_MODES:
-                from PyQt6.QtCore import QSignalBlocker
-                with QSignalBlocker(self.slider_smooth):
-                    self.slider_smooth.setValue(saved["kernels"][saved["method"]])
-            for method, value in saved["smoothing"].items():
-                self.set_smoothing_for_method(method, value)
-            for method, options in saved["brightness"].items():
-                for option, enabled in options.items():
-                    self.set_brightness_option(option, method, enabled)
             self.chk_reverse_order.setChecked(saved["stack_reverse_order"])
-            self.set_dtcwt_levels(saved["dtcwt_levels"])
-            self.set_ai_mode(saved["ai_mode"])
-            self.update_slider_availability()
+            self.refresh_algorithm_parameters()
+            self.refresh_registration_parameters()
         self.persist_settings()
 
 
@@ -969,20 +941,11 @@ class OpenFocus(QMainWindow):
             self.chk_base_correct.setChecked(False)
             self.chk_reverse_order.setChecked(False)
 
-            # Every per-method override goes, not just the kernel table: the
-            # smoothing and brightness memories used to survive a reset, so
-            # "reset" kept rendering with the user's old sigmas.
             self.reset_parameter_memories()
             self.base_frame_correct = False
             self.exposure_match = True
-            self.set_dtcwt_levels(4)
-            if getattr(self, "spin_depth_smooth", None) is not None:
-                self.spin_depth_smooth.setValue(
-                    float(self.smoothing_for_method("openfocus_b")))
-            self.slider_smooth.setValue(31)
-
-            # 更新滑块可用性
-            self.update_slider_availability()
+            self.refresh_algorithm_parameters()
+            self.refresh_registration_parameters()
         self.persist_settings()
 
         # 重置图像显示缩放与放大镜状态
@@ -1033,7 +996,8 @@ class OpenFocus(QMainWindow):
         # the accelerator resolved. Only pay for it when that is the case: a
         # user whose preference is a classical method never loads torch.
         try:
-            if self.combo_fusion.currentData() == "stackmffv3":
+            code = self.combo_fusion.currentData()
+            if code != "none" and get_fusion(code).neural:
                 self._probe_device_kind_async()
         except Exception:
             pass
@@ -1047,42 +1011,22 @@ class OpenFocus(QMainWindow):
         self._update_dynamic_status()
 
     def refresh_method_availability(self) -> None:
-        """Re-apply the cached torch-probe result to the method controls.
-
-        Other code paths (render restore, batch restore) blanket-enable the
-        fusion combo, which silently re-armed StackMFF-V3 on machines without
-        torch until the next restart."""
-        available = getattr(self, '_stackmff_available', None)
+        """Keep unavailable neural entries disabled without changing the request."""
+        available = getattr(self, "_stackmff_available", None)
         if available is None:
             return
-        combo = self.combo_fusion
-        i = combo.findData("stackmffv3")
-        if i < 0:
-            return
-        # 下拉项级禁用：模型项 setEnabled(False) 让它在弹出列表里置灰
-        item = combo.model().item(i)
-        if item is None:
-            return
-        item.setEnabled(bool(available))
-        combo.setItemData(
-            i,
-            trans.t("msg_stackmff_unavailable_text") if not available else "",
-            Qt.ItemDataRole.ToolTipRole)
-        if not available and combo.currentData() == "stackmffv3":
-            # Fall back to the first ENABLED entry: AI is the default now, so
-            # a torch-less machine would otherwise land on a disabled item.
-            self.set_fusion_method(self._first_available_method())
-
-    def _first_available_method(self) -> str:
-        """First selectable fusion method in the dropdown (skips disabled)."""
-        combo = self.combo_fusion
-        for row in range(combo.count()):
-            item = combo.model().item(row)
-            if item is not None and item.isEnabled():
-                code = combo.itemData(row)
-                if code:
-                    return code
-        return "guided_filter"
+        for spec in fusion_algorithms():
+            if not spec.neural:
+                continue
+            index = self.combo_fusion.findData(spec.id)
+            if index < 0:
+                continue
+            item = self.combo_fusion.model().item(index)
+            if item is not None:
+                item.setEnabled(bool(available))
+            self.combo_fusion.setItemData(
+                index, trans.t("msg_stackmff_unavailable_text") if not available else "",
+                Qt.ItemDataRole.ToolTipRole)
 
     # --- Update check ---
 
@@ -1455,24 +1399,6 @@ class OpenFocus(QMainWindow):
         self.stack_reverse_order = bool(enabled)
         self.persist_settings()
 
-    def set_dtcwt_levels(self, levels: int) -> None:
-        """DTCWT decomposition depth, editable in the right panel."""
-        levels = max(1, min(6, int(levels)))
-        self.dtcwt_levels = levels
-        control = getattr(self, "spin_levels", None)
-        if control is not None and int(control.value()) != levels:
-            from PyQt6.QtCore import QSignalBlocker
-            with QSignalBlocker(control):
-                control.setValue(levels)
-        self.persist_settings()
-
-    def set_smoothing_for_method(self, method: str, value: float) -> None:
-        """Set one method's smoothing sigma without switching the selection."""
-        self.__dict__.setdefault("_smoothing_by_method", {})[
-            str(method)] = float(value)
-        if str(method) == self.current_fusion_method():
-            self.set_ofb_depth_smoothing(float(value))
-        self.persist_settings()
 
     def set_brightness_option(self, option: str, method: str,
                               enabled: bool) -> None:
@@ -1483,29 +1409,6 @@ class OpenFocus(QMainWindow):
             self._set_brightness_option(option, enabled)
         self.persist_settings()
 
-    def set_ai_mode(self, mode: str) -> None:
-        """右面板单选：AI 输出模式（soft=概率加权，hard=逐像素取帧）。"""
-        mode = mode if mode in ("soft", "hard") else "soft"
-        self.ai_mode = mode
-        from PyQt6.QtCore import QSignalBlocker
-        for name, selected in (("radio_ai_soft", mode == "soft"),
-                               ("radio_ai_hard", mode == "hard")):
-            control = getattr(self, name, None)
-            if control is not None:
-                with QSignalBlocker(control):
-                    control.setChecked(selected)
-        self.persist_settings()
-
-    # 两个亮度选项都按算法独立记忆：它们是"这次融合用哪条曝光策略"，
-    # 而不是全局偏好。OpenFocus A/B/C 默认两者都开（它们没有内置标定，
-    # 这正是它们与 Helicon 的 A/B/C 最接近的行为）；其余算法沿用历史
-    # 默认（曝光匹配开、亮度漂移关）。
-    _BRIGHTNESS_DEFAULTS = {
-        "exposure_match": {"openfocus_a": True, "openfocus_b": True,
-                           "openfocus_c": True},
-        "base_correct": {"openfocus_a": True, "openfocus_b": True,
-                         "openfocus_c": True},
-    }
 
     def brightness_option_for(self, option: str, method: str = None) -> bool:
         """Value of 'exposure_match' / 'base_correct' for *method*."""
@@ -1514,11 +1417,11 @@ class OpenFocus(QMainWindow):
         key = (option, method)
         if key in memory:
             return bool(memory[key])
-        defaults = self._BRIGHTNESS_DEFAULTS.get(option, {})
-        if method in defaults:
-            return bool(defaults[method])
-        # legacy global default: exposure matching on, base correction off
-        return option == "exposure_match"
+        if method == "none":
+            return option == "exposure_match"
+        spec = get_fusion(method)
+        return (spec.default_exposure_match if option == "exposure_match"
+                else spec.default_base_correct)
 
     def _set_brightness_option(self, option: str, enabled: bool) -> None:
         method = self.current_fusion_method()
@@ -1532,6 +1435,8 @@ class OpenFocus(QMainWindow):
 
     def _sync_brightness_checkboxes(self, method: str = None) -> None:
         """Show the selected method's own values in the two checkboxes."""
+        self.exposure_match = self.brightness_option_for("exposure_match", method)
+        self.base_frame_correct = self.brightness_option_for("base_correct", method)
         for widget_name, option in (
                 ("chk_exposure_match", "exposure_match"),
                 ("chk_base_correct", "base_correct")):
@@ -2166,165 +2071,80 @@ class OpenFocus(QMainWindow):
     
     
     def current_fusion_method(self) -> str:
-        """当前选中的融合算法代码（下拉单选的唯一读取入口）。"""
-        from ui.right_panel import FUSION_ITEMS, FUSION_DEFAULT
         code = self.combo_fusion.currentData()
-        codes = {c for c, _k, _h in FUSION_ITEMS}
-        return code if code in codes else FUSION_DEFAULT
+        return "none" if code == "none" else get_fusion(code).id
 
     def current_alignment_method(self) -> str:
-        """当前选中的对齐算法代码：none | homography | ecc | openfocus。"""
         code = self.combo_align.currentData()
-        return code if code in ("none", "homography", "ecc", "openfocus") else "ecc"
+        return "none" if code == "none" else get_registration(code).id
 
     def set_fusion_method(self, code: str) -> None:
-        i = self.combo_fusion.findData(code)
-        if i >= 0:
-            self.combo_fusion.setCurrentIndex(i)
+        if code != "none":
+            get_fusion(code)
+        index = self.combo_fusion.findData(code)
+        if index < 0:
+            raise ValueError(f"Fusion method is not in the selector: {code}")
+        self.combo_fusion.setCurrentIndex(index)
 
     def set_alignment_method(self, code: str) -> None:
-        i = self.combo_align.findData(code)
-        if i >= 0:
-            self.combo_align.setCurrentIndex(i)
+        if code != "none":
+            get_registration(code)
+        index = self.combo_align.findData(code)
+        if index < 0:
+            raise ValueError(f"Registration method is not in the selector: {code}")
+        self.combo_align.setCurrentIndex(index)
 
-    def handle_method_selection(self, *_args):
-        """融合算法下拉切换（单选语义由下拉框保证，这里做联动刷新）。"""
-        # update_slider_availability 已通过信号连接；保留此槽位给
-        # 未来按方法变化的 UI 联动
-        pass
+    def fusion_parameters_for(self, method: str, depth: bool = False) -> dict:
+        if method == "none":
+            return {}
+        values = getattr(self, "_fusion_parameters_by_method", {}).get(method, {})
+        if depth:
+            defaults = fusion_defaults(method, depth=True)
+            values = {key: value for key, value in values.items() if key in defaults}
+        return resolve_fusion_parameters(method, values, depth=depth)
 
-    def handle_kernel_slider_change(self, value):
-        """确保核大小始终为奇数，并更新显示标签"""
-        adjusted = int(value)
-        if adjusted % 2 == 0:
-            if adjusted >= self.slider_smooth.maximum():
-                adjusted -= 1
-            else:
-                adjusted += 1
-            self.slider_smooth.blockSignals(True)
-            self.slider_smooth.setValue(adjusted)
-            self.slider_smooth.blockSignals(False)
-
-        self.lbl_smooth_value.setText(str(adjusted))
-        # Remember the value now: waiting for a method switch lost the last
-        # edit whenever the user closed the app on that same method.
-        self._sync_kernel_memory()
+    def set_fusion_parameters(self, method: str, values: dict) -> None:
+        if method == "none":
+            if values:
+                raise ValueError("Alignment-only output has no fusion parameters")
+            return
+        memory = self.__dict__.setdefault("_fusion_parameters_by_method", {})
+        memory[method] = resolve_fusion_parameters(method, {**memory.get(method, {}), **values})
+        if (method == self.current_fusion_method()
+                and self.fusion_parameter_panel.values() != memory[method]):
+            self.refresh_algorithm_parameters()
         self.persist_settings()
 
-    # 滑块含义按算法不同：模式 → (i18n 标签键, 默认值)
-    _KERNEL_LABELS = {
-        "guided": "label_kernel_guided",
-        "dct": "label_kernel_dct",
-        "gfg": "label_kernel_gfg",
-        "ofab": "label_kernel_of",
-    }
+    def registration_parameters_for(self, method: str) -> dict:
+        if method == "none":
+            return {}
+        values = getattr(self, "_registration_parameters_by_method", {}).get(method, {})
+        return resolve_registration_parameters(method, values)
 
-    # 方法 → (滑块模式, 范围上限, 默认 kernel)。OpenFocus A/B/C：滑块是方差
-    # 窗口（kernel = 2r+1）；判别性探针（报告 §6.7/§6.8）定 r=5 → 11，范围 1–21。
-    # The table lives in constants.py so the settings/project codecs validate
-    # against the same ranges the UI enforces.
-    _KERNEL_MODES = {
-        method: (mode, KERNEL_MODES[mode][0], KERNEL_MODES[mode][1])
-        for method, mode in METHOD_KERNEL_MODES.items()
-    }
+    def set_registration_parameters(self, method: str, values: dict) -> None:
+        if method == "none":
+            if values:
+                raise ValueError("Disabled registration has no parameters")
+            return
+        memory = self.__dict__.setdefault("_registration_parameters_by_method", {})
+        memory[method] = resolve_registration_parameters(
+            method, {**memory.get(method, {}), **values})
+        if (method == self.current_alignment_method()
+                and self.registration_parameter_panel.values() != memory[method]):
+            self.refresh_registration_parameters()
+        self.persist_settings()
 
-
-    def kernel_for_method(self, method: str) -> int:
-        """Kernel the user has set for *method* (its own remembered value,
-        or its default) — the slider means a different thing per method, so
-        another method's value must never leak in (the depth-map dialog
-        used the guided-filter radius 31 as DCT's median window)."""
-        spec = self._KERNEL_MODES.get(method)
-        if spec is None:
-            return 7
-        mode, _hi, default = spec
-        if mode == getattr(self, "current_kernel_mode", None):
-            return int(self.slider_smooth.value())
-        return int(getattr(self, "_kernel_by_mode", {}).get(mode, default))
-
-    def update_slider_availability(self):
-        """根据选中的融合方法更新滑块的可用性、默认值和含义标签。
-
-        每个方法的滑块值单独记忆：切换方法再切回来不再丢失用户调好的值。"""
+    def refresh_algorithm_parameters(self, *_args) -> None:
         method = self.current_fusion_method()
-        memory = self.__dict__.setdefault("_kernel_by_mode", {})
-        previous = getattr(self, "current_kernel_mode", None)
-        spec = self._KERNEL_MODES.get(method)
-        if previous and spec and previous != spec[0]:
-            memory[previous] = int(self.slider_smooth.value())
-        elif previous and spec is None:
-            memory[previous] = int(self.slider_smooth.value())
-        if spec is not None:
-            mode, hi, default = spec
-            self.smooth_widget.setEnabled(True)
-            # Programmatic range/value updates must not look like user edits:
-            # the handler would file the new method's value under the mode
-            # that is still current here.
-            from PyQt6.QtCore import QSignalBlocker
-            with QSignalBlocker(self.slider_smooth):
-                self.slider_smooth.setRange(1, hi)
-                if previous != mode:
-                    self.slider_smooth.setValue(min(hi, memory.get(mode, default)))
-            self.current_kernel_mode = mode
-        else:
-            # AI has no kernel: leaving the row visible showed "Kernel: 11"
-            # next to a slider that changed nothing.
-            self.smooth_widget.setEnabled(False)
-            from PyQt6.QtCore import QSignalBlocker
-            with QSignalBlocker(self.slider_smooth):
-                self.slider_smooth.setRange(1, 51)
-            self.current_kernel_mode = None
+        specs = () if method == "none" else get_fusion(method).parameters
+        self.fusion_parameter_panel.set_parameters(specs, self.fusion_parameters_for(method))
+        self._sync_brightness_checkboxes(method)
 
-        # 平滑行：B 平滑深度图；A/C 平滑混合（Helicon 的 A/C 只有
-        # Smoothing 一个参数）。三种方法共用同一行，标签与取值各自独立。
-        if getattr(self, "depth_smooth_row", None) is not None:
-            is_a = method == "openfocus_a"
-            is_b = method == "openfocus_b"
-            is_c = method == "openfocus_c"
-            self.depth_smooth_row.setVisible(is_a or is_b or is_c)
-            blend = is_a or is_c
-            label_key = ("label_blend_smoothing" if blend
-                         else "label_depth_smoothing")
-            hint_key = ("label_blend_smoothing_hint" if blend
-                        else "label_depth_smoothing_hint")
-            self.lbl_depth_smooth.setText(trans.t(label_key))
-            self.lbl_depth_smooth.setToolTip(trans.t(hint_key))
-            self.spin_depth_smooth.setToolTip(trans.t(hint_key))
-            value = self.smoothing_for_method(method)
-            self.spin_depth_smooth.blockSignals(True)
-            try:
-                self.spin_depth_smooth.setValue(float(value))
-            finally:
-                self.spin_depth_smooth.blockSignals(False)
-
-        # C 没有 Radius（Helicon 的 Method C 只有 Smoothing）：隐藏滑块
-        # 而不是留一个改了也不影响输出的控件。
-        # DTCWT 的分解层数是它真正消费的参数；其它算法不显示该行。
-        if getattr(self, "levels_row", None) is not None:
-            self.levels_row.setVisible(method == "dtcwt")
-            if method == "dtcwt":
-                self.spin_levels.blockSignals(True)
-                try:
-                    self.spin_levels.setValue(int(getattr(self, "dtcwt_levels", 4)))
-                finally:
-                    self.spin_levels.blockSignals(False)
-        # AI 输出模式只在选中神经网络时出现：其他算法没有概率图可分配。
-        if getattr(self, "ai_mode_widget", None) is not None:
-            self.ai_mode_widget.setVisible(method == "stackmffv3")
-        if getattr(self, "smooth_widget", None) is not None:
-            # 只在当前方法真的用得到 kernel 时显示：C 没有半径参数，AI
-            # 也没有，留着只会显示一个改了不影响输出的数字。
-            self.smooth_widget.setVisible(spec is not None
-                                          and method != "openfocus_c")
-        # Duck-typed hosts (tests bind update_slider_availability onto a stub)
-        # may not provide the checkbox sync.
-        sync = getattr(self, "_sync_brightness_checkboxes", None)
-        if callable(sync):
-            sync(method)
-        # 滑块含义标签随算法切换（每个算法的 kernel 含义不同）
-        label_key = self._KERNEL_LABELS.get(self.current_kernel_mode,
-                                            "label_kernel")
-        self.lbl_kernel.setText(trans.t(label_key))
+    def refresh_registration_parameters(self, *_args) -> None:
+        method = self.current_alignment_method()
+        specs = () if method == "none" else registration_parameter_specs(method)
+        self.registration_parameter_panel.set_parameters(
+            specs, self.registration_parameters_for(method))
     
     def update_result_view(self, index):
         """更新Output区域显示的图像（用于配准结果或ROI模式下的对齐图像）"""
@@ -2954,7 +2774,7 @@ class OpenFocus(QMainWindow):
         dialog = TileSettingsDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             # 设置已由对话框写回到 self 属性；可在此处触发必要的刷新
-            self.update_slider_availability()
+            self.refresh_algorithm_parameters()
             # 如果需要，可以在右侧面板或其它地方反映设置变化
             return True
         return False
@@ -3163,7 +2983,6 @@ class OpenFocus(QMainWindow):
         if getattr(self, "_restore_depth", 0):
             # A multi-field restore is in progress; its caller saves once.
             return
-        self._sync_kernel_memory()
         save_window_settings(self)
 
     # Restores (startup defaults, project load, compare adoption, undo) write
@@ -3184,23 +3003,11 @@ class OpenFocus(QMainWindow):
 
         return scope()
 
-    def _sync_kernel_memory(self) -> None:
-        """Store the live slider under its mode; it may not have been switched."""
-        mode = getattr(self, "current_kernel_mode", None)
-        slider = getattr(self, "slider_smooth", None)
-        if mode is None or slider is None:
-            return
-        spec = KERNEL_MODES.get(mode)
-        if spec is None:
-            return
-        high, _default = spec
-        self.__dict__.setdefault("_kernel_by_mode", {})[mode] = int(
-            min(max(int(slider.value()), 1), high))
 
     def reset_parameter_memories(self) -> None:
         """Drop every per-method override; defaults apply again next switch."""
-        self.__dict__["_kernel_by_mode"] = {}
-        self.__dict__["_smoothing_by_method"] = {}
+        self.__dict__["_fusion_parameters_by_method"] = {}
+        self.__dict__["_registration_parameters_by_method"] = {}
         self.__dict__["_brightness_by_method"] = {}
 
     def set_use_gpu(self, enabled: bool) -> None:
@@ -3221,37 +3028,6 @@ class OpenFocus(QMainWindow):
         self.restore_last_stack = bool(enabled)
         self.persist_settings()
 
-    # 平滑默认值：B 深度图 σ、A 加权混合 σ、C 金字塔混合 σ
-    _SMOOTHING_DEFAULTS = {
-        "openfocus_a": 2.0,
-        "openfocus_b": 1.2,
-        "openfocus_c": 3.0,
-    }
-
-    def smoothing_for_method(self, method: str) -> float:
-        """Smoothing σ the user has set for *method* (or its default).
-
-        A and C blend their frames and B smooths a depth map, so one shared
-        value would silently apply A's sigma to C or B's to A after a method
-        switch.
-        """
-        memory = self.__dict__.setdefault("_smoothing_by_method", {})
-        if method in memory:
-            return float(memory[method])
-        return float(self._SMOOTHING_DEFAULTS.get(method, 1.2))
-
-    def set_ofb_depth_smoothing(self, value: float) -> None:
-        """Smoothing spin box: per-method sigma (see smoothing_for_method)."""
-        method = self.current_fusion_method()
-        value = float(value)
-        if method in ("openfocus_a", "openfocus_c"):
-            self.of_blend_smoothing = value
-        elif method == "openfocus_b":
-            self.ofb_depth_smoothing = value
-        else:
-            return
-        self.__dict__.setdefault("_smoothing_by_method", {})[method] = value
-        self.persist_settings()
 
     def set_ask_load_scale(self, enabled: bool) -> None:
         """Toggle the loading-scale prompt shown before every import."""
@@ -3408,8 +3184,8 @@ class OpenFocus(QMainWindow):
         c = self.right_panel_components
         c.method_group.setTitle(trans.t('group_fusion'))
         # 下拉框重翻译：按 (代码, i18n 键, 提示键) 重建条目文本
-        from ui.right_panel import FUSION_ITEMS, ALIGN_ITEMS
-        for i, (_code, key, hint_key) in enumerate(FUSION_ITEMS):
+        from ui.right_panel import fusion_items, alignment_items
+        for i, (_code, key, hint_key) in enumerate(fusion_items()):
             if i < c.combo_fusion.count():
                 c.combo_fusion.setItemText(i, trans.t(key))
                 if hint_key:
@@ -3432,15 +3208,15 @@ class OpenFocus(QMainWindow):
                             trans.t('chk_reverse_order_hint'))
 
         c.registration_group.setTitle(trans.t('group_registration'))
-        for i, (_code, key, hint_key) in enumerate(ALIGN_ITEMS):
+        for i, (_code, key, hint_key) in enumerate(alignment_items()):
             if i < c.combo_align.count():
                 c.combo_align.setItemText(i, trans.t(key))
                 if hint_key:
                     c.combo_align.setItemData(
                         i, trans.t(hint_key), Qt.ItemDataRole.ToolTipRole)
         
-        # 滑块含义标签由 update_slider_availability 按当前算法写入
-        self.update_slider_availability()
+        self.refresh_algorithm_parameters()
+        self.refresh_registration_parameters()
         c.btn_reset.setText(trans.t('btn_reset'))
         c.btn_select_all.setText(trans.t('btn_select_all'))
         c.btn_select_all.setToolTip(trans.t('btn_select_all_hint'))
@@ -3466,15 +3242,6 @@ class OpenFocus(QMainWindow):
             self.lbl_result_title.setText(trans.t('panel_output'))
         c.chk_quick_preview.setText(trans.t('chk_quick_preview'))
         c.chk_quick_preview.setToolTip(trans.t('chk_quick_preview_hint'))
-        # The AI output-mode block was never retranslated: switching to any
-        # language left "AI 输出方式 / 软融合 / 硬融合" in Chinese, because
-        # these widgets only got their text once, at construction.
-        c.lbl_ai_mode.setText(trans.t('label_ai_mode'))
-        c.lbl_ai_mode.setToolTip(trans.t('label_ai_mode_hint'))
-        set_panel_label(c.radio_ai_soft, trans.t('radio_ai_soft'),
-                        trans.t('radio_ai_soft_hint'))
-        set_panel_label(c.radio_ai_hard, trans.t('radio_ai_hard'),
-                        trans.t('radio_ai_hard_hint'))
         
         # ROI Button
         if hasattr(self, 'btn_preview_roi'):

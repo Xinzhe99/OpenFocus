@@ -1389,39 +1389,18 @@ class ImageRegistration:
         result = registration.process(image_list, './output')
     """
     
-    SUPPORTED_METHODS = ['homography', 'ecc', 'both', 'openfocus']
-    
-    def __init__(self, method: str = 'homography', downscale_width: int = 1024,
-                 max_shift_ratio: Optional[float] = None,
-                 brightness_reference: str = "first",
-                 use_gpu: bool = False):
-        """
-        初始化配准器
-        
-        Args:
-            method (str): 配准方法名称，可选 'homography', 'ecc', 'both'
-            downscale_width (int): 特征/估计阶段的下采样宽度
-            max_shift_ratio (float): 仅 'openfocus' 生效——位移上限（帧尺寸
-                比例，0–1）。None 用 _OF_MAX_SHIFT_RATIO（8%）。
-            use_gpu (bool): 允许 ECC 的像素 warp 使用 CuPy。默认 False：
-                以前只要机器装了 CuPy 就静默启用，用户和 CLI 的 --cpu 都
-                关不掉，而且它与 CPU 的 Lanczos4 路径并不等价。
-        """
-        if method not in self.SUPPORTED_METHODS:
-            raise ValueError(
-                f"不支持的配准方法: {method}. "
-                f"支持的方法: {', '.join(self.SUPPORTED_METHODS)}"
-            )
-        
+    def __init__(self, method='homography', downscale_width=1024,
+                 max_shift_ratio=None, brightness_reference='first',
+                 use_gpu=False, parameters=None):
+        from core.algorithms import alignment_steps, resolve_registration_parameters
         self.method = method
-        # 用户可配置的下采样宽度，用于特征提取等预处理阶段
+        self.steps = alignment_steps(method)
+        values = resolve_registration_parameters(method, parameters)
+        if max_shift_ratio is not None:
+            values['max_shift_ratio'] = max_shift_ratio
+        self.parameters = resolve_registration_parameters(method, values)
         self.downscale_width = int(downscale_width) if downscale_width is not None else 1024
-        self.max_shift_ratio = (float(max_shift_ratio)
-                                if max_shift_ratio is not None else None)
-        # 'first' (reference frame) or 'last' (fusion base reference).
-        self.brightness_reference = (brightness_reference
-                                     if brightness_reference in ("first", "last")
-                                     else "first")
+        self.brightness_reference = brightness_reference if brightness_reference in ('first', 'last') else 'first'
         self.use_gpu = bool(use_gpu)
     
     def process(self, 
@@ -1480,36 +1459,32 @@ class ImageRegistration:
             if images is None or len(images) < 2:
                 _check_cancel(should_cancel)
                 return images if images is not None else []
+            if not self.steps:
+                _save_registration(images, output_path, filenames, should_cancel)
+                return images
             height, width = images[0].shape[:2]
             channels = images[0].shape[2] if images[0].ndim == 3 else 1
             output_bytes = sum(image.nbytes for image in images)
             # ECC retains its normalized thumbnails until pair estimation ends.
             # Full-resolution planes are a conservative bound even with resize.
-            gray_bytes = (sum(image.shape[0] * image.shape[1] * 4 for image in images)
-                          if self.method in ('ecc', 'both') else 0)
+            gray_bytes = sum(image.shape[0] * image.shape[1] * 4 for image in images)
             plan = plan_execution(Workload(
                 algorithm='registration', frames=len(images), height=height,
                 width=width, channels=channels, itemsize=images[0].dtype.itemsize,
-                fixed_bytes=output_bytes * (2 if self.method == 'both' else 1) + gray_bytes,
+                fixed_bytes=output_bytes * min(2, len(self.steps)) + gray_bytes,
                 per_worker_bytes=max(image.size for image in images) * 4 * 16,
                 outer_tasks=len(images), parallel_layer='outer'),
                 preference=resource_preference, user_threads=thread_count)
             workers = min(plan.workers, plan.max_in_flight)
-            if self.method == 'homography':
-                result = self._process_homography(images, thread_count=workers,
-                                                  should_cancel=should_cancel)
-            elif self.method == 'ecc':
-                result = self._process_ecc(images, thread_count=workers,
-                                           should_cancel=should_cancel)
-            elif self.method == 'openfocus':
-                result = self._process_openfocus(images, thread_count=workers,
-                                                 should_cancel=should_cancel)
-            else:
-                intermediate = self._process_homography(images, thread_count=workers,
-                                                        should_cancel=should_cancel)
+            from core.algorithms import get_registration, resolve_runner
+            result = images
+            for step in self.steps:
                 _check_cancel(should_cancel)
-                result = self._process_ecc(intermediate, thread_count=workers,
-                                           should_cancel=should_cancel)
+                spec = get_registration(step)
+                parameters = {item.key: self.parameters[item.key] for item in spec.parameters}
+                result = resolve_runner(spec.runner)(self, result,
+                    thread_count=workers, should_cancel=should_cancel, **parameters)
+                _check_cancel(should_cancel)
             _save_registration(result, output_path, filenames, should_cancel)
             return result
     
@@ -1547,35 +1522,14 @@ class ImageRegistration:
         """
         return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu)
 
-    def _process_openfocus(self,
-                           input_source: Union[str, List[np.ndarray]],
-                           output_path: Optional[str] = None,
-                           thread_count: int = 4,
-                           should_cancel=None) -> List[np.ndarray]:
-        """
-        OpenFocus 快速对齐（有界相似变换）
-        """
-        return _align_openfocus_impl(input_source, output_path,
-                                     downscale_width=self.downscale_width,
-                                     thread_count=thread_count,
-                                     should_cancel=should_cancel,
-                                     max_shift_ratio=self.max_shift_ratio,
-                                     brightness_reference=self.brightness_reference)
 
-    def set_method(self, method: str):
-        """
-        切换配准方法
-        
-        Args:
-            method (str): 新的配准方法名称
-        """
-        if method not in self.SUPPORTED_METHODS:
-            raise ValueError(
-                f"不支持的配准方法: {method}. "
-                f"支持的方法: {', '.join(self.SUPPORTED_METHODS)}"
-            )
-        
+    def set_method(self, method):
+        from core.algorithms import alignment_steps, resolve_registration_parameters
+        steps = alignment_steps(method)
+        parameters = resolve_registration_parameters(method)
         self.method = method
+        self.steps = steps
+        self.parameters = parameters
     
     def get_info(self) -> dict:
         """
@@ -1648,8 +1602,10 @@ def main():
     parser = argparse.ArgumentParser(description='Image Stack Registration Tool')
     parser.add_argument('--input_path', default='./coral_best_zoom', help='Input image directory path')
     parser.add_argument('--output', default=r'E:\FinishedProjects\XuChuang\regi_test', help='Output directory path')
-    parser.add_argument('--mode', default='homography', choices=['homography', 'ecc', 'both'],
-                        help='Processing mode: homography, ecc, both (homography + ecc)')
+    from core.algorithms import registration_algorithms
+    parser.add_argument('--mode', default='homography',
+                        choices=[spec.id for spec in registration_algorithms()],
+                        help='Registered alignment method')
     
     args = parser.parse_args()
     

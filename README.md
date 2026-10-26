@@ -273,6 +273,10 @@ python main.py
 
 Packaging with PyInstaller: [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md).
 
+Adding a fusion or registration algorithm: [CONTRIBUTING.md](./CONTRIBUTING.md).
+The [extensibility specification](./docs/ALGORITHM_EXTENSIBILITY_SPEC.md) defines
+the shared registration, parameter, execution and persistence contracts.
+
 <a id="star-history"></a>
 ## ⭐ Star History
 

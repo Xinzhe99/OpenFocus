@@ -17,7 +17,8 @@ class TestOpenFocusAB:
         from core.multi_focus_fusion import MultiFocusFusion
         frames = make_two_focus_stack()
         fusion = MultiFocusFusion(algorithm=method, use_gpu=False)
-        out = fusion.fuse(input_source=frames, img_resize=None, kernel_size=7)
+        out = fusion.fuse(input_source=frames, img_resize=None,
+                          parameters={} if method == 'openfocus_c' else {'kernel_size': 7})
         assert out.shape[:2] == frames[0].shape[:2]
         assert float(out.mean()) > 1.0
         # fused must beat both inputs overall (sharp half from each)
@@ -106,14 +107,13 @@ class TestOpenFocusAB:
         frames = make_two_focus_stack((120, 160))
         fusion = MultiFocusFusion(algorithm=method, use_gpu=False,
                                   tile_enabled=True, tile_threshold=64)
-        out = fusion.fuse(input_source=frames, img_resize=None, kernel_size=7)
+        out = fusion.fuse(input_source=frames, img_resize=None,
+                          parameters={} if method == 'openfocus_c' else {'kernel_size': 7})
         assert out.shape[:2] == (120, 160)
 
     def test_supported_and_cli_names(self):
-        from core.multi_focus_fusion import MultiFocusFusion
-        assert "openfocus_a" in MultiFocusFusion.SUPPORTED_ALGORITHMS
-        assert "openfocus_b" in MultiFocusFusion.SUPPORTED_ALGORITHMS
-        assert "openfocus_c" in MultiFocusFusion.SUPPORTED_ALGORITHMS
+        from core.algorithms import fusion_algorithms
+        assert {'openfocus_a', 'openfocus_b', 'openfocus_c'} <= {spec.id for spec in fusion_algorithms()}
         from core.cli import VALID_METHODS, VALID_ALIGN
         assert "openfocus_a" in VALID_METHODS
         assert "openfocus_c" in VALID_METHODS
@@ -292,8 +292,8 @@ class TestOpenFocusAlignment:
         assert abs(float(out[1].mean()) - float(dark.mean())) < 12.0
 
     def test_registered_in_supported_methods(self):
-        from core.registration import ImageRegistration
-        assert "openfocus" in ImageRegistration.SUPPORTED_METHODS
+        from core.algorithms import registration_algorithms
+        assert 'openfocus' in {spec.id for spec in registration_algorithms()}
 
     def test_no_shift_on_identical_frames(self):
         from core.registration import ImageRegistration
@@ -534,57 +534,28 @@ class TestSmoothingParity:
         assert np.array_equal(a, b)
 
     def test_smoothing_is_per_method(self, qapp):
-        """The spin box carries one value per method: switching methods must
-        never hand A's blend sigma to C (or B's depth sigma to A).
+        from types import SimpleNamespace, MethodType
+        from main import OpenFocus
+        from ui.algorithm_parameters import AlgorithmParameterPanel
 
-        A full OpenFocus window cannot be constructed inside this suite (Qt
-        access-violates on teardown here), so the real methods are bound onto
-        a stub that only provides what they touch.
-        """
-        import main
-        from PyQt6.QtWidgets import QSlider
-
-        window = type("Stub", (), {})()
-        window.ui_objs = {}
-        window._kernel_by_mode = {}
-        window._smoothing_by_method = {}
-        window.ofb_depth_smoothing = 1.2
-        window.of_blend_smoothing = 3.0
-        window.depth_smooth_row = None
-        window.smooth_widget = None
-        window.lbl_kernel = None
-        window.slider_smooth = QSlider()
-        window.current_kernel_mode = None
+        window = SimpleNamespace(method="openfocus_a", _fusion_parameters_by_method={})
+        window.current_fusion_method = lambda: window.method
         window.persist_settings = lambda: None
-        window._SMOOTHING_DEFAULTS = dict(main.OpenFocus._SMOOTHING_DEFAULTS)
-        window._methods = {"method": "openfocus_a"}
-        window.current_fusion_method = lambda: window._methods["method"]
-        for name in ("smoothing_for_method", "set_ofb_depth_smoothing"):
-            setattr(window, name, main.OpenFocus.__dict__[name].__get__(window))
+        window._sync_brightness_checkboxes = lambda *_: None
+        window.fusion_parameter_panel = AlgorithmParameterPanel()
+        for name in ("fusion_parameters_for", "set_fusion_parameters", "refresh_algorithm_parameters"):
+            setattr(window, name, MethodType(getattr(OpenFocus, name), window))
+        window.refresh_algorithm_parameters()
+        window.set_fusion_parameters("openfocus_a", {"blend_smoothing": 7.5})
+        window.method = "openfocus_c"
+        window.refresh_algorithm_parameters()
+        window.set_fusion_parameters("openfocus_c", {"blend_smoothing": 3.6})
+        window.method = "openfocus_a"
+        window.refresh_algorithm_parameters()
+        assert window.fusion_parameter_panel.values()["blend_smoothing"] == 7.5
+        assert window.fusion_parameters_for("openfocus_c")["blend_smoothing"] == 3.6
+        window.fusion_parameter_panel.deleteLater()
 
-        def select(method):
-            window._methods["method"] = method
-
-        select("openfocus_a")
-        assert window.smoothing_for_method("openfocus_a") == 2.0
-        window.set_ofb_depth_smoothing(7.5)
-        assert window.smoothing_for_method("openfocus_a") == 7.5
-        select("openfocus_b")
-        assert window.smoothing_for_method("openfocus_b") == 1.2
-        select("openfocus_c")
-        assert window.smoothing_for_method("openfocus_c") == 3.0
-        # a shared single field would have leaked A's 7.5 into C
-        assert window.of_blend_smoothing == 7.5
-        assert window.smoothing_for_method("openfocus_c") == 3.0
-
-    def test_radius_slider_is_hidden_for_c(self):
-        """Static check: update_slider_availability must hide the radius row
-        for C (Helicon's Method C has no Radius parameter)."""
-        from pathlib import Path
-        src = (Path("main.py").read_text(encoding="utf-8"))
-        assert 'self.smooth_widget.setVisible(spec is not None' in src
-        assert 'label_blend_smoothing' in src
-        assert 'smoothing_for_method' in src
 
 
 class TestRotationScaleTolerance:

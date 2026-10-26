@@ -321,7 +321,12 @@ def quantize_fuse_output(result, is_16bit: bool):
         return None
     if is_16bit:
         return (np.clip(result, 0.0, 255.0) * (65535.0 / 255.0)).round().astype(np.uint16)
-    return result
+    if result.dtype == np.uint8:
+        return result
+    clipped = np.clip(result, 0.0, 255.0)
+    if clipped.dtype.kind == "f":
+        np.rint(clipped, out=clipped)
+    return clipped.astype(np.uint8)
 
 
 # ---------------------------------------------------------------------------

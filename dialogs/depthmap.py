@@ -35,24 +35,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from constants import KERNEL_MODES, METHOD_KERNEL_MODES
+from core.algorithms import (alignment_steps, depth_algorithms, get_fusion, registration_parameter_specs,
+    registration_algorithms, resolve_fusion_parameters, resolve_registration_parameters)
+from ui.algorithm_parameters import AlgorithmParameterPanel
 from locales import trans
 from widgets.stepper import StepperSpinBox
 from utils import colormap as cmap
 from utils.image_utils import imwrite_auto
 from utils.settings_store import get_last_dialog_dir, get_settings, set_last_dialog_dir
-from utils.validators import normalize_kernel_size
-
-# 仅收录"按索引决策"的融合方法（与融合下拉同序；加权平均类无逐像素
-# 决策，不提供深度图——guided_filter / openfocus_a 不在此列）
-_METHOD_KEYS = (
-    ("stackmffv3", "radio_stackmff"),
-    ("openfocus_b", "radio_openfocus_b"),
-    ("openfocus_c", "radio_openfocus_c"),
-    ("dct", "radio_dct"),
-    ("dtcwt", "radio_dtcwt"),
-    ("gfgfgf", "radio_gfg"),
-)
 
 _DEFAULT_METHOD_COLORMAP = "turbo"
 
@@ -86,15 +76,13 @@ class DepthWorker(QThread):
     ok = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, images, method, use_gpu, kernel_size=7, parent=None):
+    def __init__(self, images, method, use_gpu, parameters=None, parent=None):
         super().__init__(parent)
         self._images = images
         self._method = method
         self._use_gpu = use_gpu
-        self._kernel_size = int(kernel_size) if kernel_size else 7
+        self.parameters = resolve_fusion_parameters(method, parameters, depth=True)
         self._cancelled = False
-        self.nlevels = 4
-        self.ai_mode = "soft"
         self.source_frames = ()
         self.valid_mask = None
         self.alignment = "none"
@@ -132,20 +120,11 @@ class DepthWorker(QThread):
             if self.reverse_order:
                 self._images = list(reversed(self._images))
                 self.source_frames = tuple(reversed(self.source_frames))
-            model_path = None
-            if self._method == "stackmffv3":
-                from core.cli import _find_model_path
-                model_path = _find_model_path()
             m = compute_focus_index(
                 self._images, self._method,
-                # 与融合管线同参数：否则 DCT 的中值窗口 / GFG-FGF 的模糊窗口
-                # 永远是默认的 7，而界面上用户调的是别的值
-                kernel_size=self._kernel_size,
-                model_path=model_path, use_gpu=self._use_gpu,
+                parameters=self.parameters, use_gpu=self._use_gpu,
                 progress_callback=lambda i, n: self.progress.emit(i, n),
                 should_cancel=lambda: self._cancelled,
-                nlevels=self.nlevels,
-                ai_mode=self.ai_mode,
                 thread_count=self.registration_settings.get("thread_count", 0),
                 resource_preference=self.registration_settings.get("resource_preference", "balanced"),
             )
@@ -376,6 +355,7 @@ class DepthMapDialog(QDialog):
         self._texture_description = ""
         self._texture_identity = None
         self._method_drafts = {}
+        self._registration_drafts = {}
         self._capture_sources()
         self._custom = self._load_custom_schemes()
         self._resize_timer = QTimer(self)
@@ -474,37 +454,28 @@ class DepthMapDialog(QDialog):
         self._source_mode = self.source_combo.currentData()
         form.addRow(trans.t("depth_source_label"), self.source_combo)
         self.align_combo = QComboBox()
-        for code, key in (("none", "check_align_none"), ("homography", "check_align_homography"),
-                          ("ecc", "check_align_ecc"), ("openfocus", "check_align_of")):
-            self.align_combo.addItem(trans.t(key), code)
+        for spec in registration_algorithms():
+            self.align_combo.addItem(trans.t(spec.label_key), spec.id)
         self.align_combo.setEnabled(self._source_mode == "current")
         form.addRow(trans.t("group_registration"), self.align_combo)
+        current_alignment = getattr(self.window_main, 'current_alignment_method', lambda: 'none')()
+        alignment_steps(current_alignment)
+        self.align_combo.setCurrentIndex(self.align_combo.findData(current_alignment))
+        self.registration_parameter_panel = AlgorithmParameterPanel(self)
+        self.registration_parameter_panel.valuesChanged.connect(self._on_registration_parameter_changed)
+        form.addRow(self.registration_parameter_panel)
+        self._sync_registration_controls()
 
         self.method_combo = QComboBox()
-        for code, key in _METHOD_KEYS:
-            self.method_combo.addItem(trans.t(key), code)
+        for spec in depth_algorithms():
+            self.method_combo.addItem(trans.t(spec.label_key), spec.id)
         default = self._current_window_method()
         i = self.method_combo.findData(default)
         self.method_combo.setCurrentIndex(max(0, i))
         form.addRow(trans.t("depth_method"), self.method_combo)
 
-        self.kernel_label = QLabel()
-        self.kernel_spin = StepperSpinBox(minimum=1, maximum=51, step=2, value=7)
-        self.kernel_label.setBuddy(self.kernel_spin.lineEdit())
-        form.addRow(self.kernel_label, self.kernel_spin)
-        self.ai_mode_combo = QComboBox()
-        self.ai_mode_combo.addItem(trans.t("radio_ai_soft"), "soft")
-        self.ai_mode_combo.addItem(trans.t("radio_ai_hard"), "hard")
-        self.ai_mode_combo.setToolTip(trans.t("depth_ai_mode_hint"))
-        self.ai_mode_label = QLabel(trans.t("label_ai_mode"))
-        self.ai_mode_label.setBuddy(self.ai_mode_combo)
-        self.ai_mode_combo.setAccessibleName(trans.t("label_ai_mode"))
-        form.addRow(self.ai_mode_label, self.ai_mode_combo)
-        self.ai_note = QLabel(trans.t("depth_ai_note"))
-        self.ai_note.setToolTip(trans.t("depth_ai_note_hint"))
-        self.ai_note.setWordWrap(True)
-        self.ai_note.setObjectName("mutedLabel")
-        form.addRow(self.ai_note)
+        self.fusion_parameter_panel = AlgorithmParameterPanel(self)
+        form.addRow(self.fusion_parameter_panel)
         manual_hint = QLabel(trans.t("depth_manual_compute_hint"))
         manual_hint.setWordWrap(True)
         manual_hint.setObjectName("mutedLabel")
@@ -648,9 +619,8 @@ class DepthMapDialog(QDialog):
                 sig.connect(self._refresh_preview)
         self.method_combo.currentIndexChanged.connect(self._on_method_changed)
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
-        self.align_combo.currentIndexChanged.connect(self._on_method_changed)
-        self.kernel_spin.valueChanged.connect(self._on_parameter_changed)
-        self.ai_mode_combo.currentIndexChanged.connect(self._on_parameter_changed)
+        self.align_combo.currentIndexChanged.connect(self._on_alignment_changed)
+        self.fusion_parameter_panel.valuesChanged.connect(self._on_parameter_changed)
 
         self._load_prefs()
         self._update_overlay_availability()
@@ -677,19 +647,13 @@ class DepthMapDialog(QDialog):
         self._total_frames = len(getattr(win, "raw_images", None) or [])
         self._reverse_order = bool(getattr(win, "stack_reverse_order", False))
         self._use_gpu = bool(getattr(win, "use_gpu", False))
-        self._nlevels = int(getattr(win, "dtcwt_levels", 4))
         self._registration_settings = {"thread_count": int(getattr(win, "thread_count", 4)),
             "resource_preference": getattr(win, "resource_preference", "balanced"),
             "use_gpu": self._use_gpu,
             "reg_downscale_width": int(getattr(win, "reg_downscale_width", 1024)),
             "exposure_match": bool(getattr(win, "exposure_match", False))}
-        getter = getattr(win, "kernel_for_method", None)
         from utils.scalebar import effective_px_um
         self._current_pixel_size = effective_px_um(win)
-        self._kernels = {
-            method: int(getter(method)) if callable(getter) else
-                    KERNEL_MODES[METHOD_KERNEL_MODES[method]][1]
-            for method, _key in _METHOD_KEYS if method in METHOD_KERNEL_MODES}
         output_list = getattr(win, "output_list", None)
         selected = output_list.selectedItems() if output_list is not None else []
         self._output_selected = bool(selected)
@@ -707,6 +671,7 @@ class DepthMapDialog(QDialog):
         self._source_mode = self.source_combo.currentData()
         self._on_method_changed()
         self.align_combo.setEnabled(self._source_mode == "current")
+        self.registration_parameter_panel.setEnabled(self._source_mode == 'current')
         self.z_mapping.setChecked(False)
         self._fill_textures()
         self._update_source_summary()
@@ -820,7 +785,7 @@ class DepthMapDialog(QDialog):
 
     def _current_window_method(self):
         w = self.window_main
-        keys = {code for code, _k in _METHOD_KEYS}
+        keys = {spec.id for spec in depth_algorithms()}
         context = self._source_context()
         if context is not None and context.algorithm in keys:
             return context.algorithm
@@ -831,7 +796,7 @@ class DepthMapDialog(QDialog):
             code = helper()
             if code in keys:
                 return code
-        return _METHOD_KEYS[0][0]
+        return depth_algorithms()[0].id
 
     def _load_custom_schemes(self):
         try:
@@ -938,75 +903,48 @@ class DepthMapDialog(QDialog):
         self._reconcile_controls()
 
     def _parameters_for(self, method):
-        from constants import METHOD_DEPTH_PARAMS
         key = (self._source_mode, method)
         if key not in self._method_drafts:
-            parameters = {}
+            getter = getattr(self.window_main, 'fusion_parameters_for', None)
+            parameters = (getter(method, depth=True) if callable(getter)
+                          else resolve_fusion_parameters(method, depth=True))
             context = self._source_context()
-            saved = context.parameters if context is not None and context.algorithm == method else {}
-            keys = METHOD_DEPTH_PARAMS.get(method, ())
-            if "kernel_size" in keys:
-                high, default = KERNEL_MODES[METHOD_KERNEL_MODES[method]]
-                value = saved.get("kernel_size", self._kernels.get(method, default))
-                parameters["kernel_size"] = normalize_kernel_size(min(high, int(value)))
-            if "N" in keys:
-                # Follow the main window: it has no user-facing level control,
-                # so a cached draft would silently freeze an old depth.
-                parameters["N"] = int(getattr(self.window_main, "dtcwt_levels", 4))
-            if "mode" in keys:
-                mode = saved.get("mode", getattr(self.window_main, "ai_mode", "soft"))
-                parameters["mode"] = "hard" if mode == "hard" else "soft"
-            self._method_drafts[key] = parameters
-        elif "N" in METHOD_DEPTH_PARAMS.get(method, ()):
-            self._method_drafts[key]["N"] = int(
-                getattr(self.window_main, "dtcwt_levels", 4))
+            if context is not None and context.algorithm == method:
+                saved = context.parameters.get('fusion_parameters', context.parameters)
+                allowed = {spec.key for spec in get_fusion(method).depth.parameters}
+                parameters.update({k: v for k, v in saved.items() if k in allowed})
+            self._method_drafts[key] = resolve_fusion_parameters(method, parameters, depth=True)
         return self._method_drafts[key]
 
     def _sync_method_controls(self):
         method = self.method_combo.currentData()
-        parameters = self._parameters_for(method)
-        kernel_keys = {"dct": "label_kernel_dct", "gfgfgf": "label_kernel_gfg",
-                       "openfocus_b": "label_kernel_of", "openfocus_c": "depth_kernel_energy"}
-        uses_kernel = method in kernel_keys
-        is_ai = method == "stackmffv3"
-        self.kernel_label.setVisible(uses_kernel)
-        self.kernel_spin.setVisible(uses_kernel)
-        self.ai_mode_label.setVisible(is_ai)
-        self.ai_mode_combo.setVisible(is_ai)
-        self.ai_note.setVisible(is_ai)
-        if uses_kernel:
-            label = trans.t(kernel_keys[method])
-            self.kernel_label.setText(label)
-            self.kernel_spin.lineEdit().setAccessibleName(label)
-            with QSignalBlocker(self.kernel_spin):
-                self.kernel_spin.setRange(1, KERNEL_MODES[METHOD_KERNEL_MODES[method]][0])
-                self.kernel_spin.setValue(parameters["kernel_size"])
-        elif is_ai:
-            with QSignalBlocker(self.ai_mode_combo):
-                self.ai_mode_combo.setCurrentIndex(
-                    max(0, self.ai_mode_combo.findData(parameters["mode"])))
+        self.fusion_parameter_panel.set_parameters(
+            get_fusion(method).depth.parameters, self._parameters_for(method))
 
-    def _on_parameter_changed(self):
-        method = self.method_combo.currentData()
-        parameters = self._parameters_for(method)
-        if "kernel_size" in parameters:
-            value = normalize_kernel_size(int(self.kernel_spin.value()))
-            with QSignalBlocker(self.kernel_spin):
-                self.kernel_spin.setValue(value)
-            key = "kernel_size"
-        elif method == "stackmffv3":
-            key = "mode"
-            value = self.ai_mode_combo.currentData()
-            if value not in ("soft", "hard"):
-                return
-        else:
-            return
-        if parameters[key] != value:
-            parameters[key] = value
+    def _on_parameter_changed(self, values):
+        key = (self._source_mode, self.method_combo.currentData())
+        if self._method_drafts[key] != values:
+            self._method_drafts[key] = dict(values)
             self._invalidate_computation()
 
-    def _kernel_for(self, method):
-        return self._parameters_for(method).get("kernel_size", 7)
+    def _sync_registration_controls(self):
+        method = self.align_combo.currentData()
+        if method not in self._registration_drafts:
+            getter = getattr(self.window_main, 'registration_parameters_for', None)
+            self._registration_drafts[method] = (getter(method) if callable(getter)
+                else resolve_registration_parameters(method))
+        specs = registration_parameter_specs(method)
+        self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
+        self.registration_parameter_panel.setVisible(bool(specs))
+
+    def _on_alignment_changed(self):
+        self._sync_registration_controls()
+        self._update_source_summary()
+        self._invalidate_computation()
+
+    def _on_registration_parameter_changed(self, values):
+        self._registration_drafts[self.align_combo.currentData()] = dict(values)
+        self._invalidate_computation()
 
     def _update_overlay_availability(self):
         base = self._matching_texture()
@@ -1045,6 +983,7 @@ class DepthMapDialog(QDialog):
         self.cancel_btn.setEnabled(not self._closing and busy and not self._cancelling)
         self._side_controls.setEnabled(not self._closing and self._export_worker is None)
         self.align_combo.setEnabled(self._source_mode == "current")
+        self.registration_parameter_panel.setEnabled(self._source_mode == 'current')
         self.texture_combo.setEnabled(self._has_current_map())
         self.lbl_map_state.setVisible(self._index01 is not None and
             (self._stale or self._map_request != self._request))
@@ -1055,8 +994,10 @@ class DepthMapDialog(QDialog):
         if self._closing or self._worker is not None or self._export_worker is not None:
             return
         method = self.method_combo.currentData()
-        if method in METHOD_KERNEL_MODES:
-            self.kernel_spin.lineEdit().editingFinished.emit()
+        for panel in (self.fusion_parameter_panel, self.registration_parameter_panel):
+            for editor in panel.editors.values():
+                if isinstance(editor, StepperSpinBox):
+                    editor.lineEdit().editingFinished.emit()
         imgs = self._images()
         if not imgs:
             self.status_lbl.setText(trans.t("depth_need_stack"))
@@ -1070,14 +1011,12 @@ class DepthMapDialog(QDialog):
         self._mark_stale()
         self._cancelling = False
         self._worker_outcome = None
-        worker = DepthWorker(imgs, method, self._use_gpu,
-                             parameters.get("kernel_size", 7), self)
-        worker.reverse_order = method in ("openfocus_b", "openfocus_c") and reverse
-        worker.nlevels = parameters.get("N", self._nlevels)
-        worker.ai_mode = parameters.get("mode", "soft")
+        worker = DepthWorker(imgs, method, self._use_gpu, parameters, self)
+        worker.reverse_order = get_fusion(method).sort_frames and reverse
         worker.source_frames = context.frames if context is not None else ()
         worker.alignment = self.align_combo.currentData() if context is None else "none"
         worker.registration_settings = dict(self._registration_settings)
+        worker.registration_settings['registration_parameters'] = self.registration_parameter_panel.values()
         worker.request = self._request
         worker.parameters = parameters
         worker.context = context
@@ -1096,7 +1035,7 @@ class DepthMapDialog(QDialog):
         worker.ok.connect(lambda index, w=worker: self._computed(index, w))
         worker.failed.connect(lambda message, w=worker: self._failed(message, w))
         worker.finished.connect(lambda w=worker: self._worker_finished(w))
-        self.status_lbl.setText(trans.t("depth_computing_ai") if method == "stackmffv3"
+        self.status_lbl.setText(trans.t("depth_computing_ai") if get_fusion(method).neural
             else trans.t("depth_computing").format(i=0, n=len(imgs)))
         self._reconcile_controls()
         try:
@@ -1124,7 +1063,7 @@ class DepthMapDialog(QDialog):
         if not self._accepts_worker(worker):
             return
         self.status_lbl.setText(trans.t("depth_computing_ai")
-            if worker._method == "stackmffv3" else
+            if get_fusion(worker._method).neural else
             trans.t("depth_computing").format(i=i, n=n))
 
     def _computed(self, index01, worker):
@@ -1159,6 +1098,10 @@ class DepthMapDialog(QDialog):
                 self._map_source_mode = worker.source_mode
                 self._map_source_id = worker.source_id
                 self._map_alignment = worker.context.alignment if worker.context else worker.alignment
+                self._map_alignment_steps = (worker.context.alignment_steps if worker.context
+                    else alignment_steps(worker.alignment))
+                self._map_registration_parameters = (worker.context.parameters.get('registration_parameters', {})
+                    if worker.context else worker.registration_settings.get('registration_parameters', {}))
                 self.z_mapping.setToolTip(trans.t("depth_axis_hint") + "\n" +
                     ", ".join(str(i + 1) for i in self._map_indices))
                 self._map_method = worker._method
@@ -1386,6 +1329,8 @@ class DepthMapDialog(QDialog):
         metadata.update(source_names=getattr(self, "_map_names", []),
                         parameters=getattr(self, "_map_parameters", {}),
                         alignment=getattr(self, "_map_alignment", "none"),
+                        alignment_steps=list(getattr(self, '_map_alignment_steps', ())),
+                        registration_parameters=getattr(self, '_map_registration_parameters', {}),
                         request=self._map_request)
         if self.physical_chk.isChecked():
             _depth, metadata["z_positions_um"] = self._physical_values(self._index01)

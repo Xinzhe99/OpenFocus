@@ -113,7 +113,7 @@ def test_tile_estimate_includes_fixed_accumulators_and_retained_result():
 
 
 def test_cuda_requires_known_vram_and_accounts_for_fixed_model():
-    workload = _workload(algorithm="stackmff", parallel_layer="native",
+    workload = _workload(algorithm='stackmffv3', parallel_layer='native',
                          fixed_vram_bytes=GiB, per_worker_vram_bytes=GiB)
     cuda = _snapshot(device_kind="CUDA", free_vram=4 * GiB, total_vram=8 * GiB)
     plan = policy.plan_execution(workload, cuda, user_threads=3)
@@ -126,7 +126,7 @@ def test_cuda_requires_known_vram_and_accounts_for_fixed_model():
 
 def test_ai_requires_explicit_estimate():
     with pytest.raises(policy.ResourceLimitError):
-        policy.plan_execution(policy.Workload(algorithm="ai", frames=2,
+        policy.plan_execution(policy.Workload(algorithm='stackmffv3', frames=2,
                                                height=20, width=30), _snapshot())
 
 

@@ -12,42 +12,16 @@ from core.render_context import build_render_context
 from core.workers import RenderWorker
 from dialogs import ROIRenderOptionsDialog  # Import the new dialog
 from locales import trans
+from core.algorithms import fusion_algorithms, get_fusion, get_registration, alignment_steps
 
 
 
 class RenderManager:
     """Encapsulates render pipeline orchestration for the main window."""
 
-    ALGORITHM_DISPLAY = {
-        "guided_filter": "Guided Filter",
-        "dct": "DCT",
-        "dtcwt": "DTCWT",
-        "gfgfgf": "GFG-FGF",
-        "openfocus_a": "OpenFocus A",
-        "openfocus_b": "OpenFocus B",
-        "openfocus_c": "OpenFocus C",
-        "stackmffv3": "StackMFF-V3",
-    }
-    # UI 展示（进度/输出列表/信息行）走 i18n 标签；ALGORITHM_DISPLAY 仅作
-    # 非代码兜底与文件名无关
-    ALGO_TRANS_KEY = {
-        "guided_filter": "radio_guided_filter",
-        "dct": "radio_dct",
-        "dtcwt": "radio_dtcwt",
-        "gfgfgf": "radio_gfg",
-        "stackmffv3": "radio_stackmff",
-        "openfocus_a": "radio_openfocus_a",
-        "openfocus_b": "radio_openfocus_b",
-        "openfocus_c": "radio_openfocus_c",
-        "none": "radio_no_fusion",
-    }
-
     @classmethod
     def algo_display_name(cls, code: str) -> str:
-        key = cls.ALGO_TRANS_KEY.get(code)
-        if key:
-            return trans.t(key)
-        return cls.ALGORITHM_DISPLAY.get(code, code)
+        return trans.t("radio_no_fusion" if code == "none" else get_fusion(code).label_key)
 
     def __init__(self, window: Any):
         self.window = window
@@ -66,30 +40,26 @@ class RenderManager:
         getter = getattr(window, "brightness_option_for", None)
         brightness = (bool(getter("exposure_match", method)) if callable(getter)
                       else bool(getattr(window, "exposure_match", True)))
+        alignment = window.current_alignment_method()
+        parameters = window.registration_parameters_for(alignment)
         return (getattr(window, "source_revision", 0), tuple(included),
                 tuple(id(window.raw_images[i]) for i in included),
-                window.current_alignment_method(),
+                alignment_steps(alignment), tuple(sorted(parameters.items())),
                 getattr(window, "reg_downscale_width", None), brightness,
                 bool(getattr(window, "stack_reverse_order", False)))
 
     def _processing_parameters(self, method):
         window = self.window
-        smoothing = getattr(window, "smoothing_for_method", None)
-        brightness = getattr(window, "brightness_option_for", None)
         values = {key: getattr(window, key, None) for key in (
             "tile_enabled", "tile_block_size", "tile_overlap", "tile_threshold",
-            "reg_downscale_width", "ai_batch_size", "ai_mode", "dtcwt_levels",
-            "ofb_depth_smoothing", "stack_reverse_order", "use_gpu")}
-        kernel_getter = getattr(window, "kernel_for_method", None)
-        kernel = max(1, kernel_getter(method) if callable(kernel_getter)
-                     else window.slider_smooth.value())
-        values["kernel_size"] = kernel if kernel % 2 else kernel - 1
-        values["smoothing"] = (smoothing(method) if callable(smoothing)
-                               else getattr(window, "of_blend_smoothing", None))
-        for option, attr, default in (("exposure_match", "exposure_match", True),
-                                      ("base_correct", "base_frame_correct", False)):
-            values[option] = bool(brightness(option, method) if callable(brightness)
-                                  else getattr(window, attr, default))
+            "reg_downscale_width", "ai_batch_size", "stack_reverse_order", "use_gpu")}
+        values.update(window.fusion_parameters_for(method))
+        values["registration_parameters"] = window.registration_parameters_for(
+            window.current_alignment_method())
+        values["exposure_match"] = window.brightness_option_for("exposure_match", method)
+        values["base_correct"] = window.brightness_option_for("base_correct", method)
+        values["base_frame"] = "last" if values["base_correct"] else "none"
+        values["sort_mode"] = "desc" if values["stack_reverse_order"] else "asc"
         return values
 
     def _disk_cache_eligible(self) -> bool:
@@ -125,7 +95,8 @@ class RenderManager:
             algorithm = window.current_fusion_method()
         except Exception:
             return True
-        if algorithm != "stackmffv3" or not getattr(window, "use_gpu", True):
+        if (algorithm == "none" or not get_fusion(algorithm).neural
+                or not getattr(window, "use_gpu", True)):
             # A user who explicitly disabled GPU acceleration has already
             # been told; the setting is the opt-out.
             return True
@@ -182,14 +153,10 @@ class RenderManager:
             window.btn_render.setText(
                 f"{trans.t('msg_compare_progress').format(i=done + 1, n=self._compare_total, method=trans.t('btn_render_processing'))}")
             return
-        try:
-            window.slider_smooth.setEnabled(True)
-        except Exception:
-            pass
-        try:
-            window.combo_fusion.setEnabled(True)
-        except Exception:
-            pass
+        for name in ("fusion_parameter_panel", "registration_parameter_panel", "combo_fusion"):
+            widget = getattr(window, name, None)
+            if widget is not None:
+                widget.setEnabled(True)
         # StackMFF-V3 availability is owned by the torch probe: blanket-enabling
         # it here re-armed an unavailable backend after every render.
         hook = getattr(window, "refresh_method_availability", None)
@@ -241,12 +208,8 @@ class RenderManager:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             return
 
-        # Same order as the fusion dropdown: AI, the OpenFocus family, then
-        # the classical back-ends.
-        methods = ["stackmffv3", "openfocus_a", "openfocus_b", "openfocus_c",
-                   "guided_filter", "dct", "dtcwt", "gfgfgf"]
-        if not is_ai_fusion_available():
-            methods.remove("stackmffv3")
+        methods = [spec.id for spec in fusion_algorithms()
+                   if not spec.neural or is_ai_fusion_available()]
 
         self._compare_queue = list(methods)
         self._compare_total = len(methods)
@@ -322,23 +285,11 @@ class RenderManager:
         window.btn_render.setText(trans.t('btn_cancel_render'))
         QApplication.processEvents()
 
-        # 禁用在处理过程中不应被修改的 UI 控件
-        try:
-            window.slider_smooth.setEnabled(False)
-        except Exception:
-            pass
-        try:
-            window.combo_fusion.setEnabled(False)
-        except Exception:
-            pass
-        try:
-            window.combo_align.setEnabled(False)
-        except Exception:
-            pass
-        try:
-            window.btn_reset.setEnabled(False)
-        except Exception:
-            pass
+        for name in ("fusion_parameter_panel", "registration_parameter_panel",
+                     "combo_fusion", "combo_align", "btn_reset"):
+            widget = getattr(window, name, None)
+            if widget is not None:
+                widget.setEnabled(False)
         try:
             # Quick-preview toggling mid-run fragments a comparison: later
             # methods would render as drafts and vanish from the history.
@@ -357,38 +308,27 @@ class RenderManager:
 
         fusion_method = window.current_fusion_method()
         alignment_method = window.current_alignment_method()
-        need_align_homography = alignment_method == "homography"
-        need_align_ecc = alignment_method == "ecc"
-        need_align_openfocus = alignment_method == "openfocus"
+        registration_parameters = window.registration_parameters_for(alignment_method)
+        requested_steps = alignment_steps(alignment_method)
 
         need_fusion = (
             force_algorithm is not None
             or fusion_method != "none"
         )
 
-        kernel_getter = getattr(window, "kernel_for_method", None)
-        kernel_slider_value = (kernel_getter(force_algorithm or fusion_method)
-                               if callable(kernel_getter) else window.slider_smooth.value())
-        if kernel_slider_value <= 0:
-            kernel_slider_value = 1
-        if kernel_slider_value % 2 == 0:
-            kernel_slider_value = max(1, kernel_slider_value - 1)
 
-        if force_algorithm is None and fusion_method == "stackmffv3" \
+        if force_algorithm is None and fusion_method != "none" and get_fusion(fusion_method).neural \
                 and not is_ai_fusion_available():
             show_warning_box(
                 window,
                 trans.t("msg_stackmff_unavailable_title"),
                 trans.t("msg_stackmff_unavailable_text"),
             )
-            window.set_fusion_method(
-                getattr(window, "_first_available_method", lambda: "guided_filter")())
             self._restore_ui_controls()
             return
 
         alignment_key = self._alignment_key(included_idx, force_algorithm or fusion_method)
-        disk_alignment_options = (need_align_homography, need_align_ecc,
-                                  need_align_openfocus, alignment_key[-2], alignment_key[-1])
+        disk_alignment_options = requested_steps
         reusable = bool(window.is_images_aligned
                         and getattr(window, "aligned_images", None)
                         and len(window.aligned_images) == len(stack_images)
@@ -457,14 +397,10 @@ class RenderManager:
         if use_roi_aligned_images:
             # ROI模式下使用已经对齐的图像栈，跳过额外的配准
             source_images = window.roi_aligned_images
-            # 在ROI模式下，图像已经对齐，不需要再次配准
-            effective_need_align_homography = False
-            effective_need_align_ecc = False
-            # 告诉Worker图像已经对齐
+            effective_alignment = "none"
             effective_aligned_images = window.roi_aligned_images
             effective_is_aligned = True
-            effective_last_alignment_options = (False, True, False)  # 表示ECC已完成
-            need_align_openfocus = False
+            effective_last_alignment_options = (("ecc",), {})
         elif self._preview_mode:
             # Quick preview: downscale the stack so the draft render finishes
             # in a fraction of the time.
@@ -479,28 +415,24 @@ class RenderManager:
             # preview grid is exact.
             # Reuse requires the exact frame selection and registration parameters.
             if reusable:
-                effective_need_align_homography = False
-                effective_need_align_ecc = False
+                effective_alignment = "none"
                 effective_aligned_images = window.aligned_images
                 source_images = effective_aligned_images
                 effective_is_aligned = True
-                effective_last_alignment_options = (False, False, False)
-                need_align_openfocus = False
+                effective_last_alignment_options = (requested_steps, registration_parameters)
             else:
-                effective_need_align_homography = need_align_homography
-                effective_need_align_ecc = need_align_ecc
+                effective_alignment = alignment_method
                 effective_aligned_images = source_images
                 effective_is_aligned = False
-                effective_last_alignment_options = (False, False, False)
-        elif (need_align_homography or need_align_ecc or need_align_openfocus) \
+                effective_last_alignment_options = None
+        elif requested_steps \
                 and not reusable and self._disk_cache_eligible() \
                 and getattr(window, "align_cache_enabled", True):
             # Ask the worker to look in the on-disk registration cache.
             # The lookup itself (stat + decode every cached PNG) runs on the
             # worker thread; the GUI only describes the request.
             source_images = stack_images
-            effective_need_align_homography = need_align_homography
-            effective_need_align_ecc = need_align_ecc
+            effective_alignment = alignment_method
             effective_aligned_images = []
             effective_is_aligned = False
             effective_last_alignment_options = None
@@ -517,8 +449,7 @@ class RenderManager:
             }
         else:
             source_images = stack_images
-            effective_need_align_homography = need_align_homography
-            effective_need_align_ecc = need_align_ecc
+            effective_alignment = alignment_method
             effective_aligned_images = window.aligned_images if reusable else []
             effective_is_aligned = reusable
             effective_last_alignment_options = window.last_alignment_options if reusable else None
@@ -534,6 +465,8 @@ class RenderManager:
                 "exposure_match": parameters["exposure_match"],
                 "registration_backend": "opencv",
                 "interpolation": "lanczos4",
+                "registration_steps": list(requested_steps),
+                "registration_parameters": registration_parameters,
             }
             source_ref = window.raw_images
             revision = getattr(window, "source_revision", 0)
@@ -552,9 +485,8 @@ class RenderManager:
             # "source" is a filtered copy, so identity must be checked against
             # this, never against "source".
             "source_ref": window.raw_images,
-            "alignment_options": (
-                effective_need_align_homography, effective_need_align_ecc,
-                need_align_openfocus),
+            "alignment_options": (("ecc",) if use_roi_aligned_images else requested_steps),
+            "alignment_identity": (requested_steps, registration_parameters),
             "preview": self._preview_mode,
             "roi": roi_rect is not None,
             "roi_rect": ((float(roi_rect.x()), float(roi_rect.y()),
@@ -591,15 +523,11 @@ class RenderManager:
             effective_aligned_images,
             effective_is_aligned,
             effective_last_alignment_options,
-            effective_need_align_homography,
-            effective_need_align_ecc,
-            need_fusion,
-            fusion_method == "guided_filter",
-            fusion_method == "dct",
-            fusion_method == "dtcwt",
-            fusion_method == "gfgfgf",
-            fusion_method == "stackmffv3",
-            kernel_slider_value,
+            algorithm=(force_algorithm or fusion_method) if need_fusion else None,
+            alignment=effective_alignment,
+            fusion_parameters=window.fusion_parameters_for(force_algorithm or fusion_method),
+            registration_parameters=registration_parameters if effective_alignment != "none" else {},
+            need_fusion=need_fusion,
             tile_enabled=getattr(window, "tile_enabled", None),
             tile_block_size=getattr(window, "tile_block_size", None),
             tile_overlap=getattr(window, "tile_overlap", None),
@@ -608,33 +536,15 @@ class RenderManager:
             thread_count=getattr(window, "thread_count", 4),
             resource_preference=getattr(window, "resource_preference", "balanced"),
             ai_batch_size=getattr(window, "ai_batch_size", 2),
-            ai_mode=getattr(window, "ai_mode", "soft"),
             roi_rect=roi_rect,
             roi_mode=roi_mode,
             roi_base_index=roi_base_index,
             use_gpu=getattr(window, "use_gpu", True),
-            algorithm_override=force_algorithm,
-            need_align_openfocus=need_align_openfocus,
-            rb_ofa_checked=fusion_method == "openfocus_a",
-            rb_ofb_checked=fusion_method == "openfocus_b",
-            rb_ofc_checked=fusion_method == "openfocus_c",
             base_frame="last" if _brightness(window, "base_correct",
                                              force_algorithm or fusion_method) else "none",
             sort_mode="desc" if getattr(window, "stack_reverse_order", False)
                 else "asc",
-            depth_smoothing=(window.smoothing_for_method("openfocus_b")
-                             if callable(getattr(window, "smoothing_for_method", None))
-                             else getattr(window, "ofb_depth_smoothing", None)),
-            # Per-method smoothing: the spin box shows the sigma of the
-            # selected method, so the render must use that method's value —
-            # a shared field sent A's blend sigma to C after a switch.
-            # Duck-typed hosts (tests, preview stubs) may not implement it.
-            blend_smoothing=(
-                window.smoothing_for_method(force_algorithm or fusion_method)
-                if callable(getattr(window, "smoothing_for_method", None))
-                else getattr(window, "of_blend_smoothing", None)),
             exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),
-            dtcwt_levels=int(getattr(window, "dtcwt_levels", 4) or 4),
             disk_cache=disk_cache_request,
             preview=self._preview_mode,
         )
@@ -868,7 +778,7 @@ class RenderManager:
             if registration_performed and alignment_matches_ui:
                 window.aligned_images = processed_images
                 window.is_images_aligned = True
-                window.last_alignment_options = context["alignment_options"]
+                window.last_alignment_options = context["alignment_identity"]
                 window.alignment_request_key = context["alignment_key"]
                 # The disk cache was written by the worker (it owns the PNG
                 # encode); writing it here again re-encoded the whole stack on
@@ -889,13 +799,7 @@ class RenderManager:
                 info_lines.append(trans.t("info_align_time").format(0.0))
             elif registration_performed:
                 alignment_method = window.current_alignment_method()
-                label_map = {
-                    "homography": trans.t("check_align_homography"),
-                    "ecc": trans.t("check_align_ecc"),
-                    "openfocus": trans.t("check_align_of"),
-                }
-                align_method_str = label_map.get(alignment_method,
-                                                 trans.t("val_none"))
+                align_method_str = trans.t(get_registration(alignment_method).label_key)
                 info_lines.append(trans.t("info_align_method").format(align_method_str))
                 info_lines.append(trans.t("info_align_time").format(alignment_time))
             else:

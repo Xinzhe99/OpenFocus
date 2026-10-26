@@ -21,6 +21,7 @@ from typing import Iterable, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
+from core.algorithms import alignment_steps
 
 
 def new_context_id() -> str:
@@ -109,7 +110,7 @@ class RenderContext:
 
     context_id: str
     algorithm: str
-    alignment: str
+    alignment_steps: Tuple[str, ...]
     width: int
     height: int
     dtype: np.dtype
@@ -126,6 +127,12 @@ class RenderContext:
     parameters: dict = field(default_factory=dict)
 
     @property
+    def alignment(self) -> str:
+        if self.alignment_steps:
+            return "+".join(self.alignment_steps)
+        return "cached" if any(frame.aligned for frame in self.frames) else "none"
+
+    @property
     def source_count(self) -> int:
         return len(self.frames)
 
@@ -136,20 +143,6 @@ class RenderContext:
         return iter(self.frames)
 
 
-def _alignment_name(options: Optional[Sequence[bool]], aligned: bool) -> str:
-    if not options:
-        return "cached" if aligned else "none"
-    homo, ecc, openfocus = (list(options) + [False, False, False])[:3]
-    parts = []
-    if openfocus:
-        parts.append("openfocus")
-    if homo:
-        parts.append("homography")
-    if ecc:
-        parts.append("ecc")
-    if parts:
-        return "+".join(parts)
-    return "cached" if aligned else "none"
 
 
 def _clamp_roi(roi_rect, shape: Tuple[int, int]) -> Optional[Tuple[int, int, int, int]]:
@@ -179,7 +172,7 @@ def build_render_context(
     *,
     filenames: Optional[Sequence[str]] = None,
     algorithm: str = "unknown",
-    alignment_options: Optional[Sequence[bool]] = None,
+    alignment_options: Optional[Sequence[str]] = None,
     aligned: bool = False,
     roi_rect=None,
     roi_mode: Optional[str] = None,
@@ -252,7 +245,7 @@ def build_render_context(
     return RenderContext(
         context_id=new_context_id(),
         algorithm=str(algorithm or "unknown"),
-        alignment=_alignment_name(alignment_options, aligned),
+        alignment_steps=alignment_steps(alignment_options or ()),
         width=int(result_w),
         height=int(result_h),
         dtype=np.dtype(result.dtype),

@@ -26,11 +26,9 @@ def _frames(dtype=np.uint8):
 
 def _render(frames, request=None):
     return RenderWorker(
-        frames, [], False, None, False, False, True,
-        False, False, False, False, False, 11,
-        algorithm_override="openfocus_a", tile_enabled=False,
-        thread_count=1, use_gpu=False, exposure_match=False,
-        need_align_openfocus=request is not None, disk_cache=request,
+        frames, algorithm='openfocus_a', alignment='openfocus' if request is not None else 'none',
+        fusion_parameters={'kernel_size': 11}, tile_enabled=False,
+        thread_count=1, use_gpu=False, exposure_match=False, disk_cache=request,
     )
 
 
@@ -97,7 +95,7 @@ def _request(tmp_path, frames):
         assert cv2.imwrite(str(folder / name), image)
         names.append(name)
     return {"mode": "load", "save": True, "folder": str(folder),
-            "filenames": names, "align_options": (False, False, True),
+            "filenames": names, "align_options": ('openfocus',),
             "downscale_width": 1024, "frame_shape": frames[0].shape[:2],
             "identity": {"brightness_reference": "first", "exposure_match": False,
                          "dtype": frames[0].dtype.str, "backend": "opencv"}}

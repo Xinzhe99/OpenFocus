@@ -10,9 +10,7 @@ from typing import Callable, List, Optional, Sequence
 import cv2
 import numpy as np
 
-# 与融合下拉同序（仅保留"按索引决策"的方法；加权平均类无逐像素决策）
-SUPPORTED_METHODS = ("dct", "dtcwt", "gfgfgf", "stackmffv3",
-                     "openfocus_b", "openfocus_c")
+from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
 
 
 class DepthMapCancelled(Exception):
@@ -309,79 +307,53 @@ def _measure_openfocus_c(images, progress, should_cancel, kernel_size=11):
 # --------------------------------------------------------------------------
 # public entry
 # --------------------------------------------------------------------------
-# The depth map must use the same window as the fusion it explains:
-# DCT/GFG-FGF fuse with 7, the OpenFocus family with 11 (Radius 5).
-_DEPTH_KERNEL_DEFAULTS = {"dct": 7, "gfgfgf": 7,
-                          "openfocus_b": 11, "openfocus_c": 11}
 
 
-def compute_focus_index(images: Sequence[np.ndarray],
-                         method: str,
-                         kernel_size: Optional[int] = None,
-                         block_size: int = 8,
-                         model_path: Optional[str] = None,
-                         use_gpu: bool = False,
-                         progress_callback: Optional[Callable] = None,
-                         should_cancel: Optional[Callable[[], bool]] = None,
-                         nlevels: int = 4,
-                         ai_mode: str = "soft",
-                         thread_count: Optional[int] = None,
-                         resource_preference: str = 'balanced',
-                         ) -> np.ndarray:
-    """Focus-position map: float32 [H, W] in [0, 1] (normalized frame index).
+def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=None, *,
+                         model_path=None, use_gpu=False, progress_callback=None,
+                         should_cancel=None, thread_count=None,
+                         resource_preference='balanced', **legacy_parameters):
+    """Return normalized focus positions using the descriptor's depth runner.
 
-    `images` are 0-255-domain BGR frames (uint8 or float). The output is
-    always full stack size — dct decides winners on its block grid and the
-    map is upscaled back, mirroring how dct fusion upscales its masks.
-    `kernel_size=None` uses the fusion default for that method (7 for
-    DCT/GFG-FGF, 11 for OpenFocus B/C).
+    Legacy named numeric arguments are translated only at this input boundary.
     """
     from core.resource_policy import Workload, heavy_job, plan_execution
     from core.registration import RegistrationCancelled
     from utils.image_utils import normalize_fuse_input
 
     _check(images)
-    if method not in SUPPORTED_METHODS:
-        raise ValueError(f"Unsupported method for depth maps: {method}")
+    spec = get_fusion(method)
+    values = resolve_fusion_parameters(method, parameters, depth=True)
+    declared_keys = {parameter.key for parameter in spec.depth.parameters}
+    for key, value in legacy_parameters.items():
+        target = {'nlevels': 'N', 'ai_mode': 'mode'}.get(key, key)
+        if target not in declared_keys:
+            raise ValueError(f'Unknown depth parameter: {key}')
+        if value is not None:
+            values[target] = value
+    values = resolve_fusion_parameters(method, values, depth=True)
     try:
         with heavy_job(should_cancel):
             n = len(images)
             h, w = images[0].shape[:2]
-            if method == 'stackmffv3':
-                plan, model_path = _plan_neural_depth(
+            if spec.depth_planner:
+                plan, model_path = resolve_runner(spec.depth_planner)(
                     images, model_path, use_gpu, thread_count, resource_preference)
             else:
                 # The shared CPU model includes normalization, map storage,
                 # method scratch and the final normalized output.
                 plan = plan_execution(
                     Workload(algorithm=method, frames=n, height=h, width=w,
-                             channels=images[0].shape[2],
+                             channels=images[0].shape[2] if images[0].ndim == 3 else 1,
                              itemsize=max(image.dtype.itemsize for image in images),
                              parallel_layer='native'),
                     preference=resource_preference, user_threads=thread_count)
             _tick(None, 0, n, should_cancel)
             images, _is_16bit = normalize_fuse_input(images)
-            kernel = (kernel_size if kernel_size is not None
-                      else _DEPTH_KERNEL_DEFAULTS.get(method))
-            if method == "dct":
-                idx = _measure_dct(images, progress_callback, should_cancel,
-                                   kernel_size=kernel, block_size=block_size)
-            elif method == "gfgfgf":
-                idx = _measure_gfgfgf(images, progress_callback, should_cancel,
-                                      kernel_size=kernel)
-            elif method == "dtcwt":
-                idx = _measure_dtcwt(images, progress_callback, should_cancel,
-                                     nlevels=nlevels)
-            elif method == "stackmffv3":
-                idx = _measure_stackmffv3(
-                    images, progress_callback, should_cancel, model_path=model_path,
-                    use_gpu=use_gpu, execution_plan=plan, mode=ai_mode)
-            elif method == "openfocus_b":
-                idx = _measure_openfocus(images, progress_callback, should_cancel,
-                                         kernel_size=kernel)
-            else:
-                idx = _measure_openfocus_c(images, progress_callback, should_cancel,
-                                           kernel_size=kernel)
+            runtime = {'progress_callback': progress_callback, 'should_cancel': should_cancel,
+                       'thread_count': plan.native_threads, 'use_gpu': use_gpu,
+                       'model_path': model_path, 'execution_plan': plan}
+            idx = resolve_runner(spec.depth.runner)(images, **runtime, **values)
             _tick(None, n, n, should_cancel)
             result = _norm_index(idx, n)
             _tick(None, n, n, should_cancel)

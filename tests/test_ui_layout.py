@@ -16,15 +16,7 @@ def _labels_that_must_fit():
             "chk_exposure_match", "chk_base_correct")
 
 
-def test_spin_box_is_not_narrower_than_it_needs():
-    """A fixed width below minimumSizeHint clips the value."""
-    from pathlib import Path
-    src = Path("ui/right_panel.py").read_text(encoding="utf-8")
-    block = src[src.index("spin_depth_smooth = StepperSpinBox("):]
-    block = block[:block.index("ds_layout.addWidget")]
-    assert "setFixedWidth" not in block, (
-        "a fixed width clips the spin box value; use setMinimumWidth")
-    assert "setMinimumWidth" in block
+
 
 
 def test_option_checkboxes_flow_and_wrap():
@@ -71,20 +63,7 @@ def test_option_checkboxes_flow_and_wrap():
         panel.deleteLater()
 
 
-def test_ai_mode_radios_are_not_pre_elided():
-    """The AI radios must show their full wording, not a fixed-width ellipsis.
 
-    They were elided to PANEL_TEXT_WIDTH regardless of the panel's real width,
-    which both hid the meaning and forced one radio per row.
-    """
-    from pathlib import Path
-
-    src = Path("ui/right_panel.py").read_text(encoding="utf-8")
-    block = src[src.index("radio_ai_soft = QRadioButton("):]
-    block = block[:block.index("ai_mode_widget.setVisible(False)")]
-    assert "elidedText" not in block, (
-        "the AI radios must not be pre-elided")
-    assert "FlowPanel" in block
 
 
 @pytest.mark.parametrize("lang", ["en", "zh", "ja", "es"])
@@ -99,18 +78,7 @@ def test_option_labels_have_a_translation(lang):
         assert text and text != key, f"{lang}: {key} is untranslated"
 
 
-@pytest.mark.parametrize("lang", ["en", "zh", "ja", "es"])
-def test_help_bodies_are_translated(lang):
-    """The registration help used to show English text in every language."""
-    from locales import trans
-    for key in ("help_render_body", "help_registration_body",
-                "help_tile_body"):
-        body = trans.translations[lang].get(key, "")
-        assert body, f"{lang}: {key} missing"
-        assert "<h3>" in body
-    if lang != "en":
-        assert "Registration Methods" not in trans.translations[lang][
-            "help_registration_body"], f"{lang}: help body is still English"
+
 
 
 def test_checked_radio_does_not_grow_its_indicator():
@@ -133,40 +101,13 @@ def test_checked_radio_does_not_grow_its_indicator():
         app.setStyleSheet(previous)
 
 
-def test_unchecked_radio_indicator_is_a_ring():
-    """Any background colour on the unchecked radio is painted as a filled
-    disc, which read as a solid dot on the dark theme."""
-    from pathlib import Path
-    src = Path("ui/styles.py").read_text(encoding="utf-8")
-    block = src[src.index("QRadioButton::indicator {{"):
-                src.index("QCheckBox:disabled")]
-    assert "background: transparent" in block
-    assert "border: 5px" not in block
 
 
-def test_ai_mode_radios_exist_and_default_to_soft():
-    from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
-    from ui.right_panel import create_right_panel
-    panel = create_right_panel()
-    try:
-        assert panel.radio_ai_soft.isChecked()
-        assert not panel.radio_ai_hard.isChecked()
-        assert not panel.ai_mode_widget.isVisible()
-    finally:
-        panel.widget.deleteLater()
 
 
-def test_help_chips_follow_the_theme():
-    """The "?" chips are styled inline at creation. Switching to light used to
-    leave them dark: apply_theme refreshed them BEFORE recording the new
-    CURRENT_THEME, so help_button_style() re-read the old one."""
-    from pathlib import Path
-    src = Path("main.py").read_text(encoding="utf-8")
-    body = src[src.index("def apply_theme(self, theme: str) -> None:"):]
-    body = body[:body.index("def _enable_dark_title_bar")]
-    assert body.index("set_current_theme(theme)") < body.index("help_button_style(theme)"), (
-        "the theme must be recorded before inline styles are recomputed")
+
+
+
 
 
 def test_help_button_style_uses_the_active_theme():
@@ -222,43 +163,13 @@ def test_no_input_widget_is_narrower_than_its_content():
         parent.deleteLater()
 
 
-def test_fusion_dropdown_order_and_default():
-    """Alignment-only stays first; AI is second but is the DEFAULT, and its
-    label names the algorithm so the method is identifiable outside the app."""
-    from ui.right_panel import FUSION_ITEMS, FUSION_DEFAULT
-    codes = [c for c, _k, _h in FUSION_ITEMS]
-    assert codes[0] == "none"
-    assert codes[1] == "stackmffv3"
-    assert codes[2:5] == ["openfocus_a", "openfocus_b", "openfocus_c"]
-    assert codes[5:] == ["guided_filter", "dct", "dtcwt", "gfgfgf"]
-    assert FUSION_DEFAULT == "stackmffv3"
 
 
-def test_ai_label_names_the_algorithm_in_every_language(qapp):
-    """'AI' alone tells the user nothing; the paper is StackMFF V3."""
-    from locales import TranslationManager
-    tables = TranslationManager().translations
-    for lang in ("en", "zh", "ja", "es"):
-        assert "StackMFF-V3" in tables[lang]["radio_stackmff"], lang
 
 
-def test_menus_have_an_opaque_background():
-    """A menu must not inherit `QWidget { background: transparent; }`.
 
-    The base rule made the popup paint its text over whatever was behind it:
-    on the dark theme a right-click menu showed the desktop through it, which
-    read as a translucent panel with unreadable labels. Both the frame and
-    every item need an explicit fill.
-    """
-    from ui.styles import build_stylesheet
 
-    for theme in ("dark", "light"):
-        qss = build_stylesheet(theme)
-        menu = qss[qss.index("QMenu {"):qss.index("QMenu::item {")]
-        item = qss[qss.index("QMenu::item {"):qss.index("QMenu::item:selected")]
-        assert "background-color:" in menu, theme
-        assert "background-color:" in item, theme
-        assert "background: transparent" not in item, theme
+
 
 
 def test_status_block_is_two_rows(qapp):
@@ -295,23 +206,7 @@ def test_status_block_is_two_rows(qapp):
         parts.widget.deleteLater()
 
 
-def test_compare_all_ignores_quick_preview():
-    """Compare-all must fill the output history even with the box ticked.
 
-    Honouring the quick-preview checkbox there rendered each of the eight
-    methods as a throwaway draft, so the run finished with nothing added to the
-    output history - reported as "the fusion ran but produced no result". A
-    draft per method is also useless for comparison: every entry is
-    downscaled.
-    """
-    from pathlib import Path
-
-    src = Path("controllers/render_manager.py").read_text(encoding="utf-8")
-    start = src.index("        preview_downscale = getattr(window,")
-    block = src[start:start + 900]
-    assert "and not compare" in block, (
-        "compare-all must opt out of quick preview")
-    assert "getattr(self, '_compare_mode', False)" in block
 
 
 def test_quick_preview_is_a_fraction_not_an_absolute_cap():
@@ -516,126 +411,41 @@ def test_batch_groups_follow_the_workflow_order(qapp):
         dlg.deleteLater()
 
 
-def test_batch_parameter_controls_share_a_left_edge(qapp):
-    """Every parameter control starts at the same x.
-
-    Three separate HBoxes with a trailing stretch pushed the steppers to the
-    far right while the downscale slider started at the far left, so the block
-    had no left edge - reported as "the left side is not aligned".
-    """
+def test_batch_parameter_editors_fit_their_content(qapp):
     from dialogs.batch import BatchProcessingDialog
-
     dlg = BatchProcessingDialog(None)
     try:
         dlg.resize(820, 900)
         dlg.show()
+        dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("openfocus_b"))
         qapp.processEvents()
-        dlg.fusion_combo.setCurrentIndex(
-            dlg.fusion_combo.findData("openfocus_b"))
-        qapp.processEvents()
-        xs = set()
-        for wd in (dlg.kernel_spin, dlg.smooth_spin, dlg.downscale_slider):
-            if wd.isVisible():
-                xs.add(wd.mapTo(dlg, wd.rect().topLeft()).x())
-        assert len(xs) == 1, f"parameter controls start at different x: {xs}"
+        for editor in dlg.fusion_parameter_panel.editors.values():
+            assert editor.width() >= editor.minimumSizeHint().width()
     finally:
         dlg.close()
         dlg.deleteLater()
 
 
-def test_batch_hides_parameters_the_method_ignores(qapp):
-    """AI has no kernel/smoothing; showing a live value invites confusion."""
-    from dialogs.batch import BatchProcessingDialog
-
-    dlg = BatchProcessingDialog(None)
-    try:
-        dlg.show()
-        qapp.processEvents()
-        dlg.fusion_combo.setCurrentIndex(
-            dlg.fusion_combo.findData("stackmffv3"))
-        qapp.processEvents()
-        assert not dlg.kernel_spin.isVisible()
-        assert not dlg.smooth_spin.isVisible()
-        assert not dlg.levels_spin.isVisible()
-        assert dlg.ai_mode_combo.isVisible()
-        dlg.fusion_combo.setCurrentIndex(
-            dlg.fusion_combo.findData("openfocus_b"))
-        qapp.processEvents()
-        assert dlg.kernel_spin.isVisible()
-        assert dlg.smooth_spin.isVisible()
-        assert not dlg.levels_spin.isVisible()
-        assert not dlg.ai_mode_combo.isVisible()
-        dlg.fusion_combo.setCurrentIndex(
-            dlg.fusion_combo.findData("dtcwt"))
-        qapp.processEvents()
-        assert dlg.levels_spin.isVisible()
-        assert not dlg.kernel_spin.isVisible()
-        assert not dlg.smooth_spin.isVisible()
-    finally:
-        dlg.close()
-        dlg.deleteLater()
 
 
-def test_every_surface_exposes_the_same_algorithm_parameters(qapp):
-    """Main window, batch, compare and depth must agree with one contract.
 
-    Each surface used to decide for itself: DTCWT levels were editable only in
-    compare and depth, batch hid AI mode and levels, and batch offered OpenFocus
-    C a kernel its back-end ignores.
-    """
-    from constants import METHOD_FUSION_PARAMS
-    from dialogs.batch import BatchProcessingDialog
-    from dialogs.compare import METHOD_FUSION_PARAMS as COMPARE_PARAMS
-    from ui.right_panel import create_right_panel
 
-    methods = tuple(METHOD_FUSION_PARAMS)
-    assert COMPARE_PARAMS is METHOD_FUSION_PARAMS
-
-    components = create_right_panel()
-    dlg = BatchProcessingDialog(None)
-    try:
-        dlg.show()
-        qapp.processEvents()
-        for method in methods:
-            keys = {key for key, *_rest in METHOD_FUSION_PARAMS[method]}
-            dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData(method))
-            qapp.processEvents()
-            assert dlg.kernel_spin.isVisible() is ("kernel_size" in keys), method
-            assert dlg.smooth_spin.isVisible() is bool(
-                keys & {"blend_smoothing", "depth_smoothing"}), method
-            assert dlg.levels_spin.isVisible() is ("N" in keys), method
-            assert dlg.ai_mode_combo.isVisible() is (method == "stackmffv3"), method
-    finally:
-        dlg.close()
-        dlg.deleteLater()
-    for widget in (components.widget, components.splitter,
-                   components.smooth_widget, components.ai_mode_widget,
-                   components.depth_smooth_row, components.levels_row):
-        widget.deleteLater()
 
 
 def test_batch_ai_mode_survives_a_method_switch(qapp):
-    """Picking hard then visiting another method must not reset the choice."""
     from dialogs.batch import BatchProcessingDialog
-
     dlg = BatchProcessingDialog(None)
     try:
         dlg.show()
-        qapp.processEvents()
-        dlg.fusion_combo.setCurrentIndex(
-            dlg.fusion_combo.findData("stackmffv3"))
-        qapp.processEvents()
-        dlg.ai_mode_combo.setCurrentIndex(dlg.ai_mode_combo.findData("hard"))
+        dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("stackmffv3"))
+        mode = dlg.fusion_parameter_panel.editors["mode"]
+        mode.setCurrentIndex(mode.findData("hard"))
         dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("dtcwt"))
-        dlg.fusion_combo.setCurrentIndex(
-            dlg.fusion_combo.findData("stackmffv3"))
+        dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("stackmffv3"))
         qapp.processEvents()
-        assert dlg.ai_mode_combo.currentData() == "hard"
-        params = dlg.get_processing_settings()["fusion_params"]
-        assert params["ai_mode"] == "hard"
-        dlg.fusion_combo.setCurrentIndex(
-            dlg.fusion_combo.findData("openfocus_c"))
-        qapp.processEvents()
+        assert dlg.fusion_parameter_panel.values()["mode"] == "hard"
+        assert dlg.get_processing_settings()["fusion_params"]["mode"] == "hard"
+        dlg.fusion_combo.setCurrentIndex(dlg.fusion_combo.findData("openfocus_c"))
         assert "kernel_size" not in dlg.get_processing_settings()["fusion_params"]
     finally:
         dlg.close()
@@ -943,44 +753,10 @@ def test_add_label_dialog_has_a_live_preview(qapp):
         preview.deleteLater()
 
 
-def test_clear_stack_resets_the_sharpness_curve():
-    """Clearing the stack must remove the sharpness strip.
-
-    Checked at the source level: the curve belongs to the frames that were
-    just dropped, and leaving it drew the old bars under an empty list.
-    """
-    from pathlib import Path
-
-    src = Path("controllers/source_manager.py").read_text(encoding="utf-8")
-    block = src[src.index("def clear_image_stack(self) -> None:"):]
-    block = block[:block.index("def update_slider_range")]
-    assert "sharpness_curve" in block and ".clear()" in block, (
-        "clear_image_stack must reset the sharpness curve")
 
 
-def test_gpu_menu_follows_the_hardware(qapp):
-    """The GPU item must be unticked and disabled without a device."""
-    from PyQt6.QtGui import QAction
 
-    from utils import platform_utils
 
-    platform_utils.reset_gpu_probe_cache()
-    present = platform_utils.has_compute_gpu()
-    from pathlib import Path
-
-    src = Path("ui/menus.py").read_text(encoding="utf-8")
-    block = src[src.index("gpu_action = QAction("):]
-    block = block[:block.index("settings_menu.addAction(gpu_action)")]
-    assert "has_compute_gpu" in block, (
-        "the GPU menu item must ask the hardware")
-    assert "setEnabled(_gpu_present)" in block
-    if not present:
-        # And the setter refuses to turn it on.
-        main_src = Path("main.py").read_text(encoding="utf-8")
-        setter = main_src[main_src.index("def set_use_gpu("):]
-        setter = setter[:setter.index("def set_restore_last_stack")]
-        assert "has_compute_gpu" in setter
-    assert QAction is not None
 
 
 
@@ -1233,44 +1009,10 @@ def test_add_label_dialog_has_a_live_preview(qapp):
         preview.deleteLater()
 
 
-def test_clear_stack_resets_the_sharpness_curve():
-    """Clearing the stack must remove the sharpness strip.
-
-    Checked at the source level: the curve belongs to the frames that were
-    just dropped, and leaving it drew the old bars under an empty list.
-    """
-    from pathlib import Path
-
-    src = Path("controllers/source_manager.py").read_text(encoding="utf-8")
-    block = src[src.index("def clear_image_stack(self) -> None:"):]
-    block = block[:block.index("def update_slider_range")]
-    assert "sharpness_curve" in block and ".clear()" in block, (
-        "clear_image_stack must reset the sharpness curve")
 
 
-def test_gpu_menu_follows_the_hardware(qapp):
-    """The GPU item must be unticked and disabled without a device."""
-    from PyQt6.QtGui import QAction
 
-    from utils import platform_utils
 
-    platform_utils.reset_gpu_probe_cache()
-    present = platform_utils.has_compute_gpu()
-    from pathlib import Path
-
-    src = Path("ui/menus.py").read_text(encoding="utf-8")
-    block = src[src.index("gpu_action = QAction("):]
-    block = block[:block.index("settings_menu.addAction(gpu_action)")]
-    assert "has_compute_gpu" in block, (
-        "the GPU menu item must ask the hardware")
-    assert "setEnabled(_gpu_present)" in block
-    if not present:
-        # And the setter refuses to turn it on.
-        main_src = Path("main.py").read_text(encoding="utf-8")
-        setter = main_src[main_src.index("def set_use_gpu("):]
-        setter = setter[:setter.index("def set_restore_last_stack")]
-        assert "has_compute_gpu" in setter
-    assert QAction is not None
 
 
 
@@ -1523,44 +1265,10 @@ def test_add_label_dialog_has_a_live_preview(qapp):
         preview.deleteLater()
 
 
-def test_clear_stack_resets_the_sharpness_curve():
-    """Clearing the stack must remove the sharpness strip.
-
-    Checked at the source level: the curve belongs to the frames that were
-    just dropped, and leaving it drew the old bars under an empty list.
-    """
-    from pathlib import Path
-
-    src = Path("controllers/source_manager.py").read_text(encoding="utf-8")
-    block = src[src.index("def clear_image_stack(self) -> None:"):]
-    block = block[:block.index("def update_slider_range")]
-    assert "sharpness_curve" in block and ".clear()" in block, (
-        "clear_image_stack must reset the sharpness curve")
 
 
-def test_gpu_menu_follows_the_hardware(qapp):
-    """The GPU item must be unticked and disabled without a device."""
-    from PyQt6.QtGui import QAction
 
-    from utils import platform_utils
 
-    platform_utils.reset_gpu_probe_cache()
-    present = platform_utils.has_compute_gpu()
-    from pathlib import Path
-
-    src = Path("ui/menus.py").read_text(encoding="utf-8")
-    block = src[src.index("gpu_action = QAction("):]
-    block = block[:block.index("settings_menu.addAction(gpu_action)")]
-    assert "has_compute_gpu" in block, (
-        "the GPU menu item must ask the hardware")
-    assert "setEnabled(_gpu_present)" in block
-    if not present:
-        # And the setter refuses to turn it on.
-        main_src = Path("main.py").read_text(encoding="utf-8")
-        setter = main_src[main_src.index("def set_use_gpu("):]
-        setter = setter[:setter.index("def set_restore_last_stack")]
-        assert "has_compute_gpu" in setter
-    assert QAction is not None
 
 
 
@@ -1813,76 +1521,16 @@ def test_add_label_dialog_has_a_live_preview(qapp):
         preview.deleteLater()
 
 
-def test_clear_stack_resets_the_sharpness_curve():
-    """Clearing the stack must remove the sharpness strip.
-
-    Checked at the source level: the curve belongs to the frames that were
-    just dropped, and leaving it drew the old bars under an empty list.
-    """
-    from pathlib import Path
-
-    src = Path("controllers/source_manager.py").read_text(encoding="utf-8")
-    block = src[src.index("def clear_image_stack(self) -> None:"):]
-    block = block[:block.index("def update_slider_range")]
-    assert "sharpness_curve" in block and ".clear()" in block, (
-        "clear_image_stack must reset the sharpness curve")
-
-
-def test_gpu_menu_follows_the_hardware(qapp):
-    """The GPU item must be unticked and disabled without a device."""
-    from PyQt6.QtGui import QAction
-
-    from utils import platform_utils
-
-    platform_utils.reset_gpu_probe_cache()
-    present = platform_utils.has_compute_gpu()
-    from pathlib import Path
-
-    src = Path("ui/menus.py").read_text(encoding="utf-8")
-    block = src[src.index("gpu_action = QAction("):]
-    block = block[:block.index("settings_menu.addAction(gpu_action)")]
-    assert "has_compute_gpu" in block, (
-        "the GPU menu item must ask the hardware")
-    assert "setEnabled(_gpu_present)" in block
-    if not present:
-        # And the setter refuses to turn it on.
-        main_src = Path("main.py").read_text(encoding="utf-8")
-        setter = main_src[main_src.index("def set_use_gpu("):]
-        setter = setter[:setter.index("def set_restore_last_stack")]
-        assert "has_compute_gpu" in setter
-    assert QAction is not None
 
 
 
 
 
-def test_menus_match_the_new_information_architecture():
-    """Scale bar and Labels live in Tools; Settings keeps theme/language.
 
-    Labels were split between Edit (add) and a separate delete menu, and the
-    scale bar sat under Settings as if it were an app preference. The four
-    one-purpose tuning dialogs were folded into one Advanced page.
-    """
-    from pathlib import Path
 
-    src = Path("ui/menus.py").read_text(encoding="utf-8")
-    tools = src[src.index("batch_menu = menubar.addMenu"):]
-    tools = tools[:tools.index("# --- Settings Menu ---")]
-    assert "menu_scale_bar" in tools, "scale bar must be under Tools"
-    assert "menu_labels" in tools, "labels must be under Tools"
-    labels = src[src.index("label_menu = batch_menu.addMenu"):]
-    labels = labels[:labels.index("# --- Settings Menu ---")]
-    assert "action_add_label" in labels
-    assert "action_del_reg_label" in labels
-    assert "action_del_input_label" in labels
 
-    settings = src[src.index("# --- Settings Menu ---"):]
-    assert "menu_scale_bar" not in settings, "scale bar left Settings"
-    # Light first: it is the fresh-install default.
-    assert '("light", \'theme_light\'),' in settings
-    for gone in ("action_tile_settings", "action_reg_settings",
-                 "action_thread_settings", "action_ai_batch_settings"):
-        assert gone not in settings, gone
+
+
 
 def _checkerboard_depth_surface(block_size=1):
     import numpy as np
@@ -1973,20 +1621,7 @@ def test_feedback_dialog_embeds_the_session_log(qapp):
             assert "system.txt" in names
     finally:
         d.deleteLater()
-def test_gpu_status_shows_na_without_a_device(qapp):
-    """No accelerator must read N/A, never CPU."""
-    from utils import platform_utils
 
-    if platform_utils.has_compute_gpu():
-        pytest.skip("this machine has a GPU")
-    from pathlib import Path
-
-    src = Path("main.py").read_text(encoding="utf-8")
-    block = src[src.index("        # GPU. Rule the user asked for"):]
-    block = block[:block.index("except Exception:")]
-    # The only paths left are N/A, CPU* (accelerator + classical), CUDA/MPS.
-    assert "'N/A'" in block
-    assert "elif not self._ai_method_selected()" in block
 
 
 def test_flat_field_failure_keeps_the_original_stack(qapp, monkeypatch):

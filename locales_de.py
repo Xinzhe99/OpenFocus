@@ -299,6 +299,8 @@ PACK = {
     "check_align_none": "Keine Ausrichtung",
     "check_align_none_hint": "Bilder wie geladen fusionieren, ohne Registrierung.",
     "check_align_of": "OpenFocus (schnell)",
+    "check_align_both": "Homographie → ECC",
+    "label_align_shift_limit": "Maximale Verschiebung (Bildanteil)",
     "check_align_of_hint": "Schnelle begrenzte Ähnlichkeitsausrichtung (Verschiebung + Rotation + Skalierung) mit Helligkeitsabgleich und automatischem Zuschnitt. Unter einer Sekunde pro Bild; Bilder, die sich um mehr als 8 % der Bildgröße verschieben, bleiben unausgerichtet statt halb korrigiert. Für nicht-starre oder extreme Geometrien ECC oder Homographie wählen.",
     "chk_base_correct": "Helligkeitsdrift entfernen",
     "chk_exposure_match": "Belichtung vor der Fusion angleichen",

@@ -299,6 +299,8 @@ PACK = {
     "check_align_none": "Nessun allineamento",
     "check_align_none_hint": "Fonde i frame così come sono caricati, senza alcuna registrazione.",
     "check_align_of": "OpenFocus (veloce)",
+    "check_align_both": "Omografia → ECC",
+    "label_align_shift_limit": "Spostamento massimo (frazione del fotogramma)",
     "check_align_of_hint": "Allineamento rapido per similarità limitata (traslazione + rotazione + scala) con equalizzazione della luminosità e ritaglio automatico. Meno di un secondo per frame; i frame che si spostano più dell'8% della dimensione vengono lasciati non allineati anziché corretti a metà. Scegli ECC o Omografia per geometrie non rigide o estreme.",
     "chk_base_correct": "Rimuovi deriva di luminosità",
     "chk_exposure_match": "Uniforma l'esposizione prima della fusione",

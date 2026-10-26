@@ -28,8 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-ALL_METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv3",
-               "openfocus_a", "openfocus_b", "openfocus_c"]
+from core.algorithms import fusion_algorithms, get_fusion
 
 
 def make_texture(h, w, seed=0):
@@ -155,7 +154,7 @@ def run(methods, n_frames=16, size=(768, 1024), noise=0.0, kernel=None,
             rows.append((m, None, None, None, None, str(exc)[:60]))
             continue
         kw = {}
-        if kernel is not None:
+        if kernel is not None and any(p.key == "kernel_size" for p in get_fusion(m).parameters):
             kw["kernel_size"] = kernel
         t0 = time.time()
         try:
@@ -171,7 +170,8 @@ def run(methods, n_frames=16, size=(768, 1024), noise=0.0, kernel=None,
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("-m", "--methods", nargs="+", default=ALL_METHODS)
+    methods = [spec.id for spec in fusion_algorithms()]
+    ap.add_argument("-m", "--methods", nargs="+", default=methods, choices=methods)
     ap.add_argument("--frames", type=int, default=16)
     ap.add_argument("--noise", type=float, default=0.0)
     ap.add_argument("--kernel", type=int, default=None)

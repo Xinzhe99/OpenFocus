@@ -29,8 +29,9 @@ from ui.styles import (
     SOURCE_LIST_STYLE,
 )
 from locales import trans
+from core.algorithms import fusion_algorithms, registration_algorithms, get_fusion
+from ui.algorithm_parameters import AlgorithmParameterPanel
 from widgets.flow_layout import FlowPanel
-from widgets.stepper import StepperSpinBox
 
 # Usable text width inside the right panel (375 px minus card padding and the
 # check indicator). Labels that would exceed this are elided; the full string
@@ -120,27 +121,14 @@ def _elide_to_width(widget, text: str, padding: int = 10) -> str:
     return fm.elidedText(text, _Qt.TextElideMode.ElideRight, available)
 from widgets.output_list import OutputListWidget
 
-# 融合算法下拉项：(算法代码, i18n 键, 提示 i18n 键或 None)。
-# "none" = 仅对齐不融合（v1.41 下拉化前的老能力：只跑配准、输出对齐帧）。
-FUSION_ITEMS = (
-    ("none", "radio_no_fusion", "radio_no_fusion_hint"),
-    ("stackmffv3", "radio_stackmff", None),
-    ("openfocus_a", "radio_openfocus_a", "radio_openfocus_a_hint"),
-    ("openfocus_b", "radio_openfocus_b", "radio_openfocus_b_hint"),
-    ("openfocus_c", "radio_openfocus_c", "radio_openfocus_c_hint"),
-    ("guided_filter", "radio_guided_filter", None),
-    ("dct", "radio_dct", None),
-    ("dtcwt", "radio_dtcwt", None),
-    ("gfgfgf", "radio_gfg", None),
-)
+def fusion_items():
+    return (("none", "radio_no_fusion", "radio_no_fusion_hint"),) + tuple(
+        (spec.id, spec.label_key, spec.hint_key) for spec in fusion_algorithms())
 
-# 对齐算法下拉项（单选语义）：none = 不对齐，直接融合原始帧。
-ALIGN_ITEMS = (
-    ("none", "check_align_none", "check_align_none_hint"),
-    ("homography", "check_align_homography", None),
-    ("ecc", "check_align_ecc", None),
-    ("openfocus", "check_align_of", "check_align_of_hint"),
-)
+
+def alignment_items():
+    return tuple((spec.id, spec.label_key, spec.hint_key)
+                 for spec in registration_algorithms())
 
 FUSION_DEFAULT = "stackmffv3"
 ALIGN_DEFAULT = "ecc"
@@ -161,23 +149,16 @@ class RightPanelComponents:
     chk_base_correct: QCheckBox
     chk_exposure_match: QCheckBox
     chk_reverse_order: QCheckBox
-    slider_smooth: QSlider
-    smooth_value_label: QLabel
-    smooth_widget: QWidget
-    ai_mode_widget: QWidget
-    lbl_ai_mode: QLabel
-    radio_ai_soft: QRadioButton
-    radio_ai_hard: QRadioButton
+    fusion_parameter_panel: AlgorithmParameterPanel
+    registration_parameter_panel: AlgorithmParameterPanel
 
     # Groups
     method_group: QGroupBox
     registration_group: QGroupBox
-    lbl_kernel: QLabel
 
     source_images_label: QLabel
     btn_select_all: QPushButton
     btn_select_none: QPushButton
-    file_list: QListWidget
     file_list: QListWidget
     output_label: QLabel
     output_list: QListWidget
@@ -188,14 +169,6 @@ class RightPanelComponents:
     lbl_status_gpu: QLabel
     lbl_status_memory: QLabel
 
-    # OpenFocus B depth-transition smoothing (shown only for that method)
-    depth_smooth_row: QWidget = None
-    lbl_depth_smooth: QLabel = None
-    spin_depth_smooth: "StepperSpinBox" = None
-    # DTCWT decomposition depth (shown only for that method)
-    levels_row: QWidget = None
-    lbl_levels: QLabel = None
-    spin_levels: "StepperSpinBox" = None
 
 
 def _fill_combo(combo: QComboBox, items) -> None:
@@ -228,7 +201,7 @@ def create_right_panel() -> RightPanelComponents:
     method_layout = QVBoxLayout(method_group)
     # 融合算法：下拉单选（一项永远选中，与 CLI -m 的单选语义一致）
     combo_fusion = QComboBox()
-    _fill_combo(combo_fusion, FUSION_ITEMS)
+    _fill_combo(combo_fusion, fusion_items())
     idx = combo_fusion.findData(FUSION_DEFAULT)
     combo_fusion.setCurrentIndex(max(0, idx))
     # "?" sits on the dropdown's row: a row of its own wasted half the
@@ -244,35 +217,14 @@ def create_right_panel() -> RightPanelComponents:
     method_help_layout.addWidget(btn_method_help)
     method_layout.addLayout(method_help_layout)
 
-    # AI output mode: only meaningful for the neural method, so the row is
-    # hidden for every other algorithm (see update_slider_availability).
-    ai_mode_widget = QWidget()
-    ai_mode_layout = QVBoxLayout(ai_mode_widget)
-    ai_mode_layout.setContentsMargins(0, 2, 0, 2)
-    ai_mode_layout.setSpacing(4)
-    lbl_ai_mode = QLabel(trans.t('label_ai_mode'))
-    lbl_ai_mode.setToolTip(trans.t('label_ai_mode_hint'))
-    ai_mode_layout.addWidget(lbl_ai_mode)
-    radio_ai_soft = QRadioButton(trans.t('radio_ai_soft'))
-    radio_ai_soft.setChecked(True)
-    radio_ai_soft.setToolTip(trans.t('radio_ai_soft_hint'))
-    radio_ai_hard = QRadioButton(trans.t('radio_ai_hard'))
-    radio_ai_hard.setToolTip(trans.t('radio_ai_hard_hint'))
-    # Radios flow like the checkboxes below: side by side when both fit, one
-    # per row when the translation is long. Eliding them to a fixed width was
-    # what forced them onto separate rows and hid the wording.
-    ai_mode_flow = FlowPanel(h_spacing=18, v_spacing=4)
-    ai_mode_flow.add(radio_ai_soft)
-    ai_mode_flow.add(radio_ai_hard)
-    ai_mode_layout.addWidget(ai_mode_flow)
-    ai_mode_widget.setVisible(False)
-    method_layout.addWidget(ai_mode_widget)
+    fusion_parameter_panel = AlgorithmParameterPanel(parent=method_group)
+    method_layout.addWidget(fusion_parameter_panel)
 
     registration_group = QGroupBox(trans.t('group_registration'))
     registration_layout = QVBoxLayout(registration_group)
     # 对齐算法：下拉单选（none / 单应性 / ECC / OpenFocus 快速）
     combo_align = QComboBox()
-    _fill_combo(combo_align, ALIGN_ITEMS)
+    _fill_combo(combo_align, alignment_items())
     idx = combo_align.findData(ALIGN_DEFAULT)
     combo_align.setCurrentIndex(max(0, idx))
     # "?" sits on the dropdown's row: a row of its own wasted half the
@@ -287,6 +239,8 @@ def create_right_panel() -> RightPanelComponents:
     btn_reg_help.setObjectName("helpButton")
     reg_help_layout.addWidget(btn_reg_help)
     registration_layout.addLayout(reg_help_layout)
+    registration_parameter_panel = AlgorithmParameterPanel(parent=registration_group)
+    registration_layout.addWidget(registration_parameter_panel)
 
     # 融合/对齐并排时面板宽 375px，两个下拉各只剩 ~114px —— 比
     # "Alignment only (no fusion)" 需要的 ~190px 窄得多，文字被截成
@@ -300,81 +254,6 @@ def create_right_panel() -> RightPanelComponents:
     config_layout.addWidget(registration_group)
     config_layout.addWidget(method_group)
 
-    smooth_widget = QWidget()
-    # Fixed height: a container with the default Preferred policy absorbed the
-    # column's leftover height (measured 480 px for ~40 px of content), which
-    # showed up as a blank block the splitter could not shrink.
-    smooth_widget.setSizePolicy(QSizePolicy.Policy.Preferred,
-                                QSizePolicy.Policy.Fixed)
-    smooth_layout = QVBoxLayout(smooth_widget)
-    # 右侧留 6px：数值标签正好顶到容器边缘时，QSS 的边框/padding 会把
-    # 最后一位吃掉（375px 面板下实测 "31" 只剩 "3"）。
-    smooth_layout.setContentsMargins(0, 5, 6, 5)
-    smooth_top = QHBoxLayout()
-    lbl_kernel = QLabel(trans.t('label_kernel'))
-    smooth_top.addWidget(lbl_kernel)
-    smooth_top.addStretch()
-    lbl_smooth_value = QLabel("31")
-    # 两位数的值紧贴容器右缘时，最后一位会被裁掉（面板 375px 下实测只
-    # 露出 "3"）。给一个最小宽度 + 右对齐，数值再长也不会被切。
-    lbl_smooth_value.setMinimumWidth(28)
-    lbl_smooth_value.setAlignment(
-        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    smooth_top.addWidget(lbl_smooth_value)
-    slider_smooth = QSlider(Qt.Orientation.Horizontal)
-    slider_smooth.setRange(1, 51)
-    slider_smooth.setSingleStep(2)
-    slider_smooth.setPageStep(2)
-    slider_smooth.setValue(31)
-    smooth_layout.addLayout(smooth_top)
-    smooth_layout.addWidget(slider_smooth)
-    config_layout.addWidget(smooth_widget)
-
-    # Per-method smoothing row: B smooths its depth map, A/C smooth the
-    # blend (Helicon's single "Smoothing" knob for its methods A and C).
-    depth_smooth_row = QWidget()
-    depth_smooth_row.setSizePolicy(QSizePolicy.Policy.Preferred,
-                                   QSizePolicy.Policy.Fixed)
-    ds_layout = QHBoxLayout(depth_smooth_row)
-    ds_layout.setContentsMargins(0, 0, 0, 4)
-    lbl_depth_smooth = QLabel(trans.t('label_depth_smoothing'))
-    lbl_depth_smooth.setToolTip(trans.t('label_depth_smoothing_hint'))
-    # A StepperSpinBox, not QDoubleSpinBox. Qt lays a spin box's two buttons
-    # out on the trailing edge and ignores subcontrol-position, so the control
-    # reads as "+ -" stacked on the right while the thing it adjusts is on the
-    # left; users expect "decrease on the left, increase on the right". The
-    # stepper builds the buttons explicitly. Same reasoning as dialogs/
-    # scalebar.py.
-    spin_depth_smooth = StepperSpinBox(
-        minimum=0.0, maximum=8.0, step=0.2, decimals=1, value=1.2)
-    # Keep a floor so the value never renders clipped.
-    spin_depth_smooth.setMinimumWidth(96)
-    spin_depth_smooth.setToolTip(trans.t('label_depth_smoothing_hint'))
-    ds_layout.addWidget(lbl_depth_smooth)
-    ds_layout.addStretch()
-    ds_layout.addWidget(spin_depth_smooth)
-    depth_smooth_row.setVisible(False)
-    config_layout.addWidget(depth_smooth_row)
-
-    # DTCWT decomposition depth: a real algorithm parameter, so it belongs in
-    # the same panel as the kernel and smoothing rows instead of being fixed at
-    # 4 behind the user's back. Hidden for every other method.
-    levels_row = QWidget()
-    levels_row.setSizePolicy(QSizePolicy.Policy.Preferred,
-                             QSizePolicy.Policy.Fixed)
-    lv_layout = QHBoxLayout(levels_row)
-    lv_layout.setContentsMargins(0, 0, 0, 4)
-    lbl_levels = QLabel(trans.t('compare_levels'))
-    lbl_levels.setToolTip(trans.t('label_levels_hint'))
-    spin_levels = StepperSpinBox(minimum=1, maximum=6, step=1, decimals=0, value=4)
-    spin_levels.setMinimumWidth(96)
-    spin_levels.setToolTip(trans.t('label_levels_hint'))
-    spin_levels.lineEdit().setAccessibleName(trans.t('compare_levels'))
-    lv_layout.addWidget(lbl_levels)
-    lv_layout.addStretch()
-    lv_layout.addWidget(spin_levels)
-    levels_row.setVisible(False)
-    config_layout.addWidget(levels_row)
 
     # Primary action on its own row, the two secondary actions underneath.
     # One row of three does not fit the panel: "▶ Rozpocznij renderowanie"
@@ -554,17 +433,11 @@ def create_right_panel() -> RightPanelComponents:
         chk_base_correct=chk_base_correct,
         chk_exposure_match=chk_exposure_match,
         chk_reverse_order=chk_reverse_order,
-        slider_smooth=slider_smooth,
-        smooth_value_label=lbl_smooth_value,
-        ai_mode_widget=ai_mode_widget,
-        lbl_ai_mode=lbl_ai_mode,
-        radio_ai_soft=radio_ai_soft,
-        radio_ai_hard=radio_ai_hard,
-        smooth_widget=smooth_widget,
+        fusion_parameter_panel=fusion_parameter_panel,
+        registration_parameter_panel=registration_parameter_panel,
 
         method_group=method_group,
         registration_group=registration_group,
-        lbl_kernel=lbl_kernel,
 
         source_images_label=source_images_label,
         btn_select_all=btn_all,
@@ -576,12 +449,6 @@ def create_right_panel() -> RightPanelComponents:
         lbl_status_resolution=lbl_status_resolution,
         lbl_status_gpu=lbl_status_gpu,
         lbl_status_memory=lbl_status_memory,
-        depth_smooth_row=depth_smooth_row,
-        lbl_depth_smooth=lbl_depth_smooth,
-        spin_depth_smooth=spin_depth_smooth,
-        levels_row=levels_row,
-        lbl_levels=lbl_levels,
-        spin_levels=spin_levels,
     )
 
 
@@ -605,15 +472,19 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.btn_select_none.clicked.connect(
         lambda: _set_all_source_checks(False))
 
-    # 下拉框本身就是单选，无需互斥处理；切换时刷新滑块联动
     components.combo_fusion.currentIndexChanged.connect(
-        window.handle_method_selection)
-    components.combo_fusion.currentIndexChanged.connect(
-        window.update_slider_availability)
+        window.refresh_algorithm_parameters)
+    components.combo_align.currentIndexChanged.connect(
+        window.refresh_registration_parameters)
+    components.fusion_parameter_panel.valuesChanged.connect(
+        lambda values: window.set_fusion_parameters(window.current_fusion_method(), values))
+    components.registration_parameter_panel.valuesChanged.connect(
+        lambda values: window.set_registration_parameters(window.current_alignment_method(), values))
     # Resolving CUDA/MPS means importing torch (~2.1 s, ~193 MB). Do it when
     # the user actually chooses the neural method, not on every launch.
     components.combo_fusion.currentIndexChanged.connect(
-        lambda: components.combo_fusion.currentData() == "stackmffv3"
+        lambda: components.combo_fusion.currentData() != "none"
+        and get_fusion(components.combo_fusion.currentData()).neural
         and window._probe_device_kind_async())
 
     # 基底校正开关（消除亮度漂移）：立即持久化，渲染时读取
@@ -622,11 +493,6 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.chk_exposure_match.toggled.connect(window.set_exposure_match)
     # 反转帧序（倒序栈）：仅影响 openfocus 族的帧序方向语义
     components.chk_reverse_order.toggled.connect(window.set_reverse_order)
-    # AI 输出模式：软融合（概率加权）/ 硬融合（逐像素取最可能帧）
-    components.radio_ai_soft.toggled.connect(
-        lambda checked: checked and window.set_ai_mode("soft"))
-    components.radio_ai_hard.toggled.connect(
-        lambda checked: checked and window.set_ai_mode("hard"))
 
     # 帮助对话框在点击时才导入：模块级导入 dialogs 会与 ui 包形成循环
     # (dialogs.about -> ui.styles -> ui/__init__ -> right_panel -> dialogs)
@@ -647,7 +513,6 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         lambda: window.render_manager.start_render())
     components.btn_reset.clicked.connect(window.reset_to_default)
 
-    components.slider_smooth.valueChanged.connect(window.handle_kernel_slider_change)
 
     components.file_list.customContextMenuRequested.connect(window.source_manager.show_source_context_menu)
     components.file_list.currentRowChanged.connect(window.source_manager.sync_slider_from_list)
@@ -675,4 +540,5 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     delete_output_shortcut.activated.connect(window.output_manager.delete_selected_output_images)
     components.output_list._delete_output_shortcut = delete_output_shortcut
 
-    window.update_slider_availability()
+    window.refresh_algorithm_parameters()
+    window.refresh_registration_parameters()

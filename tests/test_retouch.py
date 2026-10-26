@@ -730,7 +730,7 @@ def test_render_completion_attaches_provenance(qapp, monkeypatch):
     manager._render_context = {
         "source": w.raw_images,
         "source_ref": w.raw_images,
-        "alignment_options": (False, False, False),
+        "alignment_options": (),
         "preview": False,
         "roi": False,
         "roi_rect": None,

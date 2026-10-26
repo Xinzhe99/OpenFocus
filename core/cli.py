@@ -8,6 +8,8 @@ Lets batch users and CI pipelines run registration + fusion without the GUI:
 Exit codes: 0 success, 1 processing error, 2 usage error.
 """
 import argparse
+import json
+import math
 import os
 import sys
 import time
@@ -25,9 +27,12 @@ from typing import List, Optional, Tuple
 from utils.sorting import natural_sort_key
 from core.resource_policy import heavy_job, require_memory
 
-VALID_METHODS = ["guided_filter", "dct", "dtcwt", "gfgfgf", "stackmffv3",
-                 "openfocus_a", "openfocus_b", "openfocus_c"]
-VALID_ALIGN = ["none", "homography", "ecc", "both", "openfocus"]
+from core.algorithms import (fusion_algorithms, registration_algorithms, get_fusion,
+                             get_registration, resolve_fusion_parameters,
+                             resolve_registration_parameters)
+
+VALID_METHODS = [spec.id for spec in fusion_algorithms()]
+VALID_ALIGN = [spec.id for spec in registration_algorithms()]
 VALID_FORMATS = [".png", ".jpg", ".webp", ".bmp", ".tif", ".tiff"]
 
 EXIT_OK = 0
@@ -54,14 +59,20 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Output file for a single stack (default: fused.png)")
     parser.add_argument("--output-dir", "-d", default=None,
                         help="Batch mode: fuse every input folder, writing <folder>.<ext> here")
-    parser.add_argument("--method", "-m", default="stackmffv3", choices=VALID_METHODS,
+    parser.add_argument("--method", "-m", default="stackmffv3",
+                        choices=[spec.id for spec in fusion_algorithms()],
                         help="Fusion method (default: stackmffv3); openfocus_a/b/c select the "
                              "OpenFocus family (A = variance-weighted average, B = variance depth-map pick, "
                              "C = Laplacian pyramid)")
-    parser.add_argument("--align", "-a", default="none", choices=VALID_ALIGN,
+    parser.add_argument("--align", "-a", default="none",
+                        choices=[spec.id for spec in registration_algorithms()],
                         help="Registration applied before fusion (default: none); openfocus = fast bounded "
                              "similarity alignment (rotation + scale + NCC translation) with brightness "
                              "equalization")
+    parser.add_argument("--param", action="append", default=[], metavar="KEY=JSON_VALUE",
+                        help="Fusion parameter; repeat for multiple keys. Overrides legacy flags.")
+    parser.add_argument("--align-param", action="append", default=[], metavar="KEY=JSON_VALUE",
+                        help="Registration parameter; repeat for multiple keys.")
     parser.add_argument("--align-shift-limit", type=float, default=None, metavar="RATIO",
                         help="openfocus alignment only: maximum accepted frame shift as a fraction of the "
                              "frame size (default 0.08; frames above it are "
@@ -99,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Resource scheduling preference (default: balanced)")
     parser.add_argument("--batch-size", type=int, default=2,
                         help="StackMFF-V3 tile batch size (default: 2)")
-    parser.add_argument("--ai-mode", default="soft", choices=["soft", "hard"],
+    parser.add_argument("--ai-mode", default=None, choices=["soft", "hard"],
                         metavar="{soft,hard}",
                         help="StackMFF-V3 output: 'soft' blends the frames by "
                              "their predicted probabilities (default); 'hard' "
@@ -131,6 +142,55 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Batch mode: JSON file with per-folder overrides, "
                              "e.g. {\"stackA\": {\"method\": \"dct\", \"kernel\": 9}}")
     return parser
+
+
+def _parameter_assignments(assignments):
+    values = {}
+    for assignment in assignments or ():
+        key, separator, encoded = assignment.partition("=")
+        if not separator or not key:
+            raise ValueError(f"Expected KEY=JSON_VALUE, got {assignment!r}")
+        try:
+            values[key] = json.loads(encoded)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid JSON for parameter {key}: {exc}") from exc
+    return values
+
+
+def _resolve_algorithm_arguments(args):
+    """Translate old flags once; generic dictionaries/assignments win per field."""
+    spec = get_fusion(args.method)
+    get_registration(args.align)
+    declared = {parameter.key for parameter in spec.parameters}
+    values = {}
+    if getattr(args, "kernel", None) is not None and "kernel_size" in declared:
+        default = next(parameter.default for parameter in spec.parameters if parameter.key == "kernel_size")
+        values["kernel_size"] = _normalize_kernel(args.kernel, default)
+    for old, key in (("depth_smoothing", "depth_smoothing"),
+                     ("blend_smoothing", "blend_smoothing"), ("ai_mode", "mode")):
+        value = getattr(args, old, None)
+        if value is not None and key in declared:
+            if key.endswith("smoothing") and not math.isfinite(value):
+                raise ValueError(f"{old} must be finite")
+            values[key] = max(0.0, value) if key.endswith("smoothing") else value
+    provided = getattr(args, "fusion_parameters", {})
+    registration = getattr(args, "registration_parameters", {})
+    if not isinstance(provided, dict) or not isinstance(registration, dict):
+        raise ValueError("fusion_parameters and registration_parameters must be objects")
+    values.update(provided)
+    values.update(_parameter_assignments(getattr(args, "param", ())))
+    alignment = {}
+    if getattr(args, "align_shift_limit", None) is not None:
+        if args.align != "openfocus":
+            raise ValueError("--align-shift-limit requires --align openfocus")
+        alignment["max_shift_ratio"] = args.align_shift_limit
+    alignment.update(registration)
+    alignment.update(_parameter_assignments(getattr(args, "align_param", ())))
+    args._fusion_parameters = resolve_fusion_parameters(args.method, values)
+    args._registration_parameters = resolve_registration_parameters(args.align, alignment)
+    if getattr(args, "depth_map", None) and spec.depth is None:
+        raise ValueError(f"--depth-map is not available for method '{args.method}'")
+    return args
 
 
 def _list_folder_images(folder: str, loader) -> List[str]:
@@ -224,6 +284,7 @@ def _fuse_stack_admitted(images, args):
     from core.multi_focus_fusion import MultiFocusFusion
     from utils.image_utils import normalize_fuse_input, quantize_fuse_output
 
+    _resolve_algorithm_arguments(args)
     # Flat-field (dust map) correction runs FIRST and in the raw pixel
     # domain: dust lives in sensor coordinates, so it must be divided out
     # before registration warps the content.
@@ -246,11 +307,9 @@ def _fuse_stack_admitted(images, args):
 
     if args.align != "none":
         t0 = time.time()
-        # max_shift_ratio is only read by the openfocus method; the others
-        # ignore it, so one call site stays simple.
         reg = ImageRegistration(
             method=args.align, downscale_width=args.downscale,
-            max_shift_ratio=getattr(args, "align_shift_limit", None),
+            parameters=args._registration_parameters,
             brightness_reference=("last" if getattr(args, "exposure_match", True)
                                   else "first"),
             use_gpu=False)
@@ -258,46 +317,22 @@ def _fuse_stack_admitted(images, args):
                              resource_preference=getattr(args, "resource_preference", "balanced"))
         print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
 
-    # The default method is the neural one. On a machine without torch the
-    # CLI must still do something useful instead of dying in the model load:
-    # fall back to the first classical method and say so.
-    from core.multi_focus_fusion import is_ai_fusion_available
-    if args.method == "stackmffv3" and not is_ai_fusion_available():
-        print("AI fusion is unavailable (PyTorch missing); "
-              "falling back to guided_filter.")
-        args.method = "guided_filter"
-
+    spec = get_fusion(args.method)
     fusion_kwargs = dict(algorithm=args.method, use_gpu=not args.cpu,
+                         fusion_parameters=args._fusion_parameters,
                          resource_preference=getattr(args, "resource_preference", "balanced"),
                          base_frame=getattr(args, "base_frame", "none"),
                          sort_mode=getattr(args, "sort", "asc"),
-                         exposure_match=getattr(args, "exposure_match", True))
+                         exposure_match=getattr(args, "exposure_match", True),
+                         ai_batch_size=args.batch_size)
     if args.tile_size:
         fusion_kwargs["tile_block_size"] = args.tile_size
-    if args.method == "stackmffv3":
-        fusion_kwargs["ai_batch_size"] = args.batch_size
-        fusion_kwargs["ai_mode"] = args.ai_mode
     fusion = MultiFocusFusion(**fusion_kwargs)
     info = fusion.get_info()
-
     t0 = time.time()
     fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads)
-    if args.method == "guided_filter":
-        fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 31)
-    elif args.method in ("dct", "gfgfgf"):
-        fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 7)
-    elif args.method in ("openfocus_a", "openfocus_b", "openfocus_c"):
-        # 判别性探针（报告 §6.8）：默认方差窗口半径 5（kernel=11）
-        fuse_kwargs["kernel_size"] = _normalize_kernel(args.kernel, 11)
-        if args.method == "openfocus_b" and args.depth_smoothing is not None:
-            fuse_kwargs["depth_smoothing"] = max(0.0, float(args.depth_smoothing))
-        if (args.method in ("openfocus_a", "openfocus_c")
-                and args.blend_smoothing is not None):
-            fuse_kwargs["blend_smoothing"] = max(0.0, float(args.blend_smoothing))
-    elif args.method == "stackmffv3":
+    if spec.neural:
         fuse_kwargs["model_path"] = _find_model_path()
-        print(f"AI output mode: {args.ai_mode}")
-
     fused = fusion.fuse(**fuse_kwargs)
     if fused is None:
         raise RuntimeError("Fusion returned no result")
@@ -306,7 +341,7 @@ def _fuse_stack_admitted(images, args):
     # 融合内部一致：--sort desc 会在 fuse() 内反转帧序，深度图若仍按原序
     # 计算，0/N-1 标签就指向相反的一端。
     depth_frames = list(images)
-    if args.method in ("openfocus_a", "openfocus_b", "openfocus_c"):
+    if spec.sort_frames:
         from fusion_methods.openfocus_ab import sort_frames_for_openfocus
         depth_frames, _flipped = sort_frames_for_openfocus(
             depth_frames, getattr(args, "sort", "asc"))
@@ -335,23 +370,17 @@ def _save_depth(args, fused_out: str) -> None:
     out_dir = os.path.dirname(os.path.abspath(path))
     os.makedirs(out_dir, exist_ok=True)
     t0 = time.time()
-    from core.depth_map import SUPPORTED_METHODS as _DEPTH_METHODS
-    if args.method not in _DEPTH_METHODS:
-        raise RuntimeError(
-            f"--depth-map is not available for method '{args.method}': "
-            "depth/index maps exist only for index-deciding methods ("
-            + ", ".join(_DEPTH_METHODS) + "). Weighted-average fusions "
-            "(guided_filter, openfocus_a) have no per-pixel decision.")
-    kernel = None
-    if args.method in ("dct", "gfgfgf"):
-        kernel = _normalize_kernel(args.kernel, 7)
-    elif args.method in ("openfocus_b", "openfocus_c"):
-        # same default variance window the fusion used (11), otherwise the
-        # map is computed with a different measure than the fused result
-        kernel = _normalize_kernel(args.kernel, 11)
+    spec = get_fusion(args.method)
+    if spec.depth is None:
+        raise RuntimeError(f"--depth-map is not available for method '{args.method}'")
+    depth_keys = {parameter.key for parameter in spec.depth.parameters}
+    parameters = {key: value for key, value in args._fusion_parameters.items() if key in depth_keys}
+    if "kernel_size" in depth_keys and getattr(args, "kernel", None) is not None:
+        default = next(parameter.default for parameter in spec.depth.parameters if parameter.key == "kernel_size")
+        parameters.setdefault("kernel_size", _normalize_kernel(args.kernel, default))
     idx = compute_focus_index(
-        frames, args.method, kernel_size=kernel,
-        model_path=_find_model_path() if args.method == "stackmffv3" else None,
+        frames, args.method, parameters=parameters,
+        model_path=_find_model_path() if spec.neural else None,
         thread_count=getattr(args, "threads", 0),
         resource_preference=getattr(args, "resource_preference", "balanced"),
         use_gpu=not args.cpu)
@@ -554,6 +583,23 @@ def _run_cli_admitted(argv: List[str]) -> int:
         except Exception as exc:
             print(f"error: --config: {exc}", file=sys.stderr)
             return EXIT_USAGE
+
+    try:
+        _resolve_algorithm_arguments(args)
+        for folder, override in args._folder_overrides.items():
+            if not isinstance(override, dict):
+                raise ValueError(f"Overrides for {folder} must be an object")
+            unknown = set(override) - {
+                "method", "align", "kernel", "depth_smoothing", "blend_smoothing",
+                "ai_mode", "base_frame", "sort", "exposure_match", "cpu", "threads",
+                "batch_size", "downscale", "tile_size", "align_shift_limit",
+                "resource_preference", "fusion_parameters", "registration_parameters"}
+            if unknown:
+                raise ValueError(f"Unknown override keys for {folder}: {sorted(unknown)}")
+            _resolve_algorithm_arguments(argparse.Namespace(**{**vars(args), **override}))
+    except (TypeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
 
     def _emit_json(payload: dict) -> None:
         if not args.json:

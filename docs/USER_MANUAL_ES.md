@@ -214,8 +214,8 @@ Los seis métodos requieren pulsar **Calcular** expresamente. Abrir el diálogo 
 la medida, el origen, el registro o los parámetros no inicia el cálculo. El editor aparece
 justo debajo del selector de medida: los núcleos de mediana DCT e inicial GFG aceptan
 impares de 1 a 51 (7 por defecto); B usa una ventana de varianza y C una de energía de paso
-de banda, impares de 1 a 21 px (11 por defecto). DTCWT no ofrece aquí niveles: usa la
-profundidad de descomposición de la ventana principal, igual que un render. StackMFF V3
+de banda, impares de 1 a 21 px (11 por defecto). Los niveles de descomposición DTCWT
+se editan aquí como borrador local, inicializado con los parámetros del origen. StackMFF V3
 muestra su propio modo de salida de IA (mezcla suave por defecto o selección dura) y una
 explicación, sin núcleo numérico: la mezcla suave estima una posición continua ponderada
 por probabilidad; la dura toma el fotograma más probable por píxel. Ninguna es una

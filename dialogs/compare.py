@@ -13,7 +13,10 @@ from core.compare_worker import AlignmentWorker, PreviewWorker
 from locales import trans
 from utils.image_utils import cv2_to_pixmap
 from utils.settings_store import get_settings
-from utils.validators import normalize_kernel_size
+from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
+    registration_parameter_specs, registration_algorithms, resolve_fusion_parameters,
+    resolve_registration_parameters)
+from ui.algorithm_parameters import AlgorithmParameterPanel
 from widgets.compare_canvas import (
     DEFAULT_DETAIL_SIZE, DetailCanvas, SourceCanvas,
 )
@@ -21,16 +24,8 @@ from widgets.flow_layout import FlowPanel
 from widgets.stepper import StepperSpinBox
 
 
-METHOD_ORDER = ("stackmffv3", "openfocus_a", "openfocus_b", "openfocus_c",
-                "guided_filter", "dct", "dtcwt", "gfgfgf")
-METHOD_LABEL_KEYS = {
-    "stackmffv3": "radio_stackmff", "openfocus_a": "radio_openfocus_a",
-    "openfocus_b": "radio_openfocus_b", "openfocus_c": "radio_openfocus_c",
-    "guided_filter": "radio_guided_filter", "dct": "radio_dct",
-    "dtcwt": "radio_dtcwt", "gfgfgf": "radio_gfg",
-}
-from constants import METHOD_FUSION_PARAMS
-from utils.validators import normalize_kernel_size
+def _method_label(method):
+    return trans.t(get_fusion(method).label_key)
 
 
 class CompareDialog(QDialog):
@@ -118,9 +113,10 @@ class CompareDialog(QDialog):
         self._show_frame(0)
         method = (window_main.current_fusion_method()
                   if hasattr(window_main, "current_fusion_method")
-                  else "guided_filter")
-        if method not in self._checks:
-            method = "guided_filter"
+                  else fusion_algorithms()[0].id)
+        if method == 'none':
+            method = fusion_algorithms()[0].id
+        get_fusion(method)
         self._checks[method].setChecked(True)
 
     def _update_source_summary(self):
@@ -149,6 +145,13 @@ class CompareDialog(QDialog):
             value = getattr(window, key, None)
             if value is not None:
                 settings[key] = value
+        settings['method_options'] = {}
+        getter = getattr(window, 'brightness_option_for', None)
+        for spec in fusion_algorithms():
+            settings['method_options'][spec.id] = {
+                'exposure_match': bool(getter('exposure_match', spec.id)) if callable(getter) else spec.default_exposure_match,
+                'base_frame': 'last' if (bool(getter('base_correct', spec.id)) if callable(getter) else spec.default_base_correct) else 'none',
+            }
         return settings
 
     def _build_ui(self):
@@ -158,11 +161,9 @@ class CompareDialog(QDialog):
         methods_flow = FlowPanel(h_spacing=12, v_spacing=6)
         methods_flow.add(QLabel(trans.t("compare_pick")))
         self._checks = {}
-        from core.multi_focus_fusion import is_ai_fusion_available
-        for method in METHOD_ORDER:
-            if method == "stackmffv3" and not is_ai_fusion_available():
-                continue
-            box = QCheckBox(trans.t(METHOD_LABEL_KEYS[method]), methods_flow)
+        for spec in fusion_algorithms():
+            method = spec.id
+            box = QCheckBox(trans.t(spec.label_key), methods_flow)
             box.toggled.connect(self._methods_changed)
             methods_flow.add(box)
             self._checks[method] = box
@@ -181,11 +182,8 @@ class CompareDialog(QDialog):
         settings = QHBoxLayout()
         settings.addWidget(QLabel(trans.t("group_registration")))
         self.align_combo = QComboBox()
-        for code, key in (("none", "check_align_none"),
-                          ("homography", "check_align_homography"),
-                          ("ecc", "check_align_ecc"),
-                          ("openfocus", "check_align_of")):
-            self.align_combo.addItem(trans.t(key), code)
+        for spec in registration_algorithms():
+            self.align_combo.addItem(trans.t(spec.label_key), spec.id)
         current_align = (self.window_main.current_alignment_method()
                          if hasattr(self.window_main, "current_alignment_method") else "none")
         self.align_combo.setCurrentIndex(max(0, self.align_combo.findData(current_align)))
@@ -216,6 +214,12 @@ class CompareDialog(QDialog):
         self.fullscreen_button.clicked.connect(self._toggle_fullscreen)
         settings.addWidget(self.fullscreen_button)
         root.addLayout(settings)
+        self._registration_drafts = {}
+        self._editing_alignment = None
+        self.registration_parameter_panel = AlgorithmParameterPanel(self)
+        self.registration_parameter_panel.valuesChanged.connect(self._registration_parameters_changed)
+        root.addWidget(self.registration_parameter_panel)
+        self._sync_registration_parameters()
 
         self.param_host = FlowPanel(h_spacing=12, v_spacing=6)
         self.param_scroll = QScrollArea()
@@ -312,7 +316,7 @@ class CompareDialog(QDialog):
         self.split.splitterMoved.connect(lambda *_: self._layout_timer.start(0))
         root.addWidget(self.split, 1)
         for method in self._checks:
-            canvas = DetailCanvas(trans.t(METHOD_LABEL_KEYS[method]), self.grid_host)
+            canvas = DetailCanvas(_method_label(method), self.grid_host)
             canvas.setFixedSize(self._detail_size, self._detail_size)
             canvas.hide()
             canvas.installEventFilter(self)
@@ -361,30 +365,9 @@ class CompareDialog(QDialog):
         self._layout_timer.start(0)
 
     def _initial_params(self, method):
-        window = self.window_main
-        params = {}
-        for key, _label, lo, hi, _step, decimals, default in METHOD_FUSION_PARAMS.get(method, ()):
-            value = default
-            if key == "kernel_size" and hasattr(window, "kernel_for_method"):
-                value = window.kernel_for_method(method)
-            elif key in ("blend_smoothing", "depth_smoothing") and hasattr(window, "smoothing_for_method"):
-                value = window.smoothing_for_method(method)
-            elif key == "N":
-                value = getattr(window, "dtcwt_levels", default)
-            value = max(lo, min(hi, value))
-            params[key] = float(value) if decimals else int(value)
-            if key == "kernel_size":
-                params[key] = normalize_kernel_size(params[key])
-        if method == "stackmffv3":
-            params["mode"] = getattr(window, "ai_mode", "soft")
-        for option in ("exposure_match", "base_correct"):
-            if hasattr(window, "brightness_option_for"):
-                enabled = window.brightness_option_for(option, method)
-            else:
-                enabled = option == "exposure_match"
-            params["base_frame" if option == "base_correct" else option] = (
-                ("last" if enabled else "none") if option == "base_correct" else enabled)
-        return params
+        getter = getattr(self.window_main, 'fusion_parameters_for', None)
+        return (getter(method) if callable(getter)
+                else resolve_fusion_parameters(method))
 
     def _build_param_rows(self):
         for method in self._checks:
@@ -396,44 +379,22 @@ class CompareDialog(QDialog):
             row = QHBoxLayout(group)
             row.setContentsMargins(8, 4, 8, 4)
             row.setSpacing(6)
-            title = QLabel(trans.t(METHOD_LABEL_KEYS[method]), group)
+            title = QLabel(_method_label(method), group)
             font = title.font()
             font.setBold(True)
             title.setFont(font)
             row.addWidget(title)
-            self.param_widgets[method] = {}
-            for key, label_key, lo, hi, step, decimals, _default in METHOD_FUSION_PARAMS.get(method, ()):
-                caption = QLabel(trans.t(label_key), group)
-                spin = StepperSpinBox(group, minimum=lo, maximum=hi, step=step,
-                                      decimals=decimals, value=params[key])
-                spin.setFixedWidth(110)
-                spin.setAccessibleName(f"{title.text()} — {caption.text()}")
-                spin.lineEdit().setAccessibleName(spin.accessibleName())
-                caption.setBuddy(spin.lineEdit())
-                spin.valueChanged.connect(
-                    lambda value, m=method, k=key: self._param_changed(m, k, value))
-                row.addWidget(caption)
-                row.addWidget(spin)
-                self.param_widgets[method][key] = spin
-            if method == "stackmffv3":
-                caption = QLabel(trans.t("label_ai_mode"), group)
-                mode = QComboBox(group)
-                mode.addItem(trans.t("radio_ai_soft"), "soft")
-                mode.addItem(trans.t("radio_ai_hard"), "hard")
-                mode.setCurrentIndex(max(0, mode.findData(params["mode"])))
-                mode.setAccessibleName(f"{title.text()} — {caption.text()}")
-                caption.setBuddy(mode)
-                mode.currentIndexChanged.connect(
-                    lambda _index, c=mode: self._param_changed("stackmffv3", "mode", c.currentData()))
-                row.addWidget(caption)
-                row.addWidget(mode)
-                self.param_widgets[method]["mode"] = mode
+            panel = AlgorithmParameterPanel(group)
+            panel.set_parameters(get_fusion(method).parameters, params)
+            panel.valuesChanged.connect(lambda values, m=method: self._params_changed(m, values))
+            row.addWidget(panel)
+            self.param_widgets[method] = panel.editors
             self.param_host.add(group)
             self._param_rows[method] = group
             group.hide()
 
     def _selected_methods(self):
-        return [m for m in METHOD_ORDER if m in self._checks and self._checks[m].isChecked()]
+        return [m for m, check in self._checks.items() if check.isChecked()]
 
     def _methods_changed(self, _checked):
         selected = self._selected_methods()
@@ -444,17 +405,10 @@ class CompareDialog(QDialog):
         self._layout_timer.start(0)
         self._request_changed()
 
-    def _param_changed(self, method, key, value):
-        if key == "kernel_size":
-            value = normalize_kernel_size(int(value))
-            spin = self.param_widgets[method][key]
-            with QSignalBlocker(spin):
-                spin.setValue(value)
-        elif key == "N":
-            value = int(value)
-        if self._method_params[method].get(key) == value:
+    def _params_changed(self, method, values):
+        if self._method_params[method] == values:
             return
-        self._method_params[method][key] = value
+        self._method_params[method] = dict(values)
         self._results.pop(method, None)
         self._stale_methods.add(method)
         self._full_results.pop(method, None)
@@ -462,7 +416,24 @@ class CompareDialog(QDialog):
         self._update_adopt_actions()
         self._request_changed()
 
+    def _sync_registration_parameters(self):
+        method = self.align_combo.currentData()
+        if method not in self._registration_drafts:
+            getter = getattr(self.window_main, 'registration_parameters_for', None)
+            self._registration_drafts[method] = (getter(method) if callable(getter)
+                else resolve_registration_parameters(method))
+        self._editing_alignment = method
+        specs = registration_parameter_specs(method)
+        self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
+        self.registration_parameter_panel.setVisible(bool(specs))
+        self._shared['registration_parameters'] = dict(self._registration_drafts[method])
+
+    def _registration_parameters_changed(self, values):
+        self._registration_drafts[self._editing_alignment] = dict(values)
+        self._alignment_changed(0)
+
     def _alignment_changed(self, _index):
+        self._sync_registration_parameters()
         self._epoch += 1
         self._aligned_frames = None
         self._frames = self._raw_frames
@@ -745,42 +716,24 @@ class CompareDialog(QDialog):
             return
         window = self.window_main
         params = dict(self._method_params.get(method, {}))
-        previous = {
-            "method": window.current_fusion_method(),
-            "alignment": window.current_alignment_method(),
-            "stack_reverse_order": bool(getattr(window, "stack_reverse_order", False)),
-            "dtcwt_levels": int(getattr(window, "dtcwt_levels", 4)),
-            "ai_mode": getattr(window, "ai_mode", "soft"),
-            "kernels": {m: window.kernel_for_method(m) for m in METHOD_FUSION_PARAMS
-                        if hasattr(window, "kernel_for_method")},
-            "smoothing": {m: window.smoothing_for_method(m)
-                          for m in ("openfocus_a", "openfocus_b", "openfocus_c")
-                          if hasattr(window, "smoothing_for_method")},
-            "brightness": {m: {key: window.brightness_option_for(key, m)
-                               for key in ("exposure_match", "base_correct")}
-                           for m in METHOD_ORDER if hasattr(window, "brightness_option_for")},
-        }
+        previous = window._capture_parameter_state()
         try:
-            if hasattr(window, "set_alignment_method"):
-                window.set_alignment_method(self.align_combo.currentData())
-            if hasattr(window, "chk_reverse_order"):
-                window.chk_reverse_order.setChecked(self._shared["sort_mode"] == "desc")
-            if hasattr(window, "set_fusion_method"):
-                window.set_fusion_method(method)
-            if "kernel_size" in params and hasattr(window, "slider_smooth"):
-                window.slider_smooth.setValue(int(params["kernel_size"]))
-            for key in ("blend_smoothing", "depth_smoothing"):
-                if key in params and hasattr(window, "set_smoothing_for_method"):
-                    window.set_smoothing_for_method(method, params[key])
-            if "N" in params and hasattr(window, "set_dtcwt_levels"):
-                window.set_dtcwt_levels(int(params["N"]))
-            if "mode" in params and hasattr(window, "set_ai_mode"):
-                window.set_ai_mode(params["mode"])
-            if hasattr(window, "set_brightness_option"):
-                window.set_brightness_option("exposure_match", method,
-                                             bool(params["exposure_match"]))
-                window.set_brightness_option("base_correct", method,
-                                             str(params["base_frame"]) not in ("", "none"))
+            with window._restore_scope():
+                if hasattr(window, 'set_alignment_method'):
+                    window.set_alignment_method(self.align_combo.currentData())
+                if hasattr(window, 'chk_reverse_order'):
+                    window.chk_reverse_order.setChecked(self._shared['sort_mode'] == 'desc')
+                if hasattr(window, 'set_fusion_method'):
+                    window.set_fusion_method(method)
+                window.set_fusion_parameters(method, params)
+                window.set_registration_parameters(self.align_combo.currentData(),
+                    self.registration_parameter_panel.values())
+                if hasattr(window, 'set_brightness_option'):
+                    window.set_brightness_option('exposure_match', method,
+                        self._shared['method_options'][method]['exposure_match'])
+                    window.set_brightness_option('base_correct', method,
+                        self._shared['method_options'][method]['base_frame'] != 'none')
+            window.persist_settings()
             if hasattr(window, "push_parameter_undo"):
                 window.push_parameter_undo(previous)
         except Exception as exc:
@@ -813,16 +766,17 @@ class CompareDialog(QDialog):
         try:
             from core.render_context import build_render_context
             from controllers.output_manager import OutputRecord
-            label = f"{trans.t(METHOD_LABEL_KEYS[method])} · {trans.t('compare_output_suffix')}"
+            label = f"{_method_label(method)} · {trans.t('compare_output_suffix')}"
             alignment = self.align_combo.currentData()
             context = build_render_context(
                 self._aligned_frames or self._raw_frames, image,
                 filenames=self._source_names, algorithm=method,
-                alignment_options=[alignment == name for name in
-                                   ("homography", "ecc", "openfocus")],
+                alignment_options=alignment_steps(alignment),
                 aligned=alignment != "none", source_indices=self._source_indices,
                 source_revision=self._source_revision, frame_ids=self._frame_ids,
-                parameters={**self._shared, **self._method_params[method]},
+                parameters={**{key: value for key, value in self._shared.items() if key != 'method_options'},
+                    **self._shared['method_options'][method],
+                    'fusion_parameters': self._method_params[method]},
                 **self._calibration)
             record = OutputRecord.create(
                 image, label, context=context, kind="compare",
@@ -875,7 +829,7 @@ class CompareDialog(QDialog):
         self.progress.setRange(0, max(1, total))
         self.progress.setValue(done)
         if method:
-            self.status_label.setText(f"{trans.t('render_stage_fuse')} {trans.t(METHOD_LABEL_KEYS[method])}")
+            self.status_label.setText(f"{trans.t('render_stage_fuse')} {_method_label(method)}")
 
     def _worker_finished(self):
         worker = self.sender()

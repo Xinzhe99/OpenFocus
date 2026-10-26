@@ -122,11 +122,7 @@ class TestFuseBitDepth:
 
         worker = RenderWorker(
             raw_images=[f1, f2], aligned_images=[], is_images_aligned=False,
-            last_alignment_options=(False, False),
-            need_align_homography=False, need_align_ecc=False, need_fusion=True,
-            rb_a_checked=True, rb_b_checked=False, rb_c_checked=False,
-            rb_gfg_checked=False, rb_d_checked=False,
-            kernel_slider_value=9,
+            algorithm='guided_filter', fusion_parameters={'kernel_size': 9},
             tile_enabled=True, tile_block_size=128, tile_overlap=32,
             tile_threshold=256, thread_count=2, use_gpu=False,
         )
@@ -158,34 +154,34 @@ class TestAlignCache:
     def test_round_trip(self, stack_dir):
         names = self.names(stack_dir)
         frames = [np.full((8, 8, 3), 9, np.uint8) for _ in names]
-        align_cache.save_aligned(stack_dir, names, frames, (True, False), 1024, 1.0)
-        loaded = align_cache.load_aligned(stack_dir, names, (True, False), 1024, 1.0)
+        align_cache.save_aligned(stack_dir, names, frames, ('homography',), 1024, 1.0)
+        loaded = align_cache.load_aligned(stack_dir, names, ('homography',), 1024, 1.0)
         assert loaded is not None and len(loaded) == 3
         assert np.array_equal(loaded[0], frames[0])
 
     def test_signature_invalidates_on_options(self, stack_dir):
         names = self.names(stack_dir)
         align_cache.save_aligned(stack_dir, names, [np.zeros((8, 8, 3), np.uint8)] * 3,
-                                 (True, False), 1024, 1.0)
-        assert align_cache.load_aligned(stack_dir, names, (False, True), 1024, 1.0) is None
+                                 ('homography',), 1024, 1.0)
+        assert align_cache.load_aligned(stack_dir, names, ('ecc',), 1024, 1.0) is None
 
     def test_missing_cache_returns_none(self, stack_dir):
         assert align_cache.load_aligned(stack_dir, self.names(stack_dir),
-                                        (True, False), 1024) is None
+                                        ('homography',), 1024) is None
 
     def test_stale_signature_after_file_change(self, stack_dir):
         names = self.names(stack_dir)
         align_cache.save_aligned(stack_dir, names, [np.zeros((8, 8, 3), np.uint8)] * 3,
-                                 (True, False), 1024, 1.0)
+                                 ('homography',), 1024, 1.0)
         # Touch one source file (size change -> new signature)
         cv2.imwrite(os.path.join(stack_dir, "f0.png"), np.full((16, 16, 3), 7, np.uint8))
-        assert align_cache.load_aligned(stack_dir, names, (True, False), 1024, 1.0) is None
+        assert align_cache.load_aligned(stack_dir, names, ('homography',), 1024, 1.0) is None
 
     def test_signature_invalidates_on_scale(self, stack_dir):
         names = self.names(stack_dir)
         align_cache.save_aligned(stack_dir, names, [np.zeros((8, 8, 3), np.uint8)] * 3,
-                                 (True, False), 1024, 1.0)
-        assert align_cache.load_aligned(stack_dir, names, (True, False), 1024, 0.5) is None
+                                 ('homography',), 1024, 1.0)
+        assert align_cache.load_aligned(stack_dir, names, ('homography',), 1024, 0.5) is None
 
     def test_signature_carries_a_format_version(self, stack_dir):
         """A cache written by an older alignment build must not be reused.
@@ -195,11 +191,11 @@ class TestAlignCache:
         invalidate instead of silently feeding stale frames into a render.
         """
         names = self.names(stack_dir)
-        before = align_cache._signature(stack_dir, names, (True, False), 1024)
+        before = align_cache._signature(stack_dir, names, ('homography',), 1024)
         original = align_cache.CACHE_FORMAT_VERSION
         try:
             align_cache.CACHE_FORMAT_VERSION = original + 1
-            after = align_cache._signature(stack_dir, names, (True, False), 1024)
+            after = align_cache._signature(stack_dir, names, ('homography',), 1024)
         finally:
             align_cache.CACHE_FORMAT_VERSION = original
         assert before != after
@@ -211,8 +207,7 @@ class TestAlignCacheIsNotOnTheGuiThread:
     def _worker(self, tmp_path, frames, request):
         from core.workers import RenderWorker
         worker = RenderWorker(
-            frames, [], False, None, False, False, False,
-            True, False, False, False, False, 31,
+            frames, algorithm='guided_filter', alignment='homography', need_fusion=False,
             use_gpu=False, disk_cache=request,
         )
         return worker
@@ -227,11 +222,11 @@ class TestAlignCacheIsNotOnTheGuiThread:
             cv2.imwrite(str(folder / f"f{i}.png"), frame)
         names = sorted(os.listdir(folder))
         aligned = [np.full((8, 8, 3), 9, np.uint8) for _ in names]
-        align_cache.save_aligned(str(folder), names, aligned, (True, False), 1024)
+        align_cache.save_aligned(str(folder), names, aligned, ('homography',), 1024)
 
         worker = self._worker(tmp_path, frames, {
             "mode": "load", "folder": str(folder), "filenames": names,
-            "align_options": (True, False), "downscale_width": 1024,
+            "align_options": ('homography',), "downscale_width": 1024,
         })
         loaded = worker._load_cached_alignment()
         assert loaded is not None and len(loaded) == len(frames)
@@ -241,7 +236,7 @@ class TestAlignCacheIsNotOnTheGuiThread:
         frames = [np.zeros((8, 8, 3), np.uint8) for _ in range(2)]
         worker = self._worker(tmp_path, frames, {
             "mode": "load", "folder": str(tmp_path / "absent"),
-            "filenames": ["a.png", "b.png"], "align_options": (True, False),
+            "filenames": ["a.png", "b.png"], "align_options": ('homography',),
         })
         assert worker._load_cached_alignment() is None
 
@@ -263,18 +258,18 @@ class TestAlignCacheIsNotOnTheGuiThread:
         # mode="load" must never write.
         loader = self._worker(tmp_path, frames, {
             "mode": "load", "folder": str(folder), "filenames": names,
-            "align_options": (True, False), "downscale_width": 1024,
+            "align_options": ('homography',), "downscale_width": 1024,
         })
         loader._save_cached_alignment(frames)
-        assert align_cache.load_aligned(str(folder), names, (True, False),
+        assert align_cache.load_aligned(str(folder), names, ('homography',),
                                         1024) is None
 
         saver = self._worker(tmp_path, frames, {
             "mode": "save", "folder": str(folder), "filenames": names,
-            "align_options": (True, False), "downscale_width": 1024,
+            "align_options": ('homography',), "downscale_width": 1024,
         })
         saver._save_cached_alignment(frames)
-        saved = align_cache.load_aligned(str(folder), names, (True, False), 1024)
+        saved = align_cache.load_aligned(str(folder), names, ('homography',), 1024)
         assert saved is not None and np.array_equal(saved[0], frames[0])
 
     def test_reused_flag_distinguishes_load_from_compute(self, tmp_path):
@@ -287,11 +282,11 @@ class TestAlignCacheIsNotOnTheGuiThread:
             frames.append(frame)
             cv2.imwrite(str(folder / f"f{i}.png"), frame)
         names = sorted(os.listdir(folder))
-        align_cache.save_aligned(str(folder), names, frames, (True, False), 1024)
+        align_cache.save_aligned(str(folder), names, frames, ('homography',), 1024)
 
         worker = self._worker(tmp_path, frames, {
             "mode": "load", "folder": str(folder), "filenames": names,
-            "align_options": (True, False), "downscale_width": 1024,
+            "align_options": ('homography',), "downscale_width": 1024,
         })
         assert worker.alignment_reused is False
         assert worker._load_cached_alignment() is not None
@@ -313,7 +308,7 @@ class TestAlignCacheIsNotOnTheGuiThread:
         monkeypatch.setattr(align_cache, "save_aligned", boom)
         worker = self._worker(tmp_path, frames, {
             "mode": "save", "folder": str(folder), "filenames": names,
-            "align_options": (True, False), "downscale_width": 1024,
+            "align_options": ('homography',), "downscale_width": 1024,
         })
         worker._save_cached_alignment(frames)  # must not raise
 
@@ -538,10 +533,10 @@ class TestAlignCacheUnicodePath:
 
         names = ["f0.png", "f1.png"]
         frames = [np.full((16, 16, 3), 7, np.uint8) for _ in range(2)]
-        align_cache.save_aligned(str(folder), names, frames, (True, False),
+        align_cache.save_aligned(str(folder), names, frames, ('homography',),
                                  1024, 1.0, (16, 16))
 
-        loaded = align_cache.load_aligned(str(folder), names, (True, False),
+        loaded = align_cache.load_aligned(str(folder), names, ('homography',),
                                           1024, 1.0, (16, 16))
         assert loaded is not None
         assert all(np.array_equal(a, b) for a, b in zip(loaded, frames))

@@ -12,7 +12,8 @@ from typing import Any, Optional
 
 from PyQt6.QtCore import QSettings
 
-from constants import KERNEL_MODES, SMOOTHING_MAX
+from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
+                             resolve_fusion_parameters, resolve_registration_parameters)
 from locales import trans
 from utils.validators import normalize_kernel_size
 
@@ -46,14 +47,12 @@ AI_CPU_WARNING_DISMISSED_KEY = "rendering/ai_cpu_warning_dismissed"
 # mirror the method that was last touched. Each memory is stored as JSON so
 # a restart no longer reverts the user's per-algorithm choices.
 BRIGHTNESS_BY_METHOD_KEY = "fusion/brightness_by_method"
+METHOD_PARAMETERS_KEY = "fusion/method_parameters"
+REGISTRATION_PARAMETERS_KEY = "registration/parameters"
+# Historical keys are read only at this boundary.
 SMOOTHING_BY_METHOD_KEY = "fusion/smoothing_by_method"
 KERNEL_BY_MODE_KEY = "fusion/kernel_by_mode"
 BRIGHTNESS_OPTIONS = ("exposure_match", "base_correct")
-SMOOTHING_METHODS = ("openfocus_a", "openfocus_b", "openfocus_c")
-# Every fusion method the GUI can select; a value stored for anything else is
-# ignored rather than creating an unreachable preference.
-FUSION_METHODS = ("none", "stackmffv3", "openfocus_a", "openfocus_b",
-                  "openfocus_c", "guided_filter", "dct", "dtcwt", "gfgfgf")
 
 
 # window attribute -> (settings key, default, cast)
@@ -66,8 +65,6 @@ _PERSISTED_FIELDS = {
     "tile_threshold": ("rendering/tile_threshold", 2048, int),
     "reg_downscale_width": ("registration/downscale_width", 1024, int),
     "ai_batch_size": ("rendering/ai_batch_size", 2, int),
-    "ai_mode": ("fusion/ai_mode", "soft", "str"),
-    "dtcwt_levels": ("fusion/dtcwt_levels", 4, int),
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
@@ -88,8 +85,6 @@ _PERSISTED_FIELDS = {
     "stack_reverse_order": ("fusion/stack_reverse_order", False, "bool"),
     "ask_load_scale": ("ui/ask_load_scale", True, "bool"),
     "load_scale_default": ("ui/load_scale_default", 1.0, "float"),
-    "ofb_depth_smoothing": ("fusion/ofb_depth_smoothing", 1.2, "float"),
-    "of_blend_smoothing": ("fusion/of_blend_smoothing", 3.0, "float"),
 }
 
 
@@ -237,6 +232,10 @@ def _finite_number(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+def _brightness_methods():
+    return {"none", *(spec.id for spec in fusion_algorithms())}
+
+
 def brightness_memory_from_json(raw: Any) -> dict:
     """{(option, method): bool} from the stored JSON; malformed parts dropped."""
     nested = _loads_object(raw)
@@ -248,7 +247,7 @@ def brightness_memory_from_json(raw: Any) -> dict:
         for method, enabled in per_method.items():
             # bool(enabled) would turn the string "false" into True, which is
             # exactly the silent revert this persistence exists to prevent.
-            if isinstance(method, str) and method in FUSION_METHODS \
+            if isinstance(method, str) and method in _brightness_methods() \
                     and isinstance(enabled, bool):
                 memory[(option, method)] = enabled
     return memory
@@ -258,99 +257,119 @@ def brightness_memory_to_json(memory: Any) -> str:
     """Stable JSON text {option: {method: bool}} for the brightness memory."""
     nested = {option: {} for option in BRIGHTNESS_OPTIONS}
     for (option, method), enabled in (memory or {}).items():
-        if option in BRIGHTNESS_OPTIONS and method in FUSION_METHODS \
+        if option in BRIGHTNESS_OPTIONS and method in _brightness_methods() \
                 and isinstance(enabled, bool):
             nested[option][method] = enabled
     return json.dumps(nested, sort_keys=True)
 
 
-def smoothing_memory_from_json(raw: Any) -> dict:
-    """{method: sigma} for OpenFocus A/B/C, clamped to the control's range."""
-    nested = _loads_object(raw)
+def parameter_memory_from_json(raw: Any, *, registration=False) -> dict:
+    """Restore each valid declared field without losing adjacent good values."""
+    get = get_registration if registration else get_fusion
+    resolve = resolve_registration_parameters if registration else resolve_fusion_parameters
     memory = {}
-    for method, value in nested.items():
-        if method not in SMOOTHING_METHODS:
+    for method, values in _loads_object(raw).items():
+        try:
+            get(method)
+        except (TypeError, ValueError):
             continue
-        number = _finite_number(value)
-        if number is None:
+        if not isinstance(values, dict):
             continue
-        memory[method] = min(max(number, 0.0), SMOOTHING_MAX)
+        valid = {}
+        for key, value in values.items():
+            try:
+                valid[key] = resolve(method, {key: value})[key]
+            except (TypeError, ValueError):
+                continue
+        memory[method] = valid
     return memory
 
 
-def smoothing_memory_to_json(memory: Any) -> str:
-    """Stable JSON text for the per-method smoothing memory."""
+def parameter_memory_to_json(memory: Any, *, registration=False) -> str:
+    """Serialize canonical dictionaries, refusing invalid new state."""
+    get = get_registration if registration else get_fusion
+    resolve = resolve_registration_parameters if registration else resolve_fusion_parameters
     values = {}
-    for method, value in (memory or {}).items():
-        number = _finite_number(value)
-        if method in SMOOTHING_METHODS and number is not None:
-            values[method] = min(max(number, 0.0), SMOOTHING_MAX)
-    return json.dumps(values, sort_keys=True)
+    for method, parameters in (memory or {}).items():
+        get(method)
+        if not isinstance(parameters, dict):
+            raise ValueError(f"Invalid parameters for {method}")
+        resolved = resolve(method, parameters)
+        values[method] = {key: resolved[key] for key in parameters}
+    return json.dumps(values, sort_keys=True, allow_nan=False)
 
 
-def kernel_memory_from_json(raw: Any) -> dict:
-    """{mode: odd kernel} with each value normalised to its mode's range."""
-    nested = _loads_object(raw)
+_LEGACY_KERNEL_METHODS = {"guided": ("guided_filter",), "dct": ("dct",),
+                          "gfg": ("gfgfgf",), "ofab": ("openfocus_a", "openfocus_b")}
+
+
+def _legacy_kernel_memory(raw):
     memory = {}
-    for mode, value in nested.items():
-        if mode not in KERNEL_MODES:
-            continue
-        if isinstance(value, bool) or not isinstance(value, int):
-            continue
-        high, _default = KERNEL_MODES[mode]
-        if value < 1:
-            continue
-        memory[mode] = normalize_kernel_size(min(value, high))
+    for mode, value in _loads_object(raw).items():
+        if mode in _LEGACY_KERNEL_METHODS and isinstance(value, int) \
+                and not isinstance(value, bool) and value > 0:
+            method = _LEGACY_KERNEL_METHODS[mode][0]
+            spec = next(p for p in get_fusion(method).parameters if p.key == "kernel_size")
+            memory[mode] = normalize_kernel_size(min(value, spec.maximum))
     return memory
 
 
-def kernel_memory_to_json(memory: Any) -> str:
-    """Stable JSON text for the per-mode kernel memory."""
-    values = {}
-    for mode, value in (memory or {}).items():
-        if mode not in KERNEL_MODES or isinstance(value, bool) \
-                or not isinstance(value, int) or value < 1:
-            continue
-        high, _default = KERNEL_MODES[mode]
-        values[mode] = normalize_kernel_size(min(value, high))
-    return json.dumps(values, sort_keys=True)
+def _legacy_parameters(settings):
+    """Migrate the shared OF kernel identically into every declaring method."""
+    memory = {}
+    kernels = _legacy_kernel_memory(settings.value(KERNEL_BY_MODE_KEY))
+    for mode, methods in _LEGACY_KERNEL_METHODS.items():
+        if mode in kernels:
+            for method in methods:
+                memory.setdefault(method, {})["kernel_size"] = kernels[mode]
+    smoothing = _loads_object(settings.value(SMOOTHING_BY_METHOD_KEY))
+    if not settings.contains(SMOOTHING_BY_METHOD_KEY):
+        for old, methods in (("fusion/ofb_depth_smoothing", ("openfocus_b",)),
+                             ("fusion/of_blend_smoothing", ("openfocus_a", "openfocus_c"))):
+            raw = settings.value(old)
+            if settings.contains(old) and not isinstance(raw, bool):
+                value = _cast(raw, "float", None)
+                smoothing.update({method: value for method in methods})
+    for method, key in (("openfocus_a", "blend_smoothing"),
+                        ("openfocus_b", "depth_smoothing"),
+                        ("openfocus_c", "blend_smoothing")):
+        value = _finite_number(smoothing.get(method))
+        if value is not None:
+            spec = next(p for p in get_fusion(method).parameters if p.key == key)
+            memory.setdefault(method, {})[key] = min(max(value, spec.minimum), spec.maximum)
+    if settings.contains("fusion/ai_mode"):
+        memory.setdefault("stackmffv3", {})["mode"] = settings.value("fusion/ai_mode")
+    raw_levels = settings.value("fusion/dtcwt_levels")
+    if settings.contains("fusion/dtcwt_levels") and not isinstance(raw_levels, bool):
+        memory.setdefault("dtcwt", {})["N"] = _cast(raw_levels, int, None)
+    return parameter_memory_from_json(memory)
 
 
 def load_parameter_memories(window) -> None:
-    """Restore the three per-method memories onto *window*.
-
-    A stored key always wins over the legacy scalars, including when it holds
-    an empty object: that is what "reset to defaults" writes, and falling back
-    to the old scalar there would resurrect a value the user just cleared.
-    """
+    """New empty objects are authoritative; legacy scalars never revive them."""
     settings = get_settings()
     if settings.contains(BRIGHTNESS_BY_METHOD_KEY):
         window._brightness_by_method = brightness_memory_from_json(
             settings.value(BRIGHTNESS_BY_METHOD_KEY))
-    if settings.contains(SMOOTHING_BY_METHOD_KEY):
-        window._smoothing_by_method = smoothing_memory_from_json(
-            settings.value(SMOOTHING_BY_METHOD_KEY))
-    else:
-        # The old scalar is unambiguous for B (A/C shared the other one), so
-        # it is the only legacy value that can be migrated without guessing.
-        legacy = _finite_number(getattr(window, "ofb_depth_smoothing", None))
-        if legacy is not None:
-            window._smoothing_by_method = {
-                "openfocus_b": min(max(legacy, 0.0), SMOOTHING_MAX)}
-    if settings.contains(KERNEL_BY_MODE_KEY):
-        window._kernel_by_mode = kernel_memory_from_json(
-            settings.value(KERNEL_BY_MODE_KEY))
+    window._fusion_parameters_by_method = (
+        parameter_memory_from_json(settings.value(METHOD_PARAMETERS_KEY))
+        if settings.contains(METHOD_PARAMETERS_KEY) else _legacy_parameters(settings))
+    window._registration_parameters_by_method = parameter_memory_from_json(
+        settings.value(REGISTRATION_PARAMETERS_KEY), registration=True)
 
 
 def save_parameter_memories(window) -> None:
-    """Write the three memories (callers sync the live slider first)."""
+    """Write only registry parameters and separate common brightness state."""
     settings = get_settings()
     settings.setValue(BRIGHTNESS_BY_METHOD_KEY, brightness_memory_to_json(
         getattr(window, "_brightness_by_method", {})))
-    settings.setValue(SMOOTHING_BY_METHOD_KEY, smoothing_memory_to_json(
-        getattr(window, "_smoothing_by_method", {})))
-    settings.setValue(KERNEL_BY_MODE_KEY, kernel_memory_to_json(
-        getattr(window, "_kernel_by_mode", {})))
+    settings.setValue(METHOD_PARAMETERS_KEY, parameter_memory_to_json(
+        getattr(window, "_fusion_parameters_by_method", {})))
+    settings.setValue(REGISTRATION_PARAMETERS_KEY, parameter_memory_to_json(
+        getattr(window, "_registration_parameters_by_method", {}), registration=True))
+    for key in (SMOOTHING_BY_METHOD_KEY, KERNEL_BY_MODE_KEY, "fusion/ai_mode",
+                "fusion/dtcwt_levels", "fusion/ofb_depth_smoothing", "fusion/of_blend_smoothing"):
+        settings.remove(key)
 
 
 

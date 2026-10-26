@@ -27,13 +27,13 @@ def stack(tmp_path):
 
 def _save(stack, **kwargs):
     folder, names, images = stack
-    align_cache.save_aligned(folder, names, images, (False, False, True),
+    align_cache.save_aligned(folder, names, images, ('openfocus',),
                              1024, **kwargs)
 
 
 def _load(stack, **kwargs):
     folder, names, _ = stack
-    return align_cache.load_aligned(folder, names, (False, False, True),
+    return align_cache.load_aligned(folder, names, ('openfocus',),
                                     1024, **kwargs)
 
 
