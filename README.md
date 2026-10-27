@@ -55,14 +55,13 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.71.0** — algorithms are now declared in one immutable registry, so a
-> new fusion or registration method appears in rendering, batch, comparison,
-> depth and the CLI from a single descriptor with typed parameters. Every
-> launch also writes its own rotating log with linked task IDs, parameters,
-> timings and full tracebacks, and the feedback ZIP carries the crash report,
-> RAM/GPU facts and dependency versions. Diagnostics now start before Qt or
-> numerical imports, so a startup failure is still recorded. Eight algorithms
-> stay byte-identical to v1.70.0.
+> **v1.72.0** — StackMFF and StackMFF V2 join the fusion list, so ten
+> methods now ship in one install: the original 3D stack network
+> (order-independent, no settings), V2's recurrent model with depth maps
+> (keep the focus order), and the consistently named StackMFF V3. Every
+> method dropdown groups choices under AI, spatial-domain and transform-domain
+> headers, and each method explains itself on hover. V2's blurry soft blend
+> was removed; its reference sampling is untouched.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 

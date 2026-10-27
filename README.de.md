@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.71.0** — Algorithmen werden jetzt in einem unveränderlichen Register deklariert: Eine neue Fusions- oder Registrierungsmethode erscheint mit einem einzigen Deskriptor samt typisierten Parametern in Rendern, Stapel, Vergleich, Tiefe und CLI. Jeder Start schreibt ein eigenes rotierendes Protokoll mit verknüpften Task-IDs, Parametern, Laufzeiten und vollständigen Stacktraces; das Feedback-ZIP enthält Absturzbericht, RAM/GPU-Daten und Abhängigkeitsversionen. Die Diagnose startet vor Qt- und Numerik-Importen, sodass auch ein Startfehler protokolliert wird. Die acht Algorithmen bleiben byte-identisch zu v1.70.0.
+> **v1.72.0** — StackMFF und StackMFF V2 erweitern die Fusionsliste: Zehn Verfahren in einer Installation — das ursprüngliche 3D-Stack-Netz (reihenfolgeunabhängig, ohne Einstellungen), das rekurrente V2-Modell mit Tiefenkarten (Fokusreihenfolge beibehalten) und das einheitlich benannte StackMFF V3. Jede Methodenauswahl gruppiert nach KI-, Orts- und Transformationsbereich und erklärt sich beim Überfahren. Die unscharfe V2-Soft-Mischung wurde entfernt; die Referenzabtastung bleibt unverändert.
 
 <a id="features"></a>
 ## Funktionen
