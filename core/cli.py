@@ -545,7 +545,30 @@ def _run_batch(args, _emit_json=None) -> int:
     return EXIT_OK
 
 
+def _ensure_utf8_stdio() -> None:
+    """Keep non-ASCII stack paths from aborting progress output.
+
+    Windows keeps the locale code page (cp1252 on some hosts) when stdout or
+    stderr is redirected to a file or pipe. A Chinese folder name then raised
+    UnicodeEncodeError inside ``print`` and killed a fusion that had already
+    been requested. Consoles already use UTF-8; only redirected streams are
+    reconfigured, and replacement keeps a broken pipe from hiding the result.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        encoding = (getattr(stream, "encoding", "") or "").replace("-", "").lower()
+        if encoding == "utf8":
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError, AttributeError):
+            pass
+
+
 def run_cli(argv: List[str]) -> int:
+    _ensure_utf8_stdio()
     setup_logging()
     log_session_start()
     with log_operation("cli", args=argv) as operation:

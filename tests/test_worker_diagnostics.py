@@ -274,5 +274,9 @@ def test_successful_video_load_after_corrupt_image_is_not_a_failure(tmp_path, di
 
     assert len(results) == 1 and results[0][0] is True
     assert len(results[0][2]) == 2
-    assert [round(float(image.mean())) for image in results[0][2]] == [60, 100]
+    # MJPG is lossy and its YUV conversion differs per platform/backend.
+    means = [float(image.mean()) for image in results[0][2]]
+    assert abs(means[0] - 60) <= 3 and abs(means[1] - 100) <= 3, means
+    assert means[0] < means[1]
+    assert results[0][2][0].dtype == np.uint8
     _assert_outcome(diagnostics, "stack_load", "completed")
