@@ -5,7 +5,7 @@ into non-selectable section headers, so the main window, batch dialog and
 depth dialog all present the same order and grouping.
 """
 from PyQt6.QtCore import QSignalBlocker, Qt
-from PyQt6.QtGui import QBrush, QPalette
+from PyQt6.QtGui import QBrush, QFont, QPalette
 from PyQt6.QtWidgets import QComboBox
 
 from core.algorithms import fusion_algorithms
@@ -28,8 +28,14 @@ def _add_header(combo, category):
     combo.addItem(trans.t(CATEGORY_KEYS[category]), None)
     item = combo.model().item(combo.count() - 1)
     item.setEnabled(False)
-    font = item.font()
-    font.setBold(True)
+    # Section labels sit a step below the method text so the list stays
+    # readable instead of shouting each header at full size.
+    font = QFont(combo.font())
+    if font.pointSizeF() > 0:
+        font.setPointSizeF(max(6.0, font.pointSizeF() - 1.0))
+    elif font.pixelSize() > 0:
+        font.setPixelSize(max(6, font.pixelSize() - 1))
+    font.setBold(False)
     item.setFont(font)
     palette = combo.palette()
     item.setForeground(QBrush(palette.color(

@@ -573,7 +573,7 @@ PACK = {
     "radio_dct": "DCT",
     "radio_dtcwt": "DTCWT",
     "radio_gfg": "GFG-FGF",
-    "radio_stackmff": "ИИ (StackMFF-V3)",
+    "radio_stackmff": "StackMFF V3",
     "label_ai_mode": "Вывод ИИ",
     "label_ai_mode_hint": "Как нейросеть объединяет кадры",
     "radio_ai_soft": "Мягкое смешивание (взвешенное)",

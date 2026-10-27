@@ -1528,7 +1528,7 @@ EXTRA_TRANSLATIONS = {
         "radio_dtcwt": "DTCWT",
         "radio_gfg": "GFG-FGF",
         "radio_guided_filter": "Filtro guiado",
-        "radio_stackmff": "IA (StackMFF-V3)",
+        "radio_stackmff": "StackMFF V3",
         "label_ai_mode": "Salida de IA",
         "label_ai_mode_hint": "Cómo combina la red neuronal las imágenes",
         "radio_ai_soft": "Mezcla suave (ponderada)",
