@@ -58,6 +58,25 @@ def test_orf_exif_is_read_and_cleaned(tmp_path):
     assert 0x927C not in sub
 
 
+def test_common_formats_supply_their_exif_to_the_stack(tmp_path):
+    """A TIFF/PNG frame must contribute metadata, not only camera RAWs.
+
+    Pillow reports TIFF EXIF through getexif() while info['exif'] stays empty,
+    so a stack of 16-bit TIFF frames exported without camera or exposure data
+    even though every source carried it.
+    """
+    source = tmp_path / "frame.tif"
+    assert image_utils.imwrite_auto(
+        str(source), np.zeros((8, 8, 3), np.uint8),
+        exif=_camera_exif().tobytes())
+    ex = Image.Exif()
+    ex.load(_read_exif_bytes(str(source)))
+    assert ex[272] == "OM-1"
+    assert ex[274] == 1
+    assert 256 not in ex and 273 not in ex
+    assert ex.get_ifd(0x8769)[0xA434] == "OM 90mm F3.5"
+
+
 @pytest.mark.parametrize("ext", [".png", ".tif"])
 @pytest.mark.parametrize("shape", [(37, 53, 3), (37, 53)])
 def test_16bit_export_keeps_depth_pixels_and_exif(tmp_path, monkeypatch, ext, shape):

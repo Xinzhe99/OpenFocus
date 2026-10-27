@@ -10,6 +10,11 @@ The metadata module imports only the Python standard library. Backend and
 capability entry points use `module:callable` strings and load when needed.
 There is no directory scanning, download mechanism, or user plugin installer.
 
+Every merged external contribution is recorded in `CONTRIBUTORS.md`: append the
+person with the merge date, the affected areas and the pull request number, and
+extend that row as more work lands. Code, bug reports, reproduction stacks and
+usability feedback all count.
+
 ## Module boundaries and diagnostics
 
 Keep algorithm metadata and application paths independent of Qt and numerical
