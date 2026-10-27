@@ -95,7 +95,7 @@ def depth_stackmffv2(images, progress_callback=None, should_cancel=None, **param
     from core.depth_map import _measure_stackmffv2
     return _measure_stackmffv2(images, progress_callback, should_cancel,
         model_path=parameters.get('model_path'), use_gpu=parameters.get('use_gpu', False),
-        execution_plan=parameters.get('execution_plan'), mode=parameters['mode'],
+        execution_plan=parameters.get('execution_plan'),
         thread_count=parameters.get('thread_count'),
         resource_preference=parameters.get('resource_preference', 'balanced'))
 

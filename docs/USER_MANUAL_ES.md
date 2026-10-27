@@ -483,13 +483,10 @@ OpenFocus ofrece diez algoritmos de fusión (además de un modo de solo alineaci
   recurrente bidireccional; la red regresa el índice de plano focal y muestrea
   el stack. **Los fotogramas deben mantener su orden de enfoque original** —
   invertir está desactivado
-- **Modo de salida IA**: Duro (predeterminado, regla del artículo) o Suave
-  (mezcla ponderada por probabilidad)
-- **Mapas de profundidad**: compatibles; Suave = capa esperada, Duro = capa muestreada
+- **Mapas de profundidad**: compatibles; informa de la capa muestreada
 - **Ideal para**: barridos de enfoque continuos con un modelo muy pequeño y rápido
-- **Requisitos**: PyTorch; unos 0,05 M de parámetros
-
-### StackMFF-V3 (aprendizaje profundo)
+- **Requisitos**: PyTorch; unos 0,05 M de parámetros; sin ajustes
+### StackMFF V3 (aprendizaje profundo)
 
 - **Algoritmo**: clasificación de origen píxel a píxel (requiere PyTorch). La red
   predice, para cada píxel, de qué imagen de entrada proviene, y después mezcla
@@ -572,7 +569,7 @@ alineados.
 | DCT | Media | Buena | Texturas |
 | DTCWT | Media | Muy buena | Escenas complejas |
 | GFG-FGF | Rápida | Buena | Regiones de enfoque |
-| Fusión por IA (StackMFF-V3) | Lenta (GPU) | Excelente | Máxima calidad |
+| Fusión por IA (StackMFF V3) | Lenta (GPU) | Excelente | Máxima calidad |
 | OpenFocus A | Muy rápida | Muy buena | Pilas cortas, estabilidad de color |
 | OpenFocus B | Muy rápida | Muy buena | Superficies lisas, microscopía |
 | OpenFocus C | Rápida | Muy buena | Sujetos texturados, aspecto natural |
@@ -707,7 +704,7 @@ Accede en **Ajustes → Ajustes de hilos**:
 
 ### Activación de la aceleración por GPU
 
-OpenFocus usa la GPU (CUDA/MPS) solo para el modelo neuronal de IA (StackMFF-V3); los algoritmos clásicos siempre se ejecutan en CPU.
+OpenFocus usa la GPU (CUDA/MPS) solo para el modelo neuronal de IA (StackMFF V3); los algoritmos clásicos siempre se ejecutan en CPU.
 
 - Actívala o desactívala en **Ajustes → Aceleración por GPU**
 - Al desmarcarla, todo se fuerza a la CPU; resulta útil cuando los controladores de la GPU dan problemas
@@ -775,7 +772,7 @@ sustituyen automáticamente.
 
 Todo lo siguiente sobrevive automáticamente al reinicio de la aplicación:
 número de hilos, parámetros de mosaicos, ancho de reducción del registro,
-tamaño de lote de la fusión por IA (StackMFF-V3), la aceleración por GPU, la
+tamaño de lote de la fusión por IA (StackMFF V3), la aceleración por GPU, la
 caché de registro, el idioma de la interfaz, el tamaño de la ventana y la
 distribución de paneles, el formato de exportación al arrastrar y tus pilas
 abiertas recientemente. Los diálogos de ajustes guardan en el momento en que
@@ -881,7 +878,7 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT con registro ECC, 8 hilos
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V3 forzado a CPU con un tamaño de mosaico personalizado
+# StackMFF V3 forzado a CPU con un tamaño de mosaico personalizado
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Lista explícita de archivos; también se aceptan archivos de vídeo como entrada
@@ -1064,7 +1061,7 @@ mayor valor de enfoque (en caso de empate, una medida de región pequeña de
 Sobel 3×3), y los mapas de decisión binarios se suavizan con el filtro guiado
 rápido antes de la mezcla ponderada.
 
-### Fusión por IA (StackMFF-V3)
+### Fusión por IA (StackMFF V3)
 
 Un enfoque de aprendizaje profundo que usa una red neuronal entrenada con
 grandes conjuntos de pares de imágenes multifoco. La red aprende de forma

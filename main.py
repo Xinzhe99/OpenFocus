@@ -3216,14 +3216,13 @@ class OpenFocus(QMainWindow):
         # Update Right Panel
         c = self.right_panel_components
         c.method_group.setTitle(trans.t('group_fusion'))
-        # 下拉框重翻译：按 (代码, i18n 键, 提示键) 重建条目文本
-        from ui.right_panel import fusion_items, alignment_items
-        for i, (_code, key, hint_key) in enumerate(fusion_items()):
-            if i < c.combo_fusion.count():
-                c.combo_fusion.setItemText(i, trans.t(key))
-                if hint_key:
-                    c.combo_fusion.setItemData(
-                        i, trans.t(hint_key), Qt.ItemDataRole.ToolTipRole)
+        # Rebuild the grouped method list in the new language; headers and
+        # per-method hints are regenerated together, and the selection follows
+        # the method id rather than the row index.
+        from ui.right_panel import alignment_items
+        from ui.algorithm_combo import retranslate_fusion_combo
+        retranslate_fusion_combo(c.combo_fusion, none_label="radio_no_fusion",
+                                 none_hint="radio_no_fusion_hint")
         # set_panel_label elides to the panel width and keeps the full string
         # in the tooltip; plain setText here re-broke the row on language
         # switch after the panel had already fitted it.

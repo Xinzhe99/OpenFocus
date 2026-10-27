@@ -484,13 +484,10 @@ Cada um tem características próprias, adequadas a diferentes tipos de imagem.
   recorrente bidirecional; a rede regride o índice do plano focal e amostra o
   stack. **Os fotogramas devem manter a ordem de foco original** — inverter
   está desativado
-- **Saída de IA**: Dura (padrão, regra do artigo) ou Suave (mistura ponderada
-  por probabilidade)
-- **Mapas de profundidade**: suportados; Suave = camada esperada, Dura = camada amostrada
+- **Mapas de profundidade**: suportados; informa a camada amostrada
 - **Melhor para**: varreduras de foco contínuas com um modelo muito pequeno e rápido
-- **Requisitos**: PyTorch; cerca de 0,05 M de parâmetros
-
-### StackMFF-V3 (Aprendizado profundo)
+- **Requisitos**: PyTorch; cerca de 0,05 M de parâmetros; sem ajustes
+### StackMFF V3 (Aprendizado profundo)
 
 - **Algoritmo**: classificação da origem pixel a pixel (requer PyTorch). A rede
   prevê, para cada pixel, de qual quadro de entrada ele vem e depois mistura os
@@ -570,7 +567,7 @@ a qualidade do registro ou exportar quadros alinhados.
 | DCT | Média | Boa | Texturas |
 | DTCWT | Média | Muito boa | Cenas complexas |
 | GFG-FGF | Rápida | Boa | Regiões de foco |
-| Fusão por IA (StackMFF-V3) | Lenta (GPU) | Excelente | Melhor qualidade |
+| Fusão por IA (StackMFF V3) | Lenta (GPU) | Excelente | Melhor qualidade |
 | OpenFocus A | Muito rápida | Muito boa | Pilhas curtas, estabilidade de cor |
 | OpenFocus B | Muito rápida | Muito boa | Superfícies lisas, microscopia |
 | OpenFocus C | Rápida | Muito boa | Assuntos texturizados, aparência natural |
@@ -708,7 +705,7 @@ Acesse em **Configurações → Configurações de threads**:
 
 ### Aceleração por GPU
 
-O OpenFocus usa a GPU (CUDA/MPS) apenas para o modelo neural de IA (StackMFF-V3);
+O OpenFocus usa a GPU (CUDA/MPS) apenas para o modelo neural de IA (StackMFF V3);
 algoritmos clássicos sempre rodam na CPU.
 
 - Alterne em **Configurações → Aceleração por GPU**
@@ -774,7 +771,7 @@ entradas obsoletas são substituídas automaticamente.
 
 Tudo o que segue sobrevive automaticamente a uma reinicialização do aplicativo:
 número de threads, parâmetros de blocos, largura de redução do registro, tamanho do
-lote da fusão por IA (StackMFF-V3), a opção de aceleração por GPU, a opção do cache de
+lote da fusão por IA (StackMFF V3), a opção de aceleração por GPU, a opção do cache de
 registro, o idioma da interface, o tamanho da janela/leiaute dos painéis, o formato de
 arrastar e exportar e as pilhas abertas recentemente. Os diálogos de configuração
 salvam no momento em que você confirma; tudo também é salvo quando o aplicativo
@@ -879,7 +876,7 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT with ECC registration, 8 threads
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V3 forced to CPU with a custom tile size
+# StackMFF V3 forced to CPU with a custom tile size
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Explicit file list; video files are also accepted as input
@@ -1060,7 +1057,7 @@ escolhe o quadro com o maior valor de foco (empates: medida de pequena região c
 3×3), e os mapas de decisão binária são suavizados pelo filtro guiado rápido antes da
 mistura ponderada.
 
-### Fusão por IA (StackMFF-V3)
+### Fusão por IA (StackMFF V3)
 
 Uma abordagem de aprendizado profundo que usa uma rede neural treinada em grandes
 conjuntos de pares de imagens multifoco. A rede aprende estratégias de fusão ótimas

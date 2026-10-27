@@ -1,16 +1,10 @@
 """StackMFF V2 back-end: per-layer focus estimation plus cross-layer regression.
 
 The stack's focus order is meaningful: a bidirectional recurrent layer reads
-it, so the frames must stay in acquisition order. Two output modes consume the
-normalised focus probabilities:
-
-* ``soft`` — probability-weighted blend of the source frames (an extension;
-  the probabilities sum to one along the stack).
-* ``hard`` — the reference fusion rule: the depth map is min-max normalised,
-  scaled to the stack length and the nearest frame is sampled.
-
-The same probabilities drive the depth-map measure: soft reports the expected
-layer position, hard the sampled layer.
+it, so the frames must stay in acquisition order. Fusion follows the reference
+rule exactly: the expected layer is min-max normalised over the padded
+inference, scaled to the stack length and the nearest source frame is sampled.
+The same sampled layer feeds the depth-map measure.
 """
 import os
 from contextlib import nullcontext
@@ -22,14 +16,8 @@ from utils.image_utils import fuse_output_dtype
 
 PAD_ALIGN = 32
 DEFAULT_WEIGHTS = 'weights/stackmff_v2_final.pth'
-VALID_MODES = ('soft', 'hard')
 _ALGORITHM = 'stackmffv2'
 _CACHE = None
-
-
-def normalize_mode(mode):
-    mode = str(mode or 'hard').strip().lower()
-    return mode if mode in VALID_MODES else 'hard'
 
 
 def _model_and_device(model_path, use_gpu):
@@ -100,34 +88,25 @@ def _depth_from(probs, n):
     return ((expected - low) / span).astype(np.float32)
 
 
-def _blend(probs, frames, index, mode, should_cancel=None):
-    """Apply probabilities (soft) or the sampled index (hard) to the frames."""
+def _sample(frames, index, should_cancel=None):
+    """Reference output: copy the sampled source frame at every pixel."""
+    common.cancel(should_cancel)
     stack = np.stack(frames).astype(np.float32, copy=False)
     if stack.ndim == 3:
         stack = stack[..., None]
     h, w = stack.shape[1:3]
-    if mode == 'hard':
-        rows = np.arange(h)[:, None]
-        cols = np.arange(w)[None, :]
-        out = stack[index, rows, cols]
-    else:
-        out = np.empty((h, w, stack.shape[-1]), np.float32)
-        # Row blocks bound the temporary to N x rows x W x C floats.
-        for start in range(0, h, 256):
-            common.cancel(should_cancel)
-            out[start:start + 256] = (
-                probs[:, start:start + 256, :, None]
-                * stack[:, start:start + 256]).sum(axis=0)
-        common.cancel(should_cancel)
+    rows = np.arange(h)[:, None]
+    cols = np.arange(w)[None, :]
+    out = stack[index, rows, cols]
+    common.cancel(should_cancel)
     return out[..., 0] if out.shape[-1] == 1 else out
 
 
-def infer(frames, model_path, use_gpu, mode='hard', should_cancel=None,
+def infer(frames, model_path, use_gpu, should_cancel=None,
           execution_plan=None, thread_count=None,
           resource_preference='balanced'):
     """Return (fused pixels, depth 0-1, index 0..N-1) for one whole tile."""
     common.cancel(should_cancel)
-    mode = normalize_mode(mode)
     out_dtype = fuse_output_dtype(frames)
     normalized = common.normalized_frames(frames)
     n = len(normalized)
@@ -143,11 +122,10 @@ def infer(frames, model_path, use_gpu, mode='hard', should_cancel=None,
     # the edge padding changes the extrema, so keep the reference order.
     depth_full = _depth_from(probs, n)
     index_full = np.clip(np.round(depth_full * (n - 1)).astype(np.int64), 0, n - 1)
-    cropped = probs[:, :h, :w]
     depth = depth_full[:h, :w]
     index = index_full[:h, :w]
-    fused = _blend(cropped, normalized, index, mode, should_cancel)
-    del probs, cropped, depth_full, index_full
+    fused = _sample(normalized, index, should_cancel)
+    del probs, depth_full, index_full
     if out_dtype is np.uint8:
         fused = np.clip(np.round(fused), 0, 255).astype(np.uint8)
     else:
@@ -157,7 +135,7 @@ def infer(frames, model_path, use_gpu, mode='hard', should_cancel=None,
 
 
 def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
-                    mode='hard', should_cancel=None, progress_callback=None,
+                    should_cancel=None, progress_callback=None,
                     thread_count=None, resource_preference='balanced',
                     execution_plan=None, **kwargs):
     """Whole-stack fusion; the caller may already hold the heavy-job lease."""
@@ -173,7 +151,7 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
         if progress_callback is not None:
             progress_callback(0, 1)
         fused, _depth, _index = infer(
-            frames, model_path, use_gpu, mode=mode,
+            frames, model_path, use_gpu,
             should_cancel=should_cancel, execution_plan=execution_plan,
             thread_count=thread_count,
             resource_preference=resource_preference)
@@ -183,17 +161,13 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
         return fused
 
 
-def depth_positions(images, model_path, use_gpu, mode='hard',
-                    should_cancel=None, execution_plan=None, thread_count=None,
+def depth_positions(images, model_path, use_gpu, should_cancel=None,
+                    execution_plan=None, thread_count=None,
                     resource_preference='balanced'):
-    """Layer positions in 0..N-1 for the depth-map pipeline."""
-    mode = normalize_mode(mode)
-    fused, depth, index = infer(
-        list(images), model_path, use_gpu, mode=mode,
+    """Sampled layer positions in 0..N-1 for the depth-map pipeline."""
+    fused, _depth, index = infer(
+        list(images), model_path, use_gpu,
         should_cancel=should_cancel, execution_plan=execution_plan,
         thread_count=thread_count, resource_preference=resource_preference)
     del fused
-    n = len(images)
-    if mode == 'hard':
-        return index.astype(np.float32)
-    return (depth * (n - 1)).astype(np.float32)
+    return index.astype(np.float32)

@@ -431,12 +431,10 @@ OpenFocus 提供十种融合算法（外加"仅对齐"的配准模式），各�
 
 - **算法**：逐层清晰度估计 + 双向循环层跨层建模；网络回归对焦层索引并从栈中取样。
   **必须保持原始对焦顺序**——该方法已禁用反序
-- **AI 输出方式**：硬融合（默认，与论文一致）或软融合（按概率加权，过渡更平滑）
-- **深度图**：支持；软融合给出期望层位，硬融合给出取样层位
+- **深度图**：支持；给出取样的对焦层
 - **适用**：连续对焦扫描，且需要极小、快速模型的场景
-- **要求**：PyTorch；约 0.05M 参数
-
-### StackMFF-V3（深度学习）
+- **要求**：PyTorch；约 0.05M 参数；无需参数
+### StackMFF V3（深度学习）
 
 - **算法**：逐像素来源分类（需要 PyTorch）。网络为每个像素预测它最可能
   来自输入栈中的哪一帧，再按概率混合，或直接取该帧
@@ -505,11 +503,11 @@ A/B/C 两者都默认开启（它们没有内置曝光标定）；其余算法�
 | DCT | 中 | 好 | 纹理 |
 | DTCWT | 中 | 很好 | 复杂场景 |
 | GFG-FGF | 快 | 好 | 焦点区域 |
-| AI 融合（StackMFF-V3） | 慢（GPU） | 极好 | 最高质量 |
+| AI 融合（StackMFF V3） | 慢（GPU） | 极好 | 最高质量 |
 | OpenFocus A | 极快 | 很好 | 短栈、色彩稳定 |
 | OpenFocus B | 极快 | 很好 | 平滑表面、显微 |
 | OpenFocus C | 快 | 很好 | 纹理题材、观感自然 |
-| AI 融合（StackMFF-V3） | 慢（GPU） | 极好 | 最高质量 |
+| AI 融合（StackMFF V3） | 慢（GPU） | 极好 | 最高质量 |
 
 打开 **工具 → 方法对比**，可分别调整多个方法的参数。窗口变窄时，每个方法的
 名称、参数标签和输入框作为整体换行。修改后自动更新预览。
@@ -682,7 +680,7 @@ A/B/C 两者都默认开启（它们没有内置曝光标定）；其余算法�
 
 ### GPU 加速开关
 
-OpenFocus 的 AI 神经网络模型（StackMFF-V3）可使用 GPU（CUDA/MPS）；经典算法和应用内配准使用 CPU。底层 API 显式选择的 CuPy 配准属于独立数值后端。
+OpenFocus 的 AI 神经网络模型（StackMFF V3）可使用 GPU（CUDA/MPS）；经典算法和应用内配准使用 CPU。底层 API 显式选择的 CuPy 配准属于独立数值后端。
 
 - 通过 **设置 → GPU 加速** 开关切换
 - 取消勾选后全部强制使用 CPU——GPU 驱动异常时非常有用
@@ -830,7 +828,7 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT + ECC 配准，8 线程
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V3 强制 CPU + 自定义瓦片尺寸
+# StackMFF V3 强制 CPU + 自定义瓦片尺寸
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # 显式文件列表；也接受视频文件作为输入
@@ -924,7 +922,7 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 - 尝试其他融合算法
 - 增大核大小获得更平滑的结果
 
-#### StackMFF-V3 不可用
+#### StackMFF V3 不可用
 
 - 安装 PyTorch：`pip install torch torchvision`
 - GPU 加速请安装 CUDA 版 PyTorch
@@ -948,7 +946,7 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 - 在 **设置 → 线程数设置** 中增加线程数
 - 使用更强的 CPU
 - 降低图像分辨率
-- 改用更简单的融合算法（引导滤波代替 StackMFF-V3）
+- 改用更简单的融合算法（引导滤波代替 StackMFF V3）
 
 #### Windows 首次启动弹出 SmartScreen 警告
 
@@ -989,7 +987,7 @@ DTCWT 提供图像的多尺度、多方向分解。它捕获不同尺度和方�
 
 实现付宏语等（2024）：粗略聚焦图 |I − mean(I)| 叠加类高斯四邻域梯度——3×3 模板 T = [1 2 1; 2 4 2; 1 2 1]/16 得 P = I⊗T，G = (|I(x±1,y) − P|)/2 + (|I(x,y±1) − P|)/2，低于 T0 = 0.005 的置零——再经快速引导滤波优化。每个像素取聚焦值最大的帧（并列时用 3×3 Sobel 小区域度量），二值决策图经快速引导滤波平滑后加权融合。
 
-### AI 融合（StackMFF-V3）
+### AI 融合（StackMFF V3）
 
 基于深度学习的方法，使用在大规模多焦点图像对上训练的神经网络。网络自动学习最优融合策略，配置得当时可提供当前最先进的结果。
 

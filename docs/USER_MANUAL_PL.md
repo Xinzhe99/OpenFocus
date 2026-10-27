@@ -470,13 +470,10 @@ OpenFocus oferuje dziesięć algorytmów fuzji (oraz tryb tylko wyrównania). Ka
   dwukierunkową warstwę rekurencyjną; sieć regresuje indeks płaszczyzny
   ogniskowej i próbkuje stos. **Klatki muszą zachować pierwotną kolejność
   ostrości** — odwracanie jest wyłączone
-- **Wyjście AI**: Twarde (domyślne, reguła z artykułu) lub Miękkie
-  (mieszanie ważone prawdopodobieństwem)
-- **Mapy głębi**: obsługiwane; Miękkie = oczekiwana warstwa, Twarde = wybrana warstwa
+- **Mapy głębi**: obsługiwane; zwraca wybraną warstwę ogniskową
 - **Najlepsze dla**: ciągłych skanów ostrości z bardzo małym, szybkim modelem
-- **Wymagania**: PyTorch; około 0,05 mln parametrów
-
-### StackMFF-V3 (uczenie głębokie)
+- **Wymagania**: PyTorch; około 0,05 mln parametrów; bez ustawień
+### StackMFF V3 (uczenie głębokie)
 
 - **Algorytm**: klasyfikacja źródła dla każdego piksela (wymaga PyTorch).
   Sieć przewiduje dla każdego piksela, z której klatki wejściowej pochodzi, a
@@ -557,7 +554,7 @@ jakości rejestracji lub wyeksportowania wyrównanych klatek.
 | DCT | Średnia | Dobra | Tekstury |
 | DTCWT | Średnia | Bardzo dobra | Złożone sceny |
 | GFG-FGF | Szybki | Dobra | Obszary ostrości |
-| Fuzja AI (StackMFF-V3) | Wolna (GPU) | Doskonała | Najwyższa jakość |
+| Fuzja AI (StackMFF V3) | Wolna (GPU) | Doskonała | Najwyższa jakość |
 | OpenFocus A | Bardzo szybki | Bardzo dobra | Krótkie stosy, stabilność kolorów |
 | OpenFocus B | Bardzo szybki | Bardzo dobra | Gładkie powierzchnie, mikroskopia |
 | OpenFocus C | Szybki | Bardzo dobra | Obiekty teksturowane, naturalny wygląd |
@@ -693,7 +690,7 @@ Dostęp przez **Ustawienia → Ustawienia wątków**:
 
 ### Przełącznik akceleracji GPU
 
-OpenFocus używa GPU (CUDA/MPS) tylko dla neuronowego modelu AI (StackMFF-V3); algorytmy klasyczne zawsze działają na CPU.
+OpenFocus używa GPU (CUDA/MPS) tylko dla neuronowego modelu AI (StackMFF V3); algorytmy klasyczne zawsze działają na CPU.
 
 - Przełącznik w **Ustawienia → Akceleracja GPU**
 - Odznaczenie wymusza wszystko na CPU — przydatne, gdy sterowniki GPU sprawiają problemy
@@ -758,7 +755,7 @@ rejestracji**; nieaktualne wpisy są automatycznie zastępowane.
 
 Wszystkie poniższe ustawienia przetrwają automatycznie restart aplikacji:
 liczba wątków, parametry kafelków, szerokość zmniejszania przy rejestracji, rozmiar
-partii fuzji AI (StackMFF-V3), przełącznik akceleracji GPU, przełącznik pamięci
+partii fuzji AI (StackMFF V3), przełącznik akceleracji GPU, przełącznik pamięci
 rejestracji, język interfejsu, rozmiar okna i układ paneli, format eksportu przez
 przeciąganie oraz ostatnio otwierane stosy. Okna ustawień zapisują zmiany w chwili
 potwierdzenia; wszystko jest też zapisywane przy zamknięciu aplikacji. Preferencje
@@ -861,7 +858,7 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT z rejestracją ECC, 8 wątków
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V3 wymuszony na CPU z własnym rozmiarem kafelka
+# StackMFF V3 wymuszony na CPU z własnym rozmiarem kafelka
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Jawna lista plików; pliki wideo są również akceptowane jako wejście
@@ -1036,7 +1033,7 @@ zachowują zarówno informacje o teksturze, jak i o strukturze.
 Implementuje Fu i in. (2024): zgrubna mapa ostrości |I − mean(I)| jest wzbogacana
 gradientem quasi-gaussowskim w czterech sąsiedztwach — szablon 3×3 T = [1 2 1; 2 4 2; 1 2 1]/16 daje P = I⊗T, a G = (|I(x±1,y) − P|)/2 + (|I(x,y±1) − P|)/2, przy czym wartości poniżej T0 = 0.005 są odrzucane — a następnie udokładniana szybkim filtrem sterowanym. Piksele wybierają klatkę o największej wartości ostrości (remisy: miara małego obszaru 3×3 Sobela), a binarne mapy decyzji są wygładzane szybkim filtrem sterowanym przed ważonym mieszaniem.
 
-### Fuzja AI (StackMFF-V3)
+### Fuzja AI (StackMFF V3)
 
 Podejście oparte na uczeniu głębokim, wykorzystujące sieć neuronową trenowaną na
 dużych zbiorach par obrazów o wielu punktach ostrości. Sieć sama uczy się optymalnych
