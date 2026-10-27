@@ -210,11 +210,9 @@ def _plan_neural_depth(images, model_path, use_gpu, thread_count,
 
 def _measure_stackmffv2(images, progress, should_cancel,
                         model_path=None, use_gpu=False, execution_plan=None,
-                        mode="hard", thread_count=None,
-                        resource_preference='balanced'):
-    """Expected layer (soft) or sampled layer (hard) from the V2 network."""
-    from fusion_methods.stackmff_v2 import (DEFAULT_WEIGHTS, depth_positions,
-                                             normalize_mode)
+                        thread_count=None, resource_preference='balanced'):
+    """Sampled focal layer from the V2 network."""
+    from fusion_methods.stackmff_v2 import DEFAULT_WEIGHTS, depth_positions
     from utils.weights import weights_path
 
     if model_path is None:
@@ -222,7 +220,7 @@ def _measure_stackmffv2(images, progress, should_cancel,
     n = len(images)
     _tick(progress, 0, 1, should_cancel)
     result = depth_positions(
-        images, model_path, use_gpu, mode=normalize_mode(mode),
+        images, model_path, use_gpu,
         should_cancel=should_cancel, execution_plan=execution_plan,
         thread_count=thread_count, resource_preference=resource_preference)
     _tick(progress, 1, 1, should_cancel)

@@ -474,8 +474,8 @@ class DepthMapDialog(QDialog):
         self._sync_registration_controls()
 
         self.method_combo = QComboBox()
-        for spec in depth_algorithms():
-            self.method_combo.addItem(trans.t(spec.label_key), spec.id)
+        from ui.algorithm_combo import fill_fusion_combo
+        fill_fusion_combo(self.method_combo, depth_algorithms())
         default = self._current_window_method()
         i = self.method_combo.findData(default)
         self.method_combo.setCurrentIndex(max(0, i))

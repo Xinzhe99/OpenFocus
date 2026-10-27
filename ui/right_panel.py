@@ -200,8 +200,10 @@ def create_right_panel() -> RightPanelComponents:
     method_group = QGroupBox(trans.t('group_fusion'))
     method_layout = QVBoxLayout(method_group)
     # 融合算法：下拉单选（一项永远选中，与 CLI -m 的单选语义一致）
+    from ui.algorithm_combo import fill_fusion_combo
     combo_fusion = QComboBox()
-    _fill_combo(combo_fusion, fusion_items())
+    fill_fusion_combo(combo_fusion, none_label="radio_no_fusion",
+                      none_hint="radio_no_fusion_hint")
     idx = combo_fusion.findData(FUSION_DEFAULT)
     combo_fusion.setCurrentIndex(max(0, idx))
     # "?" sits on the dropdown's row: a row of its own wasted half the

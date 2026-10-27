@@ -491,13 +491,10 @@ Elk heeft andere eigenschappen en past bij andere soorten afbeeldingen.
   recurrente laag; het netwerk regresseert de focusindex en bemonstert de
   stapel. **De beelden moeten in hun oorspronkelijke focusvolgorde blijven** —
   omkeren is uitgeschakeld
-- **AI-uitvoer**: Hard (standaard, de referentieregel) of Zacht
-  (kansgewogen menging)
-- **Dieptekaarten**: ondersteund; Zacht = verwachte laag, Hard = bemonsterde laag
+- **Dieptekaarten**: ondersteund; meldt de bemonsterde focuslaag
 - **Het best voor**: continue focusreeksen met een zeer klein, snel model
-- **Vereisten**: PyTorch; circa 0,05M parameters
-
-### StackMFF-V3 (deep learning)
+- **Vereisten**: PyTorch; circa 0,05M parameters; geen instellingen
+### StackMFF V3 (deep learning)
 
 - **Algoritme**: classificatie van de bron per pixel (vereist PyTorch). Het
   netwerk voorspelt voor elke pixel uit welk invoerframe die komt en mengt de
@@ -580,7 +577,7 @@ exporteren.
 | DCT | Gemiddeld | Goed | Texture |
 | DTCWT | Gemiddeld | Zeer goed | Complexe scènes |
 | GFG-FGF | Snel | Goed | Focusgebieden |
-| AI-fusie (StackMFF-V3) | Langzaam (GPU) | Uitstekend | Beste kwaliteit |
+| AI-fusie (StackMFF V3) | Langzaam (GPU) | Uitstekend | Beste kwaliteit |
 | OpenFocus A | Zeer snel | Zeer goed | Korte stapels, kleurstabiliteit |
 | OpenFocus B | Zeer snel | Zeer goed | Gladde oppervlakken, microscopie |
 | OpenFocus C | Snel | Zeer goed | Getextureerde onderwerpen, natuurlijke uitstraling |
@@ -722,7 +719,7 @@ Bereikbaar via **Instellingen → Threadinstellingen**:
 ### GPU-versnelling
 
 OpenFocus gebruikt de GPU (CUDA/MPS) alleen voor het neurale AI-model
-(StackMFF-V3); klassieke algoritmen draaien altijd op de CPU.
+(StackMFF V3); klassieke algoritmen draaien altijd op de CPU.
 
 - Schakel via **Instellingen → GPU-versnelling**
 - Uitvinken dwingt alles naar de CPU — handig als GPU-stuurprogramma's problemen geven
@@ -789,7 +786,7 @@ verouderde items worden automatisch vervangen.
 
 Al het volgende blijft automatisch bewaard na een herstart van de toepassing:
 het aantal threads, de tegelparameters, de verkleiningsbreedte voor registratie,
-de batchgrootte van AI-fusie (StackMFF-V3), de schakelaar voor GPU-versnelling,
+de batchgrootte van AI-fusie (StackMFF V3), de schakelaar voor GPU-versnelling,
 de schakelaar voor de registratiecache, de interfacetaal, de venstergrootte en
 paneelindeling, het sleepformaat voor exporteren en je recent geopende stapels.
 Instellingenvensters slaan op zodra je ze bevestigt; alles wordt ook opgeslagen
@@ -893,7 +890,7 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT with ECC registration, 8 threads
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V3 forced to CPU with a custom tile size
+# StackMFF V3 forced to CPU with a custom tile size
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Explicit file list; video files are also accepted as input
@@ -1074,7 +1071,7 @@ kiest het frame met de grootste scherptewaarde (bij gelijke stand: een 3×3
 Sobel-maat voor kleine gebieden), en de binaire besliskaarten worden met de
 snelle guided filter vervaagd vóór de gewogen menging.
 
-### AI-fusie (StackMFF-V3)
+### AI-fusie (StackMFF V3)
 
 Een deep-learningbenadering met een neuraal netwerk dat is getraind op grote
 datasets van multi-focus-beeldparen. Het netwerk leert automatisch optimale

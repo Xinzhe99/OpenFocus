@@ -483,14 +483,11 @@ ha caratteristiche diverse, adatte a tipi di immagine differenti.
   ricorrente bidirezionale; la rete regredisce l'indice del piano focale e
   campiona lo stack. **I fotogrammi devono mantenere l'ordine di messa a fuoco
   originale** — l'inversione è disattivata
-- **Uscita IA**: Dura (predefinita, regola dell'articolo) o Morbida (miscela
-  pesata dalle probabilità)
-- **Mappe di profondità**: supportate; Morbida = livello atteso, Dura = livello campionato
+- **Mappe di profondità**: supportate; riporta il livello campionato
 - **Ideale per**: scansioni di messa a fuoco continue con un modello molto
   piccolo e veloce
-- **Requisiti**: PyTorch; circa 0,05 M di parametri
-
-### StackMFF-V3 (apprendimento profondo)
+- **Requisiti**: PyTorch; circa 0,05 M di parametri; nessuna impostazione
+### StackMFF V3 (apprendimento profondo)
 
 - **Algoritmo**: classificazione della sorgente pixel per pixel (richiede PyTorch). La
   rete prevede, per ogni pixel, da quale frame di input proviene, poi miscela i frame in
@@ -570,7 +567,7 @@ qualità della registrazione o esportare i frame allineati.
 | DCT | Media | Buona | Texture |
 | DTCWT | Media | Molto buona | Scene complesse |
 | GFG-FGF | Veloce | Buona | Regioni a fuoco |
-| AI (StackMFF-V3) | Lenta (GPU) | Eccellente | Massima qualità |
+| AI (StackMFF V3) | Lenta (GPU) | Eccellente | Massima qualità |
 | OpenFocus A | Molto veloce | Molto buona | Stack brevi, stabilità dei colori |
 | OpenFocus B | Molto veloce | Molto buona | Superfici lisce, microscopia |
 | OpenFocus C | Veloce | Molto buona | Soggetti texturizzati, aspetto naturale |
@@ -706,7 +703,7 @@ Accesso tramite **Impostazioni → Impostazioni thread**:
 
 ### Interruttore dell'accelerazione GPU
 
-OpenFocus usa la GPU (CUDA/MPS) solo per il modello neurale AI (StackMFF-V3); gli algoritmi classici girano sempre sulla CPU.
+OpenFocus usa la GPU (CUDA/MPS) solo per il modello neurale AI (StackMFF V3); gli algoritmi classici girano sempre sulla CPU.
 
 - Interruttore in **Impostazioni → Accelerazione GPU**
 - Deselezionandolo, tutto viene forzato sulla CPU — utile quando i driver della GPU causano problemi
@@ -771,7 +768,7 @@ voci obsolete vengono sostituite automaticamente.
 
 Tutte le voci seguenti sopravvivono automaticamente al riavvio dell'applicazione: numero
 di thread, parametri dei tasselli, larghezza di ridimensionamento per la registrazione,
-dimensione batch della fusione AI (StackMFF-V3), interruttore dell'accelerazione GPU,
+dimensione batch della fusione AI (StackMFF V3), interruttore dell'accelerazione GPU,
 interruttore della cache di registrazione, lingua dell'interfaccia, dimensioni della
 finestra e disposizione dei pannelli, formato di esportazione per trascinamento e stack
 aperti di recente. Le finestre delle impostazioni salvano nel momento in cui confermi;
@@ -875,7 +872,7 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT with ECC registration, 8 threads
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V3 forced to CPU with a custom tile size
+# StackMFF V3 forced to CPU with a custom tile size
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Explicit file list; video files are also accepted as input
@@ -1053,7 +1050,7 @@ con il valore di fuoco maggiore (in caso di parità: misura di piccola regione S
 e le mappe di decisione binarie vengono levigate dal filtro guidato rapido prima della
 miscelazione pesata.
 
-### Fusione AI (StackMFF-V3)
+### Fusione AI (StackMFF V3)
 
 Un approccio di apprendimento profondo basato su una rete neurale addestrata su grandi
 insiemi di coppie di immagini multi-fuoco. La rete apprende automaticamente strategie di

@@ -59,6 +59,9 @@ class FusionAlgorithm:
     # The stack's own focus order carries meaning (a recurrent model reads it);
     # reverse/dir-order controls must not reorder the frames.
     order_sensitive: bool = False
+    # UI grouping: 'ai', 'spatial' or 'transform'. Contributing methods declare
+    # their family so every selector can present them together.
+    category: str = 'spatial'
 
 
 @dataclass(frozen=True)
@@ -177,6 +180,8 @@ def register_fusion(spec):
             raise ValueError(f'{field} must be boolean')
     if spec.sort_frames and spec.order_sensitive:
         raise ValueError('A sortable method cannot also require the input order')
+    if spec.category not in ('ai', 'spatial', 'transform'):
+        raise ValueError(f'Invalid fusion category: {spec.category!r}')
     if spec.weights is not None:
         if (not isinstance(spec.weights, str)
                 or not spec.weights.startswith('weights/')
@@ -311,20 +316,19 @@ _K_GFG = ParameterSpec('kernel_size', 'label_kernel_gfg', 7, 1, 51, 2, odd=True)
 _K_OF = ParameterSpec('kernel_size', 'label_kernel_of', 11, 1, 21, 2, odd=True)
 _LEVELS = ParameterSpec('N', 'compare_levels', 4, 1, 6)
 _MODE = ParameterSpec('mode', 'label_ai_mode', 'soft', choices=('soft', 'hard'), choice_labels=('radio_ai_soft', 'radio_ai_hard'))
-_MODE_HARD = ParameterSpec('mode', 'label_ai_mode', 'hard', choices=('soft', 'hard'), choice_labels=('radio_ai_soft', 'radio_ai_hard'))
 _ADAPTER = 'core.algorithm_adapters:'
 _FUSION_CLASS = 'core.multi_focus_fusion:MultiFocusFusion.'
 
-register_fusion(FusionAlgorithm('stackmffv3', 'radio_stackmff', 'StackMFF V3', 'StackMFFV3', _FUSION_CLASS + '_fuse_stackmffv3', (_MODE,), DepthSpec(_ADAPTER + 'depth_neural', (_MODE,)), hint_key='radio_stackmff_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, roi=_ADAPTER + 'roi_neural', promotes_color=True, tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_ai_batched', depth_planner='core.depth_map:_plan_neural_depth', weights='weights/stackmff_v3_final.pth'))
-register_fusion(FusionAlgorithm('stackmff', 'radio_stackmff_v1', 'StackMFF', 'StackMFF', _FUSION_CLASS + '_fuse_stackmff', (), hint_key='radio_stackmff_v1_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, promotes_color=True, tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_stackmff', weights='weights/stackmff_final.pth'))
-register_fusion(FusionAlgorithm('stackmffv2', 'radio_stackmff_v2', 'StackMFF V2', 'StackMFFV2', _FUSION_CLASS + '_fuse_stackmffv2', (_MODE_HARD,), DepthSpec(_ADAPTER + 'depth_stackmffv2', (_MODE_HARD,)), hint_key='radio_stackmff_v2_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, order_sensitive=True, promotes_color=True, tile_decider=_ADAPTER + 'stackmffv2_needs_tiles', depth_planner='core.depth_map:_plan_stackmffv2_depth', weights='weights/stackmff_v2_final.pth'))
-register_fusion(FusionAlgorithm('openfocus_a', 'radio_openfocus_a', 'OpenFocus A', 'OpenFocusA', _FUSION_CLASS + '_fuse_openfocus_a', (_K_OF, ParameterSpec('blend_smoothing', 'label_blend_smoothing', 2.0, 0, 8, .2, 1)), hint_key='radio_openfocus_a_hint', sort_frames=True, roi=_ADAPTER + 'roi_openfocus_a', default_base_correct=True))
-register_fusion(FusionAlgorithm('openfocus_b', 'radio_openfocus_b', 'OpenFocus B', 'OpenFocusB', _FUSION_CLASS + '_fuse_openfocus_b', (_K_OF, ParameterSpec('depth_smoothing', 'label_depth_smoothing', 1.2, 0, 8, .2, 1)), DepthSpec(_ADAPTER + 'depth_openfocus_b', (_K_OF,)), hint_key='radio_openfocus_b_hint', sort_frames=True, roi=_ADAPTER + 'roi_openfocus_b', default_base_correct=True))
-register_fusion(FusionAlgorithm('openfocus_c', 'radio_openfocus_c', 'OpenFocus C', 'OpenFocusC', _FUSION_CLASS + '_fuse_openfocus_c', (ParameterSpec('blend_smoothing', 'label_blend_smoothing', 3.0, 0, 8, .2, 1),), DepthSpec(_ADAPTER + 'depth_openfocus_c', (ParameterSpec('kernel_size', 'depth_kernel_energy', 11, 1, 21, 2, odd=True),)), hint_key='radio_openfocus_c_hint', sort_frames=True, roi=_ADAPTER + 'roi_openfocus_c', default_base_correct=True))
-register_fusion(FusionAlgorithm('guided_filter', 'radio_guided_filter', 'Guided Filter', 'GuidedFilter', _FUSION_CLASS + '_fuse_guided_filter', (_K_GUIDED,), hint_key='radio_guided_filter_hint', environment=_FUSION_CLASS + '_validate_spatial_environment', parallel_frames=True, roi=_ADAPTER + 'roi_guided', promotes_color=True))
-register_fusion(FusionAlgorithm('dct', 'radio_dct', 'DCT', 'DCT', _FUSION_CLASS + '_fuse_dct', (_K_DCT,), DepthSpec(_ADAPTER + 'depth_dct', (_K_DCT,)), environment=_FUSION_CLASS + '_validate_dct_environment', hint_key='radio_dct_hint', roi=_ADAPTER + 'roi_dct', promotes_color=True))
-register_fusion(FusionAlgorithm('dtcwt', 'radio_dtcwt', 'DTCWT', 'DTCWT', _FUSION_CLASS + '_fuse_dtcwt', (_LEVELS,), DepthSpec(_ADAPTER + 'depth_dtcwt', (_LEVELS,)), environment=_FUSION_CLASS + '_validate_transform_environment', hint_key='radio_dtcwt_hint', resource_estimator=_ADAPTER + 'dtcwt_resources', parallel_frames=True, ordered_plan=True, roi=_ADAPTER + 'roi_dtcwt', promotes_color=True, tile_decider=_ADAPTER + 'dtcwt_needs_tiles'))
-register_fusion(FusionAlgorithm('gfgfgf', 'radio_gfg', 'GFG-FGF', 'GFGFGF', _FUSION_CLASS + '_fuse_gfgfgf', (_K_GFG,), DepthSpec(_ADAPTER + 'depth_gfg', (_K_GFG,)), hint_key='radio_gfg_hint', parallel_frames=True, roi=_ADAPTER + 'roi_gfg', promotes_color=True))
+register_fusion(FusionAlgorithm('stackmffv3', 'radio_stackmff', 'StackMFF V3', 'StackMFFV3', _FUSION_CLASS + '_fuse_stackmffv3', (_MODE,), DepthSpec(_ADAPTER + 'depth_neural', (_MODE,)), hint_key='radio_stackmff_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, roi=_ADAPTER + 'roi_neural', promotes_color=True, tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_ai_batched', depth_planner='core.depth_map:_plan_neural_depth', weights='weights/stackmff_v3_final.pth', category='ai'))
+register_fusion(FusionAlgorithm('stackmffv2', 'radio_stackmff_v2', 'StackMFF V2', 'StackMFFV2', _FUSION_CLASS + '_fuse_stackmffv2', (), DepthSpec(_ADAPTER + 'depth_stackmffv2', ()), hint_key='radio_stackmff_v2_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, order_sensitive=True, promotes_color=True, tile_decider=_ADAPTER + 'stackmffv2_needs_tiles', depth_planner='core.depth_map:_plan_stackmffv2_depth', weights='weights/stackmff_v2_final.pth', category='ai'))
+register_fusion(FusionAlgorithm('stackmff', 'radio_stackmff_v1', 'StackMFF', 'StackMFF', _FUSION_CLASS + '_fuse_stackmff', (), hint_key='radio_stackmff_v1_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, promotes_color=True, tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_stackmff', weights='weights/stackmff_final.pth', category='ai'))
+register_fusion(FusionAlgorithm('openfocus_a', 'radio_openfocus_a', 'OpenFocus A', 'OpenFocusA', _FUSION_CLASS + '_fuse_openfocus_a', (_K_OF, ParameterSpec('blend_smoothing', 'label_blend_smoothing', 2.0, 0, 8, .2, 1)), hint_key='radio_openfocus_a_hint', sort_frames=True, roi=_ADAPTER + 'roi_openfocus_a', default_base_correct=True, category='spatial'))
+register_fusion(FusionAlgorithm('openfocus_b', 'radio_openfocus_b', 'OpenFocus B', 'OpenFocusB', _FUSION_CLASS + '_fuse_openfocus_b', (_K_OF, ParameterSpec('depth_smoothing', 'label_depth_smoothing', 1.2, 0, 8, .2, 1)), DepthSpec(_ADAPTER + 'depth_openfocus_b', (_K_OF,)), hint_key='radio_openfocus_b_hint', sort_frames=True, roi=_ADAPTER + 'roi_openfocus_b', default_base_correct=True, category='spatial'))
+register_fusion(FusionAlgorithm('guided_filter', 'radio_guided_filter', 'Guided Filter', 'GuidedFilter', _FUSION_CLASS + '_fuse_guided_filter', (_K_GUIDED,), hint_key='radio_guided_filter_hint', environment=_FUSION_CLASS + '_validate_spatial_environment', parallel_frames=True, roi=_ADAPTER + 'roi_guided', promotes_color=True, category='spatial'))
+register_fusion(FusionAlgorithm('gfgfgf', 'radio_gfg', 'GFG-FGF', 'GFGFGF', _FUSION_CLASS + '_fuse_gfgfgf', (_K_GFG,), DepthSpec(_ADAPTER + 'depth_gfg', (_K_GFG,)), hint_key='radio_gfg_hint', parallel_frames=True, roi=_ADAPTER + 'roi_gfg', promotes_color=True, category='spatial'))
+register_fusion(FusionAlgorithm('openfocus_c', 'radio_openfocus_c', 'OpenFocus C', 'OpenFocusC', _FUSION_CLASS + '_fuse_openfocus_c', (ParameterSpec('blend_smoothing', 'label_blend_smoothing', 3.0, 0, 8, .2, 1),), DepthSpec(_ADAPTER + 'depth_openfocus_c', (ParameterSpec('kernel_size', 'depth_kernel_energy', 11, 1, 21, 2, odd=True),)), hint_key='radio_openfocus_c_hint', sort_frames=True, roi=_ADAPTER + 'roi_openfocus_c', default_base_correct=True, category='transform'))
+register_fusion(FusionAlgorithm('dct', 'radio_dct', 'DCT', 'DCT', _FUSION_CLASS + '_fuse_dct', (_K_DCT,), DepthSpec(_ADAPTER + 'depth_dct', (_K_DCT,)), environment=_FUSION_CLASS + '_validate_dct_environment', hint_key='radio_dct_hint', roi=_ADAPTER + 'roi_dct', promotes_color=True, category='transform'))
+register_fusion(FusionAlgorithm('dtcwt', 'radio_dtcwt', 'DTCWT', 'DTCWT', _FUSION_CLASS + '_fuse_dtcwt', (_LEVELS,), DepthSpec(_ADAPTER + 'depth_dtcwt', (_LEVELS,)), environment=_FUSION_CLASS + '_validate_transform_environment', hint_key='radio_dtcwt_hint', resource_estimator=_ADAPTER + 'dtcwt_resources', parallel_frames=True, ordered_plan=True, roi=_ADAPTER + 'roi_dtcwt', promotes_color=True, tile_decider=_ADAPTER + 'dtcwt_needs_tiles', category='transform'))
 register_registration(RegistrationAlgorithm('none', 'check_align_none', '', hint_key='check_align_none_hint'))
 register_registration(RegistrationAlgorithm('homography', 'check_align_homography', 'Homography', _ADAPTER + 'registration_homography', hint_key='check_align_homography_hint'))
 register_registration(RegistrationAlgorithm('ecc', 'check_align_ecc', 'ECC', _ADAPTER + 'registration_ecc', hint_key='check_align_ecc_hint'))

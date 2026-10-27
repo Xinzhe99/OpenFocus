@@ -69,7 +69,7 @@
 
 Das Standardverfahren ordnet jeden Pixel per neuronalem Netz dem wahrscheinlichsten Quellbild zu. Auf demselben registrierten Stapel bleiben Buchstabenkanten schärfer und Flächen sauberer als mit Guided Filter (Laplace-Schärfe 27,1 zu 28,5); gegen synthetische Ground Truth führt es bei PSNR und SSIM und hinterlässt weniger Geisterpixel als jedes klassische Verfahren.
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -229,7 +229,7 @@ KI-Modell, Gewichte, HEIC- und Kamera-RAW-Dekodierung stecken in dieser einen In
 - **Dokumentation** — [Handbuch](./docs/USER_MANUAL_DE.md) (zwölf Sprachen) · [Änderungen](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Algorithmus-Parität](./docs/ALGORITHM_PARITY.md)
 - **Zitation** — [CITATION.cff](./CITATION.cff); jede Version wird auf Zenodo archiviert ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — [Issue](https://github.com/Xinzhe99/OpenFocus/issues) für Fehler, Ideen und Algorithmusarbeit
-- **Danksagung** — jedes Fusions-/Registrierungsverfahren behält seine ursprüngliche Forschungslizenz; StackMFF V3 liegt unter [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+- **Danksagung** — jedes Fusions-/Registrierungsverfahren behält seine ursprüngliche Forschungslizenz; StackMFF V3 liegt unter [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
 
 <a id="developing"></a>
 ## Entwicklung

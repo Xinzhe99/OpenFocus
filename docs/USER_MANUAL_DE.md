@@ -486,13 +486,10 @@ hat eigene Eigenschaften, die zu unterschiedlichen Bildtypen passen.
   bidirektionale rekurrente Schicht; das Netz regressiert den Fokusindex und
   tastet den Stapel ab. **Die Bilder müssen in ihrer ursprünglichen
   Fokusreihenfolge bleiben** — Umkehren ist deaktiviert
-- **KI-Ausgabe**: Hart (Standard, Referenzregel) oder Weich
-  (wahrscheinlichkeitsgewichtete Mischung)
-- **Tiefenkarten**: unterstützt; Weich = erwartete Ebene, Hart = abgetastete Ebene
+- **Tiefenkarten**: unterstützt; meldet die abgetastete Fokusebene
 - **Am besten für**: kontinuierliche Fokusserien mit sehr kleinem, schnellem Modell
-- **Voraussetzungen**: PyTorch; etwa 0,05 Mio. Parameter
-
-### StackMFF-V3 (Deep Learning)
+- **Voraussetzungen**: PyTorch; etwa 0,05 Mio. Parameter; keine Einstellungen
+### StackMFF V3 (Deep Learning)
 
 - **Algorithmus**: pixelweise Quellklassifikation (erfordert PyTorch). Das
   Netzwerk sagt für jedes Pixel voraus, aus welchem Eingabebild es stammt, und mischt
@@ -573,7 +570,7 @@ um die Registrierungsqualität zu prüfen oder ausgerichtete Bilder zu exportier
 | DCT | Mittel | Gut | Texturen |
 | DTCWT | Mittel | Sehr gut | Komplexe Szenen |
 | GFG-FGF | Schnell | Gut | Fokusbereiche |
-| KI-Fusion (StackMFF-V3) | Langsam (GPU) | Hervorragend | Beste Qualität |
+| KI-Fusion (StackMFF V3) | Langsam (GPU) | Hervorragend | Beste Qualität |
 | OpenFocus A | Sehr schnell | Sehr gut | Kurze Stapel, Farbstabilität |
 | OpenFocus B | Sehr schnell | Sehr gut | Glatte Oberflächen, Mikroskopie |
 | OpenFocus C | Schnell | Sehr gut | Texturierte Motive, natürliche Wirkung |
@@ -708,7 +705,7 @@ Zugriff über **Einstellungen → Thread-Einstellungen**:
 
 ### GPU-Beschleunigung
 
-OpenFocus nutzt die GPU (CUDA/MPS) nur für das neuronale KI-Modell (StackMFF-V3); klassische Algorithmen laufen immer auf der CPU.
+OpenFocus nutzt die GPU (CUDA/MPS) nur für das neuronale KI-Modell (StackMFF V3); klassische Algorithmen laufen immer auf der CPU.
 
 - Umschalten über **Einstellungen → GPU-Beschleunigung**
 - Deaktivieren zwingt die gesamte Verarbeitung auf die CPU – nützlich, wenn GPU-Treiber Probleme bereiten
@@ -773,7 +770,7 @@ Registrierungs-Cache**; veraltete Einträge werden automatisch ersetzt.
 
 Alles Folgende übersteht einen Neustart der Anwendung automatisch:
 Thread-Anzahl, Kachelparameter, Verkleinerungsbreite der Registrierung, Batchgröße der
-KI-Fusion (StackMFF-V3), der Schalter für die GPU-Beschleunigung, der Schalter für den
+KI-Fusion (StackMFF V3), der Schalter für die GPU-Beschleunigung, der Schalter für den
 Registrierungs-Cache, die Oberflächensprache, Fenstergröße/Panel-Layout, das
 Exportformat beim Herausziehen und die zuletzt geöffneten Stapel. Einstellungsdialoge
 speichern in dem Moment, in dem bestätigt wird; zusätzlich wird alles beim Beenden der
@@ -877,7 +874,7 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT mit ECC-Registrierung, 8 Threads
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V3 auf CPU erzwungen, mit eigener Kachelgröße
+# StackMFF V3 auf CPU erzwungen, mit eigener Kachelgröße
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Explizite Dateiliste; Videodateien werden ebenfalls als Eingabe akzeptiert
@@ -1059,7 +1056,7 @@ Jedes Pixel wählt das Bild mit dem größten Fokuswert (bei Gleichstand: 3×3-S
 Kleinbereichsmaß), und die binären Entscheidungskarten werden vor der gewichteten
 Mischung mit dem schnellen Guided Filter geglättet.
 
-### KI-Fusion (StackMFF-V3)
+### KI-Fusion (StackMFF V3)
 
 Ein Deep-Learning-Ansatz mit einem neuronalen Netz, das auf großen Datensätzen von
 Multifokus-Bildpaaren trainiert wurde. Das Netz erlernt optimale Fusionsstrategien

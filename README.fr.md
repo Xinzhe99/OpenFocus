@@ -69,7 +69,7 @@
 
 La méthode par défaut classe chaque pixel selon son image source la plus probable via un réseau de neurones. Sur la même pile recalée, les contours des lettres restent plus nets et les surfaces plus propres qu'avec Guided Filter (netteté laplacienne 27,1 contre 28,5) ; face à une vérité synthétique, elle devance toutes les méthodes en PSNR et SSIM, avec moins de pixels fantômes que tout algorithme classique.
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -229,7 +229,7 @@ Le modèle IA, ses poids, le décodage HEIC et RAW y sont tous inclus. Sous Pyth
 - **Documentation** — [Manuel](./docs/USER_MANUAL_FR.md) (douze langues) · [Journal](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Parité des algorithmes](./docs/ALGORITHM_PARITY.md)
 - **Citation** — [CITATION.cff](./CITATION.cff) ; chaque version est archivée sur Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Retours** — ouvrez une [issue](https://github.com/Xinzhe99/OpenFocus/issues) pour les bugs, idées et travaux d'algorithmes
-- **Crédits** — chaque algorithme de fusion et de recalage conserve sa licence de recherche d'origine ; StackMFF V3 est sur [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+- **Crédits** — chaque algorithme de fusion et de recalage conserve sa licence de recherche d'origine ; StackMFF V3 est sur [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
 
 <a id="developing"></a>
 ## Développement

@@ -365,7 +365,8 @@ class BatchProcessingDialog(QDialog):
         method_row = QHBoxLayout()
         method_row.addWidget(QLabel(trans.t('group_fusion')))
         self.fusion_combo = QComboBox()
-        self._fill_method_combo(self.fusion_combo, fusion_algorithms(), allow_none=True)
+        from ui.algorithm_combo import fill_fusion_combo
+        fill_fusion_combo(self.fusion_combo, none_label="check_align_none")
         method_row.addWidget(self.fusion_combo, 1)
         options_layout.addLayout(method_row)
 

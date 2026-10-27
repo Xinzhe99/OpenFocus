@@ -81,7 +81,7 @@ crisper and surfaces cleaner than Guided Filter (Laplacian sharpness 27.1 vs
 28.5), and it leads every method on PSNR and SSIM against synthetic ground
 truth — with fewer ghost pixels than any classical algorithm.
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -257,7 +257,7 @@ The AI model, its weights, HEIC and camera-RAW decoding are all in that single i
 - **Docs** — [User Manual](./docs/USER_MANUAL_EN.md) (twelve languages) · [Changelog](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Algorithm parity](./docs/ALGORITHM_PARITY.md)
 - **Citation** — [CITATION.cff](./CITATION.cff); every release is archived on Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open an [issue](https://github.com/Xinzhe99/OpenFocus/issues) for bugs, ideas and algorithm work
-- **Credits** — each fusion/registration algorithm keeps its original research licence; StackMFF V3 lives at [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+- **Credits** — each fusion/registration algorithm keeps its original research licence; StackMFF V3 lives at [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
 
 <a id="developing"></a>
 ## Developing

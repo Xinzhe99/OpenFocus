@@ -856,9 +856,9 @@ class MultiFocusFusion:
         )
 
     def _fuse_stackmffv2(self, input_source, img_resize=None,
-                         model_path=None, mode='hard', should_cancel=None,
+                         model_path=None, should_cancel=None,
                          progress_callback=None, **kwargs):
-        """StackMFF V2: order-sensitive stack fusion with soft/hard output."""
+        """StackMFF V2: order-sensitive stack fusion (reference sampling)."""
         from fusion_methods.stackmff_v2 import DEFAULT_WEIGHTS, stackmffv2_impl
         from utils.weights import weights_path
 
@@ -866,7 +866,6 @@ class MultiFocusFusion:
             model_path = weights_path(os.path.basename(DEFAULT_WEIGHTS))
         return stackmffv2_impl(
             input_source, img_resize, model_path, self.use_gpu,
-            mode=mode,
             should_cancel=should_cancel,
             progress_callback=progress_callback,
             thread_count=kwargs.get('thread_count'),
@@ -1400,18 +1399,6 @@ class MultiFocusFusion:
             prepare=_prepare_inference, label="StackMFF",
             default_weights=self.descriptor.weights or 'weights/stackmff_final.pth',
             **kwargs)
-
-    def _fuse_tiled_stackmffv2(self, imgs, img_dir, tile_coords, h, w,
-                               channels, block_size, overlap, **kwargs):
-        """StackMFF V2 tiles: recurrent depth modelling per semantic tile."""
-        from fusion_methods.stackmff_v2 import _prepare_inference, normalize_mode
-
-        return self._fuse_tiled_neural(
-            imgs, img_dir, tile_coords, h, w, channels, block_size, overlap,
-            prepare=_prepare_inference, label="StackMFF V2",
-            default_weights=self.descriptor.weights or 'weights/stackmff_v2_final.pth',
-            mode_normalizer=normalize_mode, **kwargs)
-
 
     def set_device(self, use_gpu: bool):
         """

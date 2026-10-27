@@ -487,14 +487,10 @@ OpenFocus offers ten fusion algorithms (plus an alignment-only mode). Each has d
   recurrent layer; the network regresses the focal-plane index and samples the
   stack. **The frames must stay in their original focus order** — reversing is
   disabled for this method
-- **AI output mode**: Hard (default, the reference fusion rule) or Soft
-  (probability-weighted blend, smoother transitions)
-- **Depth maps**: supported; Soft reports the expected layer, Hard the sampled
-  layer
+- **Depth maps**: supported; reports the sampled focal layer
 - **Best for**: continuous focus sweeps where a very small, fast model matters
-- **Requirements**: PyTorch; about 0.05M parameters
-
-### StackMFF-V3 (Deep Learning)
+- **Requirements**: PyTorch; about 0.05M parameters; no settings
+### StackMFF V3 (Deep Learning)
 
 - **Algorithm**: Pixel-wise source classification (requires PyTorch). The
   network predicts, for every pixel, which input frame it comes from, then
@@ -577,7 +573,7 @@ filename stems are retained, with the extension of the format you select.
 | DCT | Medium | Good | Textures |
 | DTCWT | Medium | Very Good | Complex scenes |
 | GFG-FGF | Fast | Good | Focus regions |
-| AI Fusion (StackMFF-V3) | Slow (GPU) | Excellent | Best quality |
+| AI Fusion (StackMFF V3) | Slow (GPU) | Excellent | Best quality |
 | OpenFocus A | Very Fast | Very Good | Short stacks, colour stability |
 | OpenFocus B | Very Fast | Very Good | Smooth surfaces, microscopy |
 | OpenFocus C | Fast | Very Good | Textured subjects, natural look |
@@ -802,7 +798,7 @@ unchanged; choosing smaller tiles yourself can change output pixels.
 
 ### GPU Acceleration Toggle
 
-OpenFocus uses the GPU (CUDA/MPS) for the AI neural model (StackMFF-V3); classical algorithms and application registration run on CPU. Explicit low-level CuPy registration is a separate numerical backend.
+OpenFocus uses the GPU (CUDA/MPS) for the AI neural model (StackMFF V3); classical algorithms and application registration run on CPU. Explicit low-level CuPy registration is a separate numerical backend.
 
 - Toggle via **Settings → GPU Acceleration**
 - Unchecking forces everything onto the CPU — useful when GPU drivers misbehave
@@ -868,7 +864,7 @@ Cache**; stale entries are replaced automatically.
 ### Persisted Settings
 
 All of the following survive an application restart automatically:
-thread count, tile parameters, registration downscale width, AI Fusion (StackMFF-V3)
+thread count, tile parameters, registration downscale width, AI Fusion (StackMFF V3)
 batch size, the GPU acceleration toggle, the registration cache toggle,
 interface language, window size/panel layout, the drag-out export format,
 the per-method brightness options, smoothing sigma and Radius values,
@@ -989,7 +985,7 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT with ECC registration, 8 threads
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V3 forced to CPU with a custom tile size
+# StackMFF V3 forced to CPU with a custom tile size
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Explicit file list; video files are also accepted as input
@@ -1154,7 +1150,7 @@ DTCWT provides multi-scale, multi-directional decomposition of images. It captur
 
 Implements Fu et al. (2024): the coarse focus map |I − mean(I)| is enriched with the Gaussian-like four-neighbourhood gradient — the 3×3 template T = [1 2 1; 2 4 2; 1 2 1]/16 gives P = I⊗T, and G = (|I(x±1,y) − P|)/2 + (|I(x,y±1) − P|)/2 with values below T0 = 0.005 dropped — then refined by a fast guided filter. Pixels pick the frame with the largest focus value (ties: 3×3 Sobel small-region measure), and the binary decision maps are smoothed by the fast guided filter before the weighted blend.
 
-### AI Fusion (StackMFF-V3)
+### AI Fusion (StackMFF V3)
 
 A deep learning approach using a neural network trained on large datasets of multi-focus image pairs. The network learns optimal fusion strategies automatically, providing state-of-the-art results when properly configured.
 

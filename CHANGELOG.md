@@ -8,21 +8,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **StackMFF and StackMFF V2 as first-class fusion methods.** The original
   3D stack network runs the whole stack in one pass (order-independent, no
-  parameters); V2 adds a recurrent cross-layer model, a `soft`/`hard` output
-  choice and depth maps, and keeps the stack in its original focus order.
-  Both appear in the main window, comparison, batch, depth (V2), settings,
-  projects and the CLI without new flags. (Weights and network code are MIT,
-  see `THIRD_PARTY_NOTICES.md`.)
-- **A selection hint for every fusion and registration method.** The
-  right-panel and batch combos now explain each method, including the new
-  neural models; an order-sensitive method disables the reverse control with
-  an explanation instead of ignoring it silently.
+  parameters); V2 adds a recurrent cross-layer model, keeps the stack in its
+  original focus order, and provides depth maps. Both appear in the main
+  window, comparison, batch, depth (V2), settings, projects and the CLI
+  without new flags. (Weights and network code are MIT, see
+  `THIRD_PARTY_NOTICES.md`.)
+- **A selection hint and a family grouping for every method.** The right
+  panel, batch and depth dropdowns now show non-selectable AI / spatial-domain
+  / transform-domain headers, and every fusion and registration method
+  explains itself in the hint tooltip. An order-sensitive method disables the
+  reverse control with an explanation instead of ignoring it silently.
 
 ### Changed
-- **Neural methods declare their checkpoint and stack-order contract.** The
-  registry gained `weights` and `order_sensitive`; the CLI, tiled inference
-  and depth planner no longer hard-code the V3 checkpoint, and the tiled
-  neural loop is shared by V1/V2/V3.
+- **Neural methods declare their checkpoint, family and stack-order contract.**
+  The registry gained `weights`, `category` and `order_sensitive`; the CLI,
+  tiled inference and depth planner no longer hard-code the V3 checkpoint, and
+  the tiled neural loop is shared by V1/V2/V3.
+- **The StackMFF family is named consistently.** `AI (StackMFF-V3)` became
+  `StackMFF V3`, next to `StackMFF V2` and `StackMFF`.
 - **The AI-on-CPU warning names the selected model** instead of always saying
   StackMFF V3.
 

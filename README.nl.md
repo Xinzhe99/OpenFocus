@@ -69,7 +69,7 @@
 
 De standaardmethode classificeert elke pixel met een neuraal netwerk naar het meest waarschijnlijke bronframe. Op dezelfde uitgelijnde stapel blijven letterranden scherper en vlakken schoner dan bij Guided Filter (Laplaciaanse scherpte 27,1 tegen 28,5); tegen synthetische ground truth leidt het op PSNR en SSIM, met minder spookpixels dan welk klassiek algoritme ook.
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -229,7 +229,7 @@ Het AI-model, de gewichten, HEIC- en camera-RAW-decodering zitten allemaal in di
 - **Documentatie** — [Handleiding](./docs/USER_MANUAL_NL.md) (twaalf talen) · [Wijzigingen](./CHANGELOG.md) · [Prestaties](./docs/PERFORMANCE.md) · [Algoritmepariteit](./docs/ALGORITHM_PARITY.md)
 - **Citeren** — [CITATION.cff](./CITATION.cff); elke versie wordt gearchiveerd op Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open een [issue](https://github.com/Xinzhe99/OpenFocus/issues) voor bugs, ideeën en algoritmewerk
-- **Credits** — elk fusie- en registratiealgoritme behoudt zijn oorspronkelijke onderzoekslicentie; StackMFF V3 staat op [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+- **Credits** — elk fusie- en registratiealgoritme behoudt zijn oorspronkelijke onderzoekslicentie; StackMFF V3 staat op [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
 
 <a id="developing"></a>
 ## Ontwikkeling

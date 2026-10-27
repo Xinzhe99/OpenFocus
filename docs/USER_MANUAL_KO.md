@@ -463,12 +463,10 @@ OpenFocus는 열 가지 합성 알고리즘과 정렬 전용 모드를 제공합
 - **알고리즘**: 레이어별 초점 추정을 양방향 순환 레이어로 정교화하고 초점면
   인덱스를 회귀해 스택에서 샘플링합니다. **프레임은 원래 초점 순서를 유지해야
   하며** 역순은 비활성화됩니다
-- **AI 출력**: 하드(기본, 논문 융합 규칙) 또는 소프트(확률 가중 혼합)
-- **깊이 맵**: 지원. 소프트는 기대 레이어, 하드는 선택 레이어를 보고합니다
+- **깊이 맵**: 지원. 선택된 초점 레이어를 보고합니다
 - **적합한 경우**: 매우 작고 빠른 모델이 필요한 연속 초점 스캔
-- **요구 사항**: PyTorch, 약 0.05M 매개변수
-
-### StackMFF-V3 (딥러닝)
+- **요구 사항**: PyTorch, 약 0.05M 매개변수, 설정 없음
+### StackMFF V3 (딥러닝)
 
 - **알고리즘**: 픽셀 단위 원본 분류(PyTorch 필요). 신경망이 픽셀마다 어느 입력
   프레임에서 왔는지를 예측한 뒤, 그 확률로 프레임을 혼합하거나 한 프레임을
@@ -544,7 +542,7 @@ CLI: `--depth-smoothing SIGMA`(B), `--blend-smoothing SIGMA`(A, C).
 | DCT | 보통 | 좋음 | 텍스처 |
 | DTCWT | 보통 | 매우 좋음 | 복잡한 장면 |
 | GFG-FGF | 빠름 | 좋음 | 초점 영역 |
-| AI 합성 (StackMFF-V3) | 느림 (GPU) | 최고 | 최고 품질 |
+| AI 합성 (StackMFF V3) | 느림 (GPU) | 최고 | 최고 품질 |
 | OpenFocus A | 매우 빠름 | 매우 좋음 | 짧은 스택, 색상 안정성 |
 | OpenFocus B | 매우 빠름 | 매우 좋음 | 매끄러운 표면, 현미경 |
 | OpenFocus C | 빠름 | 매우 좋음 | 텍스처 피사체, 자연스러운 결과 |
@@ -675,7 +673,7 @@ CPU 병렬 처리를 제어합니다.
 
 ### GPU 가속 토글
 
-OpenFocus는 AI 신경망 모델(StackMFF-V3)에만 GPU(CUDA/MPS)를 사용하며, 고전
+OpenFocus는 AI 신경망 모델(StackMFF V3)에만 GPU(CUDA/MPS)를 사용하며, 고전
 알고리즘은 항상 CPU에서 실행됩니다.
 
 - **설정 → GPU 가속**에서 전환합니다
@@ -740,7 +738,7 @@ OpenFocus는 정합 결과를 원본 스택 옆의 `.openfocus_cache` 폴더에 
 ### 저장되는 설정
 
 다음 항목은 애플리케이션을 재시작해도 자동으로 유지됩니다. 스레드 수, 타일
-매개변수, 정합 축소 폭, AI 합성(StackMFF-V3) 배치 크기, GPU 가속 토글, 정합
+매개변수, 정합 축소 폭, AI 합성(StackMFF V3) 배치 크기, GPU 가속 토글, 정합
 캐시 토글, 인터페이스 언어, 창 크기/패널 배치, 끌어내기 내보내기 형식, 최근에 연
 스택. 설정 대화상자는 확인하는 순간 저장되며, 애플리케이션이 닫힐 때도 모두
 저장됩니다. 기본 설정은 사용자별로 `OpenFocus/OpenFocus.ini`(QSettings INI
@@ -842,7 +840,7 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT with ECC registration, 8 threads
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V3 forced to CPU with a custom tile size
+# StackMFF V3 forced to CPU with a custom tile size
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Explicit file list; video files are also accepted as input
@@ -1019,7 +1017,7 @@ T0 = 0.005보다 작은 값은 버립니다. 그다음 고속 가이드 필터�
 픽셀은 초점 값이 가장 큰 프레임을 선택하고(동률은 3×3 Sobel 소영역 척도),
 가중 혼합 전에 이진 판단 맵을 고속 가이드 필터로 스무딩합니다.
 
-### AI 합성 (StackMFF-V3)
+### AI 합성 (StackMFF V3)
 
 대규모 다초점 이미지 쌍 데이터셋으로 학습한 신경망을 사용하는 딥러닝
 방식입니다. 네트워크가 최적 합성 전략을 스스로 학습하므로, 제대로 구성하면

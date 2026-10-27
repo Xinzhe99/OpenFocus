@@ -80,8 +80,7 @@ def test_declared_capabilities():
     assert v1.neural and not v1.order_sensitive and not v1.sort_frames
 
     v2 = get_fusion("stackmffv2")
-    assert [parameter.key for parameter in v2.parameters] == ["mode"]
-    assert v2.parameters[0].default == "hard"
+    assert v2.parameters == ()
     assert v2.depth is not None and v2.depth_planner
     assert v2.order_sensitive and not v2.sort_frames
     assert v2.weights == "weights/stackmff_v2_final.pth"
@@ -113,7 +112,7 @@ def test_v2_hard_matches_the_reference_network_exactly():
     frames = _stack()
     fused, depth, index = stackmff_v2.infer(
         list(frames), weights_path("stackmff_v2_final.pth"), False,
-        mode="hard", thread_count=1)
+        thread_count=1)
     ref_fused, ref_depth, ref_index = _upstream_v2(frames)
     expected = np.clip(np.round(ref_fused.squeeze().numpy() * 255), 0, 255).astype(np.uint8)
     assert np.array_equal(fused[:, :, 0], expected)
@@ -121,37 +120,19 @@ def test_v2_hard_matches_the_reference_network_exactly():
     assert np.abs(depth - ref_depth.squeeze().numpy()).max() < 1e-4
 
 
-def test_v2_soft_is_a_convex_blend_and_differs_from_hard():
-    frames = _stack()
-    hard, _depth, _index = stackmff_v2.infer(
-        list(frames), weights_path("stackmff_v2_final.pth"), False,
-        mode="hard", thread_count=1)
-    soft, _depth, _index = stackmff_v2.infer(
-        list(frames), weights_path("stackmff_v2_final.pth"), False,
-        mode="soft", thread_count=1)
-    assert not np.array_equal(hard, soft)
-    stack = np.stack(frames).astype(np.float32)
-    low, high = stack.min(axis=0), stack.max(axis=0)
-    body = soft[2:-2, 2:-2]
-    assert (body >= low[2:-2, 2:-2] - 1).all() and (body <= high[2:-2, 2:-2] + 1).all()
-
-
 def test_v2_keeps_the_focus_order_while_v1_is_insensitive():
     frames = _stack()
     reversed_frames = list(reversed(frames))
 
-    def run(module, name, mode=None):
-        params = {} if mode is None else {"mode": mode}
-        out = MultiFocusFusion(algorithm=name, use_gpu=False,
-                               fusion_parameters=params).fuse(
+    def run(name):
+        out = MultiFocusFusion(algorithm=name, use_gpu=False).fuse(
             input_source=list(frames), thread_count=1)
-        back = MultiFocusFusion(algorithm=name, use_gpu=False,
-                                fusion_parameters=params).fuse(
+        back = MultiFocusFusion(algorithm=name, use_gpu=False).fuse(
             input_source=list(reversed_frames), thread_count=1)
         return float(np.abs(out.astype(np.int16) - back.astype(np.int16)).mean())
 
-    v1_delta = run(stackmff_v1, "stackmff")
-    v2_delta = run(stackmff_v2, "stackmffv2", "hard")
+    v1_delta = run("stackmff")
+    v2_delta = run("stackmffv2")
     # Reversal changes V2's recurrent path materially; V1's per-frame 3D pass
     # is far less affected (the paper's order-insensitivity). Pixel equality
     # is not claimed for either model — only the declared capability and the
@@ -163,10 +144,8 @@ def test_v2_keeps_the_focus_order_while_v1_is_insensitive():
 def test_both_methods_preserve_16_bit_output():
     frames = [cv2.cvtColor(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.uint16) * 257,
                            cv2.COLOR_GRAY2BGR) for frame in _stack()]
-    for name, mode in (("stackmff", None), ("stackmffv2", "hard")):
-        params = {} if mode is None else {"mode": mode}
-        fusion = MultiFocusFusion(algorithm=name, use_gpu=False,
-                                  fusion_parameters=params)
+    for name in ("stackmff", "stackmffv2"):
+        fusion = MultiFocusFusion(algorithm=name, use_gpu=False)
         normalized, is_16bit = normalize_fuse_input(list(frames))
         out = quantize_fuse_output(
             fusion.fuse(input_source=normalized, thread_count=1), is_16bit)
@@ -187,29 +166,22 @@ def test_v1_tiles_without_visible_seams_and_v2_never_tiles():
     assert delta.mean() < 2 and delta.max() <= 16
 
     v2_whole = MultiFocusFusion(algorithm="stackmffv2", use_gpu=False,
-                                tile_enabled=False,
-                                fusion_parameters={"mode": "hard"}).fuse(
+                                tile_enabled=False).fuse(
         input_source=list(frames), thread_count=1)
     v2_tiled = MultiFocusFusion(algorithm="stackmffv2", use_gpu=False,
                                 tile_enabled=True, tile_block_size=32,
-                                tile_overlap=8, tile_threshold=10,
-                                fusion_parameters={"mode": "hard"}).fuse(
+                                tile_overlap=8, tile_threshold=10).fuse(
         input_source=list(frames), thread_count=1)
     assert np.array_equal(v2_whole, v2_tiled)
 
 
-def test_v2_depth_positions_stay_in_range_and_quantise_in_hard_mode():
+def test_v2_depth_reports_a_sampled_layer():
     frames = _stack()
-    soft = compute_focus_index(frames, "stackmffv2", parameters={"mode": "soft"},
-                               thread_count=1)
-    hard = compute_focus_index(frames, "stackmffv2", parameters={"mode": "hard"},
-                               thread_count=1)
-    for result in (soft, hard):
-        assert result.shape == frames[0].shape[:2]
-        assert result.min() >= 0.0 and result.max() <= 1.0
-    steps = hard * (len(frames) - 1)
+    index = compute_focus_index(frames, "stackmffv2", thread_count=1)
+    assert index.shape == frames[0].shape[:2]
+    assert index.min() >= 0.0 and index.max() <= 1.0
+    steps = index * (len(frames) - 1)
     assert np.allclose(steps, np.round(steps), atol=1e-5)
-    assert not np.array_equal(soft, hard)
     with pytest.raises(ValueError, match="no depth measure"):
         compute_focus_index(frames, "stackmff")
 

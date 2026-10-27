@@ -69,7 +69,7 @@
 
 O método padrão classifica cada pixel pelo quadro de origem mais provável com uma rede neural. Na mesma pilha registrada, mantém as bordas das letras mais nítidas e as superfícies mais limpas que o Guided Filter (nitidez laplaciana 27,1 contra 28,5) e lidera todos os métodos em PSNR e SSIM contra verdade sintética, com menos pixels fantasmas que qualquer algoritmo clássico.
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -229,7 +229,7 @@ O modelo de IA, seus pesos, a decodificação HEIC e RAW de câmera estão nessa
 - **Documentação** — [Manual](./docs/USER_MANUAL_PT.md) (doze idiomas) · [Alterações](./CHANGELOG.md) · [Desempenho](./docs/PERFORMANCE.md) · [Paridade de algoritmos](./docs/ALGORITHM_PARITY.md)
 - **Citação** — [CITATION.cff](./CITATION.cff); cada versão é arquivada no Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — abra uma [issue](https://github.com/Xinzhe99/OpenFocus/issues) para bugs, ideias e trabalho de algoritmos
-- **Créditos** — cada algoritmo de fusão e registro mantém sua licença de pesquisa original; o StackMFF V3 está em [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+- **Créditos** — cada algoritmo de fusão e registro mantém sua licença de pesquisa original; o StackMFF V3 está em [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
 
 <a id="developing"></a>
 ## Desenvolvimento

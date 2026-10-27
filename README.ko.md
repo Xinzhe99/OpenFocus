@@ -69,7 +69,7 @@
 
 기본 방법은 신경망으로 각 픽셀을 가장 가능성 높은 소스 프레임에 분류합니다. 같은 정합 결과에서 글자 가장자리는 Guided Filter보다 선명하고 표면은 더 깨끗합니다(라플라시안 선명도 27.1 대 28.5). 합성 정답 데이터에서 PSNR과 SSIM 모두 모든 방법을 앞서며, 고스트 픽셀도 어떤 고전 알고리즘보다 적습니다.
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [벤치마크 →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [벤치마크 →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -229,7 +229,7 @@ AI 모델과 가중치, HEIC 및 카메라 RAW 디코딩이 모두 이 한 번�
 - **문서** — [사용 설명서](./docs/USER_MANUAL_KO.md)(12개 언어) · [변경 기록](./CHANGELOG.md) · [성능](./docs/PERFORMANCE.md) · [알고리즘 비교](./docs/ALGORITHM_PARITY.md)
 - **인용** — [CITATION.cff](./CITATION.cff); 모든 릴리스는 Zenodo에 보관됩니다([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **피드백** — 버그, 아이디어, 알고리즘 개선은 [issue](https://github.com/Xinzhe99/OpenFocus/issues)로
-- **크레딧** — 각 융합·정합 알고리즘은 원래 연구 라이선스를 따릅니다. StackMFF V3는 [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)에 있습니다
+- **크레딧** — 각 융합·정합 알고리즘은 원래 연구 라이선스를 따릅니다. StackMFF V3는 [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)에 있습니다
 
 <a id="developing"></a>
 ## 개발

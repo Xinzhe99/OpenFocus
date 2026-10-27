@@ -249,10 +249,40 @@ def test_every_method_has_a_selection_hint_and_ordered_models_lock_reverse(
     qapp.processEvents()
     assert host.chk_reverse_order.isEnabled() is False
     assert host.chk_reverse_order.toolTip() == trans.t("chk_reverse_order_locked_hint")
-    assert host.fusion_parameter_panel.editors["mode"].currentData() == "hard"
+    assert host.fusion_parameter_panel.editors == {}
+    assert get_fusion("stackmffv2").parameters == ()
 
     host.set_fusion_method("stackmff")
     qapp.processEvents()
     assert host.chk_reverse_order.isEnabled() is True
     assert host.fusion_parameter_panel.editors == {}
     assert get_fusion("stackmff").parameters == ()
+
+
+def test_method_dropdown_groups_families_in_a_stable_order(qapp, algorithm_host):
+    """Section headers are visible, non-selectable and ordered AI → spatial → transform."""
+    from PyQt6.QtCore import Qt
+    from core.algorithms import fusion_algorithms
+    from locales import trans
+    from ui.algorithm_combo import CATEGORY_KEYS, CATEGORY_ORDER
+
+    combo = algorithm_host.combo_fusion
+    headers, methods, last_category = [], [], None
+    for index in range(combo.count()):
+        code = combo.itemData(index)
+        item = combo.model().item(index)
+        if code is None:
+            assert item is not None and not item.isEnabled()
+            headers.append(combo.itemText(index))
+        elif code != "none":
+            methods.append(code)
+
+    assert combo.itemData(0) == "none"
+    assert headers == [trans.t(CATEGORY_KEYS[category]) for category in CATEGORY_ORDER]
+    expected = [spec.id for spec in sorted(
+        fusion_algorithms(), key=lambda spec: CATEGORY_ORDER.index(spec.category))]
+    assert methods == expected
+    # Header rows stay disabled, so the user cannot select them.
+    for index in range(combo.count()):
+        if combo.itemData(index) is None:
+            assert not combo.model().item(index).isEnabled()

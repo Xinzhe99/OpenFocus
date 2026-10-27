@@ -69,7 +69,7 @@
 
 Domyślna metoda klasyfikuje każdy piksel do najbardziej prawdopodobnej klatki źródłowej za pomocą sieci neuronowej. Na tym samym wyrównanym stosie krawędzie liter pozostają ostrzejsze, a powierzchnie czystsze niż w Guided Filter (ostrość laplasjanowa 27,1 vs 28,5); wobec syntetycznej prawdy prowadzi w PSNR i SSIM i zostawia mniej duchów niż jakikolwiek klasyczny algorytm.
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [Benchmark →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -229,7 +229,7 @@ Model AI, wagi, dekodowanie HEIC i RAW są w tej jednej instalacji. Na Pythonie 
 - **Dokumentacja** — [Podręcznik](./docs/USER_MANUAL_PL.md) (dwanaście języków) · [Zmiany](./CHANGELOG.md) · [Wydajność](./docs/PERFORMANCE.md) · [Zgodność algorytmów](./docs/ALGORITHM_PARITY.md)
 - **Cytowanie** — [CITATION.cff](./CITATION.cff); każda wersja jest archiwizowana w Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Opinie** — otwórz [issue](https://github.com/Xinzhe99/OpenFocus/issues) dla błędów, pomysłów i prac nad algorytmami
-- **Podziękowania** — każdy algorytm fuzji i rejestracji zachowuje swoją pierwotną licencję badawczą; StackMFF V3 jest na [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+- **Podziękowania** — każdy algorytm fuzji i rejestracji zachowuje swoją pierwotną licencję badawczą; StackMFF V3 jest na [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
 
 <a id="developing"></a>
 ## Rozwój

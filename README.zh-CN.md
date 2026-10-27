@@ -69,7 +69,7 @@
 
 默认方法用神经网络按最可能的来源帧逐像素判定。在同一份配准结果上，它的文字边缘比引导滤波更锐利、板面更干净（拉普拉斯清晰度 27.1 对 28.5），在已知真值的合成栈上 PSNR 与 SSIM 全面领先，重影像素也少于任何经典算法。
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [基准脚本 →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [基准脚本 →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -229,7 +229,7 @@ AI 模型、权重、HEIC 与相机 RAW 解码都包含在这一个安装包里�
 - **文档** — [用户手册](./docs/USER_MANUAL_ZH.md)（十二种语言） · [更新日志](./CHANGELOG.md) · [性能](./docs/PERFORMANCE.md) · [算法对齐](./docs/ALGORITHM_PARITY.md)
 - **引用** — [CITATION.cff](./CITATION.cff)；每个版本都归档在 Zenodo（[DOI](https://doi.org/10.5281/zenodo.23050823)）
 - **反馈** — 通过 [issue](https://github.com/Xinzhe99/OpenFocus/issues) 报告缺陷、提出想法或算法改进
-- **致谢** — 各融合/配准算法遵循其原始研究许可；StackMFF V3 位于 [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+- **致谢** — 各融合/配准算法遵循其原始研究许可；StackMFF V3 位于 [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
 
 <a id="developing"></a>
 ## 开发

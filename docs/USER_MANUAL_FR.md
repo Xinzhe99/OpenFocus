@@ -469,15 +469,11 @@ OpenFocus propose dix algorithmes de fusion (plus un mode d'alignement seul). Ch
   récurrente bidirectionnelle ; le réseau régresse l'indice de plan focal et
   échantillonne la pile. **Les images doivent conserver leur ordre de mise au
   point d'origine** — l'inversion est désactivée
-- **Sortie IA** : Dure (par défaut, règle de l'article) ou Douce (mélange
-  pondéré par les probabilités)
-- **Cartes de profondeur** : prises en charge ; Douce = couche attendue,
-  Dure = couche échantillonnée
+- **Cartes de profondeur** : prises en charge ; indique la couche échantillonnée
 - **Idéal pour** : les balayages de mise au point continus avec un modèle
   très petit et rapide
-- **Prérequis** : PyTorch ; environ 0,05 M de paramètres
-
-### StackMFF-V3 (apprentissage profond)
+- **Prérequis** : PyTorch ; environ 0,05 M de paramètres ; aucun réglage
+### StackMFF V3 (apprentissage profond)
 
 - **Algorithme** : classification de la source pixel par pixel (nécessite PyTorch). Le
   réseau prédit, pour chaque pixel, de quelle image d'entrée il provient, puis
@@ -556,7 +552,7 @@ et envoyer les images alignées dans la liste de sortie sans fusion — pratique
 | DCT | Moyenne | Bonne | Textures |
 | DTCWT | Moyenne | Très bonne | Scènes complexes |
 | GFG-FGF | Rapide | Bonne | Zones nettes |
-| Fusion IA (StackMFF-V3) | Lente (GPU) | Excellente | Qualité maximale |
+| Fusion IA (StackMFF V3) | Lente (GPU) | Excellente | Qualité maximale |
 | OpenFocus A | Très rapide | Très bonne | Piles courtes, stabilité des couleurs |
 | OpenFocus B | Très rapide | Très bonne | Surfaces lisses, microscopie |
 | OpenFocus C | Rapide | Très bonne | Sujets texturés, rendu naturel |
@@ -690,7 +686,7 @@ Accessibles via **Paramètres → Paramètres des threads** :
 
 ### Activation de l'accélération GPU
 
-OpenFocus n'utilise le GPU (CUDA/MPS) que pour le modèle de réseau de neurones IA (StackMFF-V3) ; les algorithmes classiques s'exécutent toujours sur le CPU.
+OpenFocus n'utilise le GPU (CUDA/MPS) que pour le modèle de réseau de neurones IA (StackMFF V3) ; les algorithmes classiques s'exécutent toujours sur le CPU.
 
 - Activez ou désactivez via **Paramètres → Accélération GPU**
 - Décocher force tout le traitement sur le CPU — utile lorsque les pilotes GPU posent problème
@@ -754,7 +750,7 @@ recalage** ; les entrées obsolètes sont remplacées automatiquement.
 ### Paramètres persistants
 
 Tous les éléments suivants survivent automatiquement à un redémarrage de l'application :
-nombre de threads, paramètres des tuiles, largeur de réduction du recalage, taille de lot de la fusion IA (StackMFF-V3),
+nombre de threads, paramètres des tuiles, largeur de réduction du recalage, taille de lot de la fusion IA (StackMFF V3),
 activation de l'accélération GPU, activation du cache de recalage,
 langue de l'interface, taille de la fenêtre et disposition des panneaux, format d'export par glisser-déposer
 et piles récemment ouvertes. Les boîtes de dialogue de réglages enregistrent dès que vous validez ;
@@ -857,7 +853,7 @@ python main.py --input ./stack_folder --output ./result/fused.png
 # DTCWT avec recalage ECC, 8 threads
 python main.py -i ./stack_folder -o ./result/fused.png -m dtcwt -a ecc -t 8
 
-# StackMFF-V3 forcé sur le CPU avec une taille de tuile personnalisée
+# StackMFF V3 forcé sur le CPU avec une taille de tuile personnalisée
 python main.py -i ./stack_folder -o ./result/fused.png -m stackmffv3 --cpu --tile-size 512
 
 # Liste de fichiers explicite ; les fichiers vidéo sont aussi acceptés en entrée
@@ -1023,7 +1019,7 @@ La DTCWT fournit une décomposition multi-échelle et multidirectionnelle des im
 Implémente Fu et al. (2024) : la carte de mise au point grossière |I − mean(I)| est enrichie
 par le gradient à quatre voisins de type gaussien — le gabarit 3×3 T = [1 2 1; 2 4 2; 1 2 1]/16 donne P = I⊗T, et G = (|I(x±1,y) − P|)/2 + (|I(x,y±1) − P|)/2, les valeurs inférieures à T0 = 0,005 étant écartées — puis affinée par un filtre guidé rapide. Chaque pixel choisit l'image dont la valeur de netteté est la plus grande (égalités : mesure de petite région de Sobel 3×3), et les cartes de décision binaires sont lissées par le filtre guidé rapide avant le mélange pondéré.
 
-### Fusion IA (StackMFF-V3)
+### Fusion IA (StackMFF V3)
 
 Une approche par apprentissage profond utilisant un réseau de neurones entraîné sur de grands ensembles de paires d'images multi-focus. Le réseau apprend automatiquement les stratégies de fusion optimales, offrant des résultats de l'état de l'art lorsqu'il est correctement configuré.
 

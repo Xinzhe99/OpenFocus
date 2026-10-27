@@ -69,7 +69,7 @@
 
 Метод по умолчанию относит каждый пиксель к наиболее вероятному исходному кадру с помощью нейросети. На том же выровненном стеке края букв остаются резче, а поверхности чище, чем у Guided Filter (резкость по Лапласу 27,1 против 28,5); на синтетических данных с известной истиной он лидирует по PSNR и SSIM и оставляет меньше артефактов-призраков, чем любой классический алгоритм.
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Бенчмарк →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [Бенчмарк →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -229,7 +229,7 @@ openfocus -i ./stack_folder -o ./result/fused.png
 - **Документация** — [Руководство](./docs/USER_MANUAL_RU.md) (двенадцать языков) · [Изменения](./CHANGELOG.md) · [Производительность](./docs/PERFORMANCE.md) · [Соответствие алгоритмов](./docs/ALGORITHM_PARITY.md)
 - **Цитирование** — [CITATION.cff](./CITATION.cff); каждый релиз архивируется на Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Обратная связь** — [issue](https://github.com/Xinzhe99/OpenFocus/issues) для ошибок, идей и работы над алгоритмами
-- **Благодарности** — каждый алгоритм фузии и совмещения сохраняет свою исходную исследовательскую лицензию; StackMFF V3 — [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+- **Благодарности** — каждый алгоритм фузии и совмещения сохраняет свою исходную исследовательскую лицензию; StackMFF V3 — [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
 
 <a id="developing"></a>
 ## Разработка

@@ -69,7 +69,7 @@
 
 既定の手法は、各画素を最も確からしいソースフレームにニューラルネットで分類します。同じ位置合わせ結果で、文字の輪郭はガイド付きフィルタより鋭く、面はより滑らか（ラプラシアン鮮鋭度 27.1 対 28.5）。真値のある合成スタックでは PSNR と SSIM の両方で全手法を上回り、ゴースト画素も古典手法より少なくなります。
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [ベンチマーク →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [ベンチマーク →](tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
@@ -229,7 +229,7 @@ AI モデル、重み、HEIC とカメラ RAW のデコードはすべてこの 
 - **ドキュメント** — [ユーザーマニュアル](./docs/USER_MANUAL_JA.md)（12 言語） · [変更履歴](./CHANGELOG.md) · [パフォーマンス](./docs/PERFORMANCE.md) · [アルゴリズム比較](./docs/ALGORITHM_PARITY.md)
 - **引用** — [CITATION.cff](./CITATION.cff)。各リリースは Zenodo に保存されています（[DOI](https://doi.org/10.5281/zenodo.23050823)）
 - **フィードバック** — 不具合、提案、アルゴリズムの改善は [issue](https://github.com/Xinzhe99/OpenFocus/issues) へ
-- **クレジット** — 各合成・位置合わせアルゴリズムは元の研究ライセンスに従います。StackMFF V3 は [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3) にあります
+- **クレジット** — 各合成・位置合わせアルゴリズムは元の研究ライセンスに従います。StackMFF V3 は [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3) にあります
 
 <a id="developing"></a>
 ## 開発
