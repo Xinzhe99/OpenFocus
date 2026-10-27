@@ -43,6 +43,7 @@ from widgets.stepper import StepperSpinBox
 from utils import colormap as cmap
 from utils.image_utils import imwrite_auto
 from utils.settings_store import get_last_dialog_dir, get_settings, set_last_dialog_dir
+from utils.logging_setup import frame_details, log_operation
 
 _DEFAULT_METHOD_COLORMAP = "turbo"
 
@@ -95,54 +96,60 @@ class DepthWorker(QThread):
     def run(self):
         from core.resource_policy import heavy_job
         from core.registration import RegistrationCancelled
-        try:
-            with heavy_job(lambda: self._cancelled):
-                self._run_admitted()
-        except RegistrationCancelled:
-            self.failed.emit("cancelled")
-        except Exception as exc:
-            self.failed.emit(str(exc))
+        from core.depth_map import DepthMapCancelled
+        with log_operation("depth_map", method=self._method, parameters=self.parameters,
+                           use_gpu=self._use_gpu, registration=self.alignment,
+                           registration_parameters=self.registration_settings,
+                           reverse_order=self.reverse_order,
+                           **frame_details(self._images)) as operation:
+            try:
+                with heavy_job(lambda: self._cancelled):
+                    try:
+                        self._run_admitted()
+                    except (DepthMapCancelled, RegistrationCancelled):
+                        operation.cancel()
+                        self.failed.emit("cancelled")
+                    except Exception as exc:
+                        operation.fail()
+                        self.failed.emit(str(exc))
+            except (DepthMapCancelled, RegistrationCancelled):
+                operation.cancel()
+                self.failed.emit("cancelled")
+            except Exception as exc:
+                operation.fail()
+                self.failed.emit(str(exc))
 
     def _run_admitted(self):
         from core.depth_map import DepthMapCancelled, compute_focus_index
-        from core.registration import RegistrationCancelled
-        try:
-            if self.alignment != "none":
-                from core.compare_worker import align_frames
-                self._images = align_frames(self._images, self.alignment,
-                    self.registration_settings, lambda: self._cancelled)
-                if self._images is None:
-                    self.failed.emit("cancelled")
-                    return
-                from core.render_context import SourceFrame
-                self.source_frames = tuple(SourceFrame(str(i), "", image, aligned=True)
-                                           for i, image in enumerate(self._images))
-            if self.reverse_order:
-                self._images = list(reversed(self._images))
-                self.source_frames = tuple(reversed(self.source_frames))
-            m = compute_focus_index(
-                self._images, self._method,
-                parameters=self.parameters, use_gpu=self._use_gpu,
-                progress_callback=lambda i, n: self.progress.emit(i, n),
-                should_cancel=lambda: self._cancelled,
-                thread_count=self.registration_settings.get("thread_count", 0),
-                resource_preference=self.registration_settings.get("resource_preference", "balanced"),
-            )
-            for frame in self.source_frames:
-                if self._cancelled:
-                    self.failed.emit("cancelled")
-                    return
-                valid = frame.valid_mask()
-                if valid is not None:
-                    self.valid_mask = valid if self.valid_mask is None else self.valid_mask & valid
+        if self.alignment != "none":
+            from core.compare_worker import align_frames
+            self._images = align_frames(self._images, self.alignment,
+                self.registration_settings, lambda: self._cancelled)
+            if self._images is None:
+                raise DepthMapCancelled()
+            from core.render_context import SourceFrame
+            self.source_frames = tuple(SourceFrame(str(i), "", image, aligned=True)
+                                       for i, image in enumerate(self._images))
+        if self.reverse_order:
+            self._images = list(reversed(self._images))
+            self.source_frames = tuple(reversed(self.source_frames))
+        m = compute_focus_index(
+            self._images, self._method,
+            parameters=self.parameters, use_gpu=self._use_gpu,
+            progress_callback=lambda i, n: self.progress.emit(i, n),
+            should_cancel=lambda: self._cancelled,
+            thread_count=self.registration_settings.get("thread_count", 0),
+            resource_preference=self.registration_settings.get("resource_preference", "balanced"),
+        )
+        for frame in self.source_frames:
             if self._cancelled:
-                self.failed.emit("cancelled")
-                return
-            self.ok.emit(m)
-        except (DepthMapCancelled, RegistrationCancelled):
-            self.failed.emit("cancelled")
-        except Exception as exc:  # surface to the dialog status line
-            self.failed.emit(str(exc))
+                raise DepthMapCancelled()
+            valid = frame.valid_mask()
+            if valid is not None:
+                self.valid_mask = valid if self.valid_mask is None else self.valid_mask & valid
+        if self._cancelled:
+            raise DepthMapCancelled()
+        self.ok.emit(m)
 
 class MeshExportWorker(QThread):
     ok = pyqtSignal(object)

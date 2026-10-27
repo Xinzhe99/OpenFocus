@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.70.0** — każdy ciężki etap współdzieli teraz jedną zgodę na wykonanie od przygotowania po publikację: anulowanie czeka na faktyczne zakończenie bieżącego wywołania natywnego, zamiast uruchamiać na nim drugi render. Pamięć jest sprawdzana przed alokacją (nieczytelna lub zbyt mała to jasny błąd, a nie po cichu mniejsze kafelki), pamięć podręczna wyrównania zatwierdza atomowo i nie koduje ponownie przy trafieniu, 16-bitowe wyjście neuronowe zachowuje dolne bity, a nowy **tryb zasobów** z automatycznymi wątkami (`0`) zostawia pulpitowi zapas. Osiem algorytmów pozostaje identycznych bajt w bajt z v1.69.0.
+> **v1.71.0** — algorytmy są teraz deklarowane w jednym niezmiennym rejestrze: nowa metoda fuzji lub wyrównania pojawia się w renderowaniu, wsadzie, porównaniu, głębi i CLI dzięki jednemu deskryptorowi z typowanymi parametrami. Każde uruchomienie zapisuje własny rotowany dziennik z powiązanymi identyfikatorami zadań, parametrami, czasami i pełnymi śladami stosu; ZIP opinii zawiera raport awarii, dane RAM/GPU i wersje zależności. Diagnostyka startuje przed importem Qt i bibliotek numerycznych, więc błąd startu również jest zapisywany. Osiem algorytmów pozostaje identycznych bajt w bajt z v1.70.0.
 
 <a id="features"></a>
 ## Najważniejsze funkcje

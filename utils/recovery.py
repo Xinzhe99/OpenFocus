@@ -11,6 +11,8 @@ import os
 import tempfile
 from typing import Optional
 
+from utils import app_paths
+
 RECOVERY_DIR_NAME = "recovery"
 SESSION_FILE = "session.ofproj"
 LOCK_FILE = "session.lock"
@@ -23,9 +25,9 @@ PENDING_RESTORE_FILE = "restore_pending.txt"
 def _base_dir() -> str:
     """Directory holding settings — portable-aware, so recovery data
     travels with a portable install exactly like the settings do."""
-    from utils.settings_store import get_settings, is_portable_mode, portable_data_dir
-    if is_portable_mode():
-        return portable_data_dir()
+    if app_paths.is_portable_mode():
+        return app_paths.portable_data_dir()
+    from utils.settings_store import get_settings
     ini = get_settings().fileName()
     return os.path.dirname(str(ini))
 

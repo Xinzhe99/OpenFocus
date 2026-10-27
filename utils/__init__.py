@@ -1,83 +1,53 @@
+"""Lazy utility exports, following the same convention as :mod:`core`.
+
+Importing paths or diagnostics must work before numerical/GUI dependencies load;
+otherwise an import-time failure would prevent the crash reporter starting.
 """
-Utility modules for OpenFocus.
+from importlib import import_module
 
-Modules:
-- image_utils: Image conversion functions (pixmap <-> cv2)
-- ui_utils: UI-related functions (message boxes, dialogs) — requires PyQt6
-- validators: Validation and utility functions
-- platform_utils: Cross-platform utilities (font detection, OS detection)
+_EXPORTS = {
+    'pixmap_to_cv2': 'utils.image_utils',
+    'cv2_to_pixmap': 'utils.image_utils',
+    'show_message_box': 'utils.ui_utils',
+    'show_warning_box': 'utils.ui_utils',
+    'show_error_box': 'utils.ui_utils',
+    'show_success_box': 'utils.ui_utils',
+    'show_custom_message_box': 'utils.ui_utils',
+    'style_message_box': 'utils.ui_utils',
+    'resource_path': 'utils.ui_utils',
+    'get_os_type': 'utils.platform_utils',
+    'get_ui_font_family': 'utils.platform_utils',
+    'get_monospace_font_family': 'utils.platform_utils',
+    'get_default_font': 'utils.platform_utils',
+    'is_windows': 'utils.platform_utils',
+    'is_macos': 'utils.platform_utils',
+    'is_linux': 'utils.platform_utils',
+    'normalize_kernel_size': 'utils.validators',
+    'LabelAdder': 'utils.validators',
+    'build_label_text': 'utils.validators',
+    'LabelConfig': 'utils.validators',
+}
 
-PyQt6-dependent re-exports are guarded so the headless CLI package
-(``pip install openfocus``) can use this package without a GUI stack.
-"""
 
-from utils.image_utils import (
-    pixmap_to_cv2,
-    cv2_to_pixmap,
-)
+def _headless_resource_path(*parts):
+    import os
+    return os.path.normpath(os.path.join(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))), *parts))
 
-try:  # GUI stack present (the desktop app)
-    from utils.ui_utils import (
-        show_message_box,
-        show_warning_box,
-        show_error_box,
-        show_success_box,
-        show_custom_message_box,
-        style_message_box,
-        resource_path,
-    )
-    _HAS_QT = True
-except ImportError:  # headless openfocus package
-    _HAS_QT = False
-    show_message_box = show_warning_box = show_error_box = None
-    show_success_box = show_custom_message_box = style_message_box = None
 
-    def resource_path(*parts):
-        """Headless fallback: resolve relative to this package directory."""
-        import os
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return os.path.normpath(os.path.join(base, *parts))
+def __getattr__(name):
+    try:
+        module = _EXPORTS[name]
+    except KeyError:
+        raise AttributeError(name) from None
+    try:
+        value = getattr(import_module(module), name)
+    except ImportError:
+        if module != 'utils.ui_utils':
+            raise
+        value = _headless_resource_path if name == 'resource_path' else None
+    globals()[name] = value
+    return value
 
-from utils.platform_utils import (
-    get_os_type,
-    get_ui_font_family,
-    get_monospace_font_family,
-    get_default_font,
-    is_windows,
-    is_macos,
-    is_linux,
-)
 
-from utils.validators import (
-    normalize_kernel_size,
-    LabelAdder,
-    build_label_text,
-    LabelConfig,
-)
-
-__all__ = [
-    # platform_utils
-    'get_os_type',
-    'get_ui_font_family',
-    'get_monospace_font_family',
-    'get_default_font',
-    'is_windows',
-    'is_macos',
-    'is_linux',
-    # image_utils
-    'pixmap_to_cv2',
-    'cv2_to_pixmap',
-    # ui_utils (GUI only)
-    'show_message_box',
-    'show_warning_box',
-    'show_error_box',
-    'show_success_box',
-    'show_custom_message_box',
-    'style_message_box',
-    'resource_path',
-    # validators
-    'normalize_kernel_size',
-    'LabelAdder',
-    'build_label_text',
-    'LabelConfig',
-]
+__all__ = list(_EXPORTS)

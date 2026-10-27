@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.70.0** — chaque étape lourde partage désormais un même bail d'admission, de la préparation à la publication : une annulation attend la fin réelle de l'appel natif en cours au lieu de lancer un second rendu par-dessus. La mémoire est vérifiée avant d'être allouée (illisible ou insuffisante donne une erreur claire, pas des tuiles réduites en silence), le cache de recalage valide de façon atomique et ne ré-encode plus lors d'un succès, la sortie neuronale 16 bits conserve ses bits de poids faible, et le nouveau **mode de ressources** avec threads automatiques (`0`) laisse respirer le bureau. Les huit algorithmes restent identiques octet pour octet à la v1.69.0.
+> **v1.71.0** — les algorithmes sont désormais déclarés dans un registre immuable : une nouvelle méthode de fusion ou de recalage apparaît dans le rendu, le lot, la comparaison, la profondeur et la CLI depuis un seul descripteur et des paramètres typés. Chaque lancement écrit son propre journal rotatif avec des identifiants de tâche liés, les paramètres, les durées et les traces complètes ; le ZIP de retour contient le rapport de plantage, les données RAM/GPU et les versions des dépendances. Le diagnostic démarre avant les imports Qt et numériques, si bien qu'un échec au démarrage est aussi enregistré. Les huit algorithmes restent identiques octet pour octet à la v1.70.0.
 
 <a id="features"></a>
 ## Fonctionnalités

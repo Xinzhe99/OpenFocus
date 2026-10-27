@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.70.0** — todas las etapas pesadas comparten ahora un contrato de admisión desde la preparación hasta la publicación: cancelar espera a que la llamada nativa en curso termine de verdad, en lugar de lanzar otro render encima. La memoria se comprueba antes de reservarla (si no se puede leer o no cabe, es un error claro y no un mosaico más pequeño en silencio), la caché de alineación confirma de forma atómica y no vuelve a codificar en un acierto, la salida neuronal de 16 bits conserva sus bits bajos, y el nuevo **modo de recursos** con hilos automáticos (`0`) deja aire al escritorio. Los ocho algoritmos siguen siendo idénticos byte a byte a v1.69.0.
+> **v1.71.0** — los algoritmos se declaran ahora en un registro inmutable: un nuevo método de fusión o registro aparece en renderizado, lote, comparación, profundidad y CLI con un solo descriptor y parámetros tipados. Cada inicio escribe su propio registro rotativo con identificadores de tarea enlazados, parámetros, tiempos y trazas completas; el ZIP de comentarios incluye el informe de fallo, datos de RAM/GPU y versiones de dependencias. El diagnóstico arranca antes de importar Qt o las librerías numéricas, así que un fallo de inicio también queda registrado. Los ocho algoritmos siguen idénticos byte a byte a v1.70.0.
 
 <a id="features"></a>
 ## Funciones

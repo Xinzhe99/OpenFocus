@@ -7,7 +7,6 @@ recently opened stacks) survives restarts through this module.
 import json
 import math
 import os
-import sys
 from typing import Any, Optional
 
 from PyQt6.QtCore import QSettings
@@ -15,6 +14,7 @@ from PyQt6.QtCore import QSettings
 from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
                              resolve_fusion_parameters, resolve_registration_parameters)
 from locales import trans
+from utils import app_paths
 from utils.validators import normalize_kernel_size
 
 ORGANIZATION = "OpenFocus"
@@ -89,56 +89,6 @@ _PERSISTED_FIELDS = {
 
 
 _settings_singleton = None
-_PORTABLE_MARKER = "OpenFocus.portable"
-
-
-def is_portable_mode() -> bool:
-    """True when an OpenFocus.portable marker sits next to the executable.
-
-    Portable builds (the zip from Releases) ship this marker; the installer
-    build does not. In portable mode all user data (settings, logs, project
-    defaults) lives next to the executable instead of the user profile, so
-    the installation can travel on a USB stick.
-    """
-    global _portable_dir
-    try:
-        if getattr(sys, "frozen", False):
-            base = os.path.dirname(sys.executable)
-        else:
-            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        marker = os.path.join(base, _PORTABLE_MARKER)
-        if os.path.isfile(marker):
-            data_dir = os.path.join(base, "OpenFocusData")
-            os.makedirs(data_dir, exist_ok=True)
-            # Writability probe: a marker inside a read-only install dir
-            # (e.g. accidentally shipped in Program Files) must not break
-            # every settings access - fall back to the user profile.
-            probe = os.path.join(data_dir, ".write_test")
-            try:
-                with open(probe, "w") as f:
-                    f.write("ok")
-                os.remove(probe)
-            except OSError:
-                return False
-            _portable_dir = base
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def portable_data_dir() -> str:
-    """Directory holding portable user data (created on demand)."""
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    d = os.path.join(base, "OpenFocusData")
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
-_portable_dir = None
 
 
 def get_settings() -> QSettings:
@@ -151,9 +101,9 @@ def get_settings() -> QSettings:
     """
     global _settings_singleton
     if _settings_singleton is None:
-        if is_portable_mode():
+        if app_paths.is_portable_mode():
             _settings_singleton = QSettings(
-                os.path.join(portable_data_dir(), "settings.ini"),
+                os.path.join(app_paths.portable_data_dir(), "settings.ini"),
                 QSettings.Format.IniFormat,
             )
         else:

@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.70.0** — jede rechenintensive Stufe teilt sich jetzt eine Zulassungs-Lease von der Vorbereitung bis zur Veröffentlichung: Ein Abbruch wartet, bis der laufende native Aufruf wirklich beendet ist, statt einen zweiten Render darüber zu starten. Speicher wird vor der Allokation geprüft (nicht lesbar oder zu klein ist ein klarer Fehler statt heimlich kleinerer Kacheln), Ausrichtungs-Caches schreiben atomar und kodieren bei einem Treffer nicht erneut, 16-Bit-Neuralausgaben behalten ihre niedrigen Bits, und der neue **Ressourcenmodus** samt automatischen Threads (`0`) gibt dem Desktop Luft. Die acht Algorithmen bleiben byte-identisch zu v1.69.0.
+> **v1.71.0** — Algorithmen werden jetzt in einem unveränderlichen Register deklariert: Eine neue Fusions- oder Registrierungsmethode erscheint mit einem einzigen Deskriptor samt typisierten Parametern in Rendern, Stapel, Vergleich, Tiefe und CLI. Jeder Start schreibt ein eigenes rotierendes Protokoll mit verknüpften Task-IDs, Parametern, Laufzeiten und vollständigen Stacktraces; das Feedback-ZIP enthält Absturzbericht, RAM/GPU-Daten und Abhängigkeitsversionen. Die Diagnose startet vor Qt- und Numerik-Importen, sodass auch ein Startfehler protokolliert wird. Die acht Algorithmen bleiben byte-identisch zu v1.70.0.
 
 <a id="features"></a>
 ## Funktionen

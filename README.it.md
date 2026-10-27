@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.70.0** — ogni fase pesante condivide ora un contratto di ammissione dalla preparazione alla pubblicazione: l'annullamento attende la fine reale della chiamata nativa in corso invece di avviare un secondo render sopra di essa. La memoria viene verificata prima di allocarla (illeggibile o insufficiente è un errore chiaro, non tasselli ridotti in silenzio), la cache di allineamento conferma in modo atomico e non ricodifica in caso di successo, l'output neurale a 16 bit conserva i bit bassi, e la nuova **modalità risorse** con thread automatici (`0`) lascia respiro al desktop. Gli otto algoritmi restano identici byte per byte alla v1.69.0.
+> **v1.71.0** — gli algoritmi sono ora dichiarati in un registro immutabile: un nuovo metodo di fusione o registrazione compare in rendering, batch, confronto, profondità e CLI da un solo descrittore con parametri tipizzati. Ogni avvio scrive un proprio log rotante con ID attività collegati, parametri, tempi e traceback completi; lo ZIP di feedback contiene il rapporto di crash, i dati RAM/GPU e le versioni delle dipendenze. La diagnostica parte prima degli import di Qt e delle librerie numeriche, quindi anche un errore di avvio viene registrato. Gli otto algoritmi restano identici byte per byte alla v1.70.0.
 
 <a id="features"></a>
 ## Funzionalità

@@ -712,6 +712,15 @@ Flat-field correction changes session working pixels without overwriting source 
 
 **Help → Send feedback** opens local logs. Copy copies the visible session log; the feedback ZIP contains the session/full application logs and environment information. Review the package before submitting it yourself. Opening GitHub only opens the tracker. Export cancellation leaves files unchanged; an error keeps the previous destination file and shows the failed path.
 
+Each launch writes its own rotating log, so concurrent GUI/CLI jobs keep separate
+records. Task IDs link parameters, elapsed time and completed/cancelled/failed
+outcomes; unexpected errors include a full traceback. The feedback ZIP also
+includes the current crash report and dependency versions. Use **Help → Open Logs
+Folder** or the path shown on the feedback page to find the files. Logs rotate at
+1 MB with three backups per process; inactive session logs older than 14 days are
+removed. For detailed support logs, set `OPENFOCUS_LOG_LEVEL=DEBUG` before launch;
+`OPENFOCUS_LOG_DIR` optionally selects a different log folder.
+
 ### Tile Settings (Memory Optimization)
 
 For large images, OpenFocus uses tile-based processing to avoid memory issues.

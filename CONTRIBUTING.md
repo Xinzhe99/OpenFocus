@@ -1,4 +1,4 @@
-# Contributing algorithms
+# Contributing to OpenFocus
 
 OpenFocus uses explicit descriptors in `core/algorithms.py`. Adding an algorithm
 requires a real backend, one descriptor, translated labels, and behavioral tests.
@@ -9,6 +9,74 @@ lists or algorithm-id branches to those consumers.
 The metadata module imports only the Python standard library. Backend and
 capability entry points use `module:callable` strings and load when needed.
 There is no directory scanning, download mechanism, or user plugin installer.
+
+## Module boundaries and diagnostics
+
+Keep algorithm metadata and application paths independent of Qt and numerical
+libraries. `core/algorithms.py` owns algorithm contracts; `utils/app_paths.py`
+owns portable/profile locations. `settings_store` owns QSettings persistence.
+Use the existing lazy exports in `core` and `utils`; importing metadata, paths
+or diagnostics must not initialize the GUI, import torch/numpy, or change process
+exception hooks. Executable entry points explicitly initialize diagnostics.
+
+Controllers capture UI state before starting workers. Workers operate on those
+snapshots and report results/errors through their existing signals; they do not
+read live widgets or silently turn failures into successful results. Preserve
+cooperative cancellation and the heavy-job lease when adding a processing stage.
+Keep shared processing in `core`/`utils` so GUI and CLI use the same behavior.
+
+Use `get_logger(__name__)` from `utils.logging_setup` for module messages. New
+background operations should establish their log scope inside the worker thread:
+
+```python
+from utils.logging_setup import frame_details, get_logger, log_operation
+
+logger = get_logger(__name__)
+
+with log_operation("my_processing_stage", method=method,
+                   parameters=parameters, **frame_details(images)) as operation:
+    try:
+        result = process(images, should_cancel=should_cancel)
+    except ProcessingCancelled:
+        operation.cancel()
+        # Deliver the existing cancellation signal/result here.
+    except Exception as exc:
+        operation.fail()  # Capture the traceback while still inside except.
+        # Deliver the existing failure signal/result here.
+```
+
+Let exceptions escape when the caller owns error delivery; the scope logs and
+re-raises them. Mark false-return failures with `operation.fail()` as well.
+Cancellation is an informational outcome. Nested scopes retain a parent ID and
+restore the outer context; Qt threads do not inherit the caller's context.
+Record method parameters, frame count/shape/dtype and output paths, never image
+arrays. Use DEBUG for detailed investigation; avoid logging per pixel/progress
+tick. Preserve CLI stdout/stderr and JSON contracts. `logger.exception()` belongs
+inside an active exception handler; never print an unrelated `NoneType: None`.
+
+GUI and console launchers install `utils.diagnostics` exception hooks for the main
+thread, Python threads and unraisable exceptions, with full tracebacks and native
+fault capture. Importing/embedding does not install hooks; shutdown restores only
+hooks still owned by OpenFocus. Feedback exports include the current crash report
+and dependency versions without importing optional packages.
+
+Each process writes `openfocus-<session>-<pid>.log`, rotating at 1 MB with three
+backups. Inactive session files older than 14 days are removed best-effort;
+active processes and unrelated files are retained. Legacy `openfocus.log` files
+remain available in full feedback exports. An unwritable log folder must never
+replace a processing error or prevent image processing.
+
+For support/development, set `OPENFOCUS_LOG_LEVEL=DEBUG`; `OPENFOCUS_LOG_DIR` can
+isolate logs from another checkout or an automated job. The feedback page shows
+the actual active path. Reports remain local until a person submits them.
+
+Changes to task boundaries need failure/cancellation and partial-success checks,
+plus a real GUI/CLI smoke run. Compare output pixels with the previous behavior
+when touching processing orchestration. Run the existing suite with
+`QT_QPA_PLATFORM=offscreen`; native Qt clipboard access is environment-dependent.
+Keep regression tests focused on observable behavior and avoid source-text or
+implementation-mirroring assertions. Record only exercised checks and explicitly
+state device/platform/build limitations.
 
 ## A complete fusion and depth example
 
@@ -242,6 +310,8 @@ needs no custom persistence codec.
 `hooks/hook-core.algorithms.py`. That hook derives hidden imports from registered
 fusion, depth, registration and capability entry points, including backends in
 other packages. Adding a descriptor requires no packaging module-list edit.
+`hooks/hook-utils.py` likewise collects lazy utility modules from their runtime
+export declaration; keep utility exports in that single declaration.
 Keep `--additional-hooks-dir hooks` in explicit release commands. Run a
 frozen-build execution of the new method before release; successful source
 execution does not establish that packaging includes the backend and its assets.

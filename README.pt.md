@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.70.0** — todo estágio pesado compartilha agora uma admissão desde a preparação até a publicação: cancelar espera a chamada nativa em curso terminar de fato, em vez de iniciar outro render por cima. A memória é verificada antes de ser alocada (ilegível ou insuficiente é um erro claro, não blocos menores em silêncio), o cache de alinhamento confirma atomicamente e não recodifica em um acerto, a saída neural de 16 bits preserva os bits baixos, e o novo **modo de recursos** com threads automáticas (`0`) dá folga à área de trabalho. Os oito algoritmos continuam idênticos byte a byte à v1.69.0.
+> **v1.71.0** — os algoritmos passam a ser declarados num registro imutável: um novo método de fusão ou registo aparece na renderização, lote, comparação, profundidade e CLI a partir de um único descritor com parâmetros tipados. Cada arranque escreve o seu próprio registo rotativo com IDs de tarefa ligados, parâmetros, tempos e rastreamentos completos; o ZIP de feedback inclui o relatório de falha, dados de RAM/GPU e versões das dependências. O diagnóstico inicia antes das importações de Qt e das bibliotecas numéricas, pelo que uma falha de arranque também fica registada. Os oito algoritmos continuam idênticos byte a byte à v1.70.0.
 
 <a id="features"></a>
 ## Recursos principais

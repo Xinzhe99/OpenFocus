@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.70.0** — elke zware fase deelt nu één toelatingslease van voorbereiding tot publicatie: annuleren wacht tot de lopende native aanroep echt klaar is in plaats van een tweede render eroverheen te starten. Geheugen wordt gecontroleerd vóór allocatie (onleesbaar of te klein is een duidelijke fout, geen stilletjes kleinere tegels), de uitlijningscache legt atomair vast en codeert niet opnieuw bij een treffer, 16-bit neurale uitvoer behoudt zijn lage bits, en de nieuwe **resourcemodus** met automatische threads (`0`) geeft het bureaublad ruimte. De acht algoritmen blijven byte-identiek aan v1.69.0.
+> **v1.71.0** — algoritmen worden nu in één onveranderlijk register gedeclareerd: een nieuwe fusie- of uitlijningsmethode verschijnt met één descriptor en getypeerde parameters in renderen, batch, vergelijken, diepte en de CLI. Elke start schrijft een eigen roterend logboek met gekoppelde taak-ID's, parameters, looptijden en volledige stacktraces; de feedback-ZIP bevat het crashrapport, RAM/GPU-gegevens en versies van afhankelijkheden. Diagnostiek start vóór Qt- en numerieke imports, zodat ook een startfout wordt vastgelegd. De acht algoritmen blijven byte-identiek aan v1.70.0.
 
 <a id="features"></a>
 ## Functies

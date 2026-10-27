@@ -15,10 +15,28 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 # In --noconsole (windowed) PyInstaller builds sys.stdout/stderr are None, and
 # any print() then crashes with AttributeError ('NoneType' object has no
 # attribute 'write'). Route them to the null device instead.
-if sys.stdout is None:
+if sys.stdout is None or getattr(sys.stdout, "closed", False):
     sys.stdout = open(os.devnull, 'w', encoding='utf-8')
-if sys.stderr is None:
+if sys.stderr is None or getattr(sys.stderr, "closed", False):
     sys.stderr = open(os.devnull, 'w', encoding='utf-8')
+
+if __name__ == "__main__":
+    # Bootstrap before GUI imports: CLI and import-time failures share the
+    # same diagnostics, including on systems without Qt installed.
+    from utils.logging_setup import setup_logging, get_logger, log_session_start, log_action
+    from utils.diagnostics import install_exception_hooks
+    setup_logging()
+    log_session_start()
+    install_exception_hooks()
+    log_action("startup", args=sys.argv[1:])
+    _log = get_logger(__name__)
+    # The updater's restore flag belongs to the GUI, never to argparse.
+    _argv = [arg for arg in sys.argv[1:] if arg != "--restore-session"]
+    _restore_flag = len(_argv) != len(sys.argv[1:])
+    if any(arg.startswith("-") for arg in _argv):
+        from core.cli import run_cli
+        sys.exit(run_cli(_argv))
+
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -3306,59 +3324,6 @@ class OpenFocus(QMainWindow):
 
 
 if __name__ == "__main__":
-    # Windowed (no-console) builds have no usable stdout/stderr - any
-    # print() would raise "I/O operation on closed file" and kill renders.
-    # Route them to a no-op writer; real diagnostics go to the file log.
-    class _NullWriter:
-        def write(self, s):
-            return len(s)
-        def flush(self):
-            pass
-        def isatty(self):
-            return False
-
-    if getattr(sys, "frozen", False) and (
-            sys.stdout is None or getattr(sys.stdout, "closed", False)
-            or sys.stderr is None or getattr(sys.stderr, "closed", False)):
-        sys.stdout = _NullWriter()
-        sys.stderr = _NullWriter()
-
-    # File logging first so every later step leaves a trace in the log
-    from utils.logging_setup import setup_logging, get_logger
-    setup_logging()
-    from utils.logging_setup import log_session_start, log_action
-    log_session_start()
-    log_action("startup", args=str(sys.argv[1:]) if len(sys.argv) > 1 else "-")
-    _log = get_logger()
-
-    # Diagnostics: capture every unhandled exception (slots abort silently
-    # on PyQt6 otherwise) into a crash file next to the normal log.
-    import faulthandler as _fh, tempfile as _tf
-    _crash_path = os.path.join(_tf.gettempdir(), "openfocus_crash.txt")
-    _crash_f = open(_crash_path, "a", encoding="utf-8")
-    _fh.enable(_crash_f)
-
-    def _dump_exc(kind, exc_info):
-        try:
-            _crash_f.write(kind + " " + repr(exc_info) + "\n")
-            _crash_f.flush()
-        except Exception:
-            pass
-
-    sys.excepthook = lambda t, v, tb: _dump_exc("EXCEPTHOOK", (t, v, tb))
-    import threading as _th
-    _th.excepthook = lambda a: _dump_exc("THREAD EXC", a)
-    _log.info("crash diagnostics active: %s", _crash_path)
-
-    # Headless CLI mode (--input/--output/--method ...); unknown options exit
-    # with argparse usage. Plain positional paths still auto-load in the GUI.
-    # --restore-session is ours (the updater passes it to the relaunched build)
-    # and must be consumed before the CLI sees a leading dash.
-    _argv = [a for a in sys.argv[1:] if a != "--restore-session"]
-    _restore_flag = len(_argv) != len(sys.argv[1:])
-    if any(arg.startswith("-") for arg in _argv):
-        from core.cli import run_cli
-        sys.exit(run_cli(_argv))
 
     app = OpenFocusApplication(sys.argv)
 
