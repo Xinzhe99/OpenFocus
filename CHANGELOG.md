@@ -3,6 +3,21 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Source EXIF survives 16-bit exports, and camera RAWs provide it.** 16-bit
+  PNG and TIFF exports keep camera, lens, exposure, date and GPS tags; the file
+  is assembled so pixels stay byte-identical to the previous writer instead of
+  round-tripping through an 8-bit Pillow save. TIFF-based RAWs (ORF, NEF, CR2,
+  ARW, DNG, RW2) are read for EXIF, and MakerNotes plus source pixel-layout tags
+  are dropped so the export cannot inherit stale dimensions or offsets.
+  (Contributed by @AlanRockefeller in #6.)
+- **Stacked TIFF frames contribute their EXIF too.** Pillow exposes TIFF EXIF
+  through `getexif()` rather than `info`, so a TIFF stack previously exported
+  with no metadata even though every frame carried it. The loader now returns
+  the same export-safe subset used for RAWs.
+
 ## [v1.71.0] — 2026-10-27
 
 ### Added

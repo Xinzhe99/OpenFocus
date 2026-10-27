@@ -110,7 +110,19 @@ def _read_exif_bytes(path: str) -> bytes:
         if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif', '.tif', '.tiff', '.png', '.webp'):
             return b""
         with PILImage.open(path) as pil_img:
-            return pil_img.info.get('exif', b"") or b""
+            raw = pil_img.info.get('exif', b"") or b""
+            if raw:
+                return raw
+            # Pillow reports TIFF EXIF only through getexif(); info is empty
+            # there, so a stacked TIFF's camera data was previously dropped and
+            # a 16-bit export of those frames came out without metadata. Keep
+            # the same export-safe subset the RAW path returns: IFD0 carries
+            # source strip/size pointers that must not reach an export.
+            exif = pil_img.getexif()
+            if not len(exif):
+                return b""
+            safe = export_exif(exif.tobytes())
+            return safe.tobytes() if safe is not None else b""
     except Exception:
         return b""
 
