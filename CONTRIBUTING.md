@@ -15,6 +15,29 @@ person with the merge date, the affected areas and the pull request number, and
 extend that row as more work lands. Code, bug reports, reproduction stacks and
 usability feedback all count.
 
+## Agent control surface
+
+`core/control/` hosts a local command server (`openfocus/control/1`) that lets
+an agent drive the running GUI. Keep it working when you add UI:
+
+- Every new user-visible capability must remain reachable. Add a typed command
+  when it is part of the pipeline; otherwise it is still reachable through
+  `ui.actions` and the widget tree, provided the control has an identifier.
+- Give controls a stable `controlId` dynamic property (or an `objectName` when
+  the stylesheet does not own it), and store menu actions in
+  `window.ui_objs[key]`. Paths and action keys must not depend on language.
+- Open dialogs modelessly in the control path (`dialog.open`). Never call
+  `exec()` inside a command handler; a blocking call stalls the response and
+  hides the dialog from the agent.
+- Long operations return immediately and expose state (`render.state`,
+  `batch.state`, `app.state`). Do not block the GUI thread waiting for work.
+- Keep `core/control/protocol.py` standard-library only; PyQt belongs in the
+  server/client modules. Update `COMMANDS` and `docs/AGENT_CONTROL_SPEC.md`
+  together.
+- If a menu action starts a workflow after `QDialog.exec()` returns, factor the
+  post-accept step into a method the control channel can call (see
+  `_start_batch_from_dialog`).
+
 ## Module boundaries and diagnostics
 
 Keep algorithm metadata and application paths independent of Qt and numerical

@@ -32,6 +32,10 @@ class RenderManager:
         self._preview_mode = False
         # What the *running* render was launched with; see start_render().
         self._render_context: Optional[dict] = None
+        # Control-channel observability: the last outcome and tile progress.
+        self.last_error: Optional[str] = None
+        self.last_result: Optional[dict] = None
+        self._control_progress: Optional[tuple] = None
 
     def _alignment_key(self, included, method=None):
         window = self.window
@@ -518,6 +522,9 @@ class RenderManager:
         log_action("render_start", method=fusion_method,
                    align=alignment_method, preview=self._preview_mode,
                    frames=len(window.raw_images or []))
+        self.last_error = None
+        self.last_result = None
+        self._control_progress = None
         self.worker = RenderWorker(
             source_images,
             effective_aligned_images,
@@ -621,6 +628,16 @@ class RenderManager:
         try:
             if fusion_result is not None:
                 window.fusion_result = fusion_result
+                self.last_result = {
+                    "shape": list(fusion_result.shape),
+                    "dtype": str(fusion_result.dtype),
+                    "device": device_name,
+                    "alignment_seconds": round(float(alignment_time), 3),
+                    "fusion_seconds": round(float(fusion_time), 3),
+                    "registration_performed": bool(registration_performed),
+                    "preview": bool(preview),
+                    "method": (context or {}).get("algorithm"),
+                }
                 # A quick preview is a throwaway draft: show it, but keep it
                 # out of the output history so only full-quality renders land
                 # there.
@@ -976,6 +993,7 @@ class RenderManager:
             # frozen for the rest of the run.
             bar.setRange(0, int(total))
             bar.setValue(int(done))
+        self._control_progress = (int(done), int(total))
         now = _time.time()
         last = getattr(self, '_progress_last_t', None)
         if last is None or now - last > 1.0:  # throttle to 1 Hz
@@ -1007,10 +1025,13 @@ class RenderManager:
 
         self._restore_ui_controls()
 
+        self._control_progress = None
         # Cancellation is not an error: quiet status message, no dialog
         if error_message.startswith("CANCELLED"):
+            self.last_error = None
             window.statusBar().showMessage(trans.t('msg_render_cancelled'), 4000)
             return
+        self.last_error = str(error_message)
 
         import logging
         logging.getLogger("openfocus").error("render failed: %s", error_message)

@@ -3,6 +3,20 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Local GUI control channel for agents.** `openfocus gui --control` opens a
+  token-authenticated local socket; `openfocus ctl` drives the live window:
+  stacks, methods, options, render/cancel, outputs and export, projects,
+  dialogs, batch state, and a generic UI layer that lists menu actions and
+  every widget, clicks, sets values, triggers actions and captures screenshots.
+- **Agent-oriented CLI contract.** `openfocus version` and `openfocus describe`
+  report the build, capabilities, registry and control commands as JSON. With
+  `--json-progress`, stdout carries only NDJSON: engine and progress prose is
+  redirected to stderr, batch folder events are JSON-encoded, and start/done
+  events delimit a run.
+
 ## [v1.72.0] — 2026-10-27
 
 ### Added
