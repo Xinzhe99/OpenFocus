@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.71.0** — los algoritmos se declaran ahora en un registro inmutable: un nuevo método de fusión o registro aparece en renderizado, lote, comparación, profundidad y CLI con un solo descriptor y parámetros tipados. Cada inicio escribe su propio registro rotativo con identificadores de tarea enlazados, parámetros, tiempos y trazas completas; el ZIP de comentarios incluye el informe de fallo, datos de RAM/GPU y versiones de dependencias. El diagnóstico arranca antes de importar Qt o las librerías numéricas, así que un fallo de inicio también queda registrado. Los ocho algoritmos siguen idénticos byte a byte a v1.70.0.
+> **v1.72.0** — StackMFF y StackMFF V2 se suman a la fusión: diez métodos en una sola instalación — la red 3D original (independiente del orden, sin ajustes), el modelo recurrente V2 con mapas de profundidad (mantener el orden de enfoque) y el renombrado StackMFF V3. Cada selector agrupa por IA, dominio espacial y dominio transformado, y cada método se explica al pasar el cursor. Se eliminó la mezcla suave borrosa de V2; su muestreo de referencia queda intacto.
 
 <a id="features"></a>
 ## Funciones

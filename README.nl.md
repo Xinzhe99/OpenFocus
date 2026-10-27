@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.71.0** — algoritmen worden nu in één onveranderlijk register gedeclareerd: een nieuwe fusie- of uitlijningsmethode verschijnt met één descriptor en getypeerde parameters in renderen, batch, vergelijken, diepte en de CLI. Elke start schrijft een eigen roterend logboek met gekoppelde taak-ID's, parameters, looptijden en volledige stacktraces; de feedback-ZIP bevat het crashrapport, RAM/GPU-gegevens en versies van afhankelijkheden. Diagnostiek start vóór Qt- en numerieke imports, zodat ook een startfout wordt vastgelegd. De acht algoritmen blijven byte-identiek aan v1.70.0.
+> **v1.72.0** — StackMFF en StackMFF V2 sluiten aan bij de fusie: tien methoden in één installatie — het oorspronkelijke 3D-stacknetwerk (volgordeonafhankelijk, zonder instellingen), het recurrente V2-model met dieptekaarten (focusvolgorde behouden) en het uniform genoemde StackMFF V3. Elke methodeselector groepeert op AI, ruimtelijk domein en transformatiedomein, en elke methode legt zichzelf uit bij hover. De wazige zachte menging van V2 is verwijderd; de referentiebemonstering blijft ongewijzigd.
 
 <a id="features"></a>
 ## Functies

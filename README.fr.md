@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.71.0** — les algorithmes sont désormais déclarés dans un registre immuable : une nouvelle méthode de fusion ou de recalage apparaît dans le rendu, le lot, la comparaison, la profondeur et la CLI depuis un seul descripteur et des paramètres typés. Chaque lancement écrit son propre journal rotatif avec des identifiants de tâche liés, les paramètres, les durées et les traces complètes ; le ZIP de retour contient le rapport de plantage, les données RAM/GPU et les versions des dépendances. Le diagnostic démarre avant les imports Qt et numériques, si bien qu'un échec au démarrage est aussi enregistré. Les huit algorithmes restent identiques octet pour octet à la v1.70.0.
+> **v1.72.0** — StackMFF et StackMFF V2 rejoignent la liste : dix méthodes dans une seule installation — le réseau 3D d'origine (indépendant de l'ordre, sans réglage), le modèle récurrent V2 avec cartes de profondeur (conserver l'ordre de mise au point) et StackMFF V3 au nom unifié. Chaque sélecteur regroupe par IA, domaine spatial et domaine transformé, et chaque méthode s'explique au survol. Le mélange doux flou de V2 est retiré ; son échantillonnage de référence reste inchangé.
 
 <a id="features"></a>
 ## Fonctionnalités

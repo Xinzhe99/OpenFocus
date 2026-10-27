@@ -3,7 +3,7 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v1.72.0] — 2026-10-27
 
 ### Added
 - **StackMFF and StackMFF V2 as first-class fusion methods.** The original
@@ -28,6 +28,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `StackMFF V3`, next to `StackMFF V2` and `StackMFF`.
 - **The AI-on-CPU warning names the selected model** instead of always saying
   StackMFF V3.
+
+### Verification
+- Complete Windows CPU suite: **1200 passed, 12 skipped**, two Pillow TIFF
+  metadata warnings. Both CI platforms (Linux, Windows) pass on the release
+  commit.
+- V2's hard output, layer index and depth map match the upstream reference
+  network exactly; V1's fused luma is within one level of its reference.
+  uint16 survives both backends, V1 tiling deviates by less than one level on
+  average, and V2 refuses to tile so its global depth normalisation stays
+  consistent.
+- A native session exercised the grouped main/batch/depth dropdowns, both new
+  methods, the depth dialog, comparison, batch export and a settings restart
+  with no unhandled Qt exceptions.
+- Verified limits: V2 runs whole-frame only (admission rejects oversized
+  requests); CUDA/MPS and the macOS installer were not exercised here.
 
 ## [v1.71.1] — 2026-10-27
 

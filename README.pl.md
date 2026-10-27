@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.71.0** — algorytmy są teraz deklarowane w jednym niezmiennym rejestrze: nowa metoda fuzji lub wyrównania pojawia się w renderowaniu, wsadzie, porównaniu, głębi i CLI dzięki jednemu deskryptorowi z typowanymi parametrami. Każde uruchomienie zapisuje własny rotowany dziennik z powiązanymi identyfikatorami zadań, parametrami, czasami i pełnymi śladami stosu; ZIP opinii zawiera raport awarii, dane RAM/GPU i wersje zależności. Diagnostyka startuje przed importem Qt i bibliotek numerycznych, więc błąd startu również jest zapisywany. Osiem algorytmów pozostaje identycznych bajt w bajt z v1.70.0.
+> **v1.72.0** — StackMFF i StackMFF V2 dołączają do fuzji: dziesięć metod w jednej instalacji — oryginalna sieć 3D (niezależna od kolejności, bez ustawień), model rekurencyjny V2 z mapami głębi (zachowaj kolejność ostrości) i jednolicie nazwany StackMFF V3. Każdy selektor grupuje według AI, domeny przestrzennej i domeny przekształceń, a każda metoda opisuje się po najechaniu. Rozmyte miękkie mieszanie V2 usunięto; próbkowanie referencyjne pozostało bez zmian.
 
 <a id="features"></a>
 ## Najważniejsze funkcje
