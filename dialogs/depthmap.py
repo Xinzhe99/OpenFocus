@@ -633,6 +633,13 @@ class DepthMapDialog(QDialog):
         self._update_overlay_availability()
         self._update_source_summary()
         self._reconcile_controls()
+        for _control in ("method_combo", "align_combo", "compute_btn",
+                         "cancel_btn", "btn_save_color", "btn_save_raw",
+                         "btn_save_3d", "fusion_parameter_panel",
+                         "registration_parameter_panel"):
+            _widget = getattr(self, _control, None)
+            if _widget is not None:
+                _widget.setProperty("controlId", _control)
 
     # ------------------------------------------------------------------
     def _apply_style(self):

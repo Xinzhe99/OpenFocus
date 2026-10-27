@@ -118,6 +118,14 @@ class CompareDialog(QDialog):
             method = fusion_algorithms()[0].id
         get_fusion(method)
         self._checks[method].setChecked(True)
+        for _control in ("btn_run", "btn_adopt_params", "btn_adopt_output",
+                         "btn_retry", "btn_verify", "align_combo",
+                         "mode_combo", "view_combo", "registration_parameter_panel"):
+            _widget = getattr(self, _control, None)
+            if _widget is not None:
+                _widget.setProperty("controlId", _control)
+        for _method, _box in self._checks.items():
+            _box.setProperty("controlId", f"method_{_method}")
 
     def _update_source_summary(self):
         """State which frames are compared, including excluded ones."""

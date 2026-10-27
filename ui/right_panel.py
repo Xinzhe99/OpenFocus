@@ -421,6 +421,16 @@ def create_right_panel() -> RightPanelComponents:
 
     right_layout.addWidget(status_widget)
 
+    # Stable identifiers for agents, independent of QSS object names.
+    for _control in ("combo_fusion", "combo_align", "fusion_parameter_panel",
+                     "registration_parameter_panel", "btn_reset", "btn_render",
+                     "btn_compare", "chk_quick_preview", "chk_reverse_order",
+                     "chk_exposure_match", "chk_base_correct", "file_list",
+                     "output_list"):
+        _widget = locals().get(_control)
+        if _widget is not None:
+            _widget.setProperty("controlId", _control)
+
     return RightPanelComponents(
         widget=right_panel,
         splitter=right_splitter,
