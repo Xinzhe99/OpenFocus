@@ -3,7 +3,7 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v1.71.1] — 2026-10-27
 
 ### Added
 - **Source EXIF survives 16-bit exports, and camera RAWs provide it.** 16-bit
