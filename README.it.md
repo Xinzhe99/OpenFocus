@@ -9,7 +9,7 @@
 <p align="center"><strong>Tutti i piani di fuoco. Una sola immagine completamente nitida.</strong></p>
 
 <p align="center">
-  Otto algoritmi di fusione, tre modalità di registrazione e un'area di ritocco legata alla sorgente per macro, microscopia e stack industriali. 16 bit end-to-end, CLI headless e un'interfaccia in dodici lingue.
+  Dieci algoritmi di fusione, tre modalità di registrazione e un'area di ritocco legata alla sorgente per macro, microscopia e stack industriali. 16 bit end-to-end, CLI headless e un'interfaccia in dodici lingue.
 </p>
 
 <p align="center">

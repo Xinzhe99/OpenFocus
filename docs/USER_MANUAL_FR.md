@@ -412,7 +412,7 @@ Accédez aux réglages supplémentaires via **Paramètres → Paramètres de rec
 
 ## 8. Méthodes de fusion d'images
 
-OpenFocus propose huit algorithmes de fusion (plus un mode d'alignement seul). Chacun présente des caractéristiques différentes adaptées à divers types d'images.
+OpenFocus propose dix algorithmes de fusion (plus un mode d'alignement seul). Chacun présente des caractéristiques différentes adaptées à divers types d'images.
 
 ### Filtre guidé (par défaut)
 
@@ -453,6 +453,29 @@ OpenFocus propose huit algorithmes de fusion (plus un mode d'alignement seul). C
 - **Avantages** : rapide, frontières de zones nettes précises ; la mémoire n'augmente pas
   avec le nombre d'images
 - **Paramètre** : Noyau = taille du filtre moyenne de la carte de mise au point grossière
+
+### StackMFF (V1, apprentissage profond)
+
+- **Algorithme** : un U-Net 3D qui prédit la luminance fusionnée de toute la
+  pile en une passe ; Cb/Cr proviennent de l'image source la plus proche
+- **Idéal pour** : les piles sans ordre de mise au point fixe ou capturées
+  sans série continue
+- **Avantages** : indépendant de l'ordre, sans paramètre, couleurs dans le gamut
+- **Remarque** : 6 M de paramètres ; les grosses piles profitent du GPU
+
+### StackMFF V2 (apprentissage profond)
+
+- **Algorithme** : estimation du foyer par couche affinée par une couche
+  récurrente bidirectionnelle ; le réseau régresse l'indice de plan focal et
+  échantillonne la pile. **Les images doivent conserver leur ordre de mise au
+  point d'origine** — l'inversion est désactivée
+- **Sortie IA** : Dure (par défaut, règle de l'article) ou Douce (mélange
+  pondéré par les probabilités)
+- **Cartes de profondeur** : prises en charge ; Douce = couche attendue,
+  Dure = couche échantillonnée
+- **Idéal pour** : les balayages de mise au point continus avec un modèle
+  très petit et rapide
+- **Prérequis** : PyTorch ; environ 0,05 M de paramètres
 
 ### StackMFF-V3 (apprentissage profond)
 

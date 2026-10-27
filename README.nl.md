@@ -9,7 +9,7 @@
 <p align="center"><strong>Elk scherptevlak. Eén volledig scherp beeld.</strong></p>
 
 <p align="center">
-  Acht fusiemethoden, drie registratiemodi en een bronvaste retoucheerwerkruimte voor macro, microscopie en industriële stapels. 16-bit van begin tot eind, een headless CLI en een interface in twaalf talen.
+  Tien fusiemethoden, drie registratiemodi en een bronvaste retoucheerwerkruimte voor macro, microscopie en industriële stapels. 16-bit van begin tot eind, een headless CLI en een interface in twaalf talen.
 </p>
 
 <p align="center">

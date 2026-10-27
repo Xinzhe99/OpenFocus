@@ -428,7 +428,7 @@ Weitere Einstellungen über **Einstellungen → Registrierungseinstellungen**:
 
 ## 8. Fusionsmethoden
 
-OpenFocus bietet acht Fusionsalgorithmen (plus einen reinen Ausrichtungsmodus). Jeder
+OpenFocus bietet zehn Fusionsalgorithmen (plus einen reinen Ausrichtungsmodus). Jeder
 hat eigene Eigenschaften, die zu unterschiedlichen Bildtypen passen.
 
 ### Guided Filter (Standard)
@@ -470,6 +470,27 @@ hat eigene Eigenschaften, die zu unterschiedlichen Bildtypen passen.
 - **Vorteile**: schnell, scharfe Grenzen der Fokusbereiche; der Speicherbedarf wächst
   nicht mit der Bildanzahl
 - **Parameter**: Kernel = Größe des Mittelwertfilters der groben Fokuskarte
+
+### StackMFF (V1, Deep Learning)
+
+- **Algorithmus**: ein 3D-U-Net, das die fusionierte Luma des gesamten Stapels
+  in einem Durchlauf vorhersagt; Cb/Cr stammen aus dem nächstgelegenen Quellbild
+- **Am besten für**: Stapel ohne feste Fokusreihenfolge oder ohne kontinuierliche
+  Aufnahmeserie
+- **Vorteile**: reihenfolgeunabhängig, keine Parameter, Farben bleiben im Gamut
+- **Hinweis**: 6 Mio. Parameter; große Stapel profitieren von einer GPU
+
+### StackMFF V2 (Deep Learning)
+
+- **Algorithmus**: Fokusschätzung pro Ebene, verfeinert durch eine
+  bidirektionale rekurrente Schicht; das Netz regressiert den Fokusindex und
+  tastet den Stapel ab. **Die Bilder müssen in ihrer ursprünglichen
+  Fokusreihenfolge bleiben** — Umkehren ist deaktiviert
+- **KI-Ausgabe**: Hart (Standard, Referenzregel) oder Weich
+  (wahrscheinlichkeitsgewichtete Mischung)
+- **Tiefenkarten**: unterstützt; Weich = erwartete Ebene, Hart = abgetastete Ebene
+- **Am besten für**: kontinuierliche Fokusserien mit sehr kleinem, schnellem Modell
+- **Voraussetzungen**: PyTorch; etwa 0,05 Mio. Parameter
 
 ### StackMFF-V3 (Deep Learning)
 

@@ -430,7 +430,7 @@ Extra instellingen vind je onder **Instellingen → Registratie-instellingen**:
 
 ## 8. Fusiemethoden
 
-OpenFocus biedt acht fusiealgoritmen (plus een modus die alleen uitlijnt).
+OpenFocus biedt tien fusiealgoritmen (plus een modus die alleen uitlijnt).
 Elk heeft andere eigenschappen en past bij andere soorten afbeeldingen.
 
 ### Guided Filter (standaard)
@@ -474,6 +474,28 @@ Elk heeft andere eigenschappen en past bij andere soorten afbeeldingen.
 - **Voordelen**: snel, scherpe grenzen tussen focusgebieden; het geheugengebruik
   groeit niet mee met het aantal frames
 - **Parameter**: kernel = grootte van het mean-filter van de grove scherptekaart
+
+### StackMFF (V1, deep learning)
+
+- **Algoritme**: een 3D U-Net dat de gefuseerde luma van de hele stapel in één
+  pass voorspelt; Cb/Cr komen uit het dichtstbijzijnde bronbeeld
+- **Het best voor**: stapels zonder vaste focusvolgorde of zonder continue
+  opnamereeks
+- **Voordelen**: onafhankelijk van de volgorde, geen parameters, kleuren
+  blijven binnen gamut
+- **Let op**: 6M parameters; grote stapels hebben baat bij een GPU
+
+### StackMFF V2 (deep learning)
+
+- **Algoritme**: focusinschatting per laag, verfijnd door een bidirectionele
+  recurrente laag; het netwerk regresseert de focusindex en bemonstert de
+  stapel. **De beelden moeten in hun oorspronkelijke focusvolgorde blijven** —
+  omkeren is uitgeschakeld
+- **AI-uitvoer**: Hard (standaard, de referentieregel) of Zacht
+  (kansgewogen menging)
+- **Dieptekaarten**: ondersteund; Zacht = verwachte laag, Hard = bemonsterde laag
+- **Het best voor**: continue focusreeksen met een zeer klein, snel model
+- **Vereisten**: PyTorch; circa 0,05M parameters
 
 ### StackMFF-V3 (deep learning)
 

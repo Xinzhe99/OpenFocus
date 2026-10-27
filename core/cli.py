@@ -341,8 +341,9 @@ def _fuse_stack_admitted(images, args):
     info = fusion.get_info()
     t0 = time.time()
     fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads)
-    if spec.neural:
-        fuse_kwargs["model_path"] = _find_model_path()
+    model_weights = _method_weights(spec)
+    if model_weights:
+        fuse_kwargs["model_path"] = model_weights
     fused = fusion.fuse(**fuse_kwargs)
     if fused is None:
         raise RuntimeError("Fusion returned no result")
@@ -358,6 +359,14 @@ def _fuse_stack_admitted(images, args):
     args._depth_frames = depth_frames
     print(f"Fusion ({args.method}, device={info['device']}) done in {time.time() - t0:.1f}s")
     return fused
+
+
+def _method_weights(spec) -> str | None:
+    """Resolve the descriptor's checkpoint; back-ends own their default too."""
+    if not spec.weights:
+        return None
+    from utils.weights import weights_path
+    return weights_path(os.path.basename(spec.weights))
 
 
 def _depth_out_path(args, fused_out: str) -> str:
@@ -390,7 +399,7 @@ def _save_depth(args, fused_out: str) -> None:
         parameters.setdefault("kernel_size", _normalize_kernel(args.kernel, default))
     idx = compute_focus_index(
         frames, args.method, parameters=parameters,
-        model_path=_find_model_path() if spec.neural else None,
+        model_path=_method_weights(spec),
         thread_count=getattr(args, "threads", 0),
         resource_preference=getattr(args, "resource_preference", "balanced"),
         use_gpu=not args.cpu)
@@ -748,24 +757,6 @@ def _run_cli_admitted(argv: List[str]) -> int:
         _log.exception("CLI processing failed")
         _emit_json({"mode": "single", "error": str(exc)})
         return EXIT_ERROR
-
-
-def _find_model_path() -> str:
-    """Locate stackmff_v3_final.pth: repo checkout first, then the installed
-    weights package (pip-installed openfocus ships it as package data)."""
-    repo = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "weights", "stackmff_v3_final.pth")
-    if os.path.isfile(repo):
-        return repo
-    try:
-        import weights
-        shipped = os.path.join(os.path.dirname(weights.__file__), "stackmff_v3_final.pth")
-        if os.path.isfile(shipped):
-            return shipped
-    except ImportError:
-        pass
-    return repo
 
 
 def main() -> None:

@@ -59,6 +59,7 @@ Changelog = "https://github.com/Xinzhe99/OpenFocus/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 packages = ["core", "core.models", "core.models.stackmff_v3",
+            "core.models.stackmff_v1", "core.models.stackmff_v2",
             "fusion_methods", "utils", "weights"]
 # The locale packs are top-level modules (locales_de.py, …) discovered at
 # runtime by TranslationManager; if they are not listed here they are absent

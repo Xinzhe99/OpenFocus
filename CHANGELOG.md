@@ -3,6 +3,29 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **StackMFF and StackMFF V2 as first-class fusion methods.** The original
+  3D stack network runs the whole stack in one pass (order-independent, no
+  parameters); V2 adds a recurrent cross-layer model, a `soft`/`hard` output
+  choice and depth maps, and keeps the stack in its original focus order.
+  Both appear in the main window, comparison, batch, depth (V2), settings,
+  projects and the CLI without new flags. (Weights and network code are MIT,
+  see `THIRD_PARTY_NOTICES.md`.)
+- **A selection hint for every fusion and registration method.** The
+  right-panel and batch combos now explain each method, including the new
+  neural models; an order-sensitive method disables the reverse control with
+  an explanation instead of ignoring it silently.
+
+### Changed
+- **Neural methods declare their checkpoint and stack-order contract.** The
+  registry gained `weights` and `order_sensitive`; the CLI, tiled inference
+  and depth planner no longer hard-code the V3 checkpoint, and the tiled
+  neural loop is shared by V1/V2/V3.
+- **The AI-on-CPU warning names the selected model** instead of always saying
+  StackMFF V3.
+
 ## [v1.71.1] — 2026-10-27
 
 ### Added

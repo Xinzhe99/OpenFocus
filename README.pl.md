@@ -9,7 +9,7 @@
 <p align="center"><strong>Każda płaszczyzna ostrości. Jeden w pełni ostry obraz.</strong></p>
 
 <p align="center">
-  Osiem algorytmów fuzji, trzy tryby rejestracji i obszar retuszu powiązany ze źródłem dla makro, mikroskopii i stosów przemysłowych. 16 bitów na całej ścieżce, bezgłowy CLI i interfejs w dwunastu językach.
+  Dziesięć algorytmów fuzji, trzy tryby rejestracji i obszar retuszu powiązany ze źródłem dla makro, mikroskopii i stosów przemysłowych. 16 bitów na całej ścieżce, bezgłowy CLI i interfejs w dwunastu językach.
 </p>
 
 <p align="center">

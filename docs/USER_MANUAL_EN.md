@@ -430,7 +430,7 @@ Access additional settings via **Settings → Registration**:
 
 ## 8. Image Fusion Methods
 
-OpenFocus offers eight fusion algorithms (plus an alignment-only mode). Each has different characteristics suitable for various image types.
+OpenFocus offers ten fusion algorithms (plus an alignment-only mode). Each has different characteristics suitable for various image types.
 
 ### Guided Filter (Default)
 
@@ -471,6 +471,28 @@ OpenFocus offers eight fusion algorithms (plus an alignment-only mode). Each has
 - **Advantages**: Fast, sharp focus-region boundaries; memory does not grow
   with the number of frames
 - **Parameter**: Kernel = size of the mean filter of the coarse focus map
+
+### StackMFF (V1, deep learning)
+
+- **Algorithm**: a 3D U-Net that predicts the fused luma for the whole stack
+  in one pass; Cb/Cr are taken from the source frame closest to that luma
+- **Best for**: stacks where the focus sweep is unordered or the frames were
+  not captured as a continuous series
+- **Advantages**: order-independent, no parameters, colour stays in gamut
+- **Note**: 6M parameters; larger stacks benefit from GPU acceleration
+
+### StackMFF V2 (deep learning)
+
+- **Algorithm**: per-layer focus estimation refined by a bidirectional
+  recurrent layer; the network regresses the focal-plane index and samples the
+  stack. **The frames must stay in their original focus order** — reversing is
+  disabled for this method
+- **AI output mode**: Hard (default, the reference fusion rule) or Soft
+  (probability-weighted blend, smoother transitions)
+- **Depth maps**: supported; Soft reports the expected layer, Hard the sampled
+  layer
+- **Best for**: continuous focus sweeps where a very small, fast model matters
+- **Requirements**: PyTorch; about 0.05M parameters
 
 ### StackMFF-V3 (Deep Learning)
 

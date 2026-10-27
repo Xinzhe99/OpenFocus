@@ -559,17 +559,18 @@ class MultiFocusFusion:
             self.use_gpu = False
 
     def _validate_ai_environment(self) -> None:
-        """验证AI融合依赖"""
+        """Verify the neural back-end's dependency and device."""
+        name = self.descriptor.display_name
         if not is_ai_fusion_available():
             raise RuntimeError(
-                "StackMFF-V3 fusion requires PyTorch. Install it with: pip install torch"
+                f"{name} fusion requires PyTorch. Install it with: pip install torch"
             )
 
         import torch
 
         if self.use_gpu:
             if not torch.cuda.is_available() and not torch.backends.mps.is_available():
-                print("Warning: No GPU acceleration available (CUDA/MPS). Running StackMFF-V3 on CPU (slower).")
+                print(f"Warning: No GPU acceleration available (CUDA/MPS). Running {name} on CPU (slower).")
                 self.use_gpu = False
     
     def fuse(self,
@@ -828,6 +829,43 @@ class MultiFocusFusion:
             img_resize,
             model_path,
             self.use_gpu,
+            mode=mode,
+            should_cancel=should_cancel,
+            progress_callback=progress_callback,
+            thread_count=kwargs.get('thread_count'),
+            resource_preference=self.resource_preference,
+            execution_plan=kwargs.get('execution_plan'),
+        )
+
+    def _fuse_stackmff(self, input_source, img_resize=None,
+                       model_path=None, should_cancel=None,
+                       progress_callback=None, **kwargs):
+        """StackMFF (V1): one 3D pass over the whole stack; no parameters."""
+        from fusion_methods.stackmff_v1 import DEFAULT_WEIGHTS, stackmff_impl
+        from utils.weights import weights_path
+
+        if not model_path:
+            model_path = weights_path(os.path.basename(DEFAULT_WEIGHTS))
+        return stackmff_impl(
+            input_source, img_resize, model_path, self.use_gpu,
+            should_cancel=should_cancel,
+            progress_callback=progress_callback,
+            thread_count=kwargs.get('thread_count'),
+            resource_preference=self.resource_preference,
+            execution_plan=kwargs.get('execution_plan'),
+        )
+
+    def _fuse_stackmffv2(self, input_source, img_resize=None,
+                         model_path=None, mode='hard', should_cancel=None,
+                         progress_callback=None, **kwargs):
+        """StackMFF V2: order-sensitive stack fusion with soft/hard output."""
+        from fusion_methods.stackmff_v2 import DEFAULT_WEIGHTS, stackmffv2_impl
+        from utils.weights import weights_path
+
+        if not model_path:
+            model_path = weights_path(os.path.basename(DEFAULT_WEIGHTS))
+        return stackmffv2_impl(
+            input_source, img_resize, model_path, self.use_gpu,
             mode=mode,
             should_cancel=should_cancel,
             progress_callback=progress_callback,
@@ -1240,15 +1278,21 @@ class MultiFocusFusion:
             return fused[:, :, 0]
         return fused
 
-    def _fuse_tiled_ai_batched(self, imgs, img_dir, tile_coords, h, w,
-                               channels, block_size, overlap,
-                               should_cancel=None, progress_callback=None,
-                               out_dtype=np.uint8, exposure_gains=None,
-                               thread_count=None, **kwargs):
-        """Infer one admitted semantic tile at a time, reducing in grid order."""
+    def _fuse_tiled_neural(self, imgs, img_dir, tile_coords, h, w, channels,
+                           block_size, overlap, *, prepare, label,
+                           default_weights, mode_normalizer=None,
+                           should_cancel=None, progress_callback=None,
+                           out_dtype=np.uint8, exposure_gains=None,
+                           thread_count=None, **kwargs):
+        """Shared semantic-tile loop for every neural back-end.
+
+        Each method supplies its admission helper (``prepare``) and checkpoint;
+        the fusion itself is dispatched through the descriptor's runner, so a
+        new model needs no copy of this accumulator.
+        """
         import cv2
         from core.registration import RegistrationCancelled
-        from fusion_methods.stackmffv3 import _prepare_inference
+        from utils.weights import weights_path
 
         def check_cancel():
             if should_cancel is not None and should_cancel():
@@ -1264,10 +1308,12 @@ class MultiFocusFusion:
         block_size, _, tile_coords = _ai_effective_tiling(
             count, block_size, h, w, overlap, self.ai_batch_size)
         overlap = max(0, min(int(overlap), block_size // 2))
-        model_path = kwargs.get('model_path') or 'weights/stackmff_v3_final.pth'
+        model_path = kwargs.get('model_path') or default_weights
         if not os.path.isabs(model_path):
-            model_path = resource_path(model_path)
-        mode = normalize_mode(kwargs.get('mode', self.fusion_parameters.get('mode', 'soft')))
+            model_path = weights_path(os.path.basename(model_path))
+        if mode_normalizer is not None:
+            kwargs['mode'] = mode_normalizer(
+                kwargs.get('mode', self.fusion_parameters.get('mode', 'soft')))
 
         def crop_frames(coords):
             check_cancel()
@@ -1290,7 +1336,7 @@ class MultiFocusFusion:
 
         check_cancel()
         crops = crop_frames(tile_coords[0])
-        _, device, plan = _prepare_inference(
+        _, device, plan = prepare(
             crops, model_path, self.use_gpu, thread_count=thread_count,
             resource_preference=self.resource_preference,
             fixed_bytes=h * w * ((channels + 1) * 4 + channels * np.dtype(out_dtype).itemsize))
@@ -1298,7 +1344,7 @@ class MultiFocusFusion:
         acc = np.zeros((h, w, channels), dtype=np.float32)
         weight = np.zeros((h, w, 1), dtype=np.float32)
         total = len(tile_coords)
-        print(f"StackMFF V3 tiled fusion: {total} tiles, one per call ({device})")
+        print(f"{label} tiled fusion: {total} tiles, one per call ({device})")
         if progress_callback is not None:
             progress_callback(0, total)
         for index, coords in enumerate(tile_coords):
@@ -1306,7 +1352,7 @@ class MultiFocusFusion:
             if index:
                 crops = crop_frames(coords)
             runner_parameters = dict(kwargs)
-            runner_parameters.update(model_path=model_path, mode=mode,
+            runner_parameters.update(model_path=model_path,
                 should_cancel=should_cancel, thread_count=thread_count, execution_plan=plan)
             fused_tile = resolve_runner(self.descriptor.runner)(self, crops, None, **runner_parameters)
             check_cancel()
@@ -1332,7 +1378,41 @@ class MultiFocusFusion:
         fused = acc.astype(out_dtype, copy=False)
         check_cancel()
         return fused[:, :, 0] if channels == 1 else fused
-    
+
+    def _fuse_tiled_ai_batched(self, imgs, img_dir, tile_coords, h, w,
+                               channels, block_size, overlap, **kwargs):
+        """StackMFF V3 tiles: probability blend/pick, one inference per tile."""
+        from fusion_methods.stackmffv3 import _prepare_inference, normalize_mode
+
+        return self._fuse_tiled_neural(
+            imgs, img_dir, tile_coords, h, w, channels, block_size, overlap,
+            prepare=_prepare_inference, label="StackMFF V3",
+            default_weights=self.descriptor.weights or 'weights/stackmff_v3_final.pth',
+            mode_normalizer=normalize_mode, **kwargs)
+
+    def _fuse_tiled_stackmff(self, imgs, img_dir, tile_coords, h, w,
+                             channels, block_size, overlap, **kwargs):
+        """StackMFF (V1) tiles: whole-stack 3D inference per semantic tile."""
+        from fusion_methods.stackmff_v1 import _prepare_inference
+
+        return self._fuse_tiled_neural(
+            imgs, img_dir, tile_coords, h, w, channels, block_size, overlap,
+            prepare=_prepare_inference, label="StackMFF",
+            default_weights=self.descriptor.weights or 'weights/stackmff_final.pth',
+            **kwargs)
+
+    def _fuse_tiled_stackmffv2(self, imgs, img_dir, tile_coords, h, w,
+                               channels, block_size, overlap, **kwargs):
+        """StackMFF V2 tiles: recurrent depth modelling per semantic tile."""
+        from fusion_methods.stackmff_v2 import _prepare_inference, normalize_mode
+
+        return self._fuse_tiled_neural(
+            imgs, img_dir, tile_coords, h, w, channels, block_size, overlap,
+            prepare=_prepare_inference, label="StackMFF V2",
+            default_weights=self.descriptor.weights or 'weights/stackmff_v2_final.pth',
+            mode_normalizer=normalize_mode, **kwargs)
+
+
     def set_device(self, use_gpu: bool):
         """
         切换计算设备

@@ -423,7 +423,7 @@ Accede a los ajustes adicionales en **Ajustes → Ajustes de registro**:
 
 ## 8. Métodos de fusión de imágenes
 
-OpenFocus ofrece ocho algoritmos de fusión (además de un modo de solo alineación). Cada uno tiene características distintas que lo hacen adecuado para diferentes tipos de imágenes.
+OpenFocus ofrece diez algoritmos de fusión (además de un modo de solo alineación). Cada uno tiene características distintas que lo hacen adecuado para diferentes tipos de imágenes.
 
 ### Filtro guiado (predeterminado)
 
@@ -466,6 +466,28 @@ OpenFocus ofrece ocho algoritmos de fusión (además de un modo de solo alineaci
 - **Ventajas**: rápido, límites de región de enfoque nítidos; la memoria no
   crece con el número de fotogramas
 - **Parámetro**: Núcleo = tamaño del filtro de media del mapa de enfoque grueso
+
+### StackMFF (V1, aprendizaje profundo)
+
+- **Algoritmo**: una U-Net 3D que predice la luminancia fusionada de todo el
+  stack en una pasada; Cb/Cr se toman del fotograma fuente más cercano
+- **Ideal para**: stacks sin orden de enfoque fijo o capturados sin una serie
+  continua
+- **Ventajas**: independiente del orden, sin parámetros, el color no se sale
+  de gama
+- **Nota**: 6 M de parámetros; los stacks grandes se benefician de la GPU
+
+### StackMFF V2 (aprendizaje profundo)
+
+- **Algoritmo**: estimación de enfoque por capas refinada por una capa
+  recurrente bidireccional; la red regresa el índice de plano focal y muestrea
+  el stack. **Los fotogramas deben mantener su orden de enfoque original** —
+  invertir está desactivado
+- **Modo de salida IA**: Duro (predeterminado, regla del artículo) o Suave
+  (mezcla ponderada por probabilidad)
+- **Mapas de profundidad**: compatibles; Suave = capa esperada, Duro = capa muestreada
+- **Ideal para**: barridos de enfoque continuos con un modelo muy pequeño y rápido
+- **Requisitos**: PyTorch; unos 0,05 M de parámetros
 
 ### StackMFF-V3 (aprendizaje profundo)
 

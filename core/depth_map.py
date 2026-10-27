@@ -208,6 +208,45 @@ def _plan_neural_depth(images, model_path, use_gpu, thread_count,
     return plan, model_path
 
 
+def _measure_stackmffv2(images, progress, should_cancel,
+                        model_path=None, use_gpu=False, execution_plan=None,
+                        mode="hard", thread_count=None,
+                        resource_preference='balanced'):
+    """Expected layer (soft) or sampled layer (hard) from the V2 network."""
+    from fusion_methods.stackmff_v2 import (DEFAULT_WEIGHTS, depth_positions,
+                                             normalize_mode)
+    from utils.weights import weights_path
+
+    if model_path is None:
+        model_path = weights_path(os.path.basename(DEFAULT_WEIGHTS))
+    n = len(images)
+    _tick(progress, 0, 1, should_cancel)
+    result = depth_positions(
+        images, model_path, use_gpu, mode=normalize_mode(mode),
+        should_cancel=should_cancel, execution_plan=execution_plan,
+        thread_count=thread_count, resource_preference=resource_preference)
+    _tick(progress, 1, 1, should_cancel)
+    return np.clip(result, 0, n - 1).astype(np.float32)
+
+
+def _plan_stackmffv2_depth(images, model_path, use_gpu, thread_count,
+                           resource_preference):
+    """Admit the V2 network for one depth-map pass."""
+    from fusion_methods.stackmff_v2 import DEFAULT_WEIGHTS, _prepare_inference
+    from utils.weights import weights_path
+
+    if model_path is None:
+        model_path = weights_path(os.path.basename(DEFAULT_WEIGHTS))
+    h, w = images[0].shape[:2]
+    normalization = sum(image.size * 4 for image in images) if any(
+        image.dtype == np.uint16 for image in images) else 0
+    _model, _device, plan = _prepare_inference(
+        images, model_path, use_gpu, thread_count=thread_count,
+        resource_preference=resource_preference,
+        fixed_bytes=normalization + h * w * 4 * 4)
+    return plan, model_path
+
+
 def _measure_stackmffv3(images, progress, should_cancel,
                        model_path=None, use_gpu=False, execution_plan=None,
                        mode="soft"):

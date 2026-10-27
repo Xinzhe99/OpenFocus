@@ -425,7 +425,7 @@ Le impostazioni aggiuntive sono disponibili in **Impostazioni → Impostazioni r
 
 ## 8. Metodi di fusione delle immagini
 
-OpenFocus offre otto algoritmi di fusione (più una modalità di solo allineamento). Ognuno
+OpenFocus offre dieci algoritmi di fusione (più una modalità di solo allineamento). Ognuno
 ha caratteristiche diverse, adatte a tipi di immagine differenti.
 
 ### Filtro guidato (predefinito)
@@ -467,6 +467,28 @@ ha caratteristiche diverse, adatte a tipi di immagine differenti.
 - **Vantaggi**: veloce, confini delle regioni a fuoco nitidi; la memoria non cresce con
   il numero di frame
 - **Parametro**: Kernel = dimensione del filtro medio della mappa di fuoco grossolana
+
+### StackMFF (V1, apprendimento profondo)
+
+- **Algoritmo**: una U-Net 3D che predice la luminanza fusa dell'intero stack
+  in una passata; Cb/Cr provengono dal fotogramma sorgente più vicino
+- **Ideale per**: stack senza un ordine di messa a fuoco fisso o acquisiti
+  senza una serie continua
+- **Vantaggi**: indipendente dall'ordine, senza parametri, colori in gamut
+- **Nota**: 6 M di parametri; gli stack grandi traggono vantaggio dalla GPU
+
+### StackMFF V2 (apprendimento profondo)
+
+- **Algoritmo**: stima della messa a fuoco per livello rifinita da uno strato
+  ricorrente bidirezionale; la rete regredisce l'indice del piano focale e
+  campiona lo stack. **I fotogrammi devono mantenere l'ordine di messa a fuoco
+  originale** — l'inversione è disattivata
+- **Uscita IA**: Dura (predefinita, regola dell'articolo) o Morbida (miscela
+  pesata dalle probabilità)
+- **Mappe di profondità**: supportate; Morbida = livello atteso, Dura = livello campionato
+- **Ideale per**: scansioni di messa a fuoco continue con un modello molto
+  piccolo e veloce
+- **Requisiti**: PyTorch; circa 0,05 M di parametri
 
 ### StackMFF-V3 (apprendimento profondo)
 
