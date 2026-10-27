@@ -9,7 +9,7 @@
 <p align="center"><strong>Todos os planos de foco. Uma imagem totalmente nítida.</strong></p>
 
 <p align="center">
-  Oito algoritmos de fusão, três modos de registro e um espaço de retoque ligado à fonte para macro, microscopia e pilhas industriais. 16 bits de ponta a ponta, CLI sem interface e uma UI em doze idiomas.
+  Dez algoritmos de fusão, três modos de registro e um espaço de retoque ligado à fonte para macro, microscopia e pilhas industriais. 16 bits de ponta a ponta, CLI sem interface e uma UI em doze idiomas.
 </p>
 
 <p align="center">

@@ -119,7 +119,8 @@ class RenderManager:
         style_message_box(box)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle(trans.t("ai_cpu_warning_title"))
-        box.setText(trans.t("ai_cpu_warning_text"))
+        box.setText(trans.t("ai_cpu_warning_text").format(
+            method=get_fusion(algorithm).display_name))
         dont_show = QCheckBox(trans.t("ai_cpu_warning_dont_show"))
         box.setCheckBox(dont_show)
         start_btn = box.addButton(trans.t("btn_render"),

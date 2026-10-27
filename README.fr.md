@@ -9,7 +9,7 @@
 <p align="center"><strong>Tous les plans de mise au point. Une seule image nette partout.</strong></p>
 
 <p align="center">
-  Huit algorithmes de fusion, trois modes de recalage et un espace de retouche lié à la source pour la macro, la microscopie et les piles industrielles. 16 bits de bout en bout, une CLI sans interface et une UI en douze langues.
+  Dix algorithmes de fusion, trois modes de recalage et un espace de retouche lié à la source pour la macro, la microscopie et les piles industrielles. 16 bits de bout en bout, une CLI sans interface et une UI en douze langues.
 </p>
 
 <p align="center">

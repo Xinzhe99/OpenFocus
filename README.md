@@ -9,7 +9,7 @@
 <p align="center"><strong>Every focus plane. One all-in-focus image.</strong></p>
 
 <p align="center">
-  Eight fusion algorithms, three registration modes and a source-locked retouch workspace for macro, microscopy and industrial stacks. 16-bit end to end, a headless CLI, and a UI in twelve languages.
+  Ten fusion algorithms, three registration modes and a source-locked retouch workspace for macro, microscopy and industrial stacks. 16-bit end to end, a headless CLI, and a UI in twelve languages.
 </p>
 
 <p align="center">

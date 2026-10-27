@@ -413,7 +413,7 @@ Dodatkowe ustawienia znajdziesz w **Ustawienia → Ustawienia rejestracji**:
 
 ## 8. Metody fuzji obrazów
 
-OpenFocus oferuje osiem algorytmów fuzji (oraz tryb tylko wyrównania). Każdy ma inne właściwości, odpowiednie do różnych typów obrazów.
+OpenFocus oferuje dziesięć algorytmów fuzji (oraz tryb tylko wyrównania). Każdy ma inne właściwości, odpowiednie do różnych typów obrazów.
 
 ### Filtr sterowany (domyślnie)
 
@@ -454,6 +454,27 @@ OpenFocus oferuje osiem algorytmów fuzji (oraz tryb tylko wyrównania). Każdy 
 - **Zalety**: szybki, ostre granice obszarów ostrości; pamięć nie rośnie
   wraz z liczbą klatek
 - **Parametr**: jądro = rozmiar filtra średniej zgrubnej mapy ostrości
+
+### StackMFF (V1, uczenie głębokie)
+
+- **Algorytm**: sieć 3D U-Net przewidująca jasność po fuzji całego stosu
+  w jednym przebiegu; Cb/Cr pochodzą z najbliższej klatki źródłowej
+- **Najlepsze dla**: stosów bez ustalonej kolejności ostrości lub bez
+  ciągłej serii zdjęć
+- **Zalety**: niezależność od kolejności, brak parametrów, kolory w gamucie
+- **Uwaga**: 6 mln parametrów; dużym stosom pomaga GPU
+
+### StackMFF V2 (uczenie głębokie)
+
+- **Algorytm**: ocena ostrości warstwa po warstwie, dopracowana przez
+  dwukierunkową warstwę rekurencyjną; sieć regresuje indeks płaszczyzny
+  ogniskowej i próbkuje stos. **Klatki muszą zachować pierwotną kolejność
+  ostrości** — odwracanie jest wyłączone
+- **Wyjście AI**: Twarde (domyślne, reguła z artykułu) lub Miękkie
+  (mieszanie ważone prawdopodobieństwem)
+- **Mapy głębi**: obsługiwane; Miękkie = oczekiwana warstwa, Twarde = wybrana warstwa
+- **Najlepsze dla**: ciągłych skanów ostrości z bardzo małym, szybkim modelem
+- **Wymagania**: PyTorch; około 0,05 mln parametrów
 
 ### StackMFF-V3 (uczenie głębokie)
 

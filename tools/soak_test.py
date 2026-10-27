@@ -129,9 +129,10 @@ def fuse(imgs, algo, threads=4):
     norm, is16 = normalize_fuse_input(list(imgs))
     f = MultiFocusFusion(algorithm=algo, use_gpu=False)
     kw = dict(input_source=norm, img_resize=None, thread_count=threads)
-    if get_fusion(algo).neural:
-        from core.cli import _find_model_path
-        kw["model_path"] = _find_model_path()
+    weights_name = get_fusion(algo).weights
+    if weights_name:
+        from utils.weights import weights_path
+        kw["model_path"] = weights_path(os.path.basename(weights_name))
     out = f.fuse(**kw)
     return quantize_fuse_output(out, is16)
 

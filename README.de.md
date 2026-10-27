@@ -9,7 +9,7 @@
 <p align="center"><strong>Jede Schärfeebene. Ein durchgehend scharfes Bild.</strong></p>
 
 <p align="center">
-  Acht Fusionsverfahren, drei Registrierungsmodi und eine quellengebundene Retusche für Makro-, Mikroskopie- und Industriestapel. 16 Bit durchgängig, eine Headless-CLI und eine Oberfläche in zwölf Sprachen.
+  Zehn Fusionsverfahren, drei Registrierungsmodi und eine quellengebundene Retusche für Makro-, Mikroskopie- und Industriestapel. 16 Bit durchgängig, eine Headless-CLI und eine Oberfläche in zwölf Sprachen.
 </p>
 
 <p align="center">

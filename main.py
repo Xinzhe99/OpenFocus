@@ -1042,9 +1042,13 @@ class OpenFocus(QMainWindow):
             item = self.combo_fusion.model().item(index)
             if item is not None:
                 item.setEnabled(bool(available))
+            # Keep the method's own hint when it is usable; replace it with the
+            # dependency message only while the model cannot run.
+            tooltip = (trans.t(spec.hint_key) if spec.hint_key else "")
+            if not available:
+                tooltip = trans.t("msg_stackmff_unavailable_text")
             self.combo_fusion.setItemData(
-                index, trans.t("msg_stackmff_unavailable_text") if not available else "",
-                Qt.ItemDataRole.ToolTipRole)
+                index, tooltip, Qt.ItemDataRole.ToolTipRole)
 
     # --- Update check ---
 
@@ -2154,9 +2158,20 @@ class OpenFocus(QMainWindow):
 
     def refresh_algorithm_parameters(self, *_args) -> None:
         method = self.current_fusion_method()
-        specs = () if method == "none" else get_fusion(method).parameters
+        spec = None if method == "none" else get_fusion(method)
+        specs = () if spec is None else spec.parameters
         self.fusion_parameter_panel.set_parameters(specs, self.fusion_parameters_for(method))
         self._sync_brightness_checkboxes(method)
+        # A model that reads the focus order must not expose a control that
+        # silently does nothing; the checkbox keeps the global preference for
+        # other methods but explains why it is unavailable here.
+        reverse = getattr(self, "chk_reverse_order", None)
+        if reverse is not None:
+            locked = bool(spec is not None and spec.order_sensitive)
+            reverse.setEnabled(not locked)
+            reverse.setToolTip(
+                trans.t("chk_reverse_order_locked_hint") if locked
+                else trans.t("chk_reverse_order_hint"))
 
     def refresh_registration_parameters(self, *_args) -> None:
         method = self.current_alignment_method()

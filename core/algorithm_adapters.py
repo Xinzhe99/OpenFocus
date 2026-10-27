@@ -91,6 +91,25 @@ def depth_neural(images, progress_callback=None, should_cancel=None, **parameter
         execution_plan=parameters.get('execution_plan'), mode=parameters['mode'])
 
 
+def depth_stackmffv2(images, progress_callback=None, should_cancel=None, **parameters):
+    from core.depth_map import _measure_stackmffv2
+    return _measure_stackmffv2(images, progress_callback, should_cancel,
+        model_path=parameters.get('model_path'), use_gpu=parameters.get('use_gpu', False),
+        execution_plan=parameters.get('execution_plan'), mode=parameters['mode'],
+        thread_count=parameters.get('thread_count'),
+        resource_preference=parameters.get('resource_preference', 'balanced'))
+
+
+def stackmffv2_needs_tiles(frames, threshold):
+    """V2 fuses the whole frame: its depth normalisation is global.
+
+    Splitting the image would normalise each tile independently and break the
+    mapping between neighbouring tiles, so admission rejects an oversized
+    whole-frame request instead of silently changing the fusion rule.
+    """
+    return False
+
+
 def depth_openfocus_b(images, progress_callback=None, should_cancel=None, **parameters):
     from core.depth_map import _measure_openfocus
     return _measure_openfocus(images, progress_callback, should_cancel, kernel_size=parameters['kernel_size'])

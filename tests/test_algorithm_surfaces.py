@@ -224,3 +224,35 @@ def test_fusion_gpu_preference_does_not_change_ecc_backend(qapp):
     for actual, reference in zip(aligned, expected):
         np.testing.assert_array_equal(actual, reference)
 
+
+
+def test_every_method_has_a_selection_hint_and_ordered_models_lock_reverse(
+        qapp, algorithm_host):
+    """Selecting a method must explain it; an order-bound model disables reverse."""
+    from PyQt6.QtCore import Qt
+    from core.algorithms import fusion_algorithms, get_fusion, registration_algorithms
+    from locales import trans
+
+    host = algorithm_host
+    combo = host.combo_fusion
+    for spec in fusion_algorithms():
+        index = combo.findData(spec.id)
+        assert index >= 0, spec.id
+        assert combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == trans.t(spec.hint_key)
+    align = host.combo_align
+    for spec in registration_algorithms():
+        index = align.findData(spec.id)
+        assert index >= 0, spec.id
+        assert align.itemData(index, Qt.ItemDataRole.ToolTipRole) == trans.t(spec.hint_key)
+
+    host.set_fusion_method("stackmffv2")
+    qapp.processEvents()
+    assert host.chk_reverse_order.isEnabled() is False
+    assert host.chk_reverse_order.toolTip() == trans.t("chk_reverse_order_locked_hint")
+    assert host.fusion_parameter_panel.editors["mode"].currentData() == "hard"
+
+    host.set_fusion_method("stackmff")
+    qapp.processEvents()
+    assert host.chk_reverse_order.isEnabled() is True
+    assert host.fusion_parameter_panel.editors == {}
+    assert get_fusion("stackmff").parameters == ()
