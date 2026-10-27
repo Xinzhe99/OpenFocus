@@ -573,7 +573,7 @@ PACK = {
     "radio_dct": "DCT",
     "radio_dtcwt": "DTCWT",
     "radio_gfg": "GFG-FGF",
-    "radio_stackmff": "KI (StackMFF-V3)",
+    "radio_stackmff": "StackMFF V3",
     "label_ai_mode": "KI-Ausgabe",
     "label_ai_mode_hint": "Wie das neuronale Netz die Bilder kombiniert",
     "radio_ai_soft": "Weiche Mischung (gewichtet)",

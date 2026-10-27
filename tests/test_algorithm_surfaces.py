@@ -282,7 +282,10 @@ def test_method_dropdown_groups_families_in_a_stable_order(qapp, algorithm_host)
     expected = [spec.id for spec in sorted(
         fusion_algorithms(), key=lambda spec: CATEGORY_ORDER.index(spec.category))]
     assert methods == expected
-    # Header rows stay disabled, so the user cannot select them.
+    # Header rows stay disabled and a step smaller than the method text.
     for index in range(combo.count()):
         if combo.itemData(index) is None:
-            assert not combo.model().item(index).isEnabled()
+            item = combo.model().item(index)
+            assert not item.isEnabled()
+            if combo.font().pointSizeF() > 0:
+                assert item.font().pointSizeF() < combo.font().pointSizeF()

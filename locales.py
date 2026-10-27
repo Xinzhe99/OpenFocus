@@ -1645,7 +1645,7 @@ class TranslationManager(QObject):
                 'radio_dct': '离散余弦变换 (DCT)',
                 'radio_dtcwt': '双树复小波变换 (DTCWT)',
                 'radio_gfg': '梯度域引导滤波 (GFG-FGF)',
-                'radio_stackmff': 'AI (StackMFF-V3)',
+                'radio_stackmff': 'StackMFF V3',
                 'label_ai_mode': 'AI 输出方式',
                 'label_ai_mode_hint': '神经网络如何组合各帧',
                 'radio_ai_soft': '软融合（概率加权）',
