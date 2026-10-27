@@ -16,6 +16,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--json-progress`, stdout carries only NDJSON: engine and progress prose is
   redirected to stderr, batch folder events are JSON-encoded, and start/done
   events delimit a run.
+- **Human-input layer for the control channel.** Agents can now send real Qt
+  mouse clicks, drags and wheel events, key presses and text; list and trigger
+  context menus; answer file and color pickers; and inspect every visible
+  top-level window (message boxes, input dialogs, popups) rather than only the
+  dialogs opened through the typed API. `ui.context` reports the current level,
+  active window, focused widget and view state, and duplicate widget paths are
+  disambiguated (`panelRoot[0]` / `panelRoot[1]`). `ui.click --async` prevents
+  a modal-opening button from blocking the command response.
+- **Agent skill and closed-loop smoke test.** `.claude/skills/openfocus-control/
+  SKILL.md` documents the level model, command recipes, dialog/file-picker
+  handling, gestures and safety rules. `tools/agent_gui_smoke.py` drives a live
+  window through load, render, export, depth, comparison, retouch apply, wipe,
+  labels/color, project round-trip, batch and a menu action with a file picker.
+- **Dialog and import hardening found by the sweep.** Batch folder pickers and
+  file/color dialogs are completed by path/index; the control catalog now
+  includes the Add Label action; recovery/startup prompts are visible to the
+  agent; and control mode opts into non-native Qt file/color dialogs so their
+  widgets are scriptable. An opt-in watchdog
+  (`OPENFOCUS_CONTROL_WATCHDOG=1`) dumps the GUI stack if the thread stalls.
 
 ## [v1.72.0] — 2026-10-27
 

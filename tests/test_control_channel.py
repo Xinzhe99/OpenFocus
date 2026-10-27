@@ -232,3 +232,263 @@ def test_ctl_reports_missing_gui(monkeypatch, tmp_path, capsys):
     assert run_cli(["ctl", "ping"]) == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "not_running"
+
+def test_file_dialog_patch_returns_portable_dialogs(control_window, tmp_path):
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QFileDialog
+
+    folder = tmp_path / "picked"
+    folder.mkdir()
+
+    def choose_directory():
+        dialog = next(widget for widget in QApplication.topLevelWidgets()
+                      if isinstance(widget, QFileDialog) and widget.isVisible())
+        assert dialog.testOption(QFileDialog.Option.DontUseNativeDialog)
+        dialog.setDirectory(str(folder))
+        dialog.accept()
+
+    QTimer.singleShot(100, choose_directory)
+    chosen = QFileDialog.getExistingDirectory(
+        control_window, "Choose", str(tmp_path),
+        options=QFileDialog.Option.ShowDirsOnly)
+    assert Path(chosen) == folder
+
+    target = tmp_path / "saved.png"
+
+    def choose_file():
+        dialog = next(widget for widget in QApplication.topLevelWidgets()
+                      if isinstance(widget, QFileDialog) and widget.isVisible())
+        dialog.selectFile(str(target))
+        dialog.accept()
+
+    QTimer.singleShot(100, choose_file)
+    saved, _filter = QFileDialog.getSaveFileName(
+        control_window, "Save", str(target), "PNG (*.png)")
+    assert Path(saved) == target
+
+
+def test_dialog_file_command_answers_open_and_directory(server, control_window, tmp_path):
+    from PyQt6.QtWidgets import QFileDialog
+
+    source = tmp_path / "frame.tif"
+    source.write_bytes(b"not decoded by the picker")
+    dialog = QFileDialog(control_window, "Pick one")
+    dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+    dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+    dialog.show()
+    result = call(server, "dialog.file", path=str(source))["result"]
+    assert result["accepted"] is True
+    assert Path(result["selected"][0]) == source
+    assert call(server, "dialog.list")["result"]["dialogs"] == []
+
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    dialog = QFileDialog(control_window, "Pick folder")
+    dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+    dialog.setFileMode(QFileDialog.FileMode.Directory)
+    dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+    dialog.show()
+    result = call(server, "dialog.file", path=str(folder))["result"]
+    assert result["accepted"] is True
+    assert Path(result["selected"][0]) == folder
+
+
+def test_mouse_keyboard_and_context(server, control_window):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QWidget
+
+    class Probe(QWidget):
+        def __init__(self):
+            super().__init__(control_window)
+            self.setObjectName("control_probe")
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            self.presses = 0
+            self.typed = ""
+            self.resize(160, 80)
+            self.show()
+
+        def mousePressEvent(self, event):
+            self.presses += 1
+            super().mousePressEvent(event)
+
+        def keyPressEvent(self, event):
+            self.typed += event.text()
+            super().keyPressEvent(event)
+
+    probe = Probe()
+    matches = call(server, "ui.find", object_name="control_probe")["result"]["matches"]
+    assert len(matches) == 1
+    path = matches[0]["path"]
+    assert matches[0]["geometry"]["width"] == 160
+    assert call(server, "ui.focus", path=path)["result"]["focused"] is True
+    QTest.qWait(50)
+    context = call(server, "ui.context")["result"]
+    assert context["focus"]["path"] == path, context["focus"]
+
+    call(server, "ui.mouse", path=path, action="click", x=12, y=16)
+    assert probe.presses == 1
+    call(server, "ui.key", path=path, key="a")
+    call(server, "ui.type", path=path, text="bc")
+    assert probe.typed == "abc"
+    wheel = call(server, "ui.mouse", path=path, action="wheel", delta=120)
+    assert wheel["result"]["delta"] == 120
+    drag = call(server, "ui.mouse", path=path, action="drag",
+                x=4, y=4, to_x=40, to_y=30, steps=4)
+    assert drag["result"]["steps"] == 4
+    probe.deleteLater()
+    QTest.qWait(20)
+
+
+def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames):
+    from PyQt6.QtCore import QTimer
+
+    token = server.token
+    answered = {}
+
+    def answer_when_open():
+        dialogs = call(server, "dialog.list", token=token)["result"]["dialogs"]
+        if not any(dialog["class"] == "QFileDialog" for dialog in dialogs):
+            return
+        timer.stop()
+        answered["value"] = call(
+            server, "dialog.file", token=token,
+            path=str(stack_frames))["result"]
+
+    timer = QTimer()
+    timer.setInterval(30)
+    timer.timeout.connect(answer_when_open)
+    timer.start()
+    scheduled = call(server, "ui.trigger", token=token, key="action_open_folder")
+    assert scheduled["result"]["scheduled"] is True
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and "value" not in answered:
+        QTest.qWait(20)
+    assert answered["value"]["accepted"] is True
+    deadline = time.monotonic() + 20
+    frames = call(server, "stack.frames", token=token)["result"]
+    while time.monotonic() < deadline and frames["count"] != 3:
+        QTest.qWait(20)
+        frames = call(server, "stack.frames", token=token)["result"]
+    assert frames["count"] == 3
+
+
+def test_unmanaged_message_box_is_addressable(server, control_window):
+    from PyQt6.QtWidgets import QMessageBox
+
+    box = QMessageBox(control_window)
+    box.setWindowTitle("Control check")
+    box.setText("Proceed?")
+    box.setStandardButtons(QMessageBox.StandardButton.Yes
+                           | QMessageBox.StandardButton.No)
+    box.show()
+    dialogs = call(server, "dialog.list")["result"]["dialogs"]
+    assert any(dialog["class"] == "QMessageBox" for dialog in dialogs)
+    yes = call(server, "ui.find", window="dialog[0]", text="Yes")
+    assert yes["result"]["matches"]
+    call(server, "ui.click", path=yes["result"]["matches"][0]["path"])
+    QTest.qWait(20)
+    assert not box.isVisible()
+
+def test_every_widget_path_resolves_uniquely(server, control_window):
+    from ui.control_surface import find_widgets, resolve_path, window_roots
+
+    roots = window_roots(control_window)
+    matches = find_widgets(roots)
+    assert len(matches) > 100
+    for node in matches:
+        widget = resolve_path(roots, node["path"])
+        assert widget is not None, node["path"]
+    source = find_widgets(roots, object_name="view_source")
+    assert source and "panelRoot[" in source[0]["path"]
+
+
+def test_context_menu_catalog_and_trigger(server, control_window):
+    from PyQt6.QtGui import QAction
+    from PyQt6.QtWidgets import QMenu
+
+    menu = QMenu(control_window)
+    menu.setWindowTitle("Test menu")
+    hit = []
+    action = QAction("Do thing", menu)
+    action.triggered.connect(lambda: hit.append(True))
+    menu.addAction(action)
+    menu.popup(control_window.mapToGlobal(control_window.rect().center()))
+    QTest.qWait(30)
+    catalog = call(server, "ui.menu")["result"]
+    assert any(item["text"] == "Do thing" for item in catalog["actions"])
+    context = call(server, "ui.context")["result"]
+    assert context["level"] in ("popup", "main")
+    triggered = call(server, "ui.menu", action="Do thing")["result"]
+    assert triggered["triggered"] == "Do thing"
+    assert hit == [True]
+    menu.hide()
+
+
+def test_color_dialog_command(server, control_window):
+    from PyQt6.QtGui import QColor
+    from PyQt6.QtWidgets import QColorDialog
+
+    dialog = QColorDialog(control_window)
+    dialog.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+    dialog.show()
+    result = call(server, "dialog.color", color="#336699")["result"]
+    assert result["accepted"] is True
+    assert result["color"] == "#336699"
+    assert dialog.currentColor() == QColor("#336699")
+
+def test_async_click_returns_before_modal(server, control_window):
+    from PyQt6.QtWidgets import QPushButton
+
+    button = QPushButton("Async", control_window)
+    button.setObjectName("async_probe")
+    hit = []
+    button.clicked.connect(lambda: hit.append(True))
+    button.show()
+    path = call(server, "ui.find", object_name="async_probe")["result"]["matches"][0]["path"]
+    result = call(server, "ui.click", path=path, **{"async": True})["result"]
+    assert result["scheduled"] is True
+    assert hit == []
+    QTest.qWait(200)
+    assert hit == [True]
+
+def test_persistent_session_reuses_one_connection(server, control_window):
+    from core.control.client import Session
+
+    result = {}
+
+    def run():
+        session = Session(discovery=server.discovery, timeout=10)
+        try:
+            result["ping"] = session.call("ping")["pong"]
+            result["count"] = session.call("app.state")["stack"]["count"]
+            session.call("dialog.open", {"name": "depth"})
+            result["dialog"] = session.call("dialog.list")["dialogs"][0]["class"]
+            session.call("dialog.reject")
+        except Exception as error:
+            result["error"] = repr(error)
+        finally:
+            session.close()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while thread.is_alive() and time.monotonic() < deadline:
+        QTest.qWait(10)
+    thread.join(timeout=5)
+    assert result == {"ping": True, "count": 0, "dialog": "DepthMapDialog"}
+
+def test_dynamic_menu_leaf_is_catalogued_and_triggered(server, control_window):
+    from PyQt6.QtGui import QAction
+
+    menu = control_window.menuBar().addMenu("Dynamic test")
+    action = QAction("Dynamic leaf", control_window)
+    hit = []
+    action.triggered.connect(lambda: hit.append(True))
+    menu.addAction(action)
+    catalog = call(server, "ui.actions")["result"]["actions"]
+    entry = next(item for item in catalog if item["text"] == "Dynamic leaf")
+    assert entry["source"] == "menu"
+    call(server, "ui.trigger", key=entry["key"])
+    QTest.qWait(200)
+    assert hit == [True]
+    menu.deleteLater()

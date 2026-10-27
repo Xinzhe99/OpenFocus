@@ -938,8 +938,9 @@ def _run_gui(argv: List[str]) -> int:
     return EXIT_OK
 
 
-_CTL_BOOL = {"append", "preview", "include"}
-_CTL_INT = {"index", "depth"}
+_CTL_BOOL = {"append", "preview", "include", "cancel", "submit",
+             "async", "force"}
+_CTL_INT = {"index", "depth", "steps", "x", "y", "to_x", "to_y", "delta"}
 _CTL_FLOAT = {"scale"}
 _CTL_JSON = {"value"}
 

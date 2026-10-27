@@ -146,3 +146,58 @@ def launch_gui(socket_name=None, timeout=45.0, paths=()):
     raise ControlError(
         "internal", "OpenFocus did not open the control channel in time",
         "Start it with `openfocus gui --control` and retry.")
+
+class Session:
+    """One persistent local connection for a sequence of commands.
+
+    A new QLocalSocket per request works for one-shot CLI calls, but a long
+    agent session creates hundreds of short-lived connections. Reusing one
+    connection avoids Windows named-pipe accept churn and keeps responses
+    ordered while dialogs are open.
+    """
+
+    def __init__(self, *, discovery=None, timeout=60.0):
+        from PyQt6.QtNetwork import QLocalSocket
+
+        if not isinstance(discovery, dict):
+            discovery = read_discovery()
+        self.discovery = discovery
+        self.timeout = timeout
+        _qt_core()
+        self.socket = QLocalSocket()
+        self.socket.connectToServer(self.discovery["socket"])
+        if not self.socket.waitForConnected(int(timeout * 1000)):
+            raise ControlError(
+                "not_running",
+                f"Could not connect to {self.discovery['socket']}: "
+                f"{self.socket.errorString()}",
+                "The GUI may have exited; launch it with `openfocus gui --control`.")
+        self.buffer = b""
+
+    def request(self, cmd, args=None, *, timeout=None):
+        timeout = self.timeout if timeout is None else timeout
+        payload = request_payload(
+            cmd, args, token=self.discovery.get("token"),
+            request_id=str(int(time.time() * 1000)))
+        self.socket.write(encode(payload))
+        if not self.socket.waitForBytesWritten(int(timeout * 1000)):
+            raise ControlError("internal", f"Could not send {cmd}")
+        deadline = time.monotonic() + timeout
+        while b"\n" not in self.buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ControlError(
+                    "internal", f"Timed out waiting for {cmd}",
+                    "Check ui.context; the GUI may be in a modal dialog.")
+            if not self.socket.waitForReadyRead(int(remaining * 1000) + 1):
+                continue
+            self.buffer += bytes(self.socket.readAll())
+        line, self.buffer = self.buffer.split(b"\n", 1)
+        return decode(line)
+
+    def call(self, cmd, args=None, *, timeout=None):
+        return require_ok(self.request(cmd, args, timeout=timeout))
+
+    def close(self):
+        self.socket.disconnectFromServer()
+        self.socket.deleteLater()

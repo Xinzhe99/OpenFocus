@@ -21,10 +21,11 @@ COMMANDS = (
     "output.delete",
     "project.save", "project.open",
     "dialog.open", "dialog.list", "dialog.close", "dialog.accept",
-    "dialog.reject",
+    "dialog.reject", "dialog.file", "dialog.color",
     "batch.state", "batch.cancel",
     "ui.actions", "ui.trigger", "ui.tree", "ui.find", "ui.click", "ui.set",
-    "ui.grab",
+    "ui.grab", "ui.context", "ui.focus", "ui.mouse", "ui.key", "ui.type",
+    "ui.menu",
 )
 
 ERROR_CODES = (
