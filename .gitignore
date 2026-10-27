@@ -40,9 +40,9 @@ ehthumbs.db
 Desktop.ini
 
 # Project specific
-# Ignore .pth model files except the shipped StackMFF V3 checkpoint
-!weights/stackmff_v3_final.pth
+# Ignore stray .pth model files but always ship the weights we bundle.
 *.pth
+!weights/*.pth
 .temp/
 
 # AI agent leftovers
