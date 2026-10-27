@@ -71,7 +71,7 @@ class FeedbackDialog(QDialog):
         root.addWidget(self.log_view, 1)
 
         self.log_hint = QLabel(trans.t("feedback_log_hint").format(
-            path=str(logging_setup.logs_dir() / "openfocus.log")))
+            path=str(logging_setup.session_log_path())))
         self.log_hint.setWordWrap(True)
         self.log_hint.setObjectName("mutedLabel")
         root.addWidget(self.log_hint)
@@ -135,7 +135,7 @@ class FeedbackDialog(QDialog):
             self, trans.t("feedback_export"),
             os.path.join(os.path.expanduser("~"),
                          f"OpenFocus_feedback_"
-                         f"{logging_setup._session_stamp()}.zip"),
+                         f"{logging_setup.session_id()}.zip"),
             "Zip (*.zip)")
         if not dest:
             return

@@ -3,7 +3,7 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v1.71.0] — 2026-10-27
 
 ### Added
 - **One explicit registry for fusion and registration algorithms.** Immutable
@@ -16,6 +16,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   includes a working fusion/depth example and the registration, resource,
   cancellation, translation and verification contracts. PyInstaller discovers
   registered lazy modules through `hooks/hook-core.algorithms.py`.
+- **Shared GUI/CLI diagnostics.** Per-process rotating logs prevent competing
+  launches from renaming the same file. Task IDs connect parameters, frame
+  metadata, elapsed time and completion/cancellation/failure, including partial
+  batch/comparison failures. Full main-thread, Python-thread and unraisable
+  tracebacks plus native crash reports and dependency versions enter feedback
+  exports. `OPENFOCUS_LOG_LEVEL` and `OPENFOCUS_LOG_DIR` support local debugging.
+- **Headless application paths and lazy utility exports.** Diagnostics can start
+  before Qt/numerical imports; `python main.py` dispatches CLI arguments before
+  loading the GUI. Portable/profile settings and recovery locations are preserved.
 
 ### Fixed
 - **DCT depth maps accept their block size again.** `compute_focus_index`'s
@@ -122,17 +131,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   0.6 s module import, which is warmed when the dialog opens.
 
 ### Verification
-- After the algorithm-registry migration, the complete Windows CPU suite passed:
-  **1126 passed, 12 skipped**, with two Pillow TIFF metadata warnings.
-  A native Windows session exercised an additional fusion and aligner with new
-  numeric/enum parameters through uint16 rendering, Unicode TIFF read-back,
-  comparison adoption, undo/redo, project reopening, manual depth and batch.
-  The depth result matched the requested 0.4 frame position and no unhandled
-  Qt exceptions were recorded.
+- After the algorithm-registry migration and the diagnostics work, the complete
+  Windows CPU suite passed: **1179 passed, 12 skipped**, with two Pillow TIFF
+  metadata warnings. A native Windows session exercised loading, OpenFocus
+  registration and rendering, uint16 TIFF export through the real file dialog,
+  comparison adoption with undo/redo, manual depth, batch, settings reopen,
+  project reload and a recovery snapshot; a deliberately raised Qt-slot
+  exception produced a full traceback in both the log and the crash report.
+  No unexpected Qt errors were recorded.
 - A minimal Windows program built with PyInstaller 6.22.3 loaded an additional
   registered backend from inside its bundle and produced the requested results
   for two parameter values. This verifies lazy-module collection with the actual
   hook; the full Windows/macOS installers were not rebuilt.
+- Diagnostics were verified end to end: per-process logs stayed separate under
+  concurrent writers, retained rotations were read in order, an unwritable log
+  folder never replaced a processing error, and main-thread, thread and
+  unraisable failures all reached both the log and the crash report with full
+  tracebacks. The feedback ZIP exported the current session log, the crash
+  report, RAM/GPU facts and bundled dependency versions.
+- The eight algorithms produced byte-identical output before and after the
+  treatment of the worker and CLI wiring: 24 cases (each method through the
+  render worker and through the CLI) matched the previous commit exactly at
+  uint16, and a launcher-level smoke proved the CLI runs with Qt, `ui`,
+  `controllers` and `dialogs` blocked from import.
+- The same frozen program exercised the new lazy utility boundary: `resource`
+  helpers, QPixmap conversion and the feedback export loaded from inside the
+  bundle, with numpy/Qt versions resolved without importing optional packages.
 - The contributor guide's backend and descriptor were executed verbatim:
   temperature changed pixels, hard selection kept source pixels, soft depth
   matched fusion weights, uint16 low bits survived the shared boundaries, and
@@ -144,6 +168,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   worker joins, input order with a slow first file, TIFF page identity, 16-bit
   depth, the strict/lenient error split, and multi-folder drops into the batch
   dialog (order, mode switch, duplicate suppression, files rejected).
+- Diagnostic coverage is new in `tests/test_logging_setup.py` (10 cases),
+  `tests/test_diagnostics.py` (7), `tests/test_worker_diagnostics.py` (7) and
+  `tests/test_app_paths.py` (7): session isolation across processes, rotation
+  order and retention, unwritable folders, caught/escaped/cancelled outcomes,
+  cancellation and `SystemExit` classification, executable hook chaining and
+  restoration, GUI-free startup, all three unhandled-exception kinds, worker
+  failure/cancellation/partial-batch outcomes, stale loader counters and the
+  portable/user path matrix.
 - Measured on the six-frame 999×750 demo stack, whole-image DTCWT, seven
   interleaved pairs after one warm-up: serial median 4.56 s, four workers
   3.13 s (1.46×), identical SHA-256 output.

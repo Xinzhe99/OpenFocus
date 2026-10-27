@@ -1,4 +1,3 @@
-import traceback
 from typing import Any, List, Optional
 
 
@@ -848,7 +847,6 @@ class RenderManager:
                 str(exc),
                 QMessageBox.Icon.Critical,
             )
-            traceback.print_exc()
 
         finally:
             if compare:
@@ -1024,4 +1022,3 @@ class RenderManager:
             QMessageBox.Icon.Critical,
         )
 
-        traceback.print_exc()

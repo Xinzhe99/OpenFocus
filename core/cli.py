@@ -30,6 +30,10 @@ from core.resource_policy import heavy_job, require_memory
 from core.algorithms import (fusion_algorithms, registration_algorithms, get_fusion,
                              get_registration, resolve_fusion_parameters,
                              resolve_registration_parameters)
+from utils.logging_setup import (setup_logging, log_session_start, log_operation,
+                                 log_action, get_logger, frame_details)
+
+_log = get_logger(__name__)
 
 VALID_METHODS = [spec.id for spec in fusion_algorithms()]
 VALID_ALIGN = [spec.id for spec in registration_algorithms()]
@@ -325,6 +329,12 @@ def _fuse_stack_admitted(images, args):
                          sort_mode=getattr(args, "sort", "asc"),
                          exposure_match=getattr(args, "exposure_match", True),
                          ai_batch_size=args.batch_size)
+    log_action("cli.fusion", method=args.method, alignment=args.align,
+               fusion_parameters=args._fusion_parameters,
+               registration_parameters=args._registration_parameters,
+               threads=args.threads, use_gpu=not args.cpu,
+               tile_size=args.tile_size, base_frame=fusion_kwargs['base_frame'],
+               exposure_match=fusion_kwargs['exposure_match'], **frame_details(images))
     if args.tile_size:
         fusion_kwargs["tile_block_size"] = args.tile_size
     fusion = MultiFocusFusion(**fusion_kwargs)
@@ -510,6 +520,7 @@ def _run_batch(args, _emit_json=None) -> int:
                 _save_depth(folder_args, out_path)
             ok_count += 1
         except Exception as exc:
+            _log.exception("batch folder failed: %s", folder)
             print(f"error: {name}: {exc}", file=sys.stderr)
             failures.append(name)
 
@@ -535,12 +546,20 @@ def _run_batch(args, _emit_json=None) -> int:
 
 
 def run_cli(argv: List[str]) -> int:
-    try:
-        with heavy_job():
-            return _run_cli_admitted(argv)
-    except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
-        return EXIT_ERROR
+    setup_logging()
+    log_session_start()
+    with log_operation("cli", args=argv) as operation:
+        try:
+            with heavy_job():
+                result = _run_cli_admitted(argv)
+            if result == EXIT_ERROR:
+                operation.fail()
+            log_action("cli.exit", exit_code=result)
+            return result
+        except KeyboardInterrupt:
+            operation.cancel()
+            print("interrupted", file=sys.stderr)
+            return EXIT_ERROR
 
 
 def _run_cli_admitted(argv: List[str]) -> int:
@@ -701,11 +720,9 @@ def _run_cli_admitted(argv: List[str]) -> int:
                     "frames": len(paths), "input": args.input,
                     "output": args.output, "outputs": outputs})
         return EXIT_OK
-    except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
-        return EXIT_ERROR
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
+        _log.exception("CLI processing failed")
         _emit_json({"mode": "single", "error": str(exc)})
         return EXIT_ERROR
 
@@ -730,4 +747,8 @@ def _find_model_path() -> str:
 
 def main() -> None:
     """Console-script entry point (pip-installed ``openfocus`` command)."""
+    from utils.diagnostics import install_exception_hooks
+    setup_logging()
+    log_session_start()
+    install_exception_hooks()
     sys.exit(run_cli(sys.argv[1:]))

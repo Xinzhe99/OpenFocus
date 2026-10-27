@@ -13,6 +13,7 @@ import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 from core.resource_policy import heavy_job, require_memory
 from core.registration import RegistrationCancelled
+from utils.logging_setup import frame_details, log_operation
 
 
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
@@ -68,16 +69,26 @@ class AlignmentWorker(_CancellableWorker):
         self.shared = deepcopy(shared)
 
     def run(self):
-        if self._should_cancel():
-            return
-        try:
-            with heavy_job(self._should_cancel):
-                images = align_frames(self.images, self.alignment, self.shared, self._should_cancel)
-            if images is not None and not self._should_cancel():
-                self.ready.emit(images)
-        except Exception as exc:
-            if not self._should_cancel():
-                self.failed.emit(str(exc) or type(exc).__name__)
+        with log_operation("comparison_alignment", registration=self.alignment,
+                           registration_parameters=self.shared.get('registration_parameters'),
+                           parameters=self.shared, **frame_details(self.images)) as operation:
+            if self._should_cancel():
+                operation.cancel()
+                return
+            try:
+                with heavy_job(self._should_cancel):
+                    images = align_frames(self.images, self.alignment, self.shared, self._should_cancel)
+                if images is not None and not self._should_cancel():
+                    self.ready.emit(images)
+                else:
+                    operation.cancel()
+            except Exception as exc:
+                if self._should_cancel() or isinstance(exc, RegistrationCancelled):
+                    operation.cancel()
+                else:
+                    operation.fail()
+                if not self._should_cancel():
+                    self.failed.emit(str(exc) or type(exc).__name__)
 
 
 class PreviewWorker(_CancellableWorker):
@@ -187,30 +198,48 @@ class PreviewWorker(_CancellableWorker):
         return quantize_fuse_output(result, is_16bit), bounds
 
     def run(self):
-        try:
-            with heavy_job(self._should_cancel):
-                self._run_admitted()
-        except RegistrationCancelled:
-            return
+        with log_operation("comparison_preview", methods=self.methods, parameters=self.per_method,
+                           shared_parameters=self.shared, region=self.region, roi_only=self.roi_only,
+                           **frame_details(self.images)) as operation:
+            try:
+                with heavy_job(self._should_cancel):
+                    failed = self._run_admitted()
+                if failed:
+                    operation.fail()
+                if self._should_cancel():
+                    operation.cancel()
+            except RegistrationCancelled:
+                operation.cancel()
+                return
 
     def _run_admitted(self):
         total = len(self.methods)
+        failed = False
         for index, method in enumerate(self.methods):
             if self._should_cancel():
-                return
+                return failed
             self.progress.emit(index, total, method)
             if self._should_cancel():
-                return
-            try:
-                rendered = self._fuse(method)
-                if self._should_cancel():
-                    return
-                if rendered is not None:
-                    result, bounds = rendered
-                    self.result_ready.emit(method, result, bounds)
-            except Exception as exc:
-                if self._should_cancel():
-                    return
-                self.method_failed.emit(method, str(exc) or type(exc).__name__)
+                return failed
+            with log_operation("comparison_method", method=method,
+                               parameters=self.per_method.get(method, {}), shared_parameters=self.shared,
+                               region=self.region, roi_only=self.roi_only,
+                               **frame_details(self.images)) as operation:
+                try:
+                    rendered = self._fuse(method)
+                    if self._should_cancel():
+                        operation.cancel()
+                        return failed
+                    if rendered is not None:
+                        result, bounds = rendered
+                        self.result_ready.emit(method, result, bounds)
+                except Exception as exc:
+                    if self._should_cancel():
+                        operation.cancel()
+                        return failed
+                    operation.fail()
+                    failed = True
+                    self.method_failed.emit(method, str(exc) or type(exc).__name__)
         if not self._should_cancel():
             self.progress.emit(total, total, "")
+        return failed

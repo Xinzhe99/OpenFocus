@@ -13,12 +13,15 @@ from utils import resource_path
 from utils.image_utils import to_display_uint8
 from copy import deepcopy
 from utils.export_paths import create_stack_directory, frame_export_name, unique_path
+from utils.logging_setup import frame_details, get_logger, log_operation
 from constants import (
     TILE_BLOCK_SIZE, TILE_OVERLAP, TILE_THRESHOLD,
     DEFAULT_THREAD_COUNT
 )
 from core.algorithms import (get_fusion, alignment_steps, resolve_fusion_parameters,
                              resolve_registration_parameters)
+
+logger = get_logger(__name__)
 
 
 # A quick preview must be *obviously* quicker, not marginally so. The old
@@ -69,25 +72,44 @@ class StackLoadWorker(QThread):
         self.is_cancelled = True
 
     def run(self):
-        if self.is_cancelled:
-            self.finished_load.emit(False, 'CANCELLED', [], [])
-            return
-        try:
-            options = dict(thread_count=self.thread_count,
-                           resource_preference=self.resource_preference)
-            if self.folder:
-                ok, msg, imgs, names = self.loader.load_from_folder(
-                    self.folder, scale_factor=self.scale, **options)
-            elif self.video:
-                ok, msg, imgs, names = self.loader.load_from_video(self.video, scale_factor=self.scale)
-            else:
-                ok, msg, imgs, names = self.loader.load_from_filepaths(
-                    self.filepaths, scale_factor=self.scale, **options)
-        except Exception as e:
-            ok, msg, imgs, names = False, str(e), [], []
-        if self.is_cancelled:
-            ok, msg, imgs, names = False, 'CANCELLED', [], []
-        self.finished_load.emit(ok, msg, imgs, names)
+        with log_operation("stack_load", source="folder" if self.folder else "video" if self.video else "files",
+                           folder=self.folder, video=self.video, scale=self.scale,
+                           thread_count=self.thread_count, resource_preference=self.resource_preference,
+                           file_count=len(self.filepaths) if self.filepaths is not None else None) as operation:
+            if self.is_cancelled:
+                operation.cancel()
+                self.finished_load.emit(False, 'CANCELLED', [], [])
+                return
+            try:
+                options = dict(thread_count=self.thread_count,
+                               resource_preference=self.resource_preference)
+                if self.folder:
+                    ok, msg, imgs, names = self.loader.load_from_folder(
+                        self.folder, scale_factor=self.scale, **options)
+                elif self.video:
+                    ok, msg, imgs, names = self.loader.load_from_video(self.video, scale_factor=self.scale)
+                else:
+                    ok, msg, imgs, names = self.loader.load_from_filepaths(
+                        self.filepaths, scale_factor=self.scale, **options)
+                logger.info("stack decoded %s", frame_details(imgs))
+                # Video decoding does not populate the image failure counter.
+                image_load = bool(self.folder) or not self.video
+                if not ok or (image_load and getattr(self.loader, 'failed_count', 0)):
+                    if self.is_cancelled or msg == 'CANCELLED':
+                        operation.cancel()
+                    else:
+                        operation.fail()
+                        logger.error("stack load failed: %s", msg)
+            except RegistrationCancelled as e:
+                operation.cancel()
+                ok, msg, imgs, names = False, str(e), [], []
+            except Exception as e:
+                operation.fail()
+                ok, msg, imgs, names = False, str(e), [], []
+            if self.is_cancelled:
+                operation.cancel()
+                ok, msg, imgs, names = False, 'CANCELLED', [], []
+            self.finished_load.emit(ok, msg, imgs, names)
 
 
 class ROIAlignmentWorker(QThread):
@@ -112,38 +134,45 @@ class ROIAlignmentWorker(QThread):
         self._cancelled = True
 
     def run(self):
-        try:
-            with heavy_job(lambda: self._cancelled):
-                self._run_admitted()
-        except RegistrationCancelled:
-            self.error_signal.emit("CANCELLED: alignment cancelled")
+        with log_operation("roi_alignment", method="ecc", reg_downscale_width=self.reg_downscale_width,
+                           thread_count=self.thread_count, resource_preference=self.resource_preference,
+                           **frame_details(self.raw_images)) as operation:
+            try:
+                with heavy_job(lambda: self._cancelled):
+                    try:
+                        self._run_admitted()
+                    except RegistrationCancelled:
+                        operation.cancel()
+                        self.error_signal.emit("CANCELLED: alignment cancelled")
+                    except Exception as e:
+                        operation.fail()
+                        self.error_signal.emit(str(e))
+            except RegistrationCancelled:
+                operation.cancel()
+                self.error_signal.emit("CANCELLED: alignment cancelled")
+            except Exception as e:
+                operation.fail()
+                self.error_signal.emit(str(e))
 
     def _run_admitted(self):
         """在线程中执行ECC配准"""
-        try:
-            alignment_start_time = time.time()
-
-            # 使用ECC方法进行配准
-            if self.reg_downscale_width is not None:
-                registration = ImageRegistration(method="ecc", downscale_width=self.reg_downscale_width)
-            else:
-                registration = ImageRegistration(method="ecc")
-
-            aligned_images = registration.process(
-                self.raw_images, output_path=None, thread_count=self.thread_count,
-                resource_preference=self.resource_preference,
-                should_cancel=lambda: self._cancelled)
-            alignment_time = time.time() - alignment_start_time
-            if self._cancelled:
-                raise RegistrationCancelled()
-
-            self.finished_signal.emit(aligned_images, alignment_time)
-        except RegistrationCancelled:
-            self.error_signal.emit("CANCELLED: alignment cancelled")
-        except Exception as e:
-            self.error_signal.emit(str(e))
-            import traceback
-            traceback.print_exc()
+        alignment_start_time = time.time()
+    
+        # 使用ECC方法进行配准
+        if self.reg_downscale_width is not None:
+            registration = ImageRegistration(method="ecc", downscale_width=self.reg_downscale_width)
+        else:
+            registration = ImageRegistration(method="ecc")
+    
+        aligned_images = registration.process(
+            self.raw_images, output_path=None, thread_count=self.thread_count,
+            resource_preference=self.resource_preference,
+            should_cancel=lambda: self._cancelled)
+        alignment_time = time.time() - alignment_start_time
+        if self._cancelled:
+            raise RegistrationCancelled()
+    
+        self.finished_signal.emit(aligned_images, alignment_time)
 
 
 class RenderWorker(QThread):
@@ -208,124 +237,136 @@ class RenderWorker(QThread):
         self.is_cancelled = True
 
     def run(self):
-        try:
-            with heavy_job(lambda: self.is_cancelled):
-                self._run_admitted()
-        except RegistrationCancelled:
-            self.error_signal.emit("CANCELLED: render cancelled")
+        with log_operation("render", method=self.algorithm, parameters=self.fusion_parameters,
+                           registration=self.alignment, registration_parameters=self.registration_parameters,
+                           reg_downscale_width=self.reg_downscale_width, thread_count=self.thread_count,
+                           resource_preference=self.resource_preference, use_gpu=self.use_gpu,
+                           need_fusion=self.need_fusion, preview=self.preview, roi_rect=self.roi_rect,
+                           roi_mode=self.roi_mode, roi_base_index=self.roi_base_index,
+                           tile_enabled=self.tile_enabled, tile_block_size=self.tile_block_size,
+                           tile_overlap=self.tile_overlap, tile_threshold=self.tile_threshold,
+                           ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
+                           sort_mode=self.sort_mode, exposure_match=self.exposure_match,
+                           **frame_details(self.raw_images)) as operation:
+            try:
+                with heavy_job(lambda: self.is_cancelled):
+                    try:
+                        self._run_admitted()
+                    except RegistrationCancelled:
+                        operation.cancel()
+                        self.error_signal.emit("CANCELLED: render cancelled")
+                    except Exception as e:
+                        operation.fail()
+                        self.error_signal.emit(str(e))
+            except RegistrationCancelled:
+                operation.cancel()
+                self.error_signal.emit("CANCELLED: render cancelled")
+            except Exception as e:
+                operation.fail()
+                self.error_signal.emit(str(e))
 
     def _run_admitted(self):
         """在线程中执行图像处理流程"""
-        try:
-            if self.is_cancelled:
-                self.error_signal.emit("CANCELLED: render cancelled")
-                return
-            alignment_time = 0
-            fusion_time = 0
-            device_name = "CPU"
-
-            current_alignment_options = (self.alignment, self.registration_parameters)
-            need_registration = bool(self.alignment)
-            can_reuse_aligned_images = (
-                self.is_images_aligned
-                and bool(self.aligned_images)
-                and self.last_alignment_options == current_alignment_options
-            )
-
-            # 1. 配准阶段
-            if need_registration and can_reuse_aligned_images:
-                processed_images = self.aligned_images
-                registration_performed = True
-                self.alignment_reused = True
-            else:
-                processed_images = self.raw_images.copy()
-                if self.preview:
-                    processed_images = []
-                    for image in self.raw_images:
-                        if self.is_cancelled:
-                            raise RegistrationCancelled()
-                        processed_images.append(_downscale_for_preview(image))
-                registration_performed = False
-
-                if need_registration:
+        if self.is_cancelled:
+            raise RegistrationCancelled()
+        alignment_time = 0
+        fusion_time = 0
+        device_name = "CPU"
+    
+        current_alignment_options = (self.alignment, self.registration_parameters)
+        need_registration = bool(self.alignment)
+        can_reuse_aligned_images = (
+            self.is_images_aligned
+            and bool(self.aligned_images)
+            and self.last_alignment_options == current_alignment_options
+        )
+    
+        # 1. 配准阶段
+        if need_registration and can_reuse_aligned_images:
+            processed_images = self.aligned_images
+            registration_performed = True
+            self.alignment_reused = True
+        else:
+            processed_images = self.raw_images.copy()
+            if self.preview:
+                processed_images = []
+                for image in self.raw_images:
                     if self.is_cancelled:
-                        self.error_signal.emit("CANCELLED: render cancelled")
-                        return
-                    # Disk cache lookup happens here, on the worker thread:
-                    # the GUI used to decode every cached PNG synchronously
-                    # before starting a render.
-                    cached = self._load_cached_alignment()
-                    if cached is not None:
-                        processed_images = cached
-                        registration_performed = True
-                        self.alignment_reused = True
-                        alignment_time = 0.0
-                    else:
-                        alignment_start_time = time.time()
-                        self.stage_signal.emit("align")
-                        processed_images, alignment_time = self._run_registration(
-                            processed_images, should_cancel=lambda: self.is_cancelled)
-                        registration_performed = True
-                        self.alignment_computed = True
-
-            if self.is_cancelled:
-                raise RegistrationCancelled()
-            # 2. ROI裁剪阶段
-            cropped_images, base_full_image, roi_rect_int = self._apply_roi_cropping(processed_images)
-
-            # 3. 融合阶段
-            fusion_result = None
-            if self.need_fusion:
+                        raise RegistrationCancelled()
+                    processed_images.append(_downscale_for_preview(image))
+            registration_performed = False
+    
+            if need_registration:
                 if self.is_cancelled:
-                    self.error_signal.emit("CANCELLED: render cancelled")
-                    return
-                fusion_start_time = time.time()
-                self.stage_signal.emit("fuse")
-                full_frame_roi = roi_rect_int is not None and get_fusion(self.algorithm).roi is None
-                fusion_images = (processed_images if full_frame_roi or cropped_images is None
-                                 else cropped_images)
-                fusion_result, device_name = self._run_fusion(
-                    fusion_images, should_cancel=lambda: self.is_cancelled,
-                    progress_callback=lambda done, total: self.progress_signal.emit(done, total))
-                if full_frame_roi:
-                    x, y, width, height = roi_rect_int
-                    fusion_result = fusion_result[y:y + height, x:x + width].copy()
-
-                # ROI粘贴阶段
-                if self.roi_mode == "paste" and base_full_image is not None and fusion_result is not None and roi_rect_int is not None:
-                    fusion_result = self._apply_roi_pasting(fusion_result, base_full_image, roi_rect_int)
-
-                fusion_time = time.time() - fusion_start_time
+                    raise RegistrationCancelled()
+                # Disk cache lookup happens here, on the worker thread:
+                # the GUI used to decode every cached PNG synchronously
+                # before starting a render.
+                cached = self._load_cached_alignment()
+                if cached is not None:
+                    processed_images = cached
+                    registration_performed = True
+                    self.alignment_reused = True
+                    alignment_time = 0.0
+                else:
+                    alignment_start_time = time.time()
+                    self.stage_signal.emit("align")
+                    processed_images, alignment_time = self._run_registration(
+                        processed_images, should_cancel=lambda: self.is_cancelled)
+                    registration_performed = True
+                    self.alignment_computed = True
+    
+        if self.is_cancelled:
+            raise RegistrationCancelled()
+        # 2. ROI裁剪阶段
+        cropped_images, base_full_image, roi_rect_int = self._apply_roi_cropping(processed_images)
+    
+        # 3. 融合阶段
+        fusion_result = None
+        if self.need_fusion:
             if self.is_cancelled:
                 raise RegistrationCancelled()
-
-            # Persist a freshly computed alignment before reporting the
-            # result, so the next render of this stack skips registration.
-            # Best-effort: _save_cached_alignment swallows write failures.
-            if self.alignment_computed:
-                self.stage_signal.emit("finish")
-                self._save_cached_alignment(processed_images)
-            if self.is_cancelled:
-                raise RegistrationCancelled()
-
-            self.finished_signal.emit(
-                processed_images,
-                fusion_result,
-                registration_performed,
-                alignment_time,
-                fusion_time,
-                device_name,
-            )
-        except RegistrationCancelled:
-            self.error_signal.emit("CANCELLED: render cancelled")
-        except Exception as e:
-            # Full traceback into the file log - message boxes alone make
-            # user reports undiagnosable.
-            import logging
-            logging.getLogger("openfocus").exception("render failed")
-            self.error_signal.emit(str(e))
-            import traceback
-            traceback.print_exc()
+            fusion_start_time = time.time()
+            self.stage_signal.emit("fuse")
+            full_frame_roi = roi_rect_int is not None and get_fusion(self.algorithm).roi is None
+            fusion_images = (processed_images if full_frame_roi or cropped_images is None
+                             else cropped_images)
+            fusion_result, device_name = self._run_fusion(
+                fusion_images, should_cancel=lambda: self.is_cancelled,
+                progress_callback=lambda done, total: self.progress_signal.emit(done, total))
+            if full_frame_roi:
+                x, y, width, height = roi_rect_int
+                fusion_result = fusion_result[y:y + height, x:x + width].copy()
+    
+            # ROI粘贴阶段
+            if self.roi_mode == "paste" and base_full_image is not None and fusion_result is not None and roi_rect_int is not None:
+                fusion_result = self._apply_roi_pasting(fusion_result, base_full_image, roi_rect_int)
+    
+            fusion_time = time.time() - fusion_start_time
+        if self.is_cancelled:
+            raise RegistrationCancelled()
+    
+        # Persist a freshly computed alignment before reporting the
+        # result, so the next render of this stack skips registration.
+        # Best-effort: _save_cached_alignment swallows write failures.
+        if self.alignment_computed:
+            self.stage_signal.emit("finish")
+            self._save_cached_alignment(processed_images)
+        if self.is_cancelled:
+            raise RegistrationCancelled()
+    
+        logger.info("render result device=%s alignment_reused=%s alignment_seconds=%.6f "
+                    "fusion_seconds=%.6f shape=%s dtype=%s", device_name,
+                    self.alignment_reused, alignment_time, fusion_time,
+                    getattr(fusion_result, 'shape', None), getattr(fusion_result, 'dtype', None))
+        self.finished_signal.emit(
+            processed_images,
+            fusion_result,
+            registration_performed,
+            alignment_time,
+            fusion_time,
+            device_name,
+        )
 
     def _prepare_cache_identity(self):
         request = self.disk_cache
@@ -379,9 +420,7 @@ class RenderWorker(QThread):
         except RegistrationCancelled:
             raise
         except Exception:
-            import logging
-            logging.getLogger("openfocus").exception(
-                "could not read the alignment cache")
+            logger.exception("could not read the alignment cache")
             return None
         if cached is None:
             return None
@@ -423,9 +462,7 @@ class RenderWorker(QThread):
         except Exception:
             # A cache write failure must never turn a finished fusion into a
             # failed one.
-            import logging
-            logging.getLogger("openfocus").exception(
-                "could not write the alignment cache")
+            logger.exception("could not write the alignment cache")
 
     def _run_registration(self, images, should_cancel=None):
         started = time.time()
@@ -558,33 +595,56 @@ class BatchImportWorker(QThread):
         return loader
 
     def run(self):
-        try:
-            if self.mode == 'stack':
-                self._load_stack()
-            else:
-                self._load_thumbnails()
-        except Exception as exc:  # noqa: BLE001 - surfaced by the dialog
-            if self.mode == 'stack':
-                self.stack_loaded.emit(self.folder_path or "", [], str(exc))
-            else:
-                self.folders_loaded.emit([])
+        with log_operation("batch_import", mode=self.mode, folder=self.folder_path,
+                           scale_factor=self.scale_factor, sort_by=self.sort_by,
+                           folder_count=len(self.folder_paths), thread_count=self.thread_count,
+                           resource_preference=self.resource_preference) as operation:
+            try:
+                if self.mode == 'stack':
+                    ok = self._load_stack()
+                else:
+                    ok = self._load_thumbnails()
+                if self.is_cancelled:
+                    operation.cancel()
+                elif ok is False:
+                    operation.fail()
+            except Exception as exc:  # noqa: BLE001 - surfaced by the dialog
+                operation.fail()
+                if self.mode == 'stack':
+                    self.stack_loaded.emit(self.folder_path or "", [], str(exc))
+                else:
+                    self.folders_loaded.emit([])
 
     def _load_thumbnails(self):
         loader = self._loader()
         results = []
+        failed = False
         for folder in self.folder_paths:
             if self.is_cancelled:
                 break
-            ok, _message, images, _names = loader.load_from_folder(
-                folder, scale_factor=self.scale_factor,
-                thread_count=self.thread_count,
-                resource_preference=self.resource_preference)
-            first = images[0] if ok and images else None
-            results.append((folder, first))
-            # Release the rest of the stack before the next folder.
-            del images
+            with log_operation("batch_import_folder", folder=folder, scale_factor=self.scale_factor,
+                               thread_count=self.thread_count,
+                               resource_preference=self.resource_preference) as operation:
+                ok, _message, images, _names = loader.load_from_folder(
+                    folder, scale_factor=self.scale_factor,
+                    thread_count=self.thread_count,
+                    resource_preference=self.resource_preference)
+                logger.info("batch import decoded %s", frame_details(images))
+                # A decoder can return usable frames alongside failed files;
+                # preserve its thumbnail while recording the partial failure.
+                if self.is_cancelled:
+                    operation.cancel()
+                elif not ok or getattr(loader, 'failed_count', 0):
+                    operation.fail()
+                    failed = True
+                    logger.error("batch folder import failed: %s", _message)
+                first = images[0] if ok and images else None
+                results.append((folder, first))
+                # Release the rest of the stack before the next folder.
+                del images
         if not self.is_cancelled:
             self.folders_loaded.emit(results)
+        return not failed
 
     def _load_stack(self):
         loader = self._loader()
@@ -593,13 +653,18 @@ class BatchImportWorker(QThread):
             scale_factor=self.scale_factor,
             thread_count=self.thread_count,
             resource_preference=self.resource_preference)
+        logger.info("batch import decoded frame_count=%s first_shape=%s first_dtype=%s",
+                    len(entries), entries[0][1].shape if entries else None,
+                    str(entries[0][1].dtype) if entries else None)
         if self.is_cancelled:
             return
         if not ok or loader.failed_count:
+            logger.error("batch stack import failed: %s", message)
             self.stack_loaded.emit(self.folder_path or "", [],
                                    message or "load failed")
-            return
+            return False
         self.stack_loaded.emit(self.folder_path or "", entries, "")
+        return True
 
 
 class BatchWorker(QThread):
@@ -684,71 +749,97 @@ class BatchWorker(QThread):
             quality = int(self.processing_settings.get('jpg_quality', 100))
             params = [cv2.IMWRITE_JPEG_QUALITY, max(0, min(100, quality))]
         path = unique_path(path)
-        try:
-            from utils.image_utils import imwrite_auto
-            if scale_cfg:
-                from utils import scalebar
-                image = scalebar.burn(image, scale_cfg)
-            ok = imwrite_auto(path, image, params, exif=self._source_exif)
-        except Exception as exc:
-            self._task_failures.append({'path': path, 'error': str(exc)})
-            return False
-        if ok:
-            self._task_artifacts.append(path)
-        else:
-            self._task_failures.append({'path': path, 'error': 'Image write failed'})
-        return ok
+        with log_operation("batch_image_write", path=path, extension=extension,
+                           parameters=params, shape=image.shape, dtype=str(image.dtype)) as operation:
+            try:
+                from utils.image_utils import imwrite_auto
+                if scale_cfg:
+                    from utils import scalebar
+                    image = scalebar.burn(image, scale_cfg)
+                ok = imwrite_auto(path, image, params, exif=self._source_exif)
+            except Exception as exc:
+                operation.fail()
+                self._task_failures.append({'path': path, 'error': str(exc)})
+                return False
+            if ok:
+                self._task_artifacts.append(path)
+            else:
+                operation.fail()
+                self._task_failures.append({'path': path, 'error': 'Image write failed'})
+            return ok
 
     def run(self):
         """Run both input modes with identical terminal-state accounting."""
-        try:
-            split = self.import_mode == 'single_folder'
-            if split:
-                stacks = self._split_images_for_processing()
-                source = os.path.dirname(self.single_folder_images_with_times[0][0]) if stacks else ''
-                tasks = [(f'{os.path.basename(source)}_{i + 1:03d}', stack)
-                         for i, stack in enumerate(stacks)]
-                from core.image_loader import _read_exif_bytes
-                self._source_exif = _read_exif_bytes(self.single_folder_images_with_times[0][0]) if stacks else b''
-                from utils.scalebar import detect_px_size_um
-                self.image_loader.px_size_um = detect_px_size_um(self.single_folder_images_with_times[0][0]) if stacks else None
-            else:
-                tasks = [(os.path.basename(os.path.normpath(path)), path)
-                         for path in self.folder_paths]
-            total = len(tasks)
-            for index, (name, data) in enumerate(tasks):
-                task = {'name': name, 'status': 'not_started', 'artifacts': [], 'failures': []}
-                self.task_results.append(task)
+        with log_operation("batch", method=self.processing_settings.get('fusion_method'),
+                           parameters=self.processing_settings.get('fusion_params'),
+                           registration=self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ())),
+                           registration_parameters=self.registration_parameters,
+                           output_type=self.output_type, output_path=self.output_path,
+                           runtime_settings=self.runtime_settings,
+                           folder_count=len(self.folder_paths), import_mode=self.import_mode,
+                           split_method=self.split_method, split_param=self.split_param,
+                           thread_count=self.thread_count, resource_preference=self.resource_preference,
+                           use_gpu=self.use_gpu, reg_downscale_width=self.reg_downscale_width,
+                           tile_enabled=self.tile_enabled, tile_block_size=self.tile_block_size,
+                           tile_overlap=self.tile_overlap, tile_threshold=self.tile_threshold,
+                           ai_batch_size=self.ai_batch_size, exposure_match=self.exposure_match) as operation:
+            try:
+                split = self.import_mode == 'single_folder'
+                if split:
+                    stacks = self._split_images_for_processing()
+                    source = os.path.dirname(self.single_folder_images_with_times[0][0]) if stacks else ''
+                    tasks = [(f'{os.path.basename(source)}_{i + 1:03d}', stack)
+                             for i, stack in enumerate(stacks)]
+                    from core.image_loader import _read_exif_bytes
+                    self._source_exif = _read_exif_bytes(self.single_folder_images_with_times[0][0]) if stacks else b''
+                    from utils.scalebar import detect_px_size_um
+                    self.image_loader.px_size_um = detect_px_size_um(self.single_folder_images_with_times[0][0]) if stacks else None
+                else:
+                    tasks = [(os.path.basename(os.path.normpath(path)), path)
+                             for path in self.folder_paths]
+                total = len(tasks)
+                for index, (name, data) in enumerate(tasks):
+                    task = {'name': name, 'status': 'not_started', 'artifacts': [], 'failures': []}
+                    self.task_results.append(task)
+                    if self.is_cancelled:
+                        continue
+                    self._task_artifacts = task['artifacts']
+                    self._task_failures = task['failures']
+                    self.progress_updated.emit(index, total, trans_batch_progress(index + 1, total, name))
+                    with log_operation("batch_folder", task_name=name, folder=source if split else data,
+                                       index=index, total=total) as folder_operation:
+                        try:
+                            with heavy_job(lambda: self.is_cancelled):
+                                if split:
+                                    self._process_single_stack(data, self._get_output_path_for_single_folder(source), name, index)
+                                else:
+                                    self.process_single_folder(data)
+                                if self.is_cancelled:
+                                    raise RegistrationCancelled()
+                            task['status'] = 'success'
+                        except RegistrationCancelled:
+                            folder_operation.cancel()
+                            self.is_cancelled = True
+                            task['status'] = 'cancelled'
+                        except Exception as exc:
+                            folder_operation.fail()
+                            task['status'] = 'partial' if task['artifacts'] else 'failed'
+                            task['error'] = str(exc)
+                    self.progress_updated.emit(index + 1, total, trans_batch_progress(index + 1, total, name))
+                counts = _count_task_states(self.task_results, total)
+                if counts['failed'] or counts['partial']:
+                    operation.fail()
                 if self.is_cancelled:
-                    continue
-                self._task_artifacts = task['artifacts']
-                self._task_failures = task['failures']
-                self.progress_updated.emit(index, total, trans_batch_progress(index + 1, total, name))
-                try:
-                    with heavy_job(lambda: self.is_cancelled):
-                        if split:
-                            self._process_single_stack(data, self._get_output_path_for_single_folder(source), name, index)
-                        else:
-                            self.process_single_folder(data)
-                        if self.is_cancelled:
-                            raise RegistrationCancelled()
-                    task['status'] = 'success'
-                except RegistrationCancelled:
-                    self.is_cancelled = True
-                    task['status'] = 'cancelled'
-                except Exception as exc:
-                    task['status'] = 'partial' if task['artifacts'] else 'failed'
-                    task['error'] = str(exc)
-                self.progress_updated.emit(index + 1, total, trans_batch_progress(index + 1, total, name))
-            counts = _count_task_states(self.task_results, total)
-            self.finished.emit({
-                'success': counts['success'], 'total': total,
-                'failed': [f"{task['name']}: {task['error']}" for task in self.task_results if 'error' in task],
-                'cancelled': self.is_cancelled, 'outputs': list(self.written_paths),
-                'aligned_stacks': [item for item in self.aligned_stacks if item['files']],
-                'tasks': list(self.task_results), 'counts': counts})
-        except Exception as exc:
-            self.error.emit(str(exc))
+                    operation.cancel()
+                self.finished.emit({
+                    'success': counts['success'], 'total': total,
+                    'failed': [f"{task['name']}: {task['error']}" for task in self.task_results if 'error' in task],
+                    'cancelled': self.is_cancelled, 'outputs': list(self.written_paths),
+                    'aligned_stacks': [item for item in self.aligned_stacks if item['files']],
+                    'tasks': list(self.task_results), 'counts': counts})
+            except Exception as exc:
+                operation.fail()
+                self.error.emit(str(exc))
 
     def _split_images_for_processing(self):
         """分割单文件夹中的图像"""
@@ -789,107 +880,117 @@ class BatchWorker(QThread):
     def _process_single_stack(self, stack_images_with_times, output_dir,
                               stack_name, stack_index):
         """Process one stack produced by splitting a folder.
-
+    
         Alignment, optional fusion and the exports are separate steps: the
         align-only mode used to be nested inside the fusion branch, so it
         wrote no files at all while still being counted as a success.
         """
         images = [item[1] for item in stack_images_with_times]
-        original_paths = [item[3] if len(item) > 3 else item[0] for item in stack_images_with_times]
-        if self.is_cancelled:
-            raise RegistrationCancelled()
-        if not images:
-            raise ValueError('No frames to process')
-        method = self.processing_settings.get('fusion_method')
-        if method and method != 'none' and len(images) < 2:
-            raise ValueError('Fusion requires at least two frames')
-
-        aligned_images = images.copy()
-        alignment = self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ()))
-        steps = alignment_steps(alignment)
-        if steps:
-            registration = ImageRegistration(method=alignment,
-                parameters=self.registration_parameters,
-                downscale_width=self._registration_width(aligned_images),
-                brightness_reference='last' if self.exposure_match else 'first',
-                use_gpu=False)
-            aligned_images = registration.process(aligned_images,
-                thread_count=self.thread_count, resource_preference=self.resource_preference,
-                should_cancel=lambda: self.is_cancelled)
-
-        output_format = self.processing_settings.get('format', 'png').lstrip('.').lower()
-        fusion_method = self.processing_settings.get('fusion_method')
-        if fusion_method == "none":
-            fusion_method = None
-
-        result = None
-        # The align-only mode exports these frames too; assigning the list
-        # inside the fusion branch left it None and wrote no files at all.
-        aligned_for_export = list(aligned_images)
-        if fusion_method:
-            fusion_params = resolve_fusion_parameters(fusion_method,
-                self.processing_settings.get('fusion_params'))
-            runtime = self.runtime_settings
-            tile_kwargs = {
-                'tile_enabled': self.tile_enabled if self.tile_enabled is not None else True,
-                'tile_block_size': self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE,
-                'tile_overlap': self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP,
-                'tile_threshold': self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD,
-                'ai_batch_size': self.ai_batch_size}
-            for key in tile_kwargs:
-                if runtime.get(key) is not None:
-                    tile_kwargs[key] = runtime[key]
-
-            from utils.image_utils import normalize_fuse_input, quantize_fuse_output
-            save_aligned = bool(self.processing_settings.get('save_aligned', False))
-            if not save_aligned:
-                aligned_for_export = None
-            if any(image.dtype == np.uint16 for image in aligned_images):
-                require_memory(sum(image.size * 4 for image in aligned_images if image.dtype != np.float32)
-                               + max(image.size * 4 for image in aligned_images if image.dtype == np.uint16))
-            fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
-            if aligned_for_export is None:
-                del aligned_images  # fusion does not need the originals
-
-            fusion = MultiFocusFusion(
-                algorithm=fusion_method, fusion_parameters=fusion_params, use_gpu=self.use_gpu,
-                resource_preference=self.resource_preference,
-                base_frame=runtime.get('base_frame', 'none'),
-                sort_mode=runtime.get('sort_mode', 'asc'),
-                exposure_match=self.exposure_match, **tile_kwargs)
-            result = self._fuse_one_stack(fusion, fusion_method, fusion_input, fusion_params)
-            result = quantize_fuse_output(result, is_16bit)
-        else:
-            save_aligned = True
-
-        stack_cfg = self._stack_scale_cfg()
-        saved = []
-        if result is not None:
-            output_path = unique_path(os.path.join(output_dir, f'{stack_name}.{output_format}'))
-            ok = self._save_image(output_path, result, output_format, scale_cfg=stack_cfg)
-            saved.append(ok)
-            if ok:
-                self.written_paths.append(self._task_artifacts[-1])
-
-        if save_aligned and aligned_for_export is not None:
-            stack_cfg = self._stack_scale_cfg('registered')
-            directory = create_stack_directory(output_dir, f'{stack_name}_aligned')
-            artifact = {'path': directory, 'name': stack_name, 'files': [],
-                        'annotations_baked': bool(stack_cfg)}
-            self.aligned_stacks.append(artifact)
-            for index, image in enumerate(aligned_for_export):
-                filename = frame_export_name(original_paths[index], index, output_format)
-                ok = self._save_image(os.path.join(directory, filename), image,
-                                      output_format, scale_cfg=stack_cfg)
-                saved.append(ok)
-                if ok:
-                    artifact['files'].append(self._task_artifacts[-1])
-
-        written = sum(saved)
-        if not written:
-            raise OSError(f'No files were written for {stack_name}')
-        if written != len(saved):
-            raise PartialWriteError(f'{written}/{len(saved)} files were written for {stack_name}')
+        with log_operation("batch_stack", stack_name=stack_name, stack_index=stack_index,
+                           method=self.processing_settings.get('fusion_method'),
+                           parameters=self.processing_settings.get('fusion_params'),
+                           registration=self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ())),
+                           registration_parameters=self.registration_parameters,
+                           **frame_details(images)) as operation:
+            try:
+                original_paths = [item[3] if len(item) > 3 else item[0] for item in stack_images_with_times]
+                if self.is_cancelled:
+                    raise RegistrationCancelled()
+                if not images:
+                    raise ValueError('No frames to process')
+                method = self.processing_settings.get('fusion_method')
+                if method and method != 'none' and len(images) < 2:
+                    raise ValueError('Fusion requires at least two frames')
+        
+                aligned_images = images.copy()
+                alignment = self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ()))
+                steps = alignment_steps(alignment)
+                if steps:
+                    registration = ImageRegistration(method=alignment,
+                        parameters=self.registration_parameters,
+                        downscale_width=self._registration_width(aligned_images),
+                        brightness_reference='last' if self.exposure_match else 'first',
+                        use_gpu=False)
+                    aligned_images = registration.process(aligned_images,
+                        thread_count=self.thread_count, resource_preference=self.resource_preference,
+                        should_cancel=lambda: self.is_cancelled)
+        
+                output_format = self.processing_settings.get('format', 'png').lstrip('.').lower()
+                fusion_method = self.processing_settings.get('fusion_method')
+                if fusion_method == "none":
+                    fusion_method = None
+        
+                result = None
+                # The align-only mode exports these frames too; assigning the list
+                # inside the fusion branch left it None and wrote no files at all.
+                aligned_for_export = list(aligned_images)
+                if fusion_method:
+                    fusion_params = resolve_fusion_parameters(fusion_method,
+                        self.processing_settings.get('fusion_params'))
+                    runtime = self.runtime_settings
+                    tile_kwargs = {
+                        'tile_enabled': self.tile_enabled if self.tile_enabled is not None else True,
+                        'tile_block_size': self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE,
+                        'tile_overlap': self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP,
+                        'tile_threshold': self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD,
+                        'ai_batch_size': self.ai_batch_size}
+                    for key in tile_kwargs:
+                        if runtime.get(key) is not None:
+                            tile_kwargs[key] = runtime[key]
+        
+                    from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+                    save_aligned = bool(self.processing_settings.get('save_aligned', False))
+                    if not save_aligned:
+                        aligned_for_export = None
+                    if any(image.dtype == np.uint16 for image in aligned_images):
+                        require_memory(sum(image.size * 4 for image in aligned_images if image.dtype != np.float32)
+                                       + max(image.size * 4 for image in aligned_images if image.dtype == np.uint16))
+                    fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
+                    if aligned_for_export is None:
+                        del aligned_images  # fusion does not need the originals
+        
+                    fusion = MultiFocusFusion(
+                        algorithm=fusion_method, fusion_parameters=fusion_params, use_gpu=self.use_gpu,
+                        resource_preference=self.resource_preference,
+                        base_frame=runtime.get('base_frame', 'none'),
+                        sort_mode=runtime.get('sort_mode', 'asc'),
+                        exposure_match=self.exposure_match, **tile_kwargs)
+                    result = self._fuse_one_stack(fusion, fusion_method, fusion_input, fusion_params)
+                    result = quantize_fuse_output(result, is_16bit)
+                else:
+                    save_aligned = True
+        
+                stack_cfg = self._stack_scale_cfg()
+                saved = []
+                if result is not None:
+                    output_path = unique_path(os.path.join(output_dir, f'{stack_name}.{output_format}'))
+                    ok = self._save_image(output_path, result, output_format, scale_cfg=stack_cfg)
+                    saved.append(ok)
+                    if ok:
+                        self.written_paths.append(self._task_artifacts[-1])
+        
+                if save_aligned and aligned_for_export is not None:
+                    stack_cfg = self._stack_scale_cfg('registered')
+                    directory = create_stack_directory(output_dir, f'{stack_name}_aligned')
+                    artifact = {'path': directory, 'name': stack_name, 'files': [],
+                                'annotations_baked': bool(stack_cfg)}
+                    self.aligned_stacks.append(artifact)
+                    for index, image in enumerate(aligned_for_export):
+                        filename = frame_export_name(original_paths[index], index, output_format)
+                        ok = self._save_image(os.path.join(directory, filename), image,
+                                              output_format, scale_cfg=stack_cfg)
+                        saved.append(ok)
+                        if ok:
+                            artifact['files'].append(self._task_artifacts[-1])
+        
+                written = sum(saved)
+                if not written:
+                    raise OSError(f'No files were written for {stack_name}')
+                if written != len(saved):
+                    raise PartialWriteError(f'{written}/{len(saved)} files were written for {stack_name}')
+            except RegistrationCancelled:
+                operation.cancel()
+                raise
 
     def _fuse_one_stack(self, fusion, fusion_method, fusion_input, fusion_params):
         """Dispatch every declared parameter through the common entry point."""
@@ -955,39 +1056,44 @@ class GifSaverWorker(QThread):
     def run(self):
         import tempfile
         temporary = None
-        try:
-            normalized_images = []
-            for index, image in enumerate(self.images):
+        with log_operation("gif_save", file_path=self.file_path, duration_sec=self.duration_sec,
+                           target_type=self.target_type, scale_cfg=self.scale_cfg,
+                           **frame_details(self.images)) as operation:
+            try:
+                normalized_images = []
+                for index, image in enumerate(self.images):
+                    if self.is_cancelled:
+                        raise RegistrationCancelled()
+                    if self.label_manager is not None:
+                        image = self.label_manager.prepare_bgr_image(self.target_type, image, index)
+                    if self.scale_cfg:
+                        from utils import scalebar
+                        image = scalebar.burn(image, self.scale_cfg)
+                    image = to_display_uint8(image)
+                    if image.ndim == 2:
+                        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+                    elif image.shape[2] == 3:
+                        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                    normalized_images.append(image)
+                handle, temporary = tempfile.mkstemp(suffix='.gif', prefix='.openfocus-',
+                                                     dir=os.path.dirname(os.path.abspath(self.file_path)))
+                os.close(handle)
+                imageio.mimsave(temporary, normalized_images,
+                                duration=self.duration_sec * 1000.0, loop=0)
                 if self.is_cancelled:
                     raise RegistrationCancelled()
-                if self.label_manager is not None:
-                    image = self.label_manager.prepare_bgr_image(self.target_type, image, index)
-                if self.scale_cfg:
-                    from utils import scalebar
-                    image = scalebar.burn(image, self.scale_cfg)
-                image = to_display_uint8(image)
-                if image.ndim == 2:
-                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-                elif image.shape[2] == 3:
-                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                normalized_images.append(image)
-            handle, temporary = tempfile.mkstemp(suffix='.gif', prefix='.openfocus-',
-                                                 dir=os.path.dirname(os.path.abspath(self.file_path)))
-            os.close(handle)
-            imageio.mimsave(temporary, normalized_images,
-                            duration=self.duration_sec * 1000.0, loop=0)
-            if self.is_cancelled:
-                raise RegistrationCancelled()
-            os.replace(temporary, self.file_path)
-            temporary = None
-            self.finished_signal.emit(True, self.file_path)
-        except RegistrationCancelled:
-            self.finished_signal.emit(False, 'CANCELLED')
-        except Exception as exc:
-            self.finished_signal.emit(False, str(exc))
-        finally:
-            if temporary and os.path.exists(temporary):
-                os.remove(temporary)
+                os.replace(temporary, self.file_path)
+                temporary = None
+                self.finished_signal.emit(True, self.file_path)
+            except RegistrationCancelled:
+                operation.cancel()
+                self.finished_signal.emit(False, 'CANCELLED')
+            except Exception as exc:
+                operation.fail()
+                self.finished_signal.emit(False, str(exc))
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.remove(temporary)
 
 
 class PartialWriteError(Exception):
