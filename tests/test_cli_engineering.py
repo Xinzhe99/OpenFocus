@@ -170,6 +170,37 @@ def test_new_method_numeric_enum_alignment_depth_unicode_and_u16(tmp_path, cli_e
     assert outputs[0].mean() < outputs[1].mean()
 
 
+def test_non_ascii_path_survives_a_legacy_stdout_encoding(tmp_path):
+    """A cp1252 stdout must not abort a render over a Chinese folder name.
+
+    Windows keeps the locale code page when output is redirected, and the
+    progress line names the source path. The CLI reconfigured only redirected
+    streams, so this runs the real entry point in a subprocess.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    from utils.image_utils import imwrite_auto
+    source = tmp_path / "图像栈"
+    source.mkdir()
+    for index, value in enumerate((90, 170)):
+        assert imwrite_auto(str(source / f"帧{index}.png"),
+                            np.full((24, 24, 3), value, np.uint8))
+    output = tmp_path / "结果.png"
+    environment = dict(os.environ, PYTHONIOENCODING="cp1252",
+                       OPENFOCUS_LOG_DIR=str(tmp_path / "logs"),
+                       PYTHONPATH=str(root), KMP_DUPLICATE_LIB_OK="TRUE")
+    result = subprocess.run(
+        [sys.executable, str(root / "main.py"), "-i", str(source),
+         "-o", str(output), "-m", "dct", "--threads", "1"],
+        cwd=str(root), env=environment, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=180)
+    assert result.returncode == 0, result.stderr
+    assert output.is_file()
+
+
 def test_batch_config_generic_dictionaries_execute(tmp_path, cli_extension):
     fa, fb, out = _make_stacks(tmp_path)
     cfg = tmp_path / "generic.json"

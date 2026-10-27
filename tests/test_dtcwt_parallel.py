@@ -91,7 +91,15 @@ def test_parallel_colour_matches_serial_implementation(workers):
 
 
 def test_colour_phase_actually_runs_in_parallel(monkeypatch):
-    """The activity pass caps itself at 2; the colour phase must exceed that."""
+    """The activity pass caps itself at 2; the colour phase must exceed that.
+
+    A two-core host admits one worker in balanced mode, so the property is not
+    observable there; the stage correctly runs serially instead of oversubscribing.
+    """
+    from core.resource_policy import (PREFERENCE_BALANCED, cpu_capacity,
+                                      probe_resources)
+    if cpu_capacity(probe_resources(), PREFERENCE_BALANCED) < 3:
+        pytest.skip("host admits fewer than three concurrent frame transforms")
     module._DTCWT_MAX_WORKERS = 4
     original = module.dtcwt.Transform2d.forward
     lock = threading.Lock()
