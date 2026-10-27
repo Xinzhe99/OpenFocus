@@ -89,8 +89,8 @@ load, stack decode) return immediately; poll `app.state`/`render.state`/
 |---|---|---|
 | `ping` | — | `{pong:true, version}` |
 | `app.info` | — | version, pid, platform, python, methods, capabilities, control, commands |
-| `app.state` | — | stack, method, alignment, options, render, outputs, dialogs |
-| `app.quit` | — | `{quitting:true}` |
+| `app.state` | — | stack, method, alignment, options, render, outputs, dialogs, view, context |
+| `app.quit` | `force?` | `{quitting:true, force}`; `force:true` discards prompts/work |
 
 `app.info.methods` mirrors the registry (id, label, category, parameters,
 depth, neural, order_sensitive). `capabilities` reports torch/gpu/heic/raw/
@@ -158,15 +158,30 @@ through the export manager's normal writer (labels, scale bar, bit depth).
 
 | Command | Args | Result |
 |---|---|---|
-| `dialog.open` | `name`, plus name-specific arguments | `{opened, title, index}` |
-| `dialog.list` | — | `[{index, title, class, visible, modal}]` |
-| `dialog.close` | `index?`, `title?` | `{closed:true}` |
+| `dialog.open` | `name`, plus name-specific arguments | `{opened, title}` |
+| `dialog.list` | — | every visible top-level window: `index`, `root`, `title`, `class`, `visible`, `modal`, `popup`, `managed`, `active`, `busy` |
+| `dialog.close` | `index?`, `title?`, `root?` | `{closed:true}` |
 | `dialog.accept` | `index?`, `title?` | `{accepted:true}` (runs the normal accept path) |
 | `dialog.reject` | `index?`, `title?` | `{rejected:true}` |
+| `dialog.file` | `path`, `index?`, `title?`, `cancel?` | answers a `QFileDialog` by path (or cancels it) |
+| `dialog.color` | `color`, `index?` | answers a `QColorDialog` with `#rrggbb` |
 
 Names: `settings`, `batch`, `compare`, `depth`, `feedback`, `scalebar`,
 `dust`, `retouch`, `welcome`, `method_help`, `registration_help`,
 `environment`, `contact`.
+
+`dialog.list` is not limited to these named dialogs: it includes **every
+visible Qt top-level window**, including file pickers, message boxes,
+`QInputDialog`, `QColorDialog`, label/scale/ROI dialogs opened by actions, and
+menus (`popup[N]`). Entries carry `root` (`dialog[N]`/`popup[N]`), `active`
+(the window that would receive input) and `managed` (opened through
+`dialog.open`). Startup prompts such as Session Recovery appear here too;
+handle them before starting a workflow.
+
+Managed dialogs and `dialog.open` are modeless so commands continue to flow.
+Dialogs opened by a menu action with `exec()` are reachable in the same way:
+`ui.trigger` returns, then `dialog.list`, `ui.find`, `ui.click` and
+`dialog.accept` operate their widgets from inside the nested Qt loop.
 
 Dialog controls carry `controlId` values such as `method_combo`,
 `compute_btn`, `btn_save_3d`, `btn_run`, `btn_adopt_output`, `btn_start`,
@@ -181,21 +196,42 @@ dialog starts its batch exactly like the menu action does.
 
 | Command | Args | Result |
 |---|---|---|
-| `ui.actions` | — | every menu action: key, text, enabled, checkable, checked, shortcut |
-| `ui.trigger` | `key` | `{scheduled:true}` (runs on the next event-loop turn) |
-| `ui.tree` | `window?` | nested widgets: path, class, objectName, text, enabled, visible, checked, value, children |
-| `ui.find` | `object_name?`, `class?`, `text?`, `window?` | matching nodes |
-| `ui.click` | `path` | `{clicked:true}` |
+| `ui.actions` | — | every menu action: key, text, enabled, checkable, checked, shortcut, source, menu |
+| `ui.trigger` | `key` | `{scheduled:true}` (runs after a short flush delay) |
+| `ui.tree` | `window?`, `depth?` | nested widgets: path, class, objectName, controlId, text, enabled, visible, focus, checked, value, geometry, global origin, children |
+| `ui.find` | `object_name?` (also matches controlId), `control_id?`, `class?`, `text?`, `window?` | matching nodes |
+| `ui.click` | `path`, `async?` | `{clicked:true}`; with `async:true` returns `{scheduled:true}` before the slot runs |
 | `ui.set` | `path`, `value` | written value |
 | `ui.grab` | `path?`, `output` | `{path, width, height}` |
+| `ui.context` | — | level, active window, focused widget, roots, dialogs, view, stack, render |
+| `ui.focus` | `path` | `{focused:true}` |
+| `ui.mouse` | `path`, `action`, `x?`, `y?`, `to_x?`, `to_y?`, `steps?`, `button?`, `modifiers?`, `delta?` | real mouse click/drag/wheel events |
+| `ui.key` | `path?`, `key`, `action?`, `modifiers?` | real key press/click/release |
+| `ui.type` | `path?`, `text`, `submit?` | types text; optional Enter |
+| `ui.menu` | `action?` or `index?` | list/trigger actions in the open context menu |
 
 Paths are stable within a snapshot: `main/<controlId or objectName or
-Class[n]>/…`; dialog roots are `dialog[0]`, `dialog[1]`, … in title order.
-`controlId` is a dynamic property used for the right-panel controls whose
-`objectName` is reserved by the stylesheet (`btn_render`, `combo_fusion`,
-`output_list`, …). `ui.find` matches `object_name` against either identifier.
+Class[n]>/…`; dialog roots are `dialog[0]`, `dialog[1]`, … in title order and
+menu roots are `popup[0]`, … `controlId` is a dynamic property used for the
+right-panel controls whose `objectName` is reserved by the stylesheet
+(`btn_render`, `combo_fusion`, `output_list`, …). `ui.find` matches
+`object_name`/`control_id` against either identifier.
 `ui.actions` keys are the `ui_objs` keys (`action_open_folder`, `action_save`,
-…), which do not change with language.
+…) for fixed actions, which do not change with language. Dynamic leaves such
+as recent files/projects (and any action added directly to a menu) get
+`menu_action_<n>` keys with `source:"menu"` and a `menu` path; the index is
+stable for the current menu. `ui.trigger` resolves both kinds.
+
+Duplicate sibling identifiers are disambiguated with an occurrence suffix, so
+the source and result panels are `panelRoot[0]` and `panelRoot[1]`. Always
+copy a path from `ui.find`/`ui.tree`; never guess a bare duplicate name.
+
+`ui.tree`/`ui.find` nodes include `geometry` and `global_origin`. Use these
+to aim `ui.mouse` at a canvas: coordinates in `ui.mouse` are relative to the
+addressed widget. `ui.context` is the level indicator: `level` is `main`,
+`dialog` or `modal`; `active.root` is the topmost input target; `focus.path`
+is the keyboard target. This is how an agent knows whether it is typing into
+the main window, a dialog, or a message box.
 
 Because every menu action and every dialog widget is addressable, the surface
 covers capabilities that have no dedicated command (labels, retouch, dust map,
@@ -267,10 +303,24 @@ Verification:
 - Native session: an agent command sequence drives a visible window end to end.
 - Full pytest suite; no behavior change when control is disabled.
 
-Known limits: `ui.trigger` is asynchronous by design; commands that open a
-modal dialog from inside a controller are handled by the UI layer, not by a
-typed command. `ui.click` is synchronous, so a button whose slot opens a modal
-`exec()` dialog blocks that command until the dialog closes — prefer
-`dialog.open`, which shows dialogs modelessly. Screenshots capture Qt-rendered
-pixels, not the OS desktop. The control channel is not available in frozen
-builds that were started without `--control`.
+Completeness has since been extended to human input: real Qt mouse
+click/drag/wheel and key/text events (`ui.mouse`, `ui.key`, `ui.type`), all
+top-level dialogs/popups (`dialog.list`, `dialog.file`, `dialog.color`,
+`ui.menu`), duplicate-safe paths, and `ui.context` level reporting. The
+menu-action sweep drives every enabled action (including save/open project,
+GIF, multi-page TIFF, stack folders, labels, resize, scale bar, depth/dust,
+compare, retouch and settings) and resolves the dialogs each one opens.
+
+Known limits: `ui.trigger` is asynchronous by design (the response is flushed
+before the action runs). `ui.click` is synchronous, so a button whose slot
+opens a modal `exec()` dialog blocks that command until the dialog closes —
+use `ui.click --async` or `ui.trigger`. Under heavy parallel client load a
+new local connection can occasionally time out even though the GUI is healthy;
+retry a read-only command once and check `ui.context`. Set
+`OPENFOCUS_CONTROL_WATCHDOG=1` to have the app dump the GUI stack if the
+thread really stalls. Screenshots capture Qt-rendered pixels,
+not the OS desktop. `ui.mouse` targets Qt widgets; external OS drag-and-drop
+from Explorer is not simulated (use `stack.load`). The control channel is not
+available in frozen builds started without `--control`.
+
+See `.claude/skills/openfocus-control/SKILL.md` for the agent-facing workflow.

@@ -269,6 +269,7 @@ def setup_menus(window: QMainWindow) -> None:
         window.label_manager.show_add_label_dialog)
     window.add_label_action.setEnabled(False)
     label_menu.addAction(window.add_label_action)
+    window.ui_objs['action_add_label'] = window.add_label_action
 
     # Each target can be cleared independently, including disabled labels.
     remove_menu = label_menu.addMenu(trans.t('menu_remove_labels'))

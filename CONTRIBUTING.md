@@ -26,6 +26,17 @@ an agent drive the running GUI. Keep it working when you add UI:
 - Give controls a stable `controlId` dynamic property (or an `objectName` when
   the stylesheet does not own it), and store menu actions in
   `window.ui_objs[key]`. Paths and action keys must not depend on language.
+  `_child_segments` appends an occurrence suffix when two siblings share an
+  identifier; keep paths unique rather than relying on tree order.
+- While control is active, static `QFileDialog`/`QColorDialog` helpers are
+  patched to portable Qt dialogs so agents can fill them. Do not assume a
+  native OS picker; add a typed command or `dialog.file`/`dialog.color`
+  support for new modal file/color flows.
+- A button whose slot calls `QDialog.exec()` blocks a synchronous
+  `ui.click`; test and document `ui.click --async` for these controls, then
+  poll `dialog.list`/`ui.context`. Prefer `ui.trigger` for menu actions.
+- Keep the agent workflow current: `.claude/skills/openfocus-control/SKILL.md`
+  and `tools/agent_gui_smoke.py` exercise the surface end to end.
 - Open dialogs modelessly in the control path (`dialog.open`). Never call
   `exec()` inside a command handler; a blocking call stalls the response and
   hides the dialog from the agent.

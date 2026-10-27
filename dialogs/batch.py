@@ -483,7 +483,18 @@ class BatchProcessingDialog(QDialog):
         
         # 初始化质量滑块显示状态（确保对话框打开时滑块正确显示）
         self.on_format_changed(self.format_combo.currentText())
-    
+
+        for _control in ("rb_multiple_folders", "rb_single_folder",
+                         "btn_add_folder", "btn_add_single_folder",
+                         "folder_list", "format_combo", "rb_subfolder",
+                         "subfolder_name", "rb_same_folder",
+                         "rb_custom_folder", "custom_folder_path",
+                         "fusion_combo", "align_combo", "chk_reverse_order",
+                         "chk_exposure_match", "chk_base_correct", "btn_start"):
+            _widget = getattr(self, _control, None)
+            if _widget is not None:
+                _widget.setProperty("controlId", _control)
+
     def _fit_folder_list(self) -> None:
         """Size the list to its rows (3..6) instead of stretching it."""
         rows = max(3, min(6, self.folder_list.count()))

@@ -3,15 +3,21 @@
 Every command runs on the GUI thread, so it uses the same controllers and
 dialogs the UI uses. Long operations return immediately; clients poll state.
 """
+import faulthandler
 import json
 import os
 import secrets
+import threading
 import time
 
 from PyQt6.QtCore import QObject, Qt, QTimer
 from PyQt6.QtNetwork import QLocalServer
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import (QApplication, QColorDialog, QFileDialog,
+                             QLineEdit, QMenu)
 
 from constants import APP_VERSION
+from core.control.file_dialogs import install_non_native_file_dialogs
 from core.control.protocol import (
     COMMANDS as _COMMANDS, ControlError, MAX_LINE, SCHEMA, SOCKET_PREFIX,
     clear_discovery, decode, encode, error_response, ok_response,
@@ -52,6 +58,17 @@ def _integer(args, key, required=False, default=None, minimum=None):
     if minimum is not None and value < minimum:
         raise ControlError("invalid_argument", f"{key} must be >= {minimum}")
     return value
+
+
+def _number(args, key, required=False, default=None):
+    value = args.get(key, default)
+    if value is None:
+        if required:
+            raise ControlError("invalid_argument", f"{key} is required")
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ControlError("invalid_argument", f"{key} must be a number")
+    return float(value)
 
 
 def _boolean(args, key, required=False, default=None):
@@ -121,6 +138,44 @@ def _render_state(window):
     }
 
 
+def _view_state(window):
+    def zoom(widget):
+        return float(getattr(widget, "_zoom_factor", 1.0) or 1.0)
+
+    source = getattr(window, "lbl_source_img", None)
+    result = getattr(window, "lbl_result_img", None)
+    slider = getattr(window, "stack_slider", None)
+    result_slider = getattr(window, "result_slider", None)
+    view_stack = getattr(window, "view_stack", None)
+
+    def roi(widget):
+        getter = getattr(widget, "get_roi_rect", None)
+        if not callable(getter):
+            return None
+        rect = getter()
+        return list(rect.getRect()) if rect is not None else None
+
+    return {
+        "source_index": int(slider.value()) if slider is not None else None,
+        "result_index": (int(result_slider.value())
+                         if result_slider is not None else None),
+        "source_zoom": zoom(source),
+        "result_zoom": zoom(result),
+        "result_page": (int(view_stack.currentIndex())
+                        if view_stack is not None else None),
+        "wipe_active": bool(getattr(window, "wipe_active", False)),
+        "roi_source": bool(getattr(source, "roi_mode", False)),
+        "roi_result": bool(getattr(result, "roi_mode", False)),
+        "roi_source_rect": roi(source),
+        "roi_result_rect": roi(result),
+    }
+
+
+def _root_context(window):
+    from ui.control_surface import root_context
+    return root_context(window)
+
+
 class ControlServer(QObject):
     def __init__(self, window, socket_name=None, token=None, parent=None):
         super().__init__(parent)
@@ -129,6 +184,8 @@ class ControlServer(QObject):
         self.socket_name = socket_name or f"{SOCKET_PREFIX}-{os.getpid()}"
         self._buffers = {}
         self._dialogs = {}
+        # A native file picker cannot be scripted; the portable Qt dialog can.
+        install_non_native_file_dialogs()
         self._server = QLocalServer(self)
         QLocalServer.removeServer(self.socket_name)
         if not self._server.listen(self.socket_name):
@@ -136,9 +193,38 @@ class ControlServer(QObject):
                 f"Could not listen on {self.socket_name}: "
                 f"{self._server.errorString()}")
         self._server.newConnection.connect(self._accept)
+        self._watchdog_stop = None
+        if os.environ.get("OPENFOCUS_CONTROL_WATCHDOG"):
+            self._start_watchdog()
         self.discovery = write_discovery(
             self.socket_name, self.token, os.getpid(), APP_VERSION)
         _log.info("control channel listening on %s", self.socket_name)
+
+    def _start_watchdog(self):
+        """Opt-in: dump the GUI thread if it stops answering for 10 s."""
+        self._last_tick = time.monotonic()
+        self._watchdog_stop = threading.Event()
+        timer = QTimer(self)
+        timer.setInterval(500)
+        timer.timeout.connect(
+            lambda: setattr(self, "_last_tick", time.monotonic()))
+        timer.start()
+        self._watchdog_timer = timer
+        path = os.path.join(os.environ.get("TEMP", "."), "openfocus_watchdog.txt")
+
+        def watch():
+            while not self._watchdog_stop.wait(2.0):
+                lag = time.monotonic() - self._last_tick
+                if lag < 10:
+                    continue
+                with open(path, "a", encoding="utf-8") as stream:
+                    stream.write(f"\n=== GUI stalled {lag:.1f}s ===\n")
+                    faulthandler.dump_traceback(file=stream, all_threads=True)
+                self._last_tick = time.monotonic()
+
+        self._watchdog_thread = threading.Thread(
+            target=watch, name="control-watchdog", daemon=True)
+        self._watchdog_thread.start()
 
     # ------------------------------------------------------------- sockets
     def _accept(self):
@@ -170,6 +256,8 @@ class ControlServer(QObject):
         self._buffers[connection] = buffer
 
     def close(self):
+        if self._watchdog_stop is not None:
+            self._watchdog_stop.set()
         for dialog in list(self._dialogs.values()):
             try:
                 dialog.close()
@@ -290,11 +378,18 @@ class ControlServer(QObject):
             "outputs": {"count": window.output_list.count(),
                         "selected": window.output_list.currentRow()},
             "dialogs": self._dialog_list(),
+            "view": _view_state(window),
+            "context": _root_context(window),
         }
 
     def _cmd_app_quit(self, args):
-        QTimer.singleShot(0, self.window.close)
-        return {"quitting": True}
+        force = _boolean(args, "force", default=False)
+        if force:
+            # Automation teardown: skip unexported/unsaved/in-flight prompts.
+            # The agent explicitly asked to discard them.
+            self.window._force_quit = True
+        QTimer.singleShot(100, self.window.close)
+        return {"quitting": True, "force": force}
 
     def _cmd_stack_load(self, args):
         folder = _string(args, "folder", required=False)
@@ -553,13 +648,40 @@ class ControlServer(QObject):
         return {"loading": True, "path": path}
 
     # ------------------------------------------------------------- dialogs
+    @staticmethod
+    def _dialog_busy(dialog):
+        if getattr(dialog, "_import_busy", False):
+            return True
+        for attribute in ("_worker", "_export_worker"):
+            worker = getattr(dialog, attribute, None)
+            if worker is not None and hasattr(worker, "isRunning") \
+                    and worker.isRunning():
+                return True
+        return False
+
+    def _window_entries(self):
+        from ui.control_surface import window_roots
+        roots = window_roots(self.window)
+        return [(name, widget) for name, widget in roots.items()
+                if name != "main"]
+
     def _dialog_list(self):
+        managed = {id(dialog) for dialog in self._dialogs.values()}
+        active_modal = QApplication.activeModalWidget()
+        active_window = QApplication.activeWindow()
         return [{"index": index,
-                 "title": dialog.windowTitle(),
+                 "root": name,
+                 "title": (dialog.windowTitle()
+                           or dialog.objectName()
+                           or type(dialog).__name__),
                  "class": type(dialog).__name__,
-                 "visible": bool(dialog.isVisible()),
-                 "modal": bool(dialog.isModal())}
-                for index, (_name, dialog) in enumerate(self._dialogs.items())]
+                 "visible": True,
+                 "modal": bool(dialog.isModal()),
+                 "popup": name.startswith("popup["),
+                 "managed": id(dialog) in managed,
+                 "active": dialog is active_modal or dialog is active_window,
+                 "busy": self._dialog_busy(dialog)}
+                for index, (name, dialog) in enumerate(self._window_entries())]
 
     def _open_dialog(self, name, dialog):
         existing = self._dialogs.get(name)
@@ -596,6 +718,21 @@ class ControlServer(QObject):
         elif name == "batch":
             from dialogs.batch import BatchProcessingDialog
             dialog = BatchProcessingDialog(window)
+            folders = args.get("folders")
+            if folders is not None:
+                if (not isinstance(folders, list)
+                        or not all(isinstance(folder, str) and folder
+                                   for folder in folders)):
+                    raise ControlError("invalid_argument",
+                                       "folders must be a list of paths")
+                dialog.add_folders_to_list(folders)
+            output_dir = args.get("output_dir")
+            if output_dir is not None:
+                if not isinstance(output_dir, str) or not output_dir:
+                    raise ControlError("invalid_argument",
+                                       "output_dir must be a path")
+                dialog.rb_custom_folder.setChecked(True)
+                dialog.custom_folder_path.setText(output_dir)
         elif name == "compare":
             if len(getattr(window, "raw_images", []) or []) < 2:
                 raise ControlError("invalid_argument",
@@ -656,23 +793,32 @@ class ControlServer(QObject):
     def _find_dialog(self, args):
         index = _integer(args, "index", required=False, default=None, minimum=0)
         title = _string(args, "title", required=False)
-        entries = list(self._dialogs.items())
+        root_name = _string(args, "root", required=False)
+        entries = self._window_entries()
+        if root_name is not None:
+            for name, dialog in entries:
+                if name == root_name:
+                    return dialog
+            raise ControlError("not_found", f"No window root: {root_name}")
         if index is not None:
             if index >= len(entries):
-                raise ControlError("not_found", f"No dialog at index {index}")
+                raise ControlError("not_found", f"No window at index {index}")
             return entries[index][1]
         if title is None:
             if len(entries) == 1:
                 return entries[0][1]
             if not entries:
-                raise ControlError("not_found", "No dialog is open")
+                raise ControlError("not_found", "No dialog or popup is open")
             raise ControlError("invalid_argument",
-                               "Several dialogs are open; provide index or title")
-        dialog = next((value for _name, value in entries
-                       if title.casefold() in value.windowTitle().casefold()), None)
-        if dialog is None:
+                               "Several windows are open; provide index or title")
+        matches = [dialog for _name, dialog in entries
+                   if title.casefold() in (dialog.windowTitle() or "").casefold()]
+        if not matches:
             raise ControlError("not_found", f"No dialog titled {title!r}")
-        return dialog
+        if len(matches) > 1:
+            raise ControlError("invalid_argument",
+                               f"Several dialogs match {title!r}; provide index")
+        return matches[0]
 
     def _cmd_dialog_close(self, args):
         dialog = self._find_dialog(args)
@@ -681,13 +827,94 @@ class ControlServer(QObject):
 
     def _cmd_dialog_accept(self, args):
         dialog = self._find_dialog(args)
+        if getattr(dialog, "_import_busy", False):
+            raise ControlError("busy", "The dialog is still importing folders",
+                               "Poll dialog.list until busy is false, then retry.")
+        if not hasattr(dialog, "accept"):
+            raise ControlError("unsupported",
+                               f"{type(dialog).__name__} has no accept()")
         dialog.accept()
         return {"accepted": True, "title": dialog.windowTitle()}
 
     def _cmd_dialog_reject(self, args):
         dialog = self._find_dialog(args)
+        if not hasattr(dialog, "reject"):
+            raise ControlError("unsupported",
+                               f"{type(dialog).__name__} has no reject()")
         dialog.reject()
         return {"rejected": True, "title": dialog.windowTitle()}
+
+    def _cmd_dialog_color(self, args):
+        value = _string(args, "color")
+        color = QColor(value)
+        if not color.isValid():
+            raise ControlError("invalid_argument", f"Not a color: {value}")
+        index = _integer(args, "index", required=False, default=None, minimum=0)
+        title = _string(args, "title", required=False)
+        if index is not None or title is not None:
+            dialog = self._find_dialog({"index": index, "title": title})
+            if not isinstance(dialog, QColorDialog):
+                raise ControlError("invalid_argument",
+                                   "The selected window is not a color dialog")
+        else:
+            candidates = [widget for widget in QApplication.topLevelWidgets()
+                          if isinstance(widget, QColorDialog)
+                          and widget.isVisible()]
+            if not candidates:
+                raise ControlError("not_found", "No color dialog is open")
+            dialog = candidates[-1]
+        dialog.setCurrentColor(color)
+        dialog.accept()
+        return {"accepted": True, "color": color.name()}
+
+    def _cmd_dialog_file(self, args):
+        """Answer a file/directory picker opened by a menu action or dialog."""
+        path = _string(args, "path", required=False)
+        cancel = _boolean(args, "cancel", default=False)
+        index = _integer(args, "index", required=False, default=None, minimum=0)
+        title = _string(args, "title", required=False)
+        candidates = [widget for widget in QApplication.topLevelWidgets()
+                      if isinstance(widget, QFileDialog) and widget.isVisible()]
+        if not candidates:
+            raise ControlError("not_found", "No file dialog is open",
+                               "Trigger the action, then poll dialog.list for a "
+                               "QFileDialog entry.")
+        if index is not None or title is not None:
+            dialog = self._find_dialog({"index": index, "title": title})
+            if not isinstance(dialog, QFileDialog):
+                raise ControlError("invalid_argument",
+                                   "The selected window is not a file dialog")
+        else:
+            active = QApplication.activeModalWidget()
+            dialog = active if active in candidates else candidates[-1]
+        if cancel:
+            dialog.reject()
+            return {"cancelled": True}
+        if not path:
+            raise ControlError("invalid_argument", "path is required unless cancel")
+        path = os.path.abspath(os.path.expanduser(path))
+        mode = dialog.fileMode()
+        if mode == QFileDialog.FileMode.Directory:
+            if not os.path.isdir(path):
+                raise ControlError("invalid_argument",
+                                   f"Not a directory: {path}")
+            dialog.setDirectory(path)
+        else:
+            if dialog.acceptMode() == QFileDialog.AcceptMode.AcceptOpen \
+                    and not os.path.isfile(path):
+                raise ControlError("invalid_argument", f"Not a file: {path}")
+            # selectFile() can be overwritten by the dialog's own default
+            # filename when accept() runs in the same event-loop turn; set the
+            # visible edit the user would type into.
+            edit = dialog.findChild(QLineEdit, "fileNameEdit")
+            if edit is not None:
+                edit.setText(path)
+            else:
+                dialog.selectFile(path)
+        dialog.accept()
+        return {"accepted": True, "path": path,
+                "mode": str(mode.name),
+                "selected": list(dialog.selectedFiles())}
 
     # --------------------------------------------------------------- batch
     def _cmd_batch_state(self, args):
@@ -716,13 +943,16 @@ class ControlServer(QObject):
         return {"actions": action_catalog(self.window)}
 
     def _cmd_ui_trigger(self, args):
+        from ui.control_surface import find_action
         key = _string(args, "key")
-        action = (getattr(self.window, "ui_objs", None) or {}).get(key)
+        action = find_action(self.window, key)
         if action is None or not hasattr(action, "trigger"):
             raise ControlError("not_found", f"Unknown action: {key}")
         if not action.isEnabled():
             raise ControlError("busy", f"Action is disabled: {key}")
-        QTimer.singleShot(0, action.trigger)
+        # Let the response reach the socket before a modal exec() starts; a
+        # 0 ms timer runs before the buffered write is flushed.
+        QTimer.singleShot(100, action.trigger)
         return {"scheduled": True, "key": key}
 
     def _cmd_ui_tree(self, args):
@@ -739,6 +969,9 @@ class ControlServer(QObject):
     def _cmd_ui_find(self, args):
         from ui.control_surface import find_widgets
         object_name = _string(args, "object_name", required=False)
+        control = _string(args, "control_id", required=False)
+        if control:
+            object_name = control
         class_name = _string(args, "class", required=False)
         text = _string(args, "text", required=False)
         window = _string(args, "window", required=False)
@@ -753,7 +986,8 @@ class ControlServer(QObject):
         from ui.control_surface import click_widget, resolve_path
         path = _string(args, "path")
         widget = resolve_path(self._roots(), path)
-        return click_widget(widget)
+        return click_widget(widget,
+                            asynchronous=_boolean(args, "async", default=False))
 
     def _cmd_ui_set(self, args):
         from ui.control_surface import resolve_path, set_widget_value
@@ -770,3 +1004,108 @@ class ControlServer(QObject):
         roots = self._roots()
         widget = roots["main"] if not path else resolve_path(roots, path)
         return grab_widget(widget, output)
+
+    def _cmd_ui_context(self, args):
+        from ui.control_surface import root_context
+        context = root_context(self.window)
+        context["view"] = _view_state(self.window)
+        context["stack"] = _stack_info(self.window)
+        context["render"] = _render_state(self.window)
+        context["dialogs"] = self._dialog_list()
+        return context
+
+    def _cmd_ui_focus(self, args):
+        from ui.control_surface import focus_widget, resolve_path
+        path = _string(args, "path")
+        widget = resolve_path(self._roots(), path)
+        return {"path": path, **focus_widget(widget)}
+
+    def _cmd_ui_menu(self, args):
+        """List or trigger actions in the open context menu."""
+        menu = QApplication.activePopupWidget()
+        if not isinstance(menu, QMenu):
+            candidates = [widget for widget in QApplication.topLevelWidgets()
+                          if isinstance(widget, QMenu) and widget.isVisible()]
+            menu = candidates[-1] if candidates else None
+        if menu is None:
+            raise ControlError("not_found", "No context menu is open")
+        actions = []
+        for index, action in enumerate(menu.actions()):
+            actions.append({
+                "index": index,
+                "text": action.text(),
+                "enabled": bool(action.isEnabled()),
+                "separator": bool(action.isSeparator()),
+                "checkable": bool(action.isCheckable()),
+                "checked": bool(action.isChecked()),
+                "shortcut": action.shortcut().toString(),
+            })
+        if "action" not in args and "index" not in args:
+            return {"title": menu.title(), "actions": actions}
+        action = args.get("action")
+        if action is not None:
+            candidates = [item for item in menu.actions()
+                          if item.text().casefold() == str(action).casefold()]
+            if not candidates:
+                raise ControlError("not_found", f"No menu action: {action}")
+            selected = candidates[0]
+        else:
+            index = _integer(args, "index", required=True, minimum=0)
+            if index >= len(menu.actions()):
+                raise ControlError("not_found", f"No menu action at {index}")
+            selected = menu.actions()[index]
+        if not selected.isEnabled() or selected.isSeparator():
+            raise ControlError("busy", "Menu action is not usable")
+        selected.trigger()
+        return {"triggered": selected.text()}
+
+    def _cmd_ui_mouse(self, args):
+        from ui.control_surface import resolve_path, send_mouse
+        path = _string(args, "path")
+        action = _string(args, "action", choices=(
+            "click", "double_click", "right_click", "middle_click",
+            "press", "release", "move", "drag", "wheel"))
+        widget = resolve_path(self._roots(), path)
+        return send_mouse(
+            widget, action,
+            x=_number(args, "x", default=0),
+            y=_number(args, "y", default=0),
+            to_x=_number(args, "to_x"),
+            to_y=_number(args, "to_y"),
+            steps=_integer(args, "steps", default=12, minimum=1),
+            button=args.get("button", "left"),
+            modifiers=args.get("modifiers"),
+            delta=_number(args, "delta", default=-120),
+        )
+
+    def _cmd_ui_key(self, args):
+        from ui.control_surface import resolve_path, send_key
+        path = _string(args, "path", required=False)
+        widget = (resolve_path(self._roots(), path) if path
+                  else QApplication.focusWidget())
+        if widget is None:
+            raise ControlError("not_found", "No widget has focus")
+        action = _string(args, "action", required=False, default="click",
+                         choices=("click", "press", "release"))
+        key = args.get("key")
+        text = args.get("text")
+        if key is None and text is None:
+            raise ControlError("invalid_argument", "Provide key or text")
+        return send_key(widget, key=key, text=text, action=action,
+                        modifiers=args.get("modifiers"))
+
+    def _cmd_ui_type(self, args):
+        from ui.control_surface import resolve_path, send_key
+        text = _string(args, "text", required=False)
+        if text is None or not isinstance(text, str):
+            raise ControlError("invalid_argument", "text is required")
+        path = _string(args, "path", required=False)
+        widget = (resolve_path(self._roots(), path) if path
+                  else QApplication.focusWidget())
+        if widget is None:
+            raise ControlError("not_found", "No widget has focus")
+        result = send_key(widget, text=text)
+        if _boolean(args, "submit", default=False):
+            send_key(widget, key="Enter")
+            result["submitted"] = True
+        return result
