@@ -93,6 +93,28 @@ def _dialog_candidate(widget):
     return bool(widget.isVisible() or widget.isModal())
 
 
+def _invoke(widget, method, *values):
+    """Call a dialog slot without touching a SIP-restricted Python member.
+
+    Dialogs constructed by Qt itself (the static ``QFileDialog`` helpers on
+    some platforms) come with wrappers whose Python members raise
+    "no access to protected functions or signals for objects not created
+    from Python"; ``QMetaObject.invokeMethod`` still works on them.
+    """
+    from PyQt6.QtCore import Q_ARG, QMetaObject, Qt
+    try:
+        getattr(widget, method)(*values)
+        return True
+    except RuntimeError:
+        pass
+    if values:
+        return QMetaObject.invokeMethod(
+            widget, method, Qt.ConnectionType.DirectConnection,
+            Q_ARG(str, values[0]))
+    return QMetaObject.invokeMethod(
+        widget, method, Qt.ConnectionType.DirectConnection)
+
+
 def _spec_dict(spec):
     return {
         "key": spec.key,
@@ -980,33 +1002,46 @@ class ControlServer(QObject):
             active = QApplication.activeModalWidget()
             dialog = active if active in candidates else candidates[-1]
         if cancel:
-            dialog.reject()
+            _invoke(dialog, "reject")
             return {"cancelled": True}
         if not path:
             raise ControlError("invalid_argument", "path is required unless cancel")
         path = os.path.abspath(os.path.expanduser(path))
-        mode = dialog.fileMode()
+        try:
+            mode = dialog.fileMode()
+        except RuntimeError:
+            # C++-owned wrappers (native/offscreen platforms) can refuse
+            # member access; the path itself tells us which picker this is.
+            mode = (QFileDialog.FileMode.Directory if os.path.isdir(path)
+                    else QFileDialog.FileMode.ExistingFile)
         if mode == QFileDialog.FileMode.Directory:
             if not os.path.isdir(path):
                 raise ControlError("invalid_argument",
                                    f"Not a directory: {path}")
-            dialog.setDirectory(path)
+            _invoke(dialog, "setDirectory", path)
         else:
-            if dialog.acceptMode() == QFileDialog.AcceptMode.AcceptOpen \
-                    and not os.path.isfile(path):
-                raise ControlError("invalid_argument", f"Not a file: {path}")
             # selectFile() can be overwritten by the dialog's own default
             # filename when accept() runs in the same event-loop turn; set the
             # visible edit the user would type into.
-            edit = dialog.findChild(QLineEdit, "fileNameEdit")
+            try:
+                edit = dialog.findChild(QLineEdit, "fileNameEdit")
+            except RuntimeError:
+                edit = None
             if edit is not None:
-                edit.setText(path)
+                try:
+                    edit.setText(path)
+                except RuntimeError:
+                    _invoke(dialog, "selectFile", path)
             else:
-                dialog.selectFile(path)
-        dialog.accept()
+                _invoke(dialog, "selectFile", path)
+        _invoke(dialog, "accept")
+        try:
+            selected = list(dialog.selectedFiles())
+        except RuntimeError:
+            selected = [path]
         return {"accepted": True, "path": path,
                 "mode": str(mode.name),
-                "selected": list(dialog.selectedFiles())}
+                "selected": selected}
 
     # --------------------------------------------------------------- batch
     def _cmd_batch_state(self, args):
