@@ -368,9 +368,15 @@ def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames
         if not any(dialog["class"] == "QFileDialog" for dialog in dialogs):
             return
         timer.stop()
-        answered["value"] = call(
-            server, "dialog.file", token=token,
-            path=str(stack_frames))["result"]
+        response = call(server, "dialog.file", token=token,
+                        path=str(stack_frames))
+        if "result" in response:
+            answered["value"] = response["result"]
+            return
+        # Never leave the picker exec'ing with nobody to answer it: record
+        # the failure and close the dialog so the test fails fast.
+        answered["error"] = response["error"]
+        call(server, "dialog.file", token=token, cancel=True)
 
     timer = QTimer()
     timer.setInterval(30)
@@ -381,6 +387,7 @@ def test_generic_action_answers_file_dialog_and_loads_stack(server, stack_frames
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline and "value" not in answered:
         QTest.qWait(20)
+    assert "error" not in answered, answered.get("error")
     assert answered["value"]["accepted"] is True
     deadline = time.monotonic() + 20
     frames = call(server, "stack.frames", token=token)["result"]
