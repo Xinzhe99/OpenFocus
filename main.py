@@ -33,8 +33,22 @@ if __name__ == "__main__":
     # The updater's restore flag belongs to the GUI, never to argparse.
     _argv = [arg for arg in sys.argv[1:] if arg != "--restore-session"]
     _restore_flag = len(_argv) != len(sys.argv[1:])
+    # Control channel: opt-in, stripped before CLI/GUI dispatch.
+    _control_enabled = "--control" in _argv
+    _argv = [arg for arg in _argv if arg != "--control"]
+    _control_socket = None
+    if "--control-socket" in _argv:
+        _index = _argv.index("--control-socket")
+        if _index + 1 >= len(_argv):
+            sys.exit("error: --control-socket requires a name")
+        _control_socket = _argv[_index + 1]
+        del _argv[_index:_index + 2]
+    if str(os.environ.get("OPENFOCUS_CONTROL", "")).strip().lower() in ("1", "true", "yes"):
+        _control_enabled = True
+    from core.cli import SUBCOMMANDS, run_cli
+    if _argv and (_argv[0] in SUBCOMMANDS or _argv[0] in ("--version", "-V", "--describe")):
+        sys.exit(run_cli(_argv))
     if any(arg.startswith("-") for arg in _argv):
-        from core.cli import run_cli
         sys.exit(run_cli(_argv))
 
 
@@ -477,6 +491,25 @@ class OpenFocus(QMainWindow):
         self.lbl_status_resolution = right_panel_components.lbl_status_resolution
         self.lbl_status_gpu = right_panel_components.lbl_status_gpu
         self.lbl_status_memory = right_panel_components.lbl_status_memory
+
+        # Stable control ids for the interactive canvases.  Agents address
+        # mouse coordinates relative to these widgets.
+        for _attribute, _control in ((
+                "lbl_source_img", "view_source"),
+                ("lbl_result_img", "view_result"),
+                ("wipe_widget", "wipe_compare"),
+                ("wipe_bar", "wipe_bar"),
+                ("view_stack", "result_view_stack"),
+                ("stack_slider", "slider_source"),
+                ("result_slider", "slider_result"),
+                ("btn_preview_roi", "btn_roi"),
+                ("btn_wipe", "btn_wipe"),
+                ("main_splitter", "splitter_main"),
+                ("view_splitter", "splitter_view"),
+                ("right_splitter", "splitter_right")):
+            _widget = getattr(self, _attribute, None)
+            if _widget is not None:
+                _widget.setProperty("controlId", _control)
 
         self.main_splitter.addWidget(right_panel_components.widget)
         bind_right_panel(self, right_panel_components)
@@ -2776,31 +2809,39 @@ class OpenFocus(QMainWindow):
                 dialog.preload_multiple_folders(preload_folder_paths, scale_factor)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            folder_paths = dialog.folder_paths
-            output_type, output_path = dialog.get_output_settings()
-            processing_settings = dialog.get_processing_settings()
-            import_mode = dialog.get_import_mode()
-            split_method, split_param = dialog.get_split_settings()
+            self._start_batch_from_dialog(dialog)
 
-            if import_mode == "single_folder":
-                self.batch_manager.start_batch_processing(
-                    folder_paths=[],
-                    output_type=output_type,
-                    output_path=output_path,
-                    processing_settings=processing_settings,
-                    import_mode=import_mode,
-                    split_method=split_method,
-                    split_param=split_param,
-                    single_folder_images_with_times=dialog.single_folder_images_with_times,
-                )
-            else:
-                self.batch_manager.start_batch_processing(
-                    folder_paths=folder_paths,
-                    output_type=output_type,
-                    output_path=output_path,
-                    processing_settings=processing_settings,
-                    import_mode=import_mode,
-                )
+    def _start_batch_from_dialog(self, dialog) -> None:
+        """Start the batch described by an accepted dialog.
+
+        Shared with the control channel, which shows the same dialog modelessly
+        and cannot rely on the caller's ``exec()`` return value.
+        """
+        folder_paths = dialog.folder_paths
+        output_type, output_path = dialog.get_output_settings()
+        processing_settings = dialog.get_processing_settings()
+        import_mode = dialog.get_import_mode()
+        split_method, split_param = dialog.get_split_settings()
+
+        if import_mode == "single_folder":
+            self.batch_manager.start_batch_processing(
+                folder_paths=[],
+                output_type=output_type,
+                output_path=output_path,
+                processing_settings=processing_settings,
+                import_mode=import_mode,
+                split_method=split_method,
+                split_param=split_param,
+                single_folder_images_with_times=dialog.single_folder_images_with_times,
+            )
+        else:
+            self.batch_manager.start_batch_processing(
+                folder_paths=folder_paths,
+                output_type=output_type,
+                output_path=output_path,
+                processing_settings=processing_settings,
+                import_mode=import_mode,
+            )
 
     def show_tile_settings(self):
         """显示 Tile 设置对话框"""
@@ -2898,9 +2939,11 @@ class OpenFocus(QMainWindow):
         # Nothing new may start once we are on the way out (update downloads
         # check this flag before they begin).
         self._shutting_down = True
+        force_quit = bool(getattr(self, "_force_quit", False))
         # A retouched output lives in memory until exported; exiting must not
         # silently throw those pixels away.
-        if (not getattr(self, '_restart_for_update', False)
+        if (not force_quit
+                and not getattr(self, '_restart_for_update', False)
                 and hasattr(self, "output_manager")
                 and not self.output_manager.confirm_unexported_on_exit()):
             self._shutting_down = False
@@ -2910,7 +2953,8 @@ class OpenFocus(QMainWindow):
         # (the self-update restart has already stopped the workers itself).
         # Unsaved project state: every editor asks before discarding it.
         # Skip during the update restart (the session is restored anyway).
-        if (not getattr(self, '_restart_for_update', False)
+        if (not force_quit
+                and not getattr(self, '_restart_for_update', False)
                 and getattr(self, "_project_dirty", False)):
             if not self._confirm_discard_project_changes(
                     "msg_discard_unsaved_project_quit"):
@@ -2918,7 +2962,9 @@ class OpenFocus(QMainWindow):
                 event.ignore()
                 return
 
-        if not getattr(self, '_restart_for_update', False) and self._has_work_in_flight():
+        if (not force_quit
+                and not getattr(self, '_restart_for_update', False)
+                and self._has_work_in_flight()):
             box = QMessageBox(self)
             style_message_box(box)
             box.setIcon(QMessageBox.Icon.Question)
@@ -3347,7 +3393,7 @@ if __name__ == "__main__":
     # instance whose settings writes would clobber the first one's.
     from PyQt6.QtNetwork import QLocalServer, QLocalSocket
     import json as _json
-    _server_name = "OpenFocus-single-instance"
+    _server_name = os.environ.get("OPENFOCUS_INSTANCE_NAME") or "OpenFocus-single-instance"
 
     probe = QLocalSocket()
     probe.connectToServer(_server_name)
@@ -3366,6 +3412,14 @@ if __name__ == "__main__":
     window = OpenFocus()
     app.set_main_window(window)
     _log.info("main window ready")
+
+    # ---- Local agent control channel (opt-in) ----
+    _control_server = None
+    if _control_enabled:
+        from core.control.server import ControlServer
+        _control_server = ControlServer(window, socket_name=_control_socket)
+        app.aboutToQuit.connect(_control_server.close)
+        _log.info("control channel: %s", _control_server.socket_name)
 
     def _on_second_instance(paths_json: str) -> None:
         try:

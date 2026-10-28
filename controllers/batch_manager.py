@@ -97,6 +97,7 @@ class BatchManager:
             runtime_settings=runtime,
             registration_parameters=processing_settings.get('registration_parameters', {}),
         )
+        self.last_error = None
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
 
@@ -220,6 +221,7 @@ class BatchManager:
             hook()
 
     def _handle_error(self, error_msg: str) -> None:
+        self.last_error = str(error_msg)
         self._show_message(
             title=trans.t("batch_error_title"),
             text=trans.t("batch_error_title"),

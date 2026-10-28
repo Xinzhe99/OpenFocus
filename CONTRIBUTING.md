@@ -15,6 +15,40 @@ person with the merge date, the affected areas and the pull request number, and
 extend that row as more work lands. Code, bug reports, reproduction stacks and
 usability feedback all count.
 
+## Agent control surface
+
+`core/control/` hosts a local command server (`openfocus/control/1`) that lets
+an agent drive the running GUI. Keep it working when you add UI:
+
+- Every new user-visible capability must remain reachable. Add a typed command
+  when it is part of the pipeline; otherwise it is still reachable through
+  `ui.actions` and the widget tree, provided the control has an identifier.
+- Give controls a stable `controlId` dynamic property (or an `objectName` when
+  the stylesheet does not own it), and store menu actions in
+  `window.ui_objs[key]`. Paths and action keys must not depend on language.
+  `_child_segments` appends an occurrence suffix when two siblings share an
+  identifier; keep paths unique rather than relying on tree order.
+- While control is active, static `QFileDialog`/`QColorDialog` helpers are
+  patched to portable Qt dialogs so agents can fill them. Do not assume a
+  native OS picker; add a typed command or `dialog.file`/`dialog.color`
+  support for new modal file/color flows.
+- A button whose slot calls `QDialog.exec()` blocks a synchronous
+  `ui.click`; test and document `ui.click --async` for these controls, then
+  poll `dialog.list`/`ui.context`. Prefer `ui.trigger` for menu actions.
+- Keep the agent workflow current: `.claude/skills/openfocus-control/SKILL.md`
+  and `tools/agent_gui_smoke.py` exercise the surface end to end.
+- Open dialogs modelessly in the control path (`dialog.open`). Never call
+  `exec()` inside a command handler; a blocking call stalls the response and
+  hides the dialog from the agent.
+- Long operations return immediately and expose state (`render.state`,
+  `batch.state`, `app.state`). Do not block the GUI thread waiting for work.
+- Keep `core/control/protocol.py` standard-library only; PyQt belongs in the
+  server/client modules. Update `COMMANDS` and `docs/AGENT_CONTROL_SPEC.md`
+  together.
+- If a menu action starts a workflow after `QDialog.exec()` returns, factor the
+  post-accept step into a method the control channel can call (see
+  `_start_batch_from_dialog`).
+
 ## Module boundaries and diagnostics
 
 Keep algorithm metadata and application paths independent of Qt and numerical

@@ -11,6 +11,7 @@ import argparse
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 
@@ -30,6 +31,7 @@ from core.resource_policy import heavy_job, require_memory
 from core.algorithms import (fusion_algorithms, registration_algorithms, get_fusion,
                              get_registration, resolve_fusion_parameters,
                              resolve_registration_parameters)
+from constants import APP_VERSION
 from utils.logging_setup import (setup_logging, log_session_start, log_operation,
                                  log_action, get_logger, frame_details)
 
@@ -42,6 +44,25 @@ VALID_FORMATS = [".png", ".jpg", ".webp", ".bmp", ".tif", ".tiff"]
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
+
+SUBCOMMANDS = {"ctl", "gui", "describe", "version"}
+
+# With --json-progress, stdout belongs to NDJSON: engine and progress prose is
+# redirected to stderr, while events are written to this saved stream.
+_machine_stream = None
+
+
+class _StderrProxy:
+    encoding = "utf-8"
+
+    def write(self, text):
+        return sys.stderr.write(text)
+
+    def flush(self):
+        sys.stderr.flush()
+
+    def isatty(self):
+        return False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -301,7 +322,7 @@ def _fuse_stack_admitted(images, args):
             raise RuntimeError(f"Failed to decode white-field image: {dust_white}")
         gain = compute_flat_field(white)
         images = apply_flat_field_stack(images, gain)
-        print(f"Flat-field (dust map) correction applied from {dust_white}")
+        _say(f"Flat-field (dust map) correction applied from {dust_white}")
 
     # Normalize uint16 to the float32 0–255 working domain before registration.
     if any(image.dtype == np.uint16 for image in images):
@@ -319,7 +340,7 @@ def _fuse_stack_admitted(images, args):
             use_gpu=False)
         images = reg.process(images, output_path=None, thread_count=args.threads,
                              resource_preference=getattr(args, "resource_preference", "balanced"))
-        print(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
+        _say(f"Registration ({args.align}) done in {time.time() - t0:.1f}s")
 
     spec = get_fusion(args.method)
     fusion_kwargs = dict(algorithm=args.method, use_gpu=not args.cpu,
@@ -357,7 +378,7 @@ def _fuse_stack_admitted(images, args):
         depth_frames, _flipped = sort_frames_for_openfocus(
             depth_frames, getattr(args, "sort", "asc"))
     args._depth_frames = depth_frames
-    print(f"Fusion ({args.method}, device={info['device']}) done in {time.time() - t0:.1f}s")
+    _say(f"Fusion ({args.method}, device={info['device']}) done in {time.time() - t0:.1f}s")
     return fused
 
 
@@ -405,7 +426,7 @@ def _save_depth(args, fused_out: str) -> None:
         use_gpu=not args.cpu)
     if not imwrite_auto(path, colorize(idx, args.depth_colormap)):
         raise RuntimeError(f"Failed to write depth map: {path}")
-    print(f"Depth map ({args.depth_colormap}) saved: {path} "
+    _say(f"Depth map ({args.depth_colormap}) saved: {path} "
           f"[{time.time() - t0:.1f}s]")
 
 
@@ -476,12 +497,12 @@ def _run_batch(args, _emit_json=None) -> int:
     for i, folder in enumerate(folders):
         name = os.path.basename(folder.rstrip("/\\")) or "stack"
         out_path = os.path.join(args.output_dir, f"{name}{args._batch_ext}")
-        print(f"\n=== {name} ===")
+        _say(f"\n=== {name} ===")
 
         # --resume: a finished folder (output exists) is skipped, so rerunning
         # a failed batch only processes what is still missing.
         if args.resume and os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
-            print(f"skip (output exists): {out_path}")
+            _say(f"skip (output exists): {out_path}")
             skipped_existing.append(name)
             ok_count += 1
             continue
@@ -493,22 +514,23 @@ def _run_batch(args, _emit_json=None) -> int:
         if override:
             folder_args = argparse.Namespace(**{**vars(args), **override})
             applied = ", ".join(f"{k}={v}" for k, v in override.items())
-            print(f"config override: {applied}")
+            _say(f"config override: {applied}")
 
         if args.dry_run:
             try:
                 paths = _list_folder_images(folder, loader)
                 from core.image_loader import count_frames
                 frames = sum(count_frames(p) for p in paths)
-                print(f"[dry-run] frames={frames} method={folder_args.method} "
-                      f"align={folder_args.align} output={out_path}")
+                _say(f"[dry-run] frames={frames} method={folder_args.method} "
+                     f"align={folder_args.align} output={out_path}")
             except Exception as exc:
-                print(f"[dry-run] {name}: {exc}")
+                _say(f"[dry-run] {name}: {exc}")
             continue
 
-        if args.json_progress:
-            print('{"event": "folder", "name": "%s", "index": %d, "total": %d}'
-                  % (name, i + 1, len(folders)), flush=True)
+        progress = getattr(args, "_progress", None)
+        if progress is not None:
+            progress(event="folder", name=name, index=i + 1,
+                     total=len(folders))
         try:
             paths = _list_folder_images(folder, loader)
             # Count frames, not files: a folder holding one multi-page TIFF
@@ -524,7 +546,7 @@ def _run_batch(args, _emit_json=None) -> int:
                                             "balanced"))
             fused = _fuse_stack(images, folder_args)
             _save(out_path, fused, _resolve_scale_cfg(folder_args, paths))
-            print(f"Saved: {out_path}")
+            _say(f"Saved: {out_path}")
             if args.depth_map:
                 _save_depth(folder_args, out_path)
             ok_count += 1
@@ -542,9 +564,9 @@ def _run_batch(args, _emit_json=None) -> int:
         "failed": failures,
         "duration_s": round(time.time() - started, 1),
     }
-    print(f"\nBatch finished: {ok_count}/{len(folders)} stacks succeeded")
+    _say(f"\nBatch finished: {ok_count}/{len(folders)} stacks succeeded")
     if skipped_existing:
-        print(f"skipped (already done): {', '.join(skipped_existing)}")
+        _say(f"skipped (already done): {', '.join(skipped_existing)}")
     if failures:
         print("failed: " + ", ".join(failures), file=sys.stderr)
     if _emit_json is not None:
@@ -552,6 +574,12 @@ def _run_batch(args, _emit_json=None) -> int:
     if failures:
         return EXIT_ERROR
     return EXIT_OK
+
+
+def _say(*args, **kwargs):
+    """Human-readable progress. stdout is the machine channel."""
+    kwargs["file"] = sys.stderr
+    print(*args, **kwargs)
 
 
 def _ensure_utf8_stdio() -> None:
@@ -578,8 +606,34 @@ def _ensure_utf8_stdio() -> None:
 
 def run_cli(argv: List[str]) -> int:
     _ensure_utf8_stdio()
+    if argv:
+        head = argv[0]
+        if head in ("version", "--version", "-V"):
+            print(APP_VERSION)
+            return EXIT_OK
+        if head in ("describe", "--describe"):
+            print(json.dumps(describe_payload(), ensure_ascii=False))
+            return EXIT_OK
+        if head == "gui":
+            return _run_gui(argv[1:])
+        if head == "ctl":
+            return _run_ctl(argv[1:])
+    global _machine_stream
+    redirected = "--json-progress" in argv
+    if redirected:
+        _machine_stream = sys.stdout
+        sys.stdout = _StderrProxy()
     setup_logging()
     log_session_start()
+    try:
+        return _run_with_logging(argv)
+    finally:
+        if redirected:
+            sys.stdout = _machine_stream
+            _machine_stream = None
+
+
+def _run_with_logging(argv: List[str]) -> int:
     with log_operation("cli", args=argv) as operation:
         try:
             with heavy_job():
@@ -665,10 +719,12 @@ def _run_cli_admitted(argv: List[str]) -> int:
 
     def _progress(**fields) -> None:
         if args.json_progress:
-            import json
-            print(json.dumps(fields, ensure_ascii=False), flush=True)
+            import json as _json
+            stream = _machine_stream or sys.stdout
+            print(_json.dumps(fields, ensure_ascii=False), file=stream, flush=True)
 
     args._progress = _progress
+    started_at = time.time()
 
     batch_mode = args.output_dir is not None
     if batch_mode and isinstance(args.depth_map, str) and args.depth_map:
@@ -677,6 +733,10 @@ def _run_cli_admitted(argv: List[str]) -> int:
               "use --depth-map without a value to derive one per stack",
               file=sys.stderr)
         return EXIT_USAGE
+    if args.json_progress:
+        _progress(event="start", version=APP_VERSION,
+                  mode="batch" if batch_mode else "single",
+                  method=args.method, align=args.align)
     if batch_mode:
         args._batch_ext = ".png"
     else:
@@ -713,13 +773,13 @@ def _run_cli_admitted(argv: List[str]) -> int:
         # Video inputs are unpacked to a temp dir that is always cleaned up
         with tempfile.TemporaryDirectory(prefix="openfocus_video_") as video_temp:
             _src, paths = _resolve_stack(args, video_temp)
-            print(f"Loaded {len(paths)} image(s) from {_src}")
+            _say(f"Loaded {len(paths)} image(s) from {_src}")
 
             if args.dry_run:
-                print(f"[dry-run] method={args.method} align={args.align} "
+                _say(f"[dry-run] method={args.method} align={args.align} "
                       f"frames={len(paths)} output={args.output}")
                 for p in paths:
-                    print(f"[dry-run]   {p}")
+                    _say(f"[dry-run]   {p}")
                 _emit_json({"mode": "single", "dry_run": True,
                             "method": args.method, "align": args.align,
                             "frames": len(paths), "input": args.input,
@@ -742,7 +802,7 @@ def _run_cli_admitted(argv: List[str]) -> int:
             scale_cfg = _resolve_scale_cfg(args, paths)
 
         _save(args.output, fused, scale_cfg)
-        print(f"Saved: {args.output}")
+        _say(f"Saved: {args.output}")
         _progress(event="save", output=args.output)
         outputs = [args.output]
         if args.depth_map:
@@ -751,12 +811,305 @@ def _run_cli_admitted(argv: List[str]) -> int:
         _emit_json({"mode": "single", "method": args.method, "align": args.align,
                     "frames": len(paths), "input": args.input,
                     "output": args.output, "outputs": outputs})
+        if args.json_progress:
+            _progress(event="done", ok=True,
+                      duration_s=round(time.time() - started_at, 1),
+                      outputs=outputs)
         return EXIT_OK
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         _log.exception("CLI processing failed")
         _emit_json({"mode": "single", "error": str(exc)})
+        if args.json_progress:
+            _progress(event="error", code="processing_error", message=str(exc))
+            _progress(event="done", ok=False,
+                      duration_s=round(time.time() - started_at, 1))
         return EXIT_ERROR
+
+
+
+# ---------------------------------------------------------------------------
+# Agent-facing subcommands: version / describe / gui / ctl
+# ---------------------------------------------------------------------------
+def describe_payload() -> dict:
+    """Machine-readable capabilities for agents, with no optional imports."""
+    from importlib.util import find_spec
+    from core.control.protocol import COMMANDS, SCHEMA as CONTROL_SCHEMA
+
+    methods = []
+    for spec in fusion_algorithms():
+        methods.append({
+            "id": spec.id,
+            "label": spec.display_name,
+            "category": spec.category,
+            "neural": spec.neural,
+            "order_sensitive": spec.order_sensitive,
+            "depth_map": spec.depth is not None,
+            "weights": spec.weights,
+            "parameters": [
+                {"key": parameter.key, "default": parameter.default,
+                 "minimum": parameter.minimum, "maximum": parameter.maximum,
+                 "step": parameter.step, "decimals": parameter.decimals,
+                 "choices": list(parameter.choices)}
+                for parameter in spec.parameters
+            ],
+        })
+    capabilities = {
+        "torch": find_spec("torch") is not None,
+        "heic": find_spec("pillow_heif") is not None,
+        "raw": find_spec("rawpy") is not None,
+        "dtcwt": find_spec("dtcwt") is not None,
+        "pyqt": find_spec("PyQt6") is not None,
+    }
+    try:
+        from utils.platform_utils import has_compute_gpu
+        capabilities["gpu"] = bool(has_compute_gpu())
+    except Exception:
+        capabilities["gpu"] = None
+    return {
+        "schema": "openfocus/describe/1",
+        "version": APP_VERSION,
+        "capabilities": capabilities,
+        "methods": methods,
+        "registrations": [spec.id for spec in registration_algorithms()],
+        "control": {"schema": CONTROL_SCHEMA, "commands": list(COMMANDS)},
+        "cli": {
+            "batch": ["--output-dir", "--resume", "--config"],
+            "machine": ["--json", "--json-progress", "--dry-run"],
+            "control": ["gui --control", "ctl <command>", "describe", "version"],
+        },
+    }
+
+
+def _spawn_detached(command: list, cwd: str) -> subprocess.Popen:
+    import subprocess as _subprocess
+    creation = 0
+    if sys.platform == "win32":
+        creation = 0x00000008 | 0x00000200
+    return _subprocess.Popen(
+        command, cwd=cwd, stdin=_subprocess.DEVNULL,
+        stdout=_subprocess.DEVNULL, stderr=_subprocess.DEVNULL,
+        creationflags=creation, start_new_session=sys.platform != "win32")
+
+
+def _run_gui(argv: List[str]) -> int:
+    """Launch the desktop app, optionally opening the control channel."""
+    control = "--control" in argv
+    socket_name = None
+    paths = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--control":
+            control = True
+            index += 1
+        elif token in ("--socket", "--control-socket"):
+            if index + 1 >= len(argv):
+                print("error: --socket requires a name", file=sys.stderr)
+                return EXIT_USAGE
+            socket_name = argv[index + 1]
+            index += 2
+        elif token.startswith("-"):
+            print(f"error: unknown gui option: {token}", file=sys.stderr)
+            return EXIT_USAGE
+        else:
+            paths.append(token)
+            index += 1
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if control:
+        from core.control.client import launch_gui
+        from core.control.protocol import discovery_path
+        try:
+            payload = launch_gui(socket_name, paths=paths)
+        except Exception as exc:  # noqa: BLE001 - reported to the caller
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_ERROR
+        print(json.dumps({
+            "ready": True, "socket": payload["socket"], "pid": payload["pid"],
+            "version": payload["version"], "discovery": str(discovery_path()),
+        }, ensure_ascii=False))
+        return EXIT_OK
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, *paths]
+    else:
+        entry = os.path.join(root, "main.py")
+        if not os.path.isfile(entry):
+            print("error: this install does not ship the desktop app "
+                  "(no main.py); use the desktop build or a source checkout",
+                  file=sys.stderr)
+            return EXIT_ERROR
+        command = [sys.executable, entry, *paths]
+    process = _spawn_detached(command, root)
+    print(json.dumps({"launched": True, "pid": process.pid}, ensure_ascii=False))
+    return EXIT_OK
+
+
+_CTL_BOOL = {"append", "preview", "include", "cancel", "submit",
+             "async", "force"}
+_CTL_INT = {"index", "depth", "steps", "x", "y", "to_x", "to_y", "delta"}
+_CTL_FLOAT = {"scale"}
+_CTL_JSON = {"value"}
+
+
+def _coerce_json(raw: str):
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def _extract_ctl_flags(argv: List[str]):
+    flags = {"pretty": False, "launch": False, "wait": False, "timeout": 60.0}
+    tokens = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--pretty":
+            flags["pretty"] = True
+        elif token == "--launch":
+            flags["launch"] = True
+        elif token == "--wait":
+            flags["wait"] = True
+        elif token == "--json":
+            pass
+        elif token == "--timeout":
+            if index + 1 >= len(argv):
+                raise ValueError("--timeout requires seconds")
+            flags["timeout"] = float(argv[index + 1])
+            index += 1
+        else:
+            tokens.append(token)
+        index += 1
+    return flags, tokens
+
+
+def _parse_ctl_args(tokens: List[str]) -> dict:
+    args = {}
+    files = []
+    parameters = {}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--args-json":
+            if index + 1 >= len(tokens):
+                raise ValueError("--args-json requires a JSON object")
+            payload = json.loads(tokens[index + 1])
+            if not isinstance(payload, dict):
+                raise ValueError("--args-json must be a JSON object")
+            args.update(payload)
+            index += 2
+            continue
+        if token == "--param":
+            if index + 1 >= len(tokens) or "=" not in tokens[index + 1]:
+                raise ValueError("--param expects KEY=VALUE")
+            key, _, raw = tokens[index + 1].partition("=")
+            parameters[key] = _coerce_json(raw)
+            index += 2
+            continue
+        if not token.startswith("--"):
+            raise ValueError(f"Unexpected argument: {token}")
+        name = token[2:].replace("-", "_")
+        if name in _CTL_BOOL:
+            args[name] = True
+            index += 1
+            continue
+        if index + 1 >= len(tokens):
+            raise ValueError(f"{token} requires a value")
+        raw = tokens[index + 1]
+        if name in _CTL_INT:
+            args[name] = int(raw)
+        elif name in _CTL_FLOAT:
+            args[name] = float(raw)
+        elif name in _CTL_JSON:
+            args[name] = _coerce_json(raw)
+        elif name == "file":
+            files.append(raw)
+        else:
+            args[name] = raw
+        index += 2
+    if files:
+        args["files"] = files
+    if parameters:
+        args["parameters"] = parameters
+    return args
+
+
+def _run_ctl(argv: List[str]) -> int:
+    """Send one command to the running GUI and print its JSON response."""
+    from core.control.client import launch_gui, request, wait_for
+    from core.control.protocol import ControlError, error_response
+
+    try:
+        flags, tokens = _extract_ctl_flags(argv)
+    except (TypeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not tokens:
+        print("usage: openfocus ctl <command> [--key value ...] [--pretty] "
+              "[--launch] [--wait] [--timeout N]", file=sys.stderr)
+        return EXIT_USAGE
+    command, rest = tokens[0], tokens[1:]
+    try:
+        if command == "raw":
+            if len(rest) != 1:
+                raise ValueError("raw expects one JSON request")
+            payload = json.loads(rest[0])
+            if not isinstance(payload, dict) or not isinstance(payload.get("cmd"), str):
+                raise ValueError("raw JSON needs a cmd string")
+            command = payload["cmd"]
+            args = payload.get("args") or {}
+            if not isinstance(args, dict):
+                raise ValueError("raw args must be an object")
+        else:
+            args = _parse_ctl_args(rest)
+    except (TypeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+    def send():
+        return request(command, args, timeout=flags["timeout"])
+
+    try:
+        response = send()
+    except ControlError as error:
+        if flags["launch"] and error.code == "not_running":
+            try:
+                launch_gui(timeout=45)
+                response = send()
+            except ControlError as launch_error:
+                response = error_response("0", launch_error)
+        else:
+            response = error_response("0", error)
+
+    if flags["wait"] and response.get("ok"):
+        try:
+            if command == "render.start":
+                state = wait_for(
+                    "render.state",
+                    lambda value: value.get("state") in ("done", "error", "idle")
+                    and not value.get("busy"),
+                    timeout=flags["timeout"])
+                ok = state.get("state") != "error"
+                response = {"id": response.get("id", "0"), "ok": ok,
+                            "result": state,
+                            "elapsed_ms": response.get("elapsed_ms", 0)}
+                if not ok:
+                    response["error"] = {"code": "internal",
+                                         "message": state.get("error") or "Render failed"}
+            elif command == "project.open":
+                frames = wait_for("stack.frames",
+                                  lambda value: value.get("count", 0) > 0,
+                                  timeout=flags["timeout"])
+                response = {"id": response.get("id", "0"), "ok": True,
+                            "result": frames,
+                            "elapsed_ms": response.get("elapsed_ms", 0)}
+        except ControlError as error:
+            response = error_response("0", error)
+
+    print(json.dumps(response, ensure_ascii=False,
+                     indent=2 if flags["pretty"] else None))
+    return EXIT_OK if response.get("ok") else EXIT_ERROR
+
 
 
 def main() -> None:

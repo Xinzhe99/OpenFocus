@@ -102,17 +102,15 @@ class TestFuseBitDepth:
         # has more, so seeing them proves the depth survived the back-end.
         assert np.unique(result).size > 256, f"{algorithm} quantized to 8 bits"
 
-    def test_render_worker_gui_path_stays_16bit(self):
+    def test_render_worker_gui_path_stays_16bit(self, qapp):
         """The GUI render path must hand back uint16, not a collapsed 8-bit image.
 
         Covers loader-shaped input through RenderWorker, which is where the
         normalize/quantize pair is actually wired up.
         """
         pytest.importorskip("PyQt6")
-        from PyQt6.QtWidgets import QApplication
         from core.workers import RenderWorker
 
-        QApplication.instance() or QApplication([])
 
         ramp = np.linspace(10000, 55000, 300, dtype=np.float32)
         grad = np.broadcast_to(ramp[None, :, None], (300, 300, 3)).astype(np.uint16)
@@ -314,16 +312,14 @@ class TestAlignCacheIsNotOnTheGuiThread:
 
 
 class TestBatchWorkerBitDepth:
-    def test_multi_folder_batch_keeps_16bit(self, tmp_path):
+    def test_multi_folder_batch_keeps_16bit(self, tmp_path, qapp):
         """The multi-folder batch branch fused raw uint16 frames straight through,
         skipping the normalize/quantize pair single-folder rendering uses, so
         every batched 16-bit render collapsed to a blown-out 8-bit file.
         """
         pytest.importorskip("PyQt6")
-        from PyQt6.QtWidgets import QApplication
         from core.workers import BatchWorker
 
-        QApplication.instance() or QApplication([])
 
         folder = tmp_path / "stack"
         folder.mkdir()
@@ -350,15 +346,13 @@ class TestBatchWorkerBitDepth:
         assert 8000 < float(saved.mean()) < 58000, f"batch output blown out: {saved.mean()}"
 
 
-    def test_multi_folder_batch_alignment_only(self, tmp_path):
+    def test_multi_folder_batch_alignment_only(self, tmp_path, qapp):
         """fusion_method='none' batch: registration runs, the aligned frames
         are saved, and no fusion is attempted ('none' used to be handed to
         the MultiFocusFusion constructor and crash the batch)."""
         pytest.importorskip("PyQt6")
-        from PyQt6.QtWidgets import QApplication
         from core.workers import BatchWorker
 
-        QApplication.instance() or QApplication([])
 
         folder = tmp_path / "stack"
         folder.mkdir()
@@ -389,7 +383,7 @@ class TestBatchWorkerBitDepth:
 
 
 class TestGifDuration:
-    def test_gif_worker_writes_millisecond_durations(self, tmp_path):
+    def test_gif_worker_writes_millisecond_durations(self, tmp_path, qapp):
         """imageio hands `duration` straight to Pillow, which counts milliseconds.
 
         The worker is given seconds, so every frame landed at 0 ms and the GIF
@@ -397,10 +391,8 @@ class TestGifDuration:
         """
         pytest.importorskip("PyQt6")
         from PIL import Image
-        from PyQt6.QtWidgets import QApplication
         from core.workers import GifSaverWorker
 
-        QApplication.instance() or QApplication([])
 
         class NoLabels:
             def prepare_bgr_image(self, target_type, img, index):

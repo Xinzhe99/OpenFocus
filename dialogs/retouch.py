@@ -175,6 +175,7 @@ class _RetouchCanvas(QWidget):
         super().__init__()
         self.dlg = dialog
         self.role = role
+        self.setProperty("controlId", f"retouch_{role}")
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
@@ -383,6 +384,30 @@ class RetouchDialog(QDialog):
         self.setMinimumSize(900, 600)
         self.resize(1280, 820)
         self._build_ui()
+        for _attribute, _control in (
+                ("btn_change", "retouch_change"),
+                ("btn_fullscreen", "retouch_fullscreen"),
+                ("btn_undo", "retouch_undo"),
+                ("btn_redo", "retouch_redo"),
+                ("btn_fit", "retouch_fit"),
+                ("btn_100", "retouch_zoom_100"),
+                ("btn_layout", "retouch_layout"),
+                ("btn_before", "retouch_before"),
+                ("btn_peek", "retouch_peek"),
+                ("btn_shortcuts", "retouch_shortcuts"),
+                ("chk_sharp", "retouch_sharpness"),
+                ("btn_restore_all", "retouch_restore"),
+                ("btn_apply", "retouch_apply"),
+                ("btn_cancel", "retouch_cancel"),
+                ("frame_slider", "retouch_frame")):
+            _widget = getattr(self, _attribute, None)
+            if _widget is not None:
+                _widget.setProperty("controlId", _control)
+        for _name, _row in (("diameter", self.num_diameter),
+                            ("hardness", self.num_hardness),
+                            ("opacity", self.num_opacity)):
+            _row.slider.setProperty("controlId", f"retouch_{_name}_slider")
+            _row.spin.setProperty("controlId", f"retouch_{_name}_spin")
         self._install_filters()
         self._restore_geometry()
         self._populate_frames()
