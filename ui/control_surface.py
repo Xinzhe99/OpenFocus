@@ -6,7 +6,9 @@ which is what lets an agent work through dialogs that have no dedicated
 command.
 """
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QTimer, Qt
-from PyQt6.QtGui import QAction, QKeySequence, QMouseEvent, QWheelEvent
+from PyQt6.QtGui import (
+    QAction, QKeyEvent, QKeySequence, QMouseEvent, QWheelEvent,
+)
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QAbstractButton, QAbstractItemView, QAbstractScrollArea, QApplication,
@@ -569,6 +571,28 @@ def _key(key_value):
     return candidate, Qt.KeyboardModifier.NoModifier
 
 
+def _type_text(widget, text):
+    """Type *text* without QTest.keyClicks, which cannot map non-Latin-1
+    characters and asserts (killing the GUI) on input such as CJK text."""
+    pending = []
+
+    def flush():
+        if pending:
+            QTest.keyClicks(widget, "".join(pending))
+            pending.clear()
+
+    for char in text:
+        if ord(char) < 0x80:
+            pending.append(char)
+            continue
+        flush()
+        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            QApplication.sendEvent(widget, QKeyEvent(
+                kind, Qt.Key.Key_unknown, Qt.KeyboardModifier.NoModifier,
+                char))
+    flush()
+
+
 def send_key(widget, key=None, text=None, action="click", modifiers=None):
     """Send a key press/click/release or type *text* into *widget*."""
     if text is not None:
@@ -576,7 +600,7 @@ def send_key(widget, key=None, text=None, action="click", modifiers=None):
             raise ValueError("text must be a string")
         ensure_visible(widget)
         widget.setFocus(Qt.FocusReason.OtherFocusReason)
-        QTest.keyClicks(widget, text)
+        _type_text(widget, text)
         return {"typed": text}
     key_code, key_modifiers = _key(key)
     key_modifiers |= _modifiers(modifiers)
@@ -610,8 +634,18 @@ def click_widget(widget, asynchronous=False):
     if isinstance(widget, QAbstractButton):
         if asynchronous:
             # Give the command response time to flush before a slot may open
-            # a nested modal event loop.
-            QTimer.singleShot(100, widget.click)
+            # a nested modal event loop. The click is skipped when the target
+            # disappears in the meantime: a scheduled click on a widget whose
+            # dialog closed would fire a hidden action (or qFatal on a
+            # deleted wrapper).
+            from PyQt6 import sip
+
+            def fire():
+                if sip.isdeleted(widget) or not widget.isVisible():
+                    return
+                widget.click()
+
+            QTimer.singleShot(100, fire)
             return {"scheduled": True}
         widget.click()
         return {"clicked": True}

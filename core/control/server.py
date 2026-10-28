@@ -187,11 +187,20 @@ class ControlServer(QObject):
         # A native file picker cannot be scripted; the portable Qt dialog can.
         install_non_native_file_dialogs()
         self._server = QLocalServer(self)
-        QLocalServer.removeServer(self.socket_name)
         if not self._server.listen(self.socket_name):
-            raise RuntimeError(
-                f"Could not listen on {self.socket_name}: "
-                f"{self._server.errorString()}")
+            # Only clear the name when it is really blocked, and never
+            # delete a non-socket file a custom --control-socket may point
+            # at: removeServer unlinks the path unconditionally on Unix.
+            stale = self._stale_socket_path(self.socket_name)
+            if stale is None:
+                raise RuntimeError(
+                    f"Could not listen on {self.socket_name}: "
+                    f"{self._server.errorString()}")
+            QLocalServer.removeServer(self.socket_name)
+            if not self._server.listen(self.socket_name):
+                raise RuntimeError(
+                    f"Could not listen on {self.socket_name}: "
+                    f"{self._server.errorString()}")
         self._server.newConnection.connect(self._accept)
         self._watchdog_stop = None
         if os.environ.get("OPENFOCUS_CONTROL_WATCHDOG"):
@@ -199,6 +208,25 @@ class ControlServer(QObject):
         self.discovery = write_discovery(
             self.socket_name, self.token, os.getpid(), APP_VERSION)
         _log.info("control channel listening on %s", self.socket_name)
+
+    @staticmethod
+    def _stale_socket_path(socket_name):
+        """Path of a stale Unix socket occupying *socket_name*, else None.
+
+        removeServer unlinks unconditionally on Unix, so a custom socket
+        name that collides with a regular file must not be "cleaned".
+        """
+        import stat
+        if os.name != "posix":
+            # Windows named pipes live in a namespace, not the filesystem.
+            return socket_name
+        candidate = (socket_name if os.path.isabs(socket_name)
+                     else os.path.join("/tmp", socket_name))
+        try:
+            mode = os.stat(candidate).st_mode
+        except OSError:
+            return None
+        return candidate if stat.S_ISSOCK(mode) else None
 
     def _start_watchdog(self):
         """Opt-in: dump the GUI thread if it stops answering for 10 s."""
@@ -528,8 +556,9 @@ class ControlServer(QObject):
             raise ControlError("busy", "A render is already running",
                                "Wait for render.state to leave 'rendering' or call render.cancel.")
         preview = _boolean(args, "preview", default=False)
-        if preview:
-            self.window.chk_quick_preview.setChecked(True)
+        # Apply both ways: leaving an earlier preview request checked would
+        # silently turn every later "full" render into a downscaled draft.
+        self.window.chk_quick_preview.setChecked(preview)
         method = self.window.current_fusion_method()
         if method == "none":
             raise ControlError("invalid_argument", "Select a fusion method first")
@@ -633,19 +662,45 @@ class ControlServer(QObject):
     def _cmd_project_save(self, args):
         from utils.project_file import save_project
         path = _string(args, "path")
-        ok, error = save_project(self.window, path)
+        window = self.window
+        if not path:
+            path = getattr(window, "project_path", None)
+            if not path:
+                raise ControlError(
+                    "invalid_argument", "No path given and no project open",
+                    "Pass path=... or open a project first.")
+        ok, error = save_project(window, path)
         if not ok:
             raise ControlError("invalid_argument", error or "Project was not saved")
+        # Mirror save_project_dialog: track the file and clear the dirty
+        # flag, otherwise a later GUI save-overwrite hits the wrong target.
+        window.project_path = path
+        window._clear_project_dirty()
         return {"saved": True, "path": path}
 
     def _cmd_project_open(self, args):
         from utils.project_file import apply_project, validate_project
         path = _string(args, "path")
+        force = _boolean(args, "force", default=False)
+        window = self.window
+        if getattr(window, "_project_dirty", False) and not force:
+            # The GUI path asks before discarding; an agent must opt in.
+            raise ControlError(
+                "confirm_required", "The open project has unsaved changes",
+                "Save it with project.save, or retry with force=true to "
+                "discard the changes.")
         ok, error, state = validate_project(path)
         if not ok:
             raise ControlError("invalid_argument", error or "Project is invalid")
-        apply_project(self.window, state)
-        return {"loading": True, "path": path}
+
+        def loaded():
+            window.project_path = path
+            window._clear_project_dirty()
+            window.add_recent_project(path)
+
+        apply_project(window, state, on_loaded=loaded)
+        return {"loading": True, "path": path,
+                "discarded_unsaved": bool(force)}
 
     # ------------------------------------------------------------- dialogs
     @staticmethod
@@ -826,14 +881,35 @@ class ControlServer(QObject):
         return {"closed": True}
 
     def _cmd_dialog_accept(self, args):
+        from PyQt6.QtWidgets import QDialogButtonBox, QPushButton
         dialog = self._find_dialog(args)
-        if getattr(dialog, "_import_busy", False):
-            raise ControlError("busy", "The dialog is still importing folders",
+        if self._dialog_busy(dialog):
+            raise ControlError("busy", "The dialog is still working",
                                "Poll dialog.list until busy is false, then retry.")
         if not hasattr(dialog, "accept"):
             raise ControlError("unsupported",
                                f"{type(dialog).__name__} has no accept()")
-        dialog.accept()
+        # Raw accept() skips per-dialog commit handlers (retouch would drop
+        # unapplied strokes, settings would drop pending edits), so route
+        # through the dialog's own commit action whenever one exists.
+        apply_button = getattr(dialog, "btn_apply", None)
+        if isinstance(apply_button, QPushButton) and apply_button.isEnabled():
+            apply_button.click()
+        ok_button = getattr(dialog, "btn_ok", None)
+        if not isinstance(ok_button, QPushButton):
+            for box in dialog.findChildren(QDialogButtonBox):
+                ok_button = box.button(QDialogButtonBox.StandardButton.Ok)
+                if ok_button is not None:
+                    break
+        if isinstance(ok_button, QPushButton):
+            if not ok_button.isEnabled():
+                raise ControlError(
+                    "invalid_argument",
+                    "The dialog's OK action is disabled",
+                    "Complete the dialog's inputs (see ui.tree), then retry.")
+            ok_button.click()
+        else:
+            dialog.accept()
         return {"accepted": True, "title": dialog.windowTitle()}
 
     def _cmd_dialog_reject(self, args):

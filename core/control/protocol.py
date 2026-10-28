@@ -30,7 +30,7 @@ COMMANDS = (
 
 ERROR_CODES = (
     "bad_request", "unauthorized", "not_found", "invalid_argument", "busy",
-    "unsupported", "internal", "not_running",
+    "confirm_required", "unsupported", "internal", "not_running",
 )
 
 

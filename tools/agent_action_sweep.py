@@ -23,7 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.control.client import ControlError, Session, launch_gui  # noqa: E402
+from core.control.client import (  # noqa: E402
+    ControlError, Session, launch_gui, tool_session,
+)
 
 SKIP = {"action_exit", "action_install_update", "menu_check_updates",
         "menu_open_logs", "action_gpu_accel"}
@@ -222,19 +224,22 @@ class Sweep:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--launch", action="store_true")
+    parser.add_argument("--launch", action="store_true",
+                        help="start a private GUI (isolated discovery file "
+                             "and socket; never touches a live session)")
+    parser.add_argument("--allow-existing", action="store_true",
+                        help="attach to an already-running session; the "
+                             "sweep triggers every action destructively")
     parser.add_argument("--timeout", type=float, default=120)
     options = parser.parse_args()
 
     session = None
     try:
-        try:
-            session = Session(timeout=options.timeout)
-        except ControlError as error:
-            if not options.launch or error.code != "not_running":
-                raise
-            launch_gui(timeout=60)
-            session = Session(timeout=options.timeout)
+        session = tool_session(
+            timeout=options.timeout,
+            launch=options.launch,
+            allow_existing=options.allow_existing,
+        )
         results = Sweep(options.timeout, session).run()
     except Exception as error:  # noqa: BLE001 - command-line report
         print(f"SWEEP FAILED: {type(error).__name__}: {error}", file=sys.stderr)
