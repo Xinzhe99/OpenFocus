@@ -82,6 +82,17 @@ def _boolean(args, key, required=False, default=None):
     return value
 
 
+def _dialog_candidate(widget):
+    """A picker is answerable when it is visible or exec'ing modally.
+
+    Some platforms (offscreen Linux in CI, native wrappers) report
+    ``isVisible() == False`` for a dialog that is inside ``exec()``; the
+    modal flag is the reliable signal there, and ``dialog.list`` already
+    reports such windows.
+    """
+    return bool(widget.isVisible() or widget.isModal())
+
+
 def _spec_dict(spec):
     return {
         "key": spec.key,
@@ -935,7 +946,7 @@ class ControlServer(QObject):
         else:
             candidates = [widget for widget in QApplication.topLevelWidgets()
                           if isinstance(widget, QColorDialog)
-                          and widget.isVisible()]
+                          and _dialog_candidate(widget)]
             if not candidates:
                 raise ControlError("not_found", "No color dialog is open")
             dialog = candidates[-1]
@@ -950,7 +961,12 @@ class ControlServer(QObject):
         index = _integer(args, "index", required=False, default=None, minimum=0)
         title = _string(args, "title", required=False)
         candidates = [widget for widget in QApplication.topLevelWidgets()
-                      if isinstance(widget, QFileDialog) and widget.isVisible()]
+                      if isinstance(widget, QFileDialog)
+                      and _dialog_candidate(widget)]
+        if not candidates:
+            active = QApplication.activeModalWidget()
+            if isinstance(active, QFileDialog):
+                candidates = [active]
         if not candidates:
             raise ControlError("not_found", "No file dialog is open",
                                "Trigger the action, then poll dialog.list for a "
