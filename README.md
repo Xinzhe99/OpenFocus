@@ -55,13 +55,13 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.72.0** — StackMFF and StackMFF V2 join the fusion list, so ten
-> methods now ship in one install: the original 3D stack network
-> (order-independent, no settings), V2's recurrent model with depth maps
-> (keep the focus order), and the consistently named StackMFF V3. Every
-> method dropdown groups choices under AI, spatial-domain and transform-domain
-> headers, and each method explains itself on hover. V2's blurry soft blend
-> was removed; its reference sampling is untouched.
+> **v1.73.0** — An agent can now drive the whole app. `openfocus gui --control`
+> opens a token-protected local channel and `openfocus ctl` (or any language
+> over the same protocol) loads stacks, renders, retouches, compares, exports
+> and answers every dialog — by widget, by menu action, or with real mouse and
+> keyboard events. A bundled skill documents the surface, a 14-check smoke
+> runner and a full action sweep keep it honest in CI, and nothing changes for
+> a normal launch.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
@@ -207,6 +207,26 @@ Save, Save As, drag-out and Export All.
 
 </td>
 </tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Agent-drivable
+
+Every window, widget and menu is addressable over a token-protected local
+channel: an agent loads a stack, renders, retouches, compares, solves depth,
+exports and answers dialogs — by typed command, by widget path, or with real
+mouse and keyboard events. No screen scraping, no OCR; a normal launch keeps
+the channel closed.
+
+[Protocol →](docs/AGENT_CONTROL_SPEC.md) · [Skill →](.claude/skills/openfocus-control/SKILL.md)
+
+</td>
+<td width="54%">
+
+<a href="assets/readme/agent.mp4"><picture><source srcset="assets/readme/agent.gif" type="image/gif"><img src="assets/readme/agent_poster.jpg" alt="An agent drives the live GUI: load, AI render, compare, retouch, wipe, depth, labels" width="100%" /></picture></a>
+
+</td>
+</tr>
 </table>
 
 **Also in the box:**
@@ -217,6 +237,9 @@ Save, Save As, drag-out and Export All.
   flat-field correction, multi-page TIFF Z-stacks, textured OBJ export.
 - **Headless CLI** — the same pipeline as `openfocus`, with batch mode,
   `--dry-run`, `--resume` and JSON output for scripting.
+- **Agent-drivable** — a token-protected local channel drives the live GUI
+  (typed pipeline commands plus generic widget/menu/mouse/keyboard control),
+  with a skill, a 14-check smoke runner and a full menu-action sweep.
 - **Projects and recovery** — `.ofproj` sessions, crash auto-recovery,
   undo/redo across stack edits and annotations.
 - **Twelve UI languages** — English, 中文, 日本語, Español, Deutsch, Français,

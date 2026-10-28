@@ -3,7 +3,7 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.73.0] - 2026-10-28
 
 ### Fixed
 - **Control-channel hardening from the PR review.** `ui.type` no longer
@@ -20,6 +20,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   default (`--allow-existing` required to touch a live session); and the
   headless wheel reports a clear error instead of a traceback when PyQt6
   or the desktop app is missing.
+- **Acceptance tools survive any UI language.** The smoke and sweep match
+  dialog titles and buttons against every loaded translation instead of
+  English literals, honor the new `project.open force` semantics, and
+  `agent_action_sweep.py` gained `--quit` so isolated runs leave no window
+  behind.
 
 ### Added
 - **Local GUI control channel for agents.** `openfocus gui --control` opens a
