@@ -27,6 +27,22 @@ if str(ROOT) not in sys.path:
 from core.control.client import (  # noqa: E402
     ControlError, Session, launch_gui, tool_session, wait_for,
 )
+from locales import trans  # noqa: E402
+
+
+def _texts(key, *fallbacks):
+    """Every loaded translation of *key*, plus explicit fallbacks.
+
+    The tool and the GUI are separate processes: the tool's locale can
+    differ from the live window's, so match the text in any language.
+    """
+    values = [trans.t(key)]
+    for table in getattr(trans, "translations", {}).values():
+        value = table.get(key)
+        if value:
+            values.append(value)
+    values.extend(fallbacks)
+    return list(dict.fromkeys(values))
 
 
 class Smoke:
@@ -90,8 +106,9 @@ class Smoke:
             if window["class"] == "QFileDialog":
                 self.call("dialog.file", index=window["index"], cancel=True)
             elif window["class"] == "QMessageBox":
-                labels = ("Start Fresh", "Discard changes", "No", "Discard",
-                          "OK", "Close", "Cancel")
+                labels = tuple(_texts("btn_start_fresh", "Start Fresh")
+                               + _texts("btn_discard_changes", "Discard changes")
+                               + ["No", "否", "Discard", "OK", "Close", "Cancel"])
                 try:
                     self.click_text(window["root"], labels)
                 except AssertionError:
@@ -249,15 +266,22 @@ class Smoke:
 
     def labels(self):
         self.call("ui.trigger", key="action_add_label")
+        titles = _texts("label_manage_title", "Manage Labels")
         window = self.wait_windows(
-            lambda items: any(item["title"] == "Manage Labels"
+            lambda items: any(item["title"] in titles
                               for item in items))[0]
         edits = self.call("ui.find", window=window["root"],
                           **{"class": "QLineEdit"})["matches"]
         self.call("ui.set", path=edits[0]["path"], value="AGENT")
-        self.click_text(window["root"], ["Add"])
-        color_button = self.call("ui.find", window=window["root"],
-                                 text="Choose Background Color")["matches"][0]
+        self.click_text(window["root"], _texts("label_add", "Add"))
+        color_button = None
+        for text in _texts("label_choose_bg", "Choose Background Color"):
+            found = self.call("ui.find", window=window["root"],
+                              text=text)["matches"]
+            if found:
+                color_button = found[0]
+                break
+        assert color_button is not None, "no background-color button"
         self.call("ui.click", **{"path": color_button["path"], "async": True})
         color_window = next(
             item for item in self.wait_windows(
@@ -265,7 +289,7 @@ class Smoke:
                                   for item in items))
             if item["class"] == "QColorDialog")
         self.call("dialog.color", index=color_window["index"], color="#336699")
-        self.click_text(window["root"], ["Apply and Close"])
+        self.click_text(window["root"], _texts("label_apply_close", "Apply and Close"))
         actions = {item["key"]: item["enabled"]
                    for item in self.call("ui.actions")["actions"]}
         assert actions["action_del_input_label"]
@@ -277,7 +301,9 @@ class Smoke:
         self.call("project.save", path=str(path))
         self.call("stack.clear")
         assert self.call("stack.frames")["count"] == 0
-        self.call("project.open", path=str(path))
+        # Loading the snapshot discards the cleared (unsaved) session: the
+        # open command requires explicit force for that.
+        self.call("project.open", path=str(path), force=True)
         frames = wait_for("stack.frames",
                           lambda value: value.get("count") == 6, timeout=120)
         return f"{frames['count']} frames restored"

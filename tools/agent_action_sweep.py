@@ -26,6 +26,18 @@ if str(ROOT) not in sys.path:
 from core.control.client import (  # noqa: E402
     ControlError, Session, launch_gui, tool_session,
 )
+from locales import trans  # noqa: E402
+
+
+def _texts(key, *fallbacks):
+    """Every loaded translation of *key*, plus explicit fallbacks."""
+    values = [trans.t(key)]
+    for table in getattr(trans, "translations", {}).values():
+        value = table.get(key)
+        if value:
+            values.append(value)
+    values.extend(fallbacks)
+    return list(dict.fromkeys(values))
 
 SKIP = {"action_exit", "action_install_update", "menu_check_updates",
         "menu_open_logs", "action_gpu_accel"}
@@ -69,10 +81,11 @@ class Sweep:
         elif klass == "QMenu":
             self.call("dialog.close", index=window["index"])
         elif klass == "QMessageBox":
-            labels = ("Start Fresh", "No", "Discard changes", "Discard",
-                      "OK", "Close", "Cancel")
+            labels = tuple(_texts("btn_start_fresh", "Start Fresh")
+                           + _texts("btn_discard_changes", "Discard changes")
+                           + ["No", "否", "Discard", "OK", "Close", "Cancel"])
             if startup:
-                labels = ("Start Fresh",) + labels
+                labels = (_texts("btn_start_fresh", "Start Fresh")[0],) + labels
             if not self.click_text(root, *labels):
                 self.call("dialog.accept", index=window["index"])
         else:
@@ -230,6 +243,8 @@ def main() -> int:
     parser.add_argument("--allow-existing", action="store_true",
                         help="attach to an already-running session; the "
                              "sweep triggers every action destructively")
+    parser.add_argument("--quit", action="store_true",
+                        help="quit the GUI when the run finishes")
     parser.add_argument("--timeout", type=float, default=120)
     options = parser.parse_args()
 
@@ -245,6 +260,11 @@ def main() -> int:
         print(f"SWEEP FAILED: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     finally:
+        if options.quit and session is not None:
+            try:
+                session.call("app.quit", {"force": True}, timeout=10)
+            except Exception:
+                pass
         if session is not None:
             session.close()
 
