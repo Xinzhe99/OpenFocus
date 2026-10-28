@@ -134,8 +134,13 @@ poll `render.state` until `busy` is false. `output.export` bypasses the file
 picker and writes through the normal export path (labels, scale bar, bit
 depth).
 
-Projects: `project.save --path …`, then `project.open --path …` (add
-`--wait` to wait for frames). Batch: `dialog.open --name batch
+Projects: `project.save --path …` (no path: saves the open project), then
+`project.open --path …` (add `--wait` to wait for frames). `project.open`
+refuses with `confirm_required` while the current project has unsaved
+changes; pass `force=true` only when discarding them is intended. Both
+commands keep `project_path` and the dirty marker in sync with the GUI.
+
+Batch: `dialog.open --name batch
 --args-json '{"folders":["F:/a","F:/b"],"output_dir":"F:/out"}'`, set
 `fusion_combo`, then `dialog.accept`; poll `batch.state` until `busy` is
 false and inspect `results`/`error`. `batch.cancel` requests cancellation.
@@ -240,6 +245,9 @@ token or enable control on a shared account.
   exit actions are reported as skipped.
 - Both tools are destructive: `--launch` starts a private instance with its
   own discovery file and socket, and attaching to an already-running window
-  requires `--allow-existing` (the tools refuse otherwise).
+  requires `--allow-existing` (the tools refuse otherwise). Add `--quit`
+  (smoke and sweep) so an isolated instance exits when the run finishes.
+- The tools match dialog titles and buttons in every loaded UI language, so
+  they work against a localized window.
 - Python clients that issue many commands should reuse
   `core.control.client.Session` instead of opening a socket per request.
