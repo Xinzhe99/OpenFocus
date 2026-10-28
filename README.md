@@ -239,6 +239,21 @@ No setup needed — grab a build from the [Releases](https://github.com/Xinzhe99
 
 The app is unsigned, so the first launch may show a security prompt: **Windows** SmartScreen → "More info" → "Run anyway" (the first start may take 30–60 s); **macOS** right-click → Open, or run `xattr -cr /Applications/OpenFocus.app` in Terminal.
 
+### 🤖 Agent integration
+
+The desktop app can be driven by a local agent without screen scraping:
+`openfocus gui --control` opens a token-protected local command channel and
+`openfocus ctl` runs typed commands or generic UI actions against the live
+window. Agents can load stacks, render, export, open and fill every dialog,
+answer file pickers, send mouse/keyboard events and take screenshots.
+
+- Skill: [`.claude/skills/openfocus-control/SKILL.md`](.claude/skills/openfocus-control/SKILL.md)
+- Protocol and command reference: [`docs/AGENT_CONTROL_SPEC.md`](docs/AGENT_CONTROL_SPEC.md)
+- End-to-end runner: `python tools/agent_gui_smoke.py --launch`
+- Every-action sweep: `python tools/agent_action_sweep.py --launch`
+
+Control is opt-in; a normal launch is unchanged.
+
 ### 💻 Command Line Usage
 
 Or install the CLI on Windows, macOS and Linux — the same pipeline, no GUI stack:

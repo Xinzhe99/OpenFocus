@@ -218,7 +218,8 @@ assert cli.run_cli(['-i', str(source), '-o', str(source / 'out.png'), '-m', 'dct
 assert not (source / 'out.png').exists()
 """, tmp_path, tmp_path)
     assert result.returncode == 0, result.stderr
-    assert result.stderr.strip() == "interrupted"
+    assert "interrupted" in result.stderr
+    assert "Loaded" in result.stderr  # human progress moved to stderr
     text = next((tmp_path / "logs").glob("*.log")).read_text(encoding="utf-8")
     assert "event=cli.cancelled" in text
     assert "event=cli.failed" not in text
