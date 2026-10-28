@@ -233,38 +233,56 @@ def test_ctl_reports_missing_gui(monkeypatch, tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "not_running"
 
-def test_file_dialog_patch_returns_portable_dialogs(control_window, tmp_path):
-    from PyQt6.QtCore import QTimer
-    from PyQt6.QtWidgets import QFileDialog
+def test_file_dialog_patch_injects_non_native_option(qapp, monkeypatch, control_window):
+    """The patch must add DontUseNativeDialog on every static helper call.
 
-    folder = tmp_path / "picked"
-    folder.mkdir()
+    Verified through sentinel originals instead of real dialogs: opening a
+    real picker inside CI hangs headless runs (no timer delivery inside the
+    native exec loop, and a failed assert inside a QTimer slot qFatals).
+    """
+    from core.control import file_dialogs
+    from PyQt6.QtWidgets import QColorDialog, QFileDialog
 
-    def choose_directory():
-        dialog = next(widget for widget in QApplication.topLevelWidgets()
-                      if isinstance(widget, QFileDialog) and widget.isVisible())
-        assert dialog.testOption(QFileDialog.Option.DontUseNativeDialog)
-        dialog.setDirectory(str(folder))
-        dialog.accept()
+    file_dialogs.install_non_native_file_dialogs()
+    assert file_dialogs._INSTALLED is True
 
-    QTimer.singleShot(100, choose_directory)
-    chosen = QFileDialog.getExistingDirectory(
-        control_window, "Choose", str(tmp_path),
-        options=QFileDialog.Option.ShowDirsOnly)
-    assert Path(chosen) == folder
+    seen = {}
 
-    target = tmp_path / "saved.png"
+    def capture(name):
+        def fake(*args, **kwargs):
+            seen[name] = (args, kwargs)
+            return None
+        return fake
 
-    def choose_file():
-        dialog = next(widget for widget in QApplication.topLevelWidgets()
-                      if isinstance(widget, QFileDialog) and widget.isVisible())
-        dialog.selectFile(str(target))
-        dialog.accept()
+    for name in ("getOpenFileName", "getOpenFileNames", "getSaveFileName",
+                 "getExistingDirectory"):
+        monkeypatch.setitem(file_dialogs._ORIGINAL, name, capture(name))
+    monkeypatch.setattr(file_dialogs, "_COLOR_ORIGINAL", capture("getColor"))
 
-    QTimer.singleShot(100, choose_file)
-    saved, _filter = QFileDialog.getSaveFileName(
-        control_window, "Save", str(target), "PNG (*.png)")
-    assert Path(saved) == target
+    show_dirs = QFileDialog.Option.ShowDirsOnly
+    non_native = QFileDialog.Option.DontUseNativeDialog
+    QFileDialog.getExistingDirectory(
+        control_window, "Choose", "dir", options=show_dirs)
+    args, kwargs = seen["getExistingDirectory"]
+    assert kwargs["options"] == QFileDialog.Option(show_dirs | non_native)
+
+    QFileDialog.getOpenFileName(
+        control_window, "Open", "dir", "Images (*.tif)",
+        "Images (*.tif)", show_dirs)
+    args, _kwargs = seen["getOpenFileName"]
+    assert args[5] == QFileDialog.Option(show_dirs | non_native)
+
+    QFileDialog.getSaveFileName(control_window, "Save", "out.png", "PNG (*.png)")
+    _args, kwargs = seen["getSaveFileName"]
+    assert kwargs["options"] == QFileDialog.Option(non_native)
+
+    color_non_native = QColorDialog.ColorDialogOption.DontUseNativeDialog
+    QColorDialog.getColor(parent=control_window,
+                          options=QColorDialog.ColorDialogOption.ShowAlphaChannel)
+    _args, kwargs = seen["getColor"]
+    assert kwargs["options"] == QColorDialog.ColorDialogOption(
+        QColorDialog.ColorDialogOption.ShowAlphaChannel | color_non_native)
+
 
 
 def test_dialog_file_command_answers_open_and_directory(server, control_window, tmp_path):
@@ -492,3 +510,107 @@ def test_dynamic_menu_leaf_is_catalogued_and_triggered(server, control_window):
     QTest.qWait(200)
     assert hit == [True]
     menu.deleteLater()
+
+def test_ui_type_accepts_unicode_without_crashing(server, control_window):
+    from PyQt6.QtWidgets import QLineEdit
+
+    edit = QLineEdit(control_window)
+    edit.setObjectName("unicode_edit")
+    edit.show()
+    try:
+        path = call(server, "ui.find",
+                    object_name="unicode_edit")["result"]["matches"][0]["path"]
+        result = call(server, "ui.type", path=path, text="测试abc")
+        assert result["result"]["typed"] == "测试abc"
+        assert edit.text() == "测试abc"
+    finally:
+        edit.deleteLater()
+
+
+def test_render_start_applies_preview_flag_in_both_directions(server, control_window, monkeypatch):
+    monkeypatch.setattr(control_window, "current_fusion_method", lambda: "dct")
+    monkeypatch.setattr(control_window.render_manager, "start_render", lambda: None)
+    call(server, "render.start", preview=True)
+    assert control_window.chk_quick_preview.isChecked() is True
+    call(server, "render.start", preview=False)
+    assert control_window.chk_quick_preview.isChecked() is False
+
+
+def test_project_open_refuses_dirty_project_without_force(server, control_window, monkeypatch):
+    from utils import project_file
+
+    control_window._project_dirty = True
+    response = call(server, "project.open", path="whatever.ofproj")
+    assert response["error"]["code"] == "confirm_required"
+
+    opened = []
+    target = "other.ofproj"
+    monkeypatch.setattr(project_file, "validate_project",
+                        lambda path: (True, "", {"sources": []}))
+    monkeypatch.setattr(project_file, "apply_project",
+                        lambda window, state, on_loaded=None: opened.append(target))
+    result = call(server, "project.open", path=target, force=True)["result"]
+    assert result["discarded_unsaved"] is True
+    assert opened == ["other.ofproj"]
+    control_window._project_dirty = False
+
+
+def test_project_open_sets_lifecycle_state(server, control_window, monkeypatch):
+    from utils import project_file
+
+    assert getattr(control_window, "project_path", None) in (None, "")
+    captured = {}
+
+    def fake_apply(window, state, on_loaded=None):
+        captured["on_loaded"] = on_loaded
+
+    monkeypatch.setattr(project_file, "validate_project",
+                        lambda path: (True, "", {"sources": []}))
+    monkeypatch.setattr(project_file, "apply_project", fake_apply)
+    call(server, "project.open", path="life.ofproj")["result"]
+    captured["on_loaded"]()
+    assert control_window.project_path == "life.ofproj"
+    assert control_window._project_dirty is False
+
+
+def test_dialog_accept_refuses_disabled_commit_action(server, control_window):
+    from PyQt6.QtWidgets import QDialog, QPushButton
+
+    dialog = QDialog(control_window)
+    dialog.setWindowTitle("Commit check")
+    dialog.btn_ok = QPushButton("OK", dialog)
+    dialog.btn_ok.setEnabled(False)
+    dialog.show()
+    try:
+        response = call(server, "dialog.accept", title="Commit check")
+        assert response["error"]["code"] == "invalid_argument", \
+            "accept must refuse a dialog whose OK action is disabled"
+
+
+        clicked = []
+        dialog.btn_ok.setEnabled(True)
+        dialog.btn_ok.clicked.connect(lambda: clicked.append(True))
+        # Keep the dialog open: only the commit routing is under test.
+        dialog.btn_ok.clicked.connect(lambda: None)
+        dialog.accept = lambda: None
+        call(server, "dialog.accept", title="Commit check")
+        assert clicked == [True]
+    finally:
+        dialog.deleteLater()
+
+
+def test_async_click_is_cancelled_when_target_hides(server, control_window):
+    from PyQt6.QtWidgets import QPushButton
+
+    button = QPushButton("Hidden fire", control_window)
+    button.setObjectName("hidden_fire")
+    button.show()
+    clicked = []
+    button.clicked.connect(lambda: clicked.append(True))
+    path = call(server, "ui.find",
+                object_name="hidden_fire")["result"]["matches"][0]["path"]
+    call(server, "ui.click", path=path, **{"async": True})
+    button.hide()
+    QTest.qWait(250)
+    assert clicked == [], "a scheduled click must not fire on a hidden target"
+    button.deleteLater()

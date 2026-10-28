@@ -22,13 +22,14 @@ def _raw(flag):
 def _with_option(options, option):
     if options is None:
         return option
-    return QFileDialog.Option(_raw(options) | _raw(option))
+    cls = type(option)
+    return cls(_raw(options) | _raw(option))
 
 
 def _wrap(name, option):
-    original = getattr(QFileDialog, name)
-
+    original_doc = getattr(QFileDialog, name).__doc__
     def wrapper(*args, **kwargs):
+        original = _ORIGINAL[name]
         if len(args) >= 6:
             args = list(args)
             args[5] = _with_option(args[5], option)
@@ -38,7 +39,7 @@ def _wrap(name, option):
         return original(*args, **kwargs)
 
     wrapper.__name__ = name
-    wrapper.__doc__ = original.__doc__
+    wrapper.__doc__ = original_doc
     return wrapper
 
 

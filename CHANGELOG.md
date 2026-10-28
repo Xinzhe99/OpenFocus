@@ -5,6 +5,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Control-channel hardening from the PR review.** `ui.type` no longer
+  aborts the GUI on non-Latin-1 text (CJK and emoji are delivered as real
+  key events); `project.open` refuses to discard unsaved changes without
+  `force:true` and both project commands now track `project_path` and the
+  dirty marker exactly like the GUI flow; `dialog.accept` applies pending
+  edits and routes through the dialog's own OK/Apply action instead of raw
+  `accept()` (refusing while busy or the commit action is disabled);
+  `render.start preview:false` actually clears the quick-preview flag;
+  a scheduled `ui.click --async` is cancelled when its target closes;
+  a custom `--control-socket` can no longer make the server delete a
+  non-socket file; the smoke/sweep tools run against isolated instances by
+  default (`--allow-existing` required to touch a live session); and the
+  headless wheel reports a clear error instead of a traceback when PyQt6
+  or the desktop app is missing.
+
 ### Added
 - **Local GUI control channel for agents.** `openfocus gui --control` opens a
   token-authenticated local socket; `openfocus ctl` drives the live window:

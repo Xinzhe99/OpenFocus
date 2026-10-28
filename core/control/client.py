@@ -4,6 +4,7 @@ PyQt is imported lazily: the headless CLI must still import without Qt, and
 only the ``ctl``/``gui`` commands need this module.
 """
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -31,7 +32,10 @@ def _qt_core():
 
 def request(cmd, args=None, *, timeout=60.0, discovery=None, token=None):
     """Send one command and return its parsed response."""
-    from PyQt6.QtNetwork import QLocalSocket
+    try:
+        from PyQt6.QtNetwork import QLocalSocket
+    except ImportError as exc:  # headless wheel without the Qt runtime
+        raise _no_pyqt_error(exc) from None
 
     discovery = discovery or read_discovery()
     _qt_core()
@@ -99,11 +103,25 @@ def wait_for(cmd, predicate, *, timeout=1800.0, interval=0.25,
                        f"Last state: {json.dumps(last, ensure_ascii=False)[:500]}")
 
 
+def _no_pyqt_error(exc):
+    return ControlError(
+        "unsupported",
+        f"The control client needs PyQt6, which is unavailable ({exc})",
+        "pip install PyQt6, or use the desktop build where the client "
+        "is bundled.")
+
+
 def _launch_command(socket_name=None, paths=()):
     if getattr(sys, "frozen", False):
         command = [sys.executable]
     else:
         entry = Path(__file__).resolve().parents[2] / "main.py"
+        if not entry.is_file():
+            raise ControlError(
+                "unsupported",
+                "This install does not ship the desktop app (no main.py)",
+                "The pip wheel is headless-only: install the desktop build "
+                "or run from a source checkout.")
         command = [sys.executable, str(entry)]
     command.append("--control")
     if socket_name:
@@ -156,8 +174,12 @@ class Session:
     ordered while dialogs are open.
     """
 
+
     def __init__(self, *, discovery=None, timeout=60.0):
-        from PyQt6.QtNetwork import QLocalSocket
+        try:
+            from PyQt6.QtNetwork import QLocalSocket
+        except ImportError as exc:  # headless wheel without the Qt runtime
+            raise _no_pyqt_error(exc) from None
 
         if not isinstance(discovery, dict):
             discovery = read_discovery()
@@ -201,3 +223,26 @@ class Session:
     def close(self):
         self.socket.disconnectFromServer()
         self.socket.deleteLater()
+
+
+def tool_session(timeout=60.0, launch=False, allow_existing=False,
+                 launch_timeout=60.0):
+    """Session for tool runs (smoke, sweep).
+
+    These tools clear stacks, answer prompts and trigger renders, so they
+    must never land on a user's live session by accident: attaching
+    requires ``allow_existing``, and ``launch`` starts a private instance
+    with its own discovery file and socket that cannot see the user's.
+    """
+    import tempfile
+    if launch:
+        root = Path(tempfile.mkdtemp(prefix="openfocus-tool-"))
+        os.environ["OPENFOCUS_CONTROL_FILE"] = str(root / "control.json")
+        launch_gui(f"OpenFocus-tool-{os.getpid()}", timeout=launch_timeout)
+        return Session(timeout=timeout)
+    if not allow_existing and discovery_path().exists():
+        raise ControlError(
+            "confirm_required", "A GUI control session is already running",
+            "This tool is destructive; pass allow_existing=True to use the "
+            "live session anyway, or launch=True for a private instance.")
+    return Session(timeout=timeout)

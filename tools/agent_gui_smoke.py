@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.control.client import (  # noqa: E402
-    ControlError, Session, launch_gui, wait_for,
+    ControlError, Session, launch_gui, tool_session, wait_for,
 )
 
 
@@ -330,7 +330,12 @@ class Smoke:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--launch", action="store_true",
-                        help="start a GUI when none is running")
+                        help="start a private GUI (isolated discovery file "
+                             "and socket; never touches a live session)")
+    parser.add_argument("--allow-existing", action="store_true",
+                        help="attach to an already-running session; the "
+                             "smoke clears stacks and answers prompts, so "
+                             "this is destructive")
     parser.add_argument("--quit", action="store_true",
                         help="quit the GUI when the run finishes")
     parser.add_argument("--timeout", type=float, default=600,
@@ -340,13 +345,11 @@ def main() -> int:
     session = None
     smoke = None
     try:
-        try:
-            session = Session(timeout=options.timeout)
-        except ControlError as error:
-            if not options.launch or error.code != "not_running":
-                raise
-            launch_gui(timeout=60)
-            session = Session(timeout=options.timeout)
+        session = tool_session(
+            timeout=options.timeout,
+            launch=options.launch,
+            allow_existing=options.allow_existing,
+        )
         smoke = Smoke(options.timeout, session)
         smoke.call("ping")
         checks = smoke.run()

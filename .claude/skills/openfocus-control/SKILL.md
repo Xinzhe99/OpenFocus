@@ -238,5 +238,8 @@ token or enable control on a shared account.
 - `python tools/agent_action_sweep.py --launch` triggers every enabled menu
   action and resolves the dialogs/pickers it opens; disabled, updater and
   exit actions are reported as skipped.
+- Both tools are destructive: `--launch` starts a private instance with its
+  own discovery file and socket, and attaching to an already-running window
+  requires `--allow-existing` (the tools refuse otherwise).
 - Python clients that issue many commands should reuse
   `core.control.client.Session` instead of opening a socket per request.

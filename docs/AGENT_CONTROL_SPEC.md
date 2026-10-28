@@ -151,8 +151,14 @@ through the export manager's normal writer (labels, scale bar, bit depth).
 
 | Command | Args | Result |
 |---|---|---|
-| `project.save` | `path` | `{saved:true, path}` |
-| `project.open` | `path` | `{loading:true}` (poll `app.state`) |
+| `project.save` | `path?` | `{saved:true, path}`; without `path` saves the open project |
+| `project.open` | `path`, `force?` | `{loading:true, path, discarded_unsaved}` |
+
+Both commands share the GUI's project lifecycle: `project.save` updates
+`project_path` and clears the dirty marker, `project.open` refuses with
+`confirm_required` while the current project has unsaved changes and only
+proceeds with `force:true` (which discards them), then tracks the new path
+and clears the dirty marker once loaded.
 
 ### Dialogs
 
@@ -161,7 +167,7 @@ through the export manager's normal writer (labels, scale bar, bit depth).
 | `dialog.open` | `name`, plus name-specific arguments | `{opened, title}` |
 | `dialog.list` | — | every visible top-level window: `index`, `root`, `title`, `class`, `visible`, `modal`, `popup`, `managed`, `active`, `busy` |
 | `dialog.close` | `index?`, `title?`, `root?` | `{closed:true}` |
-| `dialog.accept` | `index?`, `title?` | `{accepted:true}` (runs the normal accept path) |
+| `dialog.accept` | `index?`, `title?` | `{accepted:true}`; applies pending edits and clicks the dialog's own OK/Apply action instead of raw `accept()` — refuses when busy or the commit action is disabled |
 | `dialog.reject` | `index?`, `title?` | `{rejected:true}` |
 | `dialog.file` | `path`, `index?`, `title?`, `cancel?` | answers a `QFileDialog` by path (or cancels it) |
 | `dialog.color` | `color`, `index?` | answers a `QColorDialog` with `#rrggbb` |
@@ -258,6 +264,9 @@ accepted settings to `BatchManager` just like the menu flow.
   on a shared account.
 - The channel exposes file reads/writes the GUI itself can perform; it does not
   add privileges beyond the user's own.
+- Install scope: the pip wheel is headless-only — `openfocus gui` and the
+  `ctl` transport (PyQt6) report a clear error there instead of failing
+  silently. Use the desktop build or a source checkout for GUI control.
 
 ## 7. CLI additions
 

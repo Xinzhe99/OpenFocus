@@ -932,7 +932,13 @@ def _run_gui(argv: List[str]) -> int:
     if getattr(sys, "frozen", False):
         command = [sys.executable, *paths]
     else:
-        command = [sys.executable, os.path.join(root, "main.py"), *paths]
+        entry = os.path.join(root, "main.py")
+        if not os.path.isfile(entry):
+            print("error: this install does not ship the desktop app "
+                  "(no main.py); use the desktop build or a source checkout",
+                  file=sys.stderr)
+            return EXIT_ERROR
+        command = [sys.executable, entry, *paths]
     process = _spawn_detached(command, root)
     print(json.dumps({"launched": True, "pid": process.pid}, ensure_ascii=False))
     return EXIT_OK
