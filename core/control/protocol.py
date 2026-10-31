@@ -74,12 +74,23 @@ def write_discovery(socket_name, token, pid, version):
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                         encoding="utf-8")
+    # Create the token file restricted from the start: writing to an
+    # existing lax .tmp first (or relying on a later chmod) leaves a
+    # window where the token is readable by other users.
     try:
-        os.chmod(temporary, 0o600)
-    except OSError:
+        temporary.unlink()
+    except FileNotFoundError:
         pass
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2))
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
     os.replace(temporary, path)
     return path
 
