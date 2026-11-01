@@ -329,7 +329,8 @@ cache/provenance identity; do not convert the sequence back to positional flags.
 ## Translations, persistence and packaging
 
 Add every new method, parameter, hint and enum-label key to all twelve language
-dictionaries in `locales.py`. The example needs `radio_contrast_example`,
+tables under `locales/` (`en.py`, `zh.py`, `_extra.py`, and the `<code>.py`
+packs). The example needs `radio_contrast_example`,
 `hint_contrast_example`, `label_contrast_temperature`,
 `hint_contrast_temperature`, `label_contrast_decision`, `contrast_blend`, and
 `contrast_pick`. Translate the meanings and units consistently.

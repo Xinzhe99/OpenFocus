@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus">
-    <img src="assets/OpenFocus.png" alt="OpenFocus" width="128">
+    <img src="../../assets/OpenFocus.png" alt="OpenFocus" width="128">
   </a>
 </p>
 
@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
   <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
 </p>
 
@@ -28,13 +28,13 @@
 
 <p align="center">
   <a href="#install">Download</a> ·
-  <a href="./docs/USER_MANUAL_NL.md">Documentatie</a> ·
-  <a href="./CHANGELOG.md">Wijzigingen</a> ·
+  <a href="../USER_MANUAL_NL.md">Documentatie</a> ·
+  <a href="../../CHANGELOG.md">Wijzigingen</a> ·
   <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> ·
+  <a href="../../README.md">English</a> ·
   <a href="README.zh-CN.md">简体中文</a> ·
   <a href="README.ja.md">日本語</a> ·
   <a href="README.es.md">Español</a> ·
@@ -49,7 +49,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/ui.png" alt="OpenFocus-interface" width="880">
+  <img src="../../assets/ui.png" alt="OpenFocus-interface" width="880">
 </p>
 
 ## 📢 News
@@ -74,7 +74,7 @@ De standaardmethode classificeert elke pixel met een neuraal netwerk naar het me
 </td>
 <td width="54%">
 
-<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="AI-fusie: StackMFF V3" width="100%" /></picture></a>
+<a href="../../assets/readme/ai.mp4"><picture><source srcset="../../assets/readme/ai.gif" type="image/gif"><img src="../../assets/readme/ai_poster.jpg" alt="AI-fusie: StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -91,7 +91,7 @@ Sleep de scheiding tussen een bronframe en het resultaat om te zien wat de fusie
 </td>
 <td width="54%">
 
-<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="A/B-vergelijking tussen bronframe en resultaat" width="100%" /></picture></a>
+<a href="../../assets/readme/wipe.mp4"><picture><source srcset="../../assets/readme/wipe.gif" type="image/gif"><img src="../../assets/readme/wipe_poster.jpg" alt="A/B-vergelijking tussen bronframe en resultaat" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@ Render alle methoden één keer, vergelijk ze naast elkaar op dezelfde uitsnede 
 </td>
 <td width="54%">
 
-<a href="assets/readme/method-comparison.mp4"><picture><source srcset="assets/readme/method-comparison.gif" type="image/gif"><img src="assets/readme/method-comparison_poster.jpg" alt="Acht fusiemethoden naast elkaar" width="100%" /></picture></a>
+<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="Acht fusiemethoden naast elkaar" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@ Focuspositie per pixel uit vijf focusmaten, wetenschappelijke kleurenschalen, fy
 </td>
 <td width="54%">
 
-<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="Dieptekaart en 3D-oppervlak van dezelfde stapel" width="100%" /></picture></a>
+<a href="../../assets/readme/depth.mp4"><picture><source srcset="../../assets/readme/depth.gif" type="image/gif"><img src="../../assets/readme/depth_poster.jpg" alt="Dieptekaart en 3D-oppervlak van dezelfde stapel" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@ Schilder vanuit de frames die het resultaat echt hebben gemaakt: gedeelde zoom e
 </td>
 <td width="54%">
 
-<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="Retoucheerwerkruimte met bronframe en resultaat" width="100%" /></picture></a>
+<a href="../../assets/readme/retouch.mp4"><picture><source srcset="../../assets/readme/retouch.gif" type="image/gif"><img src="../../assets/readme/retouch_poster.jpg" alt="Retoucheerwerkruimte met bronframe en resultaat" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@ Wijs een map met stapels aan, kies methode en bestemming en laat het lopen. Alle
 </td>
 <td width="54%">
 
-<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="Dialoog voor batchverwerking" width="100%" /></picture></a>
+<a href="../../assets/readme/batch.mp4"><picture><source srcset="../../assets/readme/batch.gif" type="image/gif"><img src="../../assets/readme/batch_poster.jpg" alt="Dialoog voor batchverwerking" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@ Gekalibreerd uit TIFF-metadata of handmatig, getekend met het echte lettertype o
 </td>
 <td width="54%">
 
-<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="Schaalbalkdialoog met live voorbeeld" width="100%" /></picture></a>
+<a href="../../assets/readme/scalebar.mp4"><picture><source srcset="../../assets/readme/scalebar.gif" type="image/gif"><img src="../../assets/readme/scalebar_poster.jpg" alt="Schaalbalkdialoog met live voorbeeld" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@ Bijschriften blijven een beheerde lijst: elk met een eigen bereik (bron, uitgeli
 </td>
 <td width="54%">
 
-<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="Labels en bijschriften" width="100%" /></picture></a>
+<a href="../../assets/readme/labels.mp4"><picture><source srcset="../../assets/readme/labels.gif" type="image/gif"><img src="../../assets/readme/labels_poster.jpg" alt="Labels en bijschriften" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -195,7 +195,7 @@ Bijschriften blijven een beheerde lijst: elk met een eigen bereik (bron, uitgeli
 - **Klaar voor microscopie** — 16-bit van begin tot eind, µm/px uit TIFF, flat-fieldcorrectie, meerbladige TIFF-Z-stacks.
 - **Headless CLI** — dezelfde pijplijn als `openfocus`, met batch, `--dry-run`, `--resume` en JSON-uitvoer.
 - **Projecten en herstel** — `.ofproj`-sessies, automatisch herstel na een crash, undo/redo voor stapels en annotaties.
-- **Twaalf UI-talen** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; automatisch gedetecteerd, een nieuwe taal is één `locales_<code>.py`-bestand.
+- **Twaalf UI-talen** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; automatisch gedetecteerd, een nieuwe taal is één `locales/<code>.py`-bestand.
 - **Zuining met geheugen** — de neurale gewichten laden alleen bij de AI-methode, dus een klassieke sessie blijft rond 110 MB in plaats van 260 MB.
 
 <a id="install"></a>

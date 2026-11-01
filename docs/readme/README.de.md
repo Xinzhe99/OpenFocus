@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus">
-    <img src="assets/OpenFocus.png" alt="OpenFocus" width="128">
+    <img src="../../assets/OpenFocus.png" alt="OpenFocus" width="128">
   </a>
 </p>
 
@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
   <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
 </p>
 
@@ -28,13 +28,13 @@
 
 <p align="center">
   <a href="#install">Download</a> ·
-  <a href="./docs/USER_MANUAL_DE.md">Dokumentation</a> ·
-  <a href="./CHANGELOG.md">Änderungen</a> ·
+  <a href="../USER_MANUAL_DE.md">Dokumentation</a> ·
+  <a href="../../CHANGELOG.md">Änderungen</a> ·
   <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> ·
+  <a href="../../README.md">English</a> ·
   <a href="README.zh-CN.md">简体中文</a> ·
   <a href="README.ja.md">日本語</a> ·
   <a href="README.es.md">Español</a> ·
@@ -49,7 +49,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/ui.png" alt="OpenFocus-Oberfläche" width="880">
+  <img src="../../assets/ui.png" alt="OpenFocus-Oberfläche" width="880">
 </p>
 
 ## 📢 News
@@ -74,7 +74,7 @@ Das Standardverfahren ordnet jeden Pixel per neuronalem Netz dem wahrscheinlichs
 </td>
 <td width="54%">
 
-<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="KI-Fusion: StackMFF V3" width="100%" /></picture></a>
+<a href="../../assets/readme/ai.mp4"><picture><source srcset="../../assets/readme/ai.gif" type="image/gif"><img src="../../assets/readme/ai_poster.jpg" alt="KI-Fusion: StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -91,7 +91,7 @@ Ziehen Sie den Trenner über Quellbild und Ergebnis: Sie sehen sofort, was die F
 </td>
 <td width="54%">
 
-<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="A/B-Vergleich zwischen Quellbild und Ergebnis" width="100%" /></picture></a>
+<a href="../../assets/readme/wipe.mp4"><picture><source srcset="../../assets/readme/wipe.gif" type="image/gif"><img src="../../assets/readme/wipe_poster.jpg" alt="A/B-Vergleich zwischen Quellbild und Ergebnis" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@ Alle Verfahren einmal rendern, nebeneinander am gleichen Ausschnitt prüfen und 
 </td>
 <td width="54%">
 
-<a href="assets/readme/method-comparison.mp4"><picture><source srcset="assets/readme/method-comparison.gif" type="image/gif"><img src="assets/readme/method-comparison_poster.jpg" alt="Acht Fusionsverfahren im direkten Vergleich" width="100%" /></picture></a>
+<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="Acht Fusionsverfahren im direkten Vergleich" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@ Fokusposition pro Pixel aus fünf Fokusmaßen, wissenschaftliche Farbskalen, phy
 </td>
 <td width="54%">
 
-<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="Tiefenkarte und 3D-Oberfläche desselben Stapels" width="100%" /></picture></a>
+<a href="../../assets/readme/depth.mp4"><picture><source srcset="../../assets/readme/depth.gif" type="image/gif"><img src="../../assets/readme/depth_poster.jpg" alt="Tiefenkarte und 3D-Oberfläche desselben Stapels" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@ Malen aus den Bildern, die das Ergebnis tatsächlich erzeugt haben: gemeinsamer 
 </td>
 <td width="54%">
 
-<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="Retusche mit Quellbild und Ergebnis" width="100%" /></picture></a>
+<a href="../../assets/readme/retouch.mp4"><picture><source srcset="../../assets/readme/retouch.gif" type="image/gif"><img src="../../assets/readme/retouch_poster.jpg" alt="Retusche mit Quellbild und Ergebnis" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@ Auf einen Ordner voller Stapel zeigen, Verfahren und Ziel wählen, laufen lassen
 </td>
 <td width="54%">
 
-<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="Dialog für Stapelverarbeitung" width="100%" /></picture></a>
+<a href="../../assets/readme/batch.mp4"><picture><source srcset="../../assets/readme/batch.gif" type="image/gif"><img src="../../assets/readme/batch_poster.jpg" alt="Dialog für Stapelverarbeitung" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@ Aus TIFF-Metadaten oder manuell kalibriert, mit echter Schrift und echter Länge
 </td>
 <td width="54%">
 
-<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="Maßstabsbalken-Dialog mit Live-Vorschau" width="100%" /></picture></a>
+<a href="../../assets/readme/scalebar.mp4"><picture><source srcset="../../assets/readme/scalebar.gif" type="image/gif"><img src="../../assets/readme/scalebar_poster.jpg" alt="Maßstabsbalken-Dialog mit Live-Vorschau" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@ Beschriftungen bleiben eine verwaltete Liste: jede mit eigenem Geltungsbereich (
 </td>
 <td width="54%">
 
-<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="Beschriftungen und Legenden" width="100%" /></picture></a>
+<a href="../../assets/readme/labels.mp4"><picture><source srcset="../../assets/readme/labels.gif" type="image/gif"><img src="../../assets/readme/labels_poster.jpg" alt="Beschriftungen und Legenden" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -195,7 +195,7 @@ Beschriftungen bleiben eine verwaltete Liste: jede mit eigenem Geltungsbereich (
 - **Mikroskopiebereit** — 16 Bit durchgängig, µm/px aus TIFF, Flat-Field-Korrektur, mehrseitige TIFF-Z-Stacks.
 - **Headless-CLI** — dieselbe Pipeline als `openfocus`, mit Batch, `--dry-run`, `--resume` und JSON-Ausgabe.
 - **Projekte und Wiederherstellung** — `.ofproj`-Sitzungen, automatische Absturzrettung, Undo/Redo für Stapel und Beschriftungen.
-- **Zwölf UI-Sprachen** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; automatisch aus dem System erkannt, eine neue Sprache ist eine `locales_<code>.py`-Datei.
+- **Zwölf UI-Sprachen** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; automatisch aus dem System erkannt, eine neue Sprache ist eine `locales/<code>.py`-Datei.
 - **Speicherschonend** — die neuronalen Gewichte werden nur beim AI-Verfahren geladen; eine klassische Sitzung ruht bei rund 110 MB statt 260 MB.
 
 <a id="install"></a>

@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus">
-    <img src="assets/OpenFocus.png" alt="OpenFocus" width="128">
+    <img src="../../assets/OpenFocus.png" alt="OpenFocus" width="128">
   </a>
 </p>
 
@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
   <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
 </p>
 
@@ -28,13 +28,13 @@
 
 <p align="center">
   <a href="#install">Descargar</a> ·
-  <a href="./docs/USER_MANUAL_ES.md">Documentación</a> ·
-  <a href="./CHANGELOG.md">Cambios</a> ·
+  <a href="../USER_MANUAL_ES.md">Documentación</a> ·
+  <a href="../../CHANGELOG.md">Cambios</a> ·
   <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> ·
+  <a href="../../README.md">English</a> ·
   <a href="README.zh-CN.md">简体中文</a> ·
   <a href="README.ja.md">日本語</a> ·
   <strong>Español</strong> ·
@@ -49,7 +49,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/ui.png" alt="Interfaz de OpenFocus" width="880">
+  <img src="../../assets/ui.png" alt="Interfaz de OpenFocus" width="880">
 </p>
 
 ## 📢 News
@@ -74,7 +74,7 @@ El método predeterminado clasifica cada píxel según su fotograma de origen m�
 </td>
 <td width="54%">
 
-<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="Fusión con IA: StackMFF V3" width="100%" /></picture></a>
+<a href="../../assets/readme/ai.mp4"><picture><source srcset="../../assets/readme/ai.gif" type="image/gif"><img src="../../assets/readme/ai_poster.jpg" alt="Fusión con IA: StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -91,7 +91,7 @@ Arrastra el divisor entre un fotograma y el resultado fusionado para ver qué ca
 </td>
 <td width="54%">
 
-<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="Comparación A/B entre un fotograma y el resultado" width="100%" /></picture></a>
+<a href="../../assets/readme/wipe.mp4"><picture><source srcset="../../assets/readme/wipe.gif" type="image/gif"><img src="../../assets/readme/wipe_poster.jpg" alt="Comparación A/B entre un fotograma y el resultado" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@ Renderiza todos los métodos una vez, compáralos lado a lado en el mismo recort
 </td>
 <td width="54%">
 
-<a href="assets/readme/method-comparison.mp4"><picture><source srcset="assets/readme/method-comparison.gif" type="image/gif"><img src="assets/readme/method-comparison_poster.jpg" alt="Ocho métodos de fusión en paralelo" width="100%" /></picture></a>
+<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="Ocho métodos de fusión en paralelo" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@ Posición de foco por píxel con cinco medidas, mapas de color científicos, cal
 </td>
 <td width="54%">
 
-<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="Mapa de profundidad y superficie 3D de la misma pila" width="100%" /></picture></a>
+<a href="../../assets/readme/depth.mp4"><picture><source srcset="../../assets/readme/depth.gif" type="image/gif"><img src="../../assets/readme/depth_poster.jpg" alt="Mapa de profundidad y superficie 3D de la misma pila" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@ Pinta desde los fotogramas que produjeron el resultado: zoom y desplazamiento co
 </td>
 <td width="54%">
 
-<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="Espacio de retoque con fotograma y resultado" width="100%" /></picture></a>
+<a href="../../assets/readme/retouch.mp4"><picture><source srcset="../../assets/readme/retouch.gif" type="image/gif"><img src="../../assets/readme/retouch_poster.jpg" alt="Espacio de retoque con fotograma y resultado" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@ Apunta a una carpeta de pilas, elige método y destino, y déjalo trabajar. Solo
 </td>
 <td width="54%">
 
-<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="Diálogo de procesamiento por lotes" width="100%" /></picture></a>
+<a href="../../assets/readme/batch.mp4"><picture><source srcset="../../assets/readme/batch.gif" type="image/gif"><img src="../../assets/readme/batch_poster.jpg" alt="Diálogo de procesamiento por lotes" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@ Calibradas desde metadatos TIFF o a mano, dibujadas con la fuente y longitud rea
 </td>
 <td width="54%">
 
-<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="Diálogo de barra de escala con vista previa" width="100%" /></picture></a>
+<a href="../../assets/readme/scalebar.mp4"><picture><source srcset="../../assets/readme/scalebar.gif" type="image/gif"><img src="../../assets/readme/scalebar_poster.jpg" alt="Diálogo de barra de escala con vista previa" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@ Mantén las leyendas como una lista gestionada: cada una con su ámbito (fuente,
 </td>
 <td width="54%">
 
-<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="Etiquetas y leyendas" width="100%" /></picture></a>
+<a href="../../assets/readme/labels.mp4"><picture><source srcset="../../assets/readme/labels.gif" type="image/gif"><img src="../../assets/readme/labels_poster.jpg" alt="Etiquetas y leyendas" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -195,7 +195,7 @@ Mantén las leyendas como una lista gestionada: cada una con su ámbito (fuente,
 - **Listo para microscopía**——16 bits de extremo a extremo, µm/px desde TIFF, corrección de campo plano, Z-stacks TIFF multipágina.
 - **CLI sin interfaz**——la misma tubería como `openfocus`, con lotes, `--dry-run`, `--resume` y salida JSON.
 - **Proyectos y recuperación**——sesiones `.ofproj`, recuperación tras fallos y deshacer/rehacer de ediciones y anotaciones.
-- **Doce idiomas de interfaz**——English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; detectados del sistema, un idioma nuevo es un archivo `locales_<code>.py`.
+- **Doce idiomas de interfaz**——English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; detectados del sistema, un idioma nuevo es un archivo `locales/<code>.py`.
 - **Ligero en memoria**——los pesos neuronales se cargan solo al usar el método AI, así que una sesión clásica ronda 110 MB en vez de 260 MB.
 
 <a id="install"></a>

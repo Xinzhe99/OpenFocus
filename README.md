@@ -35,17 +35,17 @@
 
 <p align="center">
   <strong>English</strong> ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="README.ja.md">日本語</a> ·
-  <a href="README.es.md">Español</a> ·
-  <a href="README.de.md">Deutsch</a> ·
-  <a href="README.fr.md">Français</a> ·
-  <a href="README.ru.md">Русский</a> ·
-  <a href="README.ko.md">한국어</a> ·
-  <a href="README.pt.md">Português</a> ·
-  <a href="README.it.md">Italiano</a> ·
-  <a href="README.nl.md">Nederlands</a> ·
-  <a href="README.pl.md">Polski</a>
+  <a href="docs/readme/README.zh-CN.md">简体中文</a> ·
+  <a href="docs/readme/README.ja.md">日本語</a> ·
+  <a href="docs/readme/README.es.md">Español</a> ·
+  <a href="docs/readme/README.de.md">Deutsch</a> ·
+  <a href="docs/readme/README.fr.md">Français</a> ·
+  <a href="docs/readme/README.ru.md">Русский</a> ·
+  <a href="docs/readme/README.ko.md">한국어</a> ·
+  <a href="docs/readme/README.pt.md">Português</a> ·
+  <a href="docs/readme/README.it.md">Italiano</a> ·
+  <a href="docs/readme/README.nl.md">Nederlands</a> ·
+  <a href="docs/readme/README.pl.md">Polski</a>
 </p>
 
 <p align="center">
@@ -244,7 +244,7 @@ the channel closed.
   undo/redo across stack edits and annotations.
 - **Twelve UI languages** — English, 中文, 日本語, Español, Deutsch, Français,
   Русский, 한국어, Português, Italiano, Nederlands, Polski. Auto-detected from
-  the system locale; a new language is one `locales_<code>.py` file.
+  the system locale; a new language is one `locales/<code>.py` file.
 - **Light on memory** — the neural stack is loaded only when the neural method
   is used, so a classical-method session idles around 110 MB instead of 260 MB.
 

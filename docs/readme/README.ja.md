@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus">
-    <img src="assets/OpenFocus.png" alt="OpenFocus" width="128">
+    <img src="../../assets/OpenFocus.png" alt="OpenFocus" width="128">
   </a>
 </p>
 
@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
   <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
 </p>
 
@@ -28,13 +28,13 @@
 
 <p align="center">
   <a href="#install">ダウンロード</a> ·
-  <a href="./docs/USER_MANUAL_JA.md">ドキュメント</a> ·
-  <a href="./CHANGELOG.md">変更履歴</a> ·
+  <a href="../USER_MANUAL_JA.md">ドキュメント</a> ·
+  <a href="../../CHANGELOG.md">変更履歴</a> ·
   <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> ·
+  <a href="../../README.md">English</a> ·
   <a href="README.zh-CN.md">简体中文</a> ·
   <strong>日本語</strong> ·
   <a href="README.es.md">Español</a> ·
@@ -49,7 +49,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/ui.png" alt="OpenFocus の画面" width="880">
+  <img src="../../assets/ui.png" alt="OpenFocus の画面" width="880">
 </p>
 
 ## 📢 News
@@ -74,7 +74,7 @@
 </td>
 <td width="54%">
 
-<a href="assets/readme/ai.mp4"><picture><source srcset="assets/readme/ai.gif" type="image/gif"><img src="assets/readme/ai_poster.jpg" alt="AI 合成：StackMFF V3" width="100%" /></picture></a>
+<a href="../../assets/readme/ai.mp4"><picture><source srcset="../../assets/readme/ai.gif" type="image/gif"><img src="../../assets/readme/ai_poster.jpg" alt="AI 合成：StackMFF V3" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -91,7 +91,7 @@
 </td>
 <td width="54%">
 
-<a href="assets/readme/wipe.mp4"><picture><source srcset="assets/readme/wipe.gif" type="image/gif"><img src="assets/readme/wipe_poster.jpg" alt="ソースフレームと合成結果の A/B 比較" width="100%" /></picture></a>
+<a href="../../assets/readme/wipe.mp4"><picture><source srcset="../../assets/readme/wipe.gif" type="image/gif"><img src="../../assets/readme/wipe_poster.jpg" alt="ソースフレームと合成結果の A/B 比較" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -106,7 +106,7 @@
 </td>
 <td width="54%">
 
-<a href="assets/readme/method-comparison.mp4"><picture><source srcset="assets/readme/method-comparison.gif" type="image/gif"><img src="assets/readme/method-comparison_poster.jpg" alt="8 つの合成手法の並列比較" width="100%" /></picture></a>
+<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="8 つの合成手法の並列比較" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -121,7 +121,7 @@
 </td>
 <td width="54%">
 
-<a href="assets/readme/depth.mp4"><picture><source srcset="assets/readme/depth.gif" type="image/gif"><img src="assets/readme/depth_poster.jpg" alt="同じスタックの深度マップと 3D 曲面" width="100%" /></picture></a>
+<a href="../../assets/readme/depth.mp4"><picture><source srcset="../../assets/readme/depth.gif" type="image/gif"><img src="../../assets/readme/depth_poster.jpg" alt="同じスタックの深度マップと 3D 曲面" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -136,7 +136,7 @@
 </td>
 <td width="54%">
 
-<a href="assets/readme/retouch.mp4"><picture><source srcset="assets/readme/retouch.gif" type="image/gif"><img src="assets/readme/retouch_poster.jpg" alt="ソースフレームと結果を並べたレタッチ作業領域" width="100%" /></picture></a>
+<a href="../../assets/readme/retouch.mp4"><picture><source srcset="../../assets/readme/retouch.gif" type="image/gif"><img src="../../assets/readme/retouch_poster.jpg" alt="ソースフレームと結果を並べたレタッチ作業領域" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -151,7 +151,7 @@
 </td>
 <td width="54%">
 
-<a href="assets/readme/batch.mp4"><picture><source srcset="assets/readme/batch.gif" type="image/gif"><img src="assets/readme/batch_poster.jpg" alt="バッチ処理ダイアログ" width="100%" /></picture></a>
+<a href="../../assets/readme/batch.mp4"><picture><source srcset="../../assets/readme/batch.gif" type="image/gif"><img src="../../assets/readme/batch_poster.jpg" alt="バッチ処理ダイアログ" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -168,7 +168,7 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 </td>
 <td width="54%">
 
-<a href="assets/readme/scalebar.mp4"><picture><source srcset="assets/readme/scalebar.gif" type="image/gif"><img src="assets/readme/scalebar_poster.jpg" alt="ライブプレビュー付きスケールバーダイアログ" width="100%" /></picture></a>
+<a href="../../assets/readme/scalebar.mp4"><picture><source srcset="../../assets/readme/scalebar.gif" type="image/gif"><img src="../../assets/readme/scalebar_poster.jpg" alt="ライブプレビュー付きスケールバーダイアログ" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -183,7 +183,7 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 </td>
 <td width="54%">
 
-<a href="assets/readme/labels.mp4"><picture><source srcset="assets/readme/labels.gif" type="image/gif"><img src="assets/readme/labels_poster.jpg" alt="ラベルとキャプション" width="100%" /></picture></a>
+<a href="../../assets/readme/labels.mp4"><picture><source srcset="../../assets/readme/labels.gif" type="image/gif"><img src="../../assets/readme/labels_poster.jpg" alt="ラベルとキャプション" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -195,7 +195,7 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 - **顕微鏡向け**——16 ビットを一貫保持、TIFF µm/px、フラットフィールド補正、複数ページ TIFF Z スタック。
 - **ヘッドレス CLI**——GUI と同じパイプラインを `openfocus` として提供。バッチ、`--dry-run`、`--resume`、JSON 出力に対応。
 - **プロジェクトと復元**——`.ofproj` セッション、クラッシュ自動復元、スタック編集と注釈の undo/redo。
-- **12 の UI 言語**——English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski。システムロケールから自動判定し、新しい言語は `locales_<code>.py` 1 ファイルで追加できます。
+- **12 の UI 言語**——English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski。システムロケールから自動判定し、新しい言語は `locales/<code>.py` 1 ファイルで追加できます。
 - **省メモリ**——ニューラル重みは AI 手法を使うときだけ読み込み、古典手法のセッションは約 110 MB で待機します（260 MB ではなく）。
 
 <a id="install"></a>

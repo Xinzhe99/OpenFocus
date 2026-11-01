@@ -64,6 +64,7 @@ jobs:
             --add-data "docs;docs" `
             --collect-submodules PyQt6 `
             --collect-submodules fusion_methods `
+            --collect-submodules locales `
             --hidden-import core.algorithm_adapters `
             --hidden-import core.depth_map `
             --hidden-import core.registration `
@@ -195,6 +196,7 @@ jobs:
             --add-data "ui:ui" \
             --add-data "docs:docs" \
             --collect-submodules fusion_methods \
+            --collect-submodules locales \
             --hidden-import core.algorithm_adapters \
             --hidden-import core.depth_map \
             --hidden-import core.registration \

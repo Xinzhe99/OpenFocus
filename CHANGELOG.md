@@ -3,6 +3,31 @@
 All notable changes to OpenFocus are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- **One locale package instead of eleven root modules.** `locales.py`,
+  `locales_extra.py` and the eight `locales_<code>.py` packs became the
+  `locales/` package (`__init__.py`, `en.py`, `zh.py`, `_extra.py`, one
+  `<code>.py` per community language). `from locales import trans` and the
+  drop-in discovery contract are unchanged; a new language is still one file.
+- **Translated READMEs moved to `docs/readme/`**, so the repository root only
+  carries `README.md`. Every language switcher, image and manual link was
+  rewritten to the new relative paths.
+
+### Removed
+- `locales_help_texts.py` (never imported; its ja/es help bodies were exact
+  duplicates of entries already present in the translation tables) and the
+  dead `_JA_HELP`/`_ES_HELP` copies at the end of `locales_extra.py`.
+- `_chk.py`, a leftover window-luminance probe script.
+
+### Fixed
+- Packaged builds and the PyPI wheel now explicitly include every language
+  pack: the release workflows pass `--collect-submodules locales`, the wheel
+  lists the `locales` package, and `OpenFocus.spec` collects the submodules.
+  Previously the dynamic pack imports were invisible to both builders, so a
+  frozen build could ship fewer languages than the source tree.
+
 ## [1.73.0] - 2026-10-28
 
 ### Fixed

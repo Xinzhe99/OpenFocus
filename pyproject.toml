@@ -60,13 +60,11 @@ Changelog = "https://github.com/Xinzhe99/OpenFocus/blob/main/CHANGELOG.md"
 [tool.setuptools]
 packages = ["core", "core.control", "core.models", "core.models.stackmff_v3",
             "core.models.stackmff_v1", "core.models.stackmff_v2",
-            "fusion_methods", "utils", "weights"]
-# The locale packs are top-level modules (locales_de.py, …) discovered at
-# runtime by TranslationManager; if they are not listed here they are absent
-# from the wheel and every language except the inline ones disappears.
-py-modules = ["constants", "locales", "locales_extra", "locales_help_texts",
-              "locales_de", "locales_fr", "locales_ru", "locales_ko",
-              "locales_pt", "locales_it", "locales_nl", "locales_pl"]
+            "fusion_methods", "utils", "weights", "locales"]
+# The locale packs are submodules of the `locales` package (locales/de.py, …)
+# discovered at runtime by TranslationManager; the whole package is listed
+# above so every language ships in the wheel.
+py-modules = ["constants"]
 
 [tool.setuptools.dynamic]
 version = { attr = "constants.APP_VERSION" }
