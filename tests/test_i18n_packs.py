@@ -28,17 +28,17 @@ def test_every_pack_is_discovered():
     import os
 
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    package = os.path.join(here, "locales")
     on_disk = {
-        name[len("locales_"):-3]
-        for name in os.listdir(here)
-        if name.startswith("locales_") and name.endswith(".py")
-    }
-    on_disk.discard("extra")
-    on_disk.discard("help_texts")
+        name[:-3]
+        for name in os.listdir(package)
+        if name.endswith(".py") and not name.startswith("_")
+        and len(name[:-3]) == 2
+    } - {"en", "zh"}
     loaded = set(trans.translations)
-    missing = {c for c in on_disk if len(c) == 2} - loaded
+    missing = on_disk - loaded
     assert not missing, (
-        f"language pack files exist but did not load: {sorted(missing)} — "
+        f"language pack modules exist but did not load: {sorted(missing)} — "
         "check the warning printed by TranslationManager._load_language_packs")
 
 

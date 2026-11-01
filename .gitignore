@@ -92,3 +92,17 @@ assets/demo_stack/.openfocus_cache/
 # Local GUI screenshots / scratch
 .shots/
 shot_tmp.py
+
+# Local build leftovers (MSYS2 toolchain extracted/downloaded into the repo root)
+/mingw64/
+/*.pkg.tar.zst
+/.BUILDINFO
+/.MTREE
+/.PKGINFO
+
+# Local probe scratch and generated demo outputs
+/.probe/
+/assets/demo_stack/outputs/
+
+# Local test-run transcripts
+/.pytest_*.txt
