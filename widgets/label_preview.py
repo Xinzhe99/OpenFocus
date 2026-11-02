@@ -140,6 +140,9 @@ class LabelPreview(QLabel):
         from utils.image_utils import to_display_uint8
 
         canvas = self._canvas()
+        if canvas.ndim == 3 and canvas.shape[2] == 4:
+            from utils.image_utils import composite_transparent_for_display
+            canvas = composite_transparent_for_display(canvas)
         config = self._adder.config
         text = build_label_text(config.format, config.text,
                                 self._preview_value())

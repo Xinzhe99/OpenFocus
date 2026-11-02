@@ -70,7 +70,8 @@ class OutputRecord:
     def retouchable(self) -> bool:
         return (self.context is not None
                 and int(getattr(self.context, "source_count", 0)) > 0
-                and self.image is not None)
+                and self.image is not None
+                and not (self.image.ndim == 3 and self.image.shape[2] == 4))
 
     #: Outputs that exist only in this session and must not be discarded
     #: silently: retouched buffers and results adopted from the compare view.
@@ -102,6 +103,9 @@ def _thumbnail_bgr(image, size: int):
     proportional to the icon instead of to the full-resolution frame.
     """
     display = to_display_uint8(image)
+    if display.ndim == 3 and display.shape[2] == 4:
+        from utils.image_utils import composite_transparent_for_display
+        display = composite_transparent_for_display(display)
     if display.ndim == 2:
         display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
     h, w = display.shape[:2]
@@ -555,6 +559,8 @@ class OutputManager:
         image = record.image
         if image is None:
             raise ValueError(trans.t('msg_no_valid_image_text'))
+        if image.ndim == 3 and image.shape[2] == 4 and os.path.splitext(path)[1].lower() != '.png':
+            raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
         if not record.annotations_baked:
             image = labels.prepare_bgr_image('output', image, 0, output_id=record.output_id)
             image = scalebar.burn(image, scalebar.export_cfg(self.window, record=record))

@@ -29,7 +29,7 @@ PACK = {
     'retouch_tool_exposure': '노출 브러시',
     'retouch_exposure_amount': '노출 (스톱의 100분의 1)',
     'retouch_exposure_hint': '결과를 칠해 국소적으로 조정합니다. 양수는 밝게, 음수는 어둡게 합니다. 각 획은 현재 결과에서 시작합니다. 이전을 누르고 있으면 원래 결과와 비교하며 실행 취소로 되돌릴 수 있습니다.',
-    "transparent_desktop_unsupported": "데스크톱 앱과 일괄 처리에서는 투명 이미지를 불러올 수 없습니다. 명령줄은 제한된 투명 PNG 스택을 지원합니다. 파일: {path}",
+    "transparent_desktop_unsupported": "투명 이미지에서는 이 작업을 사용할 수 없습니다. 동일한 직사각형의 일정한 불투명도 마스크를 가진 PNG 프레임을 사용하고 정렬, 빠른 미리보기와 ROI를 끈 후 PNG로 내보내세요. 다른 제한은 설명서를 참조하세요. {path}",
     "label_outputs_all": "모든 출력 결과",
     "label_range_current": "현재 프레임",
     "label_range_custom": "사용자 지정 범위",

@@ -29,7 +29,7 @@ PACK = {
     'retouch_tool_exposure': 'Belichtingspenseel',
     'retouch_exposure_amount': 'Belichting (honderdsten van een stop)',
     'retouch_exposure_hint': 'Schilder om het resultaat plaatselijk aan te passen. Positieve waarden maken lichter, negatieve donkerder. Elke streek begint bij het huidige resultaat. Houd Voor ingedrukt om te vergelijken; maak een streek ongedaan om te herstellen.',
-    "transparent_desktop_unsupported": "Transparante afbeeldingen kunnen niet worden geladen in de desktopapp of batchverwerking. De opdrachtregel ondersteunt beperkt transparante PNG-stapels. Bestand: {path}",
+    "transparent_desktop_unsupported": "Deze actie is niet beschikbaar voor transparante afbeeldingen. Gebruik PNG-beelden met identieke rechthoekige maskers met constante dekking; schakel uitlijning, snelle voorvertoning en ROI uit en exporteer als PNG. Zie de handleiding voor overige beperkingen. {path}",
     "label_outputs_all": "Alle uitvoerresultaten",
     "label_range_current": "Huidig beeld",
     "label_range_custom": "Aangepast bereik",

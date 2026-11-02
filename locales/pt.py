@@ -29,7 +29,7 @@ PACK = {
     'retouch_tool_exposure': 'Pincel de exposição',
     'retouch_exposure_amount': 'Exposição (centésimos de ponto)',
     'retouch_exposure_hint': 'Pinte para ajustar o resultado localmente. Valores positivos clareiam; negativos escurecem. Cada traço começa no resultado atual. Segure Antes para comparar; desfaça o traço para reverter.',
-    "transparent_desktop_unsupported": "Imagens transparentes não podem ser carregadas no aplicativo nem no processamento em lote. A linha de comando oferece suporte limitado a pilhas PNG transparentes. Arquivo: {path}",
+    "transparent_desktop_unsupported": "Esta ação não está disponível para imagens transparentes. Use quadros PNG com máscaras retangulares idênticas de opacidade constante; desative alinhamento, prévia rápida e ROI e exporte em PNG. Consulte as demais restrições no manual. {path}",
     "label_outputs_all": "Todos os resultados",
     "label_range_current": "Quadro atual",
     "label_range_custom": "Intervalo personalizado",

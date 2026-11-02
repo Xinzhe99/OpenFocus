@@ -79,13 +79,14 @@ def test_cli_batch_preserves_transparent_png(tmp_path):
     np.testing.assert_array_equal(a, b)
 
 
-def test_desktop_rejects_entire_stack_with_transparent_frame(tmp_path):
+def test_desktop_loader_preserves_transparent_frames(tmp_path):
     folder = tmp_path / "frames"
     _stack(folder, np.uint8, 99)
-    assert cv2.imwrite(str(folder / "opaque.png"), np.zeros((80, 104, 3), np.uint8))
     ok, message, frames, _ = ImageStackLoader().load_from_folder(str(folder))
-    assert not ok and not frames
-    assert "transparent" in message.lower() or "PNG" in message
+    assert ok, message
+    assert len(frames) == 2 and all(frame.shape == (80, 104, 4) for frame in frames)
+    assert np.all(frames[0][8:72, 12:92, 3] == 127)
+    assert not np.any(frames[0][:8, :, 3])
 
 
 @pytest.mark.parametrize("option,value", [("--align", "ecc"), ("--depth-map", "depth.png")])
@@ -164,3 +165,140 @@ def test_registration_rejects_transparent_arrays():
     frame[4:12, 4:12, 3] = 255
     with pytest.raises(ValueError, match="transparent"):
         ImageRegistration(method="ecc").process([frame, frame])
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_desktop_render_and_folder_batch_preserve_alpha(tmp_path, qapp, dtype):
+    from core.workers import RenderWorker, BatchWorker
+
+    folder = tmp_path / 'frames'
+    _stack(folder, dtype, np.iinfo(dtype).max)
+    ok, message, frames, _ = ImageStackLoader().load_from_folder(str(folder))
+    assert ok, message
+    worker = RenderWorker(frames, algorithm='guided_filter', alignment='none',
+                          fusion_parameters={'kernel_size': 9}, use_gpu=False,
+                          tile_enabled=False, thread_count=1, exposure_match=False)
+    observed = {}
+    worker.finished_signal.connect(lambda *args: observed.update(result=args[1]))
+    worker.error_signal.connect(lambda message: observed.update(error=message))
+    worker.run()
+    assert 'error' not in observed, observed.get('error')
+    fused = observed['result']
+    assert fused.shape == frames[0].shape and fused.dtype == dtype
+    np.testing.assert_array_equal(fused[:, :, 3], frames[0][:, :, 3])
+    assert not np.any(fused[fused[:, :, 3] == 0, :3])
+
+    output = tmp_path / 'out'
+    output.mkdir()
+    batch = BatchWorker([str(folder)], 'custom', str(output), {
+        'reg_methods': [], 'fusion_method': 'guided_filter',
+        'fusion_params': {'kernel_size': 9}, 'format': 'png'},
+        thread_count=1, use_gpu=False, exposure_match=False)
+    batch.process_single_folder(str(folder))
+    saved = cv2.imread(str(output / 'frames.png'), cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(saved, fused)
+
+
+@pytest.mark.parametrize('options', [dict(alignment='ecc'), dict(preview=True),
+                                     dict(roi_rect=(0, 0, 8, 8))])
+def test_desktop_render_rejects_unsupported_modes(tmp_path, qapp, options):
+    from core.workers import RenderWorker
+    folder = tmp_path / 'frames'
+    _stack(folder, np.uint8, 0)
+    ok, _, frames, _ = ImageStackLoader().load_from_folder(str(folder))
+    assert ok
+    worker = RenderWorker(frames, algorithm='guided_filter', use_gpu=False, **options)
+    errors, results = [], []
+    worker.error_signal.connect(errors.append)
+    worker.finished_signal.connect(lambda *args: results.append(args))
+    worker.run()
+    assert errors and not results
+
+
+def test_desktop_rejects_distinct_masks_in_render_and_batch(tmp_path, qapp):
+    from core.workers import RenderWorker, BatchWorker
+    folder = tmp_path / 'frames'
+    _stack(folder, np.uint8, 0)
+    path = folder / '1.png'
+    changed = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    changed[8, 12, 3] = 0
+    assert cv2.imwrite(str(path), changed)
+    ok, _, frames, _ = ImageStackLoader().load_from_folder(str(folder))
+    assert ok
+    worker = RenderWorker(frames, algorithm='guided_filter', alignment='none',
+                          use_gpu=False, thread_count=1)
+    errors, results = [], []
+    worker.error_signal.connect(errors.append)
+    worker.finished_signal.connect(lambda *args: results.append(args))
+    worker.run()
+    assert errors and not results
+    output = tmp_path / 'out'
+    output.mkdir()
+    batch = BatchWorker([str(folder)], 'custom', str(output), {
+        'reg_methods': [], 'fusion_method': 'guided_filter', 'format': 'png'},
+        thread_count=1, use_gpu=False)
+    with pytest.raises(ValueError, match='alpha'):
+        batch.process_single_folder(str(folder))
+    assert not (output / 'frames.png').exists()
+
+
+def test_desktop_batch_rejects_non_png_before_writing(tmp_path, qapp):
+    from core.workers import BatchWorker
+    folder = tmp_path / 'frames'
+    _stack(folder, np.uint8, 0)
+    output = tmp_path / 'out'
+    output.mkdir()
+    batch = BatchWorker([str(folder)], 'custom', str(output), {
+        'reg_methods': [], 'fusion_method': 'guided_filter', 'format': 'jpg'},
+        thread_count=1, use_gpu=False)
+    with pytest.raises(ValueError):
+        batch.process_single_folder(str(folder))
+    assert not (output / 'frames.jpg').exists()
+
+
+def test_display_composites_alpha_without_using_hidden_color():
+    from utils.image_utils import composite_transparent_for_display
+    first = np.zeros((24, 24, 4), np.uint8)
+    second = first.copy()
+    second[:, :, :3] = 255
+    np.testing.assert_array_equal(composite_transparent_for_display(first),
+                                  composite_transparent_for_display(second))
+    displayed = composite_transparent_for_display(first)
+    assert displayed[0, 0, 0] != displayed[0, 12, 0]
+
+
+def test_transparent_export_rejects_other_formats(tmp_path):
+    from utils.image_utils import imwrite_auto
+    image = np.zeros((8, 8, 4), np.uint8)
+    image[2:6, 2:6, 3] = 127
+    assert not imwrite_auto(str(tmp_path / 'lost.jpg'), image)
+    assert not imwrite_auto(str(tmp_path / 'lost.tif'), image)
+    assert imwrite_auto(str(tmp_path / 'kept.png'), image)
+    np.testing.assert_array_equal(cv2.imread(str(tmp_path / 'kept.png'), cv2.IMREAD_UNCHANGED), image)
+
+
+@pytest.mark.parametrize('extension,dtype,channels', [
+    ('.png', np.uint8, 1), ('.png', np.uint16, 1),
+    ('.png', np.uint8, 3), ('.png', np.uint16, 3),
+    ('.png', np.uint8, 4), ('.png', np.uint16, 4),
+    ('.jpg', np.uint8, 3), ('.tif', np.uint16, 3)])
+def test_opaque_decode_matches_original_color_read(tmp_path, monkeypatch, extension, dtype, channels):
+    from core.image_loader import decode_image
+    rng = np.random.default_rng(42)
+    maximum = np.iinfo(dtype).max
+    shape = (20, 24) if channels == 1 else (20, 24, channels)
+    pixels = rng.integers(0, maximum + 1, size=shape, dtype=dtype)
+    if channels == 4:
+        pixels[:, :, 3] = maximum
+    path = tmp_path / ('source' + extension)
+    assert cv2.imwrite(str(path), pixels)
+    expected = cv2.imdecode(np.fromfile(str(path), np.uint8),
+                            cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+    decode = cv2.imdecode
+    calls = []
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return decode(*args, **kwargs)
+    monkeypatch.setattr(cv2, 'imdecode', counted)
+    np.testing.assert_array_equal(decode_image(str(path)), expected)
+    assert len(calls) == 1

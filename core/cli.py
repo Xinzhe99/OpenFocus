@@ -317,24 +317,8 @@ def _transparent_region(images, args):
             or getattr(args, "depth_map", None) or getattr(args, "scale_bar", False)
             or getattr(args, "scale_um", None) is not None):
         raise ValueError("Transparent PNG stacks require no alignment, dust map, depth map or scale bar")
-    first = images[0]
-    if (first.dtype not in (np.uint8, np.uint16) or first.ndim != 3
-            or first.shape[2] != 4):
-        raise ValueError("Transparent PNG stacks require matching RGBA frames and bit depths")
-    alpha = first[:, :, 3]
-    rows = np.flatnonzero(np.any(alpha != 0, axis=1))
-    cols = np.flatnonzero(np.any(alpha != 0, axis=0))
-    if not len(rows) or not len(cols):
-        raise ValueError("Transparent PNG stacks require a nonempty rectangular visible region")
-    y0, y1 = int(rows[0]), int(rows[-1]) + 1
-    x0, x1 = int(cols[0]), int(cols[-1]) + 1
-    opacity = int(alpha[y0, x0])
-    if not opacity or np.count_nonzero(alpha) != (y1 - y0) * (x1 - x0) or not np.all(alpha[y0:y1, x0:x1] == opacity):
-        raise ValueError("Transparent PNG alpha must be constant within one rectangle and zero outside")
-    for image in images[1:]:
-        if image.shape != first.shape or image.dtype != first.dtype or not np.array_equal(image[:, :, 3], alpha):
-            raise ValueError("Transparent PNG frames must have identical dimensions, bit depths and alpha masks")
-    return [image[y0:y1, x0:x1, :3] for image in images], (first.shape, first.dtype, y0, y1, x0, x1, opacity)
+    from core.transparency import crop_transparent_stack
+    return crop_transparent_stack(images)
 
 
 def _fuse_stack(images, args):
@@ -419,15 +403,8 @@ def _fuse_stack_admitted(images, args):
         from utils.output_sharpen import sharpen_output
         fused = sharpen_output(fused)
     fused = quantize_fuse_output(fused, is_16bit)
-    if transparent is not None:
-        shape, dtype, y0, y1, x0, x1, opacity = transparent
-        if fused.shape != (y1 - y0, x1 - x0, 3) or fused.dtype != dtype:
-            raise ValueError("The selected fusion method changes the transparent region's size or bit depth")
-        require_memory(int(np.prod(shape)) * np.dtype(dtype).itemsize)
-        output = np.zeros(shape, dtype=dtype)
-        output[y0:y1, x0:x1, :3] = fused
-        output[y0:y1, x0:x1, 3] = opacity
-        fused = output
+    from core.transparency import restore_transparent_canvas
+    fused = restore_transparent_canvas(fused, transparent)
     # 注册/归一化后的帧留给 --depth-map 用（与融合同一输入）。帧序必须与
     # 融合内部一致：--sort desc 会在 fuse() 内反转帧序，深度图若仍按原序
     # 计算，0/N-1 标签就指向相反的一端。

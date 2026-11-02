@@ -31,6 +31,21 @@ def pixmap_to_cv2(pixmap) -> Optional[np.ndarray]:
         return None
 
 
+def composite_transparent_for_display(image: np.ndarray) -> np.ndarray:
+    """Composite straight-alpha pixels on a checkerboard for display only."""
+    image = to_display_uint8(image)
+    if image.ndim != 3 or image.shape[2] != 4:
+        return image
+    h, w = image.shape[:2]
+    checker = (((np.arange(h)[:, None] // 12 + np.arange(w)[None, :] // 12) % 2) * 48 + 160).astype(np.uint16)
+    alpha = image[:, :, 3].astype(np.uint16)
+    out = np.empty((h, w, 3), dtype=np.uint8)
+    for channel in range(3):
+        out[:, :, channel] = ((image[:, :, channel].astype(np.uint16) * alpha
+                               + checker * (255 - alpha) + 127) // 255).astype(np.uint8)
+    return out
+
+
 def cv2_to_pixmap(cv2_img: np.ndarray) -> QPixmap:
     """BGR ndarray -> QPixmap, with no channel-conversion copy.
 
@@ -40,6 +55,8 @@ def cv2_to_pixmap(cv2_img: np.ndarray) -> QPixmap:
     try:
         if cv2_img.dtype != np.uint8:
             cv2_img = to_display_uint8(cv2_img)
+        if cv2_img.ndim == 3 and cv2_img.shape[2] == 4:
+            cv2_img = composite_transparent_for_display(cv2_img)
 
         if cv2_img.ndim == 3 and cv2_img.shape[2] == 3:
             bgr = np.ascontiguousarray(cv2_img)
@@ -97,6 +114,8 @@ def thumbnail_bgr(img: np.ndarray, size: int) -> np.ndarray:
     """
     if img is None or getattr(img, "size", 0) == 0:
         return np.zeros((1, 1, 3), np.uint8)
+    if img.ndim == 3 and img.shape[2] == 4:
+        img = composite_transparent_for_display(img)
     h, w = img.shape[:2]
     target = max(1, int(size))
     scale = min(target / float(max(1, w)), target / float(max(1, h)), 1.0)
@@ -142,6 +161,9 @@ def imwrite_multi_tiff(path: str, images) -> bool:
     written to a .part neighbour first and renamed into place.
     """
     if not images:
+        return False
+    from core.image_loader import _has_transparency
+    if any(_has_transparency(i) for i in images):
         return False
     import tempfile
     # cv2.imwritemulti silently fails on non-encodable filenames, so always
@@ -412,6 +434,10 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
 
     path = os.fspath(path)
     ext = os.path.splitext(path)[1].lower()
+    if ext != '.png' and image.ndim == 3 and image.shape[2] == 4:
+        from core.image_loader import _has_transparency
+        if _has_transparency(image):
+            return False
     if image.dtype == np.uint16 and ext not in (".png", ".tif", ".tiff"):
         image = to_display_uint8(image)
     embed = SOURCE_EXIF if exif is None else exif
