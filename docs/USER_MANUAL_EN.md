@@ -785,7 +785,10 @@ up to 128 sources; source names
 cannot contain characters outside the Basic Multilingual Plane, such as many
 emoji. It refuses unsafe contexts and jobs estimated to need more than 512 MiB
 of memory, reporting the failure instead of writing an incomplete export.
-Interoperability with other applications has not been verified.
+GIMP 3.2.6 on Windows imports the 8-bit and 16-bit layers, including their
+offsets and transparent registration fill. The result is visible and source
+layers are hidden; GIMP also adds a visible Background layer. Other editors
+have not been tested.
 
 For a local tonal correction, select **Exposure brush**, set its amount in
 hundredths of a stop (100 doubles the pixel values, -100 halves them), and

@@ -27,7 +27,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   small localized differences are protected from whole-frame averaging.
 - **Export layered TIFF** saves the current retouch result and source frames
   with their geometry and validity masks. Export checks context and memory use;
-  interoperability with other applications has not been verified.
+  8-bit and 16-bit layer import was verified with GIMP 3.2.6 on Windows.
 - **Retouch checkpoint replay** runs headlessly with an explicit base and ordered
   processed source images. Replay verifies the recorded context and preserves
   8- or 16-bit output in PNG or TIFF without overwriting its inputs.
