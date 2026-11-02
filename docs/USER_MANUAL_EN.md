@@ -378,6 +378,8 @@ inspect both before using the source checkbox to exclude a frame from fusion.
 Suggestions never change checkboxes or delete files. This conservative
 comparison can miss similar frames; changes confined to a small focused region
 are not averaged away. Results are discarded if the stack changes.
+Suggestions are shown only when both the suggested frame and its reference
+are included; changing a checkbox updates the displayed suggestions.
 
 ### Zooming and Panning
 
@@ -1171,6 +1173,9 @@ each suggestion's `index` and `reference_index` are zero-based positions in
 `files`, and `difference` is the mean normalized sample difference. Add
 `--json report.json` to save the same object. This review mode does not combine
 with `--output`, `--output-dir`, `--json-progress`, or `--dry-run`.
+The report compares adjacent files in the supplied input order, without knowing
+which frames you may later exclude. If you exclude a reference, reconsider its
+successor or review the remaining files again in their intended order.
 
 | Option | Description |
 |--------|-------------|
