@@ -67,6 +67,7 @@ _PERSISTED_FIELDS = {
     "ai_batch_size": ("rendering/ai_batch_size", 2, int),
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
+    "collect_alignment_report": ("rendering/collect_alignment_report", False, "bool"),
     "output_name_prefix": ("export/name_prefix", "", "str"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),
@@ -98,12 +99,18 @@ def get_settings() -> QSettings:
 
     A fresh instance per call risks losing writes when the temporary Python
     wrapper is garbage-collected before Qt syncs the backing store.
-    Portable mode (marker file next to the executable) stores the INI next
-    to the executable so settings travel with it.
+    An explicit data root uses its own INI file; otherwise portable mode
+    stores the INI next to the executable so settings travel with it.
     """
     global _settings_singleton
     if _settings_singleton is None:
-        if app_paths.is_portable_mode():
+        if os.environ.get("OPENFOCUS_DATA_DIR"):
+            data_dir = app_paths.user_data_dir()
+            data_dir.mkdir(parents=True, exist_ok=True)
+            _settings_singleton = QSettings(
+                str(data_dir / "settings.ini"), QSettings.Format.IniFormat,
+            )
+        elif app_paths.is_portable_mode():
             _settings_singleton = QSettings(
                 os.path.join(app_paths.portable_data_dir(), "settings.ini"),
                 QSettings.Format.IniFormat,

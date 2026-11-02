@@ -68,6 +68,14 @@ def _drop_on(target, folders, app):
     return enter, drop
 
 
+def _select_fusion(dialog, method='guided_filter'):
+    """Pick a real fusion method; grouping is unavailable without one."""
+    index = dialog.fusion_combo.findData(method)
+    assert index >= 0, method
+    dialog.fusion_combo.setCurrentIndex(index)
+    assert dialog.fusion_combo.currentData() == method
+
+
 def test_drop_queues_every_folder_in_order(qapp, tmp_path):
     from dialogs.batch import BatchProcessingDialog
 
@@ -173,11 +181,14 @@ def test_grouped_folder_selection_keeps_bounded_previews(qapp, tmp_path, monkeyp
     monkeypatch.setattr(loader, 'decode_image', decode)
     dialog = BatchProcessingDialog(None)
     try:
+        _select_fusion(dialog)
         if enable_first:
+            dialog.chk_grouping.setChecked(True)
             dialog.group_size_spin.setValue(4)
         dialog.add_folders_to_list(folders)
         _wait_import(dialog, qapp)
         if not enable_first:
+            dialog.chk_grouping.setChecked(True)
             dialog.group_size_spin.setValue(4)
         assert len(decoded) == 1
         assert not dialog.folder_list.item(0).icon().isNull()
@@ -201,10 +212,259 @@ def test_grouped_split_import_is_rejected_before_decoding(qapp, monkeypatch):
     monkeypatch.setattr(QMessageBox, 'warning', lambda *args: messages.append(args))
     dialog = BatchProcessingDialog(None)
     try:
+        _select_fusion(dialog)
+        dialog.chk_grouping.setChecked(True)
         dialog.group_size_spin.setValue(4)
         assert not dialog._start_import('stack', folder_path='unused')
         assert messages and not dialog._import_busy
     finally:
         dialog.close()
         dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_grouping_toggle_preserves_values_and_output_modes(qapp):
+    from dialogs.batch import BatchProcessingDialog
+
+    dialog = BatchProcessingDialog(None)
+    try:
+        _select_fusion(dialog)
+        assert dialog.group_controls.isHidden()
+        assert dialog.get_processing_settings()['group_size'] == 0
+        dialog.chk_grouping.setChecked(True)
+        assert not dialog.group_controls.isHidden()
+        dialog.group_size_spin.setValue(7)
+        dialog.group_overlap_spin.setValue(3)
+        dialog.chk_grouping.setChecked(False)
+        assert dialog.group_controls.isHidden()
+        assert dialog.get_processing_settings()['group_size'] == 0
+        dialog.chk_grouping.setChecked(True)
+        assert dialog.get_processing_settings()['group_size'] == 7
+        assert dialog.group_overlap_spin.value() == 3
+        dialog.rb_custom_folder.setChecked(True)
+        assert dialog.subfolder_controls.isHidden()
+        assert not dialog.custom_folder_controls.isHidden()
+        dialog.rb_same_folder.setChecked(True)
+        assert dialog.custom_folder_controls.isHidden()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_single_folder_switch_preserves_imported_split_stack(qapp):
+    from dialogs.batch import BatchProcessingDialog
+    from locales import trans
+
+    dialog = BatchProcessingDialog(None)
+    try:
+        _select_fusion(dialog)
+        images = [('frame.tif', 123)]
+        stacks = [images]
+        dialog.single_folder_images_with_times = images
+        dialog.single_folder_stacks = stacks
+        dialog.single_folder_path_label.setText('selected stack')
+        dialog.preview_label.setText('split preview')
+        dialog.rb_single_folder.setChecked(True)
+        assert not dialog.chk_grouping.isEnabled()
+        assert not dialog.chk_grouping.isChecked()
+        assert dialog.group_note.text() == trans.t('batch_group_split_error')
+        assert dialog.single_folder_images_with_times is images
+        assert dialog.single_folder_stacks is stacks
+        assert dialog.single_folder_path_label.text() == 'selected stack'
+        assert dialog.preview_label.text() == 'split preview'
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_batch_picker_text_uses_current_language(qapp, monkeypatch):
+    from PyQt6.QtWidgets import QFileDialog
+    from dialogs.batch import BatchProcessingDialog
+    from locales import trans
+
+    previous = trans.current_lang
+    trans.current_lang = 'zh'
+    dialog = BatchProcessingDialog(None)
+    titles = []
+    try:
+        monkeypatch.setattr(QFileDialog, 'getExistingDirectory',
+                            lambda parent, title, path: titles.append(title) or '')
+        dialog.add_single_folder()
+        dialog.browse_output_folder()
+        assert titles == [trans.t('batch_btn_select_split'), trans.t('batch_out_custom')]
+        monkeypatch.setattr(dialog, 'update_single_folder_preview', lambda: None)
+        folder = os.path.join('root', 'stack')
+        dialog._apply_single_folder_import(folder, [('frame.tif', 123)], '')
+        assert dialog.single_folder_path_label.text() == trans.t('import_folder_display').format('stack')
+    finally:
+        trans.current_lang = previous
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_batch_fusion_noop_entry_is_no_fusion_not_no_alignment(qapp):
+    """The fusion dropdown's no-op entry must not read like registration's."""
+    from dialogs.batch import BatchProcessingDialog
+    from locales import trans
+
+    dialog = BatchProcessingDialog(None)
+    try:
+        fusion_none = dialog.fusion_combo.findData('none')
+        assert fusion_none >= 0
+        assert dialog.fusion_combo.itemText(fusion_none) == trans.t('radio_no_fusion')
+        assert dialog.fusion_combo.itemData(
+            fusion_none, Qt.ItemDataRole.ToolTipRole) == trans.t('radio_no_fusion_hint')
+        align_none = dialog.align_combo.findData('none')
+        assert align_none >= 0
+        assert dialog.align_combo.itemText(align_none) == trans.t('check_align_none')
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_batch_fusion_only_options_follow_the_selected_method(qapp):
+    """Alignment-only disables fusion-only inputs but keeps their drafts."""
+    from dialogs.batch import BatchProcessingDialog
+    from locales import trans
+
+    dialog = BatchProcessingDialog(None)
+    try:
+        assert dialog.fusion_combo.currentData() == 'none'
+        for box in (dialog.chk_base_correct, dialog.chk_sharpen_output,
+                    dialog.chk_reverse_order):
+            assert not box.isEnabled()
+            assert box.toolTip() == trans.t('radio_no_fusion_hint')
+        dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('ecc'))
+        assert dialog.chk_exposure_match.isEnabled(), (
+            "registration still uses exposure matching as its brightness reference")
+
+        _select_fusion(dialog)
+        for box in (dialog.chk_base_correct, dialog.chk_sharpen_output,
+                    dialog.chk_reverse_order):
+            assert box.isEnabled()
+
+        dialog.chk_reverse_order.setChecked(True)
+        index = dialog.fusion_combo.findData('stackmffv2')
+        dialog.fusion_combo.setCurrentIndex(index)
+        assert not dialog.chk_reverse_order.isEnabled()
+        assert dialog.chk_reverse_order.toolTip() == trans.t(
+            'chk_reverse_order_locked_hint')
+        assert dialog.chk_reverse_order.isChecked(), (
+            "locking must not overwrite the stored preference")
+
+        _select_fusion(dialog)
+        assert dialog.chk_reverse_order.isEnabled()
+        assert dialog.chk_reverse_order.isChecked()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_batch_grouping_conflicts_are_visible_before_start(qapp):
+    from dialogs.batch import BatchProcessingDialog
+    from locales import trans
+
+    dialog = BatchProcessingDialog(None)
+    try:
+        assert not dialog.chk_grouping.isEnabled()
+        assert dialog.group_note.text() == trans.t('batch_group_output_error')
+
+        _select_fusion(dialog)
+        assert dialog.chk_grouping.isEnabled()
+        assert dialog.group_note.isHidden()
+
+        dialog.chk_grouping.setChecked(True)
+        assert dialog.chk_grouping.isChecked()
+        assert not dialog.save_aligned_cb.isEnabled()
+        assert not dialog.save_aligned_cb.isChecked()
+        assert dialog.save_aligned_note.text() == trans.t(
+            'batch_group_output_error')
+        assert not dialog.save_aligned_note.isHidden()
+
+        dialog.chk_grouping.setChecked(False)
+        assert dialog.save_aligned_cb.isEnabled()
+        dialog.save_aligned_cb.setChecked(True)
+        assert not dialog.chk_grouping.isEnabled()
+        assert dialog.group_note.text() == trans.t('batch_group_output_error')
+
+        dialog.save_aligned_cb.setChecked(False)
+        assert dialog.chk_grouping.isEnabled()
+
+        dialog.chk_grouping.setChecked(True)
+        dialog.rb_single_folder.setChecked(True)
+        assert not dialog.chk_grouping.isChecked()
+        assert not dialog.chk_grouping.isEnabled()
+        assert dialog.group_note.text() == trans.t('batch_group_split_error')
+        dialog.rb_multiple_folders.setChecked(True)
+        assert dialog.chk_grouping.isEnabled()
+        assert dialog.chk_grouping.isChecked(), (
+            "switching modes must not discard the grouping preference")
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_batch_parameter_heading_covers_registration_specs(qapp):
+    from dialogs.batch import BatchProcessingDialog
+
+    dialog = BatchProcessingDialog(None)
+    try:
+        assert dialog.params_rule.isHidden()
+        dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('ecc'))
+        assert not dialog.params_rule.isHidden()
+        assert not dialog.registration_parameter_panel.isHidden()
+
+        _select_fusion(dialog, 'openfocus_a')
+        dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('none'))
+        assert not dialog.params_rule.isHidden(), (
+            "the heading must survive a visible fusion parameter panel")
+        dialog.fusion_combo.setCurrentIndex(dialog.fusion_combo.findData('none'))
+        assert dialog.params_rule.isHidden()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_batch_disables_unavailable_methods_without_dropping_selection(
+        qapp, monkeypatch):
+    from PyQt6.QtWidgets import QWidget
+    import core.multi_focus_fusion as mff
+    import ui.algorithm_combo as algorithm_combo
+    from dialogs.batch import BatchProcessingDialog
+    from locales import trans
+
+    monkeypatch.setattr(mff, 'is_ai_fusion_available', lambda: False)
+    monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
+    parent = QWidget()
+    parent.current_fusion_method = lambda: 'stackmffv3'
+    parent.current_alignment_method = lambda: 'none'
+    parent.stack_reverse_order = False
+    parent.sharpen_output = False
+    dialog = BatchProcessingDialog(parent)
+    try:
+        assert dialog.fusion_combo.currentData() == 'stackmffv3'
+        for method in ('stackmff', 'stackmffv2', 'stackmffv3'):
+            index = dialog.fusion_combo.findData(method)
+            assert index >= 0
+            assert not dialog.fusion_combo.model().item(index).isEnabled()
+            assert dialog.fusion_combo.itemData(
+                index, Qt.ItemDataRole.ToolTipRole) == trans.t(
+                    'msg_stackmff_unavailable_text')
+        dtcwt = dialog.fusion_combo.findData('dtcwt')
+        assert not dialog.fusion_combo.model().item(dtcwt).isEnabled()
+        assert dialog.fusion_combo.itemData(
+            dtcwt, Qt.ItemDataRole.ToolTipRole) == trans.t('env_dtcwt_unavailable')
+        guided = dialog.fusion_combo.findData('guided_filter')
+        assert dialog.fusion_combo.model().item(guided).isEnabled()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        parent.deleteLater()
         qapp.processEvents()

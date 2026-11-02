@@ -137,8 +137,11 @@ class DustMapDialog(QDialog):
         stack_row.addWidget(self.combo_stack, 1)
         lay.addLayout(stack_row)
         target_row = QHBoxLayout()
-        target_row.addWidget(QLabel(trans.t("label_preview")))
+        self.lbl_target = QLabel(trans.t("dust_preview_frame"))
+        target_row.addWidget(self.lbl_target)
         self.combo_target = QComboBox()
+        self.combo_target.setAccessibleName(trans.t("dust_preview_frame"))
+        self.lbl_target.setBuddy(self.combo_target)
         target_row.addWidget(self.combo_target, 1)
         lay.addLayout(target_row)
 
@@ -222,10 +225,26 @@ class DustMapDialog(QDialog):
         self._fill_stack_combo()
         self.combo_stack.currentIndexChanged.connect(self._source_changed)
         self.combo_target.currentIndexChanged.connect(self._invalidate_gain)
+        self._update_preview_enabled()
 
     def _apply_style(self):
         """Styling comes from the generated application stylesheet."""
         self.setStyleSheet("")
+
+    def _preview_source_ready(self) -> bool:
+        raw, _base = self._sources()
+        if not raw:
+            return False
+        if self.rb_file.isChecked():
+            return bool(self._file_path)
+        return self._current_white() is not None
+
+    def _update_preview_enabled(self) -> None:
+        """A preview without a source can only report an error; gate it."""
+        ready = self._preview_source_ready()
+        self.btn_preview.setEnabled(ready and self._worker is None)
+        self.btn_preview.setToolTip("" if ready
+                                    else trans.t("dust_err_no_source"))
 
     # ------------------------------------------------------------ logic
     def _fill_stack_combo(self):
@@ -252,6 +271,7 @@ class DustMapDialog(QDialog):
         self.chk_remove.setEnabled(not from_file)
         self.chk_remove.setToolTip(self.combo_stack.currentText() if not from_file else "")
         self._invalidate_gain()
+        self._update_preview_enabled()
 
     def _invalidate_gain(self, *_args):
         self._revision += 1
@@ -281,6 +301,7 @@ class DustMapDialog(QDialog):
         self.lbl_path.setText(path)
         self.lbl_path.setToolTip(path)
         self._invalidate_gain()
+        self._update_preview_enabled()
         self._preview()
 
     def _current_white(self):
@@ -328,7 +349,7 @@ class DustMapDialog(QDialog):
         worker = self._worker
         self._worker = None
         self.btn_cancel.setVisible(False)
-        self.btn_preview.setEnabled(True)
+        self._update_preview_enabled()
         worker.deleteLater()
         if self._close_pending:
             super().reject()

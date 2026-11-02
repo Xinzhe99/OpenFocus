@@ -159,7 +159,7 @@ from utils.settings_store import (
 )
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
-from ui.right_panel import bind_right_panel, create_right_panel
+from ui.right_panel import bind_right_panel, create_right_panel, set_panel_label
 from controllers.render_manager import RenderManager
 from controllers.output_manager import OutputManager
 from controllers.source_manager import SourceManager
@@ -1102,24 +1102,23 @@ class OpenFocus(QMainWindow):
         self._update_dynamic_status()
 
     def refresh_method_availability(self) -> None:
-        """Keep unavailable neural entries disabled without changing the request."""
+        """Keep unavailable entries disabled without changing the request."""
+        from ui.algorithm_combo import fusion_unavailable_reason
+
         available = getattr(self, "_stackmff_available", None)
-        if available is None:
-            return
         for spec in fusion_algorithms():
-            if not spec.neural:
-                continue
+            reason = fusion_unavailable_reason(spec, available)
             index = self.combo_fusion.findData(spec.id)
             if index < 0:
                 continue
             item = self.combo_fusion.model().item(index)
             if item is not None:
-                item.setEnabled(bool(available))
+                item.setEnabled(not reason)
             # Keep the method's own hint when it is usable; replace it with the
             # dependency message only while the model cannot run.
             tooltip = (trans.t(spec.hint_key) if spec.hint_key else "")
-            if not available:
-                tooltip = trans.t("msg_stackmff_unavailable_text")
+            if reason:
+                tooltip = reason
             self.combo_fusion.setItemData(
                 index, tooltip, Qt.ItemDataRole.ToolTipRole)
 
@@ -1331,10 +1330,10 @@ class OpenFocus(QMainWindow):
 
         action = getattr(self, 'ui_objs', {}).get('action_install_update')
         if action is not None:
-            ready = bool(manager.staged_tag())
-            action.setVisible(ready)
-            if ready:
-                action.setText(trans.t('menu_install_update').format(version=tag))
+            staged = manager.staged_tag()
+            action.setVisible(bool(staged))
+            if staged:
+                action.setText(trans.t('menu_install_update').format(version=staged))
 
     def startup_update_check(self) -> None:
         """Startup entry point: staged build, then the quiet daily check.
@@ -2356,22 +2355,55 @@ class OpenFocus(QMainWindow):
             self.refresh_registration_parameters()
         self.persist_settings()
 
+    def _set_fusion_option_available(self, widget, available: bool,
+                                     hint_key: str,
+                                     include_label: bool = True) -> None:
+        """Enable/disable a fusion-only option and refresh its full tooltip.
+
+        The checkbox keeps its remembered value; disabling it says the current
+        mode cannot consume that value instead of pretending it will.
+        """
+        if widget is None:
+            return
+        widget.setEnabled(available)
+        hint = trans.t(hint_key)
+        if hasattr(widget, "set_panel_hint"):
+            widget.set_panel_hint(hint, include_label=include_label)
+            return
+        full = widget.text() if include_label else ""
+        widget.setToolTip(f"{full}\n{hint}" if full else hint)
+
     def refresh_algorithm_parameters(self, *_args) -> None:
         method = self.current_fusion_method()
         spec = None if method == "none" else get_fusion(method)
         specs = () if spec is None else spec.parameters
         self.fusion_parameter_panel.set_parameters(specs, self.fusion_parameters_for(method))
         self._sync_brightness_checkboxes(method)
+        # Base correction, sharpening and frame reversal are consumed only by
+        # the fusion step, so with "Alignment only" they must not look active.
+        # Exposure matching stays enabled: it also feeds the registration
+        # brightness reference when no fusion runs.
+        no_fusion = spec is None
+        self._set_fusion_option_available(
+            getattr(self, "chk_base_correct", None), not no_fusion,
+            "radio_no_fusion_hint" if no_fusion else "chk_base_correct_hint")
+        self._set_fusion_option_available(
+            getattr(self, "chk_sharpen_output", None), not no_fusion,
+            "radio_no_fusion_hint" if no_fusion else "chk_sharpen_output_hint")
         # A model that reads the focus order must not expose a control that
         # silently does nothing; the checkbox keeps the global preference for
         # other methods but explains why it is unavailable here.
         reverse = getattr(self, "chk_reverse_order", None)
-        if reverse is not None:
-            locked = bool(spec is not None and spec.order_sensitive)
-            reverse.setEnabled(not locked)
-            reverse.setToolTip(
-                trans.t("chk_reverse_order_locked_hint") if locked
-                else trans.t("chk_reverse_order_hint"))
+        locked = bool(spec is not None and spec.order_sensitive)
+        if no_fusion:
+            reverse_hint = "radio_no_fusion_hint"
+        elif locked:
+            reverse_hint = "chk_reverse_order_locked_hint"
+        else:
+            reverse_hint = "chk_reverse_order_hint"
+        self._set_fusion_option_available(
+            reverse, spec is not None and not locked, reverse_hint,
+            include_label=False)
 
     def refresh_registration_parameters(self, *_args) -> None:
         method = self.current_alignment_method()
@@ -3421,6 +3453,12 @@ class OpenFocus(QMainWindow):
                 # depending on the current UI language.
                 if key.startswith('action_lang_') and isinstance(obj, QAction):
                     continue
+                # This action renders a {version}; the sweep would publish the
+                # literal placeholder. _refresh_update_indicator formats it
+                # from the staged tag at the end of this method.
+                if (key == 'action_install_update'
+                        or obj.property("trans_key") == 'menu_install_update'):
+                    continue
                 t_key = obj.property("trans_key")
                 if not t_key:
                     t_key = key
@@ -3444,7 +3482,6 @@ class OpenFocus(QMainWindow):
         # set_panel_label elides to the panel width and keeps the full string
         # in the tooltip; plain setText here re-broke the row on language
         # switch after the panel had already fitted it.
-        from ui.right_panel import set_panel_label
         if getattr(c, 'chk_base_correct', None) is not None:
             set_panel_label(c.chk_base_correct, trans.t('chk_base_correct'),
                             trans.t('chk_base_correct_hint'))
@@ -3476,17 +3513,23 @@ class OpenFocus(QMainWindow):
         c.btn_select_none.setText(trans.t('btn_select_none'))
         c.btn_select_none.setToolTip(trans.t('btn_select_none_hint'))
         self.source_manager.decorate_source_items()
-        # Keep the cancel/progress affordance while a render runs — the
-        # retranslation must not reset it to the idle "Render" label.
-        busy = (getattr(self.render_manager, 'worker', None) is not None
-                and self.render_manager.worker.isRunning())             or getattr(self.render_manager, '_compare_mode', False)
-        if not busy:
-            c.btn_render.setText(trans.t('btn_render'))
-        c.btn_compare.setText(trans.t('btn_compare_all'))
-        # ElidingButton elides for the current width itself; setting the hint
-        # after setText keeps the shortcut description rather than the label.
-        c.btn_compare.setToolTip(
-            f"{trans.t('btn_compare_all')}\n{trans.t('btn_compare_all_hint')}")
+        # Keep the cancel/progress affordance while a render or comparison
+        # runs — the retranslation must not reset "Cancel render"/"Cancel" to
+        # the idle labels, and a language switch must not re-arm Compare-all
+        # while a single render holds the pipeline.
+        refresh_actions = getattr(self.render_manager,
+                                  "refresh_action_labels", None)
+        if callable(refresh_actions):
+            refresh_actions()
+        else:
+            busy = (getattr(self.render_manager, 'worker', None) is not None
+                    and self.render_manager.worker.isRunning())
+            if not busy:
+                c.btn_render.setText(trans.t('btn_render'))
+                c.btn_compare.setText(trans.t('btn_compare_all'))
+                c.btn_compare.setToolTip(
+                    f"{trans.t('btn_compare_all')}\n"
+                    f"{trans.t('btn_compare_all_hint')}")
         # Panel titles are QLabels built once at startup; without this they
         # kept the language the app was launched in ("Source Stack"/"Output"
         # stayed English after switching to Polish).
@@ -3494,8 +3537,8 @@ class OpenFocus(QMainWindow):
             self.lbl_source_title.setText(' ' + trans.t('panel_source_stack'))
         if hasattr(self, 'lbl_result_title'):
             self.lbl_result_title.setText(trans.t('panel_output'))
-        c.chk_quick_preview.setText(trans.t('chk_quick_preview'))
-        c.chk_quick_preview.setToolTip(trans.t('chk_quick_preview_hint'))
+        set_panel_label(c.chk_quick_preview, trans.t('chk_quick_preview'),
+                        trans.t('chk_quick_preview_hint'))
         
         # ROI Button
         if hasattr(self, 'btn_preview_roi'):

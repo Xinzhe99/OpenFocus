@@ -116,3 +116,51 @@ def test_advanced_settings_entry_is_translated_in_every_language(qapp):
         assert label, f"{code}: missing {key}"
         assert not _label_looks_like_a_key(label), (
             f"{code}: advanced settings renders {label!r}")
+
+
+def test_staged_update_menu_keeps_its_version_after_a_language_sweep(qapp):
+    """`menu_install_update` contains {version}; the generic retranslation
+    sweep writes that placeholder literally. The format-aware refresh must
+    restore the staged tag — including when the download candidate differs.
+    """
+    import types
+
+    from PyQt6.QtGui import QAction
+    from PyQt6.QtWidgets import (QLabel, QProgressBar, QPushButton,
+                                 QStatusBar, QWidget)
+
+    import main
+    from controllers.update_manager import STATE_READY
+
+    class _Manager:
+        state = STATE_READY
+        tag = "v9.8"          # candidate offered by the check
+        percent = 100
+
+        @staticmethod
+        def staged_tag():
+            return "v9.9"     # what is actually downloaded and verified
+
+    class _Host:
+        def __init__(self):
+            self.update_manager = _Manager()
+            self.ui_objs = {
+                'action_install_update':
+                    QAction(trans.t('menu_install_update'))}
+            self.btn_update_action = QPushButton()
+            self.lbl_update_status = QLabel()
+            self.update_progress = QProgressBar()
+            self._update_indicator = QWidget()
+            self._bar = QStatusBar()
+
+        def statusBar(self):
+            return self._bar
+
+    host = _Host()
+    action = host.ui_objs['action_install_update']
+    # What update_ui_text's sweep leaves before _refresh_update_indicator runs.
+    action.setText(trans.t('menu_install_update'))
+    types.MethodType(main.OpenFocus._refresh_update_indicator, host)()
+
+    assert action.text() == trans.t('menu_install_update').format(version="v9.9")
+    assert "{version}" not in action.text()

@@ -78,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python main.py --input img1.jpg img2.jpg img3.jpg --output fused.png --method gfgfgf\n"
             "\nTransparent input: PNG frames must share one rectangular, constant-opacity\n"
             "region and bit depth. Output must be PNG; alignment, dust correction,\n"
-            "depth maps and scale bars are unsupported. See the user manual.\n"
+            "sensor cleanup, depth maps and scale bars are unsupported. See the user manual.\n"
         ),
     )
     parser.add_argument("--input", "-i", nargs="+", required=True,
@@ -87,13 +87,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Report JSON suggestions for adjacent files in input order; "
                              "reconsider suggestions if their reference is excluded")
     parser.add_argument("--output", "-o", default=None,
-                        help="Output file for a single stack (default: fused.png)")
+                        help="Output file for a single stack (required without --output-dir)")
     parser.add_argument("--output-dir", "-d", default=None,
-                        help="Batch mode: fuse every input folder, writing <folder>.<ext> here")
+                        help="Batch mode: fuse every input folder, writing <folder>.png here")
     parser.add_argument("--group-size", type=int, default=0, metavar="FRAMES",
-                        help="Fuse a folder in overlapping groups of at most FRAMES (0 disables). "
-                             "Approximate; registration crops a conservative common region each round. "
-                             "Matching single-frame Pillow-readable inputs only; no RAW, alpha, multipage or depth maps.")
+                        help="Fuse a folder in overlapping groups of at most FRAMES (0 disables; minimum 2). "
+                             "Approximate; each round uses group-local registration and exposure references, "
+                             "crops conservatively, and uses temporary disk space. Matching single-frame "
+                             "Pillow-readable inputs only; no RAW, alpha, multipage or depth maps.")
     parser.add_argument("--group-overlap", type=int, default=0, metavar="FRAMES",
                         help="Frames shared by consecutive groups (default 0; at most group size minus 2).")
     parser.add_argument("--method", "-m", default="stackmffv3",
@@ -170,8 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scale-um", type=float, default=None,
                         help="Pixel size in um/px, overriding metadata (implies --scale-bar)")
     parser.add_argument("--depth-map", "-D", dest="depth_map", nargs="?", const=True, default=None,
-                        help="Also save a colorized focus-position (pseudo-depth) map computed with the same method "
-                             "(optional value: output path; default <output>_depth.png)")
+                        help="Also save a colorized focus-position (pseudo-depth) map for a supported method "
+                             "(optional value: output path; default <output>_depth.png; batch requires default path)")
     parser.add_argument("--depth-colormap", default="turbo",
                         help="Colormap for --depth-map: turbo, viridis, jet, gray, ... (default turbo)")
     parser.add_argument("--dry-run", action="store_true",
@@ -181,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", default=None, metavar="FILE",
                         help="Write a machine-readable result summary to FILE when done")
     parser.add_argument("--alignment-report", default=None, metavar="FILE",
-                        help="Write registration diagnostics as JSON (single stack only; no grouped fusion or dry run)")
+                        help="Write registration diagnostics as JSON (requires alignment; single stack only; no grouped fusion or dry run)")
     parser.add_argument("--json-progress", action="store_true",
                         help="Print one JSON progress object per step to stdout (NDJSON)")
     parser.add_argument("--config", default=None, metavar="FILE",
@@ -815,6 +816,7 @@ def _run_batch(args, _emit_json=None) -> int:
                     _inspect_grouped_cli(paths, folder_args)
                 _say(f"[dry-run] frames={frames} method={folder_args.method} "
                      f"align={folder_args.align} output={out_path}")
+                ok_count += 1
             except Exception as exc:
                 print(f"error: {name}: {exc}", file=sys.stderr)
                 failures.append(name)
@@ -863,7 +865,8 @@ def _run_batch(args, _emit_json=None) -> int:
         "failed": failures,
         "duration_s": round(time.time() - started, 1),
     }
-    _say(f"\nBatch finished: {ok_count}/{len(folders)} stacks succeeded")
+    _say(f"\nBatch {'validation' if args.dry_run else 'processing'} finished: "
+         f"{ok_count}/{len(folders)} stacks {'validated' if args.dry_run else 'succeeded'}")
     if skipped_existing:
         _say(f"skipped (already done): {', '.join(skipped_existing)}")
     if failures:

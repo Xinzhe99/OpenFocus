@@ -10,9 +10,18 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget,
 )
 
+from constants import (
+    TILE_BLOCK_MAX, TILE_BLOCK_MIN, TILE_OVERLAP_MAX, TILE_THRESHOLD_MAX,
+    TILE_THRESHOLD_MIN,
+)
 from locales import trans
 from utils.export_paths import prefix_output_name, valid_output_prefix
 from widgets.stepper import StepperSpinBox
+
+# Registration downscale bounds mirror dialogs/settings.py, the other surface
+# that edits the same persisted value.
+REG_WIDTH_MIN = 64
+REG_WIDTH_MAX = 8192
 
 
 def _section(parent_layout, title: str) -> QFormLayout:
@@ -30,11 +39,12 @@ def _section(parent_layout, title: str) -> QFormLayout:
     return form
 
 
-def _note(parent_layout, text: str) -> None:
+def _note(parent_layout, text: str) -> QLabel:
     note = QLabel(text)
     note.setWordWrap(True)
     note.setObjectName("mutedLabel")
     parent_layout.addWidget(note)
+    return note
 
 
 class AdvancedSettingsDialog(QDialog):
@@ -71,19 +81,18 @@ class AdvancedSettingsDialog(QDialog):
         self.chk_tile.setToolTip(trans.t("advanced_tile_enabled_hint"))
         perf.addRow(trans.t("advanced_tile_enabled"), self.chk_tile)
         self.spin_block = StepperSpinBox(
-            minimum=256, maximum=4096, step=128, decimals=0,
-            value=int(getattr(w, "tile_block_size", 1024)))
+            minimum=TILE_BLOCK_MIN, maximum=TILE_BLOCK_MAX, step=128,
+            decimals=0, value=int(getattr(w, "tile_block_size", 1024)))
         perf.addRow(trans.t("advanced_tile_block"), self.spin_block)
         self.spin_overlap = StepperSpinBox(
-            minimum=0, maximum=1024, step=32, decimals=0,
+            minimum=0, maximum=TILE_OVERLAP_MAX, step=32, decimals=0,
             value=int(getattr(w, "tile_overlap", 256)))
         perf.addRow(trans.t("advanced_tile_overlap"), self.spin_overlap)
-        self.spin_block.valueChanged.connect(
-            lambda value: self.spin_overlap.setMaximum(int(value) // 2))
-        self.spin_overlap.setMaximum(int(self.spin_block.value()) // 2)
+        self.spin_block.valueChanged.connect(self._sync_overlap_limit)
+        self._sync_overlap_limit(self.spin_block.value())
         self.spin_threshold = StepperSpinBox(
-            minimum=256, maximum=20000, step=256, decimals=0,
-            value=int(getattr(w, "tile_threshold", 2048)))
+            minimum=TILE_THRESHOLD_MIN, maximum=TILE_THRESHOLD_MAX, step=256,
+            decimals=0, value=int(getattr(w, "tile_threshold", 2048)))
         perf.addRow(trans.t("advanced_tile_threshold"), self.spin_threshold)
         self.spin_threads = StepperSpinBox(
             minimum=0, maximum=64, step=1, decimals=0,
@@ -99,18 +108,30 @@ class AdvancedSettingsDialog(QDialog):
         self.combo_resources.setToolTip(
             trans.t("advanced_resource_hint"))
         perf.addRow(trans.t("advanced_resource_mode"), self.combo_resources)
-        _note(page_lay, trans.t("advanced_tile_note"))
+        self.tile_note = _note(page_lay, trans.t("advanced_tile_note"))
+        def show_tile_controls(enabled):
+            for control in (self.spin_block, self.spin_overlap, self.spin_threshold):
+                perf.setRowVisible(control, enabled)
+            self.tile_note.setVisible(enabled)
+        self.chk_tile.toggled.connect(show_tile_controls)
+        show_tile_controls(self.chk_tile.isChecked())
 
         # ---- Registration ------------------------------------------------
         reg = _section(page_lay, trans.t("advanced_tab_registration"))
         self.spin_reg_width = StepperSpinBox(
-            minimum=256, maximum=8000, step=128, decimals=0,
+            minimum=REG_WIDTH_MIN, maximum=REG_WIDTH_MAX, step=64, decimals=0,
             value=int(getattr(w, "reg_downscale_width", 1024)))
         reg.addRow(trans.t("advanced_reg_width"), self.spin_reg_width)
         self.chk_align_cache = QCheckBox()
         self.chk_align_cache.setChecked(
             bool(getattr(w, "align_cache_enabled", True)))
         reg.addRow(trans.t("action_align_cache"), self.chk_align_cache)
+        self.chk_collect_alignment_report = QCheckBox()
+        self.chk_collect_alignment_report.setProperty("controlId", "chk_collect_alignment_report")
+        self.chk_collect_alignment_report.setChecked(
+            bool(getattr(w, "collect_alignment_report", False)))
+        self.chk_collect_alignment_report.setToolTip(trans.t("alignment_report_collect_hint"))
+        reg.addRow(trans.t("alignment_report_collect"), self.chk_collect_alignment_report)
 
         from ui.sensor_cleanup import SensorCleanupControls
         sensor = _section(page_lay, trans.t("sensor_section"))
@@ -182,6 +203,16 @@ class AdvancedSettingsDialog(QDialog):
         line.setObjectName("mutedLabel")
         return line
 
+    def _sync_overlap_limit(self, block: float) -> None:
+        """Keep the dialog's overlap cap in step with the chosen tile size.
+
+        The cap is what the fusion tiler itself applies (`block // 2`), but
+        never above the registry-wide maximum, so a stored overlap is only
+        reduced when the tiler would reduce it too.
+        """
+        self.spin_overlap.setMaximum(
+            min(TILE_OVERLAP_MAX, max(0, int(block)) // 2))
+
     def _update_output_prefix_preview(self):
         prefix = self.output_prefix.text()
         if not valid_output_prefix(prefix):
@@ -192,14 +223,16 @@ class AdvancedSettingsDialog(QDialog):
 
     def _apply(self):
         w = self.window_main
-        for spin in (self.spin_block, self.spin_overlap, self.spin_threshold,
-                     self.spin_threads, self.spin_reg_width, self.spin_ai_batch):
+        spins = [self.spin_threads, self.spin_reg_width, self.spin_ai_batch]
+        if self.chk_tile.isChecked():
+            spins[:0] = [self.spin_block, self.spin_overlap, self.spin_threshold]
+        for spin in spins:
             if not spin.lineEdit().hasAcceptableInput():
                 self.status.setText(trans.t("msg_error"))
                 spin.lineEdit().setFocus()
                 spin.lineEdit().selectAll()
                 return
-            spin.setValue(float(spin.lineEdit().text()))
+            spin.interpretText()
         if not valid_output_prefix(self.output_prefix.text()):
             self.status.setText(trans.t("output_prefix_hint"))
             self.output_prefix.setFocus()
@@ -210,13 +243,17 @@ class AdvancedSettingsDialog(QDialog):
             return
         draft = {
             "tile_enabled": self.chk_tile.isChecked(),
-            "tile_block_size": int(self.spin_block.value()),
-            "tile_overlap": int(self.spin_overlap.value()),
-            "tile_threshold": int(self.spin_threshold.value()),
+            "tile_block_size": (int(self.spin_block.value()) if self.chk_tile.isChecked()
+                                else getattr(w, "tile_block_size", 1024)),
+            "tile_overlap": (int(self.spin_overlap.value()) if self.chk_tile.isChecked()
+                             else getattr(w, "tile_overlap", 256)),
+            "tile_threshold": (int(self.spin_threshold.value()) if self.chk_tile.isChecked()
+                               else getattr(w, "tile_threshold", 2048)),
             "thread_count": max(0, int(self.spin_threads.value())),
             "resource_preference": self.combo_resources.currentData(),
             "reg_downscale_width": int(self.spin_reg_width.value()),
             "align_cache_enabled": self.chk_align_cache.isChecked(),
+            "collect_alignment_report": self.chk_collect_alignment_report.isChecked(),
             "output_name_prefix": self.output_prefix.text(),
             "ai_batch_size": max(1, int(self.spin_ai_batch.value())),
             "restore_last_stack": self.chk_restore.isChecked(),
@@ -248,7 +285,7 @@ class AdvancedSettingsDialog(QDialog):
                 pass
             self.status.setText(str(exc))
             return
-        processing = set(draft) - {"restore_last_stack", "ask_load_scale", "output_name_prefix"}
+        processing = set(draft) - {"restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report"}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)
             if mark_dirty is not None:

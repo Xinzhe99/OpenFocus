@@ -118,6 +118,35 @@ def test_drag_repaints_marker_and_release_leave_retain_region(host, qapp):
     _assert_marker_visible(canvas)
 
 
+def test_disabled_region_is_not_draggable_or_painted(host, qapp):
+    canvas = _source(host, qapp)
+    canvas.set_magnification(4)
+    before = canvas.region()
+    canvas.set_region_enabled(False)
+    assert not canvas.region_enabled()
+    # A left drag and a plain wheel only ever changed the hidden square.
+    _mouse(canvas, QEvent.Type.MouseButtonPress,
+           canvas.image_to_widget(QPointF(150, 250)),
+           Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+    _mouse(canvas, QEvent.Type.MouseMove,
+           canvas.image_to_widget(QPointF(350, 250)),
+           Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
+    _mouse(canvas, QEvent.Type.MouseButtonRelease,
+           canvas.image_to_widget(QPointF(450, 350)),
+           Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+    _wheel(canvas, QPointF(300, 200), 120)
+    assert canvas.region() == before
+    assert canvas.magnification() == 4
+    point = _marker_point(canvas)
+    image = canvas.grab().toImage()
+    x, y = round(point.x()), round(point.y())
+    assert not any(image.pixelColor(px, py) == QColor(Qt.GlobalColor.white)
+                   for px in range(x - 1, x + 2)
+                   for py in range(y - 1, y + 2))
+    canvas.set_region_enabled(True)
+    _assert_marker_visible(canvas)
+
+
 @pytest.mark.parametrize("button", [Qt.MouseButton.RightButton,
                                     Qt.MouseButton.MiddleButton])
 def test_pan_and_anchored_zoom_share_paint_mapping(host, qapp, button):

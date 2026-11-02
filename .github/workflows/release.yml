@@ -353,10 +353,35 @@ jobs:
           open("release_notes.md", "w", encoding="utf-8").write(notes)
           PY
 
+      - name: Verify the intended release assets
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          expected=(
+            "OpenFocus-${tag}-setup.exe"
+            "OpenFocus-${tag}-windows-x64.zip"
+            "OpenFocus-${tag}-macos.dmg"
+            "OpenFocus-${tag}-macos-arm64.zip"
+          )
+          for name in "${expected[@]}"; do
+            if [ ! -s "release/$name" ]; then
+              echo "::error::Missing or empty intended release asset: $name"
+              exit 1
+            fi
+          done
+          actual="$(find release -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          if [ "$actual" -ne "${#expected[@]}" ]; then
+            echo "::error::Expected ${#expected[@]} release assets, found $actual:"
+            find release -maxdepth 1 -type f -printf '%f\n'
+            exit 1
+          fi
+          ls -lh release/
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           echo "Files downloaded:"
           ls -la release/
           if gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then

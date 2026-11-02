@@ -50,6 +50,70 @@ def test_settings_overlap_is_visible_and_cancel_is_a_draft(settings_window):
     dialog.deleteLater()
 
 
+def test_settings_preserve_supported_tile_and_registration_ranges(settings_window):
+    """Values the renderer accepts must not be clamped on the way through."""
+    settings_window.tile_block_size = 8192
+    settings_window.tile_overlap = 4096
+    settings_window.tile_threshold = 60000
+    settings_window.reg_downscale_width = 8192
+
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    dialog = AdvancedSettingsDialog(settings_window)
+    assert dialog.spin_block.value() == 8192
+    assert dialog.spin_overlap.value() == 4096
+    assert dialog.spin_threshold.value() == 60000
+    assert dialog.spin_reg_width.value() == 8192
+
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert settings_window.tile_block_size == 8192
+    assert settings_window.tile_overlap == 4096
+    assert settings_window.tile_threshold == 60000
+    assert settings_window.reg_downscale_width == 8192
+    dialog.deleteLater()
+
+
+def test_tile_controls_and_diagnostics_are_drafts(settings_window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.chk_tile.setChecked(False)
+    assert dialog.spin_block.isHidden()
+    assert dialog.spin_overlap.isHidden()
+    assert dialog.spin_threshold.isHidden()
+    assert dialog.tile_note.isHidden()
+    dialog.chk_tile.setChecked(True)
+    assert not dialog.spin_block.isHidden()
+    assert not dialog.tile_note.isHidden()
+    dialog.chk_collect_alignment_report.setChecked(True)
+    dialog.reject()
+    assert not getattr(settings_window, 'collect_alignment_report', False)
+    dialog.deleteLater()
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.chk_collect_alignment_report.setChecked(True)
+    dialog._apply()
+    assert settings_window.collect_alignment_report is True
+    assert settings_window.saved
+    dialog.deleteLater()
+
+
+def test_disabled_tiling_ignores_invalid_draft_and_preserves_settings(settings_window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.spin_block.setValue(512)
+    dialog.chk_tile.setChecked(False)
+    dialog.spin_threshold.lineEdit().setText('')
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert settings_window.tile_enabled is False
+    assert settings_window.tile_block_size == 1024
+    assert settings_window.tile_overlap == 256
+    assert settings_window.tile_threshold == 2048
+    dialog.deleteLater()
+
+
 def test_settings_submit_commits_visible_values_and_update_preference(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
     dialog = AdvancedSettingsDialog(settings_window)

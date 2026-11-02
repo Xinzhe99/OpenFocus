@@ -60,6 +60,7 @@ class SourceCanvas(_Canvas):
         self._pan = QPointF()
         self._fit_pending = False
         self._drag_region = False
+        self._region_enabled = True
         self._pan_from = None
         self.setMinimumSize(180, 130)
         self.setMouseTracking(True)
@@ -67,6 +68,25 @@ class SourceCanvas(_Canvas):
 
     def has_image(self) -> bool:
         return self._pixmap is not None and not self._pixmap.isNull()
+
+    def set_region_enabled(self, enabled: bool) -> None:
+        """Show and accept the inspection square only while a ROI is used.
+
+        A full-frame comparison ignores the region, so leaving a draggable
+        square on the source implied it changed the result.
+        """
+        enabled = bool(enabled)
+        if enabled == self._region_enabled:
+            return
+        self._region_enabled = enabled
+        if not enabled:
+            self._drag_region = False
+        self.setCursor(Qt.CursorShape.CrossCursor if enabled
+                       else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def region_enabled(self) -> bool:
+        return self._region_enabled
 
     def set_pixmap(self, pixmap, reset=False):
         old_size = self._pixmap.size() if self.has_image() else None
@@ -157,7 +177,8 @@ class SourceCanvas(_Canvas):
     def mousePressEvent(self, event):  # noqa: N802
         if not self.has_image():
             return super().mousePressEvent(event)
-        if event.button() == Qt.MouseButton.LeftButton:
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self._region_enabled):
             self._drag_region = True
             self.set_region_centre(self.widget_to_image(event.position()))
             event.accept()
@@ -170,7 +191,7 @@ class SourceCanvas(_Canvas):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):  # noqa: N802
-        if self._drag_region and self.has_image():
+        if self._drag_region and self._region_enabled and self.has_image():
             self.set_region_centre(self.widget_to_image(event.position()))
             event.accept()
         elif self._pan_from is not None:
@@ -182,7 +203,8 @@ class SourceCanvas(_Canvas):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and self._drag_region:
+        if (event.button() == Qt.MouseButton.LeftButton and self._drag_region
+                and self._region_enabled):
             self.set_region_centre(self.widget_to_image(event.position()))
             self._drag_region = False
             event.accept()
@@ -200,6 +222,11 @@ class SourceCanvas(_Canvas):
     def wheelEvent(self, event):  # noqa: N802
         delta = event.angleDelta().y()
         if not self.has_image() or not delta:
+            event.ignore()
+            return
+        if (not self._region_enabled
+                and not event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            # Magnification only resizes the inspection square.
             event.ignore()
             return
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -222,7 +249,7 @@ class SourceCanvas(_Canvas):
             transform = self._image_transform()
             source = QRectF(0, 0, self._pixmap.width(), self._pixmap.height())
             painter.drawPixmap(transform.mapRect(source), self._pixmap, source)
-            if self._region is not None:
+            if self._region is not None and self._region_enabled:
                 painter.setPen(QPen(QColor(255, 255, 255), 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRect(transform.mapRect(QRectF(*self._region)))

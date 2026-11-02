@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import QEvent, QObject, Qt, QSize
 from PyQt6.QtGui import QKeySequence, QShortcut, QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSplitter,
+    QStyle,
+    QStyleOptionButton,
     QVBoxLayout,
     QWidget,
 )
@@ -33,30 +35,87 @@ from core.algorithms import fusion_algorithms, registration_algorithms, get_fusi
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from widgets.flow_layout import FlowPanel
 
-# Usable text width inside the right panel (375 px minus card padding and the
-# check indicator). Labels that would exceed this are elided; the full string
-# stays in the tooltip.
+# Widest text column that fits a 375 px panel. This is an upper bound: the
+# real width is read from the panel and its option labels are re-elided when
+# the splitter widens or narrows it. PANEL_MIN_WIDTH is the fallback used
+# while a widget is constructed, before it is parented.
 PANEL_TEXT_WIDTH = 300
+PANEL_MIN_WIDTH = 280
+_PANEL_H_MARGIN = 20          # config_layout's 10 px left + 10 px right
+_LABEL_CHROME = 28            # 18 px indicator + 8 px spacing + 2 px border
 
-def set_panel_label(button, text: str, tooltip: str = None) -> None:
-    """Set a check/radio label that must fit the fixed-width panel.
 
-    QCheckBox and QRadioButton cannot word-wrap. Setting the full translated
-    string (German and Polish labels need 500-800 px against ~335 px of usable
-    width) made the widget grow wider than the panel and pushed the rest of
-    the column off-screen. The painted text is elided and the full string —
-    plus the explanatory hint — goes into the tooltip.
+def _right_panel_for(widget):
+    """The enclosing right-panel frame, or None before the widget is parented."""
+    parent = widget.parentWidget()
+    while parent is not None:
+        if parent.objectName() == "rightPanel":
+            return parent
+        parent = parent.parentWidget()
+    return None
+
+
+def _panel_label_width(panel=None) -> int:
+    """Usable text width for an option label inside the right panel.
+
+    At construction time the panel has no final geometry (and its default
+    640 px would be a lie), so the minimum supported width is used; the
+    panel's resize event re-elides with the width the splitter really gave
+    it. Capping at PANEL_TEXT_WIDTH keeps a 4K-wide panel from stretching
+    one checkbox across the whole column.
     """
-    button.setSizePolicy(QSizePolicy.Policy.Ignored,
-                         QSizePolicy.Policy.Preferred)
-    button.setMinimumWidth(0)
-    full = text or ""
-    button.setText(button.fontMetrics().elidedText(
-        full, Qt.TextElideMode.ElideRight, PANEL_TEXT_WIDTH))
-    tip = full
-    if tooltip:
-        tip = f"{full}\n{tooltip}"
-    button.setToolTip(tip)
+    width = (panel.width() if panel is not None else 0) or PANEL_MIN_WIDTH
+    return max(60, min(PANEL_TEXT_WIDTH,
+                      width - _PANEL_H_MARGIN - _LABEL_CHROME))
+
+
+class ElidingCheckBox(QCheckBox):
+    """QCheckBox whose translated label elides to the panel width.
+
+    QCheckBox cannot word-wrap and FlowPanel lays each item at its sizeHint,
+    so Polish/German labels (400-800 px) grew wider than the 280-375 px
+    column and were clipped at launch. The full label and its hint stay in
+    the tooltip; refit() re-elides after a language switch or a panel resize.
+    """
+
+    def __init__(self, text: str = "", tooltip: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self._hint = ""
+        self._include_label = True
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+                           QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+        self.set_panel_text(text, tooltip)
+
+    def set_panel_text(self, text: str, tooltip: str = "") -> None:
+        self._full_text = text or ""
+        self._hint = tooltip or ""
+        self._include_label = True
+        self.refit()
+
+    def set_panel_hint(self, tooltip: str, include_label: bool = True) -> None:
+        """Replace the explanatory half of the tooltip, keeping the label."""
+        self._hint = tooltip or ""
+        self._include_label = bool(include_label)
+        self.refit()
+
+    def setText(self, text: str) -> None:  # noqa: N802 (Qt casing)
+        self._full_text = text or ""
+        self.refit()
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def refit(self, width: int = None) -> None:
+        if width is None:
+            width = _panel_label_width(_right_panel_for(self))
+        super().setText(self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, max(1, width)))
+        tip = self._full_text if self._include_label else ""
+        if self._hint:
+            tip = f"{tip}\n{self._hint}" if tip else self._hint
+        super().setToolTip(tip)
 
 
 class ElidingButton(QPushButton):
@@ -65,21 +124,28 @@ class ElidingButton(QPushButton):
     The right panel is ~375 px wide and splits it between up to three
     buttons, so a long translation ("▶ Rozpocznij renderowanie" needs 343 px)
     cannot fit. Qt clips mid-glyph, which reads as a rendering bug. Every
-    setText() keeps the full string as the tooltip and paints the elided form
-    for the current width, so callers do not have to remember to elide.
+    setText() paints the elided form for the current width and leaves the
+    full string (or an explicitly assigned hint) in the tooltip, so callers
+    do not have to remember to elide.
     """
 
     def __init__(self, text: str = "", parent=None):
         super().__init__(text, parent)
         self._full_text = text
-        # Explicit tooltip text survives setText(); without this every label
-        # change replaced a real hint with the button's own caption.
-        self._explicit_tip = ""
+        # An explicitly assigned tooltip survives setText(); None means the
+        # caption itself is the tooltip and must follow language changes.
+        self._explicit_tip = None
+        # Apply the elided form now: the constructor's text is full-width and
+        # would otherwise influence the first layout pass (the panel splits
+        # its width between up to three buttons).
+        self.setText(text)
 
     def setText(self, text: str) -> None:  # noqa: N802 (Qt casing)
         self._full_text = text or ""
         super().setText(_elide_to_width(self, self._full_text))
-        self.setToolTip(self._explicit_tip or self._full_text)
+        super().setToolTip(
+            self._explicit_tip if self._explicit_tip is not None
+            else self._full_text)
 
     def setToolTip(self, text: str) -> None:  # noqa: N802 (Qt casing)
         self._explicit_tip = text or ""
@@ -99,26 +165,93 @@ class ElidingButton(QPushButton):
         super().setText(_elide_to_width(self, self._full_text))
 
 
-def _elide_to_width(widget, text: str, padding: int = 10) -> str:
-    """Shorten `text` so it fits `widget`'s current width, with an ellipsis.
+def _elide_to_width(widget, text: str) -> str:
+    """Shorten `text` so it fits `widget`'s painted contents, with an ellipsis.
 
-    Called on every setText() and resize: a 375 px panel gives each secondary
-    button ~174 px, and German/French/Polish labels overflow that. Qt would
-    otherwise clip the glyphs mid-stroke, which reads as a rendering bug
-    rather than a shortened label. 10 px covers the QSS `padding: 6px 12px`
-    minus the 2 px the style engine already deducts, so a label that exactly
-    fits is not elided for no reason.
+    Use Qt's styled contents rectangle so stylesheet borders and padding do
+    not hide the first or last glyph when space is tight.
     """
-    from PyQt6.QtCore import Qt as _Qt
+    option = QStyleOptionButton()
+    widget.initStyleOption(option)
+    contents = widget.style().subElementRect(
+        QStyle.SubElement.SE_PushButtonContents, option, widget)
     fm = widget.fontMetrics()
-    available = widget.width()
-    # Qt's own size hint already includes the QSS padding, so subtract only
-    # what the text genuinely does not have: no fixed margin. Using a
-    # hardcoded 16 px elided "Reset Default" even though it fits in 174 px
-    # (it needs 169 px).
+    available = contents.width() - 2
+    if available <= 0:
+        available = widget.width() - 2
     if available <= 0:
         return text
-    return fm.elidedText(text, _Qt.TextElideMode.ElideRight, available)
+    return fm.elidedText(text, Qt.TextElideMode.ElideRight, available)
+
+
+def set_panel_label(button, text: str, tooltip: str = None) -> None:
+    """Set a check/radio label that must fit the fixed-width panel.
+
+    QCheckBox and QRadioButton cannot word-wrap. Setting the full translated
+    string (German and Polish labels need 500-800 px against ~335 px of usable
+    width) made the widget grow wider than the panel and pushed the rest of
+    the column off-screen. The painted text is elided to the panel's actual
+    width and the full string — plus the explanatory hint — goes into the
+    tooltip.
+    """
+    full = text or ""
+    panel = _right_panel_for(button)
+    if isinstance(button, ElidingCheckBox):
+        button.set_panel_text(full, tooltip or "")
+    else:
+        button.setSizePolicy(QSizePolicy.Policy.Ignored,
+                             QSizePolicy.Policy.Preferred)
+        button.setMinimumWidth(0)
+        width = _panel_label_width(panel)
+        button.setText(button.fontMetrics().elidedText(
+            full, Qt.TextElideMode.ElideRight, width))
+        tip = full
+        if tooltip:
+            tip = f"{full}\n{tooltip}"
+        button.setToolTip(tip)
+    # A language switch can shorten or lengthen the widest option; without
+    # this the flow keeps the previous row geometry until the panel is
+    # resized (the tab order looks right but the painted rows do not).
+    refitter = getattr(panel, "_label_refitter", None)
+    if refitter is not None:
+        refitter.relayout()
+
+
+class _PanelLabelRefitter(QObject):
+    """Re-elide the option column when the right panel changes width.
+
+    The first layout pass assigns the panel's width after the checkboxes
+    have been constructed; leaving their startup estimate would keep a
+    Polish label clipped until the next language switch.
+    """
+
+    def __init__(self, panel, flow, labels):
+        super().__init__(panel)
+        self._panel = panel
+        self._flow = flow
+        self._labels = list(labels)
+        self._width = -1
+
+    def eventFilter(self, watched, event):  # noqa: N802 (Qt casing)
+        if watched is self._panel and event.type() in (
+                QEvent.Type.Resize, QEvent.Type.Show):
+            self.refit()
+        return False
+
+    def refit(self) -> None:
+        width = _panel_label_width(self._panel)
+        if width == self._width:
+            return
+        self._width = width
+        for label in self._labels:
+            label.refit(width)
+        self._flow.relayout()
+
+    def relayout(self) -> None:
+        """Repack after a label's size hint changed (language switch)."""
+        self._flow.relayout()
+
+
 from widgets.output_list import OutputListWidget
 
 def fusion_items():
@@ -297,10 +430,12 @@ def create_right_panel() -> RightPanelComponents:
     # vertical space that the source and output lists need. FlowPanel packs as
     # many as actually fit and re-flows on resize; a long translation still
     # takes a whole row by itself, so nothing is clipped.
+    option_boxes = []
+
     def _option(key, checked):
-        box = QCheckBox(trans.t(key))
+        box = ElidingCheckBox(trans.t(key), trans.t(key + '_hint'))
         box.setChecked(checked)
-        box.setToolTip(trans.t(key + '_hint'))
+        option_boxes.append(box)
         return box
 
     options_flow = FlowPanel(h_spacing=14, v_spacing=6)
@@ -312,6 +447,11 @@ def create_right_panel() -> RightPanelComponents:
     chk_base_correct = options_flow.add(_option('chk_base_correct', False))
     chk_sharpen_output = options_flow.add(_option('chk_sharpen_output', False))
     config_layout.addWidget(options_flow)
+    # The splitter assigns the panel's real width after construction; a long
+    # Polish label must be re-elided then, not only after a language switch.
+    label_refitter = _PanelLabelRefitter(right_panel, options_flow, option_boxes)
+    right_panel.installEventFilter(label_refitter)
+    right_panel._label_refitter = label_refitter
 
     # Any leftover height goes to the bottom of the column instead of being
     # shared between the parameter rows.

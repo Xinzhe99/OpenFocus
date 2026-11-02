@@ -15,6 +15,7 @@
 const REPO = "Xinzhe99/OpenFocus";
 const RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const CACHE_URL = "https://openfocus.internal/latest-release.json";
+const MIRROR_MANIFEST = "openfocus-meta/latest-release.json";
 const DOWNLOAD_PREFIX = "/download/latest/";
 const DOWNLOAD_KINDS = new Set([
   "windows-setup",
@@ -132,8 +133,47 @@ function releasePayload(release) {
     },
   };
 }
+// The mirror workflow publishes this manifest only after uploading all four
+// assets. It keeps downloads available when GitHub's shared-IP rate limit is
+// exhausted; the response identifies the mirror as its metadata source.
+async function mirroredRelease(env) {
+  if (!env || !env.DOWNLOADS || typeof env.DOWNLOADS.get !== "function") return null;
+  try {
+    const object = await env.DOWNLOADS.get(MIRROR_MANIFEST);
+    if (!object || !object.body || object.size > 100000) return null;
+    const data = await new Response(object.body).json();
+    if (!data || typeof data.tag !== "string" || !/^v[0-9A-Za-z._+-]+$/.test(data.tag)) return null;
+    const suffixes = {
+      "windows-setup": "setup.exe",
+      "windows-zip": "windows-x64.zip",
+      "macos-dmg": "macos.dmg",
+      "macos-zip": "macos-arm64.zip",
+    };
+    for (const [kind, suffix] of Object.entries(suffixes)) {
+      const asset = data.assets && data.assets[kind];
+      const expected = `OpenFocus-${data.tag}-${suffix}`;
+      const remote = asset && githubAssetUrl(asset.url);
+      if (!asset || asset.name !== expected || !safeObjectKey(asset.name) ||
+          !Number.isSafeInteger(asset.size) || asset.size <= 0 || !remote ||
+          decodeURIComponent(new URL(remote).pathname) !==
+            `/${REPO}/releases/download/${data.tag}/${expected}`) return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
 
-async function latestRelease(ctx) {
+async function latestFailure(message, env) {
+  const mirror = await mirroredRelease(env);
+  if (!mirror) return badGateway(message);
+  return new Response(JSON.stringify(mirror), {
+    headers: { ...jsonHeaders(), "X-OpenFocus-Release-Source": "mirror" },
+  });
+}
+
+
+async function latestRelease(ctx, env) {
   const cache = typeof caches !== "undefined" ? caches.default : null;
   const key = new Request(CACHE_URL);
 
@@ -158,17 +198,17 @@ async function latestRelease(ctx) {
       },
     });
   } catch {
-    return badGateway("GitHub release API is unreachable");
+    return latestFailure("GitHub release API is unreachable", env);
   }
   if (!upstream.ok) {
-    return badGateway(`GitHub release API returned ${upstream.status}`);
+    return latestFailure(`GitHub release API returned ${upstream.status}`, env);
   }
 
   let release;
   try {
     release = await upstream.json();
   } catch {
-    return badGateway("GitHub release API returned invalid JSON");
+    return latestFailure("GitHub release API returned invalid JSON", env);
   }
   if (
     !release ||
@@ -176,7 +216,7 @@ async function latestRelease(ctx) {
     !release.tag_name ||
     !Array.isArray(release.assets)
   ) {
-    return badGateway("GitHub release API returned an incomplete release");
+    return latestFailure("GitHub release API returned an incomplete release", env);
   }
 
   const body = JSON.stringify(releasePayload(release));
@@ -408,7 +448,7 @@ async function handleDownload(request, env, ctx) {
 
   let latest;
   try {
-    latest = await latestRelease(ctx);
+    latest = await latestRelease(ctx, env);
   } catch {
     return badGateway("Latest release lookup failed", method);
   }
@@ -477,7 +517,7 @@ export default {
       if (method !== "GET" && method !== "HEAD") {
         return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" }, method);
       }
-      const response = await latestRelease(ctx);
+      const response = await latestRelease(ctx, env);
       if (method === "HEAD") {
         return new Response(null, { status: response.status, headers: response.headers });
       }

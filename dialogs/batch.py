@@ -316,11 +316,13 @@ class BatchProcessingDialog(QDialog):
         self.rb_subfolder.toggled.connect(self.on_output_option_changed)
         output_layout.addWidget(self.rb_subfolder)
 
-        subfolder_layout = QHBoxLayout()
+        self.subfolder_controls = QWidget()
+        subfolder_layout = QHBoxLayout(self.subfolder_controls)
+        subfolder_layout.setContentsMargins(0, 0, 0, 0)
         subfolder_layout.addWidget(QLabel(trans.t('batch_subfolder_name')))
         self.subfolder_name = QLineEdit("OpenFocus_Output")
         subfolder_layout.addWidget(self.subfolder_name)
-        output_layout.addLayout(subfolder_layout)
+        output_layout.addWidget(self.subfolder_controls)
 
         self.rb_same_folder = QRadioButton(trans.t('batch_out_same'))
         self.rb_same_folder.toggled.connect(self.on_output_option_changed)
@@ -330,17 +332,17 @@ class BatchProcessingDialog(QDialog):
         self.rb_custom_folder.toggled.connect(self.on_output_option_changed)
         output_layout.addWidget(self.rb_custom_folder)
 
-        custom_folder_layout = QHBoxLayout()
+        self.custom_folder_controls = QWidget()
+        custom_folder_layout = QHBoxLayout(self.custom_folder_controls)
+        custom_folder_layout.setContentsMargins(0, 0, 0, 0)
         self.custom_folder_path = QLineEdit()
-        self.custom_folder_path.setEnabled(False)
         custom_folder_layout.addWidget(self.custom_folder_path)
-
         browse_btn = QPushButton(trans.t('batch_btn_browse'))
         browse_btn.clicked.connect(self.browse_output_folder)
-        browse_btn.setEnabled(False)
         self.browse_btn = browse_btn
         custom_folder_layout.addWidget(browse_btn)
-        output_layout.addLayout(custom_folder_layout)
+        output_layout.addWidget(self.custom_folder_controls)
+        self.custom_folder_controls.hide()
 
         self._save_aligned_pref = False
         self.save_aligned_cb = QCheckBox(trans.t('batch_save_aligned'))
@@ -348,6 +350,14 @@ class BatchProcessingDialog(QDialog):
         self.save_aligned_cb.setToolTip(trans.t('batch_save_aligned_hint'))
         self.save_aligned_cb.toggled.connect(self._remember_save_aligned)
         output_layout.addWidget(self.save_aligned_cb)
+        # Grouped fusion owns the temporary disk output and cannot also write
+        # an aligned copy. The checkbox is unchecked and disabled in that
+        # state; this line says why instead of leaving an inert control.
+        self.save_aligned_note = QLabel()
+        self.save_aligned_note.setObjectName("mutedLabel")
+        self.save_aligned_note.setWordWrap(True)
+        self.save_aligned_note.hide()
+        output_layout.addWidget(self.save_aligned_note)
 
         layout.addWidget(output_group)
 
@@ -366,7 +376,15 @@ class BatchProcessingDialog(QDialog):
         method_row.addWidget(QLabel(trans.t('group_fusion')))
         self.fusion_combo = QComboBox()
         from ui.algorithm_combo import fill_fusion_combo
-        fill_fusion_combo(self.fusion_combo, none_label="check_align_none")
+        # The no-op entry means "no fusion" here just like in the main panel;
+        # "No alignment" belongs to the registration dropdown on the next row.
+        fill_fusion_combo(self.fusion_combo, none_label="radio_no_fusion",
+                          none_hint="radio_no_fusion_hint")
+        if self.fusion_combo.currentData() is None:
+            # A disabled category header is never a method: without a saved
+            # choice the batch default is the explicit no-fusion entry.
+            self.fusion_combo.setCurrentIndex(
+                self.fusion_combo.findData('none'))
         method_row.addWidget(self.fusion_combo, 1)
         options_layout.addLayout(method_row)
 
@@ -417,26 +435,40 @@ class BatchProcessingDialog(QDialog):
         # --- Options -----------------------------------------------------
         options_layout.addWidget(_section_rule(trans.t('batch_section_options')))
 
-        group_row = QHBoxLayout()
+        self._grouping_pref = False
+        self.chk_grouping = QCheckBox(trans.t('batch_group_enable'))
+        self.chk_grouping.setToolTip(trans.t('batch_group_hint'))
+        options_layout.addWidget(self.chk_grouping)
+        self.group_controls = QWidget()
+        group_row = QHBoxLayout(self.group_controls)
+        group_row.setContentsMargins(0, 0, 0, 0)
         group_label = QLabel(trans.t('batch_group_size'))
         group_label.setToolTip(trans.t('batch_group_hint'))
         group_row.addWidget(group_label)
         self.group_size_spin = QSpinBox()
-        self.group_size_spin.setRange(0, 9999)
-        self.group_size_spin.setSpecialValueText(trans.t('batch_group_disabled'))
+        self.group_size_spin.setRange(2, 9999)
+        self.group_size_spin.setKeyboardTracking(False)
+        self.group_size_spin.setValue(4)
         self.group_size_spin.setToolTip(trans.t('batch_group_hint'))
         group_row.addWidget(self.group_size_spin)
         group_row.addWidget(QLabel(trans.t('batch_group_overlap')))
         self.group_overlap_spin = QSpinBox()
-        self.group_overlap_spin.setRange(0, 9997)
+        self.group_overlap_spin.setRange(0, 2)
+        self.group_overlap_spin.setKeyboardTracking(False)
         self._group_overlap_preference = 1
         self.group_overlap_spin.setValue(1)
         self.group_overlap_spin.valueChanged.connect(
             lambda value: setattr(self, '_group_overlap_preference', value))
-        self.group_overlap_spin.setEnabled(False)
         group_row.addWidget(self.group_overlap_spin)
         group_row.addStretch()
-        options_layout.addLayout(group_row)
+        options_layout.addWidget(self.group_controls)
+        self.group_controls.hide()
+        self.group_note = QLabel()
+        self.group_note.setObjectName("mutedLabel")
+        self.group_note.setWordWrap(True)
+        self.group_note.hide()
+        options_layout.addWidget(self.group_note)
+        self.chk_grouping.toggled.connect(self._grouping_changed)
         self.group_size_spin.valueChanged.connect(self._group_size_changed)
 
 
@@ -477,9 +509,14 @@ class BatchProcessingDialog(QDialog):
         last_dir = self._last_pick_dir()
         if last_dir:
             self.path_input.setText(last_dir)
+        # Reflect the cached availability before seeding so the saved method is
+        # applied last and remains the current item even when it is disabled.
+        self._apply_fusion_availability()
         self._seed_from_parent()
         self.fusion_combo.currentIndexChanged.connect(self._sync_method_controls)
         self.align_combo.currentIndexChanged.connect(self._sync_registration_controls)
+        self._fusion_has_specs = False
+        self._registration_has_specs = False
         self._sync_registration_controls()
         self._sync_method_controls()
 
@@ -535,7 +572,8 @@ class BatchProcessingDialog(QDialog):
                          "subfolder_name", "rb_same_folder",
                          "rb_custom_folder", "custom_folder_path",
                          "fusion_combo", "align_combo", "chk_reverse_order",
-                         "chk_exposure_match", "chk_base_correct", "btn_start"):
+                         "chk_exposure_match", "chk_base_correct", "chk_grouping",
+                         "group_size_spin", "group_overlap_spin", "btn_start"):
             _widget = getattr(self, _control, None)
             if _widget is not None:
                 _widget.setProperty("controlId", _control)
@@ -804,7 +842,7 @@ class BatchProcessingDialog(QDialog):
     def _start_import(self, mode: str, on_thumbnails=None, on_stack=None,
                       folder_paths=None, folder_path=None,
                       sort_by: str = 'filename', scale_factor=None) -> bool:
-        if mode == 'stack' and getattr(self, 'group_size_spin', None) is not None and self.group_size_spin.value():
+        if mode == 'stack' and self.chk_grouping.isChecked():
             QMessageBox.warning(self, trans.t('msg_error'), trans.t('batch_group_split_error'))
             return False
         if self._import_busy:
@@ -866,8 +904,10 @@ class BatchProcessingDialog(QDialog):
 
     def _set_import_busy(self, busy: bool) -> None:
         """Disable the actions that would need the data still decoding."""
-        if hasattr(self, 'group_size_spin'):
-            self.group_size_spin.setEnabled(not busy)
+        if hasattr(self, 'chk_grouping'):
+            # Recompute rather than blanket-enable: an incompatible mode must
+            # keep grouping disabled once the import finishes.
+            self._sync_option_states()
         for name in ("btn_start", "btn_add_folder", "btn_add_single_folder"):
             button = getattr(self, name, None)
             if button is not None:
@@ -1023,13 +1063,8 @@ class BatchProcessingDialog(QDialog):
 
     def on_output_option_changed(self):
         """输出选项改变时的处理"""
-        subfolder_enabled = self.rb_subfolder.isChecked()
-        same_enabled = self.rb_same_folder.isChecked()
-        custom_enabled = self.rb_custom_folder.isChecked()
-        
-        self.subfolder_name.setEnabled(subfolder_enabled)
-        self.custom_folder_path.setEnabled(custom_enabled)
-        self.browse_btn.setEnabled(custom_enabled)
+        self.subfolder_controls.setVisible(self.rb_subfolder.isChecked())
+        self.custom_folder_controls.setVisible(self.rb_custom_folder.isChecked())
     
     def on_import_mode_changed(self):
         """导入模式改变时的处理"""
@@ -1045,6 +1080,9 @@ class BatchProcessingDialog(QDialog):
         
         # 初始化质量滑块显示状态
         self.on_format_changed(self.format_combo.currentText())
+        # Single-folder mode cannot use grouping; the state is disabled and
+        # explained here instead of surfacing a modal only after Start.
+        self._sync_option_states()
     
     def on_split_method_changed(self, index):
         """分割方式改变时的处理"""
@@ -1102,7 +1140,7 @@ class BatchProcessingDialog(QDialog):
         from PyQt6.QtWidgets import QFileDialog
 
         folder_path = QFileDialog.getExistingDirectory(
-            self, "Select Folder with Multiple Image Stacks", ""
+            self, trans.t('batch_btn_select_split'), ""
         )
 
         if not folder_path:
@@ -1128,7 +1166,7 @@ class BatchProcessingDialog(QDialog):
 
         # 更新路径显示
         folder_name = os.path.basename(folder_path)
-        self.single_folder_path_label.setText(f"Folder: {folder_name}")
+        self.single_folder_path_label.setText(trans.t('import_folder_display').format(folder_name))
         self.single_folder_path_label.setToolTip(folder_path)
 
         self.update_single_folder_preview()
@@ -1155,7 +1193,7 @@ class BatchProcessingDialog(QDialog):
     def _browse_flat_field(self):
         path, _ = QFileDialog.getOpenFileName(
             self, trans.t('dust_browse'), '',
-            'Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp)')
+            trans.t('batch_image_filter'))
         if path:
             self.flat_field_path.setText(path)
 
@@ -1164,7 +1202,7 @@ class BatchProcessingDialog(QDialog):
         from PyQt6.QtWidgets import QFileDialog
         
         folder_path = QFileDialog.getExistingDirectory(
-            self, "Select Output Folder", ""
+            self, trans.t('batch_out_custom'), ""
         )
         
         if folder_path:
@@ -1208,6 +1246,25 @@ class BatchProcessingDialog(QDialog):
             self.chk_exposure_match.setChecked(bool(getter('exposure_match', method)))
             self.chk_base_correct.setChecked(bool(getter('base_correct', method)))
 
+    def _apply_fusion_availability(self) -> None:
+        """Keep unavailable methods visible with a dependency explanation."""
+        from core.multi_focus_fusion import is_ai_fusion_available
+        from ui.algorithm_combo import fusion_unavailable_reason
+
+        ai_available = bool(is_ai_fusion_available())
+        for spec in fusion_algorithms():
+            reason = fusion_unavailable_reason(spec, ai_available)
+            if not reason:
+                continue
+            index = self.fusion_combo.findData(spec.id)
+            if index < 0:
+                continue
+            item = self.fusion_combo.model().item(index)
+            if item is not None:
+                item.setEnabled(False)
+            self.fusion_combo.setItemData(
+                index, reason, Qt.ItemDataRole.ToolTipRole)
+
     def _remember_fusion_parameters(self, values):
         self._fusion_drafts[self._editing_method] = dict(values)
 
@@ -1226,23 +1283,121 @@ class BatchProcessingDialog(QDialog):
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
         self.registration_parameter_panel.setVisible(bool(specs))
+        self._registration_has_specs = bool(specs)
+        self._sync_parameters_heading()
+
+    def _sync_parameters_heading(self) -> None:
+        """One heading covers both panels; hide it only when both are empty."""
+        self.params_rule.setVisible(
+            self._fusion_has_specs or self._registration_has_specs)
+
+    def _grouping_changed(self, enabled):
+        # Only a user action (or a deliberate toggle in a test) changes the
+        # remembered preference; forced off states are set with blocked signals.
+        if self.chk_grouping.isEnabled():
+            self._grouping_pref = bool(enabled)
+        self._sync_option_states()
 
     def _group_size_changed(self, value):
         with QSignalBlocker(self.group_overlap_spin):
-            maximum = max(0, value - 2) if value else 9997
+            maximum = value - 2
             self.group_overlap_spin.setMaximum(maximum)
             self.group_overlap_spin.setValue(min(self._group_overlap_preference, maximum))
-        self.group_overlap_spin.setEnabled(value != 0)
-        if value:
-            self.single_folder_images_with_times = []
-            self.single_folder_stacks = []
-            self.single_folder_path_label.setText('')
-            self.preview_label.setText('')
 
     def _remember_save_aligned(self, checked: bool) -> None:
         """Track the user's own choice, ignoring programmatic forcing."""
-        if self.fusion_combo.currentData() != "none":
+        if self.save_aligned_cb.isEnabled():
             self._save_aligned_pref = bool(checked)
+        self._sync_option_states()
+
+    def _set_save_aligned_checked(self, checked: bool) -> None:
+        checked = bool(checked)
+        if self.save_aligned_cb.isChecked() == checked:
+            return
+        with QSignalBlocker(self.save_aligned_cb):
+            self.save_aligned_cb.setChecked(checked)
+
+    def _set_grouping_checked(self, checked: bool) -> None:
+        checked = bool(checked)
+        if self.chk_grouping.isChecked() == checked:
+            return
+        with QSignalBlocker(self.chk_grouping):
+            self.chk_grouping.setChecked(checked)
+
+    def _sync_option_states(self) -> None:
+        """Reflect the incompatibilities instead of only failing at Start.
+
+        Grouping needs multi-folder input plus a fusion step and cannot share
+        the run with the aligned-stack copy; alignment-only output has no
+        fusion step, so base correction, sharpening and frame reversal have no
+        consumer. Exposure matching stays live because registration uses it as
+        its brightness reference even without fusion.
+        """
+        method = self.fusion_combo.currentData()
+        fusion_off = method in (None, 'none')
+        spec = None if fusion_off else get_fusion(method)
+
+        if not self.rb_multiple_folders.isChecked():
+            grouping_reason = trans.t('batch_group_split_error')
+        elif fusion_off or self._save_aligned_pref:
+            grouping_reason = trans.t('batch_group_output_error')
+        else:
+            grouping_reason = ''
+
+        if grouping_reason:
+            if self.chk_grouping.isChecked():
+                self._grouping_pref = True
+            self._set_grouping_checked(False)
+        elif (not self._import_busy and self._grouping_pref
+              and not self.chk_grouping.isChecked()):
+            self._set_grouping_checked(True)
+
+        grouping_on = self.chk_grouping.isChecked()
+        self.chk_grouping.setEnabled(not grouping_reason and not self._import_busy)
+        self.group_controls.setVisible(grouping_on)
+        self.group_controls.setEnabled(not self._import_busy)
+        self.chk_grouping.setToolTip(
+            grouping_reason or trans.t('batch_group_hint'))
+        self.group_note.setText(grouping_reason)
+        self.group_note.setVisible(bool(grouping_reason))
+
+        align_only = method == 'none'
+        if align_only:
+            self.save_aligned_cb.setEnabled(False)
+            self._set_save_aligned_checked(True)
+            self.save_aligned_cb.setToolTip(trans.t('batch_save_aligned_forced'))
+            self.save_aligned_note.setVisible(False)
+        elif grouping_on:
+            self.save_aligned_cb.setEnabled(False)
+            self._set_save_aligned_checked(False)
+            self.save_aligned_cb.setToolTip(
+                trans.t('batch_group_output_error'))
+            self.save_aligned_note.setText(
+                trans.t('batch_group_output_error'))
+            self.save_aligned_note.setVisible(True)
+        else:
+            self.save_aligned_cb.setEnabled(True)
+            self._set_save_aligned_checked(self._save_aligned_pref)
+            self.save_aligned_cb.setToolTip(trans.t('batch_save_aligned_hint'))
+            self.save_aligned_note.setVisible(False)
+
+        fusion_only_hint = trans.t('radio_no_fusion_hint')
+        for box, hint_key in (
+                (self.chk_base_correct, 'chk_base_correct_hint'),
+                (self.chk_sharpen_output, 'chk_sharpen_output_hint')):
+            box.setEnabled(not fusion_off)
+            box.setToolTip(fusion_only_hint if fusion_off
+                           else trans.t(hint_key))
+        locked = bool(spec is not None and spec.order_sensitive)
+        self.chk_reverse_order.setEnabled(not fusion_off and not locked)
+        if fusion_off:
+            self.chk_reverse_order.setToolTip(fusion_only_hint)
+        elif locked:
+            self.chk_reverse_order.setToolTip(
+                trans.t('chk_reverse_order_locked_hint'))
+        else:
+            self.chk_reverse_order.setToolTip(
+                trans.t('chk_reverse_order_hint'))
 
     def _sync_method_controls(self) -> None:
         method = self.fusion_combo.currentData()
@@ -1254,17 +1409,9 @@ class BatchProcessingDialog(QDialog):
                 else resolve_fusion_parameters(method) if specs else {})
         self.fusion_parameter_panel.set_parameters(specs, self._fusion_drafts[method])
         self.fusion_parameter_panel.setVisible(bool(specs))
-        self.params_rule.setVisible(bool(specs))
-        align_only = method is not None and method == "none"
-        self.save_aligned_cb.setEnabled(not align_only)
-        self.save_aligned_cb.setChecked(align_only or
-                                        self._save_aligned_pref)
-        if align_only:
-            self.save_aligned_cb.setToolTip(
-                trans.t('batch_save_aligned_forced'))
-        else:
-            self.save_aligned_cb.setToolTip(
-                trans.t('batch_save_aligned_hint'))
+        self._fusion_has_specs = bool(specs)
+        self._sync_parameters_heading()
+        self._sync_option_states()
 
     def get_processing_settings(self):
         """获取处理设置"""
@@ -1324,7 +1471,7 @@ class BatchProcessingDialog(QDialog):
             'alignment': align_method,
             'registration_parameters': self.registration_parameter_panel.values(),
             "reg_scale_percent": ratio,
-            'group_size': self.group_size_spin.value(),
+            'group_size': self.group_size_spin.value() if self.chk_grouping.isChecked() else 0,
             'group_overlap': self.group_overlap_spin.value(),
             "save_aligned": save_aligned,  # 是否保存对齐后的图像栈
             "scale_bar": scale_cfg,
@@ -1379,7 +1526,7 @@ class BatchProcessingDialog(QDialog):
 
         import_mode = self.get_import_mode()
         split_method, split_param = self.get_split_settings()
-        group_size = self.group_size_spin.value()
+        group_size = self.group_size_spin.value() if self.chk_grouping.isChecked() else 0
         if group_size:
             if import_mode == 'single_folder':
                 QMessageBox.warning(self, trans.t('msg_error'), trans.t('batch_group_split_error'))

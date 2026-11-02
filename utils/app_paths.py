@@ -48,10 +48,14 @@ def portable_data_dir() -> str:
 
 
 def user_data_dir() -> Path:
-    """Application data root used by logs, including writable portable installs.
+    """Application data root, with an explicit override for isolated processes.
 
-    Settings retain their QSettings location; recovery stays beside settings.
+    Without the override, settings retain their normal QSettings location and
+    recovery stays beside settings.
     """
+    override = os.environ.get("OPENFOCUS_DATA_DIR")
+    if override:
+        return Path(override).expanduser().absolute()
     if is_portable_mode():
         return Path(portable_data_dir())
     if sys.platform == "win32":

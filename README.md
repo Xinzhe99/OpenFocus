@@ -6,10 +6,10 @@
 
 <h1 align="center">OpenFocus</h1>
 
-<p align="center"><strong>Every focus plane. One all-in-focus image.</strong></p>
+<p align="center"><strong>Every pixel, its sharpest frame.</strong></p>
 
 <p align="center">
-  Ten fusion algorithms, three registration modes and a source-locked retouch workspace for macro, microscopy and industrial stacks. 16-bit end to end, a headless CLI, and a UI in twelve languages.
+  Ten fusion algorithms, five alignment choices and a source-locked retouch workspace for macro, microscopy and industrial stacks. 16-bit end to end, a headless CLI, and a UI in twelve languages.
 </p>
 
 <p align="center">
@@ -76,11 +76,10 @@ This is not mandatory, but highly appreciated.
 
 ### AI fusion: StackMFF V3
 
-The default method classifies every pixel by its most probable source frame
-with a neural network. On the same registered stack it keeps letter edges
-crisper and surfaces cleaner than Guided Filter (Laplacian sharpness 27.1 vs
-28.5), and it leads every method on PSNR and SSIM against synthetic ground
-truth — with fewer ghost pixels than any classical algorithm.
+The default method uses a neural network to estimate the most probable source
+frame for each pixel, then blends the predicted contributions or selects the
+most probable frame. The synthetic benchmark compares methods against known
+ground truth; results depend on the stack and settings.
 
 [StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](tools/synthetic_benchmark.py)
 
@@ -263,7 +262,7 @@ starts with the desktop app.
 <a id="install"></a>
 ## ⬇️ Install
 
-No setup needed — grab a build from the [Releases](https://github.com/Xinzhe99/OpenFocus/releases) page:
+Download the latest Windows or macOS build from the [OpenFocus website](https://openfocus.top/#download). The same files and older versions are also available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 | Platform | File | Type |
 |----------|------|------|
@@ -273,6 +272,24 @@ No setup needed — grab a build from the [Releases](https://github.com/Xinzhe99
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portable (unzip) |
 
 The app is unsigned, so the first launch may show a security prompt: **Windows** SmartScreen → "More info" → "Run anyway" (the first start may take 30–60 s); **macOS** right-click → Open, or run `xattr -cr /Applications/OpenFocus.app` in Terminal.
+
+To install from a terminal, preview the macOS or Linux command first, then run
+it without `--dry-run`. On Linux this installs the headless CLI; macOS builds
+require Apple Silicon and are installed into `~/Applications`.
+
+```bash
+curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
+curl -fsSL https://openfocus.top/install.sh | sh
+```
+
+On Windows, run the installer from PowerShell:
+
+```powershell
+irm https://openfocus.top/install.ps1 | iex
+```
+
+The direct Windows setup download is also available with
+`curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`.
 
 ### 🤖 Agent integration
 

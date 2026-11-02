@@ -13,6 +13,7 @@ import numpy as np
 from PyQt6.QtCore import QSignalBlocker, QThread, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QScrollArea,
     QSplitter,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -408,6 +410,11 @@ class DepthMapDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(trans.t("depth_dialog_title"))
         self.resize(880, 620)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(min(880, max(520, available.width() - 80)),
+                        min(620, max(400, available.height() - 100)))
         self._apply_style()
 
         self.window_main = parent
@@ -432,6 +439,8 @@ class DepthMapDialog(QDialog):
         self._map_output_label = ""
         self._map_source_mode = None
         self._map_source_id = None
+        self._overlay_available = False
+        self._ai_fusion_available = True
         self._texture_description = ""
         self._texture_identity = None
         self._method_drafts = {}
@@ -501,6 +510,24 @@ class DepthMapDialog(QDialog):
         self.lbl_surface_state.setObjectName("mutedLabel")
         self.lbl_surface_state.setWordWrap(True)
         surf_lay.addWidget(self.lbl_surface_state)
+        # Relative relief scales only the non-physical height field, so the
+        # control belongs next to the surface it changes. It stays hidden in
+        # calibrated mode, where real Z positions already set the height.
+        self.relief_row = QWidget()
+        relief_row = QHBoxLayout(self.relief_row)
+        relief_row.setContentsMargins(0, 0, 0, 0)
+        relief_label = QLabel(trans.t("depth_relief"))
+        self.relief_spin = StepperSpinBox(minimum=1, maximum=100, decimals=0, step=1, value=15)
+        self.relief_spin.setRange(1, 100)
+        self.relief_spin.setSuffix(" %")
+        self.relief_spin.setValue(15)
+        self.relief_spin.setToolTip(trans.t("depth_relief_hint"))
+        relief_label.setBuddy(self.relief_spin)
+        self.relief_spin.valueChanged.connect(
+            lambda v: self.surface.set_relief(v / 100.0))
+        relief_row.addWidget(relief_label)
+        relief_row.addWidget(self.relief_spin, 1)
+        surf_lay.addWidget(self.relief_row)
         detail_row.addWidget(QLabel(trans.t("depth_3d_detail")))
         detail_row.addWidget(self.detail_slider, 1)
         detail_row.addWidget(self.detail_value)
@@ -549,9 +576,10 @@ class DepthMapDialog(QDialog):
         self.method_combo = QComboBox()
         from ui.algorithm_combo import fill_fusion_combo
         fill_fusion_combo(self.method_combo, depth_algorithms())
+        self._apply_method_availability()
         default = self._current_window_method()
-        i = self.method_combo.findData(default)
-        self.method_combo.setCurrentIndex(max(0, i))
+        index = self.method_combo.findData(default)
+        self.method_combo.setCurrentIndex(max(0, index))
         form.addRow(trans.t("depth_method"), self.method_combo)
 
         self.fusion_parameter_panel = AlgorithmParameterPanel(self)
@@ -586,32 +614,49 @@ class DepthMapDialog(QDialog):
         self.smooth_spin.setToolTip(trans.t("depth_smooth_hint"))
         form.addRow(trans.t("depth_smooth"), self.smooth_spin)
 
-        self.relief_spin = StepperSpinBox(minimum=1, maximum=100, decimals=0, step=1, value=15)
-        self.relief_spin.setRange(1, 100)
-        self.relief_spin.setSuffix(" %")
-        self.relief_spin.setValue(15)
-        self.relief_spin.setToolTip(trans.t("depth_relief_hint"))
-        self.relief_spin.valueChanged.connect(
-            lambda v: self.surface.set_relief(v / 100.0)
-            if hasattr(self, "surface") else None)
-        form.addRow(trans.t("depth_relief"), self.relief_spin)
-
         self.physical_chk = QCheckBox(trans.t("depth_physical"))
+        self.physical_chk.setAccessibleName(trans.t("depth_physical"))
         form.addRow(self.physical_chk)
+        # Calibration only affects the calibrated-depth mode above, so its
+        # rows live in their own panel and appear with it. Hiding (rather than
+        # disabling) keeps the side panel short on small windows; every value
+        # and checkbox is left untouched, so toggling back restores the setup.
+        self.physical_panel = QWidget()
+        phys_form = QFormLayout(self.physical_panel)
+        phys_form.setContentsMargins(18, 0, 0, 0)
+        phys_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        phys_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.z_start = StepperSpinBox(minimum=-1e9, maximum=1e9, decimals=9, step=1)
         self.z_step = StepperSpinBox(minimum=0, maximum=1e9, decimals=9, step=1)
+        # The nine-decimal range has a wide Qt size hint; allow the fields to
+        # shrink with the side panel instead of clipping every control there.
+        for spin in (self.z_start, self.z_step):
+            spin.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.z_unit = QComboBox()
         for unit, factor in (("µm", 1.0), ("nm", 0.001), ("mm", 1000.0)):
             self.z_unit.addItem(unit, factor)
         self.z_direction = QComboBox()
         self.z_direction.addItem("+Z", 1)
         self.z_direction.addItem("−Z", -1)
-        form.addRow(trans.t("depth_z_start"), self.z_start)
-        form.addRow(trans.t("depth_z_step"), self.z_step)
-        form.addRow(self.z_unit, self.z_direction)
+        self.z_start.setAccessibleName(trans.t("depth_z_start"))
+        self.z_step.setAccessibleName(trans.t("depth_z_step"))
+        self.z_unit.setAccessibleName(trans.t("depth_z_unit"))
+        self.z_direction.setAccessibleName(trans.t("depth_z_direction"))
         self.z_mapping = QCheckBox(trans.t("depth_z_mapping"))
         self.z_mapping.setToolTip(trans.t("depth_axis_hint"))
-        form.addRow(self.z_mapping)
+        self.z_mapping.setAccessibleName(trans.t("depth_z_mapping"))
+        phys_form.addRow(trans.t("depth_z_start"), self.z_start)
+        phys_form.addRow(trans.t("depth_z_step"), self.z_step)
+        # The unit and the +Z/-Z direction sat in one unlabelled row; nothing
+        # told the user which combo was which.
+        phys_form.addRow(trans.t("depth_z_unit"), self.z_unit)
+        phys_form.addRow(trans.t("depth_z_direction"), self.z_direction)
+        phys_form.addRow(self.z_mapping)
+        self.btn_save_physical = QPushButton(trans.t("depth_save_physical"))
+        self.btn_save_physical.setAccessibleName(trans.t("depth_save_physical"))
+        self.btn_save_physical.clicked.connect(self._save_physical)
+        phys_form.addRow(self.btn_save_physical)
+        form.addRow(self.physical_panel)
         self.mesh_size = StepperSpinBox(minimum=2, maximum=4096, decimals=0,
                                         step=20, value=600)
         form.addRow(trans.t("depth_mesh_size"), self.mesh_size)
@@ -624,10 +669,8 @@ class DepthMapDialog(QDialog):
         self.lbl_texture_source.setWordWrap(True)
         self.lbl_texture_source.setObjectName("mutedLabel")
         form.addRow(self.lbl_texture_source)
-        self.btn_save_physical = QPushButton(trans.t("depth_save_physical"))
-        self.btn_save_physical.clicked.connect(self._save_physical)
-        form.addRow(self.btn_save_physical)
-        for control in (self.physical_chk, self.z_start, self.z_step, self.z_unit,
+        self.physical_chk.toggled.connect(self._on_physical_toggled)
+        for control in (self.z_start, self.z_step, self.z_unit,
                         self.z_direction, self.z_mapping, self.mesh_size, self.texture_combo):
             signal = (getattr(control, "currentIndexChanged", None)
                       or getattr(control, "valueChanged", None) or control.toggled)
@@ -639,11 +682,15 @@ class DepthMapDialog(QDialog):
         self.opacity_spin.setRange(0.05, 1.0)
         self.opacity_spin.setSingleStep(0.05)
         self.opacity_spin.setValue(0.55)
-        self.opacity_spin.setEnabled(False)
-        self.overlay_chk.toggled.connect(self.opacity_spin.setEnabled)
+        self.opacity_spin.setAccessibleName(trans.t("depth_overlay"))
+        self.opacity_spin.setAccessibleDescription(trans.t("depth_overlay_hint"))
+        self.opacity_spin.setToolTip(trans.t("depth_overlay_hint"))
+        self.opacity_spin.setVisible(False)
+        self.overlay_chk.toggled.connect(self._on_overlay_toggled)
         row2 = QHBoxLayout()
         row2.addWidget(self.overlay_chk)
         row2.addWidget(self.opacity_spin)
+        row2.addStretch(1)
         form.addRow("", row2)
 
         self.lbl_source = QLabel("")
@@ -654,7 +701,8 @@ class DepthMapDialog(QDialog):
         for combo in side.findChildren(QComboBox):
             combo.setSizeAdjustPolicy(
                 QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-            combo.setMinimumContentsLength(12)
+            combo.setMinimumContentsLength(
+                3 if combo in (self.z_unit, self.z_direction) else 12)
 
 
         side_scroll = QScrollArea()
@@ -703,7 +751,7 @@ class DepthMapDialog(QDialog):
         layout.addLayout(product_btns)
 
         for w in (self.map_combo, self.invert_chk, self.gamma_spin,
-                  self.smooth_spin, self.overlay_chk, self.opacity_spin):
+                  self.smooth_spin, self.opacity_spin):
             sig = getattr(w, "currentIndexChanged", None) or getattr(w, "valueChanged", None) or getattr(w, "toggled", None)
             if sig:
                 sig.connect(self._refresh_preview)
@@ -766,15 +814,20 @@ class DepthMapDialog(QDialog):
     def _source_context(self):
         return self._output_context if self._source_mode == "output" else None
 
+
     def _on_source_changed(self):
         self._source_mode = self.source_combo.currentData()
         self._on_method_changed()
         self.align_combo.setEnabled(self._source_mode == "current")
         self.registration_parameter_panel.setEnabled(self._source_mode == 'current')
-        self.z_mapping.setChecked(False)
         self._fill_textures()
         self._update_source_summary()
         self._update_overlay_availability()
+        # Identical names and indices can belong to different stacks, so the
+        # capture-order confirmation must be renewed for each source.
+        if self.z_mapping.isChecked():
+            self.z_mapping.setChecked(False)
+            self.status_lbl.setText(trans.t("depth_z_mapping_source_changed"))
 
     def _fill_textures(self):
         choice = self.texture_combo.currentData()
@@ -883,6 +936,31 @@ class DepthMapDialog(QDialog):
         return {"offset": [frame.offset_x, frame.offset_y] if frame else [0, 0],
                 "shape": list(self._index01.shape) if self._index01 is not None else None}
 
+    def _available_depth_method_id(self):
+        from ui.algorithm_combo import fusion_unavailable_reason
+        for spec in depth_algorithms():
+            if not fusion_unavailable_reason(spec, self._ai_fusion_available):
+                return spec.id
+        return depth_algorithms()[0].id
+
+    def _apply_method_availability(self):
+        """Keep unavailable methods visible with a dependency explanation."""
+        from core.multi_focus_fusion import is_ai_fusion_available
+        from ui.algorithm_combo import fusion_unavailable_reason
+
+        self._ai_fusion_available = bool(is_ai_fusion_available())
+        for index in range(self.method_combo.count()):
+            method = self.method_combo.itemData(index)
+            if not method:
+                continue
+            reason = fusion_unavailable_reason(get_fusion(method), self._ai_fusion_available)
+            if not reason:
+                continue
+            item = self.method_combo.model().item(index)
+            if item is not None:
+                item.setEnabled(False)
+            self.method_combo.setItemData(index, reason, Qt.ItemDataRole.ToolTipRole)
+
     def _current_window_method(self):
         w = self.window_main
         keys = {spec.id for spec in depth_algorithms()}
@@ -890,13 +968,13 @@ class DepthMapDialog(QDialog):
         if context is not None and context.algorithm in keys:
             return context.algorithm
         # 当前融合方法有深度侧写就用它；否则（仅对齐 / 加权平均类方法 /
-        # 无方法）回退到列表第一项
+        # 无方法）回退到一个依赖可用的方法。
         helper = getattr(w, "current_fusion_method", None)
         if callable(helper):
             code = helper()
             if code in keys:
                 return code
-        return depth_algorithms()[0].id
+        return self._available_depth_method_id()
 
     def _load_custom_schemes(self):
         try:
@@ -1048,14 +1126,37 @@ class DepthMapDialog(QDialog):
 
     def _update_overlay_availability(self):
         base = self._matching_texture()
-        has_result = base is not None
-        if not has_result:
-            self.overlay_chk.setChecked(False)
-        self.overlay_chk.setEnabled(has_result)
-        hint = (trans.t("depth_overlay_hint") if has_result
+        self._overlay_available = base is not None
+        if not self._overlay_available and self.overlay_chk.isChecked():
+            with QSignalBlocker(self.overlay_chk):
+                self.overlay_chk.setChecked(False)
+        self.overlay_chk.setEnabled(self._overlay_available)
+        hint = (trans.t("depth_overlay_hint") if self._overlay_available
                 else trans.t("depth_overlay_missing"))
         self.overlay_chk.setToolTip(hint)
-        self.opacity_spin.setEnabled(has_result and self.overlay_chk.isChecked())
+        self._sync_progressive_controls()
+
+    def _sync_progressive_controls(self) -> None:
+        """Show dependent rows only while the mode that uses them is active.
+
+        Widgets keep their values while hidden, so switching a mode off and
+        back restores the previous calibration/opacity instead of resetting it.
+        """
+        physical = self.physical_chk.isChecked()
+        self.physical_panel.setVisible(physical)
+        self.relief_row.setVisible(not physical)
+        self.relief_spin.setEnabled(not physical)
+        show_opacity = self._overlay_available and self.overlay_chk.isChecked()
+        self.opacity_spin.setVisible(show_opacity)
+        self.opacity_spin.setEnabled(show_opacity)
+
+    def _on_physical_toggled(self, _checked: bool) -> None:
+        self._sync_progressive_controls()
+        self._refresh_preview()
+
+    def _on_overlay_toggled(self, _checked: bool) -> None:
+        self._sync_progressive_controls()
+        self._refresh_preview()
 
     def resizeEvent(self, event):
         """拖大/最大化窗口后预览要跟着重排（防抖 120ms）。"""
@@ -1097,7 +1198,7 @@ class DepthMapDialog(QDialog):
         for panel in (self.fusion_parameter_panel, self.registration_parameter_panel):
             for editor in panel.editors.values():
                 if isinstance(editor, StepperSpinBox):
-                    editor.lineEdit().editingFinished.emit()
+                    editor.interpretText()
         imgs = self._images()
         if not imgs:
             self.status_lbl.setText(trans.t("depth_need_stack"))
@@ -1283,7 +1384,6 @@ class DepthMapDialog(QDialog):
                                np.arange(len(positions)), positions)
             labels = [f"{value:g} µm" for value in values]
         self.legend.set_lut(lut, labels[2], labels[0], labels[1])
-        self.relief_spin.setEnabled(not self.physical_chk.isChecked())
         if self._index01 is None:
             self.legend.update()
             return

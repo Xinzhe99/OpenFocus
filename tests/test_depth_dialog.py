@@ -1,4 +1,4 @@
-"""Behavioral regressions for the manual depth dialog (DM-A01–DM-A15).
+"""Behavioral regressions for the manual depth dialog (DM-A01–DM-A16).
 
 Thread races use real QThreads and Events; only the expensive backend boundary
 is replaced. Measurement tests below deliberately execute the real algorithms.
@@ -338,6 +338,7 @@ def test_depth_parameter_drafts_are_local_and_not_overridden(depth_dialog, monke
 def test_depth_kernel_editor_normalizes_once(depth_dialog, qapp, commit):
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QStyle, QStyleOptionSpinBox
     from utils.validators import normalize_kernel_size
     dialog, _ = depth_dialog()
     editor = dialog.fusion_parameter_panel.editors['kernel_size'].lineEdit()
@@ -353,7 +354,14 @@ def test_depth_kernel_editor_normalizes_once(depth_dialog, qapp, commit):
             dialog.method_combo.setFocus()
         expected = normalize_kernel_size(12)
     else:
-        getattr(dialog.fusion_parameter_panel.editors['kernel_size'], "step_up" if commit == "plus" else "step_down")()
+        spin = dialog.fusion_parameter_panel.editors['kernel_size']
+        options = QStyleOptionSpinBox()
+        spin.initStyleOption(options)
+        control = (QStyle.SubControl.SC_SpinBoxUp if commit == "plus"
+                   else QStyle.SubControl.SC_SpinBoxDown)
+        button = spin.style().subControlRect(
+            QStyle.ComplexControl.CC_SpinBox, options, control, spin)
+        QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=button.center())
         expected = 11 if commit == "plus" else 7
     qapp.processEvents()
     assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == expected
@@ -1190,3 +1198,116 @@ def test_depth_product_memory_refusal_preserves_file(depth_dialog, monkeypatch, 
     assert requests and requests[0] > dialog._map_frames[0].nbytes
     assert target.read_bytes() == b'original file'
     assert 'insufficient memory' in dialog.status_lbl.text()
+
+
+def test_depth_dependent_controls_are_progressively_disclosed(depth_dialog, qapp):
+    """DM-A16: dependent rows appear only while their mode is active."""
+    frames = _synthetic_thirds(48, 64)
+    output = frames[0].copy()
+    dialog, _ = depth_dialog("dct", frames, output, _output_context(frames, output))
+
+    # Calibration off: the whole panel (origin/step/unit/direction, capture
+    # confirmation and physical export) is out of the layout. Relief lives on
+    # the 3D tab, where the surface actually uses it.
+    assert dialog.physical_panel.isHidden()
+    assert not dialog.z_start.isVisibleTo(dialog)
+    assert not dialog.z_mapping.isVisibleTo(dialog)
+    assert not dialog.btn_save_physical.isVisibleTo(dialog)
+    assert not dialog.relief_row.isHidden()
+
+    dialog.z_start.setValue(2.5)
+    dialog.z_step.setValue(2)
+    dialog.z_mapping.setChecked(True)
+    dialog.z_unit.setCurrentIndex(1)      # nm
+    dialog.z_direction.setCurrentIndex(1)  # -Z
+    dialog.physical_chk.setChecked(True)
+    qapp.processEvents()
+    assert not dialog.physical_panel.isHidden()
+    assert dialog.z_start.isVisibleTo(dialog)
+    assert dialog.z_mapping.isVisibleTo(dialog)
+    assert dialog.btn_save_physical.isVisibleTo(dialog)
+    # Calibrated Z already sets the surface height, so relief is not exposed.
+    assert dialog.relief_row.isHidden()
+    assert not dialog.relief_spin.isEnabled()
+
+    dialog.physical_chk.setChecked(False)
+    qapp.processEvents()
+    assert dialog.physical_panel.isHidden()
+    assert dialog.z_step.value() == 2
+    assert dialog.z_mapping.isChecked()
+    assert dialog.z_unit.currentIndex() == 1
+    assert dialog.z_direction.currentIndex() == 1
+    assert dialog.relief_spin.isEnabled()
+
+    # Overlay available but off: no lone disabled opacity value.
+    assert dialog.overlay_chk.isEnabled()
+    assert dialog.opacity_spin.isHidden()
+    dialog.opacity_spin.setValue(0.42)
+    dialog.overlay_chk.setChecked(True)
+    qapp.processEvents()
+    assert not dialog.opacity_spin.isHidden()
+    assert dialog.opacity_spin.isEnabled()
+
+    dialog.overlay_chk.setChecked(False)
+    qapp.processEvents()
+    assert dialog.opacity_spin.isHidden()
+    assert dialog.opacity_spin.value() == pytest.approx(0.42)
+    dialog.overlay_chk.setChecked(True)
+    qapp.processEvents()
+    assert not dialog.opacity_spin.isHidden()
+    assert dialog.opacity_spin.value() == pytest.approx(0.42)
+
+
+def test_capture_order_confirmation_resets_when_source_changes(depth_dialog, qapp):
+    """Identical names and indices do not prove two sources are the same stack."""
+    from core.render_context import build_render_context
+    from locales import trans
+
+    frames = _synthetic_thirds(48, 64)
+    names = [f"capture-{i}.tif" for i in range(len(frames))]
+    output = np.full_like(frames[0], 231)
+    same_order = build_render_context(
+        frames, output, filenames=names,
+        source_indices=list(range(len(frames))), algorithm="dct")
+    dialog, _ = depth_dialog("dct", frames, output, same_order)
+    assert dialog._source_mode == "output"
+    dialog.physical_chk.setChecked(True)
+    dialog.z_mapping.setChecked(True)
+    _select(dialog.source_combo, "current")
+    qapp.processEvents()
+    assert not dialog.z_mapping.isChecked()
+    assert dialog.status_lbl.text() == trans.t("depth_z_mapping_source_changed")
+
+    changed, _ = depth_dialog("dct", frames, output,
+                              _output_context(frames, output))
+    assert changed._source_mode == "output"
+    changed.physical_chk.setChecked(True)
+    changed.z_mapping.setChecked(True)
+    _select(changed.source_combo, "current")
+    qapp.processEvents()
+    assert not changed.z_mapping.isChecked()
+    assert changed.status_lbl.text() == trans.t("depth_z_mapping_source_changed")
+
+
+def test_unavailable_depth_methods_are_disabled_with_a_reason(
+        depth_dialog, monkeypatch):
+    """Unavailable backends are disabled and the default stays runnable."""
+    import core.multi_focus_fusion as mff
+    import ui.algorithm_combo as algorithm_combo
+    from PyQt6.QtCore import Qt
+    from locales import trans
+
+    monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: False)
+    monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
+    dialog, _ = depth_dialog(method="guided_filter")
+    for method in ("stackmffv3", "stackmffv2"):
+        index = dialog.method_combo.findData(method)
+        assert index >= 0
+        assert not dialog.method_combo.model().item(index).isEnabled()
+        assert (dialog.method_combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
+                == trans.t("msg_stackmff_unavailable_text"))
+    dtcwt = dialog.method_combo.findData('dtcwt')
+    assert not dialog.method_combo.model().item(dtcwt).isEnabled()
+    assert dialog.method_combo.itemData(
+        dtcwt, Qt.ItemDataRole.ToolTipRole) == trans.t('env_dtcwt_unavailable')
+    assert dialog.method_combo.currentData() == "openfocus_b"

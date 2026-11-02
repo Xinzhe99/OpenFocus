@@ -1,37 +1,61 @@
-"""Check every translated user manual against the English source.
+"""Check translated manuals for missing chapters and broken local references.
 
-Translations drift: a missing section or a broken table is invisible until a
-user cannot find the feature. This compares structure, not wording.
+Translations may use different examples and tables, so matching raw heading or
+row counts does not establish content parity. A maintainer must review wording
+and feature coverage separately.
 """
 import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 DOCS = Path(__file__).resolve().parent.parent / "docs"
 SOURCE = DOCS / "USER_MANUAL_EN.md"
 LANGS = ("ZH", "JA", "ES", "DE", "FR", "RU", "KO", "PT", "IT", "NL", "PL")
 
-_HEADING = re.compile(r"^(#{1,6})\s+(.*)$", re.M)
-_FENCE = re.compile(r"^```", re.M)
+_CHAPTER = re.compile(r"^##\s+(\d+)\.\s+")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_LINK = re.compile(r'!?\[[^\]]*\]\(([^\s)]+)(?:\s+"[^"]*")?\)')
 
 
 def structure(path):
-    text = path.read_text(encoding="utf-8")
-    headings = _HEADING.findall(text)
-    levels = [len(h[0]) for h in headings]
-    fences = len(_FENCE.findall(text))
-    # table rows: lines that start and end with a pipe
-    rows = [ln for ln in text.splitlines()
-            if ln.strip().startswith("|") and ln.strip().endswith("|")]
-    return {"levels": levels, "fences": fences, "rows": len(rows),
-            "headings": len(headings)}
+    chapters = []
+    missing_links = []
+    fence = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        marker = _FENCE.match(line)
+        if marker:
+            token, suffix = marker.groups()
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence) and not suffix.strip():
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        chapter = _CHAPTER.match(line)
+        if chapter:
+            chapters.append(int(chapter.group(1)))
+        for link in _LINK.findall(line):
+            url = urlsplit(link.strip("<>"))
+            if url.scheme or url.netloc or not url.path:
+                continue
+            if not (path.parent / unquote(url.path)).exists():
+                missing_links.append(link)
+    return {"chapters": chapters, "unclosed_fence": fence,
+            "missing_links": missing_links}
 
 
 def main():
     src = structure(SOURCE)
     failures = []
-    print(f"source: {src['headings']} headings, {src['fences']} fences, "
-          f"{src['rows']} table rows")
+    expected = src["chapters"]
+    if not expected or expected != list(range(1, len(expected) + 1)):
+        failures.append("EN: chapters are missing or out of order")
+    if src["unclosed_fence"]:
+        failures.append("EN: unclosed code fence")
+    failures.extend(f"EN: missing local file {link}" for link in src["missing_links"])
+    print(f"source: {len(expected)} numbered chapters")
     for code in LANGS:
         path = DOCS / f"USER_MANUAL_{code}.md"
         if not path.exists():
@@ -39,27 +63,20 @@ def main():
             continue
         cur = structure(path)
         problems = []
-        if cur["headings"] != src["headings"]:
-            problems.append(f"headings {cur['headings']} != {src['headings']}")
-        if cur["levels"] != src["levels"]:
-            first = next((i for i, (a, b) in
-                          enumerate(zip(cur["levels"], src["levels"])) if a != b),
-                         None)
-            problems.append(f"heading structure differs at index {first}")
-        if cur["fences"] != src["fences"]:
-            problems.append(f"code fences {cur['fences']} != {src['fences']}")
-        if cur["rows"] != src["rows"]:
-            problems.append(f"table rows {cur['rows']} != {src['rows']}")
-        status = "OK  " if not problems else "FAIL"
-        print(f"  {status} {code}: {cur['headings']} headings, "
-              f"{cur['fences']} fences, {cur['rows']} rows")
-        for p in problems:
-            print(f"       {p}")
-            failures.append(f"{code}: {p}")
+        if cur["chapters"] != expected:
+            problems.append("numbered chapters differ from English")
+        if cur["unclosed_fence"]:
+            problems.append("unclosed code fence")
+        problems.extend(f"missing local file {link}" for link in cur["missing_links"])
+        status = "FAIL" if problems else "OK  "
+        print(f"  {status} {code}: {len(cur['chapters'])} numbered chapters")
+        for problem in problems:
+            print(f"       {problem}")
+            failures.append(f"{code}: {problem}")
     if failures:
         print(f"\n{len(failures)} problem(s)")
         return 1
-    print("\nall manuals match the English structure")
+    print("\nchapter order, code fences and local file links are valid")
     return 0
 
 

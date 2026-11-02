@@ -99,6 +99,34 @@ jobs:
             --only-show-errors \
             --no-progress
 
+      - name: Publish latest mirrored release metadata
+        run: |
+          set -euo pipefail
+          tag="${{ steps.release.outputs.tag }}"
+          latest="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          if [ "$tag" != "$latest" ]; then
+            echo "Skipping metadata: $tag is not the latest release ($latest)."
+            exit 0
+          fi
+          manifest="$RUNNER_TEMP/openfocus-latest.json"
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json tagName,publishedAt,assets |
+            jq -e --arg tag "$tag" '
+              def asset($name):
+                [.assets[] | select(.name == $name) | {name, size, url}]
+                | if length == 1 and .[0].size > 0 then .[0]
+                  else error("missing or empty asset: " + $name) end;
+              if .tagName != $tag then error("release tag changed") else . end |
+              {tag: .tagName, published: .publishedAt, assets: {
+                "windows-setup": asset("OpenFocus-" + $tag + "-setup.exe"),
+                "windows-zip": asset("OpenFocus-" + $tag + "-windows-x64.zip"),
+                "macos-dmg": asset("OpenFocus-" + $tag + "-macos.dmg"),
+                "macos-zip": asset("OpenFocus-" + $tag + "-macos-arm64.zip")
+              }}' > "$manifest"
+          aws s3 cp "$manifest" "s3://openfocus-downloads/openfocus-meta/latest-release.json" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-type "application/json" --cache-control "no-store" \
+            --only-show-errors --no-progress
+
       - name: Prune older mirrored releases
         run: |
           set -euo pipefail

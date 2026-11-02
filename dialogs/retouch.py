@@ -30,6 +30,7 @@ from locales import trans
 from utils.image_utils import thumbnail_bgr, to_display_uint8
 from utils.path_identity import same_path
 from utils.retouch import RetouchDocument, adjust_tones
+from widgets.flow_layout import FlowPanel
 
 _SHARPNESS_WORKERS = set()
 
@@ -663,8 +664,7 @@ class RetouchDialog(QDialog):
         top.addWidget(self.btn_change)
         top.addWidget(self.btn_fullscreen)
 
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(4)
+        toolbar = FlowPanel(h_spacing=4, v_spacing=4)
         self.btn_undo = QPushButton(trans.t("retouch_undo"))
         self.btn_undo.clicked.connect(self._undo)
         self.btn_redo = QPushButton(trans.t("retouch_redo"))
@@ -694,15 +694,9 @@ class RetouchDialog(QDialog):
         self.btn_peek.released.connect(lambda: self._release_preview("source"))
         for widget in (self.btn_undo, self.btn_redo, self.btn_save_checkpoint,
                        self.btn_load_checkpoint, self.btn_fit, self.btn_100,
-                       self.btn_layout, self.btn_before, self.btn_peek):
-            toolbar.addWidget(widget)
-        divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.VLine)
-        toolbar.addWidget(divider)
-        toolbar.addWidget(self.lbl_zoom)
-        toolbar.addStretch(1)
-        toolbar.addWidget(self.btn_peek)
-        toolbar.addWidget(self.btn_before)
+                       self.btn_layout, self.lbl_zoom, self.btn_peek,
+                       self.btn_before):
+            toolbar.add(widget)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
@@ -914,7 +908,7 @@ class RetouchDialog(QDialog):
         status.addWidget(self.lbl_state)
 
         outer.addLayout(top)
-        outer.addLayout(toolbar)
+        outer.addWidget(toolbar)
         outer.addWidget(self.splitter, 1)
         outer.addWidget(strip)
         outer.addLayout(status)
@@ -1326,6 +1320,10 @@ class RetouchDialog(QDialog):
         self._update_status()
         self.source_canvas.update()
         self.result_canvas.update()
+        # The exposure amount only applies to the exposure brush; hide it
+        # for the source/restore tools instead of leaving a live control
+        # whose value the stroke never reads.
+        self._update_controls()
 
     def _show_shortcuts(self) -> None:
         from utils.ui_utils import show_message_box
@@ -1614,6 +1612,10 @@ class RetouchDialog(QDialog):
         self.chk_sharp.setEnabled(not blocked)
         self.rb_source.setEnabled(not blocked)
         self.rb_restore.setEnabled(not blocked)
+        self.rb_exposure.setEnabled(not blocked)
+        exposure_tool = self.doc.tool == "exposure"
+        self.num_exposure.setVisible(exposure_tool)
+        self.num_exposure.setEnabled(exposure_tool and not blocked)
         self.num_diameter.setEnabled(not blocked)
         self.num_hardness.setEnabled(not blocked)
         self.num_opacity.setEnabled(not blocked)

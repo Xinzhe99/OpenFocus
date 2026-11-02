@@ -146,6 +146,26 @@ Batch: `dialog.open --name batch
 --args-json '{"folders":["F:/a","F:/b"],"output_dir":"F:/out"}'`, set
 `fusion_combo`, then `dialog.accept`; poll `batch.state` until `busy` is
 false and inspect `results`/`error`. `batch.cancel` requests cancellation.
+For grouped processing, set `chk_grouping` to true before setting
+`group_size_spin` and `group_overlap_spin`. Grouped fusion is approximate,
+uses temporary disk space, and does not produce original-frame depth maps.
+
+Sensor defect repair and denoising are configured in the settings dialog or
+the batch dialog. Inspect the controls and allow mask inspection to finish
+before accepting. Alignment diagnostic collection is in Advanced Settings
+(`dialog.open --name settings`, `chk_collect_alignment_report`); the report
+viewer remains a menu action. Collection requires alignment.
+
+For a layered TIFF, right-click the desired result in the output list, select
+the layered TIFF export from `ui.menu`, answer the file picker, and wait for
+the export to finish. It requires a result with source-frame provenance;
+`output.export` writes the ordinary flattened output. In the retouch dialog,
+`retouch_save_checkpoint` and `retouch_load_checkpoint` use file pickers and
+may run asynchronously. To replay headlessly, use `openfocus retouch replay
+CHECKPOINT --base BASE --sources FRAME1 FRAME2 ... --output RESULT.tif` with
+the original fused base and processed frames in checkpoint order. GUI depth
+exports include color, raw depth, source indices and other products; CLI
+`--depth-map` exports a colorized focus-position map only for supported methods.
 
 ## 6. Dialogs, menus and file pickers
 
@@ -224,7 +244,9 @@ The same commands are an automation API. A test can start an offscreen or
 visible window normally, then drive it through `openfocus ctl` or
 `core.control.client.request`, asserting on returned JSON. Discovery and
 tokens can be isolated with `OPENFOCUS_CONTROL_FILE` and
-`OPENFOCUS_INSTANCE_NAME`. Prefer `output.export`, `project.save/open` and
+`OPENFOCUS_INSTANCE_NAME`. `OPENFOCUS_DATA_DIR` redirects application data and
+settings to an explicit directory, including in portable mode. Set these
+before starting the GUI. Prefer `output.export`, `project.save/open` and
 `dialog.file` over OS automation.
 
 ## 10. Scope and safety
@@ -241,14 +263,14 @@ token or enable control on a shared account.
 
 - `python tools/agent_gui_smoke.py --launch` runs the pipeline end to end
   (load, render, export, depth, compare, retouch apply, wipe, labels/color,
-  project, batch, file picker) and exits non-zero on failure.
-- `python tools/agent_action_sweep.py --launch` triggers every enabled menu
-  action and resolves the dialogs/pickers it opens; disabled, updater and
-  exit actions are reported as skipped.
+  project, grouped batch, file picker) and exits non-zero on failure.
+- `python tools/agent_action_sweep.py --launch` triggers enabled actions exposed
+  by `ui.actions` and resolves their dialogs/pickers; disabled, updater and
+  exit actions are reported as skipped. Context menus are outside its scope.
 - Both tools are destructive: `--launch` starts a private instance with its
-  own discovery file and socket, and attaching to an already-running window
-  requires `--allow-existing` (the tools refuse otherwise). Add `--quit`
-  (smoke and sweep) so an isolated instance exits when the run finishes.
+  own data and settings directory, discovery file, control socket and
+  single-instance name. Attaching to an already-running window requires
+  `--allow-existing`. Add `--quit` so an isolated instance exits after the run.
 - The tools match dialog titles and buttons in every loaded UI language, so
   they work against a localized window.
 - Python clients that issue many commands should reuse

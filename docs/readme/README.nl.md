@@ -6,10 +6,10 @@
 
 <h1 align="center">OpenFocus</h1>
 
-<p align="center"><strong>Elk scherptevlak. Eén volledig scherp beeld.</strong></p>
+<p align="center"><strong>Elke pixel uit zijn scherpste frame.</strong></p>
 
 <p align="center">
-  Tien fusiemethoden, drie registratiemodi en een bronvaste retoucheerwerkruimte voor macro, microscopie en industriële stapels. 16-bit van begin tot eind, een headless CLI en een interface in twaalf talen.
+  Tien fusiemethoden, vijf uitlijningsopties en een bronvaste retoucheerwerkruimte voor macro-, microscopie- en industriële stapels. 16-bit van begin tot eind, een headless CLI en een interface in twaalf talen.
 </p>
 
 <p align="center">
@@ -55,53 +55,58 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.72.0** — StackMFF en StackMFF V2 sluiten aan bij de fusie: tien methoden in één installatie — het oorspronkelijke 3D-stacknetwerk (volgordeonafhankelijk, zonder instellingen), het recurrente V2-model met dieptekaarten (focusvolgorde behouden) en het uniform genoemde StackMFF V3. Elke methodeselector groepeert op AI, ruimtelijk domein en transformatiedomein, en elke methode legt zichzelf uit bij hover. De wazige zachte menging van V2 is verwijderd; de referentiebemonstering blijft ongewijzigd.
+> **v1.74.0** — De OpenFocus A/B/C-fusie en snelle uitlijning zijn bijgewerkt. De desktopapp start nu automatisch een geauthenticeerd lokaal agentkanaal, zodat `openfocus ctl` het draaiende venster kan bedienen zonder speciale startoptie.
+
+Oudere versies staan in het [wijzigingslogboek](../../CHANGELOG.md).
+
+📸 Als je afbeeldingen publiceert die met OpenFocus zijn gemaakt, stellen we een vermelding zoals deze op prijs:
+
+> Gemaakt met OpenFocus — https://github.com/Xinzhe99/OpenFocus
+
+Dit is niet verplicht, maar wel zeer gewaardeerd.
 
 <a id="features"></a>
 ## Functies
 
 <table>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### AI-fusie: StackMFF V3
 
-De standaardmethode classificeert elke pixel met een neuraal netwerk naar het meest waarschijnlijke bronframe. Op dezelfde uitgelijnde stapel blijven letterranden scherper en vlakken schoner dan bij Guided Filter (Laplaciaanse scherpte 27,1 tegen 28,5); tegen synthetische ground truth leidt het op PSNR en SSIM, met minder spookpixels dan welk klassiek algoritme ook.
+De standaardmethode gebruikt een neuraal netwerk om voor elke pixel het waarschijnlijkste bronframe te schatten en mengt vervolgens de voorspelde bijdragen of kiest het waarschijnlijkste frame. De synthetische benchmark vergelijkt methoden met een bekende referentie; de resultaten hangen af van de stapel en de instellingen.
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [Benchmark →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](../../tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/ai.mp4"><picture><source srcset="../../assets/readme/ai.gif" type="image/gif"><img src="../../assets/readme/ai_poster.jpg" alt="AI-fusie: StackMFF V3" width="100%" /></picture></a>
+<a href="../../assets/readme/ai.mp4"><picture><source srcset="../../assets/readme/ai.gif" type="image/gif"><img src="../../assets/readme/ai_poster.jpg" alt="StackMFF V3 tegen Guided Filter op dezelfde stapel" width="100%" /></picture></a>
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
-### A/B-wipe
+### Veegvergelijking
 
-Sleep de scheiding tussen een bronframe en het resultaat om te zien wat de fusie veranderde: uitlijningsdrift, halo's langs randen en verloren detail, bij elke zoomstand.
+Sleep de scheiding over een bronframe en het fusieresultaat om precies te zien wat de fusie veranderde: uitlijningsdrift, halo's langs randen en verloren detail zijn in één oogopslag zichtbaar, bij elke zoomstand.
 
-[Handleiding →](./docs/USER_MANUAL_NL.md)
+[Handleiding →](../USER_MANUAL_NL.md)
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/wipe.mp4"><picture><source srcset="../../assets/readme/wipe.gif" type="image/gif"><img src="../../assets/readme/wipe_poster.jpg" alt="A/B-vergelijking tussen bronframe en resultaat" width="100%" /></picture></a>
+<a href="../../assets/readme/wipe.mp4"><picture><source srcset="../../assets/readme/wipe.gif" type="image/gif"><img src="../../assets/readme/wipe_poster.jpg" alt="A/B-veegvergelijking tussen bronframe en fusieresultaat" width="100%" /></picture></a>
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### Methodenvergelijking
 
-Render alle methoden één keer, vergelijk ze naast elkaar op dezelfde uitsnede en neem de winnaar over als nieuwe uitvoer of kopieer de parameters terug naar het hoofdvenster.
+Render elke methode één keer, vergelijk ze naast elkaar op dezelfde uitsnede en neem de winnaar over als nieuwe uitvoer of kopieer de parameters terug naar het hoofdvenster.
 
 </td>
 <td width="54%">
@@ -110,7 +115,6 @@ Render alle methoden één keer, vergelijk ze naast elkaar op dezelfde uitsnede 
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
@@ -125,13 +129,13 @@ Focuspositie per pixel uit vijf focusmaten, wetenschappelijke kleurenschalen, fy
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### Bronvaste retouche
 
-Schilder vanuit de frames die het resultaat echt hebben gemaakt: gedeelde zoom en pan, bronframe-schuif, zachte penseel, herstelpenseel, undo per streek en bescherming van niet-geëxporteerde pixels.
+Schilder vanuit de frames die het resultaat echt hebben gemaakt: gedeelde zoom en pan, schuifregelaar voor het bronframe, zachte penseel, herstelpenseel, ongedaan maken per streek en bescherming van niet-geëxporteerde pixels.
+Pas de retouche toe als nieuwe uitvoer en kies daarna in het hoofdvenster met rechtsklik op die uitvoer **TIFF met lagen exporteren** om het resultaat samen met zijn bronframes op te slaan. Live labels en schaalbalken worden niet meegenomen. GIMP 3.2.6 op Windows opent het resultaat en de bronlagen; andere editors zijn niet getest.
 
 </td>
 <td width="54%">
@@ -140,13 +144,12 @@ Schilder vanuit de frames die het resultaat echt hebben gemaakt: gedeelde zoom e
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### Batchverwerking
 
-Wijs een map met stapels aan, kies methode en bestemming en laat het lopen. Alleen uitlijnen schrijft één map per stapel; fusie schrijft en toont alleen het gefuseerde beeld.
+Wijs een map met stapels aan, kies een methode en bestemming en laat het lopen. Alleen-uitlijnen schrijft één map per stapel; fusieregels schrijven het gefuseerde beeld en tonen precies dat. Optionele groepsfusie ruilt exacte gelijkwaardigheid met de volledige stapel in voor begrensd groepsgeheugen en tijdelijke schijfruimte.
 
 </td>
 <td width="54%">
@@ -155,15 +158,14 @@ Wijs een map met stapels aan, kies methode en bestemming en laat het lopen. Alle
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
-### Schaalbalken voor publicatie
+### Schaalbalken voor publicaties
 
-Gekalibreerd uit TIFF-metadata of handmatig, getekend met het echte lettertype op de echte lengte en ingebrand in elke export: losse afbeelding, stapel, TIFF, GIF en batch. Past hij niet leesbaar, dan zegt de dialoog dat in plaats van een kortere balk met een verkeerd label te tekenen.
+Gekalibreerd uit TIFF-metadata of handmatig ingevoerd, getekend met het echte lettertype op de echte lengte en ingebrand in elke export: losse afbeeldingen, stapels, meerbladige TIFF, GIF en batchuitvoer. Een balk die niet leesbaar past, meldt dat in plaats van een lengte af te drukken die hij niet tekent.
 
-[Handleiding →](./docs/USER_MANUAL_NL.md)
+[Handleiding →](../USER_MANUAL_NL.md)
 
 </td>
 <td width="54%">
@@ -172,18 +174,33 @@ Gekalibreerd uit TIFF-metadata of handmatig, getekend met het echte lettertype o
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### Labels en bijschriften
 
-Bijschriften blijven een beheerde lijst: elk met een eigen bereik (bron, uitgelijnde stapel of een specifieke uitvoer), framebereik en stijl. Voorbeeld en elke export gebruiken hetzelfde doel en hetzelfde framenummer, dus `{value}` leest identiek in Opslaan, Opslaan als, slepen en Alles exporteren.
+Labels blijven een beheerde lijst; elk label heeft een eigen bereik (bron, uitgelijnde stapel of een specifieke uitvoer), framebereik en stijl. Voorbeeld en elke export gebruiken hetzelfde doel en hetzelfde framenummer, zodat `{value}` identiek leest in Opslaan, Opslaan als, slepen en Alles exporteren.
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/labels.mp4"><picture><source srcset="../../assets/readme/labels.gif" type="image/gif"><img src="../../assets/readme/labels_poster.jpg" alt="Labels en bijschriften" width="100%" /></picture></a>
+<a href="../../assets/readme/labels.mp4"><picture><source srcset="../../assets/readme/labels.gif" type="image/gif"><img src="../../assets/readme/labels_poster.jpg" alt="Labelbeheer met live voorbeeld" width="100%" /></picture></a>
+
+</td>
+</tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Aanstuurbare agent
+
+Elk venster, elke widget en elk menu is bereikbaar via een tokenbeveiligd lokaal kanaal: een agent laadt een stapel, rendert, retoucheert, vergelijkt, berekent diepte, exporteert en beantwoordt dialoogen — via getypte opdrachten, widgetpaden of echte muis- en toetsgebeurtenissen. Geen screen scraping of OCR nodig; het kanaal start met de desktopapp.
+
+[Protocol →](../AGENT_CONTROL_SPEC.md) · [Skill →](../../skills/openfocus-control/SKILL.md)
+
+</td>
+<td width="54%">
+
+<a href="../../assets/readme/agent.mp4"><picture><source srcset="../../assets/readme/agent.gif" type="image/gif"><img src="../../assets/readme/agent_poster.jpg" alt="Een agent bestuurt de live GUI: laden, AI-render, vergelijken, retoucheren, vegen, diepte, labels" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -191,17 +208,21 @@ Bijschriften blijven een beheerde lijst: elk met een eigen bereik (bron, uitgeli
 
 **Ook inbegrepen:**
 
-- **Focus-stackingworkflow** — stapelbrowser, scherptecurve, snelle voorvertoning, ROI-render en per methode onthouden instellingen na herstart.
-- **Klaar voor microscopie** — 16-bit van begin tot eind, µm/px uit TIFF, flat-fieldcorrectie, meerbladige TIFF-Z-stacks.
-- **Headless CLI** — dezelfde pijplijn als `openfocus`, met batch, `--dry-run`, `--resume` en JSON-uitvoer.
-- **Projecten en herstel** — `.ofproj`-sessies, automatisch herstel na een crash, undo/redo voor stapels en annotaties.
-- **Twaalf UI-talen** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; automatisch gedetecteerd, een nieuwe taal is één `locales/<code>.py`-bestand.
-- **Zuining met geheugen** — de neurale gewichten laden alleen bij de AI-methode, dus een klassieke sessie blijft rond 110 MB in plaats van 260 MB.
+- **Focus-stackingworkflow** — stapelbrowser, scherptecurve, snel voorbeeld, ROI-render en per methode onthouden instellingen na een herstart.
+- **Klaar voor microscopie** — 16-bit van begin tot eind, µm/px uit TIFF-metadata, flat-fieldcorrectie met een stofkaart, meerbladige TIFF-Z-stapels, getextureerde OBJ-export.
+- **Kleurprofielen** — export van losse afbeeldingen als PNG, TIFF, JPEG en WebP behoudt een gedeeld RGB-ICC-profiel wanneer elk bronframe hetzelfde profiel heeft. Gemengde of ongetagde stapels krijgen geen profiel; pixels worden niet kleurgeconverteerd.
+- **Transparante PNG** — stapels met overeenkomende rechthoekige maskers met constante dekking kunnen op volledige grootte worden gefuseerd en als PNG worden opgeslagen. Beperkingen staan in de handleiding.
+- **Headless CLI** — dezelfde pijplijn als `openfocus`, met batchmodus, `--dry-run`, `--resume` en JSON-uitvoer voor scripts.
+- **Aanstuurbare agent** — een tokenbeveiligd lokaal kanaal bestuurt de live GUI (getypte pijplijnopdrachten plus generieke widget-, menu-, muis- en toetsbesturing), met een skill, een smoke-runner met 14 controles en een volledige menuhandelingenscan.
+- **Verwerkingssjablonen** — fusie-, registratie- en resource-instellingen zonder bronpaden opslaan als `.oftemplate` en op elke geladen stapel toepassen; de kiezer accepteert ook projecten en projectgebaseerde recepten.
+- **Projecten en herstel** — `.ofproj`-sessies, automatisch herstel na een crash, ongedaan maken/opnieuw uitvoeren voor stapelbewerkingen en annotaties.
+- **Twaalf UI-talen** — English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski. Automatisch gedetecteerd uit de systeemtaal; een nieuwe taal is één bestand `locales/<code>.py`.
+- **Zuinig met geheugen** — het neurale netwerk wordt alleen geladen als de neurale methode wordt gebruikt; een sessie met een klassieke methode blijft rond 110 MB in plaats van 260 MB.
 
 <a id="install"></a>
 ## ⬇️ Installatie
 
-Geen installatie nodig — haal een build van de [Releases](https://github.com/Xinzhe99/OpenFocus/releases)-pagina:
+Download de nieuwste Windows- of macOS-build van de [OpenFocus-website](https://openfocus.top/#download). Dezelfde bestanden en oudere versies staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 | Platform | Bestand | Type |
 |----------|---------|------|
@@ -210,7 +231,35 @@ Geen installatie nodig — haal een build van de [Releases](https://github.com/X
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Schijfimage (naar Programma's slepen) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Draagbaar (uitpakken) |
 
-De app is niet ondertekend, dus de eerste start kan een waarschuwing tonen: **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren); **macOS** rechtsklik → Open, of `xattr -cr /Applications/OpenFocus.app` in Terminal.
+De app is niet ondertekend, dus de eerste start kan een beveiligingswaarschuwing tonen: **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren); **macOS** rechtsklik → Open, of `xattr -cr /Applications/OpenFocus.app` in Terminal.
+
+Voor installatie vanaf de terminal bekijk je eerst de opdracht voor macOS of Linux met `--dry-run` en voer je die daarna zonder die optie uit. Op Linux installeert dit de headless CLI; macOS-builds vereisen Apple Silicon en worden in `~/Applications` geïnstalleerd.
+
+```bash
+curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
+curl -fsSL https://openfocus.top/install.sh | sh
+```
+
+Voer op Windows de installer uit vanuit PowerShell:
+
+```powershell
+irm https://openfocus.top/install.ps1 | iex
+```
+
+De Windows-setup rechtstreeks downloaden:
+
+```bash
+curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
+```
+
+### 🤖 Agentintegratie
+
+De desktopapp start automatisch een tokenbeveiligd lokaal agentkanaal. Gebruik `openfocus ctl` voor getypte opdrachten of generieke UI-acties op het draaiende venster. Agenten kunnen stapels laden, renderen, exporteren, dialoogen openen en invullen, bestandskiezers beantwoorden, muis- en toetsgebeurtenissen sturen en schermafbeeldingen maken.
+
+- Skill: [`skills/openfocus-control/SKILL.md`](../../skills/openfocus-control/SKILL.md)
+- Protocol en opdrachtenreferentie: [`docs/AGENT_CONTROL_SPEC.md`](../AGENT_CONTROL_SPEC.md)
+- End-to-end-runner: `python tools/agent_gui_smoke.py --launch`
+- Scan van elke actie: `python tools/agent_action_sweep.py --launch`
 
 ### 💻 Opdrachtregel
 
@@ -221,20 +270,71 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-Het AI-model, de gewichten, HEIC- en camera-RAW-decodering zitten allemaal in die ene installatie. Op Python 3.13+ vervalt `dtcwt` en blijft de DTCWT-optie uitgeschakeld met uitleg.
+Het AI-model, de gewichten, HEIC- en camera-RAW-decodering zitten allemaal in die ene installatie. Op Python 3.13+ vervalt `dtcwt`; daar blijft de DTCWT-optie uitgeschakeld met uitleg.
+
+Retoucheercontrolepunten kunnen headless worden afgespeeld met het oorspronkelijke gefuseerde basisbeeld en de exact verwerkte bronframes in hun vastgelegde volgorde:
+
+```bash
+openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
+```
+
+Het controlepunt controleert basis, bronpixels, geometrie en geldigheidsmaskers. Exporteer de verwerkte frames zelf (inclusief uitlijning of ROI-bijsnijding), niet de onverwerkte invoerstapel. Afspelen weigert een onverenigbare context en overschrijft nooit zijn invoer. De uitvoer is PNG of TIFF en behoudt 8- of 16-bitdiepte.
+
+Recepten leggen headless verwerkingsinstellingen vast voor hergebruik en verplaatsing:
+
+```bash
+openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
+openfocus recipe run workflow.json --dry-run
+openfocus recipe run workflow.json
+```
+
+Het JSON-formaat van versie 1 bevat `version`, een `input`-array, ofwel `output` of `output_dir`, en een `options`-object. Paden zijn relatief ten opzichte van het receptbestand; verplaats het recept samen met zijn invoerbestanden om die relaties te behouden. Bij het maken worden de CLI-instellingen en opgeloste algoritmeparameters vastgelegd. Onbekende velden, ongeldige waarden en niet-ondersteunde versies worden geweigerd. Een proefrun controleert de invoer zonder resultaatbestanden te schrijven. Bestaande projectbestanden blijven ongewijzigd.
+
+Om instellingen uit een bestaand `.ofproj` over te nemen, kies je uitdrukkelijk de nieuwe invoer en uitvoer. De oorspronkelijke projectbronnen hoeven niet aanwezig te zijn om de instellingen te extraheren:
+
+```bash
+openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
+```
+
+Dit neemt fusie, registratie, helderheid, volgorde, verscherping en tegelinstellingen over in het CLI-recept en sluit de verwerkingsinstellingen voor de GUI in. Frame-uitsluitingen, laadschaal, labels en bewerkingen worden niet overgedragen; bereid de nieuwe invoerstapel daarop voor. Projecten met brontransformaties, inclusief toegepaste flat-fieldcorrecties, moeten eerst hun gecorrigeerde bronstapel exporteren. Recepten vereisen uitvoer buiten hun invoermappen en accepteren nooit een invoerbestand als uitvoer. Groeperingsopties kunnen uit CLI-argumenten worden overgenomen.
+
+In de GUI slaat **Bestand → Verwerkingssjabloon opslaan** instellingen op zonder bronpaden. **Bestand → Verwerkingssjabloon toepassen** past een sjabloon, project of projectsjabloon toe op de huidige stapel zonder de invoer, transformaties, uitsluitingen of labels te vervangen. Een sjabloon is zelf geen uitvoerbaar recept. De GUI-instellingen in een recept staan los van de CLI-opties; houd beide consistent als je de JSON bewerkt.
+
+Dezelfde headless API is beschikbaar zonder PyQt te importeren:
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")  # gevalideerd dictionary met relatieve paden
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # False om te verwerken
+```
+
+`capture_recipe` interpreteert zijn argumenten als gewone CLI-paden relatief ten opzichte van de huidige map; `save_recipe` interpreteert opgeslagen paden relatief ten opzichte van het recept. Het recept legt instellingen en verwijzingen vast, inclusief een inhoudsvingerafdruk voor een uitdrukkelijk gekozen sensordefectmasker. Het legt niet de invoerpixels, softwareversies, hardware of controlesommen van de bronstapel vast; bewaar die apart wanneer herkomst belangrijk is. Identieke instellingen garanderen geen identieke pixels over softwareversies, stuurprogramma's of apparaten heen; GPU-neurale bewerkingen kunnen niet-deterministisch zijn. Gebruik `--cpu` wanneer uitvoering op de CPU vereist is, en bewaar de geïnstalleerde software en invoer.
 
 <a id="community"></a>
 ## Community en ondersteuning
 
-- **Documentatie** — [Handleiding](./docs/USER_MANUAL_NL.md) (twaalf talen) · [Wijzigingen](./CHANGELOG.md) · [Prestaties](./docs/PERFORMANCE.md) · [Fusiemethoden](../FUSION_METHODS.md)
-- **Citeren** — [CITATION.cff](./CITATION.cff); elke versie wordt gearchiveerd op Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
+- **Documentatie** — [Gebruikershandleiding](../USER_MANUAL_NL.md) (twaalf talen) · [Wijzigingen](../../CHANGELOG.md) · [Prestaties](../PERFORMANCE.md) · [Fusiemethoden](../FUSION_METHODS.md)
+- **Citeren** — [CITATION.cff](../../CITATION.cff); elke versie wordt gearchiveerd op Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open een [issue](https://github.com/Xinzhe99/OpenFocus/issues) voor bugs, ideeën en algoritmewerk
-- **Credits** — elk fusie- en registratiealgoritme behoudt zijn oorspronkelijke onderzoekslicentie; StackMFF V3 staat op [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
+- **Credits** — elk fusie- en registratiealgoritme behoudt zijn oorspronkelijke onderzoekslicentie; StackMFF V3 staat op [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+- **Beveiligingsmeldingen** — [@ranas-mukminov](https://github.com/ranas-mukminov) meldde het machtigingsvenster van de discovery-token ([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
+
+<a id="license"></a>
+## Licentie
+
+De OpenFocus-toepassing valt onder de [MIT-licentie](../../LICENSE).
+
+**Uitzondering voor de StackMFF-serie.** De StackMFF-fusiealgoritmen — momenteel StackMFF V3 en alle toekomstige edities op de nieuwste stand van de techniek — blijven eigendom van het OpenFocus-project, dat alle rechten op de StackMFF-serie behoudt. Je mag ze als onderdeel van OpenFocus gebruiken voor je eigen afbeeldingen en intern werk. Het kopiëren, porten of migreren van deze algoritmen naar een ander opensourceproject vereist voorafgaande schriftelijke toestemming.
 
 <a id="developing"></a>
 ## Ontwikkeling
 
-Uit de checkout starten:
+Start vanuit de checkout:
 
 ```bash
 conda create -n openfocus python=3.10
@@ -243,7 +343,10 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Verpakken met PyInstaller: [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md).
+Verpakken met PyInstaller: [docs/BUILD_COMMANDS.md](../BUILD_COMMANDS.md).
+
+Een fusie- of registratiealgoritme toevoegen: [CONTRIBUTING.md](../../CONTRIBUTING.md).
+De [uitbreidingsspecificatie](../ALGORITHM_EXTENSIBILITY_SPEC.md) definieert de gedeelde contracten voor registratie, parameters, uitvoering en persistentie.
 
 <a id="star-history"></a>
 ## ⭐ Sterrengeschiedenis

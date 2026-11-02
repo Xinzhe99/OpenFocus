@@ -177,6 +177,59 @@ gui_out.close()
     assert child.stderr.strip() == "captured-err"
 
 
+def test_settings_data_override_bypasses_portable_store(tmp_path, monkeypatch):
+    from utils import app_paths, settings_store
+
+    private_root = tmp_path / "private"
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(private_root))
+    monkeypatch.setattr(app_paths, "is_portable_mode", lambda: True)
+    monkeypatch.setattr(settings_store, "_settings_singleton", None)
+    settings = settings_store.get_settings()
+    settings.setValue("ui/theme", "dark")
+    settings.sync()
+
+    assert Path(settings.fileName()) == private_root / "settings.ini"
+    assert QSettings(str(private_root / "settings.ini"),
+                     QSettings.Format.IniFormat).value("ui/theme") == "dark"
+
+
+def test_private_tool_launches_isolate_settings_and_instances(tmp_path, monkeypatch):
+    from core.control.client import tool_session
+
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    real_file = real_root / "settings.ini"
+    settings = QSettings(str(real_file), QSettings.Format.IniFormat)
+    settings.setValue("rendering/thread_count", 17)
+    settings.sync()
+    original = real_file.read_bytes()
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(real_root))
+    monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(real_root / "control.json"))
+    monkeypatch.setenv("OPENFOCUS_INSTANCE_NAME", "OpenFocus-existing-instance")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    sessions = []
+    try:
+        sessions.append(tool_session(launch=True, timeout=30, launch_timeout=60))
+        sessions.append(tool_session(launch=True, timeout=30, launch_timeout=60))
+        first, second = sessions
+        assert first.call("app.info")["pid"] != second.call("app.info")["pid"]
+        assert first.discovery["socket"] != second.discovery["socket"]
+        first.call("option.set", {"name": "thread_count", "value": 3})
+        assert first.call("app.state")["options"]["thread_count"] == 3
+        assert second.call("app.state")["options"]["thread_count"] != 3
+        assert real_file.read_bytes() == original
+        assert not (real_root / "control.json").exists()
+        assert os.environ["OPENFOCUS_DATA_DIR"] == str(real_root)
+        assert os.environ["OPENFOCUS_INSTANCE_NAME"] == "OpenFocus-existing-instance"
+    finally:
+        for session in sessions:
+            try:
+                session.call("app.quit", {"force": True}, timeout=10)
+            finally:
+                session.close()
+
+
 def test_default_gui_launch_and_cross_process_client(tmp_path):
     from utils.app_paths import is_portable_mode
     import site

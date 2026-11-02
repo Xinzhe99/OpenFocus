@@ -178,8 +178,9 @@ disabled, with one tile per inference call on every device.
 - New settings and CLI use automatic threads (`0`); saved positive limits are
   preserved. CLI accepts `--resource-preference balanced|responsive|maximum`.
 
-Verification on Windows/Python 3.12: **1021 passed, 12 skipped**. The eight
-fusion algorithms matched baseline `4659b7b` byte-for-byte on both the real
+At that review (Windows/Python 3.12): **1021 passed, 12 skipped**. The eight
+fusion algorithms registered at that time matched baseline `4659b7b`
+byte-for-byte on both the real
 six-frame 999×750 uint8 stack and 97×130 uint16 crops with independent low bits
 (16 comparisons). Real CLI PNG/TIFF export preserved source depth; cancellation
 after the final tile raised cancellation instead of returning a result.
@@ -215,6 +216,10 @@ a release acceptance requirement, not a result implied by the unit suite.
 - **High-resolution input** uses the configured tiling policy (default block
   1024 px, overlap 256 px). Insufficient resources reduce concurrency or reject
   the job; manually choosing a different tile grid can change output pixels.
+- **OpenFocus B/C cost more than A.** Both estimate a full-image depth map
+  before fusing; the five-frame small synthetic scene measured 5.1 s and
+  19.9 s against A's 0.4 s on the reference machine (`FUSION_METHODS.md`).
+  Use A or a classical method while tuning interactively.
 
 ## Rerun the soak any time
 

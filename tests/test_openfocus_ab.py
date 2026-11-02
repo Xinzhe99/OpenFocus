@@ -475,7 +475,8 @@ class TestSmoothingControls:
         window.persist_settings = lambda: None
         window._sync_brightness_checkboxes = lambda *_: None
         window.fusion_parameter_panel = AlgorithmParameterPanel()
-        for name in ("fusion_parameters_for", "set_fusion_parameters", "refresh_algorithm_parameters"):
+        for name in ("fusion_parameters_for", "set_fusion_parameters",
+                     "_set_fusion_option_available", "refresh_algorithm_parameters"):
             setattr(window, name, MethodType(getattr(OpenFocus, name), window))
         window.refresh_algorithm_parameters()
         window.set_fusion_parameters("openfocus_a", {"blend_smoothing": 7.5})

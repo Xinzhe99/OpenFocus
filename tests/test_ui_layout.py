@@ -78,6 +78,168 @@ def test_option_labels_have_a_translation(lang):
         assert text and text != key, f"{lang}: {key} is untranslated"
 
 
+def test_long_option_labels_elide_before_the_first_language_switch(qapp):
+    """Polish labels exceed the panel at launch and must be elided then.
+
+    `create_right_panel` sets translated text before the splitter assigns a
+    width. A fixed 300 px elision was wider than the 280 px minimum panel, so
+    the checkbox was clipped until the user changed language (the only path
+    that used to call the elision helper).
+    """
+    from locales import trans as _t
+    from ui.right_panel import (ElidingCheckBox, _panel_label_width,
+                                create_right_panel, set_panel_label)
+
+    long_text = _t.translations["pl"]["chk_reverse_order"]
+    hint = _t.translations["pl"]["chk_reverse_order_hint"]
+    # What create_right_panel's _option() does before the panel has a width.
+    constructed = ElidingCheckBox(long_text, hint)
+    assert constructed.text() != long_text
+    assert constructed.fontMetrics().horizontalAdvance(
+        constructed.text()) <= _panel_label_width(None)
+    constructed.deleteLater()
+
+    parts = create_right_panel()
+    panel = parts.widget
+    box = parts.chk_reverse_order
+    try:
+        set_panel_label(box, long_text, hint)
+        assert box.text() != long_text
+        assert long_text in box.toolTip()
+
+        panel.resize(280, 700)
+        panel.show()
+        qapp.processEvents()
+        narrow = box.fontMetrics().horizontalAdvance(box.text())
+        assert narrow <= _panel_label_width(panel)
+        assert box.text() != long_text
+
+        panel.resize(520, 700)
+        qapp.processEvents()
+        wide = box.fontMetrics().horizontalAdvance(box.text())
+        assert wide > narrow, "a wider panel must reveal more of the label"
+        assert wide <= _panel_label_width(panel)
+    finally:
+        panel.close()
+        panel.deleteLater()
+
+
+def test_eliding_button_reserves_its_painted_padding(qapp):
+    """Long captions and their ellipses fit inside the styled button."""
+    from PyQt6.QtWidgets import QStyle, QStyleOptionButton
+    from ui.right_panel import ElidingButton
+
+    button = ElidingButton("▶ Rozpocznij renderowanie " * 2)
+    button.setStyleSheet("QPushButton { padding: 6px 12px; }")
+    button.resize(140, 34)
+    button.show()
+    qapp.processEvents()
+    try:
+        assert button.text() != button.full_text()
+        option = QStyleOptionButton()
+        button.initStyleOption(option)
+        contents = button.style().subElementRect(
+            QStyle.SubElement.SE_PushButtonContents, option, button)
+        assert button.fontMetrics().horizontalAdvance(button.text()) <= contents.width()
+        assert button.toolTip() == button.full_text()
+    finally:
+        button.close()
+        button.deleteLater()
+
+
+def test_main_selector_explains_missing_dtcwt(qapp, monkeypatch):
+    from types import SimpleNamespace
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QComboBox
+    import main
+    import ui.algorithm_combo as algorithm_combo
+    from locales import trans
+
+    combo = QComboBox()
+    algorithm_combo.fill_fusion_combo(combo)
+    host = SimpleNamespace(combo_fusion=combo, _stackmff_available=True)
+    monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
+    main.OpenFocus.refresh_method_availability(host)
+    index = combo.findData('dtcwt')
+    assert not combo.model().item(index).isEnabled()
+    assert combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == trans.t('env_dtcwt_unavailable')
+    monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: True)
+    main.OpenFocus.refresh_method_availability(host)
+    assert combo.model().item(index).isEnabled()
+    assert combo.itemData(index, Qt.ItemDataRole.ToolTipRole) == trans.t('radio_dtcwt_hint')
+    combo.deleteLater()
+
+
+def test_alignment_only_disables_fusion_only_options(qapp):
+    """Base correction, sharpening and reversal feed only the fusion step.
+
+    With `Alignment only (no fusion)` the render never constructs
+    MultiFocusFusion, so leaving the checkboxes enabled lied. Exposure
+    matching also feeds registration and must stay enabled.
+    """
+    import types
+
+    import main
+    from locales import trans as _t
+    from ui.right_panel import ElidingCheckBox
+
+    class _Panel:
+        def set_parameters(self, *_args):
+            pass
+
+    class _Host:
+        def __init__(self):
+            self.method = "none"
+            self.fusion_parameter_panel = _Panel()
+            self.chk_base_correct = ElidingCheckBox(
+                _t.t("chk_base_correct"), _t.t("chk_base_correct_hint"))
+            self.chk_exposure_match = ElidingCheckBox(
+                _t.t("chk_exposure_match"), _t.t("chk_exposure_match_hint"))
+            self.chk_sharpen_output = ElidingCheckBox(
+                _t.t("chk_sharpen_output"), _t.t("chk_sharpen_output_hint"))
+            self.chk_reverse_order = ElidingCheckBox(
+                _t.t("chk_reverse_order"), _t.t("chk_reverse_order_hint"))
+
+        def current_fusion_method(self):
+            return self.method
+
+        def fusion_parameters_for(self, _method, depth=False):
+            return {}
+
+        def _sync_brightness_checkboxes(self, _method=None):
+            pass
+
+    host = _Host()
+    host._set_fusion_option_available = types.MethodType(
+        main.OpenFocus._set_fusion_option_available, host)
+    refresh = types.MethodType(
+        main.OpenFocus.refresh_algorithm_parameters, host)
+
+    refresh()
+    assert not host.chk_base_correct.isEnabled()
+    assert not host.chk_sharpen_output.isEnabled()
+    assert not host.chk_reverse_order.isEnabled()
+    assert host.chk_exposure_match.isEnabled(), (
+        "exposure matching still feeds the registration brightness reference")
+    assert _t.t("radio_no_fusion_hint") in host.chk_base_correct.toolTip()
+    assert _t.t("radio_no_fusion_hint") in host.chk_reverse_order.toolTip()
+
+    host.method = "guided_filter"
+    refresh()
+    assert host.chk_base_correct.isEnabled()
+    assert host.chk_sharpen_output.isEnabled()
+    assert host.chk_reverse_order.isEnabled()
+    assert _t.t("chk_reverse_order_hint") in host.chk_reverse_order.toolTip()
+
+    # StackMFF V2 reads the original focus order; keep the existing lock.
+    host.method = "stackmffv2"
+    refresh()
+    assert not host.chk_reverse_order.isEnabled()
+    assert _t.t("chk_reverse_order_locked_hint") in (
+        host.chk_reverse_order.toolTip())
+
+
+
 
 
 
@@ -356,23 +518,117 @@ def test_theme_bound_styles_are_strings_and_follow_the_theme():
         st.set_current_theme("dark")
 
 
-def test_stepper_reapplies_theme_colours(qapp):
-    """Steppers carry inline button sheets, which a global sheet cannot beat."""
+def test_stepper_uses_native_spinbox_and_theme(qapp):
+    from PyQt6.QtWidgets import QDoubleSpinBox
     import ui.styles as st
     from widgets.stepper import StepperSpinBox
 
-    st.set_current_theme("dark")
     spin = StepperSpinBox(minimum=0, maximum=8, decimals=1, step=0.2)
-    try:
-        dark = spin._minus.styleSheet()
-        st.set_current_theme("light")
+    assert isinstance(spin, QDoubleSpinBox)
+    dark = st.get_theme_style("dark")
+    light = st.get_theme_style("light")
+    assert dark != light
+    for sheet in (dark, light):
+        spin.setStyleSheet(sheet)
         spin.reapply_theme()
-        light = spin._minus.styleSheet()
-        assert dark != light, "stepper kept the old theme's button colours"
-        assert "#FFFFFF" in light.upper()
-    finally:
-        st.set_current_theme("dark")
-        spin.deleteLater()
+        assert spin.styleSheet() == sheet
+        assert "QDoubleSpinBox::up-button" in sheet
+        assert "QDoubleSpinBox::down-button" in sheet
+    spin.deleteLater()
+
+
+def test_stepper_commits_decimal_suffix_and_clamps(qapp):
+    from PyQt6.QtCore import QLocale
+    from PyQt6.QtTest import QSignalSpy
+    from widgets.stepper import StepperSpinBox
+
+    spin = StepperSpinBox(minimum=0.5, maximum=2.5, decimals=2, step=0.25, value=1)
+    spin.setLocale(QLocale(QLocale.Language.German, QLocale.Country.Germany))
+    spin.setSuffix(" %")
+    changes = QSignalSpy(spin.valueChanged)
+    spin.lineEdit().setText("1,75 %")
+    assert spin.lineEdit().hasAcceptableInput()
+    spin.interpretText()
+    assert spin.value() == 1.75
+    assert len(changes) == 1
+    spin.stepUp()
+    assert spin.value() == 2.0
+    spin.setMaximum(1.5)
+    assert spin.value() == 1.5
+    spin.stepUp()
+    assert spin.value() == 1.5
+    spin.stepDown()
+    assert spin.value() == 1.25
+    assert spin.text().endswith(" %")
+    spin.deleteLater()
+
+
+def test_stepper_keyboard_entry_and_step(qapp):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QSignalSpy, QTest
+    from widgets.stepper import StepperSpinBox
+
+    spin = StepperSpinBox(minimum=0, maximum=10, decimals=0, step=1, value=2)
+    spin.show()
+    spin.lineEdit().setFocus()
+    changes = QSignalSpy(spin.valueChanged)
+    spin.lineEdit().selectAll()
+    QTest.keyClicks(spin.lineEdit(), "7")
+    assert len(changes) == 0
+    QTest.keyClick(spin.lineEdit(), Qt.Key.Key_Return)
+    assert spin.value() == 7
+    assert len(changes) == 1
+    QTest.keyClick(spin.lineEdit(), Qt.Key.Key_Up)
+    assert spin.value() == 8
+    QTest.keyClick(spin.lineEdit(), Qt.Key.Key_Down)
+    assert spin.value() == 7
+    spin.deleteLater()
+
+
+def test_stepper_signal_blocker_suppresses_changes(qapp):
+    from PyQt6.QtCore import QSignalBlocker
+    from PyQt6.QtTest import QSignalSpy
+    from widgets.stepper import StepperSpinBox
+
+    spin = StepperSpinBox(minimum=0, maximum=10, value=2)
+    changes = QSignalSpy(spin.valueChanged)
+    with QSignalBlocker(spin):
+        spin.setValue(5)
+        spin.stepUp()
+    assert spin.value() == 6
+    assert len(changes) == 0
+    spin.setValue(7)
+    assert len(changes) == 1
+    assert changes[0][0] == 7.0
+    spin.deleteLater()
+
+
+def test_stepper_mouse_buttons_respect_bounds(qapp):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QStyle, QStyleOptionSpinBox
+    from widgets.stepper import StepperSpinBox
+    from ui.styles import get_theme_style
+
+    spin = StepperSpinBox(minimum=0, maximum=2, step=1, value=1)
+    spin.setStyleSheet(get_theme_style("dark"))
+    spin.resize(spin.sizeHint())
+    spin.show()
+    option = QStyleOptionSpinBox()
+    spin.initStyleOption(option)
+    style = spin.style()
+    up = style.subControlRect(QStyle.ComplexControl.CC_SpinBox, option,
+                              QStyle.SubControl.SC_SpinBoxUp, spin)
+    down = style.subControlRect(QStyle.ComplexControl.CC_SpinBox, option,
+                                QStyle.SubControl.SC_SpinBoxDown, spin)
+    assert up.isValid() and down.isValid() and not up.intersects(down)
+    QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=up.center())
+    assert spin.value() == 2
+    QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=up.center())
+    assert spin.value() == 2
+    QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=down.center())
+    assert spin.value() == 1
+    spin.deleteLater()
 
 
 def test_batch_groups_follow_the_workflow_order(qapp):
@@ -503,774 +759,6 @@ def test_batch_import_mode_group_stays_compact(qapp):
     finally:
         dlg.close()
         dlg.deleteLater()
-
-
-def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):
-    """The picker must not get a second, empty list widget.
-
-    Inserting a QListWidget into Qt's splitter put an empty column beside the
-    real place list - the blank box reported in the screenshot.
-    """
-    from PyQt6.QtWidgets import QApplication, QSplitter, QListView
-
-    from dialogs.batch import BatchProcessingDialog
-
-    stack = tmp_path / "stackA"
-    stack.mkdir()
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-
-    def probe():
-        from PyQt6.QtWidgets import QFileDialog
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    spl = wd.findChild(QSplitter)
-                    captured["count"] = spl.count() if spl else 0
-                    captured["sidebar"] = (type(spl.widget(0)).__name__
-                                           if spl else None)
-                    captured["widgets"] = [type(spl.widget(i)).__name__
-                                           for i in range(spl.count())] if spl else []
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folder_to_list(str(stack))
-        dlg.add_folders()
-        assert captured.get("count") == 2, captured
-        assert captured.get("sidebar") == "QListView"
-        # Only the sidebar and the file view; no extra list widget.
-        assert captured["widgets"].count("QListWidget") == 0, captured
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_picker_path_field_is_editable(qapp, tmp_path):
-    """Qt's "Look in" combo is a plain dropdown unless made editable."""
-    from PyQt6.QtWidgets import QApplication, QComboBox, QFileDialog
-
-    from dialogs.batch import BatchProcessingDialog
-
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-    target = tmp_path / "stackB"
-    target.mkdir()
-
-    def probe():
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    for combo in wd.findChildren(QComboBox):
-                        if combo.objectName() == "lookInCombo":
-                            captured["editable"] = combo.isEditable()
-                            line = combo.lineEdit()
-                            captured["line"] = line is not None
-                            if line is not None:
-                                line.setText(str(target))
-                                line.returnPressed.emit()
-                                QApplication.processEvents()
-                                captured["dir"] = wd.directory().absolutePath()
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folders()
-        assert captured.get("editable"), "the path combo must accept typing"
-        assert captured.get("line"), "no line edit to type into"
-        assert captured.get("dir", "").replace("\\", "/").lower() == \
-            str(target).replace("\\", "/").lower(), captured
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_picker_keeps_only_qt_places(qapp, tmp_path):
-    """No custom entries in the place sidebar.
-
-    "Last used" and "Queued: <name>" were appended to Qt's place model; they
-    duplicated what the picker already offers and pushed the useful entries
-    down. The sidebar must keep exactly the standard locations.
-    """
-    from PyQt6.QtWidgets import QApplication, QFileDialog, QSplitter
-
-    from dialogs.batch import BatchProcessingDialog
-
-    stack = tmp_path / "stackA"
-    stack.mkdir()
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-
-    def probe():
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    spl = wd.findChild(QSplitter)
-                    model = spl.widget(0).model()
-                    captured["places"] = [model.index(r, 0).data()
-                                          for r in range(model.rowCount())]
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folder_to_list(str(stack))
-        dlg.add_folders()
-        places = captured.get("places") or []
-        assert places, "the sidebar is empty"
-        joined = " ".join(str(p) for p in places).lower()
-        assert "queued" not in joined and "已排队" not in joined
-        assert "last used" not in joined and "上次使用" not in joined
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_list_shows_at_least_three_rows(qapp):
-    """The queued-stack list must not collapse to a single clipped row."""
-    from dialogs.batch import BatchProcessingDialog
-
-    dlg = BatchProcessingDialog(None)
-    try:
-        needed = dlg._folder_row_height() * 3
-        assert dlg.folder_list.minimumHeight() >= needed, (
-            f"min height {dlg.folder_list.minimumHeight()} < 3 rows "
-            f"({needed}px)")
-    finally:
-        dlg.deleteLater()
-
-
-def test_label_text_resolution_rules():
-    """`format` is the template; `text` is only a fallback.
-
-    The old rule was "if '{value}' is in format, use format, else use text",
-    so typing "SAMPLE" into the format field and leaving the separate custom
-    text box empty produced an EMPTY label: the dialog saved the settings,
-    reported success, and drew nothing.
-    """
-    from utils.validators import build_label_text
-
-    assert build_label_text("{value}", "", 3) == "3"
-    assert build_label_text("Fig {value}", "", 3) == "Fig 3"
-    assert build_label_text("SAMPLE", "", 3) == "SAMPLE"
-    assert build_label_text("", "FIGURE", 3) == "FIGURE"
-    assert build_label_text("", "", 3) == ""
-    # Steppers hand back floats; "Fig 3.0" is not what anyone typed.
-    assert build_label_text("Fig {value}", "", 3.0) == "Fig 3"
-
-
-def test_label_draws_with_float_geometry():
-    """cv2.putText rejects float coordinates ("Can't parse 'org'").
-
-    The dialog's steppers expose the QDoubleSpinBox API and return floats, and
-    the draw error was swallowed, so perfectly valid settings drew nothing.
-    """
-    import numpy as np
-
-    from utils.validators import LabelAdder
-
-    image = np.full((300, 400, 3), 80, np.uint8)
-    adder = LabelAdder()
-    adder.config.update_config({
-        "format": "Fig {value}", "font_size": 70.0, "x_location": 30.0,
-        "y_location": 100.0, "starting_value": 1.0, "interval": 1.0,
-        "transparent_bg": True, "font_color": (255, 255, 255),
-        "bg_color": (0, 0, 0),
-    })
-    out = adder.add_label_to_image(image.copy(), 0)
-    assert (out != image).any(), "a label with valid settings drew nothing"
-    assert not adder.last_error
-
-
-def test_label_keeps_uint16_depth_and_leaves_other_pixels():
-    """A caption on a 16-bit frame must not down-convert the image.
-
-    Drawing used to round-trip through an 8-bit copy for the whole frame;
-    only the pixels the caption touches may change, and they must stay
-    representable at the original depth.
-    """
-    import numpy as np
-
-    from utils.validators import LabelAdder
-
-    image = np.full((160, 260, 3), 40000, np.uint16)
-    image[0:4, 0:4] = 1234
-    adder = LabelAdder()
-    adder.config.update_config({
-        "format": "SAMPLE", "font_size": 28, "x_location": 12,
-        "y_location": 60, "range": "All", "transparent_bg": True,
-        "font_color": (255, 255, 255), "bg_color": (0, 0, 0),
-        "font_family": "Arial",
-    })
-    out = adder.add_label_to_image(image.copy(), 0)
-    assert out.dtype == np.uint16
-    assert np.array_equal(out[0:4, 0:4], image[0:4, 0:4]), (
-        "pixels outside the caption changed")
-    assert not np.array_equal(out, image), "nothing was drawn"
-
-
-def test_label_outside_the_range_is_reported_not_drawn():
-    """Out-of-range is a state, not a failure and not a silent success."""
-    import numpy as np
-
-    from utils.validators import LabelAdder
-
-    adder = LabelAdder()
-    adder.config.update_config({"format": "SAMPLE", "range": "9-10",
-                                "font_size": 24, "x_location": 5,
-                                "y_location": 40})
-    image = np.full((80, 120, 3), 60, np.uint8)
-    out = adder.add_label_to_image(image.copy(), 0)
-    assert np.array_equal(out, image)
-    assert adder.last_out_of_range is True
-    assert not adder.last_error
-
-
-def test_add_label_dialog_has_a_live_preview(qapp):
-    """The dialog must show the label before it is confirmed."""
-    from dialogs.retouch import RetouchDialog  # noqa: F401  (import sanity)
-    from widgets.label_preview import LabelPreview
-
-    preview = LabelPreview()
-    try:
-        preview.resize(320, 220)
-        preview.set_config({"format": "SAMPLE", "text": "", "font_size": 40,
-                            "x_location": 20, "y_location": 60,
-                            "transparent_bg": True, "font_color": (255,) * 3,
-                            "bg_color": (0,) * 3})
-        assert preview.message() == ""
-        pix = preview.grab()
-        assert pix.width() > 0 and pix.height() > 0
-        # Both fields empty -> the preview reports why nothing is drawn.
-        preview.set_config({"format": "", "text": ""})
-        assert preview.message() == "empty"
-    finally:
-        preview.deleteLater()
-
-
-
-
-
-
-
-
-
-
-def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):
-    """The picker must not get a second, empty list widget.
-
-    Inserting a QListWidget into Qt's splitter put an empty column beside the
-    real place list - the blank box reported in the screenshot.
-    """
-    from PyQt6.QtWidgets import QApplication, QSplitter, QListView
-
-    from dialogs.batch import BatchProcessingDialog
-
-    stack = tmp_path / "stackA"
-    stack.mkdir()
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-
-    def probe():
-        from PyQt6.QtWidgets import QFileDialog
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    spl = wd.findChild(QSplitter)
-                    captured["count"] = spl.count() if spl else 0
-                    captured["sidebar"] = (type(spl.widget(0)).__name__
-                                           if spl else None)
-                    captured["widgets"] = [type(spl.widget(i)).__name__
-                                           for i in range(spl.count())] if spl else []
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folder_to_list(str(stack))
-        dlg.add_folders()
-        assert captured.get("count") == 2, captured
-        assert captured.get("sidebar") == "QListView"
-        # Only the sidebar and the file view; no extra list widget.
-        assert captured["widgets"].count("QListWidget") == 0, captured
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_picker_path_field_is_editable(qapp, tmp_path):
-    """Qt's "Look in" combo is a plain dropdown unless made editable."""
-    from PyQt6.QtWidgets import QApplication, QComboBox, QFileDialog
-
-    from dialogs.batch import BatchProcessingDialog
-
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-    target = tmp_path / "stackB"
-    target.mkdir()
-
-    def probe():
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    for combo in wd.findChildren(QComboBox):
-                        if combo.objectName() == "lookInCombo":
-                            captured["editable"] = combo.isEditable()
-                            line = combo.lineEdit()
-                            captured["line"] = line is not None
-                            if line is not None:
-                                line.setText(str(target))
-                                line.returnPressed.emit()
-                                QApplication.processEvents()
-                                captured["dir"] = wd.directory().absolutePath()
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folders()
-        assert captured.get("editable"), "the path combo must accept typing"
-        assert captured.get("line"), "no line edit to type into"
-        assert captured.get("dir", "").replace("\\", "/").lower() == \
-            str(target).replace("\\", "/").lower(), captured
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_picker_keeps_only_qt_places(qapp, tmp_path):
-    """No custom entries in the place sidebar.
-
-    "Last used" and "Queued: <name>" were appended to Qt's place model; they
-    duplicated what the picker already offers and pushed the useful entries
-    down. The sidebar must keep exactly the standard locations.
-    """
-    from PyQt6.QtWidgets import QApplication, QFileDialog, QSplitter
-
-    from dialogs.batch import BatchProcessingDialog
-
-    stack = tmp_path / "stackA"
-    stack.mkdir()
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-
-    def probe():
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    spl = wd.findChild(QSplitter)
-                    model = spl.widget(0).model()
-                    captured["places"] = [model.index(r, 0).data()
-                                          for r in range(model.rowCount())]
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folder_to_list(str(stack))
-        dlg.add_folders()
-        places = captured.get("places") or []
-        assert places, "the sidebar is empty"
-        joined = " ".join(str(p) for p in places).lower()
-        assert "queued" not in joined and "已排队" not in joined
-        assert "last used" not in joined and "上次使用" not in joined
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_list_shows_at_least_three_rows(qapp):
-    """The queued-stack list must not collapse to a single clipped row."""
-    from dialogs.batch import BatchProcessingDialog
-
-    dlg = BatchProcessingDialog(None)
-    try:
-        needed = dlg._folder_row_height() * 3
-        assert dlg.folder_list.minimumHeight() >= needed, (
-            f"min height {dlg.folder_list.minimumHeight()} < 3 rows "
-            f"({needed}px)")
-    finally:
-        dlg.deleteLater()
-
-
-def test_label_text_resolution_rules():
-    """`format` is the template; `text` is only a fallback.
-
-    The old rule was "if '{value}' is in format, use format, else use text",
-    so typing "SAMPLE" into the format field and leaving the separate custom
-    text box empty produced an EMPTY label: the dialog saved the settings,
-    reported success, and drew nothing.
-    """
-    from utils.validators import build_label_text
-
-    assert build_label_text("{value}", "", 3) == "3"
-    assert build_label_text("Fig {value}", "", 3) == "Fig 3"
-    assert build_label_text("SAMPLE", "", 3) == "SAMPLE"
-    assert build_label_text("", "FIGURE", 3) == "FIGURE"
-    assert build_label_text("", "", 3) == ""
-    # Steppers hand back floats; "Fig 3.0" is not what anyone typed.
-    assert build_label_text("Fig {value}", "", 3.0) == "Fig 3"
-
-
-def test_label_draws_with_float_geometry():
-    """cv2.putText rejects float coordinates ("Can't parse 'org'").
-
-    The dialog's steppers expose the QDoubleSpinBox API and return floats, and
-    the draw error was swallowed, so perfectly valid settings drew nothing.
-    """
-    import numpy as np
-
-    from utils.validators import LabelAdder
-
-    image = np.full((300, 400, 3), 80, np.uint8)
-    adder = LabelAdder()
-    adder.config.update_config({
-        "format": "Fig {value}", "font_size": 70.0, "x_location": 30.0,
-        "y_location": 100.0, "starting_value": 1.0, "interval": 1.0,
-        "transparent_bg": True, "font_color": (255, 255, 255),
-        "bg_color": (0, 0, 0),
-    })
-    out = adder.add_label_to_image(image.copy(), 0)
-    assert (out != image).any(), "a label with valid settings drew nothing"
-    assert not adder.last_error
-
-
-def test_label_keeps_uint16_depth_and_leaves_other_pixels():
-    """A caption on a 16-bit frame must not down-convert the image.
-
-    Drawing used to round-trip through an 8-bit copy for the whole frame;
-    only the pixels the caption touches may change, and they must stay
-    representable at the original depth.
-    """
-    import numpy as np
-
-    from utils.validators import LabelAdder
-
-    image = np.full((160, 260, 3), 40000, np.uint16)
-    image[0:4, 0:4] = 1234
-    adder = LabelAdder()
-    adder.config.update_config({
-        "format": "SAMPLE", "font_size": 28, "x_location": 12,
-        "y_location": 60, "range": "All", "transparent_bg": True,
-        "font_color": (255, 255, 255), "bg_color": (0, 0, 0),
-        "font_family": "Arial",
-    })
-    out = adder.add_label_to_image(image.copy(), 0)
-    assert out.dtype == np.uint16
-    assert np.array_equal(out[0:4, 0:4], image[0:4, 0:4]), (
-        "pixels outside the caption changed")
-    assert not np.array_equal(out, image), "nothing was drawn"
-
-
-def test_label_outside_the_range_is_reported_not_drawn():
-    """Out-of-range is a state, not a failure and not a silent success."""
-    import numpy as np
-
-    from utils.validators import LabelAdder
-
-    adder = LabelAdder()
-    adder.config.update_config({"format": "SAMPLE", "range": "9-10",
-                                "font_size": 24, "x_location": 5,
-                                "y_location": 40})
-    image = np.full((80, 120, 3), 60, np.uint8)
-    out = adder.add_label_to_image(image.copy(), 0)
-    assert np.array_equal(out, image)
-    assert adder.last_out_of_range is True
-    assert not adder.last_error
-
-
-def test_add_label_dialog_has_a_live_preview(qapp):
-    """The dialog must show the label before it is confirmed."""
-    from dialogs.retouch import RetouchDialog  # noqa: F401  (import sanity)
-    from widgets.label_preview import LabelPreview
-
-    preview = LabelPreview()
-    try:
-        preview.resize(320, 220)
-        preview.set_config({"format": "SAMPLE", "text": "", "font_size": 40,
-                            "x_location": 20, "y_location": 60,
-                            "transparent_bg": True, "font_color": (255,) * 3,
-                            "bg_color": (0,) * 3})
-        assert preview.message() == ""
-        pix = preview.grab()
-        assert pix.width() > 0 and pix.height() > 0
-        # Both fields empty -> the preview reports why nothing is drawn.
-        preview.set_config({"format": "", "text": ""})
-        assert preview.message() == "empty"
-    finally:
-        preview.deleteLater()
-
-
-
-
-
-
-
-
-
-
-def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):
-    """The picker must not get a second, empty list widget.
-
-    Inserting a QListWidget into Qt's splitter put an empty column beside the
-    real place list - the blank box reported in the screenshot.
-    """
-    from PyQt6.QtWidgets import QApplication, QSplitter, QListView
-
-    from dialogs.batch import BatchProcessingDialog
-
-    stack = tmp_path / "stackA"
-    stack.mkdir()
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-
-    def probe():
-        from PyQt6.QtWidgets import QFileDialog
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    spl = wd.findChild(QSplitter)
-                    captured["count"] = spl.count() if spl else 0
-                    captured["sidebar"] = (type(spl.widget(0)).__name__
-                                           if spl else None)
-                    captured["widgets"] = [type(spl.widget(i)).__name__
-                                           for i in range(spl.count())] if spl else []
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folder_to_list(str(stack))
-        dlg.add_folders()
-        assert captured.get("count") == 2, captured
-        assert captured.get("sidebar") == "QListView"
-        # Only the sidebar and the file view; no extra list widget.
-        assert captured["widgets"].count("QListWidget") == 0, captured
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_picker_path_field_is_editable(qapp, tmp_path):
-    """Qt's "Look in" combo is a plain dropdown unless made editable."""
-    from PyQt6.QtWidgets import QApplication, QComboBox, QFileDialog
-
-    from dialogs.batch import BatchProcessingDialog
-
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-    target = tmp_path / "stackB"
-    target.mkdir()
-
-    def probe():
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    for combo in wd.findChildren(QComboBox):
-                        if combo.objectName() == "lookInCombo":
-                            captured["editable"] = combo.isEditable()
-                            line = combo.lineEdit()
-                            captured["line"] = line is not None
-                            if line is not None:
-                                line.setText(str(target))
-                                line.returnPressed.emit()
-                                QApplication.processEvents()
-                                captured["dir"] = wd.directory().absolutePath()
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folders()
-        assert captured.get("editable"), "the path combo must accept typing"
-        assert captured.get("line"), "no line edit to type into"
-        assert captured.get("dir", "").replace("\\", "/").lower() == \
-            str(target).replace("\\", "/").lower(), captured
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_picker_keeps_only_qt_places(qapp, tmp_path):
-    """No custom entries in the place sidebar.
-
-    "Last used" and "Queued: <name>" were appended to Qt's place model; they
-    duplicated what the picker already offers and pushed the useful entries
-    down. The sidebar must keep exactly the standard locations.
-    """
-    from PyQt6.QtWidgets import QApplication, QFileDialog, QSplitter
-
-    from dialogs.batch import BatchProcessingDialog
-
-    stack = tmp_path / "stackA"
-    stack.mkdir()
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-
-    def probe():
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    spl = wd.findChild(QSplitter)
-                    model = spl.widget(0).model()
-                    captured["places"] = [model.index(r, 0).data()
-                                          for r in range(model.rowCount())]
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folder_to_list(str(stack))
-        dlg.add_folders()
-        places = captured.get("places") or []
-        assert places, "the sidebar is empty"
-        joined = " ".join(str(p) for p in places).lower()
-        assert "queued" not in joined and "已排队" not in joined
-        assert "last used" not in joined and "上次使用" not in joined
-    finally:
-        dlg.deleteLater()
-
-
-def test_folder_list_shows_at_least_three_rows(qapp):
-    """The queued-stack list must not collapse to a single clipped row."""
-    from dialogs.batch import BatchProcessingDialog
-
-    dlg = BatchProcessingDialog(None)
-    try:
-        needed = dlg._folder_row_height() * 3
-        assert dlg.folder_list.minimumHeight() >= needed, (
-            f"min height {dlg.folder_list.minimumHeight()} < 3 rows "
-            f"({needed}px)")
-    finally:
-        dlg.deleteLater()
-
-
-def test_label_text_resolution_rules():
-    """`format` is the template; `text` is only a fallback.
-
-    The old rule was "if '{value}' is in format, use format, else use text",
-    so typing "SAMPLE" into the format field and leaving the separate custom
-    text box empty produced an EMPTY label: the dialog saved the settings,
-    reported success, and drew nothing.
-    """
-    from utils.validators import build_label_text
-
-    assert build_label_text("{value}", "", 3) == "3"
-    assert build_label_text("Fig {value}", "", 3) == "Fig 3"
-    assert build_label_text("SAMPLE", "", 3) == "SAMPLE"
-    assert build_label_text("", "FIGURE", 3) == "FIGURE"
-    assert build_label_text("", "", 3) == ""
-    # Steppers hand back floats; "Fig 3.0" is not what anyone typed.
-    assert build_label_text("Fig {value}", "", 3.0) == "Fig 3"
-
-
-def test_label_draws_with_float_geometry():
-    """cv2.putText rejects float coordinates ("Can't parse 'org'").
-
-    The dialog's steppers expose the QDoubleSpinBox API and return floats, and
-    the draw error was swallowed, so perfectly valid settings drew nothing.
-    """
-    import numpy as np
-
-    from utils.validators import LabelAdder
-
-    image = np.full((300, 400, 3), 80, np.uint8)
-    adder = LabelAdder()
-    adder.config.update_config({
-        "format": "Fig {value}", "font_size": 70.0, "x_location": 30.0,
-        "y_location": 100.0, "starting_value": 1.0, "interval": 1.0,
-        "transparent_bg": True, "font_color": (255, 255, 255),
-        "bg_color": (0, 0, 0),
-    })
-    out = adder.add_label_to_image(image.copy(), 0)
-    assert (out != image).any(), "a label with valid settings drew nothing"
-    assert not adder.last_error
-
-
-def test_label_keeps_uint16_depth_and_leaves_other_pixels():
-    """A caption on a 16-bit frame must not down-convert the image.
-
-    Drawing used to round-trip through an 8-bit copy for the whole frame;
-    only the pixels the caption touches may change, and they must stay
-    representable at the original depth.
-    """
-    import numpy as np
-
-    from utils.validators import LabelAdder
-
-    image = np.full((160, 260, 3), 40000, np.uint16)
-    image[0:4, 0:4] = 1234
-    adder = LabelAdder()
-    adder.config.update_config({
-        "format": "SAMPLE", "font_size": 28, "x_location": 12,
-        "y_location": 60, "range": "All", "transparent_bg": True,
-        "font_color": (255, 255, 255), "bg_color": (0, 0, 0),
-        "font_family": "Arial",
-    })
-    out = adder.add_label_to_image(image.copy(), 0)
-    assert out.dtype == np.uint16
-    assert np.array_equal(out[0:4, 0:4], image[0:4, 0:4]), (
-        "pixels outside the caption changed")
-    assert not np.array_equal(out, image), "nothing was drawn"
-
-
-def test_label_outside_the_range_is_reported_not_drawn():
-    """Out-of-range is a state, not a failure and not a silent success."""
-    import numpy as np
-
-    from utils.validators import LabelAdder
-
-    adder = LabelAdder()
-    adder.config.update_config({"format": "SAMPLE", "range": "9-10",
-                                "font_size": 24, "x_location": 5,
-                                "y_location": 40})
-    image = np.full((80, 120, 3), 60, np.uint8)
-    out = adder.add_label_to_image(image.copy(), 0)
-    assert np.array_equal(out, image)
-    assert adder.last_out_of_range is True
-    assert not adder.last_error
-
-
-def test_add_label_dialog_has_a_live_preview(qapp):
-    """The dialog must show the label before it is confirmed."""
-    from dialogs.retouch import RetouchDialog  # noqa: F401  (import sanity)
-    from widgets.label_preview import LabelPreview
-
-    preview = LabelPreview()
-    try:
-        preview.resize(320, 220)
-        preview.set_config({"format": "SAMPLE", "text": "", "font_size": 40,
-                            "x_location": 20, "y_location": 60,
-                            "transparent_bg": True, "font_color": (255,) * 3,
-                            "bg_color": (0,) * 3})
-        assert preview.message() == ""
-        pix = preview.grab()
-        assert pix.width() > 0 and pix.height() > 0
-        # Both fields empty -> the preview reports why nothing is drawn.
-        preview.set_config({"format": "", "text": ""})
-        assert preview.message() == "empty"
-    finally:
-        preview.deleteLater()
-
-
-
-
-
-
-
-
 
 
 def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):

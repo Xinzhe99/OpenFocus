@@ -58,6 +58,7 @@ def test_settings_round_trip(qapp, clean_settings):
     load_window_settings(w)  # defaults on empty store
     assert w.thread_count == 4 and w.use_gpu is True
     assert w.sharpen_output is False
+    assert w.collect_alignment_report is False
     assert w.output_name_prefix == ""
 
     w.thread_count = 11
@@ -65,6 +66,7 @@ def test_settings_round_trip(qapp, clean_settings):
     w.tile_block_size = 640
     w.sharpen_output = True
     w.output_name_prefix = "sample_12"
+    w.collect_alignment_report = True
     demo = r"C:\stacks\demo"
     add_recent_file(w, demo)
     add_recent_file(w, demo)  # dedupe
@@ -77,6 +79,7 @@ def test_settings_round_trip(qapp, clean_settings):
     assert w2.tile_block_size == 640
     assert w2.sharpen_output is True
     assert w2.output_name_prefix == "sample_12"
+    assert w2.collect_alignment_report is True
     # add_recent_file stores the abspath (form differs across platforms)
     assert w2.recent_files == [os.path.abspath(demo)]
 
@@ -638,6 +641,66 @@ def test_compare_all_cancel_between_renders_unlocks_the_ui(qapp, monkeypatch):
     assert w.combo_align.isEnabled() and w.fusion_parameter_panel.isEnabled()
 
 
+def test_compare_button_is_the_cancel_affordance_and_restores(qapp, monkeypatch):
+    """A running comparison's only stop control is Compare-all.
+
+    It used to keep saying "Render all methods…" while the disabled Render
+    button was relabelled "Cancel render": neither button told the truth.
+    """
+    from PyQt6.QtWidgets import QPushButton
+    from locales import trans
+
+    frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(3)]
+    w = _render_window(frames)
+    w.btn_compare_all = QPushButton(trans.t('btn_compare_all'))
+    rm, _saved = _patched_render_manager(monkeypatch, w)
+
+    rm.start_compare_all()
+    assert rm._compare_mode is True
+    assert w.btn_compare_all.isEnabled()
+    assert w.btn_compare_all.text() == trans.t('compare_cancel')
+    assert w.btn_compare_all.toolTip() == trans.t('btn_cancel_render')
+    assert not w.btn_render.isEnabled()
+    assert w.btn_render.text() == trans.t('btn_render_processing')
+
+    running = rm.worker
+    rm.start_compare_all()  # cancel while the first method renders
+    assert running.is_cancelled is True
+    assert not w.btn_compare_all.isEnabled()
+    assert w.btn_compare_all.text() == trans.t('depth_cancelling')
+    assert not w.btn_render.isEnabled()
+    assert w.btn_render.text() == trans.t('depth_cancelling')
+
+    rm.on_render_error("CANCELLED: user requested")
+
+    assert rm._compare_cancelling is False
+    assert w.btn_compare_all.isEnabled()
+    assert w.btn_compare_all.text() == trans.t('btn_compare_all')
+    assert w.btn_render.isEnabled()
+    assert w.btn_render.text() == trans.t('btn_render')
+
+
+def test_compare_all_is_disabled_during_a_single_render(qapp, monkeypatch):
+    """Clicking Compare-all during an ordinary render used to return silently."""
+    from PyQt6.QtWidgets import QPushButton
+    from locales import trans
+
+    frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(3)]
+    w = _render_window(frames)
+    w.btn_compare_all = QPushButton(trans.t('btn_compare_all'))
+    rm, _saved = _patched_render_manager(monkeypatch, w)
+
+    rm.start_render()
+    assert not w.btn_compare_all.isEnabled()
+    assert w.btn_render.isEnabled()
+    assert w.btn_render.text() == trans.t('btn_cancel_render')
+
+    rm.on_render_error("CANCELLED: user requested")
+    assert w.btn_compare_all.isEnabled()
+    assert w.btn_compare_all.text() == trans.t('btn_compare_all')
+    assert w.btn_render.text() == trans.t('btn_render')
+
+
 def test_roi_reset_clears_rect_button_and_state(qapp):
     """The half-reset dropped roi_aligned_images but kept the rectangle, so the
     next render cropped the new stack with the previous stack's ROI."""
@@ -883,7 +946,8 @@ def test_algorithm_parameters_survive_method_switches(qapp):
     host.persist_settings = lambda: None
     host._sync_brightness_checkboxes = lambda *_: None
     host.fusion_parameter_panel = AlgorithmParameterPanel()
-    for name in ("fusion_parameters_for", "set_fusion_parameters", "refresh_algorithm_parameters"):
+    for name in ("fusion_parameters_for", "set_fusion_parameters",
+                 "_set_fusion_option_available", "refresh_algorithm_parameters"):
         setattr(host, name, MethodType(getattr(OpenFocus, name), host))
     host.fusion_parameter_panel.valuesChanged.connect(
         lambda values: host.set_fusion_parameters(host.method, values))
