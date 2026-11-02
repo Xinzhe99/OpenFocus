@@ -295,6 +295,7 @@ The AI model, its weights, HEIC and camera-RAW decoding are all in that single i
 - **Citation** — [CITATION.cff](./CITATION.cff); every release is archived on Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open an [issue](https://github.com/Xinzhe99/OpenFocus/issues) for bugs, ideas and algorithm work
 - **Credits** — each fusion/registration algorithm keeps its original research licence; StackMFF V3 lives at [Xinzhe99/StackMFF](https://github.com/Xinzhe99/StackMFF)
+- **Security reports** — [@ranas-mukminov](https://github.com/ranas-mukminov) reported the discovery-token permission window ([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
 
 <a id="license"></a>
 ## License
