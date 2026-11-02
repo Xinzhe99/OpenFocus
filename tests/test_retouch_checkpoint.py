@@ -220,3 +220,28 @@ def test_save_rejects_history_that_does_not_match_replay(tmp_path):
         doc.save_checkpoint(path)
     assert path.read_bytes() == b'existing'
     np.testing.assert_array_equal(doc.working, unchanged)
+
+
+def test_low_memory_preserves_checkpoint_and_current_edits(tmp_path, monkeypatch):
+    from core import resource_policy
+
+    doc = document(np.uint16)
+    stroke(doc, 'source', 0, [(10, 10), (20, 20)])
+    path = tmp_path / 'history.ofretouch'
+    doc.save_checkpoint(path)
+    saved = path.read_bytes()
+    before = doc.working.copy()
+    snapshot = resource_policy.ResourceSnapshot(
+        total_ram=2 * 1024 ** 3, available_ram=1024 ** 3)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda: snapshot)
+
+    with pytest.raises(resource_policy.ResourceLimitError):
+        doc.save_checkpoint(path)
+    assert path.read_bytes() == saved
+    np.testing.assert_array_equal(doc.working, before)
+    assert doc.can_undo
+
+    with pytest.raises(resource_policy.ResourceLimitError):
+        doc.load_checkpoint(path)
+    np.testing.assert_array_equal(doc.working, before)
+    assert doc.can_undo

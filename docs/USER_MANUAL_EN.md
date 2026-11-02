@@ -1272,6 +1272,8 @@ background operation. Saving also replays the recorded edits and checks the
 current image and undo/redo state before publishing the checkpoint. If a source
 has changed and replay no longer matches, saving fails and keeps your edits.
 Canceling a save or load also keeps your current edits available.
+If memory is insufficient for verification or replay, the operation stops and
+keeps both your current edits and any existing checkpoint unchanged.
 
 If the checkpoint recording limit prevents another edit, apply the current
 edits and start a new retouch session to continue.
