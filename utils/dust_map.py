@@ -18,6 +18,7 @@ All functions accept uint8 / uint16 / float frames in either the 0-255 or
 0-65535 domain and preserve the input dtype.
 """
 from typing import List, Sequence
+import hashlib
 
 import cv2
 import numpy as np
@@ -33,6 +34,26 @@ import numpy as np
 # few pixels wide) while staying above the white shot's own noise.
 DEFAULT_SIGMA = 4.0
 GAIN_MIN, GAIN_MAX = 0.5, 2.0
+
+
+def load_flat_field_reference(path, expected_hash=None, scale=1.0):
+    """Decode a white reference and optionally require its original contents."""
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+    except OSError as exc:
+        raise ValueError(f"Cannot read flat-field reference: {path}") from exc
+    digest = hashlib.sha256(memoryview(data)).hexdigest()
+    if expected_hash is not None and digest != expected_hash:
+        raise ValueError(f"Flat-field reference has changed: {path}")
+    white = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR) if data.size else None
+    if white is None:
+        raise ValueError(f"Cannot decode flat-field reference: {path}")
+    if scale != 1.0:
+        width, height = int(white.shape[1] * scale), int(white.shape[0] * scale)
+        if width < 1 or height < 1:
+            raise ValueError(f"Flat-field reference is too small: {path}")
+        white = cv2.resize(white, (width, height), interpolation=cv2.INTER_AREA)
+    return white, digest
 
 
 def compute_flat_field(white: np.ndarray, sigma: float = DEFAULT_SIGMA
@@ -79,7 +100,13 @@ def apply_flat_field(frame: np.ndarray, gain: np.ndarray) -> np.ndarray:
             f"Flat-field shape {gain.shape[:2]} does not match the frame "
             f"{f.shape[:2]} — the white-field shot must share the stack's "
             "resolution")
-    out = f.astype(np.float32) / gain
+    if f.shape[2] == 1 and gain.ndim == 3 and gain.shape[2] > 1:
+        gain = gain.mean(axis=2, keepdims=True)
+    alpha = f[:, :, 3].copy() if f.shape[2] == 4 else None
+    if alpha is not None and gain.ndim == 3 and gain.shape[2] == 4:
+        gain = gain[:, :, :3]
+    color = f[:, :, :3] if alpha is not None else f
+    out = color.astype(np.float32) / gain
     if frame.dtype == np.uint8:
         out = np.clip(np.rint(out), 0, 255).astype(np.uint8)
     elif frame.dtype == np.uint16:
@@ -87,6 +114,8 @@ def apply_flat_field(frame: np.ndarray, gain: np.ndarray) -> np.ndarray:
     else:
         hi = 255.0 if float(f.max()) <= 255.0 else 65535.0
         out = np.clip(out, 0, hi).astype(np.float32)
+    if alpha is not None:
+        out = np.dstack((out, alpha))
     return out[:, :, 0] if squeeze else out
 
 

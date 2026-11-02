@@ -737,6 +737,22 @@ Automatic update downloads run while idle and never install automatically. A com
 
 Flat-field correction changes session working pixels without overwriting source files. Select the white reference and a preview frame, then generate the preview again after changing source or scale. Reference and working/base images must share a coordinate domain and size. Applying prepares both stacks before committing; optional reference-frame removal belongs to the same undo step. Export corrected source images when you need to preserve these pixels outside the session.
 
+Batch processing accepts an optional white-field image in its processing options.
+Choose a defocused reference at the original frame resolution; it is scaled with
+the input stack and applied before registration, using the default dust size.
+An unreadable reference or a size mismatch fails the affected stack visibly.
+Leave the field empty to process without correction. The CLI also accepts the
+reference with `--dust-map WHITE`.
+
+When a file reference is applied in Tools at the stack's base scale, a saved
+project records its absolute path, content hash and dust size, and reapplies it
+once to the original sources on open. Keep the reference file unchanged and in
+place: a missing or changed reference prevents the project from opening. A
+reference selected from the stack, or correction at a different working/base
+scale, still requires exporting the corrected source stack before saving a
+project. If the working scale changes after correction, restore it to the
+correction scale before saving or export the corrected stack.
+
 **Help → Send feedback** opens local logs. Copy copies the visible session log; the feedback ZIP contains the session/full application logs and environment information. Review the package before submitting it yourself. Opening GitHub only opens the tracker. Export cancellation leaves files unchanged; an error keeps the previous destination file and shows the failed path.
 
 Each launch writes its own rotating log, so concurrent GUI/CLI jobs keep separate

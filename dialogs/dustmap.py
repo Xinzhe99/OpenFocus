@@ -1,5 +1,6 @@
 """Prepare flat-field previews and atomic stack corrections off the GUI thread."""
 import cv2
+import os
 import numpy as np
 from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtGui import QImage, QPixmap
@@ -10,7 +11,8 @@ from PyQt6.QtWidgets import (
 
 from locales import trans
 from widgets.stepper import StepperSpinBox
-from utils.dust_map import DEFAULT_SIGMA, compute_flat_field, apply_flat_field
+from utils.dust_map import (DEFAULT_SIGMA, compute_flat_field, apply_flat_field,
+                            load_flat_field_reference)
 
 
 def _to_pixmap(img, width=340):
@@ -37,6 +39,7 @@ class _FlatFieldWorker(QThread):
         self.result = None
         self.error = ""
         self.error_key = "msg_proc_error"
+        self.reference_hash = None
 
     def _check_cancel(self):
         if self.isInterruptionRequested():
@@ -49,8 +52,7 @@ class _FlatFieldWorker(QThread):
                 white = self.white
                 if self.path:
                     self.error_key = "dust_err_decode"
-                    white = cv2.imdecode(np.fromfile(self.path, dtype=np.uint8),
-                                         cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+                    white, self.reference_hash = load_flat_field_reference(self.path)
                 if white is None:
                     raise ValueError(trans.t("dust_err_decode"))
                 self._check_cancel()
@@ -92,6 +94,7 @@ class DustMapDialog(QDialog):
         self._gain_revision = -1
         self._close_pending = False
         self._file_path = ""
+        self._gain_reference = None
         self._gain_sources = None
         self.setWindowTitle(trans.t("dust_title"))
         self.setModal(True)
@@ -343,7 +346,7 @@ class DustMapDialog(QDialog):
         if worker.operation == "apply":
             if self.window_main.apply_flat_field_to_stack(
                     worker.gain, remove_index=worker.remove_index,
-                    prepared=worker.result) is True:
+                    prepared=worker.result, reference=getattr(worker, 'reference', None)) is True:
                 self.accept()
             else:
                 self.btn_apply.setEnabled(True)
@@ -355,6 +358,10 @@ class DustMapDialog(QDialog):
         self._gain = gain
         self._gain_revision = worker.revision
         self._gain_sources = (worker.raw, worker.base)
+        self._gain_reference = ({'path': os.path.abspath(worker.path),
+                                 'sha256': worker.reference_hash,
+                                 'sigma': worker.sigma}
+                                if worker.path and worker.reference_hash else None)
         g = gain[:, :, 0] if gain.ndim == 3 else gain
         norm = np.clip((g - 0.5) / 1.5, 0, 1)
         heat = cv2.applyColorMap((norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
@@ -382,6 +389,7 @@ class DustMapDialog(QDialog):
         worker.remove_index = (self.combo_stack.currentData()
                                if self.rb_stack.isChecked() and self.chk_remove.isChecked()
                                else None)
+        worker.reference = self._gain_reference
         self._start_worker(worker)
 
     def _cancel(self):

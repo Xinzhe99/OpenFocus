@@ -344,6 +344,7 @@ PACK = {
     "dust_title": "Stofkaart (flat-field-correctie)",
     "dust_intro": "Corrigeert vaste stofdeeltjes en vignettering met één onscherpe opname van een leeg/wit vlak: het gainveld wordt vóór de registratie uit elk frame gedeeld.",
     "dust_from_file": "Witveld-afbeelding uit bestand",
+    "batch_flat_field_hint": "Optionele witveldafbeelding op de oorspronkelijke resolutie. Wordt vóór registratie op elke batchstapel toegepast; leeg laten om over te slaan. Gebruikt de standaard stofgrootte.",
     "dust_from_stack": "Uit een frame van deze stapel",
     "dust_browse": "Bladeren...",
     "dust_no_file": "Geen witveld-afbeelding geselecteerd",

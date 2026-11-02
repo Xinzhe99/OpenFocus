@@ -344,6 +344,7 @@ PACK = {
     "dust_title": "Mapa de poeira (correção de campo plano)",
     "dust_intro": "Corrige manchas estáticas de poeira e vinhetagem com uma única foto desfocada de uma área branca/vazia: o campo de ganho é dividido de cada quadro antes do registro.",
     "dust_from_file": "Imagem de campo branco de arquivo",
+    "batch_flat_field_hint": "Imagem de campo branco opcional na resolução original. Aplicada antes do alinhamento de cada pilha; deixe vazio para ignorar. Usa o tamanho de poeira padrão.",
     "dust_from_stack": "De um quadro desta pilha",
     "dust_browse": "Procurar...",
     "dust_no_file": "Nenhuma imagem de campo branco selecionada",

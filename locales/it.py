@@ -344,6 +344,7 @@ PACK = {
     "dust_title": "Mappa polvere (correzione campo piatto)",
     "dust_intro": "Corregge macchie di polvere statiche e vignettatura con un solo scatto fuori fuoco di un'area bianca/vuota: il campo di guadagno viene diviso da ogni frame prima della registrazione.",
     "dust_from_file": "Immagine campo bianco da file",
+    "batch_flat_field_hint": "Immagine di campo bianco facoltativa alla risoluzione originale. Applicata prima dell'allineamento di ogni stack; lasciare vuoto per saltare. Usa la dimensione polvere predefinita.",
     "dust_from_stack": "Da un frame di questo stack",
     "dust_browse": "Sfoglia...",
     "dust_no_file": "Nessuna immagine campo bianco selezionata",

@@ -344,6 +344,7 @@ PACK = {
     "dust_title": "Staubkarte (Flat-Field-Korrektur)",
     "dust_intro": "Korrigiert statische Staubflecken und Vignettierung mit einer defokussierten Aufnahme einer leeren/weißen Fläche: Das Gain-Feld wird vor der Registrierung aus jedem Bild herausgeteilt.",
     "dust_from_file": "Weißbild aus Datei",
+    "batch_flat_field_hint": "Optionales Weißfeldbild in Originalauflösung. Wird vor der Registrierung auf jeden Stapel angewendet; leer lassen zum Überspringen. Die Standardstaubgröße wird verwendet.",
     "dust_from_stack": "Aus einem Bild dieses Stacks",
     "dust_browse": "Durchsuchen…",
     "dust_no_file": "Kein Weißbild ausgewählt",
