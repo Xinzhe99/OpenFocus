@@ -77,8 +77,12 @@ def _exercise(executable: Path, environment: dict, root: Path,
               shape: tuple) -> None:
     if not _call(executable, environment, "ping").get("pong"):
         raise RuntimeError("Packaged agent control did not answer ping")
-    if _call(executable, environment, "ui.context").get("level") != "main":
-        raise RuntimeError("Packaged desktop did not reach its main window")
+    context = _call(executable, environment, "ui.context")
+    if context.get("level") != "main":
+        raise RuntimeError(
+            "Packaged desktop did not reach its main window: "
+            f"{json.dumps(context, ensure_ascii=False)}"
+        )
     loaded = _call(
         executable, environment, "stack.load", "--folder", str(root / "stack"),
         "--wait",
@@ -122,7 +126,7 @@ def run(executable: Path) -> None:
         settings = QSettings(
             str(data_dir / "settings.ini"), QSettings.Format.IniFormat,
         )
-        settings.setValue("ui/first_run_done", True)
+        settings.setValue("ui/first_run_done", "1")
         settings.setValue("updates/last_check_epoch", 9999999999)
         settings.setValue("rendering/ai_cpu_warning_dismissed", True)
         settings.sync()
