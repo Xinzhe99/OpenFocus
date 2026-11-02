@@ -45,7 +45,7 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 
-SUBCOMMANDS = {"ctl", "gui", "describe", "version"}
+SUBCOMMANDS = {"ctl", "gui", "describe", "version", "recipe"}
 
 # With --json-progress, stdout belongs to NDJSON: engine and progress prose is
 # redirected to stderr, while events are written to this saved stream.
@@ -519,7 +519,8 @@ def _run_batch(args, _emit_json=None) -> int:
         seen.add(name)
     if duplicates:
         return EXIT_USAGE
-    os.makedirs(args.output_dir, exist_ok=True)
+    if not args.dry_run:
+        os.makedirs(args.output_dir, exist_ok=True)
 
     ok_count, failures = 0, []
     skipped_existing = []
@@ -551,10 +552,13 @@ def _run_batch(args, _emit_json=None) -> int:
                 paths = _list_folder_images(folder, loader)
                 from core.image_loader import count_frames
                 frames = sum(count_frames(p) for p in paths)
+                if frames < 2:
+                    raise ValueError(f"need at least 2 frames, found {frames}")
                 _say(f"[dry-run] frames={frames} method={folder_args.method} "
                      f"align={folder_args.align} output={out_path}")
             except Exception as exc:
-                _say(f"[dry-run] {name}: {exc}")
+                print(f"error: {name}: {exc}", file=sys.stderr)
+                failures.append(name)
             continue
 
         progress = getattr(args, "_progress", None)
@@ -656,6 +660,8 @@ def run_cli(argv: List[str]) -> int:
             return _run_gui(argv[1:])
         if head == "ctl":
             return _run_ctl(argv[1:])
+        if head == "recipe":
+            return _run_recipe_command(argv[1:])
     global _machine_stream
     redirected = "--json-progress" in argv
     if redirected:
@@ -669,6 +675,32 @@ def run_cli(argv: List[str]) -> int:
         if redirected:
             sys.stdout = _machine_stream
             _machine_stream = None
+
+
+def _run_recipe_command(argv: List[str]) -> int:
+    """Capture or execute a portable processing recipe."""
+    from core.recipes import capture_recipe, run_recipe
+    parser = argparse.ArgumentParser(prog="openfocus recipe")
+    commands = parser.add_subparsers(dest="command", required=True)
+    create = commands.add_parser("create", help="capture processing options")
+    create.add_argument("file", help="recipe JSON file")
+    run = commands.add_parser("run", help="run a recipe")
+    run.add_argument("file", help="recipe JSON file")
+    run.add_argument("--dry-run", action="store_true")
+    if argv and argv[0] == "create":
+        args, processing = parser.parse_known_args(argv)
+        try:
+            capture_recipe(args.file, processing)
+            return EXIT_OK
+        except (ValueError, OSError, TypeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+    args = parser.parse_args(argv)
+    try:
+        return run_recipe(args.file, dry_run=args.dry_run)
+    except (ValueError, OSError, TypeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
 
 
 def _run_with_logging(argv: List[str]) -> int:
