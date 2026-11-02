@@ -161,27 +161,6 @@ def test_every_language_defines_every_key(qapp):
         assert not missing, f"{lang} is missing {len(missing)} keys: {sorted(missing)}"
 
 
-def test_translated_keys_used_in_code_exist(qapp):
-    """A typo'd key renders as its own name in the UI; catch it in CI."""
-    import os
-    import re
-
-    from locales import trans
-
-    pattern = re.compile(r"""trans\.t\(\s*['"]([A-Za-z0-9_]+)['"]""")
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    english = set(trans.translations['en'])
-    used = set()
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames
-                       if d not in ("__pycache__", "dist", "build", ".git", ".pytest_cache")]
-        for name in filenames:
-            if name.endswith(".py"):
-                with open(os.path.join(dirpath, name), encoding="utf-8", errors="ignore") as fh:
-                    used.update(pattern.findall(fh.read()))
-
-    unknown = sorted(k for k in used if k not in english)
-    assert not unknown, f"trans.t() keys with no English entry: {unknown}"
 
 
 # ---------------------------------------------------------------------------

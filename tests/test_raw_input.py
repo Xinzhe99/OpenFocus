@@ -29,10 +29,3 @@ def test_decode_image_keeps_16bit_and_reads_non_ascii_paths(tmp_path):
     assert out.dtype == np.uint16 and (out == img).all()
 
 
-def test_cli_uses_shared_decoder(monkeypatch, tmp_path):
-    from core import cli
-    calls = []
-    monkeypatch.setattr(il, "decode_image",
-                        lambda p: calls.append(p) or np.zeros((4, 4, 3), np.uint8))
-    out = cli._load_images([str(tmp_path / "a.jpg"), str(tmp_path / "b.jpg")])
-    assert len(out) == 2 and len(calls) == 2

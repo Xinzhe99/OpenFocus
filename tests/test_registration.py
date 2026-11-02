@@ -276,20 +276,13 @@ def test_openfocus_directory_applies_exif_orientation_on_unicode_paths(tmp_path)
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
-@pytest.mark.parametrize("brightness_reference", ["first", "last"])
-def test_openfocus_brightness_correction_preserves_bgra_alpha(dtype, brightness_reference):
-    alpha = np.tile(np.arange(64, dtype=dtype), (48, 1))
-    frames = []
-    for value in (40, 80):
-        frame = np.full((48, 64, 4), value, dtype=dtype)
-        frame[:, :, 3] = alpha
-        frames.append(frame)
-    aligned = ImageRegistration(method="openfocus", brightness_reference=brightness_reference).process(
-        frames, thread_count=1)
-    target = 40 if brightness_reference == "first" else 80
-    for image in aligned:
-        np.testing.assert_array_equal(image[:, :, 3], alpha[2:-2, 2:-2])
-        np.testing.assert_array_equal(image[:, :, :3], target)
+def test_openfocus_registration_rejects_transparent_frames(dtype):
+    from core.image_loader import UnsupportedTransparency
+
+    frame = np.full((48, 64, 4), 40, dtype=dtype)
+    frame[:, :, 3] = np.tile(np.arange(64, dtype=dtype), (48, 1))
+    with pytest.raises(UnsupportedTransparency):
+        ImageRegistration(method="openfocus").process([frame, frame], thread_count=1)
 
 
 def _mixed_name_folder(tmp_path):

@@ -159,6 +159,27 @@ def test_alignment_report_never_overwrites_other_paths(tmp_path, target):
     assert not os.path.exists(output)
 
 
+@pytest.mark.parametrize('hardlink', [False, True])
+def test_alignment_report_does_not_overwrite_sensor_mask(tmp_path, hardlink):
+    folder, _, _ = _make_stacks(tmp_path)
+    mask = tmp_path / 'mask.png'
+    assert cv2.imwrite(str(mask), np.zeros((24, 24), dtype=np.uint8))
+    report = mask
+    if hardlink:
+        report = tmp_path / 'linked.json'
+        try:
+            os.link(mask, report)
+        except OSError:
+            pytest.skip('hard links are unavailable')
+    original = mask.read_bytes()
+    result = _run_cli(['-i', folder, '-o', str(tmp_path / 'out.png'),
+                       '--align', 'openfocus', '--defect-mask-path', str(mask),
+                       '--alignment-report', str(report)])
+    assert result == 2
+    assert mask.read_bytes() == original
+    assert not (tmp_path / 'out.png').exists()
+
+
 def test_alignment_report_requires_alignment(tmp_path):
     folder, _, _ = _make_stacks(tmp_path)
     report = tmp_path / 'report.json'
@@ -214,7 +235,7 @@ def test_alignment_report_atomic_write_preserves_existing_file_on_failure(tmp_pa
     def fail_replace(*args):
         raise OSError('replace failed')
     monkeypatch.setattr(os, 'replace', fail_replace)
-    with pytest.raises OSError:
+    with pytest.raises(OSError):
         _write_alignment_report(str(report), {'entries': []})
     assert report.read_text(encoding='utf-8') == 'existing'
     assert list(tmp_path.iterdir()) == [report]
