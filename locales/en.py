@@ -5,6 +5,17 @@ fall back to this table.
 """
 
 EN = {
+    'stack_review_button': 'Review frames',
+    'stack_review_cancel': 'Cancel review',
+    'stack_review_hint': 'Find similar adjacent frames. Review suggestions and use the checkboxes to choose frames to exclude.',
+    'stack_review_working': 'Analyzing frames…',
+    'stack_review_cancelling': 'Cancelling review…',
+    'stack_review_cancelled': 'Review cancelled.',
+    'stack_review_stale': 'Stack changed; review again.',
+    'stack_review_error': 'Review failed: {error}',
+    'stack_review_found': '{count} possible duplicates. Choose which to exclude.',
+    'stack_review_none': 'No possible duplicates found.',
+    'stack_review_row': 'Similar to frame {reference} (difference {difference:.4f})',
     'standalone_retouch_action': 'Retouch Image Files…',
     'standalone_retouch_result': 'Choose a result image',
     'standalone_retouch_sources': 'Choose matching source frames',

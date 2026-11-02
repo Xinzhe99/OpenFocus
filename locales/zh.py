@@ -5,6 +5,17 @@ fall back to this table.
 """
 
 ZH = {
+    'stack_review_button': '检查帧',
+    'stack_review_cancel': '取消检查',
+    'stack_review_hint': '查找相邻的相似帧。请检查建议并用复选框选择要排除的帧。',
+    'stack_review_working': '正在分析帧…',
+    'stack_review_cancelling': '正在取消检查…',
+    'stack_review_cancelled': '检查已取消。',
+    'stack_review_stale': '图像栈已更改，请重新检查。',
+    'stack_review_error': '检查失败：{error}',
+    'stack_review_found': '发现 {count} 个可能的重复帧，请选择要排除的帧。',
+    'stack_review_none': '未发现可能的重复帧。',
+    'stack_review_row': '与第 {reference} 帧相似（差异 {difference:.4f}）',
     'standalone_retouch_action': '修饰图像文件…',
     'standalone_retouch_result': '选择结果图像',
     'standalone_retouch_sources': '选择匹配的源帧',

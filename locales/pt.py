@@ -1,6 +1,17 @@
 """Portuguese (Brazil) language pack for OpenFocus."""
 
 PACK = {
+    'stack_review_button': 'Revisar quadros',
+    'stack_review_cancel': 'Cancelar revisão',
+    'stack_review_hint': 'Busca quadros adjacentes semelhantes. Revise as sugestões e use as caixas para escolher quais excluir.',
+    'stack_review_working': 'Analisando quadros…',
+    'stack_review_cancelling': 'Cancelando revisão…',
+    'stack_review_cancelled': 'Revisão cancelada.',
+    'stack_review_stale': 'A pilha mudou; revise novamente.',
+    'stack_review_error': 'Falha na revisão: {error}',
+    'stack_review_found': '{count} possíveis duplicatas. Escolha quais excluir.',
+    'stack_review_none': 'Nenhuma possível duplicata encontrada.',
+    'stack_review_row': 'Semelhante ao quadro {reference} (diferença {difference:.4f})',
     'standalone_retouch_action': 'Retocar arquivos de imagem…',
     'standalone_retouch_result': 'Escolher imagem de resultado',
     'standalone_retouch_sources': 'Escolher quadros de origem correspondentes',

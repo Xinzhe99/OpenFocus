@@ -1,6 +1,17 @@
 """Polish language pack for OpenFocus."""
 
 PACK = {
+    'stack_review_button': 'Sprawdź klatki',
+    'stack_review_cancel': 'Anuluj sprawdzanie',
+    'stack_review_hint': 'Wyszukuje podobne sąsiednie klatki. Sprawdź propozycje i wybierz polami wyboru klatki do wykluczenia.',
+    'stack_review_working': 'Analizowanie klatek…',
+    'stack_review_cancelling': 'Anulowanie sprawdzania…',
+    'stack_review_cancelled': 'Sprawdzanie anulowane.',
+    'stack_review_stale': 'Stos się zmienił; sprawdź go ponownie.',
+    'stack_review_error': 'Sprawdzanie nie powiodło się: {error}',
+    'stack_review_found': 'Możliwe duplikaty: {count}. Wybierz klatki do wykluczenia.',
+    'stack_review_none': 'Nie znaleziono możliwych duplikatów.',
+    'stack_review_row': 'Podobna do klatki {reference} (różnica {difference:.4f})',
     'standalone_retouch_action': 'Retuszuj pliki obrazów…',
     'standalone_retouch_result': 'Wybierz obraz wynikowy',
     'standalone_retouch_sources': 'Wybierz pasujące klatki źródłowe',

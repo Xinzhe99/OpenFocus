@@ -83,6 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input", "-i", nargs="+", required=True,
                         help="Image folder(s), video file(s), or a list of image files")
+    parser.add_argument("--suggest-duplicates", action="store_true",
+                        help="Review adjacent image files and print JSON suggestions without modifying the stack")
     parser.add_argument("--output", "-o", default=None,
                         help="Output file for a single stack (default: fused.png)")
     parser.add_argument("--output-dir", "-d", default=None,
@@ -306,6 +308,93 @@ def _load_images(paths: List[str], thread_count: int = 0,
     except _DecodeCancelled:
         raise RuntimeError("Loading cancelled")
     return images
+
+
+def _suggest_duplicates(args):
+    """Review ordered, single-frame files without changing the source stack."""
+    from core.image_loader import ImageStackLoader, iter_decoded_sources
+    from core.stack_review import analyze_frames
+    from utils.path_identity import same_path
+
+    if args.output or args.output_dir or args.json_progress or args.dry_run:
+        print("error: --suggest-duplicates cannot be combined with --output, "
+              "--output-dir, --json-progress or --dry-run", file=sys.stderr)
+        return EXIT_USAGE
+    if args.threads < 0:
+        print("error: --threads must be >= 0 (0 = automatic)", file=sys.stderr)
+        return EXIT_USAGE
+
+    try:
+        loader = ImageStackLoader()
+        paths = []
+        for source in args.input:
+            source = os.path.abspath(source)
+            if os.path.isdir(source):
+                paths.extend(_list_folder_images(source, loader))
+            elif os.path.isfile(source):
+                if not source.lower().endswith(tuple(loader.SUPPORTED_FORMATS)):
+                    raise ValueError(f"Expected an image file: {source}")
+                paths.append(source)
+            else:
+                raise FileNotFoundError(f"Input not found: {source}")
+        if len(paths) < 2:
+            raise ValueError("Need at least 2 image files for review")
+        if args.json and any(same_path(args.json, path) for path in paths):
+            raise ValueError("--json must not overwrite an input image")
+
+        def identity(path):
+            stat = os.stat(path)
+            return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+        snapshots = [identity(path) for path in paths]
+
+        def frames():
+            decoded = iter_decoded_sources(
+                paths, 1.0, thread_count=args.threads,
+                resource_preference=args.resource_preference,
+                allow_transparent_png=True)
+            try:
+                for item in decoded:
+                    if item.error is not None:
+                        raise RuntimeError(f"Failed to decode image: {item.path}: {item.error}")
+                    if len(item.pages) != 1:
+                        raise ValueError(f"Review requires single-frame image files: {item.path}")
+                    yield item.pages[0]
+            finally:
+                decoded.close()
+
+        source_frames = frames()
+        try:
+            suggestions = analyze_frames(source_frames)
+        finally:
+            source_frames.close()
+        if any(identity(path) != snapshot for path, snapshot in zip(paths, snapshots)):
+            raise RuntimeError("Input files changed during review; run it again")
+        payload = {"mode": "suggest-duplicates", "files": paths,
+                   "suggestions": suggestions}
+        result = json.dumps(payload, ensure_ascii=False)
+        if args.json:
+            import tempfile
+            destination = os.path.abspath(args.json)
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False,
+                                                 dir=os.path.dirname(destination),
+                                                 prefix=".openfocus-review-", suffix=".tmp") as output:
+                    temp_path = output.name
+                    output.write(result + "\n")
+                if any(same_path(destination, path) for path in paths):
+                    raise ValueError("--json must not overwrite an input image")
+                os.replace(temp_path, destination)
+                temp_path = None
+            finally:
+                if temp_path is not None:
+                    os.unlink(temp_path)
+        print(result, file=_machine_stream or sys.stdout)
+        return EXIT_OK
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
 
 
 def _normalize_kernel(kernel: Optional[int], default: int) -> int:
@@ -734,7 +823,7 @@ def run_cli(argv: List[str]) -> int:
         if head == "recipe":
             return _run_recipe_command(argv[1:])
     global _machine_stream
-    redirected = "--json-progress" in argv
+    redirected = "--json-progress" in argv or "--suggest-duplicates" in argv
     if redirected:
         _machine_stream = sys.stdout
         sys.stdout = _StderrProxy()
@@ -795,6 +884,8 @@ def _run_with_logging(argv: List[str]) -> int:
 
 def _run_cli_admitted(argv: List[str]) -> int:
     args = build_parser().parse_args(argv)
+    if args.suggest_duplicates:
+        return _suggest_duplicates(args)
 
     if args.threads < 0:
         print("error: --threads must be >= 0 (0 = automatic)", file=sys.stderr)
@@ -1045,6 +1136,7 @@ def describe_payload() -> dict:
         "cli": {
             "batch": ["--output-dir", "--resume", "--config"],
             "machine": ["--json", "--json-progress", "--dry-run"],
+            "review": ["--suggest-duplicates"],
             "control": ["gui", "ctl <command>", "describe", "version"],
         },
     }

@@ -1,6 +1,17 @@
 """Dutch language pack for OpenFocus."""
 
 PACK = {
+    'stack_review_button': 'Beelden controleren',
+    'stack_review_cancel': 'Controle annuleren',
+    'stack_review_hint': 'Zoekt vergelijkbare opeenvolgende beelden. Bekijk de suggesties en kies met de selectievakjes welke u uitsluit.',
+    'stack_review_working': 'Beelden analyseren…',
+    'stack_review_cancelling': 'Controle annuleren…',
+    'stack_review_cancelled': 'Controle geannuleerd.',
+    'stack_review_stale': 'De stapel is gewijzigd; controleer opnieuw.',
+    'stack_review_error': 'Controle mislukt: {error}',
+    'stack_review_found': '{count} mogelijke duplicaten. Kies welke u uitsluit.',
+    'stack_review_none': 'Geen mogelijke duplicaten gevonden.',
+    'stack_review_row': 'Vergelijkbaar met beeld {reference} (verschil {difference:.4f})',
     'standalone_retouch_action': 'Afbeeldingsbestanden retoucheren…',
     'standalone_retouch_result': 'Kies resultaatbeeld',
     'standalone_retouch_sources': 'Kies bijpassende bronbeelden',

@@ -1,6 +1,17 @@
 """French language pack for OpenFocus."""
 
 PACK = {
+    'stack_review_button': 'Examiner les images',
+    'stack_review_cancel': 'Annuler l’examen',
+    'stack_review_hint': 'Recherche les images adjacentes similaires. Vérifiez les suggestions et utilisez les cases pour choisir les images à exclure.',
+    'stack_review_working': 'Analyse des images…',
+    'stack_review_cancelling': 'Annulation de l’examen…',
+    'stack_review_cancelled': 'Examen annulé.',
+    'stack_review_stale': 'La pile a changé ; relancez l’examen.',
+    'stack_review_error': 'Échec de l’examen : {error}',
+    'stack_review_found': '{count} doublons possibles. Choisissez ceux à exclure.',
+    'stack_review_none': 'Aucun doublon possible trouvé.',
+    'stack_review_row': 'Similaire à l’image {reference} (différence {difference:.4f})',
     'standalone_retouch_action': 'Retoucher des fichiers image…',
     'standalone_retouch_result': 'Choisir une image résultat',
     'standalone_retouch_sources': 'Choisir les images sources correspondantes',
