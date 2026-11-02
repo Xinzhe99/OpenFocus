@@ -43,3 +43,16 @@ jobs:
         run: |
           aws s3 cp assets/ "s3://openfocus-downloads/" --recursive \
             --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+
+      - name: Remove older releases from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          endpoint="https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          tag="${{ steps.release.outputs.tag }}"
+          aws s3 ls "s3://openfocus-downloads/" --endpoint-url "$endpoint" \
+            | awk '{print $4}' | grep -v "$tag" | while read -r key; do
+                [ -n "$key" ] && aws s3 rm "s3://openfocus-downloads/$key" --endpoint-url "$endpoint"
+              done
