@@ -689,6 +689,12 @@ class OutputManager:
         retouch_action.setEnabled(record is not None and record.retouchable)
         menu.addAction(retouch_action)
 
+        layered_action = QAction(trans.t("action_export_layered_tiff"), window)
+        layered_action.triggered.connect(
+            lambda: window.export_manager.export_layered_tiff(target_item))
+        layered_action.setEnabled(target_item is not None)
+        menu.addAction(layered_action)
+
         # Drag-out export format submenu (persisted per user)
         drag_menu = menu.addMenu(trans.t("menu_drag_format"))
         current_fmt = get_drag_export_format(window)

@@ -149,6 +149,9 @@ surface.
 Paint from the frames that actually produced the result: shared zoom and pan,
 a source-frame slider, soft brush, restore brush, whole-stroke undo and a
 "not exported" guard for new pixels.
+The retouch workspace also offers **Export layered TIFF** with the current
+result and its source frames. Interoperability with other applications has
+not been verified.
 
 </td>
 <td width="54%">
