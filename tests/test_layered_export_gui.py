@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtWidgets import QApplication, QMainWindow
 
-from controllers.export_manager import ExportManager
+from controllers.export_manager import ExportManager, LayeredTiffWorker
 from controllers.output_manager import OutputRecord
 from core.render_context import RenderContext, SourceFrame
 
@@ -77,3 +77,88 @@ def test_hardlinked_input_is_protected(qapp, monkeypatch, tmp_path):
     window.close()
 
 
+
+
+def test_success_tracks_captured_output_and_pixels(qapp, monkeypatch, tmp_path):
+    from tests.test_batch_export_contract import host
+
+    window = host(qapp)
+    record = _record(tmp_path / 'source.tif')
+    record.kind = 'retouch'
+    item = window.output_manager._insert_output(record.image, record.label, record)
+    other = _record(tmp_path / 'other.tif')
+    other.kind = 'retouch'
+    other_item = window.output_manager._insert_output(other.image, other.label, other)
+    manager = window.export_manager
+    path = str(tmp_path / 'result.tif')
+    monkeypatch.setattr('controllers.export_manager.QFileDialog.getSaveFileName',
+                        lambda *args: (path, ''))
+    monkeypatch.setattr(LayeredTiffWorker, 'start', lambda worker: None)
+    manager.export_layered_tiff(item)
+    captured = record.image
+    window.output_list.setCurrentItem(other_item)
+    record.image = record.image.copy()
+    manager._layered_tiff_completed(True, path)
+    assert record.exported and record.exported_image is captured
+    assert record.export_path == path and record.changed_since_export and record.protected
+    assert not other.exported and other.protected
+    manager._layered_tiff_finished()
+    window.close()
+
+
+@pytest.mark.parametrize('annotation', ['none', 'label', 'scale', 'baked'])
+def test_export_tracks_omitted_annotations(qapp, monkeypatch, tmp_path, annotation):
+    from controllers.label_manager import LabelManager
+    from tests.test_batch_export_contract import host
+    from utils.label_model import Label
+
+    window = host(qapp)
+    window.label_manager = LabelManager(window)
+    record = _record(tmp_path / 'source.tif')
+    record.kind = 'retouch'
+    item = window.output_manager._insert_output(record.image, record.label, record)
+    if annotation in ('label', 'baked'):
+        window.label_manager.labels.add(Label.from_dict({
+            'target': 'output', 'output_id': record.output_id,
+            'format': 'A', 'enabled': True}))
+    if annotation == 'scale':
+        record.scale_bar_config = {'px_um': .5, 'position': 'bottom-right'}
+        record.scale_bar_initialized = True
+    if annotation == 'baked':
+        record.annotations_baked = True
+    path = str(tmp_path / 'result.tif')
+    monkeypatch.setattr('controllers.export_manager.QFileDialog.getSaveFileName',
+                        lambda *args: (path, ''))
+    monkeypatch.setattr(LayeredTiffWorker, 'start', lambda worker: None)
+    manager = window.export_manager
+    manager.export_layered_tiff(item)
+    manager._layered_tiff_completed(True, path)
+    assert record.exported and record.exported_image is record.image
+    assert record.exported_annotations == {'labels': [], 'scale': None}
+    assert record.protected == (annotation in ('label', 'scale'))
+    if annotation == 'scale':
+        record.scale_bar_config = None
+        window.output_manager.refresh_annotation_export_state()
+        assert not record.protected
+    manager._layered_tiff_finished()
+    window.close()
+
+
+@pytest.mark.parametrize('message', ['', 'write failed'])
+def test_cancel_or_failure_does_not_mark_output_exported(qapp, monkeypatch, tmp_path, message):
+    from tests.test_batch_export_contract import host
+
+    window = host(qapp)
+    record = _record(tmp_path / 'source.tif')
+    record.kind = 'retouch'
+    item = window.output_manager._insert_output(record.image, record.label, record)
+    monkeypatch.setattr('controllers.export_manager.QFileDialog.getSaveFileName',
+                        lambda *args: (str(tmp_path / 'result.tif'), ''))
+    monkeypatch.setattr('controllers.export_manager.show_error_box', lambda *args: None)
+    monkeypatch.setattr(LayeredTiffWorker, 'start', lambda worker: None)
+    manager = window.export_manager
+    manager.export_layered_tiff(item)
+    manager._layered_tiff_completed(False, message)
+    assert not record.exported and record.protected and not record.export_path
+    manager._layered_tiff_finished()
+    window.close()
