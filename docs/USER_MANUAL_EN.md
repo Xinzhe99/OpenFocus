@@ -860,6 +860,28 @@ at least two source frames must remain for fusion. Flat-field correction cannot
 be combined with transparent input. Leave the field empty to process without
 correction. The CLI also accepts the reference with `--dust-map WHITE`.
 
+Sensor cleanup is optional and runs on the original sensor-coordinate frames
+before registration. Select an explicit defect mask to correct known hot or
+dead pixels; OpenFocus does not infer a mask from specimen images. The mask must
+be a single-channel 8-bit or 16-bit image with the same dimensions as the source:
+zero means unaffected and either 1 or the maximum channel value marks defects.
+Review its extent before processing. Masks covering more than 10% of the frame,
+or defects without an unmasked neighbor, are rejected. Keep the mask at the
+original resolution and do not select it as a source image.
+For GUI processing, load source frames at full scale when using a defect mask;
+the mask is never resized. Pre-aligned ROI processing cannot be combined with
+sensor cleanup. Reprocess the full stack instead.
+
+The optional sensor denoise is independent of the defect mask and is disabled
+by default. Inspect the result at full size to decide whether its smoothing is
+appropriate for the specimen. Sensor cleanup preserves the source files and
+8-bit or 16-bit image depth; it is separate from flat-field correction.
+The CLI accepts `--defect-mask-path MASK` and `--sensor-denoise`; recipes and
+the Python recipe API capture these options. Recipes record a mask fingerprint
+and reject a missing or changed mask. CLI cleanup cannot be combined with
+transparent input. Grouped processing applies cleanup to original frames, not
+to intermediate group results.
+
 Recipes require their output location to be outside every input folder, and
 reject an explicitly selected input as output. Choose a separate output location
 to protect the source images and avoid including an earlier result on a rerun.

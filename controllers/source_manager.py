@@ -203,6 +203,8 @@ class SourceManager(QObject):
             window.image_loader, folder=folder, video=video,
             filepaths=filepaths, scale=scale,
             thread_count=getattr(window, "thread_count", 0),
+            exclude_paths=([window.defect_mask_path] if prepare_options is None
+                           and getattr(window, 'defect_mask_path', '') else []),
             resource_preference=getattr(window, "resource_preference", "balanced"),
         )
         self._load_accept_event = accept_event

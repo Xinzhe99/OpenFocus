@@ -14,15 +14,25 @@ VERSION = 1
 # summaries and per-folder override files).
 _FIELDS = (
     "method", "align", "base_frame", "exposure_match", "sort", "dust_map",
+    "defect_mask_path", "sensor_denoise",
     "threads", "resource_preference", "batch_size", "cpu", "downscale",
     "tile_size", "tile_enabled", "tile_overlap", "tile_threshold",
     "scale_bar", "scale_um", "depth_map", "depth_colormap", "sharpen_output",
     "group_size", "group_overlap",
 )
-_PATH_FIELDS = {"dust_map", "depth_map"}
+_PATH_FIELDS = {"dust_map", "depth_map", "defect_mask_path"}
 _INTEGER_LIMITS = {"threads": 0, "batch_size": 1, "downscale": 1, "tile_size": 64,
                    "tile_overlap": 0, "tile_threshold": 1,
                    "group_size": 0, "group_overlap": 0}
+
+
+def _mask_fingerprint(path):
+    import hashlib
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _relative(path, base):
@@ -82,11 +92,13 @@ def validate_recipe(recipe, recipe_path):
     if output_key == "output" and os.path.splitext(output)[1].lower() not in VALID_FORMATS:
         raise ValueError("unsupported output extension")
     options = recipe.get("options", {})
-    _object(options, "options", (*_FIELDS, "fusion_parameters", "registration_parameters"))
+    _object(options, "options", (*_FIELDS, "fusion_parameters", "registration_parameters", "defect_mask_sha256"))
     parser = build_parser()
     actions = {action.dest: action for action in parser._actions}
     argv = ["--input", *paths, "--" + output_key.replace("_", "-"), output]
     for key, value in options.items():
+        if key == "defect_mask_sha256":
+            continue
         if key in ("fusion_parameters", "registration_parameters"):
             if not isinstance(value, dict):
                 raise ValueError(f"{key} must be an object")
@@ -106,7 +118,7 @@ def validate_recipe(recipe, recipe_path):
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError("scale_um must be a positive finite number")
-        elif key in ("cpu", "scale_bar", "exposure_match", "tile_enabled", "sharpen_output"):
+        elif key in ("cpu", "scale_bar", "exposure_match", "tile_enabled", "sharpen_output", "sensor_denoise"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
             if key in ("exposure_match", "tile_enabled"):
@@ -124,7 +136,7 @@ def validate_recipe(recipe, recipe_path):
             value = _relative(value, base)
             if output_key == "output_dir":
                 raise ValueError("explicit depth_map path cannot be used with output_dir")
-        elif key == "dust_map":
+        elif key in ("dust_map", "defect_mask_path"):
             if value is None:
                 continue
             value = _relative(value, base)
@@ -133,6 +145,26 @@ def validate_recipe(recipe, recipe_path):
         if actions[key].choices is not None and value not in actions[key].choices:
             raise ValueError(f"invalid {key}: {value!r}")
         argv.extend(("--" + key.replace("_", "-"), str(value)))
+    mask = options.get("defect_mask_path")
+    fingerprint = options.get("defect_mask_sha256")
+    if mask:
+        if (not isinstance(fingerprint, str) or len(fingerprint) != 64
+                or any(char not in "0123456789abcdef" for char in fingerprint)):
+            raise ValueError("defect_mask_sha256 must be a lowercase SHA-256 fingerprint")
+    elif fingerprint is not None:
+        raise ValueError("defect_mask_sha256 requires defect_mask_path")
+    if mask:
+        from utils.path_identity import same_path
+        mask = _relative(mask, base)
+        if output_key == "output" and same_path(mask, output):
+            raise ValueError("recipe output would overwrite the defect mask")
+        depth = options.get("depth_map")
+        if isinstance(depth, str) and same_path(mask, _relative(depth, base)):
+            raise ValueError("depth_map would overwrite the defect mask")
+        if depth is True and output_key == "output":
+            depth_output = os.path.splitext(output)[0] + "_depth.png"
+            if same_path(mask, depth_output):
+                raise ValueError("depth_map would overwrite the defect mask")
     args = parser.parse_args(argv)
     if args.tile_overlap is not None and args.tile_size is not None and args.tile_overlap >= args.tile_size:
         raise ValueError("tile_overlap must be smaller than tile_size")
@@ -168,6 +200,11 @@ def load_recipe(path):
 def save_recipe(path, recipe):
     """Validate and save a recipe. Relative paths are relative to *path*."""
     validate_recipe(recipe, path)
+    mask = recipe.get("options", {}).get("defect_mask_path")
+    if mask:
+        from utils.path_identity import same_path
+        if same_path(path, _relative(mask, os.path.dirname(os.path.abspath(os.fspath(path))))):
+            raise ValueError("recipe would overwrite the defect mask")
     from utils.project_file import atomic_json_write
     atomic_json_write(path, recipe)
 
@@ -178,7 +215,13 @@ def run_recipe(path, *, dry_run=False):
     A dry run checks the input stack and writes no result files.
     """
     from core.cli import run_cli
-    argv = validate_recipe(load_recipe(path), path)
+    recipe = load_recipe(path)
+    argv = validate_recipe(recipe, path)
+    options = recipe.get("options", {})
+    if options.get("defect_mask_path"):
+        mask = _relative(options["defect_mask_path"], os.path.dirname(os.path.abspath(os.fspath(path))))
+        if _mask_fingerprint(mask) != options["defect_mask_sha256"]:
+            raise ValueError("defect mask fingerprint does not match the recipe")
     if dry_run:
         argv.append("--dry-run")
     return run_cli(argv)
@@ -207,6 +250,8 @@ def _capture_recipe_data(path, argv):
         except ValueError as exc:
             raise ValueError("recipe and referenced paths must be on the same drive") from exc
     options = {key: getattr(args, key) for key in _FIELDS}
+    if args.defect_mask_path:
+        options["defect_mask_sha256"] = _mask_fingerprint(args.defect_mask_path)
     for key in _PATH_FIELDS:
         if isinstance(options[key], str):
             options[key] = relative(options[key])
@@ -259,6 +304,14 @@ def capture_project_recipe(path, project_path, argv):
                   "--base-frame", "last" if base else "none",
                   "--sort", "desc" if settings.get("stack_reverse_order", False) else "asc",
                   "--exposure-match" if exposure else "--no-exposure-match"]
+    project_settings = state.get("settings", {})
+    if project_settings.get("sensor_denoise", False):
+        processing.append("--sensor-denoise")
+    mask = project_settings.get("defect_mask_path")
+    if mask:
+        if _mask_fingerprint(mask) != project_settings.get("defect_mask_sha256"):
+            raise ValueError("project defect mask fingerprint does not match")
+        processing.extend(("--defect-mask-path", mask))
     if settings.get("sharpen_output", False):
         processing.append("--sharpen-output")
     if not settings.get("tile_enabled", True):

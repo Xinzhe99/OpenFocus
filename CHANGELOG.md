@@ -11,6 +11,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Single-stack CLI renders can write an atomic JSON report; reporting uses fresh
   alignment rather than guessing outcomes from an older cache. Homography and
   ECC also offer an opt-in policy to stop when alignment failure is detected.
+- **Sensor cleanup** optionally corrects pixels marked in a reviewed sensor
+  defect mask before registration and offers conservative denoising while
+  retaining 8-bit or 16-bit precision. Both options default to off.
 - **Depth products** export an estimated frame-index TIFF or an alternative image
   assembled from the selected depth input frames. The index records estimated
   focus positions, not the true provenance of pixels in a fused result.

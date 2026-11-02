@@ -348,3 +348,57 @@ def test_worker_reference_survives_result_until_thread_finishes(qapp):
     worker.finished.slot()
     assert worker.disposals == 1
     assert not manager._retiring_workers
+
+
+def test_sensor_cleanup_project_roundtrip_and_changed_mask_rejected(tmp_path):
+    paths = _make_stack(str(tmp_path / 'source'), 2)
+    mask_path = tmp_path / 'defects.png'
+    mask = np.zeros((8, 8), np.uint8)
+    mask[2, 3] = 255
+    assert cv2.imwrite(str(mask_path), mask)
+    window = _window(paths, str(tmp_path / 'source'))
+    window.defect_mask_path = str(mask_path)
+    window.sensor_denoise = True
+    project = str(tmp_path / 'session.ofproj')
+    ok, error = project_file.save_project(window, project)
+    assert ok, error
+    ok, error, state = project_file.validate_project(project)
+    assert ok, error
+    restored = _window(paths, str(tmp_path / 'source'))
+    project_file._apply_after_load(restored, state)
+    assert restored.defect_mask_path == str(mask_path)
+    assert restored.sensor_denoise is True
+
+    mask[2, 3] = 0
+    mask[3, 4] = 255
+    assert cv2.imwrite(str(mask_path), mask)
+    ok, error, _ = project_file.validate_project(project)
+    assert not ok
+    assert 'sensor defect mask has changed' in error
+
+
+def test_sensor_controls_inspect_mask_and_reject_source_frame(qapp, tmp_path):
+    from locales import trans
+    from ui.sensor_cleanup import SensorCleanupControls, _INSPECTIONS
+
+    source = tmp_path / 'source.png'
+    mask = np.zeros((8, 8), np.uint8)
+    mask[1, 1] = 255
+    assert cv2.imwrite(str(source), mask)
+    controls = SensorCleanupControls(str(source), True)
+    jobs = list(_INSPECTIONS)
+    assert jobs
+    for job in jobs:
+        assert job.wait(5000)
+    qapp.processEvents()
+    assert controls.mask is not None
+    assert '8' in controls.extent.text()
+    window = SimpleNamespace(image_source_paths=[str(source)],
+                             raw_images=[np.zeros((8, 8, 3), np.uint8)],
+                             current_scale_factor=1.0)
+    assert controls.validate(window) == trans.t('sensor_mask_in_stack')
+    window.image_source_paths = []
+    assert controls.validate(window) == ''
+    window.current_scale_factor = 0.5
+    assert controls.validate(window) == trans.t('sensor_mask_size_error')
+    controls.close()

@@ -358,9 +358,11 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # use False to process
 
 `capture_recipe` interprets its arguments as ordinary CLI paths relative to the
 current directory; `save_recipe` interprets stored paths relative to the recipe.
-The recipe records settings and references, not the input pixels, software
-versions, hardware, or checksums. Keep those separately when provenance matters.
-Identical settings do not guarantee identical pixels across software versions,
+The recipe records settings and references, including a content fingerprint for
+an explicitly selected sensor defect mask. It does not record the input pixels,
+software versions, hardware, or checksums of the source stack; keep those
+separately when provenance matters. Identical settings do not guarantee
+identical pixels across software versions,
 drivers or devices; GPU neural operations may be nondeterministic. Use `--cpu`
 when a CPU execution is required, and retain the installed software and inputs.
 

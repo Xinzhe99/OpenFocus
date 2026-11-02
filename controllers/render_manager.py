@@ -89,7 +89,8 @@ class RenderManager:
                 tuple(id(window.raw_images[i]) for i in included),
                 alignment_steps(alignment), tuple(sorted(parameters.items())),
                 getattr(window, "reg_downscale_width", None), brightness,
-                bool(getattr(window, "stack_reverse_order", False)))
+                bool(getattr(window, "stack_reverse_order", False)),
+                bool(getattr(window, "defect_mask_path", "") or getattr(window, "sensor_denoise", False)))
 
     def _processing_parameters(self, method):
         window = self.window
@@ -102,6 +103,8 @@ class RenderManager:
         values["exposure_match"] = window.brightness_option_for("exposure_match", method)
         values["base_correct"] = window.brightness_option_for("base_correct", method)
         values["sharpen_output"] = bool(getattr(window, "sharpen_output", False))
+        values["defect_mask_path"] = getattr(window, "defect_mask_path", "")
+        values["sensor_denoise"] = bool(getattr(window, "sensor_denoise", False))
         values["base_frame"] = "last" if values["base_correct"] else "none"
         values["sort_mode"] = "desc" if values["stack_reverse_order"] else "asc"
         return values
@@ -427,7 +430,8 @@ class RenderManager:
         reusable = bool(window.is_images_aligned
                         and getattr(window, "aligned_images", None)
                         and len(window.aligned_images) == len(stack_images)
-                        and getattr(window, "alignment_request_key", None) == alignment_key)
+                        and getattr(window, "alignment_request_key", None) == alignment_key
+                        and not (getattr(window, "defect_mask_path", "") or getattr(window, "sensor_denoise", False)))
         # Handle ROI options - check if ROI mode is active and we have aligned images
         roi_rect = None
         roi_mode = "crop"
@@ -436,6 +440,8 @@ class RenderManager:
         
         # 检查ROI模式是否激活，并从右侧面板获取ROI区域
         if getattr(window, 'roi_mode_active', False) and window.roi_aligned_images:
+            if getattr(window, "defect_mask_path", "") or getattr(window, "sensor_denoise", False):
+                raise ValueError('Sensor cleanup cannot use ROI frames aligned before cleanup; disable ROI mode')
             if (getattr(window, "roi_source_revision", None) !=
                     getattr(window, "source_revision", 0)
                     or list(getattr(window, "roi_included_indices", None) or []) != list(included_idx)
@@ -665,6 +671,9 @@ class RenderManager:
                 else "asc",
             exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),
             sharpen_output=bool(getattr(window, "sharpen_output", False)),
+            defect_mask_path=getattr(window, "defect_mask_path", ""),
+            sensor_denoise=bool(getattr(window, "sensor_denoise", False)),
+            load_scale_factor=getattr(window, "current_scale_factor", 1.0),
             disk_cache=disk_cache_request,
             collect_alignment_report=collect_report and not use_roi_aligned_images,
             preview=self._preview_mode,

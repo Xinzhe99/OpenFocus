@@ -112,6 +112,12 @@ class AdvancedSettingsDialog(QDialog):
             bool(getattr(w, "align_cache_enabled", True)))
         reg.addRow(trans.t("action_align_cache"), self.chk_align_cache)
 
+        from ui.sensor_cleanup import SensorCleanupControls
+        sensor = _section(page_lay, trans.t("sensor_section"))
+        self.sensor_cleanup = SensorCleanupControls(
+            getattr(w, "defect_mask_path", ""), getattr(w, "sensor_denoise", False))
+        sensor.addRow(self.sensor_cleanup)
+
         # Output names are a user preference, independent of project processing.
         output = _section(page_lay, trans.t("output_prefix_section"))
         self.output_prefix = QLineEdit(getattr(w, "output_name_prefix", "") or "")
@@ -198,6 +204,10 @@ class AdvancedSettingsDialog(QDialog):
             self.status.setText(trans.t("output_prefix_hint"))
             self.output_prefix.setFocus()
             return
+        sensor_error = self.sensor_cleanup.validate(w)
+        if sensor_error:
+            self.status.setText(sensor_error)
+            return
         draft = {
             "tile_enabled": self.chk_tile.isChecked(),
             "tile_block_size": int(self.spin_block.value()),
@@ -211,6 +221,8 @@ class AdvancedSettingsDialog(QDialog):
             "ai_batch_size": max(1, int(self.spin_ai_batch.value())),
             "restore_last_stack": self.chk_restore.isChecked(),
             "ask_load_scale": self.chk_ask_scale.isChecked(),
+            "defect_mask_path": self.sensor_cleanup.path.text().strip(),
+            "sensor_denoise": self.sensor_cleanup.denoise.isChecked(),
         }
         previous = {key: getattr(w, key, None) for key in draft}
         manager = getattr(w, "update_manager", None)
