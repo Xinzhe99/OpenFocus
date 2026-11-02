@@ -164,7 +164,7 @@ def _en() -> dict:
                 },
                 {
                     "b": "Scale bars and labels",
-                    "t": "Calibrated or typed in, drawn at the real length, burned into every export.",
+                    "t": "Calibrate scale bars from metadata or enter a value, and add labels to results.",
                 },
             ],
             "img_alt": "Side-by-side comparison of the fusion methods at the same crop.",
@@ -418,7 +418,7 @@ def _zh() -> dict:
                 },
                 {
                     "b": "比例尺与标注",
-                    "t": "依元数据标定或手动输入，按真实长度绘制，并写入每一张导出图。",
+                    "t": "从元数据标定比例尺或手动输入尺寸，并为结果添加标注。",
                 },
             ],
             "img_alt": "同一裁切处并排比较各融合算法的结果。",
