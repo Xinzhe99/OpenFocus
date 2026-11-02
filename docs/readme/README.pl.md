@@ -323,83 +323,7 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-Model AI, jego wagi oraz dekodowanie HEIC i RAW aparatów są częścią tej jednej
-instalacji. Na Pythonie 3.13+ pakiet `dtcwt` jest pomijany, a pozycja DTCWT
-pozostaje wyłączona z podpowiedzią.
-
-Punkty kontrolne retuszu można odtworzyć bez interfejsu, podając oryginalny obraz
-bazowy i dokładnie przetworzone klatki źródłowe w zapisanej kolejności:
-
-```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
-```
-
-Punkt kontrolny weryfikuje bazę, piksele źródeł, geometrię i maski ważności.
-Eksportuj same przetworzone klatki (z wyrównaniem i przycięciem ROI), a nie
-nieprzetworzony stos wejściowy. Odtwarzanie odrzuca niezgodny kontekst i nigdy nie
-nadpisuje swoich danych wejściowych. Wynik to PNG lub TIFF z zachowaniem głębi
-8 lub 16 bitów.
-
-Przepisy zachowują ustawienia przetwarzania headless do ponownego użycia i przenoszenia:
-
-```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
-openfocus recipe run workflow.json --dry-run
-openfocus recipe run workflow.json
-```
-
-Format JSON wersji 1 zawiera `version`, tablicę `input` oraz `output` albo
-`output_dir`, a także obiekt `options`. Ścieżki są względne wobec pliku przepisu;
-przenoś przepis razem z plikami wejściowymi, aby zachować powiązania. Utworzenie
-zapisuje ustawienia CLI i rozwiązane parametry algorytmu. Nieznane pola, nieprawidłowe
-wartości i nieobsługiwane wersje są odrzucane. Próba na sucho sprawdza dane wejściowe
-bez zapisywania wyników. Istniejące pliki projektów pozostają bez zmian.
-
-Aby przechwycić ustawienia z istniejącego `.ofproj`, wskaż jawnie nowe wejście i
-wyjście. Źródła oryginalnego projektu nie muszą być obecne:
-
-```bash
-openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
-```
-
-Przenosi to do przepisu CLI ustawienia fuzji, rejestracji, jasności, kolejności,
-wyostrzania i kafelków oraz osadza ustawienia przetwarzania dla GUI. Wykluczenia
-klatek, skala ładowania, etykiety i edycje nie są przenoszone — przygotuj nowy stos
-wejściowy odpowiednio. Projekty z przekształceniami źródeł, w tym zastosowaną
-korekcją pola płaskiego, muszą najpierw wyeksportować poprawiony stos źródłowy.
-Przepisy wymagają miejsca wyjściowego poza folderami wejściowymi i nigdy nie
-przyjmują pliku wejściowego jako wyjścia. Opcje grupowania można przechwycić z
-argumentów CLI.
-
-W interfejsie **Plik → Zapisz szablon przetwarzania** zapisuje ustawienia bez ścieżek
-źródeł. **Plik → Zastosuj szablon przetwarzania** stosuje szablon, projekt lub
-przepis oparty na projekcie do bieżącego stosu, nie zastępując jego wejść,
-przekształceń, wykluczeń ani etykiet. Sam szablon nie jest wykonywalnym przepisem.
-Ustawienia GUI osadzone w przepisie są niezależne od jego opcji CLI; edytując JSON,
-utrzymuj spójność obu zestawów.
-
-Ten sam interfejs headless jest dostępny bez importowania PyQt:
-
-```python
-from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
-
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
-capture_project_recipe("from-project.json", "session.ofproj",
-                       ["-i", "new_stack", "-o", "result/fused.png"])
-recipe = load_recipe("workflow.json")  # zweryfikowany słownik ze ścieżkami względnymi
-save_recipe("workflow.json", recipe)
-exit_code = run_recipe("workflow.json", dry_run=True)  # False — wykonaj przetwarzanie
-```
-
-`capture_recipe` traktuje swoje argumenty jak zwykłe ścieżki CLI względem bieżącego
-katalogu; `save_recipe` traktuje zapisane ścieżki względem przepisu. Przepis
-zapisuje ustawienia i odwołania, w tym odcisk zawartości jawnie wybranej maski
-defektów sensora. Nie zapisuje pikseli wejściowych, wersji oprogramowania,
-sprzętu ani sum kontrolnych stosu źródłowego; przechowuj je osobno, gdy liczy się
-odtwarzalność. Identyczne ustawienia nie gwarantują identycznych pikseli między
-wersjami oprogramowania, sterownikami i urządzeniami; operacje neuronowe na GPU
-mogą być niedeterministyczne. Użyj `--cpu`, gdy wymagane jest wykonanie na CPU, i
-zachowaj zainstalowane oprogramowanie oraz dane wejściowe.
+Zobacz [podręcznik CLI](../USER_MANUAL_PL.md#14-interfejs-wiersza-poleceń).
 
 <a id="community"></a>
 ## Społeczność i wsparcie
@@ -408,7 +332,6 @@ zachowaj zainstalowane oprogramowanie oraz dane wejściowe.
 - **Cytowanie** — [CITATION.cff](../../CITATION.cff); każde wydanie jest archiwizowane na Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Opinie** — [issue](https://github.com/Xinzhe99/OpenFocus/issues) dla błędów, pomysłów i prac nad algorytmami
 - **Podziękowania** — każdy algorytm fuzji i rejestracji zachowuje swoją oryginalną licencję badawczą; StackMFF V3 mieszka w [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
-- **Zgłoszenia bezpieczeństwa** — [@ranas-mukminov](https://github.com/ranas-mukminov) zgłosił problem z uprawnieniami tokenu wykrywania ([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
 
 <a id="license"></a>
 ## Licencja
@@ -421,10 +344,6 @@ OpenFocus, który zachowuje wszelkie prawa do serii StackMFF. Możesz używać i
 ramach OpenFocus do własnych obrazów i pracy wewnętrznej. Kopiowanie, portowanie
 lub przenoszenie tych algorytmów do innego projektu open source wymaga uprzedniej
 pisemnej zgody.
-
-Dołączona tutaj wersja V3 oraz wydania projektu źródłowego do v2.0 włącznie były
-rozpowszechniane na licencji MIT; powyższe ograniczenie nie zmienia ich warunków
-MIT. Zobacz [informacje o komponentach zewnętrznych](../../THIRD_PARTY_NOTICES.md).
 
 <a id="developing"></a>
 ## Rozwój

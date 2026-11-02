@@ -157,8 +157,8 @@ De menubalk bovenaan biedt toegang tot alle functies:
 
 - **Bestand**: importeren, projecten, verwerkingssjablonen, opslaan, stapel opslaan en de lijst met recent geopende bestanden
 - **Bewerken**: beeldtransformaties, retoucheren en het bewerken van losse beeldbestanden
-- **Extra**: batchverwerking, methodenvergelijking, uitlijningsdiagnose, dieptekaart, stofkaart (flat-field), schaalbalk en labels
-- **Instellingen**: geavanceerde instellingen, GPU-versnelling, thema en taal
+- **Extra**: batchverwerking, methodenvergelijking, dieptekaart, stofkaart (flat-field), schaalbalk en labels
+- **Instellingen**: geavanceerde instellingen (registratie en uitlijningsdiagnose), GPU-versnelling, thema en taal
 - **Help**: snelstartgids, omgevingsinfo, feedback, contact, logmap en updatecontrole
 
 ---
@@ -374,7 +374,7 @@ Beeldregistratie corrigeert ruimtelijke misuitlijning tussen frames in je beelds
 
 Uitlijningsrapporten noemen de referentie en de uitkomst per frame. Een terugval betekent dat de methode de uitlijning niet kon vaststellen of afhankelijk is van een eerdere mislukte schatting; de gemelde reden onderscheidt zwakke schattingen en beweging buiten de limieten wanneer bekend. Kwaliteitswaarden zijn methodespecifiek en geen garantie voor nauwkeurigheid. Transformaties mappen broncoördinaten naar het referentiecanvas van de registratiefase vóór de gemeenschappelijke bijsnijding; samengestelde methoden melden hun fasen afzonderlijk. Homografie en ECC accepteren ook de optionele registratieparameter `failure_policy="fail"` om te stoppen wanneer hun algoritme een fout detecteert. De standaard blijft `"continue"`; controleer resultaten ook wanneer de uitlijning slaagt.
 
-Om een rendering te onderzoeken, schakel je **Instellingen → Geavanceerde instellingen… → Registratie → Uitlijningsdiagnose verzamelen** in en rendert opnieuw. Dit berekent de uitlijning opnieuw in plaats van gecachte afbeeldingen te hergebruiken. De voltooiingsstatus markeert terugvallen; **Extra → Uitlijningsdiagnose** opent het rapport per frame. Het toont beschikbare foutredenen, methodespecifieke scores, matchaantallen, gerefereerde frames en transformaties. Referentienummers en -namen verwijzen naar de oorspronkelijke bronlijst, ook wanneer frames zijn uitgesloten. Batch- en gegroepeerde renders leveren dit rapport niet.
+Om een rendering te onderzoeken, schakel je **Instellingen → Geavanceerde instellingen… → Registratie → Uitlijningsdiagnose verzamelen** in en rendert opnieuw. Dit berekent de uitlijning opnieuw in plaats van gecachte afbeeldingen te hergebruiken. De voltooiingsstatus markeert terugvallen; **Instellingen → Geavanceerde instellingen… → Registratie → Uitlijningsdiagnose** opent het rapport per frame. Het toont beschikbare foutredenen, methodespecifieke scores, matchaantallen, gerefereerde frames en transformaties. Referentienummers en -namen verwijzen naar de oorspronkelijke bronlijst, ook wanneer frames zijn uitgesloten. Batch- en gegroepeerde renders leveren dit rapport niet.
 
 ### Registratie inschakelen
 
@@ -801,6 +801,8 @@ Wanneer je resultaten uit de uitvoerlijst sleept, worden beeldbestanden geschrev
 
 ## 14. Opdrachtregelinterface
 
+`pip install openfocus` installeert het AI-model, de gewichten en de HEIC- en camera-RAW-decodering. Op Python 3.13+ vervalt `dtcwt`; daar blijft de DTCWT-optie uitgeschakeld met uitleg.
+
 OpenFocus kan zonder GUI draaien — nuttig voor gescripte pijplijnen en CI. Het consolescript `openfocus` (geïnstalleerd door `pip install openfocus`) en `python main.py` uit een checkout bieden dezelfde opdrachten. Fusieopties werken in beide vormen; de subopdrachten zijn:
 
 ```bash
@@ -907,6 +909,25 @@ openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o
 
 Dit neemt fusie, registratie, helderheid, volgorde, verscherping en tegelinstellingen over in het CLI-recept en sluit de verwerkingsinstellingen voor de GUI in. Frame-uitsluitingen, laadschaal, labels en bewerkingen worden niet overgedragen. Projecten met brontransformaties, inclusief flat-fieldcorrecties, moeten eerst hun gecorrigeerde bronstapel exporteren. Recepten vereisen uitvoer buiten hun invoermappen en accepteren nooit een invoerbestand als uitvoer. Ze weigeren tijdelijke besturingsopties zoals `--dry-run`, `--resume`, `--json` en `--config`. Een defectmasker wordt als relatief pad met een SHA-256-vingerafdruk opgeslagen; een ontbrekend of gewijzigd masker laat de run mislukken.
 
+Groeperingsopties kunnen uit CLI-argumenten worden overgenomen.
+
+In de GUI slaat **Bestand → Verwerkingssjabloon opslaan** instellingen op zonder bronpaden. **Bestand → Verwerkingssjabloon toepassen** past een sjabloon, project of projectsjabloon toe op de huidige stapel zonder de invoer, transformaties, uitsluitingen of labels te vervangen. Een sjabloon is zelf geen uitvoerbaar recept. De GUI-instellingen in een recept staan los van de CLI-opties; houd beide consistent als je de JSON bewerkt.
+
+Dezelfde headless API is beschikbaar zonder PyQt te importeren:
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")  # gevalideerd dictionary met relatieve paden
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # False om te verwerken
+```
+
+`capture_recipe` interpreteert zijn argumenten als gewone CLI-paden relatief ten opzichte van de huidige map; `save_recipe` interpreteert opgeslagen paden relatief ten opzichte van het recept. Het recept legt instellingen en verwijzingen vast, inclusief een inhoudsvingerafdruk voor een uitdrukkelijk gekozen sensordefectmasker. Het legt niet de invoerpixels, softwareversies, hardware of controlesommen van de bronstapel vast; bewaar die apart wanneer herkomst belangrijk is. Identieke instellingen garanderen geen identieke pixels over softwareversies, stuurprogramma's of apparaten heen; GPU-neurale bewerkingen kunnen niet-deterministisch zijn. Gebruik `--cpu` wanneer uitvoering op de CPU vereist is, en bewaar de geïnstalleerde software en invoer.
+
 ### Retouchecontrolepunten afspelen
 
 Bij opslaan of laden worden de basis en de verwerkte bronnen eerst in een annuleerbare achtergrondbewerking gecontroleerd. Bij opslaan worden ook de vastgelegde bewerkingen afgespeeld en wordt het huidige beeld en de ongedaan-maak-/opnieuw-uitvoerstatus gecontroleerd voordat het controlepunt wordt gepubliceerd. Als een bron is gewijzigd en het afspelen niet meer overeenkomt, mislukt het opslaan en blijven je bewerkingen behouden. Annuleren van opslaan of laden houdt je huidige bewerkingen ook beschikbaar. Is er onvoldoende geheugen voor controle of afspelen, dan stopt de bewerking en blijven zowel je huidige bewerkingen als een bestaand controlepunt ongewijzigd.
@@ -999,7 +1020,7 @@ Exitcodes: `0` succes, `1` verwerkingsfout, `2` gebruiksfout. `python main.py --
 - Kies **OpenFocus (snel)** voor begrensde starre beweging, of schakel **Stoppen bij afgewezen beeld** in om vroeg te falen in plaats van onuitgelijnde frames te accepteren
 - Verklein de verkleiningsbreedte in **Instellingen → Geavanceerde instellingen… → Registratie**
 - Zorg dat de afbeeldingen voldoende contrast en kenmerken hebben
-- Schakel onder **Instellingen → Geavanceerde instellingen… → Registratie** de optie **Uitlijningsdiagnose verzamelen** in, render opnieuw en lees **Extra → Uitlijningsdiagnose** voor de betrokken frames
+- Schakel onder **Instellingen → Geavanceerde instellingen… → Registratie** de optie **Uitlijningsdiagnose verzamelen** in, render opnieuw en lees **Instellingen → Geavanceerde instellingen… → Registratie → Uitlijningsdiagnose** voor de betrokken frames
 
 #### Trage verwerking
 

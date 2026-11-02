@@ -270,50 +270,7 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-Het AI-model, de gewichten, HEIC- en camera-RAW-decodering zitten allemaal in die ene installatie. Op Python 3.13+ vervalt `dtcwt`; daar blijft de DTCWT-optie uitgeschakeld met uitleg.
-
-Retoucheercontrolepunten kunnen headless worden afgespeeld met het oorspronkelijke gefuseerde basisbeeld en de exact verwerkte bronframes in hun vastgelegde volgorde:
-
-```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
-```
-
-Het controlepunt controleert basis, bronpixels, geometrie en geldigheidsmaskers. Exporteer de verwerkte frames zelf (inclusief uitlijning of ROI-bijsnijding), niet de onverwerkte invoerstapel. Afspelen weigert een onverenigbare context en overschrijft nooit zijn invoer. De uitvoer is PNG of TIFF en behoudt 8- of 16-bitdiepte.
-
-Recepten leggen headless verwerkingsinstellingen vast voor hergebruik en verplaatsing:
-
-```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
-openfocus recipe run workflow.json --dry-run
-openfocus recipe run workflow.json
-```
-
-Het JSON-formaat van versie 1 bevat `version`, een `input`-array, ofwel `output` of `output_dir`, en een `options`-object. Paden zijn relatief ten opzichte van het receptbestand; verplaats het recept samen met zijn invoerbestanden om die relaties te behouden. Bij het maken worden de CLI-instellingen en opgeloste algoritmeparameters vastgelegd. Onbekende velden, ongeldige waarden en niet-ondersteunde versies worden geweigerd. Een proefrun controleert de invoer zonder resultaatbestanden te schrijven. Bestaande projectbestanden blijven ongewijzigd.
-
-Om instellingen uit een bestaand `.ofproj` over te nemen, kies je uitdrukkelijk de nieuwe invoer en uitvoer. De oorspronkelijke projectbronnen hoeven niet aanwezig te zijn om de instellingen te extraheren:
-
-```bash
-openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
-```
-
-Dit neemt fusie, registratie, helderheid, volgorde, verscherping en tegelinstellingen over in het CLI-recept en sluit de verwerkingsinstellingen voor de GUI in. Frame-uitsluitingen, laadschaal, labels en bewerkingen worden niet overgedragen; bereid de nieuwe invoerstapel daarop voor. Projecten met brontransformaties, inclusief toegepaste flat-fieldcorrecties, moeten eerst hun gecorrigeerde bronstapel exporteren. Recepten vereisen uitvoer buiten hun invoermappen en accepteren nooit een invoerbestand als uitvoer. Groeperingsopties kunnen uit CLI-argumenten worden overgenomen.
-
-In de GUI slaat **Bestand → Verwerkingssjabloon opslaan** instellingen op zonder bronpaden. **Bestand → Verwerkingssjabloon toepassen** past een sjabloon, project of projectsjabloon toe op de huidige stapel zonder de invoer, transformaties, uitsluitingen of labels te vervangen. Een sjabloon is zelf geen uitvoerbaar recept. De GUI-instellingen in een recept staan los van de CLI-opties; houd beide consistent als je de JSON bewerkt.
-
-Dezelfde headless API is beschikbaar zonder PyQt te importeren:
-
-```python
-from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
-
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
-capture_project_recipe("from-project.json", "session.ofproj",
-                       ["-i", "new_stack", "-o", "result/fused.png"])
-recipe = load_recipe("workflow.json")  # gevalideerd dictionary met relatieve paden
-save_recipe("workflow.json", recipe)
-exit_code = run_recipe("workflow.json", dry_run=True)  # False om te verwerken
-```
-
-`capture_recipe` interpreteert zijn argumenten als gewone CLI-paden relatief ten opzichte van de huidige map; `save_recipe` interpreteert opgeslagen paden relatief ten opzichte van het recept. Het recept legt instellingen en verwijzingen vast, inclusief een inhoudsvingerafdruk voor een uitdrukkelijk gekozen sensordefectmasker. Het legt niet de invoerpixels, softwareversies, hardware of controlesommen van de bronstapel vast; bewaar die apart wanneer herkomst belangrijk is. Identieke instellingen garanderen geen identieke pixels over softwareversies, stuurprogramma's of apparaten heen; GPU-neurale bewerkingen kunnen niet-deterministisch zijn. Gebruik `--cpu` wanneer uitvoering op de CPU vereist is, en bewaar de geïnstalleerde software en invoer.
+Zie de [CLI-handleiding](../USER_MANUAL_NL.md#14-opdrachtregelinterface).
 
 <a id="community"></a>
 ## Community en ondersteuning
@@ -322,7 +279,6 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # False om te verwerken
 - **Citeren** — [CITATION.cff](../../CITATION.cff); elke versie wordt gearchiveerd op Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open een [issue](https://github.com/Xinzhe99/OpenFocus/issues) voor bugs, ideeën en algoritmewerk
 - **Credits** — elk fusie- en registratiealgoritme behoudt zijn oorspronkelijke onderzoekslicentie; StackMFF V3 staat op [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
-- **Beveiligingsmeldingen** — [@ranas-mukminov](https://github.com/ranas-mukminov) meldde het machtigingsvenster van de discovery-token ([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
 
 <a id="license"></a>
 ## Licentie
@@ -330,8 +286,6 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # False om te verwerken
 De OpenFocus-toepassing valt onder de [MIT-licentie](../../LICENSE).
 
 **Uitzondering voor de StackMFF-serie.** De StackMFF-fusiealgoritmen — momenteel StackMFF V3 en alle toekomstige edities op de nieuwste stand van de techniek — blijven eigendom van het OpenFocus-project, dat alle rechten op de StackMFF-serie behoudt. Je mag ze als onderdeel van OpenFocus gebruiken voor je eigen afbeeldingen en intern werk. Het kopiëren, porten of migreren van deze algoritmen naar een ander opensourceproject vereist voorafgaande schriftelijke toestemming.
-
-De hier meegeleverde V3-versie en upstreamreleases tot en met v2.0 zijn onder MIT verspreid; de bovenstaande beperking verandert hun MIT-voorwaarden niet. Zie de [kennisgevingen voor derden](../../THIRD_PARTY_NOTICES.md).
 
 <a id="developing"></a>
 ## Ontwikkeling

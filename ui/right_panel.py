@@ -65,8 +65,11 @@ def _panel_label_width(panel=None) -> int:
     one checkbox across the whole column.
     """
     width = (panel.width() if panel is not None else 0) or PANEL_MIN_WIDTH
-    return max(60, min(PANEL_TEXT_WIDTH,
-                      width - _PANEL_H_MARGIN - _LABEL_CHROME))
+    available = width - _PANEL_H_MARGIN
+    flow = getattr(panel, "_options_flow", None)
+    if flow is not None and flow.isVisible() and flow.width() > 0:
+        available = min(available, flow.width())
+    return max(60, min(PANEL_TEXT_WIDTH, available - _LABEL_CHROME))
 
 
 class ElidingCheckBox(QCheckBox):
@@ -83,7 +86,9 @@ class ElidingCheckBox(QCheckBox):
         self._full_text = ""
         self._hint = ""
         self._include_label = True
-        self.setSizePolicy(QSizePolicy.Policy.Ignored,
+        # FlowLayout uses QWidgetItem.sizeHint(); Ignored makes Qt report a
+        # zero width there, leaving the checkboxes present but invisible.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred,
                            QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(0)
         self.set_panel_text(text, tooltip)
@@ -233,7 +238,7 @@ class _PanelLabelRefitter(QObject):
         self._width = -1
 
     def eventFilter(self, watched, event):  # noqa: N802 (Qt casing)
-        if watched is self._panel and event.type() in (
+        if watched in (self._panel, self._flow) and event.type() in (
                 QEvent.Type.Resize, QEvent.Type.Show):
             self.refit()
         return False
@@ -449,8 +454,10 @@ def create_right_panel() -> RightPanelComponents:
     config_layout.addWidget(options_flow)
     # The splitter assigns the panel's real width after construction; a long
     # Polish label must be re-elided then, not only after a language switch.
+    right_panel._options_flow = options_flow
     label_refitter = _PanelLabelRefitter(right_panel, options_flow, option_boxes)
     right_panel.installEventFilter(label_refitter)
+    options_flow.installEventFilter(label_refitter)
     right_panel._label_refitter = label_refitter
 
     # Any leftover height goes to the bottom of the column instead of being

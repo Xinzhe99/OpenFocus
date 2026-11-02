@@ -125,8 +125,8 @@ La barra de menús superior da acceso a todas las funciones:
 
 - **Archivo**: operaciones de importación y exportación, proyectos, plantillas de procesamiento y la lista de archivos recientes
 - **Editar**: transformaciones de imagen, retoque y etiquetas
-- **Herramientas**: procesamiento por lotes, comparación de métodos, diagnósticos de alineación, mapa de profundidad, corrección de campo plano, barra de escala y etiquetas
-- **Ajustes**: ajustes avanzados (rendimiento, registro, limpieza del sensor, nombres de salida, IA y arranque), aceleración por GPU, tema e idioma
+- **Herramientas**: procesamiento por lotes, comparación de métodos, mapa de profundidad, corrección de campo plano, barra de escala y etiquetas
+- **Ajustes**: ajustes avanzados (rendimiento, registro y diagnósticos de alineación, limpieza del sensor, nombres de salida, IA y arranque), aceleración por GPU, tema e idioma
 - **Ayuda**: información del entorno, contacto, búsqueda de actualizaciones y carpeta de registros
 
 ---
@@ -337,7 +337,7 @@ El registro de imágenes corrige la desalineación espacial entre los fotogramas
 
 Los informes de alineación identifican la referencia y el resultado de cada fotograma. Un respaldo significa que el método no pudo establecer la alineación o depende de una estimación anterior fallida; el motivo indicado distingue las estimaciones débiles y el movimiento fuera de los límites cuando se conoce. Los valores de calidad son específicos de cada método, no una garantía de precisión. Las transformaciones asignan coordenadas de origen al lienzo de referencia de la etapa de registro antes del recorte común; los métodos compuestos informan de sus etapas por separado. Homografía y ECC también aceptan el parámetro opcional `failure_policy="fail"` para detenerse cuando sus algoritmos detectan un fallo. El valor predeterminado sigue siendo `"continue"`; inspecciona los resultados incluso cuando la alineación tenga éxito.
 
-Para inspeccionar un renderizado, activa **Ajustes → Ajustes avanzados → Registro → Recopilar diagnósticos de alineación** y vuelve a renderizar. Esto recalcula la alineación en lugar de reutilizar imágenes en caché. El estado de finalización resalta los respaldos; abre **Herramientas → Diagnósticos de alineación** para ver el informe por fotograma. Muestra los motivos de fallo disponibles, las puntuaciones específicas del método, los recuentos de coincidencias, los fotogramas referenciados y las transformaciones. Los números y nombres de referencia se refieren a la lista de origen original, incluso cuando se excluyen fotogramas. Los renderizados por lotes y agrupados no ofrecen este informe.
+Para inspeccionar un renderizado, activa **Ajustes → Ajustes avanzados → Registro → Recopilar diagnósticos de alineación** y vuelve a renderizar. Esto recalcula la alineación en lugar de reutilizar imágenes en caché. El estado de finalización resalta los respaldos; abre **Ajustes → Ajustes avanzados → Registro → Diagnósticos de alineación** para ver el informe por fotograma. Muestra los motivos de fallo disponibles, las puntuaciones específicas del método, los recuentos de coincidencias, los fotogramas referenciados y las transformaciones. Los números y nombres de referencia se refieren a la lista de origen original, incluso cuando se excluyen fotogramas. Los renderizados por lotes y agrupados no ofrecen este informe.
 
 ### Activar el registro
 
@@ -603,7 +603,7 @@ Accede en **Ajustes → Ajustes avanzados → Registro**:
 - **Ancho de reducción**: resolución de preprocesamiento para el registro
   - Predeterminado: 1024 px
   - Menor para ganar velocidad, mayor para ganar precisión
-- **Recopilar diagnósticos de alineación**: recalcula la alineación en el siguiente renderizado y habilita **Herramientas → Diagnósticos de alineación**
+- **Recopilar diagnósticos de alineación**: recalcula la alineación en el siguiente renderizado y habilita **Ajustes → Ajustes avanzados → Registro → Diagnósticos de alineación**
 
 ### Referencia de rendimiento
 
@@ -762,6 +762,8 @@ Arrastrar resultados desde la lista de salida escribe archivos de imagen con el 
 
 ## 14. Interfaz de línea de comandos
 
+`pip install openfocus` incluye el modelo de IA, sus pesos y la decodificación HEIC y RAW de cámara. En Python 3.13 y posteriores se omite `dtcwt` y la entrada DTCWT queda deshabilitada con una explicación emergente.
+
 OpenFocus puede ejecutarse sin la interfaz gráfica, lo que resulta útil para flujos automatizados e integración continua. El script de consola `openfocus` (instalado por `pip install openfocus`) y `python main.py` desde una copia del código exponen los mismos comandos. Las opciones de fusión funcionan con ambas formas; los subcomandos son:
 
 ```bash
@@ -861,6 +863,27 @@ openfocus recipe run line.json --dry-run
 
 `recipe create --project project.ofproj --input ./stack --output ./out/fused.tif` captura los ajustes de procesamiento de un proyecto con entradas elegidas explícitamente; las fuentes del proyecto pueden haberse movido. Las recetas rechazan controles transitorios como `--dry-run`, `--resume`, `--json` y `--config`, y exigen que la salida esté fuera de todas las carpetas de entrada (y sea distinta de una entrada seleccionada explícitamente). Una máscara de defectos se guarda por ruta relativa con una huella SHA-256, de modo que una máscara ausente o modificada hace fallar la ejecución. Las ediciones de origen del proyecto (rotación, volteo, campo plano) no se pueden capturar; exporta primero la pila corregida.
 
+La captura del proyecto transfiere a la receta los ajustes de fusión, registro, brillo, orden, nitidez y mosaicos, e incrusta los ajustes de procesamiento para la interfaz. Las exclusiones de fotogramas, la escala de carga, las etiquetas y las ediciones no se transfieren; prepara la nueva pila de entrada en consecuencia. Las opciones de agrupación se pueden capturar desde argumentos de la CLI.
+
+El formato JSON de la versión 1 contiene `version`, un arreglo `input`, `output` u `output_dir`, y un objeto `options`. Las rutas son relativas al archivo de receta; mueve la receta junto con sus archivos de entrada para conservar esas relaciones. La creación captura los ajustes de la CLI y los parámetros resueltos del algoritmo. Se rechazan campos desconocidos, valores inválidos y versiones no compatibles. Una ejecución de prueba comprueba la entrada sin escribir archivos de resultado. Los archivos de proyecto existentes no se modifican.
+
+En la interfaz, Archivo → Guardar plantilla de procesamiento guarda los ajustes sin rutas de origen. Archivo → Aplicar plantilla de procesamiento aplica una plantilla, un proyecto o una receta respaldada por un proyecto a la pila actual sin sustituir sus entradas, transformaciones, exclusiones ni etiquetas. Una plantilla no es en sí misma una receta ejecutable. Los ajustes de interfaz incrustados en una receta son independientes de sus opciones de CLI; si editas el JSON, mantén ambos coherentes.
+
+La misma API sin interfaz está disponible sin importar PyQt:
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")  # diccionario validado con rutas relativas
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # usa False para procesar
+```
+
+`capture_recipe` interpreta sus argumentos como rutas de CLI normales relativas al directorio actual; `save_recipe` interpreta las rutas guardadas relativas a la receta. La receta registra ajustes y referencias, incluida una huella de contenido para una máscara de defectos de sensor seleccionada explícitamente. No registra los píxeles de entrada, las versiones del software, el hardware ni las sumas de comprobación de la pila de origen; guárdalos por separado cuando la procedencia sea importante. Ajustes idénticos no garantizan píxeles idénticos entre versiones de software, controladores o dispositivos; las operaciones neuronales en GPU pueden no ser deterministas. Usa `--cpu` cuando necesites una ejecución en CPU y conserva el software instalado y las entradas.
+
 ### Reproducir un punto de control de retoque
 
 La primera vez que se guarda o carga se verifican la base y las fuentes procesadas en una operación en segundo plano cancelable. Al guardar también se reproducen las ediciones registradas y se comprueban la imagen actual y el estado de deshacer/rehacer antes de publicar el punto de control. Si una fuente ha cambiado y la reproducción ya no coincide, el guardado falla y conserva tus ediciones. Cancelar un guardado o una carga también conserva tus ediciones actuales. Si la memoria no basta para la verificación o la reproducción, la operación se detiene y deja intactas tanto tus ediciones actuales como cualquier punto de control existente.
@@ -953,7 +976,7 @@ Códigos de salida: `0` éxito, `1` error de procesamiento, `2` error de uso. Ej
 - Usa **OpenFocus (rápida)** para movimiento rígido acotado, o activa **Detener en fotograma rechazado** para fallar pronto en lugar de aceptar fotogramas sin alinear
 - Reduce el ancho de reducción en **Ajustes → Ajustes avanzados → Registro**
 - Asegúrate de que las imágenes tienen suficiente contraste y características
-- Activa **Recopilar diagnósticos de alineación**, vuelve a renderizar y consulta **Herramientas → Diagnósticos de alineación** para los fotogramas que fallan
+- Activa **Recopilar diagnósticos de alineación**, vuelve a renderizar y consulta **Ajustes → Ajustes avanzados → Registro → Diagnósticos de alineación** para los fotogramas que fallan
 
 #### Procesamiento lento
 

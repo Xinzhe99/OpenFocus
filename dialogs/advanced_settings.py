@@ -7,7 +7,7 @@ of hunting through four dialogs and a menu.
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
-    QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from constants import (
@@ -132,6 +132,11 @@ class AdvancedSettingsDialog(QDialog):
             bool(getattr(w, "collect_alignment_report", False)))
         self.chk_collect_alignment_report.setToolTip(trans.t("alignment_report_collect_hint"))
         reg.addRow(trans.t("alignment_report_collect"), self.chk_collect_alignment_report)
+        self.btn_alignment_report = QPushButton(trans.t("alignment_report_title"))
+        self.btn_alignment_report.setProperty("controlId", "btn_alignment_report")
+        self.btn_alignment_report.clicked.connect(
+            lambda: w.render_manager.show_alignment_report(parent=self))
+        reg.addRow(self.btn_alignment_report)
 
         from ui.sensor_cleanup import SensorCleanupControls
         sensor = _section(page_lay, trans.t("sensor_section"))

@@ -125,8 +125,8 @@ A barra de menus superior dá acesso a todas as funções:
 
 - **Arquivo**: operações de importação e exportação, projetos, modelos de processamento e lista de arquivos recentes
 - **Editar**: transformações de imagem, retoque e rótulos
-- **Ferramentas**: processamento em lote, comparação de métodos, diagnósticos de alinhamento, mapa de profundidade, correção de campo plano, barra de escala e rótulos
-- **Configurações**: configurações avançadas (desempenho, registro, limpeza do sensor, nomes de saída, IA e inicialização), aceleração por GPU, tema e idioma
+- **Ferramentas**: processamento em lote, comparação de métodos, mapa de profundidade, correção de campo plano, barra de escala e rótulos
+- **Configurações**: configurações avançadas (desempenho, registro e diagnósticos de alinhamento, limpeza do sensor, nomes de saída, IA e inicialização), aceleração por GPU, tema e idioma
 - **Ajuda**: informações do ambiente, contato, verificação de atualizações e pasta de logs
 
 ---
@@ -337,7 +337,7 @@ O registro corrige o desalinhamento espacial entre os quadros da pilha. É essen
 
 Os relatórios de alinhamento identificam a referência e o resultado de cada quadro. Um fallback significa que o método não conseguiu estabelecer o alinhamento ou depende de uma estimativa anterior falha; o motivo informado distingue estimativas fracas e movimento fora dos limites quando conhecido. Os valores de qualidade são específicos de cada método, não uma garantia de precisão. As transformações mapeiam coordenadas de origem para a tela de referência da etapa de registro antes do corte comum; métodos compostos relatam suas etapas separadamente. Homografia e ECC também aceitam o parâmetro opcional `failure_policy="fail"` para parar quando seus algoritmos detectam falha. O padrão continua `"continue"`; inspecione os resultados mesmo quando o alinhamento for bem-sucedido.
 
-Para inspecionar uma renderização, ative **Configurações → Configurações avançadas → Registro → Coletar diagnósticos de alinhamento** e renderize novamente. Isso recalcula o alinhamento em vez de reutilizar imagens em cache. O status de conclusão destaca fallbacks; abra **Ferramentas → Diagnósticos de alinhamento** para o relatório por quadro. Ele mostra os motivos de falha disponíveis, pontuações específicas do método, contagens de correspondência, quadros referenciados e transformações. Números e nomes de referência remetem à lista de origem original, inclusive quando quadros são excluídos. Renderizações em lote e agrupadas não fornecem esse relatório.
+Para inspecionar uma renderização, ative **Configurações → Configurações avançadas → Registro → Coletar diagnósticos de alinhamento** e renderize novamente. Isso recalcula o alinhamento em vez de reutilizar imagens em cache. O status de conclusão destaca fallbacks; abra **Configurações → Configurações avançadas → Registro → Diagnósticos de alinhamento** para o relatório por quadro. Ele mostra os motivos de falha disponíveis, pontuações específicas do método, contagens de correspondência, quadros referenciados e transformações. Números e nomes de referência remetem à lista de origem original, inclusive quando quadros são excluídos. Renderizações em lote e agrupadas não fornecem esse relatório.
 
 ### Ativar o registro
 
@@ -603,7 +603,7 @@ Acesso: **Configurações → Configurações avançadas → Registro**:
 - **Largura de redução**: resolução de pré-processamento para registro
   - Padrão: 1024 px
   - Menor para velocidade, maior para precisão
-- **Coletar diagnósticos de alinhamento**: recalcula o alinhamento na próxima renderização e habilita **Ferramentas → Diagnósticos de alinhamento**
+- **Coletar diagnósticos de alinhamento**: recalcula o alinhamento na próxima renderização e habilita **Configurações → Configurações avançadas → Registro → Diagnósticos de alinhamento**
 
 ### Referência de desempenho
 
@@ -762,6 +762,8 @@ Arrastar resultados da lista de saídas grava arquivos de imagem no formato esco
 
 ## 14. Interface de linha de comando
 
+`pip install openfocus` inclui o modelo de IA, seus pesos e a decodificação HEIC e RAW de câmera. O `dtcwt` é ignorado no Python 3.13 ou superior, onde a entrada DTCWT permanece desabilitada com uma dica.
+
 O OpenFocus pode rodar sem a interface gráfica — útil para pipelines com script e integração contínua. O script de console `openfocus` (instalado por `pip install openfocus`) e `python main.py` de uma cópia do código expõem os mesmos comandos. As opções de fusão funcionam com ambas as formas; os subcomandos são:
 
 ```bash
@@ -861,6 +863,27 @@ openfocus recipe run line.json --dry-run
 
 `recipe create --project project.ofproj --input ./stack --output ./out/fused.tif` captura as configurações de processamento de um projeto com entradas escolhidas explicitamente; as origens do projeto podem ter sido movidas. Receitas rejeitam controles transitórios como `--dry-run`, `--resume`, `--json` e `--config`, e exigem que a saída fique fora de todas as pastas de entrada (e seja diferente de uma entrada selecionada explicitamente). Uma máscara de defeitos é armazenada por caminho relativo com uma impressão digital SHA-256, então uma máscara ausente ou alterada faz a execução falhar. Edições de origem do projeto (rotação, inversão, campo plano) não podem ser capturadas; exporte primeiro a pilha corrigida.
 
+A captura do projeto transfere para a receita da CLI as configurações de fusão, registro, brilho, ordem, nitidez e blocos, e incorpora as configurações de processamento para a interface. Exclusões de quadros, escala de carregamento, rótulos e edições não são transferidos; prepare a nova pilha de entrada de acordo. As opções de agrupamento podem ser capturadas a partir de argumentos da CLI.
+
+O formato JSON versão 1 contém `version`, um array `input`, `output` ou `output_dir`, e um objeto `options`. Os caminhos são relativos ao arquivo da receita; mova a receita junto com seus arquivos de entrada para preservar essas relações. A criação captura as configurações da CLI e os parâmetros resolvidos do algoritmo. Campos desconhecidos, valores inválidos e versões não suportadas são rejeitados. Uma execução de teste verifica a entrada sem gravar arquivos de resultado. Os arquivos de projeto existentes permanecem inalterados.
+
+Na interface, Arquivo → Salvar modelo de processamento salva as configurações sem caminhos de origem. Arquivo → Aplicar modelo de processamento aplica um modelo, projeto ou receita baseada em projeto à pilha atual sem substituir suas entradas, transformações, exclusões ou rótulos. Um modelo não é, por si só, uma receita executável. As configurações de interface incorporadas em uma receita são independentes de suas opções de CLI; se editar o JSON, mantenha ambas coerentes.
+
+A mesma API headless está disponível sem importar PyQt:
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")  # dicionário validado com caminhos relativos
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # use False para processar
+```
+
+`capture_recipe` interpreta seus argumentos como caminhos de CLI comuns relativos ao diretório atual; `save_recipe` interpreta os caminhos armazenados relativos à receita. A receita registra configurações e referências, incluindo uma impressão digital de conteúdo para uma máscara de defeitos de sensor selecionada explicitamente. Ela não registra os pixels de entrada, as versões do software, o hardware nem os checksums da pilha de origem; guarde-os separadamente quando a proveniência importar. Configurações idênticas não garantem pixels idênticos entre versões de software, drivers ou dispositivos; operações neurais em GPU podem ser não determinísticas. Use `--cpu` quando uma execução em CPU for necessária e conserve o software instalado e as entradas.
+
 ### Reproduzir um checkpoint de retoque
 
 O primeiro salvamento ou carregamento verifica a base e as origens processadas em uma operação em segundo plano cancelável. Salvar também reproduz as edições registradas e confere a imagem atual e o estado de desfazer/refazer antes de publicar o checkpoint. Se uma origem mudou e a reprodução não corresponde mais, o salvamento falha e mantém suas edições. Cancelar um salvamento ou carregamento também mantém suas edições atuais. Se a memória for insuficiente para verificação ou reprodução, a operação para e mantém inalteradas tanto suas edições atuais quanto qualquer checkpoint existente.
@@ -953,7 +976,7 @@ Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Exe
 - Use **OpenFocus (rápido)** para movimento rígido limitado, ou ative **Parar em quadro rejeitado** para falhar cedo em vez de aceitar quadros não alinhados
 - Reduza a largura de redução em **Configurações → Configurações avançadas → Registro**
 - Garanta que as imagens tenham contraste e características suficientes
-- Ative **Coletar diagnósticos de alinhamento**, renderize novamente e leia **Ferramentas → Diagnósticos de alinhamento** para os quadros com falha
+- Ative **Coletar diagnósticos de alinhamento**, renderize novamente e leia **Configurações → Configurações avançadas → Registro → Diagnósticos de alinhamento** para os quadros com falha
 
 #### Processamento lento
 

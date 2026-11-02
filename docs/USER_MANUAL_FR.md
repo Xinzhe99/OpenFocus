@@ -125,8 +125,8 @@ La barre de menus supérieure donne accès à toutes les fonctions :
 
 - **Fichier** : importation et exportation, projets, modèles de traitement et liste des fichiers récents
 - **Édition** : transformations d'images, retouche et libellés
-- **Outils** : traitement par lots, comparaison de méthodes, diagnostics d'alignement, carte de profondeur, correction de champ plat, barre d'échelle et libellés
-- **Paramètres** : paramètres avancés (performances, recalage, nettoyage du capteur, nommage des sorties, IA et démarrage), accélération GPU, thème et langue
+- **Outils** : traitement par lots, comparaison de méthodes, carte de profondeur, correction de champ plat, barre d'échelle et libellés
+- **Paramètres** : paramètres avancés (performances, recalage et diagnostics d'alignement, nettoyage du capteur, nommage des sorties, IA et démarrage), accélération GPU, thème et langue
 - **Aide** : informations sur l'environnement, contact, recherche de mises à jour et dossier des journaux
 
 ---
@@ -337,7 +337,7 @@ Le recalage corrige le désalignement spatial entre les images de votre pile. Il
 
 Les rapports d'alignement identifient la référence et le résultat de chaque image. Un repli signifie que la méthode n'a pas pu établir l'alignement ou dépend d'une estimation précédente échouée ; la raison indiquée distingue les estimations faibles et le mouvement hors limites lorsqu'il est connu. Les valeurs de qualité sont propres à chaque méthode, sans garantie d'exactitude. Les transformations projettent les coordonnées sources sur le canevas de référence de l'étape de recalage avant le recadrage commun ; les méthodes composites rapportent leurs étapes séparément. L'homographie et l'ECC acceptent aussi le paramètre facultatif `failure_policy="fail"` pour s'arrêter lorsque leurs algorithmes détectent un échec. La valeur par défaut reste `"continue"` ; inspectez les résultats même lorsque l'alignement réussit.
 
-Pour inspecter un rendu, activez **Paramètres → Paramètres avancés → Recalage → Collecter les diagnostics d'alignement**, puis relancez le rendu. L'alignement est recalculé au lieu de réutiliser les images en cache. Le statut de fin met en évidence les replis ; ouvrez **Outils → Diagnostics d'alignement** pour le rapport par image. Il indique les raisons d'échec disponibles, les scores propres à la méthode, le nombre de correspondances, les images référencées et les transformations. Les numéros et noms de référence renvoient à la liste source d'origine, même lorsque des images sont exclues. Les rendus par lots et groupés ne fournissent pas ce rapport.
+Pour inspecter un rendu, activez **Paramètres → Paramètres avancés → Recalage → Collecter les diagnostics d'alignement**, puis relancez le rendu. L'alignement est recalculé au lieu de réutiliser les images en cache. Le statut de fin met en évidence les replis ; ouvrez **Paramètres → Paramètres avancés → Recalage → Diagnostics d'alignement** pour le rapport par image. Il indique les raisons d'échec disponibles, les scores propres à la méthode, le nombre de correspondances, les images référencées et les transformations. Les numéros et noms de référence renvoient à la liste source d'origine, même lorsque des images sont exclues. Les rendus par lots et groupés ne fournissent pas ce rapport.
 
 ### Activer le recalage
 
@@ -603,7 +603,7 @@ Accès : **Paramètres → Paramètres avancés → Recalage** :
 - **Largeur de réduction** : résolution de prétraitement pour le recalage
   - Défaut : 1024 px
   - Plus faible pour la vitesse, plus élevée pour la précision
-- **Collecter les diagnostics d'alignement** : recalcule l'alignement au prochain rendu et active **Outils → Diagnostics d'alignement**
+- **Collecter les diagnostics d'alignement** : recalcule l'alignement au prochain rendu et active **Paramètres → Paramètres avancés → Recalage → Diagnostics d'alignement**
 
 ### Référence de performances
 
@@ -762,6 +762,8 @@ Faire glisser des résultats depuis la liste des sorties écrit des fichiers ima
 
 ## 14. Interface en ligne de commande
 
+`pip install openfocus` inclut le modèle IA, ses poids et le décodage HEIC et RAW d'appareil photo. `dtcwt` est ignoré à partir de Python 3.13, où l'entrée DTCWT reste désactivée avec une infobulle.
+
 OpenFocus peut s'exécuter sans interface graphique — utile pour les pipelines scriptés et l'intégration continue. Le script de console `openfocus` (installé par `pip install openfocus`) et `python main.py` depuis une copie du code exposent les mêmes commandes. Les options de fusion fonctionnent avec les deux formes ; les sous-commandes sont :
 
 ```bash
@@ -861,6 +863,27 @@ openfocus recipe run line.json --dry-run
 
 `recipe create --project project.ofproj --input ./stack --output ./out/fused.tif` capture les réglages de traitement d'un projet sur des entrées choisies explicitement ; les sources du projet peuvent avoir été déplacées. Les recettes refusent les contrôles transitoires tels que `--dry-run`, `--resume`, `--json` et `--config`, et exigent que la sortie soit hors de tous les dossiers d'entrée (et différente d'une entrée explicitement sélectionnée). Un masque de défauts est stocké par chemin relatif avec une empreinte SHA-256, de sorte qu'un masque manquant ou modifié fait échouer l'exécution. Les modifications de source du projet (rotation, retournement, champ plat) ne peuvent pas être capturées ; exportez d'abord la pile corrigée.
 
+La capture du projet transfère à la recette CLI les réglages de fusion, de recalage, de luminosité, d'ordre, de netteté et de tuiles, et incorpore les réglages de traitement pour l'interface. Les exclusions d'images, l'échelle de chargement, les libellés et les modifications ne sont pas transférés ; préparez la nouvelle pile d'entrée en conséquence. Les options de regroupement peuvent être capturées depuis les arguments de la CLI.
+
+Le format JSON de version 1 contient `version`, un tableau `input`, soit `output`, soit `output_dir`, et un objet `options`. Les chemins sont relatifs au fichier de recette ; déplacez la recette avec ses fichiers d'entrée pour conserver ces relations. La création capture les réglages de la CLI et les paramètres d'algorithme résolus. Les champs inconnus, les valeurs invalides et les versions non prises en charge sont rejetés. Une exécution à blanc vérifie l'entrée sans écrire de fichiers de résultat. Les fichiers de projet existants restent inchangés.
+
+Dans l'interface, Fichier → Enregistrer un modèle de traitement enregistre les réglages sans chemins de source. Fichier → Appliquer un modèle de traitement applique un modèle, un projet ou une recette issue d'un projet à la pile actuelle sans remplacer ses entrées, transformations, exclusions ni libellés. Un modèle n'est pas lui-même une recette exécutable. Les réglages d'interface intégrés à une recette sont indépendants de ses options CLI ; si vous modifiez le JSON, gardez les deux cohérents.
+
+La même API sans interface est disponible sans importer PyQt :
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")  # dictionnaire validé avec chemins relatifs
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # utilisez False pour traiter
+```
+
+`capture_recipe` interprète ses arguments comme des chemins CLI ordinaires relatifs au répertoire courant ; `save_recipe` interprète les chemins stockés relativement à la recette. La recette enregistre les réglages et les références, y compris une empreinte de contenu pour un masque de défauts de capteur explicitement sélectionné. Elle n'enregistre pas les pixels d'entrée, les versions logicielles, le matériel ni les sommes de contrôle de la pile source ; conservez-les séparément lorsque la provenance compte. Des réglages identiques ne garantissent pas des pixels identiques d'une version logicielle, d'un pilote ou d'un appareil à l'autre ; les opérations neuronales sur GPU peuvent être non déterministes. Utilisez `--cpu` lorsqu'une exécution CPU est requise, et conservez le logiciel installé et les entrées.
+
 ### Rejouer un point de contrôle de retouche
 
 Le premier enregistrement ou chargement vérifie la base et les sources traitées dans une opération d'arrière-plan annulable. L'enregistrement rejoue aussi les modifications consignées et vérifie l'image actuelle et l'état annuler/rétablir avant de publier le point de contrôle. Si une source a changé et que le rejeu ne correspond plus, l'enregistrement échoue et conserve vos modifications. Annuler un enregistrement ou un chargement conserve aussi vos modifications actuelles. Si la mémoire est insuffisante pour la vérification ou le rejeu, l'opération s'arrête et laisse inchangés vos modifications actuelles et tout point de contrôle existant.
@@ -953,7 +976,7 @@ Codes de sortie : `0` succès, `1` erreur de traitement, `2` erreur d'utilisatio
 - Utilisez **OpenFocus (rapide)** pour un mouvement rigide borné, ou activez **Arrêter sur image rejetée** pour échouer tôt au lieu d'accepter des images non alignées
 - Réduisez la largeur de réduction dans **Paramètres → Paramètres avancés → Recalage**
 - Assurez-vous que les images ont assez de contraste et de caractéristiques
-- Activez **Collecter les diagnostics d'alignement**, relancez le rendu et consultez **Outils → Diagnostics d'alignement** pour les images en échec
+- Activez **Collecter les diagnostics d'alignement**, relancez le rendu et consultez **Paramètres → Paramètres avancés → Recalage → Diagnostics d'alignement** pour les images en échec
 
 #### Traitement lent
 

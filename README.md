@@ -313,79 +313,7 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-The AI model, its weights, HEIC and camera-RAW decoding are all in that single install. `dtcwt` is skipped on Python 3.13+, where the DTCWT entry stays disabled with a tooltip.
-
-Retouch checkpoints can be replayed headlessly with the original fused base
-and the exact processed source frames, in their recorded order:
-
-```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
-```
-
-The checkpoint verifies the base, source pixels, geometry and validity masks.
-Export the processed frames themselves (including any alignment or ROI crop),
-not the unprocessed input stack. Replay rejects incompatible context and never
-overwrites its inputs. Output is PNG or TIFF, preserving 8- or 16-bit depth.
-
-Recipes capture headless processing settings for reuse and relocation:
-
-```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
-openfocus recipe run workflow.json --dry-run
-openfocus recipe run workflow.json
-```
-
-The version 1 JSON format contains `version`, an `input` array, either `output`
-or `output_dir`, and an `options` object. Paths are relative to the recipe file;
-move the recipe together with its input files to preserve those relationships.
-Creation captures the CLI settings and resolved algorithm parameters. Unknown
-fields, invalid values and unsupported versions are rejected. A dry run checks
-the input without writing result files. Existing project files remain unchanged.
-
-To capture settings from an existing `.ofproj`, explicitly select the new input
-and output. Original project sources need not be present to extract settings:
-
-```bash
-openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
-```
-
-This transfers fusion, registration, brightness, order, sharpening and tile
-settings into the CLI recipe, and embeds the processing settings for the GUI.
-Frame exclusions, load scaling, labels and edits are not transferred; prepare
-the new input stack accordingly. Projects with source transforms, including
-applied flat-field corrections, must first export their corrected source stack.
-Recipes require outputs outside their input folders and never accept an input
-file as the output. Grouping options can be captured from CLI arguments.
-
-In the GUI, File → Save
-Processing Template saves settings without source paths. File → Apply Processing
-Template applies a template, project, or project-backed recipe to the current
-stack without replacing its inputs, transforms, exclusions or labels. A template
-is not itself an executable recipe. The GUI settings embedded in a recipe are
-independent of its CLI options; if editing the JSON, keep both consistent.
-
-The same headless API is available without importing PyQt:
-
-```python
-from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
-
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
-capture_project_recipe("from-project.json", "session.ofproj",
-                       ["-i", "new_stack", "-o", "result/fused.png"])
-recipe = load_recipe("workflow.json")  # validated dictionary with relative paths
-save_recipe("workflow.json", recipe)
-exit_code = run_recipe("workflow.json", dry_run=True)  # use False to process
-```
-
-`capture_recipe` interprets its arguments as ordinary CLI paths relative to the
-current directory; `save_recipe` interprets stored paths relative to the recipe.
-The recipe records settings and references, including a content fingerprint for
-an explicitly selected sensor defect mask. It does not record the input pixels,
-software versions, hardware, or checksums of the source stack; keep those
-separately when provenance matters. Identical settings do not guarantee
-identical pixels across software versions,
-drivers or devices; GPU neural operations may be nondeterministic. Use `--cpu`
-when a CPU execution is required, and retain the installed software and inputs.
+See the [CLI manual](./docs/USER_MANUAL_EN.md#14-command-line-interface).
 
 <a id="community"></a>
 ## Community & Support
@@ -394,7 +322,6 @@ when a CPU execution is required, and retain the installed software and inputs.
 - **Citation** — [CITATION.cff](./CITATION.cff); every release is archived on Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open an [issue](https://github.com/Xinzhe99/OpenFocus/issues) for bugs, ideas and algorithm work
 - **Credits** — each fusion/registration algorithm keeps its original research licence; StackMFF V3 lives at [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
-- **Security reports** — [@ranas-mukminov](https://github.com/ranas-mukminov) reported the discovery-token permission window ([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
 
 <a id="license"></a>
 ## License
@@ -407,10 +334,6 @@ the OpenFocus project, which retains all rights to the StackMFF series. You may
 use them as part of OpenFocus for your own images and internal work. Copying,
 porting or migrating these algorithms into another open-source project requires
 prior written permission.
-
-The V3 snapshot bundled here and upstream releases through v2.0 were distributed
-under MIT; their MIT terms are unaffected by the restriction above. See the
-[third-party notices](./THIRD_PARTY_NOTICES.md).
 
 <a id="developing"></a>
 ## Developing

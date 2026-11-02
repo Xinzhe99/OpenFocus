@@ -23,7 +23,7 @@ PACK = {
     'alignment_report_title': 'Diagnóstico de alinhamento', 'alignment_report_unavailable': 'Não há diagnóstico por quadro para a última renderização. Ative a coleta e renderize novamente.',
     'alignment_report_frame': 'Quadro {number} — {name}: {method} — {status}',
     'alignment_report_reference': 'Referência', 'alignment_report_aligned': 'Alinhado', 'alignment_report_fallback': 'Alternativa',
-    'alignment_report_cached': 'Alinhamento: resultado em cache reutilizado', 'alignment_report_available': 'Diagnóstico por quadro disponível em Ferramentas',
+    'alignment_report_cached': 'Alinhamento: resultado em cache reutilizado', 'alignment_report_available': 'Diagnóstico por quadro disponível em Configurações → Configurações avançadas → Registro',
     'sensor_section': 'Limpeza do sensor',
     'sensor_source_missing': "A máscara de defeitos requer o caminho original de cada imagem. Recarregue as imagens originais ou desative a máscara.",
     'sensor_source_orientation': "Não é possível usar a máscara de defeitos com {path}: a orientação não é neutra ou não pode ser verificada. Use imagens na orientação do sensor com orientação EXIF neutra e uma máscara correspondente, ou desative a máscara.",

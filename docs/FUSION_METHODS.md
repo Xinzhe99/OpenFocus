@@ -17,11 +17,11 @@ estimation and smoothing as fusion. Tiled B/C renders share a full-image depth
 map; when resizing is requested, they use whole-frame rendering so the depth
 map and output have the same dimensions.
 
-On macOS, if StackMFF V1 reports an MPS convolution compiler error, disable
-**Settings → GPU Acceleration** for the next render or pass `--cpu` to the
-CLI. V1 uses 3D convolutions whose availability depends on the installed
-PyTorch and macOS graphics backend; the other neural methods use different
-operations.
+StackMFF V1 uses depth-sliced spatial operations on macOS 26 MPS to avoid a
+PyTorch 3D convolution compiler error. GPU inference checks an estimated
+working set against the available memory budget; the actual MPS workspace
+depends on the device and input shape. If MPS is unavailable or still fails,
+disable **Settings → GPU Acceleration** or pass `--cpu` to the CLI.
 
 ## Depth maps
 

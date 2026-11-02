@@ -265,23 +265,7 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-AI 모델, 가중치, HEIC와 카메라 RAW 디코딩이 모두 이 한 번의 설치에 포함됩니다. Python 3.13 이상에서는 `dtcwt`가 생략되며 DTCWT 항목은 안내와 함께 비활성화됩니다.
-
-처리 레시피는 헤드리스 설정을 저장해 재사용하고 옮길 수 있습니다.
-
-```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
-openfocus recipe run workflow.json --dry-run
-openfocus recipe run workflow.json
-```
-
-리터치 체크포인트는 원래 합성 베이스와 기록된 순서의 처리된 소스 프레임으로 헤드리스 재생할 수 있습니다.
-
-```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
-```
-
-출력은 PNG 또는 TIFF이며 8비트/16비트 깊이를 유지합니다. 재생은 베이스, 소스 픽셀, 기하, 유효 마스크를 검증하고 입력을 덮어쓰지 않습니다.
+자세한 내용은 [CLI 설명서](../USER_MANUAL_KO.md#14-명령줄-인터페이스)를 참고하세요.
 
 <a id="community"></a>
 ## 커뮤니티와 지원
@@ -291,7 +275,6 @@ openfocus retouch replay edits.json --base fused.png --sources processed1.png pr
 - **인용** — [CITATION.cff](../../CITATION.cff). 모든 릴리스는 Zenodo에 보관됩니다([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **피드백** — 버그, 아이디어, 알고리즘 개선은 [issue](https://github.com/Xinzhe99/OpenFocus/issues)로 알려 주세요
 - **크레딧** — 각 합성·정합 알고리즘은 원래 연구 라이선스를 따릅니다. StackMFF V3는 [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)에 있습니다
-- **보안 보고** — [@ranas-mukminov](https://github.com/ranas-mukminov)가 검색 토큰 권한 창 문제를 보고했습니다([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
 
 <a id="license"></a>
 ## 라이선스
@@ -299,8 +282,6 @@ openfocus retouch replay edits.json --base fused.png --sources processed1.png pr
 OpenFocus 애플리케이션은 [MIT 라이선스](../../LICENSE)로 배포됩니다.
 
 **StackMFF 시리즈 예외.** StackMFF 합성 알고리즘(현재 StackMFF V3와 향후 같은 시리즈 버전 포함)은 OpenFocus 프로젝트에 귀속되며, 프로젝트가 StackMFF 시리즈의 모든 권리를 보유합니다. OpenFocus의 일부로 자신의 이미지와 내부 작업에 사용할 수 있지만, 다른 오픈 소스 프로젝트로 복사, 이식, 이동하려면 사전 서면 허가가 필요합니다.
-
-여기에 포함된 V3와 원본 프로젝트의 v2.0까지의 릴리스는 MIT 라이선스로 배포되었으며, 위 제한은 해당 MIT 조건을 변경하지 않습니다. 자세한 내용은 [서드파티 고지](../../THIRD_PARTY_NOTICES.md)를 참조하세요.
 
 <a id="developing"></a>
 ## 개발

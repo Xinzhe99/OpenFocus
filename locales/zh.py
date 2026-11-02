@@ -27,7 +27,7 @@ ZH = {
     'alignment_report_title': '配准诊断', 'alignment_report_unavailable': '上次渲染没有逐帧诊断。请启用收集并重新渲染。',
     'alignment_report_frame': '第 {number} 帧 — {name}：{method} — {status}',
     'alignment_report_reference': '参考帧', 'alignment_report_aligned': '已配准', 'alignment_report_fallback': '回退',
-    'alignment_report_cached': '配准：使用缓存结果', 'alignment_report_available': '可在工具菜单中查看逐帧配准诊断',
+    'alignment_report_cached': '配准：使用缓存结果', 'alignment_report_available': '可在设置 → 高级设置 → 配准中查看逐帧配准诊断',
     'sensor_section': '传感器清理',
     'sensor_source_missing': "缺陷掩码需要每帧的原始图像路径。请重新加载原始图像或关闭掩码。",
     'sensor_source_orientation': "无法对 {path} 使用缺陷掩码：其方向并非默认方向或无法检查。请使用传感器方向、EXIF 方向为默认值的静态图像及匹配的掩码，或关闭掩码。",

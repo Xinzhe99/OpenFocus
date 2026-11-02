@@ -23,7 +23,7 @@ PACK = {
     'alignment_report_title': 'Uitlijningsdiagnose', 'alignment_report_unavailable': 'Geen diagnose per beeld voor de laatste rendering. Schakel verzamelen in en render opnieuw.',
     'alignment_report_frame': 'Beeld {number} — {name}: {method} — {status}',
     'alignment_report_reference': 'Referentie', 'alignment_report_aligned': 'Uitgelijnd', 'alignment_report_fallback': 'Terugval',
-    'alignment_report_cached': 'Uitlijning: cacheresultaat hergebruikt', 'alignment_report_available': 'Diagnose per beeld beschikbaar onder Gereedschap',
+    'alignment_report_cached': 'Uitlijning: cacheresultaat hergebruikt', 'alignment_report_available': 'Diagnose per beeld beschikbaar onder Instellingen → Geavanceerde instellingen → Registratie',
     'sensor_section': 'Sensor opschonen',
     'sensor_source_missing': "Het defectmasker vereist het oorspronkelijke afbeeldingspad van elk frame. Laad de originele beelden opnieuw of schakel het masker uit.",
     'sensor_source_orientation': "Het defectmasker kan niet worden gebruikt met {path}: de oriëntatie is niet neutraal of kan niet worden gecontroleerd. Gebruik beelden in sensororiëntatie met neutrale EXIF-oriëntatie en een passend masker, of schakel het masker uit.",

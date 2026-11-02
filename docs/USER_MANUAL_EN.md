@@ -151,8 +151,8 @@ The top menu bar provides access to all functions:
 
 - **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Image transformations and labels
-- **Tools**: Batch processing, method comparison, alignment diagnostics, depth map, flat-field correction, scale bar and labels
-- **Settings**: Advanced Settings (performance, registration, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
+- **Tools**: Batch processing, method comparison, depth map, flat-field correction, scale bar and labels
+- **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
 - **Help**: Environment info, contact information, update check, and the log folder
 
 ---
@@ -542,7 +542,7 @@ parameter to stop when their algorithms detect failure. The default remains
 To inspect a render, enable **Settings → Advanced Settings → Registration →
 Collect alignment diagnostics** and render again. This recomputes alignment
 instead of reusing cached images. The completion
-status highlights fallbacks; open **Tools → Alignment diagnostics** for the
+status highlights fallbacks; open **Settings → Advanced Settings → Registration → Alignment diagnostics** for the
 per-frame report. It shows available failure reasons, method-specific scores,
 match counts, referenced frames and transforms. Reference numbers and names
 refer to the original source list, including when frames are excluded. Batch
@@ -1287,6 +1287,8 @@ PNG, WebP or TIFF). The choice is remembered.
 
 ## 14. Command Line Interface
 
+Installing with `pip install openfocus` includes the AI model and weights, HEIC and camera-RAW decoding. `dtcwt` is skipped on Python 3.13+, where the DTCWT entry stays disabled with a tooltip.
+
 OpenFocus can run without the GUI — useful for scripted pipelines and CI. The
 `openfocus` console script (installed by `pip install openfocus`) and
 `python main.py` from a checkout expose the same commands. Fusion options work
@@ -1418,6 +1420,48 @@ defect mask is stored by relative path with a SHA-256 fingerprint, so a missing
 or changed mask fails the run. Project source edits (rotation, flip, flat
 field) cannot be captured; export the corrected stack first.
 
+Project capture transfers fusion, registration, brightness, order, sharpening
+and tile settings into the CLI recipe and embeds GUI processing settings. Frame
+exclusions, load scaling, labels and edits are not transferred; prepare the new
+input stack accordingly. Grouping options can be captured from CLI arguments.
+
+The version 1 JSON format contains `version`, an `input` array, either `output`
+or `output_dir`, and an `options` object. Paths are relative to the recipe file;
+move the recipe together with its input files to preserve those relationships.
+Creation captures the CLI settings and resolved algorithm parameters. Unknown
+fields, invalid values and unsupported versions are rejected. A dry run checks
+the input without writing result files. Existing project files remain unchanged.
+
+In the GUI, File → Save
+Processing Template saves settings without source paths. File → Apply Processing
+Template applies a template, project, or project-backed recipe to the current
+stack without replacing its inputs, transforms, exclusions or labels. A template
+is not itself an executable recipe. The GUI settings embedded in a recipe are
+independent of its CLI options; if editing the JSON, keep both consistent.
+
+The same headless API is available without importing PyQt:
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")  # validated dictionary with relative paths
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # use False to process
+```
+
+`capture_recipe` interprets its arguments as ordinary CLI paths relative to the
+current directory; `save_recipe` interprets stored paths relative to the recipe.
+The recipe records settings and references, including a content fingerprint for
+an explicitly selected sensor defect mask. It does not record the input pixels,
+software versions, hardware, or checksums of the source stack; keep those
+separately when provenance matters. Identical settings do not guarantee
+identical pixels across software versions,
+drivers or devices; GPU neural operations may be nondeterministic. Use `--cpu`
+when a CPU execution is required, and retain the installed software and inputs.
+
 ### Replay a retouch checkpoint
 
 The first save or load verifies the base and processed sources in a cancellable
@@ -1528,7 +1572,7 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 - Reduce the downscale width in **Settings → Advanced Settings → Registration**
 - Ensure images have sufficient contrast and features
 - Enable **Collect alignment diagnostics**, render again, and read
-  **Tools → Alignment diagnostics** for the failing frames
+  **Settings → Advanced Settings → Registration → Alignment diagnostics** for the failing frames
 
 #### Slow Processing
 

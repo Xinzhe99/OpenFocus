@@ -97,6 +97,42 @@ def test_tile_controls_and_diagnostics_are_drafts(settings_window):
     assert settings_window.saved
     dialog.deleteLater()
 
+def test_alignment_report_opens_from_settings_without_applying_draft(settings_window, qapp):
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QApplication, QPlainTextEdit
+    from controllers.render_manager import RenderManager
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    settings_window.collect_alignment_report = False
+    settings_window.render_manager = RenderManager(settings_window)
+    settings_window.render_manager.alignment_diagnostics = (
+        [{'frame_index': 0, 'method': 'ecc', 'status': 'aligned'}],
+        ['source.tif'], [0])
+    settings = AdvancedSettingsDialog(settings_window)
+    settings.show()
+    settings.chk_collect_alignment_report.setChecked(True)
+    shown = []
+
+    def close_report():
+        report = QApplication.activeModalWidget()
+        text = report.findChild(QPlainTextEdit) if report is not None else None
+        shown.append((report.parentWidget() is settings if report else False,
+                      text.toPlainText() if text else None))
+        if report is not None:
+            report.reject()
+
+    try:
+        QTimer.singleShot(0, close_report)
+        settings.btn_alignment_report.click()
+        assert shown and shown[0][0] and 'source.tif' in shown[0][1]
+        assert settings.chk_collect_alignment_report.isChecked()
+        assert settings_window.collect_alignment_report is False
+        assert not settings_window.saved
+    finally:
+        settings.reject()
+        settings.deleteLater()
+        qapp.processEvents()
+
 
 def test_disabled_tiling_ignores_invalid_draft_and_preserves_settings(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog

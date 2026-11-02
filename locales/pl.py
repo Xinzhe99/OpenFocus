@@ -23,7 +23,7 @@ PACK = {
     'alignment_report_title': 'Diagnostyka wyrównania', 'alignment_report_unavailable': 'Brak diagnostyki klatek dla ostatniego renderowania. Włącz zbieranie i uruchom renderowanie ponownie.',
     'alignment_report_frame': 'Klatka {number} — {name}: {method} — {status}',
     'alignment_report_reference': 'Referencyjna', 'alignment_report_aligned': 'Wyrównana', 'alignment_report_fallback': 'Wynik zastępczy',
-    'alignment_report_cached': 'Wyrównanie: użyto wyniku z pamięci podręcznej', 'alignment_report_available': 'Diagnostyka klatek dostępna w menu Narzędzia',
+    'alignment_report_cached': 'Wyrównanie: użyto wyniku z pamięci podręcznej', 'alignment_report_available': 'Diagnostyka klatek dostępna w Ustawienia → Ustawienia zaawansowane → Rejestracja',
     'sensor_section': 'Czyszczenie matrycy',
     'sensor_source_missing': "Maska defektów wymaga ścieżki do oryginalnego pliku każdej klatki. Wczytaj ponownie oryginalne obrazy lub wyłącz maskę.",
     'sensor_source_orientation': "Nie można użyć maski defektów dla {path}: orientacja nie jest neutralna lub nie można jej sprawdzić. Użyj obrazów w orientacji sensora z neutralną orientacją EXIF i pasującą maską albo wyłącz maskę.",

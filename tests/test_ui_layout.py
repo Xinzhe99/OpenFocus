@@ -62,6 +62,40 @@ def test_option_checkboxes_flow_and_wrap():
         panel.close()
         panel.deleteLater()
 
+@pytest.mark.parametrize("width", [280, 480])
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_main_options_are_visible_and_clickable(qapp, width, theme):
+    """The real panel must not lay out its option checkboxes at zero width."""
+    from PyQt6.QtCore import QPoint, Qt
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QScrollArea
+    from ui.right_panel import create_right_panel
+    from ui.styles import build_stylesheet
+
+    parts = create_right_panel()
+    panel = parts.widget
+    panel.setStyleSheet(build_stylesheet(theme))
+    panel.resize(width, 900)
+    panel.show()
+    try:
+        qapp.processEvents()
+        scroll = panel.findChild(QScrollArea)
+        flow = panel._options_flow
+        for box in (parts.chk_quick_preview, parts.chk_reverse_order,
+                    parts.chk_exposure_match, parts.chk_base_correct,
+                    parts.chk_sharpen_output):
+            scroll.ensureWidgetVisible(box)
+            qapp.processEvents()
+            assert box.isVisible() and box.width() >= 20 and box.height() >= 16
+            assert flow.rect().contains(box.geometry())
+            before = box.isChecked()
+            QTest.mouseClick(box, Qt.MouseButton.LeftButton,
+                             pos=QPoint(8, box.height() // 2))
+            assert box.isChecked() != before
+    finally:
+        panel.close()
+        panel.deleteLater()
+
 
 
 

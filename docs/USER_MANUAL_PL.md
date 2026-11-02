@@ -139,8 +139,8 @@ Prawy panel zawiera parametry i listy:
 
 - **Plik**: otwieranie folderu, wideo i projektu, zapisywanie projektu i szablonów przetwarzania, ostatnie pliki i projekty, zapisywanie wyniku i stosu, czyszczenie stosu, wyjście
 - **Edycja**: cofanie i ponawianie, obrót, odbicie, zmiana rozmiaru, retusz wyniku i retusz plików obrazów
-- **Narzędzia**: przetwarzanie wsadowe, porównanie metod, diagnostyka wyrównania, mapa głębi, mapa pyłu, pasek skali, etykiety
-- **Ustawienia**: ustawienia zaawansowane, akceleracja GPU, motyw, język
+- **Narzędzia**: przetwarzanie wsadowe, porównanie metod, mapa głębi, mapa pyłu, pasek skali, etykiety
+- **Ustawienia**: ustawienia zaawansowane (rejestracja i diagnostyka wyrównania), akceleracja GPU, motyw, język
 - **Pomoc**: informacje o środowisku, opinia, kontakt, przewodnik szybkiego startu, sprawdzanie aktualizacji, instalacja gotowej aktualizacji i folder logów
 
 ---
@@ -355,7 +355,7 @@ Rejestracja usuwa przestrzenne przesunięcie klatek w stosie. Jest niezbędna, g
 
 Raporty wyrównania wskazują odniesienie i wynik każdej klatki. „Wynik zastępczy” oznacza, że metoda nie mogła ustalić wyrównania lub zależy od wcześniejszego nieudanego oszacowania; podana przyczyna odróżnia słabe oszacowania od ruchu poza limitami, gdy jest to znane. Wartości jakości zależą od metody i nie gwarantują dokładności. Przekształcenia mapują współrzędne źródła na płótno odniesienia etapu rejestracji przed wspólnym przycięciem; metody złożone raportują etapy osobno. Homografia i ECC również przyjmują opcjonalny parametr rejestracji `failure_policy="fail"`, aby zatrzymać się po wykryciu błędu. Domyślnie pozostaje `"continue"`; sprawdzaj wyniki nawet przy udanym wyrównaniu.
 
-Aby zbadać render, włącz **Ustawienia → Ustawienia zaawansowane → Rejestracja → Zbieraj diagnostykę wyrównania** i wyrenderuj ponownie. Powoduje to ponowne obliczenie wyrównania zamiast użycia pamięci podręcznej. Podsumowanie zakończenia wyróżnia wyniki zastępcze; otwórz **Narzędzia → Diagnostyka wyrównania**, aby zobaczyć raport dla klatek. Pokazuje dostępne przyczyny niepowodzenia, oceny metody, liczbę dopasowań, klatki odniesienia i przekształcenia. Numery i nazwy odniesień dotyczą oryginalnej listy źródeł, także gdy klatki są wykluczone. Renderowania wsadowe i grupowe nie udostępniają tego raportu.
+Aby zbadać render, włącz **Ustawienia → Ustawienia zaawansowane → Rejestracja → Zbieraj diagnostykę wyrównania** i wyrenderuj ponownie. Powoduje to ponowne obliczenie wyrównania zamiast użycia pamięci podręcznej. Podsumowanie zakończenia wyróżnia wyniki zastępcze; otwórz **Ustawienia → Ustawienia zaawansowane → Rejestracja → Diagnostyka wyrównania**, aby zobaczyć raport dla klatek. Pokazuje dostępne przyczyny niepowodzenia, oceny metody, liczbę dopasowań, klatki odniesienia i przekształcenia. Numery i nazwy odniesień dotyczą oryginalnej listy źródeł, także gdy klatki są wykluczone. Renderowania wsadowe i grupowe nie udostępniają tego raportu.
 
 ### Włączanie rejestracji
 
@@ -788,6 +788,9 @@ Dla wyniku retuszu menu kontekstowe oferuje też **Eksportuj TIFF z warstwami…
 
 ## 14. Interfejs wiersza poleceń
 
+`pip install openfocus` obejmuje model AI, jego wagi oraz dekodowanie HEIC i RAW aparatów.
+Na Pythonie 3.13+ pakiet `dtcwt` jest pomijany, a pozycja DTCWT pozostaje wyłączona z podpowiedzią.
+
 OpenFocus może działać bez interfejsu graficznego — przydatne w potokach skryptowych i CI. Skrypt konsolowy `openfocus` (instalowany przez `pip install openfocus`) i `python main.py` z kopii roboczej udostępniają te same polecenia. Opcje fuzji działają w obu formach; podpolecenia:
 
 ```bash
@@ -887,6 +890,49 @@ openfocus recipe run line.json --dry-run
 
 `recipe create --project project.ofproj --input ./stack --output ./out/fused.tif` przechwytuje ustawienia przetwarzania projektu dla jawnie wybranych wejść; źródła projektu mogą być przeniesione. Przepisy odrzucają tymczasowe opcje, takie jak `--dry-run`, `--resume`, `--json`, `--json-progress` i `--config`, oraz wymagają, aby wyjście znajdowało się poza każdym folderem wejściowym (i różniło się od jawnie wybranego wejścia). Maska defektów jest przechowywana ścieżką względną z odciskiem SHA-256, więc brakująca lub zmieniona maska powoduje błąd uruchomienia. Edycji źródeł projektu (obrót, odbicie, pole płaskie) nie można przechwycić; najpierw wyeksportuj poprawiony stos.
 
+Przechwycenie projektu przenosi do przepisu CLI ustawienia fuzji, rejestracji,
+jasności, kolejności, wyostrzania i kafelków oraz osadza ustawienia dla GUI.
+Wykluczenia klatek, skala ładowania, etykiety i edycje nie są przenoszone —
+przygotuj nowy stos wejściowy odpowiednio. Opcje grupowania można przechwycić
+z argumentów CLI.
+
+Format JSON wersji 1 zawiera `version`, tablicę `input` oraz `output` albo
+`output_dir`, a także obiekt `options`. Ścieżki są względne wobec pliku przepisu;
+przenoś przepis razem z plikami wejściowymi, aby zachować powiązania. Utworzenie
+zapisuje ustawienia CLI i rozwiązane parametry algorytmu. Nieznane pola, nieprawidłowe
+wartości i nieobsługiwane wersje są odrzucane. Próba na sucho sprawdza dane wejściowe
+bez zapisywania wyników. Istniejące pliki projektów pozostają bez zmian.
+
+W interfejsie **Plik → Zapisz szablon przetwarzania** zapisuje ustawienia bez ścieżek
+źródeł. **Plik → Zastosuj szablon przetwarzania** stosuje szablon, projekt lub
+przepis oparty na projekcie do bieżącego stosu, nie zastępując jego wejść,
+przekształceń, wykluczeń ani etykiet. Sam szablon nie jest wykonywalnym przepisem.
+Ustawienia GUI osadzone w przepisie są niezależne od jego opcji CLI; edytując JSON,
+utrzymuj spójność obu zestawów.
+
+Ten sam interfejs headless jest dostępny bez importowania PyQt:
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")  # zweryfikowany słownik ze ścieżkami względnymi
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # False — wykonaj przetwarzanie
+```
+
+`capture_recipe` traktuje swoje argumenty jak zwykłe ścieżki CLI względem bieżącego
+katalogu; `save_recipe` traktuje zapisane ścieżki względem przepisu. Przepis
+zapisuje ustawienia i odwołania, w tym odcisk zawartości jawnie wybranej maski
+defektów sensora. Nie zapisuje pikseli wejściowych, wersji oprogramowania,
+sprzętu ani sum kontrolnych stosu źródłowego; przechowuj je osobno, gdy liczy się
+odtwarzalność. Identyczne ustawienia nie gwarantują identycznych pikseli między
+wersjami oprogramowania, sterownikami i urządzeniami; operacje neuronowe na GPU
+mogą być niedeterministyczne. Użyj `--cpu`, gdy wymagane jest wykonanie na CPU, i
+zachowaj zainstalowane oprogramowanie oraz dane wejściowe.
+
 ### Odtwarzanie punktu kontrolnego retuszu
 
 Pierwszy zapis lub wczytanie weryfikuje bazę i przetworzone źródła w anulowalnej operacji w tle. Zapis odtwarza też zapisane edycje i sprawdza bieżący obraz oraz stan cofania/ponawiania przed opublikowaniem punktu kontrolnego. Jeśli źródło się zmieniło i odtwarzanie już nie pasuje, zapis kończy się błędem i zachowuje edycje. Anulowanie zapisu lub wczytania również pozostawia bieżące edycje dostępne. Jeśli pamięć jest niewystarczająca do weryfikacji lub odtwarzania, operacja zatrzymuje się i pozostawia bez zmian zarówno bieżące edycje, jak i istniejący punkt kontrolny.
@@ -960,7 +1006,7 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 - Upewnij się, że obrazy są prawidłowo wyrównane przed fuzją
 - Wypróbuj inną metodę fuzji
 - Zwiększ rozmiar jądra dla gładszego wyniku
-- Sprawdź **Narzędzia → Diagnostyka wyrównania**, włączając zbieranie w **Ustawienia → Ustawienia zaawansowane → Rejestracja**
+- Sprawdź **Ustawienia → Ustawienia zaawansowane → Rejestracja → Diagnostyka wyrównania**, włączając zbieranie w **Ustawienia → Ustawienia zaawansowane → Rejestracja**
 
 #### AI niedostępne
 
@@ -982,7 +1028,7 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 - Użyj **OpenFocus (szybko)** dla ograniczonego ruchu sztywnego albo włącz **Zatrzymaj przy odrzuconej klatce**, aby zakończyć się błędem wcześniej, zamiast akceptować niewyrównane klatki
 - Zmniejsz szerokość skalowania w **Ustawienia → Ustawienia zaawansowane → Rejestracja**
 - Upewnij się, że obrazy mają wystarczający kontrast i charakterystyczne punkty
-- Włącz **Zbieraj diagnostykę wyrównania**, wyrenderuj ponownie i otwórz **Narzędzia → Diagnostyka wyrównania**, aby zobaczyć problematyczne klatki
+- Włącz **Zbieraj diagnostykę wyrównania**, wyrenderuj ponownie i otwórz **Ustawienia → Ustawienia zaawansowane → Rejestracja → Diagnostyka wyrównania**, aby zobaczyć problematyczne klatki
 
 #### Wolne przetwarzanie
 
