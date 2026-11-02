@@ -1311,3 +1311,10 @@ def test_unavailable_depth_methods_are_disabled_with_a_reason(
     assert dialog.method_combo.itemData(
         dtcwt, Qt.ItemDataRole.ToolTipRole) == trans.t('env_dtcwt_unavailable')
     assert dialog.method_combo.currentData() == "openfocus_b"
+
+    selected, _ = depth_dialog(method="dtcwt")
+    assert selected.method_combo.currentData() == "dtcwt"
+    assert not selected.compute_btn.isEnabled()
+    assert selected.status_lbl.text() == trans.t("env_dtcwt_unavailable")
+    _select(selected.method_combo, "dct")
+    assert selected.compute_btn.isEnabled()

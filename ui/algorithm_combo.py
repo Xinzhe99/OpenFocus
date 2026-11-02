@@ -20,6 +20,7 @@ CATEGORY_KEYS = {
     'transform': 'group_transform_methods',
 }
 
+
 def _package_available(name):
     try:
         return importlib.util.find_spec(name) is not None
