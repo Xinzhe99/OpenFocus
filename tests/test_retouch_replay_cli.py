@@ -58,6 +58,19 @@ def test_replay_preserves_pixels_depth_geometry_mask_and_cursor(replay_case, tmp
     assert np.array_equal(actual[27, 27], actual[0, 0])
 
 
+def test_replay_reports_low_memory_without_overwriting_output(replay_case, tmp_path, monkeypatch):
+    from core import resource_policy
+
+    checkpoint, paths, _ = replay_case
+    output = tmp_path / 'existing.tif'
+    output.write_bytes(b'existing')
+    snapshot = resource_policy.ResourceSnapshot(
+        total_ram=2 * 1024 ** 3, available_ram=1024 ** 3)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda: snapshot)
+    assert _replay(checkpoint, paths, output) == 1
+    assert output.read_bytes() == b'existing'
+
+
 @pytest.mark.parametrize("extension", [".png", ".tif"])
 @pytest.mark.parametrize("profile_kind", ["rgb", "invalid", "missing"])
 def test_replay_exports_base_profile(replay_case, tmp_path, extension, profile_kind):

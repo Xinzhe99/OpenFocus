@@ -152,11 +152,8 @@ def _integer(value, minimum, maximum):
     return value
 
 
-def _replay_checkpoint(doc, path, cancelled=None):
-    if doc.stroke_active:
-        raise ValueError('Finish the current stroke before loading')
-    if not doc.checkpoint_ready:
-        raise ValueError('Checkpoint initialization is unavailable; start a new session')
+def read_checkpoint(path):
+    """Read checkpoint metadata without exceeding the file or memory budget."""
     with open(path, 'rb') as stream:
         size = os.fstat(stream.fileno()).st_size
         if size > MAX_FILE_BYTES:
@@ -168,7 +165,18 @@ def _replay_checkpoint(doc, path, cancelled=None):
     if len(data) > size:
         raise ValueError('Retouch history changed while reading')
     try:
-        record = json.loads(data)
+        return json.loads(data)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError('Invalid retouch checkpoint') from exc
+
+
+def _replay_checkpoint(doc, path, cancelled=None):
+    if doc.stroke_active:
+        raise ValueError('Finish the current stroke before loading')
+    if not doc.checkpoint_ready:
+        raise ValueError('Checkpoint initialization is unavailable; start a new session')
+    record = read_checkpoint(path)
+    try:
         if not isinstance(record, dict) or type(record.get('version')) is not int or record['version'] != 1:
             raise ValueError('Unsupported retouch history version')
         expected = {'base': record['base'], 'frames': record['frames']}

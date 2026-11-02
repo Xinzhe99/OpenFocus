@@ -945,7 +945,7 @@ def _run_retouch_command(argv: List[str]) -> int:
     from core.image_loader import _read_icc_profile
     from core.render_context import RenderContext, SourceFrame
     from utils.retouch import RetouchDocument
-    from utils.retouch_checkpoint import MAX_FILE_BYTES
+    from utils.retouch_checkpoint import read_checkpoint
 
     parser = argparse.ArgumentParser(prog="openfocus retouch")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -968,11 +968,7 @@ def _run_retouch_command(argv: List[str]) -> int:
                     and os.path.exists(path) and os.path.samefile(args.output, path)):
                 raise ValueError("output must not overwrite the checkpoint or an input image")
 
-        with open(args.checkpoint, "rb") as stream:
-            data = stream.read(MAX_FILE_BYTES + 1)
-        if len(data) > MAX_FILE_BYTES:
-            raise ValueError("retouch checkpoint is too large")
-        checkpoint = json.loads(data)
+        checkpoint = read_checkpoint(args.checkpoint)
         records = checkpoint.get("frames") if isinstance(checkpoint, dict) else None
         if not isinstance(records, list) or len(records) != len(args.sources):
             raise ValueError("checkpoint frame count does not match --sources")
@@ -999,13 +995,16 @@ def _run_retouch_command(argv: List[str]) -> int:
                 raise ValueError("invalid checkpoint frame geometry or identity")
             frames.append(SourceFrame(frame_id, os.path.basename(path), image,
                                       offset_x=ox, offset_y=oy, aligned=aligned))
+        del checkpoint, records, record
         context = RenderContext("replay", "replay", (), base.shape[1], base.shape[0],
                                 base.dtype, tuple(frames))
+        from core.resource_policy import require_memory
+        require_memory(2 * base.nbytes)
         document = RetouchDocument(base, context)
         document.initialize_checkpoint()
         document.load_checkpoint(args.checkpoint)
         _save(args.output, document.result(), icc_profile=_read_icc_profile(args.base))
-    except (ValueError, OSError, RuntimeError, TypeError) as exc:
+    except (ValueError, OSError, RuntimeError, TypeError, MemoryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     return EXIT_OK
