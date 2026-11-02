@@ -918,6 +918,20 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 - Starts from a snapshot of the main window settings; batch controls override it.
 - Each folder or split group is processed independently through the same pipeline.
+- **Grouped fusion** is an optional way to process long stacks in multiple-folder
+  mode. Set **Group size** to at least 2 and **Overlap** between 0 and the group
+  size minus 2. A group size of zero disables grouping. The groups are fused in
+  rounds using temporary disk space; the progress display identifies each round. Fusion,
+  exposure matching, base correction and registration use each group's own
+  frames and references, including intermediate rounds, so the result is an
+  approximation of processing the complete stack at once. Original-frame
+  depth, provenance and aligned-frame exports are unavailable. Split-folder
+  mode is not supported.
+- Grouped input must consist of single-frame files with headers readable by
+  Pillow; camera RAW and multipage files are not supported. For the command
+  line, an example is `python main.py --input stack --output fused.png --group-size 8 --group-overlap 1`.
+  Grouped CLI input must be a folder and cannot be combined with `--depth-map`
+  or `--dust-map`.
 - **What lands where, by mode.** With **align only**, the selected destination
   receives one `<stack>_aligned` folder per stack and the output panel lists
   that folder. With **fusion + save aligned**, the fused image is written as

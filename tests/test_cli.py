@@ -83,6 +83,55 @@ def test_batch_output_dir(tmp_path):
     assert sorted(os.listdir(out)) == ["stackA.png", "stackB.png"]
 
 
+def test_grouped_cli_preserves_16_bit_and_reports_progress(tmp_path):
+    import json
+
+    stack = tmp_path / "stack"
+    stack.mkdir()
+    y, x = np.indices((64, 80))
+    for index in range(7):
+        pattern = ((x * 439 + y * 271 + index * 101) % 60000).astype(np.uint16)
+        assert cv2.imwrite(str(stack / f"frame{index}.png"),
+                           np.repeat(pattern[..., None], 3, axis=2))
+    out = tmp_path / "fused.tif"
+    result = run_cli("--input", str(stack), "--output", str(out),
+                     "--method", "guided_filter", "--cpu", "--threads", "1",
+                     "--no-exposure-match", "--group-size", "3",
+                     "--group-overlap", "1", "--json-progress")
+    assert result.returncode == 0, result.stderr
+    fused = cv2.imread(str(out), cv2.IMREAD_UNCHANGED)
+    assert fused is not None and fused.dtype == np.uint16 and fused.shape == (64, 80, 3)
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert any(event.get("event") == "group" for event in events)
+    assert "approximate" in result.stderr and "temporary disk" in result.stderr
+
+
+def test_grouped_cli_rejects_depth_and_nonreducing_overlap(tmp_path):
+    stack = tmp_path / "stack"
+    stack.mkdir()
+    output = tmp_path / "fused.png"
+    depth = run_cli("--input", str(stack), "--output", str(output),
+                    "--method", "guided_filter", "--group-size", "3", "--depth-map")
+    assert depth.returncode == 2 and "original frame indices" in depth.stderr
+    overlap = run_cli("--input", str(stack), "--output", str(output),
+                      "--group-size", "3", "--group-overlap", "2")
+    assert overlap.returncode == 2 and "group-overlap" in overlap.stderr
+
+
+def test_grouped_cli_batch_processes_each_folder(tmp_path):
+    folders = [tmp_path / "a", tmp_path / "b"]
+    for folder in folders:
+        folder.mkdir()
+        _write_stack(folder, n=5)
+    output = tmp_path / "results"
+    result = run_cli("--input", *(str(folder) for folder in folders),
+                     "--output-dir", str(output), "--method", "guided_filter",
+                     "--cpu", "--threads", "1", "--group-size", "3")
+    assert result.returncode == 0, result.stderr
+    for name in ("a.png", "b.png"):
+        image = cv2.imread(str(output / name), cv2.IMREAD_UNCHANGED)
+        assert image is not None and image.dtype == np.uint8
+
 def test_batch_no_folders_exit_code(tmp_path):
     r = run_cli("--input", str(tmp_path / "nofolder"), "--output-dir", str(tmp_path / "out"))
     assert r.returncode == 2

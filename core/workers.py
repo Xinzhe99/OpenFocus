@@ -616,32 +616,53 @@ class BatchImportWorker(QThread):
                     self.folders_loaded.emit([])
 
     def _load_thumbnails(self):
+        from core.image_loader import decode_image
+        from utils.sorting import natural_sort_key
         loader = self._loader()
         results = []
         failed = False
         for folder in self.folder_paths:
             if self.is_cancelled:
                 break
-            with log_operation("batch_import_folder", folder=folder, scale_factor=self.scale_factor,
-                               thread_count=self.thread_count,
-                               resource_preference=self.resource_preference) as operation:
-                ok, _message, images, _names = loader.load_from_folder(
-                    folder, scale_factor=self.scale_factor,
-                    thread_count=self.thread_count,
-                    resource_preference=self.resource_preference)
-                logger.info("batch import decoded %s", frame_details(images))
-                # A decoder can return usable frames alongside failed files;
-                # preserve its thumbnail while recording the partial failure.
-                if self.is_cancelled:
-                    operation.cancel()
-                elif not ok or getattr(loader, 'failed_count', 0):
-                    operation.fail()
-                    failed = True
-                    logger.error("batch folder import failed: %s", _message)
-                first = images[0] if ok and images else None
+            try:
+                files = [(name, os.path.join(folder, name)) for name in os.listdir(folder)
+                         if os.path.splitext(name)[1].lower() in loader.SUPPORTED_FORMATS]
+                files = loader._drop_derived_aligned_copies(files)
+                files.sort(key=lambda item: natural_sort_key(item[0]))
+                first = None
+                for _, path in files:
+                    if self.is_cancelled:
+                        break
+                    from PIL import Image
+                    try:
+                        with Image.open(path) as header:
+                            width, height = header.size
+                        require_memory(width * height * 16 + os.path.getsize(path))
+                    except (OSError, ValueError):
+                        # Match the existing serial loader for formats whose
+                        # dimensions cannot be inspected without decoding (RAW,
+                        # for example). Only one source is decoded at a time.
+                        pass
+                    try:
+                        first = decode_image(path)
+                    except Exception:
+                        logger.exception('batch thumbnail decode failed: %s', path)
+                    if first is not None:
+                        if 0 < self.scale_factor < 1.0:
+                            first = cv2.resize(first, None, fx=self.scale_factor, fy=self.scale_factor,
+                                               interpolation=cv2.INTER_AREA)
+                        height, width = first.shape[:2]
+                        ratio = min(1.0, 60.0 / max(height, width))
+                        if ratio < 1.0:
+                            first = cv2.resize(first, (max(1, round(width * ratio)), max(1, round(height * ratio))),
+                                               interpolation=cv2.INTER_AREA)
+                        break
                 results.append((folder, first))
-                # Release the rest of the stack before the next folder.
-                del images
+                failed |= first is None
+            except Exception:
+                logger.exception('batch folder thumbnail failed: %s', folder)
+                results.append((folder, None))
+                failed = True
         if not self.is_cancelled:
             self.folders_loaded.emit(results)
         return not failed
@@ -786,6 +807,8 @@ class BatchWorker(QThread):
                            tile_overlap=self.tile_overlap, tile_threshold=self.tile_threshold,
                            ai_batch_size=self.ai_batch_size, exposure_match=self.exposure_match) as operation:
             try:
+                if self.processing_settings.get('group_size', 0) and self.import_mode != 'multiple_folders':
+                    raise ValueError('Grouped fusion supports multiple folder mode only; split mode preloads frames')
                 split = self.import_mode == 'single_folder'
                 if split:
                     stacks = self._split_images_for_processing()
@@ -807,6 +830,7 @@ class BatchWorker(QThread):
                         continue
                     self._task_artifacts = task['artifacts']
                     self._task_failures = task['failures']
+                    self._task_progress = (index, total)
                     self.progress_updated.emit(index, total, trans_batch_progress(index + 1, total, name))
                     with log_operation("batch_folder", task_name=name, folder=source if split else data,
                                        index=index, total=total) as folder_operation:
@@ -1004,6 +1028,8 @@ class BatchWorker(QThread):
 
     def process_single_folder(self, folder_path):
         """Both entry points share the same registration/fusion/write pipeline."""
+        if self.processing_settings.get('group_size', 0):
+            return self._process_grouped_folder(folder_path)
         scale = float(self.processing_settings.get('load_scale_factor', 1.0))
         self.image_loader.should_cancel = lambda: self.is_cancelled
         success, message, images, filenames = self.image_loader.load_from_folder(
@@ -1022,6 +1048,91 @@ class BatchWorker(QThread):
                    for name, image in zip(filenames, images)]
         self._process_single_stack(entries, self._get_output_path_for_single_folder(folder_path),
                                    os.path.basename(os.path.normpath(folder_path)), 0)
+
+    def _process_grouped_folder(self, folder_path):
+        from core.grouped_fusion import grouped_fuse
+        from core.image_loader import _read_exif_bytes, common_icc_profile
+        from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+        from utils.scalebar import detect_px_size_um
+        from utils.sorting import natural_sort_key
+
+        settings = self.processing_settings
+        size = settings.get('group_size', 0)
+        overlap = settings.get('group_overlap', 0)
+        method = settings.get('fusion_method')
+        if not isinstance(size, int) or isinstance(size, bool) or size < 2:
+            raise ValueError('Grouped fusion requires group size at least 2')
+        if not isinstance(overlap, int) or isinstance(overlap, bool) or not 0 <= overlap <= size - 2:
+            raise ValueError('Grouped fusion overlap must be between 0 and group size minus 2')
+        if not method or method == 'none':
+            raise ValueError('Grouped fusion requires a fusion method')
+        if settings.get('save_aligned'):
+            raise ValueError('Grouped fusion cannot export aligned frames')
+        if any(settings.get(key) for key in ('depth_map', 'provenance', 'save_depth', 'save_provenance')):
+            raise ValueError('Grouped fusion cannot export original-frame depth or provenance')
+        runtime = self.runtime_settings
+        if not os.path.isdir(folder_path):
+            raise ValueError('Selected path is not a valid directory')
+        files = [(name, os.path.join(folder_path, name)) for name in os.listdir(folder_path)
+                 if os.path.splitext(name)[1].lower() in self.image_loader.SUPPORTED_FORMATS]
+        files = self.image_loader._drop_derived_aligned_copies(files)
+        files.sort(key=lambda item: natural_sort_key(item[0]))
+        paths = [path for _, path in files]
+        if len(paths) < 2:
+            raise ValueError('Fusion requires at least two frames')
+        self._source_exif = _read_exif_bytes(paths[0])
+        self._source_icc_profile = common_icc_profile(paths)
+        self.image_loader.px_size_um = detect_px_size_um(paths[0])
+        sort_mode = runtime.get('sort_mode', 'asc')
+        if sort_mode == 'desc' and get_fusion(method).sort_frames:
+            paths.reverse()
+            sort_mode = 'asc'
+        params = resolve_fusion_parameters(method, settings.get('fusion_params'))
+        alignment = settings.get('alignment', settings.get('reg_methods', ()))
+        tile_kwargs = {
+            'tile_enabled': self.tile_enabled if self.tile_enabled is not None else True,
+            'tile_block_size': self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE,
+            'tile_overlap': self.tile_overlap if self.tile_overlap is not None else TILE_OVERLAP,
+            'tile_threshold': self.tile_threshold if self.tile_threshold is not None else TILE_THRESHOLD,
+            'ai_batch_size': self.ai_batch_size,
+        }
+        for key in tile_kwargs:
+            if runtime.get(key) is not None:
+                tile_kwargs[key] = runtime[key]
+        fusion = MultiFocusFusion(algorithm=method, fusion_parameters=params, use_gpu=self.use_gpu,
+            resource_preference=self.resource_preference, base_frame=runtime.get('base_frame', 'none'),
+            sort_mode=sort_mode, exposure_match=self.exposure_match, **tile_kwargs)
+
+        def fuse_group(images):
+            if alignment_steps(alignment):
+                registration = ImageRegistration(method=alignment, parameters=self.registration_parameters,
+                    downscale_width=self._registration_width(images),
+                    brightness_reference='last' if self.exposure_match else 'first', use_gpu=False)
+                images = registration.process(images, thread_count=self.thread_count,
+                    resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled)
+            if any(image.dtype == np.uint16 for image in images):
+                require_memory(sum(image.size * 4 for image in images if image.dtype != np.float32)
+                               + max(image.size * 4 for image in images if image.dtype == np.uint16))
+            fusion_input, is_16bit = normalize_fuse_input(list(images))
+            result = self._fuse_one_stack(fusion, method, fusion_input, params)
+            return quantize_fuse_output(result, is_16bit)
+
+        from locales import trans
+        def progress(stage, completed, total):
+            task_index, task_total = getattr(self, '_task_progress', (0, 1))
+            self.progress_updated.emit(task_index, task_total, trans.t('batch_group_progress').format(
+                stage=stage, completed=completed, total=total))
+
+        result = grouped_fuse(paths, size, overlap, fuse_group,
+            scale_factor=float(settings.get('load_scale_factor', 1.0)), thread_count=self.thread_count,
+            resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled,
+            progress=progress)
+        output_format = settings.get('format', 'png').lstrip('.').lower()
+        name = os.path.basename(os.path.normpath(folder_path))
+        output = os.path.join(self._get_output_path_for_single_folder(folder_path), f'{name}.{output_format}')
+        if not self._save_image(output, result, output_format, scale_cfg=self._stack_scale_cfg()):
+            raise OSError(f'No files were written for {name}')
+        self.written_paths.append(self._task_artifacts[-1])
 
     def _get_output_path_for_single_folder(self, source_folder_path):
         if self.output_type == 'subfolder':

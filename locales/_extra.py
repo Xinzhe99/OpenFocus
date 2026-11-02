@@ -12,6 +12,14 @@ This file is generated wholesale; edit values in place, not by patching.
 
 EXTRA_TRANSLATIONS = {
     "ja": {
+        'batch_group_size': 'グループサイズ:',
+        'batch_group_overlap': '重なり:',
+        'batch_group_disabled': '無効',
+        'batch_group_hint': 'グループ融合には一時ディスク領域が必要です。Pillow がヘッダーを読める単一フレームのみ対応し、RAW は非対応です。結果と位置合わせは近似で、深度・出典・位置合わせ済み画像は出力できません。',
+        'batch_group_split_error': 'グループ融合には複数フォルダー方式が必要です。分割方式は全画像を読み込みます。',
+        'batch_group_range_error': 'サイズは2以上、重なりはサイズから2を引いた数以下にしてください。',
+        'batch_group_output_error': '融合方式を選び、位置合わせ済み画像の保存を無効にしてください。',
+        'batch_group_progress': 'グループ段階 {stage}: {completed} / {total}',
         "label_outputs_all": "すべての出力結果",
         "label_range_current": "現在のフレーム",
         "label_range_custom": "範囲を指定",
@@ -940,6 +948,14 @@ EXTRA_TRANSLATIONS = {
         "scalebar_text_align": "テキスト配置",
     },
     "es": {
+        'batch_group_size': 'Tamaño del grupo:',
+        'batch_group_overlap': 'Solapamiento:',
+        'batch_group_disabled': 'Desactivado',
+        'batch_group_hint': 'La fusión por grupos usa disco temporal. Solo archivos de una imagen con cabeceras legibles por Pillow, sin RAW. Resultado y registro aproximados; sin profundidad, procedencia ni imágenes alineadas.',
+        'batch_group_split_error': 'La fusión por grupos requiere varias carpetas; la división precarga la pila.',
+        'batch_group_range_error': 'Tamaño mínimo 2; solapamiento máximo tamaño menos 2.',
+        'batch_group_output_error': 'Elija un método de fusión y desactive la exportación de imágenes alineadas.',
+        'batch_group_progress': 'Etapa de grupos {stage}: {completed} / {total}',
         "label_outputs_all": "Todos los resultados",
         "label_range_current": "Fotograma actual",
         "label_range_custom": "Rango personalizado",

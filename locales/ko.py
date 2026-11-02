@@ -1,6 +1,14 @@
 """Korean language pack for OpenFocus."""
 
 PACK = {
+    'batch_group_size': '그룹 크기:',
+    'batch_group_overlap': '겹침:',
+    'batch_group_disabled': '사용 안 함',
+    'batch_group_hint': '그룹 합성에는 임시 디스크 공간이 필요합니다. Pillow가 헤더를 읽을 수 있는 단일 프레임 파일만 지원하며 RAW는 지원하지 않습니다. 결과와 정렬은 근사치이며 깊이, 출처 및 정렬 프레임은 제공되지 않습니다.',
+    'batch_group_split_error': '그룹 합성은 여러 폴더 모드가 필요합니다. 분할 모드는 스택을 미리 읽습니다.',
+    'batch_group_range_error': '그룹 크기는 2 이상, 겹침은 그룹 크기보다 2 이상 작아야 합니다.',
+    'batch_group_output_error': '합성 방법을 선택하고 정렬된 프레임 저장을 끄세요.',
+    'batch_group_progress': '그룹 단계 {stage}: {completed} / {total}',
     "label_outputs_all": "모든 출력 결과",
     "label_range_current": "현재 프레임",
     "label_range_custom": "사용자 지정 범위",

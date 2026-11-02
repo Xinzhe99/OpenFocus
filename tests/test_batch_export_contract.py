@@ -435,3 +435,117 @@ def test_baked_output_stays_saved_when_workspace_annotations_change(qapp, tmp_pa
     window.output_manager.refresh_annotation_export_state()
     assert record.exported and not record.changed_since_export
     np.testing.assert_array_equal(_read_image_any(str(tmp_path / 'batch.png')), record.image)
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_grouped_batch_registers_each_round_without_loading_stack(qapp, tmp_path, monkeypatch, reverse):
+    import core.grouped_fusion as grouped
+    import core.workers as workers
+
+    source = make_stack(tmp_path / 'stack', ('img10.png', 'img2.png', 'img1.png'), np.uint8)
+    registered = []
+    stages = []
+
+    class Registration:
+        def __init__(self, **kwargs):
+            pass
+
+        def process(self, images, **kwargs):
+            assert not kwargs['should_cancel']()
+            registered.append(len(images))
+            return images
+
+    def grouped_fuse(paths, size, overlap, fuse_group, **kwargs):
+        expected = ['img1.png', 'img2.png', 'img10.png']
+        assert [Path(path).name for path in paths] == (expected[::-1] if reverse else expected)
+        assert (size, overlap) == (3, 1)
+        image = np.full((12, 16, 3), 50, np.uint8)
+        first = fuse_group([image, image])
+        result = fuse_group([first, first])
+        kwargs['progress'](2, 1, 1)
+        return result
+
+    monkeypatch.setattr(workers, 'ImageRegistration', Registration)
+    monkeypatch.setattr(grouped, 'grouped_fuse', grouped_fuse)
+    monkeypatch.setattr(ImageStackLoader, 'load_from_folder', lambda *a, **kw: pytest.fail('preloaded stack'))
+    monkeypatch.setattr(BatchWorker, '_fuse_one_stack', lambda self, fusion, method, images, params: images[0])
+    settings = {'format': 'png', 'fusion_method': 'openfocus_a', 'alignment': 'openfocus',
+                'save_aligned': False, 'group_size': 3, 'group_overlap': 1,
+                'runtime_settings': {'sort_mode': 'desc' if reverse else 'asc'}}
+    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'), settings, use_gpu=False)
+    result = {}
+    worker.progress_updated.connect(lambda done, total, text: stages.append(text))
+    worker.finished.connect(result.update)
+    worker.run()
+    assert result['counts']['success'] == 1
+    assert registered == [2, 2]
+    assert result['aligned_stacks'] == []
+    assert len(result['outputs']) == 1
+    assert any('2' in text and '1 / 1' in text for text in stages)
+
+
+def test_grouped_batch_rejects_split_and_aligned_export(qapp, tmp_path):
+    settings = {'fusion_method': 'openfocus_a', 'group_size': 2, 'group_overlap': 0,
+                'save_aligned': True}
+    worker = BatchWorker([], 'custom', str(tmp_path), settings, import_mode='single_folder')
+    errors = []
+    worker.error.connect(errors.append)
+    worker.run()
+    assert errors and 'split mode' in errors[0]
+
+    source = make_stack(tmp_path / 'stack', dtype=np.uint8)
+    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'), settings)
+    result = {}
+    worker.finished.connect(result.update)
+    worker.run()
+    assert result['counts']['failed'] == 1
+    assert 'aligned' in result['failed'][0]
+
+
+def test_batch_thumbnail_decodes_only_first_readable_image(qapp, tmp_path, monkeypatch):
+    import core.image_loader as loader
+    from core.workers import BatchImportWorker
+
+    source = make_stack(tmp_path / 'stack', ('img1.png', 'img2.png', 'img3.png'), np.uint8)
+    decoded = []
+    original = loader.decode_image
+    def decode(path):
+        decoded.append(Path(path).name)
+        return original(path)
+    monkeypatch.setattr(loader, 'decode_image', decode)
+    monkeypatch.setattr(ImageStackLoader, 'load_from_folder', lambda *a, **kw: pytest.fail('preloaded stack'))
+    worker = BatchImportWorker('thumbnails', folder_paths=[str(source)])
+    results = []
+    worker.folders_loaded.connect(results.extend)
+    worker.run()
+    assert decoded == ['img1.png']
+    assert results[0][0] == str(source) and results[0][1] is not None
+
+
+def test_grouped_batch_cancellation_is_reported(qapp, tmp_path, monkeypatch):
+    import core.grouped_fusion as grouped
+    import core.workers as workers
+    from core.registration import RegistrationCancelled
+
+    source = make_stack(tmp_path / 'stack', dtype=np.uint8)
+    class Registration:
+        def __init__(self, **kwargs):
+            pass
+        def process(self, images, **kwargs):
+            worker.cancel()
+            assert kwargs['should_cancel']()
+            raise RegistrationCancelled()
+    def cancel_during_group(paths, size, overlap, fuse_group, **kwargs):
+        assert not kwargs['should_cancel']()
+        image = np.full((12, 16, 3), 50, np.uint8)
+        return fuse_group([image, image])
+    monkeypatch.setattr(workers, 'ImageRegistration', Registration)
+    monkeypatch.setattr(grouped, 'grouped_fuse', cancel_during_group)
+    settings = {'fusion_method': 'openfocus_a', 'alignment': 'openfocus',
+                'group_size': 2, 'group_overlap': 0}
+    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'), settings)
+    result = {}
+    worker.finished.connect(result.update)
+    worker.run()
+    assert result['cancelled'] and result['counts']['cancelled'] == 1
+    assert not result['outputs']

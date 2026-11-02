@@ -5,6 +5,14 @@ fall back to this table.
 """
 
 ZH = {
+    'batch_group_size': '每组帧数：',
+    'batch_group_overlap': '重叠帧数：',
+    'batch_group_disabled': '关闭',
+    'batch_group_hint': '分轮融合并使用临时磁盘空间。仅支持 Pillow 可读取文件头的单帧文件，不支持相机 RAW 或多页文件。结果和配准参考为近似值；不能导出原始帧深度、来源或对齐帧。',
+    'batch_group_split_error': '分组融合仅支持多文件夹模式，拆分模式会预加载图像栈。',
+    'batch_group_range_error': '每组至少 2 帧，重叠数最多为组大小减 2。',
+    'batch_group_output_error': '分组融合需要选择融合方法，且不能保存对齐帧。',
+    'batch_group_progress': '分组阶段 {stage}：{completed} / {total}',
     "label_outputs_all": "所有输出结果",
     "label_range_current": "当前帧",
     "label_range_custom": "自定义范围",

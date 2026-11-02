@@ -1,6 +1,14 @@
 """Portuguese (Brazil) language pack for OpenFocus."""
 
 PACK = {
+    'batch_group_size': 'Tamanho do grupo:',
+    'batch_group_overlap': 'Sobreposição:',
+    'batch_group_disabled': 'Desativado',
+    'batch_group_hint': 'A fusão em grupos usa disco temporário. Apenas arquivos de uma imagem com cabeçalhos legíveis pelo Pillow, sem RAW. Resultado e registro aproximados; sem profundidade, proveniência ou imagens alinhadas.',
+    'batch_group_split_error': 'A fusão em grupos requer várias pastas; a divisão pré-carrega a pilha.',
+    'batch_group_range_error': 'Tamanho mínimo 2; sobreposição máxima tamanho menos 2.',
+    'batch_group_output_error': 'Escolha um método de fusão e desative a exportação de imagens alinhadas.',
+    'batch_group_progress': 'Etapa de grupos {stage}: {completed} / {total}',
     "label_outputs_all": "Todos os resultados",
     "label_range_current": "Quadro atual",
     "label_range_custom": "Intervalo personalizado",

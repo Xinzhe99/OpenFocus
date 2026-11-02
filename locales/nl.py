@@ -1,6 +1,14 @@
 """Dutch language pack for OpenFocus."""
 
 PACK = {
+    'batch_group_size': 'Groepsgrootte:',
+    'batch_group_overlap': 'Overlap:',
+    'batch_group_disabled': 'Uit',
+    'batch_group_hint': 'Groepsfusie gebruikt tijdelijke schijfruimte. Alleen bestanden met één beeld en een door Pillow leesbare header; geen camera-RAW. Resultaat en registratie zijn benaderingen; geen diepte, herkomst of uitgelijnde beelden.',
+    'batch_group_split_error': 'Groepsfusie vereist meerdere mappen; splitsen laadt de stapel vooraf.',
+    'batch_group_range_error': 'Groepsgrootte minimaal 2; overlap maximaal groepsgrootte min 2.',
+    'batch_group_output_error': 'Kies een fusiemethode en schakel export van uitgelijnde beelden uit.',
+    'batch_group_progress': 'Groepsfase {stage}: {completed} / {total}',
     "label_outputs_all": "Alle uitvoerresultaten",
     "label_range_current": "Huidig beeld",
     "label_range_custom": "Aangepast bereik",

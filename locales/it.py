@@ -1,6 +1,14 @@
 """Italian language pack for OpenFocus."""
 
 PACK = {
+    'batch_group_size': 'Dimensione gruppo:',
+    'batch_group_overlap': 'Sovrapposizione:',
+    'batch_group_disabled': 'Disattivato',
+    'batch_group_hint': 'La fusione a gruppi usa disco temporaneo. Solo file a immagine singola con intestazioni leggibili da Pillow, non RAW. Risultato e registrazione sono approssimati; profondità, provenienza e immagini allineate non disponibili.',
+    'batch_group_split_error': 'La fusione a gruppi richiede più cartelle; la divisione precarica la pila.',
+    'batch_group_range_error': 'Dimensione almeno 2; sovrapposizione al massimo dimensione meno 2.',
+    'batch_group_output_error': 'Seleziona un metodo di fusione e disattiva il salvataggio delle immagini allineate.',
+    'batch_group_progress': 'Fase gruppi {stage}: {completed} / {total}',
     "label_outputs_all": "Tutti i risultati",
     "label_range_current": "Fotogramma attuale",
     "label_range_custom": "Intervallo personalizzato",

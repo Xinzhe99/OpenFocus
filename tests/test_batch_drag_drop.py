@@ -157,3 +157,54 @@ def test_dropping_the_same_folder_twice_keeps_one_row(qapp, tmp_path):
         dialog.close()
         dialog.deleteLater()
         qapp.processEvents()
+
+
+@pytest.mark.parametrize('enable_first', [False, True])
+def test_grouped_folder_selection_keeps_bounded_previews(qapp, tmp_path, monkeypatch, enable_first):
+    from dialogs.batch import BatchProcessingDialog
+    import core.image_loader as loader
+
+    folders = _make_stacks(tmp_path, count=1, frames=4)
+    decoded = []
+    original = loader.decode_image
+    def decode(path):
+        decoded.append(path)
+        return original(path)
+    monkeypatch.setattr(loader, 'decode_image', decode)
+    dialog = BatchProcessingDialog(None)
+    try:
+        if enable_first:
+            dialog.group_size_spin.setValue(4)
+        dialog.add_folders_to_list(folders)
+        _wait_import(dialog, qapp)
+        if not enable_first:
+            dialog.group_size_spin.setValue(4)
+        assert len(decoded) == 1
+        assert not dialog.folder_list.item(0).icon().isNull()
+        assert dialog.get_processing_settings()['group_size'] == 4
+        assert dialog.group_overlap_spin.value() == 1
+        dialog.group_size_spin.setValue(2)
+        assert dialog.group_overlap_spin.value() == 0
+        dialog.group_size_spin.setValue(4)
+        assert dialog.group_overlap_spin.value() == 1
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
+
+
+def test_grouped_split_import_is_rejected_before_decoding(qapp, monkeypatch):
+    from dialogs.batch import BatchProcessingDialog
+    from PyQt6.QtWidgets import QMessageBox
+
+    messages = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: messages.append(args))
+    dialog = BatchProcessingDialog(None)
+    try:
+        dialog.group_size_spin.setValue(4)
+        assert not dialog._start_import('stack', folder_path='unused')
+        assert messages and not dialog._import_busy
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        qapp.processEvents()
