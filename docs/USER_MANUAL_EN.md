@@ -53,8 +53,8 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
   installs and the Windows/macOS builds bundle
 
 Transparent PNG stacks can be fused in the desktop application, desktop batch
-processing, or the command-line interface. Every frame must be an 8-bit or
-16-bit PNG of the same dimensions and bit depth, with the same alpha mask.
+processing, or the command-line interface, without grouped fusion. Every frame
+must be an 8-bit or 16-bit PNG of the same dimensions and bit depth, with the same alpha mask.
 The mask must be zero outside one nonempty rectangle and have one constant,
 nonzero opacity throughout the rectangle. Partially transparent constant
 opacity is allowed. The visible rectangle is fused independently, so hidden
@@ -63,12 +63,12 @@ retains the original canvas size and opacity; hidden output colors are zero.
 Desktop source and result views show transparency against a checkerboard.
 
 Load at full size, choose no alignment, turn off Quick Preview and ROI, then
-render and save as PNG. Batch uses the same restrictions and requires PNG
-output without saving an aligned stack. Alignment, downsampling, dust
-correction, depth maps, comparison, retouching, labels and scale bars are not
-supported for transparent data. A fusion method that changes the rectangle's
-dimensions is rejected. Varying or feathered masks, different frame masks,
-transparent TIFF input and non-PNG output are not supported.
+render and save as PNG. Batch requires a fusion method and PNG output without
+saving an aligned stack. Alignment, resizing or downsampling, dust correction,
+depth maps, comparison, retouching, labels and scale bars are not supported for
+transparent data. A fusion method that changes the rectangle's dimensions is
+rejected. Varying or feathered masks, different frame masks, transparent TIFF
+input and non-PNG output, including GIF and multi-page TIFF, are unsupported.
 
 For example, the CLI equivalent is `python main.py --input ./png-stack
 --output ./result.png --method guided_filter --align none`.
@@ -1027,13 +1027,14 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 - Each folder or split group is processed independently through the same pipeline.
 - **Grouped fusion** is an optional way to process long stacks in multiple-folder
   mode. Set **Group size** to at least 2 and **Overlap** between 0 and the group
-  size minus 2. A group size of zero disables grouping. The groups are fused in
-  rounds using temporary disk space; the progress display identifies each round. Fusion,
-  exposure matching, base correction and registration use each group's own
-  frames and references, including intermediate rounds, so the result is an
-  approximation of processing the complete stack at once. Original-frame
-  depth, provenance and aligned-frame exports are unavailable. Split-folder
-  mode is not supported.
+  size minus 2. A group size of zero disables grouping. The desktop overlap
+  starts at 1 and is limited to the allowed range when the size changes. Groups
+  are fused in rounds using temporary disk space; the progress display identifies
+  each round. Fusion, exposure matching, base correction and registration use
+  each group's own frames and references, including intermediate rounds, so the
+  result approximates processing the complete stack at once. Grouping requires a
+  fusion method; original-frame depth, provenance and aligned-frame exports are
+  unavailable. Split-folder mode is not supported.
   Registered groups use their first frame as the coordinate reference. Each
   registration removes a conservative border for interpolation, and later
   rounds intersect the surviving rectangles, including any single-frame tail.
@@ -1048,10 +1049,9 @@ The batch dialog shows real-time progress. You can cancel processing at any time
   dry runs check these restrictions. For the command
   line, an example is `python main.py --input stack --output fused.png --group-size 8 --group-overlap 1`.
   Grouped CLI input must be a folder and cannot be combined with `--depth-map`.
-  Each group uses its own first alignment reference; a different stack-wide
-  OpenFocus reference cannot be combined with grouping. A flat-field reference
-  is applied to original frames before registration; output sharpening is
-  applied once after the final group.
+  A different stack-wide OpenFocus alignment reference cannot be combined with
+  grouping. A flat-field reference is applied to original frames before
+  registration; output sharpening is applied once after the final group.
 - **What lands where, by mode.** With **align only**, the selected destination
   receives one `<stack>_aligned` folder per stack and the output panel lists
   that folder. With **fusion + save aligned**, the fused image is written as
@@ -1125,7 +1125,7 @@ OpenFocus can run without the GUI — useful for scripted pipelines and CI.
 From a Python environment (or next to the packaged executable):
 
 ```bash
-# Fuse a folder with the default Guided Filter
+# Fuse a folder with the default AI method
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT with ECC registration, 8 threads
@@ -1162,6 +1162,8 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--downscale` | Registration feature-detection downscale width |
 | `--tile-size` | Tile block size for large images |
 | `--output-dir, -d` | Batch mode: fuse every input folder, writing `<folder>.png` per stack |
+| `--group-size` | Fuse a folder in groups of this many frames; `0` disables grouping (default) |
+| `--group-overlap` | Frames shared by consecutive groups; default `0`, at most group size minus 2 |
 | `--scale-bar` | Draw a scale bar (calibration auto-detected from TIFF metadata) |
 | `--depth-map [path]` | Also save a colorized focus-position (depth) map (default: `<output>_depth.png`) |
 | `--depth-colormap` | Colormap for `--depth-map`: turbo, viridis, jet, gray, … (default turbo) |

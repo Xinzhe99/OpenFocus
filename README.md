@@ -164,7 +164,8 @@ a source-frame slider, soft brush, restore brush, whole-stroke undo and a
 
 Point it at a folder of stacks, choose a method and a destination, and walk
 away. Align-only runs write one folder per stack; fusion runs write the fused
-image and list exactly that.
+image and list exactly that. Optional grouped fusion trades exact whole-stack
+equivalence for bounded group memory and temporary disk space.
 
 </td>
 <td width="54%">
@@ -240,6 +241,8 @@ starts with the desktop app.
 - **Color profiles** — single-image PNG, TIFF, JPEG and WebP exports retain
   a shared RGB ICC profile when every source frame has the same profile. Mixed
   or untagged stacks have no profile attached; pixels are not color-converted.
+- **Transparent PNG** — stacks with matching rectangular constant-opacity masks
+  can be fused at full size and saved as PNG. See the manual for restrictions.
 - **Headless CLI** — the same pipeline as `openfocus`, with batch mode,
   `--dry-run`, `--resume` and JSON output for scripting.
 - **Agent-drivable** — a token-protected local channel drives the live GUI
@@ -307,7 +310,7 @@ fields, invalid values and unsupported versions are rejected. A dry run checks
 the input without writing result files. Existing project files remain unchanged.
 
 To capture settings from an existing `.ofproj`, explicitly select the new input
-and output. The project must still be able to resolve its original sources:
+and output. Original project sources need not be present to extract settings:
 
 ```bash
 openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
@@ -318,6 +321,9 @@ settings into the CLI recipe, and embeds the processing settings for the GUI.
 Frame exclusions, load scaling, labels and edits are not transferred; prepare
 the new input stack accordingly. Projects with source transforms, including
 applied flat-field corrections, must first export their corrected source stack.
+Recipes require outputs outside their input folders and never accept an input
+file as the output. Grouping options can be captured from CLI arguments.
+
 In the GUI, File → Save
 Processing Template saves settings without source paths. File → Apply Processing
 Template applies a template, project, or project-backed recipe to the current
