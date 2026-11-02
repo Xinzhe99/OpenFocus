@@ -12,6 +12,7 @@ dialog open.
 from __future__ import annotations
 
 import os
+import weakref
 
 import cv2
 import numpy as np
@@ -30,6 +31,16 @@ from utils.image_utils import thumbnail_bgr, to_display_uint8
 from utils.retouch import RetouchDocument, adjust_tones
 
 _SHARPNESS_WORKERS = set()
+
+def _release_dialog_buffers(dialog_ref):
+    """Drop large Python-owned buffers even if a Qt callback retains the wrapper."""
+    dialog = dialog_ref()
+    if dialog is None:
+        return
+    for name in ("doc", "record", "_source_qimage", "_pure_source_qimage",
+                 "_source_display", "_before_qimage", "_result_display",
+                 "_result_qimage", "_sharpness_maps"):
+        setattr(dialog, name, None)
 
 
 def _qimage_from_bgr(bgr8: np.ndarray, copy: bool = True) -> QImage:
@@ -545,6 +556,8 @@ class RetouchDialog(QDialog):
         self.finished.connect(lambda _result: self._save_geometry())
         self.finished.connect(self._shutdown_sharpness)
         self.finished.connect(self.deleteLater)
+        self.destroyed.connect(
+            lambda _object=None, ref=weakref.ref(self): _release_dialog_buffers(ref))
 
     # ------------------------------------------------------------- build
     def _build_ui(self) -> None:
@@ -1532,8 +1545,13 @@ class RetouchDialog(QDialog):
         worker.failed.connect(self._on_sharpness_failed)
         _SHARPNESS_WORKERS.add(worker)
         worker.finished.connect(lambda w=worker: _SHARPNESS_WORKERS.discard(w))
-        self._sharpness_finished_callback = (
-            lambda req=self._sharpness_request: self._on_sharpness_finished(req))
+        dialog_ref = weakref.ref(self)
+        request = self._sharpness_request
+        def finished():
+            dialog = dialog_ref()
+            if dialog is not None and not dialog._closing:
+                dialog._on_sharpness_finished(request)
+        self._sharpness_finished_callback = finished
         worker.finished.connect(self._sharpness_finished_callback)
         worker.finished.connect(worker.deleteLater)
         worker.start()
@@ -1751,7 +1769,7 @@ class RetouchDialog(QDialog):
                 if not self._source_ready:
                     self._select_frame(self.doc.frame_index, initial=True)
         finally:
-            self._closing = False
+            self._closing = event.isAccepted()
 
     def changeEvent(self, event) -> None:
         if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():

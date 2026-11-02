@@ -462,6 +462,8 @@ def test_closed_parented_dialog_releases_document_without_deleting_worker(qapp, 
     record = OutputRecord.create(image, "result", context=_context([image], image))
     dialog = RetouchDialog(parent, record=record, apply_callback=lambda *_: (True, ""))
     document = weakref.ref(dialog.doc)
+    working = weakref.ref(dialog.doc.working)
+    base = weakref.ref(dialog.doc.base)
     dialog.show()
     qapp.processEvents()
     dialog._start_sharpness_worker()
@@ -477,6 +479,8 @@ def test_closed_parented_dialog_releases_document_without_deleting_worker(qapp, 
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         assert sip.isdeleted(dialog)
         assert worker.isRunning() and not sip.isdeleted(worker)
+        assert document() is None
+        assert working() is None and base() is None
         del dialog
         gc.collect()
         assert document() is None
