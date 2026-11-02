@@ -1,6 +1,13 @@
 name: Mirror release assets to R2
 
 on:
+  # Releases created by the release workflow use the repository GITHUB_TOKEN.
+  # GitHub suppresses `release` events for those, so the mirror is chained to
+  # the release workflow's completion instead.
+  workflow_run:
+    workflows: ["Build & Publish Release"]
+    types: [completed]
+  # Releases published by hand (UI or a PAT) still emit the classic event.
   release:
     types: [published]
   workflow_dispatch:
@@ -13,46 +20,118 @@ on:
 permissions:
   contents: read
 
+# Different releases share one bucket and the prune step lists all keys.
+# Serialize every mirror run so an older re-run cannot prune a newer tag.
+concurrency:
+  group: r2-mirror
+  cancel-in-progress: false
+
 jobs:
   mirror:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'release' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch || '', 'v')) }}
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      AWS_EC2_METADATA_DISABLED: "true"
     steps:
       - name: Resolve the release tag
         id: release
-        run: echo "tag=${{ github.event.release.tag_name || inputs.tag }}" >> "$GITHUB_OUTPUT"
-
-      - name: Download the release assets
         env:
-          GH_TOKEN: ${{ github.token }}
+          EVENT_TAG: ${{ github.event.release.tag_name || inputs.tag || github.event.workflow_run.head_branch }}
         run: |
+          set -euo pipefail
+          tag="$EVENT_TAG"
+          if [ -z "$tag" ]; then
+            tag="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          fi
+          tag="${tag#refs/tags/}"
+          if ! [[ "$tag" =~ ^v[0-9A-Za-z._+-]+$ ]]; then
+            echo "::error::Refusing unexpected release tag '$tag'."
+            exit 1
+          fi
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json tagName >/dev/null
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download the intended release assets
+        run: |
+          set -euo pipefail
+          tag="${{ steps.release.outputs.tag }}"
+          rm -rf assets
           mkdir -p assets
-          gh release download "${{ steps.release.outputs.tag }}" -R Xinzhe99/OpenFocus --dir assets \
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" --dir assets \
             --pattern '*-setup.exe' \
             --pattern '*-windows-x64.zip' \
             --pattern '*-macos.dmg' \
             --pattern '*-macos-arm64.zip'
+          for pattern in '*-setup.exe' '*-windows-x64.zip' '*-macos.dmg' '*-macos-arm64.zip'; do
+            count="$(find assets -maxdepth 1 -type f -name "$pattern" | wc -l | tr -d ' ')"
+            if [ "$count" -ne 1 ]; then
+              echo "::error::Expected exactly one $pattern in $tag, found $count."
+              exit 1
+            fi
+          done
+          total="$(find assets -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          if [ "$total" -ne 4 ]; then
+            echo "::error::Expected four release assets, found $total."
+            find assets -maxdepth 1 -type f -printf '%f\n'
+            exit 1
+          fi
+          if find assets -maxdepth 1 -type f -empty | grep -q .; then
+            echo "::error::A mirrored release asset is empty."
+            exit 1
+          fi
           ls -lh assets
 
       - name: Upload to R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
-          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: |
+          set -euo pipefail
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           aws s3 cp assets/ "s3://openfocus-downloads/" --recursive \
-            --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+            --endpoint-url "$endpoint" \
+            --content-type "application/octet-stream" \
+            --cache-control "public, max-age=86400" \
+            --only-show-errors \
+            --no-progress
 
-      - name: Remove older releases from R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
+      - name: Prune older mirrored releases
         run: |
-          endpoint="https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          set -euo pipefail
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           tag="${{ steps.release.outputs.tag }}"
-          aws s3 ls "s3://openfocus-downloads/" --endpoint-url "$endpoint" \
-            | awk '{print $4}' | grep -v "$tag" | while read -r key; do
-                [ -n "$key" ] && aws s3 rm "s3://openfocus-downloads/$key" --endpoint-url "$endpoint"
-              done
+          latest="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          if [ "$tag" != "$latest" ]; then
+            echo "Skipping prune: $tag is not the latest release ($latest)."
+            exit 0
+          fi
+
+          # Never touch the tag that was just mirrored, and never touch keys
+          # that are not one of the four release asset names. This keeps
+          # unrelated objects and a concurrent/manual upload intact.
+          keys="$(aws s3api list-objects-v2 \
+            --bucket openfocus-downloads \
+            --endpoint-url "$endpoint" \
+            --query 'Contents[].Key' \
+            --output json | jq -r '.[]?')"
+          while IFS= read -r key; do
+            [ -n "$key" ] || continue
+            case "$key" in
+              "OpenFocus-${tag}-"*)
+                continue
+                ;;
+              OpenFocus-v*-setup.exe|OpenFocus-v*-windows-x64.zip|OpenFocus-v*-macos.dmg|OpenFocus-v*-macos-arm64.zip)
+                echo "Deleting $key"
+                aws s3 rm "s3://openfocus-downloads/$key" \
+                  --endpoint-url "$endpoint" \
+                  --only-show-errors
+                ;;
+              *)
+                echo "Keeping unrelated object $key"
+                ;;
+            esac
+          done <<< "$keys"
