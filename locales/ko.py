@@ -1,6 +1,12 @@
 """Korean language pack for OpenFocus."""
 
 PACK = {
+    'alignment_report_collect': '정렬 진단 수집', 'alignment_report_collect_hint': '캐시를 재사용하지 않고 정렬을 다시 계산하여 프레임별 결과를 수집합니다.',
+    'alignment_report_failed': '실패',
+    'alignment_report_title': '정렬 진단', 'alignment_report_unavailable': '마지막 렌더링의 프레임별 진단이 없습니다. 수집을 켜고 다시 렌더링하세요.',
+    'alignment_report_frame': '프레임 {number} — {name}: {method} — {status}',
+    'alignment_report_reference': '기준', 'alignment_report_aligned': '정렬됨', 'alignment_report_fallback': '대체 처리',
+    'alignment_report_cached': '정렬: 캐시된 결과 재사용', 'alignment_report_available': '도구 메뉴에서 프레임별 정렬 진단을 볼 수 있습니다',
     'stack_review_button': '프레임 검토',
     'stack_review_cancel': '검토 취소',
     'stack_review_hint': '인접한 유사 프레임을 찾습니다. 제안을 확인하고 체크박스로 제외할 프레임을 선택하세요.',

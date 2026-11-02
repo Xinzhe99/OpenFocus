@@ -2,7 +2,8 @@ from typing import Any, List, Optional
 
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog
+from PyQt6.QtWidgets import (QApplication, QMessageBox, QDialog, QDialogButtonBox,
+                             QPlainTextEdit, QVBoxLayout)
 
 from utils import show_message_box, show_warning_box
 from utils.image_utils import cv2_to_pixmap
@@ -38,6 +39,43 @@ class RenderManager:
         self.last_state: Optional[str] = None
         self._render_interactive = True
         self._control_progress: Optional[tuple] = None
+        self.alignment_diagnostics = None
+
+    def show_alignment_report(self) -> None:
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle(trans.t('alignment_report_title'))
+        dialog.resize(640, 420)
+        layout = QVBoxLayout(dialog)
+        text = QPlainTextEdit(dialog)
+        text.setReadOnly(True)
+        text.setPlainText(self.alignment_report_text())
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=dialog)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText(trans.t('dialog_close'))
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def alignment_report_text(self) -> str:
+        diagnostic = self.alignment_diagnostics
+        if not diagnostic:
+            return trans.t('alignment_report_unavailable')
+        entries, names, indices = diagnostic
+        if not entries:
+            return trans.t('alignment_report_unavailable')
+        lines = []
+        for entry in entries:
+            index = entry.get('frame_index')
+            if not isinstance(index, int) or not 0 <= index < len(names):
+                continue
+            number = indices[index] + 1 if index < len(indices) else index + 1
+            status = entry.get('status', '')
+            status_key = 'alignment_report_' + status
+            status_text = trans.t(status_key) if status in ('reference', 'aligned', 'fallback', 'failed') else status
+            lines.append(trans.t('alignment_report_frame').format(
+                number=number, name=names[index], method=entry.get('method', ''),
+                status=status_text))
+        return '\n'.join(lines) if lines else trans.t('alignment_report_unavailable')
 
     def _alignment_key(self, included, method=None):
         window = self.window
@@ -363,6 +401,8 @@ class RenderManager:
         alignment_method = window.current_alignment_method()
         registration_parameters = window.registration_parameters_for(alignment_method)
         requested_steps = alignment_steps(alignment_method)
+        collect_action = getattr(window, 'ui_objs', {}).get('alignment_report_collect')
+        collect_report = bool(collect_action and collect_action.isChecked() and requested_steps)
 
         need_fusion = (
             force_algorithm is not None
@@ -486,7 +526,7 @@ class RenderManager:
             # it; the alignment is a global transform, so scaling it to the
             # preview grid is exact.
             # Reuse requires the exact frame selection and registration parameters.
-            if reusable:
+            if reusable and not collect_report:
                 effective_alignment = "none"
                 effective_aligned_images = window.aligned_images
                 source_images = effective_aligned_images
@@ -626,6 +666,7 @@ class RenderManager:
             exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),
             sharpen_output=bool(getattr(window, "sharpen_output", False)),
             disk_cache=disk_cache_request,
+            collect_alignment_report=collect_report and not use_roi_aligned_images,
             preview=self._preview_mode,
         )
 
@@ -701,6 +742,12 @@ class RenderManager:
             self._dispose_worker()
             self._restore_ui_controls()
             return
+
+        self.alignment_diagnostics = (
+            list(getattr(self.worker, 'alignment_report', None) or []),
+            list((context or {}).get('filenames', [])),
+            list((context or {}).get('included', [])),
+        )
 
         try:
             if fusion_result is not None:
@@ -899,7 +946,7 @@ class RenderManager:
                 # The frames are aligned, but this run did not align them:
                 # reporting 0.00 s under the method name read as "aligned
                 # instantly" instead of "reused the cached result".
-                info_lines.append(trans.t("info_align_none_cached"))
+                info_lines.append(trans.t("alignment_report_cached"))
                 info_lines.append(trans.t("info_align_time").format(0.0))
             elif registration_performed:
                 alignment_method = window.current_alignment_method()
@@ -907,7 +954,7 @@ class RenderManager:
                 info_lines.append(trans.t("info_align_method").format(align_method_str))
                 info_lines.append(trans.t("info_align_time").format(alignment_time))
             else:
-                info_lines.append(trans.t("info_align_none_cached"))
+                info_lines.append(trans.t("info_align_none"))
                 info_lines.append(trans.t("info_align_time").format(0.0))
 
             fusion_method = window.current_fusion_method()
@@ -925,6 +972,12 @@ class RenderManager:
                 info_lines.append(trans.t("info_proc_unit").format(device_name))
 
             info_lines.append(trans.t("info_total_time").format(total_time))
+            if self.alignment_diagnostics[0]:
+                fallback_count = len({entry['frame_index'] for entry in self.alignment_diagnostics[0]
+                                      if entry.get('status') == 'fallback' and 'frame_index' in entry})
+                if fallback_count:
+                    info_lines.append(f"{trans.t('alignment_report_fallback')}: {fallback_count}")
+                info_lines.append(trans.t('alignment_report_available'))
 
             # Non-blocking completion report: a modal "Completed" box after
             # every render (incl. quick previews) cost a click per iteration
@@ -1106,6 +1159,12 @@ class RenderManager:
 
     def on_render_error(self, error_message: str) -> None:
         window = self.window
+        context = self._render_context or {}
+        self.alignment_diagnostics = (
+            list(getattr(self.worker, 'alignment_report', None) or [])
+            if not error_message.startswith('CANCELLED') else [],
+            list(context.get('filenames', [])), list(context.get('included', [])),
+        )
         # Every exit path clears the draft flag: a failed or cancelled render
         # must not leave the controller in preview mode.
         self._preview_mode = False
@@ -1140,7 +1199,8 @@ class RenderManager:
                 window,
                 trans.t("msg_error"),
                 trans.t("msg_proc_error"),
-                error_message,
+                (error_message + '\n\n' + trans.t('alignment_report_available')
+                 if self.alignment_diagnostics[0] else error_message),
                 QMessageBox.Icon.Critical,
             )
 

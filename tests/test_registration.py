@@ -347,11 +347,108 @@ def test_shift_limit_argument_stays_method_scoped():
     """
     assert ImageRegistration(method="openfocus",
                              max_shift_ratio=0.25).parameters["max_shift_ratio"] == 0.25
-    assert ImageRegistration(method="ecc", max_shift_ratio=0.25).parameters == {}
+    assert ImageRegistration(method="ecc", max_shift_ratio=0.25).parameters == {"failure_policy": "continue"}
     assert ImageRegistration(method="homography",
-                             max_shift_ratio=0.25).parameters == {}
+                             max_shift_ratio=0.25).parameters == {"failure_policy": "continue"}
     # An explicit registry value still wins over the legacy argument.
     explicit = ImageRegistration(method="openfocus",
                                  parameters={"max_shift_ratio": 0.1},
                                  max_shift_ratio=0.3)
     assert explicit.parameters["max_shift_ratio"] == 0.3
+
+
+@pytest.mark.parametrize('method,steps', [
+    ('openfocus', ['openfocus']), ('homography', ['homography']),
+    ('ecc', ['ecc']), ('both', ['homography', 'ecc']),
+])
+def test_single_frame_reports_each_reference(method, steps):
+    from core.registration import alignment_report
+    report = []
+    token = alignment_report.set(report)
+    try:
+        ImageRegistration(method).process([np.zeros((20, 20, 3), np.uint8)])
+    finally:
+        alignment_report.reset(token)
+    assert [(r['method'], r['frame_index'], r['status']) for r in report] == [
+        (step, 0, 'reference') for step in steps]
+
+
+def test_openfocus_report_orders_frames_and_records_applied_fallback(monkeypatch):
+    import core.registration as registration
+    monkeypatch.setattr(registration, '_of_estimate_similarity',
+                        lambda *args, **kwargs: (-1.0, 0.0, 1.0, 0.0, 0.0))
+    frames = [np.full((30, 40), 1200, np.uint16) for _ in range(3)]
+    report = []
+    token = registration.alignment_report.set(report)
+    try:
+        aligned = registration.ImageRegistration('openfocus', parameters={'reference_frame': 2}).process(frames, thread_count=2)
+    finally:
+        registration.alignment_report.reset(token)
+    assert [r['frame_index'] for r in report] == [0, 1, 2]
+    assert [r['status'] for r in report] == ['fallback', 'reference', 'fallback']
+    assert report[0]['reason'] == 'low detector quality'
+    np.testing.assert_array_equal(report[0]['transform'], np.eye(3))
+    assert all(image.dtype == np.uint16 for image in aligned)
+
+
+@pytest.mark.parametrize('method', ['homography', 'ecc', 'both'])
+def test_strict_registration_rejects_known_failure_and_reports_it(method, tmp_path, monkeypatch):
+    import core.registration as registration
+    def fail_ecc(*args, **kwargs):
+        raise cv2.error('no convergence')
+    monkeypatch.setattr(cv2, 'findTransformECC', fail_ecc)
+    frame = np.zeros((40, 40, 3), np.uint8)
+    report = []
+    token = registration.alignment_report.set(report)
+    destination = tmp_path / 'aligned'
+    try:
+        with pytest.raises(ValueError, match='frame 2'):
+            registration.ImageRegistration(method, parameters={'failure_policy': 'fail'}).process(
+                [frame, frame.copy()], output_path=str(destination), thread_count=2)
+    finally:
+        registration.alignment_report.reset(token)
+    assert report[-1]['status'] == 'failed'
+    assert report[-1]['frame_index'] == 1
+    assert 'transform' not in report[-1]
+    assert not destination.exists()
+
+
+def test_ecc_reports_pair_quality_and_inherited_fallback(monkeypatch):
+    import core.registration as registration
+    calls = iter([None, 0.8])
+    def estimate(*args):
+        quality = next(calls)
+        if quality is None:
+            raise cv2.error('no convergence')
+        return quality, np.eye(3, dtype=np.float32)
+    monkeypatch.setattr(cv2, 'findTransformECC', estimate)
+    frame = np.zeros((40, 40, 3), np.uint8)
+    report = []
+    token = registration.alignment_report.set(report)
+    try:
+        registration.ImageRegistration('ecc').process([frame] * 3, thread_count=1)
+    finally:
+        registration.alignment_report.reset(token)
+    assert [r['status'] for r in report] == ['reference', 'fallback', 'fallback']
+    assert 'quality' not in report[1]
+    assert report[2]['quality'] == 0.8
+    assert report[2]['reason'] == 'reference alignment fell back'
+    np.testing.assert_array_equal(report[2]['transform'], np.eye(3))
+
+
+def test_composite_reports_each_stage_and_actual_ecc_transform(monkeypatch):
+    import core.registration as registration
+    warp = np.array([[1, 0, 2], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+    monkeypatch.setattr(cv2, 'findTransformECC', lambda *args: (0.9, warp.copy()))
+    frame = np.zeros((40, 40, 3), np.uint8)
+    report = []
+    token = registration.alignment_report.set(report)
+    try:
+        registration.ImageRegistration('both').process([frame, frame.copy()], thread_count=2)
+    finally:
+        registration.alignment_report.reset(token)
+    assert [(r['method'], r['frame_index'], r['status']) for r in report] == [
+        ('homography', 0, 'reference'), ('homography', 1, 'fallback'),
+        ('ecc', 0, 'reference'), ('ecc', 1, 'aligned')]
+    assert report[-1]['quality'] == 0.9
+    assert report[-1]['transform'][0][2] == pytest.approx(-2)

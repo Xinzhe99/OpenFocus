@@ -480,6 +480,22 @@ Image registration corrects spatial misalignment between frames in your image st
   reference_frame=3`. Choosing a reference cannot correct parallax or a poor
   match; inspect the result.
 
+Alignment reports identify the reference and each frame's outcome. A fallback
+means the method could not establish the alignment or depends on an earlier
+failed estimate; the reported reason distinguishes weak estimates and motion
+outside the limits when known. Quality values are method-specific, not a
+guarantee of accuracy.
+Transforms map source coordinates to the registration stage's reference canvas
+before the common crop; composite methods report their stages separately.
+Homography and ECC also accept the opt-in `failure_policy="fail"` registration
+parameter to stop when their algorithms detect failure. The default remains
+`"continue"`; inspect results even when alignment succeeds.
+
+To inspect a render, enable **Tools → Collect alignment diagnostics** and render
+again. This recomputes alignment instead of reusing cached images. The completion
+status highlights fallbacks; open **Tools → Alignment diagnostics** for the
+per-frame report. Batch and grouped renders do not provide this report.
+
 ### Enabling Registration
 
 1. In the right panel, locate the **Registration** group
@@ -1180,6 +1196,14 @@ The report compares adjacent files in the supplied input order, without knowing
 which frames you may later exclude. If you exclude a reference, reconsider its
 successor or review the remaining files again in their intended order.
 
+For example, add `--align openfocus --alignment-report alignment.json` to a
+single render. The JSON object contains `method`, `input`, `frame_count`, and
+`entries`. Each entry's `frame_index` is zero-based in decoded input order,
+before fusion sorting; multipage images expand in page order and video frames
+in decode order. Composite methods include separate entries for each stage.
+The report is written atomically after successful processing and cannot replace
+an input or another output. Batch, grouped and dry-run modes reject this option.
+
 | Option | Description |
 |--------|-------------|
 | `--suggest-duplicates` | Report nearly identical adjacent frames for manual review; does not fuse or exclude them |
@@ -1188,6 +1212,7 @@ successor or review the remaining files again in their intended order.
 | `--method, -m` | `stackmffv3` (default), `none`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
 | `--align, -a` | `none` (default), `homography`, `ecc`, `both`, `openfocus` |
 | `--align-shift-limit` | `openfocus` align only: max accepted shift as a fraction of the frame size (default 0.08; frames above it are left unaligned) |
+| `--alignment-report PATH` | Save per-frame alignment outcomes as JSON for a single, non-grouped render with alignment enabled; batch and grouped renders are not supported |
 | `--exposure-match` | Match every frame's mean to the last frame before fusion (default: on; `--no-exposure-match` disables). Whole-stack gains, so tiled output stays seamless; applies to every method and to the OpenFocus aligner's brightness reference |
 | `--base-frame` | Optional post-fusion step: match the output's low frequencies to the `last`/`first` frame (`none` default) |
 | `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |

@@ -12,6 +12,12 @@ This file is generated wholesale; edit values in place, not by patching.
 
 EXTRA_TRANSLATIONS = {
     "ja": {
+        'alignment_report_collect': '位置合わせ診断を収集', 'alignment_report_collect_hint': 'キャッシュを使わず位置合わせを再計算し、各フレームの結果を収集します。',
+        'alignment_report_failed': '失敗',
+        'alignment_report_title': '位置合わせ診断', 'alignment_report_unavailable': '前回のレンダリングのフレーム別診断はありません。収集を有効にして再実行してください。',
+        'alignment_report_frame': 'フレーム {number} — {name}：{method} — {status}',
+        'alignment_report_reference': '基準', 'alignment_report_aligned': '位置合わせ済み', 'alignment_report_fallback': '代替処理',
+        'alignment_report_cached': '位置合わせ：キャッシュ結果を再利用', 'alignment_report_available': 'フレーム別診断はツールメニューから確認できます',
         'stack_review_button': 'フレームを確認',
         'stack_review_cancel': '確認を中止',
         'stack_review_hint': '隣接する類似フレームを探します。候補を確認し、チェックボックスで除外するフレームを選びます。',
@@ -1000,6 +1006,12 @@ EXTRA_TRANSLATIONS = {
         "scalebar_text_align": "テキスト配置",
     },
     "es": {
+        'alignment_report_collect': 'Recopilar diagnósticos de alineación', 'alignment_report_collect_hint': 'Recalcula la alineación para recopilar resultados por fotograma sin reutilizar la caché.',
+        'alignment_report_failed': 'Fallido',
+        'alignment_report_title': 'Diagnósticos de alineación', 'alignment_report_unavailable': 'No hay diagnósticos por fotograma del último renderizado. Activa la recopilación y vuelve a renderizar.',
+        'alignment_report_frame': 'Fotograma {number} — {name}: {method} — {status}',
+        'alignment_report_reference': 'Referencia', 'alignment_report_aligned': 'Alineado', 'alignment_report_fallback': 'Alternativa',
+        'alignment_report_cached': 'Alineación: resultado en caché reutilizado', 'alignment_report_available': 'Diagnósticos por fotograma disponibles en Herramientas',
         'stack_review_button': 'Revisar fotogramas',
         'stack_review_cancel': 'Cancelar revisión',
         'stack_review_hint': 'Busca fotogramas consecutivos similares. Revisa las sugerencias y usa las casillas para elegir cuáles excluir.',

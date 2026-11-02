@@ -176,6 +176,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Batch mode: skip folders whose output file already exists")
     parser.add_argument("--json", default=None, metavar="FILE",
                         help="Write a machine-readable result summary to FILE when done")
+    parser.add_argument("--alignment-report", default=None, metavar="FILE",
+                        help="Write registration diagnostics as JSON (single stack only; no grouped fusion or dry run)")
     parser.add_argument("--json-progress", action="store_true",
                         help="Print one JSON progress object per step to stdout (NDJSON)")
     parser.add_argument("--config", default=None, metavar="FILE",
@@ -582,6 +584,36 @@ def _depth_out_path(args, fused_out: str) -> str:
     return stem + "_depth.png"
 
 
+def _validate_alignment_report_path(args, paths=()):
+    from utils.path_identity import same_path
+
+    protected = [*args.input, *paths, args.output, args.json, args.dust_map, args.config]
+    if args.depth_map and args.output:
+        protected.append(_depth_out_path(args, args.output))
+    if any(same_path(args.alignment_report, path) for path in protected):
+        raise ValueError("--alignment-report must differ from input and output paths")
+
+
+def _write_alignment_report(path, payload):
+    import tempfile
+
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                         prefix=".openfocus_alignment_", suffix=".tmp",
+                                         delete=False) as stream:
+            temporary = stream.name
+            json.dump(payload, stream, ensure_ascii=False, indent=2, allow_nan=False)
+            stream.write("\n")
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
+
+
 def _save_depth(args, fused_out: str) -> None:
     frames = getattr(args, "_depth_frames", None)
     if not frames:
@@ -958,6 +990,18 @@ def _run_with_logging(argv: List[str]) -> int:
 
 def _run_cli_admitted(argv: List[str]) -> int:
     args = build_parser().parse_args(argv)
+    if args.alignment_report:
+        if args.suggest_duplicates or args.output_dir or args.group_size or args.dry_run:
+            print("error: --alignment-report requires a single, non-grouped fusion run", file=sys.stderr)
+            return EXIT_USAGE
+        if args.align == "none":
+            print("error: --alignment-report requires an alignment method", file=sys.stderr)
+            return EXIT_USAGE
+        try:
+            _validate_alignment_report_path(args)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
     if args.suggest_duplicates:
         return _suggest_duplicates(args)
 
@@ -1103,6 +1147,8 @@ def _run_cli_admitted(argv: List[str]) -> int:
         # Video inputs are unpacked to a temp dir that is always cleaned up
         with tempfile.TemporaryDirectory(prefix="openfocus_video_") as video_temp:
             _src, paths = _resolve_stack(args, video_temp)
+            if args.alignment_report:
+                _validate_alignment_report_path(args, paths)
             _say(f"Loaded {len(paths)} image(s) from {_src}")
 
             if args.group_size and args.dry_run:
@@ -1128,9 +1174,20 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 from core.image_loader import _read_exif_bytes
                 set_source_exif(_read_exif_bytes(paths[0]))
 
-            fused = _fuse_grouped(paths, args) if args.group_size else _fuse_stack(images, args)
+            if args.alignment_report:
+                from core.registration import alignment_report
+                entries = []
+                token = alignment_report.set(entries)
+                try:
+                    fused = _fuse_stack(images, args)
+                finally:
+                    alignment_report.reset(token)
+            else:
+                fused = _fuse_grouped(paths, args) if args.group_size else _fuse_stack(images, args)
             if fused is None:
                 raise RuntimeError("Fusion returned no result")
+            if args.alignment_report and not entries:
+                raise RuntimeError("The selected alignment method did not provide diagnostics")
             scale_cfg = _resolve_scale_cfg(args, paths)
             from core.image_loader import common_icc_profile
             source_icc_profile = common_icc_profile(paths)
@@ -1142,6 +1199,13 @@ def _run_cli_admitted(argv: List[str]) -> int:
         if args.depth_map:
             _save_depth(args, args.output)
             outputs.append(_depth_out_path(args, args.output))
+        if args.alignment_report:
+            _write_alignment_report(args.alignment_report, {
+                "method": args.align,
+                "input": args.input,
+                "frame_count": len(images),
+                "entries": entries,
+            })
         _emit_json({"mode": "single", "method": args.method, "align": args.align,
                     "frames": len(paths), "input": args.input,
                     "output": args.output, "outputs": outputs})
@@ -1209,7 +1273,7 @@ def describe_payload() -> dict:
         "control": {"schema": CONTROL_SCHEMA, "commands": list(COMMANDS)},
         "cli": {
             "batch": ["--output-dir", "--resume", "--config"],
-            "machine": ["--json", "--json-progress", "--dry-run"],
+            "machine": ["--json", "--json-progress", "--alignment-report", "--dry-run"],
             "review": ["--suggest-duplicates"],
             "control": ["gui", "ctl <command>", "describe", "version"],
         },

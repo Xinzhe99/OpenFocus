@@ -1,6 +1,12 @@
 """Polish language pack for OpenFocus."""
 
 PACK = {
+    'alignment_report_collect': 'Zbieraj diagnostykę wyrównania', 'alignment_report_collect_hint': 'Oblicz wyrównanie ponownie, aby zebrać wyniki dla klatek bez użycia pamięci podręcznej.',
+    'alignment_report_failed': 'Niepowodzenie',
+    'alignment_report_title': 'Diagnostyka wyrównania', 'alignment_report_unavailable': 'Brak diagnostyki klatek dla ostatniego renderowania. Włącz zbieranie i uruchom renderowanie ponownie.',
+    'alignment_report_frame': 'Klatka {number} — {name}: {method} — {status}',
+    'alignment_report_reference': 'Referencyjna', 'alignment_report_aligned': 'Wyrównana', 'alignment_report_fallback': 'Wynik zastępczy',
+    'alignment_report_cached': 'Wyrównanie: użyto wyniku z pamięci podręcznej', 'alignment_report_available': 'Diagnostyka klatek dostępna w menu Narzędzia',
     'stack_review_button': 'Sprawdź klatki',
     'stack_review_cancel': 'Anuluj sprawdzanie',
     'stack_review_hint': 'Wyszukuje podobne sąsiednie klatki. Sprawdź propozycje i wybierz polami wyboru klatki do wykluczenia.',
