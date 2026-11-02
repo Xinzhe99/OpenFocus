@@ -23,6 +23,8 @@ PACK = {
     'alignment_report_reference': 'Referência', 'alignment_report_aligned': 'Alinhado', 'alignment_report_fallback': 'Alternativa',
     'alignment_report_cached': 'Alinhamento: resultado em cache reutilizado', 'alignment_report_available': 'Diagnóstico por quadro disponível em Ferramentas',
     'sensor_section': 'Limpeza do sensor',
+    'sensor_source_missing': "A máscara de defeitos requer o caminho original de cada imagem. Recarregue as imagens originais ou desative a máscara.",
+    'sensor_source_orientation': "Não é possível usar a máscara de defeitos com {path}: a orientação não é neutra ou não pode ser verificada. Use imagens na orientação do sensor com orientação EXIF neutra e uma máscara correspondente, ou desative a máscara.",
     'sensor_history_unsupported': 'A limpeza do sensor não pode ser aplicada após rotação, inversão, correção de campo plano ou outras alterações das fontes. Recarregue os quadros originais ou desative a limpeza.',
     'sensor_roi_unsupported': 'A limpeza do sensor não pode usar quadros alinhados antes da limpeza. Saia do modo ROI e processe toda a pilha.',
     'sensor_settings_scope': 'Estas configurações se aplicam à sessão e aos projetos salvos, não às preferências globais.',

@@ -23,6 +23,8 @@ PACK = {
     'alignment_report_reference': 'Referentie', 'alignment_report_aligned': 'Uitgelijnd', 'alignment_report_fallback': 'Terugval',
     'alignment_report_cached': 'Uitlijning: cacheresultaat hergebruikt', 'alignment_report_available': 'Diagnose per beeld beschikbaar onder Gereedschap',
     'sensor_section': 'Sensor opschonen',
+    'sensor_source_missing': "Het defectmasker vereist het oorspronkelijke afbeeldingspad van elk frame. Laad de originele beelden opnieuw of schakel het masker uit.",
+    'sensor_source_orientation': "Het defectmasker kan niet worden gebruikt met {path}: de oriëntatie is niet neutraal of kan niet worden gecontroleerd. Gebruik beelden in sensororiëntatie met neutrale EXIF-oriëntatie en een passend masker, of schakel het masker uit.",
     'sensor_history_unsupported': 'Sensor opschonen kan niet na rotatie, spiegeling, vlakveldcorrectie of andere wijzigingen aan de bron. Laad de oorspronkelijke beelden opnieuw of schakel sensor opschonen uit.',
     'sensor_roi_unsupported': 'Sensor opschonen kan geen eerder uitgelijnde beelden gebruiken. Verlaat de ROI-modus en verwerk de hele stapel.',
     'sensor_settings_scope': 'Deze instellingen gelden voor de sessie en opgeslagen projecten, niet voor globale voorkeuren.',

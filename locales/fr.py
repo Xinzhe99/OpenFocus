@@ -23,6 +23,8 @@ PACK = {
     'alignment_report_reference': 'Référence', 'alignment_report_aligned': 'Alignée', 'alignment_report_fallback': 'Solution de repli',
     'alignment_report_cached': 'Alignement : résultat en cache réutilisé', 'alignment_report_available': 'Diagnostics par image disponibles dans Outils',
     'sensor_section': 'Nettoyage du capteur',
+    'sensor_source_missing': "Le masque de défauts nécessite le chemin du fichier original de chaque image. Rechargez les images originales ou désactivez le masque.",
+    'sensor_source_orientation': "Impossible d’utiliser le masque de défauts avec {path} : son orientation est non neutre ou impossible à vérifier. Utilisez des images en orientation capteur avec une orientation EXIF neutre et un masque adapté, ou désactivez le masque.",
     'sensor_history_unsupported': 'Le nettoyage du capteur est impossible après rotation, retournement, correction de champ plat ou autre modification des sources. Rechargez les images originales ou désactivez le nettoyage.',
     'sensor_roi_unsupported': 'Le nettoyage du capteur ne peut pas utiliser des images alignées avant le nettoyage. Quittez le mode ROI et traitez toute la pile.',
     'sensor_settings_scope': 'Ces réglages concernent la session et les projets enregistrés, pas les préférences générales.',

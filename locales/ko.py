@@ -23,6 +23,8 @@ PACK = {
     'alignment_report_reference': '기준', 'alignment_report_aligned': '정렬됨', 'alignment_report_fallback': '대체 처리',
     'alignment_report_cached': '정렬: 캐시된 결과 재사용', 'alignment_report_available': '도구 메뉴에서 프레임별 정렬 진단을 볼 수 있습니다',
     'sensor_section': '센서 정리',
+    'sensor_source_missing': "결함 마스크에는 각 프레임의 원본 이미지 경로가 필요합니다. 원본 이미지를 다시 불러오거나 마스크를 끄세요.",
+    'sensor_source_orientation': "{path}에 결함 마스크를 사용할 수 없습니다. 방향이 기본값이 아니거나 확인할 수 없습니다. 센서 방향과 일치하고 EXIF 방향이 기본값인 이미지와 해당 마스크를 사용하거나 마스크를 끄세요.",
     'sensor_history_unsupported': '원본을 회전, 뒤집기, 플랫 필드 보정 또는 기타 변경한 후에는 센서 정리를 적용할 수 없습니다. 원본 프레임을 다시 불러오거나 센서 정리를 끄세요.',
     'sensor_roi_unsupported': '센서 정리 전에 정렬된 프레임에는 센서 정리를 적용할 수 없습니다. ROI 모드를 종료하고 전체 스택을 처리하세요.',
     'sensor_settings_scope': '이 설정은 현재 세션과 저장된 프로젝트에 적용되며 전역 환경설정에는 저장되지 않습니다.',

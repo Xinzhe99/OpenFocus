@@ -29,6 +29,8 @@ EN = {
     'alignment_report_reference': 'Reference', 'alignment_report_aligned': 'Aligned', 'alignment_report_fallback': 'Fallback',
     'alignment_report_cached': 'Alignment: cached result reused', 'alignment_report_available': 'Per-frame alignment diagnostics available in Tools',
     'sensor_section': 'Sensor cleanup',
+    'sensor_source_missing': "The defect mask requires an original still-image source path for every frame. Reload the original images or disable the mask.",
+    'sensor_source_orientation': "Cannot use the defect mask with {path}: its orientation is not neutral or cannot be checked. Use sensor-oriented still images with neutral EXIF orientation and a matching mask, or disable the mask.",
     'sensor_history_unsupported': 'Sensor cleanup cannot be applied after source rotations, flips, flat-field correction or other source changes. Reload the original frames, or disable sensor cleanup.',
     'sensor_roi_unsupported': 'Sensor cleanup cannot use frames aligned before cleanup. Leave ROI mode and render the full stack.',
     'sensor_settings_scope': 'These settings apply to this session and saved projects, not global preferences.',
