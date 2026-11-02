@@ -7,13 +7,7 @@ from tests.test_retouch import _dialog
 
 
 def _ready_dialog(qapp):
-    dlg, published = _dialog(qapp)
-    worker = dlg._checkpoint_init_worker
-    if worker is not None:
-        assert worker.wait(5000)
-        qapp.processEvents()
-    assert dlg.doc.checkpoint_ready
-    return dlg, published
+    return _dialog(qapp)
 
 
 def test_checkpoint_buttons_round_trip_and_refresh(qapp, monkeypatch, tmp_path):
@@ -121,8 +115,7 @@ def test_checkpoint_translations_exist_for_each_locale():
             "retouch_checkpoint_loading", "retouch_checkpoint_load_failed",
             "retouch_checkpoint_filter", "retouch_checkpoint_input",
             "retouch_checkpoint_replace", "retouch_checkpoint_saving",
-            "retouch_checkpoint_save_failed", "retouch_checkpoint_cancel_setup",
-            "retouch_checkpoint_preparing", "retouch_checkpoint_unavailable",
+            "retouch_checkpoint_save_failed",
             "retouch_checkpoint_record_limit")
     for language in trans.PACK_ORDER:
         for key in keys:
@@ -173,87 +166,73 @@ def test_checkpoint_replay_runs_off_gui_thread_and_cancels(qapp, monkeypatch, tm
         dlg.close()
 
 
-def test_checkpoint_initialization_can_be_cancelled_without_blocking_editing(qapp, monkeypatch):
+def test_open_and_edits_do_not_scan_sources_and_changed_source_fails_save(qapp, monkeypatch, tmp_path):
     import threading
     from PyQt6.QtWidgets import QFileDialog, QMessageBox
-    from locales import trans
     from utils import retouch_checkpoint
 
-    entered = threading.Event()
-    pause = threading.Event()
-    threads = []
-    def slow_provenance(_doc, cancelled):
-        threads.append(threading.get_ident())
-        entered.set()
-        while not cancelled():
-            pause.wait(0.01)
-        raise ValueError("Retouch replay cancelled")
-
-    monkeypatch.setattr(retouch_checkpoint, "provenance", slow_provenance)
-    warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[-1]))
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (_ for _ in ()).throw(AssertionError("save dialog opened")))
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (_ for _ in ()).throw(AssertionError("load dialog opened")))
+    original = retouch_checkpoint.provenance
+    calls = []
+    def recording_provenance(*args, **kwargs):
+        calls.append(threading.get_ident())
+        return original(*args, **kwargs)
+    monkeypatch.setattr(retouch_checkpoint, "provenance", recording_provenance)
+    path = tmp_path / "history.ofretouch"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (str(path), ""))
+    errors = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: errors.append(args[-1]))
     dlg, _ = _dialog(qapp)
-    worker = dlg._checkpoint_init_worker
     try:
-        assert entered.wait(2)
-        assert threads[0] != threading.get_ident()
-        dlg.btn_save_checkpoint.click()
-        assert warnings[-1] == trans.t("retouch_checkpoint_preparing")
-        dlg.btn_cancel_checkpoint_init.click()
-        assert worker.wait(5000)
-        qapp.processEvents()
-        assert not dlg.doc.checkpoint_ready
+        assert calls == []
         assert dlg.begin_stroke(40, 40)
         dlg.end_stroke()
-        assert dlg.btn_apply.isEnabled()
+        before = dlg.doc.working.copy()
+        assert calls == []
+        dlg.doc.frames[0].image[:] = 240
         dlg.btn_save_checkpoint.click()
-        dlg.btn_load_checkpoint.click()
-        assert warnings[-2:] == [trans.t("retouch_checkpoint_unavailable")] * 2
+        assert calls and all(ident != threading.get_ident() for ident in calls)
+        assert errors and not path.exists()
+        np.testing.assert_array_equal(dlg.doc.working, before)
+        assert dlg.doc.can_undo and dlg.btn_apply.isEnabled()
     finally:
-        worker.requestInterruption()
-        worker.wait(5000)
         dlg._allow_close = True
         dlg.close()
 
 
-def test_edit_during_checkpoint_initialization_keeps_checkpoint_available(qapp, monkeypatch, tmp_path):
+def test_first_save_can_cancel_source_verification(qapp, monkeypatch, tmp_path):
     import threading
-    from PyQt6.QtWidgets import QFileDialog
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox
     from utils import retouch_checkpoint
 
-    original = retouch_checkpoint.provenance
-    entered, release = threading.Event(), threading.Event()
-    def delayed_provenance(doc, cancelled):
+    entered = threading.Event()
+    pause = threading.Event()
+    def slow_provenance(_doc, cancelled):
         entered.set()
-        release.wait(5)
-        return original(doc, cancelled)
-
-    monkeypatch.setattr(retouch_checkpoint, "provenance", delayed_provenance)
-    checkpoint = tmp_path / "during-setup.ofretouch"
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (str(checkpoint), ""))
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (str(checkpoint), ""))
+        while not cancelled():
+            pause.wait(0.01)
+        raise ValueError('Retouch replay cancelled')
+    monkeypatch.setattr(retouch_checkpoint, 'provenance', slow_provenance)
+    path = tmp_path / 'history.ofretouch'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    errors = []
+    monkeypatch.setattr(QMessageBox, 'critical', lambda *args: errors.append(args[-1]))
     dlg, _ = _dialog(qapp)
-    worker = dlg._checkpoint_init_worker
+    def cancel():
+        if entered.is_set():
+            dlg._checkpoint_dialog.cancel_button.click()
+        else:
+            QTimer.singleShot(10, cancel)
     try:
-        assert entered.wait(2)
         assert dlg.begin_stroke(40, 40)
         dlg.end_stroke()
-        release.set()
-        assert worker.wait(5000)
-        qapp.processEvents()
-        assert dlg.doc.checkpoint_ready
-        assert dlg.doc.is_dirty and dlg.btn_apply.isEnabled()
-        edited = dlg.doc.working.copy()
+        before = dlg.doc.working.copy()
+        QTimer.singleShot(10, cancel)
         dlg.btn_save_checkpoint.click()
-        assert checkpoint.is_file()
-        dlg._undo()
-        dlg.btn_load_checkpoint.click()
-        np.testing.assert_array_equal(dlg.doc.working, edited)
+        assert not path.exists() and not errors and not dlg.doc.checkpoint_ready
+        np.testing.assert_array_equal(dlg.doc.working, before)
+        assert dlg.btn_apply.isEnabled()
     finally:
-        release.set()
-        worker.wait(5000)
         dlg._allow_close = True
         dlg.close()
 
@@ -331,27 +310,3 @@ def test_checkpoint_record_limit_warns_and_keeps_apply_available(qapp, monkeypat
         dlg.close()
 
 
-def test_checkpoint_initialization_worker_survives_dialog_close(qapp, monkeypatch):
-    import threading
-    from PyQt6 import sip
-    from PyQt6.QtCore import QCoreApplication, QEvent
-    from utils import retouch_checkpoint
-
-    entered, release = threading.Event(), threading.Event()
-    def delayed_provenance(_doc, _cancelled):
-        entered.set()
-        release.wait(5)
-        raise ValueError("Retouch replay cancelled")
-    monkeypatch.setattr(retouch_checkpoint, "provenance", delayed_provenance)
-    dlg, _ = _dialog(qapp)
-    worker = dlg._checkpoint_init_worker
-    try:
-        assert entered.wait(2)
-        dlg._allow_close = True
-        dlg.close()
-        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        assert sip.isdeleted(dlg)
-        assert worker.isRunning() and worker.isInterruptionRequested()
-    finally:
-        release.set()
-        worker.wait(5000)
