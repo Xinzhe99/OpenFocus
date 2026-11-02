@@ -1,3 +1,4 @@
+import json
 import shutil
 
 import cv2
@@ -70,3 +71,31 @@ def test_save_validates_before_writing(tmp_path):
     with pytest.raises(ValueError):
         save_recipe(path, {"version": 1, "input": [], "output": "out.png"})
     assert not path.exists()
+
+
+def test_legacy_project_capture_uses_new_inputs_and_preserves_settings(tmp_path):
+    _stack(tmp_path / "old")
+    _stack(tmp_path / "replacement")
+    project = tmp_path / "old.ofproj"
+    project.write_text(json.dumps({
+        "openfocus_project": 1, "sources": [str(tmp_path / "old" / "0.png")],
+        "settings": {"fusion_method": "dct", "kernel_size": 9,
+                     "tile_enabled": False, "tile_block_size": 512,
+                     "tile_overlap": 128, "tile_threshold": 1024},
+    }), encoding="utf-8")
+    recipe = tmp_path / "recipe.json"
+    assert run_cli(["recipe", "create", str(recipe), "--project", str(project),
+                    "-i", str(tmp_path / "replacement"), "-o", str(tmp_path / "out.png")]) == 0
+    data = load_recipe(recipe)
+    assert data["input"] == ["replacement"]
+    assert data["options"]["fusion_parameters"]["kernel_size"] == 9
+    assert data["options"]["tile_enabled"] is False
+    assert data["project_settings"]["tile_overlap"] == 128
+    assert str(tmp_path / "old") not in recipe.read_text(encoding="utf-8")
+    assert run_recipe(recipe, dry_run=True) == 0
+
+
+def test_recipe_rejects_invalid_project_snapshot(tmp_path):
+    with pytest.raises(ValueError):
+        validate_recipe({"version": 1, "input": ["stack"], "output": "out.png",
+                         "project_settings": {"sources": ["secret"]}}, tmp_path / "r.json")

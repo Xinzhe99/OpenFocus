@@ -229,3 +229,35 @@ def test_scale_bar_style_round_trip(tmp_path):
     assert restored.scale_bar_text_align == "center"
     assert restored.scale_bar_custom_x == pytest.approx(0.2)
     assert restored.scale_bar_custom_y == pytest.approx(0.7)
+
+
+def test_template_applies_to_current_stack_without_source_paths(tmp_path):
+    old_paths = _make_stack(str(tmp_path / "old"), n=2)
+    new_paths = _make_stack(str(tmp_path / "new"), n=2)
+    source = _window(old_paths, str(tmp_path / "old"))
+    source._fusion = "dct"
+    source._fusion_parameters_by_method["dct"] = {"kernel_size": 9}
+    source.excluded_frames = {0}
+    template = tmp_path / "processing.oftemplate"
+    project_file.save_template(source, str(template))
+    text = template.read_text(encoding="utf-8")
+    assert str(tmp_path / "old") not in text
+    assert "excluded_frames" not in text
+
+    target = _window(new_paths, str(tmp_path / "new"))
+    target.excluded_frames = {1}
+    target.source_transforms = [{"operation": "flip", "code": 1}]
+    project_file.apply_template(target, project_file.load_template(str(template)))
+    assert target.current_fusion_method() == "dct"
+    assert target.fusion_parameters_for("dct")["kernel_size"] == 9
+    assert target.image_source_paths == new_paths
+    assert target.excluded_frames == {1}
+    assert target.source_transforms == [{"operation": "flip", "code": 1}]
+
+
+def test_template_rejects_source_references(tmp_path):
+    path = tmp_path / "bad.oftemplate"
+    path.write_text(json.dumps({"openfocus_template": 1, "settings": {
+        "sources": ["other.png"]}}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        project_file.load_template(str(path))

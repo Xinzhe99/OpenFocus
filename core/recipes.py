@@ -15,10 +15,12 @@ VERSION = 1
 _FIELDS = (
     "method", "align", "base_frame", "exposure_match", "sort", "dust_map",
     "threads", "resource_preference", "batch_size", "cpu", "downscale",
-    "tile_size", "scale_bar", "scale_um", "depth_map", "depth_colormap",
+    "tile_size", "tile_enabled", "tile_overlap", "tile_threshold",
+    "scale_bar", "scale_um", "depth_map", "depth_colormap",
 )
 _PATH_FIELDS = {"dust_map", "depth_map"}
-_INTEGER_LIMITS = {"threads": 0, "batch_size": 1, "downscale": 1, "tile_size": 64}
+_INTEGER_LIMITS = {"threads": 0, "batch_size": 1, "downscale": 1, "tile_size": 64,
+                   "tile_overlap": 0, "tile_threshold": 1}
 
 
 def _relative(path, base):
@@ -45,9 +47,12 @@ def validate_recipe(recipe, recipe_path):
     """
     from core.cli import build_parser, _resolve_algorithm_arguments, VALID_FORMATS
 
-    _object(recipe, "recipe", {"version", "input", "output", "output_dir", "options"})
+    _object(recipe, "recipe", {"version", "input", "output", "output_dir", "options", "project_settings"})
     if type(recipe.get("version")) is not int or recipe["version"] != VERSION:
         raise ValueError("unsupported recipe version")
+    if "project_settings" in recipe:
+        from utils.project_file import validate_template_settings
+        validate_template_settings(recipe["project_settings"])
     inputs = recipe.get("input")
     if not isinstance(inputs, list) or not inputs:
         raise ValueError("input must be a non-empty array of paths")
@@ -76,7 +81,7 @@ def validate_recipe(recipe, recipe_path):
                 argv.extend((flag, param + "=" + json.dumps(setting, allow_nan=False)))
             continue
         if key in _INTEGER_LIMITS:
-            if value is None and key in ("downscale", "tile_size"):
+            if value is None and key in ("downscale", "tile_size", "tile_overlap", "tile_threshold"):
                 continue
             if type(value) is not int or value < _INTEGER_LIMITS[key]:
                 raise ValueError(f"invalid {key}")
@@ -85,11 +90,12 @@ def validate_recipe(recipe, recipe_path):
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError("scale_um must be a positive finite number")
-        elif key in ("cpu", "scale_bar", "exposure_match"):
+        elif key in ("cpu", "scale_bar", "exposure_match", "tile_enabled"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
-            if key == "exposure_match":
-                argv.append("--exposure-match" if value else "--no-exposure-match")
+            if key in ("exposure_match", "tile_enabled"):
+                flag = key.replace("_", "-")
+                argv.append("--" + ("" if value else "no-") + flag)
             elif value:
                 argv.append("--" + key.replace("_", "-"))
             continue
@@ -112,6 +118,8 @@ def validate_recipe(recipe, recipe_path):
             raise ValueError(f"invalid {key}: {value!r}")
         argv.extend(("--" + key.replace("_", "-"), str(value)))
     args = parser.parse_args(argv)
+    if args.tile_overlap is not None and args.tile_size is not None and args.tile_overlap >= args.tile_size:
+        raise ValueError("tile_overlap must be smaller than tile_size")
     _resolve_algorithm_arguments(args)
     if args.depth_map:
         from utils.colormap import get_lut
@@ -156,6 +164,12 @@ def run_recipe(path, *, dry_run=False):
 
 def capture_recipe(path, argv):
     """Capture CLI processing arguments and their resolved algorithm defaults."""
+    result = _capture_recipe_data(path, argv)
+    save_recipe(path, result)
+    return result
+
+
+def _capture_recipe_data(path, argv):
     from core.cli import build_parser, _resolve_algorithm_arguments
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -180,5 +194,55 @@ def capture_recipe(path, argv):
               "options": options}
     key = "output" if args.output else "output_dir"
     result[key] = relative(getattr(args, key))
-    save_recipe(path, result)
+    validate_recipe(result, path)
     return result
+
+
+def capture_project_recipe(path, project_path, argv):
+    """Capture a project's processing settings with explicitly selected inputs.
+
+    ``argv`` contains only --input and --output or --output-dir. The CLI uses
+    its own execution controls; the full GUI processing snapshot is retained
+    separately for restoring to a loaded stack in the desktop application.
+    """
+    import argparse
+    from utils.project_file import validate_project, template_from_state
+
+    parser = argparse.ArgumentParser(prog="openfocus recipe create --project")
+    parser.add_argument("--input", "-i", required=True, nargs="+")
+    outputs = parser.add_mutually_exclusive_group(required=True)
+    outputs.add_argument("--output", "-o")
+    outputs.add_argument("--output-dir", "-d")
+    args = parser.parse_args(argv)
+    ok, error, state = validate_project(os.fspath(project_path))
+    if not ok:
+        raise ValueError(error)
+    settings = template_from_state(state)
+    method = settings.get("fusion_method", "none")
+    if method == "none":
+        raise ValueError("project has no fusion method")
+    alignment = settings.get("alignment_method", "none")
+    brightness = settings.get("brightness_by_method", {})
+    base = brightness.get("base_correct", {}).get(method, settings.get("base_frame_correct", False))
+    exposure = brightness.get("exposure_match", {}).get(method, settings.get("exposure_match", True))
+    processing = ["--input", *args.input,
+                  "--output" if args.output else "--output-dir", args.output or args.output_dir,
+                  "--method", method, "--align", alignment,
+                  "--base-frame", "last" if base else "none",
+                  "--sort", "desc" if settings.get("stack_reverse_order", False) else "asc",
+                  "--exposure-match" if exposure else "--no-exposure-match"]
+    if not settings.get("tile_enabled", True):
+        processing.append("--no-tile-enabled")
+    for key, flag in (("thread_count", "--threads"), ("ai_batch_size", "--batch-size"),
+                      ("reg_downscale_width", "--downscale"), ("tile_block_size", "--tile-size"),
+                      ("tile_overlap", "--tile-overlap"), ("tile_threshold", "--tile-threshold")):
+        if settings.get(key) is not None:
+            processing.extend((flag, str(settings[key])))
+    for name, value in settings.get("method_parameters", {}).get(method, {}).items():
+        processing.extend(("--param", name + "=" + json.dumps(value)))
+    for name, value in settings.get("registration_parameters", {}).get(alignment, {}).items():
+        processing.extend(("--align-param", name + "=" + json.dumps(value)))
+    recipe = _capture_recipe_data(path, processing)
+    recipe["project_settings"] = settings
+    save_recipe(path, recipe)
+    return recipe

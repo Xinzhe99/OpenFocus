@@ -147,6 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Registration feature-detection downscale width")
     parser.add_argument("--tile-size", type=int, default=None,
                         help="Tile block size for large images (default: auto)")
+    parser.add_argument("--tile-enabled", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable tiled fusion when needed (default: on)")
+    parser.add_argument("--tile-overlap", type=int, default=None,
+                        help="Tile overlap in pixels (default: automatic)")
+    parser.add_argument("--tile-threshold", type=int, default=None,
+                        help="Minimum image size for tiling (default: automatic)")
     parser.add_argument("--scale-bar", action="store_true",
                         help="Draw a scale bar on the output (calibration auto-detected from TIFF metadata, or --scale-um)")
     parser.add_argument("--scale-um", type=float, default=None,
@@ -359,6 +365,12 @@ def _fuse_stack_admitted(images, args):
                exposure_match=fusion_kwargs['exposure_match'], **frame_details(images))
     if args.tile_size:
         fusion_kwargs["tile_block_size"] = args.tile_size
+    if not getattr(args, "tile_enabled", True):
+        fusion_kwargs["tile_enabled"] = False
+    if getattr(args, "tile_overlap", None) is not None:
+        fusion_kwargs["tile_overlap"] = args.tile_overlap
+    if getattr(args, "tile_threshold", None) is not None:
+        fusion_kwargs["tile_threshold"] = args.tile_threshold
     fusion = MultiFocusFusion(**fusion_kwargs)
     info = fusion.get_info()
     t0 = time.time()
@@ -679,18 +691,22 @@ def run_cli(argv: List[str]) -> int:
 
 def _run_recipe_command(argv: List[str]) -> int:
     """Capture or execute a portable processing recipe."""
-    from core.recipes import capture_recipe, run_recipe
+    from core.recipes import capture_project_recipe, capture_recipe, run_recipe
     parser = argparse.ArgumentParser(prog="openfocus recipe")
     commands = parser.add_subparsers(dest="command", required=True)
     create = commands.add_parser("create", help="capture processing options")
     create.add_argument("file", help="recipe JSON file")
+    create.add_argument("--project", help="capture settings from a project")
     run = commands.add_parser("run", help="run a recipe")
     run.add_argument("file", help="recipe JSON file")
     run.add_argument("--dry-run", action="store_true")
     if argv and argv[0] == "create":
         args, processing = parser.parse_known_args(argv)
         try:
-            capture_recipe(args.file, processing)
+            if args.project:
+                capture_project_recipe(args.file, args.project, processing)
+            else:
+                capture_recipe(args.file, processing)
             return EXIT_OK
         except (ValueError, OSError, TypeError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -749,6 +765,13 @@ def _run_cli_admitted(argv: List[str]) -> int:
         if any(not os.path.isdir(path) for path in args.input):
             print("error: grouped fusion accepts folders only", file=sys.stderr)
             return EXIT_USAGE
+    if args.tile_overlap is not None and (args.tile_overlap < 0 or
+            args.tile_size is not None and args.tile_overlap >= args.tile_size):
+        print("error: --tile-overlap must be nonnegative and smaller than --tile-size", file=sys.stderr)
+        return EXIT_USAGE
+    if args.tile_threshold is not None and args.tile_threshold < 1:
+        print("error: --tile-threshold must be >= 1", file=sys.stderr)
+        return EXIT_USAGE
     if args.depth_map:
         # 提前校验：否则拼写错误要到融合全部跑完后才在 colorize 里炸掉
         try:

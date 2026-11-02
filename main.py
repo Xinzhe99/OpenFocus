@@ -1702,6 +1702,41 @@ class OpenFocus(QMainWindow):
             show_warning_box(self, trans.t("msg_error"),
                              trans.t('msg_project_save_failed').format(err=err))
 
+    def save_template_dialog(self) -> None:
+        from PyQt6.QtWidgets import QFileDialog
+        from utils.project_file import save_template, TEMPLATE_SUFFIX
+        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+        path, _ = QFileDialog.getSaveFileName(
+            self, trans.t('menu_save_template'), get_last_dialog_dir(),
+            f"OpenFocus Template (*{TEMPLATE_SUFFIX})")
+        if not path:
+            return
+        if not path.lower().endswith(TEMPLATE_SUFFIX):
+            path += TEMPLATE_SUFFIX
+        try:
+            save_template(self, path)
+            set_last_dialog_dir(path)
+            self._show_status_message(trans.t('msg_template_saved'), 8000)
+        except (OSError, ValueError, TypeError) as exc:
+            show_warning_box(self, trans.t('msg_error'), str(exc))
+
+    def open_template_dialog(self) -> None:
+        from PyQt6.QtWidgets import QFileDialog
+        from utils.project_file import load_template, apply_template, TEMPLATE_SUFFIX
+        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+        path, _ = QFileDialog.getOpenFileName(
+            self, trans.t('menu_open_template'), get_last_dialog_dir(),
+            f"OpenFocus Template, Recipe or Project (*{TEMPLATE_SUFFIX} *.json *.ofproj)")
+        if not path:
+            return
+        try:
+            settings = load_template(path)
+            apply_template(self, settings)
+            set_last_dialog_dir(path)
+            self._show_status_message(trans.t('msg_template_applied'), 8000)
+        except (OSError, ValueError, TypeError) as exc:
+            show_warning_box(self, trans.t('msg_error'), str(exc))
+
     def _update_project_title(self) -> None:
         """Window title: project name plus an unsaved-changes marker.
 

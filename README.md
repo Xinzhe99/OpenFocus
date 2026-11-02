@@ -304,15 +304,33 @@ or `output_dir`, and an `options` object. Paths are relative to the recipe file;
 move the recipe together with its input files to preserve those relationships.
 Creation captures the CLI settings and resolved algorithm parameters. Unknown
 fields, invalid values and unsupported versions are rejected. A dry run checks
-the input without writing result files. Recipes describe CLI processing, not GUI
-session edits, labels, or `.ofproj` projects. Existing project files are unchanged.
+the input without writing result files. Existing project files remain unchanged.
+
+To capture settings from an existing `.ofproj`, explicitly select the new input
+and output. The project must still be able to resolve its original sources:
+
+```bash
+openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
+```
+
+This transfers fusion, registration, brightness, order and tile settings into
+the CLI recipe, and embeds the project's processing settings for the GUI. It
+does not transfer project frame exclusions, transforms, load scaling, labels,
+or edits; prepare the new input stack accordingly. In the GUI, File → Save
+Processing Template saves settings without source paths. File → Apply Processing
+Template applies a template, project, or project-backed recipe to the current
+stack without replacing its inputs, transforms, exclusions or labels. A template
+is not itself an executable recipe. The GUI settings embedded in a recipe are
+independent of its CLI options; if editing the JSON, keep both consistent.
 
 The same headless API is available without importing PyQt:
 
 ```python
-from core.recipes import capture_recipe, load_recipe, save_recipe, run_recipe
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
 
 capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
 recipe = load_recipe("workflow.json")  # validated dictionary with relative paths
 save_recipe("workflow.json", recipe)
 exit_code = run_recipe("workflow.json", dry_run=True)  # use False to process
