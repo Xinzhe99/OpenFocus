@@ -135,6 +135,27 @@ def test_standalone_applies_orientation_once(tmp_path, extension, dtype, orienta
     np.testing.assert_array_equal(context.frames[0].image, expected)
 
 
+@pytest.mark.parametrize('orientation', [5, 6, 7, 8])
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_oriented_tiff_result_matches_upright_png_source(tmp_path, dtype, orientation):
+    pixels = np.arange(15, dtype=dtype).reshape(3, 5) * 13
+    exif = Image.Exif()
+    exif[274] = orientation
+    result = tmp_path / 'result.tiff'
+    Image.fromarray(pixels).save(result, exif=exif)
+    expected = {
+        5: lambda a: np.swapaxes(a, 0, 1),
+        6: lambda a: np.rot90(a, -1),
+        7: lambda a: np.swapaxes(a, 0, 1)[::-1, ::-1],
+        8: lambda a: np.rot90(a, 1),
+    }[orientation](pixels)
+    source = tmp_path / 'source.png'
+    _write(source, expected)
+    base, context = load_standalone_retouch(str(result), [str(source)])
+    np.testing.assert_array_equal(base, expected)
+    np.testing.assert_array_equal(context.frames[0].image, expected)
+
+
 @pytest.mark.parametrize('extension', ['jpg', 'png', 'tiff'])
 def test_standalone_rejects_mismatched_upright_dimensions(tmp_path, extension):
     pixels = np.zeros((3, 5, 3), np.uint8)

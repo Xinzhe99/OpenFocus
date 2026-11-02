@@ -1737,12 +1737,14 @@ class RetouchDialog(QDialog):
             if self._applied or self._allow_close:
                 self._save_geometry()
                 self._shutdown_sharpness()
+                self.deleteLater()
                 event.accept()
                 return
             if self._confirm_close():
                 self._allow_close = True
                 self._save_geometry()
                 self._shutdown_sharpness()
+                self.deleteLater()
                 event.accept()
             else:
                 event.ignore()

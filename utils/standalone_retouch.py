@@ -51,10 +51,14 @@ def _read_single_image(path, expected_size=None):
         if getattr(image, "n_frames", 1) != 1:
             raise ValueError(f"{path}: multiple pages")
         orientation = image.getexif().get(274, 1)
-        size = image.size[::-1] if orientation in (5, 6, 7, 8) else image.size
+        is_tiff = image.format == 'TIFF'
+        # Pillow may expose TIFF's oriented size after examining the IFD.
+        # The TIFF tags always describe the encoded pixel grid.
+        raw_size = ((int(image.tag_v2[256]), int(image.tag_v2[257]))
+                    if is_tiff else image.size)
+        size = raw_size[::-1] if orientation in (5, 6, 7, 8) else raw_size
         if expected_size is not None and size != expected_size:
             raise ValueError(f"{path}: dimensions do not match the result")
-        is_tiff = image.format == 'TIFF'
     data = np.fromfile(path, dtype=np.uint8)
     if is_tiff:
         _neutralize_tiff_orientation(data)
