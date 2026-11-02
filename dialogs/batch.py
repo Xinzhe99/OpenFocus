@@ -470,7 +470,7 @@ class BatchProcessingDialog(QDialog):
         from ui.sensor_cleanup import SensorCleanupControls
         self.sensor_cleanup = SensorCleanupControls(
             getattr(self.parent_window, 'defect_mask_path', ''),
-            getattr(self.parent_window, 'sensor_denoise', False))
+            getattr(self.parent_window, 'sensor_denoise', False), show_scope=False)
         options_layout.addWidget(self.sensor_cleanup)
         self.sensor_cleanup.path.textChanged.connect(lambda: self.update_single_folder_preview())
 

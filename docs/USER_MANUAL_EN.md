@@ -872,8 +872,14 @@ Review its extent before processing. Masks covering more than 10% of the frame,
 or defects without an unmasked neighbor, are rejected. Keep the mask at the
 original resolution and do not select it as a source image.
 For GUI processing, load source frames at full scale when using a defect mask;
-the mask is never resized. Pre-aligned ROI processing cannot be combined with
-sensor cleanup. Reprocess the full stack instead.
+the mask is never resized. Sensor cleanup (including denoise) cannot be applied
+to a GUI stack after a rotation, flip, flat-field correction, or other source
+change: reload the original frames or disable cleanup. This also applies to
+restored projects with such source histories. Pre-aligned ROI processing cannot
+be combined with sensor cleanup; leave ROI mode and render the full stack.
+Cleanup settings belong to the current session and saved project, not global
+application preferences. Batch and CLI process their original inputs separately,
+with sensor cleanup before flat-field correction and registration.
 
 The optional sensor denoise is independent of the defect mask and is disabled
 by default. Inspect the result at full size to decide whether its smoothing is

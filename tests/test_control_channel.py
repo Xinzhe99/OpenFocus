@@ -896,6 +896,32 @@ def test_render_state_is_idle_without_a_finished_render(server, control_window):
         control_window.fusion_result = None
 
 
+@pytest.mark.parametrize('roi', [False, True])
+def test_render_start_reports_sensor_cleanup_validation(server, control_window, monkeypatch, roi):
+    from controllers import render_manager as render_module
+    from locales import trans
+
+    monkeypatch.setattr(control_window, 'current_fusion_method', lambda: 'dct')
+    monkeypatch.setattr(control_window, 'current_alignment_method', lambda: 'none')
+    monkeypatch.setattr(render_module, 'show_warning_box',
+                        lambda *args: pytest.fail('control render opened a dialog'))
+    frames = [np.zeros((16, 16, 3), np.uint8) for _ in range(2)]
+    control_window.raw_images = frames
+    control_window.image_filenames = ['a.tif', 'b.tif']
+    control_window.excluded_frames = set()
+    control_window.sensor_denoise = True
+    control_window.roi_mode_active = roi
+    control_window.roi_aligned_images = frames if roi else []
+    control_window.source_transforms = [] if roi else [{'operation': 'flat_field'}]
+
+    response = call(server, 'render.start')
+    key = 'sensor_roi_unsupported' if roi else 'sensor_history_unsupported'
+    assert response['error']['code'] == 'invalid_argument'
+    assert response['error']['message'] == trans.t(key)
+    assert control_window.render_manager.worker is None
+    assert control_window.btn_render.isEnabled()
+
+
 def test_render_start_reports_confirmation_without_a_modal(server, control_window,
                                                            monkeypatch):
     monkeypatch.setattr(control_window, "current_fusion_method", lambda: "stackmffv3")

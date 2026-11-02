@@ -324,7 +324,10 @@ class RenderWorker(QThread):
         else:
             processed_images = self.raw_images.copy()
             if cleanup:
-                from utils.sensor_cleanup import load_sensor_defect_mask, cleanup_sensor_image
+                from utils.sensor_cleanup import (load_sensor_defect_mask, cleanup_sensor_image,
+                                                  require_sensor_cleanup_stack)
+                require_sensor_cleanup_stack(processed_images, self.defect_mask_path,
+                                             self.sensor_denoise)
                 mask = (load_sensor_defect_mask(self.defect_mask_path, cancel_callback=lambda: self.is_cancelled)
                         if self.defect_mask_path else None)
                 processed_images = [cleanup_sensor_image(image, defect_mask_path=mask,
@@ -1009,7 +1012,9 @@ class BatchWorker(QThread):
                 if mask_path and float(self.processing_settings.get('load_scale_factor', 1.0)) != 1.0:
                     raise ValueError('A sensor defect mask requires images loaded at 100% scale')
                 if mask_path or denoise:
-                    from utils.sensor_cleanup import load_sensor_defect_mask, cleanup_sensor_image
+                    from utils.sensor_cleanup import (load_sensor_defect_mask, cleanup_sensor_image,
+                                                      require_sensor_cleanup_stack)
+                    require_sensor_cleanup_stack(aligned_images, mask_path, denoise)
                     mask = (load_sensor_defect_mask(mask_path, cancel_callback=lambda: self.is_cancelled)
                             if mask_path else None)
                     aligned_images = [cleanup_sensor_image(frame, defect_mask_path=mask,

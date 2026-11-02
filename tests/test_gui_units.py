@@ -424,6 +424,61 @@ def _patched_render_manager(monkeypatch, window, ai_available=False):
 
     return render_module.RenderManager(window), saved
 
+@pytest.mark.parametrize('history,operation', [
+    ({'operation': 'flip', 'code': 1}, lambda image: cv2.flip(image, 1)),
+    ({'operation': 'rotate', 'code': cv2.ROTATE_90_CLOCKWISE},
+     lambda image: cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)),
+    ({'operation': 'flat_field'}, lambda image: image // 2),
+])
+@pytest.mark.parametrize('mask,denoise', [('mask.png', False), ('', True)])
+def test_sensor_cleanup_rejects_transformed_square_stack(qapp, monkeypatch, history, operation, mask, denoise):
+    from controllers import render_manager as render_module
+    from locales import trans
+
+    original = np.zeros((16, 16, 3), np.uint8)
+    original[2, 4] = 255
+    window = _render_window([operation(original), operation(original)])
+    window.source_transforms = [history]
+    window.defect_mask_path = mask
+    window.sensor_denoise = denoise
+    manager, _ = _patched_render_manager(monkeypatch, window)
+    warnings = []
+    monkeypatch.setattr(render_module, 'show_warning_box', lambda *args: warnings.append(args))
+
+    assert manager.start_render() == 'sensor_history_unsupported'
+    assert warnings[0][2] == trans.t('sensor_history_unsupported')
+    assert manager.worker is None
+    assert window.btn_render.isEnabled() and window.combo_fusion.isEnabled()
+    window.defect_mask_path = ''
+    window.sensor_denoise = False
+    assert manager.start_render() == 'started'
+
+
+@pytest.mark.parametrize('history,roi', [(['modified pixels'], False), ([], True)])
+def test_sensor_cleanup_rejection_restores_controls(qapp, monkeypatch, history, roi):
+    from controllers import render_manager as render_module
+    from locales import trans
+
+    frames = [np.zeros((16, 16, 3), np.uint8) for _ in range(2)]
+    window = _render_window(frames)
+    window.unrecoverable_source_changes = history
+    window.roi_mode_active = roi
+    window.roi_aligned_images = frames if roi else []
+    window.sensor_denoise = True
+    manager, _ = _patched_render_manager(monkeypatch, window)
+    manager._compare_mode = True
+    manager._compare_queue = ['dct']
+    window.btn_render.setEnabled(False)
+    window.combo_fusion.setEnabled(False)
+    warnings = []
+    monkeypatch.setattr(render_module, 'show_warning_box', lambda *args: warnings.append(args))
+
+    status = 'sensor_roi_unsupported' if roi else 'sensor_history_unsupported'
+    assert manager.start_render() == status
+    assert warnings[0][2] == trans.t(status)
+    assert manager.worker is None and not manager._compare_mode
+    assert window.btn_render.isEnabled() and window.combo_fusion.isEnabled()
+
 
 def _finish_alignment(manager, window, stack):
     """Registration-only result: same count, different (aligned) frames."""

@@ -11,6 +11,9 @@ when their difference is at most 4 (8-bit) or 1028 (16-bit) levels. Calculations
 stay in the source's native intensity range, including 16-bit low-order bits.
 """
 from dataclasses import dataclass, field
+import os
+
+from PIL import Image
 
 import cv2
 import numpy as np
@@ -27,6 +30,48 @@ def _check_cancel(callback):
         raise SensorCleanupCancelled()
 
 
+def _mask_decode_bytes(path):
+    """Estimate encoded data and worst-case decoder buffers from the header."""
+    try:
+        encoded_bytes = os.path.getsize(path)
+        with Image.open(path) as header:
+            width, height = header.size
+        if width <= 0 or height <= 0:
+            raise ValueError("Invalid mask dimensions")
+    except (OSError, ValueError, SyntaxError) as exc:
+        raise ValueError(f"Cannot inspect sensor defect mask: {path}") from exc
+    # OpenCV can decode four 16-bit channels even though validation later
+    # rejects them; allow an additional decoder-sized working buffer.
+    return encoded_bytes + width * height * 16
+
+
+def _cleanup_temporary_bytes(image, sensor_denoise):
+    height, width = image.shape[:2]
+    tile_pixels = min(height, 256) * min(width, 256)
+    # Nonzero coordinates and validation/selection arrays for a mask tile.
+    temporary = tile_pixels * 20
+    if sensor_denoise:
+        halo_pixels = min(height, 258) * min(width, 258)
+        # Float input, Gaussian result, arithmetic and selection buffers.
+        temporary = max(temporary, halo_pixels * 32)
+    return temporary
+
+
+def require_sensor_cleanup_stack(images, defect_mask_path=None, sensor_denoise=False):
+    """Admit cleaned stack copies, mask decode and peak per-image buffers."""
+    if not defect_mask_path and not sensor_denoise:
+        return
+    from core.resource_policy import require_memory
+
+    copies = sum(image.nbytes for image in images)
+    temporary = max((_cleanup_temporary_bytes(image, sensor_denoise)
+                     + (image.nbytes if sensor_denoise else 0)
+                     for image in images), default=0)
+    mask_bytes = (_mask_decode_bytes(defect_mask_path)
+                  if defect_mask_path and not isinstance(defect_mask_path, SensorDefectMask)
+                  else 0)
+    require_memory(copies + temporary + mask_bytes)
+
 @dataclass(frozen=True, eq=False)
 class SensorDefectMask:
     """Validated sensor mask and its inspection metadata."""
@@ -39,6 +84,9 @@ class SensorDefectMask:
 
 def load_sensor_defect_mask(path, cancel_callback=None):
     """Decode and validate a binary mask once for reuse across a stack."""
+    _check_cancel(cancel_callback)
+    from core.resource_policy import require_memory
+    require_memory(_mask_decode_bytes(path))
     _check_cancel(cancel_callback)
     try:
         encoded = np.fromfile(path, dtype=np.uint8)
@@ -99,6 +147,10 @@ def cleanup_sensor_image(image, defect_mask_path=None, sensor_denoise=False,
     height, width = image.shape[:2]
     if mask is not None and (mask.height, mask.width) != (height, width):
         raise ValueError("Sensor defect mask dimensions do not match the image")
+    from core.resource_policy import require_memory
+    require_memory(image.nbytes * (2 if sensor_denoise else 1)
+                   + _cleanup_temporary_bytes(image, sensor_denoise))
+    _check_cancel(cancel_callback)
     result = image.copy()
     # Two- and four-channel images carry alpha in their last channel.
     channels = image.shape[2] if image.ndim == 3 else 1

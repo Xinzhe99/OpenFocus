@@ -100,3 +100,52 @@ def test_cancel_before_and_during_processing(tmp_path):
         cleanup_sensor_image(image, sensor_denoise=True, cancel_callback=lambda: next(calls))
     with pytest.raises(SensorCleanupCancelled):
         load_sensor_defect_mask(_save_mask(tmp_path, image), lambda: True)
+
+
+def test_mask_memory_rejected_before_encoded_read_and_decode(tmp_path, monkeypatch):
+    from core import resource_policy
+    from utils import sensor_cleanup
+
+    mask = np.zeros((300, 400), np.uint16)
+    path = _save_mask(tmp_path, mask)
+    requests = []
+
+    def reject(amount):
+        requests.append(amount)
+        raise resource_policy.ResourceLimitError("full")
+
+    monkeypatch.setattr(resource_policy, "require_memory", reject)
+    monkeypatch.setattr(sensor_cleanup.np, "fromfile", lambda *a, **k: pytest.fail("read before admission"))
+    monkeypatch.setattr(sensor_cleanup.cv2, "imdecode", lambda *a, **k: pytest.fail("decode before admission"))
+    with pytest.raises(resource_policy.ResourceLimitError):
+        load_sensor_defect_mask(path)
+    assert requests == [path.stat().st_size + mask.size * 16]
+
+
+def test_cleanup_admits_copy_and_denoise_buffers_before_copy(monkeypatch):
+    from core import resource_policy
+
+    image = np.zeros((300, 400, 4), np.uint16)
+    requests = []
+
+    def reject(amount):
+        requests.append(amount)
+        raise resource_policy.ResourceLimitError("full")
+
+    monkeypatch.setattr(resource_policy, "require_memory", reject)
+    with pytest.raises(resource_policy.ResourceLimitError):
+        cleanup_sensor_image(image, sensor_denoise=True)
+    assert requests[0] >= 2 * image.nbytes + 258 * 258 * 32
+
+
+def test_stack_admission_accounts_for_all_copies_and_mask(tmp_path, monkeypatch):
+    from core import resource_policy
+    from utils.sensor_cleanup import require_sensor_cleanup_stack
+
+    images = [np.zeros((300, 400, 3), np.uint8) for _ in range(3)]
+    path = _save_mask(tmp_path, np.zeros((300, 400), np.uint8))
+    requests = []
+    monkeypatch.setattr(resource_policy, "require_memory", requests.append)
+    require_sensor_cleanup_stack(images, path, True)
+    assert requests[0] >= (sum(image.nbytes for image in images) + images[0].nbytes
+                           + 258 * 258 * 32 + path.stat().st_size + 300 * 400 * 16)
