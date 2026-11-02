@@ -109,6 +109,57 @@ def _exercise(executable: Path, environment: dict, root: Path,
     if not np.any(result % 257):
         raise RuntimeError("Packaged desktop export lost 16-bit precision")
 
+    # Exercise the actual output-list action so packaged lazy imports and
+    # the 16-bit Photoshop layer tag are checked on both release platforms.
+    from locales import trans
+    from psdtags import PsdKey, TiffImageSourceData
+
+    nodes = _call(executable, environment, "ui.find", "--window", "main",
+                  "--object-name", "outputList").get("matches", [])
+    if not nodes:
+        raise RuntimeError("Packaged desktop output list was not found")
+    _call(executable, environment, "ui.mouse", "--path", nodes[0]["path"],
+          "--action", "right_click", "--x", "20", "--y", "20")
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if _call(executable, environment, "ui.context").get("level") == "popup":
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("Packaged output menu did not open")
+    actions = _call(executable, environment, "ui.menu").get("actions", [])
+    labels = {table.get("action_export_layered_tiff")
+              for table in trans.translations.values()}
+    action = next((entry for entry in actions if entry.get("text") in labels), None)
+    if action is None or not action.get("enabled"):
+        raise RuntimeError("Packaged layered TIFF action is unavailable")
+    _call(executable, environment, "ui.menu", "--index", str(action["index"]))
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        dialogs = _call(executable, environment, "dialog.list").get("dialogs", [])
+        if any(dialog.get("class") == "QFileDialog" for dialog in dialogs):
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("Packaged layered TIFF file dialog did not open")
+    layered = root / "layered.tif"
+    _call(executable, environment, "dialog.file", "--path", str(layered))
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        dialogs = _call(executable, environment, "dialog.list").get("dialogs", [])
+        if any(dialog.get("class") == "QMessageBox" for dialog in dialogs):
+            raise RuntimeError(f"Packaged layered TIFF export failed: {dialogs}")
+        if layered.is_file() and not dialogs:
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("Packaged layered TIFF export did not finish")
+    composite = cv2.imdecode(np.fromfile(str(layered), np.uint8), cv2.IMREAD_UNCHANGED)
+    layers = TiffImageSourceData.fromtiff(layered).layers
+    if (not np.array_equal(composite, result) or layers.key != PsdKey.LAYER_16
+            or len(layers.layers) != 3):
+        raise RuntimeError("Packaged layered TIFF lost its composite or source layers")
+
 
 def run(executable: Path) -> None:
     executable = executable.resolve()
