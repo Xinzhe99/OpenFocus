@@ -48,7 +48,10 @@ POSSIBILITY OF SUCH DAMAGE.
 ## StackMFF V3 — neural fusion model
 
 - **Upstream**: https://github.com/Xinzhe99/StackMFF-V3
-- **License**: MIT, Copyright (c) 2026 Xinzhe Xie
+- **License of the bundled snapshot**: MIT, Copyright (c) 2026 Xinzhe Xie.
+  Upstream releases through [v2.0](https://github.com/Xinzhe99/StackMFF-V3/blob/v2.0/LICENSE)
+  used MIT; the [current upstream license](https://github.com/Xinzhe99/StackMFF-V3/blob/main/LICENSE)
+  is a separate source-available license.
 - **Vendored code**: `core/models/stackmff_v3/network.py` (the network
   architecture: `StackMFFLoop`, `StackMFFV3` and their building blocks) and
   `core/models/stackmff_v3/model_io.py` (checkpoint loading and the released

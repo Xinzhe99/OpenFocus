@@ -301,6 +301,8 @@ OpenFocus 应用以 [MIT 许可](../../LICENSE) 发布。
 
 **StackMFF 系列例外。** StackMFF 融合算法——目前包括 StackMFF V3 及未来任何同系列版本——归 OpenFocus 项目所有，项目保留 StackMFF 系列的全部权利。你可以在 OpenFocus 中使用它们处理自己的图像和内部工作；复制、移植或迁移到其他开源项目需要事先获得书面许可。
 
+此处随附的 V3 副本及上游截至 v2.0 的发行版均按 MIT 许可发布；上述限制不改变这些版本的 MIT 条款。详见[第三方许可声明](../../THIRD_PARTY_NOTICES.md)。
+
 <a id="developing"></a>
 ## 开发
 

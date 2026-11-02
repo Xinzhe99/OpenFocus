@@ -422,6 +422,10 @@ ramach OpenFocus do własnych obrazów i pracy wewnętrznej. Kopiowanie, portowa
 lub przenoszenie tych algorytmów do innego projektu open source wymaga uprzedniej
 pisemnej zgody.
 
+Dołączona tutaj wersja V3 oraz wydania projektu źródłowego do v2.0 włącznie były
+rozpowszechniane na licencji MIT; powyższe ograniczenie nie zmienia ich warunków
+MIT. Zobacz [informacje o komponentach zewnętrznych](../../THIRD_PARTY_NOTICES.md).
+
 <a id="developing"></a>
 ## Rozwój
 
