@@ -5,6 +5,9 @@ Static marketing site for OpenFocus: English at `/`, Simplified Chinese at
 language with CSS and JavaScript inlined, deployed as Cloudflare Workers
 static assets.
 
+Full operating manual (architecture, R2 mirror, release checklist,
+troubleshooting): [`docs/WEBSITE_OPERATIONS.md`](../docs/WEBSITE_OPERATIONS.md).
+
 ## Build
 
 ```bash
