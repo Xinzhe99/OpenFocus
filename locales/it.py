@@ -1,6 +1,10 @@
 """Italian language pack for OpenFocus."""
 
 PACK = {
+    'standalone_retouch_action': 'Ritocca file immagine…',
+    'standalone_retouch_result': 'Scegli immagine risultato',
+    'standalone_retouch_sources': 'Scegli fotogrammi sorgente corrispondenti',
+    'standalone_retouch_intro': 'Scegli un risultato e fotogrammi sorgente già allineati sulla stessa griglia di pixel. Tutte le immagini devono avere dimensioni, canali e profondità di 8 o 16 bit identici. Dimensioni uguali non dimostrano l’allineamento.',
     'batch_group_size': 'Dimensione gruppo:',
     'batch_group_overlap': 'Sovrapposizione:',
     'batch_group_disabled': 'Disattivato',

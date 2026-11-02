@@ -13,7 +13,9 @@ def _read_single_image(path, expected_size=None):
     with Image.open(path) as image:
         if getattr(image, "n_frames", 1) != 1:
             raise ValueError(f"{path}: multiple pages")
-        if expected_size is not None and image.size != expected_size:
+        orientation = image.getexif().get(274, 1)
+        size = image.size[::-1] if orientation in (5, 6, 7, 8) else image.size
+        if expected_size is not None and size != expected_size:
             raise ValueError(f"{path}: dimensions do not match the result")
     image = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     if image is None:
@@ -21,6 +23,8 @@ def _read_single_image(path, expected_size=None):
     if image.dtype not in (np.uint8, np.uint16) or not (
             image.ndim == 2 or (image.ndim == 3 and image.shape[2] == 3)):
         raise ValueError(f"{path}: expected 8/16-bit grayscale or RGB image without alpha")
+    from core.image_loader import apply_exif_orientation
+    image = apply_exif_orientation(path, image)
     return image
 
 
@@ -49,8 +53,10 @@ def load_standalone_retouch(result_path, source_paths, *, progress=None):
                                   name=os.path.basename(path), image=image))
     if progress is not None and not progress(len(source_paths), len(source_paths)):
         return None
+    from core.image_loader import common_icc_profile
     context = RenderContext(context_id=new_context_id(), algorithm="user-selected",
                             alignment_steps=(), width=base.shape[1], height=base.shape[0],
                             dtype=base.dtype, frames=tuple(frames),
+                            icc_profile=common_icc_profile([result_path, *source_paths]),
                             parameters={"selected_retouch_sources": True})
     return base, context

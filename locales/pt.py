@@ -1,6 +1,10 @@
 """Portuguese (Brazil) language pack for OpenFocus."""
 
 PACK = {
+    'standalone_retouch_action': 'Retocar arquivos de imagem…',
+    'standalone_retouch_result': 'Escolher imagem de resultado',
+    'standalone_retouch_sources': 'Escolher quadros de origem correspondentes',
+    'standalone_retouch_intro': 'Escolha um resultado e quadros de origem já alinhados na mesma grade de pixels. Todas as imagens devem ter as mesmas dimensões, canais e profundidade de 8 ou 16 bits. Dimensões iguais não comprovam o alinhamento.',
     'batch_group_size': 'Tamanho do grupo:',
     'batch_group_overlap': 'Sobreposição:',
     'batch_group_disabled': 'Desativado',
