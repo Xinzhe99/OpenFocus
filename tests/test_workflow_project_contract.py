@@ -146,7 +146,7 @@ def test_project_roundtrips_per_method_parameters(tmp_path):
                                     ("exposure_match", "openfocus_b"): False}
     window.set_fusion_parameters("openfocus_c", {"blend_smoothing": 3.5})
     window.set_fusion_parameters("dct", {"kernel_size": 11})
-    window.set_registration_parameters("openfocus", {"max_shift_ratio": .12})
+    window.set_registration_parameters("openfocus", {"max_shift_ratio": .12, "failure_policy": "fail"})
     state = project_file._collect_state(window)
     restored = _window(paths, str(tmp_path))
     project_file._apply_after_load(restored, state)
@@ -154,7 +154,7 @@ def test_project_roundtrips_per_method_parameters(tmp_path):
     assert restored._brightness_by_method[("exposure_match", "openfocus_b")] is False
     assert restored.fusion_parameters_for("openfocus_c") == {"blend_smoothing": 3.5}
     assert restored.fusion_parameters_for("dct") == {"kernel_size": 11}
-    assert restored.registration_parameters_for("openfocus") == {"max_shift_ratio": .12}
+    assert restored.registration_parameters_for("openfocus") == {"max_shift_ratio": .12, "failure_policy": "fail"}
 
 
 def test_project_does_not_rebind_missing_absolute_source_to_same_basename(tmp_path):
