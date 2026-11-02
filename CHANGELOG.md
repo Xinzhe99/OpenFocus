@@ -38,6 +38,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   batch folders retain their own profiles; mixed or untagged stacks are not
   assigned a potentially incorrect profile. PNG/TIFF keep their 16-bit pixels.
 
+### Changed
+- **Desktop controls** show grouped-batch, tile, ROI base-frame and
+  depth-calibration settings only when their parent option is enabled.
+  Alignment diagnostic collection is configured in Advanced Settings, and
+  numeric controls share a compact style.
+- **Label and retouch controls** keep the editor usable in narrower windows;
+  long retouch toolbar captions wrap rather than being clipped, and full label
+  summaries remain available as tooltips.
+- **Method selectors** explain when the optional DTCWT backend or neural
+  dependency is unavailable across the main, batch, comparison and depth views.
+- **Agent tooling** can isolate application data and discovery files for GUI
+  automation, and the control guide documents the current workflows.
+- **Website and installers** include a maintained deployment runbook, safer
+  installation rollback, and range-aware mirrored downloads.
+- **Manual checks** validate numbered chapters, code-fence balance and local
+  file links without requiring translated examples to have identical layouts.
+- **Continuous integration** runs the regression suite on macOS as well as
+  Windows and Linux.
+
 ### Fixed
 - **Memory status** now uses the same cross-platform physical-memory probe as
   the resource planner, so it can report available readings on macOS and Linux.

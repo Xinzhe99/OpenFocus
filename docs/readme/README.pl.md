@@ -6,10 +6,10 @@
 
 <h1 align="center">OpenFocus</h1>
 
-<p align="center"><strong>Każda płaszczyzna ostrości. Jeden w pełni ostry obraz.</strong></p>
+<p align="center"><strong>Każdy piksel z najostrzejszej klatki.</strong></p>
 
 <p align="center">
-  Dziesięć algorytmów fuzji, trzy tryby rejestracji i obszar retuszu powiązany ze źródłem dla makro, mikroskopii i stosów przemysłowych. 16 bitów na całej ścieżce, bezgłowy CLI i interfejs w dwunastu językach.
+  Dziesięć algorytmów fuzji, tryb tylko wyrównania, cztery metody rejestracji i przestrzeń retuszu powiązana ze źródłami dla makrofotografii, mikroskopii i stosów przemysłowych. 16 bitów na całej ścieżce, headless CLI i interfejs w dwunastu językach.
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 <p align="center">
   <a href="#install">Pobierz</a> ·
   <a href="../USER_MANUAL_PL.md">Dokumentacja</a> ·
-  <a href="../../CHANGELOG.md">Zmiany</a> ·
+  <a href="../../CHANGELOG.md">Historia zmian</a> ·
   <a href="https://doi.org/10.5281/zenodo.23050823">DOI</a>
 </p>
 
@@ -52,56 +52,71 @@
   <img src="../../assets/ui.png" alt="Interfejs OpenFocus" width="880">
 </p>
 
-## 📢 News
+## 📢 Aktualności
 
 > [!NOTE]
-> **v1.72.0** — StackMFF i StackMFF V2 dołączają do fuzji: dziesięć metod w jednej instalacji — oryginalna sieć 3D (niezależna od kolejności, bez ustawień), model rekurencyjny V2 z mapami głębi (zachowaj kolejność ostrości) i jednolicie nazwany StackMFF V3. Każdy selektor grupuje według AI, domeny przestrzennej i domeny przekształceń, a każda metoda opisuje się po najechaniu. Rozmyte miękkie mieszanie V2 usunięto; próbkowanie referencyjne pozostało bez zmian.
+> **v1.74.0** — Zaktualizowano fuzję OpenFocus A/B/C i szybkie wyrównanie.
+> Aplikacja desktopowa uruchamia teraz automatycznie uwierzytelniony lokalny
+> kanał agenta, więc `openfocus ctl` może sterować działającym oknem bez
+> specjalnej flagi uruchomienia.
+
+Wcześniejsze wydania opisuje [historia zmian](../../CHANGELOG.md).
+
+📸 Jeśli publikujesz obrazy utworzone w OpenFocus, rozważ dodanie notki:
+
+> Utworzono w OpenFocus — https://openfocus.top
+
+Nie jest to obowiązkowe, ale bardzo mile widziane.
 
 <a id="features"></a>
-## Najważniejsze funkcje
+## Funkcje
 
 <table>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### Fuzja AI: StackMFF V3
 
-Domyślna metoda klasyfikuje każdy piksel do najbardziej prawdopodobnej klatki źródłowej za pomocą sieci neuronowej. Na tym samym wyrównanym stosie krawędzie liter pozostają ostrzejsze, a powierzchnie czystsze niż w Guided Filter (ostrość laplasjanowa 27,1 vs 28,5); wobec syntetycznej prawdy prowadzi w PSNR i SSIM i zostawia mniej duchów niż jakikolwiek klasyczny algorytm.
+Domyślna metoda wykorzystuje sieć neuronową do oszacowania najbardziej
+prawdopodobnej klatki źródłowej dla każdego piksela, a następnie miesza wkłady
+klatek lub wybiera najbardziej prawdopodobną klatkę. Benchmark syntetyczny
+porównuje metody ze znanym wzorcem; wyniki zależą od stosu i ustawień.
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [Benchmark →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](../../tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/ai.mp4"><picture><source srcset="../../assets/readme/ai.gif" type="image/gif"><img src="../../assets/readme/ai_poster.jpg" alt="Fuzja AI: StackMFF V3" width="100%" /></picture></a>
+<a href="../../assets/readme/ai.mp4"><picture><source srcset="../../assets/readme/ai.gif" type="image/gif"><img src="../../assets/readme/ai_poster.jpg" alt="StackMFF V3 i Guided Filter na tym samym stosie" width="100%" /></picture></a>
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
-### Porównanie A/B
+### Porównanie suwakiem
 
-Przeciągnij podziałkę po klatce źródłowej i wyniku, aby zobaczyć, co zmieniła fuzja: dryf wyrównania, obwódki na krawędziach i utracony detal, przy dowolnym powiększeniu.
+Przeciągnij dzielnik po klatce źródłowej i wyniku fuzji, aby dokładnie zobaczyć,
+co zmieniło mieszanie: przesunięcie wyrównania, obwódki na krawędziach i utracone
+szczegóły są widoczne od razu, przy dowolnym powiększeniu.
 
-[Podręcznik →](./docs/USER_MANUAL_PL.md)
+[Podręcznik →](../USER_MANUAL_PL.md)
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/wipe.mp4"><picture><source srcset="../../assets/readme/wipe.gif" type="image/gif"><img src="../../assets/readme/wipe_poster.jpg" alt="Porównanie A/B klatki i wyniku" width="100%" /></picture></a>
+<a href="../../assets/readme/wipe.mp4"><picture><source srcset="../../assets/readme/wipe.gif" type="image/gif"><img src="../../assets/readme/wipe_poster.jpg" alt="Porównanie suwakiem klatki źródłowej i wyniku" width="100%" /></picture></a>
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### Porównanie metod
 
-Wyrenderuj wszystkie metody raz, porównaj je obok siebie na tym samym kadrze i przyjmij zwycięzcę jako nowy wynik lub skopiuj jego parametry do okna głównego.
+Wyrenderuj wszystkie metody za jednym razem, obejrzyj je obok siebie na wspólnym
+fragmencie, a następnie przyjmij zwycięzcę jako nowy wynik albo przenieś jego
+parametry z powrotem do głównego okna.
 
 </td>
 <td width="54%">
@@ -110,13 +125,13 @@ Wyrenderuj wszystkie metody raz, porównaj je obok siebie na tym samym kadrze i 
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### Mapa głębi i 3D
 
-Pozycja ostrości na piksel z pięciu miar, naukowe palety, fizyczna kalibracja Z z metadanych TIFF i eksport teksturowanego OBJ powierzchni.
+Położenie ostrości dla każdego piksela według siedmiu miar, naukowe palety barw,
+kalibracja fizycznej osi Z z metadanych TIFF oraz eksport teksturowanej siatki OBJ.
 
 </td>
 <td width="54%">
@@ -125,28 +140,36 @@ Pozycja ostrości na piksel z pięciu miar, naukowe palety, fizyczna kalibracja 
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
-### Retusz powiązany ze źródłem
+### Retusz powiązany ze źródłami
 
-Maluj z klatek, które naprawdę utworzyły wynik: wspólny zoom i przesuwanie, suwak klatki źródłowej, miękki pędzel, pędzel przywracania, cofanie na pociągnięcie i ochrona niewyeksportowanych pikseli.
+Maluj pikselami z klatek, które naprawdę utworzyły wynik: wspólne powiększenie
+i przesuwanie, suwak klatki źródłowej, miękki pędzel, pędzel przywracania,
+cofanie całych pociągnięć i ochrona niewyeksportowanych pikseli.
+Zastosuj retusz jako nowy wynik, a następnie kliknij go prawym przyciskiem i
+wybierz **Eksportuj TIFF z warstwami…**, aby zapisać go razem z klatkami
+źródłowymi. Etykiety na żywo i paski skali nie są dołączane. GIMP 3.2.6 w systemie Windows
+otwiera wynik i warstwy źródeł; inne edytory nie były testowane.
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/retouch.mp4"><picture><source srcset="../../assets/readme/retouch.gif" type="image/gif"><img src="../../assets/readme/retouch_poster.jpg" alt="Obszar retuszu z klatką i wynikiem" width="100%" /></picture></a>
+<a href="../../assets/readme/retouch.mp4"><picture><source srcset="../../assets/readme/retouch.gif" type="image/gif"><img src="../../assets/readme/retouch_poster.jpg" alt="Przestrzeń retuszu z klatką źródłową i wynikiem" width="100%" /></picture></a>
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### Przetwarzanie wsadowe
 
-Wskaż folder ze stosami, wybierz metodę i miejsce docelowe, a potem zostaw. Samo wyrównanie zapisuje folder na stos; fuzja zapisuje i pokazuje wyłącznie obraz wynikowy.
+Wskaż folder ze stosami, wybierz metodę i miejsce docelowe, a potem zostaw
+program. Tryb tylko wyrównania zapisuje jeden folder na stos; fuzja zapisuje
+obraz wynikowy i pokazuje w liście wyłącznie jego. Opcjonalna fuzja grupowa
+wymienia dokładną równoważność z przetwarzaniem całego stosu na ograniczone
+zużycie pamięci i miejsca tymczasowego na dysku.
 
 </td>
 <td width="54%">
@@ -155,86 +178,254 @@ Wskaż folder ze stosami, wybierz metodę i miejsce docelowe, a potem zostaw. Sa
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
-### Paski skali do publikacji
+### Paski skali publikacyjnej
 
-Kalibrowane z metadanych TIFF lub ręcznie, rysowane prawdziwą czcionką w rzeczywistej długości i wypalane w każdym eksporcie: obraz, stos, TIFF, GIF i wsad. Jeśli pasek nie mieści się czytelnie, okno to zgłasza zamiast rysować krótszy pasek z niepasującym opisem.
+Kalibrowane z metadanych TIFF lub wpisywane ręcznie, rysowane prawdziwą czcionką
+w rzeczywistej długości i wpalane w każdy eksport — pojedyncze obrazy, stosy,
+wielostronicowy TIFF, GIF i wyniki wsadowe. Jeśli pasek nie mieści się czytelnie,
+program to zgłasza zamiast drukować długość, której nie rysuje.
 
-[Podręcznik →](./docs/USER_MANUAL_PL.md)
+[Podręcznik →](../USER_MANUAL_PL.md)
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/scalebar.mp4"><picture><source srcset="../../assets/readme/scalebar.gif" type="image/gif"><img src="../../assets/readme/scalebar_poster.jpg" alt="Okno paska skali z podglądem" width="100%" /></picture></a>
+<a href="../../assets/readme/scalebar.mp4"><picture><source srcset="../../assets/readme/scalebar.gif" type="image/gif"><img src="../../assets/readme/scalebar_poster.jpg" alt="Okno paska skali z podglądem na żywo" width="100%" /></picture></a>
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
-### Etykiety i podpisy
+### Etykiety i adnotacje
 
-Podpisy to zarządzana lista: każdy ma własny zakres (źródło, wyrównany stos lub konkretny wynik), zakres klatek i styl. Podgląd i każdy eksport używają tego samego celu i numeru klatki, więc `{value}` czyta się tak samo w Zapisz, Zapisz jako, przeciąganiu i Eksportuj wszystko.
+Prowadź zarządzaną listę etykiet; każda ma własny zakres (stos źródłowy, stos
+wyrównany lub konkretny wynik), zakres klatek i styl. Podgląd i każdy eksport
+używają tego samego celu i numeru klatki, więc `{value}` czyta się tak samo w
+„Zapisz”, „Zapisz jako”, przeciąganiu i „Eksportuj wszystko”.
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/labels.mp4"><picture><source srcset="../../assets/readme/labels.gif" type="image/gif"><img src="../../assets/readme/labels_poster.jpg" alt="Etykiety i podpisy" width="100%" /></picture></a>
+<a href="../../assets/readme/labels.mp4"><picture><source srcset="../../assets/readme/labels.gif" type="image/gif"><img src="../../assets/readme/labels_poster.jpg" alt="Menedżer etykiet z podglądem na żywo" width="100%" /></picture></a>
+
+</td>
+</tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Sterowanie przez agenta
+
+Każde okno, widżet i menu są osiągalne przez lokalny kanał chroniony tokenem:
+agent ładuje stos, renderuje, retuszuje, porównuje, oblicza głębię, eksportuje i
+odpowiada na okna dialogowe — poleceniem typowanym, ścieżką widżetu albo
+rzeczywistymi zdarzeniami myszy i klawiatury. Nie potrzeba odczytywania ekranu
+ani OCR; kanał startuje razem z aplikacją desktopową.
+
+[Protokół →](../AGENT_CONTROL_SPEC.md) · [Umiejętność →](../../skills/openfocus-control/SKILL.md)
+
+</td>
+<td width="54%">
+
+<a href="../../assets/readme/agent.mp4"><picture><source srcset="../../assets/readme/agent.gif" type="image/gif"><img src="../../assets/readme/agent_poster.jpg" alt="Agent steruje działającym interfejsem: ładowanie, render AI, porównanie, retusz, suwak, głębia, etykiety" width="100%" /></picture></a>
 
 </td>
 </tr>
 </table>
 
-**Dodatkowo w zestawie:**
+**W zestawie także:**
 
-- **Przepływ focus stackingu** — przeglądarka stosów, krzywa ostrości, szybki podgląd, render ROI i ustawienia zapamiętywane dla każdej metody.
-- **Gotowe do mikroskopii** — 16 bitów na całej ścieżce, µm/px z TIFF, korekcja pola płaskiego, wielostronicowe stosy Z w TIFF.
-- **Bezgłowy CLI** — ten sam potok jako `openfocus`, z trybem wsadowym, `--dry-run`, `--resume` i wyjściem JSON.
-- **Projekty i odzyskiwanie** — sesje `.ofproj`, automatyczne odzyskiwanie po awarii, cofanie/ponawianie dla stosów i adnotacji.
-- **Dwanaście języków interfejsu** — English, 简体中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski; wykrywane z systemu, nowy język to jeden plik `locales/<code>.py`.
-- **Oszczędny w pamięci** — wagi neuronowe ładują się tylko przy metodzie AI, więc sesja klasyczna zajmuje około 110 MB zamiast 260 MB.
+- **Przepływ pracy ze stosem ostrości** — przeglądarka stosu, krzywa ostrości,
+  szybki podgląd, render ROI i zapamiętywane ustawienia każdej metody między
+  uruchomieniami.
+- **Gotowość do mikroskopii** — 16 bitów na całej ścieżce, µm/px z metadanych
+  TIFF, korekcja pola płaskiego z mapy pyłu, wielostronicowe stosy Z TIFF, eksport
+  teksturowanego OBJ.
+- **Profile kolorów** — eksport pojedynczych obrazów PNG, TIFF, JPEG i WebP
+  zachowuje wspólny profil RGB ICC, gdy wszystkie klatki źródłowe mają ten sam
+  profil. Stosy mieszane lub bez profilu są zapisywane bez profilu ICC; piksele nie
+  są konwertowane do wspólnej przestrzeni barw.
+- **Przezroczysty PNG** — stosy z identycznymi prostokątnymi maskami stałej
+  nieprzezroczystości można połączyć w pełnym rozmiarze i zapisać jako PNG.
+  Ograniczenia opisuje podręcznik.
+- **Headless CLI** — ten sam potok jako `openfocus`, z trybem wsadowym,
+  `--dry-run`, `--resume` i wyjściem JSON dla skryptów.
+- **Sterowanie przez agenta** — lokalny kanał chroniony tokenem steruje działającym
+  interfejsem (typowe polecenia potoku oraz uniwersalna kontrola widżetów, menu,
+  myszy i klawiatury), z umiejętnością, runnerem smoke z 14 sprawdzeniami i pełnym
+  przemarszem po akcjach menu.
+- **Projekty i odzyskiwanie** — sesje `.ofproj`, automatyczne odzyskiwanie po
+  awarii, cofanie i ponawianie zmian stosu oraz adnotacji.
+- **Dwanaście języków interfejsu** — English, 中文, 日本語, Español, Deutsch,
+  Français, Русский, 한국어, Português, Italiano, Nederlands, Polski.
+  Wykrywane z ustawień systemowych; nowy język to jeden plik `locales/<code>.py`.
+- **Oszczędność pamięci** — sieć neuronowa jest ładowana tylko przy użyciu metody
+  neuronowej, więc sesja z metodą klasyczną zajmuje około 110 MB zamiast 260 MB.
 
 <a id="install"></a>
 ## ⬇️ Instalacja
 
-Bez konfiguracji — pobierz kompilację ze strony [Releases](https://github.com/Xinzhe99/OpenFocus/releases):
+Pobierz najnowszą kompilację dla Windows lub macOS ze [strony OpenFocus](https://openfocus.top/#download). Te same pliki i starsze wersje są dostępne na [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
 | Platforma | Plik | Typ |
 |-----------|------|-----|
-| Windows 10/11 (64-bit) | `OpenFocus-*-setup.exe` | **Instalator** (zalecany) |
-| Windows 10/11 (64-bit) | `OpenFocus-*-windows-x64.zip` | Przenośna (rozpakuj i uruchom) |
+| Windows 10/11 (64 bity) | `OpenFocus-*-setup.exe` | **Instalator** (zalecany) |
+| Windows 10/11 (64 bity) | `OpenFocus-*-windows-x64.zip` | Wersja przenośna (rozpakuj i uruchom) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Obraz dysku (przeciągnij do Programów) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Przenośna (rozpakuj) |
+| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Wersja przenośna (rozpakuj) |
 
-Aplikacja nie jest podpisana, więc przy pierwszym uruchomieniu może pojawić się ostrzeżenie: **Windows** SmartScreen → „Więcej informacji” → „Uruchom mimo to” (pierwsze uruchomienie może potrwać 30–60 s); **macOS** kliknij prawym → Otwórz lub `xattr -cr /Applications/OpenFocus.app` w Terminalu.
+Aplikacja nie jest podpisana, więc przy pierwszym uruchomieniu może pojawić się
+ostrzeżenie: **Windows** SmartScreen → „Więcej informacji” → „Uruchom mimo to”
+(pierwsze uruchomienie może potrwać 30–60 s); **macOS** kliknij prawym przyciskiem →
+„Otwórz” albo wykonaj `xattr -cr /Applications/OpenFocus.app` w Terminalu.
 
-### 💻 Wiersz poleceń
+Aby zainstalować z terminala, najpierw obejrzyj polecenie dla macOS lub Linux z
+flagą `--dry-run`, a potem uruchom je bez niej. W systemie Linux instaluje się w ten sposób
+headless CLI; kompilacje macOS wymagają Apple Silicon i są instalowane w
+`~/Applications`.
 
-Możesz też zainstalować CLI na Windows, macOS i Linux — ten sam potok bez stosu graficznego:
+```bash
+curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
+curl -fsSL https://openfocus.top/install.sh | sh
+```
+
+W systemie Windows uruchom instalator z PowerShell:
+
+```powershell
+irm https://openfocus.top/install.ps1 | iex
+```
+
+Bezpośrednie pobranie instalatora Windows jest też dostępne przez
+`curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`.
+
+### 🤖 Integracja z agentami
+
+Aplikacja desktopowa automatycznie uruchamia lokalny kanał agenta chroniony
+tokenem. Użyj `openfocus ctl` do poleceń typowanych lub ogólnych działań na
+działającym oknie. Agenci mogą ładować stosy, renderować, eksportować, otwierać i
+wypełniać okna dialogowe, odpowiadać na wybór plików, wysyłać zdarzenia myszy i
+klawiatury oraz robić zrzuty ekranu.
+
+- Umiejętność: [`skills/openfocus-control/SKILL.md`](../../skills/openfocus-control/SKILL.md)
+- Protokół i opis poleceń: [`docs/AGENT_CONTROL_SPEC.md`](../AGENT_CONTROL_SPEC.md)
+- Runner end-to-end: `python tools/agent_gui_smoke.py --launch`
+- Przemarsz po wszystkich akcjach: `python tools/agent_action_sweep.py --launch`
+
+### 💻 Korzystanie z wiersza poleceń
+
+Możesz też zainstalować CLI w systemach Windows, macOS i Linux — ten sam potok bez warstwy GUI:
 
 ```bash
 pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-Model AI, wagi, dekodowanie HEIC i RAW są w tej jednej instalacji. Na Pythonie 3.13+ `dtcwt` jest pomijany, a pozycja DTCWT pozostaje wyłączona z wyjaśnieniem.
+Model AI, jego wagi oraz dekodowanie HEIC i RAW aparatów są częścią tej jednej
+instalacji. Na Pythonie 3.13+ pakiet `dtcwt` jest pomijany, a pozycja DTCWT
+pozostaje wyłączona z podpowiedzią.
+
+Punkty kontrolne retuszu można odtworzyć bez interfejsu, podając oryginalny obraz
+bazowy i dokładnie przetworzone klatki źródłowe w zapisanej kolejności:
+
+```bash
+openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
+```
+
+Punkt kontrolny weryfikuje bazę, piksele źródeł, geometrię i maski ważności.
+Eksportuj same przetworzone klatki (z wyrównaniem i przycięciem ROI), a nie
+nieprzetworzony stos wejściowy. Odtwarzanie odrzuca niezgodny kontekst i nigdy nie
+nadpisuje swoich danych wejściowych. Wynik to PNG lub TIFF z zachowaniem głębi
+8 lub 16 bitów.
+
+Przepisy zachowują ustawienia przetwarzania headless do ponownego użycia i przenoszenia:
+
+```bash
+openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
+openfocus recipe run workflow.json --dry-run
+openfocus recipe run workflow.json
+```
+
+Format JSON wersji 1 zawiera `version`, tablicę `input` oraz `output` albo
+`output_dir`, a także obiekt `options`. Ścieżki są względne wobec pliku przepisu;
+przenoś przepis razem z plikami wejściowymi, aby zachować powiązania. Utworzenie
+zapisuje ustawienia CLI i rozwiązane parametry algorytmu. Nieznane pola, nieprawidłowe
+wartości i nieobsługiwane wersje są odrzucane. Próba na sucho sprawdza dane wejściowe
+bez zapisywania wyników. Istniejące pliki projektów pozostają bez zmian.
+
+Aby przechwycić ustawienia z istniejącego `.ofproj`, wskaż jawnie nowe wejście i
+wyjście. Źródła oryginalnego projektu nie muszą być obecne:
+
+```bash
+openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
+```
+
+Przenosi to do przepisu CLI ustawienia fuzji, rejestracji, jasności, kolejności,
+wyostrzania i kafelków oraz osadza ustawienia przetwarzania dla GUI. Wykluczenia
+klatek, skala ładowania, etykiety i edycje nie są przenoszone — przygotuj nowy stos
+wejściowy odpowiednio. Projekty z przekształceniami źródeł, w tym zastosowaną
+korekcją pola płaskiego, muszą najpierw wyeksportować poprawiony stos źródłowy.
+Przepisy wymagają miejsca wyjściowego poza folderami wejściowymi i nigdy nie
+przyjmują pliku wejściowego jako wyjścia. Opcje grupowania można przechwycić z
+argumentów CLI.
+
+W interfejsie **Plik → Zapisz szablon przetwarzania** zapisuje ustawienia bez ścieżek
+źródeł. **Plik → Zastosuj szablon przetwarzania** stosuje szablon, projekt lub
+przepis oparty na projekcie do bieżącego stosu, nie zastępując jego wejść,
+przekształceń, wykluczeń ani etykiet. Sam szablon nie jest wykonywalnym przepisem.
+Ustawienia GUI osadzone w przepisie są niezależne od jego opcji CLI; edytując JSON,
+utrzymuj spójność obu zestawów.
+
+Ten sam interfejs headless jest dostępny bez importowania PyQt:
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")  # zweryfikowany słownik ze ścieżkami względnymi
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # False — wykonaj przetwarzanie
+```
+
+`capture_recipe` traktuje swoje argumenty jak zwykłe ścieżki CLI względem bieżącego
+katalogu; `save_recipe` traktuje zapisane ścieżki względem przepisu. Przepis
+zapisuje ustawienia i odwołania, w tym odcisk zawartości jawnie wybranej maski
+defektów sensora. Nie zapisuje pikseli wejściowych, wersji oprogramowania,
+sprzętu ani sum kontrolnych stosu źródłowego; przechowuj je osobno, gdy liczy się
+odtwarzalność. Identyczne ustawienia nie gwarantują identycznych pikseli między
+wersjami oprogramowania, sterownikami i urządzeniami; operacje neuronowe na GPU
+mogą być niedeterministyczne. Użyj `--cpu`, gdy wymagane jest wykonanie na CPU, i
+zachowaj zainstalowane oprogramowanie oraz dane wejściowe.
 
 <a id="community"></a>
 ## Społeczność i wsparcie
 
-- **Dokumentacja** — [Podręcznik](./docs/USER_MANUAL_PL.md) (dwanaście języków) · [Zmiany](./CHANGELOG.md) · [Wydajność](./docs/PERFORMANCE.md) · [Metody fuzji](../FUSION_METHODS.md)
-- **Cytowanie** — [CITATION.cff](./CITATION.cff); każda wersja jest archiwizowana w Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
-- **Opinie** — otwórz [issue](https://github.com/Xinzhe99/OpenFocus/issues) dla błędów, pomysłów i prac nad algorytmami
-- **Podziękowania** — każdy algorytm fuzji i rejestracji zachowuje swoją pierwotną licencję badawczą; StackMFF V3 jest na [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
+- **Dokumentacja** — [podręcznik użytkownika](../USER_MANUAL_PL.md) (dwanaście języków) · [historia zmian](../../CHANGELOG.md) · [wydajność](../PERFORMANCE.md) · [metody fuzji](../FUSION_METHODS.md)
+- **Cytowanie** — [CITATION.cff](../../CITATION.cff); każde wydanie jest archiwizowane na Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
+- **Opinie** — [issue](https://github.com/Xinzhe99/OpenFocus/issues) dla błędów, pomysłów i prac nad algorytmami
+- **Podziękowania** — każdy algorytm fuzji i rejestracji zachowuje swoją oryginalną licencję badawczą; StackMFF V3 mieszka w [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
+- **Zgłoszenia bezpieczeństwa** — [@ranas-mukminov](https://github.com/ranas-mukminov) zgłosił problem z uprawnieniami tokenu wykrywania ([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
+
+<a id="license"></a>
+## Licencja
+
+Aplikacja OpenFocus jest udostępniana na [licencji MIT](../../LICENSE).
+
+**Wyjątek dla serii StackMFF.** Algorytmy fuzji StackMFF — obecnie StackMFF V3 i
+wszystkie przyszłe wydania klasy state-of-the-art — pozostają własnością projektu
+OpenFocus, który zachowuje wszelkie prawa do serii StackMFF. Możesz używać ich w
+ramach OpenFocus do własnych obrazów i pracy wewnętrznej. Kopiowanie, portowanie
+lub przenoszenie tych algorytmów do innego projektu open source wymaga uprzedniej
+pisemnej zgody.
 
 <a id="developing"></a>
 ## Rozwój
 
-Uruchamianie z repozytorium:
+Uruchomienie z repozytorium:
 
 ```bash
 conda create -n openfocus python=3.10
@@ -243,7 +434,11 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Pakowanie przez PyInstaller: [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md).
+Pakowanie przez PyInstaller: [docs/BUILD_COMMANDS.md](../BUILD_COMMANDS.md).
+
+Dodawanie algorytmu fuzji lub rejestracji: [CONTRIBUTING.md](../../CONTRIBUTING.md).
+[Specyfikacja rozszerzalności](../ALGORITHM_EXTENSIBILITY_SPEC.md) określa wspólne
+kontrakty rejestracji, parametrów, wykonania i zapisu.
 
 <a id="star-history"></a>
 ## ⭐ Historia gwiazdek

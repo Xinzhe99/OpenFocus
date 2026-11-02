@@ -67,7 +67,7 @@ class ROIRenderOptionsDialog(QDialog):
 
         hbox.addWidget(self.combo_frames)
         self.frame_container.setLayout(hbox)
-        self.frame_container.setEnabled(False) # Default disabled
+        self.frame_container.hide()
         layout.addWidget(self.frame_container)
         self.lbl_preview = QLabel()
         self.lbl_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -108,7 +108,7 @@ class ROIRenderOptionsDialog(QDialog):
 
     def _sync_choice(self, *_args):
         crop = self.rb_crop.isChecked()
-        self.frame_container.setEnabled(not crop)
+        self.frame_container.setVisible(not crop)
         index = self.combo_frames.currentIndex()
         if 0 <= index < len(self._frames):
             import cv2

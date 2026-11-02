@@ -200,9 +200,7 @@ class ScaleBarDialog(QDialog):
                 ("output", trans.t("scalebar_target_output"))):
             self.target_combo.addItem(label, code)
         self.target_combo.addItem(trans.t("label_target_registered"), "registered")
-        self.target_combo.setCurrentIndex(max(0, self.target_combo.findData(
-            getattr(window, "scale_bar_target", "all"))))
-        form.insertRow(0, trans.t("scalebar_target"), self.target_combo)
+
         self.output_combo = QComboBox()
         manager = getattr(window, "output_manager", None)
         outputs = getattr(window, "output_list", None)
@@ -216,6 +214,35 @@ class ScaleBarDialog(QDialog):
                 if self.output_combo.itemData(index) is current:
                     self.output_combo.setCurrentIndex(index)
                     break
+
+        # A target with no frames in this session used to leave the preview
+        # blank and OK disabled with no explanation. Grey it out (the label
+        # manager already does this for "registered") and fall back to a
+        # target that can actually be previewed when the saved one cannot.
+        registration = getattr(window, "registration_results", None) or []
+        for code, missing in (("registered", not registration),
+                              ("output", self.output_combo.count() == 0)):
+            if missing:
+                item = self.target_combo.model().item(
+                    self.target_combo.findData(code))
+                item.setEnabled(False)
+                item.setToolTip(trans.t("label_preview_no_target"))
+
+        def available(code: str) -> bool:
+            index = self.target_combo.findData(code)
+            return (index >= 0
+                    and self.target_combo.model().item(index).isEnabled())
+
+        stored = getattr(window, "scale_bar_target", "all") or "all"
+        if not available(stored):
+            order = (("source", "registered", "output", "all")
+                     if (getattr(window, "raw_images", None) or [])
+                     else ("registered", "output", "all", "source"))
+            stored = next((code for code in order if available(code)), "all")
+        self.target_combo.setCurrentIndex(
+            max(0, self.target_combo.findData(stored)))
+
+        form.insertRow(0, trans.t("scalebar_target"), self.target_combo)
         form.insertRow(1, trans.t("label_target_output"), self.output_combo)
         self._target_form = form
 
@@ -440,7 +467,13 @@ class ScaleBarDialog(QDialog):
                         self.bold_chk, self.align_combo, self.custom_x, self.custom_y)
             blockers = [QSignalBlocker(control) for control in controls]
             self.mode_combo.setCurrentIndex(self.mode_combo.findData(cfg.get("mode", CALIBRATION_MANUAL)))
-            self.px_spin.setValue(cfg.get("manual", cfg["px_um"] * self._work_scale))
+            # Adapt the precision BEFORE setValue: QDoubleSpinBox rounds to
+            # its current decimals, so a stored 0.0008 µm/px used to become
+            # 0.00 when the previous target needed only two decimals.
+            manual = (cfg["manual"] if "manual" in cfg
+                      else cfg["px_um"] * self._work_scale)
+            self._adapt_px_decimals(manual)
+            self.px_spin.setValue(manual)
             self.pos_combo.setCurrentIndex(self.pos_combo.findData(cfg["position"]))
             self.color_combo.setCurrentIndex(self.color_combo.findData(cfg["color"]))
             self.font_combo.setCurrentFont(QFont(cfg.get("font_family") or self.font().family()))
@@ -451,7 +484,9 @@ class ScaleBarDialog(QDialog):
             self.custom_y.setValue(int(cfg.get("custom_y", 0.95) * 100))
             del blockers
         self._target_form.setRowVisible(
-            self.output_combo, self.target_combo.currentData() in ("all", "output"))
+            self.output_combo,
+            self.output_combo.count() > 0
+            and self.target_combo.currentData() in ("all", "output"))
         frames = getattr(self.parent(), "registration_results" if self.target_combo.currentData() == "registered" else "raw_images", ()) or ()
         self.frame_index.blockSignals(True)
         self.frame_index.setRange(1, max(1, len(frames)))

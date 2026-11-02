@@ -17,6 +17,7 @@ from typing import Any, Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -361,8 +362,16 @@ class LabelManager:
         window = self.window
         dialog = QDialog(window)
         dialog.setWindowTitle(trans.t('label_manage_title'))
-        dialog.resize(1000, 700)
         dialog.setMinimumSize(820, 560)
+        screen = window.screen() if hasattr(window, "screen") else None
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            dialog.resize(min(1000, max(820, available.width() - 80)),
+                          min(700, max(560, available.height() - 100)))
+        else:
+            dialog.resize(1000, 700)
 
         from ui.styles import CURRENT_THEME
         dialog.setStyleSheet(get_add_label_dialog_style(CURRENT_THEME))
@@ -390,8 +399,13 @@ class LabelManager:
         left.addWidget(list_title)
 
         self._dialog_list = QListWidget()
-        self._dialog_list.setMinimumWidth(210)
-        self._dialog_list.setMaximumWidth(260)
+        # A fixed, modest width keeps the middle form readable at the 820 px
+        # minimum: a QListWidget's size hint (256 px) otherwise took 36 px
+        # more than the form could spare. Summaries elide instead of adding a
+        # second horizontal scrollbar inside the list.
+        self._dialog_list.setFixedWidth(220)
+        self._dialog_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         left.addWidget(self._dialog_list, 1)
 
         list_buttons = QHBoxLayout()
@@ -405,13 +419,15 @@ class LabelManager:
         body.addLayout(left, 0)
 
         # ---- middle: form ------------------------------------------------
+        middle = QVBoxLayout()
+        middle.setSpacing(6)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         form_host = QWidget()
         form_col = QVBoxLayout(form_host)
         self._form_host = form_host
-        form_col.setContentsMargins(0, 0, 8, 0)
+        form_col.setContentsMargins(0, 0, 6, 0)
         form_col.setSpacing(10)
 
         def _group(title_key):
@@ -449,12 +465,19 @@ class LabelManager:
         self._range_mode.addItem(trans.t('label_range_all_placeholder'), "all")
         self._range_mode.addItem(trans.t('label_range_current'), "current")
         self._range_mode.addItem(trans.t('label_range_custom'), "custom")
+        # The longest translated mode string used to set the whole column's
+        # minimum width. Keep the minimum below the colour buttons' so the
+        # row can wrap (and then show the full text) instead of forcing a
+        # horizontal scrollbar at the minimum window width.
+        self._range_mode.setMinimumWidth(280)
         target_form.addRow(trans.t('label_range'), self._range_mode)
 
         self.range_edit = QLineEdit("")
         self.range_edit.setPlaceholderText(trans.t('label_range_all_placeholder'))
         self.range_edit.setToolTip(trans.t('label_range_hint'))
-        target_form.addRow(trans.t('label_range'), self.range_edit)
+        # The mode combo above is the row called "Range"; repeating that
+        # caption for the custom edit made the form read as two Range rows.
+        target_form.addRow(trans.t('label_range_custom'), self.range_edit)
         self._range_status = QLabel("")
         self._range_status.setObjectName("mutedLabel")
         self._range_status.setWordWrap(True)
@@ -516,8 +539,13 @@ class LabelManager:
         self.transparent_bg_checkbox.setChecked(True)
         look_form.addRow("", self.transparent_bg_checkbox)
 
-        colors = QHBoxLayout()
+        # Stacked, not side by side: at the minimum window width the two
+        # translated captions ("Choose Background Color" + "Choose Font
+        # Color") together were wider than the whole form column, which was
+        # the main reason the middle pane clipped.
+        colors = QVBoxLayout()
         colors.setContentsMargins(0, 0, 0, 0)
+        colors.setSpacing(4)
         self.bg_color_button = QPushButton(trans.t('label_choose_bg'))
         self.bg_color_value = (0, 0, 0)
         self._set_color_button_style(self.bg_color_button, 0, 0, 0)
@@ -529,12 +557,14 @@ class LabelManager:
         self.font_color_button.clicked.connect(self.choose_font_color)
         colors.addWidget(self.bg_color_button)
         colors.addWidget(self.font_color_button)
-        colors.addStretch()
         look_form.addRow(trans.t('label_colors'), colors)
+        self.transparent_bg_checkbox.toggled.connect(
+            self._sync_background_color_control)
 
         form_col.addStretch()
         scroll.setWidget(form_host)
-        body.addWidget(scroll, 1)
+        middle.addWidget(scroll, 1)
+        body.addLayout(middle, 2)
 
         # ---- right: preview ---------------------------------------------
         right = QVBoxLayout()
@@ -547,10 +577,12 @@ class LabelManager:
 
         nav = QHBoxLayout()
         self._preview_prev = QPushButton("<")
+        self._preview_prev.setObjectName("previewNavButton")
         self._preview_prev.setToolTip(trans.t('label_preview_prev'))
         self._preview_prev.setAccessibleName(trans.t('label_preview_prev'))
         self._preview_prev.clicked.connect(lambda: self._step_preview(-1))
         self._preview_next = QPushButton(">")
+        self._preview_next.setObjectName("previewNavButton")
         self._preview_next.setToolTip(trans.t('label_preview_next'))
         self._preview_next.setAccessibleName(trans.t('label_preview_next'))
         self._preview_next.clicked.connect(lambda: self._step_preview(1))
@@ -572,6 +604,11 @@ class LabelManager:
 
         from widgets.label_preview import LabelPreview
         self.preview = LabelPreview()
+        # The widget's own 280 px minimum made the preview column force the
+        # form below its layout width at the 820 px minimum dialog size. The
+        # preview scales its frame, so 180 px stays usable and leaves the
+        # form column the space it needs.
+        self.preview.setMinimumWidth(180)
         right.addWidget(self.preview, 1)
         preview_tools = QHBoxLayout()
         fit = QPushButton(trans.t('label_fit'))
@@ -583,13 +620,21 @@ class LabelManager:
         right.addLayout(preview_tools)
         self._first_applicable = QPushButton(trans.t('label_first_applicable'))
         self._first_applicable.clicked.connect(self._show_first_applicable)
-        right.addWidget(self._first_applicable)
 
         self.preview_status = QLabel("")
         self.preview_status.setWordWrap(True)
         self.preview_status.setObjectName("mutedLabel")
         right.addWidget(self.preview_status)
         body.addLayout(right, 1)
+
+        # Keep the long preview action out of both side columns: in several
+        # translations its caption is wider than a column can be at the
+        # 820 px minimum, and a clipped action is still unusable. A
+        # left-aligned row under the body always has the full width.
+        first_row = QHBoxLayout()
+        first_row.addWidget(self._first_applicable)
+        first_row.addStretch()
+        root.addLayout(first_row)
 
         # ---- bottom: fixed actions --------------------------------------
         self._dialog_error = QLabel("")
@@ -639,6 +684,7 @@ class LabelManager:
         # The preview frame count belongs to the selected target; without this
         # initial refresh the dialog showed "/ 0" until the target changed.
         self._on_target_changed()
+        self._sync_background_color_control()
 
         dialog.exec()
         self._clear_dialog_state()
@@ -665,7 +711,12 @@ class LabelManager:
         widget.blockSignals(True)
         widget.clear()
         for label in self._draft:
-            item = QListWidgetItem(self._label_summary(label))
+            summary = self._label_summary(label)
+            item = QListWidgetItem(summary)
+            # The column is deliberately narrow to leave the form room at the
+            # 820 px minimum; the tooltip keeps the elided target/range text
+            # available without a horizontal scrollbar inside the list.
+            item.setToolTip(summary)
             item.setData(Qt.ItemDataRole.UserRole, label.label_id)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if label.enabled else Qt.CheckState.Unchecked)
@@ -775,6 +826,7 @@ class LabelManager:
                 widget.blockSignals(False)
             self._loading_editor = False
         self._on_target_changed()
+        self._sync_background_color_control()
 
     @staticmethod
     def _rgb(bgr) -> tuple:
@@ -932,7 +984,9 @@ class LabelManager:
         item = self._dialog_list.currentItem()
         if item is not None and item.data(Qt.ItemDataRole.UserRole) == label.label_id:
             self._dialog_list.blockSignals(True)
-            item.setText(self._label_summary(label))
+            summary = self._label_summary(label)
+            item.setText(summary)
+            item.setToolTip(summary)
             self._dialog_list.blockSignals(False)
 
     def _applicable_indices(self, config, total):
@@ -1039,7 +1093,7 @@ class LabelManager:
         for spin in (self.starting_value_spin, self.interval_spin, self.font_size_spin,
                      self.x_location_spin, self.y_location_spin):
             if isinstance(spin, StepperSpinBox):
-                spin.lineEdit().editingFinished.emit()
+                spin.interpretText()
         self._save_editor_to_draft()
         for label in self._draft:
             original = self._labels.get(label.label_id)
@@ -1092,6 +1146,26 @@ class LabelManager:
         self._replace_labels(draft)
 
     # ---- colour pickers ---------------------------------------------------
+    def _sync_background_color_control(self) -> None:
+        """Grey out the background swatch while the label is transparent.
+
+        `draw_label` only reads `bg_color` when transparency is off, so an
+        active swatch promised an effect it did not have. The stored colour
+        stays untouched and becomes editable again when transparency is
+        unchecked.
+        """
+        button = self.bg_color_button
+        checkbox = self.transparent_bg_checkbox
+        if button is None or checkbox is None:
+            return
+        transparent = bool(checkbox.isChecked())
+        button.setEnabled(not transparent)
+        if transparent:
+            button.setToolTip(trans.t('label_transparent_bg'))
+        else:
+            red, green, blue = self._rgb(self.bg_color_value)
+            button.setToolTip(f"RGB ({red}, {green}, {blue})")
+
     def choose_background_color(self) -> None:
         color = QColorDialog.getColor(parent=self.window)
         if color.isValid() and self.bg_color_button is not None:
@@ -1117,7 +1191,7 @@ class LabelManager:
         button.setStyleSheet(
             f"background-color: rgb({red}, {green}, {blue}); "
             f"color: {text_color}; border: 1px solid #555; "
-            "padding: 6px 12px; border-radius: 4px;")
+            f"padding: 6px 8px; border-radius: 4px;")
         button.setToolTip(f"RGB ({red}, {green}, {blue})")
 
     def _clear_dialog_state(self) -> None:

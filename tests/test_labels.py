@@ -91,6 +91,27 @@ def test_cancel_does_not_change_model_undo_dirty_or_revision(manager, monkeypatc
     assert manager.window.dirty == 0
 
 
+def test_transparent_background_disables_swatch_but_keeps_color(manager, monkeypatch):
+    label = caption()
+    label.config.transparent_bg = True
+    label.config.bg_color = (12, 34, 56)
+    manager.labels.add(label)
+
+    def edit(dialog):
+        assert manager.transparent_bg_checkbox.isChecked()
+        assert not manager.bg_color_button.isEnabled()
+        assert manager._dialog_config()["bg_color"] == (12, 34, 56)
+        manager.transparent_bg_checkbox.setChecked(False)
+        assert manager.bg_color_button.isEnabled()
+        assert manager._dialog_config()["bg_color"] == (12, 34, 56)
+        manager.transparent_bg_checkbox.setChecked(True)
+        assert not manager.bg_color_button.isEnabled()
+        assert manager._dialog_config()["bg_color"] == (12, 34, 56)
+        dialog.reject()
+
+    edit_dialog(monkeypatch, manager, edit)
+
+
 def test_deleting_last_label_commits_empty_set(manager, monkeypatch):
     manager.labels.add(caption())
 

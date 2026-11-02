@@ -63,6 +63,19 @@ def test_empty_environment_keeps_existing_relative_path(sandbox, platform, key):
     assert app_paths.user_data_dir() == Path("OpenFocus")
 
 
+@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
+@pytest.mark.parametrize("portable", [False, True])
+def test_data_override_takes_precedence_over_platform_and_portable(sandbox, tmp_path,
+                                                                    platform, portable):
+    app_paths.sys.platform = platform
+    if portable:
+        (sandbox.source / "OpenFocus.portable").write_text("", encoding="utf-8")
+    override = tmp_path / "private"
+    app_paths.os.environ["OPENFOCUS_DATA_DIR"] = str(override)
+
+    assert app_paths.user_data_dir() == override
+    assert not (sandbox.source / "OpenFocusData").exists()
+
 @pytest.mark.parametrize("frozen", [False, True])
 def test_portable_marker_selects_source_or_executable_directory(sandbox, frozen):
     app_paths.sys.frozen = frozen

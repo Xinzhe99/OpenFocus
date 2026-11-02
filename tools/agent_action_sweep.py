@@ -1,8 +1,8 @@
 """Drive every enabled menu action in the live GUI and close what it opens.
 
-Complements ``agent_gui_smoke.py``: the smoke covers the end-to-end pipeline,
-this sweep proves that every action in ``ui.actions`` remains callable and
-that its dialog/file picker can be resolved through the generic UI layer.
+Complements ``agent_gui_smoke.py``: the smoke covers the end-to-end pipeline.
+This sweep triggers enabled actions exposed by ``ui.actions`` and resolves
+the dialogs and file pickers they open; context menus are outside its scope.
 
     python tools/agent_action_sweep.py [--launch] [--timeout 120]
 
@@ -52,7 +52,7 @@ class Sweep:
         self.work = Path(tempfile.mkdtemp(prefix="openfocus_sweep_"))
         self.demo = ROOT / "assets" / "demo_stack"
         self.video = self._make_video()
-        self.project = self.work / "source.ofp"
+        self.project = self.work / "source.ofproj"
         self.save_dir = self.work / "actions"
         self.save_dir.mkdir(exist_ok=True)
 
@@ -120,15 +120,19 @@ class Sweep:
             path = self.demo
         elif key == "action_open_video":
             path = self.video
-        elif key == "menu_open_project":
+        elif key in ("menu_open_project", "menu_open_template"):
             path = self.project
+        elif key == "standalone_retouch_action":
+            path = self.demo / "demo_01.jpg"
+        elif key == "menu_save_template":
+            path = self.save_dir / "template.oftemplate"
         elif key in ("action_save_folder_input", "action_save_folder_reg"):
             path = self.save_dir / f"{key}_dir"
             path.mkdir(exist_ok=True)
         elif "project" in key:
-            path = self.save_dir / f"{key}.ofp"
+            path = self.save_dir / f"{key}.ofproj"
         else:
-            suffix = ".gif" if "gif" in key else ".tif" if "mtiff" in key else ".png"
+            suffix = ".gif" if "gif" in key else ".tif" if ("mtiff" in key or "layered" in key) else ".png"
             path = self.save_dir / f"{key}{suffix}"
         self.call("dialog.file", index=index, path=str(path))
 
@@ -145,9 +149,11 @@ class Sweep:
             empty_rounds = 0
             open_windows.sort(key=lambda item: (not item["active"], item["index"]))
             window = open_windows[0]
-            if seen and window["class"] not in (
+            if (seen and window["class"] not in (
                     "QFileDialog", "QColorDialog", "QInputDialog", "QMenu",
-                    "QMessageBox"):
+                    "QMessageBox") and not (
+                        key == "standalone_retouch_action"
+                        and window["class"] == "RetouchDialog")):
                 raise RuntimeError(f"unrecognized continuation dialog: {window}")
             seen.append(f"{window['class']}:{window['title']}")
             try:

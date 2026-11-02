@@ -3,10 +3,10 @@
 Runs against an already-running window (`--control`) or launches one with
 `--launch`. It exercises the same commands an agent uses: stack load, render,
 export, depth/compare/retouch dialogs, canvas gestures, a menu action with a
-file picker, project round-trip and batch. Exit code 0 means every assertion
+file picker, project round-trip and grouped batch. Exit code 0 means every assertion
 passed.
 
-    python tools/agent_gui_smoke.py [--launch] [--quit] [--keep]
+    python tools/agent_gui_smoke.py [--launch] [--quit]
 
 This is the executable version of the workflow in
 `skills/openfocus-control/SKILL.md`.
@@ -141,7 +141,7 @@ class Smoke:
             load = value.get("load") or {}
             return load.get("id") == load_id and load.get("finished") is True
 
-        frames = wait_for("stack.frames", loaded, timeout=120)
+        frames = wait_for("stack.frames", loaded, timeout=120, discovery=self.session.discovery)
         assert not frames["load"].get("error"), frames["load"]
         assert frames["count"] == 6, frames
         assert frames["dtype"] == "uint8"
@@ -165,7 +165,7 @@ class Smoke:
                          and not value.get("busy")
                          and value.get("state") in (
                              "done", "error", "cancelled", "discarded", "idle"),
-                         timeout=300)
+                         timeout=300, discovery=self.session.discovery)
         assert final["state"] == "done", final
         result = self.call("render.result")
         assert result["shape"][0] > 0
@@ -279,7 +279,7 @@ class Smoke:
                     and load.get("id", 0) > before
                     and load.get("finished"))
 
-        frames = wait_for("stack.frames", loaded, timeout=120)
+        frames = wait_for("stack.frames", loaded, timeout=120, discovery=self.session.discovery)
         assert not frames["load"].get("error"), frames["load"]
         return f"picked folder -> {frames['count']} frames"
 
@@ -293,6 +293,14 @@ class Smoke:
                           **{"class": "QLineEdit"})["matches"]
         self.call("ui.set", path=edits[0]["path"], value="AGENT")
         self.click_text(window["root"], _texts("label_add", "Add"))
+        for text in _texts("label_transparent_bg", "Transparent Background"):
+            matches = self.call("ui.find", window=window["root"],
+                                text=text)["matches"]
+            if matches:
+                self.call("ui.set", path=matches[0]["path"], value=False)
+                break
+        else:
+            raise AssertionError("no transparent-background checkbox")
         color_button = None
         for text in _texts("label_choose_bg", "Choose Background Color"):
             found = self.call("ui.find", window=window["root"],
@@ -330,7 +338,7 @@ class Smoke:
             load = value.get("load") or {}
             return load.get("id") == load_id and load.get("finished") is True
 
-        frames = wait_for("stack.frames", restored, timeout=120)
+        frames = wait_for("stack.frames", restored, timeout=120, discovery=self.session.discovery)
         assert not frames["load"].get("error"), frames["load"]
         assert frames["count"] == 6, frames
         return f"{frames['count']} frames restored"
@@ -346,19 +354,25 @@ class Smoke:
         combo = self.call("ui.find", window=window["root"],
                           object_name="fusion_combo")["matches"][0]
         self.call("ui.set", path=combo["path"], value="dct")
+        for control, value in (("chk_grouping", True), ("group_size_spin", 3),
+                               ("group_overlap_spin", 1)):
+            match = self.call("ui.find", window=window["root"],
+                              control_id=control)["matches"][0]
+            self.call("ui.set", path=match["path"], value=value)
         self.call("dialog.accept")
         # A run that never started also answers "not busy"; require evidence
         # that the batch began before waiting for it to finish.
         wait_for("batch.state",
                  lambda value: value.get("busy") or value.get("results") is not None,
-                 timeout=60)
+                 timeout=60, discovery=self.session.discovery)
         state = wait_for("batch.state",
-                         lambda value: not value.get("busy"), timeout=600)
+                         lambda value: not value.get("busy"), timeout=600,
+                         discovery=self.session.discovery)
         assert state["error"] is None, state["error"]
         assert state["results"]["success"] >= 1, state["results"]
         files = list(outdir.rglob("*.png"))
         assert files, outdir
-        return f"{len(files)} file(s)"
+        return f"group size 3, overlap 1: {len(files)} file(s)"
 
     def screenshot(self):
         target = self.work / "window.png"
@@ -380,7 +394,7 @@ class Smoke:
         self.check("menu action + file picker", self.file_action)
         self.check("labels + color dialog", self.labels)
         self.check("project round-trip", self.project)
-        self.check("batch dialog", self.batch)
+        self.check("grouped batch dialog", self.batch)
         self.check("screenshot", self.screenshot)
         return self.checks
 

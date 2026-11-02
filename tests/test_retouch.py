@@ -536,6 +536,19 @@ def test_dialog_exposure_preview_undo_and_publish(qapp):
     dlg.close()
 
 
+def test_dialog_exposure_amount_is_hidden_for_other_tools(qapp):
+    dlg, _ = _dialog(qapp)
+    assert not dlg.num_exposure.isVisible()
+    dlg.rb_exposure.setChecked(True)
+    qapp.processEvents()
+    assert dlg.num_exposure.isVisible() and dlg.num_exposure.isEnabled()
+    dlg.rb_restore.setChecked(True)
+    qapp.processEvents()
+    assert not dlg.num_exposure.isVisible()
+    dlg._allow_close = True
+    dlg.close()
+
+
 def test_dialog_preserves_zoom_and_frame_when_switching(qapp):
     from PyQt6.QtCore import QPointF
     dlg, _ = _dialog(qapp)

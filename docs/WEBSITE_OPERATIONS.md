@@ -80,10 +80,12 @@ page and asset request therefore counts as a Worker invocation.
 - `/zh/` — pre-rendered Chinese page.
 - `/api/latest` — GitHub `releases/latest` reduced to
   `{tag, published, assets: {windows-setup, windows-zip, macos-dmg,
-  macos-zip}}`. The Worker stores the JSON in `caches.default` per data center
-  for 5 minutes (`max-age=300` on the stored response) but returns
-  `Cache-Control: no-store` to clients, so browsers do not pin the release. A
-  release can therefore appear at different times in different locations.
+  macos-zip}}`. A successful GitHub response is cached per data center for
+  five minutes, while clients receive `Cache-Control: no-store`. If GitHub is
+  unavailable or rate-limited, the Worker reads the last complete mirror
+  manifest from `openfocus-meta/latest-release.json` in R2 and identifies it
+  with `X-OpenFocus-Release-Source: mirror`. That manifest represents the last
+  successfully mirrored release and can lag GitHub until mirroring succeeds.
 - `/download/latest/<kind>` — resolves the latest asset, streams the R2 object
   with `ETag`, `Last-Modified`, `If-None-Match`/`304`, and single-range
   `Range`/`206` support. All responses are `Cache-Control: no-store` because
@@ -126,9 +128,9 @@ python -m http.server 8788 --directory site/dist
 npx wrangler deploy -c site/wrangler.jsonc
 ```
 
-`SITE_ORIGIN` defaults to a placeholder `workers.dev` URL. **Always set it to
-`https://openfocus.top` for production builds** so canonical, `hreflang`,
-`sitemap.xml`, Open Graph URLs and the printed installer commands are correct.
+`SITE_ORIGIN` defaults to `https://openfocus.top`, which is correct for
+production. Override it for a local preview or another host so canonical,
+`hreflang`, sitemap, Open Graph and installer-command URLs match that origin.
 
 `wrangler` requires an authenticated Cloudflare account (`npx wrangler login`)
 with access to the `openfocus-site` Worker, the `openfocus.top` zone and the
@@ -252,15 +254,17 @@ Steps:
    S3 endpoint (`https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`), with
    `application/octet-stream` and `public, max-age=86400` metadata. Objects
    keep their release filenames.
-4. If the mirrored tag is not the latest release, skip pruning. Otherwise list
+4. If the mirrored tag is still GitHub's latest release, publish metadata for
+   those four exact assets to `openfocus-meta/latest-release.json` only after
+   their uploads complete. Older manual runs never replace that manifest.
+5. If the mirrored tag is not the latest release, skip pruning. Otherwise list
    the bucket and delete only older keys matching the four recognized
-   `OpenFocus-v*-...` asset names. Keys for the current tag and unrelated
+   `OpenFocus-v*-...` asset names. Current assets, the manifest and unrelated
    objects are kept.
 
-The workflow does not purge the Worker cache. `/api/latest` expires after five
-minutes per data center; that is the expected propagation delay after a
-release. Clients receive `no-store`, so a browser reload after that window
-cannot keep serving an older tag.
+The workflow does not purge the Worker cache. Successful GitHub metadata can
+remain cached for five minutes per data center. During a GitHub outage the
+uncached mirror manifest is used; it advances only after a successful mirror.
 
 Why R2: egress is free at any volume; the free tier is 10 GB-month storage, 1M
 Class A operations and 10M Class B operations per month. A release is about

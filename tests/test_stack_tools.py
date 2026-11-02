@@ -131,6 +131,25 @@ class TestDustMapDialog:
         dlg.deleteLater()
         stub.deleteLater()
 
+    def test_preview_requires_a_white_field_source(self, qapp):
+        from dialogs.dustmap import DustMapDialog
+        from locales import trans
+
+        stub = self._stub_window()
+        dlg = DustMapDialog(stub)
+        assert dlg.lbl_target.text() == trans.t("dust_preview_frame")
+        assert not dlg.btn_preview.isEnabled()
+        assert dlg.btn_preview.toolTip() == trans.t("dust_err_no_source")
+        dlg.rb_stack.setChecked(True)
+        assert dlg.btn_preview.isEnabled()
+        dlg.rb_file.setChecked(True)
+        assert not dlg.btn_preview.isEnabled()
+        dlg._file_path = "white.tif"
+        dlg._update_preview_enabled()
+        assert dlg.btn_preview.isEnabled()
+        dlg.deleteLater()
+        stub.deleteLater()
+
     def test_size_mismatch_is_a_localized_error_not_a_crash(self, qapp):
         from dialogs.dustmap import DustMapDialog
         stub = self._stub_window(h=48, w=64)

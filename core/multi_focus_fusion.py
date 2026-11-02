@@ -530,18 +530,7 @@ class MultiFocusFusion:
 
     def _validate_transform_environment(self) -> None:
         """验证变换域融合依赖"""
-        # pytorch_available = False
         dtcwt_available = False
-
-        # torch_spec = importlib.util.find_spec("torch")
-        # pytorch_wavelets_spec = importlib.util.find_spec("pytorch_wavelets")
-        # if torch_spec and pytorch_wavelets_spec:
-        #     torch = importlib.import_module("torch")
-        #     importlib.import_module("pytorch_wavelets")
-        #     pytorch_available = True
-        #     if self.use_gpu and not torch.cuda.is_available():
-        #         print("警告: CUDA不可用,将自动降级到CPU")
-        #         self.use_gpu = False
 
         dtcwt_spec = importlib.util.find_spec("dtcwt")
         if dtcwt_spec:

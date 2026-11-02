@@ -34,9 +34,7 @@ _CHECK_SVG = _asset_url("check_white.svg")
 _RADIO_DOT_LIGHT = _asset_url("radio_dot_blue.svg")
 _RADIO_DOT_DARK = _asset_url("radio_dot_dark.svg")
 _ARROW_DOWN_LIGHT = _asset_url("arrow_down_light.svg")
-_ARROW_UP_LIGHT = _asset_url("arrow_up_light.svg")
 _ARROW_DOWN_DARK = _asset_url("arrow_down_dark.svg")
-_ARROW_UP_DARK = _asset_url("arrow_up_dark.svg")
 # Right-pointing glyph for QMenu submenu indicators. Qt draws its own
 # triangle when the stylesheet leaves QMenu::right-arrow alone; that triangle
 # sits flush against the popup edge and ignores the theme, which is what made
@@ -63,29 +61,49 @@ def arrow_qss(theme: str = "dark", button_bg: str = None,
     """
     t = palette(theme)
     down = _ARROW_DOWN_LIGHT if theme == "dark" else _ARROW_DOWN_DARK
-    up = _ARROW_UP_LIGHT if theme == "dark" else _ARROW_UP_DARK
-    minus = _MINUS_LIGHT if theme == "dark" else _MINUS_DARK
-    plus = _PLUS_LIGHT if theme == "dark" else _PLUS_DARK
+    minus = _MINUS_DARK if theme == "dark" else _MINUS_LIGHT
+    plus = _PLUS_DARK if theme == "dark" else _PLUS_LIGHT
     bg = button_bg or t["surfaceHover"]
     hover = button_hover or t["surfaceActive"]
     r = RADIUS
-    s = SPACE
-    f = FONT
-    bd = border or t["border"]
+    bd = border or t["controlBorder"]
     return f"""
 QComboBox::drop-down {{
     subcontrol-origin: padding; subcontrol-position: center right;
     width: 22px; border: none; background: transparent;
 }}
 QComboBox::down-arrow {{ image: url("{down}"); width: 10px; height: 10px; }}
-/* Spin box steppers keep Qt's native geometry (two sub-controls on the
-   trailing edge; Qt 6 ignores subcontrol-position for them, so they cannot be
-   moved to opposite sides from a stylesheet). The glyphs are still swapped for
-   a + and a -, which is what makes the control read as "adjust this number"
-   rather than "sort".
-
-   Controls that need the + and - on OPPOSITE sides use widgets/stepper.py
-   instead — it builds the buttons explicitly. */
+/* Keep Qt's native spin box interaction while giving each step a compact,
+   separately highlighted target. The edit padding reserves this column. */
+QSpinBox::up-button, QDoubleSpinBox::up-button,
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    width: 20px;
+    background-color: {bg};
+    border: none;
+    border-left: 1px solid {bd};
+}}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-position: top right;
+    border-top-right-radius: {r['sm']}px;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: {r['sm']}px;
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+    background-color: {hover};
+}}
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {{
+    background-color: {t['accentSoft']};
+}}
+QSpinBox::up-button:disabled, QDoubleSpinBox::up-button:disabled,
+QSpinBox::down-button:disabled, QDoubleSpinBox::down-button:disabled {{
+    background-color: {t['controlDisabled']};
+    border-color: {t['border']};
+}}
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
     image: url("{plus}"); width: 9px; height: 9px;
 }}
@@ -93,10 +111,6 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
     image: url("{minus}"); width: 9px; height: 9px;
 }}
 
-/* StepperSpinBox (widgets/stepper.py): - on the left, + on the right.
-   QToolButton needs a base rule: a bare id selector alone did not beat the
-   widget's native metrics here, and the buttons kept Qt's 20 px height while
-   the adjacent line edit was 34 px. */
 QToolButton {{
     background-color: {t['surface']};
     color: {t['text']};
@@ -106,50 +120,6 @@ QToolButton {{
 }}
 QToolButton:hover {{ background-color: {t['surfaceHover']}; }}
 QToolButton:pressed {{ background-color: {t['surfaceActive']}; }}
-QToolButton#stepperMinusButton, QToolButton#stepperPlusButton {{
-    background-color: {t['surfaceHover']};
-    color: {t['text']};
-    border: 1px solid {t['controlBorder']};
-    min-width: 22px; max-width: 22px;
-    /* Height has to reach the 34 px of the adjacent QLineEdit; making it
-       implicit left the buttons 14 px short and broke the stepper's outline. */
-    min-height: 32px; max-height: 32px;
-    font-size: {f['body'] + 2}pt;
-    font-weight: 600;
-    padding: 0;
-}}
-QToolButton#stepperMinusButton {{
-    border-top-left-radius: {r['sm']}px;
-    border-bottom-left-radius: {r['sm']}px;
-    border-right: none;
-}}
-QToolButton#stepperPlusButton {{
-    border-top-right-radius: {r['sm']}px;
-    border-bottom-right-radius: {r['sm']}px;
-    border-left: none;
-}}
-QToolButton#stepperMinusButton:hover, QToolButton#stepperPlusButton:hover {{
-    background-color: {hover};
-}}
-QToolButton#stepperMinusButton:pressed, QToolButton#stepperPlusButton:pressed {{
-    background-color: {t['surfaceActive']};
-}}
-QToolButton#stepperMinusButton:disabled, QToolButton#stepperPlusButton:disabled {{
-    background-color: {t['controlDisabled']};
-    color: {t['textFaint']};
-}}
-#stepperSpinBoxEdit {{
-    background-color: {t['controlBg']};
-    color: {t['text']};
-    border: 1px solid {t['controlBorder']};
-    /* Matches QLineEdit / QComboBox, so a stepper lines up with the plain
-       inputs in the same dialog. */
-    padding: {s['xs'] + 2}px {s['sm']}px;
-    min-height: 20px;
-    selection-background-color: {t['accent']};
-    selection-color: {t['textOnAccent']};
-}}
-#stepperSpinBoxEdit:focus {{ border-color: {t['borderFocus']}; }}
 """
 
 
@@ -382,9 +352,20 @@ QSpinBox, QDoubleSpinBox {{
     selection-background-color: {t['accent']};
     selection-color: {t['textOnAccent']};
 }}
+QSpinBox:hover, QDoubleSpinBox:hover {{ border-color: {t['borderStrong']}; }}
 QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {t['borderFocus']}; }}
 QSpinBox:disabled, QDoubleSpinBox:disabled {{
     background-color: {t['controlDisabled']}; color: {t['textFaint']};
+}}
+/* The generic rule reserves the 22 px stepper column on the trailing edge.
+   Controls that call setButtonSymbols(NoButtons) (scale-bar frame index,
+   label preview index, downscale percentage) paint no arrows there, so the
+   reserved gutter left the number visibly off-centre. buttonSymbols is a Qt
+   property, so QSS can match the no-button state without a dynamic
+   property. */
+QSpinBox[buttonSymbols="NoButtons"],
+QDoubleSpinBox[buttonSymbols="NoButtons"] {{
+    padding-right: {s['sm']}px;
 }}
 
 /* ===================== item views ===================== */

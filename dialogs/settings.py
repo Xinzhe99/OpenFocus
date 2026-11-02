@@ -349,11 +349,9 @@ class RegistrationSettingsDialog(QDialog):
         self.spin_downscale = QSpinBox()
         self.spin_downscale.setRange(64, 8192)
         self.spin_downscale.setSingleStep(1)
-        # 默认值会在 load_defaults 中设置
-        self.spin_downscale.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self.spin_downscale.setKeyboardTracking(False)
         self.spin_downscale.setValue(1024)
-        # A usable minimum: sizeHint for a NoButtons spin is only ~45 px.
-        self.spin_downscale.setMinimumWidth(90)
+        self.spin_downscale.setMinimumWidth(110)
         g_layout.addWidget(self.spin_downscale)
         g_layout.addStretch()
 

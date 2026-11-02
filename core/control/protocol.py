@@ -167,9 +167,9 @@ def write_discovery(socket_name, token, pid, version):
     return path
 
 
-def read_discovery():
+def read_discovery(path=None):
     """Parsed discovery file, or ControlError('not_running')."""
-    path = discovery_path()
+    path = Path(path) if path is not None else discovery_path()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:

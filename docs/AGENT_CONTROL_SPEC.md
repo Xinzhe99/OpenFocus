@@ -45,7 +45,7 @@ At startup the server writes `<user-data>/control.json`:
 ```json
 {
   "schema": "openfocus/control/1",
-  "version": "1.72.0",
+  "version": "1.74.0",
   "pid": 12345,
   "socket": "OpenFocus-control-12345",
   "token": "…",
@@ -82,7 +82,7 @@ Responses always carry the request `id`. `ui.trigger` schedules the action and
 returns before it runs, because menu actions may open a modal dialog.
 
 Errors: `bad_request`, `unauthorized`, `not_found`, `invalid_argument`,
-`busy`, `unsupported`, `internal`, `not_running`.
+`busy`, `confirm_required`, `unsupported`, `internal`, `not_running`.
 
 ## 5. Commands
 
@@ -95,13 +95,13 @@ load, stack decode) return immediately; poll `app.state`/`render.state`/
 | Command | Args | Result |
 |---|---|---|
 | `ping` | — | `{pong:true, version}` |
-| `app.info` | — | version, pid, platform, python, methods, capabilities, control, commands |
+| `app.info` | — | version, pid, platform, python, methods, registrations, capabilities, control |
 | `app.state` | — | stack, method, alignment, options, render, outputs, dialogs, view, context |
 | `app.quit` | `force?` | `{quitting:true, force}`; `force:true` discards prompts/work |
 
-`app.info.methods` mirrors the registry (id, label, category, parameters,
-depth, neural, order_sensitive). `capabilities` reports torch/gpu/heic/raw/
-dtcwt/headless without importing optional packages.
+`app.info.methods` mirrors the registry (id, label, category, neural,
+order_sensitive, depth_map, weights, parameters). `capabilities` reports torch,
+gpu, heic, raw, dtcwt and pyqt without importing the optional packages.
 
 ### Stack
 
@@ -123,7 +123,7 @@ reports `finished:true` with the reason and leaves the previous frames alone.
 | Command | Args | Result |
 |---|---|---|
 | `method.set` | `id`, `parameters?` | current method + resolved parameters |
-| `method.parameters` | `id?` | `{parameters, defaults, specs}` |
+| `method.parameters` | `id?` | `{id, parameters, specs, depth}` |
 | `align.set` | `id`, `parameters?` | current alignment + parameters |
 | `option.set` | `name`, `value` | `{name, value}` |
 
@@ -154,13 +154,16 @@ CPU-AI or ROI modal; retry with `confirm:true` or `roi_mode` plus
 | Command | Args | Result |
 |---|---|---|
 | `output.list` | — | records with index, label, kind, exported, retouchable, shape, dtype, export_path |
-| `output.select` | `index` | selected record |
+| `output.select` | `index` | `{selected, label}` |
 | `output.display` | `index` | `{displayed:true}` |
 | `output.export` | `path`, `index?` | `{path, written:true}` |
-| `output.delete` | `index` | `{deleted:true}` |
+| `output.delete` | `index`, `force?` | `{deleted:true}`; protected unexported retouch/compare outputs require `force:true` |
 
 `output.export` writes the selected (or given) output without a file dialog,
-through the export manager's normal writer (labels, scale bar, bit depth).
+through the export manager's normal writer (labels, scale bar, bit depth). For
+an aligned-stack output it writes the frame folder and returns
+`kind:"aligned"`; layered TIFF is not part of this command (use the output
+list's context menu through `ui.menu`).
 
 ### Project
 
@@ -209,9 +212,6 @@ Dialog controls carry `controlId` values such as `method_combo`,
 `fusion_combo` and `method_<id>` checkboxes. `dialog.accept` drives the normal
 accept path, so an accepted batch dialog starts its batch exactly like the
 menu action.
-
-Dialogs are shown modelessly so commands can keep arriving; an accepted batch
-dialog starts its batch exactly like the menu action does.
 
 ### UI surface (any capability)
 
@@ -267,7 +267,12 @@ multi-page TIFF, updates, help, …).
 
 Start a batch by opening the dialog (`dialog.open batch`), filling it through
 `ui.set`, and clicking Start (or `dialog.accept`); the server forwards the
-accepted settings to `BatchManager` just like the menu flow.
+accepted settings to `BatchManager` just like the menu flow. `dialog.open batch`
+also accepts `folders` (a list of stack folders) and `output_dir` (switches to
+the custom output folder). For grouped processing, set `chk_grouping` to true
+before `group_size_spin`/`group_overlap_spin`; those controls are hidden while
+the checkbox is off. Grouped fusion is approximate, uses temporary disk space,
+and produces no original-frame depth, provenance or aligned-frame export.
 
 ## 6. Security
 
@@ -280,7 +285,8 @@ accepted settings to `BatchManager` just like the menu flow.
   add privileges beyond the user's own.
 - Install scope: the pip wheel is headless-only — `openfocus gui` and the
   `ctl` transport (PyQt6) report a clear error there instead of failing
-  silently. Use the desktop build or a source checkout for GUI control.
+  silently. Use the packaged desktop build (download it from
+  **https://openfocus.top**) or a source checkout for GUI control.
   The windowed desktop executable can return CLI output through inherited
   standard handles, such as pipes supplied by a subprocess. If no usable
   handle is supplied, output is discarded; no console is opened. The headless

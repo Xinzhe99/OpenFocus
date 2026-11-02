@@ -305,6 +305,45 @@ test("upstream release failures stay 502 instead of becoming 404", async () => {
   assert.match(await response.text(), /503/);
 });
 
+test("mirror metadata keeps downloads available when GitHub is rate limited", async () => {
+  installCache();
+  installReleaseFetch({ fail: true });
+  const release = releaseBody();
+  const manifest = {
+    tag: release.tag_name,
+    published: release.published_at,
+    assets: Object.fromEntries(Object.entries(NAMES).map(([kind, name]) => {
+      const asset = release.assets.find((item) => item.name === name);
+      return [kind, { name, size: asset.size, url: asset.browser_download_url }];
+    })),
+  };
+  const env = makeEnv({
+    "openfocus-meta/latest-release.json": new TextEncoder().encode(JSON.stringify(manifest)),
+    [NAMES["windows-setup"]]: PAYLOAD,
+  });
+  const latest = await run("https://openfocus.top/api/latest", { env });
+  assert.equal(latest.status, 200);
+  assert.equal(latest.headers.get("x-openfocus-release-source"), "mirror");
+  assert.equal((await latest.json()).tag, TAG);
+  const download = await run("https://openfocus.top/download/latest/windows-setup", {
+    env, headers: { Range: "bytes=2-4" },
+  });
+  assert.equal(download.status, 206);
+  assert.equal(download.headers.get("content-range"), "bytes 2-4/10");
+  assert.equal(await download.text(), "234");
+});
+
+test("invalid mirror metadata cannot redirect downloads", async () => {
+  installCache();
+  installReleaseFetch({ fail: true });
+  const env = makeEnv({
+    "openfocus-meta/latest-release.json": new TextEncoder().encode(JSON.stringify({tag: TAG, assets: {}})),
+  });
+  const response = await run("https://openfocus.top/api/latest", { env });
+  assert.equal(response.status, 502);
+  assert.match(await response.text(), /GitHub release API returned 503/);
+});
+
 test("unknown kinds are 404 and non-read methods are 405", async () => {
   installCache();
   installReleaseFetch();

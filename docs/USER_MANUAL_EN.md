@@ -28,16 +28,17 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 ### Key Features
 
 - **Multi-Focus Image Fusion**: Combine multiple images with different focus points into one fully focused image
-- **Multiple Fusion Algorithms**: Choose from Guided Filter, DCT, DTCWT, GFG-FGF, and AI Fusion (deep learning)
-- **Image Registration**: Align misaligned image sequences using ECC or Homography methods
+- **Multiple Fusion Algorithms**: Ten methods — Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3 and OpenFocus A/B/C — plus alignment-only mode
+- **Image Registration**: Align misaligned frames with ECC, homography, homography followed by ECC, or the fast OpenFocus aligner
 - **Wipe Compare View**: Inspect alignment and compare results with an A/B divider view
 - **Project Files**: restore input references and reproducible settings; export result pixels separately
+- **Processing Templates**: save and reapply fusion, registration and resource settings to any loaded stack
 - **Multi-page TIFF**: single-file Z-stacks load page-by-page and export back into one file
 - **Depth Map**: per-pixel focus-position maps with custom pseudo-color schemes
 - **Scale Bar**: publication-grade scale bars with automatic µm/px calibration
 - **Crash Auto-Recovery**: the last working session is offered for restore after a crash
 - **Multi-language**: twelve UI languages — English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski — with automatic system-language detection
-- **Headless CLI**: Script OpenFocus from the command line for automation and CI
+- **Headless and Agent CLIs**: Script headless pipelines for CI, or drive a running window through the local control channel
 - **Flexible Export**: Save results as individual images, folders, or GIF animations
 - **Image Transformations**: Rotate, flip, and resize image stacks
 - **Label Addition**: Add text labels to registered and input stacks
@@ -46,7 +47,7 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 ### Supported Input Formats
 
 - Image files: JPG/JPEG, PNG, BMP, TIFF, WebP, and other common formats
-- Video files: MP4 format (automatically decoded into image sequences)
+- Video files: MP4, AVI, MOV, MKV, WMV, FLV and WEBM (decoded into image sequences)
 - Folders containing numbered image sequences
 - Camera RAW files (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2 and other common
   RAW formats). Decoding uses `rawpy` (LibRaw), which `pip install openfocus`
@@ -64,11 +65,13 @@ Desktop source and result views show transparency against a checkerboard.
 
 Load at full size, choose no alignment, turn off Quick Preview and ROI, then
 render and save as PNG. Batch requires a fusion method and PNG output without
-saving an aligned stack. Alignment, resizing or downsampling, dust correction,
-depth maps, comparison, retouching, labels and scale bars are not supported for
-transparent data. A fusion method that changes the rectangle's dimensions is
+saving an aligned stack. Alignment, resizing or downsampling, flat-field
+correction, depth maps, method comparison, retouching and scale bars are
+unavailable for transparent data, and labels cannot be burned into an export.
+A fusion method that changes the rectangle's dimensions is
 rejected. Varying or feathered masks, different frame masks, transparent TIFF
 input and non-PNG output, including GIF and multi-page TIFF, are unsupported.
+The CLI rejects sensor cleanup and depth maps for transparent input as well.
 
 For example, the CLI equivalent is `python main.py --input ./png-stack
 --output ./result.png --method guided_filter --align none`.
@@ -83,20 +86,33 @@ For example, the CLI equivalent is `python main.py --input ./png-stack
 
 ## 2. Getting Started
 
-### Starting the Application
+### Downloading and Starting the Application
+
+The preferred way to install a packaged build is the project website,
+**https://openfocus.top** — it links the current Windows installer, macOS build
+and Linux package, with install scripts for terminal use. Prefer it over
+rebuilding: those artifacts are the exact release pipeline output.
+`pip install openfocus` installs only the headless command-line interface (the
+wheel deliberately does not depend on PyQt6); use a desktop build or a source
+checkout for the GUI.
 
 After installation, launch OpenFocus by:
 
-1. **Windows (Executable)**: Double-click the OpenFocus shortcut or executable file
-2. **Python Source**: Run `python main.py` in your activated conda environment
+1. **Windows**: Double-click the OpenFocus shortcut or executable file
+2. **macOS**: Open `OpenFocus.app` from Applications
+3. **Python Source**: Run `pip install -r requirements.txt`, then
+   `python main.py` in your activated environment
 
-Upon launch, you will see the main application window with a dark theme interface.
+The first launch opens the welcome dialog, where you can choose the theme and
+load the bundled demo stack. A fresh profile defaults to the light theme; the
+choice is remembered.
 
 ### Quick Start Workflow
 
 1. Import your image sequence (File → Open Folder or drag-and-drop)
 2. Configure fusion settings in the right panel
-3. Optionally enable registration for alignment
+3. Registration starts on **ECC**; choose **No alignment** if the frames are
+   already aligned
 4. Adjust kernel size if needed
 5. *(optional)* Check **Quick preview** to test parameters on a downscaled draft first
 6. Click "Start Render" to begin processing
@@ -133,10 +149,10 @@ The right panel contains all configuration options organized vertically:
 
 The top menu bar provides access to all functions:
 
-- **File**: Import/export operations and the recent-files list
+- **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Image transformations and labels
-- **Tools**: Batch processing, depth map
-- **Settings**: GPU acceleration, language, tile, registration, and thread configurations
+- **Tools**: Batch processing, method comparison, alignment diagnostics, depth map, flat-field correction, scale bar and labels
+- **Settings**: Advanced Settings (performance, registration, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
 - **Help**: Environment info, contact information, update check, and the log folder
 
 ---
@@ -151,9 +167,9 @@ The top menu bar provides access to all functions:
 4. Click OK to load the images
 
 Tick **Don't ask again** in that dialog to always load at the chosen scale
-without a prompt; **Settings → Ask for Loading Scale on Import** turns the
-prompt back on. A loaded stack can still be downscaled later with
-**Edit → Resize**.
+without a prompt; **Settings → Advanced Settings → Startup & updates → Ask for
+Loading Scale on Import** turns the prompt back on. A loaded stack can still be
+downscaled later with **Edit → Resize**.
 
 The software will automatically:
 - Detect and sort image files by filename
@@ -179,6 +195,27 @@ files require saving a new input stack first.
 File → Open Project rebuilds the recorded frames before replacing the current
 stack. If sources moved, choose the new source root and confirm the complete
 old/new path mapping. Save the project again to retain the relocated references.
+
+A project behaves like a document: the title bar shows its name with a `*` while
+there are unsaved changes, and closing the app or opening another project asks
+before discarding them. Source images are referenced, not copied.
+
+### Processing Templates
+
+A processing template carries settings, never source paths. **File → Save
+Processing Template…** writes an `.oftemplate` containing the current fusion
+method and parameters, registration method and parameters, per-method
+brightness options, thread count, tile settings, registration downscale width,
+StackMFF AI batch size, sharpening, reverse order and the sensor-denoise flag.
+A defect-mask path is deliberately not stored.
+
+**File → Apply Processing Template…** applies such settings to the stack that is
+already loaded; it does not replace the current sources. The picker also accepts
+a `.ofproj` project (settings are extracted without requiring its sources) and a
+recipe `.json` that contains project settings. Applying a template marks the
+project dirty and can change algorithm parameters and resource settings, so
+review the right panel before rendering. Recipes remain the headless format and
+do include a defect-mask path plus a fingerprint.
 
 ### Demo Stack
 
@@ -235,13 +272,15 @@ showed the bar leaves the setting unchanged.
 
 **Tools → Depth Map…** estimates focus positions using the selected method's
 activity measure. This is not a measured surface or an exact pixel-source map:
-pyramid/wavelet methods estimate activity and AI reports an expected frame
-position. Choose either the current checked frames or the selected output's
+pyramid/wavelet methods estimate activity and the StackMFF variants report an
+estimated frame position. Choose either the current checked frames or the selected output's
 recorded source. Missing historical provenance is never replaced with the
 current stack. The source and texture stay bound to that snapshot.
+Depth maps are unavailable for transparent PNG stacks, in the GUI and the CLI.
 
-All six methods — DCT, DTCWT, GFG-FGF, OpenFocus B, OpenFocus C and StackMFF V3 —
-require an explicit **Compute** click. Opening the dialog or changing the measure,
+All seven depth-capable methods — DCT, DTCWT, GFG-FGF, OpenFocus B, OpenFocus C,
+StackMFF V2 and StackMFF V3 — require an explicit **Compute** click. StackMFF V1
+has no depth map. Opening the dialog or changing the measure,
 source, registration or parameters never starts computation. The parameter editor
 appears directly below the measure selector: DCT median kernel and GFG initial kernel
 use odd values 1–51 (default 7). OpenFocus B uses a focus-response radius
@@ -250,7 +289,8 @@ are editable here as a local draft, initialized from the source parameters. Stac
 shows its own AI output mode (Soft blend by default, or Hard pick) and an explanation
 instead of a numeric kernel: the map reports a continuous frame position, not a
 physical distance. Soft uses the probability-weighted position; Hard uses the most
-probable frame per pixel.
+probable frame per pixel. StackMFF V2 has no parameters and reports the focal
+layer its network samples.
 Drafts start from the matching output's parameters or the main window's remembered
 method settings. They are remembered per source and method while this dialog is
 open; editing them does not change the main window, project or recorded output.
@@ -284,7 +324,8 @@ Compute stays visible and is disabled while computing, cancelling or exporting.
   values are promoted to 16-bit by multiplying by 257. Exports use the depth
   map's ROI and preserve invalid areas as zero.
 - **Physical depth**: enter Z start, positive step, unit and acquisition direction,
-  then confirm the original capture mapping. Excluded frames keep their gaps.
+  then confirm the original capture mapping. Switching source clears this
+  confirmation; confirm the capture order again. Excluded frames keep their gaps.
   Float32 TIFF stores micrometres, NaN for missing data, and source metadata.
   A physical OBJ also needs XY calibration; it uses a 1:1 physical Z scale.
 - **3D model / 3D texture**: choose the grid's longest side (600 vertices by default).
@@ -306,8 +347,12 @@ Compute stays visible and is disabled while computing, cancelling or exporting.
   parent fusion image or remove that image's unsaved protection.
 
 Computation runs in the background with progress and cancellation; the AI
-method reuses the same memory-safe tiling as AI fusion, so deep stacks
-work. The CLI equivalent is `--depth-map [path]` with `--depth-colormap`.
+methods reuse the same memory-safe tiling as AI fusion, so deep stacks
+work. The CLI equivalent is `--depth-map [path]` with `--depth-colormap`; it
+writes only the colorized map (default `<output>_depth.png`), works only for
+the depth-capable methods above, and is rejected for transparent or grouped
+input. The GUI additionally exports raw depth, frame indices, alternative
+images, physical depth and 3D models.
 
 ### Crash Auto-Recovery
 
@@ -319,7 +364,7 @@ exits never show the prompt. Recovery data lives next to your settings
 
 ### Recent Files
 
-Every stack you open is remembered under **File → Open Recent** (up to 8 entries). Press `Alt+1`–`Alt+8` to reopen an entry directly. Reopening the same stack moves it to the top; entries whose files no longer exist can be removed with a prompt, and **Clear Recent List** empties the menu.
+Every stack you open is remembered under **File → Open Recent** (up to 8 entries, numbered in the submenu). Click an entry to reopen it; there is no global keyboard shortcut for recent files. Reopening the same stack moves it to the top; entries whose files no longer exist can be removed with a prompt, and **Clear Recent List** empties the menu.
 
 ### Drag and Drop
 
@@ -366,8 +411,11 @@ To remove all loaded images, go to **File → Clear Stack** or press `Ctrl+W`.
 ### Navigating the Image Stack
 
 - **Slider**: Drag the slider below the source panel to scroll through frames
-- **File List**: Click any filename in the right panel's source images list
-- **Keyboard**: Use arrow keys (Left/Right) to navigate
+- **File List**: Click any filename in the right panel's source images list;
+  while the list has focus, Up/Down move the selection and the source panel
+  follows
+- **Keyboard**: There is no global previous/next-frame shortcut; focus the
+  source list first
 
 ### Reviewing similar frames
 
@@ -491,8 +539,9 @@ Homography and ECC also accept the opt-in `failure_policy="fail"` registration
 parameter to stop when their algorithms detect failure. The default remains
 `"continue"`; inspect results even when alignment succeeds.
 
-To inspect a render, enable **Tools → Collect alignment diagnostics** and render
-again. This recomputes alignment instead of reusing cached images. The completion
+To inspect a render, enable **Settings → Advanced Settings → Registration →
+Collect alignment diagnostics** and render again. This recomputes alignment
+instead of reusing cached images. The completion
 status highlights fallbacks; open **Tools → Alignment diagnostics** for the
 per-frame report. It shows available failure reasons, method-specific scores,
 match counts, referenced frames and transforms. Reference numbers and names
@@ -503,8 +552,10 @@ and grouped renders do not provide this report.
 
 1. In the right panel, locate the **Registration** group
 2. Pick one method from the dropdown: **No alignment**, **OpenFocus (fast)**,
-   **Align (ECC)** or **Align (Homography)**
-3. For OpenFocus (fast), choose how to handle rejected frames in its settings.
+   **ECC**, **Homography**, or **Homography → ECC**
+3. For OpenFocus (fast), choose rejected-frame handling and a reference frame;
+   ECC and Homography also offer **Rejected frame handling**
+4. **Collect alignment diagnostics** now lives in Advanced Settings (see above)
 
 ### When to Use Registration
 
@@ -515,18 +566,23 @@ and grouped renders do not provide this report.
 
 ### Registration Settings
 
-Access additional settings via **Settings → Registration**:
+Access additional settings via **Settings → Advanced Settings → Registration**:
 - **Downscale Width**: Control preprocessing resolution (default: 1024px)
 - Lower values = faster processing, potentially lower accuracy
 - Higher values = slower processing, potentially higher accuracy
+- **Collect alignment diagnostics** and **Registration cache** sit in the same
+  section
 
 ---
 
 ## 8. Image Fusion Methods
 
-OpenFocus offers ten fusion algorithms (plus an alignment-only mode). Each has different characteristics suitable for various image types.
+OpenFocus offers ten fusion algorithms (plus an alignment-only mode). A fresh
+profile starts on **StackMFF V3** with **ECC** registration; the lists below
+describe every choice. Each has different characteristics suitable for
+various image types.
 
-### Guided Filter (Default)
+### Guided Filter
 
 - **Algorithm**: Uses guided filtering for edge-preserving fusion
 - **Best for**: General purpose, balanced speed and quality
@@ -667,12 +723,14 @@ filename stems are retained, with the extension of the format you select.
 | DCT | Medium | Good | Textures |
 | DTCWT | Medium | Very Good | Complex scenes |
 | GFG-FGF | Fast | Good | Focus regions |
-| AI Fusion (StackMFF V3) | Slow (GPU) | Excellent | Best quality |
+| StackMFF (V1) | Slow (GPU) | Not benchmarked here | Unordered or discontinuous stacks |
+| StackMFF V2 | Fast (GPU) | Not benchmarked here | Continuous sweeps with a tiny model |
+| StackMFF V3 | Slow (GPU) | Excellent | Best quality |
 | OpenFocus A | Depends on stack | Depends on stack | Multiscale focused-pixel selection |
 | OpenFocus B | Depends on stack | Depends on stack | Depth-guided blending of neighboring frames |
 | OpenFocus C | Depends on stack | Depends on stack | Depth-guided multiscale reconstruction |
 
-Open **Tools → Method comparison** to adjust several methods independently.
+Open **Tools → Compare methods…** to adjust several methods independently.
 Each method's name, parameter labels and controls stay together when the window
 narrows. Changes update the preview automatically. **ROI preview (fast)** fuses
 the selected area with surrounding context; **Full-image fusion** checks the
@@ -704,13 +762,13 @@ return safely.
 ### Quick Preview (Draft Render)
 
 Tuning parameters on large stacks is slow at full resolution. Check
-**Quick preview** above the render button and OpenFocus first renders a
-downscaled draft (longest side 1200 px) — typically several times faster,
-including registration. The preview is displayed with a "Preview" note in
-the status-bar summary after the render and is **not** added to the output history. Uncheck
-the box and render again to produce the full-resolution result. Preview
-mode does not apply to ROI renders and never pollutes the full-resolution
-alignment cache.
+**Quick preview** above the render button and OpenFocus first renders a draft
+at half the linear size (never below 320 px on the long edge) — typically
+several times faster, including registration. The completion message (and the
+newest result's tooltip) reports **Quality: Preview**, and the draft is **not**
+added to the output history. Uncheck the box and render again to produce the
+full-resolution result. Preview mode does not apply to ROI renders and never
+pollutes the full-resolution alignment cache.
 
 ---
 
@@ -781,10 +839,11 @@ Live labels and scale bars are not included; unsaved annotation changes remain
 protected. Source geometry and validity masks are retained. The result and
 sources must be opaque RGB or grayscale images with matching 8-bit or 16-bit
 depth, and each source rectangle must fit within the result. Export supports
-up to 128 sources; source names
-cannot contain characters outside the Basic Multilingual Plane, such as many
-emoji. It refuses unsafe contexts and jobs estimated to need more than 512 MiB
-of memory, reporting the failure instead of writing an incomplete export.
+up to 128 sources; source names are limited to 255 characters and
+cannot contain NUL or characters outside the Basic Multilingual Plane, such as
+many emoji. It refuses unsafe contexts and jobs estimated to exceed 512 MiB
+of working memory or the available RAM budget, reporting the failure instead
+of writing an incomplete export.
 GIMP 3.2.6 on Windows imports the 8-bit and 16-bit layers, including their
 offsets and transparent registration fill. The result is visible and source
 layers are hidden; GIMP also adds a visible Background layer. Other editors
@@ -863,7 +922,13 @@ export an image to write the annotations to a file.
 
 ## 11. Settings and Configuration
 
-Open **Settings → Advanced Settings** for performance, registration, StackMFF AI and startup preferences. Changes remain drafts until **OK**; Cancel, Esc and closing discard them. Reducing the tile size immediately updates the visible overlap limit to half a tile. AI output mode affects StackMFF only; registration width can change alignment accuracy.
+Open **Settings → Advanced Settings** for performance, registration, sensor
+cleanup, output naming, StackMFF AI and startup preferences. Changes remain
+drafts until **OK**; Cancel, Esc and closing discard them. Reducing the tile
+size immediately updates the visible overlap limit to half a tile. The AI
+section's saved batch limit is retained, but inference currently submits one
+tile per call; registration width can change alignment accuracy.
+Alignment-diagnostic collection is a checkbox in the Registration section.
 
 Automatic update downloads run while idle and never install automatically. A completed download remains ready until you explicitly choose **Restart and Update**. Restart protects active edits and unsaved work, then writes recovery data before launching replacement. Cancelling a download or preparation waits for the current safe boundary. An existing complete, newer staged build can be installed offline.
 
@@ -879,7 +944,9 @@ be combined with transparent input. Leave the field empty to process without
 correction. The CLI also accepts the reference with `--dust-map WHITE`.
 
 Sensor cleanup is optional and runs on the original sensor-coordinate frames
-before registration. Select an explicit defect mask to correct known hot or
+before registration. In the desktop application it lives in **Settings →
+Advanced Settings → Sensor cleanup**; the batch dialog has the same controls.
+Select an explicit defect mask to correct known hot or
 dead pixels; OpenFocus does not infer a mask from specimen images. The mask must
 be a single-channel 8-bit or 16-bit image with the same dimensions as the source:
 zero means unaffected and either 1 or the maximum channel value marks defects.
@@ -914,11 +981,17 @@ to intermediate group results.
 Recipes require their output location to be outside every input folder, and
 reject an explicitly selected input as output. Choose a separate output location
 to protect the source images and avoid including an earlier result on a rerun.
-Processing settings can be extracted from a project as a template or recipe
-even if its original sources have moved. Opening the project itself still
+A project's processing settings can be reused as a template or recipe even if
+its original sources have moved: **File → Save Processing Template…** stores
+the settings without source paths and **File → Apply Processing Template…**
+applies them to a loaded stack, while `openfocus recipe create --project`
+writes a headless recipe that still needs explicit `--input` paths. Templates
+carry the sensor-denoise flag but not a defect-mask path; recipes store the mask
+path and its fingerprint. Opening the project itself still
 requires its sources and any recorded flat-field reference.
 
-When a file reference is applied in Tools at the stack's base scale, a saved
+When a flat-field file reference is applied in **Tools → Dust Map
+(Flat-field)** at the stack's base scale, a saved
 project records its absolute path, content hash and dust size, and reapplies it
 once to the original sources on open. Keep the reference file unchanged and in
 place: a missing or changed reference prevents the project from opening. A
@@ -1000,11 +1073,12 @@ unchanged; choosing smaller tiles yourself can change output pixels.
 
 ### GPU Acceleration Toggle
 
-OpenFocus uses the GPU (CUDA/MPS) for the AI neural model (StackMFF V3); classical algorithms and application registration run on CPU. Explicit low-level CuPy registration is a separate numerical backend.
+OpenFocus uses the GPU (CUDA/MPS) for the AI neural models (StackMFF V1/V2/V3); classical algorithms and application registration run on CPU. Explicit low-level CuPy registration is a separate numerical backend.
 
 - Toggle via **Settings → GPU Acceleration**
-- Unchecking forces everything onto the CPU — useful when GPU drivers misbehave
-- The status panel shows `CPU*` while the GPU is disabled
+- Unchecking forces neural methods onto the CPU — useful when GPU drivers misbehave
+- The status panel shows `N/A` when no accelerator is used or available, and
+  `CPU*` when an accelerator exists but the selected method is CPU-only
 - The choice takes effect on the next render and is remembered
 
 ### AI Batch Size
@@ -1018,10 +1092,10 @@ Access via **Settings → Advanced Settings → AI**:
 
 ### Themes
 
-Two interface themes are available: **Dark (default)** and **Light**. Switch via
+Two interface themes are available: **Light (default)** and **Dark**. Switch via
 **Settings → Theme**; the choice is applied immediately (the Windows title
 bar follows) and remembered. First-launch users choose a theme in the
-welcome dialog.
+welcome dialog; a saved choice always wins.
 
 ### Portable Mode
 
@@ -1040,52 +1114,50 @@ are written without it.
 
 ### HEIC/HEIF Input
 
-iPhone photos load directly. Requires the optional `pillow-heif` package
-(`pip install pillow-heif`; included in the packaged builds).
+iPhone photos load directly. Requires `pillow-heif`, which
+`pip install openfocus` installs and the packaged builds bundle.
 
 ### Updates
 
-Project files (`.ofproj`) behave like a document: the title bar shows the
-project name with a `*` while there are unsaved changes, and closing the app
-or opening another project asks before discarding them. The project stores
-reconstructable input and settings; it does not store output pixels or remove
-their export protection. Source images are referenced, not copied.
-
-Help → Check for Updates compares your version against GitHub Releases.
-**Download and Install** fetches the new installer in-app (with progress)
-and launches it; Open Downloads Page goes to the releases list. The check
-runs silently at most once a day.
+Help → Check for Updates compares your version against GitHub Releases. A
+newer release is downloaded in the background while the app is idle; once the
+build is staged, the banner and status area offer **Restart and Update**, which
+applies it offline. Builds that cannot self-update open the Releases page
+instead. The check runs silently at most once a day.
 
 ### Registration Cache
 
 OpenFocus can store registration results in a `.openfocus_cache` folder
 next to the source stack. Re-opening the same stack (files unchanged)
-then skips alignment entirely. Toggle via **Settings → Registration
-Cache**; stale entries are replaced automatically.
+then skips alignment entirely. Toggle it in **Settings → Advanced Settings →
+Registration**; stale entries are replaced automatically.
 
 ### Persisted Settings
 
 All of the following survive an application restart automatically:
-thread count, tile parameters, registration downscale width, AI Fusion (StackMFF V3)
-batch size, the GPU acceleration toggle, the registration cache toggle,
-interface language, window size/panel layout, the drag-out export format,
-the per-method brightness options, smoothing sigma and Radius values,
-and your recently opened stacks. Settings dialogs save the moment you confirm them;
-everything is also saved when the application closes. Preferences are
-stored per user in `OpenFocus/OpenFocus.ini` (QSettings INI format).
+thread count, resource mode, tile parameters, registration downscale width, AI
+Fusion (StackMFF V3) batch size, the GPU acceleration toggle, the registration
+cache and alignment-diagnostic toggles, interface language, window size/panel
+layout, the drag-out export format, the per-method brightness options,
+smoothing and Radius values, and your recently opened stacks. Settings dialogs
+save when you confirm them; everything is also saved when the application
+closes. Preferences are stored per user in `OpenFocus/OpenFocus.ini`
+(QSettings INI format).
 
 ### Interface Language
 
-Switch anytime via **Settings → Language → English / 中文**. The change
-applies immediately and is remembered for future sessions.
+Switch anytime via **Settings → Language**, which lists all twelve packs
+(English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português,
+Italiano, Nederlands, Polski). The change applies immediately and is remembered
+for future sessions.
 
 ### Automatic Update Check
 
 Once per day, a few seconds after launch, OpenFocus silently checks GitHub
 for a newer release. When one exists, a banner appears above the image
-panels: the version, **Update now** (downloads and restarts in one step),
-**What's new** (release notes) and a dismiss button. Dismissing hides the
-banner for that version only — the next release brings it back, and
+panels: the version, **Update now** (applies a staged build, or starts the
+download), **What's new** (release notes) and a dismiss button. Dismissing
+hides the banner for that version only — the next release brings it back, and
 **Help → Check for Updates** re-arms it immediately.
 
 While the download runs in the background the status bar shows progress.
@@ -1104,7 +1176,6 @@ Process multiple folders automatically:
      dialog (or on the folder list) to queue them all at once; dropping
      switches to multi-folder mode and the thumbnails appear as they decode
    - **Remove Folders**: Remove selected folders from the list
-   - **Clear All**: Remove all folders
 3. Configure output settings:
    - **Save to Subfolder**: Creates results in each input folder
    - **Save to Same Folder**: Saves alongside input while preserving existing files
@@ -1119,15 +1190,17 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 - Starts from a snapshot of the main window settings; batch controls override it.
 - Each folder or split group is processed independently through the same pipeline.
 - **Grouped fusion** is an optional way to process long stacks in multiple-folder
-  mode. Set **Group size** to at least 2 and **Overlap** between 0 and the group
-  size minus 2. A group size of zero disables grouping. The desktop overlap
-  starts at 1 and is limited to the allowed range when the size changes. Groups
+  mode. Tick **Process large stacks in groups**; the **Group size** and
+  **Overlap** controls appear only while it is on. Group size must be at least 2
+  and overlap between 0 and the group size minus 2. The desktop overlap starts
+  at 1 and is limited to the allowed range when the size changes. Groups
   are fused in rounds using temporary disk space; the progress display identifies
   each round. Fusion, exposure matching, base correction and registration use
   each group's own frames and references, including intermediate rounds, so the
   result approximates processing the complete stack at once. Grouping requires a
   fusion method; original-frame depth, provenance and aligned-frame exports are
-  unavailable. Split-folder mode is not supported.
+  unavailable. Split-folder mode is not supported, so the checkbox is rejected
+  there.
   Registered groups use their first frame as the coordinate reference. Each
   registration removes a conservative border for interpolation, and later
   rounds intersect the surviving rectangles, including any single-frame tail.
@@ -1186,7 +1259,7 @@ output names.
 
 Dragging results from the output list writes image files using the format
 chosen under the output list's context menu (**Drag-out format**: JPG,
-PNG or TIFF). The choice is remembered.
+PNG, WebP or TIFF). The choice is remembered.
 
 ### Saving the Registered Stack
 
@@ -1214,11 +1287,31 @@ PNG or TIFF). The choice is remembered.
 
 ## 14. Command Line Interface
 
-OpenFocus can run without the GUI — useful for scripted pipelines and CI.
+OpenFocus can run without the GUI — useful for scripted pipelines and CI. The
+`openfocus` console script (installed by `pip install openfocus`) and
+`python main.py` from a checkout expose the same commands. Fusion options work
+with either form; the subcommands below are:
+
+```bash
+openfocus version                       # print the version
+openfocus describe                      # JSON: methods, parameters, capabilities, control commands
+openfocus gui [--control] [--socket NAME] [paths…]   # start the desktop app
+openfocus ctl <command> [flags]          # drive a running window (see AGENT_CONTROL_SPEC.md)
+openfocus recipe create FILE --input … --output … [processing flags]
+openfocus recipe run FILE [--dry-run]    # replay a saved headless recipe
+openfocus retouch replay CHECKPOINT --base BASE --sources … --output RESULT
+```
+
+`openfocus gui` launches detached; `--control` waits for the control channel and
+prints its connection JSON. `openfocus describe` and `version` need no input.
+The agent-facing workflow is documented in
+[AGENT_CONTROL_SPEC.md](./AGENT_CONTROL_SPEC.md) and
+`skills/openfocus-control/SKILL.md`.
+
 From a Python environment (or next to the packaged executable):
 
 ```bash
-# Fuse a folder with the default AI method
+# Fuse a folder with the default method (StackMFF V3)
 python main.py --input ./stack_folder --output ./result/fused.png
 
 # DTCWT with ECC registration, 8 threads
@@ -1242,7 +1335,8 @@ image files. It prints one JSON object with `files` and `suggestions` arrays;
 each suggestion's `index` and `reference_index` are zero-based positions in
 `files`, and `difference` is the mean normalized sample difference. Add
 `--json report.json` to save the same object. This review mode does not combine
-with `--output`, `--output-dir`, `--json-progress`, or `--dry-run`.
+with `--output`, `--output-dir`, `--json-progress`, `--dry-run`, or sensor
+cleanup options.
 The report compares adjacent files in the supplied input order, without knowing
 which frames you may later exclude. If you exclude a reference, reconsider its
 successor or review the remaining files again in their intended order.
@@ -1258,32 +1352,71 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | Option | Description |
 |--------|-------------|
 | `--suggest-duplicates` | Report nearly identical adjacent frames for manual review; does not fuse or exclude them |
-| `--input, -i` | Image folder, video file, or one or more image files |
+| `--input, -i` | Image folder(s), video file, one or more image files, or multi-page TIFF |
 | `--output, -o` | Output image path (extension sets the format) |
-| `--method, -m` | `stackmffv3` (default), `none`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
+| `--output-dir, -d` | Batch mode: fuse every input folder, writing `<folder>.<ext>` per stack |
+| `--resume` | Batch mode: skip folders whose output already exists |
+| `--config FILE` | Batch mode: JSON per-folder overrides, e.g. `{"stackA": {"method": "dct"}}` |
+| `--method, -m` | `stackmffv3` (default), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
+| `--param KEY=JSON_VALUE` | Set any fusion parameter; repeatable and overrides legacy flags |
 | `--align, -a` | `none` (default), `homography`, `ecc`, `both`, `openfocus` |
+| `--align-param KEY=JSON_VALUE` | Set any registration parameter; repeatable |
 | `--align-shift-limit` | `openfocus` align only: max accepted shift as a fraction of the frame size (default 0.08; frames above it are left unaligned) |
 | `--alignment-report PATH` | Save per-frame alignment outcomes as JSON for a single, non-grouped render with alignment enabled; batch and grouped renders are not supported |
 | `--exposure-match` | Match every frame's mean to the last frame before fusion (default: on; `--no-exposure-match` disables). Whole-stack gains, so tiled output stays seamless; applies to every method and to the OpenFocus aligner's brightness reference |
 | `--base-frame` | Optional post-fusion step: match the output's low frequencies to the `last`/`first` frame (`none` default) |
 | `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |
+| `--sharpen-output` | Apply mild unsharp masking to the fused output (off by default) |
 | `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
+| `--defect-mask-path MASK` | Sensor-coordinate defect mask repaired before registration |
+| `--sensor-denoise` | Conservative sensor denoising before registration |
 | `--kernel, -k` | Kernel size (forced odd); controls focus-response scale for `openfocus_a` and `openfocus_b`; C has no radius |
 | `--depth-smoothing VALUE` | `openfocus_b` only: depth-transition smoothing strength (default 1.2) |
 | `--blend-smoothing VALUE` | `openfocus_a` / `openfocus_c` only: transition smoothing strength (defaults 2.0 for A, 3.0 for C) |
+| `--ai-mode {soft,hard}` | StackMFF V3 output: probability-weighted blend (default) or most probable frame per pixel |
 | `--threads, -t` | Worker thread upper limit; `0` = automatic (default), positive values cap concurrency |
 | `--resource-preference` | `balanced` (default), `responsive`, or `maximum`; controls resource scheduling |
 | `--batch-size` | AI tile batch upper limit (default 2); actual inference currently uses one tile per call |
 | `--cpu` | Force CPU even if a GPU is available |
 | `--downscale` | Registration feature-detection downscale width |
-| `--tile-size` | Tile block size for large images |
-| `--output-dir, -d` | Batch mode: fuse every input folder, writing `<folder>.png` per stack |
-| `--group-size` | Fuse a folder in groups of this many frames; `0` disables grouping (default) |
+| `--tile-enabled` / `--no-tile-enabled` | Enable tiled fusion when needed (default: on) |
+| `--tile-size` | Tile block size for large images (default: automatic) |
+| `--tile-overlap` | Tile overlap in pixels (default: automatic) |
+| `--tile-threshold` | Minimum image size that triggers tiling (default: automatic) |
+| `--group-size` | Fuse a folder in groups of this many frames; `0` disables grouping (default). Folders only; no `--depth-map`, RAW/alpha/multipage input, or non-default OpenFocus reference frame |
 | `--group-overlap` | Frames shared by consecutive groups; default `0`, at most group size minus 2 |
 | `--scale-bar` | Draw a scale bar (calibration auto-detected from TIFF metadata) |
-| `--depth-map [path]` | Also save a colorized focus-position (depth) map (default: `<output>_depth.png`) |
-| `--depth-colormap` | Colormap for `--depth-map`: turbo, viridis, jet, gray, … (default turbo) |
 | `--scale-um` | Pixel size in µm/px, overriding metadata (implies `--scale-bar`) |
+| `--depth-map [path]` | Also save a colorized focus-position map (default `<output>_depth.png`); depth-capable methods only, not grouped or transparent. In batch mode only the default path is allowed |
+| `--depth-colormap` | Colormap for `--depth-map`: turbo, viridis, jet, gray, … (default turbo) |
+| `--json FILE` | Write a machine-readable result summary to FILE when done |
+| `--json-progress` | Print one JSON progress object per step to stdout (NDJSON); prose goes to stderr |
+| `--dry-run` | Validate inputs and print the plan without fusing |
+
+There is no `--method none` value: the CLI always fuses. Use the desktop
+application for alignment-only output.
+
+### Processing recipes
+
+A recipe is a portable JSON file of CLI processing options with paths relative
+to the recipe. Create one from the options you would pass to a normal run, then
+replay it:
+
+```bash
+openfocus recipe create line.json --input ./stack --output ./out/fused.tif \
+  --method dtcwt --align ecc --threads 8
+openfocus recipe run line.json
+openfocus recipe run line.json --dry-run
+```
+
+`recipe create --project project.ofproj --input ./stack --output ./out/fused.tif`
+captures a project's processing settings against explicitly chosen inputs; the
+project's sources may have moved. Recipes reject transient controls such as
+`--dry-run`, `--resume`, `--json` and `--config`, and require the output to sit
+outside every input folder (and differ from an explicitly selected input). A
+defect mask is stored by relative path with a SHA-256 fingerprint, so a missing
+or changed mask fails the run. Project source edits (rotation, flip, flat
+field) cannot be captured; export the corrected stack first.
 
 ### Replay a retouch checkpoint
 
@@ -1327,6 +1460,8 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 |----------|--------|
 | `Ctrl+O` | Open Folder |
 | `Ctrl+Shift+O` | Open Video |
+| `Ctrl+Alt+O` | Open Project |
+| `Ctrl+Alt+S` | Save Project |
 | `Ctrl+S` | Save Result |
 | `Ctrl+Shift+S` | Save Registered Stack |
 | `Ctrl+W` | Clear Stack |
@@ -1343,8 +1478,7 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 
 | Shortcut | Action |
 |----------|--------|
-| `Left Arrow` | Previous frame |
-| `Right Arrow` | Next frame |
+| `Up` / `Down` (source list focused) | Previous / next frame |
 | `Mouse Wheel` | Zoom in/out |
 | `Ctrl + Wheel` | Fine zoom |
 | `Double-click` | Toggle fit/100% view |
@@ -1353,8 +1487,8 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 
 | Shortcut | Action |
 |----------|--------|
-| `Space` | Pan mode toggle |
-| `Delete` | Delete selected item |
+| `Space` (hold, pointer over an image) | Temporary pan mode |
+| `Delete` | Delete the focused list item; also clears the ROI when the pointer is over the source image |
 
 ---
 
@@ -1376,39 +1510,45 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 
 #### AI Unavailable
 
-- Install PyTorch: `pip install torch torchvision`
-- For GPU support, install CUDA-enabled PyTorch
+- Install PyTorch: `pip install torch` (torchvision is not used)
+- For GPU support, install a CUDA-enabled PyTorch build
 - Check via **Help → Environment Info**
 
 #### Out of Memory Errors
 
-- Enable tile processing in **Settings → Tile**
+- Enable tile processing in **Settings → Advanced Settings → Performance**
 - Reduce tile block size
 - Use smaller kernel sizes
 - Resize images to smaller dimensions
 
 #### Registration Fails
 
-- Try only one registration method at a time
-- Reduce the downscale width in **Settings → Registration**
+- Use **OpenFocus (fast)** for bounded rigid motion, or enable **Stop on
+  rejected frame** to fail early instead of accepting unaligned frames
+- Reduce the downscale width in **Settings → Advanced Settings → Registration**
 - Ensure images have sufficient contrast and features
+- Enable **Collect alignment diagnostics**, render again, and read
+  **Tools → Alignment diagnostics** for the failing frames
 
 #### Slow Processing
 
-- Increase thread count in **Settings → Thread Count Settings**
-- Use a more powerful CPU
-- Reduce image resolution
-- Use simpler fusion algorithms (Guided Filter instead of AI Fusion)
+- Leave threads at automatic (`0`); CPU capacity, resource mode and memory
+  headroom already cap concurrency
+- Use Maximum resource mode for an unattended batch, or Guided Filter /
+  GFG-FGF instead of an AI method
+- Reduce image resolution or use **Quick preview** while tuning
 
 #### Windows SmartScreen Warning on First Launch
 
-The released binaries are unsigned. Click **More info → Run anyway**.
-The first launch after unzipping may take 30–60 seconds.
+The released binaries are unsigned. Download them from
+**https://openfocus.top** rather than a third-party mirror, then click
+**More info → Run anyway**. The first launch after unzipping may take
+30–60 seconds.
 
 #### macOS Says the App "Cannot Be Opened" or "Is Damaged"
 
-The app is unsigned and not notarized. After moving `OpenFocus.app` to
-Applications, run:
+The app is unsigned and not notarized. Download the Apple Silicon build from
+**https://openfocus.top**, move `OpenFocus.app` to Applications, then run:
 
 ```bash
 xattr -cr /Applications/OpenFocus.app

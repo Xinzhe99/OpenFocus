@@ -4,9 +4,9 @@ import os
 from PyQt6.QtCore import QEvent, QSignalBlocker, Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSplitter,
-    QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
+    QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
+    QSlider, QSplitter, QVBoxLayout, QWidget,
 )
 
 from core.compare_worker import AlignmentWorker, PreviewWorker
@@ -36,6 +36,14 @@ class CompareDialog(QDialog):
         self.window_main = window_main
         self.setWindowTitle(trans.t("compare_title"))
         self.resize(1280, 820)
+        # 1280x820 does not fit a 1366x768 work area at 125-150 % scaling; the
+        # action bar then sat below the screen. Clamp the first size the same
+        # way the retouch window does and let the splitter/scroll areas shrink.
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self.resize(min(1280, max(480, available.width() - 80)),
+                        min(820, max(360, available.height() - 100)))
         # A plain QDialog has only a close button on Windows; allow the title
         # bar to maximise as well as the explicit fullscreen toggle below.
         self.setWindowFlags(self.windowFlags()
@@ -117,9 +125,20 @@ class CompareDialog(QDialog):
                   if hasattr(window_main, "current_fusion_method")
                   else fusion_algorithms()[0].id)
         if method == 'none':
-            method = fusion_algorithms()[0].id
+            method = self._first_available_method()
         get_fusion(method)
-        self._checks[method].setChecked(True)
+        box = self._checks.get(method)
+        # An unavailable inherited method stays unchecked (it stays visible and
+        # disabled with its dependency tooltip): silently swapping the request
+        # would compare something the user did not choose.
+        if box is not None and box.isEnabled():
+            box.setChecked(True)
+        if not self._selected_methods():
+            # Only when the inherited method is unavailable: keep the empty
+            # parameter strip and disabled Run button honest.
+            self.param_scroll.setVisible(False)
+            self.btn_run.setEnabled(False)
+            self.status_label.setText(box.toolTip() if box is not None else "")
         for _control in ("btn_run", "btn_adopt_params", "btn_adopt_output",
                          "btn_retry", "btn_verify", "align_combo",
                          "mode_combo", "view_combo", "registration_parameter_panel"):
@@ -128,6 +147,24 @@ class CompareDialog(QDialog):
                 _widget.setProperty("controlId", _control)
         for _method, _box in self._checks.items():
             _box.setProperty("controlId", f"method_{_method}")
+
+    def _first_available_method(self) -> str:
+        return next((name for name, box in self._checks.items()
+                     if box.isEnabled()), fusion_algorithms()[0].id)
+
+    def _apply_method_availability(self) -> None:
+        """Disable methods whose optional backend is unavailable."""
+        from core.multi_focus_fusion import is_ai_fusion_available
+        from ui.algorithm_combo import fusion_unavailable_reason
+
+        available = bool(is_ai_fusion_available())
+        for spec in fusion_algorithms():
+            box = self._checks.get(spec.id)
+            if box is None:
+                continue
+            reason = fusion_unavailable_reason(spec, available)
+            box.setEnabled(not reason)
+            box.setToolTip(reason)
 
     def _update_source_summary(self):
         """State which frames are compared, including excluded ones."""
@@ -169,16 +206,38 @@ class CompareDialog(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(8)
         methods_row = QHBoxLayout()
-        methods_flow = FlowPanel(h_spacing=12, v_spacing=6)
-        methods_flow.add(QLabel(trans.t("compare_pick")))
+        methods_host = QWidget()
+        methods_layout = QVBoxLayout(methods_host)
+        methods_layout.setContentsMargins(0, 0, 0, 0)
+        methods_layout.setSpacing(4)
+        methods_layout.addWidget(QLabel(trans.t("compare_pick")))
+        methods_policy = QSizePolicy(QSizePolicy.Policy.Preferred,
+                                     QSizePolicy.Policy.Minimum)
+        methods_policy.setHeightForWidth(True)
+        methods_host.setSizePolicy(methods_policy)
         self._checks = {}
-        for spec in fusion_algorithms():
+        # Same family order and captions as the main/batch/depth selectors, so
+        # a method keeps its familiar neighbour and family.
+        from ui.algorithm_combo import CATEGORY_KEYS, CATEGORY_ORDER
+        specs = sorted(fusion_algorithms(),
+                       key=lambda spec: CATEGORY_ORDER.index(spec.category))
+        last_category = None
+        flow = None
+        for spec in specs:
             method = spec.id
-            box = QCheckBox(trans.t(spec.label_key), methods_flow)
+            if spec.category != last_category:
+                header = QLabel(trans.t(CATEGORY_KEYS[spec.category]))
+                header.setObjectName("sectionLabel")
+                methods_layout.addWidget(header)
+                flow = FlowPanel(h_spacing=12, v_spacing=6)
+                methods_layout.addWidget(flow)
+                last_category = spec.category
+            box = QCheckBox(trans.t(spec.label_key), flow)
             box.toggled.connect(self._methods_changed)
-            methods_flow.add(box)
+            flow.add(box)
             self._checks[method] = box
-        methods_row.addWidget(methods_flow, 1)
+        self._apply_method_availability()
+        methods_row.addWidget(methods_host, 1)
         self.btn_run = QPushButton(trans.t("compare_run"))
         self.btn_run.setObjectName("primaryButton")
         self.btn_run.clicked.connect(self.run_comparison)
@@ -456,7 +515,11 @@ class CompareDialog(QDialog):
         self._request_changed()
 
     def _mode_changed(self, _index):
-        self.preview_note.setVisible(bool(self.mode_combo.currentData()))
+        roi = bool(self.mode_combo.currentData())
+        self.preview_note.setVisible(roi)
+        # Full-frame comparison ignores the square; hiding it stops a drag
+        # from looking like it changed the full result.
+        self.ref_canvas.set_region_enabled(roi)
         self._stale_methods.update(self._results)
         self._results.clear()
         self._full_results.clear()

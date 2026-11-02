@@ -87,10 +87,12 @@ language menu, `hreflang` tags and sitemap pick it up automatically.
 Releasing: the Worker resolves `/api/latest` from GitHub and serves
 `/download/latest/*` from R2 (falling back to a `302` GitHub asset URL for a
 full request), so the page's version label, file sizes and download links
-follow the latest release without a rebuild. `/api/latest` clients receive
-`no-store`; the Worker itself caches the payload for five minutes per data
-center. The values in `site/site_content.py` are the no-JavaScript fallback —
-bump `RELEASE` when a release is cut so that fallback stays current.
+follow the latest release without a rebuild. Successful GitHub metadata is
+cached for five minutes per data center, while clients receive `no-store`. If
+GitHub is unavailable, the Worker serves the last complete mirror manifest
+with `X-OpenFocus-Release-Source: mirror`; it may lag until mirroring succeeds.
+The values in `site/site_content.py` are the no-JavaScript fallback — bump
+`RELEASE` when a release is cut so that fallback stays current.
 
 ## Download mirror (R2)
 
@@ -102,11 +104,10 @@ falls back to the GitHub release asset for a full request when it does not.
 - Workflow: `.github/workflows/r2-mirror.yml` runs after a successful
   **Build & Publish Release** run for a `v*` tag (the release event is
   suppressed for `GITHUB_TOKEN` releases), on manually published releases, and
-  on manual dispatch (`tag` input). It downloads the four assets with `gh`,
-  verifies exactly four non-empty assets, uploads them through the R2 S3
-  endpoint under their release filenames, and prunes only older recognized
-  `OpenFocus-v*` keys after confirming the mirrored tag is the latest release.
-  Runs are serialized so an older re-run cannot prune a newer tag.
+  on manual dispatch (`tag` input). It downloads and verifies the four assets,
+  uploads them under their release filenames, and publishes a manifest under
+  `openfocus-meta/latest-release.json` only for the current latest release.
+  It then prunes older recognized `OpenFocus-v*` keys. Runs are serialized.
 - Secrets: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (an R2
   API token with Object Read & Write on the bucket).
 - Free tier: 10 GB-month storage, 1M Class A and 10M Class B operations per

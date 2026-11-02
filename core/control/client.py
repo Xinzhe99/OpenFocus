@@ -178,10 +178,12 @@ def _launch_command(socket_name=None, paths=()):
     return command
 
 
-def launch_gui(socket_name=None, timeout=45.0, paths=()):
+def launch_gui(socket_name=None, timeout=45.0, paths=(), *, env=None):
     """Start a detached GUI and wait for its control discovery file."""
     before = None
-    path = discovery_path()
+    child_env = os.environ.copy() if env is None else env.copy()
+    override = child_env.get("OPENFOCUS_CONTROL_FILE")
+    path = Path(override).expanduser().absolute() if override else discovery_path()
     try:
         before = path.stat().st_mtime_ns
     except OSError:
@@ -189,11 +191,10 @@ def launch_gui(socket_name=None, timeout=45.0, paths=()):
     creation = 0
     if sys.platform == "win32":
         creation = 0x00000008 | 0x00000200  # DETACHED_PROCESS | NEW_GROUP
-    env = os.environ.copy()
-    if env.get("OPENFOCUS_CONTROL_FILE"):
-        env["OPENFOCUS_CONTROL_FILE"] = str(path.absolute())
+    if override:
+        child_env["OPENFOCUS_CONTROL_FILE"] = str(path)
     process = subprocess.Popen(
-        _launch_command(socket_name, paths), cwd=str(Path(__file__).resolve().parents[2]), env=env,
+        _launch_command(socket_name, paths), cwd=str(Path(__file__).resolve().parents[2]), env=child_env,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=creation,
         start_new_session=sys.platform != "win32",
@@ -205,7 +206,7 @@ def launch_gui(socket_name=None, timeout=45.0, paths=()):
                 "internal", f"OpenFocus exited during startup ({process.returncode})",
                 "Start it manually with `openfocus gui` to see the error.")
         try:
-            payload = read_discovery()
+            payload = read_discovery(path)
             matching = socket_name is None or payload["socket"] == socket_name
             fresh = before is None or path.stat().st_mtime_ns != before
             if matching and fresh:
@@ -344,10 +345,26 @@ def tool_session(timeout=60.0, launch=False, allow_existing=False,
     """
     import tempfile
     if launch:
+        from PyQt6.QtCore import QSettings
+
         root = Path(tempfile.mkdtemp(prefix="openfocus-tool-"))
-        os.environ["OPENFOCUS_CONTROL_FILE"] = str(root / "control.json")
-        launch_gui(f"OpenFocus-tool-{os.getpid()}", timeout=launch_timeout)
-        return Session(timeout=timeout)
+        settings = QSettings(str(root / "settings.ini"), QSettings.Format.IniFormat)
+        settings.setValue("ui/first_run_done", "1")
+        settings.setValue("updates/last_check_epoch", 9999999999)
+        settings.setValue("ui/ask_load_scale", False)
+        settings.setValue("rendering/use_gpu", False)
+        settings.setValue("rendering/ai_cpu_warning_dismissed", True)
+        settings.sync()
+        if settings.status() != QSettings.Status.NoError:
+            raise ControlError("internal", "Could not initialize private settings")
+        env = os.environ.copy()
+        env["OPENFOCUS_DATA_DIR"] = str(root)
+        env["OPENFOCUS_CONTROL_FILE"] = str(root / "control.json")
+        env["OPENFOCUS_INSTANCE_NAME"] = f"OpenFocus-tool-instance-{root.name}"
+        env.pop("OPENFOCUS_LOG_DIR", None)
+        discovery = launch_gui(f"OpenFocus-tool-control-{root.name}",
+                               timeout=launch_timeout, env=env)
+        return Session(discovery=discovery, timeout=timeout)
     if not allow_existing and discovery_path().exists():
         raise ControlError(
             "confirm_required", "A GUI control session is already running",

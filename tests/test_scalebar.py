@@ -254,6 +254,68 @@ def test_historical_output_keeps_its_calibration():
     assert export_cfg(host, record=record)["px_um"] == 0.65
 
 
+def test_unavailable_registered_target_is_disabled_and_not_preselected(qapp):
+    from dialogs.scalebar import ScaleBarDialog
+
+    host = _scale_dialog_host(np.zeros((240, 400, 3), np.uint8))
+    host.registration_results = []
+    host.scale_bar_target = "registered"
+    dialog = ScaleBarDialog(host)
+    index = dialog.target_combo.findData("registered")
+    assert not dialog.target_combo.model().item(index).isEnabled()
+    assert dialog.target_combo.currentData() == "source"
+    assert dialog._ok_button.isEnabled()
+    dialog.reject()
+    assert host.scale_bar_target == "registered"
+    host.deleteLater()
+
+
+def test_empty_output_selector_is_hidden(qapp):
+    from dialogs.scalebar import ScaleBarDialog
+
+    host = _scale_dialog_host(np.zeros((240, 400, 3), np.uint8))
+    host.scale_bar_target = "all"
+    dialog = ScaleBarDialog(host)
+    output_index = dialog.target_combo.findData("output")
+    assert not dialog.target_combo.model().item(output_index).isEnabled()
+    assert dialog.output_combo.count() == 0
+    assert not dialog._target_form.isRowVisible(dialog.output_combo)
+    dialog.reject()
+    host.deleteLater()
+
+
+def test_restored_record_keeps_a_tiny_stored_calibration(qapp):
+    from types import SimpleNamespace
+    from dialogs.scalebar import ScaleBarDialog
+
+    image = np.zeros((240, 400, 3), np.uint8)
+    record = SimpleNamespace(
+        kind="fusion", label="result", image=image, output_id="o1",
+        context=None,
+        scale_bar_config={
+            "mode": "manual", "manual": 0.0008, "px_um": 0.0008,
+            "position": "bottom-right", "color": "auto",
+            "font_family": "", "font_size": 0.0, "font_bold": False,
+            "text_align": "auto", "custom_x": 0.95, "custom_y": 0.95,
+        })
+    host = _scale_dialog_host(image)
+    host.scale_bar_target = "all"
+    # Two decimals are enough for the host value; the record's 0.0008 must
+    # not be rounded away while restoring it.
+    host.scale_um_per_px_manual = 5.0
+    host.output_manager = SimpleNamespace(
+        record_for_row=lambda row: record,
+        record_for_item=lambda item: record)
+    host.output_list = SimpleNamespace(count=lambda: 1,
+                                       currentItem=lambda: "item")
+    dialog = ScaleBarDialog(host)
+    assert dialog.mode_combo.currentData() == "manual"
+    assert dialog.px_spin.decimals() >= 4
+    assert dialog.manual_value() == pytest.approx(0.0008)
+    dialog.reject()
+    host.deleteLater()
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -1.0])
 def test_invalid_calibration_never_draws_a_physical_claim(value):
     from utils.scalebar import draw_scale_bar

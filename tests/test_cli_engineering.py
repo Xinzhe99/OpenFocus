@@ -62,6 +62,17 @@ def test_dry_run_writes_nothing(tmp_path):
     assert rc == 0
     assert not os.path.isdir(out) or not list(out.glob("*.png"))
 
+def test_batch_dry_run_summary_counts_validated_stacks(tmp_path):
+    fa, fb, out = _make_stacks(tmp_path)
+    summary = tmp_path / "summary.json"
+    assert _run_cli(["-i", fa, fb, "-d", str(out), "--dry-run",
+                     "--json", str(summary)]) == 0
+    payload = json.loads(summary.read_text(encoding="utf-8"))
+    assert payload["dry_run"] is True
+    assert payload["succeeded"] == 2
+    assert payload["failed"] == []
+    assert not out.exists()
+
 
 @pytest.mark.parametrize('batch', [False, True])
 def test_grouped_dry_run_rejects_alpha_before_processing(tmp_path, capsys, batch):

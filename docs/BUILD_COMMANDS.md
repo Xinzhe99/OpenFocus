@@ -2,11 +2,18 @@
 
 PowerShell commands for packaging OpenFocus with PyInstaller (6.x).
 
+To *install* OpenFocus, use the packaged builds from **https://openfocus.top**
+(the preferred download route); build locally only for development, testing a
+change, or producing an unsupported platform variant.
+
 > **Authoritative build**: the release pipeline
-> (`.github/workflows/release.yml`) builds with **mode 3 (onedir + torch)**
-> below — that exact command produces the shipped artifacts. The commands here
-> are the same thing for local runs; `python -m PyInstaller` is preferred over
-> a bare `pyinstaller` so the interpreter you intend is the one that runs.
+> (`.github/workflows/release.yml`) builds the Windows artifact with the
+> **mode 3 (onedir + torch)** command below, followed by a pruning step that
+> removes torch headers, `share`/`test` data and `.lib`/`.pdb`/`.exp` files.
+> The macOS job uses the same data/hidden-import/exclude list with
+> `--windowed` (no `--noupx`).
+> `python -m PyInstaller` is preferred for local runs so the interpreter you
+> intend is the one that runs; CI invokes the `pyinstaller` script directly.
 
 ---
 
@@ -43,7 +50,7 @@ Notes:
 
 ## 2) Include `torch`, single-file (--onefile)
 
-Bundle `torch` and `torchvision` into a single-file executable. This increases exe size and build time significantly.
+Bundle `torch` into a single-file executable (torchvision is excluded). This increases exe size and build time significantly.
 
 ```powershell
 pyinstaller --clean --noconfirm --onefile --noconsole `
@@ -60,13 +67,19 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --collect-data dtcwt `
   --collect-all rawpy `
   --collect-all torch `
-  --collect-all torchvision `
+  --exclude-module torchvision `
   main.py
 ```
 
 Notes:
 - Single-file with `torch` may hit antivirus false positives and will be large. Consider `--onedir` if size/time is an issue.
-- Includes `ui` and `docs` directories for complete application functionality.
+- `torchvision` is not used; excluding it keeps the bundle smaller.
+- Includes `ui` and `docs` directories as shipped data.
+
+The one-file commands below are local conveniences. They omit the release's
+explicit `--collect-submodules locales fusion_methods` and hidden-import list;
+add those (as mode 3 does) when every language pack and back-end must be
+present in a frozen build.
 
 ---
 
@@ -75,27 +88,53 @@ Notes:
 This builds an output folder containing the executable and required files. Faster to build and easier to troubleshoot dependency issues.
 
 ```powershell
-pyinstaller --clean --noconfirm --onedir --noconsole `
+pyinstaller --clean --noconfirm --onedir --noconsole --noupx `
   --name OpenFocus `
-  --icon ".\assets\OpenFocus.ico" `
+  --additional-hooks-dir hooks `
+  --icon "assets/OpenFocus.ico" `
   --add-data "assets;assets" `
   --add-data "weights;weights" `
   --add-data "ui;ui" `
   --add-data "docs;docs" `
-  --collect-all PyQt6 `
-  --additional-hooks-dir hooks `
+  --add-data "THIRD_PARTY_NOTICES.md;." `
+  --collect-submodules PyQt6 `
+  --collect-submodules fusion_methods `
+  --collect-submodules locales `
+  --hidden-import core.algorithm_adapters `
+  --hidden-import core.depth_map `
+  --hidden-import core.registration `
+  --hidden-import PyQt6.QtCore `
+  --hidden-import PyQt6.QtGui `
+  --hidden-import PyQt6.QtWidgets `
+  --hidden-import PyQt6.QtNetwork `
   --collect-all scipy `
   --copy-metadata imageio `
   --collect-data dtcwt `
   --collect-all rawpy `
   --collect-all torch `
-  --collect-all torchvision `
+  --exclude-module torchvision `
+  --exclude-module torch.test `
+  --exclude-module torch.utils.tensorboard `
+  --exclude-module torch.distributed `
+  --exclude-module matplotlib `
+  --exclude-module tkinter `
+  --exclude-module IPython `
+  --exclude-module pytest `
+  --exclude-module PyQt6.QtWebEngineCore `
+  --exclude-module PyQt6.Qt3DCore `
+  --exclude-module PyQt6.QtMultimedia `
+  --exclude-module PyQt6.QtBluetooth `
+  --exclude-module PyQt6.QtDesigner `
+  --exclude-module PyQt6.QtQuick `
   main.py
 ```
 
 Notes:
-- `--onedir` is recommended for large dependencies like `torch` during development or when debugging.
-- Includes `ui` and `docs` directories for complete application functionality.
+- This is the release command; CI then prunes build-only torch headers and
+  libraries from the bundle. `--onedir` is recommended for large dependencies
+  like `torch` during development or when debugging.
+- `torchvision` is not imported by any fusion back-end; the release excludes it.
+- Includes `ui` and `docs` directories as shipped data.
 
 ---
 
@@ -106,30 +145,32 @@ Notes:
 - `--noconsole`: Hide console window (useful for GUI apps).
 - `--icon`: App icon file path.
 - `--add-data "src;dest"`: Include extra data files; format on Windows is `"src;dest"` (note backslashes in paths).
-  - Required directories: `assets`, `weights`, `ui`, `docs`
+  - Shipped directories: `assets`, `weights`, `ui`, `docs` (see the table below)
 - `--collect-all <package>`: Collect package data, binaries, submodules for the named package.
 - `--copy-metadata <package>`: Copy package metadata (useful for packages like `imageio`).
 - `--exclude-module <module>`: Prevent a specific module from being bundled.
 
-## ⭐ Required Resource Directories
+## Required Resource Directories
 
-All PyInstaller commands MUST include these directories:
+| Directory | Purpose | Runtime need |
+|-----------|---------|--------------|
+| `assets` | Icons, demo stack and image-panel resources | Required |
+| `weights` | StackMFF checkpoints (`stackmff_final.pth`, `stackmff_v2_final.pth`, `stackmff_v3_final.pth`) | Required for AI methods |
+| `ui` | Python UI modules (collected as code; `--add-data` included for shipped data) | Code is required; data is shipped |
+| `docs` | Documentation files | Shipped; not read at runtime |
 
-| Directory | Purpose | Required |
-|-----------|---------|----------|
-| `assets` | Icons, images, UI resources | ✅ Yes |
-| `weights` | AI model files (StackMFF-V3) | ✅ Yes |
-| `ui` | UI styles and resources (styles.py) | ✅ Yes |
-| `docs` | Documentation files | ✅ Yes |
-
-**Failure to include all directories will result in `FileNotFoundError` at runtime.**
+Missing `assets`/`weights` only breaks the features that read them (icon,
+demo stack, AI methods) at the moment of use; it does not fail application
+startup. CI verifies `weights/stackmff_v3_final.pth` exists and is nonempty
+before building.
 
 ---
 
 ## 4) Spec-file builds
 
-The repo root `OpenFocus.spec` is the PyInstaller 6 equivalent of mode 3
-(onedir, torch included, UPX off) if you prefer a spec:
+The repository does not ship `OpenFocus.spec`; CI passes the flags explicitly.
+If you keep a local spec file (it is gitignored) as the PyInstaller 6 equivalent
+of mode 3 (onedir, torch included, UPX off), build it with:
 
 ```powershell
 python -m PyInstaller --clean --noconfirm OpenFocus.spec
@@ -141,12 +182,10 @@ fusion, depth, registration and capability entry point. Keep
 its backend automatically, including modules outside `fusion_methods`. Source
 execution alone cannot establish that a frozen distribution includes it.
 
-It is **not** used by CI (the release workflow passes the flags explicitly) and
-it is gitignored, so treat it as a convenience for local builds. The older
-`docs/OpenFocus.spec` was removed: it used the PyInstaller 4/5 API
-(`cipher`, `a.zipfiles`, `win_*` kwargs) and referenced files that do not
-exist (`locales/`, `assets/OpenFocus.icns`), so it could not run on the
-version CI installs.
+The older `docs/OpenFocus.spec` was removed: it used the PyInstaller 4/5 API
+(`cipher`, `a.zipfiles`, `win_*` kwargs) and referenced files that do not match
+this repository (`assets/OpenFocus.icns` is generated on macOS; the spec used a
+stale source layout), so it could not run on the version CI installs.
 
 ```powershell
 # Windows (PowerShell)
@@ -164,12 +203,14 @@ pyinstaller --clean --noconfirm --onefile --noconsole `
   --collect-data dtcwt `
   --collect-all rawpy `
   --collect-all torch `
-  --collect-all torchvision `
+  --exclude-module torchvision `
   main.py
 ```
 
 ```bash
 # macOS (bash) - Creates .app bundle with dock drag-and-drop support
+# Generate assets/OpenFocus.icns first (the release workflow builds it from
+# assets/OpenFocus.png with iconutil); otherwise omit --icon.
 pyinstaller --clean --noconfirm --onedir --noconsole \
   --name OpenFocus \
   --icon "./assets/OpenFocus.icns" \
@@ -184,7 +225,7 @@ pyinstaller --clean --noconfirm --onedir --noconsole \
   --collect-data dtcwt \
   --collect-all rawpy \
   --collect-all torch \
-  --collect-all torchvision \
+  --exclude-module torchvision \
   --osx-bundle-identifier com.openfocus.app \
   main.py
 ```
@@ -205,7 +246,7 @@ pyinstaller --clean --noconfirm --onedir --noconsole \
   --collect-data dtcwt \
   --collect-all rawpy \
   --collect-all torch \
-  --collect-all torchvision \
+  --exclude-module torchvision \
   main.py
 
 # Install desktop file for taskbar drag-and-drop support

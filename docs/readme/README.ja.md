@@ -9,7 +9,7 @@
 <p align="center"><strong>すべての焦点面を、1 枚の全焦点画像に。</strong></p>
 
 <p align="center">
-  10 個の合成アルゴリズム、3 つの位置合わせモード、マクロ・顕微鏡・産業用スタック向けのソース固定レタッチ。16 ビットを一貫して保持し、ヘッドレス CLI と 12 言語の UI を備えます。
+  10 種類の融合アルゴリズム、4 つの位置合わせモード、マクロ・顕微鏡・産業用スタック向けのソース固定レタッチ。16 ビットを一貫して保持し、ヘッドレス CLI と 12 言語の UI を備えます。
 </p>
 
 <p align="center">
@@ -52,71 +52,75 @@
   <img src="../../assets/ui.png" alt="OpenFocus の画面" width="880">
 </p>
 
-## 📢 News
+## 📢 お知らせ
 
 > [!NOTE]
-> **v1.72.0** — StackMFF と StackMFF V2 が融合に加わり、1 つのインストールで 10 手法になりました。元の 3D スタックネットワーク（順序非依存・設定なし）、深度マップ付きの V2 再帰モデル（フォーカス順を保持）、名称を統一した StackMFF V3 です。各アルゴリズムの選択肢は AI・空間領域・変換領域でグループ化され、ホバーで説明が表示されます。V2 のぼやけるソフト合成は削除し、論文どおりのサンプリングを維持しています。
+> **v1.74.0** — OpenFocus A/B/C の融合と高速位置合わせを更新しました。デスクトップ版は認証付きローカル Agent チャネルを自動で開始するため、`openfocus ctl` は特別な起動フラグなしで実行中のウィンドウを操作できます。
+
+以前のリリースは [変更履歴](../../CHANGELOG.md) にあります。
+
+📸 OpenFocus で作成した画像を公開する場合は、次のような注記を添えていただけると幸いです。
+
+> Created with OpenFocus — https://github.com/Xinzhe99/OpenFocus
+
+必須ではありませんが、大変ありがたく思います。
 
 <a id="features"></a>
 ## 機能
 
 <table>
-
 <tr>
 <td width="46%" valign="middle">
 
-### AI 合成：StackMFF V3
+### AI 融合：StackMFF V3
 
-既定の手法は、各画素を最も確からしいソースフレームにニューラルネットで分類します。同じ位置合わせ結果で、文字の輪郭はガイド付きフィルタより鋭く、面はより滑らか（ラプラシアン鮮鋭度 27.1 対 28.5）。真値のある合成スタックでは PSNR と SSIM の両方で全手法を上回り、ゴースト画素も古典手法より少なくなります。
+既定の手法はニューラルネットワークで各画素の最も可能性の高いソースフレームを推定し、予測に応じて各フレームをブレンドするか、最も可能性の高いフレームを選択します。合成ベンチマークは既知の正解画像と各手法を比較します。結果はスタックと設定によって異なります。
 
-[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF V3) · [ベンチマーク →](tools/synthetic_benchmark.py)
+[StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [ベンチマーク →](../../tools/synthetic_benchmark.py)
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/ai.mp4"><picture><source srcset="../../assets/readme/ai.gif" type="image/gif"><img src="../../assets/readme/ai_poster.jpg" alt="AI 合成：StackMFF V3" width="100%" /></picture></a>
+<a href="../../assets/readme/ai.mp4"><picture><source srcset="../../assets/readme/ai.gif" type="image/gif"><img src="../../assets/readme/ai_poster.jpg" alt="同じスタックでの StackMFF V3 とガイドフィルタ" width="100%" /></picture></a>
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### A/B ワイプ比較
 
-分割線をソースフレームと合成結果の上で動かし、ブレンドが何を変えたかを確認。位置ずれ、縁のハロー、失われた細部が一目で分かります。
+分割線をソースフレームと融合結果の上で動かし、ブレンドが何を変えたかを確認できます。位置ずれ、縁のハロー、失われた細部が一目で分かります。
 
-[ユーザーマニュアル →](./docs/USER_MANUAL_JA.md)
+[ユーザーマニュアル →](../USER_MANUAL_JA.md)
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/wipe.mp4"><picture><source srcset="../../assets/readme/wipe.gif" type="image/gif"><img src="../../assets/readme/wipe_poster.jpg" alt="ソースフレームと合成結果の A/B 比較" width="100%" /></picture></a>
+<a href="../../assets/readme/wipe.mp4"><picture><source srcset="../../assets/readme/wipe.gif" type="image/gif"><img src="../../assets/readme/wipe_poster.jpg" alt="ソースフレームと融合結果の A/B 比較" width="100%" /></picture></a>
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### 手法比較
 
-すべての手法を一度にレンダリングし、同じクロップで並べて確認。勝った結果を新しい出力として採用するか、パラメータをメインウィンドウに戻せます。
+すべての手法を一度にレンダリングし、同じクロップで並べて確認できます。勝った結果を新しい出力として採用するか、パラメータをメインウィンドウに戻せます。
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="8 つの合成手法の並列比較" width="100%" /></picture></a>
+<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="複数の融合手法の並列比較" width="100%" /></picture></a>
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### 深度マップと 3D
 
-5 つのフォーカス尺度で画素ごとの焦点位置を推定。研究用カラーマップ、TIFF メタデータからの物理 Z 校正、テクスチャ付き OBJ 曲面の書き出しに対応。
+複数のフォーカス尺度で画素ごとの焦点位置を推定します。研究用カラーマップ、TIFF メタデータからの物理 Z 校正、テクスチャ付き OBJ 曲面の書き出しに対応します。
 
 </td>
 <td width="54%">
@@ -125,13 +129,13 @@
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### ソース固定レタッチ
 
-結果を実際に生成したフレームから描画。共有ズーム/パン、ソースフレームスライダー、軟らかいブラシ、復元ブラシ、ストローク単位の undo、未書き出しピクセルの保護。
+結果を実際に生成したフレームから描画します。共有ズーム/パン、ソースフレームスライダー、軟らかいブラシ、復元ブラシ、ストローク単位の undo、未書き出しピクセルの保護を備えます。
+新しい出力として適用したあと、その出力を右クリックして **レイヤー付き TIFF を書き出し** を選ぶと、ソースフレームと一緒に保存できます。ライブのラベルとスケールバーは含まれません。Windows 上の GIMP 3.2.6 は結果とソースのレイヤーを開けます。他のエディタは未検証です。
 
 </td>
 <td width="54%">
@@ -140,13 +144,12 @@
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### バッチ処理
 
-スタックの入ったフォルダを指定し、手法と出力先を選んで放置。位置合わせのみならスタックごとに 1 フォルダ、合成なら合成画像だけを書き出して一覧に表示します。
+スタックの入ったフォルダを指定し、手法と出力先を選んで放置できます。位置合わせのみならスタックごとに 1 フォルダ、融合なら融合画像だけを書き出して一覧に表示します。任意のグループ融合では、グループ単位のメモリと一時ディスクを使って、スタック全体を一度に処理した結果に近づけます。
 
 </td>
 <td width="54%">
@@ -155,15 +158,14 @@
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
 ### 出版向けスケールバー
 
-TIFF メタデータまたは手入力で校正し、実際のフォントと実寸で描画。単体画像、スタック、TIFF、GIF、バッチ出力のすべてに焼き込みます。 読みやすく収まらない場合は、表示と異なる短いバーを描かずに明示します。
+TIFF メタデータまたは手入力で校正し、実際のフォントと実寸で描画します。単体画像、スタック、マルチページ TIFF、GIF、バッチ出力のすべてに焼き込みます。読みやすく収まらない場合は、表示と異なる短いバーを描かずに明示します。
 
-[ユーザーマニュアル →](./docs/USER_MANUAL_JA.md)
+[ユーザーマニュアル →](../USER_MANUAL_JA.md)
 
 </td>
 <td width="54%">
@@ -172,7 +174,6 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 
 </td>
 </tr>
-
 <tr>
 <td width="46%" valign="middle">
 
@@ -187,13 +188,31 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 
 </td>
 </tr>
+<tr>
+<td width="46%" valign="middle">
+
+### Agent から操作可能
+
+すべてのウィンドウ、ウィジェット、メニューをトークン保護されたローカルチャネルから操作できます。Agent はスタックの読み込み、レンダリング、レタッチ、比較、深度計算、書き出し、ダイアログへの応答を、型付きコマンド、ウィジェットパス、または実際のマウス・キーボードイベントで行えます。画面キャプチャや OCR は不要で、デスクトップ版の起動と同時にチャネルが開きます。
+
+[プロトコル →](../../docs/AGENT_CONTROL_SPEC.md) · [スキル →](../../skills/openfocus-control/SKILL.md)
+
+</td>
+<td width="54%">
+
+<a href="../../assets/readme/agent.mp4"><picture><source srcset="../../assets/readme/agent.gif" type="image/gif"><img src="../../assets/readme/agent_poster.jpg" alt="Agent が実 GUI を操作：読み込み、AI レンダリング、比較、レタッチ、ワイプ、深度、ラベル" width="100%" /></picture></a>
+
+</td>
+</tr>
 </table>
 
-**その他：**
+**そのほか：**
 
 - **フォーカススタッキング作業フロー**——スタック閲覧、シャープネス曲線、クイックプレビュー、ROI レンダリング、手法ごとの設定を再起動後も保持。
-- **顕微鏡向け**——16 ビットを一貫保持、TIFF µm/px、フラットフィールド補正、複数ページ TIFF Z スタック。
-- **ヘッドレス CLI**——GUI と同じパイプラインを `openfocus` として提供。バッチ、`--dry-run`、`--resume`、JSON 出力に対応。
+- **顕微鏡向け**——16 ビットを一貫保持、TIFF µm/px、フラットフィールド補正、センサー欠陥補正、マルチページ TIFF Z スタック、テクスチャ付き OBJ 書き出し。
+- **カラープロファイル**——すべてのソースフレームが同じ RGB ICC プロファイルを持つ場合、単体の PNG、TIFF、JPEG、WebP 書き出しにそのプロファイルを保持します。混在または未設定のスタックには付与せず、画素の色変換も行いません。
+- **透明 PNG**——同じ矩形の一定不透明度マスクを持つスタックは、原寸で融合して PNG に保存できます。制限はユーザーマニュアルを参照してください。
+- **ヘッドレス CLI**——GUI と同じパイプラインを `openfocus` コマンドとして提供。バッチ、`--dry-run`、`--resume`、JSON 出力に対応。
 - **プロジェクトと復元**——`.ofproj` セッション、クラッシュ自動復元、スタック編集と注釈の undo/redo。
 - **12 の UI 言語**——English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski。システムロケールから自動判定し、新しい言語は `locales/<code>.py` 1 ファイルで追加できます。
 - **省メモリ**——ニューラル重みは AI 手法を使うときだけ読み込み、古典手法のセッションは約 110 MB で待機します（260 MB ではなく）。
@@ -201,7 +220,7 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 <a id="install"></a>
 ## ⬇️ インストール
 
-セットアップ不要 — [Releases](https://github.com/Xinzhe99/OpenFocus/releases) からビルドを取得してください：
+最新の Windows または macOS ビルドは [OpenFocus 公式サイト](https://openfocus.top/#download) からダウンロードしてください。同じファイルと旧バージョンは [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases) にもあります。
 
 | プラットフォーム | ファイル | 種類 |
 |------------------|----------|------|
@@ -210,11 +229,36 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | ディスクイメージ（Applications へドラッグ） |
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | ポータブル（解凍して実行） |
 
-アプリは未署名のため、初回起動で警告が出る場合があります：**Windows** は「詳細情報 → 実行」を選びます（初回は 30〜60 秒かかることがあります）。**macOS** は右クリック →「開く」、またはターミナルで `xattr -cr /Applications/OpenFocus.app` を実行します。
+アプリは未署名のため、初回起動で警告が出る場合があります。**Windows** は「詳細情報 → 実行」を選びます（初回は 30〜60 秒かかることがあります）。**macOS** は右クリック →「開く」、またはターミナルで `xattr -cr /Applications/OpenFocus.app` を実行します。
+
+ターミナルからもインストールできます。まず macOS または Linux のコマンドを `--dry-run` で確認し、その後フラグを外して実行します。Linux ではヘッドレス CLI が入り、macOS ビルドは Apple Silicon が必要で `~/Applications` にインストールされます。
+
+```bash
+curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
+curl -fsSL https://openfocus.top/install.sh | sh
+```
+
+Windows では PowerShell からインストーラーを実行します。
+
+```powershell
+irm https://openfocus.top/install.ps1 | iex
+```
+
+Windows のセットアップを直接取得することもできます。
+`curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`
+
+### 🤖 Agent 連携
+
+デスクトップ版はトークン保護されたローカル Agent チャネルを自動で開始します。`openfocus ctl` を使うと、実行中のウィンドウに型付きコマンドや汎用 UI 操作を送れます。Agent はスタックの読み込み、レンダリング、書き出し、ダイアログの表示と入力、ファイル選択への応答、マウス・キーボードイベントの送信、スクリーンショットの取得ができます。
+
+- スキル：[`skills/openfocus-control/SKILL.md`](../../skills/openfocus-control/SKILL.md)
+- プロトコルとコマンドリファレンス：[`docs/AGENT_CONTROL_SPEC.md`](../../docs/AGENT_CONTROL_SPEC.md)
+- エンドツーエンド実行：`python tools/agent_gui_smoke.py --launch`
+- 全メニュー操作のスイープ：`python tools/agent_action_sweep.py --launch`
 
 ### 💻 コマンドライン
 
-Windows・macOS・Linux では CLI もインストールできます。同じパイプラインを GUI なしで動かせます：
+Windows・macOS・Linux では CLI もインストールできます。同じパイプラインを GUI なしで動かせます。
 
 ```bash
 pip install openfocus
@@ -223,13 +267,38 @@ openfocus -i ./stack_folder -o ./result/fused.png
 
 AI モデル、重み、HEIC とカメラ RAW のデコードはすべてこの 1 回のインストールに含まれます。Python 3.13 以降では `dtcwt` が省略され、DTCWT の項目は説明付きで無効になります。
 
+処理レシピはヘッドレス設定を保存して再利用・移行できます。
+
+```bash
+openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
+openfocus recipe run workflow.json --dry-run
+openfocus recipe run workflow.json
+```
+
+レタッチのチェックポイントは、元の融合ベース画像と記録順の処理済みソースフレームを使ってヘッドレスで再生できます。
+
+```bash
+openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
+```
+
+出力は PNG または TIFF で、8 ビット/16 ビット深度を保持します。再生時はベース、ソース画素、ジオメトリ、有効マスクを検証し、入力を上書きしません。
+
 <a id="community"></a>
 ## コミュニティとサポート
 
-- **ドキュメント** — [ユーザーマニュアル](./docs/USER_MANUAL_JA.md)（12 言語） · [変更履歴](./CHANGELOG.md) · [パフォーマンス](./docs/PERFORMANCE.md) · [合成手法](../FUSION_METHODS.md)
-- **引用** — [CITATION.cff](./CITATION.cff)。各リリースは Zenodo に保存されています（[DOI](https://doi.org/10.5281/zenodo.23050823)）
+- **ドキュメント** — [ユーザーマニュアル](../USER_MANUAL_JA.md)（12 言語） · [変更履歴](../../CHANGELOG.md) · [パフォーマンス](../../docs/PERFORMANCE.md) · [融合手法](../../docs/FUSION_METHODS.md)
+- **公式サイト** — [openfocus.top](https://openfocus.top/)（ダウンロード、インストールスクリプト、ミラー）
+- **引用** — [CITATION.cff](../../CITATION.cff)。各リリースは Zenodo に保存されています（[DOI](https://doi.org/10.5281/zenodo.23050823)）
 - **フィードバック** — 不具合、提案、アルゴリズムの改善は [issue](https://github.com/Xinzhe99/OpenFocus/issues) へ
-- **クレジット** — 各合成・位置合わせアルゴリズムは元の研究ライセンスに従います。StackMFF V3 は [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3) にあります
+- **クレジット** — 各融合・位置合わせアルゴリズムは元の研究ライセンスに従います。StackMFF V3 は [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3) にあります
+- **セキュリティ報告** — [@ranas-mukminov](https://github.com/ranas-mukminov) が検出トークンの権限ウィンドウを報告しました（[PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9)）
+
+<a id="license"></a>
+## ライセンス
+
+OpenFocus アプリケーションは [MIT ライセンス](../../LICENSE) で公開されています。
+
+**StackMFF シリーズの例外。** StackMFF 融合アルゴリズム——現在の StackMFF V3 および将来の同シリーズ版を含む——は OpenFocus プロジェクトに帰属し、プロジェクトが StackMFF シリーズのすべての権利を保持します。OpenFocus の一部として自分の画像や内部作業に使うことはできますが、他のオープンソースプロジェクトへのコピー、移植、移行には事前の書面による許可が必要です。
 
 <a id="developing"></a>
 ## 開発
@@ -243,7 +312,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-PyInstaller でのパッケージングは [docs/BUILD_COMMANDS.md](./docs/BUILD_COMMANDS.md) を参照してください。
+PyInstaller でのパッケージングは [docs/BUILD_COMMANDS.md](../../docs/BUILD_COMMANDS.md) を参照してください。
 
 <a id="star-history"></a>
 ## ⭐ Star 履歴

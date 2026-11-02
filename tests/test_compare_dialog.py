@@ -3,7 +3,7 @@ from threading import Event
 from time import monotonic
 
 import pytest
-from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtCore import QPoint, QPointF, Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QWidget
 
@@ -294,6 +294,78 @@ def test_comparison_requires_two_effective_frames(qapp, included):
         assert not instance.btn_run.isEnabled()
     finally:
         instance.reject()
+
+
+def test_full_comparison_hides_the_inspection_square(dialog, qapp):
+    """The region cannot be changed while a full frame is being compared."""
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(False))
+    dialog._preview_timer.stop()
+    qapp.processEvents()
+    assert not dialog.ref_canvas.region_enabled()
+    region = dialog.ref_canvas.region()
+    QTest.mouseClick(dialog.ref_canvas, Qt.MouseButton.LeftButton,
+                     pos=QPoint(60, 60))
+    qapp.processEvents()
+    assert dialog.ref_canvas.region() == region
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(True))
+    dialog._preview_timer.stop()
+    qapp.processEvents()
+    assert dialog.ref_canvas.region_enabled()
+
+
+def test_method_checkboxes_follow_the_shared_family_groups(dialog):
+    from PyQt6.QtWidgets import QLabel
+    from core.algorithms import fusion_algorithms
+    from locales import trans
+    from ui.algorithm_combo import CATEGORY_KEYS, CATEGORY_ORDER
+
+    headers = [label.text() for label in dialog.findChildren(QLabel)
+               if label.objectName() == "sectionLabel"]
+    assert headers == [trans.t(CATEGORY_KEYS[category])
+                       for category in CATEGORY_ORDER]
+    assert list(dialog._checks) == [
+        spec.id for spec in sorted(
+            fusion_algorithms(),
+            key=lambda spec: CATEGORY_ORDER.index(spec.category))]
+
+
+def test_unavailable_methods_stay_visible_with_a_reason(
+        qapp, monkeypatch):
+    import core.multi_focus_fusion as mff
+    import ui.algorithm_combo as algorithm_combo
+    from locales import trans
+
+    monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: False)
+    monkeypatch.setattr(algorithm_combo, '_package_available', lambda _name: False)
+    window = QWidget()
+    window.raw_images = make_two_focus_stack((160, 560))
+    window.current_fusion_method = lambda: "stackmffv3"
+    window.current_alignment_method = lambda: "none"
+    window.brightness_option_for = lambda *_: False
+    window.tile_enabled = False
+    window.thread_count = 1
+    instance = CompareDialog(window)
+    try:
+        instance._preview_timer.stop()
+        for method in ("stackmffv3", "stackmffv2", "stackmff"):
+            box = instance._checks[method]
+            assert not box.isHidden()
+            assert not box.isEnabled()
+            assert box.toolTip() == trans.t("msg_stackmff_unavailable_text")
+        # The inherited unavailable method is not silently replaced: nothing
+        # is selected, so no comparison starts behind the user's back.
+        assert not instance._checks["stackmffv3"].isChecked()
+        assert not any(box.isChecked() for box in instance._checks.values())
+        assert instance.status_label.text() == trans.t(
+            "msg_stackmff_unavailable_text")
+        assert instance._checks["openfocus_a"].isEnabled()
+        assert not instance._checks['dtcwt'].isEnabled()
+        assert instance._checks['dtcwt'].toolTip() == trans.t('env_dtcwt_unavailable')
+    finally:
+        instance.reject()
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
 
 
 def test_uncomputed_candidate_cannot_adopt_parameters(dialog):

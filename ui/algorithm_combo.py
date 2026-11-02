@@ -4,6 +4,8 @@ Fusion methods declare ``category`` in the registry; this module turns that
 into non-selectable section headers, so the main window, batch dialog and
 depth dialog all present the same order and grouping.
 """
+import importlib.util
+
 from PyQt6.QtCore import QSignalBlocker, Qt
 from PyQt6.QtGui import QBrush, QFont, QPalette
 from PyQt6.QtWidgets import QComboBox
@@ -17,6 +19,21 @@ CATEGORY_KEYS = {
     'spatial': 'group_spatial_methods',
     'transform': 'group_transform_methods',
 }
+
+def _package_available(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def fusion_unavailable_reason(spec, ai_available):
+    """Return a localized explanation for a missing optional backend."""
+    if spec.neural and ai_available is False:
+        return trans.t("msg_stackmff_unavailable_text")
+    if spec.id == "dtcwt" and not _package_available("dtcwt"):
+        return trans.t("env_dtcwt_unavailable")
+    return ""
 
 
 def _grouped(specs):

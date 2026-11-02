@@ -27,6 +27,7 @@ class RenderManager:
         self.window = window
         self.worker: Optional[RenderWorker] = None
         self._compare_mode = False
+        self._compare_cancelling = False
         self._compare_queue: List[str] = []
         self._compare_total = 0
         self._compare_current: Optional[str] = None
@@ -238,6 +239,70 @@ class RenderManager:
             settings.sync()
         return box.clickedButton() is start_btn
 
+    def _compare_button(self):
+        return getattr(self.window, "btn_compare_all", None)
+
+    def _set_compare_button(self, mode: str) -> None:
+        """Paint the Compare-all button for the state it is actually in.
+
+        While a comparison runs it is the cancel affordance, so it must not
+        keep saying "Render all methods…"; while a single render owns the
+        pipeline it is disabled instead of silently returning when clicked.
+        """
+        button = self._compare_button()
+        if button is None:
+            return
+        if mode == "cancel":
+            button.setEnabled(True)
+            button.setText(trans.t('compare_cancel'))
+            button.setToolTip(trans.t('btn_cancel_render'))
+        elif mode == "cancelling":
+            button.setEnabled(False)
+            button.setText(trans.t('depth_cancelling'))
+            button.setToolTip(trans.t('depth_cancelling'))
+        elif mode == "disabled":
+            button.setEnabled(False)
+            button.setText(trans.t('btn_compare_all'))
+            button.setToolTip(
+                f"{trans.t('btn_compare_all')}\n"
+                f"{trans.t('btn_compare_all_hint')}")
+        else:
+            button.setEnabled(True)
+            button.setText(trans.t('btn_compare_all'))
+            button.setToolTip(
+                f"{trans.t('btn_compare_all')}\n"
+                f"{trans.t('btn_compare_all_hint')}")
+
+    def refresh_action_labels(self) -> None:
+        """Re-apply render/compare captions after a language or state change.
+
+        A language switch used to reset a running comparison's cancel button
+        to "Render all methods…" (and re-enable it over a single render).
+        """
+        window = self.window
+        render = getattr(window, "btn_render", None)
+        busy = self.worker is not None and self.worker.isRunning()
+        if getattr(self, '_compare_cancelling', False):
+            if render is not None:
+                render.setEnabled(False)
+                render.setText(trans.t('depth_cancelling'))
+            self._set_compare_button("cancelling")
+        elif getattr(self, '_compare_mode', False):
+            if render is not None:
+                render.setEnabled(False)
+                render.setText(trans.t('btn_render_processing'))
+            self._set_compare_button("cancel")
+        elif busy:
+            if render is not None:
+                render.setEnabled(True)
+                render.setText(trans.t('btn_cancel_render'))
+            self._set_compare_button("disabled")
+        else:
+            if render is not None:
+                render.setEnabled(True)
+                render.setText(trans.t('btn_render'))
+            self._set_compare_button("idle")
+
     def _abort_compare_run(self) -> None:
         """Abort a chained comparison whose next render failed to start."""
         if getattr(self, '_compare_mode', False):
@@ -248,13 +313,16 @@ class RenderManager:
     def _restore_ui_controls(self) -> None:
         """Re-enable every control disabled by start_render (safe to call anywhere)."""
         window = self.window
+        self._compare_cancelling = False
         if getattr(self, '_compare_mode', False):
             # A comparison queue is still running - keep controls locked and
-            # show progress instead.
+            # show progress instead. The Compare button stays enabled because
+            # it is the only way to stop the run.
             window.btn_render.setEnabled(False)
             done = self._compare_total - len(self._compare_queue)
             window.btn_render.setText(
                 f"{trans.t('msg_compare_progress').format(i=done + 1, n=self._compare_total, method=trans.t('btn_render_processing'))}")
+            self._set_compare_button("cancel")
             return
         for name in ("fusion_parameter_panel", "registration_parameter_panel", "combo_fusion"):
             widget = getattr(window, name, None)
@@ -279,6 +347,7 @@ class RenderManager:
             pass
         window.btn_render.setEnabled(True)
         window.btn_render.setText(trans.t('btn_render'))
+        self._set_compare_button("idle")
 
     def start_compare_all(self) -> None:
         """Render the stack once per available fusion method so the results
@@ -291,22 +360,29 @@ class RenderManager:
             # Cancel: RenderWorker polls is_cancelled between its stages, and
             # the chained _start_next_compare no-ops on the emptied queue.
             self._compare_mode = False
-            queued = bool(self._compare_queue)
             self._compare_queue = []
             self._compare_current = None
-            if self.worker is not None and self.worker.isRunning():
+            running = self.worker is not None and self.worker.isRunning()
+            if running:
+                # Keep the truth visible until the worker acknowledges the
+                # cancel: no enabled button that would silently do nothing.
+                self._compare_cancelling = True
                 self.worker.is_cancelled = True
-            elif queued:
+                self.refresh_action_labels()
+            else:
                 # Between two queued renders nothing is running, so the UI has
                 # to be unlocked here instead of by the cancel callback.
                 self._restore_ui_controls()
             window.statusBar().showMessage(trans.t(
-                'depth_cancelling' if self.worker is not None and self.worker.isRunning()
-                else 'msg_render_cancelled'), 0)
+                'depth_cancelling' if running else 'msg_render_cancelled'), 0)
             return
 
         if self.worker is not None and self.worker.isRunning():
+            # A single render owns the pipeline. The button is disabled in
+            # that state, but keep the programmatic path truthful too.
+            window.statusBar().showMessage(trans.t('btn_render_processing'), 3000)
             return
+ 
         if len(window.effective_stack()[0]) < 2:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
             return
@@ -316,7 +392,9 @@ class RenderManager:
 
         self._compare_queue = list(methods)
         self._compare_total = len(methods)
+        self._compare_cancelling = False
         self._compare_mode = True
+        self._set_compare_button("cancel")
         self._start_next_compare()
 
     def _start_next_compare(self) -> None:
@@ -434,13 +512,15 @@ class RenderManager:
 
         if force_algorithm:
             # Compare-all mode drives the next renders programmatically; the
-            # button doubles as a cancel affordance and everything else stays
-            # locked until the queue finishes.
+            # Render button stays disabled (the Compare button is the cancel
+            # affordance) and everything else stays locked until the queue
+            # finishes. Painting "Cancel render" here made a disabled button
+            # look like the way to stop the run.
             window.btn_render.setEnabled(False)
             window.btn_render.setText(trans.t('btn_render_processing'))
-            QApplication.processEvents()
-
-        window.btn_render.setText(trans.t('btn_cancel_render'))
+        else:
+            window.btn_render.setEnabled(True)
+            window.btn_render.setText(trans.t('btn_cancel_render'))
         QApplication.processEvents()
 
         for name in ("fusion_parameter_panel", "registration_parameter_panel",
@@ -448,6 +528,10 @@ class RenderManager:
             widget = getattr(window, name, None)
             if widget is not None:
                 widget.setEnabled(False)
+        if not getattr(self, '_compare_mode', False):
+            # A single render owns the pipeline; Compare-all cannot start
+            # until it ends, so do not leave an enabled silent no-op.
+            self._set_compare_button("disabled")
         try:
             # Quick-preview toggling mid-run fragments a comparison: later
             # methods would render as drafts and vanish from the history.
@@ -468,8 +552,7 @@ class RenderManager:
         alignment_method = window.current_alignment_method()
         registration_parameters = window.registration_parameters_for(alignment_method)
         requested_steps = alignment_steps(alignment_method)
-        collect_action = getattr(window, 'ui_objs', {}).get('alignment_report_collect')
-        collect_report = bool(collect_action and collect_action.isChecked() and requested_steps)
+        collect_report = bool(getattr(window, 'collect_alignment_report', False) and requested_steps)
 
         need_fusion = (
             force_algorithm is not None
