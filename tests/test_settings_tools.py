@@ -136,6 +136,60 @@ def test_automatic_thread_limit_commits(settings_window):
     dialog.deleteLater()
 
 
+def test_output_prefix_preview_validation_and_cancel(settings_window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    settings_window.output_name_prefix = "old"
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.output_prefix.setText("specimen-12")
+    assert dialog.output_prefix_preview.text().startswith("specimen-12_OpenFocus_")
+    dialog.reject()
+    assert settings_window.output_name_prefix == "old"
+    assert not settings_window.saved
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog.output_prefix.setText("../source")
+    dialog.spin_block.setValue(512)
+    dialog._apply()
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert settings_window.tile_block_size == 1024
+    assert settings_window.output_name_prefix == "old"
+    assert not settings_window.saved
+
+    dialog.output_prefix.setText("標本_12")
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert settings_window.output_name_prefix == "標本_12"
+    assert settings_window.saved == [512]
+    dialog.deleteLater()
+
+
+def test_output_prefix_default_and_safe_suggested_name(settings_window):
+    from controllers.export_manager import ExportManager
+    from utils.export_paths import valid_output_prefix
+    manager = ExportManager(settings_window)
+    manager._fusion_tag = lambda: "Fusion"
+    manager._align_tag = lambda: "Align"
+    original = manager.generate_default_filename()
+    assert original.startswith("OpenFocus_")
+    settings_window.output_name_prefix = "sample"
+    name = manager.generate_default_filename()
+    assert name.startswith("sample_OpenFocus_")
+    assert manager.filename_from_label(name) == name
+    settings_window.output_name_prefix = "../bad"
+    assert manager.generate_default_filename().startswith("OpenFocus_")
+    assert not valid_output_prefix("a" * 41)
+    assert not valid_output_prefix("a/b")
+    assert not valid_output_prefix("a b")
+
+
+def test_output_prefix_is_translated_in_every_locale():
+    from locales import trans
+    for table in trans.translations.values():
+        for key in ("output_prefix_section", "output_prefix_label",
+                    "output_prefix_preview", "output_prefix_hint"):
+            assert table.get(key)
+
+
 @pytest.fixture
 def dust_window(qapp):
     window = QWidget()

@@ -131,8 +131,10 @@ class ExportManager:
 
     def generate_default_filename(self) -> str:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        return (f"OpenFocus_{timestamp}_{self._fusion_tag()}_"
+        name = (f"OpenFocus_{timestamp}_{self._fusion_tag()}_"
                 f"{self._align_tag()}")
+        from utils.export_paths import prefix_output_name
+        return prefix_output_name(getattr(self.window, "output_name_prefix", ""), name)
 
     def selected_output(self):
         """(image, default filename) of the output the user has selected in

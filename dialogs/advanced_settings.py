@@ -7,10 +7,11 @@ of hunting through four dialogs and a menu.
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
-    QLabel, QScrollArea, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from locales import trans
+from utils.export_paths import prefix_output_name, valid_output_prefix
 from widgets.stepper import StepperSpinBox
 
 
@@ -111,6 +112,18 @@ class AdvancedSettingsDialog(QDialog):
             bool(getattr(w, "align_cache_enabled", True)))
         reg.addRow(trans.t("action_align_cache"), self.chk_align_cache)
 
+        # Output names are a user preference, independent of project processing.
+        output = _section(page_lay, trans.t("output_prefix_section"))
+        self.output_prefix = QLineEdit(getattr(w, "output_name_prefix", "") or "")
+        self.output_prefix.setMaxLength(40)
+        self.output_prefix.setToolTip(trans.t("output_prefix_hint"))
+        output.addRow(trans.t("output_prefix_label"), self.output_prefix)
+        self.output_prefix_preview = QLabel()
+        self.output_prefix_preview.setWordWrap(True)
+        output.addRow(trans.t("output_prefix_preview"), self.output_prefix_preview)
+        self.output_prefix.textChanged.connect(self._update_output_prefix_preview)
+        self._update_output_prefix_preview()
+
         # ---- AI ----------------------------------------------------------
         ai = _section(page_lay, trans.t("advanced_tab_ai"))
         self.spin_ai_batch = StepperSpinBox(
@@ -163,6 +176,14 @@ class AdvancedSettingsDialog(QDialog):
         line.setObjectName("mutedLabel")
         return line
 
+    def _update_output_prefix_preview(self):
+        prefix = self.output_prefix.text()
+        if not valid_output_prefix(prefix):
+            self.output_prefix_preview.setText(trans.t("output_prefix_hint"))
+            return
+        self.output_prefix_preview.setText(prefix_output_name(
+            prefix, "OpenFocus_20261015_120000_Method_Align.png"))
+
     def _apply(self):
         w = self.window_main
         for spin in (self.spin_block, self.spin_overlap, self.spin_threshold,
@@ -173,6 +194,10 @@ class AdvancedSettingsDialog(QDialog):
                 spin.lineEdit().selectAll()
                 return
             spin.setValue(float(spin.lineEdit().text()))
+        if not valid_output_prefix(self.output_prefix.text()):
+            self.status.setText(trans.t("output_prefix_hint"))
+            self.output_prefix.setFocus()
+            return
         draft = {
             "tile_enabled": self.chk_tile.isChecked(),
             "tile_block_size": int(self.spin_block.value()),
@@ -182,6 +207,7 @@ class AdvancedSettingsDialog(QDialog):
             "resource_preference": self.combo_resources.currentData(),
             "reg_downscale_width": int(self.spin_reg_width.value()),
             "align_cache_enabled": self.chk_align_cache.isChecked(),
+            "output_name_prefix": self.output_prefix.text(),
             "ai_batch_size": max(1, int(self.spin_ai_batch.value())),
             "restore_last_stack": self.chk_restore.isChecked(),
             "ask_load_scale": self.chk_ask_scale.isChecked(),
@@ -210,7 +236,7 @@ class AdvancedSettingsDialog(QDialog):
                 pass
             self.status.setText(str(exc))
             return
-        processing = set(draft) - {"restore_last_stack", "ask_load_scale"}
+        processing = set(draft) - {"restore_last_stack", "ask_load_scale", "output_name_prefix"}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)
             if mark_dirty is not None:

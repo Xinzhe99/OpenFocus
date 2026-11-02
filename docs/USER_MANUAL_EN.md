@@ -1030,6 +1030,16 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 3. Choose format and location
 4. Click Save
 
+In **Settings → Advanced Settings → Output naming**, an optional filename
+prefix helps identify newly rendered results. The example updates as you type;
+use up to 40 letters, numbers, underscores or hyphens. Leave it empty for the
+original naming. Confirm with **OK** to remember it, or cancel to discard the
+change. The prefix becomes part of new output-list names and their suggested
+export names; existing results keep their names. You can still edit a name in
+the save dialog. This preference does not rename source files or change batch
+output names.
+
+
 ### Drag-out Export Format
 
 Dragging results from the output list writes image files using the format
