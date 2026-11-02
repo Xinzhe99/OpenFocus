@@ -173,3 +173,73 @@ def test_batch_cancels_between_corrected_frames(qapp, tmp_path, monkeypatch):
     assert len(calls) == 1
     assert outcome['counts']['cancelled'] == 1
     assert not outcome['outputs']
+
+
+@pytest.mark.parametrize('grouped', [False, True])
+def test_batch_excludes_white_reference_from_folder(qapp, tmp_path, monkeypatch, grouped):
+    from core.workers import BatchWorker
+    source = tmp_path / 'stack'
+    source.mkdir()
+    white_path, white = _reference(source)
+    for i in range(2):
+        assert cv2.imwrite(str(source / f'{i}.png'), np.full_like(white, 20000 + i * 1000))
+    settings = {'format': 'png', 'fusion_method': 'dct', 'alignment': 'none',
+                'flat_field_path': str(white_path), 'group_size': 2 if grouped else 0}
+    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'), settings, use_gpu=False)
+    counts = []
+    def fuse(fusion, method, images, params):
+        counts.append(len(images))
+        return images[0]
+    monkeypatch.setattr(worker, '_fuse_one_stack', fuse)
+    outcome = {}
+    worker.finished.connect(outcome.update)
+    worker.run()
+    assert outcome['success'] == 1
+    assert counts == [2]
+    (source / '1.png').unlink()
+    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out2'), settings, use_gpu=False)
+    outcome = {}
+    worker.finished.connect(outcome.update)
+    worker.run()
+    assert outcome['counts']['failed'] == 1
+
+
+def test_batch_rejects_transparency_before_flat_field(qapp, tmp_path, monkeypatch):
+    from core.workers import BatchWorker
+    import utils.dust_map as dust_map
+    white, _ = _reference(tmp_path)
+    source = tmp_path / 'stack'
+    source.mkdir()
+    frame = np.full((48, 64, 4), 200, np.uint8)
+    frame[:5, :, 3] = 0
+    for i in range(2):
+        assert cv2.imwrite(str(source / f'{i}.png'), frame)
+    def forbidden(*args, **kwargs):
+        pytest.fail('flat-field reference decoded before rejecting transparency')
+    monkeypatch.setattr(dust_map, 'load_flat_field_reference', forbidden)
+    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'),
+                         {'format': 'png', 'fusion_method': 'dct', 'alignment': 'none',
+                          'flat_field_path': str(white)}, use_gpu=False)
+    outcome = {}
+    worker.finished.connect(outcome.update)
+    worker.run()
+    assert outcome['counts']['failed'] == 1
+    assert 'transparent' in str(outcome).lower()
+
+
+def test_grouped_reference_admits_before_decode_and_cancels_after(tmp_path, monkeypatch):
+    import core.resource_policy as policy
+    import utils.dust_map as dust_map
+    from core.registration import RegistrationCancelled
+    path, white = _reference(tmp_path)
+    events = []
+    monkeypatch.setattr(policy, 'require_memory', lambda amount: events.append(('admit', amount)))
+    def decode(*args, **kwargs):
+        events.append(('decode', None))
+        return white, 'digest'
+    monkeypatch.setattr(dust_map, 'load_flat_field_reference', decode)
+    monkeypatch.setattr(dust_map, 'compute_flat_field', lambda image: pytest.fail('gain computed after cancellation'))
+    with pytest.raises(RegistrationCancelled):
+        dust_map.grouped_flat_field_gain(path, should_cancel=lambda: len(events) >= 2)
+    assert events[0][0] == 'admit' and events[0][1] >= path.stat().st_size + white.nbytes
+    assert events[1][0] == 'decode'

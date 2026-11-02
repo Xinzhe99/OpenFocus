@@ -589,17 +589,19 @@ class ImageStackLoader:
 
     def load_from_folder(self, folder_path: str, scale_factor: float = 1.0, *,
                          thread_count: int = 0,
-                         resource_preference: str = "balanced",
+                         resource_preference: str = "balanced", exclude_paths=(),
                          ) -> Tuple[bool, str, List[np.ndarray], List[str]]:
         self.failed_count = 0
         self.skipped_derived_count = 0
         if not os.path.isdir(folder_path):
             return False, "Selected path is not a valid directory", [], []
 
+        from utils.path_identity import same_path
         image_files = []
         for filename in os.listdir(folder_path):
             ext = os.path.splitext(filename)[1].lower()
-            if ext in self.SUPPORTED_FORMATS:
+            if ext in self.SUPPORTED_FORMATS and not any(
+                    same_path(os.path.join(folder_path, filename), excluded) for excluded in exclude_paths):
                 full_path = os.path.join(folder_path, filename)
                 image_files.append((filename, full_path))
         image_files = self._drop_derived_aligned_copies(image_files)

@@ -113,3 +113,85 @@ def test_recipe_rejects_invalid_project_snapshot(tmp_path):
     with pytest.raises(ValueError):
         validate_recipe({"version": 1, "input": ["stack"], "output": "out.png",
                          "project_settings": {"sources": ["secret"]}}, tmp_path / "r.json")
+
+
+def test_project_recipe_protects_project_and_accepts_missing_sources(tmp_path):
+    from core.recipes import capture_project_recipe
+    project = tmp_path / 'source.ofproj'
+    project.write_text(json.dumps({'openfocus_project': 3, 'sources': [str(tmp_path / 'gone.png')],
+                                   'settings': {'fusion_method': 'dct'}}), encoding='utf-8')
+    original = project.read_bytes()
+    argv = ['-i', str(tmp_path / 'new'), '-o', str(tmp_path / 'out.png')]
+    with pytest.raises(ValueError, match='destination'):
+        capture_project_recipe(project, project, argv)
+    alias = tmp_path / 'alias.ofproj'
+    try:
+        alias.hardlink_to(project)
+    except OSError:
+        pass
+    else:
+        with pytest.raises(ValueError, match='destination'):
+            capture_project_recipe(alias, project, argv)
+    assert project.read_bytes() == original
+    recipe = tmp_path / 'recipe.json'
+    capture_project_recipe(recipe, project, argv)
+    assert load_recipe(recipe)['project_settings']['fusion_method'] == 'dct'
+
+
+def test_recipe_write_failure_preserves_destination(tmp_path, monkeypatch):
+    from utils import project_file
+    path = tmp_path / 'recipe.json'
+    path.write_text('original', encoding='utf-8')
+    def fail(*args):
+        raise OSError('replace failed')
+    monkeypatch.setattr(project_file.os, 'replace', fail)
+    with pytest.raises(OSError, match='replace failed'):
+        save_recipe(path, {'version': 1, 'input': ['stack'], 'output': 'out.png'})
+    assert path.read_text(encoding='utf-8') == 'original'
+
+
+@pytest.mark.parametrize('grouped', [False, True])
+def test_recipe_rerun_excludes_reference(tmp_path, monkeypatch, grouped):
+    import core.cli as cli
+    folder = tmp_path / 'stack'
+    _stack(folder)
+    white = folder / 'white.png'
+    assert cv2.imwrite(str(white), np.full((64, 64, 3), 200, np.uint8))
+    output = tmp_path / 'result.png'
+    recipe = tmp_path / 'recipe.json'
+    args = ['-i', str(folder), '-o', str(output), '-m', 'dct', '--dust-map', str(white)]
+    if grouped:
+        args += ['--group-size', '2']
+    capture_recipe(recipe, args)
+    counts = []
+    if grouped:
+        def fuse(paths, args):
+            counts.append([__import__('os').path.basename(p) for p in paths])
+            return np.zeros((64, 64, 3), np.uint8)
+        monkeypatch.setattr(cli, '_fuse_grouped', fuse)
+    else:
+        def fuse(images, args):
+            counts.append(len(images))
+            return np.zeros((64, 64, 3), np.uint8)
+        monkeypatch.setattr(cli, '_fuse_stack', fuse)
+    assert run_recipe(recipe) == 0
+    assert run_recipe(recipe) == 0
+    assert counts == ([['0.png', '1.png']] * 2 if grouped else [2, 2])
+    (folder / '1.png').unlink()
+    assert run_recipe(recipe, dry_run=True) != 0
+
+
+def test_recipe_rejects_output_inside_input_folder(tmp_path):
+    folder = tmp_path / 'stack'
+    _stack(folder)
+    existing = folder / '0.png'
+    before = existing.read_bytes()
+    recipe = tmp_path / 'recipe.json'
+    for output in (existing, folder / 'new.png'):
+        with pytest.raises(ValueError, match='outside input folders'):
+            capture_recipe(recipe, ['-i', str(folder), '-o', str(output), '-m', 'dct'])
+    with pytest.raises(ValueError, match='outside input folders'):
+        save_recipe(recipe, {'version': 1, 'input': ['stack'], 'output': 'stack/0.png'})
+    with pytest.raises(ValueError, match='overwrite'):
+        capture_recipe(recipe, ['-i', str(existing), '-o', str(existing), '-m', 'dct'])
+    assert existing.read_bytes() == before

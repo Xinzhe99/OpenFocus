@@ -816,8 +816,17 @@ Batch processing accepts an optional white-field image in its processing options
 Choose a defocused reference at the original frame resolution; it is scaled with
 the input stack and applied before registration, using the default dust size.
 An unreadable reference or a size mismatch fails the affected stack visibly.
-Leave the field empty to process without correction. The CLI also accepts the
-reference with `--dust-map WHITE`.
+The reference is excluded from folder inputs, including grouped processing;
+at least two source frames must remain for fusion. Flat-field correction cannot
+be combined with transparent input. Leave the field empty to process without
+correction. The CLI also accepts the reference with `--dust-map WHITE`.
+
+Recipes require their output location to be outside every input folder, and
+reject an explicitly selected input as output. Choose a separate output location
+to protect the source images and avoid including an earlier result on a rerun.
+Processing settings can be extracted from a project as a template or recipe
+even if its original sources have moved. Opening the project itself still
+requires its sources and any recorded flat-field reference.
 
 When a file reference is applied in Tools at the stack's base scale, a saved
 project records its absolute path, content hash and dust size, and reapplies it

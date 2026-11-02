@@ -238,6 +238,11 @@ def _list_folder_images(folder: str, loader) -> List[str]:
     )
 
 
+def _filter_stack_paths(paths, reference):
+    from utils.path_identity import same_path
+    return [path for path in paths if not same_path(path, reference)]
+
+
 def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
     """Return (source_label, image file paths) from folders, videos, or files.
 
@@ -268,6 +273,7 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
             paths.append(entry)
         else:
             raise FileNotFoundError(f"Input not found: {entry}")
+    paths = _filter_stack_paths(paths, args.dust_map)
 
     # A single multi-page TIFF is a whole stack: count its pages, not files
     from core.image_loader import count_frames
@@ -433,10 +439,8 @@ def _fuse_grouped(paths, args):
     group_args.dust_map = None
     preprocess = None
     if args.dust_map:
-        from utils.dust_map import load_flat_field_reference, compute_flat_field, apply_flat_field
-        white, _ = load_flat_field_reference(args.dust_map)
-        require_memory(white.size * 12)
-        gain = compute_flat_field(white)
+        from utils.dust_map import grouped_flat_field_gain, apply_flat_field
+        gain = grouped_flat_field_gain(args.dust_map)
         preprocess = lambda image: apply_flat_field(image, gain)
     # Reverse the whole source once. Reversing each group independently would
     # interleave the original order and reverse it again at every later stage.
@@ -608,7 +612,7 @@ def _run_batch(args, _emit_json=None) -> int:
 
         if args.dry_run:
             try:
-                paths = _list_folder_images(folder, loader)
+                paths = _filter_stack_paths(_list_folder_images(folder, loader), folder_args.dust_map)
                 from core.image_loader import count_frames
                 frames = sum(count_frames(p) for p in paths)
                 if frames < 2:
@@ -625,7 +629,7 @@ def _run_batch(args, _emit_json=None) -> int:
             progress(event="folder", name=name, index=i + 1,
                      total=len(folders))
         try:
-            paths = _list_folder_images(folder, loader)
+            paths = _filter_stack_paths(_list_folder_images(folder, loader), folder_args.dust_map)
             # Count frames, not files: a folder holding one multi-page TIFF
             # Z-stack is a complete stack (same rule as single-stack mode).
             from core.image_loader import count_frames

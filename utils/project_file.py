@@ -54,12 +54,25 @@ def template_from_state(state):
     return validate_template_settings({key: settings[key] for key in TEMPLATE_SETTINGS if key in settings})
 
 
+def atomic_json_write(path, data):
+    """Write JSON beside its destination and replace it only after success."""
+    fd, temporary = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2, allow_nan=False)
+            stream.write('\n')
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 def save_template(window, path):
     settings = template_from_state(_collect_state(window))
-    with open(path, "w", encoding="utf-8") as stream:
-        json.dump({"openfocus_template": TEMPLATE_VERSION, "settings": settings},
-                  stream, ensure_ascii=False, indent=2, allow_nan=False)
-        stream.write("\n")
+    atomic_json_write(path, {"openfocus_template": TEMPLATE_VERSION, "settings": settings})
 
 
 def load_template(path):
@@ -73,7 +86,7 @@ def load_template(path):
     with open(path, encoding="utf-8") as stream:
         data = json.load(stream, object_pairs_hook=unique_pairs)
     if isinstance(data, dict) and "openfocus_project" in data:
-        ok, error, state = validate_project(path)
+        ok, error, state = validate_project(path, require_sources=False)
         if not ok:
             raise ValueError(error)
         return template_from_state(state)
@@ -91,6 +104,12 @@ def load_template(path):
 def apply_template(window, settings):
     """Apply processing settings to the currently loaded sources, untouched."""
     settings = validate_template_settings(settings)
+    registrations = settings.setdefault("registration_parameters", {})
+    alignment = settings.get("alignment_method", "none")
+    registrations.setdefault(alignment, {})
+    settings["registration_parameters"] = {
+        name: resolve_registration_parameters(name, values)
+        for name, values in registrations.items()}
     state = _collect_state(window)
     state["settings"].update(settings)
     _apply_after_load(window, state)
@@ -99,7 +118,7 @@ def apply_template(window, settings):
         mark()
 
 
-def _validate_source_transforms(transforms, scale):
+def _validate_source_transforms(transforms, scale, *, require_sources=True):
     from utils.dust_map import load_flat_field_reference
     if not isinstance(transforms, list):
         raise ValueError("invalid source transformations")
@@ -120,7 +139,8 @@ def _validate_source_transforms(transforms, scale):
                     or isinstance(reference_scale, bool) or not isinstance(reference_scale, (int, float))
                     or not math.isfinite(reference_scale) or abs(reference_scale - scale) > 1e-9):
                 raise ValueError("Invalid flat-field reference or working scale; export the source stack first")
-            load_flat_field_reference(path, expected_hash=digest)
+            if require_sources:
+                load_flat_field_reference(path, expected_hash=digest)
         else:
             raise ValueError("invalid source transformations")
 
@@ -314,7 +334,7 @@ def _resolve_sources(state: Dict[str, Any], project_dir: str) -> Optional[List[s
     return resolved
 
 
-def validate_project(path: str, source_root: Optional[str] = None) -> Tuple[bool, str, Dict[str, Any]]:
+def validate_project(path: str, source_root: Optional[str] = None, *, require_sources=True) -> Tuple[bool, str, Dict[str, Any]]:
     """Read and validate a project file. Returns (ok, error, state).
 
     The resolved paths are stored back into the state as `resolved_sources`,
@@ -348,12 +368,13 @@ def validate_project(path: str, source_root: Optional[str] = None) -> Tuple[bool
             or not isinstance(frame.get("name"), str) for frame in frames)):
         return False, "invalid project frame order", {}
     project_dir = os.path.dirname(os.path.abspath(path))
-    resolved = (_relocated_sources(state, source_root, project_dir) if source_root is not None
-                else _resolve_sources(state, project_dir))
-    if resolved is None:
-        missing = [p for p in sources if not os.path.isfile(p)] or sources
-        return False, f"{len(missing)} source file(s) missing:\n" + "\n".join(missing), {}
-    state["resolved_sources"] = resolved
+    if require_sources:
+        resolved = (_relocated_sources(state, source_root, project_dir) if source_root is not None
+                    else _resolve_sources(state, project_dir))
+        if resolved is None:
+            missing = [p for p in sources if not os.path.isfile(p)] or sources
+            return False, f"{len(missing)} source file(s) missing:\n" + "\n".join(missing), {}
+        state["resolved_sources"] = resolved
 
     # Numeric settings reach int()/float() casts inside Qt slots; a
     # hand-edited .ofproj must not crash the app there. Coerce here so
@@ -390,7 +411,7 @@ def validate_project(path: str, source_root: Optional[str] = None) -> Tuple[bool
     if not math.isfinite(state["scale_factor"]) or not 0 < state["scale_factor"] <= 1:
         return False, "invalid working scale", {}
     try:
-        _validate_source_transforms(state.get("source_transforms", []), state["scale_factor"])
+        _validate_source_transforms(state.get("source_transforms", []), state["scale_factor"], require_sources=require_sources)
     except (OSError, ValueError) as exc:
         return False, str(exc), {}
     return True, "", state
@@ -678,7 +699,7 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
     if exp_chk is not None:
         exp_chk.setChecked(exposure_match)
 
-    if settings.get("thread_count"):
+    if settings.get("thread_count") is not None:
         window.thread_count = int(settings["thread_count"])
     window.tile_enabled = bool(settings.get("tile_enabled", True))
     window.tile_block_size = int(settings.get("tile_block_size", 1024))

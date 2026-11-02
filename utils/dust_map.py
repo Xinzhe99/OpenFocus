@@ -56,6 +56,24 @@ def load_flat_field_reference(path, expected_hash=None, scale=1.0):
     return white, digest
 
 
+def grouped_flat_field_gain(path, *, scale=1.0, should_cancel=None):
+    """Admit reference decoding before allocating its encoded and pixel buffers."""
+    from core.grouped_fusion import _header
+    from core.registration import RegistrationCancelled
+    from core.resource_policy import require_memory
+
+    if should_cancel and should_cancel():
+        raise RegistrationCancelled()
+    width, height, encoded = _header(path)
+    require_memory(encoded + width * height * 48)
+    if should_cancel and should_cancel():
+        raise RegistrationCancelled()
+    white, _ = load_flat_field_reference(path, scale=scale)
+    if should_cancel and should_cancel():
+        raise RegistrationCancelled()
+    return compute_flat_field(white)
+
+
 def compute_flat_field(white: np.ndarray, sigma: float = DEFAULT_SIGMA
                        ) -> np.ndarray:
     """Extract the normalized gain field from a defocused white shot.
