@@ -291,6 +291,41 @@ openfocus -i ./stack_folder -o ./result/fused.png
 
 The AI model, its weights, HEIC and camera-RAW decoding are all in that single install. `dtcwt` is skipped on Python 3.13+, where the DTCWT entry stays disabled with a tooltip.
 
+Recipes capture headless processing settings for reuse and relocation:
+
+```bash
+openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
+openfocus recipe run workflow.json --dry-run
+openfocus recipe run workflow.json
+```
+
+The version 1 JSON format contains `version`, an `input` array, either `output`
+or `output_dir`, and an `options` object. Paths are relative to the recipe file;
+move the recipe together with its input files to preserve those relationships.
+Creation captures the CLI settings and resolved algorithm parameters. Unknown
+fields, invalid values and unsupported versions are rejected. A dry run checks
+the input without writing result files. Recipes describe CLI processing, not GUI
+session edits, labels, or `.ofproj` projects. Existing project files are unchanged.
+
+The same headless API is available without importing PyQt:
+
+```python
+from core.recipes import capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+recipe = load_recipe("workflow.json")  # validated dictionary with relative paths
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # use False to process
+```
+
+`capture_recipe` interprets its arguments as ordinary CLI paths relative to the
+current directory; `save_recipe` interprets stored paths relative to the recipe.
+The recipe records settings and references, not the input pixels, software
+versions, hardware, or checksums. Keep those separately when provenance matters.
+Identical settings do not guarantee identical pixels across software versions,
+drivers or devices; GPU neural operations may be nondeterministic. Use `--cpu`
+when a CPU execution is required, and retain the installed software and inputs.
+
 <a id="community"></a>
 ## Community & Support
 
