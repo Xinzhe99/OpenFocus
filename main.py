@@ -1981,6 +1981,63 @@ class OpenFocus(QMainWindow):
         from dialogs.depthmap import DepthMapDialog
         DepthMapDialog(self).exec()
 
+    def show_standalone_retouch(self) -> None:
+        """Retouch a file with frames explicitly selected by the user."""
+        from PyQt6.QtWidgets import QFileDialog
+        from controllers.output_manager import OutputRecord
+        from dialogs.retouch import RetouchDialog
+        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+        from utils.standalone_retouch import load_standalone_retouch
+
+        show_message_box(self, trans.t('standalone_retouch_action'),
+                         trans.t('standalone_retouch_intro'), '',
+                         QMessageBox.Icon.Information)
+        image_filter = 'PNG / TIFF / JPEG / BMP (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)'
+        result_path, _ = QFileDialog.getOpenFileName(
+            self, trans.t('standalone_retouch_result'), get_last_dialog_dir(), image_filter)
+        if not result_path:
+            return
+        source_paths, _ = QFileDialog.getOpenFileNames(
+            self, trans.t('standalone_retouch_sources'), os.path.dirname(result_path), image_filter)
+        if not source_paths:
+            return
+        set_last_dialog_dir(os.path.dirname(result_path))
+        try:
+            progress = QProgressDialog(trans.t('standalone_retouch_sources'),
+                                       trans.t('btn_cancel'), 0, len(source_paths) + 1, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+
+            def advance(done, total):
+                progress.setValue(done)
+                QApplication.processEvents()
+                return not progress.wasCanceled()
+
+            try:
+                loaded = load_standalone_retouch(result_path, source_paths, progress=advance)
+            finally:
+                progress.close()
+            if loaded is None:
+                return
+            image, context = loaded
+            record = OutputRecord.create(image, os.path.basename(result_path), context=context)
+
+            def apply_selected(base, edited):
+                success, message = self._apply_retouch_output(base, edited)
+                if success:
+                    protected = getattr(self, '_standalone_retouch_paths', set())
+                    protected.update([result_path, *source_paths])
+                    self._standalone_retouch_paths = protected
+                return success, message
+
+            dialog = RetouchDialog(self, record=record, apply_callback=apply_selected)
+            dialog.exec()
+            if dialog.change_requested:
+                self.show_retouch_dialog()
+        except Exception as exc:  # noqa: BLE001 - report file and preparation errors
+            show_message_box(self, trans.t('msg_error'), trans.t('msg_proc_error'),
+                             str(exc), QMessageBox.Icon.Critical)
+
     def show_retouch_dialog(self, item=None) -> None:
         """Retouch one output selected by identity, not by row order.
 

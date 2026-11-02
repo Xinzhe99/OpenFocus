@@ -102,6 +102,7 @@ class ExportManager:
     def _safe_export_path(self, path):
         sources = list(getattr(self.window, 'image_source_paths', ()) or ())
         sources.extend(getattr(getattr(self.window, 'image_loader', None), 'image_paths', ()) or ())
+        sources.extend(getattr(self.window, '_standalone_retouch_paths', ()) or ())
         target = os.path.normcase(os.path.realpath(path))
         for source in sources:
             if not source:
