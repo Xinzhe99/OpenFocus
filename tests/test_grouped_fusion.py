@@ -273,7 +273,7 @@ def test_different_crops_and_singleton_keep_source_coordinates(tmp_path, admitte
     np.testing.assert_array_equal(result, image[y0:y0 + result.shape[0], x0:x0 + result.shape[1]])
 
 
-def test_real_registration_crops_across_rounds(tmp_path, admitted, monkeypatch):
+def test_real_registration_crops_across_rounds(tmp_path, monkeypatch):
     from core import registration as registration_module
     y, x = np.indices((64, 68))
     image = np.stack([x, y, x + y], axis=-1).astype(np.uint8)

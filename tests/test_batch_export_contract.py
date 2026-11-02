@@ -2,6 +2,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 import pytest
 from PyQt6.QtWidgets import QLabel, QListWidget, QSlider, QWidget
