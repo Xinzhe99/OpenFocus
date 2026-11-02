@@ -151,8 +151,8 @@ a source-frame slider, soft brush, restore brush, whole-stroke undo and a
 "not exported" guard for new pixels.
 Apply the retouch as a new output, then right-click that output and choose
 **Export layered TIFF** to save it with its source frames. Live labels and
-scale bars are not included. Interoperability with other applications has not
-been verified.
+scale bars are not included. GIMP 3.2.6 on Windows opens the result and source
+layers; other editors have not been tested.
 
 </td>
 <td width="54%">
