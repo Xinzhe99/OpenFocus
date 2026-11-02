@@ -3,7 +3,10 @@
 Zero dependencies beyond Pillow (already a runtime dependency of the app).
 
     python tools/build_site.py
-    SITE_ORIGIN=https://openfocus.example.com python tools/build_site.py
+    SITE_ORIGIN=http://127.0.0.1:8788 python tools/build_site.py   # local preview
+
+The default origin is https://openfocus.top; set SITE_ORIGIN to override the
+canonical URLs, sitemap, Open Graph tags and installer commands.
 
 The output is plain static files: one HTML page per language, inlined CSS
 and JavaScript, optimised images, robots.txt, sitemap.xml, _headers and a
