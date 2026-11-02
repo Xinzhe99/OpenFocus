@@ -20,6 +20,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   batch folders retain their own profiles; mixed or untagged stacks are not
   assigned a potentially incorrect profile. PNG/TIFF keep their 16-bit pixels.
 
+### Fixed
+- **Memory status** now uses the same cross-platform physical-memory probe as
+  the resource planner, so it can report available readings on macOS and Linux.
+
 ## [1.74.0] - 2026-11-02
 
 ### Changed
