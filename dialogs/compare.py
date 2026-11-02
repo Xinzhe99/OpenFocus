@@ -95,11 +95,12 @@ class CompareDialog(QDialog):
         frame_ids = manager.frame_ids("input") if manager is not None else []
         self._frame_ids = [frame_ids[i] for i in self._source_indices] if frame_ids else None
         from utils.scalebar import effective_px_um
+        from core.image_loader import stack_icc_profile
         self._calibration = {
             "pixel_size_um": effective_px_um(window_main),
             "source_px_um": getattr(window_main, "source_px_um", None),
             "source_scale_factor": getattr(window_main, "current_scale_factor", 1.0),
-            "icc_profile": getattr(getattr(window_main, "image_loader", None), "source_icc_profile", b""),
+            "icc_profile": stack_icc_profile(window_main, self._source_indices),
         }
 
         self._preview_timer = QTimer(self)

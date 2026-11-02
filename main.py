@@ -318,6 +318,7 @@ class OpenFocus(QMainWindow):
         self.current_scale_factor = 1.0
         # Full path of each frame in image_filenames, when the origin is known
         self.image_source_paths = []
+        self.image_icc_profiles = []
         self.fusion_result = None  # 存储最新的融合结果
         self.fusion_results = []  # 存储所有融合结果的历史记录
         self.registration_results = []  # 存储配准后的图像栈
@@ -794,6 +795,7 @@ class OpenFocus(QMainWindow):
             "raw": list(self.raw_images),
             "filenames": list(self.image_filenames),
             "source_paths": list(getattr(self, "image_source_paths", [])),
+            "icc_profiles": list(getattr(self, "image_icc_profiles", [])),
             "base": list(getattr(self, "base_images", [])),
             "excluded": set(getattr(self, "excluded_frames", set())),
             "current": getattr(self, "current_img_index", 0),
@@ -944,6 +946,7 @@ class OpenFocus(QMainWindow):
         self.raw_images = list(state["raw"])
         self.image_filenames = list(state["filenames"])
         self.image_source_paths = list(state["source_paths"])
+        self.image_icc_profiles = list(state.get("icc_profiles", []))
         self.base_images = list(state["base"])
         self.excluded_frames = set(state["excluded"])
         self.current_img_index = state["current"]
@@ -2207,6 +2210,8 @@ class OpenFocus(QMainWindow):
             self.image_filenames = [name for i, name in enumerate(self.image_filenames)
                                     if i != remove_index]
             self.image_source_paths = [path for i, path in enumerate(self.image_source_paths)
+                                       if i != remove_index]
+            self.image_icc_profiles = [profile for i, profile in enumerate(self.image_icc_profiles)
                                        if i != remove_index]
             self.excluded_frames = {i - (i > remove_index)
                                     for i in self.excluded_frames if i != remove_index}

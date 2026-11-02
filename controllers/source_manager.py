@@ -139,7 +139,8 @@ class SourceManager:
                     window.source_px_um = metadata / scale if metadata else None
                 elif getattr(window, "source_px_um", None) != (metadata / scale if metadata else None):
                     window.source_px_um = None
-                self._apply_load_options(load_options, append=append)
+                self._apply_load_options(load_options, append=append,
+                                         profile_map=getattr(worker, "source_icc_profiles", {}))
                 if on_success is not None:
                     on_success()
                 # Remember for the optional "restore last stack on startup"
@@ -460,11 +461,20 @@ class SourceManager:
             return list(filepaths)
         return []
 
-    def _apply_load_options(self, options: LoadOptions, append: bool = False) -> None:
+    def _apply_load_options(self, options: LoadOptions, append: bool = False,
+                            profile_map=None) -> None:
         window = self.window
         paths = self._source_paths_for(options.filenames)
         previous_paths = list(getattr(window, "image_source_paths", None) or [])
         previous_count = len(window.image_filenames or [])
+        if profile_map is None:
+            profile_map = getattr(getattr(window, "image_loader", None), "source_icc_profiles", {})
+        profiles = [profile_map.get(path, b"") for path in paths]
+        if len(profiles) != len(options.working_images):
+            profiles = [b""] * len(options.working_images)
+        previous_profiles = list(getattr(window, "image_icc_profiles", ()) or ())
+        if len(previous_profiles) != len(window.raw_images or []):
+            previous_profiles = [b""] * len(window.raw_images or [])
 
         if append and window.raw_images:
             if getattr(window, "source_transforms", None):
@@ -474,6 +484,7 @@ class SourceManager:
             window.base_images = list(window.raw_images) + options.base_images
             window.base_scale_factor = window.current_scale_factor
             window.raw_images = (window.raw_images or []) + options.working_images
+            window.image_icc_profiles = previous_profiles + profiles
             window.image_filenames = (window.image_filenames or []) + options.filenames
             # Keep the paths aligned with the names; anything else is better
             # dropped than left pointing at the wrong frame.
@@ -492,6 +503,7 @@ class SourceManager:
             window.raw_images = options.working_images
             window.image_filenames = options.filenames
             window.image_source_paths = paths
+            window.image_icc_profiles = profiles
             window.excluded_frames = set()
             window.source_transforms = []
             window.unrecoverable_source_changes = []
@@ -544,6 +556,7 @@ class SourceManager:
         window.stack_images = []
         window.image_filenames = []
         window.image_source_paths = []
+        window.image_icc_profiles = []
         window.excluded_frames = set()
         window.source_transforms = []
         window.unrecoverable_source_changes = []
@@ -633,6 +646,7 @@ class SourceManager:
         self._pop_sequence(window.raw_images, row)
         self._pop_sequence(getattr(window, "base_images", None), row)
         self._pop_sequence(getattr(window, "image_source_paths", None), row)
+        self._pop_sequence(getattr(window, "image_icc_profiles", None), row)
         self._remap_exclusions_after_delete([row])
 
         if window.raw_images:
@@ -677,6 +691,7 @@ class SourceManager:
             self._pop_sequence(window.raw_images, row)
             self._pop_sequence(getattr(window, "base_images", None), row)
             self._pop_sequence(getattr(window, "image_source_paths", None), row)
+            self._pop_sequence(getattr(window, "image_icc_profiles", None), row)
         self._remap_exclusions_after_delete(rows)
 
         if window.raw_images:
@@ -790,6 +805,8 @@ class SourceManager:
             window.base_images = _reorder(window.base_images)
         if getattr(window, "image_source_paths", None):
             window.image_source_paths = _reorder(window.image_source_paths)
+        if len(getattr(window, "image_icc_profiles", ()) or ()) == n:
+            window.image_icc_profiles = _reorder(window.image_icc_profiles)
         excluded = getattr(window, "excluded_frames", None)
         if excluded:
             # old index i ends up at position new_order.index(i)

@@ -920,12 +920,12 @@ class OutputManager:
                 QMessageBox.Icon.Critical,
             )
 
-def publish_aligned_stack(window, frames, *, filenames=None) -> None:
+def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None) -> None:
     """List an aligned stack once; write its folder only on explicit export."""
     if not frames:
         return
+    indices = list(getattr(window, 'registered_source_indices', ()) or range(len(frames)))
     if filenames is None:
-        indices = list(getattr(window, 'registered_source_indices', ()) or range(len(frames)))
         source_names = list(getattr(window, 'image_filenames', ()) or ())
         filenames = [source_names[i] if i < len(source_names) else f'frame_{i + 1:04d}.png' for i in indices]
     names = tuple(filenames)
@@ -933,7 +933,8 @@ def publish_aligned_stack(window, frames, *, filenames=None) -> None:
     record = OutputRecord.create(None, label, kind='aligned', exported=False)
     record.aligned_frames = tuple(frames)
     record.aligned_names = names
-    record.icc_profile = getattr(getattr(window, 'image_loader', None), 'source_icc_profile', b'')
+    from core.image_loader import stack_icc_profile
+    record.icc_profile = stack_icc_profile(window, indices) if icc_profile is None else icc_profile
     item = window.output_manager._insert_output(None, label, record)
     item.setIcon(QIcon.fromTheme("folder"))
     window.aligned_stack_dir = None

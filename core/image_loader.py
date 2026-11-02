@@ -156,29 +156,64 @@ def _read_exif_bytes(path: str) -> bytes:
 
 
 def _read_icc_profile(path: str) -> bytes:
-    """Read an RGB ICC profile; RAW decoding produces sRGB pixels instead."""
+    """Read a common RGB profile from every page of an image file."""
     if not PIL_AVAILABLE or os.path.splitext(path)[1].lower() in RAW_FORMATS:
+        return b""
+    from io import BytesIO
+    try:
+        from PIL import ImageCms
+    except ImportError:
         return b""
     try:
         with PILImage.open(path) as image:
-            profile = image.info.get("icc_profile", b"")
-        if (isinstance(profile, bytes) and len(profile) >= 128
-                and profile[16:20] == b"RGB " and profile[36:40] == b"acsp"):
-            return profile
-    except (OSError, ValueError, TypeError):
-        pass
-    return b""
+            profiles = []
+            for page in range(getattr(image, "n_frames", 1)):
+                image.seek(page)
+                # TIFF tags are page-specific; Pillow's info dictionary may
+                # otherwise retain metadata from a previous page.
+                if image.format == "TIFF":
+                    profile = image.tag_v2.get(34675, b"")
+                else:
+                    profile = image.info.get("icc_profile", b"")
+                if not (isinstance(profile, bytes) and len(profile) >= 128
+                        and profile[16:20] == b"RGB " and profile[36:40] == b"acsp"):
+                    return b""
+                if int.from_bytes(profile[:4], "big") != len(profile):
+                    return b""
+                ImageCms.ImageCmsProfile(BytesIO(profile))
+                profiles.append(profile)
+            return common_profile_values(profiles)
+    except (OSError, ValueError, TypeError, EOFError, ImageCms.PyCMSError):
+        return b""
+
+
+def common_profile_values(profiles) -> bytes:
+    """Return a profile only if every supplied frame has the same profile."""
+    common = None
+    for profile in profiles:
+        if not profile or (common is not None and profile != common):
+            return b""
+        common = profile
+    return common or b""
 
 
 def common_icc_profile(paths) -> bytes:
     """Return the common RGB profile only when every source has the same one."""
-    profile = None
-    for path in dict.fromkeys(paths):
-        current = _read_icc_profile(path)
-        if not current or (profile is not None and current != profile):
-            return b""
-        profile = current
-    return profile or b""
+    return common_profile_values(_read_icc_profile(path) for path in dict.fromkeys(paths))
+
+
+def stack_icc_profile(window, indices=None) -> bytes:
+    """Get cached provenance for the selected frames without reading files."""
+    profiles = getattr(window, "image_icc_profiles", ()) or ()
+    count = len(getattr(window, "raw_images", ()) or ())
+    if len(profiles) != count:
+        return b""
+    if indices is None:
+        indices = range(count)
+    selected = list(indices)
+    if any(i < 0 or i >= count for i in selected):
+        return b""
+    return common_profile_values(profiles[i] for i in selected)
 
 
 # EXIF Orientation tag values that need a pixel transform (1 = already OK).
@@ -525,6 +560,7 @@ class ImageStackLoader:
         # µm/px auto-detected from the stack's TIFF metadata (None = unknown)
         self.px_size_um = None
         self.source_icc_profile = b""
+        self.source_icc_profiles = {}
         self.should_cancel = lambda: False
         self.failed_count = 0
         # `*_registered*` copies found beside their originals and skipped
@@ -630,7 +666,8 @@ class ImageStackLoader:
         # shift the remaining paths (get_image_info used to report the wrong
         # file for every frame after either case).
         self.image_paths = loaded_paths
-        self.source_icc_profile = common_icc_profile(loaded_paths)
+        self.source_icc_profiles = {path: _read_icc_profile(path) for path in dict.fromkeys(loaded_paths)}
+        self.source_icc_profile = common_profile_values(self.source_icc_profiles.values())
 
         message = f"Loaded {len(loaded_images)} image(s)"
         if failed_count > 0:
@@ -641,6 +678,11 @@ class ImageStackLoader:
         return True, message, loaded_images, filenames
 
     def load_from_video(self, video_path: str, scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
+        self.source_exif = b""
+        self.source_icc_profile = b""
+        self.source_icc_profiles = {}
+        self.px_size_um = None
+        self.image_paths = []
         if not os.path.isfile(video_path):
             return False, "Video file does not exist", [], []
 
@@ -754,7 +796,8 @@ class ImageStackLoader:
 
         self.images = loaded_images
         self.image_paths = loaded_paths
-        self.source_icc_profile = common_icc_profile(loaded_paths)
+        self.source_icc_profiles = {path: _read_icc_profile(path) for path in dict.fromkeys(loaded_paths)}
+        self.source_icc_profile = common_profile_values(self.source_icc_profiles.values())
 
         message = f"Loaded {len(loaded_images)} image(s)"
         if failed_count > 0:

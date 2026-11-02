@@ -74,6 +74,7 @@ class StackLoadWorker(QThread):
         self.scale = scale
         self.thread_count = thread_count
         self.resource_preference = resource_preference
+        self.source_icc_profiles = {}
         self.is_cancelled = False
         self.loader.should_cancel = lambda: self.is_cancelled
 
@@ -100,6 +101,8 @@ class StackLoadWorker(QThread):
                 else:
                     ok, msg, imgs, names = self.loader.load_from_filepaths(
                         self.filepaths, scale_factor=self.scale, **options)
+                if ok:
+                    self.source_icc_profiles = dict(getattr(self.loader, 'source_icc_profiles', {}))
                 logger.info("stack decoded %s", frame_details(imgs))
                 # Video decoding does not populate the image failure counter.
                 image_load = bool(self.folder) or not self.video
