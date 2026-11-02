@@ -537,7 +537,20 @@ def test_depth_products_cancel_and_reject_incompatible_sources():
                        should_cancel=lambda: True)
     with pytest.raises(ValueError):
         render_indices(indices, [np.zeros((2, 2), np.uint8),
-                                 np.zeros((2, 2), np.uint16)])
+                                 np.zeros((2, 2), np.float32)])
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_depth_guided_render_promotes_mixed_bit_depth(reverse):
+    from core.depth_products import render_indices
+
+    frames = [np.array([[3, 5]], np.uint8), np.array([[40001, 50003]], np.uint16)]
+    if reverse:
+        frames.reverse()
+    result = render_indices(np.array([[1, 2]], np.uint16), frames)
+    assert result.dtype == np.uint16
+    expected = [[40001, 5 * 257]] if reverse else [[3 * 257, 50003]]
+    np.testing.assert_array_equal(result, expected)
 
 
 def test_depth_guided_render_rejects_out_of_range_index():

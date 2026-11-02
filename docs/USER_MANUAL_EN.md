@@ -279,9 +279,10 @@ Compute stays visible and is disabled while computing, cancelling or exporting.
   frames are supported. Fractional estimated positions are rounded to the nearest
   frame, with halfway values rounded upward. These indices estimate focus position;
   they are not the true pixel provenance of a fused result. The alternative image
-  selects the exact pixel from the corresponding depth input frame at each valid
-  location, with invalid pixels set to zero. Exports use the depth map's ROI and
-  preserve invalid areas as zero.
+  selects the pixel from the corresponding depth input frame at each valid
+  location, with invalid pixels set to zero. When any input is 16-bit, 8-bit
+  values are promoted to 16-bit by multiplying by 257. Exports use the depth
+  map's ROI and preserve invalid areas as zero.
 - **Physical depth**: enter Z start, positive step, unit and acquisition direction,
   then confirm the original capture mapping. Excluded frames keep their gaps.
   Float32 TIFF stores micrometres, NaN for missing data, and source metadata.
