@@ -468,6 +468,11 @@ def test_closed_parented_dialog_releases_document_without_deleting_worker(qapp, 
     worker = dialog._sharpness_worker
     try:
         assert entered.wait(2)
+        dialog._confirm_close = lambda: False
+        dialog.close()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert not sip.isdeleted(dialog) and worker.isRunning()
+        del dialog._confirm_close
         dialog.close()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         assert sip.isdeleted(dialog)
