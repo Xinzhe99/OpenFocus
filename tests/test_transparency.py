@@ -94,7 +94,8 @@ def test_cli_rejects_incompatible_processing(tmp_path, option, value):
     folder = tmp_path / "frames"
     _stack(folder, np.uint8, 1)
     out = tmp_path / "out.png"
-    result = _run("--input", folder, "--output", out, "--method", "guided_filter", option, value)
+    method = "openfocus_b" if option == "--depth-map" else "guided_filter"
+    result = _run("--input", folder, "--output", out, "--method", method, option, value)
     assert result.returncode != 0
     assert "transparent" in result.stderr.lower()
     assert not out.exists()

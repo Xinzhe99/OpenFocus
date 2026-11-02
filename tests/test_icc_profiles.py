@@ -19,6 +19,8 @@ def rgb_profile():
 @pytest.mark.parametrize("channels", [3, 4])
 def test_16bit_export_keeps_pixels_exif_and_icc(tmp_path, rgb_profile, extension, channels):
     image = np.random.default_rng(3).integers(0, 65536, (17, 23, channels), dtype=np.uint16)
+    if channels == 4 and extension == ".tif":
+        image[:, :, 3] = np.iinfo(np.uint16).max
     exif = Image.Exif()
     exif[271] = "Camera"
     path = tmp_path / f"结果{extension}"
