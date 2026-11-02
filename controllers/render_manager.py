@@ -573,6 +573,7 @@ class RenderManager:
             "alignment_key": alignment_key,
             "disk_alignment_options": disk_alignment_options,
             "full_filenames": list(window.image_filenames),
+            "icc_profile": getattr(getattr(window, "image_loader", None), "source_icc_profile", b""),
             "parameters": self._processing_parameters(force_algorithm or fusion_method),
         }
         from utils.scalebar import effective_px_um
@@ -763,6 +764,7 @@ class RenderManager:
                             pixel_size_um=ctx.get("pixel_size_um"),
                             source_px_um=ctx.get("source_px_um"),
                             source_scale_factor=ctx.get("source_scale_factor", 1.0),
+                            icc_profile=ctx.get("icc_profile", b""),
                         )
                         window.last_render_context = new_context
                     except Exception:

@@ -237,6 +237,9 @@ starts with the desktop app.
   ROI render, and per-method settings remembered across restarts.
 - **Microscopy-ready** — 16-bit end to end, µm/px from TIFF metadata, dust-map
   flat-field correction, multi-page TIFF Z-stacks, textured OBJ export.
+- **Color profiles** — single-image PNG, TIFF, JPEG and WebP exports retain
+  a shared RGB ICC profile when every source frame has the same profile. Mixed
+  or untagged stacks have no profile attached; pixels are not color-converted.
 - **Headless CLI** — the same pipeline as `openfocus`, with batch mode,
   `--dry-run`, `--resume` and JSON output for scripting.
 - **Agent-drivable** — a token-protected local channel drives the live GUI

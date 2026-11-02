@@ -125,6 +125,7 @@ class RenderContext:
     source_indices: Tuple[int, ...] = ()
     source_revision: int = 0
     parameters: dict = field(default_factory=dict)
+    icc_profile: bytes = b""
 
     @property
     def alignment(self) -> str:
@@ -184,6 +185,7 @@ def build_render_context(
     source_revision: int = 0,
     parameters: Optional[dict] = None,
     frame_ids: Optional[Sequence[str]] = None,
+    icc_profile: bytes = b"",
 ) -> Optional[RenderContext]:
     """Build the provenance context for one completed fusion.
 
@@ -259,4 +261,5 @@ def build_render_context(
         source_indices=tuple(source_indices or range(len(frames))),
         source_revision=source_revision,
         parameters=dict(parameters or {}),
+        icc_profile=icc_profile,
     )

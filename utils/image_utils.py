@@ -323,7 +323,36 @@ def _png_insert_exif(png: bytes, tiff_exif: bytes) -> bytes:
     return png[:ihdr_end] + chunk + png[ihdr_end:]
 
 
-def _encode_tiff_with_exif(image: np.ndarray, exif) -> bytes:
+def _png_insert_icc(png: bytes, profile: bytes) -> bytes:
+    """Add a PNG iCCP chunk without changing the encoded pixels."""
+    import struct
+    import zlib
+    ihdr_end = 8 + 8 + 13 + 4
+    if png[12:16] != b"IHDR":
+        raise ValueError("not a PNG produced by cv2")
+    data = b"ICC\x00\x00" + zlib.compress(profile)
+    chunk = (struct.pack(">I", len(data)) + b"iCCP" + data
+             + struct.pack(">I", zlib.crc32(b"iCCP" + data)))
+    return png[:ihdr_end] + chunk + png[ihdr_end:]
+
+
+def _jpeg_insert_icc(jpeg: bytes, profile: bytes) -> bytes:
+    """Add the standard APP2 ICC segments without recompressing JPEG pixels."""
+    import struct
+    if jpeg[:2] != b"\xff\xd8":
+        raise ValueError("not a JPEG produced by cv2")
+    size = 65519
+    count = (len(profile) + size - 1) // size
+    if count > 255:
+        raise ValueError("ICC profile is too large for JPEG")
+    segments = []
+    for index in range(count):
+        data = b"ICC_PROFILE\x00" + bytes((index + 1, count)) + profile[index * size:(index + 1) * size]
+        segments.append(b"\xff\xe2" + struct.pack(">H", len(data) + 2) + data)
+    return jpeg[:2] + b"".join(segments) + jpeg[2:]
+
+
+def _encode_tiff_with_exif(image: np.ndarray, exif, icc_profile: bytes = b"") -> bytes:
     """Uncompressed TIFF (uint8/uint16, gray or BGR) with an EXIF sub-IFD.
 
     Pillow cannot hold 16-bit RGB, so the file is assembled directly: an
@@ -334,6 +363,9 @@ def _encode_tiff_with_exif(image: np.ndarray, exif) -> bytes:
     if image.ndim == 3 and image.shape[2] == 3:
         pixels = np.ascontiguousarray(image[:, :, ::-1])  # BGR -> RGB
         samples, photometric = 3, 2
+    elif image.ndim == 3 and image.shape[2] == 4:
+        pixels = np.ascontiguousarray(image[:, :, [2, 1, 0, 3]])
+        samples, photometric = 4, 2
     elif image.ndim == 2:
         pixels = np.ascontiguousarray(image)
         samples, photometric = 1, 1
@@ -351,8 +383,10 @@ def _encode_tiff_with_exif(image: np.ndarray, exif) -> bytes:
 
     head = b"II*\x00" + (8).to_bytes(4, "little")
     ifd = TiffImagePlugin.ImageFileDirectory_v2(ifh=head)
-    for tag, value in exif.items():
+    for tag, value in (exif or {}).items():
         ifd[tag] = value  # sub-IFDs are plain dicts (see export_exif)
+    if icc_profile:
+        ifd[34675] = icc_profile
     ifd[256] = width
     ifd[257] = height
     ifd[258] = (bits,) * samples
@@ -360,6 +394,8 @@ def _encode_tiff_with_exif(image: np.ndarray, exif) -> bytes:
     ifd[262] = photometric
     ifd[277] = samples
     ifd[278] = rows_per_strip
+    if samples == 4:
+        ifd[338] = (2,)  # unassociated alpha
     ifd[284] = 1  # chunky
     # Strip offsets/counts are LONG regardless of magnitude; Pillow's writer
     # rebases StripOffsets onto the end of the IFD, where the strips go.
@@ -370,8 +406,8 @@ def _encode_tiff_with_exif(image: np.ndarray, exif) -> bytes:
 
 
 def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
-                 exif: Optional[bytes] = None) -> bool:
-    """Encode beside the destination, then atomically replace a complete file."""
+                 exif: Optional[bytes] = None, icc_profile: bytes = b"") -> bool:
+    """Atomically write pixels, optionally embedding their RGB color profile."""
     import tempfile
 
     path = os.fspath(path)
@@ -382,10 +418,12 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
     # PNG/TIFF get EXIF spliced in at the byte level, so 16-bit exports keep
     # their depth (a Pillow round-trip would cut them to 8-bit).
     meta = export_exif(embed) if ext in (".png", ".tif", ".tiff") else None
+    profile = icc_profile if (icc_profile and image.ndim == 3
+                              and image.shape[2] in (3, 4)) else b""
     part = None
     try:
         encoded = None
-        if meta is not None:
+        if meta is not None or (profile and ext in (".tif", ".tiff")):
             try:
                 if ext == ".png":
                     ok, buf = cv2.imencode(ext, image, params or [])
@@ -393,7 +431,7 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
                         return False
                     encoded = _png_insert_exif(buf.tobytes(), meta.tobytes()[6:])
                 else:
-                    encoded = _encode_tiff_with_exif(image, meta)
+                    encoded = _encode_tiff_with_exif(image, meta, profile)
             except ValueError as exc:
                 print(f"EXIF embed skipped for {path}: {exc}")
                 meta = None
@@ -401,18 +439,27 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
             ok, encoded = cv2.imencode(ext, image, params or [])
             if not ok:
                 return False
+        if profile and ext == ".png":
+            encoded = _png_insert_icc(bytes(encoded), profile)
+        elif profile and ext in (".jpg", ".jpeg", ".jpe", ".jfif"):
+            encoded = _jpeg_insert_icc(bytes(encoded), profile)
         fd, part = tempfile.mkstemp(
             suffix=ext, dir=os.path.dirname(os.path.abspath(path)))
         with os.fdopen(fd, "wb") as handle:
             handle.write(encoded)
         # Pillow re-save fallback: 8-bit only, since re-opening a 16-bit file
         # with Pillow would downgrade it. Covers WebP and unparsable EXIF.
-        if embed and meta is None and image.dtype == np.uint8 \
-                and ext in (".png", ".tif", ".tiff", ".webp"):
+        if image.dtype == np.uint8 and (
+                (embed and meta is None and ext in (".png", ".tif", ".tiff", ".webp"))
+                or (profile and ext == ".webp")):
             from PIL import Image
             with Image.open(part) as source:
                 source.load()
-                metadata = {"exif": _upright_exif(embed)}
+                metadata = {}
+                if embed and meta is None:
+                    metadata["exif"] = _upright_exif(embed)
+                if profile:
+                    metadata["icc_profile"] = profile
                 if ext == ".webp":
                     metadata["lossless"] = True
                 source.save(part, **metadata)

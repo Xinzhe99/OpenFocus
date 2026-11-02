@@ -127,6 +127,32 @@ def _read_exif_bytes(path: str) -> bytes:
         return b""
 
 
+def _read_icc_profile(path: str) -> bytes:
+    """Read an RGB ICC profile; RAW decoding produces sRGB pixels instead."""
+    if not PIL_AVAILABLE or os.path.splitext(path)[1].lower() in RAW_FORMATS:
+        return b""
+    try:
+        with PILImage.open(path) as image:
+            profile = image.info.get("icc_profile", b"")
+        if (isinstance(profile, bytes) and len(profile) >= 128
+                and profile[16:20] == b"RGB " and profile[36:40] == b"acsp"):
+            return profile
+    except (OSError, ValueError, TypeError):
+        pass
+    return b""
+
+
+def common_icc_profile(paths) -> bytes:
+    """Return the common RGB profile only when every source has the same one."""
+    profile = None
+    for path in dict.fromkeys(paths):
+        current = _read_icc_profile(path)
+        if not current or (profile is not None and current != profile):
+            return b""
+        profile = current
+    return profile or b""
+
+
 # EXIF Orientation tag values that need a pixel transform (1 = already OK).
 _EXIF_TRANSFORMS = {
     2: lambda a: a[:, ::-1],                       # mirror horizontal
@@ -448,6 +474,7 @@ class ImageStackLoader:
         self.thumbnail_size = (600, 400)
         # µm/px auto-detected from the stack's TIFF metadata (None = unknown)
         self.px_size_um = None
+        self.source_icc_profile = b""
         self.should_cancel = lambda: False
         self.failed_count = 0
         # `*_registered*` copies found beside their originals and skipped
@@ -501,6 +528,7 @@ class ImageStackLoader:
         loaded_paths = []
         failed_count = 0
         self.source_exif = b""
+        self.source_icc_profile = b""
         # Reset per load: one loader instance serves the whole session, so a
         # calibration detected for a previous stack must not leak into this
         # one (every later export would carry the wrong scale bar).
@@ -549,6 +577,7 @@ class ImageStackLoader:
         # shift the remaining paths (get_image_info used to report the wrong
         # file for every frame after either case).
         self.image_paths = loaded_paths
+        self.source_icc_profile = common_icc_profile(loaded_paths)
 
         message = f"Loaded {len(loaded_images)} image(s)"
         if failed_count > 0:
@@ -628,6 +657,7 @@ class ImageStackLoader:
         # see load_from_folder: calibration must not stick across stacks
         self.px_size_um = None
         self.source_exif = b""
+        self.source_icc_profile = b""
 
         missing = [path for path in sources if not os.path.exists(path)]
         sources = [path for path in sources if os.path.exists(path)]
@@ -668,6 +698,7 @@ class ImageStackLoader:
 
         self.images = loaded_images
         self.image_paths = loaded_paths
+        self.source_icc_profile = common_icc_profile(loaded_paths)
 
         message = f"Loaded {len(loaded_images)} image(s)"
         if failed_count > 0:

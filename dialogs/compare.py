@@ -99,6 +99,7 @@ class CompareDialog(QDialog):
             "pixel_size_um": effective_px_um(window_main),
             "source_px_um": getattr(window_main, "source_px_um", None),
             "source_scale_factor": getattr(window_main, "current_scale_factor", 1.0),
+            "icc_profile": getattr(getattr(window_main, "image_loader", None), "source_icc_profile", b""),
         }
 
         self._preview_timer = QTimer(self)
