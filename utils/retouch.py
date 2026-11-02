@@ -140,6 +140,7 @@ def apply_dab(
     history: Optional["TileHistory"] = None,
     source_valid: Optional[np.ndarray] = None,
     offset: Tuple[int, int] = (0, 0),
+    exposure: Optional[float] = None,
 ) -> Optional[Tuple[int, int, int, int]]:
     """Blend one brush dab from `source` into `target` in place.
 
@@ -188,10 +189,23 @@ def apply_dab(
     blend = (coverage.apply(tx0, ty0, tx1, ty1, alpha)
              if coverage is not None else alpha)
 
-    src = _to_dtype(_as_bgr(source)[nsy0:nsy1, nsx0:nsx1], target.dtype)
+    if exposure is None:
+        src = _to_dtype(_as_bgr(source)[nsy0:nsy1, nsx0:nsx1], target.dtype)
+    else:
+        # Use the pixels at the beginning of the stroke, so overlapping
+        # dabs cannot compound the adjustment within one stroke.
+        original = target[ty0:ty1, tx0:tx1].copy()
+        for key in history._tile_keys(tx0, ty0, tx1, ty1):
+            tile = history._current[key]
+            bx, by = key[0] * TILE, key[1] * TILE
+            ix0, iy0 = max(tx0, bx), max(ty0, by)
+            ix1, iy1 = min(tx1, bx + tile.shape[1]), min(ty1, by + tile.shape[0])
+            original[iy0-ty0:iy1-ty0, ix0-tx0:ix1-tx0] = tile[iy0-by:iy1-by, ix0-bx:ix1-bx]
+        src = np.clip(original.astype(np.float32) * (2.0 ** exposure),
+                      0, _dtype_max(target.dtype))
     tgt = target[ty0:ty1, tx0:tx1]
     cur = tgt.astype(np.float32)
-    if cur.ndim == 2:
+    if cur.ndim == 2 and src.ndim == 3:
         src = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
     factor = blend[..., None] if cur.ndim == 3 else blend
     blended = cur + (src - cur) * factor
@@ -388,7 +402,7 @@ class TileHistory:
 class RetouchDocument:
     """One retouch session: base image, source frames, brush and history."""
 
-    TOOLS = ("source", "restore")
+    TOOLS = ("source", "restore", "exposure")
 
     def __init__(self, base_image: np.ndarray, context: RenderContext,
                  *, max_strokes: int = DEFAULT_MAX_STROKES,
@@ -406,6 +420,7 @@ class RetouchDocument:
         self.diameter = 64
         self.hardness = 0.4
         self.opacity = 1.0
+        self.exposure = 0.5
         self.history = TileHistory(self.working, self.base,
                                    max_strokes=max_strokes,
                                    max_bytes=max_bytes)
@@ -499,7 +514,7 @@ class RetouchDocument:
     def source_valid_at(self, x: float, y: float) -> bool:
         if not (0 <= x < self.width and 0 <= y < self.height):
             return False
-        if self.tool == "restore":
+        if self.tool in ("restore", "exposure"):
             return True
         frame = self.active_frame
         if not frame.contains(x, y):
@@ -522,6 +537,7 @@ class RetouchDocument:
             "diameter": self.diameter,
             "hardness": self.hardness,
             "opacity": self.opacity,
+            "exposure": self.exposure,
             "last": (float(x), float(y)),
         }
         self._coverage = StrokeCoverage(self.height, self.width)
@@ -587,6 +603,7 @@ class RetouchDocument:
             history=self.history,
             source_valid=valid,
             offset=offset,
+            exposure=locked["exposure"] if locked["tool"] == "exposure" else None,
         )
 
     # -------------------------------------------------------- history ops

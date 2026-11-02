@@ -558,15 +558,25 @@ class RetouchDialog(QDialog):
         side.addWidget(lbl_tools)
         self.rb_source = QRadioButton(trans.t("retouch_tool_source"))
         self.rb_restore = QRadioButton(trans.t("retouch_tool_restore"))
+        self.rb_exposure = QRadioButton(trans.t("retouch_tool_exposure"))
         self.tool_group = QButtonGroup(self)
         self.tool_group.addButton(self.rb_source, 0)
         self.tool_group.addButton(self.rb_restore, 1)
+        self.tool_group.addButton(self.rb_exposure, 2)
         self.rb_source.toggled.connect(
             lambda on: self._set_tool("source") if on else None)
         self.rb_restore.toggled.connect(
             lambda on: self._set_tool("restore") if on else None)
+        self.rb_exposure.toggled.connect(
+            lambda on: self._set_tool("exposure") if on else None)
         side.addWidget(self.rb_source)
         side.addWidget(self.rb_restore)
+        side.addWidget(self.rb_exposure)
+        self.num_exposure = _NumberRow(trans.t("retouch_exposure_amount"),
+                                       -200, 200, 50)
+        self.num_exposure.setToolTip(trans.t("retouch_exposure_hint"))
+        self.num_exposure.valueChanged.connect(self._on_exposure_changed)
+        side.addWidget(self.num_exposure)
 
         self.num_diameter = _NumberRow(trans.t("retouch_diameter"),
                                        1, 2048, self.doc.diameter)
@@ -702,7 +712,7 @@ class RetouchDialog(QDialog):
             self.btn_layout, self.btn_before, self.btn_peek,
             self.frame_list, self.frame_spin, self.frame_slider,
             self.btn_prev, self.btn_next,
-            self.rb_source, self.rb_restore, self.num_diameter,
+            self.rb_source, self.rb_restore, self.rb_exposure, self.num_exposure, self.num_diameter,
             self.num_hardness, self.num_opacity, self.chk_sharp,
             self.btn_restore_all, self.btn_apply, self.btn_change,
             self.btn_fullscreen,
@@ -1071,8 +1081,8 @@ class RetouchDialog(QDialog):
         self.lbl_frame_status.setText(trans.t("retouch_frame").format(
             i=self.doc.frame_index + 1, n=self.doc.frame_count,
             name=os.path.basename(frame.name)))
-        tool = (trans.t("retouch_tool_source") if self.doc.tool == "source"
-                else trans.t("retouch_tool_restore"))
+        tool = trans.t({"source": "retouch_tool_source", "restore": "retouch_tool_restore",
+                        "exposure": "retouch_tool_exposure"}[self.doc.tool])
         if self.cursor_pos is not None and self.doc.tool == "source" and not self.cursor_source_valid():
             tool = (trans.t("retouch_source_roi") + " · "
                     if not frame.contains(self.cursor_pos.x(), self.cursor_pos.y()) else "")
@@ -1114,15 +1124,20 @@ class RetouchDialog(QDialog):
         """The help line follows the active tool (it used to stay on source)."""
         if self.lbl_help is None:
             return
-        key = ("retouch_help_restore" if self.doc.tool == "restore"
-               else "retouch_help")
+        key = {"source": "retouch_help", "restore": "retouch_help_restore",
+               "exposure": "retouch_exposure_hint"}[self.doc.tool]
         self.lbl_help.setText(trans.t(key))
 
     def _sync_tool_buttons(self) -> None:
         self._syncing_tools = True
         self.rb_source.setChecked(self.doc.tool == "source")
         self.rb_restore.setChecked(self.doc.tool == "restore")
+        self.rb_exposure.setChecked(self.doc.tool == "exposure")
         self._syncing_tools = False
+
+    def _on_exposure_changed(self, value: int) -> None:
+        if not self.doc.stroke_active:
+            self.doc.exposure = value / 100.0
 
     def _on_brush_changed(self, _value=None) -> None:
         if self.doc.stroke_active:

@@ -707,6 +707,16 @@ copies pixels from the exact frames that produced the selected result:
    window, and OpenFocus protects it from automatic history eviction and
    from quitting without a decision.
 
+For a local tonal correction, select **Exposure brush**, set its amount in
+hundredths of a stop (100 doubles the pixel values, -100 halves them), and
+paint on the result. The preview updates as you paint. Each stroke adjusts the
+current result once, even where its dabs overlap; another stroke builds on it.
+Use the brush opacity and hardness to control the blend. Highlights can clip
+when brightening. Hold **Before** to compare with the result as opened, press
+Escape during a stroke to cancel it, or use undo and redo after the stroke.
+These are pixel edits, not adjustable layers. Apply as New Output and export
+the new entry to save the edited pixels; a project does not store those pixels.
+
 Provenance travels with the output: the aligned frames, ROI crop/paste
 offsets, DCT edge trimming and bit depth are recorded when the result is
 rendered. Batch files, legacy results and align-only folder entries have no
