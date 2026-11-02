@@ -1,0 +1,49 @@
+name: Mirror release assets to R2
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to mirror (for example v1.74.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve the release tag
+        id: release
+        run: echo "tag=${{ github.event.release.tag_name || inputs.tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p assets
+          gh release download "${{ steps.release.outputs.tag }}" --dir assets \
+            --pattern '*-setup.exe' \
+            --pattern '*-windows-x64.zip' \
+            --pattern '*-macos.dmg' \
+            --pattern '*-macos-arm64.zip'
+          ls -lh assets
+
+      - name: Configure AWS credentials for R2
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          aws-region: auto
+
+      - name: Upload to R2
+        env:
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          aws s3 cp assets/ "s3://openfocus-downloads/" --recursive \
+            --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com"
