@@ -1179,7 +1179,16 @@ class DepthMapDialog(QDialog):
     def _reconcile_controls(self):
         busy = self._worker is not None or self._export_worker is not None
         self.compute_btn.setVisible(True)
-        self.compute_btn.setEnabled(not self._closing and not busy and bool(self._images()))
+        index = self.method_combo.currentIndex()
+        item = self.method_combo.model().item(index)
+        available = item is not None and item.isEnabled()
+        reason = (self.method_combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
+                  if not available else "")
+        self.compute_btn.setEnabled(
+            not self._closing and not busy and bool(self._images()) and available)
+        self.compute_btn.setToolTip(reason or "")
+        if reason and not busy and not self._closing:
+            self.status_lbl.setText(reason)
         self.cancel_btn.setVisible(busy and not self._closing)
         self.cancel_btn.setEnabled(not self._closing and busy and not self._cancelling)
         self._side_controls.setEnabled(not self._closing and self._export_worker is None)
