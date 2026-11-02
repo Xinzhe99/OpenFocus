@@ -205,6 +205,12 @@ def setup_menus(window: QMainWindow) -> None:
     window.ui_objs['action_retouch'] = retouch_action
     retouch_action.setProperty("trans_key", 'action_retouch')
 
+    standalone_retouch = QAction(trans.t('standalone_retouch_action'), window)
+    standalone_retouch.setProperty('trans_key', 'standalone_retouch_action')
+    standalone_retouch.triggered.connect(window.show_standalone_retouch)
+    edit_menu.addAction(standalone_retouch)
+    window.ui_objs['standalone_retouch_action'] = standalone_retouch
+
     # Labels live under Tools: adding and removing are two halves of one
     # feature, so they share one submenu instead of a loose action here and a
     # separate "delete" menu elsewhere.

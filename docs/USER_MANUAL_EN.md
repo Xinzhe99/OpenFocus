@@ -714,6 +714,16 @@ recorded source, so they are listed as unavailable instead of being guessed
 from the current stack. Unapplied strokes and undo history are session-only;
 saving a project does not store them.
 
+For an existing image file, choose **Edit → Retouch Image Files…**, then select
+the result and one or more source images. The sources must already be aligned
+to the result on the same pixel grid; matching dimensions alone cannot prove
+alignment. Single-page PNG, TIFF, JPEG and BMP images with matching dimensions,
+channels and 8-bit or 16-bit depth are accepted; alpha and multipage images are
+not supported. The selected frames are user supplied, not recorded render
+provenance. Apply creates a separate unexported output; save it from the output
+list. The chosen files are protected against overwriting during this session.
+As with other results, project files do not store these pixels or brush history.
+
 ### Managing Labels
 
 Open **Tools → Labels** after loading images or producing a result. Each label
