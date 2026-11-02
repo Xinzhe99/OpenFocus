@@ -60,6 +60,7 @@ Desktop.ini
 .ecc_inputs.npz
 .zcodeignore
 docs/OpenFocus.spec
+.wrangler/
 
 # Local build spec and stray export screenshots in repo root
 /OpenFocus.spec

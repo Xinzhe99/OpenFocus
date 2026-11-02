@@ -1,0 +1,544 @@
+"""Copy and release metadata for the OpenFocus website.
+
+The build script (tools/build_site.py) renders one page per entry in
+LOCALES.  Adding a language means adding one dict here and a
+locales/<code>.py entry is *not* needed: the site is independent of the
+application's UI language packs.
+
+Placeholders are resolved by dotted key, so every ``{{key}}`` in
+template.html must exist under the matching locale.
+"""
+
+import os
+
+REPO = "https://github.com/Xinzhe99/OpenFocus"
+RELEASES = f"{REPO}/releases"
+MANUAL = {
+    "en": f"{REPO}/blob/main/docs/USER_MANUAL_EN.md",
+    "zh": f"{REPO}/blob/main/docs/USER_MANUAL_ZH.md",
+}
+
+# Single source of truth for the version the download cards point at.
+# A release-backed card's kind_id must match an assets key in site/worker.js.
+RELEASE = {
+    "tag": "v1.74.0",
+    "page": f"{RELEASES}/tag/v1.74.0",
+    "windows_setup": f"{RELEASES}/download/v1.74.0/OpenFocus-v1.74.0-setup.exe",
+    "windows_zip": f"{RELEASES}/download/v1.74.0/OpenFocus-v1.74.0-windows-x64.zip",
+    "macos_dmg": f"{RELEASES}/download/v1.74.0/OpenFocus-v1.74.0-macos.dmg",
+    "macos_zip": f"{RELEASES}/download/v1.74.0/OpenFocus-v1.74.0-macos-arm64.zip",
+    "pypi": "https://pypi.org/project/openfocus/",
+}
+
+
+def _en() -> dict:
+    return {
+        "code": "en",
+        "html_lang": "en",
+        "og_locale": "en_US",
+        "path": "",
+        "switch_label": "English",
+        "skip": "Skip to content",
+        "title": "OpenFocus — focus stacking, pixel by pixel",
+        "desc": (
+            "OpenFocus aligns a focus stack and fuses it into one all-in-focus "
+            "image, choosing each pixel from its sharpest source frame: ten "
+            "fusion algorithms including neural StackMFF V3, 16-bit end to "
+            "end, depth maps, retouch and a headless CLI."
+        ),
+        "nav": {
+            "features": "Features",
+            "workflow": "Workflow",
+            "benchmark": "Benchmark",
+            "cli": "CLI",
+            "docs": "Docs",
+            "github": "GitHub",
+            "download": "Download",
+            "theme": "Theme",
+            "language": "Language",
+            "menu": "Menu",
+        },
+        "hero": {
+            "title": 'Every pixel,<br>its sharpest frame.',
+            "lede": (
+                "A focus stack is a pile of near-misses. OpenFocus aligns the "
+                "frames, decides which one is sharpest at every pixel, and "
+                "blends them into a single image — for macro, microscopy and "
+                "industrial inspection."
+            ),
+            "chips": [
+                "10 fusion methods",
+                "5 alignment modes",
+                "16-bit end to end",
+                "12 UI languages",
+                "MIT licensed",
+            ],
+            "cta_windows": "Download for Windows",
+            "cta_macos": "Download for macOS",
+            "cta_linux": "Install with pip",
+            "cta_github": "View on GitHub",
+            "meta": "v1.74.0 · Windows 10/11 · macOS Apple Silicon · Linux CLI",
+            "shot_alt": (
+                "The OpenFocus window: a nine-frame stack, a wipe comparison "
+                "and a 50 mm scale bar on the fused result."
+            ),
+        },
+        "why": {
+            "eyebrow": "Why OpenFocus",
+            "title": "Focus stacking, without the guesswork.",
+            "sub": (
+                "Ten fusion algorithms, a registration step that fits your "
+                "rig, and a workspace that shows you the result at every zoom."
+            ),
+            "features": [
+                {
+                    "title": "AI fusion and classical methods",
+                    "body": (
+                        "StackMFF V3 is OpenFocus's current state-of-the-art AI "
+                        "fusion model, estimating the best source frame for each "
+                        "pixel. V2 and V1 join Guided Filter, DCT, DTCWT, GFG-FGF "
+                        "and OpenFocus A/B/C."
+                    ),
+                },
+                {
+                    "title": "Alignment that matches the rig",
+                    "body": (
+                        "No alignment, SIFT homography, ECC, homography refined "
+                        "by ECC, or a bounded similarity search that finishes in "
+                        "under a second per frame."
+                    ),
+                },
+                {
+                    "title": "16-bit, end to end",
+                    "body": (
+                        "Load, fuse and export without dropping to 8-bit. µm/px "
+                        "comes from TIFF metadata, and multi-page TIFF Z-stacks "
+                        "stay intact."
+                    ),
+                },
+                {
+                    "title": "Compare, then commit",
+                    "body": (
+                        "Render every method once and inspect them at a shared "
+                        "crop. Adopt the winner, or copy its parameters back to "
+                        "the main window."
+                    ),
+                },
+                {
+                    "title": "Retouch from the source",
+                    "body": (
+                        "Paint detail back from the frame that actually had it: "
+                        "shared zoom and pan, soft and restore brushes, "
+                        "whole-stroke undo."
+                    ),
+                },
+                {
+                    "title": "Headless when you need it",
+                    "body": (
+                        "The same pipeline as <code>openfocus</code>, with batch "
+                        "mode, <code>--dry-run</code>, <code>--resume</code> and "
+                        "JSON output for scripting."
+                    ),
+                },
+            ],
+        },
+        "workflow": {
+            "eyebrow": "Workflow",
+            "title": "Load. Align. Fuse. Retouch.",
+            "sub": (
+                "The stack browser and sharpness curve tell you which frame "
+                "owns which detail before you render."
+            ),
+            "bullets": [
+                {
+                    "b": "Wipe compare",
+                    "t": "Drag the divider between a source frame and the result at any zoom.",
+                },
+                {
+                    "b": "Method comparison",
+                    "t": "Every algorithm rendered once, side by side at a shared crop.",
+                },
+                {
+                    "b": "Depth map & 3D",
+                    "t": "Five focus measures, research colour maps, physical Z from TIFF metadata, textured OBJ export.",
+                },
+                {
+                    "b": "Scale bars and labels",
+                    "t": "Calibrated or typed in, drawn at the real length, burned into every export.",
+                },
+            ],
+            "img_alt": "Side-by-side comparison of the fusion methods at the same crop.",
+        },
+        "detail": {
+            "eyebrow": "Retouch",
+            "title": "Fix the one percent the blend got wrong.",
+            "sub": (
+                "The retouch workspace is locked to the frames that produced the "
+                "result, so every stroke is traceable. Depth maps come from the "
+                "same stack."
+            ),
+            "bullets": [
+                {
+                    "b": "Source-locked brush",
+                    "t": "Pick the frame, paint, and the result updates in place.",
+                },
+                {
+                    "b": "Restore and undo",
+                    "t": "Soft brush, restore brush, whole-stroke undo, and a guard for pixels that will not be exported.",
+                },
+                {
+                    "b": "Depth and surface",
+                    "t": "Five focus measures, research colour maps, and a textured OBJ of the surface.",
+                },
+            ],
+            "img_alt": "The retouch workspace with a source frame beside the fused result.",
+        },
+        "bench": {
+            "eyebrow": "Benchmark",
+            "title": "Measured against ground truth.",
+            "sub": (
+                "A 16-frame synthetic stack with noise σ = 3, rendered through a "
+                "known depth map. Higher PSNR/SSIM and a lower ghost ratio are "
+                "better."
+            ),
+            "img_alt": (
+                "Benchmark chart: StackMFF V3 leads the fusion methods with "
+                "37.13 dB PSNR, 0.9910 SSIM and 0.97% ghosting."
+            ),
+            "link": "Reproduce with tools/synthetic_benchmark.py",
+        },
+        "cli": {
+            "eyebrow": "Headless",
+            "title": "The same pipeline, without the window.",
+            "sub": (
+                "Install on Windows, macOS or Linux. The model, its weights, "
+                "HEIC and camera-RAW decoding are all in one wheel."
+            ),
+            "install": "pip install openfocus",
+            "copy": "Copy",
+            "copied": "Copied",
+            "lines": [
+                "openfocus -i ./stack -o fused.png",
+                "openfocus -i ./stackA ./stackB -d results -m stackmffv3",
+                "openfocus -i ./stack -m dtcwt -a ecc --threads 8",
+            ],
+            "note": (
+                "<code>--dry-run</code>, <code>--resume</code>, "
+                "<code>--json</code> and every fusion and registration "
+                "parameter are available."
+            ),
+            "link": "Command reference",
+        },
+        "download": {
+            "eyebrow": "Download",
+            "title": "Install OpenFocus",
+            "sub": (
+                "Builds are unsigned. On Windows, SmartScreen → More info → Run "
+                "anyway; the first start can take 30–60 seconds. On macOS, "
+                "right-click → Open."
+            ),
+            "cards": [
+                {
+                    "os": "Windows 10/11 · x64",
+                    "kind": "Installer",
+                    "size": "277 MB",
+                    "kind_id": "windows-setup",
+                    "url": RELEASE["windows_setup"],
+                    "primary": True,
+                },
+                {
+                    "os": "Windows 10/11 · x64",
+                    "kind": "Portable ZIP",
+                    "size": "395 MB",
+                    "kind_id": "windows-zip",
+                    "url": RELEASE["windows_zip"],
+                },
+                {
+                    "os": "macOS Apple Silicon",
+                    "kind": "Disk image",
+                    "size": "359 MB",
+                    "kind_id": "macos-dmg",
+                    "url": RELEASE["macos_dmg"],
+                    "primary": True,
+                },
+                {
+                    "os": "macOS Apple Silicon",
+                    "kind": "Portable ZIP",
+                    "size": "327 MB",
+                    "kind_id": "macos-zip",
+                    "url": RELEASE["macos_zip"],
+                },
+                {
+                    "os": "Linux · any OS",
+                    "kind": "pip install openfocus",
+                    "size": "PyPI",
+                    "url": RELEASE["pypi"],
+                },
+            ],
+            "action": "Download",
+            "script_label": "Terminal install · macOS / Linux",
+            "ps_label": "PowerShell · Windows",
+            "copy": "Copy",
+            "copied": "Copied",
+            "all": "All releases and checksums",
+            "note": "Latest release: v1.74.0 · MIT License",
+        },
+        "footer": {
+            "tagline": "Every pixel, its sharpest frame.",
+            "links": [
+                ("GitHub", REPO),
+                ("Docs", MANUAL["en"]),
+                ("Changelog", f"{REPO}/blob/main/CHANGELOG.md"),
+                ("Cite", "https://doi.org/10.5281/zenodo.23050823"),
+            ],
+            "license": "© 2026 OpenFocus Contributors · MIT License",
+        },
+        "notfound": {
+            "title": "That page is out of focus.",
+            "body": "The link may have moved. The home page is a good place to refocus.",
+            "home": "Back to OpenFocus",
+        },
+    }
+
+
+def _zh() -> dict:
+    return {
+        "code": "zh",
+        "html_lang": "zh-CN",
+        "og_locale": "zh_CN",
+        "path": "zh/",
+        "switch_label": "简体中文",
+        "skip": "跳到主要内容",
+        "title": "OpenFocus — 像素级焦点堆栈融合",
+        "desc": (
+            "OpenFocus 先对齐焦点堆栈，再将多张不同焦点的照片融合为一张"
+            "全清晰图像：支持十种融合算法（包括 AI 模型 StackMFF V3）、"
+            "16 位处理、深度图、源帧修饰和命令行批处理。"
+        ),
+        "nav": {
+            "features": "功能",
+            "workflow": "工作流",
+            "benchmark": "基准",
+            "cli": "命令行",
+            "docs": "文档",
+            "github": "GitHub",
+            "download": "下载",
+            "theme": "主题",
+            "language": "语言",
+            "menu": "菜单",
+        },
+        "hero": {
+            "title": "每一像素，<br>皆取自最清晰的一帧。",
+            "lede": (
+                "焦点堆栈，是一叠“此处清晰、彼处模糊”的照片。OpenFocus 先对齐"
+                "每一帧，再逐像素判断何处最清晰，最终融成一张全清晰图像——微距、"
+                "显微与工业检测皆可适用。"
+            ),
+            "chips": [
+                "十种融合算法",
+                "五种配准模式",
+                "全程 16-bit",
+                "十二种界面语言",
+                "MIT 许可",
+            ],
+            "cta_windows": "下载 Windows 版",
+            "cta_macos": "下载 macOS 版",
+            "cta_linux": "用 pip 安装",
+            "cta_github": "查看源码",
+            "meta": "v1.74.0 · Windows 10/11 · macOS Apple Silicon · Linux 命令行",
+            "shot_alt": "OpenFocus 主窗口：九帧源图、拖拽对比，以及融合结果上的 50 mm 比例尺。",
+        },
+        "why": {
+            "eyebrow": "为何选择 OpenFocus",
+            "title": "焦点堆叠，不必靠猜。",
+            "sub": "十种融合算法、贴合不同拍摄方式的配准，以及可在任意缩放下逐像素检视的工作区。",
+            "features": [
+                {
+                    "title": "AI 融合与经典算法",
+                    "body": (
+                        "StackMFF V3 是 OpenFocus 目前最先进的 AI 融合模型，"
+                        "逐像素判断最合适的源帧；也可选择 V2、V1、引导滤波、"
+                        "DCT、DTCWT、GFG-FGF 和 OpenFocus A/B/C。"
+                    ),
+                },
+                {
+                    "title": "配准，随拍摄方式而定",
+                    "body": (
+                        "不对齐、SIFT 单应性、ECC、单应性→ECC 精修，或每帧不到一秒的"
+                        "受限相似变换搜索——总有一种适合你的拍摄方式。"
+                    ),
+                },
+                {
+                    "title": "全程 16-bit",
+                    "body": (
+                        "从载入、融合到导出，全程不降至 8-bit；µm/px 直接从 TIFF "
+                        "元数据读取，多页 TIFF Z 堆栈保持原样。"
+                    ),
+                },
+                {
+                    "title": "先比较，再定稿",
+                    "body": (
+                        "一次渲染全部算法，于同一裁切处并排审视；择其优者定稿，"
+                        "或将其参数回填至主窗口。"
+                    ),
+                },
+                {
+                    "title": "从源帧修饰结果",
+                    "body": (
+                        "从清晰的源帧取回细节：同步缩放和平移，"
+                        "使用柔边画笔或恢复画笔，并可逐笔撤销。"
+                    ),
+                },
+                {
+                    "title": "需要时，可完全无界面运行",
+                    "body": (
+                        "与 <code>openfocus</code> 同一套流程，支持批处理、"
+                        "<code>--dry-run</code>、<code>--resume</code> 与 JSON "
+                        "输出，便于脚本化。"
+                    ),
+                },
+            ],
+        },
+        "workflow": {
+            "eyebrow": "工作流程",
+            "title": "载入、对齐、融合、修饰。",
+            "sub": "借助源图列表和清晰度曲线，在渲染前了解各帧的清晰程度。",
+            "bullets": [
+                {
+                    "b": "拖拽对比",
+                    "t": "在任意缩放下拖动分隔线，比较源帧与融合结果。",
+                },
+                {
+                    "b": "算法对比",
+                    "t": "一次渲染全部算法，于同一裁切处并排查看。",
+                },
+                {
+                    "b": "深度图与 3D",
+                    "t": "五种清晰度评价、科研级配色、依 TIFF 元数据标定物理 Z，导出带纹理的 OBJ。",
+                },
+                {
+                    "b": "比例尺与标注",
+                    "t": "依元数据标定或手动输入，按真实长度绘制，并写入每一张导出图。",
+                },
+            ],
+            "img_alt": "同一裁切处并排比较各融合算法的结果。",
+        },
+        "detail": {
+            "eyebrow": "修饰",
+            "title": "融合后的细节，由你完善。",
+            "sub": "修饰工作区只使用实际参与融合的源帧，每一笔都可追溯，方便找回细节、修复光晕；深度图也同样来自这组源帧。",
+            "bullets": [
+                {
+                    "b": "源帧画笔",
+                    "t": "选择一张源帧，在结果上涂抹即可取回对应细节。",
+                },
+                {
+                    "b": "恢复与撤销",
+                    "t": "支持柔边画笔、恢复画笔和逐笔撤销；源帧没有有效像素的边缘会自动跳过。",
+                },
+                {
+                    "b": "深度与表面",
+                    "t": "五种清晰度评价、科研级配色，以及带纹理的表面 OBJ。",
+                },
+            ],
+            "img_alt": "修饰工作区：源帧与融合结果并排显示。",
+        },
+        "bench": {
+            "eyebrow": "基准测试",
+            "title": "用已知真值评估效果。",
+            "sub": "基准使用经已知深度图渲染的 16 帧合成图像，噪声 σ = 3；PSNR、SSIM 越高，重影比例越低，效果越好。",
+            "img_alt": "基准图：StackMFF V3 以 37.13 dB PSNR、0.9910 SSIM 和 0.97% 的重影比例领先各融合算法。",
+            "link": "以 tools/synthetic_benchmark.py 复现",
+        },
+        "cli": {
+            "eyebrow": "命令行",
+            "title": "同一套流程，无需窗口。",
+            "sub": "Windows、macOS、Linux 皆可安装；模型、权重、HEIC 与相机 RAW 解码，皆在同一安装包内。",
+            "install": "pip install openfocus",
+            "copy": "复制",
+            "copied": "已复制",
+            "lines": [
+                "openfocus -i ./stack -o fused.png",
+                "openfocus -i ./stackA ./stackB -d results -m stackmffv3",
+                "openfocus -i ./stack -m dtcwt -a ecc --threads 8",
+            ],
+            "note": (
+                "支持 <code>--dry-run</code>、<code>--resume</code>、"
+                "<code>--json</code>，以及全部融合与配准参数。"
+            ),
+            "link": "命令参考",
+        },
+        "download": {
+            "eyebrow": "下载",
+            "title": "安装 OpenFocus",
+            "sub": "安装包未签名。Windows 首次运行时若被 SmartScreen 拦截，请点“更多信息 → 仍要运行”；首次启动可能需要 30–60 秒。macOS 请右键选择“打开”。",
+            "cards": [
+                {
+                    "os": "Windows 10/11 · x64",
+                    "kind": "安装程序",
+                    "size": "277 MB",
+                    "kind_id": "windows-setup",
+                    "url": RELEASE["windows_setup"],
+                    "primary": True,
+                },
+                {
+                    "os": "Windows 10/11 · x64",
+                    "kind": "便携 ZIP",
+                    "size": "395 MB",
+                    "kind_id": "windows-zip",
+                    "url": RELEASE["windows_zip"],
+                },
+                {
+                    "os": "macOS Apple Silicon",
+                    "kind": "磁盘映像",
+                    "size": "359 MB",
+                    "kind_id": "macos-dmg",
+                    "url": RELEASE["macos_dmg"],
+                    "primary": True,
+                },
+                {
+                    "os": "macOS Apple Silicon",
+                    "kind": "便携 ZIP",
+                    "size": "327 MB",
+                    "kind_id": "macos-zip",
+                    "url": RELEASE["macos_zip"],
+                },
+                {
+                    "os": "Linux · 任意系统",
+                    "kind": "pip install openfocus",
+                    "size": "PyPI",
+                    "url": RELEASE["pypi"],
+                },
+            ],
+            "action": "下载",
+            "script_label": "终端安装 · macOS / Linux",
+            "ps_label": "PowerShell · Windows",
+            "copy": "复制",
+            "copied": "已复制",
+            "all": "所有版本与校验值",
+            "note": "最新版本：v1.74.0 · MIT 许可",
+        },
+        "footer": {
+            "tagline": "每一像素，皆取自最清晰的一帧。",
+            "links": [
+                ("GitHub", REPO),
+                ("文档", MANUAL["zh"]),
+                ("更新日志", f"{REPO}/blob/main/CHANGELOG.md"),
+                ("引用", "https://doi.org/10.5281/zenodo.23050823"),
+            ],
+            "license": "© 2026 OpenFocus Contributors · MIT 许可",
+        },
+        "notfound": {
+            "title": "这个页面失焦了。",
+            "body": "页面可能已移动，请返回首页。",
+            "home": "返回 OpenFocus 首页",
+        },
+    }
+
+
+LOCALES = {"en": _en(), "zh": _zh()}
+
+# Canonical origin.  Production builds use the public domain; set SITE_ORIGIN
+# for local previews (e.g. http://127.0.0.1:8788) or another host:
+#   SITE_ORIGIN=http://127.0.0.1:8788 python tools/build_site.py
+ORIGIN = os.environ.get("SITE_ORIGIN", "").strip().rstrip("/") or "https://openfocus.top"
