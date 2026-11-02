@@ -13,7 +13,9 @@ def document(dtype):
     frames = [np.full_like(base, 190 if dtype == np.uint8 else 50000),
               np.full_like(base, 40 if dtype == np.uint8 else 4000)]
     context = build_render_context(frames, base, filenames=['one', 'two'])
-    return RetouchDocument(base, context)
+    doc = RetouchDocument(base, context)
+    doc.initialize_checkpoint()
+    return doc
 
 
 def stroke(doc, tool, frame, points):
@@ -107,7 +109,9 @@ def test_aligned_mask_offset_restore_all_and_evicted_history(tmp_path):
     def make():
         frame = SourceFrame('frame', 'source', image.copy(), 5, 6, True)
         context = RenderContext('id', 'test', (), 32, 32, base.dtype, (frame,))
-        return RetouchDocument(base, context, max_strokes=2)
+        doc = RetouchDocument(base, context, max_strokes=2)
+        doc.initialize_checkpoint()
+        return doc
 
     doc = make()
     stroke(doc, 'source', 0, [(10, 10), (15, 15)])
@@ -128,3 +132,91 @@ def test_aligned_mask_offset_restore_all_and_evicted_history(tmp_path):
     with pytest.raises(ValueError):
         mismatch.load_checkpoint(path)
     np.testing.assert_array_equal(mismatch.working, base)
+
+
+@pytest.mark.parametrize('change_source', [False, True])
+def test_edit_during_initial_scan_is_verified_before_save(monkeypatch, tmp_path, change_source):
+    import threading
+    import utils.retouch_checkpoint as checkpoint
+
+    base = np.full((24, 24, 3), 80, np.uint8)
+    frame = np.full_like(base, 180)
+    doc = RetouchDocument(base, build_render_context([frame], base))
+    entered, release = threading.Event(), threading.Event()
+    original = checkpoint.provenance
+
+    def delayed(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(checkpoint, 'provenance', delayed)
+    errors = []
+    def initialize():
+        try:
+            doc.initialize_checkpoint()
+        except ValueError as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=initialize)
+    worker.start()
+    assert entered.wait(5)
+    stroke(doc, 'source', 0, [(8, 8), (10, 10)])
+    if change_source:
+        frame[:] = 220
+    release.set()
+    worker.join(5)
+    assert not worker.is_alive() and not errors and doc.checkpoint_ready
+    assert doc.undo() and doc.redo()
+    path = tmp_path / 'history.ofretouch'
+    if change_source:
+        with pytest.raises(ValueError, match='does not match'):
+            doc.save_checkpoint(path)
+        assert not path.exists()
+    else:
+        doc.save_checkpoint(path)
+        restored = RetouchDocument(base, build_render_context([frame], base))
+        restored.initialize_checkpoint()
+        restored.load_checkpoint(path)
+        np.testing.assert_array_equal(restored.working, doc.working)
+
+
+def test_cancel_save_after_fsync_preserves_existing_checkpoint(tmp_path, monkeypatch):
+    import utils.retouch_checkpoint as checkpoint
+
+    doc = document(np.uint8)
+    stroke(doc, 'source', 0, [(8, 8), (10, 10)])
+    path = tmp_path / 'existing.ofretouch'
+    path.write_bytes(b'original')
+    cancelled = [False]
+    def cancel_after_sync(fd):
+        cancelled[0] = True
+    monkeypatch.setattr(checkpoint.os, 'fsync', cancel_after_sync)
+    with pytest.raises(ValueError, match='cancelled'):
+        doc.save_checkpoint(path, lambda: cancelled[0])
+    assert path.read_bytes() == b'original'
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_record_limit_reports_failure_without_changing_result():
+    doc = document(np.uint8)
+    stroke(doc, 'source', 0, [(8, 8), (10, 10)])
+    before = doc.working.copy()
+    doc._point_count = 250000
+    assert not doc.begin_stroke(12, 12)
+    assert doc.last_status == 'record_limit'
+    np.testing.assert_array_equal(doc.working, before)
+    assert doc.is_dirty and doc.undo()
+
+
+def test_save_rejects_history_that_does_not_match_replay(tmp_path):
+    doc = document(np.uint8)
+    stroke(doc, 'source', 0, [(8, 8), (10, 10)])
+    unchanged = doc.working.copy()
+    tile = next(iter(doc.history._undo[-1].values()))
+    tile[0, 0, 0] ^= 1
+    path = tmp_path / 'existing.ofretouch'
+    path.write_bytes(b'existing')
+    with pytest.raises(ValueError, match='history does not match'):
+        doc.save_checkpoint(path)
+    assert path.read_bytes() == b'existing'
+    np.testing.assert_array_equal(doc.working, unchanged)

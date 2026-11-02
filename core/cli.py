@@ -842,6 +842,7 @@ def run_cli(argv: List[str]) -> int:
 
 def _run_retouch_command(argv: List[str]) -> int:
     """Replay a checkpoint against its original base and processed frames."""
+    from core.image_loader import _read_icc_profile
     from core.render_context import RenderContext, SourceFrame
     from utils.retouch import RetouchDocument
     from utils.retouch_checkpoint import MAX_FILE_BYTES
@@ -901,8 +902,9 @@ def _run_retouch_command(argv: List[str]) -> int:
         context = RenderContext("replay", "replay", (), base.shape[1], base.shape[0],
                                 base.dtype, tuple(frames))
         document = RetouchDocument(base, context)
+        document.initialize_checkpoint()
         document.load_checkpoint(args.checkpoint)
-        _save(args.output, document.result())
+        _save(args.output, document.result(), icc_profile=_read_icc_profile(args.base))
     except (ValueError, OSError, RuntimeError, TypeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
