@@ -1,6 +1,21 @@
 """Russian language pack for OpenFocus."""
 
 PACK = {
+    "alignment_detail_reason": "Причина",
+    "alignment_detail_quality_fast": "Оценка детектора",
+    "alignment_detail_quality_ecc": "Корреляция ECC",
+    "alignment_detail_matches": "Совпадения",
+    "alignment_detail_inliers": "Согласованные точки",
+    "alignment_detail_reference": "Сопоставленный опорный кадр",
+    "alignment_detail_chained": "Цепочка соседних кадров",
+    "alignment_detail_transform": "Матрица из исходного в опорный кадр до обрезки",
+    "alignment_reason_low_quality": "Низкое качество выравнивания",
+    "alignment_reason_outside_limits": "Преобразование за пределами допустимого",
+    "alignment_reason_reference_fallback": "Возврат к опорному кадру",
+    "alignment_reason_insufficient_features": "Недостаточно характерных точек",
+    "alignment_reason_insufficient_matches": "Недостаточно совпадений",
+    "alignment_reason_homography_failed": "Ошибка гомографии",
+    "alignment_reason_ecc_failed": "Ошибка ECC",
     'alignment_report_collect': 'Собирать диагностику выравнивания', 'alignment_report_collect_hint': 'Повторно вычислить выравнивание для сбора результатов по кадрам без использования кэша.',
     'alignment_report_failed': 'Ошибка',
     'alignment_report_title': 'Диагностика выравнивания', 'alignment_report_unavailable': 'Для последнего рендеринга нет диагностики по кадрам. Включите сбор и повторите рендеринг.',

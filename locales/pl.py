@@ -1,6 +1,21 @@
 """Polish language pack for OpenFocus."""
 
 PACK = {
+    "alignment_detail_reason": "Powód",
+    "alignment_detail_quality_fast": "Wynik detektora",
+    "alignment_detail_quality_ecc": "Korelacja ECC",
+    "alignment_detail_matches": "Dopasowania",
+    "alignment_detail_inliers": "Punkty zgodne",
+    "alignment_detail_reference": "Dopasowana klatka odniesienia",
+    "alignment_detail_chained": "Łańcuch sąsiednich klatek",
+    "alignment_detail_transform": "Macierz ze źródła do odniesienia przed przycięciem",
+    "alignment_reason_low_quality": "Niska jakość wyrównania",
+    "alignment_reason_outside_limits": "Transformacja poza limitami",
+    "alignment_reason_reference_fallback": "Powrót do klatki odniesienia",
+    "alignment_reason_insufficient_features": "Zbyt mało cech",
+    "alignment_reason_insufficient_matches": "Zbyt mało dopasowań",
+    "alignment_reason_homography_failed": "Niepowodzenie homografii",
+    "alignment_reason_ecc_failed": "Niepowodzenie ECC",
     'alignment_report_collect': 'Zbieraj diagnostykę wyrównania', 'alignment_report_collect_hint': 'Oblicz wyrównanie ponownie, aby zebrać wyniki dla klatek bez użycia pamięci podręcznej.',
     'alignment_report_failed': 'Niepowodzenie',
     'alignment_report_title': 'Diagnostyka wyrównania', 'alignment_report_unavailable': 'Brak diagnostyki klatek dla ostatniego renderowania. Włącz zbieranie i uruchom renderowanie ponownie.',

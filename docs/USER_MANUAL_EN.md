@@ -494,7 +494,10 @@ parameter to stop when their algorithms detect failure. The default remains
 To inspect a render, enable **Tools → Collect alignment diagnostics** and render
 again. This recomputes alignment instead of reusing cached images. The completion
 status highlights fallbacks; open **Tools → Alignment diagnostics** for the
-per-frame report. Batch and grouped renders do not provide this report.
+per-frame report. It shows available failure reasons, method-specific scores,
+match counts, referenced frames and transforms. Reference numbers and names
+refer to the original source list, including when frames are excluded. Batch
+and grouped renders do not provide this report.
 
 ### Enabling Registration
 

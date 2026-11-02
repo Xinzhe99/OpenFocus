@@ -1,6 +1,21 @@
 """German language pack for OpenFocus."""
 
 PACK = {
+    "alignment_detail_reason": "Grund",
+    "alignment_detail_quality_fast": "Detektorwert",
+    "alignment_detail_quality_ecc": "ECC-Korrelation",
+    "alignment_detail_matches": "Übereinstimmungen",
+    "alignment_detail_inliers": "Inlier",
+    "alignment_detail_reference": "Zugeordnetes Referenzbild",
+    "alignment_detail_chained": "Nachbarkette",
+    "alignment_detail_transform": "Matrix vom Quell- zum Referenzbild vor dem Zuschnitt",
+    "alignment_reason_low_quality": "Geringe Ausrichtungsqualität",
+    "alignment_reason_outside_limits": "Transformation außerhalb der Grenzen",
+    "alignment_reason_reference_fallback": "Rückfall auf Referenzbild",
+    "alignment_reason_insufficient_features": "Zu wenige Merkmale",
+    "alignment_reason_insufficient_matches": "Zu wenige Übereinstimmungen",
+    "alignment_reason_homography_failed": "Homographie fehlgeschlagen",
+    "alignment_reason_ecc_failed": "ECC fehlgeschlagen",
     'alignment_report_collect': 'Ausrichtungsdiagnose erfassen', 'alignment_report_collect_hint': 'Ausrichtung neu berechnen und Ergebnisse pro Bild erfassen, statt den Cache zu verwenden.',
     'alignment_report_failed': 'Fehlgeschlagen',
     'alignment_report_title': 'Ausrichtungsdiagnose', 'alignment_report_unavailable': 'Für das letzte Rendern liegen keine Einzelbilddiagnosen vor. Erfassung aktivieren und erneut rendern.',

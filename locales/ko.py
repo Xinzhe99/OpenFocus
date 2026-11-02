@@ -1,6 +1,21 @@
 """Korean language pack for OpenFocus."""
 
 PACK = {
+    "alignment_detail_reason": "이유",
+    "alignment_detail_quality_fast": "검출기 점수",
+    "alignment_detail_quality_ecc": "ECC 상관도",
+    "alignment_detail_matches": "일치점",
+    "alignment_detail_inliers": "내점",
+    "alignment_detail_reference": "매칭된 기준 프레임",
+    "alignment_detail_chained": "인접 프레임 체인",
+    "alignment_detail_transform": "자르기 전 원본에서 기준으로의 변환 행렬",
+    "alignment_reason_low_quality": "정렬 품질 낮음",
+    "alignment_reason_outside_limits": "변환이 허용 범위를 벗어남",
+    "alignment_reason_reference_fallback": "기준 프레임으로 대체",
+    "alignment_reason_insufficient_features": "특징점 부족",
+    "alignment_reason_insufficient_matches": "일치점 부족",
+    "alignment_reason_homography_failed": "호모그래피 실패",
+    "alignment_reason_ecc_failed": "ECC 실패",
     'alignment_report_collect': '정렬 진단 수집', 'alignment_report_collect_hint': '캐시를 재사용하지 않고 정렬을 다시 계산하여 프레임별 결과를 수집합니다.',
     'alignment_report_failed': '실패',
     'alignment_report_title': '정렬 진단', 'alignment_report_unavailable': '마지막 렌더링의 프레임별 진단이 없습니다. 수집을 켜고 다시 렌더링하세요.',

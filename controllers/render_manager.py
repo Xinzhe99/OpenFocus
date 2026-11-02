@@ -63,18 +63,59 @@ class RenderManager:
         entries, names, indices = diagnostic
         if not entries:
             return trans.t('alignment_report_unavailable')
+        reason_keys = {
+            'low detector quality': 'alignment_reason_low_quality',
+            'motion outside limits': 'alignment_reason_outside_limits',
+            'reference alignment fell back': 'alignment_reason_reference_fallback',
+            'insufficient features': 'alignment_reason_insufficient_features',
+            'insufficient matches': 'alignment_reason_insufficient_matches',
+            'homography estimation failed': 'alignment_reason_homography_failed',
+            'ECC failed to converge': 'alignment_reason_ecc_failed',
+        }
+
+        def frame_label(index):
+            if not isinstance(index, int) or not 0 <= index < len(names):
+                return None
+            number = indices[index] + 1 if index < len(indices) else index + 1
+            return number, names[index]
+
         lines = []
         for entry in entries:
-            index = entry.get('frame_index')
-            if not isinstance(index, int) or not 0 <= index < len(names):
+            frame = frame_label(entry.get('frame_index'))
+            if frame is None:
                 continue
-            number = indices[index] + 1 if index < len(indices) else index + 1
+            number, name = frame
+            method = entry.get('method', '')
             status = entry.get('status', '')
             status_key = 'alignment_report_' + status
             status_text = trans.t(status_key) if status in ('reference', 'aligned', 'fallback', 'failed') else status
             lines.append(trans.t('alignment_report_frame').format(
-                number=number, name=names[index], method=entry.get('method', ''),
-                status=status_text))
+                number=number, name=name, method=method, status=status_text))
+            details = []
+            reason = entry.get('reason')
+            if reason:
+                reason_text = trans.t(reason_keys[reason]) if reason in reason_keys else reason
+                details.append(f"{trans.t('alignment_detail_reason')}: {reason_text}")
+            quality_key = {'openfocus': 'alignment_detail_quality_fast',
+                           'ecc': 'alignment_detail_quality_ecc'}.get(method)
+            if quality_key and entry.get('quality') is not None:
+                details.append(f"{trans.t(quality_key)}: {entry['quality']:.4g}")
+            for field, label in (('match_count', 'alignment_detail_matches'),
+                                 ('inlier_count', 'alignment_detail_inliers')):
+                if entry.get(field) is not None:
+                    details.append(f"{trans.t(label)}: {entry[field]}")
+            reference = frame_label(entry.get('reference_index'))
+            if reference is not None:
+                details.append(f"{trans.t('alignment_detail_reference')}: {reference[0]} — {reference[1]}")
+            if entry.get('chained'):
+                details.append(trans.t('alignment_detail_chained'))
+            if details:
+                lines.append('  ' + ' · '.join(details))
+            matrix = entry.get('transform')
+            if matrix is not None:
+                lines.append(f"  {trans.t('alignment_detail_transform')}:")
+                lines.extend('    [' + ', '.join(f'{value:.6g}' for value in row) + ']'
+                             for row in matrix)
         return '\n'.join(lines) if lines else trans.t('alignment_report_unavailable')
 
     def _alignment_key(self, included, method=None):

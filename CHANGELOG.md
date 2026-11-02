@@ -6,8 +6,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- **Alignment diagnostics** expose per-frame outcomes, including detected
-  fallbacks, with method-specific quality and transforms when available.
+- **Alignment diagnostics** expose per-frame outcomes, including localized
+  fallback reasons, reference frames, method-specific scores, match counts and
+  transforms when available.
   Single-stack CLI renders can write an atomic JSON report; reporting uses fresh
   alignment rather than guessing outcomes from an older cache. Homography and
   ECC also offer an opt-in policy to stop when alignment failure is detected.

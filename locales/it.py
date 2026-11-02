@@ -1,6 +1,21 @@
 """Italian language pack for OpenFocus."""
 
 PACK = {
+    "alignment_detail_reason": "Motivo",
+    "alignment_detail_quality_fast": "Punteggio del rilevatore",
+    "alignment_detail_quality_ecc": "Correlazione ECC",
+    "alignment_detail_matches": "Corrispondenze",
+    "alignment_detail_inliers": "Punti validi",
+    "alignment_detail_reference": "Fotogramma di riferimento corrispondente",
+    "alignment_detail_chained": "Catena di fotogrammi adiacenti",
+    "alignment_detail_transform": "Matrice da sorgente a riferimento prima del ritaglio",
+    "alignment_reason_low_quality": "Qualità di allineamento bassa",
+    "alignment_reason_outside_limits": "Trasformazione fuori dai limiti",
+    "alignment_reason_reference_fallback": "Ripiego sul fotogramma di riferimento",
+    "alignment_reason_insufficient_features": "Punti caratteristici insufficienti",
+    "alignment_reason_insufficient_matches": "Corrispondenze insufficienti",
+    "alignment_reason_homography_failed": "Omografia non riuscita",
+    "alignment_reason_ecc_failed": "ECC non riuscito",
     'alignment_report_collect': 'Raccogli diagnostica di allineamento', 'alignment_report_collect_hint': 'Ricalcola l’allineamento per raccogliere i risultati per fotogramma senza usare la cache.',
     'alignment_report_failed': 'Non riuscito',
     'alignment_report_title': 'Diagnostica di allineamento', 'alignment_report_unavailable': 'Nessuna diagnostica per fotogramma per l’ultimo rendering. Attiva la raccolta e ripeti il rendering.',

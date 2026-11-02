@@ -1,6 +1,21 @@
 """French language pack for OpenFocus."""
 
 PACK = {
+    "alignment_detail_reason": "Raison",
+    "alignment_detail_quality_fast": "Score du détecteur",
+    "alignment_detail_quality_ecc": "Corrélation ECC",
+    "alignment_detail_matches": "Correspondances",
+    "alignment_detail_inliers": "Points retenus",
+    "alignment_detail_reference": "Image de référence correspondante",
+    "alignment_detail_chained": "Chaîne de voisins",
+    "alignment_detail_transform": "Matrice source vers référence avant recadrage",
+    "alignment_reason_low_quality": "Qualité d’alignement faible",
+    "alignment_reason_outside_limits": "Transformation hors limites",
+    "alignment_reason_reference_fallback": "Repli sur l’image de référence",
+    "alignment_reason_insufficient_features": "Points caractéristiques insuffisants",
+    "alignment_reason_insufficient_matches": "Correspondances insuffisantes",
+    "alignment_reason_homography_failed": "Échec de l’homographie",
+    "alignment_reason_ecc_failed": "Échec ECC",
     'alignment_report_collect': 'Collecter les diagnostics d’alignement', 'alignment_report_collect_hint': 'Recalculer l’alignement pour collecter les résultats par image sans utiliser le cache.',
     'alignment_report_failed': 'Échec',
     'alignment_report_title': 'Diagnostics d’alignement', 'alignment_report_unavailable': 'Aucun diagnostic par image pour le dernier rendu. Activez la collecte et relancez le rendu.',
