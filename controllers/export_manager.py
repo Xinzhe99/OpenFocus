@@ -97,6 +97,7 @@ class ExportManager:
         self.gif_worker: Optional[GifSaverWorker] = None
         self.layered_worker: Optional[LayeredTiffWorker] = None
         self.layered_progress_dialog: Optional[QProgressDialog] = None
+        self._layered_record = None
 
     def normalize_export_path(self, file_path: str,
                               fallback_extension: str = DEFAULT_EXPORT_EXTENSION,
@@ -263,6 +264,7 @@ class ExportManager:
         worker = LayeredTiffWorker(path, record.image, record.context,
                                    record.icc_profile or record.context.icc_profile)
         self.layered_worker = worker
+        self._layered_record = record
         progress.canceled.connect(self._cancel_layered_tiff)
         worker.completed.connect(self._layered_tiff_completed)
         worker.finished.connect(self._layered_tiff_finished)
@@ -279,6 +281,13 @@ class ExportManager:
 
     def _layered_tiff_completed(self, success, message):
         if success:
+            if self._layered_record is not None and self.layered_worker is not None:
+                # Layered output contains the captured pixels without live
+                # labels or scale bars. Compare those against the current
+                # annotation state so omitted changes stay protected.
+                self.window.output_manager._mark_record_exported(
+                    self._layered_record, self.layered_worker.image, message,
+                    {'labels': [], 'scale': None})
             self.window.statusBar().showMessage(
                 trans.t('msg_image_saved_info').format(path=message).replace('\n', ' '), 8000)
         elif message:
@@ -290,6 +299,7 @@ class ExportManager:
             self.layered_progress_dialog.close()
             self.layered_progress_dialog = None
         self.layered_worker = None
+        self._layered_record = None
 
     def save_result(self) -> None:
         window = self.window

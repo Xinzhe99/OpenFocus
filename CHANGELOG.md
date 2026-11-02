@@ -41,6 +41,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - **Memory status** now uses the same cross-platform physical-memory probe as
   the resource planner, so it can report available readings on macOS and Linux.
+- Layered export records the exact saved output while keeping omitted live
+  labels and scale bars marked as unsaved.
 
 ## [1.74.0] - 2026-11-02
 

@@ -775,11 +775,13 @@ copies pixels from the exact frames that produced the selected result:
    window, and OpenFocus protects it from automatic history eviction and
    from quitting without a decision.
 
-Choose **Export layered TIFF** in the retouch workspace to save the current
-result together with its source frames in a layered TIFF. Source geometry and
-validity masks are retained. The result and sources must be opaque RGB or
-grayscale images with matching 8-bit or 16-bit depth, and each source rectangle
-must fit within the result. Export supports up to 128 sources; source names
+Apply the retouch as a new output, then right-click that output in the main
+window and choose **Export layered TIFF** to save it with its source frames.
+Live labels and scale bars are not included; unsaved annotation changes remain
+protected. Source geometry and validity masks are retained. The result and
+sources must be opaque RGB or grayscale images with matching 8-bit or 16-bit
+depth, and each source rectangle must fit within the result. Export supports
+up to 128 sources; source names
 cannot contain characters outside the Basic Multilingual Plane, such as many
 emoji. It refuses unsafe contexts and jobs estimated to need more than 512 MiB
 of memory, reporting the failure instead of writing an incomplete export.
