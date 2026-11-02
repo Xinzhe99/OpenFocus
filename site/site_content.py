@@ -19,6 +19,7 @@ MANUAL = {
 }
 
 # Single source of truth for the version the download cards point at.
+# A release-backed card's kind_id must match an assets key in site/worker.js.
 RELEASE = {
     "tag": "v1.74.0",
     "page": f"{RELEASES}/tag/v1.74.0",
@@ -91,11 +92,12 @@ def _en() -> dict:
             ),
             "features": [
                 {
-                    "title": "Neural fusion, classical fallbacks",
+                    "title": "AI fusion and classical methods",
                     "body": (
-                        "StackMFF V3 classifies every pixel by its most probable "
-                        "source frame. StackMFF V2 and V1 sit beside Guided Filter, "
-                        "DCT, DTCWT, GFG-FGF and OpenFocus A/B/C."
+                        "StackMFF V3 is OpenFocus's current state-of-the-art AI "
+                        "fusion model, estimating the best source frame for each "
+                        "pixel. V2 and V1 join Guided Filter, DCT, DTCWT, GFG-FGF "
+                        "and OpenFocus A/B/C."
                     ),
                 },
                 {
@@ -309,9 +311,9 @@ def _zh() -> dict:
         "skip": "跳到主要内容",
         "title": "OpenFocus — 像素级焦点堆栈融合",
         "desc": (
-            "OpenFocus 先配准焦点堆栈，再逐像素选取最清晰的源帧，融成一张"
-            "全清晰图像：十种融合算法（含神经网络 StackMFF V3）、全程 16-bit、"
-            "深度图、源帧修描与命令行批处理。"
+            "OpenFocus 先对齐焦点堆栈，再将多张不同焦点的照片融合为一张"
+            "全清晰图像：支持十种融合算法（包括 AI 模型 StackMFF V3）、"
+            "16 位处理、深度图、源帧修饰和命令行批处理。"
         ),
         "nav": {
             "features": "功能",
@@ -329,8 +331,8 @@ def _zh() -> dict:
             "title": "每一像素，<br>皆取自最清晰的一帧。",
             "lede": (
                 "焦点堆栈，是一叠“此处清晰、彼处模糊”的照片。OpenFocus 先对齐"
-                "每一帧，再逐像素判断何处最清晰，最终融成一张——微距、显微与"
-                "工业检测皆可适用。"
+                "每一帧，再逐像素判断何处最清晰，最终融成一张全清晰图像——微距、"
+                "显微与工业检测皆可适用。"
             ),
             "chips": [
                 "十种融合算法",
@@ -352,10 +354,11 @@ def _zh() -> dict:
             "sub": "十种融合算法、贴合不同拍摄方式的配准，以及可在任意缩放下逐像素检视的工作区。",
             "features": [
                 {
-                    "title": "神经融合，经典为辅",
+                    "title": "AI 融合与经典算法",
                     "body": (
-                        "StackMFF V3 逐像素推定最可能的源帧；V2、V1 与引导滤波、"
-                        "DCT、DTCWT、GFG-FGF、OpenFocus A/B/C 皆可一键切换。"
+                        "StackMFF V3 是 OpenFocus 目前最先进的 AI 融合模型，"
+                        "逐像素判断最合适的源帧；也可选择 V2、V1、引导滤波、"
+                        "DCT、DTCWT、GFG-FGF 和 OpenFocus A/B/C。"
                     ),
                 },
                 {
@@ -380,16 +383,16 @@ def _zh() -> dict:
                     ),
                 },
                 {
-                    "title": "从源帧修描",
+                    "title": "从源帧修饰结果",
                     "body": (
-                        "从真正清晰的那一帧取回细节：缩放与平移同步、"
-                        "柔边与恢复笔刷、整笔撤销。"
+                        "从清晰的源帧取回细节：同步缩放和平移，"
+                        "使用柔边画笔或恢复画笔，并可逐笔撤销。"
                     ),
                 },
                 {
-                    "title": "需要时，无需打开界面。",
+                    "title": "需要时，可完全无界面运行",
                     "body": (
-                        "与 <code>openfocus</code> 同一套流程，支持批量、"
+                        "与 <code>openfocus</code> 同一套流程，支持批处理、"
                         "<code>--dry-run</code>、<code>--resume</code> 与 JSON "
                         "输出，便于脚本化。"
                     ),
@@ -398,8 +401,8 @@ def _zh() -> dict:
         },
         "workflow": {
             "eyebrow": "工作流程",
-            "title": "载入、对齐、融合、修描。",
-            "sub": "源图浏览器与清晰度曲线，在渲染前便厘清：哪一处细节属于哪一帧。",
+            "title": "载入、对齐、融合、修饰。",
+            "sub": "借助源图列表和清晰度曲线，在渲染前了解各帧的清晰程度。",
             "bullets": [
                 {
                     "b": "拖拽对比",
@@ -421,30 +424,30 @@ def _zh() -> dict:
             "img_alt": "同一裁切处并排比较各融合算法的结果。",
         },
         "detail": {
-            "eyebrow": "修描",
-            "title": "融合未尽之处，由你补足。",
-            "sub": "修描工作区始终对应真正产生结果的源帧，每一笔皆可追溯；深度图亦取自同一组堆栈。",
+            "eyebrow": "修饰",
+            "title": "融合后的细节，由你完善。",
+            "sub": "修饰工作区只使用实际参与融合的源帧，每一笔都可追溯，方便找回细节、修复光晕；深度图也同样来自这组源帧。",
             "bullets": [
                 {
-                    "b": "锁定源帧的笔刷",
-                    "t": "择一帧下笔，结果就地更新。",
+                    "b": "源帧画笔",
+                    "t": "选择一张源帧，在结果上涂抹即可取回对应细节。",
                 },
                 {
                     "b": "恢复与撤销",
-                    "t": "柔边笔刷、恢复笔刷、整笔撤销，并对不会写入导出的新增像素予以提示。",
+                    "t": "支持柔边画笔、恢复画笔和逐笔撤销；源帧没有有效像素的边缘会自动跳过。",
                 },
                 {
                     "b": "深度与表面",
                     "t": "五种清晰度评价、科研级配色，以及带纹理的表面 OBJ。",
                 },
             ],
-            "img_alt": "修描工作区：源帧与融合结果并排显示。",
+            "img_alt": "修饰工作区：源帧与融合结果并排显示。",
         },
         "bench": {
             "eyebrow": "基准测试",
-            "title": "以真值为尺。",
-            "sub": "16 帧合成堆栈，噪声 σ = 3，经已知深度图渲染而成。PSNR/SSIM 愈高、重影比例愈低者为佳。",
-            "img_alt": "基准图：StackMFF V3 以 37.13 dB PSNR、0.9910 SSIM、0.97% 重影领先各融合算法。",
+            "title": "用已知真值评估效果。",
+            "sub": "基准使用经已知深度图渲染的 16 帧合成图像，噪声 σ = 3；PSNR、SSIM 越高，重影比例越低，效果越好。",
+            "img_alt": "基准图：StackMFF V3 以 37.13 dB PSNR、0.9910 SSIM 和 0.97% 的重影比例领先各融合算法。",
             "link": "以 tools/synthetic_benchmark.py 复现",
         },
         "cli": {
@@ -468,12 +471,13 @@ def _zh() -> dict:
         "download": {
             "eyebrow": "下载",
             "title": "安装 OpenFocus",
-            "sub": "安装包尚未签名。Windows 首次运行若被 SmartScreen 拦截，请点“更多信息 → 仍要运行”，首次启动或需 30–60 秒；macOS 请右键 →“打开”。",
+            "sub": "安装包未签名。Windows 首次运行时若被 SmartScreen 拦截，请点“更多信息 → 仍要运行”；首次启动可能需要 30–60 秒。macOS 请右键选择“打开”。",
             "cards": [
                 {
                     "os": "Windows 10/11 · x64",
                     "kind": "安装程序",
                     "size": "277 MB",
+                    "kind_id": "windows-setup",
                     "url": RELEASE["windows_setup"],
                     "primary": True,
                 },
@@ -481,12 +485,14 @@ def _zh() -> dict:
                     "os": "Windows 10/11 · x64",
                     "kind": "便携 ZIP",
                     "size": "395 MB",
+                    "kind_id": "windows-zip",
                     "url": RELEASE["windows_zip"],
                 },
                 {
                     "os": "macOS Apple Silicon",
                     "kind": "磁盘映像",
                     "size": "359 MB",
+                    "kind_id": "macos-dmg",
                     "url": RELEASE["macos_dmg"],
                     "primary": True,
                 },
@@ -494,6 +500,7 @@ def _zh() -> dict:
                     "os": "macOS Apple Silicon",
                     "kind": "便携 ZIP",
                     "size": "327 MB",
+                    "kind_id": "macos-zip",
                     "url": RELEASE["macos_zip"],
                 },
                 {
@@ -523,14 +530,15 @@ def _zh() -> dict:
         },
         "notfound": {
             "title": "这个页面失焦了。",
-            "body": "链接或已移动，回首页重新对焦。",
-            "home": "回到 OpenFocus",
+            "body": "页面可能已移动，请返回首页。",
+            "home": "返回 OpenFocus 首页",
         },
     }
 
 
 LOCALES = {"en": _en(), "zh": _zh()}
 
-# Canonical origin.  Override at build time:
-#   SITE_ORIGIN=https://openfocus.example.com python tools/build_site.py
-ORIGIN = os.environ.get("SITE_ORIGIN", "https://openfocus-site.workers.dev").rstrip("/")
+# Canonical origin.  Production builds use the public domain; set SITE_ORIGIN
+# for local previews (e.g. http://127.0.0.1:8788) or another host:
+#   SITE_ORIGIN=http://127.0.0.1:8788 python tools/build_site.py
+ORIGIN = os.environ.get("SITE_ORIGIN", "").strip().rstrip("/") or "https://openfocus.top"

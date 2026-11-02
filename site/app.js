@@ -11,18 +11,22 @@
     });
   }
 
-  // Primary download follows the visitor's OS, and /api/latest can re-point it.
-  const dl = $('#dl');
+  // Every download button follows the visitor's OS, and /api/latest can
+  // re-point them at the current release.
+  const dlButtons = Array.from(document.querySelectorAll('[data-url-win]'));
   const applyDownload = () => {
-    if (!dl) return;
+    if (!dlButtons.length) return;
     const ua = navigator.userAgent;
     const os = /Mac/i.test(ua) ? 'mac' : /Win/i.test(ua) ? 'win' : 'linux';
     document.documentElement.dataset.os = os;
     const key = os[0].toUpperCase() + os.slice(1);
-    const url = dl.dataset['url' + key];
-    const label = dl.dataset['label' + key];
-    if (url) dl.href = url;
-    if (label) $('span', dl).textContent = label;
+    dlButtons.forEach((el) => {
+      const url = el.dataset['url' + key];
+      if (url) el.href = url;
+      const label = el.dataset['label' + key];
+      const text = $('span', el);
+      if (label && text) text.textContent = label;
+    });
   };
   applyDownload();
 
@@ -111,6 +115,21 @@
     onScroll();
   }
 
+  // Replace the version in text nodes only: .note also holds the release link
+  // and <code> examples, which must survive the update.
+  const applyReleaseTag = (tag) => {
+    document.querySelectorAll('.meta, .note').forEach((root) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+      nodes.forEach((node) => {
+        const text = node.nodeValue || '';
+        if (!/v\d+\.\d+\.\d+/.test(text)) return;
+        node.nodeValue = text.replace(/v\d+\.\d+\.\d+/g, () => tag);
+      });
+    });
+  };
+
   // Keep version labels and download cards on the latest GitHub release.
   (async () => {
     try {
@@ -118,9 +137,7 @@
       if (!res.ok) return;
       const data = await res.json();
       if (!data || !data.tag) return;
-      document.querySelectorAll('.meta, .note').forEach((el) => {
-        el.textContent = el.textContent.replace(/v\d+\.\d+\.\d+/g, data.tag);
-      });
+      applyReleaseTag(data.tag);
       document.querySelectorAll('a[data-kind]').forEach((a) => {
         const asset = data.assets && data.assets[a.dataset.kind];
         if (!asset || !asset.url) return;
@@ -131,11 +148,15 @@
           size.textContent = size.textContent.replace(/[\d.]+ ?(MB|GB)/, mb + ' MB');
         }
       });
-      if (dl) {
-        if (data.assets && data.assets['windows-setup']) dl.dataset.urlWin = '/download/latest/windows-setup';
-        if (data.assets && data.assets['macos-dmg']) dl.dataset.urlMac = '/download/latest/macos-dmg';
-        applyDownload();
-      }
+      dlButtons.forEach((el) => {
+        if (data.assets && data.assets['windows-setup']) {
+          el.dataset.urlWin = '/download/latest/windows-setup';
+        }
+        if (data.assets && data.assets['macos-dmg']) {
+          el.dataset.urlMac = '/download/latest/macos-dmg';
+        }
+      });
+      applyDownload();
     } catch {}
   })();
 })();

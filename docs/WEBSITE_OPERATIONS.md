@@ -52,22 +52,27 @@ personal information.
 ```mermaid
 flowchart LR
   U[Browser] -->|DNS: openfocus.top| CF[Cloudflare edge]
-  CF -->|"/" Worker first| L[Language check<br/>Accept-Language + lang cookie]
+  CF --> W[Worker: run_worker_first<br/>every request]
+  W -->|"/"| L[Language check<br/>Accept-Language + lang cookie]
   L -->|zh| Z[302 /zh/]
   L -->|en| A[Static assets: site/dist]
-  CF -->|"/zh/"| A
-  CF -->|"/api/latest"| API[Worker: latest release<br/>5 min edge cache]
-  CF -->|"/download/latest/*"| D[Worker: download]
+  W -->|"/zh/" or other path| A
+  W -->|"www.openfocus.top"| WWW[301 to apex]
+  W -->|"/api/latest"| API[latest release<br/>5 min cache per data center]
+  W -->|"/download/latest/*"| D[download]
   D -->|object exists| R[(R2: openfocus-downloads)]
-  D -.->|object missing| GH[302 GitHub release asset]
-  REL[GitHub Release] --> ACT[Action: r2-mirror.yml]
+  D -.->|"full request, object missing"| GH[302 GitHub release asset]
+  D -.->|"range request, object missing"| E[503 retry]
+  RW["Build & Publish Release"] -->|workflow_run| ACT[Action: r2-mirror.yml]
+  REL[GitHub Release] -->|release: published| ACT
   ACT -->|gh release download| REL
   ACT -->|aws s3 cp| R
 ```
 
-Only `/`, `/api/latest` and `/download/latest/*` invoke the Worker
-(`run_worker_first` in `site/wrangler.jsonc`). Every other request is a static
-asset and does not consume Worker requests.
+With `run_worker_first: true` in `site/wrangler.jsonc`, every request reaches
+the Worker. It handles `/`, `/api/latest`, `/download/latest/*` and `www`
+canonicalisation; everything else is passed to the static asset binding. Every
+page and asset request therefore counts as a Worker invocation.
 
 - `/` — prefers Chinese from `Accept-Language` (or the `lang` cookie) and
   redirects to `/zh/`; English otherwise. Response: `Vary: Accept-Language,
@@ -75,11 +80,19 @@ asset and does not consume Worker requests.
 - `/zh/` — pre-rendered Chinese page.
 - `/api/latest` — GitHub `releases/latest` reduced to
   `{tag, published, assets: {windows-setup, windows-zip, macos-dmg,
-  macos-zip}}`, cached at the edge for 5 minutes.
-- `/download/latest/<kind>` — resolves the latest asset, streams it from R2
-  with `Range`/`206` support, and falls back to a `302` GitHub asset URL when
-  the R2 object is missing.
-- `www.openfocus.top` — `301` to `https://openfocus.top/` preserving path.
+  macos-zip}}`. The Worker stores the JSON in `caches.default` per data center
+  for 5 minutes (`max-age=300` on the stored response) but returns
+  `Cache-Control: no-store` to clients, so browsers do not pin the release. A
+  release can therefore appear at different times in different locations.
+- `/download/latest/<kind>` — resolves the latest asset, streams the R2 object
+  with `ETag`, `Last-Modified`, `If-None-Match`/`304`, and single-range
+  `Range`/`206` support. All responses are `Cache-Control: no-store` because
+  the URL always names the latest release. A full request falls back to a
+  `302` GitHub asset URL when the R2 object is missing; a range request
+  returns `503` with `Retry-After` instead, so a partial download cannot be
+  completed from a different representation.
+- `www.openfocus.top` — every path returns a `301` to `https://openfocus.top/`
+  with the path preserved (for example `/zh/?x=1`).
 - Everything else — `site/dist` with `html_handling: auto-trailing-slash`,
   `not_found_handling: 404-page`, and the headers in `dist/_headers`.
 
@@ -118,8 +131,21 @@ npx wrangler deploy -c site/wrangler.jsonc
 `sitemap.xml`, Open Graph URLs and the printed installer commands are correct.
 
 `wrangler` requires an authenticated Cloudflare account (`npx wrangler login`)
-with access to the `openfocus-site` Worker and the zone. Do not commit
-wrangler credentials.
+with access to the `openfocus-site` Worker, the `openfocus.top` zone and the
+`openfocus-downloads` R2 bucket. `site/wrangler.jsonc` binds the production
+custom domains and the bucket, so a deploy without those resources fails; it
+does not create an account-free public site. Do not commit wrangler
+credentials.
+
+To validate the Worker bundle and configuration without uploading:
+
+```bash
+npx wrangler deploy -c site/wrangler.jsonc --dry-run
+```
+
+`--temporary` creates a temporary preview account; it cannot bind
+`openfocus.top`, `www.openfocus.top` or the existing R2 bucket, so it is not a
+production or account-free deploy path for this configuration.
 
 The build script:
 
@@ -154,23 +180,36 @@ template resolves `{{dotted.key}}` placeholders; missing keys fail the build.
 
 ## 5. Installer scripts
 
-Both scripts resolve the latest release from `https://openfocus.top/api/latest`
-and download through `https://openfocus.top/download/latest/<kind>` so China
-downloads use the R2 mirror instead of GitHub.
+The macOS and Windows installers resolve the latest release from
+`https://openfocus.top/api/latest` and download through
+`https://openfocus.top/download/latest/<kind>` so China downloads use the R2
+mirror instead of GitHub. The Linux path installs the CLI from PyPI and does
+not use the release API.
 
 `install.sh`:
 
-- macOS Apple Silicon: downloads `macos-zip`, finds `OpenFocus.app`, installs
-  it to `~/Applications`, clears quarantine, opens it.
-- Linux: installs the CLI with `pipx` (or `python3 -m pip --user`). There is no
-  Linux GUI build.
+- macOS Apple Silicon: downloads `macos-zip`, finds `OpenFocus.app`, verifies
+  its `Contents/Info.plist` and executable, stages a complete copy beside
+  `~/Applications/OpenFocus.app`, moves the previous app to a hidden backup,
+  swaps the staged app in, restores the backup if the swap fails, and removes
+  the backup only after a successful swap. It then clears quarantine and opens
+  the app.
+- Linux: installs the CLI with `pipx` when available. Otherwise it creates an
+  isolated virtual environment at `~/.local/share/openfocus/venv` and links
+  `~/.local/bin/openfocus` when that path is free or already a symlink; an
+  existing regular file is left untouched and the direct venv path is printed.
+  It never runs `pip --user` or `pip --break-system-packages`; if pipx and
+  `venv` are both unavailable it stops with actionable instructions. There is
+  no Linux GUI build.
 - Windows/MSYS: prints the PowerShell command.
-- `--dry-run` prints the plan without downloading.
+- `--dry-run` prints the plan without downloading or installing anything.
 
 `install.ps1`:
 
-- downloads `windows-setup` through the site and runs the installer;
-- `OPENFOCUS_DRY_RUN=1` prints the plan without downloading.
+- downloads `windows-setup` through the site and runs the setup;
+- a non-zero setup exit code is reported as an error;
+- `OPENFOCUS_DRY_RUN=1` (also `true`, `yes` or `on`) prints the plan without
+  downloading or installing anything.
 
 Public commands:
 
@@ -192,25 +231,45 @@ If the asset naming in the release workflow changes, update the regexes in
 
 `.github/workflows/r2-mirror.yml` runs on:
 
-- `release: published` — automatic for every new release on the default
-  branch;
+- `workflow_run` after the **Build & Publish Release** workflow completes —
+  only a successful run whose head branch starts with `v` is mirrored. The
+  release workflow creates releases with the repository `GITHUB_TOKEN`, and
+  GitHub suppresses `release` events for those, so this is the automatic path.
+- `release: published` — for releases published by hand (UI or a PAT).
 - `workflow_dispatch` with a `tag` input — manual backfill.
+
+A `concurrency: r2-mirror` group serializes every run (`cancel-in-progress:
+false`) so an older re-run cannot prune a newer tag.
 
 Steps:
 
-1. `gh release download <tag>` for the four installer patterns.
-2. `aws s3 cp assets/ s3://openfocus-downloads/ --recursive` against the R2
-   S3 endpoint (`https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`).
-3. Delete objects whose key does not contain the current tag, so storage stays
-   inside the R2 free tier.
+1. Resolve the tag from the event (`release.tag_name`, `inputs.tag` or the
+   workflow run's head branch), strip `refs/tags/`, require it to match
+   `^v[0-9A-Za-z._+-]+$`, and confirm the release exists.
+2. `gh release download <tag>` for the four installer patterns, then verify
+   exactly one file per pattern, exactly four files total, and no empty files.
+3. `aws s3 cp assets/ s3://openfocus-downloads/ --recursive` against the R2
+   S3 endpoint (`https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`), with
+   `application/octet-stream` and `public, max-age=86400` metadata. Objects
+   keep their release filenames.
+4. If the mirrored tag is not the latest release, skip pruning. Otherwise list
+   the bucket and delete only older keys matching the four recognized
+   `OpenFocus-v*-...` asset names. Keys for the current tag and unrelated
+   objects are kept.
+
+The workflow does not purge the Worker cache. `/api/latest` expires after five
+minutes per data center; that is the expected propagation delay after a
+release. Clients receive `no-store`, so a browser reload after that window
+cannot keep serving an older tag.
 
 Why R2: egress is free at any volume; the free tier is 10 GB-month storage, 1M
 Class A operations and 10M Class B operations per month. A release is about
 1.36 GB and four uploads; one mirrored release fits comfortably. Older
 releases are pruned because the site only ever serves the latest.
 
-The workflow must exist on the **default branch** (`main`) for release events
-to fire. `workflow_dispatch` also requires it on `main` in this repository.
+The workflow must exist on the **default branch** (`main`) for release and
+`workflow_run` events to fire. `workflow_dispatch` also requires it on `main`
+in this repository.
 
 Manual backfill:
 
@@ -219,20 +278,31 @@ gh workflow run r2-mirror.yml -R Xinzhe99/OpenFocus --ref main -f tag=v1.74.0
 gh run list -R Xinzhe99/OpenFocus --workflow r2-mirror.yml --limit 3
 ```
 
-If the action fails, downloads still work: `/download/latest/*` falls back to a
-`302` to the GitHub asset. Fix the action, then re-run it; no website redeploy
-is needed.
+If the action fails, full downloads still work: `/download/latest/*` falls
+back to a `302` to the GitHub asset. Range/resume requests return `503` until
+the object exists in R2, because the Worker will not mix a partial download
+with a different representation. Fix the action, then re-run it; no website
+redeploy is needed.
 
 ### Release checklist
 
 1. `constants.APP_VERSION` equals the release tag.
-2. Publish the GitHub release with the four installer assets.
-3. Wait for `r2-mirror` to succeed.
+2. Push the `v*` tag. **Build & Publish Release** verifies the four non-empty
+   installer assets and creates the GitHub release.
+3. Wait for `r2-mirror` to succeed. It is chained to the release workflow; a
+   release published by hand uses the `release: published` trigger. If neither
+   path fired, run the manual dispatch below.
 4. Verify:
-   - `https://openfocus.top/api/latest` returns the new tag;
-   - `curl -r 0-0 -I https://openfocus.top/download/latest/windows-setup`
-     returns `206` and the new `Content-Range` length;
-   - `https://openfocus.top/` shows the new version within 5 minutes.
+   - `https://openfocus.top/api/latest` returns the new tag with
+     `Cache-Control: no-store`;
+   - `curl -fsS -r 0-0 -D - -o /dev/null https://openfocus.top/download/latest/windows-setup`
+     returns `206`, a `Content-Range: bytes 0-0/<size>` total matching the
+     release asset, and `Cache-Control: no-store`. Use GET, not `-I`/HEAD:
+     HEAD does not validate the byte range. A `503` means the R2 object is
+     missing or not ready for ranges; a `302` is the full download's GitHub
+     fallback and does not occur for a range request;
+   - `https://openfocus.top/` shows the new version within 5 minutes per data
+     center.
 5. Bump `RELEASE` in `site/site_content.py` and redeploy the site (optional,
    but keeps the no-JS fallback and JSON-LD current).
 
@@ -286,30 +356,45 @@ If the domain or zone moves, update:
 |---|---|
 | Domain returns `100::` or NXDOMAIN right after setup | Nameserver delegation or custom-domain certificate still provisioning. Wait, flush local resolver cache, check `nslookup -type=A openfocus.top 1.1.1.1`. |
 | `/` never redirects to `/zh/` | Worker not running (check `run_worker_first`), or a `lang=en` cookie is set. |
-| Page shows old version / old file size | `/api/latest` edge cache is 5 minutes; wait or redeploy. |
-| Download returns `302` to GitHub | R2 object missing (mirror action failed or has not run); fallback is expected. |
-| Download returns `404` | The latest release does not contain that asset kind; check the release asset names. |
-| Download stalls or resumes oddly | Range responses are `206` with `Content-Range`; 200 responses are cached for one day, 206 responses are `no-store`. |
+| Page shows old version / old file size | `/api/latest` is cached in the Worker per data center for 5 minutes; clients receive `no-store`, so a browser reload does not add another cache layer. Wait, or use Purge Everything if immediate propagation is required; a URL purge does not target the Worker's `openfocus.internal` cache key. |
+| Download returns `302` to GitHub | Full download request with no `Range`: R2 object missing (mirror action failed or has not run). Fallback is expected. |
+| Download returns `503` for a range | `Range` request while the R2 object is missing. The Worker refuses to mix a partial download with the GitHub representation; retry after the mirror is available. |
+| Download returns `404` | Known kind without a matching asset in the latest release, or an unknown download kind; check the release asset names and the four supported kinds. |
+| Download stalls or resumes oddly | All `/download/latest/*` responses are `Cache-Control: no-store`; `206` carries `Content-Range`, ETag, and Last-Modified. Only a single valid range is accepted; multi-range or unsatisfiable ranges return `416`, and `If-Range` uses a strong ETag or date. Validate with a range GET, not HEAD. |
 | Installer cannot reach the site | The script uses `https://openfocus.top`; confirm the domain is live from that network. |
 | Theme is dark on first visit | A stored `theme` preference wins; clear site data or use the toggle. Light is the first-visit default. |
 
 Useful checks:
 
 ```bash
-curl -I https://openfocus.top/
-curl -I -H 'Accept-Language: zh-CN' https://openfocus.top/
-curl -s https://openfocus.top/api/latest
-curl -r 0-0 -D - -o NUL https://openfocus.top/download/latest/windows-setup
-curl -I https://www.openfocus.top/
+# Expect 302 to /zh/ with Cache-Control: no-store
+curl -sS -o /dev/null -D - -H 'Accept-Language: zh-CN' https://openfocus.top/
+
+# Expect 200 for the English page
+curl -sS -o /dev/null -D - https://openfocus.top/
+
+curl -sS https://openfocus.top/api/latest
+
+# Expect 206 + Content-Range + Cache-Control: no-store. A 503 means the R2
+# mirror lacks the object for a range request; 302 only applies to a full GET.
+# Use GET, not HEAD; replace /dev/null with NUL on Windows.
+curl -sS -r 0-0 -D - -o /dev/null \
+  https://openfocus.top/download/latest/windows-setup
+
+# Every www path redirects to the apex (301)
+curl -sS -o /dev/null -D - https://www.openfocus.top/zh/
 ```
 
 ---
 
 ## 10. Cost and limits
 
-- Cloudflare Workers Free: static asset requests are free and unlimited;
-  Worker invocations are 100k/day. Only `/`, `/api/latest` and
-  `/download/latest/*` invoke the Worker.
+- Cloudflare Workers Free: Worker invocations are 100k/day. Because
+  `run_worker_first: true` routes every page and asset request through the
+  Worker before `env.ASSETS`, static traffic counts against that limit; static
+  asset bandwidth itself is free. `/`, `/api/latest`, `/download/latest/*` and
+  `www` are handled in the Worker, while other paths forward to the asset
+  binding.
 - R2: egress free; 10 GB-month storage, 1M Class A, 10M Class B per month.
   Overage: $0.015/GB-month, $4.50/M Class A, $0.36/M Class B.
 - The website itself has no paid services beyond the domain registration.
@@ -328,12 +413,16 @@ Cloudflare account as the Worker.
   menu, 404, sitemap, robots, Open Graph and JSON-LD.
 - Added `tools/build_site.py` (inlined CSS/JS, image optimisation, page and
   metadata generation).
-- Added the Cloudflare Worker: `/` language negotiation, `/api/latest`,
-  `/download/latest/*` with R2 streaming/range and GitHub fallback, `www`
-  redirect.
-- Added `install.sh` and `install.ps1`, served from the site.
+- Added the Cloudflare Worker: all-path `www` canonicalisation, `/` language
+  negotiation, `/api/latest` (5-minute per-data-center cache, client
+  `no-store`), `/download/latest/*` with R2 streaming, ETag/single-range
+  support and a GitHub fallback for full downloads.
+- Added `install.sh` and `install.ps1`, served from the site. The macOS path
+  stages and verifies the new app before a rollback-capable swap; the Linux
+  path uses pipx or a private venv and never bypasses PEP 668.
 - Added the R2 download mirror (`openfocus-downloads`) and the
-  `r2-mirror.yml` GitHub Action with old-release cleanup.
+  `r2-mirror.yml` GitHub Action: chained to the release workflow, serialized,
+  asset-count/emptiness checks, and pruning limited to older recognized keys.
 - Bound `openfocus.top` and `www.openfocus.top` as Worker custom domains.
 - Added the build/deploy notes in `site/README.md` and this document.
 
