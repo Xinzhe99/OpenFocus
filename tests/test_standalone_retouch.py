@@ -100,3 +100,49 @@ def test_standalone_uses_upright_pixels_and_common_profile(tmp_path):
     Image.fromarray(pixels).save(source, exif=exif)
     _, context = load_standalone_retouch(str(result), [str(source)])
     assert context.icc_profile == b''
+
+
+@pytest.mark.parametrize('extension,dtype', [
+    ('jpg', np.uint8), ('png', np.uint8), ('tiff', np.uint8),
+    ('png', np.uint16), ('tiff', np.uint16),
+])
+@pytest.mark.parametrize('orientation', range(1, 9))
+def test_standalone_applies_orientation_once(tmp_path, extension, dtype, orientation):
+    pixels = (np.arange(15, dtype=dtype).reshape(3, 5) * 13).astype(dtype)
+    if dtype == np.uint8:
+        pixels = np.stack((pixels, pixels + 5, pixels + 10), axis=2)
+    source = tmp_path / f'source.{extension}'
+    reference = tmp_path / f'reference.{extension}'
+    exif = Image.Exif()
+    exif[274] = orientation
+    Image.fromarray(pixels).save(source, exif=exif)
+    Image.fromarray(pixels).save(reference)
+    raw = cv2.imdecode(np.fromfile(str(reference), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    expected = {
+        1: lambda a: a,
+        2: lambda a: a[:, ::-1],
+        3: lambda a: a[::-1, ::-1],
+        4: lambda a: a[::-1, :],
+        5: lambda a: np.swapaxes(a, 0, 1),
+        6: lambda a: np.rot90(a, -1),
+        7: lambda a: np.swapaxes(a, 0, 1)[::-1, ::-1],
+        8: lambda a: np.rot90(a, 1),
+    }[orientation](raw)
+    result = tmp_path / 'result.png'
+    _write(result, expected)
+    base, context = load_standalone_retouch(str(result), [str(source)])
+    np.testing.assert_array_equal(base, expected)
+    np.testing.assert_array_equal(context.frames[0].image, expected)
+
+
+@pytest.mark.parametrize('extension', ['jpg', 'png', 'tiff'])
+def test_standalone_rejects_mismatched_upright_dimensions(tmp_path, extension):
+    pixels = np.zeros((3, 5, 3), np.uint8)
+    result = tmp_path / 'result.png'
+    source = tmp_path / f'source.{extension}'
+    _write(result, pixels)
+    exif = Image.Exif()
+    exif[274] = 6
+    Image.fromarray(pixels).save(source, exif=exif)
+    with pytest.raises(ValueError, match='dimensions'):
+        load_standalone_retouch(str(result), [str(source)])
