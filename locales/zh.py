@@ -33,6 +33,7 @@ ZH = {
     'retouch_tool_exposure': '曝光画笔',
     'retouch_exposure_amount': '曝光（百分之一档）',
     'retouch_exposure_hint': '涂抹以局部调整结果。正值调亮，负值调暗。每次笔画基于当前结果。按住“之前”比较打开时的结果；撤销或取消笔画可还原。',
+    "transparent_desktop_unsupported": "桌面应用及其批处理不支持加载透明图像。命令行支持有限的透明 PNG 图像栈。文件：{path}",
     "label_outputs_all": "所有输出结果",
     "label_range_current": "当前帧",
     "label_range_custom": "自定义范围",

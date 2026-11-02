@@ -29,6 +29,7 @@ PACK = {
     'retouch_tool_exposure': 'Pennello esposizione',
     'retouch_exposure_amount': 'Esposizione (centesimi di stop)',
     'retouch_exposure_hint': 'Dipingi per regolare localmente il risultato. I valori positivi schiariscono, quelli negativi scuriscono. Ogni tratto parte dal risultato corrente. Tieni premuto Prima per confrontare; annulla il tratto per ripristinare.',
+    "transparent_desktop_unsupported": "Le immagini trasparenti non possono essere caricate nell’app desktop o nel suo batch. La riga di comando supporta alcuni stack PNG trasparenti. File: {path}",
     "label_outputs_all": "Tutti i risultati",
     "label_range_current": "Fotogramma attuale",
     "label_range_custom": "Intervallo personalizzato",

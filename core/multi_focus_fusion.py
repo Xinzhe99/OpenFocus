@@ -623,6 +623,12 @@ class MultiFocusFusion:
                      if f.lower().endswith(exts)]
             if not names:
                 raise ValueError(f"No image files found in directory: {input_source}")
+            from core.image_loader import decode_image, _read_tiff_pages
+            for name in names:
+                check_cancel()
+                path = os.path.join(input_source, name)
+                _read_tiff_pages(path)
+                decode_image(path)
             first = cv2.imdecode(
                 np.fromfile(os.path.join(input_source, names[0]), dtype=np.uint8),
                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
@@ -636,6 +642,11 @@ class MultiFocusFusion:
             first = input_source[0]
             count = len(input_source)
             source_allocation = 0
+            from core.image_loader import _has_transparency, UnsupportedTransparency
+            for frame in input_source:
+                check_cancel()
+                if _has_transparency(frame):
+                    raise UnsupportedTransparency("Transparent frames require the CLI PNG workflow")
         else:
             raise ValueError("Fusion requires a non-empty image stack or directory")
 
