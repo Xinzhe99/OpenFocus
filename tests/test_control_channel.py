@@ -2,6 +2,8 @@
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 
@@ -120,6 +122,134 @@ def test_socket_round_trip_and_discovery(server):
     assert result["response"]["result"]["pong"] is True
 
 
+def test_accept_drains_already_buffered_request():
+    from types import SimpleNamespace
+
+    class Signal:
+        def connect(self, callback):
+            self.callback = callback
+
+    class Connection:
+        def __init__(self):
+            self.readyRead = Signal()
+            self.disconnected = Signal()
+
+        def setReadBufferSize(self, size):
+            pass
+
+        def bytesAvailable(self):
+            return 1
+
+    connection = Connection()
+    pending = [connection]
+    drained = []
+    owner = SimpleNamespace(
+        _server=SimpleNamespace(hasPendingConnections=lambda: bool(pending),
+                                nextPendingConnection=lambda: pending.pop()),
+        _buffers={}, _client_is_local=lambda c: True,
+        _read=drained.append, _drop=lambda c: None)
+    ControlServer._accept(owner)
+    assert drained == [connection]
+
+
+def test_frozen_cli_recovers_inherited_pipes(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    script = '''
+import main, sys
+sys.frozen = True
+sys.argv = ["OpenFocus.exe", "ctl", "ping"]
+out = main._output_stream(None, -11)
+err = main._output_stream(None, -12)
+print("captured-out", file=out, flush=True)
+print("captured-err", file=err, flush=True)
+out.close()
+err.close()
+sys.argv = ["OpenFocus.exe"]
+gui_out = main._output_stream(None, -11)
+print("gui-output", file=gui_out, flush=True)
+gui_out.close()
+'''
+    env = dict(os.environ, OPENFOCUS_LOG_DIR=str(tmp_path / "logs"))
+    child = subprocess.run([sys.executable, "-c", script], cwd=root, env=env,
+                           capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip() == "captured-out"
+    assert child.stderr.strip() == "captured-err"
+
+
+def test_default_gui_launch_and_cross_process_client(tmp_path):
+    from utils.app_paths import is_portable_mode
+    import site
+
+    if is_portable_mode():
+        pytest.skip("Portable mode stores settings beside the checkout")
+    root = Path(__file__).resolve().parents[1]
+    discovery = tmp_path / "control.json"
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen",
+               OPENFOCUS_CONTROL_FILE=str(discovery),
+               OPENFOCUS_INSTANCE_NAME=f"OpenFocus-test-{os.getpid()}-{time.monotonic_ns()}",
+               OPENFOCUS_LOG_DIR=str(tmp_path / "logs"),
+               APPDATA=str(tmp_path / "appdata"),
+               XDG_CONFIG_HOME=str(tmp_path / "config"),
+               XDG_DATA_HOME=str(tmp_path / "data"),
+               HOME=str(tmp_path), USERPROFILE=str(tmp_path))
+    env.pop("OPENFOCUS_CONTROL", None)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (
+        site.getusersitepackages(), env.get("PYTHONPATH"),
+    )))
+    bootstrap = '''
+import runpy, sys
+from PyQt6.QtCore import QSettings
+QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, sys.argv[2])
+sys.argv = [sys.argv[1]]
+runpy.run_path(sys.argv[0], run_name="__main__")
+'''
+    command = [sys.executable, "-c", bootstrap, str(root / "main.py"), str(tmp_path / "settings")]
+    log_path = tmp_path / "gui-output.log"
+    log = log_path.open("w", encoding="utf-8")
+    gui = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.DEVNULL,
+                           stdout=log, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.monotonic() + 60
+        while not discovery.is_file() and time.monotonic() < deadline:
+            if gui.poll() is not None:
+                pytest.fail("GUI exited before publishing discovery: "
+                            + log_path.read_text(encoding="utf-8", errors="replace"))
+            time.sleep(0.05)
+        assert discovery.is_file(), "GUI did not publish control discovery"
+        cli = subprocess.run([sys.executable, str(root / "main.py"), "ctl", "ping"],
+                             cwd=root, env=env, capture_output=True, text=True, timeout=30)
+        assert cli.returncode == 0, cli.stderr
+        assert json.loads(cli.stdout)["result"]["pong"] is True
+        forwarded = subprocess.run(command, cwd=root, env=env, capture_output=True,
+                                   text=True, timeout=30)
+        assert forwarded.returncode == 0, forwarded.stderr
+        assert gui.poll() is None
+        script = '''
+from core.control.client import Session, request
+assert request("ping", token="incorrect", timeout=10)["error"]["code"] == "unauthorized"
+session = Session(timeout=10)
+try:
+    assert session.call("ping")["pong"] is True
+    assert session.call("ui.context")["level"] in ("main", "dialog", "modal", "popup")
+    assert session.call("ping")["pong"] is True
+    assert session.call("app.quit", {"force": True})["quitting"] is True
+finally:
+    session.close()
+'''
+        client = subprocess.run([sys.executable, "-c", script], cwd=root, env=env,
+                                capture_output=True, text=True, timeout=45)
+        assert client.returncode == 0, client.stderr
+        assert gui.wait(timeout=30) == 0
+        assert not discovery.exists()
+    finally:
+        if gui.poll() is None:
+            gui.kill()
+            gui.wait(timeout=10)
+        log.close()
+
+
 def test_stack_method_render_export_and_project(server, stack_frames, tmp_path):
     token = server.token
     assert call(server, "stack.load", token=token,
@@ -220,7 +350,7 @@ def test_dialog_lifecycle_and_batch_hook(server):
     assert call(server, "dialog.close", token=token, index=0)["result"]["closed"] is True
 
 
-def test_control_is_opt_in_and_describe_matches_registry(monkeypatch, tmp_path):
+def test_describe_matches_registry(monkeypatch, tmp_path):
     from core.cli import describe_payload, run_cli
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(tmp_path / "missing.json"))
     description = describe_payload()
@@ -982,12 +1112,24 @@ def test_say_writes_to_stdout_unless_redirected(monkeypatch):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
-def test_discovery_file_is_created_private(tmp_path, monkeypatch):
+def test_discovery_file_is_private_before_first_write(tmp_path, monkeypatch):
     import stat as stat_module
+    from core.control import protocol
 
-    from core.control.protocol import read_discovery, write_discovery
-
+    stale = tmp_path / "control.tmp"
+    stale.write_text("untrusted", encoding="utf-8")
+    stale.chmod(0o666)
     monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(tmp_path / "control.json"))
-    path = write_discovery("sock", "token", os.getpid(), "1.0")
+    original_fdopen = os.fdopen
+    modes = []
+
+    def inspect_mode(fd, *args, **kwargs):
+        modes.append(stat_module.S_IMODE(os.fstat(fd).st_mode))
+        return original_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(protocol.os, "fdopen", inspect_mode)
+    path = protocol.write_discovery("sock", "token", os.getpid(), "1.0")
+    assert modes == [0o600]
     assert stat_module.S_IMODE(path.stat().st_mode) == 0o600
-    assert read_discovery()["socket"] == "sock"
+    assert protocol.read_discovery()["socket"] == "sock"
+    assert stale.read_text(encoding="utf-8") == "untrusted"

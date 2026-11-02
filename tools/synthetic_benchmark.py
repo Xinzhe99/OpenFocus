@@ -44,10 +44,14 @@ def make_texture(h, w, seed=0):
         p1 = (int(rng.integers(0, w)), int(rng.integers(0, h)))
         p2 = (int(rng.integers(0, w)), int(rng.integers(0, h)))
         cv2.line(img, p1, p2, c, int(rng.integers(1, 3)), cv2.LINE_AA)
+    # OpenCV 5 accepts text only on uint8 images; keep the texture in float
+    # and apply the generated text mask afterward.
+    text_mask = np.zeros((h, w), np.uint8)
     for i in range(12):
-        cv2.putText(img, "OpenFocus %d" % i,
+        cv2.putText(text_mask, "OpenFocus %d" % i,
                     (int(rng.integers(0, w - 200)), int(rng.integers(20, h))),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (20, 20, 20), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, 255, 1, cv2.LINE_8)
+    img[text_mask != 0] = 20
     return np.clip(img, 0, 255).astype(np.float32)
 
 

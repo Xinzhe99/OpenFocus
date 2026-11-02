@@ -131,6 +131,22 @@ def test_byte_limit_evicts_oldest_cache_and_preserves_unrelated_files(stack):
     assert (unrelated / 'keep.txt').read_text(encoding='utf-8') == 'unrelated'
 
 
+def test_previous_cache_version_is_evicted_after_alignment_change(stack, monkeypatch):
+    current_version = align_cache.CACHE_FORMAT_VERSION
+    monkeypatch.setattr(align_cache, 'CACHE_FORMAT_VERSION', 3)
+    _save(stack, identity={'revision': 1})
+    root = Path(align_cache.cache_dir(stack[0]))
+    old_manifest = next(root.glob('*/meta.json'))
+    encoded_bytes = json.loads(old_manifest.read_text(encoding='utf-8'))['encoded_bytes']
+    os.utime(old_manifest, (1, 1))
+
+    monkeypatch.setattr(align_cache, 'CACHE_FORMAT_VERSION', current_version)
+    assert _load(stack, identity={'revision': 1}) is None
+    _save(stack, identity={'revision': 2}, max_cache_bytes=encoded_bytes + 1)
+    assert not old_manifest.exists()
+    assert _load(stack, identity={'revision': 2}) is not None
+
+
 def test_over_budget_new_entry_does_not_remove_previous_cache(stack):
     _save(stack, identity={'revision': 1})
     _save(stack, identity={'revision': 2}, max_cache_bytes=1)

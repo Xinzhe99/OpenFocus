@@ -14,8 +14,12 @@ from scipy.ndimage import median_filter
 
 from core.registration import RegistrationCancelled
 from fusion_methods import dct, gff, gfg_fgf
-from fusion_methods import openfocus_ab as ab
+from fusion_methods import openfocus_a, openfocus_bc, openfocus_depth
 from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+
+
+OPENFOCUS = {"a": openfocus_a.openfocus_a_impl, "b": openfocus_bc.openfocus_b_impl,
+             "c": openfocus_bc.openfocus_c_impl}
 
 
 def _stack(kind="bgr", n=4):
@@ -43,54 +47,6 @@ def _color(frame):
 def _dtype(frames):
     return np.uint8 if frames[0].dtype == np.uint8 else np.float32
 
-
-def _ab_reference(frames, method, smoothing):
-    """Original stacked A/B/C formulas; no production streaming decisions."""
-    floats = [f.astype(np.float32) for f in frames]
-    if method in ("a", "b"):
-        variances = np.stack([
-            ab._window_variance(ab._luminance(f), 3) for f in floats])
-        stack = np.stack([f[:, :, None] if f.ndim == 2 else f for f in floats])
-        if method == "a":
-            weights = np.stack([cv2.GaussianBlur(v, (0, 0), smoothing)
-                                if smoothing > 1e-3 else v for v in variances])
-            acc = np.zeros(stack.shape[1:], np.float32)
-            total = np.zeros((*stack.shape[1:3], 1), np.float32)
-            for frame, weight in zip(stack, weights):
-                acc += frame * weight[:, :, None]
-                total += weight[:, :, None]
-            acc += stack[-1]
-            total += 1.0
-            result = acc / total
-        else:
-            depth = np.argmax(variances, axis=0).astype(np.float32)
-            depth = cv2.medianBlur(depth, 3)
-            if smoothing > 0.05:
-                depth = cv2.GaussianBlur(depth, (0, 0), smoothing)
-            index = np.clip(np.rint(depth), 0, len(frames) - 1).astype(np.int32)
-            result = np.take_along_axis(stack, index[None, :, :, None], axis=0)[0]
-        if frames[0].ndim == 2:
-            result = result[:, :, 0]
-    else:
-        h, w = frames[0].shape[:2]
-        usable = max(2, min(7, int(np.log2(max(2, min(h, w)))) - 1))
-        pyramids = [ab._pyramid_gauss(f, usable) for f in floats]
-        selected = []
-        for level in range(usable - 1):
-            bands = np.stack([p[level] - ab._pyramid_expand(p[level + 1], p[level].shape[:2])
-                              for p in pyramids]).astype(np.float32)
-            luma = ((bands * np.array([0.114, 0.587, 0.299], np.float32)).sum(axis=3)
-                    if bands.ndim == 4 else bands)
-            weights = np.stack([cv2.GaussianBlur(np.abs(v), (0, 0), smoothing)
-                                if smoothing > 1e-3 else np.abs(v) for v in luma])
-            index = weights.argmax(axis=0)
-            gather = index[None, :, :, None] if bands.ndim == 4 else index[None]
-            selected.append(np.take_along_axis(bands, gather, axis=0)[0])
-        selected.append(pyramids[-1][-1].copy())
-        result = selected[-1]
-        for level in range(usable - 2, -1, -1):
-            result = ab._pyramid_expand(result, selected[level].shape[:2]) + selected[level]
-    return np.clip(result, 0, 255).astype(_dtype(frames))
 
 
 def _gff_reference(frames):
@@ -178,7 +134,7 @@ def _gfg_reference(frames):
 
 
 @pytest.mark.parametrize("kind", ["bgr", "uint16", "gray", "alpha"])
-@pytest.mark.parametrize("method", ["a", "b", "c", "gff", "dct", "gfg"])
+@pytest.mark.parametrize("method", ["gff", "dct", "gfg"])
 @pytest.mark.parametrize("smoothing", [0.0, 2.0])
 def test_baseline_pixels_and_input_ownership(kind, method, smoothing):
     raw = _stack(kind)
@@ -187,17 +143,7 @@ def test_baseline_pixels_and_input_ownership(kind, method, smoothing):
     originals = [f.copy() for f in raw]
     frames, is16 = normalize_fuse_input(raw)
     before = [f.copy() for f in frames]
-    # Baseline C accepts BGR/gray; alpha support is checked separately below.
-    if method == "c" and kind == "alpha":
-        frames = [_color(f) for f in frames]
-        before = [f.copy() for f in frames]
-    if method in ("a", "b", "c"):
-        kwargs = {"depth_smoothing" if method == "b" else "blend_smoothing": smoothing}
-        expected = _ab_reference(frames, method, smoothing)
-        call = getattr(ab, f"openfocus_{method}_impl")
-        actual = call(frames, kernel_size=7, thread_count=1, **kwargs)
-        parallel = call(frames, kernel_size=7, thread_count=4, **kwargs)
-    elif method == "gff":
+    if method == "gff":
         expected = _gff_reference(frames)
         actual = gff.gff_impl(frames, None, 7, thread_count=1)
         parallel = gff.gff_impl(frames, None, 7, thread_count=4)
@@ -222,19 +168,16 @@ def test_baseline_pixels_and_input_ownership(kind, method, smoothing):
         assert actual.dtype == np.float32
 
 
-@pytest.mark.parametrize("method", ["a", "b", "c", "gff", "dct", "gfg"])
+@pytest.mark.parametrize("method", ["gff", "dct", "gfg"])
 def test_distinguishable_flat_ties_and_last_frame_prior(method):
     frames = [np.full((33, 39, 3), value, np.uint8) for value in (32, 96, 160)]
-    if method in ("a", "b", "c"):
-        call = getattr(ab, f"openfocus_{method}_impl")
-        result = call(frames, thread_count=1)
-    elif method == "gff":
+    if method == "gff":
         result = gff.gff_impl(frames, None, thread_count=1)
     elif method == "gfg":
         result = gfg_fgf.gfgfgf_impl(frames, thread_count=1)
     else:
         result = dct.dct_focus_stack_fusion(frames, thread_count=1)
-    np.testing.assert_array_equal(result, frames[-1] if method in ("a", "c") else frames[0])
+    np.testing.assert_array_equal(result, frames[0])
 
 
 @pytest.mark.parametrize("method", ["a", "b", "c", "gff", "dct", "gfg"])
@@ -244,9 +187,9 @@ def test_deep_stack_selects_frame_259(method):
     sharp = np.repeat(texture[:, :, None], 3, axis=2).astype(np.uint8)
     frames = [flat] * 259 + [sharp]
     if method == "b":
-        result = ab.openfocus_b_impl(frames, depth_smoothing=0)
+        result = OPENFOCUS[method](frames, depth_smoothing=0)
     elif method in ("a", "c"):
-        result = getattr(ab, f"openfocus_{method}_impl")(frames)
+        result = OPENFOCUS[method](frames)
     elif method == "gff":
         result = gff.gff_impl(frames, None, 7, thread_count=1)
     elif method == "gfg":
@@ -265,8 +208,8 @@ def test_cancel_after_real_frame_work_stops_before_next_frame(monkeypatch, metho
     cancelled = threading.Event()
     calls = []
     if method in ("a", "b", "c"):
-        module, symbol = ab, "_pyramid_gauss" if method == "c" else "_window_variance"
-        call = getattr(ab, f"openfocus_{method}_impl")
+        module, symbol = (openfocus_a, "_response") if method == "a" else (openfocus_depth, "_filter")
+        call = OPENFOCUS[method]
     elif method == "gff":
         module, symbol = cv2, "Laplacian"
         call = lambda frames, **kw: gff.gff_impl(frames, None, **kw)
@@ -316,8 +259,8 @@ def test_futures_are_bounded_until_results_are_consumed(monkeypatch, backend):
 
 def test_c_alpha_does_not_enter_color_decisions():
     frames = _stack("alpha")
-    result = ab.openfocus_c_impl(frames)
-    expected = ab.openfocus_c_impl([f[:, :, :3] for f in frames])
+    result = openfocus_bc.openfocus_c_impl(frames)
+    expected = openfocus_bc.openfocus_c_impl([f[:, :, :3] for f in frames])
     assert result.shape == frames[0].shape
     np.testing.assert_array_equal(result[:, :, :3], expected)
 
@@ -327,7 +270,7 @@ def test_raw_uint16_matches_explicit_work_domain(method):
     raw = _stack("uint16")
     normalized, _ = normalize_fuse_input(raw)
     if method in ("a", "b", "c"):
-        call = getattr(ab, f"openfocus_{method}_impl")
+        call = OPENFOCUS[method]
     elif method == "gff":
         call = lambda frames, **kwargs: gff.gff_impl(frames, None, **kwargs)
     elif method == "gfg":
@@ -346,7 +289,7 @@ def test_cancel_callback_errors_propagate(method):
         raise RuntimeError("cancel callback failed")
 
     if method in ("a", "b", "c"):
-        call = getattr(ab, f"openfocus_{method}_impl")
+        call = OPENFOCUS[method]
     elif method == "gff":
         call = lambda frames, **kwargs: gff.gff_impl(frames, None, **kwargs)
     elif method == "gfg":
@@ -355,3 +298,40 @@ def test_cancel_callback_errors_propagate(method):
         call = dct.dct_focus_stack_fusion
     with pytest.raises(RuntimeError, match="cancel callback failed"):
         call(_stack(), thread_count=1, should_cancel=broken_callback)
+
+
+@pytest.mark.parametrize("method", ["b", "c"])
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+@pytest.mark.parametrize("color", [False, True])
+def test_depth_override_selects_source_without_recomputing(monkeypatch, method, dtype, color):
+    shape = (17, 19, 3) if color else (17, 19)
+    maximum = np.iinfo(dtype).max
+    frames = [np.full(shape, maximum // 4, dtype),
+              np.full(shape, maximum * 3 // 4, dtype)]
+    monkeypatch.setattr(openfocus_bc, "depth_map", lambda *args: pytest.fail("depth recomputed"))
+    actual = OPENFOCUS[method](frames, depth_override=np.ones(shape[:2], np.float32))
+    expected = frames[1] if dtype == np.uint8 else frames[1].astype(np.float32) * (255 / 65535)
+    np.testing.assert_allclose(actual, expected, atol=0.004)
+    with pytest.raises(ValueError, match="depth_override"):
+        OPENFOCUS[method](frames, depth_override=np.zeros((1, 1), np.float32))
+
+
+def test_c_coarse_bands_change_visible_fusion():
+    shape = (32, 32)
+    frames = [np.full(shape, 32, np.uint8), np.full(shape, 224, np.uint8)]
+    depth = np.zeros(shape, np.float32)
+    depth[:, 15:] = 1
+    single = openfocus_bc.openfocus_c_impl(frames, levels=1, depth_override=depth)
+    multiscale = openfocus_bc.openfocus_c_impl(frames, levels=3, depth_override=depth)
+    assert single[16, 14] == 32 and single[16, 15] == 224
+    assert np.any(multiscale != single)
+    assert 32 < multiscale[16, 14] < 224
+
+
+@pytest.mark.parametrize("method", ["b", "c"])
+def test_deep_stack_override_selects_last_frame(method):
+    flat = np.full((5, 7), 17, np.uint8)
+    sharp = np.full((5, 7), 203, np.uint8)
+    result = OPENFOCUS[method]([flat] * 999 + [sharp],
+                               depth_override=np.full((5, 7), 999, np.float32))
+    np.testing.assert_array_equal(result, sharp)

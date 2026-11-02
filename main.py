@@ -12,13 +12,63 @@ import os
 # something a user install can do.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-# In --noconsole (windowed) PyInstaller builds sys.stdout/stderr are None, and
-# any print() then crashes with AttributeError ('NoneType' object has no
-# attribute 'write'). Route them to the null device instead.
-if sys.stdout is None or getattr(sys.stdout, "closed", False):
-    sys.stdout = open(os.devnull, 'w', encoding='utf-8')
-if sys.stderr is None or getattr(sys.stderr, "closed", False):
-    sys.stderr = open(os.devnull, 'w', encoding='utf-8')
+# Windowed PyInstaller builds may set Python's streams to None even when a CLI
+# caller supplied inherited handles. Never attach or create a console.
+def _is_cli_invocation(argv):
+    if argv and argv[0] in {"ctl", "gui", "describe", "version"}:
+        return True
+    skip_value = False
+    for arg in argv:
+        if skip_value:
+            skip_value = False
+        elif arg == "--control-socket":
+            skip_value = True
+        elif arg.startswith("-") and arg not in {"--control", "--restore-session"}:
+            return True
+    return False
+
+
+def _output_stream(stream, standard_handle):
+    if stream is not None and not getattr(stream, "closed", False):
+        return stream
+    if getattr(sys, "frozen", False) and _is_cli_invocation(sys.argv[1:]):
+        if sys.platform != "win32":
+            try:
+                fd = os.dup(1 if standard_handle == -11 else 2)
+                return os.fdopen(fd, "w", encoding="utf-8", errors="replace", buffering=1)
+            except OSError:
+                return open(os.devnull, "w", encoding="utf-8")
+        try:
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+            kernel.GetStdHandle.restype = wintypes.HANDLE
+            kernel.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel.DuplicateHandle.argtypes = [wintypes.HANDLE, wintypes.HANDLE,
+                                               wintypes.HANDLE, ctypes.POINTER(wintypes.HANDLE),
+                                               wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.DuplicateHandle.restype = wintypes.BOOL
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel.GetStdHandle(standard_handle & 0xffffffff)
+            duplicate = wintypes.HANDLE()
+            process = kernel.GetCurrentProcess()
+            if handle and handle != ctypes.c_void_p(-1).value and kernel.DuplicateHandle(
+                    process, handle, process, ctypes.byref(duplicate), 0, False, 2):
+                try:
+                    fd = msvcrt.open_osfhandle(duplicate.value, os.O_WRONLY | os.O_BINARY)
+                except OSError:
+                    kernel.CloseHandle(duplicate)
+                    raise
+                return os.fdopen(fd, "w", encoding="utf-8", errors="replace", buffering=1)
+        except (OSError, ValueError):
+            pass
+    return open(os.devnull, "w", encoding="utf-8")
+
+
+sys.stdout = _output_stream(sys.stdout, -11)
+sys.stderr = _output_stream(sys.stderr, -12)
 
 if __name__ == "__main__":
     # Bootstrap before GUI imports: CLI and import-time failures share the
@@ -33,13 +83,11 @@ if __name__ == "__main__":
     # The updater's restore flag belongs to the GUI, never to argparse.
     _argv = [arg for arg in sys.argv[1:] if arg != "--restore-session"]
     _restore_flag = len(_argv) != len(sys.argv[1:])
-    # A subcommand owns its own flags: stripping --control here made
-    # `python main.py gui --control` start a GUI with no control channel.
+    # A subcommand owns its own flags.
     from core.cli import SUBCOMMANDS, run_cli
     if _argv and (_argv[0] in SUBCOMMANDS or _argv[0] in ("--version", "-V", "--describe")):
         sys.exit(run_cli(_argv))
-    # Control channel: opt-in, stripped before the GUI consumes the remainder.
-    _control_enabled = "--control" in _argv
+    # Consume the legacy flag and optional socket name before GUI startup.
     _argv = [arg for arg in _argv if arg != "--control"]
     _control_socket = None
     if "--control-socket" in _argv:
@@ -48,8 +96,7 @@ if __name__ == "__main__":
             sys.exit("error: --control-socket requires a name")
         _control_socket = _argv[_index + 1]
         del _argv[_index:_index + 2]
-    if str(os.environ.get("OPENFOCUS_CONTROL", "")).strip().lower() in ("1", "true", "yes"):
-        _control_enabled = True
+    sys.argv = [sys.argv[0], *_argv]
     if any(arg.startswith("-") for arg in _argv):
         sys.exit(run_cli(_argv))
 
@@ -3401,7 +3448,7 @@ if __name__ == "__main__":
     probe.connectToServer(_server_name)
     if probe.waitForConnected(500):
         paths = [os.path.abspath(a) for a in sys.argv[1:] if not a.startswith("-")]
-        probe.write(_json.dumps(paths).encode("utf-8"))
+        probe.write((_json.dumps(paths) + "\n").encode("utf-8"))
         probe.flush()
         probe.waitForBytesWritten(1000)
         probe.disconnectFromServer()
@@ -3410,18 +3457,21 @@ if __name__ == "__main__":
     QLocalServer.removeServer(_server_name)
     _single_server = QLocalServer()
     _single_server.listen(_server_name)
+    app.aboutToQuit.connect(_single_server.close)
 
     window = OpenFocus()
     app.set_main_window(window)
     _log.info("main window ready")
 
-    # ---- Local agent control channel (opt-in) ----
+    # ---- Local agent control channel ----
     _control_server = None
-    if _control_enabled:
+    try:
         from core.control.server import ControlServer
         _control_server = ControlServer(window, socket_name=_control_socket)
         app.aboutToQuit.connect(_control_server.close)
         _log.info("control channel: %s", _control_server.socket_name)
+    except Exception:
+        _log.exception("Could not start the control channel")
 
     def _on_second_instance(paths_json: str) -> None:
         try:
@@ -3435,11 +3485,21 @@ if __name__ == "__main__":
         window.activateWindow()
 
     def _on_new_connection() -> None:
-        conn = _single_server.nextPendingConnection()
-        if conn is None:
-            return
-        conn.readyRead.connect(
-            lambda: _on_second_instance(bytes(conn.readAll()).decode("utf-8", "ignore")))
+        while _single_server.hasPendingConnections():
+            conn = _single_server.nextPendingConnection()
+            buffer = bytearray()
+
+            def receive(c=conn, data=buffer):
+                data.extend(bytes(c.readAll()))
+                if b"\n" in data:
+                    line, _, _ = data.partition(b"\n")
+                    _on_second_instance(line.decode("utf-8", "ignore"))
+                    c.disconnectFromServer()
+
+            conn.readyRead.connect(receive)
+            conn.disconnected.connect(conn.deleteLater)
+            if conn.bytesAvailable():
+                receive()
 
     _single_server.newConnection.connect(_on_new_connection)
 

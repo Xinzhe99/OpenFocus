@@ -17,12 +17,14 @@ class DepthMapCancelled(Exception):
     """Raised when should_cancel returns True mid-computation."""
 
 
-def _check(images: Sequence[np.ndarray]) -> None:
+def _check(images: Sequence[np.ndarray], allow_grayscale=False) -> None:
     if len(images) < 2:
         raise ValueError("A focus index map needs at least 2 frames")
     first = images[0]
-    if first.ndim != 3 or first.shape[2] < 3:
-        raise ValueError("Depth map expects BGR images")
+    if not ((first.ndim == 3 and first.shape[2] >= 3) or
+            (allow_grayscale and (first.ndim == 2 or
+                                  (first.ndim == 3 and first.shape[2] == 1)))):
+        raise ValueError("Depth map expects BGR images or supported grayscale images")
     if any(image.shape != first.shape for image in images):
         raise ValueError("Depth map frames must have matching shapes")
     if min(first.shape[:2]) <= 0:
@@ -288,58 +290,6 @@ def _measure_stackmffv3(images, progress, should_cancel,
     return result
 
 
-# --------------------------------------------------------------------------
-# openfocus_a/b/c — 各自融合管线的"焦点位置"可视化（三种不同的图）
-# --------------------------------------------------------------------------
-def _measure_openfocus(images, progress, should_cancel, kernel_size=11):
-    """B：argmax of blur(x²) − blur(x)² on the gray channel.
-
-    与 fusion_methods/openfocus_ab.py 的 B 方法度量一致——硬拾取的
-    逐像素获胜帧。kernel 滑块即方差窗口（默认半径 5）；流式 argmax
-    （严格 > 保持 np.argmax 首胜语义）。
-    """
-    if kernel_size % 2 == 0:
-        kernel_size += 1
-    k = max(1, int(kernel_size))
-    best_val = best_idx = None
-    for idx, bgr in enumerate(images):
-        _tick(progress, idx, len(images), should_cancel)
-        gray = cv2.cvtColor(bgr.astype(np.float32), cv2.COLOR_BGR2GRAY)
-        mean = cv2.blur(gray, (k, k))
-        var = cv2.blur(gray * gray, (k, k)) - mean * mean
-        if best_val is None:
-            best_val, best_idx = var, np.zeros(var.shape, np.int32)
-        else:
-            hit = var > best_val
-            best_val[hit] = var[hit]
-            best_idx[hit] = idx
-    return best_idx
-
-
-def _measure_openfocus_c(images, progress, should_cancel, kernel_size=11):
-    """C：最细带通层能量 argmax（金字塔法按频带决策的深度侧写）。
-
-    band = gray − blur(gray, σ1)（拉普拉斯金字塔最细层的同款构造），
-    W = blur(|band|, window)，逐像素取能量最大帧——与 B 的窗口方差
-    （二阶统计）不同，这是带通能量的选择行为。
-    """
-    if kernel_size % 2 == 0:
-        kernel_size += 1
-    k = max(1, int(kernel_size))
-    best_val = best_idx = None
-    for idx, bgr in enumerate(images):
-        _tick(progress, idx, len(images), should_cancel)
-        gray = cv2.cvtColor(bgr.astype(np.float32), cv2.COLOR_BGR2GRAY)
-        band = gray - cv2.GaussianBlur(gray, (0, 0), 1.0)
-        energy = cv2.blur(np.abs(band), (k, k))
-        if best_val is None:
-            best_val, best_idx = energy, np.zeros(energy.shape, np.int32)
-        else:
-            hit = energy > best_val
-            best_val[hit] = energy[hit]
-            best_idx[hit] = idx
-    return best_idx
-
 
 # --------------------------------------------------------------------------
 # public entry
@@ -358,7 +308,7 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
     from core.registration import RegistrationCancelled
     from utils.image_utils import normalize_fuse_input
 
-    _check(images)
+    _check(images, allow_grayscale=method in ('openfocus_b', 'openfocus_c'))
     spec = get_fusion(method)
     values = resolve_fusion_parameters(method, parameters, depth=True)
     declared_keys = {parameter.key for parameter in spec.depth.parameters}
@@ -391,7 +341,10 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
                              parallel_layer='native'),
                     preference=resource_preference, user_threads=thread_count)
             _tick(None, 0, n, should_cancel)
-            images, _is_16bit = normalize_fuse_input(images)
+            # B/C prepare each source themselves; retaining its dtype also
+            # preserves their 8-bit quantization rule in mixed-depth stacks.
+            if method not in ('openfocus_b', 'openfocus_c'):
+                images, _is_16bit = normalize_fuse_input(images)
             runtime = {'progress_callback': progress_callback, 'should_cancel': should_cancel,
                        'thread_count': plan.native_threads, 'use_gpu': use_gpu,
                        'model_path': model_path, 'execution_plan': plan}

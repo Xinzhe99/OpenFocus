@@ -112,12 +112,13 @@ Rules the planner enforces:
 
 ## Streaming back-ends (v1.69)
 
-The OpenFocus A/B/C, GFF and DTCWT back-ends no longer materialise whole-stack
-temporaries. The arithmetic per frame and the accumulation order are
-unchanged, so outputs stay bit-identical (verified on 8-bit, derived 16-bit,
-greyscale and flat-tie inputs, and across thread counts).
+These measurements describe v1.69. OpenFocus A/B/C have since been replaced;
+their arithmetic, output and timings below do not describe the current
+implementations. See `FUSION_METHODS.md` for the newer observations.
+At the time, the A/B/C, GFF and DTCWT streaming revisions preserved the
+previous outputs while removing whole-stack temporaries.
 
-| Back-end | What used to be live | What is live now |
+| Back-end | What used to be live | What was live in v1.69 |
 |---|---|---|
 | OpenFocus A | `(N,H,W)` variance stack + `(N,H,W)` weight stack + float copy of the stack | accumulator + `(H,W)` weights for one frame |
 | OpenFocus B | `(N,H,W)` variance stack + `(N,H,W,C)` float stack for the gather | running max/argmax + one frame's mask gather |

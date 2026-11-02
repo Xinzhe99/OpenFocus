@@ -113,6 +113,11 @@ jobs:
           $before = (Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum
           Write-Output ("bundle after prune: {0:N0} MB" -f ($before/1MB))
 
+      - name: Verify packaged CLI and desktop control
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tools/frozen_cli_smoke.py --executable dist/OpenFocus/OpenFocus.exe
+
       - name: Package zip (portable)
         shell: pwsh
         run: |
@@ -236,6 +241,11 @@ jobs:
           rm -rf "$APP"/Contents/Resources/torch/include 2>/dev/null || true
           du -sh dist/OpenFocus.app || true
 
+      - name: Verify packaged CLI and desktop control
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tools/frozen_cli_smoke.py --executable dist/OpenFocus.app/Contents/MacOS/OpenFocus
+
       - name: Ad-hoc codesign
         run: codesign --force --deep -s - dist/OpenFocus.app
 
@@ -331,11 +341,13 @@ jobs:
           python3 - "${{ github.ref_name }}" <<'PY'
           import re, sys
           tag = sys.argv[1]
+          version = tag[1:] if tag.startswith('v') else tag
           text = open("CHANGELOG.md", encoding="utf-8").read()
-          m = re.search(r"^## \[" + re.escape(tag) + r"\][^\n]*\n(.*?)(?=^## \[)", text, re.S | re.M)
+          m = re.search(r"^## \[v?" + re.escape(version) + r"\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.S | re.M)
+          if not m:
+              raise SystemExit(f"No changelog section found for {tag}")
           notes = open("release_notes.md", encoding="utf-8").read()
-          if m:
-              notes = "## What's new\n" + m.group(1).strip() + "\n\n" + notes
+          notes = "## What's new\n" + m.group(1).strip() + "\n\n" + notes
           open("release_notes.md", "w", encoding="utf-8").write(notes)
           PY
 
@@ -345,11 +357,14 @@ jobs:
         run: |
           echo "Files downloaded:"
           ls -la release/
-          # A leftover release from a previously failed run would break "create"
-          gh release delete "${{ github.ref_name }}" --repo "${{ github.repository }}" --yes 2>/dev/null || true
-          gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "OpenFocus ${{ github.ref_name }}" \
-          --notes-file release_notes.md \
-          release/* \
-          || { echo "create/upload failed; retrying upload"; gh release upload "${{ github.ref_name }}" release/* --repo "${{ github.repository }}" --clobber; }
+          if gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "${{ github.ref_name }}" release/* \
+              --repo "${{ github.repository }}" --clobber
+            gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" \
+              --title "OpenFocus ${{ github.ref_name }}" --notes-file release_notes.md
+          else
+            gh release create "${{ github.ref_name }}" \
+              --repo "${{ github.repository }}" \
+              --title "OpenFocus ${{ github.ref_name }}" \
+              --notes-file release_notes.md release/*
+          fi

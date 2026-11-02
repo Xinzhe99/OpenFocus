@@ -1,10 +1,9 @@
 """Non-native file pickers for the local control channel.
 
 A visible native Windows file dialog is a separate OS window: Qt cannot see
-its widgets, so an agent cannot type a path or press Open.  While control is
-enabled every static ``QFileDialog`` helper gains the portable Qt dialog,
-whose widgets are ordinary Qt children and therefore visible in ``ui.tree``.
-The office build never installs this patch.
+its widgets, so an agent cannot type a path or press Open. The control server
+installs portable Qt dialogs whose widgets are visible in ``ui.tree``, and
+restores the original helpers when the service shuts down.
 """
 from __future__ import annotations
 

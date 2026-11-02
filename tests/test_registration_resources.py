@@ -183,23 +183,19 @@ def test_cpu_budget_caps_actual_registration_pool(monkeypatch):
     assert pool_sizes and max(pool_sizes) == 1
 
 
-def test_openfocus_cancels_between_search_candidates(monkeypatch):
-    cancelled = Event()
-    original = registration._of_ncc_score
-    candidates = []
+def test_openfocus_cancels_between_search_candidates():
+    calls = 0
 
-    def score_and_cancel(*args, **kwargs):
-        result = original(*args, **kwargs)
-        candidates.append(result)
-        cancelled.set()
-        return result
+    def should_cancel():
+        nonlocal calls
+        calls += 1
+        return calls >= 3
 
-    monkeypatch.setattr(registration, '_of_ncc_score', score_and_cancel)
     gray = cv2.cvtColor(_stack(1)[0], cv2.COLOR_BGR2GRAY).astype(np.float32)
     with pytest.raises(registration.RegistrationCancelled):
         registration._of_estimate_similarity(gray, gray,
-                                              should_cancel=cancelled.is_set)
-    assert len(candidates) == 1
+                                              should_cancel=should_cancel)
+    assert calls == 3
 
 
 @pytest.mark.parametrize('method', ['homography', 'ecc', 'openfocus'])

@@ -31,15 +31,14 @@ agent ── openfocus ctl … ──QLocalSocket──▶ ControlServer (GUI th
 
 ## 3. Lifecycle and discovery
 
-Start the GUI with control enabled:
+The control channel starts automatically with the desktop application:
 
 ```bash
-openfocus gui --control                 # detached, prints connection info
-python main.py --control                # same from a checkout
+openfocus gui                           # detached
+python main.py                          # from a checkout
 ```
 
-`OPENFOCUS_CONTROL=1` enables it for a normal launch. Without `--control` the
-file is absent and no server exists; the default launch is unchanged.
+`openfocus gui --control` also waits for discovery and prints connection info.
 
 At startup the server writes `<user-data>/control.json`:
 
@@ -272,17 +271,20 @@ accepted settings to `BatchManager` just like the menu flow.
 
 ## 6. Security
 
-- Opt-in (`--control` / `OPENFOCUS_CONTROL=1`); no listening socket otherwise.
+- The desktop GUI starts the control channel automatically.
 - Local IPC only; no TCP port.
 - Every request carries a 128-bit token stored in the per-user data directory.
-- The token file is written with owner-only permissions where the OS supports
-  it. Any process running as the same user can read it; do not enable control
-  on a shared account.
+- The token file has owner-only permissions. Any process running as the same
+  user can read it, so a shared account also shares control of the GUI.
 - The channel exposes file reads/writes the GUI itself can perform; it does not
   add privileges beyond the user's own.
 - Install scope: the pip wheel is headless-only — `openfocus gui` and the
   `ctl` transport (PyQt6) report a clear error there instead of failing
   silently. Use the desktop build or a source checkout for GUI control.
+  The windowed desktop executable can return CLI output through inherited
+  standard handles, such as pipes supplied by a subprocess. If no usable
+  handle is supplied, output is discarded; no console is opened. The headless
+  wheel needs PyQt6 installed separately to use `ctl`.
 
 ## 7. CLI additions
 
@@ -305,11 +307,9 @@ startup. Batch folder events and result summaries are emitted with
 `json.dumps`, so names with quotes or backslashes cannot corrupt the stream.
 `--version` and `--describe` work without an input.
 
-`ctl --launch` starts `gui --control` when no live discovery file exists.
+`ctl --launch` starts the GUI when no live discovery file exists.
 `OPENFOCUS_CONTROL_FILE` isolates the discovery file for tests or parallel
-sessions; `OPENFOCUS_INSTANCE_NAME` separates single-instance guards. A GUI
-already running without `--control` cannot be upgraded in place: quit it and
-relaunch with control enabled.
+sessions; `OPENFOCUS_INSTANCE_NAME` separates single-instance guards.
 
 ## 8. Completeness and verification
 
@@ -326,7 +326,7 @@ Verification:
   `ui.actions/tree/find/click/set/trigger`, screenshot.
 - Client tests: discovery parsing, request/response round-trip, `--launch`.
 - Native session: an agent command sequence drives a visible window end to end.
-- Full pytest suite; no behavior change when control is disabled.
+- Cross-process tests exercise default GUI startup and authenticated control.
 
 Completeness has since been extended to human input: real Qt mouse
 click/drag/wheel and key/text events (`ui.mouse`, `ui.key`, `ui.type`), all
@@ -339,13 +339,9 @@ compare, retouch and settings) and resolves the dialogs each one opens.
 Known limits: `ui.trigger` is asynchronous by design (the response is flushed
 before the action runs). `ui.click` is synchronous, so a button whose slot
 opens a modal `exec()` dialog blocks that command until the dialog closes —
-use `ui.click --async` or `ui.trigger`. Under heavy parallel client load a
-new local connection can occasionally time out even though the GUI is healthy;
-retry a read-only command once and check `ui.context`. Set
-`OPENFOCUS_CONTROL_WATCHDOG=1` to have the app dump the GUI stack if the
-thread really stalls. Screenshots capture Qt-rendered pixels,
-not the OS desktop. `ui.mouse` targets Qt widgets; external OS drag-and-drop
-from Explorer is not simulated (use `stack.load`). The control channel is not
-available in frozen builds started without `--control`.
+use `ui.click --async` or `ui.trigger`. Set `OPENFOCUS_CONTROL_WATCHDOG=1`
+to have the app dump the GUI stack if the thread stalls. Screenshots capture
+Qt-rendered pixels, not the OS desktop. `ui.mouse` targets Qt widgets;
+external OS drag-and-drop from Explorer is not simulated (use `stack.load`).
 
-See `.claude/skills/openfocus-control/SKILL.md` for the agent-facing workflow.
+See `skills/openfocus-control/SKILL.md` for the agent-facing workflow.

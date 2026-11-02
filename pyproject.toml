@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openfocus"
-description = "Multi-focus image fusion from the command line: registration (ECC / homography / fast phase correlation) plus eight fusion algorithms - four classical, the OpenFocus A/B/C family and the StackMFF V3 neural model - in one pip-installable tool"
+description = "Multi-focus image fusion from the command line, with registration, classical methods, OpenFocus A/B/C and neural models"
 readme = "README.md"
 # Every CI job and the packaged builds are 3.10; PyQt6 needs 3.10 as well, so
 # advertising 3.9 produced an install that failed at import time.
