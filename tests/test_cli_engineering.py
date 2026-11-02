@@ -657,3 +657,52 @@ def test_sensor_mask_cannot_be_output(tmp_path, batch):
     assert run_cli(['-i', str(folder), *destination, '-m', 'dct',
                     '--defect-mask-path', str(mask)]) != 0
     assert mask.read_bytes() == original
+
+
+@pytest.mark.parametrize('batch', [False, True])
+@pytest.mark.parametrize('grouped', [False, True])
+@pytest.mark.parametrize('dry_run', [False, True])
+def test_cli_rejects_rotated_square_source_with_sensor_mask(tmp_path, capsys, batch, grouped, dry_run):
+    from PIL import Image
+
+    folder = tmp_path / 'stack'
+    folder.mkdir()
+    for index in range(2):
+        image = Image.fromarray(np.full((24, 24, 3), 40 + index, np.uint8))
+        exif = image.getexif()
+        exif[274] = 6 if index else 1
+        image.save(folder / f'{index}.jpg', exif=exif)
+    mask = tmp_path / 'mask.png'
+    assert cv2.imwrite(str(mask), np.zeros((24, 24), np.uint8))
+    destination = ['-d', str(tmp_path / 'out')] if batch else ['-o', str(tmp_path / 'out.png')]
+    options = (['--group-size', '2'] if grouped else []) + (['--dry-run'] if dry_run else [])
+    assert run_cli(['-i', str(folder), *destination, *options,
+                    '--defect-mask-path', str(mask)]) != 0
+    assert 'orientation' in capsys.readouterr().err.lower()
+    assert not (tmp_path / 'out.png').exists()
+    assert not (tmp_path / 'out' / 'stack.png').exists()
+
+
+@pytest.mark.parametrize('option', [[], ['--sensor-denoise']])
+def test_cli_oriented_sources_remain_available_without_mask(tmp_path, option):
+    from PIL import Image
+
+    folder = tmp_path / 'stack'
+    folder.mkdir()
+    for index in range(2):
+        image = Image.fromarray(np.zeros((24, 24, 3), np.uint8))
+        exif = image.getexif()
+        exif[274] = 6
+        image.save(folder / f'{index}.jpg', exif=exif)
+    assert run_cli(['-i', str(folder), '-o', str(tmp_path / 'out.png'),
+                    '--dry-run', *option]) == 0
+
+
+def test_cli_rejects_video_before_materializing_masked_frames(tmp_path, capsys):
+    video = tmp_path / 'source.mp4'
+    video.write_bytes(b'')
+    mask = tmp_path / 'mask.png'
+    assert cv2.imwrite(str(mask), np.zeros((16, 16), np.uint8))
+    assert run_cli(['-i', str(video), '-o', str(tmp_path / 'out.png'),
+                    '--defect-mask-path', str(mask)]) != 0
+    assert 'video' in capsys.readouterr().err.lower()

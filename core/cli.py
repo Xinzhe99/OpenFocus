@@ -266,6 +266,12 @@ def _sensor_mask(args):
     return load_sensor_defect_mask(path, cancel_callback=getattr(args, "_should_cancel", None))
 
 
+def _validate_sensor_sources(paths, args):
+    if getattr(args, "defect_mask_path", None):
+        from utils.sensor_cleanup import validate_sensor_source_orientation
+        validate_sensor_source_orientation(paths, cancel_callback=getattr(args, "_should_cancel", None))
+
+
 def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
     """Return (source_label, image file paths) from folders, videos, or files.
 
@@ -283,6 +289,10 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
         if os.path.isdir(entry):
             paths.extend(_list_folder_images(entry, loader))
         elif loader.is_video_file(entry):
+            if getattr(args, "defect_mask_path", None):
+                raise ValueError("Cannot use a sensor defect mask with video frames: "
+                                 "their sensor orientation is unknown. Use sensor-oriented "
+                                 "still images or disable the defect mask.")
             ok, message, frames, _names = loader.load_from_video(entry)
             if not ok:
                 raise RuntimeError(f"Failed to read video {entry}: {message}")
@@ -298,6 +308,7 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
             raise FileNotFoundError(f"Input not found: {entry}")
     paths = _filter_stack_paths(paths, args.dust_map)
     paths = _filter_stack_paths(paths, getattr(args, "defect_mask_path", None))
+    _validate_sensor_sources(paths, args)
 
     # A single multi-page TIFF is a whole stack: count its pages, not files
     from core.image_loader import count_frames
@@ -795,6 +806,7 @@ def _run_batch(args, _emit_json=None) -> int:
             try:
                 paths = _filter_stack_paths(_list_folder_images(folder, loader), folder_args.dust_map)
                 paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
+                _validate_sensor_sources(paths, folder_args)
                 from core.image_loader import count_frames
                 frames = sum(count_frames(p) for p in paths)
                 if frames < 2:
@@ -815,6 +827,7 @@ def _run_batch(args, _emit_json=None) -> int:
         try:
             paths = _filter_stack_paths(_list_folder_images(folder, loader), folder_args.dust_map)
             paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
+            _validate_sensor_sources(paths, folder_args)
             # Count frames, not files: a folder holding one multi-page TIFF
             # Z-stack is a complete stack (same rule as single-stack mode).
             from core.image_loader import count_frames

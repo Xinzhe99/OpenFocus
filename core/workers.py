@@ -209,7 +209,8 @@ class RenderWorker(QThread):
                  base_frame='none', sort_mode='asc', exposure_match=False,
                  disk_cache=None, resource_preference='balanced', preview=False,
                  sharpen_output=False, defect_mask_path='', sensor_denoise=False,
-                 load_scale_factor=1.0, collect_alignment_report=False):
+                 load_scale_factor=1.0, source_paths=None,
+                 collect_alignment_report=False):
         super().__init__()
         if algorithm is None:
             if need_fusion or fusion_parameters:
@@ -245,6 +246,7 @@ class RenderWorker(QThread):
         self.defect_mask_path = defect_mask_path or ''
         self.sensor_denoise = bool(sensor_denoise)
         self.load_scale_factor = float(load_scale_factor)
+        self.source_paths = list(source_paths or [])
         self._cache_source_images = self.raw_images
         self.is_cancelled = False
         self.disk_cache = deepcopy(disk_cache) if disk_cache else None
@@ -297,6 +299,11 @@ class RenderWorker(QThread):
         cleanup = bool(self.defect_mask_path or self.sensor_denoise)
         if self.defect_mask_path and self.load_scale_factor != 1.0:
             raise ValueError('A sensor defect mask requires images loaded at 100% scale')
+        if self.defect_mask_path:
+            if len(self.source_paths) != len(self.raw_images) or not all(self.source_paths):
+                raise ValueError('A sensor defect mask requires the original still-image source path for every frame; reload the source images or disable the mask')
+            from utils.sensor_cleanup import validate_sensor_source_orientation
+            validate_sensor_source_orientation(self.source_paths, cancel_callback=lambda: self.is_cancelled)
         alignment_time = 0
         fusion_time = 0
         device_name = "CPU"
@@ -945,7 +952,7 @@ class BatchWorker(QThread):
         references = (self.processing_settings.get('flat_field_path', ''),
                       self.processing_settings.get('defect_mask_path', ''))
         def keep(item):
-            return not any(same_path(item[3] if len(item) > 3 else item[0], reference)
+            return not any(same_path(item[0], reference)
                            for reference in references if reference)
         if self._frozen_stacks:
             return [[item for item in stack if keep(item)] for stack in self._frozen_stacks]
@@ -987,7 +994,7 @@ class BatchWorker(QThread):
         references = (self.processing_settings.get('flat_field_path', ''),
                       self.processing_settings.get('defect_mask_path', ''))
         stack_images_with_times = [item for item in stack_images_with_times
-            if not any(same_path(item[3] if len(item) > 3 else item[0], reference)
+            if not any(same_path(item[0], reference)
                        for reference in references if reference)]
         images = [item[1] for item in stack_images_with_times]
         with log_operation("batch_stack", stack_name=stack_name, stack_index=stack_index,
@@ -997,7 +1004,8 @@ class BatchWorker(QThread):
                            registration_parameters=self.registration_parameters,
                            **frame_details(images)) as operation:
             try:
-                original_paths = [item[3] if len(item) > 3 else item[0] for item in stack_images_with_times]
+                original_paths = [item[0] for item in stack_images_with_times]
+                export_names = [item[3] if len(item) > 3 else item[0] for item in stack_images_with_times]
                 if self.is_cancelled:
                     raise RegistrationCancelled()
                 if not images:
@@ -1011,6 +1019,11 @@ class BatchWorker(QThread):
                 denoise = bool(self.processing_settings.get('sensor_denoise', False))
                 if mask_path and float(self.processing_settings.get('load_scale_factor', 1.0)) != 1.0:
                     raise ValueError('A sensor defect mask requires images loaded at 100% scale')
+                if mask_path:
+                    if not all(original_paths):
+                        raise ValueError('A sensor defect mask requires the original still-image source path for every frame; reload the source images or disable the mask')
+                    from utils.sensor_cleanup import validate_sensor_source_orientation
+                    validate_sensor_source_orientation(original_paths, cancel_callback=lambda: self.is_cancelled)
                 if mask_path or denoise:
                     from utils.sensor_cleanup import (load_sensor_defect_mask, cleanup_sensor_image,
                                                       require_sensor_cleanup_stack)
@@ -1128,7 +1141,7 @@ class BatchWorker(QThread):
                                 'annotations_baked': bool(stack_cfg)}
                     self.aligned_stacks.append(artifact)
                     for index, image in enumerate(aligned_for_export):
-                        filename = frame_export_name(original_paths[index], index, output_format)
+                        filename = frame_export_name(export_names[index], index, output_format)
                         ok = self._save_image(os.path.join(directory, filename), image,
                                               output_format, scale_cfg=stack_cfg)
                         saved.append(ok)
@@ -1170,8 +1183,12 @@ class BatchWorker(QThread):
             raise ValueError(message)
         self._source_exif = getattr(self.image_loader, 'source_exif', b'') or b''
         self._source_icc_profile = getattr(self.image_loader, 'source_icc_profile', b'')
-        entries = [(os.path.join(folder_path, name), image, None)
-                   for name, image in zip(filenames, images)]
+        source_paths = getattr(self.image_loader, 'image_paths', None) or []
+        if len(source_paths) != len(images):
+            source_paths = ([None] * len(images) if self.processing_settings.get('defect_mask_path')
+                            else [os.path.join(folder_path, name) for name in filenames])
+        entries = [(source_path, image, None, name)
+                   for name, image, source_path in zip(filenames, images, source_paths)]
         self._process_single_stack(entries, self._get_output_path_for_single_folder(folder_path),
                                    os.path.basename(os.path.normpath(folder_path)), 0)
 
@@ -1210,6 +1227,9 @@ class BatchWorker(QThread):
         paths = [path for _, path in files]
         if len(paths) < 2:
             raise ValueError('Fusion requires at least two frames')
+        if settings.get('defect_mask_path', ''):
+            from utils.sensor_cleanup import validate_sensor_source_orientation
+            validate_sensor_source_orientation(paths, cancel_callback=lambda: self.is_cancelled)
         self._source_exif = _read_exif_bytes(paths[0])
         self._source_icc_profile = common_icc_profile(paths)
         self.image_loader.px_size_um = detect_px_size_um(paths[0])
