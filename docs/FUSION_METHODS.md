@@ -17,6 +17,12 @@ estimation and smoothing as fusion. Tiled B/C renders share a full-image depth
 map; when resizing is requested, they use whole-frame rendering so the depth
 map and output have the same dimensions.
 
+On macOS, if StackMFF V1 reports an MPS convolution compiler error, disable
+**Settings → GPU Acceleration** for the next render or pass `--cpu` to the
+CLI. V1 uses 3D convolutions whose availability depends on the installed
+PyTorch and macOS graphics backend; the other neural methods use different
+operations.
+
 ## Depth maps
 
 Focus-position maps are available for DCT, DTCWT, GFG-FGF, OpenFocus B,
@@ -36,9 +42,11 @@ TIFFs, alternative images, physical depth and 3D models; the CLI
 
 The OpenFocus aligner searches bounded translation, rotation and scale using a
 sampled difference score, then warps with Lanczos4. The shift limit applies to
-both axes. Aligned edges are cropped to the intersection of valid regions.
-Luminance-weighted grayscale is used for registration so motion in color
-textures is not lost when channel sums remain constant.
+both axes. A denser initial translation grid reduces false matches on repeated
+textures, though it can increase alignment time. Aligned edges are cropped to
+the intersection of valid regions. Luminance-weighted grayscale is used for
+registration so motion in color textures is not lost when channel sums remain
+constant.
 
 ## Performance and quality observations
 

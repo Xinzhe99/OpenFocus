@@ -227,7 +227,6 @@ class StackMFF(Module):
 
         # Output convolution
         self.one_conv = Conv3d(feat_channels[0], num_channels, kernel_size=1, stride=1, padding=0, bias=True)
-        self.pool = nn.AdaptiveMaxPool3d(output_size=(1, None, None))
         self.smooth_layer=ConvBN(kernel_size=3, padding=1, stride=1, in_channels=1, out_channels=1)
         self.act_hardact = nn.Sigmoid()
 
@@ -259,7 +258,8 @@ class StackMFF(Module):
 
 
         out_decoder=self.one_conv(d_high1)
-        out_reduce_depth= self.pool(out_decoder)
+        # AdaptiveMaxPool3d is unsupported on MPS; reduce the full depth instead.
+        out_reduce_depth = torch.amax(out_decoder, dim=2, keepdim=True)
         out_squeeze = torch.squeeze(out_reduce_depth, 2)
         out_smooth = self.smooth_layer(out_squeeze)
         out = self.act_hardact(out_smooth)
