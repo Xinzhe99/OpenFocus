@@ -77,6 +77,46 @@ def _document(frames=None, result=None, **kwargs):
     return RetouchDocument(result, _context(frames, result), **kwargs)
 
 
+def test_global_tones_preserve_precision_and_are_one_history_step():
+    image = np.full((160, 180, 3), 10001, np.uint16)
+    frame = np.full_like(image, 23456)
+    doc = _document(frames=[frame], result=image)
+    assert doc.adjust_tones(1.0, 0.0) == "committed"
+    assert doc.working.dtype == np.uint16
+    assert (doc.working == 20002).all()
+    assert (image == 10001).all() and (frame == 23456).all()
+    changed = doc.working.copy()
+    assert doc.undo() and np.array_equal(doc.working, image)
+    assert not doc.can_undo
+    assert doc.redo() and np.array_equal(doc.working, changed)
+
+
+def test_global_tones_cancel_and_history_limit_leave_result_untouched():
+    image = np.full((256, 256, 3), 100, np.uint8)
+    doc = _document(frames=[image.copy()], result=image)
+    calls = []
+    def cancel_after_one_tile():
+        calls.append(1)
+        return len(calls) > 1
+    assert doc.adjust_tones(1.0, 0.0, cancel_after_one_tile) == "cancelled"
+    assert np.array_equal(doc.working, image)
+    assert not doc.can_undo and not doc.is_dirty
+    small = _document(frames=[image.copy()], result=image, max_bytes=100)
+    assert small.adjust_tones(1.0, 0.0) == "oversize"
+    assert np.array_equal(small.working, image) and not small.can_undo
+
+
+def test_global_tones_contrast_and_alpha():
+    from utils.retouch import adjust_tones
+    pixels = np.array([[[10000, 32768, 50000, 12345]]], dtype=np.uint16)
+    adjusted = adjust_tones(pixels, 0.0, 1.0)
+    assert adjusted.dtype == np.uint16
+    assert adjusted[0, 0, 0] == 0
+    assert adjusted[0, 0, 1] == 32768
+    assert adjusted[0, 0, 2] == 65535
+    assert adjusted[0, 0, 3] == 12345
+
+
 def test_exposure_brush_is_local_undoable_and_preserves_16bit():
     base = np.full((64, 64, 3), 12001, np.uint16)
     frames = [np.full_like(base, 25000)]
@@ -353,6 +393,36 @@ def _dialog(qapp, monkeypatch=None, apply_result=True):
     QApplication.processEvents()
     QApplication.processEvents()
     return dlg, published
+
+
+def test_global_tone_dialog_previews_cancels_and_applies(qapp):
+    from PyQt6.QtCore import QEventLoop, QTimer
+    from PyQt6.QtWidgets import QDialog
+    from dialogs.retouch import _ToneDialog
+
+    parent, published = _dialog(qapp)
+    dialog = _ToneDialog(parent.doc, parent)
+    dialog.exposure.spin.setValue(100)
+    after = dialog.preview.pixmap().toImage().pixelColor(10, 10).red()
+    dialog.before.setChecked(True)
+    before = dialog.preview.pixmap().toImage().pixelColor(10, 10).red()
+    assert (before, after) == (110, 220)
+    dialog.reject()
+    assert (parent.doc.working == 110).all() and not parent.doc.can_undo
+
+    dialog = _ToneDialog(parent.doc, parent)
+    dialog.exposure.spin.setValue(100)
+    dialog._apply()
+    loop = QEventLoop()
+    dialog.worker.finished.connect(loop.quit)
+    QTimer.singleShot(5000, loop.quit)
+    loop.exec()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert (parent.doc.working == 220).all()
+    parent._update_dirty_ui()
+    assert parent._apply()
+    assert (published[0][1] == 220).all()
+    parent.close()
 
 
 def test_dialog_exposure_preview_undo_and_publish(qapp):

@@ -717,6 +717,16 @@ Escape during a stroke to cancel it, or use undo and redo after the stroke.
 These are pixel edits, not adjustable layers. Apply as New Output and export
 the new entry to save the edited pixels; a project does not store those pixels.
 
+**Result adjustments…** changes the entire current retouch result. Its sampled
+preview updates as you change exposure and contrast; check **Before** to
+compare with the result before opening the adjustment. Both controls use
+hundredths of a stop: exposure multiplies pixel values, then contrast scales
+their distance from mid-gray. Extreme values can clip highlights or shadows.
+**OK** applies the adjustment as one undoable edit; **Cancel** leaves the
+result unchanged. During processing, Cancel requests a rollback. The full
+image must fit within the retouch history's memory limit for this undoable
+operation. Publish and export the result as described above.
+
 Provenance travels with the output: the aligned frames, ROI crop/paste
 offsets, DCT edge trimming and bit depth are recorded when the result is
 rendered. Batch files, legacy results and align-only folder entries have no

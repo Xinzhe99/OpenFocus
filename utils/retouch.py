@@ -40,6 +40,21 @@ def _to_dtype(patch: np.ndarray, dst_dtype) -> np.ndarray:
     return out
 
 
+def adjust_tones(image: np.ndarray, exposure: float, contrast: float) -> np.ndarray:
+    """Apply exposure and midpoint contrast in the image's native range."""
+    maximum = _dtype_max(image.dtype)
+    pixels = image.astype(np.float32)
+    color = pixels[..., :3] if pixels.ndim == 3 and pixels.shape[2] == 4 else pixels
+    color *= 2.0 ** exposure
+    color -= maximum / 2.0
+    color *= 2.0 ** contrast
+    color += maximum / 2.0
+    np.clip(color, 0, maximum, out=color)
+    if np.issubdtype(image.dtype, np.integer):
+        np.rint(color, out=color)
+    return pixels.astype(image.dtype)
+
+
 def _as_bgr(img: np.ndarray) -> np.ndarray:
     if img.ndim == 2:
         return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -470,6 +485,37 @@ class RetouchDocument:
 
     def result(self) -> np.ndarray:
         return self.working
+
+    def adjust_tones(self, exposure: float, contrast: float, cancelled=None) -> str:
+        """Apply a whole-image adjustment as one bounded history transaction.
+
+        Cancellation and errors restore every changed tile.
+        """
+        if self.stroke_active:
+            return "busy"
+        if exposure == 0 and contrast == 0:
+            return "empty"
+        if self.working.nbytes > self.history.max_bytes:
+            return "oversize"
+        self.history.begin()
+        try:
+            for key in self.history._tile_keys(0, 0, self.width, self.height):
+                if cancelled is not None and cancelled():
+                    self.history.abort()
+                    return "cancelled"
+                sl = self.history._tile_slice(key)
+                tile = self.working[sl]
+                adjusted = adjust_tones(tile, exposure, contrast)
+                if not np.array_equal(tile, adjusted):
+                    self.history.remember_tile(key)
+                    tile[...] = adjusted
+            if cancelled is not None and cancelled():
+                self.history.abort()
+                return "cancelled"
+            return self.history.end()
+        except BaseException:
+            self.history.abort()
+            raise
 
     # ---------------------------------------------------------- choices
     def set_frame(self, index: int) -> bool:
