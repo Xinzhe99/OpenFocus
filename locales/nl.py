@@ -1,6 +1,21 @@
 """Dutch language pack for OpenFocus."""
 
 PACK = {
+    "alignment_detail_reason": "Reden",
+    "alignment_detail_quality_fast": "Detectorscore",
+    "alignment_detail_quality_ecc": "ECC-correlatie",
+    "alignment_detail_matches": "Overeenkomsten",
+    "alignment_detail_inliers": "Inliers",
+    "alignment_detail_reference": "Gekoppeld referentiebeeld",
+    "alignment_detail_chained": "Keten van buurbeelden",
+    "alignment_detail_transform": "Matrix van bron naar referentie vóór bijsnijden",
+    "alignment_reason_low_quality": "Lage uitlijningskwaliteit",
+    "alignment_reason_outside_limits": "Transformatie buiten grenzen",
+    "alignment_reason_reference_fallback": "Terugval op referentiebeeld",
+    "alignment_reason_insufficient_features": "Onvoldoende kenmerken",
+    "alignment_reason_insufficient_matches": "Onvoldoende overeenkomsten",
+    "alignment_reason_homography_failed": "Homografie mislukt",
+    "alignment_reason_ecc_failed": "ECC mislukt",
     'alignment_report_collect': 'Uitlijningsdiagnose verzamelen', 'alignment_report_collect_hint': 'Bereken de uitlijning opnieuw voor resultaten per beeld in plaats van de cache te gebruiken.',
     'alignment_report_failed': 'Mislukt',
     'alignment_report_title': 'Uitlijningsdiagnose', 'alignment_report_unavailable': 'Geen diagnose per beeld voor de laatste rendering. Schakel verzamelen in en render opnieuw.',

@@ -5,6 +5,21 @@ fall back to this table.
 """
 
 ZH = {
+    "alignment_detail_reason": "原因",
+    "alignment_detail_quality_fast": "检测器得分",
+    "alignment_detail_quality_ecc": "ECC 相关性",
+    "alignment_detail_matches": "匹配数",
+    "alignment_detail_inliers": "内点数",
+    "alignment_detail_reference": "匹配的参考帧",
+    "alignment_detail_chained": "相邻帧链",
+    "alignment_detail_transform": "裁剪前从源帧到参考帧的矩阵",
+    "alignment_reason_low_quality": "配准质量低",
+    "alignment_reason_outside_limits": "变换超出限制",
+    "alignment_reason_reference_fallback": "回退到参考帧",
+    "alignment_reason_insufficient_features": "特征点不足",
+    "alignment_reason_insufficient_matches": "匹配点不足",
+    "alignment_reason_homography_failed": "单应性计算失败",
+    "alignment_reason_ecc_failed": "ECC 失败",
     'alignment_report_collect': '收集配准诊断', 'alignment_report_collect_hint': '重新计算配准以收集逐帧结果，不使用配准缓存。',
     'alignment_report_failed': '失败',
     'alignment_report_title': '配准诊断', 'alignment_report_unavailable': '上次渲染没有逐帧诊断。请启用收集并重新渲染。',

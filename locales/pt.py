@@ -1,6 +1,21 @@
 """Portuguese (Brazil) language pack for OpenFocus."""
 
 PACK = {
+    "alignment_detail_reason": "Motivo",
+    "alignment_detail_quality_fast": "Pontuação do detector",
+    "alignment_detail_quality_ecc": "Correlação ECC",
+    "alignment_detail_matches": "Correspondências",
+    "alignment_detail_inliers": "Pontos válidos",
+    "alignment_detail_reference": "Quadro de referência correspondente",
+    "alignment_detail_chained": "Cadeia de quadros vizinhos",
+    "alignment_detail_transform": "Matriz da origem para a referência antes do recorte",
+    "alignment_reason_low_quality": "Baixa qualidade de alinhamento",
+    "alignment_reason_outside_limits": "Transformação fora dos limites",
+    "alignment_reason_reference_fallback": "Alternativa com quadro de referência",
+    "alignment_reason_insufficient_features": "Pontos de interesse insuficientes",
+    "alignment_reason_insufficient_matches": "Correspondências insuficientes",
+    "alignment_reason_homography_failed": "Falha na homografia",
+    "alignment_reason_ecc_failed": "Falha no ECC",
     'alignment_report_collect': 'Coletar diagnóstico de alinhamento', 'alignment_report_collect_hint': 'Recalcule o alinhamento para coletar resultados por quadro sem reutilizar o cache.',
     'alignment_report_failed': 'Falhou',
     'alignment_report_title': 'Diagnóstico de alinhamento', 'alignment_report_unavailable': 'Não há diagnóstico por quadro para a última renderização. Ative a coleta e renderize novamente.',

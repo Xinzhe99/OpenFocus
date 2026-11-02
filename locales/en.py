@@ -5,6 +5,21 @@ fall back to this table.
 """
 
 EN = {
+    "alignment_detail_reason": "Reason",
+    "alignment_detail_quality_fast": "Detector score",
+    "alignment_detail_quality_ecc": "ECC correlation",
+    "alignment_detail_matches": "Matches",
+    "alignment_detail_inliers": "Inliers",
+    "alignment_detail_reference": "Matched reference frame",
+    "alignment_detail_chained": "Neighbor chain",
+    "alignment_detail_transform": "Source-to-reference matrix before crop",
+    "alignment_reason_low_quality": "Low alignment quality",
+    "alignment_reason_outside_limits": "Transform outside limits",
+    "alignment_reason_reference_fallback": "Reference frame fallback",
+    "alignment_reason_insufficient_features": "Insufficient features",
+    "alignment_reason_insufficient_matches": "Insufficient matches",
+    "alignment_reason_homography_failed": "Homography failed",
+    "alignment_reason_ecc_failed": "ECC failed",
     'alignment_report_collect': 'Collect alignment diagnostics',
     'alignment_report_failed': 'Failed',
     'alignment_report_collect_hint': 'Recompute alignment to collect per-frame outcomes instead of reusing cached alignment.',
