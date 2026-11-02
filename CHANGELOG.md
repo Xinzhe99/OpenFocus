@@ -26,6 +26,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Retouch checkpoint replay** runs headlessly with an explicit base and ordered
   processed source images. Replay verifies the recorded context and preserves
   8- or 16-bit output in PNG or TIFF without overwriting its inputs.
+  Replay checks its memory budget before allocating image and history buffers;
+  a refused operation leaves the current edits and existing checkpoint intact.
 - **RGB color profiles** are retained in single-image PNG, TIFF, JPEG and WebP
   when all source frames have the same ICC profile. Historical outputs and
   batch folders retain their own profiles; mixed or untagged stacks are not

@@ -14,6 +14,32 @@ MAX_POINTS = 250000
 MAX_OPERATIONS = 100000
 
 
+def _aligned_mask_bytes(doc):
+    # Connected components, zero masks, labels and up to two cached masks.
+    pixels = max((frame.image.shape[0] * frame.image.shape[1]
+                  for frame in doc.frames
+                  if frame.image is not None and frame.aligned), default=0)
+    return pixels * 14
+
+
+def _require_replay_memory(doc, operations, max_bytes):
+    from core.resource_policy import require_memory
+
+    frame_bytes = doc.base.nbytes
+    count = len(operations)
+    pixels = doc.height * doc.width
+    history = min(max_bytes, count * frame_bytes)
+    stroke_diameters = [op.get('diameter', 0) for op in operations
+                        if isinstance(op, dict) and op.get('type') == 'stroke']
+    diameter = max((value for value in stroke_diameters
+                    if type(value) is int and 1 <= value <= 2048), default=0)
+    dab_pixels = min(doc.width, diameter) * min(doc.height, diameter)
+    # One replay document holds two image copies. A pending stroke can hold
+    # another full image of history plus coverage and float blending buffers.
+    scratch = (frame_bytes + pixels * 4 + dab_pixels * 48) if count else 0
+    require_memory(2 * frame_bytes + history + scratch + _aligned_mask_bytes(doc))
+
+
 def _fingerprint(array, cancelled=None):
     if array is None:
         return None
@@ -28,6 +54,10 @@ def _fingerprint(array, cancelled=None):
 
 
 def provenance(doc, cancelled=None):
+    mask_bytes = _aligned_mask_bytes(doc)
+    if mask_bytes:
+        from core.resource_policy import require_memory
+        require_memory(mask_bytes)
     frames = []
     for frame in doc.frames:
         if cancelled is not None and cancelled():
@@ -65,6 +95,11 @@ def save_checkpoint(doc, path, cancelled=None):
         if name and os.path.isfile(name) and (os.path.normcase(os.path.abspath(name)) == os.path.normcase(destination)
                 or (os.path.exists(destination) and os.path.samefile(name, destination))):
             raise ValueError('Cannot overwrite a source image')
+    # Reserve for JSON text and its UTF-8 encoding before materializing both.
+    from core.resource_policy import require_memory
+    record_bytes = (4096 + 96 * doc._point_count + 256 * len(doc._operations)
+                    + sum(512 + 6 * len(str(frame.frame_id)) for frame in doc.frames))
+    require_memory(record_bytes * 2)
     record = {"version": 1, **doc._provenance, "operations": doc._operations,
               "cursor": doc._cursor, "undo_count": len(doc.history._undo),
               "redo_count": len(doc.history._redo), "max_strokes": doc.history.max_strokes,
@@ -83,12 +118,7 @@ def save_checkpoint(doc, path, cancelled=None):
             os.fsync(stream.fileno())
         if cancelled is not None and cancelled():
             raise ValueError('Retouch checkpoint saving cancelled')
-        from utils.retouch import RetouchDocument
-        verified = RetouchDocument(doc.base, doc.context,
-                                   max_strokes=doc.history.max_strokes,
-                                   max_bytes=doc.history.max_bytes)
-        verified._provenance = doc._provenance
-        load_checkpoint(verified, temp, cancelled)
+        verified = _replay_checkpoint(doc, temp, cancelled)
         if not np.array_equal(verified.working, doc.working):
             raise ValueError('Retouch replay does not match the current image; start a new session')
         for expected, actual in ((doc.history._undo, verified.history._undo),
@@ -122,15 +152,21 @@ def _integer(value, minimum, maximum):
     return value
 
 
-def load_checkpoint(doc, path, cancelled=None):
+def _replay_checkpoint(doc, path, cancelled=None):
     if doc.stroke_active:
         raise ValueError('Finish the current stroke before loading')
     if not doc.checkpoint_ready:
         raise ValueError('Checkpoint initialization is unavailable; start a new session')
     with open(path, 'rb') as stream:
-        data = stream.read(MAX_FILE_BYTES + 1)
-    if len(data) > MAX_FILE_BYTES:
-        raise ValueError('Retouch history is too large')
+        size = os.fstat(stream.fileno()).st_size
+        if size > MAX_FILE_BYTES:
+            raise ValueError('Retouch history is too large')
+        from core.resource_policy import require_memory
+        # JSON objects and point lists occupy more memory than their encoding.
+        require_memory(size * 12)
+        data = stream.read(size + 1)
+    if len(data) > size:
+        raise ValueError('Retouch history changed while reading')
     try:
         record = json.loads(data)
         if not isinstance(record, dict) or type(record.get('version')) is not int or record['version'] != 1:
@@ -149,6 +185,7 @@ def load_checkpoint(doc, path, cancelled=None):
             raise ValueError('Invalid redo history')
         max_strokes = _integer(record['max_strokes'], 1, 100000)
         max_bytes = _integer(record['max_bytes'], 1, 4 * 1024 * 1024 * 1024)
+        _require_replay_memory(doc, operations, max_bytes)
         from utils.retouch import RetouchDocument
         replay = RetouchDocument(doc.base, doc.context, max_strokes=max_strokes, max_bytes=max_bytes)
         replay._provenance = doc._provenance
@@ -217,6 +254,11 @@ def load_checkpoint(doc, path, cancelled=None):
             raise ValueError('Retouch replay cancelled')
     except (KeyError, TypeError, OverflowError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError('Invalid retouch checkpoint') from exc
+    return replay
+
+
+def load_checkpoint(doc, path, cancelled=None):
+    replay = _replay_checkpoint(doc, path, cancelled)
     doc.working = replay.working
     doc.history = replay.history
     doc._operations = replay._operations
