@@ -16,6 +16,88 @@ from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
 PROJECT_SUFFIX = ".ofproj"
 FORMAT_VERSION = 3
 
+TEMPLATE_SUFFIX = ".oftemplate"
+TEMPLATE_VERSION = 1
+TEMPLATE_SETTINGS = (
+    "fusion_method", "alignment_method", "stack_reverse_order",
+    "base_frame_correct", "exposure_match", "thread_count", "tile_enabled",
+    "tile_block_size", "tile_overlap", "tile_threshold", "reg_downscale_width",
+    "ai_batch_size", "method_parameters", "registration_parameters",
+    "brightness_by_method",
+)
+
+
+def validate_template_settings(settings):
+    """Validate processing settings without retaining source-specific state."""
+    if not isinstance(settings, dict) or set(settings) - set(TEMPLATE_SETTINGS):
+        raise ValueError("invalid template settings")
+    settings = json.loads(json.dumps(settings, allow_nan=False))
+    for key in ("stack_reverse_order", "base_frame_correct", "exposure_match", "tile_enabled"):
+        if key in settings and type(settings[key]) is not bool:
+            raise ValueError(f"{key} must be boolean")
+    for key in ("thread_count", "tile_block_size", "tile_overlap", "tile_threshold",
+                "reg_downscale_width", "ai_batch_size"):
+        value = settings.get(key)
+        if value is None and key == "reg_downscale_width":
+            continue
+        if key in settings and (type(value) is not int or value < (0 if key in ("thread_count", "tile_overlap") else 1)):
+            raise ValueError(f"invalid {key}")
+    if settings.get("tile_overlap", 0) >= settings.get("tile_block_size", 1024):
+        raise ValueError("tile overlap must be smaller than the tile size")
+    _normalize_algorithm_settings(settings, legacy=False)
+    return settings
+
+
+def template_from_state(state):
+    """Extract settings from a validated project or a window snapshot."""
+    settings = state.get("settings", {})
+    return validate_template_settings({key: settings[key] for key in TEMPLATE_SETTINGS if key in settings})
+
+
+def save_template(window, path):
+    settings = template_from_state(_collect_state(window))
+    with open(path, "w", encoding="utf-8") as stream:
+        json.dump({"openfocus_template": TEMPLATE_VERSION, "settings": settings},
+                  stream, ensure_ascii=False, indent=2, allow_nan=False)
+        stream.write("\n")
+
+
+def load_template(path):
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate field: {key}")
+            result[key] = value
+        return result
+    with open(path, encoding="utf-8") as stream:
+        data = json.load(stream, object_pairs_hook=unique_pairs)
+    if isinstance(data, dict) and "openfocus_project" in data:
+        ok, error, state = validate_project(path)
+        if not ok:
+            raise ValueError(error)
+        return template_from_state(state)
+    if isinstance(data, dict) and "version" in data:
+        from core.recipes import load_recipe
+        recipe = load_recipe(path)
+        if "project_settings" not in recipe:
+            raise ValueError("recipe has no project settings")
+        return validate_template_settings(recipe["project_settings"])
+    if not isinstance(data, dict) or set(data) != {"openfocus_template", "settings"} or type(data["openfocus_template"]) is not int or data["openfocus_template"] != TEMPLATE_VERSION:
+        raise ValueError("unsupported or invalid template")
+    return validate_template_settings(data["settings"])
+
+
+def apply_template(window, settings):
+    """Apply processing settings to the currently loaded sources, untouched."""
+    settings = validate_template_settings(settings)
+    state = _collect_state(window)
+    state["settings"].update(settings)
+    _apply_after_load(window, state)
+    mark = getattr(window, "_mark_project_dirty", None)
+    if callable(mark):
+        mark()
+
 
 def _collect_state(window) -> Dict[str, Any]:
     """Snapshot everything restorable from the main window."""

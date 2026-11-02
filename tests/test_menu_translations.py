@@ -47,7 +47,8 @@ def _menu_window(qapp):
     })()
     for name in (
             "open_folder_dialog", "open_video_dialog", "open_project_dialog",
-            "save_project_dialog", "rebuild_recent_menu", "undo", "redo",
+            "save_project_dialog", "open_template_dialog", "save_template_dialog",
+            "rebuild_recent_menu", "undo", "redo",
             "rotate_stack", "flip_stack", "resize_all_images",
             "show_retouch_dialog", "show_batch_processing_dialog",
             "show_compare_dialog", "show_depth_map_dialog",

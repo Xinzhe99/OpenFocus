@@ -44,6 +44,16 @@ def setup_menus(window: QMainWindow) -> None:
     file_menu.addAction(save_project_as_action)
     window.ui_objs['menu_save_project_as'] = save_project_as_action
 
+    open_template_action = QAction(trans.t('menu_open_template'), window)
+    open_template_action.triggered.connect(window.open_template_dialog)
+    file_menu.addAction(open_template_action)
+    window.ui_objs['menu_open_template'] = open_template_action
+
+    save_template_action = QAction(trans.t('menu_save_template'), window)
+    save_template_action.triggered.connect(window.save_template_dialog)
+    file_menu.addAction(save_template_action)
+    window.ui_objs['menu_save_template'] = save_template_action
+
     file_menu.addSeparator()
 
     # Recent files submenu (items filled in by window.rebuild_recent_menu())
