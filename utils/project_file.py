@@ -23,7 +23,7 @@ TEMPLATE_SETTINGS = (
     "base_frame_correct", "exposure_match", "thread_count", "tile_enabled",
     "tile_block_size", "tile_overlap", "tile_threshold", "reg_downscale_width",
     "ai_batch_size", "method_parameters", "registration_parameters",
-    "brightness_by_method",
+    "brightness_by_method", "sharpen_output",
 )
 
 
@@ -32,7 +32,7 @@ def validate_template_settings(settings):
     if not isinstance(settings, dict) or set(settings) - set(TEMPLATE_SETTINGS):
         raise ValueError("invalid template settings")
     settings = json.loads(json.dumps(settings, allow_nan=False))
-    for key in ("stack_reverse_order", "base_frame_correct", "exposure_match", "tile_enabled"):
+    for key in ("stack_reverse_order", "base_frame_correct", "exposure_match", "tile_enabled", "sharpen_output"): 
         if key in settings and type(settings[key]) is not bool:
             raise ValueError(f"{key} must be boolean")
     for key in ("thread_count", "tile_block_size", "tile_overlap", "tile_threshold",

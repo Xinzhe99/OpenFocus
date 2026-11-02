@@ -16,11 +16,13 @@ _FIELDS = (
     "method", "align", "base_frame", "exposure_match", "sort", "dust_map",
     "threads", "resource_preference", "batch_size", "cpu", "downscale",
     "tile_size", "tile_enabled", "tile_overlap", "tile_threshold",
-    "scale_bar", "scale_um", "depth_map", "depth_colormap",
+    "scale_bar", "scale_um", "depth_map", "depth_colormap", "sharpen_output",
+    "group_size", "group_overlap",
 )
 _PATH_FIELDS = {"dust_map", "depth_map"}
 _INTEGER_LIMITS = {"threads": 0, "batch_size": 1, "downscale": 1, "tile_size": 64,
-                   "tile_overlap": 0, "tile_threshold": 1}
+                   "tile_overlap": 0, "tile_threshold": 1,
+                   "group_size": 0, "group_overlap": 0}
 
 
 def _relative(path, base):
@@ -90,7 +92,7 @@ def validate_recipe(recipe, recipe_path):
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError("scale_um must be a positive finite number")
-        elif key in ("cpu", "scale_bar", "exposure_match", "tile_enabled"):
+        elif key in ("cpu", "scale_bar", "exposure_match", "tile_enabled", "sharpen_output"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
             if key in ("exposure_match", "tile_enabled"):
@@ -120,6 +122,10 @@ def validate_recipe(recipe, recipe_path):
     args = parser.parse_args(argv)
     if args.tile_overlap is not None and args.tile_size is not None and args.tile_overlap >= args.tile_size:
         raise ValueError("tile_overlap must be smaller than tile_size")
+    if args.group_size == 1 or (args.group_size and args.group_overlap > args.group_size - 2):
+        raise ValueError("invalid group size or overlap")
+    if args.group_size and args.depth_map:
+        raise ValueError("original-frame depth is unavailable with grouped fusion")
     _resolve_algorithm_arguments(args)
     if args.depth_map:
         from utils.colormap import get_lut
@@ -217,6 +223,8 @@ def capture_project_recipe(path, project_path, argv):
     ok, error, state = validate_project(os.fspath(project_path))
     if not ok:
         raise ValueError(error)
+    if state.get("source_transforms"):
+        raise ValueError("project source edits cannot be captured in a recipe; export the corrected source stack first")
     settings = template_from_state(state)
     method = settings.get("fusion_method", "none")
     if method == "none":
@@ -231,6 +239,8 @@ def capture_project_recipe(path, project_path, argv):
                   "--base-frame", "last" if base else "none",
                   "--sort", "desc" if settings.get("stack_reverse_order", False) else "asc",
                   "--exposure-match" if exposure else "--no-exposure-match"]
+    if settings.get("sharpen_output", False):
+        processing.append("--sharpen-output")
     if not settings.get("tile_enabled", True):
         processing.append("--no-tile-enabled")
     for key, flag in (("thread_count", "--threads"), ("ai_batch_size", "--batch-size"),
