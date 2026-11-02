@@ -191,7 +191,8 @@ class RenderWorker(QThread):
                  thread_count=DEFAULT_THREAD_COUNT, ai_batch_size=2,
                  roi_rect=None, roi_mode='crop', roi_base_index=0, use_gpu=True,
                  base_frame='none', sort_mode='asc', exposure_match=False,
-                 disk_cache=None, resource_preference='balanced', preview=False):
+                 disk_cache=None, resource_preference='balanced', preview=False,
+                 sharpen_output=False):
         super().__init__()
         if algorithm is None:
             if need_fusion or fusion_parameters:
@@ -223,6 +224,7 @@ class RenderWorker(QThread):
         self.base_frame = base_frame
         self.sort_mode = sort_mode
         self.exposure_match = bool(exposure_match)
+        self.sharpen_output = bool(sharpen_output)
         self.is_cancelled = False
         self.disk_cache = deepcopy(disk_cache) if disk_cache else None
         if self.disk_cache is not None and self.registration_parameters:
@@ -534,6 +536,9 @@ class RenderWorker(QThread):
             resource_preference=self.resource_preference)
         result = fusion.fuse(images, thread_count=self.thread_count,
             should_cancel=should_cancel, progress_callback=progress_callback)
+        if self.sharpen_output and result is not None:
+            from utils.output_sharpen import sharpen_output
+            result = sharpen_output(result, should_cancel)
         device = fusion.get_info()['device'] if get_fusion(self.algorithm).neural else 'CPU'
         return quantize_fuse_output(result, is_16bit), device
 
@@ -984,6 +989,9 @@ class BatchWorker(QThread):
                         sort_mode=runtime.get('sort_mode', 'asc'),
                         exposure_match=self.exposure_match, **tile_kwargs)
                     result = self._fuse_one_stack(fusion, fusion_method, fusion_input, fusion_params)
+                    if runtime.get('sharpen_output', False) and result is not None:
+                        from utils.output_sharpen import sharpen_output
+                        result = sharpen_output(result, lambda: self.is_cancelled)
                     result = quantize_fuse_output(result, is_16bit)
                 else:
                     save_aligned = True

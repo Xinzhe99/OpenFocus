@@ -63,6 +63,7 @@ class RenderManager:
             window.current_alignment_method())
         values["exposure_match"] = window.brightness_option_for("exposure_match", method)
         values["base_correct"] = window.brightness_option_for("base_correct", method)
+        values["sharpen_output"] = bool(getattr(window, "sharpen_output", False))
         values["base_frame"] = "last" if values["base_correct"] else "none"
         values["sort_mode"] = "desc" if values["stack_reverse_order"] else "asc"
         return values
@@ -622,6 +623,7 @@ class RenderManager:
             sort_mode="desc" if getattr(window, "stack_reverse_order", False)
                 else "asc",
             exposure_match=_brightness(window, "exposure_match", force_algorithm or fusion_method),
+            sharpen_output=bool(getattr(window, "sharpen_output", False)),
             disk_cache=disk_cache_request,
             preview=self._preview_mode,
         )

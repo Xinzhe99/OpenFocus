@@ -148,6 +148,7 @@ class CompareDialog(QDialog):
             "resource_preference": getattr(window, "resource_preference", "balanced"),
             "reg_downscale_width": int(getattr(window, "reg_downscale_width", 1024)),
             "exposure_match": bool(getattr(window, "exposure_match", True)),
+            "sharpen_output": bool(getattr(window, "sharpen_output", False)),
             "sort_mode": "desc" if getattr(window, "stack_reverse_order", False) else "asc",
         }
         for key in ("tile_block_size", "tile_overlap", "tile_threshold"):

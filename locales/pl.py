@@ -332,6 +332,8 @@ PACK = {
     "check_align_of_hint": "Szybkie ograniczone dopasowanie podobieństwa (przesunięcie + obrót + skala) z wyrównaniem jasności i automatycznym przycięciem. Poniżej sekundy na klatkę; klatki przesunięte o więcej niż 8% rozmiaru pozostają niewyrównane zamiast częściowo poprawionych. Wybierz ECC lub homografię dla geometrii nieodkształcalnej lub ekstremalnej.",
     "chk_base_correct": "Usuń dryf jasności",
     "chk_exposure_match": "Dopasuj ekspozycję przed fuzją",
+    "chk_sharpen_output": "Wyostrz wynik łączenia",
+    "chk_sharpen_output_hint": "Po połączeniu stosuje lekką maskę wyostrzającą. Może wzmocnić krawędzie, ale także szum i obwódki. Domyślnie wyłączone.",
     "chk_exposure_match_hint": "Skaluje każdą klatkę do średniej z ostatniej klatki przed miarą ostrości, więc ciemniejsza lub jaśniejsza klatka nie wygrywa ani nie przegrywa tylko przez jasność. Obliczane na całym stosie (wynik kafelkowy pozostaje bezszwowy) i stosowane do każdej metody fuzji. Domyślnie włączone (zawsze włączone dla OpenFocus A/B/C, które nie mają wbudowanej kalibracji).",
     "chk_base_correct_hint": "Po fuzji dopasowuje niskoczęstotliwościową jasność wyniku do ostatniej klatki (lub pierwszej, dla odwróconego stosu). Usuwa dryf ekspozycji niewidoczny dla miary ostrości, np. w stosie poklatkowym, w którym oświetlenie zmieniało się między zdjęciami. Dotyczy każdej metody; domyślnie włączone dla OpenFocus A/B/C.",
     "chk_reverse_order": "Odwróć kolejność stosu (przemiatanie od dalekich do bliskich)",

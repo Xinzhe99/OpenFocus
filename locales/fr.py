@@ -332,6 +332,8 @@ PACK = {
     "check_align_of_hint": "Alignement rapide par similarité bornée (translation + rotation + échelle) avec égalisation de la luminosité et recadrage automatique. Moins d'une seconde par image ; les images décalées de plus de 8 % de leur taille restent non alignées plutôt que partiellement corrigées. Choisissez ECC ou Homographie pour une géométrie non rigide ou extrême.",
     "chk_base_correct": "Supprimer la dérive de luminosité",
     "chk_exposure_match": "Harmoniser l'exposition avant la fusion",
+    "chk_sharpen_output": "Accentuer le résultat fusionné",
+    "chk_sharpen_output_hint": "Applique une légère accentuation après fusion. Elle peut renforcer les contours, mais aussi le bruit et les halos. Désactivé par défaut.",
     "chk_exposure_match_hint": "Ramène chaque image à la moyenne de la dernière image avant la mesure de netteté, afin qu'une image plus sombre ou plus claire ne gagne ou ne perde pas sur la seule luminosité. Calculé sur toute la pile (la sortie en tuiles reste sans couture) et appliqué à toutes les méthodes de fusion. Activé par défaut (toujours actif pour OpenFocus A/B/C, sans calibration intégrée).",
     "chk_base_correct_hint": "Après la fusion, aligne la luminosité basse fréquence du résultat sur la dernière image (ou la première, pour une pile inversée). Supprime la dérive d'exposition que la mesure de netteté ne voit pas, par ex. une pile en time-lapse dont l'éclairage a changé entre les prises. S'applique à toutes les méthodes ; activé par défaut pour OpenFocus A/B/C.",
     "chk_reverse_order": "Inverser l'ordre de la pile (balayage loin → près)",

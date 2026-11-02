@@ -452,6 +452,10 @@ class BatchProcessingDialog(QDialog):
         self.chk_base_correct.setToolTip(trans.t('chk_base_correct_hint'))
         options_layout.addWidget(self.chk_base_correct)
 
+        self.chk_sharpen_output = QCheckBox(trans.t('chk_sharpen_output'))
+        self.chk_sharpen_output.setToolTip(trans.t('chk_sharpen_output_hint'))
+        options_layout.addWidget(self.chk_sharpen_output)
+
         last_dir = self._last_pick_dir()
         if last_dir:
             self.path_input.setText(last_dir)
@@ -1167,6 +1171,7 @@ class BatchProcessingDialog(QDialog):
         self.fusion_combo.setCurrentIndex(self.fusion_combo.findData(method))
         self.align_combo.setCurrentIndex(self.align_combo.findData(alignment))
         self.chk_reverse_order.setChecked(bool(getattr(window, 'stack_reverse_order', False)))
+        self.chk_sharpen_output.setChecked(bool(getattr(window, 'sharpen_output', False)))
         getter = getattr(window, 'brightness_option_for', None)
         if callable(getter):
             method = self.fusion_combo.currentData()
@@ -1240,6 +1245,7 @@ class BatchProcessingDialog(QDialog):
         runtime = dict(self._runtime_settings)
         runtime['base_frame'] = 'last' if self.chk_base_correct.isChecked() else 'none'
         runtime['exposure_match'] = self.chk_exposure_match.isChecked()
+        runtime['sharpen_output'] = self.chk_sharpen_output.isChecked()
         runtime['sort_mode'] = 'desc' if self.chk_reverse_order.isChecked() else 'asc'
 
         align_method = self.align_combo.currentData() or "none"

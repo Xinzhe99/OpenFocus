@@ -148,6 +148,7 @@ class RightPanelComponents:
     combo_align: QComboBox
     chk_base_correct: QCheckBox
     chk_exposure_match: QCheckBox
+    chk_sharpen_output: QCheckBox
     chk_reverse_order: QCheckBox
     fusion_parameter_panel: AlgorithmParameterPanel
     registration_parameter_panel: AlgorithmParameterPanel
@@ -307,6 +308,7 @@ def create_right_panel() -> RightPanelComponents:
     chk_reverse_order = options_flow.add(_option('chk_reverse_order', False))
     chk_exposure_match = options_flow.add(_option('chk_exposure_match', True))
     chk_base_correct = options_flow.add(_option('chk_base_correct', False))
+    chk_sharpen_output = options_flow.add(_option('chk_sharpen_output', False))
     config_layout.addWidget(options_flow)
 
     # Any leftover height goes to the bottom of the column instead of being
@@ -425,7 +427,7 @@ def create_right_panel() -> RightPanelComponents:
     for _control in ("combo_fusion", "combo_align", "fusion_parameter_panel",
                      "registration_parameter_panel", "btn_reset", "btn_render",
                      "btn_compare", "chk_quick_preview", "chk_reverse_order",
-                     "chk_exposure_match", "chk_base_correct", "file_list",
+                     "chk_exposure_match", "chk_base_correct", "chk_sharpen_output", "file_list",
                      "output_list"):
         _widget = locals().get(_control)
         if _widget is not None:
@@ -444,6 +446,7 @@ def create_right_panel() -> RightPanelComponents:
         combo_align=combo_align,
         chk_base_correct=chk_base_correct,
         chk_exposure_match=chk_exposure_match,
+        chk_sharpen_output=chk_sharpen_output,
         chk_reverse_order=chk_reverse_order,
         fusion_parameter_panel=fusion_parameter_panel,
         registration_parameter_panel=registration_parameter_panel,
@@ -503,6 +506,7 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.chk_base_correct.toggled.connect(window.set_base_correct)
     # 融合前曝光匹配（整栈标定到末帧）：立即持久化
     components.chk_exposure_match.toggled.connect(window.set_exposure_match)
+    components.chk_sharpen_output.toggled.connect(window.set_sharpen_output)
     # 反转帧序（倒序栈）：仅影响 openfocus 族的帧序方向语义
     components.chk_reverse_order.toggled.connect(window.set_reverse_order)
 

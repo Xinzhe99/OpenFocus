@@ -114,6 +114,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Match every frame's exposure to the last frame before fusion "
                              "(default: on; --no-exposure-match disables it). Computed on the "
                              "whole stack before tiling, for every fusion method.")
+    parser.add_argument("--sharpen-output", action="store_true",
+                        help="Apply mild unsharp masking to the fused output (off by default).")
     parser.add_argument("--sort", default="asc", choices=["asc", "desc", "off"],
                         help="Frame order for openfocus_a/b/c: 'asc' keeps file order "
                              "(default), 'desc' reverses it, 'off' leaves it unchanged")
@@ -381,6 +383,9 @@ def _fuse_stack_admitted(images, args):
     fused = fusion.fuse(**fuse_kwargs)
     if fused is None:
         raise RuntimeError("Fusion returned no result")
+    if getattr(args, "sharpen_output", False):
+        from utils.output_sharpen import sharpen_output
+        fused = sharpen_output(fused)
     fused = quantize_fuse_output(fused, is_16bit)
     # 注册/归一化后的帧留给 --depth-map 用（与融合同一输入）。帧序必须与
     # 融合内部一致：--sort desc 会在 fuse() 内反转帧序，深度图若仍按原序
@@ -805,7 +810,7 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 raise ValueError(f"Overrides for {folder} must be an object")
             unknown = set(override) - {
                 "method", "align", "kernel", "depth_smoothing", "blend_smoothing",
-                "ai_mode", "base_frame", "sort", "exposure_match", "cpu", "threads",
+                "ai_mode", "base_frame", "sort", "exposure_match", "sharpen_output", "cpu", "threads",
                 "batch_size", "downscale", "tile_size", "align_shift_limit",
                 "resource_preference", "fusion_parameters", "registration_parameters"}
             if unknown:

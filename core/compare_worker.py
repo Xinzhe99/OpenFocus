@@ -152,6 +152,8 @@ class PreviewWorker(_CancellableWorker):
         base_frame = self.shared.get('method_options', {}).get(method, self.shared).get('base_frame', 'none')
         if base_frame in ("first", "last"):
             halo += 4 * 32  # Low-pass base correction follows fusion.
+        if self.shared.get('sharpen_output', False):
+            halo += 4
 
         x0 = max(0, ((x - halo) // grid) * grid)
         y0 = max(0, ((y - halo) // grid) * grid)
@@ -190,6 +192,9 @@ class PreviewWorker(_CancellableWorker):
             return None
         if not isinstance(result, np.ndarray) or result.shape[:2] != (ch, cw):
             raise ValueError("Fusion returned an invalid comparison image size.")
+        if self.shared.get('sharpen_output', False):
+            from utils.output_sharpen import sharpen_output
+            result = sharpen_output(result, self._should_cancel)
         x, y, w, h = bounds
         if context != bounds:
             result = result[y - y0:y - y0 + h, x - x0:x - x0 + w]

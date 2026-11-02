@@ -527,6 +527,7 @@ class OpenFocus(QMainWindow):
         self.combo_align = right_panel_components.combo_align
         self.chk_base_correct = right_panel_components.chk_base_correct
         self.chk_exposure_match = right_panel_components.chk_exposure_match
+        self.chk_sharpen_output = right_panel_components.chk_sharpen_output
         self.chk_reverse_order = right_panel_components.chk_reverse_order
         self.fusion_parameter_panel = right_panel_components.fusion_parameter_panel
         self.registration_parameter_panel = right_panel_components.registration_parameter_panel
@@ -571,6 +572,7 @@ class OpenFocus(QMainWindow):
         self.chk_reverse_order.setChecked(bool(
             getattr(self, "stack_reverse_order", False)))
         self.chk_reverse_order.blockSignals(False)
+        self.chk_sharpen_output.setChecked(bool(getattr(self, "sharpen_output", False)))
 
         # Probe torch availability in a background thread: importing torch
         # can block for seconds, and this only decides one checkbox state.
@@ -1040,6 +1042,7 @@ class OpenFocus(QMainWindow):
             # 基底校正默认关闭；帧序默认文件序（不反转）
             self.chk_base_correct.setChecked(False)
             self.chk_reverse_order.setChecked(False)
+            self.chk_sharpen_output.setChecked(False)
 
             self.reset_parameter_memories()
             self.base_frame_correct = False
@@ -1501,6 +1504,10 @@ class OpenFocus(QMainWindow):
     def set_reverse_order(self, enabled: bool) -> None:
         """右面板开关：反转帧序（倒序栈，仅影响 OpenFocus A/B/C）。"""
         self.stack_reverse_order = bool(enabled)
+        self.persist_settings()
+
+    def set_sharpen_output(self, enabled: bool) -> None:
+        self.sharpen_output = bool(enabled)
         self.persist_settings()
 
 
@@ -3364,6 +3371,9 @@ class OpenFocus(QMainWindow):
             set_panel_label(c.chk_exposure_match,
                             trans.t('chk_exposure_match'),
                             trans.t('chk_exposure_match_hint'))
+        if getattr(c, 'chk_sharpen_output', None) is not None:
+            set_panel_label(c.chk_sharpen_output, trans.t('chk_sharpen_output'),
+                            trans.t('chk_sharpen_output_hint'))
         if getattr(c, 'chk_reverse_order', None) is not None:
             set_panel_label(c.chk_reverse_order,
                             trans.t('chk_reverse_order'),

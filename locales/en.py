@@ -330,6 +330,8 @@ EN = {
     "check_align_of_hint": "Fast bounded similarity alignment (translation + rotation + scale) with brightness equalization and auto-crop. Sub-second per frame; frames shifting more than 8% of the frame size are left unaligned rather than half-corrected. Pick ECC or Homography for non-rigid or extreme geometry.",
     "chk_base_correct": "Remove brightness drift",
     "chk_exposure_match": "Match exposure before fusion",
+    "chk_sharpen_output": "Sharpen fused output",
+    "chk_sharpen_output_hint": "Apply a mild unsharp mask after fusion. This can enhance edges but also amplify noise and halos. Off by default.",
     "chk_exposure_match_hint": "Scales every frame to the last frame's mean before the focus measure, so a darker or lighter frame cannot win or lose on brightness alone. Computed on the whole stack (tiled output stays seamless) and applied to every fusion method. On by default (always on for OpenFocus A/B/C, which have no built-in calibration).",
     "chk_base_correct_hint": "After fusion, matches the result's low-frequency brightness to the last frame (or first, for a reversed stack). Removes exposure drift the focus measure cannot see, e.g. a time-lapse stack whose illumination changed between shots. Applies to every method; on by default for OpenFocus A/B/C.",
     "chk_reverse_order": "Reverse stack order (far-to-near sweep)",
