@@ -294,7 +294,19 @@ The AI model, its weights, HEIC and camera-RAW decoding are all in that single i
 - **Docs** — [User Manual](./docs/USER_MANUAL_EN.md) (twelve languages) · [Changelog](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Fusion methods](./docs/FUSION_METHODS.md)
 - **Citation** — [CITATION.cff](./CITATION.cff); every release is archived on Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open an [issue](https://github.com/Xinzhe99/OpenFocus/issues) for bugs, ideas and algorithm work
-- **Credits** — each fusion/registration algorithm keeps its original research licence; StackMFF V3 lives at [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)
+- **Credits** — each fusion/registration algorithm keeps its original research licence; StackMFF V3 lives at [Xinzhe99/StackMFF](https://github.com/Xinzhe99/StackMFF)
+
+<a id="license"></a>
+## License
+
+The OpenFocus application is released under the [MIT License](./LICENSE).
+
+**StackMFF series exception.** The StackMFF fusion algorithms — currently
+StackMFF V3 and any future state-of-the-art editions — remain the property of
+the OpenFocus project, which retains all rights to the StackMFF series. You may
+use them as part of OpenFocus for your own images and internal work. Copying,
+porting or migrating these algorithms into another open-source project requires
+prior written permission.
 
 <a id="developing"></a>
 ## Developing
