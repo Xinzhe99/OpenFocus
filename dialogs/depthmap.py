@@ -782,6 +782,7 @@ class DepthMapDialog(QDialog):
                 return
             if os.path.splitext(path)[1].lower() not in (".tif", ".tiff"):
                 raise ValueError(trans.t("depth_raw_needs_tiff"))
+            self._safe_export_paths([path])
             from utils.image_utils import imwrite_float_tiff
             if not imwrite_float_tiff(path, depth, {"unit": "um", "z_positions_um": positions,
                     "missing": "NaN", "source_indices": self._map_indices,
@@ -1278,6 +1279,12 @@ class DepthMapDialog(QDialog):
             self.status_lbl.setText(trans.t("depth_stale"))
         return self._has_current_map()
 
+    def _safe_export_paths(self, paths):
+        from controllers.export_manager import ExportManager
+        guard = ExportManager(self.window_main)
+        for path in paths:
+            guard._safe_export_path(path)
+
     def _save(self, colorized=True):
         if not self._require_current_map():
             return
@@ -1297,6 +1304,11 @@ class DepthMapDialog(QDialog):
             # imwrite_auto legally converts uint16 to 8-bit for JPG/BMP; that
             # is right for ordinary images, wrong for the "raw 16-bit" exit.
             self.status_lbl.setText(trans.t("depth_raw_needs_tiff"))
+            return
+        try:
+            self._safe_export_paths([path])
+        except ValueError as exc:
+            self.status_lbl.setText(str(exc))
             return
         set_last_dialog_dir(path)
         try:
@@ -1327,6 +1339,11 @@ class DepthMapDialog(QDialog):
         path, _ = QFileDialog.getSaveFileName(
             self, trans.t("depth_export_3d"), default, "Wavefront OBJ (*.obj)")
         if not path:
+            return
+        try:
+            self._safe_export_paths(obj_paths(path))
+        except ValueError as exc:
+            self.status_lbl.setText(str(exc))
             return
         conflicts = [name for name in obj_paths(path) if os.path.exists(name)]
         if conflicts:

@@ -544,6 +544,7 @@ class RetouchDialog(QDialog):
         self._focus_signal.connect(self._on_focus_changed)
         self.finished.connect(lambda _result: self._save_geometry())
         self.finished.connect(self._shutdown_sharpness)
+        self.finished.connect(self.deleteLater)
 
     # ------------------------------------------------------------- build
     def _build_ui(self) -> None:
@@ -1531,8 +1532,9 @@ class RetouchDialog(QDialog):
         worker.failed.connect(self._on_sharpness_failed)
         _SHARPNESS_WORKERS.add(worker)
         worker.finished.connect(lambda w=worker: _SHARPNESS_WORKERS.discard(w))
-        worker.finished.connect(
+        self._sharpness_finished_callback = (
             lambda req=self._sharpness_request: self._on_sharpness_finished(req))
+        worker.finished.connect(self._sharpness_finished_callback)
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
@@ -1591,6 +1593,11 @@ class RetouchDialog(QDialog):
             return
         try:
             worker.ready.disconnect(self._on_sharpness_ready)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            worker.failed.disconnect(self._on_sharpness_failed)
+            worker.finished.disconnect(self._sharpness_finished_callback)
         except (TypeError, RuntimeError):
             pass
         worker.requestInterruption()

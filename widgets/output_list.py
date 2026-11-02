@@ -61,7 +61,7 @@ class OutputListWidget(QListWidget):
                 image = self._get_output_image_for_row(row)
                 if image is None:
                     continue
-                file_path = self._write_temp_jpg(image, item.text())
+                file_path = self._write_temp_jpg(image, item.text(), record)
             except Exception as exc:
                 from utils import show_error_box
                 from locales import trans
@@ -104,7 +104,7 @@ class OutputListWidget(QListWidget):
                                         output_id=record.output_id if record else None)
         return scalebar.burn(image, scalebar.export_cfg(window, target='output', record=record))
 
-    def _write_temp_jpg(self, image, base_name: str) -> str | None:
+    def _write_temp_jpg(self, image, base_name: str, record=None) -> str | None:
         window = self._window
         fmt = ".jpg"
         if window is not None and hasattr(window, "drag_export_format"):
@@ -124,7 +124,14 @@ class OutputListWidget(QListWidget):
             ) as temp_file:
                 file_path = temp_file.name
 
-            success = imwrite_auto(file_path, image, params)
+            profile = b''
+            if record is not None:
+                if record.annotations_baked and record.export_path:
+                    from core.image_loader import _read_icc_profile
+                    profile = _read_icc_profile(record.export_path)
+                else:
+                    profile = getattr(record.context, 'icc_profile', record.icc_profile)
+            success = imwrite_auto(file_path, image, params, icc_profile=profile)
             if not success:
                 os.remove(file_path)
                 raise OSError(file_path)

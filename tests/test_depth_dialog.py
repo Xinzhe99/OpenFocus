@@ -989,3 +989,78 @@ def test_depth_dtcwt_levels_seed_from_main_and_preserve_local_draft(depth_dialog
     _click_and_finish(qapp, dialog)
     assert seen == [3, 5]
     assert dialog._map_parameters["N"] == 5
+
+
+@pytest.mark.parametrize("kind", ["color", "raw", "physical"])
+def test_depth_image_exports_protect_standalone_sources(depth_dialog, monkeypatch, qapp, tmp_path, kind):
+    from core import depth_map
+    from PyQt6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
+    source = tmp_path / ("source.png" if kind == "color" else "source.tif")
+    source.write_bytes(b"original standalone source")
+    dialog, _ = depth_dialog(_standalone_retouch_paths={str(source)})
+    _click_and_finish(qapp, dialog)
+    monkeypatch.setattr(dialog, "_physical_values", lambda index: (index, [0.0, 1.0]))
+    target = [source]
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target[0]), ""))
+
+    def save():
+        if kind == "physical":
+            dialog._save_physical()
+        else:
+            dialog._save(colorized=kind == "color")
+
+    save()
+    assert source.read_bytes() == b"original standalone source"
+    assert str(source) in dialog.status_lbl.text()
+    target[0] = tmp_path / ("safe.png" if kind == "color" else "safe.tif")
+    save()
+    assert target[0].is_file()
+    assert source.read_bytes() == b"original standalone source"
+
+
+@pytest.mark.parametrize("companion", range(4))
+def test_depth_mesh_protects_every_standalone_companion(depth_dialog, monkeypatch, qapp, tmp_path, companion):
+    from core import depth_map
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from utils.mesh_export import obj_paths
+
+    monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
+    target = tmp_path / "model.any"
+    files = [Path(name) for name in obj_paths(target)]
+    source = files[companion]
+    source.write_bytes(b"original standalone source")
+    dialog, _ = depth_dialog(_standalone_retouch_paths={str(source)})
+    _click_and_finish(qapp, dialog)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    prompts = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: prompts.append(1))
+
+    dialog._export_3d()
+    assert source.read_bytes() == b"original standalone source"
+    assert all(not path.exists() for path in files if path != source)
+    assert str(source) in dialog.status_lbl.text()
+    assert not prompts
+    assert dialog._export_worker is None
+
+
+def test_depth_export_protects_hardlinked_standalone_source(depth_dialog, monkeypatch, qapp, tmp_path):
+    from core import depth_map
+    from PyQt6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
+    source = tmp_path / "source.png"
+    alias = tmp_path / "alias.png"
+    source.write_bytes(b"original standalone source")
+    try:
+        alias.hardlink_to(source)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+    dialog, _ = depth_dialog(_standalone_retouch_paths={str(source)})
+    _click_and_finish(qapp, dialog)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(alias), ""))
+    dialog._save()
+    assert source.read_bytes() == b"original standalone source"
+    assert alias.read_bytes() == b"original standalone source"
+    assert str(source) in dialog.status_lbl.text()

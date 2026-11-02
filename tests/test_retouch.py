@@ -106,6 +106,34 @@ def test_global_tones_cancel_and_history_limit_leave_result_untouched():
     assert np.array_equal(small.working, image) and not small.can_undo
 
 
+def test_tone_cancellation_during_history_commit_preserves_redo(monkeypatch):
+    image = np.full((256, 256, 3), 10000, np.uint16)
+    doc = _document(frames=[image.copy()], result=image)
+    assert doc.adjust_tones(1.0, 0.0) == "committed"
+    painted = doc.working.copy()
+    assert doc.undo() and doc.can_redo
+    cancelled = [False]
+    original_end = doc.history.end
+    original_slice = doc.history._tile_slice
+
+    def commit_with_interruption(*args, **kwargs):
+        def interrupt_after_first_comparison(key):
+            cancelled[0] = True
+            return original_slice(key)
+        monkeypatch.setattr(doc.history, "_tile_slice", interrupt_after_first_comparison)
+        try:
+            return original_end(*args, **kwargs)
+        finally:
+            monkeypatch.setattr(doc.history, "_tile_slice", original_slice)
+
+    monkeypatch.setattr(doc.history, "end", commit_with_interruption)
+    assert doc.adjust_tones(-1.0, 0.0, lambda: cancelled[0]) == "cancelled"
+    np.testing.assert_array_equal(doc.working, image)
+    assert doc.can_redo and not doc.can_undo and not doc.is_dirty
+    assert doc.redo()
+    np.testing.assert_array_equal(doc.working, painted)
+
+
 def test_global_tones_contrast_and_alpha():
     from utils.retouch import adjust_tones
     pixels = np.array([[[10000, 32768, 50000, 12345]]], dtype=np.uint16)
@@ -136,6 +164,25 @@ def test_exposure_brush_is_local_undoable_and_preserves_16bit():
     assert doc.redo() and np.array_equal(doc.working, painted)
     assert np.array_equal(frames[0], source)
     assert (base == 12001).all()
+
+
+def test_zero_exposure_stroke_preserves_redo():
+    base = np.full((64, 64, 3), 12001, np.uint16)
+    doc = _document(frames=[np.full_like(base, 25000)], result=base)
+    doc.set_tool("exposure")
+    doc.exposure = 1.0
+    assert doc.begin_stroke(30, 30)
+    assert doc.end_stroke() == "committed"
+    painted = doc.working.copy()
+    assert doc.undo()
+    doc.exposure = 0.0
+    assert doc.begin_stroke(30, 30)
+    doc.stroke_to(35, 30)
+    assert doc.end_stroke() == "empty"
+    assert doc.can_redo and not doc.can_undo and not doc.is_dirty
+    np.testing.assert_array_equal(doc.working, base)
+    assert doc.redo()
+    np.testing.assert_array_equal(doc.working, painted)
 
 
 def test_exposure_brush_locks_amount_and_cancels():
@@ -393,6 +440,44 @@ def _dialog(qapp, monkeypatch=None, apply_result=True):
     QApplication.processEvents()
     QApplication.processEvents()
     return dlg, published
+
+
+def test_closed_parented_dialog_releases_document_without_deleting_worker(qapp, monkeypatch):
+    import gc
+    import threading
+    import weakref
+    from PyQt6 import sip
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    from PyQt6.QtWidgets import QWidget
+    from controllers.output_manager import OutputRecord
+    from dialogs.retouch import RetouchDialog, _SharpnessWorker
+
+    entered, release = threading.Event(), threading.Event()
+    def run_until_released(worker):
+        entered.set()
+        release.wait(5)
+    monkeypatch.setattr(_SharpnessWorker, "run", run_until_released)
+    parent = QWidget()
+    image = np.full((96, 120, 3), 100, np.uint8)
+    record = OutputRecord.create(image, "result", context=_context([image], image))
+    dialog = RetouchDialog(parent, record=record, apply_callback=lambda *_: (True, ""))
+    document = weakref.ref(dialog.doc)
+    dialog.show()
+    qapp.processEvents()
+    dialog._start_sharpness_worker()
+    worker = dialog._sharpness_worker
+    try:
+        assert entered.wait(2)
+        dialog.close()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert sip.isdeleted(dialog)
+        assert worker.isRunning() and not sip.isdeleted(worker)
+        del dialog
+        gc.collect()
+        assert document() is None
+    finally:
+        release.set()
+        worker.wait(5000)
 
 
 def test_global_tone_dialog_previews_cancels_and_applies(qapp):

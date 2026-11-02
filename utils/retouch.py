@@ -163,6 +163,8 @@ def apply_dab(
     `source_valid` is an optional boolean mask in source coordinates; pixels
     outside it are never written.  Returns the dirty rect or None.
     """
+    if exposure == 0:
+        return None
     th, tw = target.shape[:2]
     sh, sw = source.shape[:2]
     d = max(1, int(diameter))
@@ -280,9 +282,8 @@ class TileHistory:
             self._current[key] = data
             self._current_bytes += data.nbytes
 
-    def end(self) -> str:
-        """Commit the open stroke.  Returns "empty", "committed",
-        "oversize" or "idle".  An oversized stroke is rolled back."""
+    def end(self, cancelled=None) -> str:
+        """Commit the open stroke, rolling back if it is too large or cancelled."""
         if self._current is None:
             return "idle"
         if self._current_bytes > self.max_bytes:
@@ -292,13 +293,27 @@ class TileHistory:
             self._current = None
             self._current_bytes = 0
             return "empty"
+        # Determine dirty state before publishing history.  Comparing full-image
+        # tiles can take long enough for cancellation to arrive during commit.
+        dirty = set(self._dirty)
+        for key in self._current:
+            if cancelled is not None and cancelled():
+                self.abort()
+                return "cancelled"
+            sl = self._tile_slice(key)
+            if np.array_equal(self.target[sl], self.base[sl]):
+                dirty.discard(key)
+            else:
+                dirty.add(key)
+        if cancelled is not None and cancelled():
+            self.abort()
+            return "cancelled"
         entry = self._current
         self._current = None
         self._current_bytes = 0
         self._undo.append(entry)
         self._redo.clear()
-        for key in entry:
-            self._refresh_dirty(key)
+        self._dirty = dirty
         self._enforce_budget()
         return "committed"
 
@@ -517,7 +532,7 @@ class RetouchDocument:
             if cancelled is not None and cancelled():
                 self.history.abort()
                 return "cancelled"
-            return self.history.end()
+            return self.history.end(cancelled=cancelled)
         except BaseException:
             self.history.abort()
             raise
