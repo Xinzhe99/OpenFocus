@@ -65,7 +65,7 @@ class StackLoadWorker(QThread):
     finished_load = pyqtSignal(bool, str, object, object)  # ok, message, images, filenames
 
     def __init__(self, loader, folder=None, video=None, filepaths=None, scale=1.0,
-                 thread_count: int = 0, resource_preference: str = "balanced"):
+                 thread_count: int = 0, resource_preference: str = "balanced", exclude_paths=()):
         super().__init__()
         self.loader = loader
         self.folder = folder
@@ -74,6 +74,7 @@ class StackLoadWorker(QThread):
         self.scale = scale
         self.thread_count = thread_count
         self.resource_preference = resource_preference
+        self.exclude_paths = tuple(path for path in exclude_paths if path)
         self.source_icc_profiles = {}
         self.is_cancelled = False
         self.loader.should_cancel = lambda: self.is_cancelled
@@ -95,12 +96,15 @@ class StackLoadWorker(QThread):
                                resource_preference=self.resource_preference)
                 if self.folder:
                     ok, msg, imgs, names = self.loader.load_from_folder(
-                        self.folder, scale_factor=self.scale, **options)
+                        self.folder, scale_factor=self.scale, exclude_paths=self.exclude_paths, **options)
                 elif self.video:
                     ok, msg, imgs, names = self.loader.load_from_video(self.video, scale_factor=self.scale)
                 else:
+                    from utils.path_identity import same_path
+                    paths = [path for path in self.filepaths if not any(
+                        same_path(path, excluded) for excluded in self.exclude_paths)]
                     ok, msg, imgs, names = self.loader.load_from_filepaths(
-                        self.filepaths, scale_factor=self.scale, **options)
+                        paths, scale_factor=self.scale, **options)
                 if ok:
                     self.source_icc_profiles = dict(getattr(self.loader, 'source_icc_profiles', {}))
                 logger.info("stack decoded %s", frame_details(imgs))
@@ -204,7 +208,8 @@ class RenderWorker(QThread):
                  roi_rect=None, roi_mode='crop', roi_base_index=0, use_gpu=True,
                  base_frame='none', sort_mode='asc', exposure_match=False,
                  disk_cache=None, resource_preference='balanced', preview=False,
-                 sharpen_output=False, collect_alignment_report=False):
+                 sharpen_output=False, defect_mask_path='', sensor_denoise=False,
+                 load_scale_factor=1.0, collect_alignment_report=False):
         super().__init__()
         if algorithm is None:
             if need_fusion or fusion_parameters:
@@ -237,9 +242,13 @@ class RenderWorker(QThread):
         self.sort_mode = sort_mode
         self.exposure_match = bool(exposure_match)
         self.sharpen_output = bool(sharpen_output)
+        self.defect_mask_path = defect_mask_path or ''
+        self.sensor_denoise = bool(sensor_denoise)
+        self.load_scale_factor = float(load_scale_factor)
+        self._cache_source_images = self.raw_images
         self.is_cancelled = False
         self.disk_cache = deepcopy(disk_cache) if disk_cache else None
-        if self.disk_cache is not None and self.registration_parameters:
+        if self.disk_cache is not None and (self.registration_parameters or self.defect_mask_path or self.sensor_denoise):
             self.disk_cache['identity'] = dict(self.disk_cache.get('identity') or {})
         self._cache_identity_prepared = False
         self.resource_preference = resource_preference
@@ -285,6 +294,9 @@ class RenderWorker(QThread):
         """在线程中执行图像处理流程"""
         if self.is_cancelled:
             raise RegistrationCancelled()
+        cleanup = bool(self.defect_mask_path or self.sensor_denoise)
+        if self.defect_mask_path and self.load_scale_factor != 1.0:
+            raise ValueError('A sensor defect mask requires images loaded at 100% scale')
         alignment_time = 0
         fusion_time = 0
         device_name = "CPU"
@@ -301,6 +313,7 @@ class RenderWorker(QThread):
             and self.is_images_aligned
             and bool(self.aligned_images)
             and self.last_alignment_options == current_alignment_options
+            and not cleanup
         )
     
         # 1. 配准阶段
@@ -310,12 +323,22 @@ class RenderWorker(QThread):
             self.alignment_reused = True
         else:
             processed_images = self.raw_images.copy()
+            if cleanup:
+                from utils.sensor_cleanup import load_sensor_defect_mask, cleanup_sensor_image
+                mask = (load_sensor_defect_mask(self.defect_mask_path, cancel_callback=lambda: self.is_cancelled)
+                        if self.defect_mask_path else None)
+                processed_images = [cleanup_sensor_image(image, defect_mask_path=mask,
+                                    sensor_denoise=self.sensor_denoise,
+                                    cancel_callback=lambda: self.is_cancelled)
+                                    for image in processed_images]
+            self._cache_source_images = processed_images
             if self.preview:
-                processed_images = []
-                for image in self.raw_images:
+                preview_images = []
+                for image in processed_images:
                     if self.is_cancelled:
                         raise RegistrationCancelled()
-                    processed_images.append(_downscale_for_preview(image))
+                    preview_images.append(_downscale_for_preview(image))
+                processed_images = preview_images
             registration_performed = False
     
             if need_registration:
@@ -410,7 +433,7 @@ class RenderWorker(QThread):
         request['identity']['registration_parameters'] = dict(self.registration_parameters)
         import hashlib
         digest = hashlib.sha256()
-        for image in self.raw_images:
+        for image in self._cache_source_images:
             if self.is_cancelled:
                 raise RegistrationCancelled()
             digest.update(str((image.shape, image.dtype.str)).encode("ascii"))
@@ -613,7 +636,7 @@ class BatchImportWorker(QThread):
     def __init__(self, mode: str, folder_paths=None, folder_path=None,
                  scale_factor: float = 1.0, sort_by: str = 'filename',
                  thread_count: int = 0, resource_preference: str = "balanced",
-                 parent=None):
+                 parent=None, exclude_paths=()):
         super().__init__(parent)
         self.mode = mode
         self.folder_paths = list(folder_paths or [])
@@ -622,6 +645,7 @@ class BatchImportWorker(QThread):
         self.sort_by = sort_by
         self.thread_count = thread_count
         self.resource_preference = resource_preference
+        self.exclude_paths = tuple(path for path in exclude_paths if path)
         self.is_cancelled = False
 
     def cancel(self):
@@ -667,6 +691,9 @@ class BatchImportWorker(QThread):
                 files = [(name, os.path.join(folder, name)) for name in os.listdir(folder)
                          if os.path.splitext(name)[1].lower() in loader.SUPPORTED_FORMATS]
                 files = loader._drop_derived_aligned_copies(files)
+                from utils.path_identity import same_path
+                files = [(name, path) for name, path in files if not any(
+                    same_path(path, excluded) for excluded in self.exclude_paths)]
                 files.sort(key=lambda item: natural_sort_key(item[0]))
                 first = None
                 for _, path in files:
@@ -712,7 +739,7 @@ class BatchImportWorker(QThread):
             self.folder_path, sort_by=self.sort_by,
             scale_factor=self.scale_factor,
             thread_count=self.thread_count,
-            resource_preference=self.resource_preference)
+            resource_preference=self.resource_preference, exclude_paths=self.exclude_paths)
         logger.info("batch import decoded frame_count=%s first_shape=%s first_dtype=%s",
                     len(entries), entries[0][1].shape if entries else None,
                     str(entries[0][1].dtype) if entries else None)
@@ -912,9 +939,11 @@ class BatchWorker(QThread):
     def _split_images_for_processing(self):
         """分割单文件夹中的图像"""
         from utils.path_identity import same_path
-        reference = self.processing_settings.get('flat_field_path', '')
+        references = (self.processing_settings.get('flat_field_path', ''),
+                      self.processing_settings.get('defect_mask_path', ''))
         def keep(item):
-            return not same_path(item[3] if len(item) > 3 else item[0], reference)
+            return not any(same_path(item[3] if len(item) > 3 else item[0], reference)
+                           for reference in references if reference)
         if self._frozen_stacks:
             return [[item for item in stack if keep(item)] for stack in self._frozen_stacks]
         entries = [item for item in self.single_folder_images_with_times if keep(item)]
@@ -952,11 +981,12 @@ class BatchWorker(QThread):
         """
         images = [item[1] for item in stack_images_with_times]
         from utils.path_identity import same_path
-        reference = self.processing_settings.get('flat_field_path', '')
-        if reference:
-            stack_images_with_times = [item for item in stack_images_with_times
-                                       if not same_path(item[3] if len(item) > 3 else item[0], reference)]
-            images = [item[1] for item in stack_images_with_times]
+        references = (self.processing_settings.get('flat_field_path', ''),
+                      self.processing_settings.get('defect_mask_path', ''))
+        stack_images_with_times = [item for item in stack_images_with_times
+            if not any(same_path(item[3] if len(item) > 3 else item[0], reference)
+                       for reference in references if reference)]
+        images = [item[1] for item in stack_images_with_times]
         with log_operation("batch_stack", stack_name=stack_name, stack_index=stack_index,
                            method=self.processing_settings.get('fusion_method'),
                            parameters=self.processing_settings.get('fusion_params'),
@@ -974,6 +1004,17 @@ class BatchWorker(QThread):
                     raise ValueError('Fusion requires at least two frames')
         
                 aligned_images = images.copy()
+                mask_path = self.processing_settings.get('defect_mask_path', '')
+                denoise = bool(self.processing_settings.get('sensor_denoise', False))
+                if mask_path and float(self.processing_settings.get('load_scale_factor', 1.0)) != 1.0:
+                    raise ValueError('A sensor defect mask requires images loaded at 100% scale')
+                if mask_path or denoise:
+                    from utils.sensor_cleanup import load_sensor_defect_mask, cleanup_sensor_image
+                    mask = (load_sensor_defect_mask(mask_path, cancel_callback=lambda: self.is_cancelled)
+                            if mask_path else None)
+                    aligned_images = [cleanup_sensor_image(frame, defect_mask_path=mask,
+                                      sensor_denoise=denoise, cancel_callback=lambda: self.is_cancelled)
+                                      for frame in aligned_images]
                 reference = self.processing_settings.get('flat_field_path', '')
                 if reference and any(image.ndim == 3 and image.shape[2] == 4 for image in images):
                     raise ValueError('Flat-field correction is not supported for transparent input')
@@ -1114,7 +1155,8 @@ class BatchWorker(QThread):
             folder_path, scale_factor=scale,
             thread_count=self.thread_count,
             resource_preference=getattr(self, 'resource_preference', 'balanced'),
-            exclude_paths=[self.processing_settings.get('flat_field_path', '')])
+            exclude_paths=[self.processing_settings.get('flat_field_path', ''),
+                           self.processing_settings.get('defect_mask_path', '')])
         if self.is_cancelled:
             raise RegistrationCancelled()
         if getattr(self.image_loader, 'failed_count', 0):
@@ -1156,8 +1198,9 @@ class BatchWorker(QThread):
                  if os.path.splitext(name)[1].lower() in self.image_loader.SUPPORTED_FORMATS]
         files = self.image_loader._drop_derived_aligned_copies(files)
         from utils.path_identity import same_path
-        reference = settings.get('flat_field_path', '')
-        files = [(name, path) for name, path in files if not same_path(path, reference)]
+        references = (settings.get('flat_field_path', ''), settings.get('defect_mask_path', ''))
+        files = [(name, path) for name, path in files if not any(
+            same_path(path, reference) for reference in references if reference)]
         files.sort(key=lambda item: natural_sort_key(item[0]))
         paths = [path for _, path in files]
         if len(paths) < 2:
@@ -1188,13 +1231,30 @@ class BatchWorker(QThread):
             resource_preference=self.resource_preference, base_frame=runtime.get('base_frame', 'none'),
             sort_mode=sort_mode, exposure_match=self.exposure_match, **tile_kwargs)
 
-        preprocess = None
+        mask_path = settings.get('defect_mask_path', '')
+        denoise = bool(settings.get('sensor_denoise', False))
+        if mask_path and float(settings.get('load_scale_factor', 1.0)) != 1.0:
+            raise ValueError('A sensor defect mask requires images loaded at 100% scale')
+        mask = None
+        if mask_path or denoise:
+            from utils.sensor_cleanup import load_sensor_defect_mask, cleanup_sensor_image
+            if mask_path:
+                mask = load_sensor_defect_mask(mask_path, cancel_callback=lambda: self.is_cancelled)
         reference = settings.get('flat_field_path', '')
+        gain = None
         if reference:
             from utils.dust_map import grouped_flat_field_gain, apply_flat_field
             gain = grouped_flat_field_gain(reference, scale=float(settings.get('load_scale_factor', 1.0)),
                                            should_cancel=lambda: self.is_cancelled)
-            preprocess = lambda image: apply_flat_field(image, gain)
+        preprocess = None
+        if mask_path or denoise or reference:
+            def preprocess(image):
+                if mask_path or denoise:
+                    image = cleanup_sensor_image(image, defect_mask_path=mask, sensor_denoise=denoise,
+                                                 cancel_callback=lambda: self.is_cancelled)
+                if reference:
+                    image = apply_flat_field(image, gain)
+                return image
 
         def fuse_group(images):
             if alignment_steps(alignment):

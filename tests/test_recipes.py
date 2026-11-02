@@ -195,3 +195,46 @@ def test_recipe_rejects_output_inside_input_folder(tmp_path):
     with pytest.raises(ValueError, match='overwrite'):
         capture_recipe(recipe, ['-i', str(existing), '-o', str(existing), '-m', 'dct'])
     assert existing.read_bytes() == before
+
+
+@pytest.mark.parametrize('grouped', [False, True])
+def test_sensor_recipe_excludes_mask_and_checks_fingerprint(tmp_path, monkeypatch, grouped):
+    import core.cli as cli
+    folder = tmp_path / 'stack'
+    _stack(folder)
+    mask = folder / 'mask.png'
+    assert cv2.imwrite(str(mask), np.zeros((64, 64), np.uint8))
+    recipe = tmp_path / 'recipe.json'
+    args = ['-i', str(folder), '-o', str(tmp_path / 'out.png'), '-m', 'dct',
+            '--defect-mask-path', str(mask), '--sensor-denoise']
+    if grouped:
+        args += ['--group-size', '2']
+    saved = capture_recipe(recipe, args)
+    assert saved['options']['defect_mask_path'] == 'stack/mask.png'
+    assert saved['options']['sensor_denoise'] is True
+    assert len(saved['options']['defect_mask_sha256']) == 64
+    seen = []
+    if grouped:
+        def fuse(paths, options):
+            seen.append([__import__('os').path.basename(path) for path in paths])
+            return np.zeros((64, 64, 3), np.uint8)
+        monkeypatch.setattr(cli, '_fuse_grouped', fuse)
+    else:
+        def fuse(images, options):
+            seen.append(len(images))
+            return np.zeros((64, 64, 3), np.uint8)
+        monkeypatch.setattr(cli, '_fuse_stack', fuse)
+    assert run_recipe(recipe) == 0
+    assert seen == ([['0.png', '1.png']] if grouped else [2])
+    assert cv2.imwrite(str(mask), np.ones((64, 64), np.uint8))
+    with pytest.raises(ValueError, match='fingerprint'):
+        run_recipe(recipe, dry_run=True)
+
+
+def test_sensor_recipe_defaults_are_disabled(tmp_path):
+    _stack(tmp_path / 'stack')
+    saved = capture_recipe(tmp_path / 'recipe.json',
+                           ['-i', str(tmp_path / 'stack'), '-o', str(tmp_path / 'out.png'), '-m', 'dct'])
+    assert saved['options']['defect_mask_path'] is None
+    assert saved['options']['sensor_denoise'] is False
+    assert 'defect_mask_sha256' not in saved['options']

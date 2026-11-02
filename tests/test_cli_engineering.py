@@ -523,3 +523,83 @@ def test_suggest_duplicates_handles_keyboard_interrupt(tmp_path, capsys, monkeyp
     assert run_cli(["--suggest-duplicates", "-i", folder]) == 1
     captured = capsys.readouterr()
     assert "interrupted" in captured.err and not captured.out
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_sensor_cleanup_precedes_registration(tmp_path, monkeypatch, enabled):
+    from core import cli, registration, multi_focus_fusion
+    mask = np.zeros((16, 16), np.uint8)
+    mask[8, 8] = 255
+    mask_path = tmp_path / 'mask.png'
+    assert cv2.imwrite(str(mask_path), mask)
+    image = np.full((16, 16, 3), 1000, np.uint16)
+    image[8, 8] = 50000
+    argv = ['-i', 'unused', '-o', 'unused.png', '-m', 'dct', '--align', 'ecc']
+    if enabled:
+        argv += ['--defect-mask-path', str(mask_path)]
+    args = cli.build_parser().parse_args(argv)
+    registered = []
+
+    class Registration:
+        def __init__(self, **kwargs):
+            pass
+
+        def process(self, images, **kwargs):
+            registered.append(images[0][8, 8, 0])
+            return images
+
+    class Fusion:
+        def __init__(self, **kwargs):
+            pass
+
+        def get_info(self):
+            return {'device': 'CPU'}
+
+        def fuse(self, input_source, **kwargs):
+            return input_source[0]
+
+    monkeypatch.setattr(registration, 'ImageRegistration', Registration)
+    monkeypatch.setattr(multi_focus_fusion, 'MultiFocusFusion', Fusion)
+    cli._fuse_stack([image, image.copy()], args)
+    assert registered[0] == pytest.approx((1000 if enabled else 50000) / 257, abs=0.01)
+
+
+def test_grouped_sensor_cleanup_only_processes_original_frames(tmp_path, monkeypatch):
+    from core import cli
+    from utils import sensor_cleanup
+    folder = tmp_path / 'stack'
+    folder.mkdir()
+    paths = []
+    for index in range(4):
+        path = folder / f'{index}.png'
+        assert cv2.imwrite(str(path), np.full((16, 16, 3), index + 30, np.uint8))
+        paths.append(str(path))
+    mask_path = tmp_path / 'mask.png'
+    assert cv2.imwrite(str(mask_path), np.zeros((16, 16), np.uint8))
+    args = cli.build_parser().parse_args(['-i', str(folder), '-o', str(tmp_path / 'out.png'),
+                                         '-m', 'dct', '--group-size', '2',
+                                         '--defect-mask-path', str(mask_path)])
+    calls = []
+    cleanup = sensor_cleanup.cleanup_sensor_image
+    def record(image, *args, **kwargs):
+        calls.append(int(image[0, 0, 0]))
+        return cleanup(image, *args, **kwargs)
+    monkeypatch.setattr(sensor_cleanup, 'cleanup_sensor_image', record)
+    monkeypatch.setattr(cli, '_fuse_stack_admitted', lambda images, args: images[0])
+    cli._fuse_grouped(paths, args)
+    assert calls == [30, 31, 32, 33]
+
+
+@pytest.mark.parametrize('batch', [False, True])
+def test_sensor_mask_cannot_be_output(tmp_path, batch):
+    folder = tmp_path / 'stack'
+    folder.mkdir()
+    for index in range(2):
+        assert cv2.imwrite(str(folder / f'{index}.png'), np.zeros((16, 16, 3), np.uint8))
+    mask = tmp_path / ('stack.png' if batch else 'mask.png')
+    assert cv2.imwrite(str(mask), np.zeros((16, 16), np.uint8))
+    original = mask.read_bytes()
+    destination = ['-d', str(tmp_path)] if batch else ['-o', str(mask)]
+    assert run_cli(['-i', str(folder), *destination, '-m', 'dct',
+                    '--defect-mask-path', str(mask)]) != 0
+    assert mask.read_bytes() == original

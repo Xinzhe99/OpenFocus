@@ -902,14 +902,14 @@ class ImageStackLoader:
     def load_images_with_timestamps(self, folder_path: str, sort_by: str = 'filename',
                                     scale_factor: float = 1.0, *,
                                     thread_count: int = 0,
-                                    resource_preference: str = "balanced"):
+                                    resource_preference: str = "balanced", exclude_paths=()):
         """Decode through the normal loader, preserving all container pages.
 
         Each entry retains its real source path and a separate export/page name.
         """
         ok, message, images, filenames = self.load_from_folder(
             folder_path, scale_factor, thread_count=thread_count,
-            resource_preference=resource_preference)
+            resource_preference=resource_preference, exclude_paths=exclude_paths)
         if not ok:
             return ok, message, [], []
         timestamps = {path: self.get_image_timestamp(path) for path in dict.fromkeys(self.image_paths)}

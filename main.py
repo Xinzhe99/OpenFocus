@@ -1029,6 +1029,8 @@ class OpenFocus(QMainWindow):
             self.chk_base_correct.setChecked(False)
             self.chk_reverse_order.setChecked(False)
             self.chk_sharpen_output.setChecked(False)
+            self.defect_mask_path = ""
+            self.sensor_denoise = False
 
             self.reset_parameter_memories()
             self.base_frame_correct = False

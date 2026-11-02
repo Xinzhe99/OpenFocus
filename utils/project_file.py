@@ -16,6 +16,14 @@ from core.algorithms import (fusion_algorithms, get_fusion, get_registration,
 PROJECT_SUFFIX = ".ofproj"
 FORMAT_VERSION = 3
 
+def _sensor_mask_digest(path):
+    import hashlib
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
 TEMPLATE_SUFFIX = ".oftemplate"
 TEMPLATE_VERSION = 1
 TEMPLATE_SETTINGS = (
@@ -23,7 +31,7 @@ TEMPLATE_SETTINGS = (
     "base_frame_correct", "exposure_match", "thread_count", "tile_enabled",
     "tile_block_size", "tile_overlap", "tile_threshold", "reg_downscale_width",
     "ai_batch_size", "method_parameters", "registration_parameters",
-    "brightness_by_method", "sharpen_output",
+    "brightness_by_method", "sharpen_output", "sensor_denoise",
 )
 
 
@@ -32,7 +40,7 @@ def validate_template_settings(settings):
     if not isinstance(settings, dict) or set(settings) - set(TEMPLATE_SETTINGS):
         raise ValueError("invalid template settings")
     settings = json.loads(json.dumps(settings, allow_nan=False))
-    for key in ("stack_reverse_order", "base_frame_correct", "exposure_match", "tile_enabled", "sharpen_output"): 
+    for key in ("stack_reverse_order", "base_frame_correct", "exposure_match", "tile_enabled", "sharpen_output", "sensor_denoise"):
         if key in settings and type(settings[key]) is not bool:
             raise ValueError(f"{key} must be boolean")
     for key in ("thread_count", "tile_block_size", "tile_overlap", "tile_threshold",
@@ -159,6 +167,8 @@ def _collect_state(window) -> Dict[str, Any]:
         "alignment_method": alignment,
         "stack_reverse_order": bool(getattr(window, "stack_reverse_order", False)),
         "sharpen_output": bool(getattr(window, "sharpen_output", False)),
+        "defect_mask_path": os.path.abspath(window.defect_mask_path) if getattr(window, "defect_mask_path", "") else "",
+        "sensor_denoise": bool(getattr(window, "sensor_denoise", False)),
         # The top-level flags describe *this* method; the per-method memory
         # below is what a reopen actually restores.
         "base_frame_correct": bool(brightness("base_correct", method))
@@ -198,6 +208,8 @@ def _collect_state(window) -> Dict[str, Any]:
             "manual" if float(getattr(window, "scale_um_per_px_manual", 0.0) or 0.0) > 0
             else "metadata"),
     }
+    if settings["defect_mask_path"]:
+        settings["defect_mask_sha256"] = _sensor_mask_digest(settings["defect_mask_path"])
     settings["method_parameters"] = {
         spec.id: resolve_fusion_parameters(spec.id, window.fusion_parameters_for(spec.id))
         for spec in fusion_algorithms()}
@@ -360,6 +372,23 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
     if "sharpen_output" in state.get("settings", {}) and not isinstance(
             state["settings"]["sharpen_output"], bool):
         return False, "invalid output sharpening setting", {}
+    sensor = state.get("settings", {})
+    mask_path = sensor.get("defect_mask_path", "")
+    digest = sensor.get("defect_mask_sha256", "")
+    if (not isinstance(mask_path, str) or type(sensor.get("sensor_denoise", False)) is not bool
+            or (mask_path and (not os.path.isabs(mask_path) or not isinstance(digest, str)
+                               or not re.fullmatch(r"[0-9a-f]{64}", digest)))
+            or (not mask_path and digest)):
+        return False, "invalid sensor cleanup settings", {}
+    if mask_path and require_sources:
+        try:
+            actual = _sensor_mask_digest(mask_path)
+            if actual != digest:
+                return False, "sensor defect mask has changed: " + mask_path, {}
+            from utils.sensor_cleanup import load_sensor_defect_mask
+            load_sensor_defect_mask(mask_path)
+        except (OSError, ValueError) as exc:
+            return False, str(exc), {}
     frames = state.get("frame_order")
     if frames is not None and (not isinstance(frames, list) or not frames or any(
             not isinstance(frame, dict)
@@ -648,6 +677,8 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
     settings = state.get("settings", {})
     window.source_transforms = list(state.get("source_transforms", []))
     window.unrecoverable_source_changes = list(state.get("unrecoverable_source_changes", []))
+    window.defect_mask_path = settings.get("defect_mask_path", "")
+    window.sensor_denoise = settings.get("sensor_denoise", False)
     _normalize_algorithm_settings(settings, legacy=state.get("openfocus_project", 2) < 3)
     method = settings.get("fusion_method")
     for name, values in settings["method_parameters"].items():

@@ -129,6 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Flat-field (dust map) correction: path to a defocused shot of a blank/white "
                              "area; removes static dust specks and vignetting from every frame before "
                              "registration")
+    parser.add_argument("--defect-mask-path", default=None, metavar="MASK",
+                        help="Sensor-coordinate defect mask; nonzero pixels are repaired before registration")
+    parser.add_argument("--sensor-denoise", action="store_true",
+                        help="Apply conservative sensor denoising before registration")
     parser.add_argument("--kernel", "-k", type=int, default=None,
                         help="Odd kernel size; for OpenFocus A/B, controls focus-response scale")
     parser.add_argument("--depth-smoothing", type=float, default=None, metavar="VALUE",
@@ -248,6 +252,20 @@ def _filter_stack_paths(paths, reference):
     return [path for path in paths if not same_path(path, reference)]
 
 
+def folder_args_mask_conflict(args, path):
+    from utils.path_identity import same_path
+    return bool(getattr(args, "defect_mask_path", None) and path
+                and same_path(args.defect_mask_path, path))
+
+
+def _sensor_mask(args):
+    path = getattr(args, "defect_mask_path", None)
+    if not path:
+        return None
+    from utils.sensor_cleanup import load_sensor_defect_mask
+    return load_sensor_defect_mask(path, cancel_callback=getattr(args, "_should_cancel", None))
+
+
 def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
     """Return (source_label, image file paths) from folders, videos, or files.
 
@@ -279,6 +297,7 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
         else:
             raise FileNotFoundError(f"Input not found: {entry}")
     paths = _filter_stack_paths(paths, args.dust_map)
+    paths = _filter_stack_paths(paths, getattr(args, "defect_mask_path", None))
 
     # A single multi-page TIFF is a whole stack: count its pages, not files
     from core.image_loader import count_frames
@@ -412,15 +431,16 @@ def _transparent_region(images, args):
     if not any(image.ndim == 3 and image.shape[2] == 4 for image in images):
         return images, None
     if (args.align != "none" or getattr(args, "dust_map", None)
+            or getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False)
             or getattr(args, "depth_map", None) or getattr(args, "scale_bar", False)
             or getattr(args, "scale_um", None) is not None):
-        raise ValueError("Transparent PNG stacks require no alignment, dust map, depth map or scale bar")
+        raise ValueError("Transparent PNG stacks require no alignment, dust map, sensor cleanup, depth map or scale bar")
     from core.transparency import crop_transparent_stack
     return crop_transparent_stack(images)
 
 
 def _fuse_stack(images, args):
-    with heavy_job():
+    with heavy_job(getattr(args, "_should_cancel", None)):
         return _fuse_stack_admitted(images, args)
 
 
@@ -433,9 +453,13 @@ def _fuse_stack_admitted(images, args):
 
     _resolve_algorithm_arguments(args)
     images, transparent = _transparent_region(images, args)
-    # Flat-field (dust map) correction runs FIRST and in the raw pixel
-    # domain: dust lives in sensor coordinates, so it must be divided out
-    # before registration warps the content.
+    if getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False):
+        from utils.sensor_cleanup import cleanup_sensor_image
+        mask = _sensor_mask(args)
+        images = [cleanup_sensor_image(image, mask, getattr(args, "sensor_denoise", False),
+                                       cancel_callback=getattr(args, "_should_cancel", None))
+                  for image in images]
+    # Flat-field correction also runs in the raw pixel domain before registration.
     dust_white = getattr(args, "dust_map", None)
     if dust_white:
         from utils.dust_map import compute_flat_field, apply_flat_field_stack
@@ -523,7 +547,7 @@ def _inspect_grouped_cli(paths, args):
     if (args.align == 'openfocus'
             and args._registration_parameters.get('reference_frame', 1) != 1):
         raise ValueError('Grouped fusion cannot use a stack-wide alignment reference; use frame 1 or disable grouping')
-    inspect_grouped_inputs(paths)
+    inspect_grouped_inputs(paths, should_cancel=getattr(args, "_should_cancel", None))
 
 
 def _fuse_grouped(paths, args):
@@ -535,11 +559,25 @@ def _fuse_grouped(paths, args):
     group_args._grouped = True
     group_args.sharpen_output = False
     group_args.dust_map = None
-    preprocess = None
+    group_args.defect_mask_path = None
+    group_args.sensor_denoise = False
+    gain = None
     if args.dust_map:
-        from utils.dust_map import grouped_flat_field_gain, apply_flat_field
+        from utils.dust_map import grouped_flat_field_gain
         gain = grouped_flat_field_gain(args.dust_map)
-        preprocess = lambda image: apply_flat_field(image, gain)
+    preprocess = None
+    mask = _sensor_mask(args)
+    if gain is not None or getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False):
+        def preprocess(image):
+            if getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False):
+                from utils.sensor_cleanup import cleanup_sensor_image
+                image = cleanup_sensor_image(image, mask,
+                                             getattr(args, "sensor_denoise", False),
+                                             cancel_callback=getattr(args, "_should_cancel", None))
+            if gain is not None:
+                from utils.dust_map import apply_flat_field
+                image = apply_flat_field(image, gain)
+            return image
     # Reverse the whole source once. Reversing each group independently would
     # interleave the original order and reverse it again at every later stage.
     if get_fusion(args.method).sort_frames and args.sort == "desc":
@@ -559,6 +597,7 @@ def _fuse_grouped(paths, args):
                           lambda images: _fuse_stack_admitted(images, group_args),
                           thread_count=args.threads,
                           resource_preference=args.resource_preference,
+                          should_cancel=getattr(args, "_should_cancel", None),
                           progress=progress, preprocess=preprocess)
     if args.sharpen_output:
         from utils.image_utils import normalize_fuse_input, quantize_fuse_output
@@ -719,6 +758,11 @@ def _run_batch(args, _emit_json=None) -> int:
     for i, folder in enumerate(folders):
         name = os.path.basename(folder.rstrip("/\\")) or "stack"
         out_path = os.path.join(args.output_dir, f"{name}{args._batch_ext}")
+        if (folder_args_mask_conflict(args, out_path) or
+                (args.depth_map and folder_args_mask_conflict(args, _depth_out_path(args, out_path)))):
+            print(f"error: output would overwrite defect mask: {out_path}", file=sys.stderr)
+            failures.append(name)
+            continue
         _say(f"\n=== {name} ===")
 
         # --resume: a finished folder (output exists) is skipped, so rerunning
@@ -741,6 +785,7 @@ def _run_batch(args, _emit_json=None) -> int:
         if args.dry_run:
             try:
                 paths = _filter_stack_paths(_list_folder_images(folder, loader), folder_args.dust_map)
+                paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
                 from core.image_loader import count_frames
                 frames = sum(count_frames(p) for p in paths)
                 if frames < 2:
@@ -760,6 +805,7 @@ def _run_batch(args, _emit_json=None) -> int:
                      total=len(folders))
         try:
             paths = _filter_stack_paths(_list_folder_images(folder, loader), folder_args.dust_map)
+            paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
             # Count frames, not files: a folder holding one multi-page TIFF
             # Z-stack is a complete stack (same rule as single-stack mode).
             from core.image_loader import count_frames
@@ -1003,6 +1049,9 @@ def _run_cli_admitted(argv: List[str]) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_USAGE
     if args.suggest_duplicates:
+        if args.defect_mask_path or args.sensor_denoise:
+            print("error: sensor cleanup is unavailable with --suggest-duplicates", file=sys.stderr)
+            return EXIT_USAGE
         return _suggest_duplicates(args)
 
     if args.threads < 0:
@@ -1135,6 +1184,13 @@ def _run_cli_admitted(argv: List[str]) -> int:
                   f"expected one of {', '.join(VALID_FORMATS)}", file=sys.stderr)
             return EXIT_USAGE
 
+    if args.defect_mask_path:
+        destinations = [args.output, args.json]
+        if args.output and args.depth_map:
+            destinations.append(_depth_out_path(args, args.output))
+        if any(folder_args_mask_conflict(args, path) for path in destinations if path):
+            print("error: an output would overwrite the defect mask", file=sys.stderr)
+            return EXIT_USAGE
     try:
         import tempfile
         import cv2

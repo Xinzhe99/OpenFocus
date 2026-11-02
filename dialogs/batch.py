@@ -467,6 +467,13 @@ class BatchProcessingDialog(QDialog):
         flat_row.addWidget(flat_browse)
         options_layout.addLayout(flat_row)
 
+        from ui.sensor_cleanup import SensorCleanupControls
+        self.sensor_cleanup = SensorCleanupControls(
+            getattr(self.parent_window, 'defect_mask_path', ''),
+            getattr(self.parent_window, 'sensor_denoise', False))
+        options_layout.addWidget(self.sensor_cleanup)
+        self.sensor_cleanup.path.textChanged.connect(lambda: self.update_single_folder_preview())
+
         last_dir = self._last_pick_dir()
         if last_dir:
             self.path_input.setText(last_dir)
@@ -811,6 +818,7 @@ class BatchProcessingDialog(QDialog):
             scale_factor=(self.load_scale_factor if scale_factor is None
                           else scale_factor),
             sort_by=sort_by,
+            exclude_paths=[self.sensor_cleanup.path.text().strip()] if self.sensor_cleanup.path.text().strip() else [],
             thread_count=self._runtime_settings.get('thread_count', 0),
             resource_preference=self._runtime_settings.get(
                 'resource_preference', 'balanced'),
@@ -1073,16 +1081,20 @@ class BatchProcessingDialog(QDialog):
         from core.image_loader import ImageStackLoader
         loader = ImageStackLoader()
         from utils.sorting import natural_sort_key
-        self.single_folder_images_with_times.sort(key=lambda item:
+        from utils.path_identity import same_path
+        mask_path = self.sensor_cleanup.path.text().strip()
+        entries = [item for item in self.single_folder_images_with_times
+                   if not mask_path or not same_path(item[0], mask_path)]
+        entries.sort(key=lambda item:
             natural_sort_key(item[3] if len(item) > 3 else item[0]) if split_method == 0 else
             (item[2] is None, item[2] or 0, natural_sort_key(item[3] if len(item) > 3 else item[0])))
-        
+
         if split_method == 0:
-            stacks = loader.split_by_count(self.single_folder_images_with_times, param_value)
-            self.preview_label.setText(trans.t('batch_preview_fmt_count').format(len(self.single_folder_images_with_times), len(stacks), param_value))
+            stacks = loader.split_by_count(entries, param_value)
+            self.preview_label.setText(trans.t('batch_preview_fmt_count').format(len(entries), len(stacks), param_value))
         else:
-            stacks = loader.split_by_time_threshold(self.single_folder_images_with_times, param_value)
-            self.preview_label.setText(trans.t('batch_preview_fmt_time').format(len(self.single_folder_images_with_times), len(stacks), param_value))
+            stacks = loader.split_by_time_threshold(entries, param_value)
+            self.preview_label.setText(trans.t('batch_preview_fmt_time').format(len(entries), len(stacks), param_value))
         self.single_folder_stacks = stacks
     
     def add_single_folder(self):
@@ -1317,6 +1329,8 @@ class BatchProcessingDialog(QDialog):
             "save_aligned": save_aligned,  # 是否保存对齐后的图像栈
             "scale_bar": scale_cfg,
             'flat_field_path': self.flat_field_path.text().strip(),
+            'defect_mask_path': self.sensor_cleanup.path.text().strip(),
+            'sensor_denoise': self.sensor_cleanup.denoise.isChecked(),
             'load_scale_factor': self.load_scale_factor,
             'runtime_settings': runtime,
             'frozen_stacks': [list(stack) for stack in self.single_folder_stacks],
@@ -1358,6 +1372,10 @@ class BatchProcessingDialog(QDialog):
     def start_batch_processing(self):
         """开始批处理"""
         from PyQt6.QtWidgets import QMessageBox
+        sensor_error = self.sensor_cleanup.validate()
+        if sensor_error:
+            QMessageBox.warning(self, trans.t('msg_error'), sensor_error)
+            return
 
         import_mode = self.get_import_mode()
         split_method, split_param = self.get_split_settings()
