@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Grouped fusion** processes long stacks in overlapping groups using
+  disk-backed intermediates. The result approximates whole-stack fusion;
+  grouped input and export limitations are described in the user manual.
+- **Reusable workflows** include desktop processing templates and CLI recipes
+  for applying saved settings to another stack.
+- **Transparent PNG stacks** can be fused and saved with their matching
+  rectangular, constant-opacity masks when the documented constraints are met.
+- **Output sharpening** can be enabled for the final fused result, including
+  grouped processing.
 - **Alignment diagnostics** expose per-frame outcomes, including localized
   fallback reasons, reference frames, method-specific scores, match counts and
   transforms when available.
