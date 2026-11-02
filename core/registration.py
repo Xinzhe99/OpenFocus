@@ -583,7 +583,8 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                           downscale_width=None, thread_count: int = 4,
                           should_cancel=None, equalize_brightness=True,
                           max_shift_ratio=None, brightness_reference="first",
-                          max_rotation_deg=None, max_scale_delta=None):
+                          max_rotation_deg=None, max_scale_delta=None,
+                          failure_policy='continue'):
     """
     OpenFocus 快速对齐：有界相似变换（平移+旋转+缩放）+ 亮度均衡 + 自动裁边。
 
@@ -760,6 +761,9 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
             if (abs(rot_deg) > max_rotation_deg + 1e-6
                     or abs(scale_now - 1.0) > max_scale_delta + 1e-6):
                 over = True
+            if failure_policy == 'fail' and (ncc < min_ncc or over):
+                reason = 'low detector quality' if ncc < min_ncc else 'motion outside limits'
+                raise ValueError(f'OpenFocus alignment failed at frame {i + 1}: {reason} (detector quality {ncc:.2f})')
             if over:
                 M = np.eye(3)
                 tx = ty = 0.0

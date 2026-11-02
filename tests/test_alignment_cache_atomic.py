@@ -42,6 +42,7 @@ def _load(stack, **kwargs):
     {'equalize_brightness': False},
     {'backend': 'cupy-linear'},
     {'effective_params': {'max_shift_ratio': 0.25}},
+    {'effective_params': {'max_shift_ratio': 0.08, 'failure_policy': 'fail'}},
     {'source_revision': 2},
     {'frame_ids': [2, 1, 0]},
     {'dtype': '<f4'},
@@ -49,7 +50,7 @@ def _load(stack, **kwargs):
 def test_request_identity_prevents_cross_request_pixel_reuse(stack, change):
     identity = {'brightness_reference': 'last', 'equalize_brightness': True,
                 'backend': 'opencv-lanczos4',
-                'effective_params': {'max_shift_ratio': 0.08},
+                'effective_params': {'max_shift_ratio': 0.08, 'failure_policy': 'continue'},
                 'source_revision': 1, 'frame_ids': [0, 1, 2], 'dtype': '<u2'}
     _save(stack, identity=identity)
     loaded = _load(stack, identity=dict(reversed(list(identity.items()))))

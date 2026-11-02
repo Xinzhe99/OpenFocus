@@ -412,14 +412,25 @@ Image registration corrects spatial misalignment between frames in your image st
   rather than partially corrected. Override with the CLI
   `--align-shift-limit`
 - For non-rigid or extreme geometry, pick ECC or Homography instead
+- **Rejected frame handling** defaults to continuing with the unaligned frame.
+  Choose **Stop on rejected frame** to fail the render or batch item before
+  producing a result when detector quality is below 0.06 or the estimated
+  motion exceeds the configured shift limit, 8° rotation, or 5% scale change.
+  Frames are numbered from 1 in the error, in the processed stack order. The
+  first frame is the geometric reference; a weak direct match may be retried
+  against the previous frame. This policy detects rejected estimates, not all
+  incorrect matches: low texture, repeated patterns, occlusion, large motion,
+  or focus changes can still defeat registration. Inspect the result.
+- In the CLI, select the same policy with `--align openfocus --align-param
+  'failure_policy="fail"'` (use shell-appropriate quoting). Batch items use
+  the selected policy independently. The default is `"continue"`.
 
 ### Enabling Registration
 
 1. In the right panel, locate the **Registration** group
 2. Pick one method from the dropdown: **No alignment**, **OpenFocus (fast)**,
    **Align (ECC)** or **Align (Homography)**
-3. The OpenFocus fast alignment can also be chained in front of ECC or
-   Homography (coarse global pass first, then the precise local pass)
+3. For OpenFocus (fast), choose how to handle rejected frames in its settings.
 
 ### When to Use Registration
 

@@ -75,6 +75,20 @@ def test_batch_json_summary(tmp_path):
     assert os.path.isfile(out / "stackA.png")
 
 
+def test_strict_alignment_reports_rejected_frames_in_single_and_batch(tmp_path, capsys):
+    fa, fb, out = _make_stacks(tmp_path)
+    option = ["--align", "openfocus", "--align-param", 'failure_policy="fail"']
+    single = tmp_path / "single.png"
+    assert _run_cli(["-i", fa, "-o", str(single), *option]) == 1
+    assert "frame 2: low detector quality" in capsys.readouterr().err
+    assert not single.exists()
+    assert _run_cli(["-i", fa, fb, "-d", str(out), *option]) == 1
+    error = capsys.readouterr().err
+    assert "stackA" in error and "stackB" in error
+    assert "frame 2: low detector quality" in error
+    assert not list(out.glob("*.png"))
+
+
 def test_batch_config_override_changes_method(tmp_path):
     fa, fb, out = _make_stacks(tmp_path)
     cfg = tmp_path / "cfg.json"

@@ -131,6 +131,39 @@ def test_openfocus_recovers_rotation_scale_and_translation_together():
     aligned_error = np.abs(aligned[0].astype(np.float32) - aligned[1]).mean()
     assert aligned_error < raw_error * 0.15
 
+def test_openfocus_strict_policy_accepts_known_translation_and_preserves_uint16():
+    frames, _ = _shifted_stack(dx=5, dy=3, size=(140, 180))
+    frames = [frame.astype(np.uint16) * 257 for frame in frames]
+    aligned = ImageRegistration(method="openfocus", parameters={"failure_policy": "fail"}).process(
+        frames, thread_count=1)
+    assert all(frame.dtype == np.uint16 for frame in aligned)
+    raw = np.abs(frames[0].astype(np.float32) - frames[1]).mean()
+    result = np.abs(aligned[0].astype(np.float32) - aligned[1]).mean()
+    assert result < raw
+
+
+def test_openfocus_strict_policy_rejects_low_texture_without_saving(tmp_path):
+    frame = np.full((48, 64), 2000, dtype=np.uint16)
+    output = tmp_path / "aligned"
+    with pytest.raises(ValueError, match=r"frame 2: low detector quality"):
+        ImageRegistration(method="openfocus", parameters={"failure_policy": "fail"}).process(
+            [frame, frame.copy()], output_path=str(output), thread_count=1)
+    assert not output.exists()
+    default = ImageRegistration(method="openfocus").process([frame, frame.copy()], thread_count=1)
+    assert len(default) == 2
+    assert all(image.dtype == np.uint16 for image in default)
+
+
+def test_openfocus_strict_policy_rejects_estimated_motion_over_limit(monkeypatch):
+    import core.registration as registration
+    frames, _ = _shifted_stack(size=(140, 180))
+    monkeypatch.setattr(registration, '_of_estimate_similarity',
+                        lambda *args, **kwargs: (1.0, 0.0, 1.0, -50.0, 0.0))
+    with pytest.raises(ValueError, match=r"frame 2: motion outside limits"):
+        ImageRegistration(method="openfocus", parameters={"failure_policy": "fail"}).process(
+            frames, thread_count=1)
+
+
 
 def test_openfocus_aligns_color_texture_with_constant_channel_sum():
     rng = np.random.default_rng(5)
