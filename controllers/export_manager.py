@@ -1,9 +1,10 @@
 import datetime
 import os
+import threading
 from typing import Any, Optional
 
 import cv2
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog, QInputDialog
 
 from dialogs import DurationDialog
@@ -58,6 +59,35 @@ DEFAULT_EXPORT_EXTENSION = ".png"
 from utils.image_utils import get_imwrite_params  # noqa: E402,F401
 
 
+class LayeredTiffWorker(QThread):
+    completed = pyqtSignal(bool, str)
+
+    def __init__(self, path, image, context, icc_profile):
+        super().__init__()
+        self.path = path
+        self.image = image
+        self.context = context
+        self.icc_profile = icc_profile
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
+
+    def run(self):
+        try:
+            from utils.layered_tiff import export_layered_tiff
+            export_layered_tiff(self.path, self.image, self.context,
+                                icc_profile=self.icc_profile,
+                                cancelled=self._cancelled.is_set)
+        except Exception as exc:  # Errors must reach the GUI thread.
+            if self._cancelled.is_set() and str(exc) == 'Layered export cancelled':
+                self.completed.emit(False, '')
+            else:
+                self.completed.emit(False, str(exc) or type(exc).__name__)
+        else:
+            self.completed.emit(True, self.path)
+
+
 class ExportManager:
     """Handles save and export workflows for the main window."""
 
@@ -65,6 +95,8 @@ class ExportManager:
         self.window = window
         self.gif_progress_dialog: Optional[QProgressDialog] = None
         self.gif_worker: Optional[GifSaverWorker] = None
+        self.layered_worker: Optional[LayeredTiffWorker] = None
+        self.layered_progress_dialog: Optional[QProgressDialog] = None
 
     def normalize_export_path(self, file_path: str,
                               fallback_extension: str = DEFAULT_EXPORT_EXTENSION,
@@ -99,10 +131,11 @@ class ExportManager:
 
         raise ValueError(f'{trans.t("msg_save_failed_info_write")} {ext} · PNG / TIFF / JPG / BMP / WebP')
 
-    def _safe_export_path(self, path):
+    def _safe_export_path(self, path, extra_sources=()):
         sources = list(getattr(self.window, 'image_source_paths', ()) or ())
         sources.extend(getattr(getattr(self.window, 'image_loader', None), 'image_paths', ()) or ())
         sources.extend(getattr(self.window, '_standalone_retouch_paths', ()) or ())
+        sources.extend(extra_sources)
         target = os.path.normcase(os.path.realpath(path))
         for source in sources:
             if not source:
@@ -187,6 +220,76 @@ class ExportManager:
         from controllers.output_manager import ALIGNED_DIR_ROLE
         folder = item.data(ALIGNED_DIR_ROLE)
         return folder if folder and os.path.isdir(folder) else None
+
+    def export_layered_tiff(self, item=None) -> None:
+        window = self.window
+        if self.layered_worker is not None:
+            return
+        if item is None:
+            item = window.output_list.currentItem()
+        record = window.output_manager.record_for_item(item)
+        if record is None or not record.retouchable:
+            show_warning_box(window, trans.t('action_export_layered_tiff'),
+                             trans.t('layered_tiff_no_source'))
+            return
+        default = self.filename_from_label(record.label) + '.tif'
+        path, _ = QFileDialog.getSaveFileName(
+            window, trans.t('action_export_layered_tiff'), default,
+            'TIFF (*.tif *.tiff)')
+        if not path:
+            return
+        root, ext = os.path.splitext(path)
+        if not ext:
+            path = root + '.tif'
+        elif ext.lower() not in ('.tif', '.tiff'):
+            show_error_box(window, trans.t('msg_save_failed_title'),
+                           trans.t('layered_tiff_extension'))
+            return
+        try:
+            frame_paths = (frame.name for frame in record.context.frames
+                           if os.path.isabs(frame.name))
+            self._safe_export_path(path, frame_paths)
+        except (ValueError, OSError) as exc:
+            show_error_box(window, trans.t('msg_save_failed_title'), str(exc))
+            return
+
+        progress = QProgressDialog(trans.t('layered_tiff_exporting'),
+                                   trans.t('btn_cancel'), 0, 0, window)
+        progress.setWindowTitle(trans.t('action_export_layered_tiff'))
+        progress.setStyleSheet(ui_styles.PROGRESS_DIALOG_STYLE)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        self.layered_progress_dialog = progress
+        worker = LayeredTiffWorker(path, record.image, record.context,
+                                   record.icc_profile or record.context.icc_profile)
+        self.layered_worker = worker
+        progress.canceled.connect(self._cancel_layered_tiff)
+        worker.completed.connect(self._layered_tiff_completed)
+        worker.finished.connect(self._layered_tiff_finished)
+        progress.show()
+        worker.start()
+
+    def _cancel_layered_tiff(self):
+        if self.layered_worker is not None:
+            self.layered_worker.cancel()
+        if self.layered_progress_dialog is not None:
+            self.layered_progress_dialog.setLabelText(trans.t('depth_cancelling'))
+            self.layered_progress_dialog.setCancelButton(None)
+            self.layered_progress_dialog.show()
+
+    def _layered_tiff_completed(self, success, message):
+        if success:
+            self.window.statusBar().showMessage(
+                trans.t('msg_image_saved_info').format(path=message).replace('\n', ' '), 8000)
+        elif message:
+            show_error_box(self.window, trans.t('action_export_layered_tiff'),
+                           f"{trans.t('msg_save_failed_text')}\n{message}")
+
+    def _layered_tiff_finished(self):
+        if self.layered_progress_dialog is not None:
+            self.layered_progress_dialog.close()
+            self.layered_progress_dialog = None
+        self.layered_worker = None
 
     def save_result(self) -> None:
         window = self.window

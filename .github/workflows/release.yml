@@ -62,6 +62,7 @@ jobs:
             --add-data "weights;weights" `
             --add-data "ui;ui" `
             --add-data "docs;docs" `
+            --add-data "THIRD_PARTY_NOTICES.md;." `
             --collect-submodules PyQt6 `
             --collect-submodules fusion_methods `
             --collect-submodules locales `
@@ -200,6 +201,7 @@ jobs:
             --add-data "weights:weights" \
             --add-data "ui:ui" \
             --add-data "docs:docs" \
+            --add-data "THIRD_PARTY_NOTICES.md:." \
             --collect-submodules fusion_methods \
             --collect-submodules locales \
             --hidden-import core.algorithm_adapters \

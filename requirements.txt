@@ -4,6 +4,8 @@ pyqt6
 numpy
 imageio
 pillow-heif
+psdtags==2024.5.24
+tifffile==2024.8.30
 rawpy
 dtcwt
 scipy

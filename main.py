@@ -3088,6 +3088,9 @@ class OpenFocus(QMainWindow):
         gif_worker = getattr(export_manager, 'gif_worker', None) if export_manager else None
         if gif_worker is not None:
             running.append(gif_worker.isRunning())
+        layered_worker = getattr(export_manager, 'layered_worker', None) if export_manager else None
+        if layered_worker is not None:
+            running.append(layered_worker.isRunning())
         source_manager = getattr(self, 'source_manager', None)
         load_worker = getattr(source_manager, '_load_worker', None) if source_manager else None
         if load_worker is not None:
@@ -3196,6 +3199,7 @@ class OpenFocus(QMainWindow):
         # Stop GIF saver worker if running (no cancel support; wait briefly)
         if hasattr(self, 'export_manager'):
             _shutdown_worker(getattr(self.export_manager, 'gif_worker', None))
+            _shutdown_worker(getattr(self.export_manager, 'layered_worker', None))
 
         # Stop batch worker if running
         if hasattr(self, 'batch_manager') and self.batch_manager._thread is not None:
