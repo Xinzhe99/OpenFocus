@@ -243,24 +243,23 @@ def test_alignment_only_disables_fusion_only_options(qapp):
 
 
 
-def test_checked_radio_does_not_grow_its_indicator():
-    """A 5 px border on :checked grew the box from 18 px to 26 px, so the
-    indicator visibly jumped when the AI mode was toggled."""
-    from PyQt6.QtWidgets import QApplication, QRadioButton
+def test_checked_radio_does_not_grow_its_indicator(qapp):
+    """Checked and unchecked radios occupy the same space in both themes."""
+    from PyQt6.QtWidgets import QRadioButton, QWidget
     from ui.styles import build_stylesheet
-    app = QApplication.instance() or QApplication([])
-    previous = app.styleSheet()
-    try:
-        for theme in ("light", "dark"):
-            app.setStyleSheet(build_stylesheet(theme))
-            # Same label: only the checked state may differ.
-            soft, hard = QRadioButton("same"), QRadioButton("same")
+
+    for theme in ("light", "dark"):
+        parent = QWidget()
+        parent.setStyleSheet(build_stylesheet(theme))
+        soft, hard = QRadioButton("same", parent), QRadioButton("same", parent)
+        try:
             soft.setChecked(True)
             assert soft.height() == hard.height(), theme
             assert soft.sizeHint().height() == hard.sizeHint().height(), theme
             assert soft.sizeHint().width() == hard.sizeHint().width(), theme
-    finally:
-        app.setStyleSheet(previous)
+        finally:
+            parent.close()
+            parent.deleteLater()
 
 
 
@@ -288,7 +287,7 @@ def test_help_button_style_uses_the_active_theme():
         st.set_current_theme("dark")
 
 
-def test_no_input_widget_is_narrower_than_its_content():
+def test_no_input_widget_is_narrower_than_its_content(qapp):
     """A fixed width below minimumSizeHint silently clips the value.
 
     Two shipped defects of this class: the right panel's blend-smoothing spin
@@ -296,23 +295,21 @@ def test_no_input_widget_is_narrower_than_its_content():
     sigma ("4.0" → "4."). This walks every dialog's spin boxes so a new fixed
     width cannot reintroduce it.
     """
-    from PyQt6.QtWidgets import (QApplication, QDoubleSpinBox, QSpinBox,
-                                 QWidget)
-    app = QApplication.instance() or QApplication([])
+    from PyQt6.QtWidgets import QDoubleSpinBox, QSpinBox, QWidget
     from ui.styles import build_stylesheet
-    app.setStyleSheet(build_stylesheet("dark"))
 
     from dialogs.settings import DownsampleDialog, TileSettingsDialog
     from dialogs.dustmap import DustMapDialog
 
     parent = QWidget()
+    parent.setStyleSheet(build_stylesheet("dark"))
     dialogs = [DownsampleDialog(parent, initial_scale=0.05, max_scale=1.0),
                TileSettingsDialog(parent),
                DustMapDialog(parent)]
     try:
         for dlg in dialogs:
             dlg.show()
-            app.processEvents()
+            qapp.processEvents()
             for spin in dlg.findChildren((QSpinBox, QDoubleSpinBox)):
                 need = spin.minimumSizeHint().width()
                 assert spin.width() >= need, (
