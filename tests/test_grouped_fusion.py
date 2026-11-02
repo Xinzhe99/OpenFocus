@@ -244,3 +244,85 @@ def test_rejects_invalid_fusion_result(tmp_path, admitted, scratch_root):
         grouped.grouped_fuse(_files(tmp_path, range(4)), 2, 0,
                              lambda images: images[0].astype(np.float32))
     assert not list(scratch_root.iterdir())
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_different_crops_and_singleton_keep_source_coordinates(tmp_path, admitted, dtype):
+    from core.registration import _record_grouped_crop
+    y, x = np.indices((48, 52))
+    image = np.stack([x, y, x + y], axis=-1).astype(dtype)
+    paths = []
+    for index in range(5):
+        path = tmp_path / f'{index}.png'
+        assert cv2.imwrite(str(path), image)
+        paths.append(path)
+    calls = []
+
+    def fuse(images):
+        calls.append(len(images))
+        h, w = images[0].shape[:2]
+        left = 1 if len(calls) % 2 else 3
+        top = 2 if len(calls) % 2 else 1
+        _record_grouped_crop(top, h - 1, left, w - 2)
+        return images[0][top:h - 1, left:w - 2].copy()
+
+    result = grouped.grouped_fuse(paths, 2, 0, fuse)
+    x0, y0 = map(int, result[0, 0, :2])
+    assert result.dtype == dtype
+    assert calls == [2, 2, 2, 2]
+    np.testing.assert_array_equal(result, image[y0:y0 + result.shape[0], x0:x0 + result.shape[1]])
+
+
+def test_real_registration_crops_across_rounds(tmp_path, admitted, monkeypatch):
+    from core import registration as registration_module
+    y, x = np.indices((64, 68))
+    image = np.stack([x, y, x + y], axis=-1).astype(np.uint8)
+    paths = []
+    for index in range(5):
+        path = tmp_path / f'{index}.png'
+        assert cv2.imwrite(str(path), image)
+        paths.append(path)
+    monkeypatch.setattr(registration_module, '_of_estimate_similarity',
+                        lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
+    registration = registration_module.ImageRegistration(method='openfocus')
+
+    def fuse(images):
+        return registration.process(images, thread_count=1)[0].copy()
+
+    result = grouped.grouped_fuse(paths, 2, 0, fuse)
+    np.testing.assert_array_equal(result, image[12:52, 12:56])
+
+
+def test_scaled_resource_admission_keeps_full_decoder_scratch(tmp_path, monkeypatch):
+    paths = _files(tmp_path, [1, 2])
+    requests = []
+    def reject(workload, **kwargs):
+        requests.append(workload.fixed_bytes)
+        raise resource_policy.ResourceLimitError('stop before decode')
+    monkeypatch.setattr(grouped.resource_policy, 'plan_execution', reject)
+    with pytest.raises(resource_policy.ResourceLimitError):
+        grouped.grouped_fuse(paths, 2, 0, np.maximum.reduce, scale_factor=0.5)
+    encoded = max(path.stat().st_size for path in paths)
+    assert requests == [2 * 4 * 4 * 6 + 8 * 9 * 24 + encoded]
+
+
+def test_alpha_is_rejected_before_processing(tmp_path, monkeypatch):
+    path = tmp_path / 'transparent.png'
+    image = np.zeros((16, 16, 4), dtype=np.uint8)
+    image[2:14, 2:14, 3] = 255
+    assert cv2.imwrite(str(path), image)
+    monkeypatch.setattr(grouped, 'decode_image', lambda path: pytest.fail('decoded alpha input'))
+    with pytest.raises(ValueError, match='alpha-channel'):
+        grouped.grouped_fuse([path], 2, 0, np.maximum.reduce)
+
+
+def test_projective_horizon_is_rejected_for_grouped_registration():
+    from core.registration import grouped_crop_offsets, _compute_valid_region_from_transforms
+    transform = np.eye(3)
+    transform[2, 0] = -0.04
+    token = grouped_crop_offsets.set([])
+    try:
+        with pytest.raises(ValueError, match='projective transform'):
+            _compute_valid_region_from_transforms([transform], (64, 64))
+    finally:
+        grouped_crop_offsets.reset(token)

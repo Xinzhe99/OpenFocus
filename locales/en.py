@@ -12,7 +12,7 @@ EN = {
     'batch_group_size': 'Group size:',
     'batch_group_overlap': 'Overlap:',
     'batch_group_disabled': 'Disabled',
-    'batch_group_hint': 'Fuse groups in rounds using temporary disk space. Single-frame files with Pillow-readable headers are required; camera RAW and multipage files are unsupported. Results and registration references are approximate; original-frame depth, provenance and aligned exports are unavailable.',
+    'batch_group_hint': 'Fuse groups in rounds using temporary disk space. Inputs must have matching oriented dimensions and Pillow-readable single-frame headers; RAW, multipage and alpha-channel files are unsupported. Registration crops a conservative common region each round and may reject difficult transforms. Results and registration references are approximate; original-frame depth, provenance and aligned exports are unavailable.',
     'batch_group_split_error': 'Grouped fusion requires multiple-folder mode. Split mode preloads the stack.',
     'batch_group_range_error': 'Group size must be at least 2; overlap must be at most group size minus 2.',
     'batch_group_output_error': 'Grouped fusion requires a fusion method and cannot save aligned frames.',

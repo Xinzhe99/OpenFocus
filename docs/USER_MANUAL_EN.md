@@ -1034,8 +1034,18 @@ The batch dialog shows real-time progress. You can cancel processing at any time
   approximation of processing the complete stack at once. Original-frame
   depth, provenance and aligned-frame exports are unavailable. Split-folder
   mode is not supported.
-- Grouped input must consist of single-frame files with headers readable by
-  Pillow; camera RAW and multipage files are not supported. For the command
+  Registered groups use their first frame as the coordinate reference. Each
+  registration removes a conservative border for interpolation, and later
+  rounds intersect the surviving rectangles, including any single-frame tail.
+  The final image is therefore cropped. Each group being registered must be
+  larger than 8 pixels in both dimensions; difficult rotations or projective
+  transforms may have no safely usable rectangle and produce an error. Use
+  pre-aligned inputs without registration, or disable grouping, if this occurs.
+- Grouped input must have matching oriented dimensions and consist of single-frame
+  files with headers readable by Pillow. Camera RAW, multipage files, and files
+  with alpha channels or transparency are unsupported, including transparent
+  PNG stacks. Remove alpha or disable grouping to process those stacks. CLI
+  dry runs check these restrictions. For the command
   line, an example is `python main.py --input stack --output fused.png --group-size 8 --group-overlap 1`.
   Grouped CLI input must be a folder and cannot be combined with `--depth-map`.
   Each group uses its own first alignment reference; a different stack-wide

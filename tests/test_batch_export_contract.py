@@ -484,6 +484,28 @@ def test_grouped_batch_registers_each_round_without_loading_stack(qapp, tmp_path
     assert any('2' in text and '1 / 1' in text for text in stages)
 
 
+def test_grouped_batch_real_registration_keeps_singleton_coordinates(qapp, tmp_path, monkeypatch):
+    import core.registration as registration
+    source = tmp_path / 'registered'
+    source.mkdir()
+    y, x = np.indices((64, 68))
+    frame = np.stack([x, y, x + y], axis=-1).astype(np.uint16) * 257
+    for index in range(5):
+        assert cv2.imwrite(str(source / f'{index}.png'), frame)
+    monkeypatch.setattr(registration, '_of_estimate_similarity',
+                        lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
+    monkeypatch.setattr(BatchWorker, '_fuse_one_stack', lambda self, fusion, method, images, params: images[0])
+    settings = {'format': 'png', 'fusion_method': 'openfocus_a', 'alignment': 'openfocus',
+                'group_size': 2, 'group_overlap': 0}
+    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'), settings, use_gpu=False)
+    result = {}
+    worker.finished.connect(result.update)
+    worker.run()
+    assert result['counts']['success'] == 1
+    saved = cv2.imread(result['outputs'][0], cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(saved, frame[12:52, 12:56])
+
+
 def test_grouped_batch_rejects_split_and_aligned_export(qapp, tmp_path):
     settings = {'fusion_method': 'openfocus_a', 'group_size': 2, 'group_overlap': 0,
                 'save_aligned': True}

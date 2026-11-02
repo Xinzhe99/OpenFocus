@@ -63,6 +63,39 @@ def test_dry_run_writes_nothing(tmp_path):
     assert not os.path.isdir(out) or not list(out.glob("*.png"))
 
 
+@pytest.mark.parametrize('batch', [False, True])
+def test_grouped_dry_run_rejects_alpha_before_processing(tmp_path, capsys, batch):
+    folder = tmp_path / 'stack'
+    folder.mkdir()
+    frame = np.zeros((24, 24, 4), dtype=np.uint8)
+    frame[2:-2, 2:-2, 3] = 255
+    for index in range(2):
+        assert cv2.imwrite(str(folder / f'{index}.png'), frame)
+    destination = ['-d', str(tmp_path / 'out')] if batch else ['-o', str(tmp_path / 'out.png')]
+    assert _run_cli(['-i', str(folder), *destination, '--group-size', '2', '--dry-run']) != 0
+    assert 'alpha-channel' in capsys.readouterr().err
+    assert not (tmp_path / 'out.png').exists()
+    assert not (tmp_path / 'out').exists()
+
+
+def test_grouped_cli_real_registration_keeps_singleton_coordinates(tmp_path, monkeypatch):
+    import core.registration as registration
+    from core.multi_focus_fusion import MultiFocusFusion
+    folder = tmp_path / 'stack'
+    folder.mkdir()
+    y, x = np.indices((64, 68))
+    frame = np.stack([x, y, x + y], axis=-1).astype(np.uint8)
+    for index in range(5):
+        assert cv2.imwrite(str(folder / f'{index}.png'), frame)
+    monkeypatch.setattr(registration, '_of_estimate_similarity',
+                        lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
+    monkeypatch.setattr(MultiFocusFusion, 'fuse', lambda self, input_source, **kwargs: input_source[0])
+    output = tmp_path / 'out.png'
+    assert _run_cli(['-i', str(folder), '-o', str(output), '--group-size', '2',
+                     '--group-overlap', '0', '--align', 'openfocus', '--cpu']) == 0
+    np.testing.assert_array_equal(cv2.imread(str(output)), frame[12:52, 12:56])
+
+
 def test_batch_json_summary(tmp_path):
     fa, fb, out = _make_stacks(tmp_path)
     jout = tmp_path / "res.json"
