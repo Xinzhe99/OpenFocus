@@ -86,6 +86,11 @@ def test_admission_and_cancellation_keep_existing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(layered_tiff, 'ram_budget', lambda snapshot: 1)
     with pytest.raises(ValueError, match='memory budget'):
         layered_tiff.export_layered_tiff(path, image, context)
+    monkeypatch.setattr(layered_tiff, 'probe_resources', lambda: type('Snapshot', (), {'ram_known': False})())
+    with pytest.raises(ValueError, match='memory budget'):
+        layered_tiff.export_layered_tiff(path, image, context)
+    assert path.read_bytes() == b'previous'
+    monkeypatch.setattr(layered_tiff, 'probe_resources', lambda: type('Snapshot', (), {'ram_known': True})())
     assert path.read_bytes() == b'previous'
     monkeypatch.setattr(layered_tiff, 'ram_budget', lambda snapshot: 512 * 1024 * 1024)
     cancelled = [False]

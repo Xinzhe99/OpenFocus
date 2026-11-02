@@ -80,7 +80,9 @@ def _preflight(image, context, icc_profile, cancelled):
         layer_bytes += count * 4 * image.dtype.itemsize
     estimate = layer_bytes * 8 + largest * 24 + len(icc_profile) * 2 + 16 * 1024 * 1024
     snapshot = probe_resources()
-    budget = ram_budget(snapshot) if snapshot.ram_known else 128 * 1024 * 1024
+    if not snapshot.ram_known:
+        raise ValueError('Layered export requires a known memory budget')
+    budget = ram_budget(snapshot)
     limit = min(MAX_WORKING_BYTES, budget)
     if estimate > limit:
         raise ValueError('Layered export exceeds the available memory budget')
@@ -147,9 +149,12 @@ def export_layered_tiff(path, image, context, *, icc_profile=b'', cancelled=None
         tags.append((34675, 7, len(icc_profile), icc_profile, True))
     composite = np.ascontiguousarray(np.stack(_channels(image), axis=-1))
     _cancelled(cancelled)
-    fd, temporary = tempfile.mkstemp(prefix='.layered-', suffix='.tif', dir=os.path.dirname(destination))
+    temporary = None
     try:
-        with os.fdopen(fd, 'w+b') as stream:
+        with tempfile.NamedTemporaryFile(mode='w+b', prefix='.layered-',
+                                         suffix='.tif', dir=os.path.dirname(destination),
+                                         delete=False) as stream:
+            temporary = stream.name
             tifffile.imwrite(stream, composite, byteorder='<', photometric='rgb', metadata=None,
                              compression=None, extratags=tags)
             stream.flush()
@@ -157,5 +162,5 @@ def export_layered_tiff(path, image, context, *, icc_profile=b'', cancelled=None
         _cancelled(cancelled)
         os.replace(temporary, destination)
     finally:
-        if os.path.exists(temporary):
+        if temporary and os.path.exists(temporary):
             os.unlink(temporary)
