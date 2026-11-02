@@ -1,6 +1,12 @@
 """Russian language pack for OpenFocus."""
 
 PACK = {
+    'alignment_report_collect': 'Собирать диагностику выравнивания', 'alignment_report_collect_hint': 'Повторно вычислить выравнивание для сбора результатов по кадрам без использования кэша.',
+    'alignment_report_failed': 'Ошибка',
+    'alignment_report_title': 'Диагностика выравнивания', 'alignment_report_unavailable': 'Для последнего рендеринга нет диагностики по кадрам. Включите сбор и повторите рендеринг.',
+    'alignment_report_frame': 'Кадр {number} — {name}: {method} — {status}',
+    'alignment_report_reference': 'Опорный', 'alignment_report_aligned': 'Выровнен', 'alignment_report_fallback': 'Резервный результат',
+    'alignment_report_cached': 'Выравнивание: использован результат из кэша', 'alignment_report_available': 'Диагностика кадров доступна в меню «Инструменты»',
     'stack_review_button': 'Проверить кадры',
     'stack_review_cancel': 'Отменить проверку',
     'stack_review_hint': 'Поиск похожих соседних кадров. Просмотрите предложения и снимите флажки с кадров, которые нужно исключить.',

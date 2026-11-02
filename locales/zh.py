@@ -5,6 +5,12 @@ fall back to this table.
 """
 
 ZH = {
+    'alignment_report_collect': '收集配准诊断', 'alignment_report_collect_hint': '重新计算配准以收集逐帧结果，不使用配准缓存。',
+    'alignment_report_failed': '失败',
+    'alignment_report_title': '配准诊断', 'alignment_report_unavailable': '上次渲染没有逐帧诊断。请启用收集并重新渲染。',
+    'alignment_report_frame': '第 {number} 帧 — {name}：{method} — {status}',
+    'alignment_report_reference': '参考帧', 'alignment_report_aligned': '已配准', 'alignment_report_fallback': '回退',
+    'alignment_report_cached': '配准：使用缓存结果', 'alignment_report_available': '可在工具菜单中查看逐帧配准诊断',
     'stack_review_button': '检查帧',
     'stack_review_cancel': '取消检查',
     'stack_review_hint': '查找相邻的相似帧。请检查建议并用复选框选择要排除的帧。',

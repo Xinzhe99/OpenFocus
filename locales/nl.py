@@ -1,6 +1,12 @@
 """Dutch language pack for OpenFocus."""
 
 PACK = {
+    'alignment_report_collect': 'Uitlijningsdiagnose verzamelen', 'alignment_report_collect_hint': 'Bereken de uitlijning opnieuw voor resultaten per beeld in plaats van de cache te gebruiken.',
+    'alignment_report_failed': 'Mislukt',
+    'alignment_report_title': 'Uitlijningsdiagnose', 'alignment_report_unavailable': 'Geen diagnose per beeld voor de laatste rendering. Schakel verzamelen in en render opnieuw.',
+    'alignment_report_frame': 'Beeld {number} — {name}: {method} — {status}',
+    'alignment_report_reference': 'Referentie', 'alignment_report_aligned': 'Uitgelijnd', 'alignment_report_fallback': 'Terugval',
+    'alignment_report_cached': 'Uitlijning: cacheresultaat hergebruikt', 'alignment_report_available': 'Diagnose per beeld beschikbaar onder Gereedschap',
     'stack_review_button': 'Beelden controleren',
     'stack_review_cancel': 'Controle annuleren',
     'stack_review_hint': 'Zoekt vergelijkbare opeenvolgende beelden. Bekijk de suggesties en kies met de selectievakjes welke u uitsluit.',

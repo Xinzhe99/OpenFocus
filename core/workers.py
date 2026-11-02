@@ -204,7 +204,7 @@ class RenderWorker(QThread):
                  roi_rect=None, roi_mode='crop', roi_base_index=0, use_gpu=True,
                  base_frame='none', sort_mode='asc', exposure_match=False,
                  disk_cache=None, resource_preference='balanced', preview=False,
-                 sharpen_output=False):
+                 sharpen_output=False, collect_alignment_report=False):
         super().__init__()
         if algorithm is None:
             if need_fusion or fusion_parameters:
@@ -245,6 +245,8 @@ class RenderWorker(QThread):
         self.resource_preference = resource_preference
         self.alignment_reused = False
         self.alignment_computed = False
+        self.alignment_report = [] if collect_alignment_report else None
+        self.alignment_report_provenance = None
 
     def cancel(self):
         """Request cancellation; checked between registration/fusion stages."""
@@ -295,7 +297,8 @@ class RenderWorker(QThread):
         current_alignment_options = (self.alignment, self.registration_parameters)
         need_registration = bool(self.alignment)
         can_reuse_aligned_images = (
-            self.is_images_aligned
+            self.alignment_report is None
+            and self.is_images_aligned
             and bool(self.aligned_images)
             and self.last_alignment_options == current_alignment_options
         )
@@ -321,7 +324,8 @@ class RenderWorker(QThread):
                 # Disk cache lookup happens here, on the worker thread:
                 # the GUI used to decode every cached PNG synchronously
                 # before starting a render.
-                cached = self._load_cached_alignment()
+                cached = (self._load_cached_alignment()
+                          if self.alignment_report is None else None)
                 if cached is not None:
                     processed_images = cached
                     registration_performed = True
@@ -330,8 +334,18 @@ class RenderWorker(QThread):
                 else:
                     alignment_start_time = time.time()
                     self.stage_signal.emit("align")
-                    processed_images, alignment_time = self._run_registration(
-                        processed_images, should_cancel=lambda: self.is_cancelled)
+                    if self.alignment_report is None:
+                        processed_images, alignment_time = self._run_registration(
+                            processed_images, should_cancel=lambda: self.is_cancelled)
+                    else:
+                        from core.registration import alignment_report
+                        token = alignment_report.set(self.alignment_report)
+                        try:
+                            processed_images, alignment_time = self._run_registration(
+                                processed_images, should_cancel=lambda: self.is_cancelled)
+                        finally:
+                            alignment_report.reset(token)
+                        self.alignment_report_provenance = 'fresh'
                     registration_performed = True
                     self.alignment_computed = True
     

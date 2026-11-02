@@ -95,6 +95,130 @@ def test_grouped_cli_real_registration_keeps_singleton_coordinates(tmp_path, mon
                      '--group-overlap', '0', '--align', 'openfocus', '--cpu']) == 0
     np.testing.assert_array_equal(cv2.imread(str(output)), frame[12:52, 12:56])
 
+def test_cli_alignment_report_records_registration_and_restores_context(tmp_path, monkeypatch):
+    import core.registration as registration
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    folder, _, _ = _make_stacks(tmp_path)
+    monkeypatch.setattr(registration, '_of_estimate_similarity',
+                        lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
+    monkeypatch.setattr(MultiFocusFusion, 'fuse', lambda self, input_source, **kwargs: input_source[0])
+    report = tmp_path / 'report.json'
+    prior = []
+    token = registration.alignment_report.set(prior)
+    try:
+        result = _run_cli(['-i', folder, '-o', str(tmp_path / 'fused.png'),
+                           '--align', 'openfocus', '--cpu', '--alignment-report', str(report)])
+        assert result == 0
+        assert registration.alignment_report.get() is prior
+        assert prior == []
+    finally:
+        registration.alignment_report.reset(token)
+    payload = json.loads(report.read_text(encoding='utf-8'))
+    assert payload['method'] == 'openfocus'
+    assert payload['input'] == [folder]
+    assert payload['frame_count'] == 3
+    assert {entry['frame_index'] for entry in payload['entries']} == {0, 1, 2}
+    assert all(entry['method'] == 'openfocus' for entry in payload['entries'])
+    assert any(entry['status'] == 'reference' for entry in payload['entries'])
+
+
+@pytest.mark.parametrize('extra', [
+    ['--group-size', '2'], ['--dry-run'], ['--suggest-duplicates'],
+])
+def test_alignment_report_rejects_unsupported_modes(tmp_path, extra):
+    folder, _, _ = _make_stacks(tmp_path)
+    report = tmp_path / 'report.json'
+    assert _run_cli(['-i', folder, '-o', str(tmp_path / 'out.png'),
+                     '--alignment-report', str(report), *extra]) == 2
+    assert not report.exists()
+
+
+def test_alignment_report_rejects_batch(tmp_path):
+    folder, _, out = _make_stacks(tmp_path)
+    assert _run_cli(['-i', folder, '-d', str(out), '--alignment-report',
+                     str(tmp_path / 'report.json')]) == 2
+    assert not out.exists()
+
+
+@pytest.mark.parametrize('target', ['frame', 'output', 'depth', 'summary', 'dust'])
+def test_alignment_report_never_overwrites_other_paths(tmp_path, target):
+    folder, _, _ = _make_stacks(tmp_path)
+    frame = os.path.join(folder, 'f0.png')
+    output = str(tmp_path / 'out.png')
+    depth = str(tmp_path / 'out_depth.png')
+    summary = str(tmp_path / 'summary.json')
+    paths = {'frame': frame, 'output': output, 'depth': depth, 'summary': summary, 'dust': frame}
+    before = open(frame, 'rb').read()
+    args = ['-i', folder, '-o', output, '--align', 'openfocus', '--depth-map', '--json', summary,
+            '--alignment-report', paths[target]]
+    if target == 'dust':
+        args += ['--dust-map', frame]
+    assert _run_cli(args) != 0
+    assert open(frame, 'rb').read() == before
+    assert not os.path.exists(output)
+
+
+def test_alignment_report_requires_alignment(tmp_path):
+    folder, _, _ = _make_stacks(tmp_path)
+    report = tmp_path / 'report.json'
+    assert _run_cli(['-i', folder, '-o', str(tmp_path / 'out.png'),
+                     '--alignment-report', str(report)]) == 2
+    assert not report.exists()
+
+
+def test_alignment_report_rejects_hardlinked_input(tmp_path):
+    folder, _, _ = _make_stacks(tmp_path)
+    frame = os.path.join(folder, 'f0.png')
+    report = tmp_path / 'linked.json'
+    try:
+        os.link(frame, report)
+    except OSError:
+        pytest.skip('hard links are unavailable')
+    original = report.read_bytes()
+    assert _run_cli(['-i', folder, '-o', str(tmp_path / 'out.png'), '--align', 'openfocus',
+                     '--alignment-report', str(report)]) != 0
+    assert report.read_bytes() == original
+    assert not (tmp_path / 'out.png').exists()
+
+
+
+def test_alignment_report_failure_restores_context_and_preserves_report(tmp_path, monkeypatch):
+    import core.cli as cli
+    import core.registration as registration
+
+    folder, _, _ = _make_stacks(tmp_path)
+    report = tmp_path / 'report.json'
+    report.write_text('previous', encoding='utf-8')
+    prior = []
+    token = registration.alignment_report.set(prior)
+    def fail_fusion(images, args):
+        registration.alignment_report.get().append({'frame_index': 0, 'status': 'aligned'})
+        raise RuntimeError('registration failed')
+    monkeypatch.setattr(cli, '_fuse_stack', fail_fusion)
+    try:
+        assert _run_cli(['-i', folder, '-o', str(tmp_path / 'out.png'), '--align', 'openfocus',
+                         '--alignment-report', str(report)]) == 1
+        assert registration.alignment_report.get() is prior
+        assert prior == []
+    finally:
+        registration.alignment_report.reset(token)
+    assert report.read_text(encoding='utf-8') == 'previous'
+    assert not (tmp_path / 'out.png').exists()
+
+def test_alignment_report_atomic_write_preserves_existing_file_on_failure(tmp_path, monkeypatch):
+    from core.cli import _write_alignment_report
+
+    report = tmp_path / 'report.json'
+    report.write_text('existing', encoding='utf-8')
+    def fail_replace(*args):
+        raise OSError('replace failed')
+    monkeypatch.setattr(os, 'replace', fail_replace)
+    with pytest.raises OSError:
+        _write_alignment_report(str(report), {'entries': []})
+    assert report.read_text(encoding='utf-8') == 'existing'
+    assert list(tmp_path.iterdir()) == [report]
+
 
 def test_batch_json_summary(tmp_path):
     fa, fb, out = _make_stacks(tmp_path)

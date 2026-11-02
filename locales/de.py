@@ -1,6 +1,12 @@
 """German language pack for OpenFocus."""
 
 PACK = {
+    'alignment_report_collect': 'Ausrichtungsdiagnose erfassen', 'alignment_report_collect_hint': 'Ausrichtung neu berechnen und Ergebnisse pro Bild erfassen, statt den Cache zu verwenden.',
+    'alignment_report_failed': 'Fehlgeschlagen',
+    'alignment_report_title': 'Ausrichtungsdiagnose', 'alignment_report_unavailable': 'Für das letzte Rendern liegen keine Einzelbilddiagnosen vor. Erfassung aktivieren und erneut rendern.',
+    'alignment_report_frame': 'Bild {number} — {name}: {method} — {status}',
+    'alignment_report_reference': 'Referenz', 'alignment_report_aligned': 'Ausgerichtet', 'alignment_report_fallback': 'Ersatzverfahren',
+    'alignment_report_cached': 'Ausrichtung: Cache-Ergebnis wiederverwendet', 'alignment_report_available': 'Einzelbilddiagnose unter Werkzeuge verfügbar',
     'stack_review_button': 'Bilder prüfen',
     'stack_review_cancel': 'Prüfung abbrechen',
     'stack_review_hint': 'Sucht ähnliche benachbarte Bilder. Prüfen Sie die Vorschläge und wählen Sie die auszuschließenden Bilder mit den Kästchen.',

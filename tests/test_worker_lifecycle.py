@@ -209,3 +209,75 @@ def test_preview_resize_runs_under_worker_lifetime(monkeypatch):
     assert all(thread != get_ident() for thread in resizing_threads)
     assert len(resizing_threads) == 2
     assert results[0][1].shape[:2] == (256, 320)
+
+
+@pytest.mark.parametrize('cached', ['memory', 'disk'])
+def test_requested_report_runs_registration_in_worker_even_with_cached_frames(monkeypatch, cached):
+    from core.registration import alignment_report
+
+    frames = _frames(np.uint16)
+    request = {'mode': 'load'} if cached == 'disk' else None
+    worker = RenderWorker(frames, algorithm=None, need_fusion=False,
+                          alignment='openfocus', use_gpu=False,
+                          disk_cache=request, collect_alignment_report=True)
+    if cached == 'memory':
+        worker.aligned_images = [np.zeros_like(frame) for frame in frames]
+        worker.is_images_aligned = True
+        worker.last_alignment_options = (worker.alignment, worker.registration_parameters)
+    observed = []
+
+    def register(images, should_cancel=None):
+        observed.append((get_ident(), alignment_report.get(), images[0].dtype))
+        alignment_report.get().append({'frame_index': 1, 'status': 'aligned',
+                                       'method': 'openfocus'})
+        return images, 0.1
+
+    def unexpected_cache_load():
+        raise AssertionError('reporting must not load cached alignment')
+
+    monkeypatch.setattr(worker, '_run_registration', register)
+    monkeypatch.setattr(worker, '_load_cached_alignment', unexpected_cache_load)
+    results, errors = _capture(worker)
+    parent_report = []
+    token = alignment_report.set(parent_report)
+    try:
+        worker.start()
+        assert worker.wait(10000)
+        assert alignment_report.get() is parent_report
+    finally:
+        alignment_report.reset(token)
+    assert not errors and len(results) == 1
+    assert len(observed) == 1
+    assert observed[0][1] is worker.alignment_report
+    assert observed[0][2] == np.dtype('uint16')
+    assert observed[0][0] != get_ident()
+    assert parent_report == []
+    assert worker.alignment_report == [{'frame_index': 1, 'status': 'aligned',
+                                        'method': 'openfocus'}]
+    assert worker.alignment_report_provenance == 'fresh'
+    assert worker.alignment_computed and not worker.alignment_reused
+    np.testing.assert_array_equal(results[0][0][0], frames[0])
+
+
+def test_report_context_restored_after_registration_error(monkeypatch):
+    from core.registration import alignment_report
+
+    worker = RenderWorker(_frames(), algorithm=None, need_fusion=False,
+                          alignment='openfocus', use_gpu=False,
+                          collect_alignment_report=True)
+
+    def fail(images, should_cancel=None):
+        assert alignment_report.get() is worker.alignment_report
+        raise ValueError('registration failed')
+
+    monkeypatch.setattr(worker, '_run_registration', fail)
+    results, errors = _capture(worker)
+    outer = []
+    token = alignment_report.set(outer)
+    try:
+        worker.run()
+        assert alignment_report.get() is outer
+    finally:
+        alignment_report.reset(token)
+    assert results == [] and errors == ['registration failed']
+    assert worker.alignment_report_provenance is None

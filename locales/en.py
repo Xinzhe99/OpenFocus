@@ -5,6 +5,14 @@ fall back to this table.
 """
 
 EN = {
+    'alignment_report_collect': 'Collect alignment diagnostics',
+    'alignment_report_failed': 'Failed',
+    'alignment_report_collect_hint': 'Recompute alignment to collect per-frame outcomes instead of reusing cached alignment.',
+    'alignment_report_title': 'Alignment diagnostics',
+    'alignment_report_unavailable': 'No per-frame diagnostics are available for the last render. Enable collection and render again.',
+    'alignment_report_frame': 'Frame {number} — {name}: {method} — {status}',
+    'alignment_report_reference': 'Reference', 'alignment_report_aligned': 'Aligned', 'alignment_report_fallback': 'Fallback',
+    'alignment_report_cached': 'Alignment: cached result reused', 'alignment_report_available': 'Per-frame alignment diagnostics available in Tools',
     'stack_review_button': 'Review frames',
     'stack_review_cancel': 'Cancel review',
     'stack_review_hint': 'Find similar adjacent frames. Review suggestions and use the checkboxes to choose frames to exclude.',

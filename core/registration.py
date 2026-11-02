@@ -158,6 +158,22 @@ from contextvars import ContextVar
 # Grouped fusion records crop offsets in the reference image's pixel grid.
 grouped_crop_offsets = ContextVar('grouped_crop_offsets', default=None)
 
+# Optional per-frame diagnostics, collected on the calling thread.
+alignment_report = ContextVar('alignment_report', default=None)
+
+
+def _report_alignment(frame_index, method, status, **details):
+    report = alignment_report.get()
+    if report is not None:
+        details = {key: value.tolist() if isinstance(value, np.ndarray) else value
+                   for key, value in details.items()}
+        report.append({'frame_index': frame_index, 'method': method,
+                       'status': status, **details})
+
+
+def _report_reference(method, index=0):
+    _report_alignment(index, method, 'reference', transform=np.eye(3).tolist())
+
 
 def _record_grouped_crop(top, bottom, left, right):
     offsets = grouped_crop_offsets.get()
@@ -310,7 +326,7 @@ def _crop_with_transforms(images, H_matrices):
 # ========== 单应性对齐算法实现（非线性） ==========
 
 
-def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None):
+def _align_homography_impl(input_source, output_path=None, img_filenames=None, downscale_width=1600, thread_count: int = 4, should_cancel=None, failure_policy='continue'):
     """
     商业级图像对齐算法优化版
     特性：
@@ -339,6 +355,8 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
         images = input_source
 
     num_images = len(images)
+    if num_images:
+        _report_reference('homography')
     if num_images < 2:
         return images
 
@@ -403,10 +421,17 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     with _bounded_registration_map(get_features_task, images, max_workers,
                                    should_cancel) as features:
         last_kps, last_des, last_scale = next(features)
+        last_index = 0
+        trajectory_failed = False
         for idx, (curr_kps, curr_des, curr_scale) in enumerate(features, 1):
             _check_cancel(should_cancel)
             if curr_des is None or len(curr_kps) < 4 or last_des is None:
                 print(f"Warning: Frame {idx} features insufficient. Keeping original position.")
+                if failure_policy == 'fail':
+                    _report_alignment(idx, 'homography', 'failed', reason='insufficient features', reference_index=last_index)
+                    raise ValueError(f'Homography alignment failed at frame {idx + 1}: insufficient features')
+                _report_alignment(idx, 'homography', 'fallback', reason='insufficient features',
+                                  reference_index=last_index, transform=H_global)
                 H_matrices.append(H_global.copy())
                 continue
 
@@ -419,6 +444,12 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
                         good_matches.append(m)
             if len(good_matches) < 6:
                 print(f"Warning: Frame {idx} poor matches ({len(good_matches)}). Keeping previous trajectory.")
+                if failure_policy == 'fail':
+                    _report_alignment(idx, 'homography', 'failed', reason='insufficient matches', reference_index=last_index, match_count=len(good_matches))
+                    raise ValueError(f'Homography alignment failed at frame {idx + 1}: insufficient matches')
+                _report_alignment(idx, 'homography', 'fallback', reason='insufficient matches',
+                                  reference_index=last_index, transform=H_global,
+                                  match_count=len(good_matches))
                 H_matrices.append(H_global.copy())
                 continue
 
@@ -426,12 +457,29 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
             pts_last = np.float32([last_kps[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2) / last_scale
             H_local, mask = cv2.findHomography(pts_curr, pts_last, cv2.RANSAC, 5.0)
             _check_cancel(should_cancel)
+            estimated = H_local is not None
             if H_local is None:
                 print(f"Frame {idx} alignment failed.")
+                if failure_policy == 'fail':
+                    _report_alignment(idx, 'homography', 'failed', reason='homography estimation failed', reference_index=last_index, match_count=len(good_matches))
+                    raise ValueError(f'Homography alignment failed at frame {idx + 1}: homography estimation failed')
+                _report_alignment(idx, 'homography', 'fallback', reason='homography estimation failed',
+                                  reference_index=last_index, transform=H_global,
+                                  match_count=len(good_matches))
+                trajectory_failed = True
                 H_local = np.eye(3)
             H_global = np.matmul(H_global, H_local)
             H_matrices.append(H_global.copy())
+            if estimated:
+                details = {'match_count': len(good_matches)}
+                if mask is not None:
+                    details['inlier_count'] = int(np.count_nonzero(mask))
+                if trajectory_failed:
+                    details['reason'] = 'reference alignment fell back'
+                _report_alignment(idx, 'homography', 'fallback' if trajectory_failed else 'aligned',
+                                  reference_index=last_index, transform=H_global, **details)
             last_kps, last_des, last_scale = curr_kps, curr_des, curr_scale
+            last_index = idx
     del last_kps, last_des, curr_kps, curr_des
 
     # --- 4. 并行应用变换与裁切 ---
@@ -657,6 +705,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
     if not 1 <= reference_frame <= len(images):
         raise ValueError(f'OpenFocus reference frame {reference_frame} is outside the stack of {len(images)} frames')
     if len(images) < 2:
+        _report_reference('openfocus')
         return images
 
     n = len(images)
@@ -756,6 +805,15 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
 
     corrections = [None] * n  # cur→ref 的校正矩阵；参考帧为 None
     corrections[ref_idx] = np.eye(3, dtype=np.float64)
+    report_entries = {} if alignment_report.get() is not None else None
+    if report_entries is not None:
+        report_entries[ref_idx] = ('reference', {'transform': corrections[ref_idx]})
+
+    def flush_report():
+        if report_entries is not None:
+            for frame_index in sorted(report_entries):
+                status, details = report_entries[frame_index]
+                _report_alignment(frame_index, 'openfocus', status, **details)
     prev_est = ref_est
     print("Aligning %d images using OpenFocus (reference: frame %d)..." % (n, reference_frame))
     order = chain((ref_idx,), range(ref_idx - 1, -1, -1), range(ref_idx + 1, n))
@@ -806,6 +864,11 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                 over = True
             if failure_policy == 'fail' and (ncc < min_ncc or over):
                 reason = 'low detector quality' if ncc < min_ncc else 'motion outside limits'
+                if report_entries is not None:
+                    report_entries[i] = ('failed', {'reason': reason, 'quality': float(ncc),
+                                                   'reference_index': previous_index if chained else ref_idx,
+                                                   'chained': chained})
+                flush_report()
                 raise ValueError(f'OpenFocus alignment failed at frame {i + 1}: {reason} (detector quality {ncc:.2f})')
             if over:
                 M = np.eye(3)
@@ -816,6 +879,17 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                     and abs(rot_deg) < dead_rot
                     and abs(scale_now - 1.0) < dead_scale):
                 M = np.eye(3)
+            if report_entries is not None:
+                reason = ('low detector quality' if ncc < min_ncc else
+                          'motion outside limits' if over else None)
+                if chained and reason is None and report_entries[previous_index][0] == 'fallback':
+                    reason = 'reference alignment fell back'
+                details = {'quality': float(ncc), 'transform': M,
+                           'reference_index': previous_index if chained else ref_idx,
+                           'chained': chained}
+                if reason is not None:
+                    details['reason'] = reason
+                report_entries[i] = ('fallback' if reason else 'aligned', details)
             corrections[i] = M
             prev_est = cur_est
             print("  frame %d/%d: rot %+.2f° scale %.3f shift (%+.2f, %+.2f)"
@@ -823,6 +897,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                                      " (chained)" if chained else "",
                                      " (DROPPED: outside limits)" if over else
                                      " (DROPPED: low detector quality)" if ncc < min_ncc else ""))
+    flush_report()
 
     def _apply_gain(img, gain):
         if gain == 1.0:
@@ -868,7 +943,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
 
 # ========== ECC对齐算法实现（高精度） ==========
 
-def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000, thread_count: int = 4, should_cancel=None, use_gpu: bool = False):
+def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscale_width=1000, thread_count: int = 4, should_cancel=None, use_gpu: bool = False, failure_policy='continue'):
     """
     基于 ECC (增强相关系数) 的高精度图像栈对齐算法
     适用于：显微摄影、微距摄影中伴随呼吸效应的图像栈
@@ -888,6 +963,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         img_filenames = [os.path.basename(path) for path in img_paths]
     else:
         images = input_source
+    if len(images):
+        _report_reference('ecc')
 
     if len(images) < 2:
         return images
@@ -985,12 +1062,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 warp_matrix[0, 2] /= scale_factor
                 warp_matrix[1, 2] /= scale_factor
         except cv2.error:
+            cc = None
             print(f"Warning: ECC failed to converge at frame {idx}. Assuming no motion.")
             if warp_mode == cv2.MOTION_HOMOGRAPHY:
                 warp_matrix = np.eye(3, dtype=np.float32)
             else:
                 warp_matrix = np.eye(2, 3, dtype=np.float32)
-        return warp_matrix
+        return warp_matrix, cc
 
     with _bounded_registration_map(_compute_pair_transform,
                                    range(1, len(images)), max_workers,
@@ -998,8 +1076,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         pair_transforms = list(results)
     del preprocessed_data
 
-    for idx, warp_matrix in enumerate(pair_transforms, start=1):
+    trajectory_failed = False
+    for idx, (warp_matrix, cc) in enumerate(pair_transforms, start=1):
         _check_cancel(should_cancel)
+        if cc is None and failure_policy == 'fail':
+            _report_alignment(idx, 'ecc', 'failed', reason='ECC failed to converge',
+                              reference_index=idx - 1)
+            raise ValueError(f'ECC alignment failed at frame {idx + 1}: ECC failed to converge')
         # 矩阵累积：warp_matrix maps frame k-1 -> frame k, so the map
         # frame0 -> frame_k is Wk @ ... @ W1 — compose on the LEFT.
         # (The old right-side product W1 @ W2 @ ... left frame 3+ misaligned
@@ -1014,6 +1097,15 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         # 记录变换矩阵（使用逆矩阵）
         H_inv = np.linalg.inv(H_global)
         H_matrices.append(H_inv.copy())
+        reason = ('ECC failed to converge' if cc is None else
+                  'reference alignment fell back' if trajectory_failed else None)
+        trajectory_failed = trajectory_failed or cc is None
+        details = {'reference_index': idx - 1, 'transform': H_inv}
+        if cc is not None:
+            details['quality'] = float(cc)
+        if reason is not None:
+            details['reason'] = reason
+        _report_alignment(idx, 'ecc', 'fallback' if reason else 'aligned', **details)
 
     # --- 5. 并行应用变换与裁切 ---
     # print("  - Step 3/3: Warping and saving concurrently...")
@@ -1439,6 +1531,9 @@ class ImageRegistration:
 
             if images is None or len(images) < 2:
                 _check_cancel(should_cancel)
+                if images:
+                    for step in self.steps:
+                        _report_reference(step)
                 return images if images is not None else []
             if not self.steps:
                 _save_registration(images, output_path, filenames, should_cancel)
@@ -1473,7 +1568,7 @@ class ImageRegistration:
                            input_source: Union[str, List[np.ndarray]], 
                            output_path: Optional[str] = None,
                            thread_count: int = 4,
-                           should_cancel=None) -> List[np.ndarray]:
+                           should_cancel=None, failure_policy='continue') -> List[np.ndarray]:
         """
         单应性对齐配准（非线性）
         
@@ -1484,13 +1579,13 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel)
+        return _align_homography_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, failure_policy=failure_policy)
     
     def _process_ecc(self, 
                     input_source: Union[str, List[np.ndarray]], 
                     output_path: Optional[str] = None,
                     thread_count: int = 4,
-                    should_cancel=None) -> List[np.ndarray]:
+                    should_cancel=None, failure_policy='continue') -> List[np.ndarray]:
         """
         ECC对齐配准（高精度、亚像素级）
         
@@ -1501,7 +1596,7 @@ class ImageRegistration:
         Returns:
             配准后的图像列表
         """
-        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu)
+        return _align_ecc_impl(input_source, output_path, downscale_width=self.downscale_width, thread_count=thread_count, should_cancel=should_cancel, use_gpu=self.use_gpu, failure_policy=failure_policy)
 
 
     def set_method(self, method):

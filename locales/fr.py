@@ -1,6 +1,12 @@
 """French language pack for OpenFocus."""
 
 PACK = {
+    'alignment_report_collect': 'Collecter les diagnostics d’alignement', 'alignment_report_collect_hint': 'Recalculer l’alignement pour collecter les résultats par image sans utiliser le cache.',
+    'alignment_report_failed': 'Échec',
+    'alignment_report_title': 'Diagnostics d’alignement', 'alignment_report_unavailable': 'Aucun diagnostic par image pour le dernier rendu. Activez la collecte et relancez le rendu.',
+    'alignment_report_frame': 'Image {number} — {name} : {method} — {status}',
+    'alignment_report_reference': 'Référence', 'alignment_report_aligned': 'Alignée', 'alignment_report_fallback': 'Solution de repli',
+    'alignment_report_cached': 'Alignement : résultat en cache réutilisé', 'alignment_report_available': 'Diagnostics par image disponibles dans Outils',
     'stack_review_button': 'Examiner les images',
     'stack_review_cancel': 'Annuler l’examen',
     'stack_review_hint': 'Recherche les images adjacentes similaires. Vérifiez les suggestions et utilisez les cases pour choisir les images à exclure.',

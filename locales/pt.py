@@ -1,6 +1,12 @@
 """Portuguese (Brazil) language pack for OpenFocus."""
 
 PACK = {
+    'alignment_report_collect': 'Coletar diagnóstico de alinhamento', 'alignment_report_collect_hint': 'Recalcule o alinhamento para coletar resultados por quadro sem reutilizar o cache.',
+    'alignment_report_failed': 'Falhou',
+    'alignment_report_title': 'Diagnóstico de alinhamento', 'alignment_report_unavailable': 'Não há diagnóstico por quadro para a última renderização. Ative a coleta e renderize novamente.',
+    'alignment_report_frame': 'Quadro {number} — {name}: {method} — {status}',
+    'alignment_report_reference': 'Referência', 'alignment_report_aligned': 'Alinhado', 'alignment_report_fallback': 'Alternativa',
+    'alignment_report_cached': 'Alinhamento: resultado em cache reutilizado', 'alignment_report_available': 'Diagnóstico por quadro disponível em Ferramentas',
     'stack_review_button': 'Revisar quadros',
     'stack_review_cancel': 'Cancelar revisão',
     'stack_review_hint': 'Busca quadros adjacentes semelhantes. Revise as sugestões e use as caixas para escolher quais excluir.',
