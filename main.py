@@ -33,7 +33,12 @@ if __name__ == "__main__":
     # The updater's restore flag belongs to the GUI, never to argparse.
     _argv = [arg for arg in sys.argv[1:] if arg != "--restore-session"]
     _restore_flag = len(_argv) != len(sys.argv[1:])
-    # Control channel: opt-in, stripped before CLI/GUI dispatch.
+    # A subcommand owns its own flags: stripping --control here made
+    # `python main.py gui --control` start a GUI with no control channel.
+    from core.cli import SUBCOMMANDS, run_cli
+    if _argv and (_argv[0] in SUBCOMMANDS or _argv[0] in ("--version", "-V", "--describe")):
+        sys.exit(run_cli(_argv))
+    # Control channel: opt-in, stripped before the GUI consumes the remainder.
     _control_enabled = "--control" in _argv
     _argv = [arg for arg in _argv if arg != "--control"]
     _control_socket = None
@@ -45,9 +50,6 @@ if __name__ == "__main__":
         del _argv[_index:_index + 2]
     if str(os.environ.get("OPENFOCUS_CONTROL", "")).strip().lower() in ("1", "true", "yes"):
         _control_enabled = True
-    from core.cli import SUBCOMMANDS, run_cli
-    if _argv and (_argv[0] in SUBCOMMANDS or _argv[0] in ("--version", "-V", "--describe")):
-        sys.exit(run_cli(_argv))
     if any(arg.startswith("-") for arg in _argv):
         sys.exit(run_cli(_argv))
 

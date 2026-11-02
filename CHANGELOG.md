@@ -22,6 +22,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `_chk.py`, a leftover window-luminance probe script.
 
 ### Fixed
+- **Control-channel follow-ups from the PR review (issue #8).** Loads and
+  renders now carry a generation (`load_id`/`render_id`) that every entry
+  point advances, so `--wait` can no longer accept a previous stack or a
+  cancelled render; load errors are reported, and `render.state` distinguishes
+  `cancelled` and `discarded` from `done`. `render.start` reports the CPU-AI
+  and ROI decisions as `confirm_required` instead of blocking on a modal.
+  Frame inclusion, option changes, dialog reuse, output deletion and
+  alignment-only export follow the GUI paths; item views scroll, and
+  right-clicks deliver a real context menu event. The transport bounds request
+  and reply buffers, matches response ids, resets after a timeout, resolves
+  relative paths in the caller, creates the token file with owner-only access
+  from the start, and rejects remote Windows pipe clients. The smoke/sweep
+  tools require the requested operation to finish.
 - Packaged builds and the PyPI wheel now explicitly include every language
   pack: the release workflows pass `--collect-submodules locales`, the wheel
   lists the `locales` package, and `OpenFocus.spec` collects the submodules.

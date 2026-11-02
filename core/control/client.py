@@ -18,6 +18,39 @@ from core.control.protocol import (
 
 _QT_APP = None
 
+# Arguments that name a filesystem target. They are resolved on the caller's
+# side: the GUI's working directory is unrelated to the shell that sent the
+# request.
+_PATH_ARG_KEYS = ("path", "folder", "video", "file", "output", "output_dir")
+_PATH_LIST_KEYS = ("files", "folders")
+
+
+def _resolve_paths(args, cmd=None):
+    if not isinstance(args, dict):
+        return args
+
+    def absolute(value):
+        if not isinstance(value, str) or not value:
+            return value
+        if "://" in value:
+            return value
+        return os.path.abspath(os.path.expanduser(value))
+
+    resolved = dict(args)
+    widget_path = isinstance(cmd, str) and cmd.startswith("ui.")
+    for key in _PATH_ARG_KEYS:
+        if key in resolved:
+            if key == "path" and widget_path:
+                # ui.* commands address a widget ("main/btn_render"), not a
+                # file; making it absolute destroyed the path.
+                continue
+            resolved[key] = absolute(resolved[key])
+    for key in _PATH_LIST_KEYS:
+        value = resolved.get(key)
+        if isinstance(value, list):
+            resolved[key] = [absolute(item) for item in value]
+    return resolved
+
 
 def _qt_core():
     """Keep a created QCoreApplication alive for the process lifetime."""
@@ -40,37 +73,50 @@ def request(cmd, args=None, *, timeout=60.0, discovery=None, token=None):
     discovery = discovery or read_discovery()
     _qt_core()
     socket = QLocalSocket()
+    socket.setReadBufferSize(MAX_LINE + 1)
     socket.connectToServer(discovery["socket"])
     if not socket.waitForConnected(int(timeout * 1000)):
         raise ControlError(
             "not_running",
             f"Could not connect to {discovery['socket']}: {socket.errorString()}",
             "The GUI may have exited; launch it with `openfocus gui --control`.")
-    payload = request_payload(cmd, args, token=token or discovery.get("token"),
-                              request_id=str(int(time.time() * 1000)))
+    request_id = f"{os.getpid()}-{time.monotonic_ns()}"
+    payload = request_payload(cmd, _resolve_paths(args, cmd),
+                              token=token or discovery.get("token"),
+                              request_id=request_id)
     try:
         socket.write(encode(payload))
         if not socket.waitForBytesWritten(int(timeout * 1000)):
             raise ControlError("internal", "Could not send the request")
         buffer = b""
         deadline = time.monotonic() + timeout
-        while b"\n" not in buffer:
+        while True:
+            if b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                if len(line) > MAX_LINE:
+                    raise ControlError("internal", "Response is too large")
+                if not line.strip():
+                    continue
+                response = decode(line)
+                # A late reply to an earlier, abandoned request must not be
+                # mistaken for this command's result.
+                if str(response.get("id")) != request_id:
+                    continue
+                return response
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ControlError(
                     "internal", f"Timed out waiting for {cmd}",
                     "Increase --timeout; a modal dialog may be waiting for input.")
-            if not socket.waitForReadyRead(int(remaining * 1000) + 1):
+            if not socket.bytesAvailable() and not socket.waitForReadyRead(int(remaining * 1000) + 1):
+                if socket.state() == QLocalSocket.LocalSocketState.UnconnectedState:
+                    raise ControlError("internal", "The GUI closed the connection")
                 continue
-            buffer += bytes(socket.readAll())
-            if len(buffer) > MAX_LINE * 4:
+            buffer += bytes(socket.read(MAX_LINE + 1 - len(buffer)))
+            if len(buffer) > MAX_LINE and b"\n" not in buffer:
                 raise ControlError("internal", "Response is too large")
     finally:
         socket.disconnectFromServer()
-    line = buffer.split(b"\n", 1)[0]
-    if not line:
-        raise ControlError("internal", "The GUI closed the connection")
-    return decode(line)
 
 
 def require_ok(response):
@@ -126,7 +172,7 @@ def _launch_command(socket_name=None, paths=()):
     command.append("--control")
     if socket_name:
         command.extend(["--control-socket", socket_name])
-    command.extend(str(path) for path in paths)
+    command.extend(os.path.abspath(os.path.expanduser(str(path))) for path in paths)
     return command
 
 
@@ -141,8 +187,11 @@ def launch_gui(socket_name=None, timeout=45.0, paths=()):
     creation = 0
     if sys.platform == "win32":
         creation = 0x00000008 | 0x00000200  # DETACHED_PROCESS | NEW_GROUP
+    env = os.environ.copy()
+    if env.get("OPENFOCUS_CONTROL_FILE"):
+        env["OPENFOCUS_CONTROL_FILE"] = str(path.absolute())
     process = subprocess.Popen(
-        _launch_command(socket_name, paths), cwd=str(Path(__file__).resolve().parents[2]),
+        _launch_command(socket_name, paths), cwd=str(Path(__file__).resolve().parents[2]), env=env,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=creation,
         start_new_session=sys.platform != "win32",
@@ -185,8 +234,10 @@ class Session:
             discovery = read_discovery()
         self.discovery = discovery
         self.timeout = timeout
+        self._sequence = 0
         _qt_core()
         self.socket = QLocalSocket()
+        self.socket.setReadBufferSize(MAX_LINE + 1)
         self.socket.connectToServer(self.discovery["socket"])
         if not self.socket.waitForConnected(int(timeout * 1000)):
             raise ControlError(
@@ -196,26 +247,70 @@ class Session:
                 "The GUI may have exited; launch it with `openfocus gui --control`.")
         self.buffer = b""
 
+    def _ensure_connected(self, timeout):
+        from PyQt6.QtNetwork import QLocalSocket
+
+        if self.socket.state() == QLocalSocket.LocalSocketState.ConnectedState:
+            return
+        # A timed-out request may still be queued on the pipe; start clean so
+        # the next command cannot read the previous reply.
+        self.socket.abort()
+        self.buffer = b""
+        self.socket.connectToServer(self.discovery["socket"])
+        if not self.socket.waitForConnected(int(timeout * 1000)):
+            raise ControlError(
+                "not_running",
+                f"Could not reconnect to {self.discovery['socket']}: "
+                f"{self.socket.errorString()}",
+                "The GUI may have exited; launch it with `openfocus gui --control`.")
+
+    def _reset(self):
+        self.buffer = b""
+        self.socket.abort()
+
     def request(self, cmd, args=None, *, timeout=None):
+        from PyQt6.QtNetwork import QLocalSocket
+
         timeout = self.timeout if timeout is None else timeout
+        self._ensure_connected(timeout)
+        self._sequence += 1
+        request_id = f"{os.getpid()}-{self._sequence}"
         payload = request_payload(
-            cmd, args, token=self.discovery.get("token"),
-            request_id=str(int(time.time() * 1000)))
+            cmd, _resolve_paths(args, cmd), token=self.discovery.get("token"),
+            request_id=request_id)
         self.socket.write(encode(payload))
         if not self.socket.waitForBytesWritten(int(timeout * 1000)):
+            self._reset()
             raise ControlError("internal", f"Could not send {cmd}")
         deadline = time.monotonic() + timeout
-        while b"\n" not in self.buffer:
+        while True:
+            if b"\n" in self.buffer:
+                line, self.buffer = self.buffer.split(b"\n", 1)
+                if len(line) > MAX_LINE:
+                    self._reset()
+                    raise ControlError("internal", "Response is too large")
+                if not line.strip():
+                    continue
+                response = decode(line)
+                if str(response.get("id")) != request_id:
+                    continue  # reply to an abandoned request
+                return response
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                self._reset()
                 raise ControlError(
                     "internal", f"Timed out waiting for {cmd}",
-                    "Check ui.context; the GUI may be in a modal dialog.")
-            if not self.socket.waitForReadyRead(int(remaining * 1000) + 1):
+                    "Check ui.context; the GUI may be in a modal dialog. "
+                    "The socket was reset and the next request reconnects.")
+            if not self.socket.bytesAvailable() and not self.socket.waitForReadyRead(int(remaining * 1000) + 1):
+                if self.socket.state() == QLocalSocket.LocalSocketState.UnconnectedState:
+                    self.buffer = b""
+                    raise ControlError("internal", "The GUI closed the connection")
                 continue
-            self.buffer += bytes(self.socket.readAll())
-        line, self.buffer = self.buffer.split(b"\n", 1)
-        return decode(line)
+            self.buffer += bytes(self.socket.read(MAX_LINE + 1 - len(self.buffer)))
+            if len(self.buffer) > MAX_LINE and b"\n" not in self.buffer:
+                self._reset()
+                raise ControlError("internal", "Response is too large")
 
     def call(self, cmd, args=None, *, timeout=None):
         return require_ok(self.request(cmd, args, timeout=timeout))

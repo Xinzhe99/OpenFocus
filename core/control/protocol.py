@@ -4,6 +4,7 @@ Standard library only: the headless CLI imports this module without PyQt.
 """
 import json
 import os
+import secrets
 from pathlib import Path
 import time
 
@@ -62,6 +63,84 @@ def discovery_path() -> Path:
     return Path(user_data_dir()) / DISCOVERY_FILE
 
 
+def _private_file(path):
+    """Create a new file with access limited to the current user."""
+    if os.name != "nt":
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel.LocalFree.restype = wintypes.HLOCAL
+    advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                       ctypes.POINTER(wintypes.HANDLE)]
+    advapi.OpenProcessToken.restype = wintypes.BOOL
+    advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                           wintypes.LPVOID, wintypes.DWORD,
+                                           ctypes.POINTER(wintypes.DWORD)]
+    advapi.GetTokenInformation.restype = wintypes.BOOL
+    advapi.ConvertSidToStringSidW.argtypes = [wintypes.LPVOID,
+                                              ctypes.POINTER(wintypes.LPWSTR)]
+    advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.ULONG)]
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("length", wintypes.DWORD), ("descriptor", wintypes.LPVOID),
+                    ("inherit", wintypes.BOOL)]
+
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.POINTER(SecurityAttributes), wintypes.DWORD,
+                                   wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    token = wintypes.HANDLE()
+    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    sid_string = wintypes.LPWSTR()
+    descriptor = wintypes.LPVOID()
+    try:
+        size = wintypes.DWORD()
+        advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+        if not size.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        info = ctypes.create_string_buffer(size.value)
+        if not advapi.GetTokenInformation(token, 1, info, size, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        # TOKEN_USER starts with SID_AND_ATTRIBUTES, whose first member is PSID.
+        sid = ctypes.cast(info, ctypes.POINTER(wintypes.LPVOID)).contents
+        if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(sid_string)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        sddl = f"D:P(A;;FA;;;{sid_string.value})"
+        if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl, 1, ctypes.byref(descriptor), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+        handle = kernel.CreateFileW(str(path), 0x40000000, 0, ctypes.byref(attributes),
+                                    1, 0x80, None)  # GENERIC_WRITE, CREATE_NEW
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+        except BaseException:
+            kernel.CloseHandle(handle)
+            raise
+    finally:
+        if descriptor:
+            kernel.LocalFree(descriptor)
+        if sid_string:
+            kernel.LocalFree(ctypes.cast(sid_string, wintypes.HLOCAL))
+        kernel.CloseHandle(token)
+
+
 def write_discovery(socket_name, token, pid, version):
     path = discovery_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,14 +152,18 @@ def write_discovery(socket_name, token, pid, version):
         "token": token,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                         encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(16)}.tmp")
+    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    descriptor = _private_file(temporary)
     try:
-        os.chmod(temporary, 0o600)
-    except OSError:
-        pass
-    os.replace(temporary, path)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
     return path
 
 

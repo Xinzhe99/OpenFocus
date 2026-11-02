@@ -106,7 +106,9 @@ openfocus ctl ui.type --path 'dialog[0]/.../fileNameEdit' --text 'F:/out.tif' --
 `ui.mouse` actions: `click`, `double_click`, `right_click`, `middle_click`,
 `press`, `release`, `move`, `drag`, `wheel`. Add `--async` to `ui.click` when
 the slot opens a modal dialog; otherwise that command waits inside the
-dialog's event loop. After an async click, poll `ui.context`/`dialog.list`. `ui.key` actions: `click`,
+dialog's event loop. After an async click, poll `ui.context`/`dialog.list`.
+A `right_click` posts the context-menu event and returns before the menu
+opens: poll `ui.context` for `popup[N]`, then use `ui.menu`. `ui.key` actions: `click`,
 `press`, `release`. `ui.type` appends `--submit` to press Enter afterwards.
 These are the tools for zooming/panning canvases, ROI drawing, wipe handles,
 retouch strokes, list selection and 3D/depth surfaces.
@@ -119,7 +121,7 @@ spin boxes, sliders, line edits, text areas, tabs, stacked pages and lists.
 ```bash
 # load -> configure -> render -> inspect -> export
 openfocus ctl stack.load --folder 'F:/stacks/session'
-# poll until stack.frames.count reaches the expected count
+# poll stack.frames until load.finished for the returned load_id
 openfocus ctl method.set --id dct
 openfocus ctl align.set --id ecc
 openfocus ctl option.set --name thread_count --value 4
@@ -129,10 +131,11 @@ openfocus ctl output.list
 openfocus ctl output.export --path 'F:/out/result.tif' --index 0
 ```
 
-`render.start --wait` exits when the render leaves `rendering`; without it
-poll `render.state` until `busy` is false. `output.export` bypasses the file
-picker and writes through the normal export path (labels, scale bar, bit
-depth).
+`render.start --wait` exits when the returned `render_id` reaches `done`,
+`error`, `cancelled` or `discarded`; only `done` is success. Without it poll
+`render.state` until `busy` is false and compare `render_id`. `output.export`
+bypasses the file picker and writes through the normal export path (labels,
+scale bar, bit depth).
 
 Projects: `project.save --path …` (no path: saves the open project), then
 `project.open --path …` (add `--wait` to wait for frames). `project.open`

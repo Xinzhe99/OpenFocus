@@ -577,8 +577,12 @@ def _run_batch(args, _emit_json=None) -> int:
 
 
 def _say(*args, **kwargs):
-    """Human-readable progress. stdout is the machine channel."""
-    kwargs["file"] = sys.stderr
+    """Human-readable progress.
+
+    With --json-progress stdout is already redirected to stderr, so the
+    machine stream keeps stdout to itself; forcing stderr here broke plain
+    stdout pipelines (dry-run reports).
+    """
     print(*args, **kwargs)
 
 
@@ -894,7 +898,9 @@ def _spawn_detached(command: list, cwd: str) -> subprocess.Popen:
 
 def _run_gui(argv: List[str]) -> int:
     """Launch the desktop app, optionally opening the control channel."""
-    control = "--control" in argv
+    control = "--control" in argv or str(
+        os.environ.get("OPENFOCUS_CONTROL", "")).strip().lower() in (
+            "1", "true", "yes")
     socket_name = None
     paths = []
     index = 0
@@ -945,8 +951,9 @@ def _run_gui(argv: List[str]) -> int:
 
 
 _CTL_BOOL = {"append", "preview", "include", "cancel", "submit",
-             "async", "force"}
-_CTL_INT = {"index", "depth", "steps", "x", "y", "to_x", "to_y", "delta"}
+             "async", "force", "confirm"}
+_CTL_INT = {"index", "depth", "steps", "x", "y", "to_x", "to_y", "delta",
+            "roi_base_index"}
 _CTL_FLOAT = {"scale"}
 _CTL_JSON = {"value"}
 
@@ -1082,27 +1089,56 @@ def _run_ctl(argv: List[str]) -> int:
             response = error_response("0", error)
 
     if flags["wait"] and response.get("ok"):
+        result = response.get("result") or {}
         try:
             if command == "render.start":
-                state = wait_for(
-                    "render.state",
-                    lambda value: value.get("state") in ("done", "error", "idle")
-                    and not value.get("busy"),
-                    timeout=flags["timeout"])
-                ok = state.get("state") != "error"
+                render_id = result.get("render_id")
+                if not result.get("started") or render_id is None:
+                    raise ControlError("internal", "Render did not start with a render_id")
+
+                def finished(value):
+                    if value.get("render_id") != render_id:
+                        # Superseded by a newer render (possibly from the
+                        # GUI): this request will never publish again.
+                        return True
+                    if value.get("busy"):
+                        return False
+                    return value.get("state") in (
+                        "done", "error", "cancelled", "discarded", "idle")
+
+                state = wait_for("render.state", finished,
+                                 timeout=flags["timeout"])
+                ok = state.get("state") == "done"
                 response = {"id": response.get("id", "0"), "ok": ok,
                             "result": state,
                             "elapsed_ms": response.get("elapsed_ms", 0)}
                 if not ok:
-                    response["error"] = {"code": "internal",
-                                         "message": state.get("error") or "Render failed"}
-            elif command == "project.open":
-                frames = wait_for("stack.frames",
-                                  lambda value: value.get("count", 0) > 0,
+                    response["error"] = {
+                        "code": "internal",
+                        "message": (state.get("error")
+                                    or "The render did not finish (cancelled?)")}
+            elif command in ("stack.load", "project.open"):
+                load_id = result.get("load_id")
+                if load_id is None:
+                    raise ControlError("internal", "Load did not return a load_id")
+
+                def loaded(value):
+                    load = value.get("load") or {}
+                    if load.get("id") != load_id:
+                        return False  # frames from an earlier stack
+                    return bool(load.get("finished"))
+
+                frames = wait_for("stack.frames", loaded,
                                   timeout=flags["timeout"])
-                response = {"id": response.get("id", "0"), "ok": True,
+                error = (frames.get("load") or {}).get("error")
+                ok = error is None and frames.get("count", 0) > 0
+                response = {"id": response.get("id", "0"), "ok": ok,
                             "result": frames,
                             "elapsed_ms": response.get("elapsed_ms", 0)}
+                if not ok:
+                    response["error"] = {
+                        "code": "internal",
+                        "message": error or "The stack did not load"}
         except ControlError as error:
             response = error_response("0", error)
 

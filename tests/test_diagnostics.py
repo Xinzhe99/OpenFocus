@@ -219,7 +219,7 @@ assert not (source / 'out.png').exists()
 """, tmp_path, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "interrupted" in result.stderr
-    assert "Loaded" in result.stderr  # human progress moved to stderr
+    assert "Loaded" in result.stdout  # ordinary progress stays on stdout
     text = next((tmp_path / "logs").glob("*.log")).read_text(encoding="utf-8")
     assert "event=cli.cancelled" in text
     assert "event=cli.failed" not in text
