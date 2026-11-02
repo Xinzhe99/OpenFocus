@@ -188,10 +188,23 @@ class DepthProductExportWorker(QThread):
     def run(self):
         import tempfile
         from core.depth_products import estimate_indices, render_indices
-        from core.resource_policy import heavy_job
+        from core.resource_policy import heavy_job, require_memory
         part = None
         try:
             with heavy_job(self.isInterruptionRequested):
+                height, width = self.index.shape
+                context = self.context
+                full_height, full_width = ((context.height, context.width)
+                                           if context is not None and context.roi_mode == "paste"
+                                           else (height, width))
+                channels = int(np.prod(self.frames[0].shape[2:])) if self.render else 1
+                itemsize = (2 if not self.render or any(frame.dtype == np.uint16
+                            for frame in self.frames) else 1)
+                full_bytes = full_height * full_width * channels * itemsize
+                # Include the index, ROI output, full canvas and the writer's
+                # contiguous pixels, encoded TIFF and intermediate byte strings.
+                require_memory(height * width * (2 + channels * itemsize)
+                               + 6 * full_bytes + min(height, 128) * width * (24 + 4 * channels))
                 indices = estimate_indices(self.index, len(self.frames), self.valid_mask,
                                            self.isInterruptionRequested)
                 pixels = (render_indices(indices, self.frames, self.isInterruptionRequested)
@@ -208,47 +221,15 @@ class DepthProductExportWorker(QThread):
                     return
                 fd, part = tempfile.mkstemp(suffix=".tif", dir=os.path.dirname(os.path.abspath(self.path)))
                 os.close(fd)
-                if self.render:
-                    from PIL import TiffImagePlugin, TiffTags
-                    channels = 1 if pixels.ndim == 2 else pixels.shape[2]
-                    if channels not in (1, 3, 4) or pixels.dtype.kind not in "uif":
-                        raise ValueError("Unsupported TIFF image format")
-                    height, width = pixels.shape[:2]
-                    row_bytes = width * channels * pixels.dtype.itemsize
-                    rows = max(1, min(height, (1 << 20) // row_bytes))
-                    offsets = tuple(row * row_bytes for row in range(0, height, rows))
-                    counts = tuple(min(rows, height - row) * row_bytes for row in range(0, height, rows))
-                    header = b"II*\x00" + (8).to_bytes(4, "little")
-                    tags = TiffImagePlugin.ImageFileDirectory_v2(ifh=header)
-                    tags[256], tags[257] = width, height
-                    tags[258] = (pixels.dtype.itemsize * 8,) * channels
-                    tags[259], tags[262], tags[277], tags[278], tags[284] = 1, (1 if channels == 1 else 2), channels, rows, 1
-                    tags[339] = (3 if pixels.dtype.kind == "f" else 2 if pixels.dtype.kind == "i" else 1,) * channels
-                    if channels == 4:
-                        tags[338] = (2,)
-                    if self.profile and channels in (3, 4):
-                        tags[34675] = self.profile
-                    tags.tagtype[273] = tags.tagtype[279] = TiffTags.LONG
-                    tags[273], tags[279] = offsets, counts
-                    with open(part, "wb") as output:
-                        output.write(header)
-                        output.write(tags.tobytes(8))
-                        for row in range(0, height, rows):
-                            if self.isInterruptionRequested():
-                                self.failed.emit("cancelled")
-                                return
-                            chunk = pixels[row:row + rows]
-                            if channels == 3:
-                                chunk = chunk[:, :, ::-1]
-                            elif channels == 4:
-                                chunk = chunk[:, :, [2, 1, 0, 3]]
-                            chunk = np.ascontiguousarray(chunk, dtype=pixels.dtype.newbyteorder("<"))
-                            output.write(memoryview(chunk).cast("B"))
-                else:
-                    from PIL import Image, TiffImagePlugin
-                    tags = TiffImagePlugin.ImageFileDirectory_v2()
-                    tags[270] = json.dumps(self.metadata, ensure_ascii=True, allow_nan=False)
-                    Image.fromarray(pixels).save(part, format="TIFF", tiffinfo=tags)
+                exif = b""
+                if not self.render:
+                    from PIL import Image
+                    description = Image.Exif()
+                    description[270] = json.dumps(self.metadata, ensure_ascii=True, allow_nan=False)
+                    exif = description.tobytes()
+                if not imwrite_auto(part, pixels, exif=exif,
+                                    icc_profile=self.profile if self.render else b""):
+                    raise OSError(trans.t("msg_save_failed_text"))
                 if self.isInterruptionRequested():
                     self.failed.emit("cancelled")
                     return

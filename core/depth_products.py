@@ -44,7 +44,7 @@ def estimate_indices(index, count, valid_mask=None, should_cancel=None):
 
 
 def render_indices(indices, frames, should_cancel=None):
-    """Copy selected source pixels, preserving their bit depth and channels."""
+    """Copy source pixels; promote 8-bit values when the stack contains 16-bit frames."""
     indices = np.asarray(indices)
     if indices.ndim != 2 or indices.dtype != np.uint16:
         raise ValueError("Source indices must be a two-dimensional uint16 map")
@@ -55,10 +55,13 @@ def render_indices(indices, frames, should_cancel=None):
         raise ValueError("Source frames must match the map and use 8- or 16-bit pixels")
     if first.ndim not in (2, 3):
         raise ValueError("Unsupported source frame shape")
+    output_dtype = np.uint8
     for frame in frames:
-        if frame.shape != first.shape or frame.dtype != first.dtype:
-            raise ValueError("Source frames must have matching shapes and bit depths")
-    result = np.zeros_like(first)
+        if frame.shape != first.shape or frame.dtype not in (np.uint8, np.uint16):
+            raise ValueError("Source frames must have matching shapes and use 8- or 16-bit pixels")
+        if frame.dtype == np.uint16:
+            output_dtype = np.uint16
+    result = np.zeros(first.shape, dtype=output_dtype)
     for y in range(0, indices.shape[0], _ROWS):
         _cancel(should_cancel)
         selection = indices[y:y + _ROWS]
@@ -70,6 +73,10 @@ def render_indices(indices, frames, should_cancel=None):
                 continue
             _cancel(should_cancel)
             mask = selection == number
-            destination[mask] = frames[int(number) - 1][y:y + _ROWS][mask]
+            frame = frames[int(number) - 1]
+            values = frame[y:y + _ROWS][mask]
+            if output_dtype == np.uint16 and frame.dtype == np.uint8:
+                values = values.astype(np.uint16) * 257
+            destination[mask] = values
     _cancel(should_cancel)
     return result

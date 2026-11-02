@@ -1075,7 +1075,8 @@ def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qa
     frames = [np.full((20, 30, 3), (1000, 2000, 3000), np.uint16),
               np.full((20, 30, 3), (40000, 50000, 60000), np.uint16)]
     output = frames[0].copy()
-    context = _output_context(frames, output, roi_rect=(4, 3, 16, 10), roi_mode='paste')
+    context = _output_context(frames, output, roi_rect=(4, 3, 16, 10), roi_mode='paste',
+                              icc_profile=b'captured profile')
     dialog, _ = depth_dialog('dct', frames, output, context)
     _click_and_finish(qapp, dialog)
     target = tmp_path / 'indices-é.tif'
@@ -1092,6 +1093,8 @@ def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qa
     target = tmp_path / 'render-é.tif'
     dialog.btn_save_render.click()
     _wait(qapp, lambda: dialog._export_worker is None)
+    with Image.open(target) as image:
+        assert image.info['icc_profile'] == b'captured profile'
     rendered = cv2.imdecode(np.fromfile(target, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     assert rendered.dtype == np.uint16 and rendered.shape == output.shape
     np.testing.assert_array_equal(rendered[0, 0], [0, 0, 0])
@@ -1163,3 +1166,27 @@ def test_depth_index_metadata_tracks_reversed_inputs(depth_dialog, monkeypatch, 
         assert np.asarray(image)[0, 0] == 1
     assert metadata['source_indices'] == [2, 1, 0]
     assert metadata['source_names'] == ['capture-2.tif', 'capture-1.tif', 'capture-0.tif']
+
+
+def test_depth_product_memory_refusal_preserves_file(depth_dialog, monkeypatch, qapp, tmp_path):
+    from core import depth_map, resource_policy
+    from PyQt6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
+    dialog, _ = depth_dialog()
+    _click_and_finish(qapp, dialog)
+    target = tmp_path / 'existing.tif'
+    target.write_bytes(b'original file')
+    requests = []
+
+    def reject(required, **kwargs):
+        requests.append(required)
+        raise resource_policy.ResourceLimitError('insufficient memory')
+
+    monkeypatch.setattr(resource_policy, 'require_memory', reject)
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
+    dialog.btn_save_render.click()
+    _wait(qapp, lambda: dialog._export_worker is None)
+    assert requests and requests[0] > dialog._map_frames[0].nbytes
+    assert target.read_bytes() == b'original file'
+    assert 'insufficient memory' in dialog.status_lbl.text()
