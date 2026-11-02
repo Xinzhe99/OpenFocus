@@ -45,7 +45,7 @@ EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 
-SUBCOMMANDS = {"ctl", "gui", "describe", "version", "recipe"}
+SUBCOMMANDS = {"ctl", "gui", "describe", "version", "recipe", "retouch"}
 
 # With --json-progress, stdout belongs to NDJSON: engine and progress prose is
 # redirected to stderr, while events are written to this saved stream.
@@ -823,6 +823,8 @@ def run_cli(argv: List[str]) -> int:
             return _run_ctl(argv[1:])
         if head == "recipe":
             return _run_recipe_command(argv[1:])
+        if head == "retouch":
+            return _run_retouch_command(argv[1:])
     global _machine_stream
     redirected = "--json-progress" in argv or "--suggest-duplicates" in argv
     if redirected:
@@ -836,6 +838,75 @@ def run_cli(argv: List[str]) -> int:
         if redirected:
             sys.stdout = _machine_stream
             _machine_stream = None
+
+
+def _run_retouch_command(argv: List[str]) -> int:
+    """Replay a checkpoint against its original base and processed frames."""
+    from core.render_context import RenderContext, SourceFrame
+    from utils.retouch import RetouchDocument
+    from utils.retouch_checkpoint import MAX_FILE_BYTES
+
+    parser = argparse.ArgumentParser(prog="openfocus retouch")
+    commands = parser.add_subparsers(dest="command", required=True)
+    replay = commands.add_parser("replay", help="replay a retouch checkpoint")
+    replay.add_argument("checkpoint", help="retouch checkpoint JSON")
+    replay.add_argument("--base", required=True, help="original fused base image")
+    replay.add_argument("--sources", nargs="+", required=True,
+                        help="processed source images in checkpoint order")
+    replay.add_argument("--output", "-o", required=True,
+                        help="output PNG or TIFF")
+    args = parser.parse_args(argv)
+
+    try:
+        if os.path.splitext(args.output)[1].lower() not in (".png", ".tif", ".tiff"):
+            raise ValueError("replay output must be PNG or TIFF to preserve bit depth")
+        output_path = os.path.normcase(os.path.realpath(os.path.abspath(args.output)))
+        for path in [args.checkpoint, args.base, *args.sources]:
+            input_path = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+            if output_path == input_path or (os.path.exists(args.output)
+                    and os.path.exists(path) and os.path.samefile(args.output, path)):
+                raise ValueError("output must not overwrite the checkpoint or an input image")
+
+        with open(args.checkpoint, "rb") as stream:
+            data = stream.read(MAX_FILE_BYTES + 1)
+        if len(data) > MAX_FILE_BYTES:
+            raise ValueError("retouch checkpoint is too large")
+        checkpoint = json.loads(data)
+        records = checkpoint.get("frames") if isinstance(checkpoint, dict) else None
+        if not isinstance(records, list) or len(records) != len(args.sources):
+            raise ValueError("checkpoint frame count does not match --sources")
+
+        images = []
+        for path in [args.base, *args.sources]:
+            decoded = _load_images([path])
+            if len(decoded) != 1:
+                raise ValueError(f"expected one image in {path}")
+            images.append(decoded[0])
+        base, sources = images[0], images[1:]
+        frames = []
+        for record, image, path in zip(records, sources, args.sources):
+            if not isinstance(record, dict):
+                raise ValueError("invalid checkpoint frame")
+            frame_id = record.get("id")
+            ox, oy, aligned = record.get("offset_x"), record.get("offset_y"), record.get("aligned")
+            if (not isinstance(frame_id, str) or not frame_id
+                    or type(ox) is not int or type(oy) is not int
+                    or type(aligned) is not bool
+                    or ox < 0 or oy < 0
+                    or ox + image.shape[1] > base.shape[1]
+                    or oy + image.shape[0] > base.shape[0]):
+                raise ValueError("invalid checkpoint frame geometry or identity")
+            frames.append(SourceFrame(frame_id, os.path.basename(path), image,
+                                      offset_x=ox, offset_y=oy, aligned=aligned))
+        context = RenderContext("replay", "replay", (), base.shape[1], base.shape[0],
+                                base.dtype, tuple(frames))
+        document = RetouchDocument(base, context)
+        document.load_checkpoint(args.checkpoint)
+        _save(args.output, document.result())
+    except (ValueError, OSError, RuntimeError, TypeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    return EXIT_OK
 
 
 def _run_recipe_command(argv: List[str]) -> int:

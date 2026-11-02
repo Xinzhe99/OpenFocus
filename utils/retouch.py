@@ -462,6 +462,12 @@ class RetouchDocument:
         self._stroke: Optional[dict] = None
         self._coverage: Optional[StrokeCoverage] = None
         self._mask_cache: OrderedDict[int, Optional[np.ndarray]] = OrderedDict()
+        from utils.retouch_checkpoint import provenance
+        self._provenance = provenance(self)
+        self._operations = []
+        self._cursor = 0
+        self._point_count = 0
+        self._record_overflow = False
         self.last_status = ""
 
     # ----------------------------------------------------------- basics
@@ -515,6 +521,8 @@ class RetouchDocument:
             return "busy"
         if exposure == 0 and contrast == 0:
             return "empty"
+        if self._cursor >= 100000:
+            return "oversize"
         if self.working.nbytes > self.history.max_bytes:
             return "oversize"
         self.history.begin()
@@ -532,7 +540,11 @@ class RetouchDocument:
             if cancelled is not None and cancelled():
                 self.history.abort()
                 return "cancelled"
-            return self.history.end(cancelled=cancelled)
+            status = self.history.end(cancelled=cancelled)
+            if status == "committed":
+                self._record_operation({"type": "tones", "exposure": float(exposure),
+                                        "contrast": float(contrast)})
+            return status
         except BaseException:
             self.history.abort()
             raise
@@ -595,6 +607,8 @@ class RetouchDocument:
     def begin_stroke(self, x: float, y: float) -> bool:
         if self._stroke is not None:
             return False
+        if self._cursor >= 100000 or self._point_count >= 250000:
+            return False
         if not self.source_valid_at(x, y):
             return False
         self._stroke = {
@@ -605,6 +619,7 @@ class RetouchDocument:
             "opacity": self.opacity,
             "exposure": self.exposure,
             "last": (float(x), float(y)),
+            "points": [(float(x), float(y))],
         }
         self._coverage = StrokeCoverage(self.height, self.width)
         self.history.begin()
@@ -617,6 +632,10 @@ class RetouchDocument:
         last_x, last_y = self._stroke["last"]
         dx, dy = x - last_x, y - last_y
         dist = (dx * dx + dy * dy) ** 0.5
+        if self._point_count + len(self._stroke["points"]) >= 250000:
+            self._record_overflow = True
+        else:
+            self._stroke["points"].append((float(x), float(y)))
         if dist < 0.01:
             return None
         step = max(1.0, self._stroke["diameter"] / 8.0)
@@ -633,7 +652,16 @@ class RetouchDocument:
     def end_stroke(self) -> str:
         if self._stroke is None:
             return "idle"
-        status = self.history.end()
+        if self._record_overflow:
+            self.history.abort()
+            status = "oversize"
+            self._record_overflow = False
+        else:
+            status = self.history.end()
+        if status == "committed":
+            operation = {key: value for key, value in self._stroke.items() if key != "last"}
+            operation["type"] = "stroke"
+            self._record_operation(operation)
         self.last_status = status
         self._stroke = None
         self._coverage = None
@@ -644,6 +672,7 @@ class RetouchDocument:
             return False
         restored = self.history.abort()
         self._stroke = None
+        self._record_overflow = False
         self._coverage = None
         self.last_status = "cancelled"
         return restored
@@ -676,17 +705,50 @@ class RetouchDocument:
     def undo(self) -> bool:
         if self._stroke is not None:
             self.end_stroke()
-        return self.history.undo(self.working)
+        changed = self.history.undo(self.working)
+        if changed:
+            self._cursor -= 1
+            self._trim_redo()
+        return changed
 
     def redo(self) -> bool:
         if self._stroke is not None:
             self.end_stroke()
-        return self.history.redo(self.working)
+        changed = self.history.redo(self.working)
+        if changed:
+            self._cursor += 1
+            self._trim_redo()
+        return changed
 
     def restore_all(self) -> bool:
         if self._stroke is not None:
             self.end_stroke()
-        return self.history.restore_all()
+        if self._cursor >= 100000:
+            return False
+        changed = self.history.restore_all()
+        if changed:
+            self._record_operation({"type": "restore_all"})
+        return changed
+
+    def _trim_redo(self):
+        end = self._cursor + len(self.history._redo)
+        self._point_count -= sum(len(op.get("points", ())) for op in self._operations[end:])
+        del self._operations[end:]
+
+    def _record_operation(self, operation):
+        self._point_count -= sum(len(op.get("points", ())) for op in self._operations[self._cursor:])
+        del self._operations[self._cursor:]
+        self._operations.append(operation)
+        self._cursor += 1
+        self._point_count += len(operation.get("points", ()))
+
+    def save_checkpoint(self, path):
+        from utils.retouch_checkpoint import save_checkpoint
+        return save_checkpoint(self, path)
+
+    def load_checkpoint(self, path, cancelled=None):
+        from utils.retouch_checkpoint import load_checkpoint
+        return load_checkpoint(self, path, cancelled)
 
 
 def _union_rect(first, second):

@@ -2037,7 +2037,8 @@ class OpenFocus(QMainWindow):
                     self._standalone_retouch_paths = protected
                 return success, message
 
-            dialog = RetouchDialog(self, record=record, apply_callback=apply_selected)
+            dialog = RetouchDialog(self, record=record, apply_callback=apply_selected,
+                                   input_paths=[result_path, *source_paths])
             dialog.exec()
             if dialog.change_requested:
                 self.show_retouch_dialog()

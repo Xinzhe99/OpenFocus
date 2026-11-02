@@ -1206,6 +1206,23 @@ successor or review the remaining files again in their intended order.
 | `--depth-colormap` | Colormap for `--depth-map`: turbo, viridis, jet, gray, … (default turbo) |
 | `--scale-um` | Pixel size in µm/px, overriding metadata (implies `--scale-bar`) |
 
+### Replay a retouch checkpoint
+
+Save a retouch checkpoint from the retouch workspace, then supply the original
+base image and every processed source frame in the same order as the session:
+
+```bash
+openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+```
+
+Use the actual frames used for retouching, after alignment and any ROI crop or
+other processing, with their original pixel values and bit depth. The checkpoint
+records edits and fingerprints, not the image pixels. Replay reconstructs the
+recorded frame offsets and alignment behavior and verifies the base, ordered
+frames and validity masks; incompatible pixels, geometry or masks are rejected.
+Each path must contain one image. Output must be PNG or TIFF and preserves the
+base bit depth. The checkpoint and input images cannot be used as the output.
+
 Exit codes: `0` success, `1` processing error, `2` usage error. Running
 `python main.py --help` prints all options; launching with a plain path
 (`python main.py C:\stack`) still opens the GUI with that folder loaded.

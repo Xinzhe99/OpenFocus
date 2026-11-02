@@ -12,6 +12,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Similar-frame review** suggests nearly identical adjacent sources for
   inspection in the source list or CLI. It never changes selections or files;
   small localized differences are protected from whole-frame averaging.
+- **Retouch checkpoint replay** runs headlessly with an explicit base and ordered
+  processed source images. Replay verifies the recorded context and preserves
+  8- or 16-bit output in PNG or TIFF without overwriting its inputs.
 - **RGB color profiles** are retained in single-image PNG, TIFF, JPEG and WebP
   when all source frames have the same ICC profile. Historical outputs and
   batch folders retain their own profiles; mixed or untagged stacks are not
