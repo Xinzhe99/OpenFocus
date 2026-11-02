@@ -37,6 +37,16 @@ RAW_FORMATS = {'.dng', '.cr2', '.cr3', '.crw', '.nef', '.nrw', '.arw', '.srf',
                '.iiq', '.erf', '.kdc', '.mos', '.mrw', '.x3f'}
 
 
+class UnsupportedTransparency(ValueError):
+    """The source cannot be processed without losing transparency."""
+
+
+def _has_transparency(image: np.ndarray) -> bool:
+    if image.ndim != 3 or image.shape[2] != 4:
+        return False
+    return (image.dtype not in (np.uint8, np.uint16)
+            or np.any(image[:, :, 3] != np.iinfo(image.dtype).max))
+
 def _read_raw(path: str) -> Optional[np.ndarray]:
     """Camera RAW -> 16-bit BGR (sRGB gamma, camera white balance).
 
@@ -56,9 +66,8 @@ def _read_raw(path: str) -> Optional[np.ndarray]:
         return None
 
 
-def decode_image(path: str) -> Optional[np.ndarray]:
-    """Decode one still image (any supported format) to BGR, keeping 16-bit.
-    EXIF orientation is applied for everything except RAW (LibRaw does it)."""
+def decode_image(path: str, *, allow_transparent_png: bool = False) -> Optional[np.ndarray]:
+    """Decode an oriented still image, rejecting unsupported transparency."""
     ext = os.path.splitext(path)[1].lower()
     if ext in RAW_FORMATS:
         return _read_raw(path)
@@ -67,8 +76,15 @@ def decode_image(path: str) -> Optional[np.ndarray]:
     # afterwards applied every transform twice (portrait phone shots loaded
     # sideways). The PIL fallback below does not rotate on its own, so the
     # single explicit pass is the only orientation step for both paths.
-    img = cv2.imdecode(np.fromfile(path, dtype=np.uint8),
-                       cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
+    data = np.fromfile(path, dtype=np.uint8)
+    unchanged = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    if unchanged is not None and _has_transparency(unchanged):
+        if allow_transparent_png and ext == '.png':
+            return apply_exif_orientation(path, unchanged)
+        raise UnsupportedTransparency(
+            f"Transparent input is unsupported here: {path}. "
+            "The CLI supports matching rectangular PNG transparency; see the manual.")
+    img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
                        | cv2.IMREAD_IGNORE_ORIENTATION)
     if img is None:
         # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
@@ -210,6 +226,12 @@ def _read_via_pil(path: str) -> Optional[np.ndarray]:
         with PILImage.open(path) as pil_img:
             if pil_img.mode in ('I', 'I;16', 'I;16B'):
                 arr = np.array(pil_img).astype(np.uint16)
+            elif 'A' in pil_img.getbands() or 'transparency' in pil_img.info:
+                rgba = np.array(pil_img.convert('RGBA'))
+                if np.any(rgba[:, :, 3] != 255):
+                    raise UnsupportedTransparency(
+                        f"Transparent input is unsupported here: {path}")
+                arr = rgba[:, :, :3]
             else:
                 arr = np.array(pil_img.convert('RGB'))
         if arr.ndim == 2:
@@ -217,6 +239,8 @@ def _read_via_pil(path: str) -> Optional[np.ndarray]:
         if arr.shape[2] == 4:
             return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
         return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    except UnsupportedTransparency:
+        raise
     except Exception as e:
         print(f"Unsupported image for PIL fallback {path}: {e}")
         return None
@@ -233,14 +257,18 @@ def _read_tiff_pages(path: str) -> Optional[List[np.ndarray]]:
     if os.path.splitext(path)[1].lower() not in ('.tif', '.tiff'):
         return None
     try:
+        data = np.fromfile(path, dtype=np.uint8)
+        success, unchanged = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED)
+        if success and len(unchanged) >= 2 and any(_has_transparency(p) for p in unchanged):
+            raise UnsupportedTransparency(f"Transparent TIFF pages are unsupported: {path}")
+        del unchanged
         flags = cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
-        # np.fromfile + imdecodemulti survives non-ASCII paths (imreadmulti
-        # silently fails on them, same as imread)
-        success, pages = cv2.imdecodemulti(
-            np.fromfile(path, dtype=np.uint8), flags=flags)
+        success, pages = cv2.imdecodemulti(data, flags=flags)
         if not success or len(pages) < 2:
             return None
         return list(pages)
+    except UnsupportedTransparency:
+        raise
     except Exception:
         return None
 
@@ -304,7 +332,7 @@ def _source_is_parallel(path: str) -> bool:
 
 
 def _decode_one_source(path: str, scale_factor: float,
-                       should_cancel=None) -> DecodedSource:
+                       should_cancel=None, allow_transparent_png=False) -> DecodedSource:
     """Decode one source exactly as the serial loaders do (pages included)."""
     try:
         if should_cancel is not None and should_cancel():
@@ -313,7 +341,10 @@ def _decode_one_source(path: str, scale_factor: float,
         if pages is not None:
             return DecodedSource(path, [_downscale_page(p, scale_factor)
                                         for p in pages])
-        image = decode_image(path)
+        image = (decode_image(path, allow_transparent_png=True)
+                 if allow_transparent_png else decode_image(path))
+        if image is not None and _has_transparency(image) and scale_factor != 1.0:
+            raise UnsupportedTransparency("Transparent images cannot be downsampled during loading")
         if image is None:
             return DecodedSource(path, error=ValueError("decode failed"))
         return DecodedSource(path, [_downscale_page(image, scale_factor)])
@@ -349,7 +380,7 @@ def _peek_source_size(path: str) -> Optional[Tuple[int, int, int, int]]:
             width, height = image.size
             bands = len(image.getbands())
             itemsize = 1 if image.mode in ("L", "RGB", "P", "CMYK") else 2
-        return int(width), int(height), max(1, min(3, bands)), itemsize
+        return int(width), int(height), max(3, min(4, bands)), itemsize
     except Exception:
         return None
 
@@ -357,7 +388,7 @@ def _peek_source_size(path: str) -> Optional[Tuple[int, int, int, int]]:
 def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
                          thread_count: int = 0,
                          resource_preference: str = "balanced",
-                         should_cancel=None):
+                         should_cancel=None, allow_transparent_png=False):
     """Yield DecodedSource objects in input order, with bounded parallelism.
 
     Plain single-frame formats decode in a window of at most the admitted
@@ -416,7 +447,7 @@ def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
     if workers == 1:
         for path in sources:
             check_cancel()
-            yield _decode_one_source(path, scale_factor, should_cancel)
+            yield _decode_one_source(path, scale_factor, should_cancel, allow_transparent_png)
         return
 
     pool = ThreadPoolExecutor(max_workers=workers)
@@ -429,12 +460,12 @@ def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
                    and _source_is_parallel(sources[index])):
                 window.append((sources[index],
                                pool.submit(_decode_one_source, sources[index],
-                                           scale_factor, should_cancel)))
+                                           scale_factor, should_cancel, allow_transparent_png)))
                 index += 1
             if not window:
                 # A serial source: decode it alone, then continue.
                 path = sources[index]
-                yield _decode_one_source(path, scale_factor, should_cancel)
+                yield _decode_one_source(path, scale_factor, should_cancel, allow_transparent_png)
                 index += 1
                 continue
             path, future = window[0]
@@ -544,6 +575,9 @@ class ImageStackLoader:
             try:
                 for item in decoded:
                     if item.error is not None:
+                        if isinstance(item.error, UnsupportedTransparency):
+                            from locales import trans
+                            return False, trans.t("transparent_desktop_unsupported").format(path=item.path), [], []
                         failed_count += 1
                         print(f"Failed to load image {names[item.path]}: {item.error}")
                         continue
@@ -670,6 +704,9 @@ class ImageStackLoader:
             try:
                 for item in decoded:
                     if item.error is not None:
+                        if isinstance(item.error, UnsupportedTransparency):
+                            from locales import trans
+                            return False, trans.t("transparent_desktop_unsupported").format(path=item.path), [], []
                         failed_count += 1
                         print(f"Failed to load image {item.path}: {item.error}")
                         continue

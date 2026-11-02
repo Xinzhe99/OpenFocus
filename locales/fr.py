@@ -29,6 +29,7 @@ PACK = {
     'retouch_tool_exposure': 'Pinceau d’exposition',
     'retouch_exposure_amount': 'Exposition (centièmes de valeur)',
     'retouch_exposure_hint': 'Peignez pour ajuster localement le résultat. Une valeur positive éclaircit, une valeur négative assombrit. Chaque trait part du résultat actuel. Maintenez Avant pour comparer ; annulez le trait pour revenir en arrière.',
+    "transparent_desktop_unsupported": "Les images transparentes ne peuvent pas être chargées dans l’application ni dans son traitement par lots. La ligne de commande prend en charge certains empilements PNG transparents. Fichier : {path}",
     "label_outputs_all": "Tous les résultats",
     "label_range_current": "Image actuelle",
     "label_range_custom": "Plage personnalisée",

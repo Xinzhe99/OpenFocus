@@ -29,6 +29,7 @@ PACK = {
     'retouch_tool_exposure': 'Pędzel ekspozycji',
     'retouch_exposure_amount': 'Ekspozycja (setne stopnia)',
     'retouch_exposure_hint': 'Maluj, aby lokalnie dostosować wynik. Wartości dodatnie rozjaśniają, ujemne przyciemniają. Każde pociągnięcie zaczyna się od bieżącego wyniku. Przytrzymaj Przed, aby porównać; cofnij pociągnięcie, aby je wycofać.',
+    "transparent_desktop_unsupported": "Nie można wczytać przezroczystych obrazów w aplikacji ani w jej trybie wsadowym. Wiersz poleceń obsługuje niektóre stosy przezroczystych PNG. Plik: {path}",
     "label_outputs_all": "Wszystkie wyniki",
     "label_range_current": "Bieżąca klatka",
     "label_range_custom": "Własny zakres",

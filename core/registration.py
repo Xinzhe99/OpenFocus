@@ -1357,6 +1357,9 @@ class ImageRegistration:
                 images = []
                 for path in paths:
                     _check_cancel(should_cancel)
+                    from core.image_loader import decode_image, _read_tiff_pages
+                    _read_tiff_pages(path)
+                    decode_image(path)
                     flags = cv2.IMREAD_UNCHANGED if self.method == 'openfocus' else cv2.IMREAD_COLOR
                     data = np.fromfile(path, dtype=np.uint8)
                     image = cv2.imdecode(data, flags) if data.size else None
@@ -1369,6 +1372,12 @@ class ImageRegistration:
                 filenames = [os.path.basename(path) for path in paths]
             if images is not None and len(images) and 'openfocus' in self.steps and self.parameters['reference_frame'] > len(images):
                 raise ValueError(f"OpenFocus reference frame {self.parameters['reference_frame']} is outside the stack of {len(images)} frames")
+
+            from core.image_loader import _has_transparency, UnsupportedTransparency
+            for image in images or ():
+                _check_cancel(should_cancel)
+                if _has_transparency(image):
+                    raise UnsupportedTransparency("Registration of transparent images is unsupported")
 
             if images is None or len(images) < 2:
                 _check_cancel(should_cancel)

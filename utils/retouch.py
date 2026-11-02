@@ -426,6 +426,11 @@ class RetouchDocument:
             raise ValueError("a base image is required")
         if base_image.shape[0] != context.height or base_image.shape[1] != context.width:
             raise ValueError("base image does not match the render context")
+        from core.image_loader import _has_transparency, UnsupportedTransparency
+        if (_has_transparency(base_image) or any(
+                frame.image is not None and _has_transparency(frame.image)
+                for frame in context.frames)):
+            raise UnsupportedTransparency("Retouching transparent images is unsupported")
         self.base = np.ascontiguousarray(base_image.copy())
         self.working = self.base.copy()
         self.context = context
