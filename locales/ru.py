@@ -1,6 +1,14 @@
 """Russian language pack for OpenFocus."""
 
 PACK = {
+    'batch_group_size': 'Размер группы:',
+    'batch_group_overlap': 'Перекрытие:',
+    'batch_group_disabled': 'Выключено',
+    'batch_group_hint': 'Групповое слияние использует временное место на диске. Только однокадровые файлы с заголовками, читаемыми Pillow, без RAW. Результат и регистрация приблизительны; глубина, происхождение и выровненные кадры недоступны.',
+    'batch_group_split_error': 'Групповое слияние требует режима нескольких папок; разделение загружает весь стек.',
+    'batch_group_range_error': 'Размер не менее 2; перекрытие не более размера минус 2.',
+    'batch_group_output_error': 'Выберите метод слияния и отключите сохранение выровненных кадров.',
+    'batch_group_progress': 'Этап групп {stage}: {completed} / {total}',
     "label_outputs_all": "Все выходные результаты",
     "label_range_current": "Текущий кадр",
     "label_range_custom": "Заданный диапазон",

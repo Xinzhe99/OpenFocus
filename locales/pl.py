@@ -1,6 +1,14 @@
 """Polish language pack for OpenFocus."""
 
 PACK = {
+    'batch_group_size': 'Rozmiar grupy:',
+    'batch_group_overlap': 'Nakładanie:',
+    'batch_group_disabled': 'Wyłączone',
+    'batch_group_hint': 'Łączenie grupowe wymaga miejsca tymczasowego. Tylko pliki jednoklatkowe z nagłówkiem czytelnym dla Pillow, bez RAW. Wynik i rejestracja są przybliżone; brak głębi, pochodzenia i wyrównanych klatek.',
+    'batch_group_split_error': 'Łączenie grupowe wymaga wielu folderów; podział wczytuje cały stos.',
+    'batch_group_range_error': 'Rozmiar co najmniej 2; nakładanie najwyżej rozmiar minus 2.',
+    'batch_group_output_error': 'Wybierz metodę łączenia i wyłącz zapis wyrównanych klatek.',
+    'batch_group_progress': 'Etap grupowy {stage}: {completed} / {total}',
     "label_outputs_all": "Wszystkie wyniki",
     "label_range_current": "Bieżąca klatka",
     "label_range_custom": "Własny zakres",

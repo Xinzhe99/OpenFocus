@@ -1,6 +1,14 @@
 """French language pack for OpenFocus."""
 
 PACK = {
+    'batch_group_size': 'Taille du groupe :',
+    'batch_group_overlap': 'Chevauchement :',
+    'batch_group_disabled': 'Désactivé',
+    'batch_group_hint': 'La fusion par groupes utilise du disque temporaire. Fichiers à une image lisibles par Pillow uniquement, sans RAW. Résultat et recalage approximatifs ; profondeur, provenance et images alignées indisponibles.',
+    'batch_group_split_error': 'La fusion par groupes exige plusieurs dossiers ; le découpage précharge la pile.',
+    'batch_group_range_error': 'Taille au moins 2 ; chevauchement au plus égal à la taille moins 2.',
+    'batch_group_output_error': 'Choisissez une fusion et désactivez l’export des images alignées.',
+    'batch_group_progress': 'Étape de groupes {stage} : {completed} / {total}',
     "label_outputs_all": "Tous les résultats",
     "label_range_current": "Image actuelle",
     "label_range_custom": "Plage personnalisée",

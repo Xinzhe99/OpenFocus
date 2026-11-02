@@ -84,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Output file for a single stack (default: fused.png)")
     parser.add_argument("--output-dir", "-d", default=None,
                         help="Batch mode: fuse every input folder, writing <folder>.<ext> here")
+    parser.add_argument("--group-size", type=int, default=0, metavar="FRAMES",
+                        help="Fuse a folder in overlapping groups of at most FRAMES (0 disables). "
+                             "Approximate, uses temporary disk; single-frame Pillow-readable "
+                             "images only, no RAW or depth maps.")
+    parser.add_argument("--group-overlap", type=int, default=1, metavar="FRAMES",
+                        help="Frames shared by consecutive groups (default 1; at most group size minus 2).")
     parser.add_argument("--method", "-m", default="stackmffv3",
                         choices=[spec.id for spec in fusion_algorithms()],
                         help="OpenFocus methods: A = multiscale response selection, "
@@ -367,14 +373,43 @@ def _fuse_stack_admitted(images, args):
     # 注册/归一化后的帧留给 --depth-map 用（与融合同一输入）。帧序必须与
     # 融合内部一致：--sort desc 会在 fuse() 内反转帧序，深度图若仍按原序
     # 计算，0/N-1 标签就指向相反的一端。
-    depth_frames = list(images)
-    if spec.sort_frames:
-        from fusion_methods.openfocus_ab import sort_frames_for_openfocus
-        depth_frames, _flipped = sort_frames_for_openfocus(
-            depth_frames, getattr(args, "sort", "asc"))
-    args._depth_frames = depth_frames
+    if not getattr(args, "_grouped", False):
+        depth_frames = list(images)
+        if spec.sort_frames:
+            from fusion_methods.openfocus_ab import sort_frames_for_openfocus
+            depth_frames, _flipped = sort_frames_for_openfocus(
+                depth_frames, getattr(args, "sort", "asc"))
+        args._depth_frames = depth_frames
     _say(f"Fusion ({args.method}, device={info['device']}) done in {time.time() - t0:.1f}s")
     return fused
+
+
+def _fuse_grouped(paths, args):
+    """Fuse an ordered folder in bounded groups, then combine the results."""
+    from core.grouped_fusion import grouped_fuse
+
+    group_args = argparse.Namespace(**vars(args))
+    group_args._grouped = True
+    # Reverse the whole source once. Reversing each group independently would
+    # interleave the original order and reverse it again at every later stage.
+    if get_fusion(args.method).sort_frames and args.sort == "desc":
+        paths = list(reversed(paths))
+        group_args.sort = "asc"
+
+    _say("Grouped fusion is approximate and uses temporary disk space; "
+         "registration and exposure matching use each group's reference.")
+
+    def progress(stage, completed, total):
+        _say(f"Group stage {stage}: {completed}/{total}")
+        emit = getattr(args, "_progress", None)
+        if emit is not None:
+            emit(event="group", stage=stage, done=completed, total=total)
+
+    return grouped_fuse(paths, args.group_size, args.group_overlap,
+                        lambda images: _fuse_stack_admitted(images, group_args),
+                        thread_count=args.threads,
+                        resource_preference=args.resource_preference,
+                        progress=progress)
 
 
 def _method_weights(spec) -> str | None:
@@ -535,11 +570,13 @@ def _run_batch(args, _emit_json=None) -> int:
             if frame_count < 2:
                 raise RuntimeError(
                     f"need at least 2 frames, found {frame_count}")
-            images = _load_images(
-                paths, thread_count=getattr(args, "threads", 0) or 0,
-                resource_preference=getattr(args, "resource_preference",
-                                            "balanced"))
-            fused = _fuse_stack(images, folder_args)
+            if folder_args.group_size:
+                fused = _fuse_grouped(paths, folder_args)
+            else:
+                images = _load_images(
+                    paths, thread_count=getattr(args, "threads", 0) or 0,
+                    resource_preference=getattr(args, "resource_preference", "balanced"))
+                fused = _fuse_stack(images, folder_args)
             from core.image_loader import common_icc_profile
             _save(out_path, fused, _resolve_scale_cfg(folder_args, paths),
                   common_icc_profile(paths))
@@ -664,6 +701,22 @@ def _run_cli_admitted(argv: List[str]) -> int:
     if args.tile_size is not None and args.tile_size < 64:
         print("error: --tile-size must be >= 64", file=sys.stderr)
         return EXIT_USAGE
+    if args.group_size < 0 or args.group_size == 1:
+        print("error: --group-size must be 0 or at least 2", file=sys.stderr)
+        return EXIT_USAGE
+    if args.group_overlap < 0 or (args.group_size and args.group_overlap > args.group_size - 2):
+        print("error: --group-overlap must be between 0 and group size minus 2", file=sys.stderr)
+        return EXIT_USAGE
+    if args.group_size:
+        if args.depth_map:
+            print("error: --depth-map is unavailable with grouped fusion: group positions are not original frame indices", file=sys.stderr)
+            return EXIT_USAGE
+        if args.dust_map:
+            print("error: --dust-map is unavailable with grouped fusion", file=sys.stderr)
+            return EXIT_USAGE
+        if any(not os.path.isdir(path) for path in args.input):
+            print("error: grouped fusion accepts folders only", file=sys.stderr)
+            return EXIT_USAGE
     if args.depth_map:
         # 提前校验：否则拼写错误要到融合全部跑完后才在 colorize 里炸掉
         try:
@@ -788,16 +841,16 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 return EXIT_OK
 
             _progress(event="load", done=1, total=1, frames=len(paths))
-            images = _load_images(
-                paths, thread_count=getattr(args, "threads", 0) or 0,
-                resource_preference=getattr(args, "resource_preference",
-                                            "balanced"))
+            if not args.group_size:
+                images = _load_images(
+                    paths, thread_count=getattr(args, "threads", 0) or 0,
+                    resource_preference=getattr(args, "resource_preference", "balanced"))
             if paths:
                 from utils.image_utils import set_source_exif
                 from core.image_loader import _read_exif_bytes
                 set_source_exif(_read_exif_bytes(paths[0]))
 
-            fused = _fuse_stack(images, args)
+            fused = _fuse_grouped(paths, args) if args.group_size else _fuse_stack(images, args)
             if fused is None:
                 raise RuntimeError("Fusion returned no result")
             scale_cfg = _resolve_scale_cfg(args, paths)

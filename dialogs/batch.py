@@ -2,7 +2,7 @@
 """Batch processing dialogs."""
 
 import os
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QSignalBlocker
 from PyQt6.QtGui import QFont, QIcon, QTextOption
 from PyQt6.QtWidgets import (
     QDialog,
@@ -417,6 +417,29 @@ class BatchProcessingDialog(QDialog):
         # --- Options -----------------------------------------------------
         options_layout.addWidget(_section_rule(trans.t('batch_section_options')))
 
+        group_row = QHBoxLayout()
+        group_label = QLabel(trans.t('batch_group_size'))
+        group_label.setToolTip(trans.t('batch_group_hint'))
+        group_row.addWidget(group_label)
+        self.group_size_spin = QSpinBox()
+        self.group_size_spin.setRange(0, 9999)
+        self.group_size_spin.setSpecialValueText(trans.t('batch_group_disabled'))
+        self.group_size_spin.setToolTip(trans.t('batch_group_hint'))
+        group_row.addWidget(self.group_size_spin)
+        group_row.addWidget(QLabel(trans.t('batch_group_overlap')))
+        self.group_overlap_spin = QSpinBox()
+        self.group_overlap_spin.setRange(0, 9997)
+        self._group_overlap_preference = 1
+        self.group_overlap_spin.setValue(1)
+        self.group_overlap_spin.valueChanged.connect(
+            lambda value: setattr(self, '_group_overlap_preference', value))
+        self.group_overlap_spin.setEnabled(False)
+        group_row.addWidget(self.group_overlap_spin)
+        group_row.addStretch()
+        options_layout.addLayout(group_row)
+        self.group_size_spin.valueChanged.connect(self._group_size_changed)
+
+
         self.chk_reverse_order = QCheckBox(trans.t('chk_reverse_order'))
         self.chk_reverse_order.setToolTip(trans.t('chk_reverse_order_hint'))
         options_layout.addWidget(self.chk_reverse_order)
@@ -759,6 +782,9 @@ class BatchProcessingDialog(QDialog):
     def _start_import(self, mode: str, on_thumbnails=None, on_stack=None,
                       folder_paths=None, folder_path=None,
                       sort_by: str = 'filename', scale_factor=None) -> bool:
+        if mode == 'stack' and getattr(self, 'group_size_spin', None) is not None and self.group_size_spin.value():
+            QMessageBox.warning(self, trans.t('msg_error'), trans.t('batch_group_split_error'))
+            return False
         if self._import_busy:
             return False
         from core.workers import BatchImportWorker
@@ -817,6 +843,8 @@ class BatchProcessingDialog(QDialog):
 
     def _set_import_busy(self, busy: bool) -> None:
         """Disable the actions that would need the data still decoding."""
+        if hasattr(self, 'group_size_spin'):
+            self.group_size_spin.setEnabled(not busy)
         for name in ("btn_start", "btn_add_folder", "btn_add_single_folder"):
             button = getattr(self, name, None)
             if button is not None:
@@ -1164,6 +1192,18 @@ class BatchProcessingDialog(QDialog):
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
         self.registration_parameter_panel.setVisible(bool(specs))
 
+    def _group_size_changed(self, value):
+        with QSignalBlocker(self.group_overlap_spin):
+            maximum = max(0, value - 2) if value else 9997
+            self.group_overlap_spin.setMaximum(maximum)
+            self.group_overlap_spin.setValue(min(self._group_overlap_preference, maximum))
+        self.group_overlap_spin.setEnabled(value != 0)
+        if value:
+            self.single_folder_images_with_times = []
+            self.single_folder_stacks = []
+            self.single_folder_path_label.setText('')
+            self.preview_label.setText('')
+
     def _remember_save_aligned(self, checked: bool) -> None:
         """Track the user's own choice, ignoring programmatic forcing."""
         if self.fusion_combo.currentData() != "none":
@@ -1248,6 +1288,8 @@ class BatchProcessingDialog(QDialog):
             'alignment': align_method,
             'registration_parameters': self.registration_parameter_panel.values(),
             "reg_scale_percent": ratio,
+            'group_size': self.group_size_spin.value(),
+            'group_overlap': self.group_overlap_spin.value(),
             "save_aligned": save_aligned,  # 是否保存对齐后的图像栈
             "scale_bar": scale_cfg,
             'load_scale_factor': self.load_scale_factor,
@@ -1294,6 +1336,17 @@ class BatchProcessingDialog(QDialog):
 
         import_mode = self.get_import_mode()
         split_method, split_param = self.get_split_settings()
+        group_size = self.group_size_spin.value()
+        if group_size:
+            if import_mode == 'single_folder':
+                QMessageBox.warning(self, trans.t('msg_error'), trans.t('batch_group_split_error'))
+                return
+            if group_size < 2 or self.group_overlap_spin.value() > group_size - 2:
+                QMessageBox.warning(self, trans.t('msg_error'), trans.t('batch_group_range_error'))
+                return
+            if self.fusion_combo.currentData() in (None, 'none') or self.save_aligned_cb.isChecked():
+                QMessageBox.warning(self, trans.t('msg_error'), trans.t('batch_group_output_error'))
+                return
 
         if import_mode == "multiple_folders":
             if not self.folder_paths:

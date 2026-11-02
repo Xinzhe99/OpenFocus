@@ -1,6 +1,14 @@
 """German language pack for OpenFocus."""
 
 PACK = {
+    'batch_group_size': 'Gruppengröße:',
+    'batch_group_overlap': 'Überlappung:',
+    'batch_group_disabled': 'Aus',
+    'batch_group_hint': 'Gruppenweise Fusion benötigt temporären Speicher. Nur einseitige Dateien mit Pillow-lesbaren Kopfzeilen; kein Kamera-RAW. Ergebnis und Registrierung sind Näherungen; Tiefe, Herkunft und ausgerichtete Bilder fehlen.',
+    'batch_group_split_error': 'Gruppenfusion erfordert mehrere Ordner; der Einzelordner lädt alle Bilder.',
+    'batch_group_range_error': 'Gruppengröße mindestens 2; Überlappung höchstens Gruppengröße minus 2.',
+    'batch_group_output_error': 'Wählen Sie ein Fusionsverfahren und deaktivieren Sie den Export ausgerichteter Bilder.',
+    'batch_group_progress': 'Gruppenphase {stage}: {completed} / {total}',
     "label_outputs_all": "Alle Ausgabeergebnisse",
     "label_range_current": "Aktuelles Bild",
     "label_range_custom": "Benutzerdefinierter Bereich",
