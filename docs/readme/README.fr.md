@@ -265,50 +265,7 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-Le modèle IA, ses poids, le décodage HEIC et RAW d'appareil photo sont tous inclus dans cette installation unique. `dtcwt` est ignoré à partir de Python 3.13, où l'entrée DTCWT reste désactivée avec une infobulle.
-
-Les points de contrôle de retouche peuvent être rejoués sans interface avec la base fusionnée d'origine et les images sources traitées exactes, dans l'ordre enregistré :
-
-```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
-```
-
-Le point de contrôle vérifie la base, les pixels sources, la géométrie et les masques de validité. Exportez les images traitées elles-mêmes (y compris tout recadrage de recalage ou de ROI), pas la pile d'entrée non traitée. Le rejeu refuse les contextes incompatibles et n'écrase jamais ses entrées. La sortie est en PNG ou TIFF et conserve la profondeur 8 ou 16 bits.
-
-Les recettes enregistrent les réglages de traitement sans interface pour les réutiliser et les déplacer :
-
-```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
-openfocus recipe run workflow.json --dry-run
-openfocus recipe run workflow.json
-```
-
-Le format JSON de version 1 contient `version`, un tableau `input`, soit `output`, soit `output_dir`, et un objet `options`. Les chemins sont relatifs au fichier de recette ; déplacez la recette avec ses fichiers d'entrée pour conserver ces relations. La création capture les réglages de la CLI et les paramètres d'algorithme résolus. Les champs inconnus, les valeurs invalides et les versions non prises en charge sont rejetés. Une exécution à blanc vérifie l'entrée sans écrire de fichiers de résultat. Les fichiers de projet existants restent inchangés.
-
-Pour capturer les réglages d'un `.ofproj` existant, sélectionnez explicitement la nouvelle entrée et la nouvelle sortie. Les sources d'origine du projet n'ont pas besoin d'être présentes pour extraire les réglages :
-
-```bash
-openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
-```
-
-Cette opération transfère à la recette CLI les réglages de fusion, de recalage, de luminosité, d'ordre, de netteté et de tuiles, et incorpore les réglages de traitement pour l'interface. Les exclusions d'images, l'échelle de chargement, les libellés et les modifications ne sont pas transférés ; préparez la nouvelle pile d'entrée en conséquence. Les projets comportant des transformations de source, notamment des corrections de champ plat appliquées, doivent d'abord exporter leur pile source corrigée. Les recettes exigent des sorties hors de leurs dossiers d'entrée et n'acceptent jamais un fichier d'entrée comme sortie. Les options de regroupement peuvent être capturées depuis les arguments de la CLI.
-
-Dans l'interface, Fichier → Enregistrer un modèle de traitement enregistre les réglages sans chemins de source. Fichier → Appliquer un modèle de traitement applique un modèle, un projet ou une recette issue d'un projet à la pile actuelle sans remplacer ses entrées, transformations, exclusions ni libellés. Un modèle n'est pas lui-même une recette exécutable. Les réglages d'interface intégrés à une recette sont indépendants de ses options CLI ; si vous modifiez le JSON, gardez les deux cohérents.
-
-La même API sans interface est disponible sans importer PyQt :
-
-```python
-from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
-
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
-capture_project_recipe("from-project.json", "session.ofproj",
-                       ["-i", "new_stack", "-o", "result/fused.png"])
-recipe = load_recipe("workflow.json")  # dictionnaire validé avec chemins relatifs
-save_recipe("workflow.json", recipe)
-exit_code = run_recipe("workflow.json", dry_run=True)  # utilisez False pour traiter
-```
-
-`capture_recipe` interprète ses arguments comme des chemins CLI ordinaires relatifs au répertoire courant ; `save_recipe` interprète les chemins stockés relativement à la recette. La recette enregistre les réglages et les références, y compris une empreinte de contenu pour un masque de défauts de capteur explicitement sélectionné. Elle n'enregistre pas les pixels d'entrée, les versions logicielles, le matériel ni les sommes de contrôle de la pile source ; conservez-les séparément lorsque la provenance compte. Des réglages identiques ne garantissent pas des pixels identiques d'une version logicielle, d'un pilote ou d'un appareil à l'autre ; les opérations neuronales sur GPU peuvent être non déterministes. Utilisez `--cpu` lorsqu'une exécution CPU est requise, et conservez le logiciel installé et les entrées.
+Consultez le [manuel de la CLI](../USER_MANUAL_FR.md#14-interface-en-ligne-de-commande).
 
 <a id="community"></a>
 ## Communauté et support
@@ -317,7 +274,6 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # utilisez False pour tra
 - **Citation** — [CITATION.cff](../../CITATION.cff) ; chaque version est archivée sur Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Retours** — ouvrez un [issue](https://github.com/Xinzhe99/OpenFocus/issues) pour les bogues, les idées et le travail sur les algorithmes
 - **Crédits** — chaque algorithme de fusion et de recalage conserve sa licence de recherche d'origine ; StackMFF V3 se trouve sur [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
-- **Rapports de sécurité** — [@ranas-mukminov](https://github.com/ranas-mukminov) a signalé la fenêtre de permissions du jeton de découverte ([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
 
 <a id="license"></a>
 ## Licence
@@ -325,8 +281,6 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # utilisez False pour tra
 L'application OpenFocus est publiée sous [licence MIT](../../LICENSE).
 
 **Exception de la série StackMFF.** Les algorithmes de fusion StackMFF — actuellement StackMFF V3 et toute future édition de pointe — restent la propriété du projet OpenFocus, qui conserve tous les droits sur la série StackMFF. Vous pouvez les utiliser au sein d'OpenFocus pour vos propres images et votre travail interne. Copier, porter ou migrer ces algorithmes vers un autre projet open source nécessite une autorisation écrite préalable.
-
-La version V3 incluse ici et les versions du projet d'origine jusqu'à la v2.0 ont été distribuées sous licence MIT ; leurs conditions MIT ne sont pas modifiées par la restriction ci-dessus. Voir les [mentions des tiers](../../THIRD_PARTY_NOTICES.md).
 
 <a id="developing"></a>
 ## Développement

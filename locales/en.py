@@ -29,7 +29,7 @@ EN = {
     'alignment_report_unavailable': 'No per-frame diagnostics are available for the last render. Enable collection and render again.',
     'alignment_report_frame': 'Frame {number} — {name}: {method} — {status}',
     'alignment_report_reference': 'Reference', 'alignment_report_aligned': 'Aligned', 'alignment_report_fallback': 'Fallback',
-    'alignment_report_cached': 'Alignment: cached result reused', 'alignment_report_available': 'Per-frame alignment diagnostics available in Tools',
+    'alignment_report_cached': 'Alignment: cached result reused', 'alignment_report_available': 'Per-frame alignment diagnostics available in Settings → Advanced Settings → Registration',
     'sensor_section': 'Sensor cleanup',
     'sensor_source_missing': "The defect mask requires an original still-image source path for every frame. Reload the original images or disable the mask.",
     'sensor_source_orientation': "Cannot use the defect mask with {path}: its orientation is not neutral or cannot be checked. Use sensor-oriented still images with neutral EXIF orientation and a matching mask, or disable the mask.",

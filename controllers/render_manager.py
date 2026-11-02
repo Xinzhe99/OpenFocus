@@ -42,8 +42,8 @@ class RenderManager:
         self._control_progress: Optional[tuple] = None
         self.alignment_diagnostics = None
 
-    def show_alignment_report(self) -> None:
-        dialog = QDialog(self.window)
+    def show_alignment_report(self, *, parent=None) -> None:
+        dialog = QDialog(parent or self.window)
         dialog.setWindowTitle(trans.t('alignment_report_title'))
         dialog.resize(640, 420)
         layout = QVBoxLayout(dialog)

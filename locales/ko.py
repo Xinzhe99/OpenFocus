@@ -23,7 +23,7 @@ PACK = {
     'alignment_report_title': '정렬 진단', 'alignment_report_unavailable': '마지막 렌더링의 프레임별 진단이 없습니다. 수집을 켜고 다시 렌더링하세요.',
     'alignment_report_frame': '프레임 {number} — {name}: {method} — {status}',
     'alignment_report_reference': '기준', 'alignment_report_aligned': '정렬됨', 'alignment_report_fallback': '대체 처리',
-    'alignment_report_cached': '정렬: 캐시된 결과 재사용', 'alignment_report_available': '도구 메뉴에서 프레임별 정렬 진단을 볼 수 있습니다',
+    'alignment_report_cached': '정렬: 캐시된 결과 재사용', 'alignment_report_available': '설정 → 고급 설정 → 정합에서 프레임별 정렬 진단을 볼 수 있습니다',
     'sensor_section': '센서 정리',
     'sensor_source_missing': "결함 마스크에는 각 프레임의 원본 이미지 경로가 필요합니다. 원본 이미지를 다시 불러오거나 마스크를 끄세요.",
     'sensor_source_orientation': "{path}에 결함 마스크를 사용할 수 없습니다. 방향이 기본값이 아니거나 확인할 수 없습니다. 센서 방향과 일치하고 EXIF 방향이 기본값인 이미지와 해당 마스크를 사용하거나 마스크를 끄세요.",

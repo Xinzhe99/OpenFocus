@@ -125,8 +125,8 @@ La barra dei menu superiore dà accesso a tutte le funzioni:
 
 - **File**: operazioni di importazione ed esportazione, progetti, modelli di elaborazione ed elenco file recenti
 - **Modifica**: trasformazioni delle immagini, ritocco ed etichette
-- **Strumenti**: elaborazione batch, confronto metodi, diagnostica di allineamento, mappa di profondità, correzione di campo piatto, barra di scala ed etichette
-- **Impostazioni**: impostazioni avanzate (prestazioni, registrazione, pulizia del sensore, nomi output, IA e avvio), accelerazione GPU, tema e lingua
+- **Strumenti**: elaborazione batch, confronto metodi, mappa di profondità, correzione di campo piatto, barra di scala ed etichette
+- **Impostazioni**: impostazioni avanzate (prestazioni, registrazione e diagnostica di allineamento, pulizia del sensore, nomi output, IA e avvio), accelerazione GPU, tema e lingua
 - **Aiuto**: informazioni sull'ambiente, contatto, controllo aggiornamenti e cartella dei log
 
 ---
@@ -337,7 +337,7 @@ La registrazione corregge il disallineamento spaziale tra i fotogrammi dello sta
 
 I report di allineamento identificano il riferimento e l'esito di ogni fotogramma. Un ripiego significa che il metodo non è riuscito a stabilire l'allineamento o dipende da una stima precedente fallita; la ragione riportata distingue stime deboli e movimento fuori dai limiti quando noto. I valori di qualità sono specifici del metodo, non una garanzia di accuratezza. Le trasformazioni mappano le coordinate sorgente sulla tela di riferimento della fase di registrazione prima del ritaglio comune; i metodi compositi riportano le loro fasi separatamente. Anche omografia ed ECC accettano il parametro facoltativo `failure_policy="fail"` per fermarsi quando i loro algoritmi rilevano un errore. Il valore predefinito resta `"continue"`; ispeziona i risultati anche quando l'allineamento riesce.
 
-Per ispezionare un rendering, attiva **Impostazioni → Impostazioni avanzate → Registrazione → Raccogli diagnostica di allineamento** e renderizza di nuovo. L'allineamento viene ricalcolato invece di riutilizzare le immagini in cache. Lo stato di completamento evidenzia i ripieghi; apri **Strumenti → Diagnostica di allineamento** per il report per fotogramma. Mostra le ragioni di errore disponibili, i punteggi specifici del metodo, i conteggi delle corrispondenze, i fotogrammi di riferimento e le trasformazioni. Numeri e nomi di riferimento si riferiscono all'elenco sorgente originale, anche quando i fotogrammi sono esclusi. I rendering batch e raggruppati non forniscono questo report.
+Per ispezionare un rendering, attiva **Impostazioni → Impostazioni avanzate → Registrazione → Raccogli diagnostica di allineamento** e renderizza di nuovo. L'allineamento viene ricalcolato invece di riutilizzare le immagini in cache. Lo stato di completamento evidenzia i ripieghi; apri **Impostazioni → Impostazioni avanzate → Registrazione → Diagnostica di allineamento** per il report per fotogramma. Mostra le ragioni di errore disponibili, i punteggi specifici del metodo, i conteggi delle corrispondenze, i fotogrammi di riferimento e le trasformazioni. Numeri e nomi di riferimento si riferiscono all'elenco sorgente originale, anche quando i fotogrammi sono esclusi. I rendering batch e raggruppati non forniscono questo report.
 
 ### Attivazione della registrazione
 
@@ -603,7 +603,7 @@ Accesso: **Impostazioni → Impostazioni avanzate → Registrazione**:
 - **Larghezza di riduzione**: risoluzione di pre-elaborazione per la registrazione
   - Predefinito: 1024 px
   - Più bassa per la velocità, più alta per l'accuratezza
-- **Raccogli diagnostica di allineamento**: ricalcola l'allineamento al prossimo rendering e abilita **Strumenti → Diagnostica di allineamento**
+- **Raccogli diagnostica di allineamento**: ricalcola l'allineamento al prossimo rendering e abilita **Impostazioni → Impostazioni avanzate → Registrazione → Diagnostica di allineamento**
 
 ### Riferimenti sulle prestazioni
 
@@ -762,6 +762,8 @@ Trascinare i risultati dall'elenco output scrive file immagine nel formato scelt
 
 ## 14. Interfaccia a riga di comando
 
+`pip install openfocus` include il modello IA, i suoi pesi e la decodifica HEIC e RAW della fotocamera. `dtcwt` viene saltato da Python 3.13 in poi, dove la voce DTCWT resta disabilitata con un suggerimento.
+
 OpenFocus può funzionare senza interfaccia grafica — utile per pipeline scriptate e integrazione continua. Lo script console `openfocus` (installato da `pip install openfocus`) e `python main.py` da una copia del codice espongono gli stessi comandi. Le opzioni di fusione funzionano con entrambe le forme; i sottocomandi sono:
 
 ```bash
@@ -861,6 +863,27 @@ openfocus recipe run line.json --dry-run
 
 `recipe create --project project.ofproj --input ./stack --output ./out/fused.tif` cattura le impostazioni di elaborazione di un progetto su input scelti esplicitamente; le sorgenti del progetto possono essere state spostate. Le ricette rifiutano controlli transitori come `--dry-run`, `--resume`, `--json` e `--config`, e richiedono che l'output sia fuori da tutte le cartelle di input (e diverso da un input selezionato esplicitamente). Una maschera difetti viene memorizzata per percorso relativo con un'impronta SHA-256, quindi una maschera mancante o modificata fa fallire l'esecuzione. Le modifiche alla sorgente del progetto (rotazione, capovolgimento, campo piatto) non possono essere catturate; esporta prima lo stack corretto.
 
+La cattura del progetto trasferisce nella ricetta CLI le impostazioni di fusione, registrazione, luminosità, ordine, nitidezza e tasselli, e incorpora le impostazioni di elaborazione per la GUI. Esclusioni dei fotogrammi, scala di caricamento, etichette e modifiche non vengono trasferite; prepara di conseguenza il nuovo stack di input. Le opzioni di raggruppamento possono essere catturate dagli argomenti CLI.
+
+Il formato JSON versione 1 contiene `version`, un array `input`, `output` oppure `output_dir`, e un oggetto `options`. I percorsi sono relativi al file della ricetta; sposta la ricetta insieme ai suoi file di input per conservare tali relazioni. La creazione cattura le impostazioni della CLI e i parametri risolti dell'algoritmo. Campi sconosciuti, valori non validi e versioni non supportate vengono rifiutati. Una prova a vuoto controlla l'input senza scrivere file di risultato. I file di progetto esistenti restano invariati.
+
+Nella GUI, File → Salva modello di elaborazione salva le impostazioni senza percorsi sorgente. File → Applica modello di elaborazione applica un modello, un progetto o una ricetta basata su progetto allo stack corrente senza sostituirne input, trasformazioni, esclusioni o etichette. Un modello non è di per sé una ricetta eseguibile. Le impostazioni GUI incorporate in una ricetta sono indipendenti dalle sue opzioni CLI; se modifichi il JSON, mantieni coerenti entrambe.
+
+La stessa API headless è disponibile senza importare PyQt:
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")  # dizionario validato con percorsi relativi
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # usa False per elaborare
+```
+
+`capture_recipe` interpreta i suoi argomenti come normali percorsi CLI relativi alla directory corrente; `save_recipe` interpreta i percorsi memorizzati relativi alla ricetta. La ricetta registra impostazioni e riferimenti, inclusa un'impronta di contenuto per una maschera di difetti del sensore selezionata esplicitamente. Non registra i pixel di input, le versioni software, l'hardware né i checksum dello stack sorgente; conservali separatamente quando la provenienza è importante. Impostazioni identiche non garantiscono pixel identici tra versioni software, driver o dispositivi; le operazioni neurali su GPU possono essere non deterministiche. Usa `--cpu` quando è richiesta un'esecuzione su CPU e conserva il software installato e gli input.
+
 ### Riproduzione di un punto di controllo di ritocco
 
 Il primo salvataggio o caricamento verifica la base e le sorgenti elaborate in un'operazione in background annullabile. Il salvataggio riproduce anche le modifiche registrate e controlla l'immagine corrente e lo stato annulla/ripristina prima di pubblicare il punto di controllo. Se una sorgente è cambiata e la riproduzione non corrisponde più, il salvataggio fallisce e conserva le modifiche. Annullare un salvataggio o un caricamento conserva comunque le modifiche correnti. Se la memoria non basta per verifica o riproduzione, l'operazione si ferma e lascia invariati sia le modifiche correnti sia qualsiasi punto di controllo esistente.
@@ -953,7 +976,7 @@ Codici di uscita: `0` successo, `1` errore di elaborazione, `2` errore d'uso. `p
 - Usa **OpenFocus (veloce)** per movimento rigido limitato, oppure attiva **Interrompi su fotogramma rifiutato** per fallire presto invece di accettare fotogrammi non allineati
 - Riduci la larghezza di riduzione in **Impostazioni → Impostazioni avanzate → Registrazione**
 - Assicurati che le immagini abbiano contrasto e caratteristiche sufficienti
-- Attiva **Raccogli diagnostica di allineamento**, renderizza di nuovo e leggi **Strumenti → Diagnostica di allineamento** per i fotogrammi in errore
+- Attiva **Raccogli diagnostica di allineamento**, renderizza di nuovo e leggi **Impostazioni → Impostazioni avanzate → Registrazione → Diagnostica di allineamento** per i fotogrammi in errore
 
 #### Elaborazione lenta
 

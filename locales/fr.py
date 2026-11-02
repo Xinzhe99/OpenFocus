@@ -23,7 +23,7 @@ PACK = {
     'alignment_report_title': 'Diagnostics d’alignement', 'alignment_report_unavailable': 'Aucun diagnostic par image pour le dernier rendu. Activez la collecte et relancez le rendu.',
     'alignment_report_frame': 'Image {number} — {name} : {method} — {status}',
     'alignment_report_reference': 'Référence', 'alignment_report_aligned': 'Alignée', 'alignment_report_fallback': 'Solution de repli',
-    'alignment_report_cached': 'Alignement : résultat en cache réutilisé', 'alignment_report_available': 'Diagnostics par image disponibles dans Outils',
+    'alignment_report_cached': 'Alignement : résultat en cache réutilisé', 'alignment_report_available': 'Diagnostics par image disponibles dans Paramètres → Paramètres avancés → Recalage',
     'sensor_section': 'Nettoyage du capteur',
     'sensor_source_missing': "Le masque de défauts nécessite le chemin du fichier original de chaque image. Rechargez les images originales ou désactivez le masque.",
     'sensor_source_orientation': "Impossible d’utiliser le masque de défauts avec {path} : son orientation est non neutre ou impossible à vérifier. Utilisez des images en orientation capteur avec une orientation EXIF neutre et un masque adapté, ou désactivez le masque.",

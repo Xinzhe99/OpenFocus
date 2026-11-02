@@ -146,8 +146,8 @@ OpenFocus 界面分为三个主要区域：
 
 - **文件**：导入/导出、工程文件、处理模板、保存堆栈、最近打开列表
 - **编辑**：图像变换、修饰结果、修饰图像文件、撤销/重做
-- **工具**：批处理、方法对比、配准诊断、深度图、尘点图（平场校正）、比例尺、标签
-- **设置**：高级设置（性能、配准、传感器清理、输出命名、AI、启动）、GPU 加速、主题、语言
+- **工具**：批处理、方法对比、深度图、尘点图（平场校正）、比例尺、标签
+- **设置**：高级设置（性能、配准及配准诊断、传感器清理、输出命名、AI、启动）、GPU 加速、主题、语言
 - **帮助**：用户手册、环境信息、反馈、检查更新、打开日志文件夹
 
 ---
@@ -455,7 +455,7 @@ Wipe 模式与 ROI 模式共用结果面板，进入其一自动退出另一个�
 Homography 与 ECC 也接受 `failure_policy="fail"` 参数，默认仍为 `"continue"`。
 
 要检查某次渲染，请先在 **设置 → 高级设置 → 配准** 中启用 **收集配准诊断**，然后重新
-渲染；这会重新计算对齐，而不复用缓存。完成状态会标出回退帧，之后从 **工具 → 配准诊断**
+渲染；这会重新计算对齐，而不复用缓存。完成状态会标出回退帧，之后从 **设置 → 高级设置 → 配准 → 配准诊断**
 打开逐帧报告，其中包含失败原因、方法相关分数、匹配数、参考帧与变换。参考编号和名称
 按原始源列表计算，包括被排除的帧。批处理和分组渲染不提供该报告。
 
@@ -1045,6 +1045,8 @@ TIFF。实时标签和比例尺不会写入；未保存的标注更改仍受保�
 
 ## 14. 命令行界面
 
+`pip install openfocus` 包含 AI 模型、权重、HEIC 与相机 RAW 解码。Python 3.13+ 会跳过 `dtcwt`，此时 DTCWT 项保持禁用并给出提示。
+
 OpenFocus 支持无界面运行——适合脚本流水线和 CI 集成。安装 pip 包后可直接使用
 `openfocus` 命令；从源码运行时把 `openfocus` 换成 `python main.py` 即可。常用
 子命令如下，融合参数对两种入口相同：
@@ -1128,6 +1130,21 @@ openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o
 捕获。GUI 中 **文件 → 保存处理模板** 保存不含源路径的设置，**应用处理模板** 把模板、
 工程或带工程设置的配方应用到当前图像栈，不替换其输入、变换、排除帧或标签；模板本身
 不是可执行配方。配方内嵌的 GUI 设置与 CLI 选项相互独立，手工编辑 JSON 时请保持一致。
+
+无需导入 PyQt，即可从 Python 使用相同的无界面 API。将 `dry_run=False` 用于实际处理：
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)
+```
+
+`capture_recipe` 将参数路径视为相对于当前目录的普通 CLI 路径；`save_recipe` 将保存的路径视为相对于配方文件。配方记录设置和引用，包括明确选定的传感器缺陷掩码的内容指纹，但不记录输入像素、软件版本、硬件或源图像栈的校验和；需要追溯来源时请另行保存。同样的设置不能保证在不同软件版本、驱动或设备上得到完全相同的像素；GPU 神经网络运算可能具有不确定性。需要在 CPU 上运行时使用 `--cpu`，并保留已安装的软件和输入。
 
 ### 重放修饰检查点
 
@@ -1266,7 +1283,7 @@ openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2
   立即报错，而不是接受未对齐的帧
 - 在 **设置 → 高级设置 → 配准** 中减小下采样宽度
 - 确保图像有足够的对比度和特征
-- 启用 **收集配准诊断** 后重新渲染，再从 **工具 → 配准诊断** 查看失败帧
+- 启用 **收集配准诊断** 后重新渲染，再从 **设置 → 高级设置 → 配准 → 配准诊断** 查看失败帧
 
 #### 处理速度慢
 

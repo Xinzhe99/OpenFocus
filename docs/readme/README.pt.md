@@ -265,50 +265,7 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-O modelo de IA, seus pesos, a decodificação HEIC e RAW de câmera estão todos nessa única instalação. O `dtcwt` é ignorado no Python 3.13 ou superior, onde a entrada DTCWT permanece desabilitada com uma dica.
-
-Os checkpoints de retoque podem ser reproduzidos sem interface com a base fundida original e os quadros de origem processados exatos, na ordem registrada:
-
-```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
-```
-
-O checkpoint verifica a base, os pixels de origem, a geometria e as máscaras de validade. Exporte os quadros processados (incluindo qualquer recorte de alinhamento ou ROI), não a pilha de entrada não processada. A reprodução rejeita contextos incompatíveis e nunca sobrescreve suas entradas. A saída é PNG ou TIFF e preserva a profundidade de 8 ou 16 bits.
-
-As receitas capturam configurações de processamento headless para reutilização e realocação:
-
-```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
-openfocus recipe run workflow.json --dry-run
-openfocus recipe run workflow.json
-```
-
-O formato JSON versão 1 contém `version`, um array `input`, `output` ou `output_dir`, e um objeto `options`. Os caminhos são relativos ao arquivo da receita; mova a receita junto com seus arquivos de entrada para preservar essas relações. A criação captura as configurações da CLI e os parâmetros resolvidos do algoritmo. Campos desconhecidos, valores inválidos e versões não suportadas são rejeitados. Uma execução de teste verifica a entrada sem gravar arquivos de resultado. Os arquivos de projeto existentes permanecem inalterados.
-
-Para capturar configurações de um `.ofproj` existente, selecione explicitamente a nova entrada e saída. As fontes originais do projeto não precisam estar presentes para extrair as configurações:
-
-```bash
-openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
-```
-
-Isso transfere para a receita da CLI as configurações de fusão, registro, brilho, ordem, nitidez e blocos, e incorpora as configurações de processamento para a interface. Exclusões de quadros, escala de carregamento, rótulos e edições não são transferidos; prepare a nova pilha de entrada de acordo. Projetos com transformações de origem, incluindo correções de campo plano aplicadas, precisam primeiro exportar sua pilha de origem corrigida. Receitas exigem saídas fora das pastas de entrada e nunca aceitam um arquivo de entrada como saída. As opções de agrupamento podem ser capturadas a partir de argumentos da CLI.
-
-Na interface, Arquivo → Salvar modelo de processamento salva as configurações sem caminhos de origem. Arquivo → Aplicar modelo de processamento aplica um modelo, projeto ou receita baseada em projeto à pilha atual sem substituir suas entradas, transformações, exclusões ou rótulos. Um modelo não é, por si só, uma receita executável. As configurações de interface incorporadas em uma receita são independentes de suas opções de CLI; se editar o JSON, mantenha ambas coerentes.
-
-A mesma API headless está disponível sem importar PyQt:
-
-```python
-from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
-
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
-capture_project_recipe("from-project.json", "session.ofproj",
-                       ["-i", "new_stack", "-o", "result/fused.png"])
-recipe = load_recipe("workflow.json")  # dicionário validado com caminhos relativos
-save_recipe("workflow.json", recipe)
-exit_code = run_recipe("workflow.json", dry_run=True)  # use False para processar
-```
-
-`capture_recipe` interpreta seus argumentos como caminhos de CLI comuns relativos ao diretório atual; `save_recipe` interpreta os caminhos armazenados relativos à receita. A receita registra configurações e referências, incluindo uma impressão digital de conteúdo para uma máscara de defeitos de sensor selecionada explicitamente. Ela não registra os pixels de entrada, as versões do software, o hardware nem os checksums da pilha de origem; guarde-os separadamente quando a proveniência importar. Configurações idênticas não garantem pixels idênticos entre versões de software, drivers ou dispositivos; operações neurais em GPU podem ser não determinísticas. Use `--cpu` quando uma execução em CPU for necessária e conserve o software instalado e as entradas.
+Consulte o [manual da CLI](../USER_MANUAL_PT.md#14-interface-de-linha-de-comando).
 
 <a id="community"></a>
 ## Comunidade e suporte
@@ -317,7 +274,6 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # use False para processa
 - **Citação** — [CITATION.cff](../../CITATION.cff); cada versão é arquivada no Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — abra uma [issue](https://github.com/Xinzhe99/OpenFocus/issues) para bugs, ideias e trabalho nos algoritmos
 - **Créditos** — cada algoritmo de fusão e registro mantém sua licença de pesquisa original; o StackMFF V3 fica em [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
-- **Relatos de segurança** — [@ranas-mukminov](https://github.com/ranas-mukminov) relatou a janela de permissões do token de descoberta ([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
 
 <a id="license"></a>
 ## Licença
@@ -325,8 +281,6 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # use False para processa
 O aplicativo OpenFocus é distribuído sob a [licença MIT](../../LICENSE).
 
 **Exceção da série StackMFF.** Os algoritmos de fusão StackMFF — atualmente StackMFF V3 e qualquer futura edição de ponta — permanecem propriedade do projeto OpenFocus, que detém todos os direitos sobre a série StackMFF. Você pode usá-los como parte do OpenFocus para suas próprias imagens e trabalho interno. Copiar, portar ou migrar esses algoritmos para outro projeto de código aberto exige permissão prévia por escrito.
-
-A versão V3 incluída aqui e as versões do projeto original até a v2.0 foram distribuídas sob a licença MIT; a restrição acima não altera suas condições MIT. Consulte os [avisos de terceiros](../../THIRD_PARTY_NOTICES.md).
 
 <a id="developing"></a>
 ## Desenvolvimento

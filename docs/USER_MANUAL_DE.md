@@ -157,8 +157,8 @@ Die Menüleiste am oberen Rand bietet Zugriff auf alle Funktionen:
 
 - **Datei**: Importieren, Projekte, Verarbeitungsvorlagen, Speichern, Stapel speichern und die Liste der zuletzt geöffneten Dateien
 - **Bearbeiten**: Bildtransformationen, Retusche und Bearbeitung einzelner Bilddateien
-- **Werkzeuge**: Stapelverarbeitung, Methodenvergleich, Ausrichtungsdiagnose, Tiefenkarte, Staubkarte (Flat-Field), Maßstabsbalken und Beschriftungen
-- **Einstellungen**: Erweiterte Einstellungen, GPU-Beschleunigung, Design und Sprache
+- **Werkzeuge**: Stapelverarbeitung, Methodenvergleich, Tiefenkarte, Staubkarte (Flat-Field), Maßstabsbalken und Beschriftungen
+- **Einstellungen**: Erweiterte Einstellungen (Registrierung und Ausrichtungsdiagnose), GPU-Beschleunigung, Design und Sprache
 - **Hilfe**: Schnellstart, Umgebungsinformationen, Feedback, Kontakt, Log-Ordner und Update-Prüfung
 
 ---
@@ -374,7 +374,7 @@ Die Bildregistrierung korrigiert räumliche Fehlausrichtungen zwischen den Bilde
 
 Ausrichtungsberichte nennen die Referenz und das Ergebnis jedes Bildes. Ein Rückfall bedeutet, dass die Methode die Ausrichtung nicht herstellen konnte oder von einer früheren fehlgeschlagenen Schätzung abhängt; der gemeldete Grund unterscheidet schwache Schätzungen und Bewegung außerhalb der Grenzen, sofern bekannt. Qualitätswerte sind methodenspezifisch und keine Garantie für Genauigkeit. Transformationen bilden Quellkoordinaten auf die Referenzleinwand der Registrierungsstufe vor dem gemeinsamen Zuschnitt ab; zusammengesetzte Methoden melden ihre Stufen getrennt. Homographie und ECC akzeptieren ebenfalls den optionalen Registrierungsparameter `failure_policy="fail"`, um bei erkanntem Fehler zu stoppen. Standard bleibt `"continue"`; prüfen Sie Ergebnisse auch bei erfolgreicher Ausrichtung.
 
-Um ein Rendering zu untersuchen, aktivieren Sie **Einstellungen → Erweiterte Einstellungen… → Registrierung → Ausrichtungsdiagnose erfassen** und rendern erneut. Dadurch wird die Ausrichtung neu berechnet, statt zwischengespeicherte Bilder wiederzuverwenden. Der Abschlussstatus hebt Rückfälle hervor; **Werkzeuge → Ausrichtungsdiagnose** öffnet den Bericht pro Bild. Er zeigt verfügbare Fehlergründe, methodenspezifische Werte, Übereinstimmungszahlen, referenzierte Bilder und Transformationen. Referenznummern und -namen beziehen sich auf die ursprüngliche Quellenliste, auch wenn Bilder ausgeschlossen sind. Stapel- und gruppierte Renderings liefern diesen Bericht nicht.
+Um ein Rendering zu untersuchen, aktivieren Sie **Einstellungen → Erweiterte Einstellungen… → Registrierung → Ausrichtungsdiagnose erfassen** und rendern erneut. Dadurch wird die Ausrichtung neu berechnet, statt zwischengespeicherte Bilder wiederzuverwenden. Der Abschlussstatus hebt Rückfälle hervor; **Einstellungen → Erweiterte Einstellungen… → Registrierung → Ausrichtungsdiagnose** öffnet den Bericht pro Bild. Er zeigt verfügbare Fehlergründe, methodenspezifische Werte, Übereinstimmungszahlen, referenzierte Bilder und Transformationen. Referenznummern und -namen beziehen sich auf die ursprüngliche Quellenliste, auch wenn Bilder ausgeschlossen sind. Stapel- und gruppierte Renderings liefern diesen Bericht nicht.
 
 ### Registrierung aktivieren
 
@@ -801,6 +801,8 @@ Werden Ergebnisse aus der Ausgabeliste herausgezogen, entstehen Bilddateien im F
 
 ## 14. Kommandozeilenschnittstelle
 
+`pip install openfocus` installiert KI-Modell, Gewichte sowie HEIC- und Kamera-RAW-Dekodierung. Unter Python 3.13+ entfällt `dtcwt`; dort bleibt der DTCWT-Eintrag mit Erklärung deaktiviert.
+
 OpenFocus kann ohne GUI laufen – nützlich für skriptgesteuerte Pipelines und CI. Das Konsolenskript `openfocus` (installiert durch `pip install openfocus`) und `python main.py` aus einem Checkout stellen dieselben Befehle bereit. Fusionsoptionen funktionieren in beiden Formen; die Unterbefehle sind:
 
 ```bash
@@ -907,6 +909,25 @@ openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o
 
 Das überträgt Fusion, Registrierung, Helligkeit, Reihenfolge, Schärfung und Kacheleinstellungen in das CLI-Rezept und bettet die Verarbeitungseinstellungen für die GUI ein. Bildausschlüsse, Ladeskalierung, Beschriftungen und Bearbeitungen werden nicht übertragen. Projekte mit Quelltransformationen, einschließlich Flat-Field-Korrekturen, müssen zuerst ihren korrigierten Quellstapel exportieren. Rezepte verlangen Ausgaben außerhalb ihrer Eingabeordner und akzeptieren niemals eine Eingabedatei als Ausgabe. Sie lehnen transiente Steueroptionen wie `--dry-run`, `--resume`, `--json` und `--config` ab. Eine Defektmaske wird als relativer Pfad mit einem SHA-256-Fingerabdruck gespeichert; eine fehlende oder geänderte Maske lässt den Lauf fehlschlagen.
 
+Gruppierungsoptionen lassen sich aus CLI-Argumenten übernehmen.
+
+In der GUI speichert **Datei → Verarbeitungsvorlage speichern** Einstellungen ohne Quellpfade. **Datei → Verarbeitungsvorlage anwenden** wendet eine Vorlage, ein Projekt oder ein projektgestütztes Rezept auf den aktuellen Stapel an, ohne dessen Eingaben, Transformationen, Ausschlüsse oder Beschriftungen zu ersetzen. Eine Vorlage ist selbst kein ausführbares Rezept. Die in einem Rezept eingebetteten GUI-Einstellungen sind unabhängig von seinen CLI-Optionen; wenn Sie die JSON-Datei bearbeiten, halten Sie beides konsistent.
+
+Dieselbe Headless-API ist ohne Import von PyQt verfügbar:
+
+```python
+from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
+
+capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
+capture_project_recipe("from-project.json", "session.ofproj",
+                       ["-i", "new_stack", "-o", "result/fused.png"])
+recipe = load_recipe("workflow.json")  # validiertes Dictionary mit relativen Pfaden
+save_recipe("workflow.json", recipe)
+exit_code = run_recipe("workflow.json", dry_run=True)  # False zum Verarbeiten
+```
+
+`capture_recipe` interpretiert seine Argumente als gewöhnliche CLI-Pfade relativ zum aktuellen Verzeichnis; `save_recipe` interpretiert gespeicherte Pfade relativ zum Rezept. Das Rezept zeichnet Einstellungen und Referenzen auf, einschließlich eines Inhaltsfingerabdrucks für eine ausdrücklich gewählte Sensordefektmaske. Es zeichnet nicht die Eingabepixel, Softwareversionen, Hardware oder Prüfsummen des Quellstapels auf; bewahren Sie diese separat auf, wenn Herkunft wichtig ist. Identische Einstellungen garantieren keine identischen Pixel über Softwareversionen, Treiber oder Geräte hinweg; GPU-neuronale Operationen können nicht deterministisch sein. Verwenden Sie `--cpu`, wenn eine CPU-Ausführung erforderlich ist, und bewahren Sie die installierte Software und die Eingaben auf.
+
 ### Retusche-Kontrollpunkte wiedergeben
 
 Bei jedem Speichern oder Laden werden die Basis und die verarbeiteten Quellen zuerst in einem abbrechbaren Hintergrundvorgang geprüft. Beim Speichern werden zusätzlich die aufgezeichneten Bearbeitungen wiedergegeben und das aktuelle Bild sowie der Rückgängig-/Wiederholen-Zustand geprüft, bevor der Kontrollpunkt veröffentlicht wird. Hat sich eine Quelle geändert und passt die Wiedergabe nicht mehr, schlägt das Speichern fehl und behält Ihre Bearbeitungen. Das Abbrechen eines Speicher- oder Ladevorgangs lässt Ihre aktuellen Bearbeitungen ebenfalls verfügbar. Reicht der Arbeitsspeicher für Prüfung oder Wiedergabe nicht aus, endet der Vorgang und lässt sowohl Ihre aktuellen Bearbeitungen als auch einen vorhandenen Kontrollpunkt unverändert.
@@ -999,7 +1020,7 @@ Exit-Codes: `0` Erfolg, `1` Verarbeitungsfehler, `2` Nutzungsfehler. Der Aufruf 
 - Für begrenzte starre Bewegung **OpenFocus (schnell)** wählen oder **Bei abgelehntem Bild stoppen** aktivieren, um früh fehlzuschlagen statt unausgerichtete Bilder zu akzeptieren
 - Die Verkleinerungsbreite in **Einstellungen → Erweiterte Einstellungen… → Registrierung** reduzieren
 - Sicherstellen, dass die Bilder ausreichend Kontrast und Merkmale haben
-- Unter **Einstellungen → Erweiterte Einstellungen… → Registrierung** die **Ausrichtungsdiagnose erfassen** aktivieren, erneut rendern und **Werkzeuge → Ausrichtungsdiagnose** für die betroffenen Bilder lesen
+- Unter **Einstellungen → Erweiterte Einstellungen… → Registrierung** die **Ausrichtungsdiagnose erfassen** aktivieren, erneut rendern und **Einstellungen → Erweiterte Einstellungen… → Registrierung → Ausrichtungsdiagnose** für die betroffenen Bilder lesen
 
 #### Langsame Verarbeitung
 

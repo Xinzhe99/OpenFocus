@@ -23,7 +23,7 @@ PACK = {
     'alignment_report_title': 'Diagnostica di allineamento', 'alignment_report_unavailable': 'Nessuna diagnostica per fotogramma per l’ultimo rendering. Attiva la raccolta e ripeti il rendering.',
     'alignment_report_frame': 'Fotogramma {number} — {name}: {method} — {status}',
     'alignment_report_reference': 'Riferimento', 'alignment_report_aligned': 'Allineato', 'alignment_report_fallback': 'Ripiego',
-    'alignment_report_cached': 'Allineamento: risultato in cache riutilizzato', 'alignment_report_available': 'Diagnostica per fotogramma disponibile in Strumenti',
+    'alignment_report_cached': 'Allineamento: risultato in cache riutilizzato', 'alignment_report_available': 'Diagnostica per fotogramma disponibile in Impostazioni → Impostazioni avanzate → Registrazione',
     'sensor_section': 'Pulizia del sensore',
     'sensor_source_missing': "La maschera richiede il percorso originale di ogni immagine. Ricarica le immagini originali o disattiva la maschera.",
     'sensor_source_orientation': "Impossibile usare la maschera con {path}: l’orientamento non è neutro o non è verificabile. Usa immagini orientate come il sensore, con orientamento EXIF neutro e una maschera corrispondente, oppure disattiva la maschera.",

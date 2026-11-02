@@ -265,23 +265,7 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-AI モデル、重み、HEIC とカメラ RAW のデコードはすべてこの 1 回のインストールに含まれます。Python 3.13 以降では `dtcwt` が省略され、DTCWT の項目は説明付きで無効になります。
-
-処理レシピはヘッドレス設定を保存して再利用・移行できます。
-
-```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
-openfocus recipe run workflow.json --dry-run
-openfocus recipe run workflow.json
-```
-
-レタッチのチェックポイントは、元の融合ベース画像と記録順の処理済みソースフレームを使ってヘッドレスで再生できます。
-
-```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
-```
-
-出力は PNG または TIFF で、8 ビット/16 ビット深度を保持します。再生時はベース、ソース画素、ジオメトリ、有効マスクを検証し、入力を上書きしません。
+詳しくは[CLI マニュアル](../USER_MANUAL_JA.md#14-コマンドラインインターフェース)を参照してください。
 
 <a id="community"></a>
 ## コミュニティとサポート
@@ -291,7 +275,6 @@ openfocus retouch replay edits.json --base fused.png --sources processed1.png pr
 - **引用** — [CITATION.cff](../../CITATION.cff)。各リリースは Zenodo に保存されています（[DOI](https://doi.org/10.5281/zenodo.23050823)）
 - **フィードバック** — 不具合、提案、アルゴリズムの改善は [issue](https://github.com/Xinzhe99/OpenFocus/issues) へ
 - **クレジット** — 各融合・位置合わせアルゴリズムは元の研究ライセンスに従います。StackMFF V3 は [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3) にあります
-- **セキュリティ報告** — [@ranas-mukminov](https://github.com/ranas-mukminov) が検出トークンの権限ウィンドウを報告しました（[PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9)）
 
 <a id="license"></a>
 ## ライセンス
@@ -299,8 +282,6 @@ openfocus retouch replay edits.json --base fused.png --sources processed1.png pr
 OpenFocus アプリケーションは [MIT ライセンス](../../LICENSE) で公開されています。
 
 **StackMFF シリーズの例外。** StackMFF 融合アルゴリズム——現在の StackMFF V3 および将来の同シリーズ版を含む——は OpenFocus プロジェクトに帰属し、プロジェクトが StackMFF シリーズのすべての権利を保持します。OpenFocus の一部として自分の画像や内部作業に使うことはできますが、他のオープンソースプロジェクトへのコピー、移植、移行には事前の書面による許可が必要です。
-
-ここに同梱された V3 と上流の v2.0 までのリリースは MIT ライセンスで配布されており、上記の制限によってその MIT 条件は変わりません。詳細は[サードパーティの通知](../../THIRD_PARTY_NOTICES.md)を参照してください。
 
 <a id="developing"></a>
 ## 開発

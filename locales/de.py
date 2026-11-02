@@ -23,7 +23,7 @@ PACK = {
     'alignment_report_title': 'Ausrichtungsdiagnose', 'alignment_report_unavailable': 'Für das letzte Rendern liegen keine Einzelbilddiagnosen vor. Erfassung aktivieren und erneut rendern.',
     'alignment_report_frame': 'Bild {number} — {name}: {method} — {status}',
     'alignment_report_reference': 'Referenz', 'alignment_report_aligned': 'Ausgerichtet', 'alignment_report_fallback': 'Ersatzverfahren',
-    'alignment_report_cached': 'Ausrichtung: Cache-Ergebnis wiederverwendet', 'alignment_report_available': 'Einzelbilddiagnose unter Werkzeuge verfügbar',
+    'alignment_report_cached': 'Ausrichtung: Cache-Ergebnis wiederverwendet', 'alignment_report_available': 'Einzelbilddiagnose unter Einstellungen → Erweiterte Einstellungen → Registrierung verfügbar',
     'sensor_section': 'Sensorbereinigung',
     'sensor_source_missing': "Die Defektmaske benötigt für jedes Bild den ursprünglichen Dateipfad. Laden Sie die Originalbilder erneut oder deaktivieren Sie die Maske.",
     'sensor_source_orientation': "Die Defektmaske kann für {path} nicht verwendet werden: Die Ausrichtung ist nicht neutral oder nicht prüfbar. Verwenden Sie Bilder in Sensorausrichtung mit neutraler EXIF-Ausrichtung und passender Maske oder deaktivieren Sie die Maske.",

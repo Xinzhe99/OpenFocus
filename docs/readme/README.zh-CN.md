@@ -266,23 +266,7 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-AI 模型、权重、HEIC 与相机 RAW 解码都包含在这一个安装包里。Python 3.13+ 会跳过 `dtcwt`，此时 DTCWT 项保持禁用并给出提示。
-
-处理配方可保存并复用无界面参数，也便于整体迁移：
-
-```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
-openfocus recipe run workflow.json --dry-run
-openfocus recipe run workflow.json
-```
-
-修饰检查点可用原始融合底图和当时处理后的源帧，按记录顺序无界面重放：
-
-```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
-```
-
-输出为 PNG 或 TIFF，并保留 8 位或 16 位深度；重放会校验底图、源像素、几何与有效区域蒙版，不会覆盖输入。
+详见[命令行手册](../USER_MANUAL_ZH.md#14-命令行界面)。
 
 <a id="community"></a>
 ## 社区与支持
@@ -292,7 +276,6 @@ openfocus retouch replay edits.json --base fused.png --sources processed1.png pr
 - **引用** — [CITATION.cff](../../CITATION.cff)；每个版本都归档在 Zenodo（[DOI](https://doi.org/10.5281/zenodo.23050823)）
 - **反馈** — 通过 [issue](https://github.com/Xinzhe99/OpenFocus/issues) 报告缺陷、提出想法或算法改进
 - **致谢** — 各融合/配准算法遵循其原始研究许可；StackMFF V3 位于 [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
-- **安全报告** — [@ranas-mukminov](https://github.com/ranas-mukminov) 报告了发现令牌的权限窗口问题（[PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9)）
 
 <a id="license"></a>
 ## 许可
@@ -300,8 +283,6 @@ openfocus retouch replay edits.json --base fused.png --sources processed1.png pr
 OpenFocus 应用以 [MIT 许可](../../LICENSE) 发布。
 
 **StackMFF 系列例外。** StackMFF 融合算法——目前包括 StackMFF V3 及未来任何同系列版本——归 OpenFocus 项目所有，项目保留 StackMFF 系列的全部权利。你可以在 OpenFocus 中使用它们处理自己的图像和内部工作；复制、移植或迁移到其他开源项目需要事先获得书面许可。
-
-此处随附的 V3 副本及上游截至 v2.0 的发行版均按 MIT 许可发布；上述限制不改变这些版本的 MIT 条款。详见[第三方许可声明](../../THIRD_PARTY_NOTICES.md)。
 
 <a id="developing"></a>
 ## 开发

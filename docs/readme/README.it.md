@@ -265,50 +265,7 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-Il modello IA, i suoi pesi, la decodifica HEIC e RAW della fotocamera sono tutti inclusi in quella singola installazione. `dtcwt` viene saltato da Python 3.13 in poi, dove la voce DTCWT resta disabilitata con un suggerimento.
-
-I punti di controllo di ritocco possono essere riprodotti senza interfaccia con la base fusa originale e i fotogrammi sorgente elaborati esatti, nell'ordine registrato:
-
-```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
-```
-
-Il punto di controllo verifica la base, i pixel sorgente, la geometria e le maschere di validità. Esporta i fotogrammi elaborati stessi (inclusi eventuali ritagli di allineamento o ROI), non lo stack di input non elaborato. La riproduzione rifiuta contesti incompatibili e non sovrascrive mai i propri input. L'output è PNG o TIFF e conserva la profondità a 8 o 16 bit.
-
-Le ricette catturano le impostazioni di elaborazione headless per riutilizzarle e spostarle:
-
-```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
-openfocus recipe run workflow.json --dry-run
-openfocus recipe run workflow.json
-```
-
-Il formato JSON versione 1 contiene `version`, un array `input`, `output` oppure `output_dir`, e un oggetto `options`. I percorsi sono relativi al file della ricetta; sposta la ricetta insieme ai suoi file di input per conservare tali relazioni. La creazione cattura le impostazioni della CLI e i parametri risolti dell'algoritmo. Campi sconosciuti, valori non validi e versioni non supportate vengono rifiutati. Una prova a vuoto controlla l'input senza scrivere file di risultato. I file di progetto esistenti restano invariati.
-
-Per catturare le impostazioni da un `.ofproj` esistente, seleziona esplicitamente il nuovo input e output. Le sorgenti originali del progetto non devono essere presenti per estrarre le impostazioni:
-
-```bash
-openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
-```
-
-Questo trasferisce nella ricetta CLI le impostazioni di fusione, registrazione, luminosità, ordine, nitidezza e tasselli, e incorpora le impostazioni di elaborazione per la GUI. Esclusioni dei fotogrammi, scala di caricamento, etichette e modifiche non vengono trasferite; prepara di conseguenza il nuovo stack di input. I progetti con trasformazioni della sorgente, comprese le correzioni di campo piatto applicate, devono prima esportare lo stack sorgente corretto. Le ricette richiedono output esterni alle cartelle di input e non accettano mai un file di input come output. Le opzioni di raggruppamento possono essere catturate dagli argomenti CLI.
-
-Nella GUI, File → Salva modello di elaborazione salva le impostazioni senza percorsi sorgente. File → Applica modello di elaborazione applica un modello, un progetto o una ricetta basata su progetto allo stack corrente senza sostituirne input, trasformazioni, esclusioni o etichette. Un modello non è di per sé una ricetta eseguibile. Le impostazioni GUI incorporate in una ricetta sono indipendenti dalle sue opzioni CLI; se modifichi il JSON, mantieni coerenti entrambe.
-
-La stessa API headless è disponibile senza importare PyQt:
-
-```python
-from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
-
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
-capture_project_recipe("from-project.json", "session.ofproj",
-                       ["-i", "new_stack", "-o", "result/fused.png"])
-recipe = load_recipe("workflow.json")  # dizionario validato con percorsi relativi
-save_recipe("workflow.json", recipe)
-exit_code = run_recipe("workflow.json", dry_run=True)  # usa False per elaborare
-```
-
-`capture_recipe` interpreta i suoi argomenti come normali percorsi CLI relativi alla directory corrente; `save_recipe` interpreta i percorsi memorizzati relativi alla ricetta. La ricetta registra impostazioni e riferimenti, inclusa un'impronta di contenuto per una maschera di difetti del sensore selezionata esplicitamente. Non registra i pixel di input, le versioni software, l'hardware né i checksum dello stack sorgente; conservali separatamente quando la provenienza è importante. Impostazioni identiche non garantiscono pixel identici tra versioni software, driver o dispositivi; le operazioni neurali su GPU possono essere non deterministiche. Usa `--cpu` quando è richiesta un'esecuzione su CPU e conserva il software installato e gli input.
+Consulta il [manuale della CLI](../USER_MANUAL_IT.md#14-interfaccia-a-riga-di-comando).
 
 <a id="community"></a>
 ## Community e supporto
@@ -317,7 +274,6 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # usa False per elaborare
 - **Citazione** — [CITATION.cff](../../CITATION.cff); ogni versione è archiviata su Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — apri una [issue](https://github.com/Xinzhe99/OpenFocus/issues) per bug, idee e lavoro sugli algoritmi
 - **Crediti** — ogni algoritmo di fusione e registrazione conserva la propria licenza di ricerca originale; StackMFF V3 si trova su [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
-- **Segnalazioni di sicurezza** — [@ranas-mukminov](https://github.com/ranas-mukminov) ha segnalato la finestra di permessi del token di scoperta ([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
 
 <a id="license"></a>
 ## Licenza
@@ -325,8 +281,6 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # usa False per elaborare
 L'applicazione OpenFocus è distribuita con [licenza MIT](../../LICENSE).
 
 **Eccezione della serie StackMFF.** Gli algoritmi di fusione StackMFF — attualmente StackMFF V3 e ogni futura edizione allo stato dell'arte — restano di proprietà del progetto OpenFocus, che ne detiene tutti i diritti. Puoi usarli all'interno di OpenFocus per le tue immagini e il tuo lavoro interno. Copiare, portare o migrare questi algoritmi in un altro progetto open source richiede un'autorizzazione scritta preventiva.
-
-La versione V3 inclusa qui e le versioni del progetto originale fino alla v2.0 sono state distribuite sotto licenza MIT; la restrizione precedente non ne modifica le condizioni MIT. Vedi le [note sui componenti di terze parti](../../THIRD_PARTY_NOTICES.md).
 
 <a id="developing"></a>
 ## Sviluppo

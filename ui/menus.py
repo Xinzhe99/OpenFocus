@@ -233,13 +233,6 @@ def setup_menus(window: QMainWindow) -> None:
     # Rendering group | analysis group | annotation group
     batch_menu.addSeparator()
 
-    alignment_report = QAction(trans.t('alignment_report_title'), window)
-    alignment_report.setProperty('trans_key', 'alignment_report_title')
-    alignment_report.triggered.connect(window.render_manager.show_alignment_report)
-    batch_menu.addAction(alignment_report)
-    window.ui_objs['alignment_report_title'] = alignment_report
-
-
     depth_action = QAction(trans.t('menu_depth_map'), window)
     depth_action.triggered.connect(window.show_depth_map_dialog)
     depth_action.setProperty("trans_key", 'menu_depth_map')

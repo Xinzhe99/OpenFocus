@@ -265,50 +265,7 @@ pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
 
-El modelo de IA, sus pesos, la decodificación HEIC y RAW de cámara están incluidos en esa única instalación. En Python 3.13 y posteriores se omite `dtcwt` y la entrada DTCWT queda deshabilitada con una explicación emergente.
-
-Los puntos de control de retoque se pueden reproducir sin interfaz con la base fusionada original y los fotogramas de origen procesados exactos, en el orden registrado:
-
-```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
-```
-
-El punto de control verifica la base, los píxeles de origen, la geometría y las máscaras de validez. Exporta los fotogramas procesados (incluido cualquier recorte de alineación o ROI), no la pila de entrada sin procesar. La reproducción rechaza contextos incompatibles y nunca sobrescribe sus entradas. La salida es PNG o TIFF y conserva la profundidad de 8 o 16 bits.
-
-Las recetas guardan ajustes de procesamiento sin interfaz para reutilizarlos y trasladarlos:
-
-```bash
-openfocus recipe create workflow.json -i ./stack_folder -o ./result/fused.png -m dct --cpu
-openfocus recipe run workflow.json --dry-run
-openfocus recipe run workflow.json
-```
-
-El formato JSON de la versión 1 contiene `version`, un arreglo `input`, `output` u `output_dir`, y un objeto `options`. Las rutas son relativas al archivo de receta; mueve la receta junto con sus archivos de entrada para conservar esas relaciones. La creación captura los ajustes de la CLI y los parámetros resueltos del algoritmo. Se rechazan campos desconocidos, valores inválidos y versiones no compatibles. Una ejecución de prueba comprueba la entrada sin escribir archivos de resultado. Los archivos de proyecto existentes no se modifican.
-
-Para capturar ajustes de un `.ofproj` existente, selecciona explícitamente la nueva entrada y salida. No es necesario que las fuentes originales del proyecto estén presentes para extraer los ajustes:
-
-```bash
-openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
-```
-
-Esto transfiere a la receta de la CLI los ajustes de fusión, registro, brillo, orden, nitidez y mosaicos, e incrusta los ajustes de procesamiento para la interfaz. Las exclusiones de fotogramas, la escala de carga, las etiquetas y las ediciones no se transfieren; prepara la nueva pila de entrada en consecuencia. Los proyectos con transformaciones de origen, incluidas las correcciones de campo plano aplicadas, deben exportar primero su pila de origen corregida. Las recetas exigen que las salidas estén fuera de sus carpetas de entrada y nunca aceptan un archivo de entrada como salida. Las opciones de agrupación se pueden capturar desde argumentos de la CLI.
-
-En la interfaz, Archivo → Guardar plantilla de procesamiento guarda los ajustes sin rutas de origen. Archivo → Aplicar plantilla de procesamiento aplica una plantilla, un proyecto o una receta respaldada por un proyecto a la pila actual sin sustituir sus entradas, transformaciones, exclusiones ni etiquetas. Una plantilla no es en sí misma una receta ejecutable. Los ajustes de interfaz incrustados en una receta son independientes de sus opciones de CLI; si editas el JSON, mantén ambos coherentes.
-
-La misma API sin interfaz está disponible sin importar PyQt:
-
-```python
-from core.recipes import capture_project_recipe, capture_recipe, load_recipe, save_recipe, run_recipe
-
-capture_recipe("workflow.json", ["-i", "stack_folder", "-o", "result/fused.png", "-m", "dct"])
-capture_project_recipe("from-project.json", "session.ofproj",
-                       ["-i", "new_stack", "-o", "result/fused.png"])
-recipe = load_recipe("workflow.json")  # diccionario validado con rutas relativas
-save_recipe("workflow.json", recipe)
-exit_code = run_recipe("workflow.json", dry_run=True)  # usa False para procesar
-```
-
-`capture_recipe` interpreta sus argumentos como rutas de CLI normales relativas al directorio actual; `save_recipe` interpreta las rutas guardadas relativas a la receta. La receta registra ajustes y referencias, incluida una huella de contenido para una máscara de defectos de sensor seleccionada explícitamente. No registra los píxeles de entrada, las versiones del software, el hardware ni las sumas de comprobación de la pila de origen; guárdalos por separado cuando la procedencia sea importante. Ajustes idénticos no garantizan píxeles idénticos entre versiones de software, controladores o dispositivos; las operaciones neuronales en GPU pueden no ser deterministas. Usa `--cpu` cuando necesites una ejecución en CPU y conserva el software instalado y las entradas.
+Consulta el [manual de la CLI](../USER_MANUAL_ES.md#14-interfaz-de-línea-de-comandos).
 
 <a id="community"></a>
 ## Comunidad y soporte
@@ -317,7 +274,6 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # usa False para procesar
 - **Citación** — [CITATION.cff](../../CITATION.cff); cada versión se archiva en Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Comentarios** — abre un [issue](https://github.com/Xinzhe99/OpenFocus/issues) para fallos, ideas y mejoras de algoritmos
 - **Créditos** — cada algoritmo de fusión y registro conserva su licencia de investigación original; StackMFF V3 está en [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
-- **Informes de seguridad** — [@ranas-mukminov](https://github.com/ranas-mukminov) notificó la ventana de permisos del token de descubrimiento ([PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9))
 
 <a id="license"></a>
 ## Licencia
@@ -325,8 +281,6 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # usa False para procesar
 La aplicación OpenFocus se distribuye bajo la [licencia MIT](../../LICENSE).
 
 **Excepción de la serie StackMFF.** Los algoritmos de fusión StackMFF —actualmente StackMFF V3 y cualquier futura edición de última generación— siguen siendo propiedad del proyecto OpenFocus, que conserva todos los derechos sobre la serie StackMFF. Puedes usarlos como parte de OpenFocus para tus propias imágenes y trabajo interno. Copiar, portar o migrar estos algoritmos a otro proyecto de código abierto requiere permiso previo por escrito.
-
-La versión de V3 incluida aquí y las versiones del proyecto original hasta la v2.0 se distribuyeron bajo MIT; la restricción anterior no modifica sus condiciones MIT. Consulta los [avisos de terceros](../../THIRD_PARTY_NOTICES.md).
 
 <a id="developing"></a>
 ## Desarrollo

@@ -107,6 +107,88 @@ def test_v1_luma_matches_the_reference_network():
     assert np.array_equal(fused[:, :, 0], fused[:, :, 1])
     assert np.array_equal(fused[:, :, 1], fused[:, :, 2])
 
+@pytest.mark.parametrize("depth,height,width", [(2, 32, 48), (3, 64, 80), (5, 64, 96)])
+def test_v1_depth_sliced_inference_matches_native_cpu(monkeypatch, depth, height, width):
+    """The macOS GPU path must preserve the trained model's output."""
+    from core.models.stackmff_v1 import network
+
+    torch.manual_seed(153)
+    model = network.StackMFF().eval()
+    checkpoint = torch.load(weights_path("stackmff_final.pth"), map_location="cpu")
+    model.load_state_dict({key[7:] if key.startswith("module.") else key: value
+                           for key, value in checkpoint.items()})
+    source = torch.rand((1, 1, depth, height, width))
+    with torch.inference_mode():
+        monkeypatch.setattr(network, "_mps_26", lambda _x: False)
+        expected = model(source)
+        monkeypatch.setattr(network, "_mps_26", lambda _x: True)
+        actual = model(source)
+    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+
+
+def test_v1_macos26_mps_matches_cpu_when_available():
+    """Exercise the real GPU backend on an affected Mac when available."""
+    from core.models.stackmff_v1 import network
+
+    if not network._MACOS_26 or not torch.backends.mps.is_available():
+        pytest.skip("requires macOS 26 with an available MPS device")
+    torch.manual_seed(291)
+    model = network.StackMFF().eval()
+    checkpoint = torch.load(weights_path("stackmff_final.pth"), map_location="cpu")
+    model.load_state_dict({key[7:] if key.startswith("module.") else key: value
+                           for key, value in checkpoint.items()})
+    source = torch.rand((1, 1, 3, 64, 80))
+    with torch.inference_mode():
+        expected = model(source)
+        actual = model.to("mps")(source.to("mps"))
+        torch.mps.synchronize()
+    assert actual.device.type == "mps"
+    torch.testing.assert_close(actual.cpu(), expected, rtol=1e-3, atol=1e-4)
+
+
+def test_v1_macos26_rejects_insufficient_mps_memory_before_loading(monkeypatch):
+    from core.models.stackmff_v1 import network
+    from core.resource_policy import ResourceLimitError
+
+    stackmff_v1.common.ensure_torch()
+    monkeypatch.setattr(network, '_MACOS_26', True)
+    monkeypatch.setattr(stackmff_v1.common, 'resolve_device',
+                        lambda _use_gpu: torch.device('mps'))
+    monkeypatch.setattr(torch.mps, 'empty_cache', lambda: None, raising=False)
+    monkeypatch.setattr(torch.mps, 'recommended_max_memory',
+                        lambda: 3 * 1024 ** 3, raising=False)
+    monkeypatch.setattr(torch.mps, 'driver_allocated_memory',
+                        lambda: 1024 ** 3, raising=False)
+    monkeypatch.setattr(stackmff_v1, '_model_and_device',
+                        lambda *_args: pytest.fail('model loaded over GPU budget'))
+    with pytest.raises(ResourceLimitError, match='GPU memory'):
+        stackmff_v1._prepare_inference(
+            _stack(count=6, size=(128, 128)), weights_path('stackmff_final.pth'), True)
+
+
+def test_v1_macos26_admits_small_stack_with_limited_memory(monkeypatch):
+    from core.models.stackmff_v1 import network
+    from core import resource_policy
+
+    stackmff_v1.common.ensure_torch()
+    monkeypatch.setattr(network, '_MACOS_26', True)
+    monkeypatch.setattr(stackmff_v1.common, 'resolve_device',
+                        lambda _use_gpu: torch.device('mps'))
+    monkeypatch.setattr(torch.mps, 'empty_cache', lambda: None, raising=False)
+    monkeypatch.setattr(torch.mps, 'recommended_max_memory',
+                        lambda: 3 * 1024 ** 3, raising=False)
+    monkeypatch.setattr(torch.mps, 'driver_allocated_memory',
+                        lambda: 1024 ** 3, raising=False)
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=3 * 1024 ** 3, total_ram=8 * 1024 ** 3,
+        physical_cores=4, logical_cpus=4, device_kind='MPS')
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda _kind: snapshot)
+    monkeypatch.setattr(stackmff_v1, '_model_and_device',
+                        lambda *_args: (object(), torch.device('mps')))
+    _, _, plan = stackmff_v1._prepare_inference(
+        _stack(count=3, size=(64, 80)), weights_path('stackmff_final.pth'), True)
+    assert plan.device_kind == 'MPS'
+
 
 def test_v2_hard_matches_the_reference_network_exactly():
     frames = _stack()

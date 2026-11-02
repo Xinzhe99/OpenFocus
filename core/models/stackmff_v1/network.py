@@ -7,10 +7,79 @@ handling live in OpenFocus (`fusion_methods/`).
 # -*- coding: utf-8 -*-
 # @Author  : XinZhe Xie
 # @University  : ZheJiang University
+import platform
+
 import torch
 from torch import nn
-from torch.nn import Module, Sequential,Conv3d, ConvTranspose3d, BatchNorm3d, MaxPool3d,ReLU
+from torch.nn import Module, Sequential, BatchNorm3d, ReLU
 import torch.nn.functional as F
+
+
+_MACOS_26 = platform.system() == 'Darwin' and platform.mac_ver()[0].split('.')[0] == '26'
+
+
+def _mps_26(x):
+    return _MACOS_26 and x.device.type == 'mps'
+
+
+def _planes(x):
+    """Fold depth into the batch for spatial 2D operations."""
+    n, c, d, h, w = x.shape
+    return x.permute(0, 2, 1, 3, 4).reshape(n * d, c, h, w)
+
+
+def _volume(x, n, d):
+    return x.reshape(n, d, *x.shape[1:]).permute(0, 2, 1, 3, 4)
+
+
+class Conv3d(nn.Conv3d):
+    def forward(self, x):
+        if not _mps_26(x):
+            return super().forward(x)
+
+        # Sum one spatial convolution per depth offset.
+        n, _, depth, _, _ = x.shape
+        depth_pad = self.padding[0]
+        depth_stride = self.stride[0]
+        depth_dilation = self.dilation[0]
+        out_depth = (depth + 2 * depth_pad - depth_dilation *
+                     (self.kernel_size[0] - 1) - 1) // depth_stride + 1
+        padded = F.pad(x, (0, 0, 0, 0, depth_pad, depth_pad)) if depth_pad else x
+        result = None
+        for offset in range(self.kernel_size[0]):
+            start = offset * depth_dilation
+            planes = _planes(padded[:, :, start:start + out_depth * depth_stride:depth_stride])
+            part = F.conv2d(planes, self.weight[:, :, offset],
+                            self.bias if offset == 0 else None,
+                            self.stride[1:], self.padding[1:],
+                            self.dilation[1:], self.groups)
+            result = part if result is None else result + part
+        return _volume(result, n, out_depth)
+
+
+class ConvTranspose3d(nn.ConvTranspose3d):
+    def forward(self, x, output_size=None):
+        if not _mps_26(x):
+            return super().forward(x, output_size)
+        if output_size is not None:
+            raise ValueError('Explicit output_size is unsupported by the MPS decoder')
+        # The decoder's depth kernel and stride are both one.
+        n, _, depth, _, _ = x.shape
+        result = F.conv_transpose2d(
+            _planes(x), self.weight[:, :, 0], self.bias, self.stride[1:],
+            self.padding[1:], self.output_padding[1:], self.groups,
+            self.dilation[1:])
+        return _volume(result, n, depth)
+
+
+class MaxPool3d(nn.MaxPool3d):
+    def forward(self, x):
+        if not _mps_26(x):
+            return super().forward(x)
+        # All four pools operate only on the spatial dimensions.
+        n, _, depth, _, _ = x.shape
+        result = F.max_pool2d(_planes(x), 2, 2)
+        return _volume(result, n, depth)
 
 
 class h_sigmoid(nn.Module):
@@ -89,12 +158,12 @@ class CoordAtt_3d(nn.Module):
         self.pool_w = AvgPool3d_w()
 
         mip = max(threshold, inp // reduction)
-        self.conv1 = nn.Conv3d(inp, mip, kernel_size=1, stride=1, padding=0)
+        self.conv1 = Conv3d(inp, mip, kernel_size=1, stride=1, padding=0)
         self.bn1 = nn.BatchNorm3d(mip)
         self.act = h_swish()
-        self.conv_d = nn.Conv3d(mip, oup, kernel_size=1, stride=1, padding=0)
-        self.conv_h = nn.Conv3d(mip, oup, kernel_size=1, stride=1, padding=0)
-        self.conv_w = nn.Conv3d(mip, oup, kernel_size=1, stride=1, padding=0)
+        self.conv_d = Conv3d(mip, oup, kernel_size=1, stride=1, padding=0)
+        self.conv_h = Conv3d(mip, oup, kernel_size=1, stride=1, padding=0)
+        self.conv_w = Conv3d(mip, oup, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
         identity = x
