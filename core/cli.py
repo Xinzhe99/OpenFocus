@@ -626,7 +626,8 @@ def _depth_out_path(args, fused_out: str) -> str:
 def _validate_alignment_report_path(args, paths=()):
     from utils.path_identity import same_path
 
-    protected = [*args.input, *paths, args.output, args.json, args.dust_map, args.config]
+    protected = [*args.input, *paths, args.output, args.json, args.dust_map,
+                 args.defect_mask_path, args.config]
     if args.depth_map and args.output:
         protected.append(_depth_out_path(args, args.output))
     if any(same_path(args.alignment_report, path) for path in protected):

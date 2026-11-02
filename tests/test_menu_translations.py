@@ -45,12 +45,15 @@ def _menu_window(qapp):
         "delete_output_labels": staticmethod(stub),
         "delete_all_labels": staticmethod(stub),
     })()
+    window.render_manager = type("R", (), {
+        "show_alignment_report": staticmethod(stub),
+    })()
     for name in (
             "open_folder_dialog", "open_video_dialog", "open_project_dialog",
             "save_project_dialog", "open_template_dialog", "save_template_dialog",
             "rebuild_recent_menu", "undo", "redo",
             "rotate_stack", "flip_stack", "resize_all_images",
-            "show_retouch_dialog", "show_batch_processing_dialog",
+            "show_retouch_dialog", "show_standalone_retouch", "show_batch_processing_dialog",
             "show_compare_dialog", "show_depth_map_dialog",
             "show_dust_map_dialog", "show_scale_bar_dialog",
             "remove_scale_bar", "show_advanced_settings_dialog",
