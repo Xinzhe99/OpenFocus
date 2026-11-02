@@ -93,6 +93,45 @@ def test_selection_change_during_review_does_not_discard_results(qapp, monkeypat
     assert window.file_list.item(1).toolTip()
 
 
+@pytest.mark.parametrize("timing", ["before", "during", "after"])
+def test_excluded_reference_never_suggests_its_successor(qapp, monkeypatch, timing):
+    import core.stack_review
+    entered = threading.Event()
+    release = threading.Event()
+
+    def analyze(frames, cancel):
+        entered.set()
+        release.wait(5)
+        return [{"index": 1, "reference_index": 0, "difference": 0.0},
+                {"index": 2, "reference_index": 1, "difference": 0.0}]
+
+    monkeypatch.setattr(core.stack_review, "analyze_frames", analyze)
+    window, manager, panel = _window()
+    if timing == "before":
+        window.file_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    panel.btn_review_stack.click()
+    try:
+        assert entered.wait(5)
+        if timing == "during":
+            window.file_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    finally:
+        release.set()
+    _finish(qapp, manager)
+    if timing == "after":
+        assert window.file_list.item(1).toolTip()
+        window.file_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    assert window.excluded_frames == {0}
+    assert not window.file_list.item(1).toolTip()
+    assert window.file_list.item(2).toolTip()
+    window.file_list.item(1).setCheckState(Qt.CheckState.Unchecked)
+    assert window.excluded_frames == {0, 1}
+    assert not window.file_list.item(2).toolTip()
+    assert panel.review_status.text() == trans.t("stack_review_none")
+    window.file_list.item(0).setCheckState(Qt.CheckState.Checked)
+    window.file_list.item(1).setCheckState(Qt.CheckState.Checked)
+    assert window.file_list.item(1).toolTip()
+    assert window.file_list.item(2).toolTip()
+
 def test_reorder_and_replacement_discard_stale_results(qapp, monkeypatch):
     import core.stack_review
     entered = threading.Event()

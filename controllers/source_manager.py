@@ -104,6 +104,12 @@ class SourceManager(QObject):
         worker.deleteLater()
         self.decorate_source_items()
 
+    def _visible_review_results(self):
+        excluded = getattr(self.window, "excluded_frames", set())
+        return [entry for entry in self._review_results
+                if entry["index"] not in excluded
+                and entry["reference_index"] not in excluded]
+
     def refresh_review_text(self):
         panel = getattr(self.window, "right_panel_components", None)
         if panel is None:
@@ -113,8 +119,12 @@ class SourceManager(QObject):
             "stack_review_cancel" if busy else "stack_review_button"))
         panel.btn_review_stack.setToolTip(trans.t("stack_review_hint"))
         panel.btn_review_stack.setEnabled(busy or len(self.window.raw_images) >= 2)
-        status = trans.t(self._review_status_key) if self._review_status_key else ""
-        panel.review_status.setText(status.format(count=len(self._review_results),
+        status_key = self._review_status_key
+        visible = self._visible_review_results()
+        if status_key in ("stack_review_found", "stack_review_none"):
+            status_key = "stack_review_found" if visible else "stack_review_none"
+        status = trans.t(status_key) if status_key else ""
+        panel.review_status.setText(status.format(count=len(visible),
                                                   error=self._review_error))
 
     def _invalidate_stale_review(self):
@@ -815,7 +825,7 @@ class SourceManager(QObject):
         position tag (UserRole), so a drag-drop can be mapped back to data."""
         window = self.window
         self._invalidate_stale_review()
-        findings = {entry["index"]: entry for entry in self._review_results}
+        findings = {entry["index"]: entry for entry in self._visible_review_results()}
         excluded = getattr(window, "excluded_frames", set())
         blocked = window.file_list.blockSignals(True)
         for row in range(window.file_list.count()):
@@ -882,6 +892,7 @@ class SourceManager(QObject):
         window.alignment_request_key = None
         window.transform_manager.reset_roi_selection()
         self._refresh_source_count()
+        self.decorate_source_items()
         if hasattr(window, "_mark_project_dirty"):
             window._mark_project_dirty()
 

@@ -84,7 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", "-i", nargs="+", required=True,
                         help="Image folder(s), video file(s), or a list of image files")
     parser.add_argument("--suggest-duplicates", action="store_true",
-                        help="Review adjacent image files and print JSON suggestions without modifying the stack")
+                        help="Report JSON suggestions for adjacent files in input order; "
+                             "reconsider suggestions if their reference is excluded")
     parser.add_argument("--output", "-o", default=None,
                         help="Output file for a single stack (default: fused.png)")
     parser.add_argument("--output-dir", "-d", default=None,
