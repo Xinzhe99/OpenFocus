@@ -202,11 +202,11 @@ class TestAlignCache:
 class TestAlignCacheIsNotOnTheGuiThread:
     """Reading a cache hit used to decode every PNG synchronously in the GUI."""
 
-    def _worker(self, tmp_path, frames, request):
+    def _worker(self, tmp_path, frames, request, parameters=None):
         from core.workers import RenderWorker
         worker = RenderWorker(
             frames, algorithm='guided_filter', alignment='homography', need_fusion=False,
-            use_gpu=False, disk_cache=request,
+            registration_parameters=parameters, use_gpu=False, disk_cache=request,
         )
         return worker
 
@@ -220,7 +220,11 @@ class TestAlignCacheIsNotOnTheGuiThread:
             cv2.imwrite(str(folder / f"f{i}.png"), frame)
         names = sorted(os.listdir(folder))
         aligned = [np.full((8, 8, 3), 9, np.uint8) for _ in names]
-        align_cache.save_aligned(str(folder), names, aligned, ('homography',), 1024)
+        writer = self._worker(tmp_path, frames, {
+            "mode": "save", "folder": str(folder), "filenames": names,
+            "align_options": ('homography',), "downscale_width": 1024,
+        })
+        writer._save_cached_alignment(aligned)
 
         worker = self._worker(tmp_path, frames, {
             "mode": "load", "folder": str(folder), "filenames": names,
@@ -259,18 +263,17 @@ class TestAlignCacheIsNotOnTheGuiThread:
             "align_options": ('homography',), "downscale_width": 1024,
         })
         loader._save_cached_alignment(frames)
-        assert align_cache.load_aligned(str(folder), names, ('homography',),
-                                        1024) is None
+        assert loader._load_cached_alignment() is None
 
         saver = self._worker(tmp_path, frames, {
             "mode": "save", "folder": str(folder), "filenames": names,
             "align_options": ('homography',), "downscale_width": 1024,
         })
         saver._save_cached_alignment(frames)
-        saved = align_cache.load_aligned(str(folder), names, ('homography',), 1024)
+        saved = loader._load_cached_alignment()
         assert saved is not None and np.array_equal(saved[0], frames[0])
 
-    def test_reused_flag_distinguishes_load_from_compute(self, tmp_path):
+    def test_reused_flag_distinguishes_load_from_compute(self, tmp_path, monkeypatch):
         """A cache hit must be reportable as a hit, not as a fresh alignment."""
         folder = tmp_path / "stack"
         folder.mkdir()
@@ -280,17 +283,44 @@ class TestAlignCacheIsNotOnTheGuiThread:
             frames.append(frame)
             cv2.imwrite(str(folder / f"f{i}.png"), frame)
         names = sorted(os.listdir(folder))
-        align_cache.save_aligned(str(folder), names, frames, ('homography',), 1024)
+        saver = self._worker(tmp_path, frames, {
+            "mode": "save", "folder": str(folder), "filenames": names,
+            "align_options": ('homography',), "downscale_width": 1024,
+        })
+        saver._save_cached_alignment(frames)
 
         worker = self._worker(tmp_path, frames, {
             "mode": "load", "folder": str(folder), "filenames": names,
             "align_options": ('homography',), "downscale_width": 1024,
         })
         assert worker.alignment_reused is False
-        assert worker._load_cached_alignment() is not None
-        # The flag is set by run() when the load succeeded, not by the helper;
-        # what matters here is that a fresh worker starts as "not reused".
+        monkeypatch.setattr(worker, '_run_registration', lambda *args, **kwargs:
+                            pytest.fail('registration ran despite a valid cache'))
+        worker._run_admitted()
+        assert worker.alignment_reused is True
         assert worker.alignment_computed is False
+
+    def test_worker_cache_rejects_changed_parameters_and_decoded_pixels(self, tmp_path):
+        folder = tmp_path / 'stack'
+        folder.mkdir()
+        frames = [np.full((8, 8, 3), i * 20, np.uint8) for i in range(2)]
+        for i, frame in enumerate(frames):
+            cv2.imwrite(str(folder / f'f{i}.png'), frame)
+        names = sorted(os.listdir(folder))
+        request = {'folder': str(folder), 'filenames': names,
+                   'align_options': ('homography',), 'downscale_width': 1024}
+        saver = self._worker(tmp_path, frames, {**request, 'mode': 'save'})
+        saver._save_cached_alignment(frames)
+
+        same = self._worker(tmp_path, frames, {**request, 'mode': 'load'})
+        assert same._load_cached_alignment() is not None
+        changed_policy = self._worker(tmp_path, frames, {**request, 'mode': 'load'},
+                                      {'failure_policy': 'fail'})
+        assert changed_policy._load_cached_alignment() is None
+        changed_frames = [frame.copy() for frame in frames]
+        changed_frames[0][0, 0, 0] = 1
+        changed_pixels = self._worker(tmp_path, changed_frames, {**request, 'mode': 'load'})
+        assert changed_pixels._load_cached_alignment() is None
 
     def test_a_failed_write_never_fails_the_render(self, tmp_path, monkeypatch):
         folder = tmp_path / "stack"
