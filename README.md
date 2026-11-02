@@ -294,6 +294,18 @@ openfocus -i ./stack_folder -o ./result/fused.png
 
 The AI model, its weights, HEIC and camera-RAW decoding are all in that single install. `dtcwt` is skipped on Python 3.13+, where the DTCWT entry stays disabled with a tooltip.
 
+Retouch checkpoints can be replayed headlessly with the original fused base
+and the exact processed source frames, in their recorded order:
+
+```bash
+openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
+```
+
+The checkpoint verifies the base, source pixels, geometry and validity masks.
+Export the processed frames themselves (including any alignment or ROI crop),
+not the unprocessed input stack. Replay rejects incompatible context and never
+overwrites its inputs. Output is PNG or TIFF, preserving 8- or 16-bit depth.
+
 Recipes capture headless processing settings for reuse and relocation:
 
 ```bash
