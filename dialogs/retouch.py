@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 
 from locales import trans
 from utils.image_utils import thumbnail_bgr, to_display_uint8
-from utils.retouch import RetouchDocument
+from utils.retouch import RetouchDocument, adjust_tones
 
 _SHARPNESS_WORKERS = set()
 
@@ -166,6 +166,129 @@ class _SharpnessWorker(QThread):
             self.ready.emit(self.request_id, maps)
         except Exception as exc:
             self.failed.emit(self.request_id, str(exc))
+
+
+class _ToneWorker(QThread):
+    def __init__(self, doc, exposure, contrast):
+        super().__init__()
+        self.doc = doc
+        self.exposure = exposure
+        self.contrast = contrast
+        self.status = ""
+        self.error = ""
+
+    def run(self):
+        try:
+            self.status = self.doc.adjust_tones(
+                self.exposure, self.contrast, self.isInterruptionRequested)
+        except Exception as exc:
+            self.error = str(exc)
+
+
+class _ToneDialog(QDialog):
+    """Preview a sampled current result, then commit one history entry."""
+
+    def __init__(self, doc, parent=None):
+        super().__init__(parent)
+        self.doc = doc
+        self.worker = None
+        self.setWindowTitle(trans.t("retouch_tones_title"))
+        self.setModal(True)
+        self.resize(600, 660)
+        stride = max(1, int(np.ceil(max(doc.height, doc.width) / 768)))
+        self.sample = np.ascontiguousarray(doc.working[::stride, ::stride])
+        layout = QVBoxLayout(self)
+        self.preview = QLabel()
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setMinimumSize(320, 240)
+        layout.addWidget(self.preview, 1)
+        note = QLabel(trans.t("retouch_tones_hint"))
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.before = QCheckBox(trans.t("retouch_before_short"))
+        self.before.toggled.connect(self._refresh_preview)
+        layout.addWidget(self.before)
+        self.exposure = _NumberRow(trans.t("retouch_exposure_amount"), -200, 200, 0)
+        self.contrast = _NumberRow(trans.t("retouch_tones_contrast"), -100, 100, 0)
+        for row in (self.exposure, self.contrast):
+            row.valueChanged.connect(self._refresh_preview)
+            layout.addWidget(row)
+        buttons = QHBoxLayout()
+        self.apply_button = QPushButton(trans.t("btn_ok"))
+        self.apply_button.clicked.connect(self._apply)
+        self.cancel_button = QPushButton(trans.t("btn_cancel"))
+        self.cancel_button.clicked.connect(self.reject)
+        buttons.addStretch(1)
+        buttons.addWidget(self.apply_button)
+        buttons.addWidget(self.cancel_button)
+        layout.addLayout(buttons)
+        self._refresh_preview()
+
+    def _refresh_preview(self, *_args):
+        image = self.sample if self.before.isChecked() else adjust_tones(
+            self.sample, self.exposure.value() / 100.0, self.contrast.value() / 100.0)
+        display = to_display_uint8(image)
+        if display.ndim == 3 and display.shape[2] == 4:
+            display = display[..., :3]
+        pixmap = QPixmap.fromImage(_qimage_from_bgr(display))
+        self.preview.setPixmap(pixmap.scaled(
+            self.preview.size(), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "contrast"):
+            self._refresh_preview()
+
+    def _apply(self):
+        if self.worker is not None:
+            return
+        if self.exposure.value() == 0 and self.contrast.value() == 0:
+            self.accept()
+            return
+        if self.doc.working.nbytes > self.doc.history.max_bytes:
+            QMessageBox.warning(self, trans.t("msg_warning"),
+                                trans.t("retouch_tones_oversize"))
+            return
+        self.exposure.setEnabled(False)
+        self.contrast.setEnabled(False)
+        self.before.setEnabled(False)
+        self.apply_button.setEnabled(False)
+        self.worker = _ToneWorker(self.doc, self.exposure.value() / 100.0,
+                                  self.contrast.value() / 100.0)
+        self.worker.finished.connect(self._finished)
+        self.worker.start()
+
+    def _finished(self):
+        worker = self.worker
+        self.worker = None
+        if worker.error:
+            QMessageBox.critical(self, trans.t("msg_error"), worker.error)
+            self.exposure.setEnabled(True)
+            self.contrast.setEnabled(True)
+            self.before.setEnabled(True)
+            self.apply_button.setEnabled(True)
+            self.cancel_button.setEnabled(True)
+            self.cancel_button.setText(trans.t("btn_cancel"))
+        elif worker.status in ("committed", "empty"):
+            self.accept()
+        else:
+            super().reject()
+
+    def reject(self):
+        if self.worker is not None:
+            self.worker.requestInterruption()
+            self.cancel_button.setEnabled(False)
+            self.cancel_button.setText(trans.t("compare_stopping"))
+        else:
+            super().reject()
+
+    def closeEvent(self, event):
+        if self.worker is not None:
+            self.reject()
+            event.ignore()
+        else:
+            super().closeEvent(event)
 
 
 class _RetouchCanvas(QWidget):
@@ -603,6 +726,9 @@ class RetouchDialog(QDialog):
         self.lbl_heat_legend.setVisible(False)
         side.addWidget(self.lbl_heat_legend)
 
+        self.btn_tones = QPushButton(trans.t("retouch_tones_title") + "…")
+        self.btn_tones.clicked.connect(self._adjust_tones)
+        side.addWidget(self.btn_tones)
         self.btn_restore_all = QPushButton(trans.t("retouch_restore_all"))
         self.btn_restore_all.clicked.connect(self._restore_all)
         side.addWidget(self.btn_restore_all)
@@ -714,7 +840,7 @@ class RetouchDialog(QDialog):
             self.btn_prev, self.btn_next,
             self.rb_source, self.rb_restore, self.rb_exposure, self.num_exposure, self.num_diameter,
             self.num_hardness, self.num_opacity, self.chk_sharp,
-            self.btn_restore_all, self.btn_apply, self.btn_change,
+            self.btn_restore_all, self.btn_tones, self.btn_apply, self.btn_change,
             self.btn_fullscreen,
         ]
 
@@ -1253,6 +1379,17 @@ class RetouchDialog(QDialog):
         self._update_dirty_ui()
         self._update_controls()
 
+    def _adjust_tones(self) -> None:
+        if self.doc.stroke_active or self.preview_mode is not None:
+            return
+        if _ToneDialog(self.doc, self).exec() == QDialog.DialogCode.Accepted:
+            self._refresh_result_display()
+            if self.doc.history.evicted and not self._eviction_announced:
+                self._eviction_announced = True
+                self._set_notice(trans.t("retouch_history_evicted"))
+            self._update_dirty_ui()
+            self._update_controls()
+
     def _restore_all(self) -> None:
         if (self.doc.stroke_active or self.preview_mode is not None
                 or not self.doc.is_dirty):
@@ -1294,6 +1431,7 @@ class RetouchDialog(QDialog):
         self._sync_tool_buttons()
         self.btn_undo.setEnabled(self.doc.can_undo and not blocked and not preview)
         self.btn_redo.setEnabled(self.doc.can_redo and not blocked and not preview)
+        self.btn_tones.setEnabled(not blocked and not preview)
         self.btn_restore_all.setEnabled(
             self.doc.is_dirty and not blocked and not preview)
         self.btn_apply.setEnabled(
