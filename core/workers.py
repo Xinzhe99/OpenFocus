@@ -33,6 +33,18 @@ def _crop_transparent_for_gui(images, should_cancel=None):
         raise ValueError(trans.t('transparent_desktop_unsupported').format(path='') + ' ' + str(exc)) from exc
 
 
+def _validate_sensor_sources_for_gui(paths, should_cancel):
+    from locales import trans
+    from utils.sensor_cleanup import validate_sensor_source_orientation
+    for path in paths:
+        if not path:
+            raise ValueError(trans.t('sensor_source_missing'))
+        try:
+            validate_sensor_source_orientation([path], cancel_callback=should_cancel)
+        except ValueError as exc:
+            raise ValueError(trans.t('sensor_source_orientation').format(path=path)) from exc
+
+
 # A quick preview must be *obviously* quicker, not marginally so. The old
 # absolute cap of 1200 px did almost nothing at the sizes people actually use:
 # a 1344 px stack shrank by 11%, and the extra downscale plus the forced
@@ -300,10 +312,10 @@ class RenderWorker(QThread):
         if self.defect_mask_path and self.load_scale_factor != 1.0:
             raise ValueError('A sensor defect mask requires images loaded at 100% scale')
         if self.defect_mask_path:
-            if len(self.source_paths) != len(self.raw_images) or not all(self.source_paths):
-                raise ValueError('A sensor defect mask requires the original still-image source path for every frame; reload the source images or disable the mask')
-            from utils.sensor_cleanup import validate_sensor_source_orientation
-            validate_sensor_source_orientation(self.source_paths, cancel_callback=lambda: self.is_cancelled)
+            if len(self.source_paths) != len(self.raw_images):
+                from locales import trans
+                raise ValueError(trans.t('sensor_source_missing'))
+            _validate_sensor_sources_for_gui(self.source_paths, lambda: self.is_cancelled)
         alignment_time = 0
         fusion_time = 0
         device_name = "CPU"
@@ -1020,10 +1032,7 @@ class BatchWorker(QThread):
                 if mask_path and float(self.processing_settings.get('load_scale_factor', 1.0)) != 1.0:
                     raise ValueError('A sensor defect mask requires images loaded at 100% scale')
                 if mask_path:
-                    if not all(original_paths):
-                        raise ValueError('A sensor defect mask requires the original still-image source path for every frame; reload the source images or disable the mask')
-                    from utils.sensor_cleanup import validate_sensor_source_orientation
-                    validate_sensor_source_orientation(original_paths, cancel_callback=lambda: self.is_cancelled)
+                    _validate_sensor_sources_for_gui(original_paths, lambda: self.is_cancelled)
                 if mask_path or denoise:
                     from utils.sensor_cleanup import (load_sensor_defect_mask, cleanup_sensor_image,
                                                       require_sensor_cleanup_stack)
@@ -1228,8 +1237,7 @@ class BatchWorker(QThread):
         if len(paths) < 2:
             raise ValueError('Fusion requires at least two frames')
         if settings.get('defect_mask_path', ''):
-            from utils.sensor_cleanup import validate_sensor_source_orientation
-            validate_sensor_source_orientation(paths, cancel_callback=lambda: self.is_cancelled)
+            _validate_sensor_sources_for_gui(paths, lambda: self.is_cancelled)
         self._source_exif = _read_exif_bytes(paths[0])
         self._source_icc_profile = common_icc_profile(paths)
         self.image_loader.px_size_um = detect_px_size_um(paths[0])

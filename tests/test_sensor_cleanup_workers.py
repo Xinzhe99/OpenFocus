@@ -175,6 +175,33 @@ def test_render_rejects_unknown_mask_provenance(qapp, tmp_path, source_paths):
     assert errors
 
 
+@pytest.mark.parametrize('missing', [False, True])
+def test_render_reports_localized_sensor_source_problem(qapp, tmp_path, monkeypatch, missing):
+    from core.image_loader import decode_image
+    from core.workers import RenderWorker
+    from locales import trans
+    paths = _oriented_jpegs(tmp_path / 'source')
+    mask, _ = _inputs(tmp_path)
+    frames = [decode_image(path) for path in paths]
+    monkeypatch.setattr(trans, 'current_lang', 'fr')
+    worker = RenderWorker(frames, algorithm=None, need_fusion=False,
+                          defect_mask_path=str(mask), source_paths=[] if missing else paths)
+    errors = []
+    worker.error_signal.connect(errors.append)
+    worker.run()
+    expected = (trans.t('sensor_source_missing') if missing else
+                trans.t('sensor_source_orientation').format(path=paths[1]))
+    assert errors == [expected]
+
+
+def test_sensor_source_messages_exist_in_all_locales(qapp):
+    from locales import trans
+    for language in trans.PACK_ORDER:
+        pack = trans.translations[language]
+        assert pack['sensor_source_missing']
+        assert '{path}' in pack['sensor_source_orientation']
+
+
 @pytest.mark.parametrize('mode', ['folder', 'split', 'grouped'])
 def test_batch_rejects_square_oriented_jpeg(qapp, tmp_path, mode):
     from core.image_loader import decode_image

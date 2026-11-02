@@ -27,6 +27,8 @@ ZH = {
     'alignment_report_reference': '参考帧', 'alignment_report_aligned': '已配准', 'alignment_report_fallback': '回退',
     'alignment_report_cached': '配准：使用缓存结果', 'alignment_report_available': '可在工具菜单中查看逐帧配准诊断',
     'sensor_section': '传感器清理',
+    'sensor_source_missing': "缺陷掩码需要每帧的原始图像路径。请重新加载原始图像或关闭掩码。",
+    'sensor_source_orientation': "无法对 {path} 使用缺陷掩码：其方向并非默认方向或无法检查。请使用传感器方向、EXIF 方向为默认值的静态图像及匹配的掩码，或关闭掩码。",
     'sensor_history_unsupported': '源图像旋转、翻转、平场校正或其他修改后无法进行传感器清理。请重新加载原始帧，或关闭传感器清理。',
     'sensor_roi_unsupported': '传感器清理无法使用清理前已对齐的帧。请退出 ROI 模式并渲染完整图像栈。',
     'sensor_settings_scope': '这些设置适用于当前会话和保存的项目，不属于全局首选项。',

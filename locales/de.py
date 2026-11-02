@@ -23,6 +23,8 @@ PACK = {
     'alignment_report_reference': 'Referenz', 'alignment_report_aligned': 'Ausgerichtet', 'alignment_report_fallback': 'Ersatzverfahren',
     'alignment_report_cached': 'Ausrichtung: Cache-Ergebnis wiederverwendet', 'alignment_report_available': 'Einzelbilddiagnose unter Werkzeuge verfügbar',
     'sensor_section': 'Sensorbereinigung',
+    'sensor_source_missing': "Die Defektmaske benötigt für jedes Bild den ursprünglichen Dateipfad. Laden Sie die Originalbilder erneut oder deaktivieren Sie die Maske.",
+    'sensor_source_orientation': "Die Defektmaske kann für {path} nicht verwendet werden: Die Ausrichtung ist nicht neutral oder nicht prüfbar. Verwenden Sie Bilder in Sensorausrichtung mit neutraler EXIF-Ausrichtung und passender Maske oder deaktivieren Sie die Maske.",
     'sensor_history_unsupported': 'Nach Drehung, Spiegelung, Flachfeldkorrektur oder anderen Änderungen der Quelldaten ist die Sensorbereinigung nicht möglich. Laden Sie die Originalbilder erneut oder deaktivieren Sie die Sensorbereinigung.',
     'sensor_roi_unsupported': 'Die Sensorbereinigung kann keine zuvor ausgerichteten Bilder verwenden. Verlassen Sie den ROI-Modus und verarbeiten Sie den gesamten Stapel.',
     'sensor_settings_scope': 'Diese Einstellungen gelten für die Sitzung und gespeicherte Projekte, nicht für globale Einstellungen.',

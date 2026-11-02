@@ -23,6 +23,8 @@ PACK = {
     'alignment_report_reference': 'Referencyjna', 'alignment_report_aligned': 'Wyrównana', 'alignment_report_fallback': 'Wynik zastępczy',
     'alignment_report_cached': 'Wyrównanie: użyto wyniku z pamięci podręcznej', 'alignment_report_available': 'Diagnostyka klatek dostępna w menu Narzędzia',
     'sensor_section': 'Czyszczenie matrycy',
+    'sensor_source_missing': "Maska defektów wymaga ścieżki do oryginalnego pliku każdej klatki. Wczytaj ponownie oryginalne obrazy lub wyłącz maskę.",
+    'sensor_source_orientation': "Nie można użyć maski defektów dla {path}: orientacja nie jest neutralna lub nie można jej sprawdzić. Użyj obrazów w orientacji sensora z neutralną orientacją EXIF i pasującą maską albo wyłącz maskę.",
     'sensor_history_unsupported': 'Czyszczenia matrycy nie można zastosować po obrocie, odbiciu, korekcji płaskiego pola ani innych zmianach źródeł. Wczytaj oryginalne klatki ponownie lub wyłącz czyszczenie.',
     'sensor_roi_unsupported': 'Czyszczenie matrycy nie może używać klatek wyrównanych przed czyszczeniem. Wyłącz tryb ROI i przetwórz cały stos.',
     'sensor_settings_scope': 'Te ustawienia dotyczą sesji i zapisanych projektów, a nie ustawień globalnych.',
