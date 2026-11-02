@@ -55,7 +55,7 @@ def _windows(count, group_size, overlap):
 
 def grouped_fuse(paths, group_size, overlap, fuse_group, *, scale_factor=1.0,
                  thread_count=0, resource_preference='balanced',
-                 should_cancel=None, progress=None):
+                 should_cancel=None, progress=None, preprocess=None):
     """Fuse ordered files in bounded groups, returning a quantized BGR image.
 
     ``progress`` receives (1-based round, completed groups, total groups). A
@@ -64,6 +64,7 @@ def grouped_fuse(paths, group_size, overlap, fuse_group, *, scale_factor=1.0,
     RAW files are not supported. Scratch TIFFs are removed on every exit.
     Cancellation is observed between decode, fusion, and scratch operations;
     the callback must provide its own cancellation for a long-running fusion.
+    ``preprocess`` applies only to original decoded frames, never intermediates.
     """
     paths = [os.fspath(path) for path in paths]
     if not paths:
@@ -78,6 +79,8 @@ def grouped_fuse(paths, group_size, overlap, fuse_group, *, scale_factor=1.0,
         raise ValueError("scale_factor must be finite and in (0, 1]")
     if not callable(fuse_group):
         raise TypeError("fuse_group must be callable")
+    if preprocess is not None and not callable(preprocess):
+        raise TypeError("preprocess must be callable")
 
     from core.multi_focus_fusion import memory_budget_bytes
 
@@ -124,6 +127,8 @@ def grouped_fuse(paths, group_size, overlap, fuse_group, *, scale_factor=1.0,
                             raise ValueError(f"Failed to decode image: {path}")
                         if not intermediate:
                             image = _downscale_page(image, scale_factor)
+                            if preprocess is not None:
+                                image = preprocess(image)
                         if images and image.shape != images[0].shape:
                             raise ValueError("Grouped fusion requires matching image dimensions")
                         images.append(image)

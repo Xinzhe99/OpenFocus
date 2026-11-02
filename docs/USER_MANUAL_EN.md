@@ -953,8 +953,9 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 - Grouped input must consist of single-frame files with headers readable by
   Pillow; camera RAW and multipage files are not supported. For the command
   line, an example is `python main.py --input stack --output fused.png --group-size 8 --group-overlap 1`.
-  Grouped CLI input must be a folder and cannot be combined with `--depth-map`
-  or `--dust-map`.
+  Grouped CLI input must be a folder and cannot be combined with `--depth-map`.
+  A flat-field reference is applied to original frames before registration;
+  output sharpening is applied once after the final group.
 - **What lands where, by mode.** With **align only**, the selected destination
   receives one `<stack>_aligned` folder per stack and the output panel lists
   that folder. With **fusion + save aligned**, the fused image is written as

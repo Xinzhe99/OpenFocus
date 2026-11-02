@@ -95,6 +95,20 @@ def test_legacy_project_capture_uses_new_inputs_and_preserves_settings(tmp_path)
     assert run_recipe(recipe, dry_run=True) == 0
 
 
+def test_recipe_preserves_grouping_and_output_sharpening(tmp_path):
+    _stack(tmp_path / "stack")
+    path = tmp_path / "recipe.json"
+    capture_recipe(path, ["-i", str(tmp_path / "stack"),
+                          "-o", str(tmp_path / "out.png"),
+                          "-m", "guided_filter", "--cpu", "--threads", "1",
+                          "--group-size", "2", "--sharpen-output"])
+    data = load_recipe(path)
+    assert data["options"]["group_size"] == 2
+    assert data["options"]["sharpen_output"] is True
+    assert run_recipe(path) == 0
+    assert cv2.imread(str(tmp_path / "out.png")) is not None
+
+
 def test_recipe_rejects_invalid_project_snapshot(tmp_path):
     with pytest.raises(ValueError):
         validate_recipe({"version": 1, "input": ["stack"], "output": "out.png",

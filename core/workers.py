@@ -1129,6 +1129,15 @@ class BatchWorker(QThread):
             resource_preference=self.resource_preference, base_frame=runtime.get('base_frame', 'none'),
             sort_mode=sort_mode, exposure_match=self.exposure_match, **tile_kwargs)
 
+        preprocess = None
+        reference = settings.get('flat_field_path', '')
+        if reference:
+            from utils.dust_map import load_flat_field_reference, compute_flat_field, apply_flat_field
+            white, _ = load_flat_field_reference(reference, scale=float(settings.get('load_scale_factor', 1.0)))
+            require_memory(white.size * 12)
+            gain = compute_flat_field(white)
+            preprocess = lambda image: apply_flat_field(image, gain)
+
         def fuse_group(images):
             if alignment_steps(alignment):
                 registration = ImageRegistration(method=alignment, parameters=self.registration_parameters,
@@ -1152,7 +1161,11 @@ class BatchWorker(QThread):
         result = grouped_fuse(paths, size, overlap, fuse_group,
             scale_factor=float(settings.get('load_scale_factor', 1.0)), thread_count=self.thread_count,
             resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled,
-            progress=progress)
+            progress=progress, preprocess=preprocess)
+        if runtime.get('sharpen_output', False):
+            from utils.output_sharpen import sharpen_output
+            frames, is_16bit = normalize_fuse_input([result])
+            result = quantize_fuse_output(sharpen_output(frames[0], lambda: self.is_cancelled), is_16bit)
         output_format = settings.get('format', 'png').lstrip('.').lower()
         name = os.path.basename(os.path.normpath(folder_path))
         output = os.path.join(self._get_output_path_for_single_folder(folder_path), f'{name}.{output_format}')

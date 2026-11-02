@@ -225,6 +225,14 @@ def test_scale_only_applied_to_originals(tmp_path, admitted):
     assert result.shape == (4, 4, 3)
 
 
+def test_preprocess_only_affects_original_frames(tmp_path, admitted):
+    paths = _files(tmp_path, [10, 20, 30, 40, 50])
+    result = grouped.grouped_fuse(
+        paths, 2, 0, np.maximum.reduce,
+        preprocess=lambda image: image + np.uint8(10))
+    assert np.all(result == 60)
+
+
 @pytest.mark.parametrize('group_size,overlap', [(1, 0), (2, 1), (3, 2), (3, -1)])
 def test_invalid_group_geometry(tmp_path, group_size, overlap):
     with pytest.raises(ValueError):

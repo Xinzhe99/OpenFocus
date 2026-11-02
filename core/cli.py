@@ -88,8 +88,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Fuse a folder in overlapping groups of at most FRAMES (0 disables). "
                              "Approximate, uses temporary disk; single-frame Pillow-readable "
                              "images only, no RAW or depth maps.")
-    parser.add_argument("--group-overlap", type=int, default=1, metavar="FRAMES",
-                        help="Frames shared by consecutive groups (default 1; at most group size minus 2).")
+    parser.add_argument("--group-overlap", type=int, default=0, metavar="FRAMES",
+                        help="Frames shared by consecutive groups (default 0; at most group size minus 2).")
     parser.add_argument("--method", "-m", default="stackmffv3",
                         choices=[spec.id for spec in fusion_algorithms()],
                         help="OpenFocus methods: A = multiscale response selection, "
@@ -407,6 +407,15 @@ def _fuse_grouped(paths, args):
 
     group_args = argparse.Namespace(**vars(args))
     group_args._grouped = True
+    group_args.sharpen_output = False
+    group_args.dust_map = None
+    preprocess = None
+    if args.dust_map:
+        from utils.dust_map import load_flat_field_reference, compute_flat_field, apply_flat_field
+        white, _ = load_flat_field_reference(args.dust_map)
+        require_memory(white.size * 12)
+        gain = compute_flat_field(white)
+        preprocess = lambda image: apply_flat_field(image, gain)
     # Reverse the whole source once. Reversing each group independently would
     # interleave the original order and reverse it again at every later stage.
     if get_fusion(args.method).sort_frames and args.sort == "desc":
@@ -422,11 +431,17 @@ def _fuse_grouped(paths, args):
         if emit is not None:
             emit(event="group", stage=stage, done=completed, total=total)
 
-    return grouped_fuse(paths, args.group_size, args.group_overlap,
-                        lambda images: _fuse_stack_admitted(images, group_args),
-                        thread_count=args.threads,
-                        resource_preference=args.resource_preference,
-                        progress=progress)
+    result = grouped_fuse(paths, args.group_size, args.group_overlap,
+                          lambda images: _fuse_stack_admitted(images, group_args),
+                          thread_count=args.threads,
+                          resource_preference=args.resource_preference,
+                          progress=progress, preprocess=preprocess)
+    if args.sharpen_output:
+        from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+        from utils.output_sharpen import sharpen_output
+        frames, is_16bit = normalize_fuse_input([result])
+        result = quantize_fuse_output(sharpen_output(frames[0]), is_16bit)
+    return result
 
 
 def _method_weights(spec) -> str | None:
@@ -763,9 +778,6 @@ def _run_cli_admitted(argv: List[str]) -> int:
     if args.group_size:
         if args.depth_map:
             print("error: --depth-map is unavailable with grouped fusion: group positions are not original frame indices", file=sys.stderr)
-            return EXIT_USAGE
-        if args.dust_map:
-            print("error: --dust-map is unavailable with grouped fusion", file=sys.stderr)
             return EXIT_USAGE
         if any(not os.path.isdir(path) for path in args.input):
             print("error: grouped fusion accepts folders only", file=sys.stderr)
