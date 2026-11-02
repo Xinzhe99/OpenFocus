@@ -246,6 +246,8 @@ class ExportManager:
             file_path = self.normalize_export_path(file_path, selected_filter=selected_filter)
             from utils.logging_setup import log_action
             log_action('export_image', path=file_path)
+            if result_to_save.ndim == 3 and result_to_save.shape[2] == 4 and os.path.splitext(file_path)[1].lower() != '.png':
+                raise ValueError(trans.t('transparent_desktop_unsupported').format(path=file_path))
             image_to_save = labels.prepare_bgr_image('output', result_to_save, 0)
             ext = os.path.splitext(file_path)[1].lower()
             params = get_imwrite_params(ext)
@@ -344,6 +346,8 @@ class ExportManager:
                 image = _read_image_any(frame) if baked else frame
                 if image is None:
                     raise OSError(f'Cannot read {frame}')
+                if image.ndim == 3 and image.shape[2] == 4 and extension != 'png':
+                    raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
                 if labels is not None:
                     image = labels.prepare_bgr_image(target, image, index)
                     image = scalebar.burn(image, cfg)

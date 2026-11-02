@@ -45,7 +45,7 @@ def _has_transparency(image: np.ndarray) -> bool:
     if image.ndim != 3 or image.shape[2] != 4:
         return False
     return (image.dtype not in (np.uint8, np.uint16)
-            or np.any(image[:, :, 3] != np.iinfo(image.dtype).max))
+            or (image.size > 0 and np.min(image[:, :, 3]) != np.iinfo(image.dtype).max))
 
 def _read_raw(path: str) -> Optional[np.ndarray]:
     """Camera RAW -> 16-bit BGR (sRGB gamma, camera white balance).
@@ -83,9 +83,21 @@ def decode_image(path: str, *, allow_transparent_png: bool = False) -> Optional[
             return apply_exif_orientation(path, unchanged)
         raise UnsupportedTransparency(
             f"Transparent input is unsupported here: {path}. "
-            "The CLI supports matching rectangular PNG transparency; see the manual.")
-    img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
-                       | cv2.IMREAD_IGNORE_ORIENTATION)
+            "Matching rectangular PNG transparency is supported in the desktop and CLI workflows; see the manual.")
+    # Standard uint8/uint16 decoders already return the BGR samples used by
+    # the previous color-read path. Exotic sample types retain that path.
+    img = None
+    if (unchanged is not None and unchanged.dtype in (np.uint8, np.uint16)
+            and ext in ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.bmp', '.webp', '.tif', '.tiff')):
+        if unchanged.ndim == 2:
+            img = cv2.cvtColor(unchanged, cv2.COLOR_GRAY2BGR)
+        elif unchanged.ndim == 3 and unchanged.shape[2] == 3:
+            img = unchanged
+        elif unchanged.ndim == 3 and unchanged.shape[2] == 4:
+            img = cv2.cvtColor(unchanged, cv2.COLOR_BGRA2BGR)
+    if img is None:
+        img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
+                           | cv2.IMREAD_IGNORE_ORIENTATION)
     if img is None:
         # OpenCV ships no HEIC/HEIF decoder: fall back to Pillow
         img = _read_via_pil(path)
@@ -259,8 +271,15 @@ def _read_tiff_pages(path: str) -> Optional[List[np.ndarray]]:
     try:
         data = np.fromfile(path, dtype=np.uint8)
         success, unchanged = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED)
-        if success and len(unchanged) >= 2 and any(_has_transparency(p) for p in unchanged):
+        if not success or len(unchanged) < 2:
+            return None
+        if any(_has_transparency(p) for p in unchanged):
             raise UnsupportedTransparency(f"Transparent TIFF pages are unsupported: {path}")
+        if all(p.dtype in (np.uint8, np.uint16) and
+               (p.ndim == 2 or (p.ndim == 3 and p.shape[2] in (3, 4))) for p in unchanged):
+            return [cv2.cvtColor(p, cv2.COLOR_GRAY2BGR) if p.ndim == 2 else
+                    cv2.cvtColor(p, cv2.COLOR_BGRA2BGR) if p.shape[2] == 4 else p
+                    for p in unchanged]
         del unchanged
         flags = cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
         success, pages = cv2.imdecodemulti(data, flags=flags)
@@ -571,7 +590,7 @@ class ImageStackLoader:
             decoded = iter_decoded_sources(
                 sources, scale_factor, thread_count=thread_count,
                 resource_preference=resource_preference,
-                should_cancel=self.should_cancel)
+                should_cancel=self.should_cancel, allow_transparent_png=True)
             try:
                 for item in decoded:
                     if item.error is not None:
@@ -700,7 +719,7 @@ class ImageStackLoader:
             decoded = iter_decoded_sources(
                 sources, scale_factor, thread_count=thread_count,
                 resource_preference=resource_preference,
-                should_cancel=self.should_cancel)
+                should_cancel=self.should_cancel, allow_transparent_png=True)
             try:
                 for item in decoded:
                     if item.error is not None:
@@ -753,6 +772,9 @@ class ImageStackLoader:
     def create_thumbnails(self, images: List[np.ndarray], thumb_size: int = 40) -> list:
         thumbnails = []
         for img in images:
+            if img.ndim == 3 and img.shape[2] == 4:
+                from utils.image_utils import composite_transparent_for_display
+                img = composite_transparent_for_display(img)
             h, w = img.shape[:2]
             if h <= 0 or w <= 0:
                 raise ValueError(f"Invalid image dimensions: {w}x{h}")
@@ -771,6 +793,9 @@ class ImageStackLoader:
         from utils.image_utils import cv2_to_pixmap
 
         if max_size is not None:
+            if cv_img.ndim == 3 and cv_img.shape[2] == 4:
+                from utils.image_utils import composite_transparent_for_display
+                cv_img = composite_transparent_for_display(cv_img)
             h, w = cv_img.shape[:2]
             max_w, max_h = max_size
 

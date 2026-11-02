@@ -1978,6 +1978,10 @@ class OpenFocus(QMainWindow):
 
     def show_depth_map_dialog(self) -> None:
         """Focus-position (pseudo-depth) map viewer and exporter."""
+        if any(image.ndim == 3 and image.shape[2] == 4 for image in self.raw_images):
+            show_warning_box(self, trans.t('msg_warning'),
+                             trans.t('transparent_desktop_unsupported').format(path=''))
+            return
         from dialogs.depthmap import DepthMapDialog
         DepthMapDialog(self).exec()
 
@@ -2079,6 +2083,11 @@ class OpenFocus(QMainWindow):
 
         while True:
             record = self.output_manager.record_for_item(item)
+            if (record is not None and record.image is not None and record.image.ndim == 3
+                    and record.image.shape[2] == 4):
+                show_warning_box(self, trans.t('msg_warning'),
+                                 trans.t('transparent_desktop_unsupported').format(path=''))
+                return
             if record is None or not record.retouchable:
                 show_warning_box(self, trans.t("msg_warning"),
                                  trans.t("retouch_no_source"))
@@ -2135,16 +2144,28 @@ class OpenFocus(QMainWindow):
             show_warning_box(self, trans.t("msg_no_images_title"),
                              trans.t("msg_render_need_images_text"))
             return
+        if any(image.ndim == 3 and image.shape[2] == 4 for image in self.raw_images):
+            show_warning_box(self, trans.t('msg_warning'),
+                             trans.t('transparent_desktop_unsupported').format(path=''))
+            return
         from dialogs.compare import CompareDialog
         CompareDialog(self).exec()
 
     def show_dust_map_dialog(self) -> None:
         """Flat-field (dust map) correction from a defocused white shot."""
+        if any(image.ndim == 3 and image.shape[2] == 4 for image in self.raw_images):
+            show_warning_box(self, trans.t('msg_warning'),
+                             trans.t('transparent_desktop_unsupported').format(path=''))
+            return
         from dialogs.dustmap import DustMapDialog
         DustMapDialog(self).exec()
 
     def apply_flat_field_to_stack(self, gain, remove_index=None, prepared=None, reference=None) -> bool:
         """Commit corrected source/base frames and optional removal together."""
+        if any(image.ndim == 3 and image.shape[2] == 4 for image in self.raw_images):
+            show_warning_box(self, trans.t('msg_warning'),
+                             trans.t('transparent_desktop_unsupported').format(path=''))
+            return False
         import time as _time
         from utils.dust_map import apply_flat_field_stack
         t0 = _time.time()

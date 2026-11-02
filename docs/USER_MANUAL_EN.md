@@ -52,23 +52,26 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
   RAW formats). Decoding uses `rawpy` (LibRaw), which `pip install openfocus`
   installs and the Windows/macOS builds bundle
 
-Transparent images are rejected by the desktop application and desktop batch
-processing, including transparent TIFF pages. Retouching and registration do
-not support transparency. The command-line interface supports a restricted
-transparent PNG workflow: every frame must be an 8-bit or 16-bit PNG of the
-same dimensions and bit depth, with the same alpha mask. That mask must be
-zero outside one nonempty rectangle and have one constant, nonzero opacity
-throughout the rectangle. Partially transparent constant opacity is allowed.
-The visible rectangle is fused independently, so hidden colors outside it
-cannot influence focus measurement or tile boundaries. The output is a PNG
-with the original canvas size and opacity; hidden output colors are zero.
+Transparent PNG stacks can be fused in the desktop application, desktop batch
+processing, or the command-line interface. Every frame must be an 8-bit or
+16-bit PNG of the same dimensions and bit depth, with the same alpha mask.
+The mask must be zero outside one nonempty rectangle and have one constant,
+nonzero opacity throughout the rectangle. Partially transparent constant
+opacity is allowed. The visible rectangle is fused independently, so hidden
+colors cannot influence focus measurement or tile boundaries. PNG output
+retains the original canvas size and opacity; hidden output colors are zero.
+Desktop source and result views show transparency against a checkerboard.
 
-For example, run `python main.py --input ./png-stack --output ./result.png
---method guided_filter --align none`. CLI batch processing has the same
-restrictions. Alignment, dust correction, depth maps and scale bars cannot be
-combined with transparent inputs. A fusion method that changes the rectangle's
-dimensions is rejected. Varying or feathered masks, differing frame masks,
+Load at full size, choose no alignment, turn off Quick Preview and ROI, then
+render and save as PNG. Batch uses the same restrictions and requires PNG
+output without saving an aligned stack. Alignment, downsampling, dust
+correction, depth maps, comparison, retouching, labels and scale bars are not
+supported for transparent data. A fusion method that changes the rectangle's
+dimensions is rejected. Varying or feathered masks, different frame masks,
 transparent TIFF input and non-PNG output are not supported.
+
+For example, the CLI equivalent is `python main.py --input ./png-stack
+--output ./result.png --method guided_filter --align none`.
 
 ### Supported Output Formats
 

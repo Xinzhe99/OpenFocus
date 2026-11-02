@@ -24,6 +24,15 @@ from core.algorithms import (get_fusion, alignment_steps, resolve_fusion_paramet
 logger = get_logger(__name__)
 
 
+def _crop_transparent_for_gui(images, should_cancel=None):
+    from core.transparency import crop_transparent_stack
+    try:
+        return crop_transparent_stack(images, should_cancel)
+    except ValueError as exc:
+        from locales import trans
+        raise ValueError(trans.t('transparent_desktop_unsupported').format(path='') + ' ' + str(exc)) from exc
+
+
 # A quick preview must be *obviously* quicker, not marginally so. The old
 # absolute cap of 1200 px did almost nothing at the sizes people actually use:
 # a 1344 px stack shrank by 11%, and the extra downscale plus the forced
@@ -274,6 +283,11 @@ class RenderWorker(QThread):
         alignment_time = 0
         fusion_time = 0
         device_name = "CPU"
+        has_alpha = any(image.ndim == 3 and image.shape[2] == 4 for image in self.raw_images)
+        if has_alpha:
+            from locales import trans
+            if self.alignment or self.preview or self.roi_rect is not None or not self.need_fusion:
+                raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
     
         current_alignment_options = (self.alignment, self.registration_parameters)
         need_registration = bool(self.alignment)
@@ -520,6 +534,8 @@ class RenderWorker(QThread):
 
     def _run_fusion(self, images, should_cancel=None, progress_callback=None):
         """Run the selected descriptor with its complete parameter mapping."""
+        from core.transparency import restore_transparent_canvas
+        images, transparent = _crop_transparent_for_gui(images, should_cancel)
         from utils.image_utils import normalize_fuse_input, quantize_fuse_output
         if any(image.dtype == np.uint16 for image in images):
             require_memory(sum(image.size * 4 for image in images if image.dtype != np.float32)
@@ -540,7 +556,8 @@ class RenderWorker(QThread):
             from utils.output_sharpen import sharpen_output
             result = sharpen_output(result, should_cancel)
         device = fusion.get_info()['device'] if get_fusion(self.algorithm).neural else 'CPU'
-        return quantize_fuse_output(result, is_16bit), device
+        result = quantize_fuse_output(result, is_16bit)
+        return restore_transparent_canvas(result, transparent), device
 
     def _apply_roi_pasting(self, fusion_result, base_image, roi_rect_int):
         """将融合结果粘贴回基准图像"""
@@ -956,6 +973,14 @@ class BatchWorker(QThread):
                     aligned_images = corrected
                 alignment = self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ()))
                 steps = alignment_steps(alignment)
+                has_alpha = any(image.ndim == 3 and image.shape[2] == 4 for image in images)
+                if has_alpha:
+                    from locales import trans
+                    if (steps or not method or method == 'none'
+                            or self.processing_settings.get('format', 'png').lstrip('.').lower() != 'png'
+                            or self.processing_settings.get('scale_bar')
+                            or self.processing_settings.get('save_aligned', False)):
+                        raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
                 if steps:
                     registration = ImageRegistration(method=alignment,
                         parameters=self.registration_parameters,
@@ -996,7 +1021,10 @@ class BatchWorker(QThread):
                     if any(image.dtype == np.uint16 for image in aligned_images):
                         require_memory(sum(image.size * 4 for image in aligned_images if image.dtype != np.float32)
                                        + max(image.size * 4 for image in aligned_images if image.dtype == np.uint16))
-                    fusion_input, is_16bit = normalize_fuse_input(list(aligned_images))
+                    from core.transparency import restore_transparent_canvas
+                    color_frames, transparent = _crop_transparent_for_gui(
+                        aligned_images, lambda: self.is_cancelled)
+                    fusion_input, is_16bit = normalize_fuse_input(list(color_frames))
                     if aligned_for_export is None:
                         del aligned_images  # fusion does not need the originals
         
@@ -1011,6 +1039,7 @@ class BatchWorker(QThread):
                         from utils.output_sharpen import sharpen_output
                         result = sharpen_output(result, lambda: self.is_cancelled)
                     result = quantize_fuse_output(result, is_16bit)
+                    result = restore_transparent_canvas(result, transparent)
                 else:
                     save_aligned = True
         
@@ -1222,6 +1251,9 @@ class GifSaverWorker(QThread):
                 for index, image in enumerate(self.images):
                     if self.is_cancelled:
                         raise RegistrationCancelled()
+                    if image.ndim == 3 and image.shape[2] == 4:
+                        from locales import trans
+                        raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
                     if self.label_manager is not None:
                         image = self.label_manager.prepare_bgr_image(self.target_type, image, index)
                     if self.scale_cfg:

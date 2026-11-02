@@ -504,6 +504,10 @@ class ScaleBarDialog(QDialog):
             self.preview_lbl.clear()
             self._error.setText(trans.t("label_preview_no_target"))
             return
+        if image.ndim == 3 and image.shape[2] == 4:
+            self.preview_lbl.set_display_pixmap(cv2_to_pixmap(image))
+            self._error.setText(trans.t('transparent_desktop_unsupported').format(path=''))
+            return
         height, width = image.shape[:2]
         name = self._target_record().label if self._target_record() else self.target_combo.currentText()
         self.header.setText(name + " · " + trans.t("scalebar_header").format(

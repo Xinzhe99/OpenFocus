@@ -109,6 +109,9 @@ class OutputListWidget(QListWidget):
         fmt = ".jpg"
         if window is not None and hasattr(window, "drag_export_format"):
             fmt = window.drag_export_format
+        if image.ndim == 3 and image.shape[2] == 4 and fmt.lower() != '.png':
+            from locales import trans
+            raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
         safe_name = self._sanitize_filename(base_name)
         params = get_imwrite_params(fmt)
 

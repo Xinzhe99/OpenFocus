@@ -548,6 +548,8 @@ def burn(img: np.ndarray, cfg: Optional[dict]) -> np.ndarray:
     """Apply draw_scale_bar from an export_cfg dict; passthrough on None."""
     if not cfg:
         return img
+    if img.ndim == 3 and img.shape[2] == 4:
+        raise ValueError("Scale bars on transparent images are unsupported")
     return draw_scale_bar(
         img, cfg["px_um"], cfg["position"], cfg["color"],
         font_family=cfg.get("font_family"),

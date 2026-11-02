@@ -20,6 +20,9 @@ class DepthMapCancelled(Exception):
 def _check(images: Sequence[np.ndarray], allow_grayscale=False) -> None:
     if len(images) < 2:
         raise ValueError("A focus index map needs at least 2 frames")
+    from core.image_loader import _has_transparency
+    if any(_has_transparency(image) for image in images):
+        raise ValueError("Depth maps of transparent images are unsupported")
     first = images[0]
     if not ((first.ndim == 3 and first.shape[2] >= 3) or
             (allow_grayscale and (first.ndim == 2 or

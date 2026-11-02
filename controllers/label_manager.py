@@ -305,6 +305,9 @@ class LabelManager:
         """BGR image with registered-stack captions applied."""
         if not self._labels.any_enabled("registered"):
             return image
+        if image.ndim == 3 and image.shape[2] == 4:
+            from utils.image_utils import composite_transparent_for_display
+            image = composite_transparent_for_display(image)
         drawn, _err = self._draw_for(image.copy(), "registered", index)
         return drawn
 
@@ -320,6 +323,8 @@ class LabelManager:
         wanted = normalize_target(target)
         if not self._labels.any_enabled(wanted):
             return output
+        if image.ndim == 3 and image.shape[2] == 4:
+            raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
         drawn, error = self._draw_for(output, wanted, index, output_id)
         if error:
             raise ValueError(trans.t('msg_label_draw_failed_title') + ": " + error)
@@ -329,6 +334,10 @@ class LabelManager:
                           scale_cfg=None, output_id=None):
         """BGR image ready to be shown, copying only when something draws."""
         wanted = normalize_target(target)
+        if (image.ndim == 3 and image.shape[2] == 4
+                and (self._labels.any_enabled(wanted) or scale_cfg)):
+            from utils.image_utils import composite_transparent_for_display
+            image = composite_transparent_for_display(image)
         drawn = None
         if self._labels.any_enabled(wanted):
             drawn, _err = self._draw_for(image.copy(), wanted, index, output_id)

@@ -33,7 +33,7 @@ EN = {
     'retouch_tool_exposure': 'Exposure brush',
     'retouch_exposure_amount': 'Exposure (hundredths of a stop)',
     'retouch_exposure_hint': 'Paint to adjust the result locally. Positive values brighten; negative values darken. Each stroke starts from the current result. Hold Before to compare with the opened result; undo or cancel a stroke to revert.',
-    "transparent_desktop_unsupported": "Transparent images cannot be loaded in the desktop app or its batch mode. The CLI supports limited transparent PNG stacks. File: {path}",
+    "transparent_desktop_unsupported": "This action is unavailable for transparent images. Use PNG frames with identical rectangular, constant-opacity masks; disable alignment, quick preview and ROI, and export PNG. See the manual for other restrictions. {path}",
     "label_outputs_all": "All output results",
     "label_range_current": "Current frame",
     "label_range_custom": "Custom range",

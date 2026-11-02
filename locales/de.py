@@ -29,7 +29,7 @@ PACK = {
     'retouch_tool_exposure': 'Belichtungspinsel',
     'retouch_exposure_amount': 'Belichtung (Hundertstel Blendenstufen)',
     'retouch_exposure_hint': 'Malen, um das Ergebnis lokal anzupassen. Positive Werte hellen auf, negative dunkeln ab. Jeder Strich beginnt beim aktuellen Ergebnis. „Vorher“ gedrückt halten zum Vergleich; Strich rückgängig machen oder abbrechen.',
-    "transparent_desktop_unsupported": "Transparente Bilder können in der Desktop-App und ihrer Stapelverarbeitung nicht geladen werden. Die Kommandozeile unterstützt transparente PNG-Stapel eingeschränkt. Datei: {path}",
+    "transparent_desktop_unsupported": "Diese Aktion ist für transparente Bilder nicht verfügbar. PNG-Bilder benötigen identische rechteckige Masken mit konstanter Deckkraft; Ausrichtung, Schnellvorschau und ROI deaktivieren und als PNG exportieren. Weitere Einschränkungen stehen im Handbuch. {path}",
     "label_outputs_all": "Alle Ausgabeergebnisse",
     "label_range_current": "Aktuelles Bild",
     "label_range_custom": "Benutzerdefinierter Bereich",

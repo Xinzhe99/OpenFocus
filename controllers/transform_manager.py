@@ -56,6 +56,10 @@ class TransformManager:
         if not window.raw_images:
             show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_no_images_resize"))
             return
+        if any(img.ndim == 3 and img.shape[2] == 4 for img in window.raw_images):
+            show_warning_box(window, trans.t('msg_warning'),
+                             trans.t('transparent_desktop_unsupported').format(path=''))
+            return
 
         # base_images are the sharpest frames the session holds, decoded at
         # base_scale relative to the files on disk. Rescaling must start from
@@ -183,6 +187,9 @@ class TransformManager:
         curve widget above the source slider."""
         curve = getattr(window, "sharpness_curve", None)
         if curve is None:
+            return
+        if any(img.ndim == 3 and img.shape[2] == 4 for img in window.raw_images):
+            curve.set_data([])
             return
         try:
             values = []
