@@ -77,6 +77,41 @@ def _document(frames=None, result=None, **kwargs):
     return RetouchDocument(result, _context(frames, result), **kwargs)
 
 
+def test_exposure_brush_is_local_undoable_and_preserves_16bit():
+    base = np.full((64, 64, 3), 12001, np.uint16)
+    frames = [np.full_like(base, 25000)]
+    source = frames[0].copy()
+    doc = _document(frames=frames, result=base)
+    assert doc.set_tool("exposure")
+    doc.exposure = 1.0
+    doc.set_brush(diameter=12, hardness=1.0, opacity=1.0)
+    assert doc.begin_stroke(30, 30)
+    doc.stroke_to(31, 30)
+    assert doc.end_stroke() == "committed"
+    assert (doc.working[30, 30] == 24002).all()
+    assert (doc.working[0, 0] == 12001).all()
+    assert doc.working.dtype == np.uint16
+    painted = doc.working.copy()
+    assert doc.undo() and np.array_equal(doc.working, base)
+    assert doc.redo() and np.array_equal(doc.working, painted)
+    assert np.array_equal(frames[0], source)
+    assert (base == 12001).all()
+
+
+def test_exposure_brush_locks_amount_and_cancels():
+    doc = _document()
+    doc.set_tool("exposure")
+    doc.exposure = -1.0
+    doc.set_brush(diameter=12, hardness=1.0, opacity=1.0)
+    assert doc.begin_stroke(30, 30)
+    doc.exposure = 1.0
+    doc.stroke_to(36, 30)
+    assert (doc.working[30, 36] == 60).all()
+    assert doc.cancel_stroke()
+    assert np.array_equal(doc.working, doc.base)
+    assert not doc.can_undo and not doc.is_dirty
+
+
 def test_stroke_locks_the_source_frame_and_settings():
     doc = _document()
     doc.set_frame(0)
@@ -318,6 +353,23 @@ def _dialog(qapp, monkeypatch=None, apply_result=True):
     QApplication.processEvents()
     QApplication.processEvents()
     return dlg, published
+
+
+def test_dialog_exposure_preview_undo_and_publish(qapp):
+    dlg, published = _dialog(qapp)
+    dlg.rb_exposure.setChecked(True)
+    dlg.num_exposure.spin.setValue(100)
+    assert dlg.begin_stroke(60, 48)
+    dlg.end_stroke()
+    assert (dlg.doc.working[48, 60] == 220).all()
+    dlg._undo()
+    assert (dlg.doc.working[48, 60] == 110).all()
+    dlg._redo()
+    assert (dlg.doc.working[48, 60] == 220).all()
+    assert dlg._apply()
+    assert (published[0][1][48, 60] == 220).all()
+    assert (published[0][0].image[48, 60] == 110).all()
+    dlg.close()
 
 
 def test_dialog_preserves_zoom_and_frame_when_switching(qapp):
