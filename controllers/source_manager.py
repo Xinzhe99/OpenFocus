@@ -3,7 +3,7 @@ from typing import Any
 
 import cv2
 import os
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QObject, QPoint, QThread, Qt
 from PyQt6.QtGui import QAction, QIcon, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox, QDialog
 
@@ -14,6 +14,29 @@ from ui import styles as ui_styles
 from locales import trans
 
 
+class StackReviewWorker(QThread):
+    """Analyze a snapshot without touching widgets from the worker thread."""
+
+    def __init__(self, frames):
+        super().__init__()
+        self.frames = tuple(frames)
+        self.results = None
+        self.error = None
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            from core.stack_review import analyze_frames
+            self.results = analyze_frames(self.frames, cancel=lambda: self._cancelled)
+        except InterruptedError:
+            self._cancelled = True
+        except Exception as exc:  # report failures on the UI thread
+            self.error = str(exc)
+
+
 @dataclass
 class LoadOptions:
     scale_factor: float
@@ -22,11 +45,85 @@ class LoadOptions:
     working_images: list[Any]
 
 
-class SourceManager:
+class SourceManager(QObject):
     """Handles source list interactions and bookkeeping for the main window."""
 
     def __init__(self, window: Any):
+        super().__init__()
         self.window = window
+        self._review_worker = None
+        self._review_frames = ()
+        self._review_results = []
+        self._review_status_key = None
+        self._review_error = ""
+
+    def _review_matches_stack(self, frames):
+        current = self.window.raw_images
+        return len(frames) == len(current) and all(
+            before is after for before, after in zip(frames, current))
+
+    def toggle_stack_review(self):
+        if self._review_worker is not None:
+            self._review_worker.cancel()
+            self._review_status_key = "stack_review_cancelling"
+            self.refresh_review_text()
+            return
+        frames = tuple(self.window.raw_images)
+        if len(frames) < 2:
+            return
+        self._review_frames = frames
+        self._review_results = []
+        self._review_error = ""
+        self._review_status_key = "stack_review_working"
+        worker = StackReviewWorker(frames)
+        self._review_worker = worker
+        worker.finished.connect(self._finish_stack_review)
+        self.decorate_source_items()
+        worker.start()
+
+    def _finish_stack_review(self):
+        worker = self._review_worker
+        if worker is None:
+            return
+        self._review_worker = None
+        if not self._review_matches_stack(worker.frames):
+            self._review_status_key = "stack_review_stale"
+        elif worker._cancelled:
+            self._review_status_key = "stack_review_cancelled"
+        elif worker.error is not None:
+            self._review_error = worker.error
+            self._review_status_key = "stack_review_error"
+        else:
+            self._review_frames = worker.frames
+            self._review_results = worker.results or []
+            self._review_status_key = ("stack_review_found" if self._review_results
+                                       else "stack_review_none")
+        if self._review_status_key not in ("stack_review_found", "stack_review_none"):
+            self._review_frames = ()
+            self._review_results = []
+        worker.deleteLater()
+        self.decorate_source_items()
+
+    def refresh_review_text(self):
+        panel = getattr(self.window, "right_panel_components", None)
+        if panel is None:
+            return
+        busy = self._review_worker is not None
+        panel.btn_review_stack.setText(trans.t(
+            "stack_review_cancel" if busy else "stack_review_button"))
+        panel.btn_review_stack.setToolTip(trans.t("stack_review_hint"))
+        panel.btn_review_stack.setEnabled(busy or len(self.window.raw_images) >= 2)
+        status = trans.t(self._review_status_key) if self._review_status_key else ""
+        panel.review_status.setText(status.format(count=len(self._review_results),
+                                                  error=self._review_error))
+
+    def _invalidate_stale_review(self):
+        if self._review_frames and not self._review_matches_stack(self._review_frames):
+            if self._review_worker is not None:
+                self._review_worker.cancel()
+            self._review_frames = ()
+            self._review_results = []
+            self._review_status_key = "stack_review_stale"
 
     # ------------------------------------------------------------------
     # UI helpers
@@ -717,6 +814,8 @@ class SourceManager:
         """Give every list row its checkable "included" state and its original
         position tag (UserRole), so a drag-drop can be mapped back to data."""
         window = self.window
+        self._invalidate_stale_review()
+        findings = {entry["index"]: entry for entry in self._review_results}
         excluded = getattr(window, "excluded_frames", set())
         blocked = window.file_list.blockSignals(True)
         for row in range(window.file_list.count()):
@@ -731,7 +830,21 @@ class SourceManager:
             font = item.font()
             font.setStrikeOut(row in excluded)
             item.setFont(font)
+            names = getattr(window, "image_filenames", ())
+            if row < len(names):
+                name = names[row]
+                finding = findings.get(row)
+                if finding is not None:
+                    label = trans.t("stack_review_row").format(
+                        reference=finding["reference_index"] + 1,
+                        difference=finding["difference"])
+                    item.setText(f"{name} — {label}")
+                    item.setToolTip(label)
+                else:
+                    item.setText(name)
+                    item.setToolTip("")
         window.file_list.blockSignals(blocked)
+        self.refresh_review_text()
 
     def on_item_changed(self, item: QListWidgetItem) -> None:
         """Update participation independently of the highlighted frame."""

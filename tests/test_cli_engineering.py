@@ -283,3 +283,119 @@ def test_explicit_unavailable_method_does_not_change_id(tmp_path, monkeypatch, c
 
 def _unavailable(fusion):
     raise RuntimeError("unavailable test backend")
+
+
+def test_suggest_duplicates_reports_ordered_files_without_modifying_them(tmp_path, capsys):
+    image = np.random.default_rng(42).integers(0, 256, (80, 80, 3), dtype=np.uint8)
+    other = np.random.default_rng(43).integers(0, 256, (80, 80, 3), dtype=np.uint8)
+    for name, pixels in (("f2.png", image), ("f10.png", other), ("f1.png", image)):
+        assert cv2.imwrite(str(tmp_path / name), pixels)
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    result_file = tmp_path / "result.json"
+
+    assert run_cli(["--suggest-duplicates", "-i", str(tmp_path), "--json", str(result_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert json.loads(result_file.read_text(encoding="utf-8")) == payload
+    assert [os.path.basename(path) for path in payload["files"]] == ["f1.png", "f2.png", "f10.png"]
+    assert payload["mode"] == "suggest-duplicates"
+    assert [(item["index"], item["reference_index"]) for item in payload["suggestions"]] == [(1, 0)]
+    assert all((tmp_path / name).read_bytes() == contents for name, contents in before.items())
+
+
+def test_suggest_duplicates_keeps_explicit_file_order(tmp_path, capsys, monkeypatch):
+    from core import stack_review
+    paths = [tmp_path / "b.png", tmp_path / "a.png"]
+    for index, path in enumerate(paths):
+        assert cv2.imwrite(str(path), np.full((16, 16, 3), index * 50, np.uint8))
+
+    def analyze(frames, cancel=None):
+        assert [int(frame[0, 0, 0]) for frame in frames] == [0, 50]
+        return [{"index": 1, "reference_index": 0, "difference": 0.01}]
+
+    monkeypatch.setattr(stack_review, "analyze_frames", analyze)
+    assert run_cli(["--suggest-duplicates", "-i", *map(str, paths)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["files"] == list(map(str, paths))
+    assert payload["suggestions"][0]["difference"] == 0.01
+
+
+def test_suggest_duplicates_rejects_json_hardlink_to_input(tmp_path, capsys):
+    folder, _, _ = _make_stacks(tmp_path)
+    source = os.path.join(folder, "f0.png")
+    alias = tmp_path / "alias.json"
+    try:
+        os.link(source, alias)
+    except OSError:
+        pytest.skip("hard links unavailable")
+    before = alias.read_bytes()
+    assert run_cli(["--suggest-duplicates", "-i", folder, "--json", str(alias)]) == 1
+    captured = capsys.readouterr()
+    assert "overwrite" in captured.err and not captured.out
+    assert alias.read_bytes() == before
+
+
+def test_suggest_duplicates_rejects_unreadable_files_and_output_options(tmp_path, capsys):
+    folder, _, _ = _make_stacks(tmp_path)
+    (tmp_path / "stackA" / "f1.png").write_bytes(b"not an image")
+    assert run_cli(["--suggest-duplicates", "-i", folder]) == 1
+    captured = capsys.readouterr()
+    assert "decode" in captured.err and not captured.out
+    output = tmp_path / "output.png"
+    assert run_cli(["--suggest-duplicates", "-i", folder, "-o", str(output)]) == 2
+    assert not output.exists()
+
+
+def test_suggest_duplicates_rejects_files_changed_during_analysis(tmp_path, capsys, monkeypatch):
+    from core import stack_review
+    folder, _, _ = _make_stacks(tmp_path)
+    result_file = tmp_path / "result.json"
+
+    def analyze(frames, cancel=None):
+        list(frames)
+        with open(os.path.join(folder, "f1.png"), "ab") as source:
+            source.write(b"changed")
+        return []
+
+    monkeypatch.setattr(stack_review, "analyze_frames", analyze)
+    assert run_cli(["--suggest-duplicates", "-i", folder, "--json", str(result_file)]) == 1
+    captured = capsys.readouterr()
+    assert "changed during review" in captured.err and not captured.out
+    assert not result_file.exists()
+
+
+def test_suggest_duplicates_reports_interruption(tmp_path, capsys, monkeypatch):
+    from core import stack_review
+    folder, _, _ = _make_stacks(tmp_path)
+
+    def analyze(frames, cancel=None):
+        raise InterruptedError("review cancelled")
+
+    monkeypatch.setattr(stack_review, "analyze_frames", analyze)
+    assert run_cli(["--suggest-duplicates", "-i", folder]) == 1
+    captured = capsys.readouterr()
+    assert "review cancelled" in captured.err and not captured.out
+
+
+def test_suggest_duplicates_rejects_multipage_input(tmp_path, capsys):
+    from PIL import Image
+    pages = [Image.fromarray(np.full((16, 16, 3), value, np.uint8)) for value in (20, 40)]
+    stack = tmp_path / "stack.tiff"
+    pages[0].save(stack, save_all=True, append_images=pages[1:])
+    single = tmp_path / "single.png"
+    pages[0].save(single)
+    assert run_cli(["--suggest-duplicates", "-i", str(stack), str(single)]) == 1
+    captured = capsys.readouterr()
+    assert "single-frame" in captured.err and not captured.out
+
+
+def test_suggest_duplicates_handles_keyboard_interrupt(tmp_path, capsys, monkeypatch):
+    from core import stack_review
+    folder, _, _ = _make_stacks(tmp_path)
+
+    def analyze(frames, cancel=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(stack_review, "analyze_frames", analyze)
+    assert run_cli(["--suggest-duplicates", "-i", folder]) == 1
+    captured = capsys.readouterr()
+    assert "interrupted" in captured.err and not captured.out

@@ -1,6 +1,17 @@
 """German language pack for OpenFocus."""
 
 PACK = {
+    'stack_review_button': 'Bilder prüfen',
+    'stack_review_cancel': 'Prüfung abbrechen',
+    'stack_review_hint': 'Sucht ähnliche benachbarte Bilder. Prüfen Sie die Vorschläge und wählen Sie die auszuschließenden Bilder mit den Kästchen.',
+    'stack_review_working': 'Bilder werden analysiert…',
+    'stack_review_cancelling': 'Prüfung wird abgebrochen…',
+    'stack_review_cancelled': 'Prüfung abgebrochen.',
+    'stack_review_stale': 'Stapel geändert; bitte erneut prüfen.',
+    'stack_review_error': 'Prüfung fehlgeschlagen: {error}',
+    'stack_review_found': '{count} mögliche Duplikate. Wählen Sie aus, welche ausgeschlossen werden.',
+    'stack_review_none': 'Keine möglichen Duplikate gefunden.',
+    'stack_review_row': 'Ähnlich wie Bild {reference} (Unterschied {difference:.4f})',
     'standalone_retouch_action': 'Bilddateien retuschieren…',
     'standalone_retouch_result': 'Ergebnisbild auswählen',
     'standalone_retouch_sources': 'Passende Quellbilder auswählen',

@@ -1,6 +1,17 @@
 """Italian language pack for OpenFocus."""
 
 PACK = {
+    'stack_review_button': 'Esamina fotogrammi',
+    'stack_review_cancel': 'Annulla esame',
+    'stack_review_hint': 'Cerca fotogrammi adiacenti simili. Controlla i suggerimenti e scegli con le caselle quali escludere.',
+    'stack_review_working': 'Analisi dei fotogrammi…',
+    'stack_review_cancelling': 'Annullamento esame…',
+    'stack_review_cancelled': 'Esame annullato.',
+    'stack_review_stale': 'La pila è cambiata; ripeti l’esame.',
+    'stack_review_error': 'Esame non riuscito: {error}',
+    'stack_review_found': '{count} possibili duplicati. Scegli quali escludere.',
+    'stack_review_none': 'Nessun possibile duplicato trovato.',
+    'stack_review_row': 'Simile al fotogramma {reference} (differenza {difference:.4f})',
     'standalone_retouch_action': 'Ritocca file immagine…',
     'standalone_retouch_result': 'Scegli immagine risultato',
     'standalone_retouch_sources': 'Scegli fotogrammi sorgente corrispondenti',

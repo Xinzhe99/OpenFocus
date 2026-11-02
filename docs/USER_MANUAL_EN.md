@@ -369,6 +369,16 @@ To remove all loaded images, go to **File → Clear Stack** or press `Ctrl+W`.
 - **File List**: Click any filename in the right panel's source images list
 - **Keyboard**: Use arrow keys (Left/Right) to navigate
 
+### Reviewing similar frames
+
+Click **Review frames** below the source list header to find adjacent frames
+whose pixels are nearly identical. The button changes to **Cancel review**
+while analysis runs. Each suggested row names its reference frame and difference;
+inspect both before using the source checkbox to exclude a frame from fusion.
+Suggestions never change checkboxes or delete files. This conservative
+comparison can miss similar frames; changes confined to a small focused region
+are not averaged away. Results are discarded if the stack changes.
+
 ### Zooming and Panning
 
 - **Zoom In/Out**: Mouse wheel over the image
@@ -1150,10 +1160,21 @@ python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 
 # Single multi-page TIFF Z-stack with a metadata-calibrated scale bar
 python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
+
+# Inspect adjacent similar frames without fusing or changing the input
+python main.py -i ./stack_folder --suggest-duplicates
 ```
+
+`--suggest-duplicates` accepts a folder or an ordered list of single-frame
+image files. It prints one JSON object with `files` and `suggestions` arrays;
+each suggestion's `index` and `reference_index` are zero-based positions in
+`files`, and `difference` is the mean normalized sample difference. Add
+`--json report.json` to save the same object. This review mode does not combine
+with `--output`, `--output-dir`, `--json-progress`, or `--dry-run`.
 
 | Option | Description |
 |--------|-------------|
+| `--suggest-duplicates` | Report nearly identical adjacent frames for manual review; does not fuse or exclude them |
 | `--input, -i` | Image folder, video file, or one or more image files |
 | `--output, -o` | Output image path (extension sets the format) |
 | `--method, -m` | `stackmffv3` (default), `none`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |

@@ -160,6 +160,8 @@ class RightPanelComponents:
     source_images_label: QLabel
     btn_select_all: QPushButton
     btn_select_none: QPushButton
+    btn_review_stack: QPushButton
+    review_status: QLabel
     file_list: QListWidget
     output_label: QLabel
     output_list: QListWidget
@@ -347,6 +349,16 @@ def create_right_panel() -> RightPanelComponents:
     source_header.addWidget(btn_all)
     source_header.addWidget(btn_none)
     source_list_layout.addLayout(source_header)
+    review_row = QHBoxLayout()
+    btn_review_stack = QPushButton(trans.t('stack_review_button'))
+    btn_review_stack.setObjectName("secondaryButton")
+    btn_review_stack.setToolTip(trans.t('stack_review_hint'))
+    btn_review_stack.setEnabled(False)
+    review_status = QLabel()
+    review_status.setWordWrap(True)
+    review_row.addWidget(btn_review_stack)
+    review_row.addWidget(review_status, 1)
+    source_list_layout.addLayout(review_row)
 
     file_list = QListWidget()
     file_list.setIconSize(QSize(40, 40))
@@ -457,6 +469,8 @@ def create_right_panel() -> RightPanelComponents:
         source_images_label=source_images_label,
         btn_select_all=btn_all,
         btn_select_none=btn_none,
+        btn_review_stack=btn_review_stack,
+        review_status=review_status,
         file_list=file_list,
         output_label=output_label,
         output_list=output_list,
@@ -486,6 +500,7 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         lambda: _set_all_source_checks(True))
     components.btn_select_none.clicked.connect(
         lambda: _set_all_source_checks(False))
+    components.btn_review_stack.clicked.connect(window.source_manager.toggle_stack_review)
 
     components.combo_fusion.currentIndexChanged.connect(
         window.refresh_algorithm_parameters)

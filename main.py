@@ -3184,6 +3184,7 @@ class OpenFocus(QMainWindow):
         # destroys a running QThread at teardown and aborts the process)
         if hasattr(self, 'source_manager'):
             _shutdown_worker(getattr(self.source_manager, '_load_worker', None))
+            _shutdown_worker(getattr(self.source_manager, '_review_worker', None))
             self.source_manager._load_worker = None
 
         # Stop update download/stage workers if running. The background
@@ -3484,6 +3485,7 @@ class OpenFocus(QMainWindow):
         c.btn_select_all.setToolTip(trans.t('btn_select_all_hint'))
         c.btn_select_none.setText(trans.t('btn_select_none'))
         c.btn_select_none.setToolTip(trans.t('btn_select_none_hint'))
+        self.source_manager.decorate_source_items()
         # Keep the cancel/progress affordance while a render runs — the
         # retranslation must not reset it to the idle "Render" label.
         busy = (getattr(self.render_manager, 'worker', None) is not None

@@ -1,6 +1,17 @@
 """Russian language pack for OpenFocus."""
 
 PACK = {
+    'stack_review_button': 'Проверить кадры',
+    'stack_review_cancel': 'Отменить проверку',
+    'stack_review_hint': 'Поиск похожих соседних кадров. Просмотрите предложения и снимите флажки с кадров, которые нужно исключить.',
+    'stack_review_working': 'Анализ кадров…',
+    'stack_review_cancelling': 'Отмена проверки…',
+    'stack_review_cancelled': 'Проверка отменена.',
+    'stack_review_stale': 'Стек изменился; проверьте его снова.',
+    'stack_review_error': 'Ошибка проверки: {error}',
+    'stack_review_found': 'Возможных дубликатов: {count}. Выберите кадры для исключения.',
+    'stack_review_none': 'Возможные дубликаты не найдены.',
+    'stack_review_row': 'Похож на кадр {reference} (разница {difference:.4f})',
     'standalone_retouch_action': 'Ретушировать файлы изображений…',
     'standalone_retouch_result': 'Выберите изображение результата',
     'standalone_retouch_sources': 'Выберите соответствующие исходные кадры',

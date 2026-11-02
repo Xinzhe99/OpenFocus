@@ -1,6 +1,17 @@
 """Korean language pack for OpenFocus."""
 
 PACK = {
+    'stack_review_button': '프레임 검토',
+    'stack_review_cancel': '검토 취소',
+    'stack_review_hint': '인접한 유사 프레임을 찾습니다. 제안을 확인하고 체크박스로 제외할 프레임을 선택하세요.',
+    'stack_review_working': '프레임 분석 중…',
+    'stack_review_cancelling': '검토 취소 중…',
+    'stack_review_cancelled': '검토가 취소되었습니다.',
+    'stack_review_stale': '스택이 변경되었습니다. 다시 검토하세요.',
+    'stack_review_error': '검토 실패: {error}',
+    'stack_review_found': '중복 가능성 {count}개. 제외할 프레임을 선택하세요.',
+    'stack_review_none': '중복 가능성이 발견되지 않았습니다.',
+    'stack_review_row': '프레임 {reference}와 유사 (차이 {difference:.4f})',
     'standalone_retouch_action': '이미지 파일 리터치…',
     'standalone_retouch_result': '결과 이미지 선택',
     'standalone_retouch_sources': '일치하는 원본 프레임 선택',
