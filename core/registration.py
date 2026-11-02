@@ -153,6 +153,20 @@ if getattr(sys, "frozen", False) and sys.stdout is not None and hasattr(sys.stdo
 
 # ========== 基于变换矩阵的精确裁切函数 ==========
 
+from contextvars import ContextVar
+
+# Grouped fusion records crop offsets in the reference image's pixel grid.
+grouped_crop_offsets = ContextVar('grouped_crop_offsets', default=None)
+
+
+def _record_grouped_crop(top, bottom, left, right):
+    offsets = grouped_crop_offsets.get()
+    if offsets is not None:
+        if top >= bottom or left >= right:
+            raise ValueError('Registration has no common valid region; disable grouping or use better aligned inputs')
+        offsets.append((left, top, right, bottom))
+
+
 def _compute_valid_region_from_transforms(H_matrices, img_shape, margin=2):
     """
     通过变换矩阵计算所有图像的公共有效区域
@@ -165,6 +179,30 @@ def _compute_valid_region_from_transforms(H_matrices, img_shape, margin=2):
     Returns:
         (top, bottom, left, right): 公共有效区域的边界
     """
+    if grouped_crop_offsets.get() is not None:
+        # Lanczos4 samples a radius of four source pixels. Transform an inset
+        # rectangle, then retain an axis-aligned rectangle inside every warp.
+        h, w = img_shape
+        if min(h, w) <= 8:
+            raise ValueError('Grouped registration requires images larger than 8 pixels in each dimension')
+        corners = np.array([[4, w - 4, w - 4, 4],
+                            [4, 4, h - 4, h - 4], [1, 1, 1, 1]], dtype=np.float64)
+        left, top, right, bottom = 0.0, 0.0, float(w), float(h)
+        for matrix in H_matrices:
+            transformed = np.asarray(matrix, dtype=np.float64) @ corners
+            denominator = transformed[2]
+            if (not np.all(np.isfinite(transformed)) or np.any(np.abs(denominator) < 1e-10)
+                    or not (np.all(denominator > 0) or np.all(denominator < 0))):
+                raise ValueError('Grouped registration cannot safely crop this projective transform; disable grouping')
+            x, y = transformed[:2] / denominator
+            if not (x[0] < x[1] and x[3] < x[2] and y[0] < y[3] and y[1] < y[2]):
+                raise ValueError('Grouped registration cannot safely crop this rotated or projective transform; disable grouping')
+            left = max(left, x[0], x[3])
+            right = min(right, x[1], x[2])
+            top = max(top, y[0], y[1])
+            bottom = min(bottom, y[2], y[3])
+        return int(np.ceil(top)), int(np.floor(bottom)), int(np.ceil(left)), int(np.floor(right))
+
     h, w = img_shape
     
     # 图像四个角点
@@ -401,6 +439,7 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
     
     # 预先计算裁切区域，直接变换到目标区域，避免先变换后裁切的浪费
     top, bottom, left, right = _compute_valid_region_from_transforms(H_matrices, (h_orig, w_orig))
+    _record_grouped_crop(top, bottom, left, right)
     
     do_crop = True
     if top >= bottom or left >= right:
@@ -819,6 +858,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
     # corrections map source coordinates into the output canvas.
     top, bottom, left, right = _compute_valid_region_from_transforms(
         corrections, (h, w), margin=0 if min(h, w) <= 4 else 2)
+    _record_grouped_crop(top, bottom, left, right)
     if top >= bottom or left >= right:
         raise ValueError("Registration transforms have no common valid crop")
     aligned = [img[top:bottom, left:right] for img in aligned]
@@ -980,6 +1020,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     # 计算公共有效区域
     top, bottom, left, right = _compute_valid_region_from_transforms(H_matrices, (h_orig, w_orig))
+    _record_grouped_crop(top, bottom, left, right)
     
     do_crop = True
     if top >= bottom or left >= right:
@@ -1357,17 +1398,34 @@ class ImageRegistration:
                 images = []
                 for path in paths:
                     _check_cancel(should_cancel)
-                    from core.image_loader import decode_image, _read_tiff_pages
-                    _read_tiff_pages(path)
-                    decode_image(path)
-                    flags = cv2.IMREAD_UNCHANGED if self.method == 'openfocus' else cv2.IMREAD_COLOR
+                    from core.image_loader import _has_transparency, UnsupportedTransparency
                     data = np.fromfile(path, dtype=np.uint8)
-                    image = cv2.imdecode(data, flags) if data.size else None
+                    multipage = False
+                    if os.path.splitext(path)[1].lower() in ('.tif', '.tiff'):
+                        with Image.open(path) as header:
+                            multipage = getattr(header, 'n_frames', 1) > 1
+                    if multipage:
+                        ok, pages = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED)
+                        if not ok or not pages:
+                            raise ValueError(f"Could not decode registration frame: {path}")
+                        if any(_has_transparency(page) for page in pages):
+                            raise UnsupportedTransparency(f"Transparent TIFF pages are unsupported: {path}")
+                        image = pages[0]
+                    else:
+                        image = cv2.imdecode(data, cv2.IMREAD_UNCHANGED) if data.size else None
+                        if image is not None and _has_transparency(image):
+                            raise UnsupportedTransparency(f"Registration of transparent images is unsupported: {path}")
                     _check_cancel(should_cancel)
                     if image is None:
                         raise ValueError(f"Could not decode registration frame: {path}")
-                    if flags == cv2.IMREAD_UNCHANGED:
-                        image = apply_exif_orientation(path, image)
+                    if self.method != 'openfocus':
+                        if image.dtype == np.uint16:
+                            image = (image >> 8).astype(np.uint8)
+                        if image.ndim == 2:
+                            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+                        elif image.shape[2] == 4:
+                            image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+                    image = apply_exif_orientation(path, image)
                     images.append(image)
                 filenames = [os.path.basename(path) for path in paths]
             if images is not None and len(images) and 'openfocus' in self.steps and self.parameters['reference_frame'] > len(images):

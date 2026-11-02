@@ -89,8 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Batch mode: fuse every input folder, writing <folder>.<ext> here")
     parser.add_argument("--group-size", type=int, default=0, metavar="FRAMES",
                         help="Fuse a folder in overlapping groups of at most FRAMES (0 disables). "
-                             "Approximate, uses temporary disk; single-frame Pillow-readable "
-                             "images only, no RAW or depth maps.")
+                             "Approximate; registration crops a conservative common region each round. "
+                             "Matching single-frame Pillow-readable inputs only; no RAW, alpha, multipage or depth maps.")
     parser.add_argument("--group-overlap", type=int, default=0, metavar="FRAMES",
                         help="Frames shared by consecutive groups (default 0; at most group size minus 2).")
     parser.add_argument("--method", "-m", default="stackmffv3",
@@ -425,13 +425,19 @@ def _fuse_stack_admitted(images, args):
     return fused
 
 
-def _fuse_grouped(paths, args):
-    """Fuse an ordered folder in bounded groups, then combine the results."""
-    from core.grouped_fusion import grouped_fuse
+def _inspect_grouped_cli(paths, args):
+    from core.grouped_fusion import inspect_grouped_inputs
     _resolve_algorithm_arguments(args)
     if (args.align == 'openfocus'
             and args._registration_parameters.get('reference_frame', 1) != 1):
         raise ValueError('Grouped fusion cannot use a stack-wide alignment reference; use frame 1 or disable grouping')
+    inspect_grouped_inputs(paths)
+
+
+def _fuse_grouped(paths, args):
+    """Fuse an ordered folder in bounded groups, then combine the results."""
+    from core.grouped_fusion import grouped_fuse
+    _inspect_grouped_cli(paths, args)
 
     group_args = argparse.Namespace(**vars(args))
     group_args._grouped = True
@@ -617,6 +623,8 @@ def _run_batch(args, _emit_json=None) -> int:
                 frames = sum(count_frames(p) for p in paths)
                 if frames < 2:
                     raise ValueError(f"need at least 2 frames, found {frames}")
+                if folder_args.group_size:
+                    _inspect_grouped_cli(paths, folder_args)
                 _say(f"[dry-run] frames={frames} method={folder_args.method} "
                      f"align={folder_args.align} output={out_path}")
             except Exception as exc:
@@ -932,6 +940,8 @@ def _run_cli_admitted(argv: List[str]) -> int:
             _src, paths = _resolve_stack(args, video_temp)
             _say(f"Loaded {len(paths)} image(s) from {_src}")
 
+            if args.group_size and args.dry_run:
+                _inspect_grouped_cli(paths, args)
             if args.dry_run:
                 _say(f"[dry-run] method={args.method} align={args.align} "
                       f"frames={len(paths)} output={args.output}")
