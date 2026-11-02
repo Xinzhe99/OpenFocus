@@ -2086,7 +2086,7 @@ class OpenFocus(QMainWindow):
         from dialogs.dustmap import DustMapDialog
         DustMapDialog(self).exec()
 
-    def apply_flat_field_to_stack(self, gain, remove_index=None, prepared=None) -> bool:
+    def apply_flat_field_to_stack(self, gain, remove_index=None, prepared=None, reference=None) -> bool:
         """Commit corrected source/base frames and optional removal together."""
         import time as _time
         from utils.dust_map import apply_flat_field_stack
@@ -2132,8 +2132,15 @@ class OpenFocus(QMainWindow):
                                        if i != remove_index]
             self.excluded_frames = {i - (i > remove_index)
                                     for i in self.excluded_frames if i != remove_index}
-        self.unrecoverable_source_changes = list(getattr(
-            self, "unrecoverable_source_changes", []) or []) + [trans.t('dust_title')]
+        same_scale = abs(float(getattr(self, "current_scale_factor", 1.0) or 1.0)
+                         - float(getattr(self, "base_scale_factor", 1.0) or 1.0)) < 1e-9
+        if reference and remove_index is None and same_scale:
+            self.source_transforms = list(getattr(self, "source_transforms", [])) + [{
+                "operation": "flat_field", **reference,
+                "scale": float(getattr(self, "current_scale_factor", 1.0) or 1.0)}]
+        else:
+            self.unrecoverable_source_changes = list(getattr(
+                self, "unrecoverable_source_changes", []) or []) + [trans.t('dust_title')]
         if hasattr(self.get_or_create_source_pixmap, "cache_clear"):
             self.get_or_create_source_pixmap.cache_clear()
         self.transform_manager._invalidate_processing_results(

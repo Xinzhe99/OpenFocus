@@ -456,6 +456,17 @@ class BatchProcessingDialog(QDialog):
         self.chk_sharpen_output.setToolTip(trans.t('chk_sharpen_output_hint'))
         options_layout.addWidget(self.chk_sharpen_output)
 
+        flat_row = QHBoxLayout()
+        flat_row.addWidget(QLabel(trans.t('dust_from_file')))
+        self.flat_field_path = QLineEdit()
+        self.flat_field_path.setPlaceholderText(trans.t('dust_no_file'))
+        self.flat_field_path.setToolTip(trans.t('batch_flat_field_hint'))
+        flat_row.addWidget(self.flat_field_path, 1)
+        flat_browse = QPushButton(trans.t('dust_browse'))
+        flat_browse.clicked.connect(self._browse_flat_field)
+        flat_row.addWidget(flat_browse)
+        options_layout.addLayout(flat_row)
+
         last_dir = self._last_pick_dir()
         if last_dir:
             self.path_input.setText(last_dir)
@@ -1129,6 +1140,13 @@ class BatchProcessingDialog(QDialog):
             return 'count', int(param_value)
         return 'time_threshold', float(param_value)
     
+    def _browse_flat_field(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, trans.t('dust_browse'), '',
+            'Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp)')
+        if path:
+            self.flat_field_path.setText(path)
+
     def browse_output_folder(self):
         """浏览输出文件夹"""
         from PyQt6.QtWidgets import QFileDialog
@@ -1298,6 +1316,7 @@ class BatchProcessingDialog(QDialog):
             'group_overlap': self.group_overlap_spin.value(),
             "save_aligned": save_aligned,  # 是否保存对齐后的图像栈
             "scale_bar": scale_cfg,
+            'flat_field_path': self.flat_field_path.text().strip(),
             'load_scale_factor': self.load_scale_factor,
             'runtime_settings': runtime,
             'frozen_stacks': [list(stack) for stack in self.single_folder_stacks],

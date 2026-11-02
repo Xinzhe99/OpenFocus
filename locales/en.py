@@ -342,6 +342,7 @@ EN = {
     "dust_title": "Dust Map (Flat-field Correction)",
     "dust_intro": "Corrects static dust specks and vignetting with one defocused shot of a blank/white area: the gain field is divided out of every frame before registration.",
     "dust_from_file": "White-field image from file",
+    "batch_flat_field_hint": "Optional white-field image at the original stack resolution. Applied before registration to each batch stack; leave empty to skip. The default dust size is used.",
     "dust_from_stack": "From a frame of this stack",
     "dust_browse": "Browse...",
     "dust_no_file": "No white-field image selected",

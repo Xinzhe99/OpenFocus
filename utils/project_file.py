@@ -1,7 +1,7 @@
 """Project files reference source frames and reproducible processing settings.
 
-Output pixels, retouch history and applied white-field correction are not stored;
-those images require a separate export. Source order includes TIFF page identity.
+Output pixels and retouch history are not stored. File-backed flat-field
+corrections are restored only while their reference remains unchanged.
 """
 import json
 import os
@@ -97,6 +97,32 @@ def apply_template(window, settings):
     mark = getattr(window, "_mark_project_dirty", None)
     if callable(mark):
         mark()
+
+
+def _validate_source_transforms(transforms, scale):
+    from utils.dust_map import load_flat_field_reference
+    if not isinstance(transforms, list):
+        raise ValueError("invalid source transformations")
+    for item in transforms:
+        if not isinstance(item, dict):
+            raise ValueError("invalid source transformations")
+        operation = item.get("operation")
+        if operation in ("rotate", "flip"):
+            if item.get("code") not in ((0, 1, 2) if operation == "rotate" else (-1, 0, 1)):
+                raise ValueError("invalid source transformations")
+        elif operation == "flat_field":
+            path, digest = item.get("path"), item.get("sha256")
+            sigma, reference_scale = item.get("sigma"), item.get("scale")
+            if (not isinstance(path, str) or not os.path.isabs(path)
+                    or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                    or isinstance(sigma, bool) or not isinstance(sigma, (int, float))
+                    or not math.isfinite(sigma) or not 1 <= sigma <= 40
+                    or isinstance(reference_scale, bool) or not isinstance(reference_scale, (int, float))
+                    or not math.isfinite(reference_scale) or abs(reference_scale - scale) > 1e-9):
+                raise ValueError("Invalid flat-field reference or working scale; export the source stack first")
+            load_flat_field_reference(path, expected_hash=digest)
+        else:
+            raise ValueError("invalid source transformations")
 
 
 def _collect_state(window) -> Dict[str, Any]:
@@ -238,6 +264,7 @@ def save_project(window, path: str) -> Tuple[bool, str]:
         return False, "Export the processed source stack before saving a project: " + "; ".join(limitations)
     try:
         state = _collect_state(window)
+        _validate_source_transforms(state.get("source_transforms", []), state["scale_factor"])
         missing = [source for source in state["sources"] if not os.path.isfile(source)]
         if missing:
             return False, "Source file is unavailable: " + missing[0]
@@ -320,12 +347,6 @@ def validate_project(path: str, source_root: Optional[str] = None) -> Tuple[bool
             or not 0 <= frame["source"] < len(sources)
             or not isinstance(frame.get("name"), str) for frame in frames)):
         return False, "invalid project frame order", {}
-    transforms = state.get("source_transforms", [])
-    if not isinstance(transforms, list) or any(
-            not isinstance(item, dict) or item.get("operation") not in ("rotate", "flip")
-            or item.get("code") not in ((0, 1, 2) if item.get("operation") == "rotate" else (-1, 0, 1))
-            for item in transforms):
-        return False, "invalid source transformations", {}
     project_dir = os.path.dirname(os.path.abspath(path))
     resolved = (_relocated_sources(state, source_root, project_dir) if source_root is not None
                 else _resolve_sources(state, project_dir))
@@ -368,6 +389,10 @@ def validate_project(path: str, source_root: Optional[str] = None) -> Tuple[bool
         state["scale_factor"] = 1.0
     if not math.isfinite(state["scale_factor"]) or not 0 < state["scale_factor"] <= 1:
         return False, "invalid working scale", {}
+    try:
+        _validate_source_transforms(state.get("source_transforms", []), state["scale_factor"])
+    except (OSError, ValueError) as exc:
+        return False, str(exc), {}
     return True, "", state
 
 
@@ -572,8 +597,14 @@ def _prepare_project_load(window, state, options):
         options.base_images = [options.base_images[i] for i in order]
         paths = [paths[i] for i in order]
     for item in state.get("source_transforms", []):
-        transform = cv2.rotate if item["operation"] == "rotate" else cv2.flip
-        options.base_images = [transform(image, item["code"]) for image in options.base_images]
+        if item["operation"] == "flat_field":
+            from utils.dust_map import load_flat_field_reference, compute_flat_field, apply_flat_field
+            white, _ = load_flat_field_reference(item["path"], expected_hash=item["sha256"])
+            gain = compute_flat_field(white, sigma=item["sigma"])
+            options.base_images = [apply_flat_field(image, gain) for image in options.base_images]
+        else:
+            transform = cv2.rotate if item["operation"] == "rotate" else cv2.flip
+            options.base_images = [transform(image, item["code"]) for image in options.base_images]
     options.working_images = list(options.base_images)
     window.image_loader.image_paths = paths
     return options

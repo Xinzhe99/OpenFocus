@@ -936,6 +936,24 @@ class BatchWorker(QThread):
                     raise ValueError('Fusion requires at least two frames')
         
                 aligned_images = images.copy()
+                reference = self.processing_settings.get('flat_field_path', '')
+                if reference:
+                    from utils.dust_map import (load_flat_field_reference, compute_flat_field,
+                                                apply_flat_field)
+                    scale = float(self.processing_settings.get('load_scale_factor', 1.0))
+                    white, _ = load_flat_field_reference(reference, scale=scale)
+                    if self.is_cancelled:
+                        raise RegistrationCancelled()
+                    require_memory(sum(frame.nbytes for frame in aligned_images)
+                                   + max(frame.size * 12 for frame in aligned_images)
+                                   + white.size * 12)
+                    gain = compute_flat_field(white)
+                    corrected = []
+                    for frame in aligned_images:
+                        if self.is_cancelled:
+                            raise RegistrationCancelled()
+                        corrected.append(apply_flat_field(frame, gain))
+                    aligned_images = corrected
                 alignment = self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ()))
                 steps = alignment_steps(alignment)
                 if steps:

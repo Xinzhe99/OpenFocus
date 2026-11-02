@@ -344,6 +344,7 @@ PACK = {
     "dust_title": "Mapa pyłu (korekcja pola płaskiego)",
     "dust_intro": "Koryguje statyczne plamki pyłu i winietowanie jednym rozogniskowanym zdjęciem pustego/białego obszaru: pole wzmocnienia jest dzielone z każdej klatki przed rejestracją.",
     "dust_from_file": "Obraz białego pola z pliku",
+    "batch_flat_field_hint": "Opcjonalny obraz białego pola w oryginalnej rozdzielczości. Stosowany przed wyrównaniem każdego stosu; puste pole pomija korekcję. Używa domyślnego rozmiaru pyłu.",
     "dust_from_stack": "Z klatki tego stosu",
     "dust_browse": "Przeglądaj...",
     "dust_no_file": "Nie wybrano obrazu białego pola",

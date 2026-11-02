@@ -344,6 +344,7 @@ PACK = {
     "dust_title": "Carte de poussière (correction de champ plat)",
     "dust_intro": "Corrige les taches de poussière fixes et le vignetage à l'aide d'une prise de vue défocalisée d'une zone blanche : le champ de gain est divisé de chaque image avant le recalage.",
     "dust_from_file": "Image de champ blanc depuis un fichier",
+    "batch_flat_field_hint": "Image de champ blanc facultative à la résolution d'origine. Appliquée avant le recalage de chaque pile ; laisser vide pour ignorer. Taille de poussière par défaut.",
     "dust_from_stack": "Depuis une image de cette pile",
     "dust_browse": "Parcourir...",
     "dust_no_file": "Aucune image de champ blanc sélectionnée",
