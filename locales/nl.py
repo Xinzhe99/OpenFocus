@@ -13,6 +13,8 @@ PACK = {
     "menu_save_template": "Verwerkingssjabloon opslaan…",
     "msg_template_saved": "Sjabloon opgeslagen zonder bronpaden.",
     "msg_template_applied": "Instellingen toegepast op de huidige stapel.",
+    "label_align_reference_frame": "Referentiebeeld (vanaf 1)",
+    "align_reference_frame_hint": "Nummer in de verwerkte beeldvolgorde; elke stapel moet dit beeld bevatten. De helderheidsreferentie staat hier los van.",
     "label_align_failure_policy": "Afgewezen beelden verwerken",
     "align_failure_continue": "Doorgaan met niet-uitgelijnd beeld",
     "align_failure_fail": "Stoppen bij afgewezen beeld",

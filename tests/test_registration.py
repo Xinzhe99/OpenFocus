@@ -131,6 +131,35 @@ def test_openfocus_recovers_rotation_scale_and_translation_together():
     aligned_error = np.abs(aligned[0].astype(np.float32) - aligned[1]).mean()
     assert aligned_error < raw_error * 0.15
 
+@pytest.mark.parametrize("reference", [2, 3])
+def test_openfocus_selected_reference_aligns_both_sides_without_reordering(reference):
+    from core.registration import _align_openfocus_impl
+    frames, _ = _shifted_stack(dx=4, dy=2)
+    base = frames[0]
+    frames = [base, cv2.warpAffine(base, np.float32([[1, 0, 4], [0, 1, 2]]),
+                                   (base.shape[1], base.shape[0]), borderMode=cv2.BORDER_REFLECT),
+              cv2.warpAffine(base, np.float32([[1, 0, 8], [0, 1, 4]]),
+                             (base.shape[1], base.shape[0]), borderMode=cv2.BORDER_REFLECT)]
+    aligned = _align_openfocus_impl(frames, reference_frame=reference,
+                                    equalize_brightness=False, thread_count=1,
+                                    failure_policy="fail")
+    anchor = aligned[reference - 1]
+    # The anchor is cropped but never warped, and every other frame reaches it.
+    source = frames[reference - 1]
+    ys, xs = np.where(np.all(source == anchor[0, 0], axis=2))
+    assert any(np.array_equal(source[y:y + anchor.shape[0], x:x + anchor.shape[1]], anchor)
+               for y, x in zip(ys, xs))
+    for image in aligned:
+        assert np.abs(image.astype(np.float32) - anchor).mean() < 10
+
+
+def test_openfocus_reference_outside_stack_is_an_error():
+    frame = np.zeros((20, 20), dtype=np.uint16)
+    registration = ImageRegistration(method="openfocus", parameters={"reference_frame": 2})
+    with pytest.raises(ValueError, match="reference frame 2.*stack of 1"):
+        registration.process([frame])
+
+
 def test_openfocus_strict_policy_accepts_known_translation_and_preserves_uint16():
     frames, _ = _shifted_stack(dx=5, dy=3, size=(140, 180))
     frames = [frame.astype(np.uint16) * 257 for frame in frames]

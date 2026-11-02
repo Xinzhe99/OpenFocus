@@ -17,6 +17,8 @@ ZH = {
     "menu_save_template": "保存处理模板…",
     "msg_template_saved": "已保存处理模板，不含源文件路径。",
     "msg_template_applied": "处理设置已应用于当前图像栈。",
+    "label_align_reference_frame": "参考帧（从 1 开始）",
+    "align_reference_frame_hint": "按参与处理的帧顺序编号；每个批处理图像栈都必须包含该帧。亮度参考帧单独设置。",
     "label_align_failure_policy": "被拒绝帧的处理",
     "align_failure_continue": "继续使用未对齐帧",
     "align_failure_fail": "遇到被拒绝帧时停止",

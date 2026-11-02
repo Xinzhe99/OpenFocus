@@ -13,6 +13,8 @@ PACK = {
     "menu_save_template": "Zapisz szablon przetwarzania…",
     "msg_template_saved": "Zapisano szablon bez ścieżek źródłowych.",
     "msg_template_applied": "Zastosowano ustawienia do bieżącego stosu.",
+    "label_align_reference_frame": "Klatka odniesienia (od 1)",
+    "align_reference_frame_hint": "Numer w kolejności przetwarzanych klatek; każdy stos wsadowy musi ją zawierać. Odniesienie jasności jest osobne.",
     "label_align_failure_policy": "Obsługa odrzuconych klatek",
     "align_failure_continue": "Kontynuuj z niewyrównaną klatką",
     "align_failure_fail": "Zatrzymaj po odrzuceniu klatki",

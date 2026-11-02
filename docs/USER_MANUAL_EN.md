@@ -416,14 +416,20 @@ Image registration corrects spatial misalignment between frames in your image st
   Choose **Stop on rejected frame** to fail the render or batch item before
   producing a result when detector quality is below 0.06 or the estimated
   motion exceeds the configured shift limit, 8° rotation, or 5% scale change.
-  Frames are numbered from 1 in the error, in the processed stack order. The
-  first frame is the geometric reference; a weak direct match may be retried
-  against the previous frame. This policy detects rejected estimates, not all
+  Frames are numbered from 1 in the processed stack order. The geometric
+  reference defaults to frame 1; a weak direct match may be retried against
+  the adjacent frame closer to the reference. This policy detects rejected estimates, not all
   incorrect matches: low texture, repeated patterns, occlusion, large motion,
   or focus changes can still defeat registration. Inspect the result.
 - In the CLI, select the same policy with `--align openfocus --align-param
   'failure_policy="fail"'` (use shell-appropriate quoting). Batch items use
   the selected policy independently. The default is `"continue"`.
+- Set **Reference frame** to a 1-based number in the included, processed stack
+  order to anchor geometry to that frame. Frame order is preserved; brightness
+  equalization uses its own reference. Every batch stack must contain that
+  number or the item fails. CLI example: `--align openfocus --align-param
+  reference_frame=3`. Choosing a reference cannot correct parallax or a poor
+  match; inspect the result.
 
 ### Enabling Registration
 

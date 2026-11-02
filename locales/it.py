@@ -13,6 +13,8 @@ PACK = {
     "menu_save_template": "Salva modello di elaborazione…",
     "msg_template_saved": "Modello salvato senza percorsi sorgente.",
     "msg_template_applied": "Impostazioni applicate alla pila corrente.",
+    "label_align_reference_frame": "Fotogramma di riferimento (da 1)",
+    "align_reference_frame_hint": "Numero nell’ordine dei fotogrammi elaborati; ogni serie del lotto deve contenerlo. Il riferimento di luminosità è separato.",
     "label_align_failure_policy": "Gestione dei fotogrammi rifiutati",
     "align_failure_continue": "Continua con il fotogramma non allineato",
     "align_failure_fail": "Interrompi se un fotogramma è rifiutato",

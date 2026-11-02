@@ -13,6 +13,8 @@ PACK = {
     "menu_save_template": "Salvar modelo de processamento…",
     "msg_template_saved": "Modelo salvo sem caminhos de origem.",
     "msg_template_applied": "Configurações aplicadas à pilha atual.",
+    "label_align_reference_frame": "Quadro de referência (a partir de 1)",
+    "align_reference_frame_hint": "Número na ordem dos quadros processados; cada pilha do lote deve contê-lo. A referência de brilho é independente.",
     "label_align_failure_policy": "Tratamento de quadros rejeitados",
     "align_failure_continue": "Continuar com o quadro não alinhado",
     "align_failure_fail": "Parar ao rejeitar um quadro",

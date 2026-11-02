@@ -13,6 +13,8 @@ PACK = {
     "menu_save_template": "Enregistrer le modèle de traitement…",
     "msg_template_saved": "Modèle enregistré sans chemins sources.",
     "msg_template_applied": "Paramètres appliqués à la pile actuelle.",
+    "label_align_reference_frame": "Image de référence (à partir de 1)",
+    "align_reference_frame_hint": "Numéro dans l’ordre des images traitées ; chaque pile du lot doit contenir cette image. La référence de luminosité est distincte.",
     "label_align_failure_policy": "Traitement des images rejetées",
     "align_failure_continue": "Continuer avec l’image non alignée",
     "align_failure_fail": "Arrêter si une image est rejetée",
