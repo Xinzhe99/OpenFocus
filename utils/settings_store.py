@@ -67,6 +67,7 @@ _PERSISTED_FIELDS = {
     "ai_batch_size": ("rendering/ai_batch_size", 2, int),
     "use_gpu": ("rendering/use_gpu", True, "bool"),
     "align_cache_enabled": ("rendering/align_cache_enabled", True, "bool"),
+    "output_name_prefix": ("export/name_prefix", "", "str"),
     "restore_last_stack": ("ui/restore_last_stack", False, "bool"),
     "ui_theme": ("ui/theme", DEFAULT_THEME, "str"),
     "scale_bar_enabled": ("export/scale_bar_enabled", False, "bool"),

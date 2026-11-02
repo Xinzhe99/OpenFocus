@@ -11,6 +11,17 @@ _ALIGNED_SUFFIX = re.compile(r'^(?P<stem>.+?)(?:_registered)+(?:_(?P<n>\d+))?$',
                              re.IGNORECASE)
 
 
+def valid_output_prefix(prefix: str) -> bool:
+    """Accept a short portable prefix, or an empty prefix for the default."""
+    return (isinstance(prefix, str) and len(prefix) <= 40
+            and all(char.isalnum() or char in '_-' for char in prefix))
+
+
+def prefix_output_name(prefix: str, name: str) -> str:
+    """Apply only valid saved prefixes; damaged settings keep the default name."""
+    return f"{prefix}_{name}" if prefix and valid_output_prefix(prefix) else name
+
+
 def unique_path(path: str) -> str:
     """Preserve every existing target, including dangling links."""
     stem, extension = os.path.splitext(path)
