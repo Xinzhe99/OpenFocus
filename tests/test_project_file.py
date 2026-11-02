@@ -279,3 +279,35 @@ def test_template_rejects_source_references(tmp_path):
         "sources": ["other.png"]}}), encoding="utf-8")
     with pytest.raises(ValueError):
         project_file.load_template(str(path))
+
+
+def test_template_restores_registration_defaults_and_automatic_threads(tmp_path):
+    paths = _make_stack(str(tmp_path / 'stack'), n=2)
+    target = _window(paths, str(tmp_path / 'stack'))
+    target.thread_count = 8
+    target.set_registration_parameters('openfocus', {'reference_frame': 2})
+    project_file.apply_template(target, {'alignment_method': 'openfocus',
+                                         'registration_parameters': {'openfocus': {}},
+                                         'thread_count': 0})
+    assert target.registration_parameters_for('openfocus')['reference_frame'] == 1
+    assert target.thread_count == 0
+
+
+def test_project_template_extraction_does_not_require_sources(tmp_path):
+    project = tmp_path / 'missing.ofproj'
+    project.write_text(json.dumps({'openfocus_project': 3, 'sources': [str(tmp_path / 'missing.png')],
+                                   'settings': {'fusion_method': 'dct'}}), encoding='utf-8')
+    assert project_file.load_template(project)['fusion_method'] == 'dct'
+    assert not project_file.validate_project(project)[0]
+
+
+def test_template_write_failure_preserves_destination(tmp_path, monkeypatch):
+    paths = _make_stack(str(tmp_path / 'stack'), n=2)
+    destination = tmp_path / 'saved.oftemplate'
+    destination.write_text('original', encoding='utf-8')
+    def fail(*args):
+        raise OSError('replace failed')
+    monkeypatch.setattr(project_file.os, 'replace', fail)
+    with pytest.raises(OSError, match='replace failed'):
+        project_file.save_template(_window(paths, str(tmp_path / 'stack')), destination)
+    assert destination.read_text(encoding='utf-8') == 'original'

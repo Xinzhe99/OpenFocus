@@ -837,13 +837,14 @@ class BatchWorker(QThread):
                 split = self.import_mode == 'single_folder'
                 if split:
                     stacks = self._split_images_for_processing()
-                    source = os.path.dirname(self.single_folder_images_with_times[0][0]) if stacks else ''
+                    source = os.path.dirname(stacks[0][0][0]) if stacks and stacks[0] else ''
                     tasks = [(f'{os.path.basename(source)}_{i + 1:03d}', stack)
                              for i, stack in enumerate(stacks)]
                     from core.image_loader import _read_exif_bytes
-                    self._source_exif = _read_exif_bytes(self.single_folder_images_with_times[0][0]) if stacks else b''
+                    first = stacks[0][0][0] if stacks and stacks[0] else None
+                    self._source_exif = _read_exif_bytes(first) if first else b''
                     from utils.scalebar import detect_px_size_um
-                    self.image_loader.px_size_um = detect_px_size_um(self.single_folder_images_with_times[0][0]) if stacks else None
+                    self.image_loader.px_size_um = detect_px_size_um(first) if first else None
                 else:
                     tasks = [(os.path.basename(os.path.normpath(path)), path)
                              for path in self.folder_paths]
@@ -896,23 +897,20 @@ class BatchWorker(QThread):
 
     def _split_images_for_processing(self):
         """分割单文件夹中的图像"""
+        from utils.path_identity import same_path
+        reference = self.processing_settings.get('flat_field_path', '')
+        def keep(item):
+            return not same_path(item[3] if len(item) > 3 else item[0], reference)
         if self._frozen_stacks:
-            return self._frozen_stacks
-        if not self.single_folder_images_with_times:
-            return []
-
+            return [[item for item in stack if keep(item)] for stack in self._frozen_stacks]
+        entries = [item for item in self.single_folder_images_with_times if keep(item)]
+        if not entries:
+            return [[]] if self.single_folder_images_with_times else []
         if self.split_method == "count":
-            return self.image_loader.split_by_count(
-                self.single_folder_images_with_times,
-                self.split_param or 5
-            )
+            return self.image_loader.split_by_count(entries, self.split_param or 5)
         elif self.split_method == "time_threshold":
-            return self.image_loader.split_by_time_threshold(
-                self.single_folder_images_with_times,
-                self.split_param or 5.0
-            )
-        else:
-            return [self.single_folder_images_with_times]
+            return self.image_loader.split_by_time_threshold(entries, self.split_param or 5.0)
+        return [entries]
 
     def _stack_scale_cfg(self, target='output') -> Optional[dict]:
         cfg = dict(self.processing_settings.get('scale_bar') or {})
@@ -939,6 +937,12 @@ class BatchWorker(QThread):
         wrote no files at all while still being counted as a success.
         """
         images = [item[1] for item in stack_images_with_times]
+        from utils.path_identity import same_path
+        reference = self.processing_settings.get('flat_field_path', '')
+        if reference:
+            stack_images_with_times = [item for item in stack_images_with_times
+                                       if not same_path(item[3] if len(item) > 3 else item[0], reference)]
+            images = [item[1] for item in stack_images_with_times]
         with log_operation("batch_stack", stack_name=stack_name, stack_index=stack_index,
                            method=self.processing_settings.get('fusion_method'),
                            parameters=self.processing_settings.get('fusion_params'),
@@ -957,6 +961,8 @@ class BatchWorker(QThread):
         
                 aligned_images = images.copy()
                 reference = self.processing_settings.get('flat_field_path', '')
+                if reference and any(image.ndim == 3 and image.shape[2] == 4 for image in images):
+                    raise ValueError('Flat-field correction is not supported for transparent input')
                 if reference:
                     from utils.dust_map import (load_flat_field_reference, compute_flat_field,
                                                 apply_flat_field)
@@ -1093,7 +1099,8 @@ class BatchWorker(QThread):
         success, message, images, filenames = self.image_loader.load_from_folder(
             folder_path, scale_factor=scale,
             thread_count=self.thread_count,
-            resource_preference=getattr(self, 'resource_preference', 'balanced'))
+            resource_preference=getattr(self, 'resource_preference', 'balanced'),
+            exclude_paths=[self.processing_settings.get('flat_field_path', '')])
         if self.is_cancelled:
             raise RegistrationCancelled()
         if getattr(self.image_loader, 'failed_count', 0):
@@ -1134,6 +1141,9 @@ class BatchWorker(QThread):
         files = [(name, os.path.join(folder_path, name)) for name in os.listdir(folder_path)
                  if os.path.splitext(name)[1].lower() in self.image_loader.SUPPORTED_FORMATS]
         files = self.image_loader._drop_derived_aligned_copies(files)
+        from utils.path_identity import same_path
+        reference = settings.get('flat_field_path', '')
+        files = [(name, path) for name, path in files if not same_path(path, reference)]
         files.sort(key=lambda item: natural_sort_key(item[0]))
         paths = [path for _, path in files]
         if len(paths) < 2:
@@ -1167,10 +1177,9 @@ class BatchWorker(QThread):
         preprocess = None
         reference = settings.get('flat_field_path', '')
         if reference:
-            from utils.dust_map import load_flat_field_reference, compute_flat_field, apply_flat_field
-            white, _ = load_flat_field_reference(reference, scale=float(settings.get('load_scale_factor', 1.0)))
-            require_memory(white.size * 12)
-            gain = compute_flat_field(white)
+            from utils.dust_map import grouped_flat_field_gain, apply_flat_field
+            gain = grouped_flat_field_gain(reference, scale=float(settings.get('load_scale_factor', 1.0)),
+                                           should_cancel=lambda: self.is_cancelled)
             preprocess = lambda image: apply_flat_field(image, gain)
 
         def fuse_group(images):

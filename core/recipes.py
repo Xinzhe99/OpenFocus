@@ -65,6 +65,20 @@ def validate_recipe(recipe, recipe_path):
         raise ValueError("exactly one of output and output_dir is required")
     output_key = output_keys[0]
     output = _relative(recipe[output_key], base)
+    for source in paths:
+        if os.path.isdir(source):
+            try:
+                root = os.path.normcase(os.path.realpath(source))
+                destination = os.path.normcase(os.path.realpath(output))
+                inside = os.path.commonpath([root, destination]) == root
+            except ValueError:
+                inside = False
+            if inside:
+                raise ValueError('Recipe output must be outside input folders; choose a separate output location')
+        else:
+            from utils.path_identity import same_path
+            if output_key == 'output' and same_path(source, output):
+                raise ValueError('Recipe output would overwrite an explicitly selected source')
     if output_key == "output" and os.path.splitext(output)[1].lower() not in VALID_FORMATS:
         raise ValueError("unsupported output extension")
     options = recipe.get("options", {})
@@ -154,9 +168,8 @@ def load_recipe(path):
 def save_recipe(path, recipe):
     """Validate and save a recipe. Relative paths are relative to *path*."""
     validate_recipe(recipe, path)
-    with open(path, "w", encoding="utf-8") as stream:
-        json.dump(recipe, stream, ensure_ascii=False, indent=2, allow_nan=False)
-        stream.write("\n")
+    from utils.project_file import atomic_json_write
+    atomic_json_write(path, recipe)
 
 
 def run_recipe(path, *, dry_run=False):
@@ -216,6 +229,10 @@ def capture_project_recipe(path, project_path, argv):
     """
     import argparse
     from utils.project_file import validate_project, template_from_state
+    from utils.path_identity import same_path
+
+    if same_path(path, project_path):
+        raise ValueError("Recipe destination must differ from the source project")
 
     parser = argparse.ArgumentParser(prog="openfocus recipe create --project")
     parser.add_argument("--input", "-i", required=True, nargs="+")
@@ -223,7 +240,7 @@ def capture_project_recipe(path, project_path, argv):
     outputs.add_argument("--output", "-o")
     outputs.add_argument("--output-dir", "-d")
     args = parser.parse_args(argv)
-    ok, error, state = validate_project(os.fspath(project_path))
+    ok, error, state = validate_project(os.fspath(project_path), require_sources=False)
     if not ok:
         raise ValueError(error)
     if state.get("source_transforms"):
