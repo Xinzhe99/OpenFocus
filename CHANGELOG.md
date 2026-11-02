@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **RGB color profiles** are retained in single-image PNG, TIFF, JPEG and WebP
+  when all source frames have the same ICC profile. Historical outputs and
+  batch folders retain their own profiles; mixed or untagged stacks are not
+  assigned a potentially incorrect profile. PNG/TIFF keep their 16-bit pixels.
+
 ## [1.74.0] - 2026-11-02
 
 ### Changed

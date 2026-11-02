@@ -309,6 +309,15 @@ with auto-brightening disabled, so every frame of a stack gets the same
 exposure mapping; per-frame auto exposure would make brightness flicker
 between frames. Save as TIFF or PNG to keep the 16-bit data.
 
+### Color Profiles
+
+Single-image PNG, TIFF, JPEG and WebP exports retain the RGB ICC profile when
+every source frame has the same embedded profile. Mixed or untagged stacks are exported
+without an ICC profile. OpenFocus preserves the profile; it does not convert
+source pixels into a common color space or color-manage the preview. Convert
+mixed-profile images to a common color space before loading them. RAW input is
+developed to sRGB and does not inherit a camera profile.
+
 ### Clearing the Stack
 
 To remove all loaded images, go to **File → Clear Stack** or press `Ctrl+W`.

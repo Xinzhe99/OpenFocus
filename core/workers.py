@@ -696,6 +696,7 @@ class BatchWorker(QThread):
         self._task_artifacts = []
         self._task_failures = []
         self._source_exif = b""
+        self._source_icc_profile = b""
         self.is_cancelled = False
         self.import_mode = import_mode
         self.split_method = split_method
@@ -756,7 +757,8 @@ class BatchWorker(QThread):
                 if scale_cfg:
                     from utils import scalebar
                     image = scalebar.burn(image, scale_cfg)
-                ok = imwrite_auto(path, image, params, exif=self._source_exif)
+                ok = imwrite_auto(path, image, params, exif=self._source_exif,
+                                  icc_profile=self._source_icc_profile)
             except Exception as exc:
                 operation.fail()
                 self._task_failures.append({'path': path, 'error': str(exc)})
@@ -811,6 +813,8 @@ class BatchWorker(QThread):
                         try:
                             with heavy_job(lambda: self.is_cancelled):
                                 if split:
+                                    from core.image_loader import common_icc_profile
+                                    self._source_icc_profile = common_icc_profile(item[0] for item in data)
                                     self._process_single_stack(data, self._get_output_path_for_single_folder(source), name, index)
                                 else:
                                     self.process_single_folder(data)
@@ -1013,6 +1017,7 @@ class BatchWorker(QThread):
         if not success or not images:
             raise ValueError(message)
         self._source_exif = getattr(self.image_loader, 'source_exif', b'') or b''
+        self._source_icc_profile = getattr(self.image_loader, 'source_icc_profile', b'')
         entries = [(os.path.join(folder_path, name), image, None)
                    for name, image in zip(filenames, images)]
         self._process_single_stack(entries, self._get_output_path_for_single_folder(folder_path),

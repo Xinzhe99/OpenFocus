@@ -446,14 +446,14 @@ def _resolve_scale_cfg(args, paths):
     return {"px_um": px_um, "position": "bottom-right", "color": "auto"}
 
 
-def _save(path: str, fused, scale_cfg=None) -> None:
+def _save(path: str, fused, scale_cfg=None, icc_profile=b"") -> None:
     from utils.image_utils import imwrite_auto
     out_dir = os.path.dirname(os.path.abspath(path))
     os.makedirs(out_dir, exist_ok=True)
     if scale_cfg:
         from utils import scalebar
         fused = scalebar.burn(fused, scale_cfg)
-    if not imwrite_auto(path, fused):
+    if not imwrite_auto(path, fused, icc_profile=icc_profile):
         raise RuntimeError(f"Failed to write output: {path}")
 
 
@@ -540,7 +540,9 @@ def _run_batch(args, _emit_json=None) -> int:
                 resource_preference=getattr(args, "resource_preference",
                                             "balanced"))
             fused = _fuse_stack(images, folder_args)
-            _save(out_path, fused, _resolve_scale_cfg(folder_args, paths))
+            from core.image_loader import common_icc_profile
+            _save(out_path, fused, _resolve_scale_cfg(folder_args, paths),
+                  common_icc_profile(paths))
             _say(f"Saved: {out_path}")
             if args.depth_map:
                 _save_depth(folder_args, out_path)
@@ -799,8 +801,10 @@ def _run_cli_admitted(argv: List[str]) -> int:
             if fused is None:
                 raise RuntimeError("Fusion returned no result")
             scale_cfg = _resolve_scale_cfg(args, paths)
+            from core.image_loader import common_icc_profile
+            source_icc_profile = common_icc_profile(paths)
 
-        _save(args.output, fused, scale_cfg)
+        _save(args.output, fused, scale_cfg, source_icc_profile)
         _say(f"Saved: {args.output}")
         _progress(event="save", output=args.output)
         outputs = [args.output]

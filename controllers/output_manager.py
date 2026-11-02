@@ -57,6 +57,7 @@ class OutputRecord:
     aligned_names: tuple = ()
     exported_annotations: Optional[dict] = None
     annotations_changed: bool = False
+    icc_profile: bytes = b""
 
     @classmethod
     def create(cls, image, label: str, *, context=None, kind: str = "fusion",
@@ -557,9 +558,13 @@ class OutputManager:
         if not record.annotations_baked:
             image = labels.prepare_bgr_image('output', image, 0, output_id=record.output_id)
             image = scalebar.burn(image, scalebar.export_cfg(self.window, record=record))
-        from core.image_loader import _read_exif_bytes
-        exif = _read_exif_bytes(record.export_path) if record.annotations_baked and record.export_path else b''
-        if not imwrite_auto(path, image, get_imwrite_params(os.path.splitext(path)[1]), exif=exif):
+        from core.image_loader import _read_exif_bytes, _read_icc_profile
+        baked_path = record.export_path if record.annotations_baked else ""
+        exif = _read_exif_bytes(baked_path) if baked_path else b''
+        profile = (_read_icc_profile(baked_path) if baked_path else
+                   getattr(record.context, 'icc_profile', record.icc_profile))
+        if not imwrite_auto(path, image, get_imwrite_params(os.path.splitext(path)[1]),
+                            exif=exif, icc_profile=profile):
             raise OSError(trans.t('msg_save_failed_info_write'))
 
     def _mark_record_exported(self, record, image, path, annotations=None):
@@ -922,6 +927,7 @@ def publish_aligned_stack(window, frames, *, filenames=None) -> None:
     record = OutputRecord.create(None, label, kind='aligned', exported=False)
     record.aligned_frames = tuple(frames)
     record.aligned_names = names
+    record.icc_profile = getattr(getattr(window, 'image_loader', None), 'source_icc_profile', b'')
     item = window.output_manager._insert_output(None, label, record)
     item.setIcon(QIcon.fromTheme("folder"))
     window.aligned_stack_dir = None

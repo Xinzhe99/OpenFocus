@@ -246,7 +246,8 @@ class ExportManager:
             image_to_save = labels.prepare_bgr_image('output', result_to_save, 0)
             ext = os.path.splitext(file_path)[1].lower()
             params = get_imwrite_params(ext)
-            if imwrite_auto(file_path, scalebar.burn(image_to_save, cfg), params, exif=b''):
+            profile = getattr(getattr(window, 'image_loader', None), 'source_icc_profile', b'')
+            if imwrite_auto(file_path, scalebar.burn(image_to_save, cfg), params, exif=b'', icc_profile=profile):
                 # Non-blocking confirmation (errors still get a dialog)
                 window.statusBar().showMessage(
                     trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
@@ -326,6 +327,8 @@ class ExportManager:
         failures = []
         saved = 0
         exif = (b'' if baked else getattr(getattr(window, 'image_loader', None), 'source_exif', b''))
+        profile = (getattr(record, 'icc_profile', b'') if record is not None else
+                   getattr(getattr(window, 'image_loader', None), 'source_icc_profile', b''))
         for index, frame in enumerate(frames):
             name = frame_export_name(filenames[index] if index < len(filenames) else '', index, extension)
             path = unique_path(os.path.join(directory, name))
@@ -342,9 +345,10 @@ class ExportManager:
                     image = labels.prepare_bgr_image(target, image, index)
                     image = scalebar.burn(image, cfg)
                 if baked:
-                    from core.image_loader import _read_exif_bytes
+                    from core.image_loader import _read_exif_bytes, _read_icc_profile
                     exif = _read_exif_bytes(frame)
-                if not imwrite_auto(path, image, get_imwrite_params('.' + extension.lower()), exif=exif):
+                    profile = _read_icc_profile(frame)
+                if not imwrite_auto(path, image, get_imwrite_params('.' + extension.lower()), exif=exif, icc_profile=profile):
                     raise OSError(trans.t('msg_save_failed_info_write'))
                 saved += 1
             except Exception as exc:
