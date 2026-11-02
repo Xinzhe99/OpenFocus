@@ -705,6 +705,9 @@ class RenderManager:
         self._control_progress = None
         self.last_state = "running"
         self._render_interactive = interactive
+        all_source_paths = list(getattr(window, "image_source_paths", None) or [])
+        source_paths = ([all_source_paths[i] for i in included_idx]
+                        if len(all_source_paths) == len(window.raw_images) else [])
         self.worker = RenderWorker(
             source_images,
             effective_aligned_images,
@@ -735,6 +738,7 @@ class RenderManager:
             sharpen_output=bool(getattr(window, "sharpen_output", False)),
             defect_mask_path=getattr(window, "defect_mask_path", ""),
             sensor_denoise=bool(getattr(window, "sensor_denoise", False)),
+            source_paths=source_paths,
             load_scale_factor=getattr(window, "current_scale_factor", 1.0),
             disk_cache=disk_cache_request,
             collect_alignment_report=collect_report and not use_roi_aligned_images,

@@ -16,7 +16,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   defect mask before registration and offers conservative denoising while
   retaining 8-bit or 16-bit precision. Both options default to off.
   Cleanup is memory-admitted and rejects previously transformed source frames
-  or pre-aligned ROI frames where sensor coordinates cannot be preserved.
+  or pre-aligned ROI frames. Defect masks also reject oriented or ambiguous
+  source files where their sensor coordinates cannot be established.
 - **Depth products** export an estimated frame-index TIFF or an alternative image
   assembled from the selected depth input frames. The index records estimated
   focus positions, not the true provenance of pixels in a fused result.

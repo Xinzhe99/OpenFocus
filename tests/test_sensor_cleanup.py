@@ -2,11 +2,13 @@
 import cv2
 import numpy as np
 import pytest
+from PIL import Image
 
 from utils.sensor_cleanup import (
     SensorCleanupCancelled,
     cleanup_sensor_image,
     load_sensor_defect_mask,
+    validate_sensor_source_orientation,
 )
 
 
@@ -149,3 +151,59 @@ def test_stack_admission_accounts_for_all_copies_and_mask(tmp_path, monkeypatch)
     require_sensor_cleanup_stack(images, path, True)
     assert requests[0] >= (sum(image.nbytes for image in images) + images[0].nbytes
                            + 258 * 258 * 32 + path.stat().st_size + 300 * 400 * 16)
+
+
+@pytest.mark.parametrize('orientation', [None, 1])
+def test_sensor_orientation_accepts_neutral_jpeg(tmp_path, orientation):
+    path = tmp_path / 'neutral.jpg'
+    image = Image.fromarray(np.zeros((16, 16, 3), np.uint8))
+    exif = image.getexif()
+    if orientation is not None:
+        exif[274] = orientation
+    image.save(path, exif=exif)
+    validate_sensor_source_orientation([path])
+
+
+def test_sensor_orientation_rejects_rotated_square_jpeg(tmp_path):
+    path = tmp_path / 'rotated.jpg'
+    image = Image.fromarray(np.zeros((16, 16, 3), np.uint8))
+    exif = image.getexif()
+    exif[274] = 6
+    image.save(path, exif=exif)
+    with pytest.raises(ValueError, match='orientation.*6'):
+        validate_sensor_source_orientation([path])
+
+
+def test_sensor_orientation_checks_each_tiff_page(tmp_path):
+    import struct
+
+    # Two uncompressed 1x1 TIFF pages, with a rotation on the second page.
+    def ifd(offset, next_offset, orientation):
+        entries = [(256, 4, 1, 1), (257, 4, 1, 1), (258, 3, 1, 8),
+                   (259, 3, 1, 1), (262, 3, 1, 1), (273, 4, 1, offset),
+                   (274, 3, 1, orientation), (278, 4, 1, 1), (279, 4, 1, 1)]
+        return (struct.pack('<H', len(entries))
+                + b''.join(struct.pack('<HHII', *entry) for entry in entries)
+                + struct.pack('<I', next_offset))
+
+    ifd_size = 2 + 9 * 12 + 4
+    second = 8 + ifd_size
+    pixels = second + ifd_size
+    path = tmp_path / 'pages.tif'
+    path.write_bytes(b'II' + struct.pack('<HI', 42, 8)
+                     + ifd(pixels, second, 1) + ifd(pixels + 1, 0, 6) + b'\0\0')
+    with pytest.raises(ValueError, match='page 2'):
+        validate_sensor_source_orientation([path])
+
+
+def test_sensor_orientation_rejects_raw_unknown_and_cancellation(tmp_path):
+    raw = tmp_path / 'source.dng'
+    raw.write_bytes(b'raw')
+    unknown = tmp_path / 'broken.jpg'
+    unknown.write_bytes(b'not an image')
+    with pytest.raises(ValueError, match='RAW'):
+        validate_sensor_source_orientation([raw])
+    with pytest.raises(ValueError, match='cannot be inspected'):
+        validate_sensor_source_orientation([unknown])
+    with pytest.raises(SensorCleanupCancelled):
+        validate_sensor_source_orientation([unknown], lambda: True)

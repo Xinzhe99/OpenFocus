@@ -880,6 +880,11 @@ be combined with sensor cleanup; leave ROI mode and render the full stack.
 Cleanup settings belong to the current session and saved project, not global
 application preferences. Batch and CLI process their original inputs separately,
 with sensor cleanup before flat-field correction and registration.
+Defect masks require source files with neutral EXIF orientation. Oriented files,
+camera RAW files, and sources whose orientation cannot be established are
+rejected because their decoded pixels may no longer match sensor coordinates.
+Use source images and a mask in the same known pixel orientation, with neutral
+orientation metadata. Denoising alone does not require a defect mask.
 
 The optional sensor denoise is independent of the defect mask and is disabled
 by default. Inspect the result at full size to decide whether its smoothing is

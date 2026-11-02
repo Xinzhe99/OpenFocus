@@ -12,6 +12,7 @@ stay in the source's native intensity range, including 16-bit low-order bits.
 """
 from dataclasses import dataclass, field
 import os
+import warnings
 
 from PIL import Image
 
@@ -28,6 +29,48 @@ class SensorCleanupCancelled(RegistrationCancelled):
 def _check_cancel(callback):
     if callback is not None and callback():
         raise SensorCleanupCancelled()
+
+
+def validate_sensor_source_orientation(paths, cancel_callback=None):
+    """Require inspectable, sensor-oriented still images for defect masking.
+
+    The image loader applies orientation transforms, so a sensor-coordinate
+    mask cannot safely be applied when a source requests such a transform.
+    """
+    from core.image_loader import RAW_FORMATS
+
+    guidance = ("Use sensor-oriented still images with neutral EXIF orientation "
+                "and a mask made for those pixels, or disable the defect mask.")
+    inspectable_formats = {'JPEG', 'PNG', 'TIFF', 'BMP', 'WEBP'}
+    for path in paths:
+        _check_cancel(cancel_callback)
+        if os.path.splitext(os.fspath(path))[1].lower() in RAW_FORMATS:
+            raise ValueError(f"Cannot use a sensor defect mask with RAW source {path}: "
+                             f"the RAW decoder may orient pixels. {guidance}")
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('error')
+                with Image.open(path) as image:
+                    if image.format not in inspectable_formats:
+                        raise ValueError(f"unsupported image format {image.format}")
+                    page = 0
+                    while True:
+                        _check_cancel(cancel_callback)
+                        try:
+                            image.seek(page)
+                        except EOFError:
+                            break
+                        orientation = image.getexif().get(274, 1)
+                        if type(orientation) is not int or orientation != 1:
+                            raise ValueError(f"EXIF orientation {orientation!r} on page {page + 1}")
+                        page += 1
+        except SensorCleanupCancelled:
+            raise
+        except Exception as exc:
+            raise ValueError(f"Cannot use a sensor defect mask with source {path}: "
+                             f"orientation is non-neutral or cannot be inspected ({exc}). "
+                             f"{guidance}") from exc
+    _check_cancel(cancel_callback)
 
 
 def _mask_decode_bytes(path):
