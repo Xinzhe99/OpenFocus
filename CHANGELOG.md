@@ -72,6 +72,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   relative paths in the caller, creates the token file with owner-only access
   from the start, and rejects remote Windows pipe clients. The smoke/sweep
   tools require the requested operation to finish.
+- **Discovery-token permission report.** The control discovery file is created
+  with owner-only access from the start. Reported by
+  [@ranas-mukminov](https://github.com/ranas-mukminov) in
+  [PR #9](https://github.com/Xinzhe99/OpenFocus/pull/9).
 - Packaged builds and the PyPI wheel now explicitly include every language
   pack: the release workflows pass `--collect-submodules locales`, the wheel
   lists the `locales` package, and `OpenFocus.spec` collects the submodules.
