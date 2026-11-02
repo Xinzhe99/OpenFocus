@@ -331,6 +331,8 @@ Die OpenFocus-Anwendung steht unter der [MIT-Lizenz](../../LICENSE).
 
 **Ausnahme für die StackMFF-Serie.** Die StackMFF-Fusionsalgorithmen – derzeit StackMFF V3 und alle künftigen Ausgaben auf dem Stand der Technik – bleiben Eigentum des OpenFocus-Projekts, das alle Rechte an der StackMFF-Serie behält. Sie dürfen sie als Teil von OpenFocus für eigene Bilder und interne Arbeit verwenden. Das Kopieren, Portieren oder Migrieren dieser Algorithmen in ein anderes Open-Source-Projekt erfordert vorherige schriftliche Genehmigung.
 
+Die hier enthaltene V3-Fassung und die Veröffentlichungen des Ursprungsprojekts bis einschließlich v2.0 wurden unter MIT verbreitet; ihre MIT-Bedingungen bleiben von der obigen Einschränkung unberührt. Siehe die [Drittanbieterhinweise](../../THIRD_PARTY_NOTICES.md).
+
 <a id="developing"></a>
 ## Entwicklung
 

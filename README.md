@@ -408,6 +408,10 @@ use them as part of OpenFocus for your own images and internal work. Copying,
 porting or migrating these algorithms into another open-source project requires
 prior written permission.
 
+The V3 snapshot bundled here and upstream releases through v2.0 were distributed
+under MIT; their MIT terms are unaffected by the restriction above. See the
+[third-party notices](./THIRD_PARTY_NOTICES.md).
+
 <a id="developing"></a>
 ## Developing
 

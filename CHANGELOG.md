@@ -54,6 +54,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   installation rollback, and range-aware mirrored downloads.
 - **Manual checks** validate numbered chapters, code-fence balance and local
   file links without requiring translated examples to have identical layouts.
+- **License notices** distinguish the bundled MIT-licensed StackMFF V3 snapshot
+  and older upstream releases from the upstream project's current license.
 - **Continuous integration** runs the regression suite on macOS as well as
   Windows and Linux.
 
