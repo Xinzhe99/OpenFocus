@@ -104,8 +104,8 @@ def _en() -> dict:
                     "title": "Alignment that matches the rig",
                     "body": (
                         "No alignment, SIFT homography, ECC, homography refined "
-                        "by ECC, or a bounded similarity search that finishes in "
-                        "under a second per frame."
+                        "by ECC, or a bounded similarity search for translation, "
+                        "rotation and scale."
                     ),
                 },
                 {
@@ -364,8 +364,8 @@ def _zh() -> dict:
                 {
                     "title": "配准，随拍摄方式而定",
                     "body": (
-                        "不对齐、SIFT 单应性、ECC、单应性→ECC 精修，或每帧不到一秒的"
-                        "受限相似变换搜索——总有一种适合你的拍摄方式。"
+                        "不对齐、SIFT 单应性、ECC、单应性→ECC 精修，或用于平移、旋转"
+                        "和缩放的受限相似变换搜索——总有一种适合你的拍摄方式。"
                     ),
                 },
                 {
