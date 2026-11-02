@@ -5,6 +5,10 @@ fall back to this table.
 """
 
 ZH = {
+    'standalone_retouch_action': '修饰图像文件…',
+    'standalone_retouch_result': '选择结果图像',
+    'standalone_retouch_sources': '选择匹配的源帧',
+    'standalone_retouch_intro': '请选择已对齐到同一像素网格的结果和源帧。所有图像的尺寸、通道和 8 位或 16 位深度必须相同。尺寸相同并不能证明图像已对齐。',
     'batch_group_size': '每组帧数：',
     'batch_group_overlap': '重叠帧数：',
     'batch_group_disabled': '关闭',

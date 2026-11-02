@@ -1,6 +1,10 @@
 """French language pack for OpenFocus."""
 
 PACK = {
+    'standalone_retouch_action': 'Retoucher des fichiers image…',
+    'standalone_retouch_result': 'Choisir une image résultat',
+    'standalone_retouch_sources': 'Choisir les images sources correspondantes',
+    'standalone_retouch_intro': 'Choisissez un résultat et des images sources déjà alignés sur la même grille de pixels. Toutes les images doivent avoir les mêmes dimensions, canaux et profondeur de 8 ou 16 bits. Des dimensions identiques ne prouvent pas l’alignement.',
     'batch_group_size': 'Taille du groupe :',
     'batch_group_overlap': 'Chevauchement :',
     'batch_group_disabled': 'Désactivé',

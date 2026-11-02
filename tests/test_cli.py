@@ -118,6 +118,19 @@ def test_grouped_cli_rejects_depth_and_nonreducing_overlap(tmp_path):
     assert overlap.returncode == 2 and "group-overlap" in overlap.stderr
 
 
+def test_grouped_cli_rejects_nonlocal_alignment_reference(tmp_path):
+    stack = tmp_path / "stack"
+    stack.mkdir()
+    _write_stack(stack, n=5)
+    output = tmp_path / "fused.png"
+    result = run_cli("--input", str(stack), "--output", str(output),
+                     "--method", "guided_filter", "--cpu", "--group-size", "3",
+                     "--align", "openfocus", "--align-param", "reference_frame=2")
+    assert result.returncode != 0
+    assert "stack-wide alignment reference" in result.stderr
+    assert not output.exists()
+
+
 def test_grouped_cli_batch_processes_each_folder(tmp_path):
     folders = [tmp_path / "a", tmp_path / "b"]
     for folder in folders:

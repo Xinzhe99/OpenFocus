@@ -127,6 +127,9 @@ def validate_recipe(recipe, recipe_path):
     if args.group_size and args.depth_map:
         raise ValueError("original-frame depth is unavailable with grouped fusion")
     _resolve_algorithm_arguments(args)
+    if (args.group_size and args.align == "openfocus"
+            and args._registration_parameters.get("reference_frame", 1) != 1):
+        raise ValueError("grouped fusion cannot use a stack-wide alignment reference")
     if args.depth_map:
         from utils.colormap import get_lut
         get_lut(args.depth_colormap)

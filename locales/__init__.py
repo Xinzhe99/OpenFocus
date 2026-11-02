@@ -38,11 +38,6 @@ class TranslationManager(QObject):
         self.translations = {"en": dict(EN), "zh": dict(ZH)}
 
         self._load_language_packs()
-        from ._standalone_retouch import TEXT
-        keys = ("standalone_retouch_action", "standalone_retouch_result",
-                "standalone_retouch_sources", "standalone_retouch_intro")
-        for code, values in TEXT.items():
-            self.translations.setdefault(code, {}).update(zip(keys, values))
 
         # Apply the detected language only now: the packs had to exist first,
         # otherwise a locale whose pack failed to load would leave

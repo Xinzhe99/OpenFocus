@@ -1,6 +1,10 @@
 """Korean language pack for OpenFocus."""
 
 PACK = {
+    'standalone_retouch_action': '이미지 파일 리터치…',
+    'standalone_retouch_result': '결과 이미지 선택',
+    'standalone_retouch_sources': '일치하는 원본 프레임 선택',
+    'standalone_retouch_intro': '같은 픽셀 격자에 이미 정렬된 결과와 원본 프레임을 선택하세요. 모든 이미지의 크기, 채널 및 8비트 또는 16비트 깊이가 같아야 합니다. 크기가 같아도 정렬이 보장되지는 않습니다.',
     'batch_group_size': '그룹 크기:',
     'batch_group_overlap': '겹침:',
     'batch_group_disabled': '사용 안 함',

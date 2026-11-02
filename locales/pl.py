@@ -1,6 +1,10 @@
 """Polish language pack for OpenFocus."""
 
 PACK = {
+    'standalone_retouch_action': 'Retuszuj pliki obrazów…',
+    'standalone_retouch_result': 'Wybierz obraz wynikowy',
+    'standalone_retouch_sources': 'Wybierz pasujące klatki źródłowe',
+    'standalone_retouch_intro': 'Wybierz wynik i klatki źródłowe już wyrównane do tej samej siatki pikseli. Wszystkie obrazy muszą mieć identyczne wymiary, kanały i głębię 8 lub 16 bitów. Takie same wymiary nie potwierdzają wyrównania.',
     'batch_group_size': 'Rozmiar grupy:',
     'batch_group_overlap': 'Nakładanie:',
     'batch_group_disabled': 'Wyłączone',

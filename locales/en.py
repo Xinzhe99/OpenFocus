@@ -5,6 +5,10 @@ fall back to this table.
 """
 
 EN = {
+    'standalone_retouch_action': 'Retouch Image Files…',
+    'standalone_retouch_result': 'Choose a result image',
+    'standalone_retouch_sources': 'Choose matching source frames',
+    'standalone_retouch_intro': 'Choose a result and source frames already aligned to the same pixel grid. All images must have identical dimensions, channels and 8-bit or 16-bit depth. Matching dimensions alone do not prove alignment.',
     'batch_group_size': 'Group size:',
     'batch_group_overlap': 'Overlap:',
     'batch_group_disabled': 'Disabled',

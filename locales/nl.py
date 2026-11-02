@@ -1,6 +1,10 @@
 """Dutch language pack for OpenFocus."""
 
 PACK = {
+    'standalone_retouch_action': 'Afbeeldingsbestanden retoucheren…',
+    'standalone_retouch_result': 'Kies resultaatbeeld',
+    'standalone_retouch_sources': 'Kies bijpassende bronbeelden',
+    'standalone_retouch_intro': 'Kies een resultaat en bronbeelden die al op hetzelfde pixelraster zijn uitgelijnd. Alle beelden moeten dezelfde afmetingen, kanalen en 8- of 16-bits diepte hebben. Gelijke afmetingen bewijzen geen uitlijning.',
     'batch_group_size': 'Groepsgrootte:',
     'batch_group_overlap': 'Overlap:',
     'batch_group_disabled': 'Uit',

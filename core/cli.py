@@ -404,6 +404,10 @@ def _fuse_stack_admitted(images, args):
 def _fuse_grouped(paths, args):
     """Fuse an ordered folder in bounded groups, then combine the results."""
     from core.grouped_fusion import grouped_fuse
+    _resolve_algorithm_arguments(args)
+    if (args.align == 'openfocus'
+            and args._registration_parameters.get('reference_frame', 1) != 1):
+        raise ValueError('Grouped fusion cannot use a stack-wide alignment reference; use frame 1 or disable grouping')
 
     group_args = argparse.Namespace(**vars(args))
     group_args._grouped = True

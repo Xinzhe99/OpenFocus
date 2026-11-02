@@ -313,10 +313,12 @@ and output. The project must still be able to resolve its original sources:
 openfocus recipe create workflow.json --project session.ofproj -i ./new_stack -o ./result/fused.png
 ```
 
-This transfers fusion, registration, brightness, order and tile settings into
-the CLI recipe, and embeds the project's processing settings for the GUI. It
-does not transfer project frame exclusions, transforms, load scaling, labels,
-or edits; prepare the new input stack accordingly. In the GUI, File → Save
+This transfers fusion, registration, brightness, order, sharpening and tile
+settings into the CLI recipe, and embeds the processing settings for the GUI.
+Frame exclusions, load scaling, labels and edits are not transferred; prepare
+the new input stack accordingly. Projects with source transforms, including
+applied flat-field corrections, must first export their corrected source stack.
+In the GUI, File → Save
 Processing Template saves settings without source paths. File → Apply Processing
 Template applies a template, project, or project-backed recipe to the current
 stack without replacing its inputs, transforms, exclusions or labels. A template

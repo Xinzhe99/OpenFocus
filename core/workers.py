@@ -1115,6 +1115,9 @@ class BatchWorker(QThread):
             sort_mode = 'asc'
         params = resolve_fusion_parameters(method, settings.get('fusion_params'))
         alignment = settings.get('alignment', settings.get('reg_methods', ()))
+        if ('openfocus' in alignment_steps(alignment)
+                and self.registration_parameters.get('reference_frame', 1) != 1):
+            raise ValueError('Grouped fusion cannot use a stack-wide alignment reference; use frame 1 or disable grouping')
         tile_kwargs = {
             'tile_enabled': self.tile_enabled if self.tile_enabled is not None else True,
             'tile_block_size': self.tile_block_size if self.tile_block_size is not None else TILE_BLOCK_SIZE,

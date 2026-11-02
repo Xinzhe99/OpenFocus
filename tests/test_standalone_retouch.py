@@ -80,3 +80,23 @@ def test_cancellation_stops_before_decoding_sources(tmp_path):
     result = load_standalone_retouch(str(base), [str(tmp_path / 'missing.png')],
                                     progress=lambda done, total: False)
     assert result is None
+
+
+def test_standalone_uses_upright_pixels_and_common_profile(tmp_path):
+    from PIL import ImageCms
+    profile = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
+    exif = Image.Exif()
+    exif[274] = 6
+    pixels = np.zeros((12, 20, 3), np.uint8)
+    pixels[:4, :, 0] = 255
+    result = tmp_path / 'result.jpg'
+    source = tmp_path / 'source.jpg'
+    for path in (result, source):
+        Image.fromarray(pixels).save(path, exif=exif, icc_profile=profile)
+    base, context = load_standalone_retouch(str(result), [str(source)])
+    assert base.shape == (20, 12, 3)
+    np.testing.assert_array_equal(context.frames[0].image, base)
+    assert context.icc_profile == profile
+    Image.fromarray(pixels).save(source, exif=exif)
+    _, context = load_standalone_retouch(str(result), [str(source)])
+    assert context.icc_profile == b''

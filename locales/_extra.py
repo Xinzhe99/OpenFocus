@@ -12,6 +12,10 @@ This file is generated wholesale; edit values in place, not by patching.
 
 EXTRA_TRANSLATIONS = {
     "ja": {
+        'standalone_retouch_action': '画像ファイルをレタッチ…',
+        'standalone_retouch_result': '結果画像を選択',
+        'standalone_retouch_sources': '対応するソースフレームを選択',
+        'standalone_retouch_intro': '同じピクセル座標に位置合わせ済みの結果とソースフレームを選択してください。サイズ、チャンネル、8 ビットまたは 16 ビットの深度はすべて同じである必要があります。サイズの一致だけでは位置合わせを確認できません。',
         'batch_group_size': 'グループサイズ:',
         'batch_group_overlap': '重なり:',
         'batch_group_disabled': '無効',
@@ -971,6 +975,10 @@ EXTRA_TRANSLATIONS = {
         "scalebar_text_align": "テキスト配置",
     },
     "es": {
+        'standalone_retouch_action': 'Retocar archivos de imagen…',
+        'standalone_retouch_result': 'Elegir imagen de resultado',
+        'standalone_retouch_sources': 'Elegir fotogramas de origen correspondientes',
+        'standalone_retouch_intro': 'Elija un resultado y fotogramas de origen ya alineados en la misma cuadrícula de píxeles. Todas las imágenes deben tener las mismas dimensiones, canales y profundidad de 8 o 16 bits. Las dimensiones iguales no garantizan la alineación.',
         'batch_group_size': 'Tamaño del grupo:',
         'batch_group_overlap': 'Solapamiento:',
         'batch_group_disabled': 'Desactivado',

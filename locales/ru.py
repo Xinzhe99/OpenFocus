@@ -1,6 +1,10 @@
 """Russian language pack for OpenFocus."""
 
 PACK = {
+    'standalone_retouch_action': 'Ретушировать файлы изображений…',
+    'standalone_retouch_result': 'Выберите изображение результата',
+    'standalone_retouch_sources': 'Выберите соответствующие исходные кадры',
+    'standalone_retouch_intro': 'Выберите результат и исходные кадры, уже выровненные по одной пиксельной сетке. Размеры, каналы и глубина 8 или 16 бит должны совпадать. Одинаковый размер не подтверждает выравнивание.',
     'batch_group_size': 'Размер группы:',
     'batch_group_overlap': 'Перекрытие:',
     'batch_group_disabled': 'Выключено',

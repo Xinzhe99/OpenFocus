@@ -1,6 +1,10 @@
 """German language pack for OpenFocus."""
 
 PACK = {
+    'standalone_retouch_action': 'Bilddateien retuschieren…',
+    'standalone_retouch_result': 'Ergebnisbild auswählen',
+    'standalone_retouch_sources': 'Passende Quellbilder auswählen',
+    'standalone_retouch_intro': 'Wählen Sie ein Ergebnis und bereits auf demselben Pixelraster ausgerichtete Quellbilder. Alle Bilder müssen gleiche Abmessungen, Kanäle und 8- oder 16-Bit-Tiefe haben. Gleiche Abmessungen belegen keine Ausrichtung.',
     'batch_group_size': 'Gruppengröße:',
     'batch_group_overlap': 'Überlappung:',
     'batch_group_disabled': 'Aus',
