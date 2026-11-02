@@ -1208,6 +1208,17 @@ successor or review the remaining files again in their intended order.
 
 ### Replay a retouch checkpoint
 
+The retouch workspace prepares checkpoint verification in the background, and
+you can continue editing while it runs. Wait for setup to finish before saving
+or loading a checkpoint. If you cancel setup, checkpoints are unavailable for
+that session; apply any edits you want to keep and start a new retouch session
+to use them. Saving verifies the recorded edits and undo/redo state before
+publishing the checkpoint. Saving and loading can also be canceled; your
+current edits remain available.
+
+If the checkpoint recording limit prevents another edit, apply the current
+edits and start a new retouch session to continue.
+
 Save a retouch checkpoint from the retouch workspace, then supply the original
 base image and every processed source frame in the same order as the session:
 

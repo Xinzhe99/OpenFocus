@@ -11,6 +11,7 @@ owns the pixel math, the per-stroke coverage map and tile-based history.
 from __future__ import annotations
 
 from collections import OrderedDict
+import threading
 from typing import Optional, Tuple
 
 import cv2
@@ -462,13 +463,28 @@ class RetouchDocument:
         self._stroke: Optional[dict] = None
         self._coverage: Optional[StrokeCoverage] = None
         self._mask_cache: OrderedDict[int, Optional[np.ndarray]] = OrderedDict()
-        from utils.retouch_checkpoint import provenance
-        self._provenance = provenance(self)
+        self._checkpoint_lock = threading.Lock()
+        self._provenance = None
         self._operations = []
         self._cursor = 0
         self._point_count = 0
         self._record_overflow = False
         self.last_status = ""
+
+    @property
+    def checkpoint_ready(self):
+        return self._provenance is not None
+
+    def initialize_checkpoint(self, cancelled=None):
+        from utils.retouch_checkpoint import provenance
+        with self._checkpoint_lock:
+            if self._provenance is not None:
+                return
+        initial = provenance(self, cancelled)
+        with self._checkpoint_lock:
+            if cancelled is not None and cancelled():
+                raise ValueError("Retouch checkpoint initialization cancelled")
+            self._provenance = initial
 
     # ----------------------------------------------------------- basics
     @property
@@ -522,7 +538,8 @@ class RetouchDocument:
         if exposure == 0 and contrast == 0:
             return "empty"
         if self._cursor >= 100000:
-            return "oversize"
+            self.last_status = "record_limit"
+            return "record_limit"
         if self.working.nbytes > self.history.max_bytes:
             return "oversize"
         self.history.begin()
@@ -607,7 +624,9 @@ class RetouchDocument:
     def begin_stroke(self, x: float, y: float) -> bool:
         if self._stroke is not None:
             return False
+        self.last_status = ""
         if self._cursor >= 100000 or self._point_count >= 250000:
+            self.last_status = "record_limit"
             return False
         if not self.source_valid_at(x, y):
             return False
@@ -654,7 +673,7 @@ class RetouchDocument:
             return "idle"
         if self._record_overflow:
             self.history.abort()
-            status = "oversize"
+            status = "record_limit"
             self._record_overflow = False
         else:
             status = self.history.end()
@@ -724,6 +743,7 @@ class RetouchDocument:
         if self._stroke is not None:
             self.end_stroke()
         if self._cursor >= 100000:
+            self.last_status = "record_limit"
             return False
         changed = self.history.restore_all()
         if changed:
@@ -742,9 +762,9 @@ class RetouchDocument:
         self._cursor += 1
         self._point_count += len(operation.get("points", ()))
 
-    def save_checkpoint(self, path):
+    def save_checkpoint(self, path, cancelled=None):
         from utils.retouch_checkpoint import save_checkpoint
-        return save_checkpoint(self, path)
+        return save_checkpoint(self, path, cancelled)
 
     def load_checkpoint(self, path, cancelled=None):
         from utils.retouch_checkpoint import load_checkpoint

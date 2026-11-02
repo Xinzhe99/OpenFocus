@@ -53,10 +53,12 @@ def _check_provenance(doc, expected, cancelled=None):
         raise ValueError('Base image, processed sources or source geometry do not match the checkpoint')
 
 
-def save_checkpoint(doc, path):
+def save_checkpoint(doc, path, cancelled=None):
     if doc.stroke_active:
         raise ValueError('Finish the current stroke before saving')
-    _check_provenance(doc, doc._provenance)
+    if not doc.checkpoint_ready:
+        raise ValueError('Checkpoint initialization is unavailable; start a new session')
+    _check_provenance(doc, doc._provenance, cancelled)
     destination = os.path.abspath(os.fspath(path))
     for frame in doc.frames:
         name = frame.name
@@ -70,6 +72,8 @@ def save_checkpoint(doc, path):
     data = json.dumps(record, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
     if len(data) > MAX_FILE_BYTES:
         raise ValueError('Retouch history is too large to save')
+    if cancelled is not None and cancelled():
+        raise ValueError('Retouch checkpoint saving cancelled')
     directory = os.path.dirname(destination)
     fd, temp = tempfile.mkstemp(prefix='.retouch-', suffix='.tmp', dir=directory)
     try:
@@ -77,6 +81,29 @@ def save_checkpoint(doc, path):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        if cancelled is not None and cancelled():
+            raise ValueError('Retouch checkpoint saving cancelled')
+        from utils.retouch import RetouchDocument
+        verified = RetouchDocument(doc.base, doc.context,
+                                   max_strokes=doc.history.max_strokes,
+                                   max_bytes=doc.history.max_bytes)
+        verified._provenance = doc._provenance
+        load_checkpoint(verified, temp, cancelled)
+        if not np.array_equal(verified.working, doc.working):
+            raise ValueError('Retouch replay does not match the current image; start a new session')
+        for expected, actual in ((doc.history._undo, verified.history._undo),
+                                 (doc.history._redo, verified.history._redo)):
+            if len(expected) != len(actual):
+                raise ValueError('Retouch replay history does not match; start a new session')
+            for left, right in zip(expected, actual):
+                if cancelled is not None and cancelled():
+                    raise ValueError('Retouch checkpoint saving cancelled')
+                if left.keys() != right.keys() or any(
+                        not np.array_equal(left[key], right[key]) for key in left):
+                    raise ValueError('Retouch replay history does not match; start a new session')
+        _check_provenance(doc, doc._provenance, cancelled)
+        if cancelled is not None and cancelled():
+            raise ValueError('Retouch checkpoint saving cancelled')
         os.replace(temp, destination)
     finally:
         if os.path.exists(temp):
@@ -98,6 +125,8 @@ def _integer(value, minimum, maximum):
 def load_checkpoint(doc, path, cancelled=None):
     if doc.stroke_active:
         raise ValueError('Finish the current stroke before loading')
+    if not doc.checkpoint_ready:
+        raise ValueError('Checkpoint initialization is unavailable; start a new session')
     with open(path, 'rb') as stream:
         data = stream.read(MAX_FILE_BYTES + 1)
     if len(data) > MAX_FILE_BYTES:
@@ -122,6 +151,7 @@ def load_checkpoint(doc, path, cancelled=None):
         max_bytes = _integer(record['max_bytes'], 1, 4 * 1024 * 1024 * 1024)
         from utils.retouch import RetouchDocument
         replay = RetouchDocument(doc.base, doc.context, max_strokes=max_strokes, max_bytes=max_bytes)
+        replay._provenance = doc._provenance
         points_count = 0
         for op in operations:
             if cancelled is not None and cancelled():

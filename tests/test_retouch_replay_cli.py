@@ -4,9 +4,11 @@ import json
 import cv2
 import numpy as np
 import pytest
+from PIL import Image, ImageCms
 
 from core.cli import run_cli
 from core.render_context import RenderContext, SourceFrame
+from utils.image_utils import imwrite_auto
 from utils.retouch import RetouchDocument
 
 
@@ -23,6 +25,7 @@ def replay_case(tmp_path, request):
               SourceFrame("full", "full", second))
     context = RenderContext("original", "test", (), 32, 32, base.dtype, frames)
     doc = RetouchDocument(base, context)
+    doc.initialize_checkpoint()
     doc.set_brush(diameter=6, hardness=1, opacity=1)
     assert doc.begin_stroke(12, 13)
     assert doc.end_stroke() == "committed"
@@ -53,6 +56,24 @@ def test_replay_preserves_pixels_depth_geometry_mask_and_cursor(replay_case, tmp
     np.testing.assert_array_equal(actual, expected)
     assert np.any(actual[13, 12] != actual[0, 0])
     assert np.array_equal(actual[27, 27], actual[0, 0])
+
+
+@pytest.mark.parametrize("extension", [".png", ".tif"])
+@pytest.mark.parametrize("profile_kind", ["rgb", "invalid", "missing"])
+def test_replay_exports_base_profile(replay_case, tmp_path, extension, profile_kind):
+    checkpoint, paths, expected = replay_case
+    rgb = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    profile = {"rgb": rgb, "invalid": b"invalid profile", "missing": b""}[profile_kind]
+    base = cv2.imread(str(paths[0]), cv2.IMREAD_UNCHANGED)
+    assert imwrite_auto(str(paths[0]), base, icc_profile=profile)
+    source = cv2.imread(str(paths[1]), cv2.IMREAD_UNCHANGED)
+    assert imwrite_auto(str(paths[1]), source, icc_profile=rgb)
+    output = tmp_path / f"profiled{extension}"
+
+    assert _replay(checkpoint, paths, output) == 0
+    np.testing.assert_array_equal(cv2.imread(str(output), cv2.IMREAD_UNCHANGED), expected)
+    with Image.open(output) as saved:
+        assert saved.info.get("icc_profile", b"") == (rgb if profile_kind == "rgb" else b"")
 
 
 def test_replay_rejects_wrong_order_pixels_and_base(replay_case, tmp_path):

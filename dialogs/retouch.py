@@ -32,6 +32,7 @@ from utils.path_identity import same_path
 from utils.retouch import RetouchDocument, adjust_tones
 
 _SHARPNESS_WORKERS = set()
+_CHECKPOINT_WORKERS = set()
 
 def _release_dialog_buffers(dialog_ref):
     """Drop large Python-owned buffers even if a Qt callback retains the wrapper."""
@@ -198,33 +199,42 @@ class _ToneWorker(QThread):
 
 
 class _CheckpointWorker(QThread):
-    def __init__(self, doc, path):
+    def __init__(self, doc, operation, path=None):
         super().__init__()
         self.doc = doc
+        self.operation = operation
         self.path = path
         self.error = None
         self.cancelled = False
 
     def run(self):
         try:
-            self.doc.load_checkpoint(self.path, self.isInterruptionRequested)
+            if self.operation == "initialize":
+                self.doc.initialize_checkpoint(self.isInterruptionRequested)
+            elif self.operation == "save":
+                self.doc.save_checkpoint(self.path, self.isInterruptionRequested)
+            else:
+                self.doc.load_checkpoint(self.path, self.isInterruptionRequested)
         except Exception as exc:
             self.error = exc
-            self.cancelled = (self.isInterruptionRequested()
-                              and str(exc) == "Retouch replay cancelled")
+            self.cancelled = (self.isInterruptionRequested() and isinstance(exc, ValueError)
+                              and str(exc) in ("Retouch replay cancelled",
+                                               "Retouch checkpoint saving cancelled",
+                                               "Retouch checkpoint initialization cancelled"))
 
 
 class _CheckpointDialog(QDialog):
-    """Keep the workspace modal while replay finishes or cancels."""
-    def __init__(self, doc, path, parent):
+    """Keep the workspace modal while checkpoint I/O finishes or cancels."""
+    def __init__(self, doc, path, parent, operation="load"):
         super().__init__(parent)
-        self.setWindowTitle(trans.t("retouch_checkpoint_load"))
+        self.setWindowTitle(trans.t("retouch_checkpoint_" + operation))
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(trans.t("retouch_checkpoint_loading")))
+        layout.addWidget(QLabel(trans.t("retouch_checkpoint_" +
+                                        ("saving" if operation == "save" else "loading"))))
         self.cancel_button = QPushButton(trans.t("btn_cancel"))
         self.cancel_button.clicked.connect(self.reject)
         layout.addWidget(self.cancel_button)
-        self.worker = _CheckpointWorker(doc, path)
+        self.worker = _CheckpointWorker(doc, operation, path)
         self.worker.finished.connect(self.accept)
 
     def start(self):
@@ -333,6 +343,10 @@ class _ToneDialog(QDialog):
             self.cancel_button.setText(trans.t("btn_cancel"))
         elif worker.status in ("committed", "empty"):
             self.accept()
+        elif worker.status == "record_limit":
+            QMessageBox.warning(self, trans.t("msg_warning"),
+                                trans.t("retouch_checkpoint_record_limit"))
+            super().reject()
         else:
             super().reject()
 
@@ -566,6 +580,7 @@ class RetouchDialog(QDialog):
 
         self.setWindowTitle(trans.t("retouch_title"))
         self._checkpoint_dialog = None
+        self._checkpoint_init_worker = None
         self.setModal(True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.setMinimumSize(900, 600)
@@ -610,9 +625,11 @@ class RetouchDialog(QDialog):
         self._focus_signal.connect(self._on_focus_changed)
         self.finished.connect(lambda _result: self._save_geometry())
         self.finished.connect(self._shutdown_sharpness)
+        self.finished.connect(self._shutdown_checkpoint_init)
         self.finished.connect(self.deleteLater)
         self.destroyed.connect(
             lambda _object=None, ref=weakref.ref(self): _release_dialog_buffers(ref))
+        self._start_checkpoint_init()
 
     # ------------------------------------------------------------- build
     def _build_ui(self) -> None:
@@ -660,6 +677,9 @@ class RetouchDialog(QDialog):
         self.btn_save_checkpoint.clicked.connect(self._save_checkpoint)
         self.btn_load_checkpoint = QPushButton(trans.t("retouch_checkpoint_load"))
         self.btn_load_checkpoint.clicked.connect(self._load_checkpoint)
+        self.btn_cancel_checkpoint_init = QPushButton(trans.t("retouch_checkpoint_cancel_setup"))
+        self.btn_cancel_checkpoint_init.clicked.connect(self._cancel_checkpoint_init)
+        self.btn_cancel_checkpoint_init.setToolTip(trans.t("retouch_checkpoint_preparing"))
         self.btn_fit = QPushButton(trans.t("retouch_fit_short"))
         self.btn_fit.setToolTip(trans.t("retouch_fit"))
         self.btn_fit.clicked.connect(self._fit)
@@ -680,7 +700,8 @@ class RetouchDialog(QDialog):
         self.btn_peek.pressed.connect(lambda: self._press_preview("source"))
         self.btn_peek.released.connect(lambda: self._release_preview("source"))
         for widget in (self.btn_undo, self.btn_redo, self.btn_save_checkpoint,
-                       self.btn_load_checkpoint, self.btn_fit, self.btn_100,
+                       self.btn_load_checkpoint, self.btn_cancel_checkpoint_init,
+                       self.btn_fit, self.btn_100,
                        self.btn_layout, self.btn_before, self.btn_peek):
             toolbar.addWidget(widget)
         divider = QFrame()
@@ -1385,6 +1406,8 @@ class RetouchDialog(QDialog):
             self._set_notice(trans.t("retouch_source_unavailable"))
             return False
         if not self.doc.begin_stroke(x, y):
+            if self.doc.last_status == "record_limit":
+                self._show_record_limit()
             return False
         self._set_stroke_ui(True)
         self._refresh_result_display()
@@ -1408,6 +1431,9 @@ class RetouchDialog(QDialog):
             self._set_notice(trans.t("retouch_stroke_too_large"))
             QMessageBox.warning(self, trans.t("msg_warning"),
                                 trans.t("retouch_stroke_too_large"))
+        elif status == "record_limit":
+            self._refresh_result_display()
+            self._show_record_limit()
         elif status == "committed" and self.doc.history.evicted:
             if not self._eviction_announced:
                 self._eviction_announced = True
@@ -1480,8 +1506,52 @@ class RetouchDialog(QDialog):
             return
         if self.doc.restore_all():
             self._refresh_result_display()
+        elif self.doc.last_status == "record_limit":
+            self._show_record_limit()
         self._update_dirty_ui()
         self._update_controls()
+
+    def _show_record_limit(self) -> None:
+        QMessageBox.warning(self, trans.t("msg_warning"),
+                            trans.t("retouch_checkpoint_record_limit"))
+
+    def _start_checkpoint_init(self) -> None:
+        worker = _CheckpointWorker(self.doc, "initialize")
+        self._checkpoint_init_worker = worker
+        _CHECKPOINT_WORKERS.add(worker)
+        worker.finished.connect(lambda w=worker: _CHECKPOINT_WORKERS.discard(w))
+        worker.finished.connect(self._checkpoint_init_finished)
+        worker.start()
+
+    def _cancel_checkpoint_init(self) -> None:
+        worker = self._checkpoint_init_worker
+        if worker is not None:
+            worker.requestInterruption()
+            self.btn_cancel_checkpoint_init.setEnabled(False)
+            self.btn_cancel_checkpoint_init.setText(trans.t("compare_stopping"))
+
+    def _checkpoint_init_finished(self) -> None:
+        self._checkpoint_init_worker = None
+        self.btn_cancel_checkpoint_init.hide()
+
+    def _shutdown_checkpoint_init(self, *_args) -> None:
+        worker = self._checkpoint_init_worker
+        if worker is not None:
+            worker.requestInterruption()
+            try:
+                worker.finished.disconnect(self._checkpoint_init_finished)
+            except (TypeError, RuntimeError):
+                pass
+            self._checkpoint_init_worker = None
+
+    def _checkpoint_available(self) -> bool:
+        if self.doc.checkpoint_ready:
+            return True
+        key = ("retouch_checkpoint_preparing" if self._checkpoint_init_worker is not None
+               and self._checkpoint_init_worker.isRunning()
+               else "retouch_checkpoint_unavailable")
+        QMessageBox.warning(self, trans.t("msg_warning"), trans.t(key))
+        return False
 
     def _checkpoint_sources(self):
         window = self.window_main
@@ -1495,6 +1565,8 @@ class RetouchDialog(QDialog):
     def _save_checkpoint(self) -> None:
         if self.doc.stroke_active or self.preview_mode is not None:
             return
+        if not self._checkpoint_available():
+            return
         path, _ = QFileDialog.getSaveFileName(
             self, trans.t("retouch_checkpoint_save"), "",
             trans.t("retouch_checkpoint_filter"))
@@ -1505,12 +1577,24 @@ class RetouchDialog(QDialog):
         try:
             if any(same_path(path, source) for source in self._checkpoint_sources()):
                 raise ValueError(trans.t("retouch_checkpoint_input"))
-            self.doc.save_checkpoint(path)
         except (ValueError, OSError) as exc:
             QMessageBox.critical(self, trans.t("msg_error"), str(exc))
+            return
+        dialog = _CheckpointDialog(self.doc, path, self, operation="save")
+        self._checkpoint_dialog = dialog
+        try:
+            dialog.start()
+        finally:
+            self._checkpoint_dialog = None
+        if dialog.worker.error is not None and not dialog.worker.cancelled:
+            QMessageBox.critical(self, trans.t("msg_error"),
+                                 trans.t("retouch_checkpoint_save_failed") + "\n\n"
+                                 + str(dialog.worker.error))
 
     def _load_checkpoint(self) -> None:
         if self.doc.stroke_active or self.preview_mode is not None:
+            return
+        if not self._checkpoint_available():
             return
         path, _ = QFileDialog.getOpenFileName(
             self, trans.t("retouch_checkpoint_load"), "",
@@ -1879,6 +1963,7 @@ class RetouchDialog(QDialog):
             if self._applied or self._allow_close:
                 self._save_geometry()
                 self._shutdown_sharpness()
+                self._shutdown_checkpoint_init()
                 self.deleteLater()
                 event.accept()
                 return
@@ -1886,6 +1971,7 @@ class RetouchDialog(QDialog):
                 self._allow_close = True
                 self._save_geometry()
                 self._shutdown_sharpness()
+                self._shutdown_checkpoint_init()
                 self.deleteLater()
                 event.accept()
             else:
