@@ -87,7 +87,10 @@ class Sweep:
             if startup:
                 labels = (_texts("btn_start_fresh", "Start Fresh")[0],) + labels
             if not self.click_text(root, *labels):
-                self.call("dialog.accept", index=window["index"])
+                if startup:
+                    self.call("dialog.accept", index=window["index"])
+                else:
+                    raise RuntimeError(f"unrecognized message dialog: {window}")
         else:
             try:
                 self.call("dialog.reject", index=window["index"])
@@ -105,6 +108,11 @@ class Sweep:
                 except ControlError:
                     pass
             time.sleep(0.1)
+        remaining = self.windows()
+        if remaining:
+            raise RuntimeError(
+                "dialogs would not close: "
+                + ", ".join(sorted({item["class"] for item in remaining})))
 
     def answer_file(self, window, key):
         index = window["index"]
@@ -137,6 +145,10 @@ class Sweep:
             empty_rounds = 0
             open_windows.sort(key=lambda item: (not item["active"], item["index"]))
             window = open_windows[0]
+            if seen and window["class"] not in (
+                    "QFileDialog", "QColorDialog", "QInputDialog", "QMenu",
+                    "QMessageBox"):
+                raise RuntimeError(f"unrecognized continuation dialog: {window}")
             seen.append(f"{window['class']}:{window['title']}")
             try:
                 if window["class"] == "QFileDialog":
@@ -163,15 +175,32 @@ class Sweep:
     def ensure_ready(self):
         frames = self.call("stack.frames")
         if frames["count"] == 0:
-            self.call("stack.load", folder=str(self.demo))
-            self.wait(lambda: self.call("stack.frames"),
-                      lambda value: value["count"] == 6, 60, "frames")
+            started = self.call("stack.load", folder=str(self.demo))
+            load_id = started["load_id"]
+            if load_id is None:
+                raise RuntimeError(f"load did not return an id: {started}")
+
+            def loaded(value):
+                load = value.get("load") or {}
+                return load.get("id") == load_id and load.get("finished") is True
+
+            frames = self.wait(lambda: self.call("stack.frames"), loaded, 60, "frames")
+            if frames["load"].get("error") or frames["count"] != 6:
+                raise RuntimeError(f"load failed: {frames}")
         if self.call("output.list")["count"] == 0:
             self.call("method.set", id="dct")
-            self.call("render.start")
-            self.wait(lambda: self.call("render.state"),
-                      lambda value: not value.get("busy")
-                      and value.get("state") in ("done", "error"), 300, "render")
+            started = self.call("render.start")
+            render_id = started.get("render_id")
+            if not started.get("started") or render_id is None:
+                raise RuntimeError(f"render did not start: {started}")
+            final = self.wait(lambda: self.call("render.state"),
+                              lambda value: value.get("render_id") == render_id
+                              and not value.get("busy")
+                              and value.get("state") in (
+                                  "done", "error", "cancelled", "discarded", "idle"),
+                              300, "render")
+            if final["state"] != "done":
+                raise RuntimeError(f"render failed: {final}")
 
     @staticmethod
     def wait(producer, predicate, timeout, what):

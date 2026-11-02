@@ -59,11 +59,19 @@ token. A stale file (process gone) is reported as `not_running`; `--launch`
 starts a new GUI first. The file is removed on a clean quit.
 
 The socket is per-user local IPC (Windows named pipe, Unix-domain socket).
-Requests without the token are rejected with `unauthorized`.
+Requests without the token are rejected with `unauthorized`. The discovery
+file is created with owner-only permissions from the first byte (a restricted
+ACL on Windows, mode `0600` elsewhere). On Windows the server also compares
+the named-pipe client's computer with `GetComputerNameW` and rejects a remote
+or unidentifiable client; `ERROR_PIPE_LOCAL` is treated as local.
 
 ## 4. Framing
 
-One request per line, one response per line, UTF-8, max 1 MiB per line:
+One request per line, one response per line, UTF-8, max 1 MiB per line.
+Input is read in bounded chunks and queued replies are capped, so an oversize
+line or a burst of pipelined requests cannot grow memory without limit; an
+oversize response is returned as a small `internal` error. Clients match the
+response `id` and discard a late reply after a timeout.
 
 ```json
 {"id":"1","token":"…","cmd":"app.info","args":{}}
@@ -100,13 +108,16 @@ dtcwt/headless without importing optional packages.
 
 | Command | Args | Result |
 |---|---|---|
-| `stack.load` | `folder` \| `files` \| `video`, `scale`, `append` | `{loading:true, source}` |
-| `stack.frames` | — | `{count, names, included, folder, scale, shape, dtype}` |
+| `stack.load` | `folder` \| `files` \| `video`, `scale`, `append` | `{loading:true, source, load_id}` |
+| `stack.frames` | — | `{count, names, included, folder, scale, shape, dtype, load:{id,active,finished,error}}` |
 | `stack.clear` | — | `{cleared:true}` |
-| `stack.include` | `indices`, `include` | `{included:[…]}` |
+| `stack.include` | `indices`, `include` | current stack info |
 
-`stack.load` uses the same worker as the Open button; poll `stack.frames`
-until `count > 0` or check `app.state.render.error`.
+`stack.load` uses the same worker as the Open button. Loads started from the
+menu or a drag-drop advance the same `load_id`, so a wait can bind to one
+request instead of any non-empty stack. Poll `stack.frames` until
+`load.finished` is true and inspect `load.error`; a failed or cancelled decode
+reports `finished:true` with the reason and leaves the previous frames alone.
 
 ### Method, alignment and options
 
@@ -126,13 +137,18 @@ until `count > 0` or check `app.state.render.error`.
 
 | Command | Args | Result |
 |---|---|---|
-| `render.start` | `preview?` | `{started, method, preview}` |
+| `render.start` | `preview?`, `confirm?`, `roi_mode?`, `roi_base_index?` | `{started, render_id, method, alignment, preview}` |
 | `render.cancel` | — | `{cancelling:true}` |
-| `render.state` | — | `{state, busy, progress:{done,total}, method, result, error}` |
+| `render.state` | — | `{state, render_id, busy, progress:{done,total}, method, result, error}` |
 | `render.result` | — | result metadata + selected output record |
 
-`state` is `idle`, `rendering`, `done` or `error`. `result` includes shape,
-dtype, device, elapsed and whether it is a preview.
+`state` is `idle`, `rendering`, `done`, `cancelled`, `discarded` or `error`.
+A cancelled render and a result discarded because the stack changed while it
+ran are terminal failures, not `done`, even when an older `fusion_result`
+still exists. `render.start` answers `confirm_required` instead of opening the
+CPU-AI or ROI modal; retry with `confirm:true` or `roi_mode` plus
+`roi_base_index`. Renders started by the render button advance the same
+`render_id`, so `--wait` never accepts a previous render's completion.
 
 ### Outputs and export
 

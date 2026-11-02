@@ -148,11 +148,16 @@ def _render_state(window):
     worker = getattr(manager, "worker", None)
     busy = bool(worker is not None and worker.isRunning())
     error = getattr(manager, "last_error", None)
-    if busy:
+    last_state = getattr(manager, "last_state", None)
+    if busy or last_state == "running":
         state = "rendering"
+    elif last_state in ("done", "cancelled", "discarded", "error"):
+        # A cancelled or stack-changed render is terminal but not a success;
+        # a newer fusion_result must not turn it into "done".
+        state = last_state
     elif error:
         state = "error"
-    elif getattr(window, "fusion_result", None) is not None:
+    elif getattr(manager, "last_result", None) is not None:
         state = "done"
     else:
         state = "idle"
@@ -217,6 +222,15 @@ class ControlServer(QObject):
         self.socket_name = socket_name or f"{SOCKET_PREFIX}-{os.getpid()}"
         self._buffers = {}
         self._dialogs = {}
+        # Generation counters let --wait bind to one request instead of any
+        # stack that happens to have frames.
+        self._load_id = 0
+        self._load_baseline = 0
+        self._load_error = None
+        self._load_finished = True
+        self._render_id = 0
+        self._tracked_load_bound = None
+        self._tracked_render_bound = None
         # A native file picker cannot be scripted; the portable Qt dialog can.
         install_non_native_file_dialogs()
         self._server = QLocalServer(self)
@@ -240,6 +254,7 @@ class ControlServer(QObject):
             self._start_watchdog()
         self.discovery = write_discovery(
             self.socket_name, self.token, os.getpid(), APP_VERSION)
+        self._install_tracking()
         _log.info("control channel listening on %s", self.socket_name)
 
     @staticmethod
@@ -287,38 +302,255 @@ class ControlServer(QObject):
             target=watch, name="control-watchdog", daemon=True)
         self._watchdog_thread.start()
 
+    # ------------------------------------------------------ generation tracking
+    def _install_tracking(self):
+        """Expose loads and renders started outside the control commands.
+
+        `--wait` must bind to one request, but a folder opened from the menu
+        and a render started by the button used to leave the counters stale,
+        so a wait could accept an earlier load or a cancelled render. Wrap the
+        manager entry points once and advance the same generations for every
+        caller.
+        """
+        manager = getattr(self.window, "source_manager", None)
+        starter = getattr(manager, "_start_load_worker", None)
+        if starter is not None:
+            self._original_start_load = starter
+            self._tracked_load_bound = self._tracked_start_load
+            manager._start_load_worker = self._tracked_load_bound
+        renderer = getattr(self.window, "render_manager", None)
+        start_render = getattr(renderer, "start_render", None)
+        if start_render is not None:
+            self._original_start_render = start_render
+            self._tracked_render_bound = self._tracked_start_render
+            renderer.start_render = self._tracked_render_bound
+
+    def _remove_tracking(self):
+        try:
+            manager = getattr(self.window, "source_manager", None)
+        except RuntimeError:  # the window was already destroyed
+            manager = None
+        if (self._tracked_load_bound is not None
+                and getattr(manager, "_start_load_worker", None)
+                is self._tracked_load_bound):
+            manager._start_load_worker = self._original_start_load
+        try:
+            renderer = getattr(self.window, "render_manager", None)
+        except RuntimeError:
+            renderer = None
+        if (self._tracked_render_bound is not None
+                and getattr(renderer, "start_render", None)
+                is self._tracked_render_bound):
+            renderer.start_render = self._original_start_render
+
+    def _tracked_start_load(self, *args, **kwargs):
+        load_id = self._begin_load()
+        success = kwargs.get("on_success")
+        failure = kwargs.get("on_error")
+
+        def on_success():
+            try:
+                if success is not None:
+                    success()
+            finally:
+                self._finish_load(load_id)
+
+        def on_error(message):
+            try:
+                if failure is not None:
+                    failure(message)
+            finally:
+                self._finish_load(load_id, message)
+
+        kwargs["on_success"] = on_success
+        kwargs["on_error"] = on_error
+        try:
+            self._original_start_load(*args, **kwargs)
+        except Exception:
+            self._finish_load(load_id, "Load failed to start")
+            raise
+        self._watch_load(load_id)
+        return load_id
+
+    def _watch_load(self, load_id):
+        """Finish the generation even when no callback fires (superseded load)."""
+        worker = getattr(self.window.source_manager, "_load_worker", None)
+        if worker is None:
+            self._finish_load(load_id, self._load_error or "Load did not start")
+            return
+        worker.finished_load.connect(
+            lambda ok, message, images, names, lid=load_id:
+            self._finish_load(lid, None if ok else (message or "Load failed")))
+        worker.finished.connect(lambda lid=load_id: self._finish_load(lid))
+
+    def _tracked_start_render(self, *args, **kwargs):
+        status = self._original_start_render(*args, **kwargs)
+        if status == "started":
+            self._render_id += 1
+        return status
+
+    def _begin_load(self):
+        """Open a new load generation; --wait must match this id."""
+        self._load_id += 1
+        self._load_finished = False
+        self._load_error = None
+        self._load_baseline = len(getattr(self.window, "raw_images", None) or [])
+        return self._load_id
+
+    def _finish_load(self, load_id, error=None) -> None:
+        if load_id != self._load_id:
+            return  # a newer request owns the state
+        self._load_finished = True
+        text = str(error or "").strip()
+        if text:
+            self._load_error = ("cancelled"
+                                if text.upper().startswith("CANCELLED")
+                                else text)
+
+    def _load_info(self) -> dict:
+        manager = self.window.source_manager
+        active = (getattr(manager, "_load_worker", None) is not None
+                  and not self._load_finished)
+        return {
+            "id": self._load_id,
+            "active": active,
+            "finished": bool(self._load_finished),
+            "error": self._load_error if self._load_finished else None,
+            "baseline_count": self._load_baseline,
+        }
+
     # ------------------------------------------------------------- sockets
     def _accept(self):
         while self._server.hasPendingConnections():
             connection = self._server.nextPendingConnection()
+            if not self._client_is_local(connection):
+                connection.abort()
+                connection.deleteLater()
+                continue
             self._buffers[connection] = b""
+            connection.setReadBufferSize(MAX_LINE + 1)
             connection.readyRead.connect(lambda c=connection: self._read(c))
             connection.disconnected.connect(lambda c=connection: self._drop(c))
+
+    @staticmethod
+    def _client_is_local(connection) -> bool:
+        """Reject Windows pipe clients whose machine cannot be verified."""
+        if os.name != "nt":
+            return True
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            get_client = kernel32.GetNamedPipeClientComputerNameW
+            get_client.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.ULONG]
+            get_client.restype = wintypes.BOOL
+            get_local = kernel32.GetComputerNameW
+            get_local.argtypes = [wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+            get_local.restype = wintypes.BOOL
+            client_name = ctypes.create_unicode_buffer(256)
+            local_name = ctypes.create_unicode_buffer(256)
+            local_size = wintypes.DWORD(len(local_name))
+            handle = int(connection.socketDescriptor())
+            if handle == -1:
+                return False
+            ctypes.set_last_error(0)
+            if not get_client(wintypes.HANDLE(handle), client_name,
+                              ctypes.sizeof(client_name)):
+                # A local client is reported as ERROR_PIPE_LOCAL rather than
+                # a computer name; that answer is itself proof of locality.
+                if ctypes.get_last_error() == 229:  # ERROR_PIPE_LOCAL
+                    return True
+                _log.warning("control: cannot verify pipe client locality (error %s)",
+                             ctypes.get_last_error())
+                return False
+            if not get_local(local_name, ctypes.byref(local_size)):
+                _log.warning("control: cannot read the local computer name (error %s)",
+                             ctypes.get_last_error())
+                return False
+            return client_name.value.lstrip("\\").casefold() == local_name.value.casefold()
+        except Exception:  # noqa: BLE001 - fail closed when locality is unknown
+            _log.exception("control: client locality check failed")
+            return False
 
     def _drop(self, connection):
         self._buffers.pop(connection, None)
         connection.deleteLater()
 
     def _read(self, connection):
-        buffer = self._buffers.get(connection, b"") + bytes(connection.readAll())
-        while b"\n" in buffer:
-            line, buffer = buffer.split(b"\n", 1)
-            if not line.strip():
-                continue
-            response = self.handle_line(line, token=self.token)
-            connection.write(encode(response))
-            connection.flush()
-        if len(buffer) > MAX_LINE:
-            connection.write(encode(error_response(
-                "0", ControlError("bad_request", "Request line is too large"))))
-            connection.flush()
-            connection.disconnectFromServer()
+        buffer = self._buffers.get(connection)
+        if buffer is None:
             return
-        self._buffers[connection] = buffer
+        while connection.bytesAvailable():
+            # Never copy an unbounded Qt read buffer into Python.
+            chunk = bytes(connection.read(min(65536, MAX_LINE + 1 - len(buffer))))
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                if len(line) > MAX_LINE:
+                    self._reject_request(connection, "Request line is too large")
+                    return
+                if not line.strip():
+                    continue
+                self._buffers[connection] = buffer
+                response = self.handle_line(line, token=self.token)
+                if connection not in self._buffers:
+                    return
+                payload = self._encode_response(response)
+                if payload is None:
+                    connection.abort()
+                    return
+                if connection.bytesToWrite() + len(payload) > MAX_LINE * 2:
+                    connection.abort()
+                    return
+                if connection.write(payload) != len(payload):
+                    connection.abort()
+                    return
+                connection.flush()
+                buffer = self._buffers.get(connection)
+                if buffer is None:
+                    return
+            if len(buffer) > MAX_LINE:
+                self._reject_request(connection, "Request line is too large")
+                return
+            self._buffers[connection] = buffer
+
+    def _encode_response(self, response):
+        """Encode one reply; a too-large payload becomes a small error.
+
+        Without this the encode() failure escaped the Qt slot and the client
+        waited for a line that would never arrive.
+        """
+        try:
+            return encode(response)
+        except Exception:  # noqa: BLE001 - report serialization and size errors
+            try:
+                return encode(error_response(
+                    str(response.get("id", "0")),
+                    ControlError("internal", "Response is too large or cannot be encoded")))
+            except Exception:  # noqa: BLE001 - even the request id may be too large
+                return None
+
+    def _reject_request(self, connection, message):
+        self._buffers.pop(connection, None)
+        if connection.bytesToWrite() > MAX_LINE:
+            connection.abort()
+            return
+        try:
+            connection.write(encode(error_response(
+                "0", ControlError("bad_request", message))))
+            connection.flush()
+        except Exception:  # noqa: BLE001 - closing anyway
+            connection.abort()
+            return
+        connection.disconnectFromServer()
 
     def close(self):
         if self._watchdog_stop is not None:
             self._watchdog_stop.set()
+        self._remove_tracking()
         for dialog in list(self._dialogs.values()):
             try:
                 dialog.close()
@@ -470,20 +702,26 @@ class ControlServer(QObject):
         if getattr(manager, "_load_worker", None) is not None:
             raise ControlError("busy", "A stack is already loading",
                                "Poll stack.frames, then retry.")
+        load_id = None
         if folder:
-            manager._start_load_worker(folder=folder, scale=scale, append=append)
+            load_id = manager._start_load_worker(
+                folder=folder, scale=scale, append=append)
             source = folder
         elif video:
-            manager._start_load_worker(video=video, scale=scale, append=append)
+            load_id = manager._start_load_worker(
+                video=video, scale=scale, append=append)
             source = video
         else:
-            manager._start_load_worker(filepaths=list(files), scale=scale,
-                                       append=append)
+            load_id = manager._start_load_worker(
+                filepaths=list(files), scale=scale, append=append)
             source = list(files)
-        return {"loading": True, "source": source}
+        return {"loading": True, "source": source, "load_id": load_id,
+                "baseline_count": self._load_baseline}
 
     def _cmd_stack_frames(self, args):
-        return _stack_info(self.window)
+        info = _stack_info(self.window)
+        info["load"] = self._load_info()
+        return info
 
     def _cmd_stack_clear(self, args):
         self.window.source_manager.clear_image_stack()
@@ -496,22 +734,32 @@ class ControlServer(QObject):
                            for index in indices)):
             raise ControlError("invalid_argument", "indices must be integers")
         include = _boolean(args, "include", default=True)
-        excluded = set(getattr(self.window, "excluded_frames", set()) or set())
+        window = self.window
+        manager = window.source_manager
         for index in indices:
-            if not 0 <= index < len(self.window.raw_images):
+            if not 0 <= index < len(window.raw_images):
                 raise ControlError("invalid_argument", f"Frame index out of range: {index}")
-            if include:
-                excluded.discard(index)
-            else:
-                excluded.add(index)
-        self.window.excluded_frames = excluded
-        self.window.source_manager.decorate_source_items()
-        return _stack_info(self.window)
+            item = window.file_list.item(index)
+            if item is None:
+                raise ControlError("not_found", f"No frame row at index {index}")
+            # Drive the same handler the checkbox uses: it pushes undo, marks
+            # the project dirty, bumps source_revision and drops the cached
+            # alignment/ROI. Block the list signal so the state change is
+            # handled exactly once, whichever path called us.
+            blocked = window.file_list.blockSignals(True)
+            try:
+                item.setCheckState(Qt.CheckState.Checked if include
+                                   else Qt.CheckState.Unchecked)
+            finally:
+                window.file_list.blockSignals(blocked)
+            manager.on_item_changed(item)
+        return _stack_info(window)
 
     # -------------------------------------------------- method/align/options
     def _cmd_method_set(self, args):
         method = _string(args, "id")
-        get_fusion(method)
+        if method != "none":
+            get_fusion(method)
         self.window.set_fusion_method(method)
         parameters = args.get("parameters")
         if parameters is not None:
@@ -549,12 +797,19 @@ class ControlServer(QObject):
         name = _string(args, "name")
         value = args.get("value")
         window = self.window
-        if name == "base_correct":
-            window.set_base_correct(bool(value))
-        elif name == "exposure_match":
-            window.set_exposure_match(bool(value))
+        if name in ("base_correct", "exposure_match"):
+            # Per-method brightness option; this is the path the checkbox
+            # uses, so app.state reads the same value the control shows.
+            window.set_brightness_option(name, window.current_fusion_method(),
+                                         bool(value))
+            window._sync_brightness_checkboxes()
         elif name == "reverse_order":
             window.set_reverse_order(bool(value))
+            checkbox = getattr(window, "chk_reverse_order", None)
+            if checkbox is not None:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(bool(value))
+                checkbox.blockSignals(False)
         elif name == "thread_count":
             window.thread_count = max(0, int(value))
         elif name == "use_gpu":
@@ -593,20 +848,83 @@ class ControlServer(QObject):
         # silently turn every later "full" render into a downscaled draft.
         self.window.chk_quick_preview.setChecked(preview)
         method = self.window.current_fusion_method()
-        if method == "none":
-            raise ControlError("invalid_argument", "Select a fusion method first")
-        manager.start_render()
-        return {"started": True, "method": method, "preview": preview}
+        alignment = self.window.current_alignment_method()
+        if method == "none" and alignment == "none":
+            raise ControlError(
+                "invalid_argument",
+                "Select a fusion method or an alignment method first",
+                "method.set id=none renders the aligned stack only; with "
+                "alignment 'none' there is nothing to do.")
+        confirm = _boolean(args, "confirm", default=False)
+        roi_mode = _string(args, "roi_mode", required=False)
+        roi_choice = None
+        if roi_mode is not None:
+            if roi_mode not in ("crop", "paste"):
+                raise ControlError("invalid_argument",
+                                   "roi_mode must be 'crop' or 'paste'")
+            roi_choice = {"mode": roi_mode,
+                          "base_index": _integer(args, "roi_base_index",
+                                                 default=0, minimum=0)}
+        # interactive=False: a decision that would open a modal box comes back
+        # as a status, so the socket is answered before anything blocks.
+        before = self._render_id
+        try:
+            status = manager.start_render(interactive=False, confirmed=confirm,
+                                          roi_choice=roi_choice)
+        except ValueError as error:
+            raise ControlError("invalid_argument", str(error)) from error
+        if status == "started":
+            if self._render_id == before:
+                # A monkeypatched/test renderer bypassed the generation
+                # wrapper; keep the id accurate for --wait all the same.
+                self._render_id += 1
+            return {"started": True, "render_id": self._render_id,
+                    "method": method, "alignment": alignment,
+                    "preview": preview}
+        if status == "busy":
+            raise ControlError("busy", "A render is already running",
+                               "Wait for render.state to leave 'rendering' or "
+                               "call render.cancel.")
+        if status == "confirm_ai":
+            raise ControlError(
+                "confirm_required",
+                "The selected AI model runs on the CPU and is much slower",
+                "Retry with confirm=true to accept the warning.")
+        if status == "confirm_roi":
+            raise ControlError(
+                "confirm_required",
+                "An ROI render needs an output decision",
+                "Pass roi_mode ('crop' or 'paste') and roi_base_index, or "
+                "leave ROI mode.")
+        if status == "no_frames":
+            raise ControlError("invalid_argument",
+                               "At least two usable frames are required",
+                               "Load a stack or include more frames first.")
+        if status == "unavailable":
+            raise ControlError("unsupported",
+                               "The selected AI model is not available",
+                               "Install torch or pick another method.")
+        if status == "stack_changed":
+            raise ControlError("invalid_argument",
+                               "The stack changed while the ROI was active",
+                               "Reset the ROI selection and retry.")
+        if status == "cancelled":
+            raise ControlError("internal",
+                               "The render was cancelled before it started",
+                               "Retry render.start.")
+        raise ControlError("internal", f"Render did not start ({status})")
 
     def _cmd_render_cancel(self, args):
         worker = getattr(self.window.render_manager, "worker", None)
         if worker is None:
             return {"cancelling": False}
         worker.is_cancelled = True
-        return {"cancelling": True}
+        return {"cancelling": True, "render_id": self._render_id}
 
     def _cmd_render_state(self, args):
-        return _render_state(self.window)
+        state = _render_state(self.window)
+        state["render_id"] = self._render_id
+        return state
 
     def _cmd_render_result(self, args):
         state = _render_state(self.window)
@@ -677,6 +995,19 @@ class ControlServer(QObject):
         record = replace(original, scale_bar_config=deepcopy(original.scale_bar_config))
         target = window.export_manager.normalize_export_path(path)
         labels = window.label_manager.snapshot()
+        if getattr(original, "kind", None) == "aligned":
+            # An aligned-stack output is a folder of frames, not one image;
+            # handing it to the image writer produced a single broken file.
+            destination = os.path.dirname(target) or None
+            written = manager._export_aligned_record(
+                record, destination=destination, labels_snapshot=labels)
+            if not written:
+                raise ControlError("internal", "The aligned stack was not written")
+            manager._mark_record_exported(
+                original, record.image, written,
+                manager._annotation_state(record, labels))
+            return {"path": written, "written": True, "index": index,
+                    "kind": "aligned"}
         manager._write_record(record, target, labels)
         manager._mark_record_exported(
             original, record.image, target,
@@ -685,10 +1016,35 @@ class ControlServer(QObject):
 
     def _cmd_output_delete(self, args):
         index = _integer(args, "index", required=True, minimum=0)
+        force = _boolean(args, "force", default=False)
         window = self.window
-        if window.output_list.item(index) is None:
+        item = window.output_list.item(index)
+        if item is None:
             raise ControlError("not_found", f"No output at index {index}")
-        window.output_manager._remove_row(index)
+        manager = window.output_manager
+        record = manager.record_for_item(item)
+        if record is not None and record.protected and not force:
+            raise ControlError(
+                "confirm_required",
+                "The output is an unexported retouch/compare result",
+                "Export it first, or retry with force=true to discard it.")
+        manager._remove_row(index)
+        # Mirror delete_selected_output_images: the canvas and
+        # window.fusion_result must follow the list instead of keeping the
+        # deleted pixels. Keep the row the user had selected (shifted by the
+        # removal) instead of always jumping to the deleted index.
+        if window.output_list.count():
+            current = window.output_list.currentRow()
+            new_index = current - 1 if current > index else current
+            new_index = max(0, min(new_index, window.output_list.count() - 1))
+            window.output_list.setCurrentRow(new_index)
+            manager.display_output_image_in_result_view(
+                window.output_list.item(new_index))
+        else:
+            window.fusion_result = None
+            window.lbl_result_img.clear()
+            window.lbl_result_img.setText(trans.t("result_hint"))
+            window.result_control_bar.setVisible(False)
         return {"deleted": True, "index": index}
 
     # ------------------------------------------------------------- project
@@ -725,14 +1081,20 @@ class ControlServer(QObject):
         ok, error, state = validate_project(path)
         if not ok:
             raise ControlError("invalid_argument", error or "Project is invalid")
+        if getattr(window.source_manager, "_load_worker", None) is not None:
+            raise ControlError("busy", "A stack is already loading",
+                               "Poll stack.frames, then retry.")
 
         def loaded():
             window.project_path = path
             window._clear_project_dirty()
             window.add_recent_project(path)
 
-        apply_project(window, state, on_loaded=loaded)
-        return {"loading": True, "path": path,
+        try:
+            apply_project(window, state, on_loaded=loaded)
+        except Exception as error:  # noqa: BLE001 - reported to the client
+            raise ControlError("invalid_argument", str(error)) from error
+        return {"loading": True, "path": path, "load_id": self._load_id,
                 "discarded_unsaved": bool(force)}
 
     # ------------------------------------------------------------- dialogs
@@ -800,6 +1162,17 @@ class ControlServer(QObject):
     def _cmd_dialog_open(self, args):
         name = _string(args, "name")
         window = self.window
+        # Reuse a managed instance before building a new dialog: constructing
+        # first leaked images and signal handlers on every repeated open.
+        existing = self._dialogs.get(name)
+        if existing is not None:
+            if existing.isVisible():
+                existing.raise_()
+                existing.activateWindow()
+                return {"opened": True, "title": existing.windowTitle(),
+                        "existing": True}
+            self._dialogs.pop(name, None)
+            existing.close()
         if name == "settings":
             from dialogs.advanced_settings import AdvancedSettingsDialog
             dialog = AdvancedSettingsDialog(window)
@@ -1183,8 +1556,17 @@ class ControlServer(QObject):
             selected = menu.actions()[index]
         if not selected.isEnabled() or selected.isSeparator():
             raise ControlError("busy", "Menu action is not usable")
-        selected.trigger()
-        return {"triggered": selected.text()}
+        from PyQt6 import sip
+
+        def fire(action=selected):
+            if not sip.isdeleted(action):
+                action.trigger()
+
+        # Delete / Save As open modal dialogs inside trigger(); the reply must
+        # reach the client before that nested event loop starts.
+        QTimer.singleShot(100, fire)
+        return {"scheduled": True, "triggered": selected.text(),
+                "index": menu.actions().index(selected)}
 
     def _cmd_ui_mouse(self, args):
         from ui.control_surface import resolve_path, send_mouse

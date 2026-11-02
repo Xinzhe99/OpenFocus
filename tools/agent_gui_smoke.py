@@ -133,10 +133,17 @@ class Smoke:
         return f"v{info['version']} commands={len(info['control']['commands'])}"
 
     def load(self):
-        self.call("stack.load", folder=str(self.demo))
-        frames = wait_for("stack.frames",
-                          lambda value: value.get("count") == 6,
-                          timeout=120)
+        started = self.call("stack.load", folder=str(self.demo))
+        load_id = started["load_id"]
+        assert load_id is not None, started
+
+        def loaded(value):
+            load = value.get("load") or {}
+            return load.get("id") == load_id and load.get("finished") is True
+
+        frames = wait_for("stack.frames", loaded, timeout=120)
+        assert not frames["load"].get("error"), frames["load"]
+        assert frames["count"] == 6, frames
         assert frames["dtype"] == "uint8"
         return f"{frames['count']} frames {frames['shape']}"
 
@@ -150,10 +157,14 @@ class Smoke:
 
     def render(self):
         state = self.call("render.start")
-        assert state["started"]
+        assert state["started"], state
+        render_id = state["render_id"]
+        assert render_id is not None, state
         final = wait_for("render.state",
-                         lambda value: not value.get("busy")
-                         and value.get("state") in ("done", "error"),
+                         lambda value: value.get("render_id") == render_id
+                         and not value.get("busy")
+                         and value.get("state") in (
+                             "done", "error", "cancelled", "discarded", "idle"),
                          timeout=300)
         assert final["state"] == "done", final
         result = self.call("render.result")
@@ -253,6 +264,7 @@ class Smoke:
         return "wipe drag + wheel"
 
     def file_action(self):
+        before = self.call("stack.frames")["load"]["id"]
         self.call("ui.trigger", key="action_open_folder")
         windows = self.wait_windows(
             lambda items: any(item["class"] == "QFileDialog"
@@ -260,8 +272,15 @@ class Smoke:
         window = next(item for item in windows
                       if item["class"] == "QFileDialog")
         self.call("dialog.file", index=window["index"], path=str(self.demo))
-        frames = wait_for("stack.frames",
-                          lambda value: value.get("count") == 6, timeout=120)
+
+        def loaded(value):
+            load = value.get("load") or {}
+            return (value.get("count") == 6
+                    and load.get("id", 0) > before
+                    and load.get("finished"))
+
+        frames = wait_for("stack.frames", loaded, timeout=120)
+        assert not frames["load"].get("error"), frames["load"]
         return f"picked folder -> {frames['count']} frames"
 
     def labels(self):
@@ -303,9 +322,17 @@ class Smoke:
         assert self.call("stack.frames")["count"] == 0
         # Loading the snapshot discards the cleared (unsaved) session: the
         # open command requires explicit force for that.
-        self.call("project.open", path=str(path), force=True)
-        frames = wait_for("stack.frames",
-                          lambda value: value.get("count") == 6, timeout=120)
+        started = self.call("project.open", path=str(path), force=True)
+        load_id = started["load_id"]
+        assert load_id is not None, started
+
+        def restored(value):
+            load = value.get("load") or {}
+            return load.get("id") == load_id and load.get("finished") is True
+
+        frames = wait_for("stack.frames", restored, timeout=120)
+        assert not frames["load"].get("error"), frames["load"]
+        assert frames["count"] == 6, frames
         return f"{frames['count']} frames restored"
 
     def batch(self):
@@ -320,6 +347,11 @@ class Smoke:
                           object_name="fusion_combo")["matches"][0]
         self.call("ui.set", path=combo["path"], value="dct")
         self.call("dialog.accept")
+        # A run that never started also answers "not busy"; require evidence
+        # that the batch began before waiting for it to finish.
+        wait_for("batch.state",
+                 lambda value: value.get("busy") or value.get("results") is not None,
+                 timeout=60)
         state = wait_for("batch.state",
                          lambda value: not value.get("busy"), timeout=600)
         assert state["error"] is None, state["error"]

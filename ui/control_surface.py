@@ -7,7 +7,7 @@ command.
 """
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QTimer, Qt
 from PyQt6.QtGui import (
-    QAction, QKeyEvent, QKeySequence, QMouseEvent, QWheelEvent,
+    QAction, QContextMenuEvent, QKeyEvent, QKeySequence, QMouseEvent, QWheelEvent,
 )
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
@@ -425,8 +425,42 @@ def ensure_visible(widget):
     """Scroll a widget into view so synthetic mouse coordinates hit it."""
     parent = widget.parentWidget()
     while parent is not None:
-        if isinstance(parent, QAbstractScrollArea):
-            parent.ensureWidgetVisible(widget)
+        if isinstance(parent, QAbstractItemView):
+            # indexAt cannot find an off-screen index widget. Walk the model
+            # and find the widget (or its ancestor) installed for each index.
+            model = parent.model()
+            if model is not None:
+                # Qt's private list model does not expose columnCount to
+                # Python; item widgets still need a column count to walk.
+                try:
+                    columns = int(model.columnCount(parent.rootIndex()))
+                except (TypeError, AttributeError):
+                    counter = getattr(parent, "columnCount", None)
+                    try:
+                        columns = int(counter()) if callable(counter) else 1
+                    except TypeError:
+                        columns = 1
+                pending = [parent.rootIndex()]
+                found = False
+                while pending and not found:
+                    root = pending.pop()
+                    for row in range(model.rowCount(root)):
+                        for column in range(max(1, columns)):
+                            index = model.index(row, column, root)
+                            item_widget = parent.indexWidget(index)
+                            if item_widget is not None and (
+                                    item_widget is widget or item_widget.isAncestorOf(widget)):
+                                parent.scrollTo(index)
+                                found = True
+                                break
+                            if model.hasChildren(index):
+                                pending.append(index)
+                        if found:
+                            break
+        elif isinstance(parent, QAbstractScrollArea):
+            scroller = getattr(parent, "ensureWidgetVisible", None)
+            if callable(scroller):
+                scroller(widget)
         parent = parent.parentWidget()
 
 
@@ -479,6 +513,19 @@ def send_mouse(widget, action, x=0, y=0, to_x=None, to_y=None,
         elif action == "middle_click":
             mouse_button = Qt.MouseButton.MiddleButton
         QTest.mouseClick(widget, mouse_button, modifiers, start)
+        if mouse_button == Qt.MouseButton.RightButton:
+            target = widget
+            pos = start
+            if isinstance(widget, QAbstractScrollArea):
+                viewport = widget.viewport()
+                viewport_pos = viewport.mapFrom(widget, start)
+                if viewport.rect().contains(viewport_pos):
+                    target, pos = viewport, viewport_pos
+            # Menu handlers may run a nested modal loop. Post the event so the
+            # control request can return before the menu is opened.
+            QApplication.postEvent(target, QContextMenuEvent(
+                QContextMenuEvent.Reason.Mouse, pos,
+                target.mapToGlobal(pos), modifiers))
         return {"action": action, "x": start.x(), "y": start.y()}
     if action == "double_click":
         QTest.mouseDClick(widget, mouse_button, modifiers, start)

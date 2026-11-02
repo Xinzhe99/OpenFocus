@@ -35,6 +35,8 @@ class RenderManager:
         # Control-channel observability: the last outcome and tile progress.
         self.last_error: Optional[str] = None
         self.last_result: Optional[dict] = None
+        self.last_state: Optional[str] = None
+        self._render_interactive = True
         self._control_progress: Optional[tuple] = None
 
     def _alignment_key(self, included, method=None):
@@ -79,6 +81,38 @@ class RenderManager:
             os.path.normcase(os.path.abspath(os.path.join(folder, name)))
             for path, name in zip(paths, names))
 
+    def _ai_confirmation_needed(self, force_algorithm: str | None = None) -> bool:
+        """True when starting a CPU-only AI render would ask the user first.
+
+        Kept separate from the dialog so the control channel can answer
+        ``confirm_required`` without opening a modal box.
+        """
+        if force_algorithm is not None:
+            return False
+        window = self.window
+        try:
+            algorithm = window.current_fusion_method()
+        except Exception:
+            return False
+        if (algorithm == "none" or not get_fusion(algorithm).neural
+                or not getattr(window, "use_gpu", True)):
+            # A user who explicitly disabled GPU acceleration has already
+            # been told; the setting is the opt-out.
+            return False
+
+        from utils.settings_store import (AI_CPU_WARNING_DISMISSED_KEY,
+                                          get_settings)
+        settings = get_settings()
+        if settings.value(AI_CPU_WARNING_DISMISSED_KEY, False, type=bool):
+            return False
+
+        from core.multi_focus_fusion import is_ai_fusion_available, torch_device_kind
+        if not is_ai_fusion_available():
+            return False  # torch missing: the render itself will say so
+        if torch_device_kind() not in (None, "N/A"):
+            return False  # CUDA or MPS available: nothing to warn about
+        return True
+
     def _confirm_cpu_ai_render(self, force_algorithm: str | None = None) -> bool:
         """Warn before starting a CPU-only AI render; True means go ahead.
 
@@ -91,31 +125,13 @@ class RenderManager:
         Compare-all drives methods programmatically and must not stop for a
         modal box mid-run, so it is skipped.
         """
-        if force_algorithm is not None:
+        if not self._ai_confirmation_needed(force_algorithm):
             return True
         window = self.window
-        try:
-            algorithm = window.current_fusion_method()
-        except Exception:
-            return True
-        if (algorithm == "none" or not get_fusion(algorithm).neural
-                or not getattr(window, "use_gpu", True)):
-            # A user who explicitly disabled GPU acceleration has already
-            # been told; the setting is the opt-out.
-            return True
-
+        algorithm = window.current_fusion_method()
         from utils.settings_store import (AI_CPU_WARNING_DISMISSED_KEY,
                                           get_settings)
         settings = get_settings()
-        if settings.value(AI_CPU_WARNING_DISMISSED_KEY, False, type=bool):
-            return True
-
-        from core.multi_focus_fusion import is_ai_fusion_available, torch_device_kind
-        if not is_ai_fusion_available():
-            return True  # torch missing: the render itself will say so
-        if torch_device_kind() not in (None, "N/A"):
-            return True  # CUDA or MPS available: nothing to warn about
-
         from PyQt6.QtWidgets import QCheckBox, QMessageBox
         from utils import style_message_box
 
@@ -234,22 +250,54 @@ class RenderManager:
             5000)
         self.start_render(force_algorithm=method)
 
-    def start_render(self, force_algorithm: str | None = None) -> None:
-        window = self.window
+    def start_render(self, force_algorithm: str | None = None, *,
+                     interactive: bool = True, confirmed: bool = False,
+                     roi_choice: dict | None = None):
+        """Start a render and report why it did or did not start.
+
+        ``interactive=False`` is the control-channel path: it never opens a
+        modal box. A decision that would have shown one is returned as a
+        status instead, so the client gets a reply before anything blocks.
+        """
         # 重入守卫：本方法中途有多次 processEvents()，期间排队的第二次点击
         # 会重入并把 self.worker 覆盖掉——正在运行的 RenderWorker 失去引用
         # 被 C++ 析构，QThread 直接 qFatal abort。守卫必须在任何
         # processEvents 之前设置。
         if getattr(self, "_render_pending", False):
-            return
+            return "busy"
         self._render_pending = True
         try:
-            self._start_render_inner(force_algorithm)
+            self._start_render_inner(force_algorithm, interactive=interactive,
+                                     confirmed=confirmed, roi_choice=roi_choice)
+        except Exception as exc:
+            self.last_state = "error"
+            self.last_error = str(exc)
+            self.last_result = None
+            self._render_context = None
+            self._preview_mode = False
+            self._abort_compare_run()
+            self._restore_ui_controls()
+            raise
         finally:
             self._render_pending = False
+        return self._start_status
 
-    def _start_render_inner(self, force_algorithm: str | None = None) -> None:
+    def _start_render_inner(self, force_algorithm: str | None = None, *,
+                            interactive: bool = True, confirmed: bool = False,
+                            roi_choice: dict | None = None) -> None:
         window = self.window
+        # Why the last start returned; "started" only when a worker runs.
+        self._start_status = "started"
+
+        # A render is already running: this click cancels it
+        if self.worker is not None and self.worker.isRunning():
+            self._start_status = "busy"
+            if interactive:
+                self.worker.is_cancelled = True
+                window.btn_render.setEnabled(False)
+                window.btn_render.setText(trans.t('depth_cancelling'))
+                QApplication.processEvents()
+            return
         # A previous render may have aborted without clearing this; it decides
         # whether the result is treated as a throwaway draft.
         self._preview_mode = False
@@ -260,23 +308,23 @@ class RenderManager:
             timer.deleteLater()
             self._compare_chain_timer = None
 
-        # A render is already running: this click cancels it
-        if self.worker is not None and self.worker.isRunning():
-            self.worker.is_cancelled = True
-            window.btn_render.setEnabled(False)
-            window.btn_render.setText(trans.t('depth_cancelling'))
-            QApplication.processEvents()
-            return
-
         stack_images, stack_filenames, included_idx = window.effective_stack()
         if len(stack_images) < 2:
-            show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
+            if interactive:
+                show_warning_box(window, trans.t("msg_no_images_title"), trans.t("msg_render_need_images_text"))
+            self._start_status = "no_frames"
             self._abort_compare_run()
             return
 
-        if not self._confirm_cpu_ai_render(force_algorithm):
-            self._abort_compare_run()
-            return
+        if self._ai_confirmation_needed(force_algorithm) and not confirmed:
+            if not interactive:
+                self._start_status = "confirm_ai"
+                self._abort_compare_run()
+                return
+            if not self._confirm_cpu_ai_render(force_algorithm):
+                self._start_status = "cancelled"
+                self._abort_compare_run()
+                return
 
         if force_algorithm:
             # Compare-all mode drives the next renders programmatically; the
@@ -323,11 +371,13 @@ class RenderManager:
 
         if force_algorithm is None and fusion_method != "none" and get_fusion(fusion_method).neural \
                 and not is_ai_fusion_available():
-            show_warning_box(
-                window,
-                trans.t("msg_stackmff_unavailable_title"),
-                trans.t("msg_stackmff_unavailable_text"),
-            )
+            if interactive:
+                show_warning_box(
+                    window,
+                    trans.t("msg_stackmff_unavailable_title"),
+                    trans.t("msg_stackmff_unavailable_text"),
+                )
+            self._start_status = "unavailable"
             self._restore_ui_controls()
             return
 
@@ -353,6 +403,7 @@ class RenderManager:
                 window.transform_manager.reset_roi_selection()
                 self._restore_ui_controls()
                 self._abort_compare_run()
+                self._start_status = "stack_changed"
                 window.statusBar().showMessage(trans.t("msg_render_stack_changed"), 8000)
                 return
             # 从右侧结果面板获取ROI区域（因为ROI是在对齐后的图像上选择的）
@@ -367,19 +418,35 @@ class RenderManager:
                 base = (window.roi_aligned_images[0]
                         if getattr(window, "roi_aligned_images", None) else None)
                 output_size = (base.shape[1], base.shape[0]) if base is not None else None
-                dialog = ROIRenderOptionsDialog(
-                    len(window.roi_aligned_images), window,
-                    frame_names=names, roi_size=roi_size,
-                    output_size=output_size, frames=window.roi_aligned_images,
-                    frame_indices=included_idx)
-                if dialog.exec() == QDialog.DialogCode.Accepted:
-                    roi_mode = dialog.mode
-                    roi_base_index = dialog.base_frame_index
-                else:
-                    # User cancelled the ROI dialog -> cancel render
+                if roi_choice is not None:
+                    roi_mode = str(roi_choice.get("mode", "crop"))
+                    if roi_mode not in ("crop", "paste"):
+                        raise ValueError(f"ROI mode must be crop or paste: {roi_mode}")
+                    roi_base_index = int(roi_choice.get("base_index", 0))
+                    if not 0 <= roi_base_index < len(window.roi_aligned_images):
+                        raise ValueError("ROI base_index is outside the included stack")
+                elif not interactive:
+                    # The client must decide crop/paste up front; exec() here
+                    # would leave its request unanswered.
+                    self._start_status = "confirm_roi"
                     self._restore_ui_controls()
                     self._abort_compare_run()
                     return
+                else:
+                    dialog = ROIRenderOptionsDialog(
+                        len(window.roi_aligned_images), window,
+                        frame_names=names, roi_size=roi_size,
+                        output_size=output_size, frames=window.roi_aligned_images,
+                        frame_indices=included_idx)
+                    if dialog.exec() == QDialog.DialogCode.Accepted:
+                        roi_mode = dialog.mode
+                        roi_base_index = dialog.base_frame_index
+                    else:
+                        # User cancelled the ROI dialog -> cancel render
+                        self._start_status = "cancelled"
+                        self._restore_ui_controls()
+                        self._abort_compare_run()
+                        return
         
         preview_downscale = getattr(window, 'chk_quick_preview', None)
         # Compare-all is a *producing* operation: the whole point is to fill the
@@ -525,6 +592,8 @@ class RenderManager:
         self.last_error = None
         self.last_result = None
         self._control_progress = None
+        self.last_state = "running"
+        self._render_interactive = interactive
         self.worker = RenderWorker(
             source_images,
             effective_aligned_images,
@@ -611,6 +680,10 @@ class RenderManager:
             print("Render finished but the stack changed meanwhile — result discarded.")
             _logging.getLogger("openfocus").warning(
                 "render result discarded: stack changed while rendering")
+            self.last_state = "discarded"
+            self.last_error = message
+            self.last_result = None
+            self._control_progress = None
             window.statusBar().showMessage(message, 8000)
             # Nothing will chain the next comparison method any more (the
             # queue is only advanced from the normal completion path), so an
@@ -737,6 +810,15 @@ class RenderManager:
                     "render finished (preview=%s, method fusion, %.1fs)", preview, fusion_time)
             else:
                 if registration_performed:
+                    self.last_result = {
+                        "device": device_name,
+                        "alignment_seconds": round(float(alignment_time), 3),
+                        "fusion_seconds": round(float(fusion_time), 3),
+                        "registration_performed": True,
+                        "preview": bool(preview),
+                        "method": (context or {}).get("algorithm"),
+                        "frame_count": len(processed_images),
+                    }
                     if preview:
                         # Preview draft: show the small aligned frames without
                         # touching the full-resolution output history
@@ -854,17 +936,24 @@ class RenderManager:
                 if newest is not None:
                     # Long names are cut off in the list: lead with the name
                     newest.setToolTip("\n".join([newest.text(), ""] + info_lines))
+            self.last_state = "done" if self.last_result is not None else "error"
+            if self.last_state == "error":
+                self.last_error = "Render completed without producing a result"
 
         except Exception as exc:
             import logging
             logging.getLogger("openfocus").exception("render failed with exception")
-            show_message_box(
-                window,
-                trans.t("msg_error"),
-                trans.t("msg_proc_error"),
-                str(exc),
-                QMessageBox.Icon.Critical,
-            )
+            self.last_state = "error"
+            self.last_error = str(exc)
+            self.last_result = None
+            if getattr(self, "_render_interactive", True):
+                show_message_box(
+                    window,
+                    trans.t("msg_error"),
+                    trans.t("msg_proc_error"),
+                    str(exc),
+                    QMessageBox.Icon.Critical,
+                )
 
         finally:
             if compare:
@@ -1028,19 +1117,24 @@ class RenderManager:
         self._control_progress = None
         # Cancellation is not an error: quiet status message, no dialog
         if error_message.startswith("CANCELLED"):
+            self.last_state = "cancelled"
+            self.last_result = None
             self.last_error = None
             window.statusBar().showMessage(trans.t('msg_render_cancelled'), 4000)
             return
         self.last_error = str(error_message)
+        self.last_state = "error"
+        self.last_result = None
 
         import logging
         logging.getLogger("openfocus").error("render failed: %s", error_message)
 
-        show_message_box(
-            window,
-            trans.t("msg_error"),
-            trans.t("msg_proc_error"),
-            error_message,
-            QMessageBox.Icon.Critical,
-        )
+        if getattr(self, "_render_interactive", True):
+            show_message_box(
+                window,
+                trans.t("msg_error"),
+                trans.t("msg_proc_error"),
+                error_message,
+                QMessageBox.Icon.Critical,
+            )
 
