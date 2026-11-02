@@ -251,7 +251,7 @@ class ExportManager:
             image_to_save = labels.prepare_bgr_image('output', result_to_save, 0)
             ext = os.path.splitext(file_path)[1].lower()
             params = get_imwrite_params(ext)
-            profile = getattr(getattr(window, 'image_loader', None), 'source_icc_profile', b'')
+            profile = getattr(getattr(window, 'last_render_context', None), 'icc_profile', b'')
             if imwrite_auto(file_path, scalebar.burn(image_to_save, cfg), params, exif=b'', icc_profile=profile):
                 # Non-blocking confirmation (errors still get a dialog)
                 window.statusBar().showMessage(
@@ -331,9 +331,10 @@ class ExportManager:
         directory = create_stack_directory(base, self.filename_from_label(folder_name))
         failures = []
         saved = 0
+        from core.image_loader import stack_icc_profile
         exif = (b'' if baked else getattr(getattr(window, 'image_loader', None), 'source_exif', b''))
         profile = (getattr(record, 'icc_profile', b'') if record is not None else
-                   getattr(getattr(window, 'image_loader', None), 'source_icc_profile', b''))
+                   stack_icc_profile(window))
         for index, frame in enumerate(frames):
             name = frame_export_name(filenames[index] if index < len(filenames) else '', index, extension)
             path = unique_path(os.path.join(directory, name))

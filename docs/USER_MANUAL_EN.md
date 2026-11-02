@@ -339,6 +339,11 @@ source pixels into a common color space or color-manage the preview. Convert
 mixed-profile images to a common color space before loading them. RAW input is
 developed to sRGB and does not inherit a camera profile.
 
+For a multi-page TIFF, all pages in the file must have the same valid RGB
+profile; otherwise its frames are treated as untagged. Video frames are also
+treated as untagged. Appended frames and the frames selected for a render all
+contribute to its profile, which stays with that result for later exports.
+
 ### Clearing the Stack
 
 To remove all loaded images, go to **File → Clear Stack** or press `Ctrl+W`.

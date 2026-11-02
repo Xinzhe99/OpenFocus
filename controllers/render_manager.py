@@ -551,6 +551,7 @@ class RenderManager:
         # it) and must not publish an alignment that belongs to a different
         # stack than the one the UI shows (quick preview and ROI mode hand the
         # worker downscaled / cropped copies instead of window.raw_images).
+        from core.image_loader import stack_icc_profile
         self._render_context = {
             "source": source_images,
             # Live reference of the FULL stack at launch: with exclusions,
@@ -574,7 +575,7 @@ class RenderManager:
             "alignment_key": alignment_key,
             "disk_alignment_options": disk_alignment_options,
             "full_filenames": list(window.image_filenames),
-            "icc_profile": getattr(getattr(window, "image_loader", None), "source_icc_profile", b""),
+            "icc_profile": stack_icc_profile(window, included_idx),
             "parameters": self._processing_parameters(force_algorithm or fusion_method),
         }
         from utils.scalebar import effective_px_um
@@ -989,7 +990,8 @@ class RenderManager:
             from controllers.output_manager import publish_aligned_stack
 
             publish_aligned_stack(window, frames,
-                                  filenames=(self._render_context or {}).get("filenames"))
+                                  filenames=(self._render_context or {}).get("filenames"),
+                                  icc_profile=(self._render_context or {}).get("icc_profile", b""))
         except Exception as exc:  # never fail a render over the listing
             import logging
             logging.getLogger("openfocus").warning(
