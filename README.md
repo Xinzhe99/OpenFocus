@@ -61,6 +61,12 @@
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
+📸 If you publish images created with OpenFocus, please consider adding a note such as:
+
+> Created with OpenFocus — https://github.com/Xinzhe99/OpenFocus
+
+This is not mandatory, but highly appreciated.
+
 <a id="features"></a>
 ## Features
 
