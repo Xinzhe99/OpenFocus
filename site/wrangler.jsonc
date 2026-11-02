@@ -1,0 +1,20 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "openfocus-site",
+  "compatibility_date": "2026-11-01",
+  "main": "./worker.js",
+  "routes": [
+    { "pattern": "openfocus.top", "custom_domain": true },
+    { "pattern": "www.openfocus.top", "custom_domain": true }
+  ],
+  "r2_buckets": [
+    { "binding": "DOWNLOADS", "bucket_name": "openfocus-downloads" }
+  ],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page",
+    "run_worker_first": true
+  }
+}
