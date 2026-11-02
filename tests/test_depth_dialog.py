@@ -1064,3 +1064,102 @@ def test_depth_export_protects_hardlinked_standalone_source(depth_dialog, monkey
     assert source.read_bytes() == b"original standalone source"
     assert alias.read_bytes() == b"original standalone source"
     assert str(source) in dialog.status_lbl.text()
+
+
+def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qapp, tmp_path):
+    from core import depth_map
+    from PIL import Image
+    from PyQt6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
+    frames = [np.full((20, 30, 3), (1000, 2000, 3000), np.uint16),
+              np.full((20, 30, 3), (40000, 50000, 60000), np.uint16)]
+    output = frames[0].copy()
+    context = _output_context(frames, output, roi_rect=(4, 3, 16, 10), roi_mode='paste')
+    dialog, _ = depth_dialog('dct', frames, output, context)
+    _click_and_finish(qapp, dialog)
+    target = tmp_path / 'indices-é.tif'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
+    dialog.btn_save_indices.click()
+    _wait(qapp, lambda: dialog._export_worker is None)
+    with Image.open(target) as image:
+        metadata = json.loads(image.tag_v2[270])
+        indices = np.asarray(image)
+    assert metadata['source_indices'] == [2, 5]
+    assert metadata['source_names'] == ['historical-0.tif', 'historical-1.tif']
+    assert indices.shape == (20, 30)
+    assert indices[0, 0] == 0 and indices[3, 4] == 1 and indices[3, 19] == 2
+    target = tmp_path / 'render-é.tif'
+    dialog.btn_save_render.click()
+    _wait(qapp, lambda: dialog._export_worker is None)
+    rendered = cv2.imdecode(np.fromfile(target, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    assert rendered.dtype == np.uint16 and rendered.shape == output.shape
+    np.testing.assert_array_equal(rendered[0, 0], [0, 0, 0])
+    np.testing.assert_array_equal(rendered[3, 4], frames[0][3, 4])
+    np.testing.assert_array_equal(rendered[3, 19], frames[1][3, 19])
+
+
+def test_depth_products_refuse_stale_map(depth_dialog, monkeypatch, qapp):
+    from core import depth_map
+    from PyQt6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
+    dialog, _ = depth_dialog()
+    _click_and_finish(qapp, dialog)
+    dialog._invalidate_computation()
+    assert not dialog.btn_save_indices.isEnabled()
+    assert not dialog.btn_save_render.isEnabled()
+    asked = []
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: asked.append(True) or ('', ''))
+    dialog._export_product(False)
+    dialog._export_product(True)
+    assert not asked
+
+
+def test_depth_product_cancellation_preserves_existing_file(depth_dialog, monkeypatch, qapp, tmp_path):
+    from core import depth_map, depth_products
+    from PyQt6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
+    dialog, _ = depth_dialog()
+    _click_and_finish(qapp, dialog)
+    target = tmp_path / 'existing.tif'
+    target.write_bytes(b'original file')
+    entered, release = Event(), Event()
+    depth_dialog.releases.append(release)
+    estimate = depth_products.estimate_indices
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return estimate(*args, **kwargs)
+
+    monkeypatch.setattr(depth_products, 'estimate_indices', blocked)
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
+    dialog.btn_save_indices.click()
+    _wait(qapp, entered.is_set)
+    dialog.cancel_btn.click()
+    release.set()
+    _wait(qapp, lambda: dialog._export_worker is None)
+    assert target.read_bytes() == b'original file'
+    assert dialog.btn_save_indices.isEnabled()
+
+
+def test_depth_index_metadata_tracks_reversed_inputs(depth_dialog, monkeypatch, qapp, tmp_path):
+    from core import depth_map
+    from PIL import Image
+    from PyQt6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
+    frames = _synthetic_thirds(48, 64)
+    dialog, _ = depth_dialog('openfocus_b', frames, stack_reverse_order=True)
+    _click_and_finish(qapp, dialog)
+    target = tmp_path / 'order.tif'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
+    dialog.btn_save_indices.click()
+    _wait(qapp, lambda: dialog._export_worker is None)
+    with Image.open(target) as image:
+        metadata = json.loads(image.tag_v2[270])
+        assert np.asarray(image)[0, 0] == 1
+    assert metadata['source_indices'] == [2, 1, 0]
+    assert metadata['source_names'] == ['capture-2.tif', 'capture-1.tif', 'capture-0.tif']

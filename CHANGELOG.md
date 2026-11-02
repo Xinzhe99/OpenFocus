@@ -6,6 +6,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Depth products** export an estimated frame-index TIFF or an alternative image
+  assembled from the selected depth input frames. The index records estimated
+  focus positions, not the true provenance of pixels in a fused result.
 - **RGB color profiles** are retained in single-image PNG, TIFF, JPEG and WebP
   when all source frames have the same ICC profile. Historical outputs and
   batch folders retain their own profiles; mixed or untagged stacks are not
