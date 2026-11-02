@@ -13,6 +13,8 @@ PACK = {
     "menu_save_template": "Verarbeitungsvorlage speichern…",
     "msg_template_saved": "Vorlage ohne Quellpfade gespeichert.",
     "msg_template_applied": "Verarbeitungseinstellungen auf den aktuellen Stapel angewendet.",
+    "label_align_reference_frame": "Referenzbild (ab 1)",
+    "align_reference_frame_hint": "Nummer in der verarbeiteten Bildfolge; jeder Stapel muss dieses Bild enthalten. Die Helligkeitsreferenz ist unabhängig.",
     "label_align_failure_policy": "Behandlung abgelehnter Bilder",
     "align_failure_continue": "Mit nicht ausgerichtetem Bild fortfahren",
     "align_failure_fail": "Bei abgelehntem Bild stoppen",

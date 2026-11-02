@@ -17,6 +17,8 @@ EN = {
     "menu_save_template": "Save Processing Template…",
     "msg_template_saved": "Processing template saved without source paths.",
     "msg_template_applied": "Processing settings applied to the current stack.",
+    "label_align_reference_frame": "Reference frame (1-based)",
+    "align_reference_frame_hint": "Number in the included, processed stack order; each batch stack must contain this frame. Brightness reference is separate.",
     "label_align_failure_policy": "Rejected frame handling",
     "align_failure_continue": "Continue with unaligned frame",
     "align_failure_fail": "Stop on rejected frame",

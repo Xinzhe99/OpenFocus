@@ -22,6 +22,7 @@ python Registration.py --mode both
 
 import argparse
 import concurrent.futures
+from itertools import chain
 from collections import deque
 from contextlib import contextmanager
 import time
@@ -584,11 +585,11 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                           should_cancel=None, equalize_brightness=True,
                           max_shift_ratio=None, brightness_reference="first",
                           max_rotation_deg=None, max_scale_delta=None,
-                          failure_policy='continue'):
+                          failure_policy='continue', reference_frame=1):
     """
     OpenFocus 快速对齐：有界相似变换（平移+旋转+缩放）+ 亮度均衡 + 自动裁边。
 
-    Geometry uses the first frame as its anchor. A bounded sampled-difference
+    Geometry uses the selected frame as its anchor. A bounded sampled-difference
     grid estimates translation, rotation and scale; the common valid region
     is cropped after brightness equalization and warping.
     """
@@ -612,8 +613,12 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
         img_filenames = [os.path.basename(path) for path in img_paths]
     else:
         images = input_source
-    if images is None or len(images) < 2:
+    if images is None or not len(images):
         return images if images is not None else []
+    if not 1 <= reference_frame <= len(images):
+        raise ValueError(f'OpenFocus reference frame {reference_frame} is outside the stack of {len(images)} frames')
+    if len(images) < 2:
+        return images
 
     n = len(images)
     h, w = images[0].shape[:2]
@@ -636,12 +641,8 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                 g = g if g.ndim == 2 else g[:, :, 0]
         return g.astype(np.float32)
 
-    # Geometry is always estimated against the FIRST frame: one fixed anchor
-    # keeps the valid-region crop minimal and the per-frame shift budget
-    # independent of the exposure target. The brightness target is separate
-    # (the fusion pipeline calibrates to the LAST frame by default), so a
-    # stack is not pulled toward two different ends.
-    ref_idx = 0
+    # Brightness and geometry have independent reference frames.
+    ref_idx = reference_frame - 1
     bright_gray = (_gray_float(images[-1])
                    if brightness_reference == "last" else _gray_float(images[0]))
     ref_low = cv2.GaussianBlur(bright_gray, (0, 0), 32.0)
@@ -717,24 +718,27 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
     corrections = [None] * n  # cur→ref 的校正矩阵；参考帧为 None
     corrections[ref_idx] = np.eye(3, dtype=np.float64)
     prev_est = ref_est
-    print("Aligning %d images using OpenFocus (reference: first frame)..." % n)
-    with _bounded_registration_map(_prepare, range(n), max(1, int(thread_count)),
+    print("Aligning %d images using OpenFocus (reference: frame %d)..." % (n, reference_frame))
+    order = chain((ref_idx,), range(ref_idx - 1, -1, -1), range(ref_idx + 1, n))
+    with _bounded_registration_map(_prepare, order, max(1, int(thread_count)),
                                    should_cancel) as prepared:
         for i, gain, cur_est in prepared:
             _check_cancel(should_cancel)
-            # 亮度标定对参考帧同样生效：几何锚点在前，曝光锚点可以在另一端
-            # （融合默认标定到末帧），参考帧的 gain 不是恒等。
+            # Brightness calibration also applies to the geometric reference.
             gains[i] = gain
             if i == ref_idx:
                 continue
+            if i == ref_idx + 1:
+                prev_est = ref_est
 
             est = _estimate(ref_est, cur_est)
             chained = False
-            if est[0] < chain_ncc and i >= 2:
-                # 失焦/弱纹理帧：与相邻帧（模糊程度接近）更相关——链式估计
+            if est[0] < chain_ncc and abs(i - ref_idx) >= 2:
+                # Retry against the adjacent frame in the direction of the anchor.
                 est2 = _estimate(prev_est, cur_est)
                 if est2[0] > est[0] + 0.02:
-                    M = corrections[i - 1] @ _compose_full(est2)
+                    previous_index = i + 1 if i < ref_idx else i - 1
+                    M = corrections[previous_index] @ _compose_full(est2)
                     chained = True
                     est = (est2[0],) + est[1:]
             if not chained:
@@ -1363,6 +1367,8 @@ class ImageRegistration:
                         image = apply_exif_orientation(path, image)
                     images.append(image)
                 filenames = [os.path.basename(path) for path in paths]
+            if images is not None and len(images) and 'openfocus' in self.steps and self.parameters['reference_frame'] > len(images):
+                raise ValueError(f"OpenFocus reference frame {self.parameters['reference_frame']} is outside the stack of {len(images)} frames")
 
             if images is None or len(images) < 2:
                 _check_cancel(should_cancel)

@@ -13,6 +13,8 @@ PACK = {
     "menu_save_template": "처리 템플릿 저장…",
     "msg_template_saved": "원본 경로 없이 템플릿을 저장했습니다.",
     "msg_template_applied": "현재 스택에 처리 설정을 적용했습니다.",
+    "label_align_reference_frame": "기준 프레임 (1부터)",
+    "align_reference_frame_hint": "처리할 프레임 순서의 번호입니다. 배치의 각 스택에 해당 프레임이 있어야 합니다. 밝기 기준은 별도입니다.",
     "label_align_failure_policy": "거부된 프레임 처리",
     "align_failure_continue": "정렬되지 않은 프레임으로 계속",
     "align_failure_fail": "프레임이 거부되면 중지",

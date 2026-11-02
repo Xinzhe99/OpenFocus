@@ -89,6 +89,15 @@ def test_strict_alignment_reports_rejected_frames_in_single_and_batch(tmp_path, 
     assert not list(out.glob("*.png"))
 
 
+def test_cli_reference_frame_outside_stack_reports_failure(tmp_path, capsys):
+    fa, fb, out = _make_stacks(tmp_path)
+    option = ["--align", "openfocus", "--align-param", "reference_frame=4"]
+    assert _run_cli(["-i", fa, "-o", str(tmp_path / "single.png"), *option]) == 1
+    assert "reference frame 4" in capsys.readouterr().err
+    assert _run_cli(["-i", fa, fb, "-d", str(out), *option]) == 1
+    assert "reference frame 4" in capsys.readouterr().err
+
+
 def test_batch_config_override_changes_method(tmp_path):
     fa, fb, out = _make_stacks(tmp_path)
     cfg = tmp_path / "cfg.json"
