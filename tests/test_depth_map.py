@@ -493,3 +493,56 @@ def test_depth_guide_expands_range_from_lower_percentile(monkeypatch):
     openfocus_depth.depth_map(frames, None, 11, 5, None)
     assert guides[0][0, 0] < 100
     assert guides[0][-1, -1] > 65000
+
+
+def test_estimated_indices_boundaries_and_invalid_pixels():
+    from core.depth_products import estimate_indices
+
+    positions = np.array([[0, .249, .25, .75, 1, np.nan]], np.float32)
+    mask = np.array([[True, True, True, True, False, True]])
+    np.testing.assert_array_equal(estimate_indices(positions, 3, mask),
+                                  [[1, 1, 2, 3, 0, 0]])
+    assert estimate_indices(np.array([[1]], np.float32), 65535)[0, 0] == 65535
+    with pytest.raises(ValueError):
+        estimate_indices(positions, 65536)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_depth_guided_render_copies_exact_source_pixels(dtype):
+    from core.depth_products import estimate_indices, render_indices
+
+    frames = [np.array([[[1, 5, 7], [11, 19, 21], [23, 29, 31]]], dtype=dtype),
+              np.array([[[101, 105, 107], [111, 119, 121], [123, 129, 131]]], dtype=dtype)]
+    if dtype == np.uint16:
+        frames = [frame * 257 for frame in frames]
+    indices = estimate_indices(np.array([[0, 1, 1]], np.float32), 2,
+                               np.array([[True, True, False]]))
+    result = render_indices(indices, frames)
+    assert result.dtype == dtype
+    np.testing.assert_array_equal(result[0, 0], frames[0][0, 0])
+    np.testing.assert_array_equal(result[0, 1], frames[1][0, 1])
+    np.testing.assert_array_equal(result[0, 2], [0, 0, 0])
+
+
+def test_depth_products_cancel_and_reject_incompatible_sources():
+    from core.depth_map import DepthMapCancelled
+    from core.depth_products import estimate_indices, render_indices
+
+    index = np.zeros((2, 2), np.float32)
+    with pytest.raises(DepthMapCancelled):
+        estimate_indices(index, 2, should_cancel=lambda: True)
+    indices = estimate_indices(index, 2)
+    with pytest.raises(DepthMapCancelled):
+        render_indices(indices, [np.zeros((2, 2), np.uint8)] * 2,
+                       should_cancel=lambda: True)
+    with pytest.raises(ValueError):
+        render_indices(indices, [np.zeros((2, 2), np.uint8),
+                                 np.zeros((2, 2), np.uint16)])
+
+
+def test_depth_guided_render_rejects_out_of_range_index():
+    from core.depth_products import render_indices
+
+    frames = [np.zeros((1, 1), np.uint8)] * 2
+    with pytest.raises(ValueError):
+        render_indices(np.array([[3]], np.uint16), frames)

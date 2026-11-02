@@ -272,6 +272,16 @@ Compute stays visible and is disabled while computing, cancelling or exporting.
 - **Overlay**: available only for the associated output with matching coordinates.
 - **Raw export**: 16-bit TIFF stores a normalized index encoded from 0–65535;
   it is not lossless float data or a physical distance. JPEG/BMP are refused.
+- **Index TIFF and alternative image TIFF**: export the current depth estimate as
+  unsigned 16-bit frame indices or as an image assembled from source pixels. Index
+  values 1–N refer to the exact frame order used as input to the depth calculation,
+  after any registration and reordering; 0 marks invalid pixels. At most 65,535
+  frames are supported. Fractional estimated positions are rounded to the nearest
+  frame, with halfway values rounded upward. These indices estimate focus position;
+  they are not the true pixel provenance of a fused result. The alternative image
+  selects the exact pixel from the corresponding depth input frame at each valid
+  location, with invalid pixels set to zero. Exports use the depth map's ROI and
+  preserve invalid areas as zero.
 - **Physical depth**: enter Z start, positive step, unit and acquisition direction,
   then confirm the original capture mapping. Excluded frames keep their gaps.
   Float32 TIFF stores micrometres, NaN for missing data, and source metadata.

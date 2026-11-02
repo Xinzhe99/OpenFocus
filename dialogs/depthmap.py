@@ -1,10 +1,9 @@
 """Depth-map viewer/exporter with pseudo-color customization.
 
 Computes a focus-position map with the selected algorithm's own activity
-measure (core.depth_map), previews it colorized (optionally overlaid on the
-fused result), and exports either the colorized image or the raw 16-bit
-index map. Custom color schemes are interpolated from user color stops and
-persisted in QSettings.
+measure (core.depth_map), previews it colorized, and exports visualizations,
+frame indices, or an image assembled from the selected source frames. Custom
+color schemes are interpolated from user color stops and persisted in QSettings.
 """
 import json
 import os
@@ -171,6 +170,99 @@ class MeshExportWorker(QThread):
             self.failed.emit("cancelled")
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class DepthProductExportWorker(QThread):
+    ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, path, index, frames, valid_mask, context, metadata, profile, render, parent=None):
+        super().__init__(parent)
+        self.path, self.index, self.frames = path, index, frames
+        self.valid_mask, self.context, self.metadata = valid_mask, context, metadata
+        self.profile, self.render = profile, render
+
+    def cancel(self):
+        self.requestInterruption()
+
+    def run(self):
+        import tempfile
+        from core.depth_products import estimate_indices, render_indices
+        from core.resource_policy import heavy_job
+        part = None
+        try:
+            with heavy_job(self.isInterruptionRequested):
+                indices = estimate_indices(self.index, len(self.frames), self.valid_mask,
+                                           self.isInterruptionRequested)
+                pixels = (render_indices(indices, self.frames, self.isInterruptionRequested)
+                          if self.render else indices)
+                context = self.context
+                if context is not None and context.roi_mode == "paste":
+                    frame = context.frames[0]
+                    full = np.zeros((context.height, context.width) + pixels.shape[2:], dtype=pixels.dtype)
+                    full[frame.offset_y:frame.offset_y + pixels.shape[0],
+                         frame.offset_x:frame.offset_x + pixels.shape[1]] = pixels
+                    pixels = full
+                if self.isInterruptionRequested():
+                    self.failed.emit("cancelled")
+                    return
+                fd, part = tempfile.mkstemp(suffix=".tif", dir=os.path.dirname(os.path.abspath(self.path)))
+                os.close(fd)
+                if self.render:
+                    from PIL import TiffImagePlugin, TiffTags
+                    channels = 1 if pixels.ndim == 2 else pixels.shape[2]
+                    if channels not in (1, 3, 4) or pixels.dtype.kind not in "uif":
+                        raise ValueError("Unsupported TIFF image format")
+                    height, width = pixels.shape[:2]
+                    row_bytes = width * channels * pixels.dtype.itemsize
+                    rows = max(1, min(height, (1 << 20) // row_bytes))
+                    offsets = tuple(row * row_bytes for row in range(0, height, rows))
+                    counts = tuple(min(rows, height - row) * row_bytes for row in range(0, height, rows))
+                    header = b"II*\x00" + (8).to_bytes(4, "little")
+                    tags = TiffImagePlugin.ImageFileDirectory_v2(ifh=header)
+                    tags[256], tags[257] = width, height
+                    tags[258] = (pixels.dtype.itemsize * 8,) * channels
+                    tags[259], tags[262], tags[277], tags[278], tags[284] = 1, (1 if channels == 1 else 2), channels, rows, 1
+                    tags[339] = (3 if pixels.dtype.kind == "f" else 2 if pixels.dtype.kind == "i" else 1,) * channels
+                    if channels == 4:
+                        tags[338] = (2,)
+                    if self.profile and channels in (3, 4):
+                        tags[34675] = self.profile
+                    tags.tagtype[273] = tags.tagtype[279] = TiffTags.LONG
+                    tags[273], tags[279] = offsets, counts
+                    with open(part, "wb") as output:
+                        output.write(header)
+                        output.write(tags.tobytes(8))
+                        for row in range(0, height, rows):
+                            if self.isInterruptionRequested():
+                                self.failed.emit("cancelled")
+                                return
+                            chunk = pixels[row:row + rows]
+                            if channels == 3:
+                                chunk = chunk[:, :, ::-1]
+                            elif channels == 4:
+                                chunk = chunk[:, :, [2, 1, 0, 3]]
+                            chunk = np.ascontiguousarray(chunk, dtype=pixels.dtype.newbyteorder("<"))
+                            output.write(memoryview(chunk).cast("B"))
+                else:
+                    from PIL import Image, TiffImagePlugin
+                    tags = TiffImagePlugin.ImageFileDirectory_v2()
+                    tags[270] = json.dumps(self.metadata, ensure_ascii=True, allow_nan=False)
+                    Image.fromarray(pixels).save(part, format="TIFF", tiffinfo=tags)
+                if self.isInterruptionRequested():
+                    self.failed.emit("cancelled")
+                    return
+                os.replace(part, self.path)
+                part = None
+                self.ok.emit({"files": [self.path]})
+        except Exception as exc:
+            self.failed.emit("cancelled" if self.isInterruptionRequested() else str(exc))
+        finally:
+            if part and os.path.exists(part):
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
 
 
 
@@ -618,6 +710,16 @@ class DepthMapDialog(QDialog):
         btns.addWidget(self.btn_save_3d)
         btns.addWidget(close_btn)
         layout.addLayout(btns)
+        product_btns = QHBoxLayout()
+        self.btn_save_indices = QPushButton(trans.t("depth_save_indices"))
+        self.btn_save_render = QPushButton(trans.t("depth_save_render"))
+        for button in (self.btn_save_indices, self.btn_save_render):
+            button.setToolTip(trans.t("depth_products_hint"))
+            product_btns.addWidget(button)
+        self.btn_save_indices.clicked.connect(lambda: self._export_product(False))
+        self.btn_save_render.clicked.connect(lambda: self._export_product(True))
+        product_btns.addStretch()
+        layout.addLayout(product_btns)
 
         for w in (self.map_combo, self.invert_chk, self.gamma_spin,
                   self.smooth_spin, self.overlay_chk, self.opacity_spin):
@@ -635,7 +737,7 @@ class DepthMapDialog(QDialog):
         self._reconcile_controls()
         for _control in ("method_combo", "align_combo", "compute_btn",
                          "cancel_btn", "btn_save_color", "btn_save_raw",
-                         "btn_save_3d", "fusion_parameter_panel",
+                         "btn_save_3d", "btn_save_indices", "btn_save_render", "fusion_parameter_panel",
                          "registration_parameter_panel"):
             _widget = getattr(self, _control, None)
             if _widget is not None:
@@ -658,6 +760,8 @@ class DepthMapDialog(QDialog):
         self._current_images = list(images)
         self._current_names = list(names)
         self._current_indices = list(indices)
+        from core.image_loader import stack_icc_profile
+        self._current_icc_profile = stack_icc_profile(win, self._current_indices)
         self._total_frames = len(getattr(win, "raw_images", None) or [])
         self._reverse_order = bool(getattr(win, "stack_reverse_order", False))
         self._use_gpu = bool(getattr(win, "use_gpu", False))
@@ -1040,6 +1144,8 @@ class DepthMapDialog(QDialog):
         worker.source_mode = self._source_mode
         worker.source_id = context.context_id if context is not None else "current"
         worker.source_indices = self._capture_indices()
+        worker.icc_profile = (getattr(context, "icc_profile", b"") if context is not None
+                              else self._current_icc_profile)
         names = [frame.name for frame in context.frames] if context else self._current_names
         worker.source_names = [names[i] if i < len(names) else "" for i in range(len(imgs))]
         if worker.reverse_order:
@@ -1108,6 +1214,7 @@ class DepthMapDialog(QDialog):
                 self._map_names = worker.source_names
                 self._map_parameters = {**worker.parameters, "reverse_order": worker.reverse_order}
                 self._map_context = worker.context
+                self._map_icc_profile = worker.icc_profile
                 self._map_output_texture = worker.output_texture
                 self._map_output_label = worker.output_label
                 self._map_source_mode = worker.source_mode
@@ -1136,7 +1243,8 @@ class DepthMapDialog(QDialog):
 
     def _update_export_state(self):
         current = self._has_current_map()
-        for name in ("btn_save_color", "btn_save_raw", "btn_save_3d"):
+        for name in ("btn_save_color", "btn_save_raw", "btn_save_3d",
+                     "btn_save_indices", "btn_save_render"):
             getattr(self, name).setEnabled(current)
         self.btn_save_physical.setEnabled(current and self.physical_chk.isChecked())
 
@@ -1284,6 +1392,48 @@ class DepthMapDialog(QDialog):
         guard = ExportManager(self.window_main)
         for path in paths:
             guard._safe_export_path(path)
+
+    def _export_product(self, render):
+        if not self._require_current_map():
+            return
+        title = trans.t("depth_save_render" if render else "depth_save_indices")
+        start_dir = get_last_dialog_dir()
+        default = os.path.join(start_dir, "depth_render.tif" if render else "depth_indices.tif")
+        path, _ = QFileDialog.getSaveFileName(self, title, default, "TIFF (*.tif *.tiff)")
+        if not path or not self._require_current_map():
+            return
+        if os.path.splitext(path)[1].lower() not in (".tif", ".tiff"):
+            self.status_lbl.setText(trans.t("depth_raw_needs_tiff"))
+            return
+        try:
+            self._safe_export_paths([path])
+        except ValueError as exc:
+            self.status_lbl.setText(str(exc))
+            return
+        context = self._map_context
+        metadata = {"description": "Estimated frame indices (not pixel provenance): 0 is invalid; 1..N identify ordered input frames",
+                    "source_indices": list(self._map_indices), "source_names": list(self._map_names),
+                    "method": self._map_method, "domain": self._domain_metadata(),
+                    "roi_mode": context.roi_mode if context is not None else "full"}
+        worker = DepthProductExportWorker(path, self._index01, tuple(self._map_frames),
+            self._map_valid_mask, context, metadata, self._map_icc_profile, render, self)
+        self._export_worker = worker
+        self._export_outcome = None
+        self._cancelling = False
+        worker.ok.connect(lambda info, w=worker: self._set_export_outcome((True, info), w))
+        worker.failed.connect(lambda error, w=worker: self._set_export_outcome((False, error), w))
+        worker.finished.connect(lambda w=worker: self._export_finished(w))
+        self.status_lbl.setText(title)
+        self.status_lbl.setToolTip(path)
+        self._reconcile_controls()
+        set_last_dialog_dir(path)
+        try:
+            worker.start()
+        except Exception as exc:
+            self._export_worker = None
+            worker.deleteLater()
+            self.status_lbl.setText(str(exc))
+            self._reconcile_controls()
 
     def _save(self, colorized=True):
         if not self._require_current_map():
