@@ -332,6 +332,8 @@ PACK = {
     "check_align_of_hint": "Alinhamento rápido por similaridade limitada (translação + rotação + escala) com equalização de brilho e corte automático. Menos de um segundo por quadro; quadros que se deslocam mais de 8% do tamanho são deixados sem alinhar em vez de corrigidos pela metade. Use ECC ou Homografia para geometrias não rígidas ou extremas.",
     "chk_base_correct": "Remover deriva de brilho",
     "chk_exposure_match": "Igualar exposição antes da fusão",
+    "chk_sharpen_output": "Aumentar nitidez do resultado",
+    "chk_sharpen_output_hint": "Aplica uma máscara de nitidez suave após a fusão. Pode realçar bordas, mas também ruído e halos. Desativado por padrão.",
     "chk_exposure_match_hint": "Escala cada quadro para a média do último quadro antes da medida de foco, para que um quadro mais escuro ou mais claro não vença nem perca apenas por brilho. Calculado sobre toda a pilha (a saída em blocos continua contínua) e aplicado a todos os métodos de fusão. Ativado por padrão (sempre ativo no OpenFocus A/B/C, que não têm calibração interna).",
     "chk_base_correct_hint": "Após a fusão, iguala o brilho de baixa frequência do resultado ao do último quadro (ou do primeiro, em pilha invertida). Remove a deriva de exposição que a medida de foco não detecta, por exemplo em pilhas de timelapse cuja iluminação mudou entre disparos. Aplica-se a todos os métodos; ativado por padrão no OpenFocus A/B/C.",
     "chk_reverse_order": "Inverter ordem da pilha (varredura de longe para perto)",

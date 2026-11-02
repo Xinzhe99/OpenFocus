@@ -184,6 +184,24 @@ def test_project_keeps_base_frame_correction(tmp_path):
     assert restored.base_frame_correct is True
 
 
+def test_output_sharpening_round_trip(tmp_path):
+    src = str(tmp_path / "src")
+    paths = _make_stack(src)
+    window = _window(paths, src)
+    window.sharpen_output = True
+    path = str(tmp_path / "session.ofproj")
+    ok, error = project_file.save_project(window, path)
+    assert ok, error
+    ok, error, state = project_file.validate_project(path)
+    assert ok, error
+    restored = _window(paths, src)
+    project_file._apply_after_load(restored, state)
+    assert restored.sharpen_output is True
+    state['settings'].pop('sharpen_output')
+    project_file._apply_after_load(restored, state)
+    assert restored.sharpen_output is False
+
+
 def test_excluded_frames_round_trip(tmp_path):
     """A reopened project must process the same frames that were on screen."""
     stack_dir = str(tmp_path / "stack")

@@ -112,6 +112,7 @@ def _collect_state(window) -> Dict[str, Any]:
         "fusion_method": method,
         "alignment_method": alignment,
         "stack_reverse_order": bool(getattr(window, "stack_reverse_order", False)),
+        "sharpen_output": bool(getattr(window, "sharpen_output", False)),
         # The top-level flags describe *this* method; the per-method memory
         # below is what a reopen actually restores.
         "base_frame_correct": bool(brightness("base_correct", method))
@@ -309,6 +310,9 @@ def validate_project(path: str, source_root: Optional[str] = None) -> Tuple[bool
         return False, "invalid source folders", {}
     if not isinstance(state.get("settings", {}), dict) or not isinstance(state.get("labels", {}), dict):
         return False, "invalid project settings or labels", {}
+    if "sharpen_output" in state.get("settings", {}) and not isinstance(
+            state["settings"]["sharpen_output"], bool):
+        return False, "invalid output sharpening setting", {}
     frames = state.get("frame_order")
     if frames is not None and (not isinstance(frames, list) or not frames or any(
             not isinstance(frame, dict)
@@ -617,6 +621,10 @@ def _apply_settings(window, state: Dict[str, Any]) -> None:
     chk = getattr(window, "chk_reverse_order", None)
     if chk is not None:
         chk.setChecked(reverse)
+    window.sharpen_output = bool(settings.get("sharpen_output", False))
+    sharpen_chk = getattr(window, "chk_sharpen_output", None)
+    if sharpen_chk is not None:
+        sharpen_chk.setChecked(window.sharpen_output)
 
     # Old projects carry only these two scalars, and they describe the method
     # the project was saved on. They must not be broadcast to other methods,

@@ -332,6 +332,8 @@ PACK = {
     "check_align_of_hint": "Allineamento rapido per similarità limitata (traslazione + rotazione + scala) con equalizzazione della luminosità e ritaglio automatico. Meno di un secondo per frame; i frame che si spostano più dell'8% della dimensione vengono lasciati non allineati anziché corretti a metà. Scegli ECC o Omografia per geometrie non rigide o estreme.",
     "chk_base_correct": "Rimuovi deriva di luminosità",
     "chk_exposure_match": "Uniforma l'esposizione prima della fusione",
+    "chk_sharpen_output": "Aumenta la nitidezza del risultato",
+    "chk_sharpen_output_hint": "Applica una lieve maschera di contrasto dopo la fusione. Può accentuare i bordi, ma anche rumore e aloni. Disattivata per default.",
     "chk_exposure_match_hint": "Porta ogni frame alla media dell'ultimo frame prima della misura di fuoco, così un frame più scuro o più chiaro non può vincere o perdere solo per la luminosità. Calcolato sull'intero stack (l'output a tasselli resta senza giunture) e applicato a ogni metodo di fusione. Attivo per impostazione predefinita (sempre attivo per OpenFocus A/B/C, che non hanno calibrazione integrata).",
     "chk_base_correct_hint": "Dopo la fusione, allinea la luminosità a bassa frequenza del risultato a quella dell'ultimo frame (o del primo, per uno stack invertito). Rimuove le derive di esposizione che la misura di fuoco non vede, ad es. uno stack time-lapse la cui illuminazione è cambiata tra gli scatti. Si applica a ogni metodo; attivo per impostazione predefinita per OpenFocus A/B/C.",
     "chk_reverse_order": "Inverti l'ordine dello stack (scansione da lontano a vicino)",

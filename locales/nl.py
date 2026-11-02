@@ -332,6 +332,8 @@ PACK = {
     "check_align_of_hint": "Snelle begrensde similariteitsuitlijning (translatie + rotatie + schaal) met helderheidsvereffening en automatisch bijsnijden. Minder dan een seconde per frame; frames die meer dan 8% van de beeldgrootte verschuiven, blijven onuitgelijnd in plaats van half gecorrigeerd. Kies ECC of Homografie voor niet-rigide of extreme geometrie.",
     "chk_base_correct": "Helderheidsdrift verwijderen",
     "chk_exposure_match": "Belichting afstemmen vóór fusie",
+    "chk_sharpen_output": "Samengevoegd resultaat verscherpen",
+    "chk_sharpen_output_hint": "Past na het samenvoegen lichte onscherpe maskering toe. Dit benadrukt randen, maar ook ruis en halo's. Standaard uit.",
     "chk_exposure_match_hint": "Schaalt elk frame naar het gemiddelde van het laatste frame vóór de scherptemaat, zodat een donkerder of lichter frame niet puur op helderheid kan winnen of verliezen. Berekend over de hele stapel (getegelde uitvoer blijft naadloos) en toegepast op elke fusiemethode. Standaard aan (altijd aan voor OpenFocus A/B/C, die geen ingebouwde kalibratie hebben).",
     "chk_base_correct_hint": "Stemt na de fusie de laagfrequente helderheid van het resultaat af op het laatste frame (of het eerste, bij een omgekeerde stapel). Verwijdert belichtingsdrift die de scherptemaat niet ziet, bijvoorbeeld een tijdreeksstapel waarvan de belichting tussen opnamen veranderde. Geldt voor elke methode; standaard aan voor OpenFocus A/B/C.",
     "chk_reverse_order": "Stapelvolgorde omkeren (ver-naar-dichtbij)",

@@ -332,6 +332,8 @@ PACK = {
     "check_align_of_hint": "Schnelle begrenzte Ähnlichkeitsausrichtung (Verschiebung + Rotation + Skalierung) mit Helligkeitsabgleich und automatischem Zuschnitt. Unter einer Sekunde pro Bild; Bilder, die sich um mehr als 8 % der Bildgröße verschieben, bleiben unausgerichtet statt halb korrigiert. Für nicht-starre oder extreme Geometrien ECC oder Homographie wählen.",
     "chk_base_correct": "Helligkeitsdrift entfernen",
     "chk_exposure_match": "Belichtung vor der Fusion angleichen",
+    "chk_sharpen_output": "Fusionsergebnis schärfen",
+    "chk_sharpen_output_hint": "Nach der Fusion leicht unscharf maskieren. Kanten werden betont, aber auch Rauschen und Halos verstärkt. Standardmäßig aus.",
     "chk_exposure_match_hint": "Skaliert jedes Bild vor dem Schärfemaß auf den Mittelwert des letzten Bildes, damit ein dunkleres oder helleres Bild nicht allein durch Helligkeit gewinnt oder verliert. Wird für den gesamten Stack berechnet (gekachelte Ausgabe bleibt nahtlos) und bei jeder Fusionsmethode angewendet. Standardmäßig an (bei OpenFocus A/B/C immer an, da ohne eingebaute Kalibrierung).",
     "chk_base_correct_hint": "Gleicht nach der Fusion die niederfrequente Helligkeit des Ergebnisses an das letzte Bild an (bzw. das erste bei umgekehrtem Stack). Entfernt Belichtungsdrift, die das Schärfemaß nicht sieht, z. B. bei einem Zeitraffer-Stack mit wechselnder Beleuchtung. Gilt für jede Methode; standardmäßig an für OpenFocus A/B/C.",
     "chk_reverse_order": "Stack-Reihenfolge umkehren (Fern-nach-Nah)",

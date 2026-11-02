@@ -550,6 +550,13 @@ matching on, drift removal off). Switching methods shows that method's own
 values, and those values survive a restart. **Reset** clears the remembered
 brightness, smoothing and Radius values of every method.
 
+**Sharpen fused output** applies a mild unsharp mask after fusion, before the
+result is converted to its output bit depth. It is off by default and can be
+enabled in the main fusion options or batch options; the equivalent CLI flag is
+`--sharpen-output`. This affects the fused image, not registered frames or
+depth maps. It can make edges more distinct, but may amplify noise and halos.
+It is saved with the project and remembered between sessions.
+
 ### Alignment only (no fusion)
 
 Select **Alignment only (no fusion)** to register the stack and add one stack
