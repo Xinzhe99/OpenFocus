@@ -714,31 +714,14 @@ class OpenFocus(QMainWindow):
 
     def _update_dynamic_status(self):
         """Update GPU and Memory status."""
-        # Memory
-        try:
-            import ctypes
-            
-            class MEMORYSTATUSEX(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", ctypes.c_ulong),
-                    ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong),
-                    ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong),
-                    ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong),
-                    ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-                ]
-            
-            stat = MEMORYSTATUSEX()
-            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-            
-            used_gb = (stat.ullTotalPhys - stat.ullAvailPhys) / (1024**3)
-            total_gb = stat.ullTotalPhys / (1024**3)
+        from utils import memory
+        available = memory.available_memory_bytes()
+        total = memory.total_memory_bytes()
+        if total > 0 and 0 < available <= total:
+            used_gb = (total - available) / (1024**3)
+            total_gb = total / (1024**3)
             self.lbl_status_memory.setText(trans.t('status_ram_fmt').format(used_gb, total_gb))
-        except Exception:
+        else:
             self.lbl_status_memory.setText(trans.t('status_ram').format('N/A'))
 
         # GPU. Rule the user asked for: when this machine has no usable

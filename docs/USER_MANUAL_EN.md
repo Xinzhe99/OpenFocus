@@ -900,6 +900,9 @@ See [PERFORMANCE.md](./PERFORMANCE.md) for measured throughput and memory
 numbers on large real stacks, and practical guidance for deep stacks and
 high-resolution input.
 
+The status panel shows used and total physical memory when the operating
+system can provide both readings; otherwise it shows `N/A`.
+
 ### Thread Count Settings
 
 Control CPU parallel processing:
