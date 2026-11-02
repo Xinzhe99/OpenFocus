@@ -26,7 +26,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p assets
-          gh release download "${{ steps.release.outputs.tag }}" --dir assets \
+          gh release download "${{ steps.release.outputs.tag }}" -R Xinzhe99/OpenFocus --dir assets \
             --pattern '*-setup.exe' \
             --pattern '*-windows-x64.zip' \
             --pattern '*-macos.dmg' \
