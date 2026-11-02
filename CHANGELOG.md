@@ -60,6 +60,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - **Memory status** now uses the same cross-platform physical-memory probe as
   the resource planner, so it can report available readings on macOS and Linux.
+- **OpenFocus alignment** samples translation more densely at the coarsest
+  search level to reduce false matches on repeated textures, while retaining
+  the configured motion limits.
+- **StackMFF V1 on MPS** uses an equivalent depth reduction supported by
+  PyTorch on macOS 15. On macOS 26, a PyTorch 3D convolution compiler error
+  was observed in the hosted runner; use CPU if it occurs.
 - Layered export records the exact saved output while keeping omitted live
   labels and scale bars marked as unsaved.
 

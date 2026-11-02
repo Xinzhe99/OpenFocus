@@ -84,13 +84,18 @@ def estimate(ref, cur, shift_ratio, rot_bound, scale_range, check_cancel):
         ref_std = max(float(reference.std()), 1.0)
         if level:
             radius = np.minimum(bounds, np.maximum(radius, [2 / sx, 2 / sy, 0.01, 0.5]))
-        for _ in range(5):
+        for iteration in range(5):
             check_cancel()
             axes = []
             for k in range(4):
                 lo = max(lower[k], best[k] - radius[k])
                 hi = min(upper[k], best[k] + radius[k])
-                axes.append(np.linspace(lo, hi, 5) if hi > lo + 1e-12 else np.array([lo]))
+                # A sparse first grid can lock onto a repeated texture before
+                # refinement reaches the correct translation basin. Sample
+                # translation more densely at the coarsest level; later grids
+                # still refine all four parameters within the same bounds.
+                points = 17 if level == 0 and iteration == 0 and k < 2 else 5
+                axes.append(np.linspace(lo, hi, points) if hi > lo + 1e-12 else np.array([lo]))
             # Prefer the smallest normalized motion when costs are equal.
             candidates = np.array([tuple(reversed(v)) for v in itertools.product(*axes[::-1])])
             best_cost, best_motion, winner = float('inf'), float('inf'), None

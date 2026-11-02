@@ -75,7 +75,8 @@ POSSIBILITY OF SUCH DAMAGE.
   training and prediction scripts are not included; OpenFocus fuses at
   inference only.
 - **Changes**: the `__main__` smoke block and its prints were removed, and the
-  module docstring was rewritten. The network math is unchanged.
+  module docstring was rewritten. Depth pooling uses an equivalent maximum
+  reduction supported by more PyTorch devices; the network math is unchanged.
 - **Weights**: `weights/stackmff_final.pth` is the upstream released
   `weights/checkpoint.pth` (24,405,662 bytes, SHA-256
   `5445a79657c87d05a6b4cafd79d6a893b3f0c2713222a9ef8e1daf6e2e35ff80`).
