@@ -86,14 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Batch mode: fuse every input folder, writing <folder>.<ext> here")
     parser.add_argument("--method", "-m", default="stackmffv3",
                         choices=[spec.id for spec in fusion_algorithms()],
-                        help="Fusion method (default: stackmffv3); openfocus_a/b/c select the "
-                             "OpenFocus family (A = variance-weighted average, B = variance depth-map pick, "
-                             "C = Laplacian pyramid)")
+                        help="OpenFocus methods: A = multiscale response selection, "
+                             "B = depth-guided blending, C = depth-guided pyramid")
     parser.add_argument("--align", "-a", default="none",
                         choices=[spec.id for spec in registration_algorithms()],
-                        help="Registration applied before fusion (default: none); openfocus = fast bounded "
-                             "similarity alignment (rotation + scale + NCC translation) with brightness "
-                             "equalization")
+                        help="Registration applied before fusion (default: none); openfocus = "
+                             "fast bounded similarity search with brightness equalization")
     parser.add_argument("--param", action="append", default=[], metavar="KEY=JSON_VALUE",
                         help="Fusion parameter; repeat for multiple keys. Overrides legacy flags.")
     parser.add_argument("--align-param", action="append", default=[], metavar="KEY=JSON_VALUE",
@@ -111,23 +109,20 @@ def build_parser() -> argparse.ArgumentParser:
                              "(default: on; --no-exposure-match disables it). Computed on the "
                              "whole stack before tiling, for every fusion method.")
     parser.add_argument("--sort", default="asc", choices=["asc", "desc", "off"],
-                        help="Stack order for the openfocus_a/b/c methods: 'asc' keeps the file order "
-                             "(default), 'desc' reverses a far-to-near sweep so the "
-                             "base/last-frame semantics anchor to the intended end, 'off' is an explicit no-op")
+                        help="Frame order for openfocus_a/b/c: 'asc' keeps file order "
+                             "(default), 'desc' reverses it, 'off' leaves it unchanged")
     parser.add_argument("--dust-map", default=None, metavar="WHITE",
                         help="Flat-field (dust map) correction: path to a defocused shot of a blank/white "
                              "area; removes static dust specks and vignetting from every frame before "
                              "registration")
     parser.add_argument("--kernel", "-k", type=int, default=None,
-                        help="Kernel size (forced odd); for the openfocus family it is the "
-                             "source of the variance-window radius")
-    parser.add_argument("--depth-smoothing", type=float, default=None, metavar="SIGMA",
-                        help="openfocus_b only: depth-map transition smoothing (Gaussian sigma, "
-                             "default 1.2; 0 = sharpest, larger = calmer on noisy stacks)")
-    parser.add_argument("--blend-smoothing", type=float, default=None, metavar="SIGMA",
-                        help="openfocus_a / openfocus_c only: blend smoothing (Gaussian sigma "
-                             "of the per-frame weight map; defaults 2.0 for A and 3.0 for C; "
-                             "0 = crispest per-pixel choice, larger = softer transitions)")
+                        help="Odd kernel size; for OpenFocus A/B, controls focus-response scale")
+    parser.add_argument("--depth-smoothing", type=float, default=None, metavar="VALUE",
+                        help="openfocus_b only: depth-map transition smoothing "
+                             "(default 1.2; larger values smooth transitions more)")
+    parser.add_argument("--blend-smoothing", type=float, default=None, metavar="VALUE",
+                        help="openfocus_a / openfocus_c only: transition smoothing "
+                             "(defaults 2.0 for A and 3.0 for C)")
     parser.add_argument("--threads", "-t", type=int, default=0,
                         help="Worker thread upper limit (0 = automatic; default: 0)")
     parser.add_argument("--resource-preference", default="balanced",
@@ -880,7 +875,7 @@ def describe_payload() -> dict:
         "cli": {
             "batch": ["--output-dir", "--resume", "--config"],
             "machine": ["--json", "--json-progress", "--dry-run"],
-            "control": ["gui --control", "ctl <command>", "describe", "version"],
+            "control": ["gui", "ctl <command>", "describe", "version"],
         },
     }
 
@@ -897,10 +892,8 @@ def _spawn_detached(command: list, cwd: str) -> subprocess.Popen:
 
 
 def _run_gui(argv: List[str]) -> int:
-    """Launch the desktop app, optionally opening the control channel."""
-    control = "--control" in argv or str(
-        os.environ.get("OPENFOCUS_CONTROL", "")).strip().lower() in (
-            "1", "true", "yes")
+    """Launch the desktop app; its control channel starts automatically."""
+    control = "--control" in argv
     socket_name = None
     paths = []
     index = 0
@@ -922,7 +915,7 @@ def _run_gui(argv: List[str]) -> int:
             paths.append(token)
             index += 1
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if control:
+    if control or socket_name:
         from core.control.client import launch_gui
         from core.control.protocol import discovery_path
         try:

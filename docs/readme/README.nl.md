@@ -226,7 +226,7 @@ Het AI-model, de gewichten, HEIC- en camera-RAW-decodering zitten allemaal in di
 <a id="community"></a>
 ## Community en ondersteuning
 
-- **Documentatie** — [Handleiding](./docs/USER_MANUAL_NL.md) (twaalf talen) · [Wijzigingen](./CHANGELOG.md) · [Prestaties](./docs/PERFORMANCE.md) · [Algoritmepariteit](./docs/ALGORITHM_PARITY.md)
+- **Documentatie** — [Handleiding](./docs/USER_MANUAL_NL.md) (twaalf talen) · [Wijzigingen](./CHANGELOG.md) · [Prestaties](./docs/PERFORMANCE.md) · [Fusiemethoden](../FUSION_METHODS.md)
 - **Citeren** — [CITATION.cff](./CITATION.cff); elke versie wordt gearchiveerd op Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open een [issue](https://github.com/Xinzhe99/OpenFocus/issues) voor bugs, ideeën en algoritmewerk
 - **Credits** — elk fusie- en registratiealgoritme behoudt zijn oorspronkelijke onderzoekslicentie; StackMFF V3 staat op [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)

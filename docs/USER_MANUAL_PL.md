@@ -205,8 +205,8 @@ bieżącym stosem. Obliczenia, tekstura i eksport pozostają związane z tą sam
 Wszystkie sześć metod wymaga jawnego kliknięcia **Oblicz**. Otwarcie okna oraz zmiana
 miary, źródła, rejestracji lub parametrów nie rozpoczynają obliczeń. Edytor parametrów
 znajduje się tuż pod wyborem miary: jądra medianowe DCT i początkowe GFG przyjmują wartości
-nieparzyste 1–51 (domyślnie 7); B używa okna wariancji, a C okna energii pasmowej,
-nieparzystych 1–21 px (domyślnie 11). Poziomy dekompozycji DTCWT można tu edytować
+nieparzyste 1–51 (domyślnie 7). B używa promienia i wygładzania głębi (domyślnie 1,2),
+a C wygładzania mieszania (domyślnie 3,0). Poziomy dekompozycji DTCWT można tu edytować
 jako lokalne wartości robocze, inicjalizowane parametrami źródła. StackMFF V3 zamiast pola
 liczbowego pokazuje własny tryb wyjścia AI (domyślnie miękkie mieszanie lub twardy wybór)
 i objaśnienie: miękkie mieszanie szacuje ważoną prawdopodobieństwem ciągłą pozycję klatki,
@@ -381,7 +381,7 @@ Rejestracja obrazów koryguje przestrzenne przesunięcia między klatkami stosu.
 
 - Ograniczone wyrównanie podobieństwa (przesunięcie + obrót + skala),
   z wyrównaniem jasności każdej klatki i automatycznym przycięciem
-- Poniżej sekundy na klatkę — znacznie szybciej niż ECC czy homografia
+- Wyszukiwanie ocenia próbkowane różnice obrazów; transformacja wykorzystuje interpolację Lanczosa
 - Klatki przesunięte o więcej niż **8% rozmiaru ramki pozostają niewyrównane**
   zamiast być częściowo poprawione. Próg można zmienić w CLI przez
   `--align-shift-limit`
@@ -494,34 +494,22 @@ OpenFocus oferuje dziesięć algorytmów fuzji (oraz tryb tylko wyrównania). Ka
 
 ### OpenFocus A / B / C
 
-- **Algorytm**: średnia ważona wariancją, wybór z mapy wariancji głębi oraz
-  fuzja piramidą laplasjanową
-- **OpenFocus A**: średnia ważona wariancją z priorem ostatniej klatki —
-  szybka, stabilna kolorystycznie na krótkich stosach
-- **OpenFocus B**: wybór z mapy wariancji głębi — wybiera najostrzejszą klatkę
-  na piksel; najlepsza na gładkich powierzchniach i w mikroskopii
-- **OpenFocus C**: mieszanie pasm piramidą laplasjanową — naturalny wygląd na
-  obiektach teksturowanych, wzmacnia kontrast lokalny
-- **Parametry**: A i B mają okno wariancji (suwak jądra); C nie ma
-  promienia. Wszystkie trzy mają parametr sigma wygładzania.
+- **OpenFocus A**: wybiera ostre piksele na podstawie wieloskalowej odpowiedzi ostrości.
+- **OpenFocus B**: miesza sąsiednie klatki według wygładzonej mapy głębi.
+- **OpenFocus C**: rekonstruuje pasma wieloskalowe według wygładzonej mapy głębi.
+- **Parametry**: jądro steruje skalą odpowiedzi ostrości w A i B; C nie ma promienia.
 
-**Wygładzanie**: jedno pole liczbowe pod suwakiem jądra, którego znaczenie zależy od
-wybranej metody (zakres 0–8, krok 0,2):
+**Wygładzanie** (0–8, krok 0,2) działa różnie w zależności od metody:
 
-| Metoda | Etykieta | Domyślnie | Efekt |
+| Metoda | Parametr | Domyślnie | Efekt |
 |---|---|---|---|
-| OpenFocus A | Wygładzanie mieszania (σ) | 2,0 | Wygładzanie gaussowskie mapy wag każdej klatki — jak szeroko mieszane są ostre obszary sąsiednich klatek |
-| OpenFocus B | Wygładzanie głębi (σ) | 1,2 | Wygładzanie gaussowskie mapy głębi — szerokość przejścia między klatkami |
-| OpenFocus C | Wygładzanie mieszania (σ) | 3,0 | Wygładzanie gaussowskie mapy wag każdego pasma piramidy |
+| OpenFocus A | Wygładzanie mieszania | 2,0 | Wygładza mapę odpowiedzi ostrości przed wyborem pikseli |
+| OpenFocus B | Wygładzanie głębi | 1,2 | Steruje wygładzaniem mapy głębi i przejściami między klatkami |
+| OpenFocus C | Wygładzanie mieszania | 3,0 | Steruje mapą głębi używaną do rekonstrukcji pasm |
 
-0 zachowuje najostrzejszy wybór na piksel (najdrobniejsze szczegóły, ale plamki na
-zaszumionych stosach); większe wartości łagodzą przejścia i aureole. Każda metoda
-pamięta własną wartość między sesjami, a przetwarzanie wsadowe stosuje tę samą zasadę.
+Każda metoda pamięta wartość między sesjami; korzysta z niej także przetwarzanie wsadowe.
 
-C nie ma promienia: metoda C w Heliconie udostępnia tylko wygładzanie, więc suwak
-jądra jest dla C ukryty, zamiast po cichu nic nie robić.
-
-CLI: `--depth-smoothing SIGMA` (B) oraz `--blend-smoothing SIGMA` (A, C).
+CLI: `--depth-smoothing VALUE` (B) oraz `--blend-smoothing VALUE` (A, C).
 
 **Opcje jasności są ustawiane osobno dla każdej metody.** *Dopasuj ekspozycję przed
 fuzją* i *Usuń dryf jasności* są zapamiętywane oddzielnie dla każdej metody fuzji,
@@ -555,9 +543,9 @@ jakości rejestracji lub wyeksportowania wyrównanych klatek.
 | DTCWT | Średnia | Bardzo dobra | Złożone sceny |
 | GFG-FGF | Szybki | Dobra | Obszary ostrości |
 | Fuzja AI (StackMFF V3) | Wolna (GPU) | Doskonała | Najwyższa jakość |
-| OpenFocus A | Bardzo szybki | Bardzo dobra | Krótkie stosy, stabilność kolorów |
-| OpenFocus B | Bardzo szybki | Bardzo dobra | Gładkie powierzchnie, mikroskopia |
-| OpenFocus C | Szybki | Bardzo dobra | Obiekty teksturowane, naturalny wygląd |
+| OpenFocus A | — | — | Wybór według ostrości |
+| OpenFocus B | — | — | Mieszanie według mapy głębi |
+| OpenFocus C | — | — | Rekonstrukcja pasm według mapy głębi |
 
 ### Szybki podgląd (szkic renderu)
 
@@ -879,9 +867,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--base-frame` | opcjonalny etap po fuzji: dopasowanie niskich częstotliwości wyniku do klatki `last`/`first` (domyślnie `none`) |
 | `--sort` | kolejność klatek dla `openfocus_a/b/c`: `asc` (domyślnie, kolejność plików), `desc` (odwrócenie przemiatania od dalekich do bliskich), `off` |
 | `--dust-map WHITE` | korekcja pola płaskiego (mapa pyłu) na podstawie rozogniskowanego zdjęcia białego pola |
-| `--kernel, -k` | rozmiar jądra (wymuszany na nieparzysty; dla rodziny openfocus jest źródłem promienia okna wariancji) |
-| `--depth-smoothing SIGMA` | tylko `openfocus_b`: sigma gaussowska przejścia głębi między klatkami (domyślnie 1.2; 0 zachowuje najdrobniejsze szczegóły) |
-| `--blend-smoothing SIGMA` | tylko `openfocus_a` / `openfocus_c`: sigma gaussowska mapy wag każdej klatki (domyślnie 2.0 dla A, 3.0 dla C; 0 zachowuje najostrzejszy wybór na piksel) |
+| `--kernel, -k` | Rozmiar jądra (nieparzysty; w OpenFocus A/B steruje skalą odpowiedzi ostrości, nie działa na C) |
+| `--depth-smoothing VALUE` | Tylko `openfocus_b`: siła wygładzania głębi (domyślnie 1,2) |
+| `--blend-smoothing VALUE` | Tylko `openfocus_a` / `openfocus_c`: siła wygładzania mieszania (domyślnie 2,0 dla A, 3,0 dla C) |
 | `--threads, -t` | Limit wątków; `0` = automatycznie (domyślnie), wartości dodatnie ograniczają współbieżność |
 | `--resource-preference` | Tryb zasobów: `balanced` (domyślnie), `responsive` lub `maximum` |
 | `--batch-size` | Limit partii kafelków AI (domyślnie 2); obecnie jeden kafelek na wywołanie |

@@ -1,11 +1,10 @@
 """Render the OpenFocus launch film entirely in code.
 
 Every frame is drawn with PIL/NumPy (typography, easing, glow, grain) and the
-soundtrack is synthesised from oscillators and filtered noise. Real product
-imagery is composited in: the nine source frames of the heliconsoft7 stack, a
-genuine sharpness-selection fusion of that stack, and the feature captures.
+soundtrack is synthesised from oscillators and filtered noise. Source frames,
+their sharpness-selection fusion, and feature captures are composited in.
 
-Usage:  python tools/launch_film.py [--out launch.mp4] [--preview 120]
+Usage: python tools/launch_film.py --stack /path/to/stack [--out launch.mp4] [--preview 120]
 """
 from __future__ import annotations
 
@@ -23,7 +22,6 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
-STACK = Path(r"C:\Users\dell\Pictures\Helicon Focus\StackMFF V2 Used\heliconsoft7")
 SHOTS = ROOT / "assets" / "readme"
 
 W, H = 1920, 1080
@@ -180,8 +178,11 @@ def shadowed(img, blur=26, opacity=150, offset=(0, 18)):
 
 
 # ------------------------------------------------------------- media prep
-def load_stack_frames(width=1180):
-    paths = sorted(STACK.glob("*.jpg"), key=lambda p: int(p.stem))
+def load_stack_frames(stack, width=1180):
+    paths = sorted(stack.glob("*.jpg"),
+                   key=lambda p: (0, int(p.stem)) if p.stem.isdigit() else (1, p.name))
+    if not paths:
+        raise ValueError(f"No JPG source frames found in {stack}")
     frames = []
     for p in paths:
         im = Image.open(p).convert("RGB")
@@ -319,8 +320,8 @@ def synth_audio(duration, path):
 
 # ----------------------------------------------------------------- scenes
 class Film:
-    def __init__(self):
-        self.stack = load_stack_frames(1180)
+    def __init__(self, stack):
+        self.stack = load_stack_frames(stack, 1180)
         self.fused = fuse_stack(self.stack)
         self.logo = Image.open(ROOT / "assets" / "OpenFocus.png").convert("RGBA")
         self.logo = fit(self.logo, 460, 460)
@@ -686,12 +687,14 @@ class Film:
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--stack", required=True, type=Path,
+                    help="directory containing the JPG source stack")
     ap.add_argument("--out", default=str(ROOT / "assets" / "launch.mp4"))
     ap.add_argument("--preview", type=int, default=0,
                     help="render only N stills for inspection")
     args = ap.parse_args()
 
-    film = Film()
+    film = Film(args.stack)
     total = 38.0
     if args.preview:
         out_dir = Path(tempfile.mkdtemp(prefix="of_film_"))
@@ -712,7 +715,9 @@ def main():
     audio = out_dir / "score.wav"
     synth_audio(total, audio)
 
-    ffmpeg = shutil.which("ffmpeg") or r"D:\ffmpeg-master-latest-win64-gpl-shared\bin\ffmpeg.exe"
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg must be available on PATH")
     cmd = [ffmpeg, "-y", "-loglevel", "error",
            "-framerate", str(FPS), "-i", str(out_dir / "f%05d.png"),
            "-i", str(audio),

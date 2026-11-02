@@ -46,6 +46,17 @@ class TestComputeFocusIndex:
         assert idx[:, 110:210].mean() == pytest.approx(0.5, abs=0.1)
         assert idx[:, 220:].mean() == pytest.approx(1.0, abs=0.1)
 
+    @pytest.mark.parametrize("method,parameter", [
+        ("openfocus_b", "depth_smoothing"),
+        ("openfocus_c", "blend_smoothing"),
+    ])
+    def test_openfocus_smoothing_changes_depth_transition(self, method, parameter):
+        frames = _synthetic_thirds(80, 120)
+        sharp = compute_focus_index(frames, method, {parameter: 0})
+        smooth = compute_focus_index(frames, method, {parameter: 8})
+        assert np.any(np.abs(sharp - smooth) > 0.01)
+        assert smooth[:, :30].mean() < smooth[:, 90:].mean()
+
     def test_weighted_average_methods_rejected(self):
         """加权平均类融合没有逐像素决策——不提供深度图（v1.44 设计收敛）。"""
         for method in ("guided_filter", "openfocus_a"):
@@ -65,24 +76,6 @@ class TestComputeFocusIndex:
             "dct", "dtcwt", "gfgfgf", "stackmffv3", "stackmffv2",
             "openfocus_b", "openfocus_c"}
 
-    def test_openfocus_depth_maps_differ(self):
-        """B/C 的深度侧写照各自的融合管线：B=方差硬 argmax，
-        C=带通能量 argmax（v1.43 前两者共用一张图，是缺陷）。"""
-        rng = np.random.default_rng(11)
-        h, w = 160, 240
-        tex = np.clip(128 + rng.normal(0, 30, (h, w, 3)), 0, 255)
-        # 两帧都有纹理（重叠聚焦）：f0 左 2/3 强，f1 右 2/3 强
-        f0 = tex.copy()
-        f0[:, int(w * 2 / 3):] = cv2.GaussianBlur(tex, (0, 0), 4)[:, int(w * 2 / 3):]
-        f1 = tex.copy()
-        f1[:, :int(w / 3)] = cv2.GaussianBlur(tex, (0, 0), 4)[:, :int(w / 3)]
-        frames = [f0.astype(np.uint8), f1.astype(np.uint8)]
-        b = compute_focus_index(frames, "openfocus_b")
-        c = compute_focus_index(frames, "openfocus_c")
-        # B 是硬拾取：只有 0/1 两个值
-        assert set(np.unique(np.round(b, 3))) <= {0.0, 1.0}
-        # C 的带通能量选择与 B 的方差统计不同（至少不是逐位相同）
-        assert not np.allclose(b, c, atol=1e-6)
 
     def test_cancellation(self):
         def cancel():
@@ -456,3 +449,47 @@ def test_dct_depth_block_size_is_a_legacy_input():
     # It remains a DCT-only argument: other measures must reject it.
     with pytest.raises(ValueError):
         compute_focus_index(frames, "gfgfgf", block_size=4)
+
+
+@pytest.mark.parametrize("smoothing", [0, 5])
+@pytest.mark.parametrize("winner", [500, 999])
+def test_deep_stack_depth_index_is_preserved(monkeypatch, smoothing, winner):
+    from fusion_methods import openfocus_depth
+
+    calls = 0
+
+    def fake_filter(src, radius, cancel, guide=None, low=None):
+        nonlocal calls
+        if guide is not None:
+            return src.astype(np.int64)
+        calls += 1
+        return np.zeros_like(src) if calls % 2 else src
+
+    monkeypatch.setattr(openfocus_depth, "_filter", fake_filter)
+    blank = np.zeros((2, 2), np.uint8)
+    frames = [blank] * 1000
+    frames[winner] = np.full((2, 2), 255, np.uint8)
+    depth = openfocus_depth.depth_map(frames, None, 11, smoothing, None)
+    np.testing.assert_allclose(depth, winner, atol=0.01)
+
+
+def test_depth_guide_expands_range_from_lower_percentile(monkeypatch):
+    from fusion_methods import openfocus_depth
+
+    activity = np.arange(100, dtype=np.int64).reshape(10, 10) * 10 + 1000
+    guides = []
+    calls = 0
+
+    def fake_filter(src, radius, cancel, guide=None, low=None):
+        nonlocal calls
+        if guide is not None:
+            guides.append(guide.copy())
+            return src.astype(np.int64)
+        calls += 1
+        return np.zeros_like(src) if calls % 2 else activity.copy()
+
+    monkeypatch.setattr(openfocus_depth, "_filter", fake_filter)
+    frames = [np.zeros((10, 10), np.uint8)] * 2
+    openfocus_depth.depth_map(frames, None, 11, 5, None)
+    assert guides[0][0, 0] < 100
+    assert guides[0][-1, -1] > 65000

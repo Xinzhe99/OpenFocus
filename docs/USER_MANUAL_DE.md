@@ -210,8 +210,8 @@ ersetzt. Berechnung, Textur und Export bleiben an denselben Quellstand gebunden.
 Alle sechs Methoden erfordern einen ausdrücklichen Klick auf **Berechnen**. Öffnen,
 Wechsel von Maß, Quelle oder Registrierung und Parameteränderungen starten keine
 Berechnung. Direkt unter der Maßauswahl stehen die editierbaren Parameter: DCT-Median-
-und GFG-Anfangskernel sind ungerade 1–51 (Standard 7), das Varianzfenster von B und das
-Bandpassenergiefenster von C ungerade 1–21 px (Standard 11). Die DTCWT-Zerlegungstiefe
+und GFG-Anfangskernel sind ungerade 1–51 (Standard 7). B verwendet den Radius und die
+Tiefenglättung (Standard 1,2), C die Mischungsglättung (Standard 3,0). Die DTCWT-Zerlegungstiefe
 ist hier als lokaler Entwurf bearbeitbar und beginnt mit den Quellparametern. StackMFF V3
 zeigt stattdessen einen eigenen KI-Ausgabemodus (standardmäßig weiche Mischung oder harte
 Auswahl) und eine Erläuterung: Weiche Mischung schätzt eine wahrscheinlichkeitsgewichtete
@@ -396,7 +396,7 @@ Perspektivänderungen aufweisen.
 
 - Begrenzte Ähnlichkeitsausrichtung (Verschiebung + Rotation + Skalierung),
   mit Helligkeitsabgleich pro Bild und automatischem Zuschnitt
-- Unter einer Sekunde pro Bild – deutlich schneller als ECC oder Homographie
+- Die Suche bewertet abgetastete Bilddifferenzen; die Transformation verwendet Lanczos-Interpolation
 - Bilder, die sich um mehr als **8 % der Bildgröße verschieben, bleiben unausgerichtet**,
   statt teilweise korrigiert zu werden. Über die CLI-Option
   `--align-shift-limit` änderbar
@@ -509,35 +509,22 @@ hat eigene Eigenschaften, die zu unterschiedlichen Bildtypen passen.
 
 ### OpenFocus A / B / C
 
-- **Algorithmus**: varianzgewichteter Mittelwert, Varianz-Tiefenkarten-Auswahl und
-  Laplace-Pyramiden-Fusion
-- **OpenFocus A**: varianzgewichteter Mittelwert mit Prior des letzten Bildes –
-  schnell, farbstabil bei kurzen Stapeln
-- **OpenFocus B**: Varianz-Tiefenkarten-Auswahl – wählt pro Pixel das schärfste
-  Bild; am besten auf glatten Oberflächen und in der Mikroskopie
-- **OpenFocus C**: Laplace-Pyramiden-Mischung pro Frequenzband – natürliche Wirkung
-  bei texturierten Motiven, hebt den lokalen Kontrast
-- **Parameter**: A und B verwenden ein Varianzfenster (Kernelregler); C hat keinen
-  Radius. Alle drei verwenden ein Glättungs-Sigma.
+- **OpenFocus A**: wählt fokussierte Pixel anhand einer mehrskaligen Fokusantwort.
+- **OpenFocus B**: mischt benachbarte Bilder anhand einer geglätteten Tiefenkarte.
+- **OpenFocus C**: rekonstruiert mehrskalige Bänder anhand einer geglätteten Tiefenkarte.
+- **Parameter**: Der Kernel steuert bei A und B die Skala der Fokusantwort; C hat keinen Radius.
 
-**Glättung**: ein Drehfeld unter dem Kernelregler, dessen Bedeutung von der gewählten
-Methode abhängt (Bereich 0–8, Schrittweite 0,2):
+**Glättung** (0–8, Schrittweite 0,2) wirkt je nach Methode unterschiedlich:
 
-| Methode | Beschriftung | Standard | Wirkung |
+| Methode | Parameter | Standard | Wirkung |
 |---|---|---|---|
-| OpenFocus A | Mischungsglättung (σ) | 2,0 | Gauß-Glättung der Gewichtskarte pro Bild – wie breit die scharfen Bereiche benachbarter Bilder gemischt werden |
-| OpenFocus B | Tiefenglätung (σ) | 1,2 | Gauß-Glättung der Tiefenkarte – Breite des Übergangs zwischen den Bildern |
-| OpenFocus C | Mischungsglättung (σ) | 3,0 | Gauß-Glättung der Gewichtskarte jedes Pyramidenbands |
+| OpenFocus A | Mischungsglättung | 2,0 | Glättet die Fokusantwortkarte vor der Pixelauswahl |
+| OpenFocus B | Tiefenglättung | 1,2 | Steuert die Glättung der Tiefenkarte und die Bildübergänge |
+| OpenFocus C | Mischungsglättung | 3,0 | Steuert die Tiefenkarte für die Bandrekonstruktion |
 
-0 behält die schärfste Auswahl pro Pixel (feinstes Detail, aber Sprenkel auf
-verrauschten Stapeln); größere Werte machen Übergänge und Halos weicher. Jede Methode
-merkt sich ihren eigenen Wert über Sitzungen hinweg, und die Stapelverarbeitung nutzt
-dieselbe Regel.
+Jede Methode speichert ihren Wert über Sitzungen hinweg; die Stapelverarbeitung verwendet ihn ebenfalls.
 
-C hat keinen Radius: Helicons Methode C bietet nur Glättung, daher wird der
-Kernelregler für C ausgeblendet, statt stillschweigend wirkungslos zu sein.
-
-CLI: `--depth-smoothing SIGMA` (B) und `--blend-smoothing SIGMA` (A, C).
+CLI: `--depth-smoothing VALUE` (B) und `--blend-smoothing VALUE` (A, C).
 
 **Helligkeitsoptionen gelten pro Methode.** *Belichtung vor der Fusion angleichen* und
 *Helligkeitsdrift entfernen* werden für jede Fusionsmethode separat gespeichert, weil
@@ -571,9 +558,9 @@ um die Registrierungsqualität zu prüfen oder ausgerichtete Bilder zu exportier
 | DTCWT | Mittel | Sehr gut | Komplexe Szenen |
 | GFG-FGF | Schnell | Gut | Fokusbereiche |
 | KI-Fusion (StackMFF V3) | Langsam (GPU) | Hervorragend | Beste Qualität |
-| OpenFocus A | Sehr schnell | Sehr gut | Kurze Stapel, Farbstabilität |
-| OpenFocus B | Sehr schnell | Sehr gut | Glatte Oberflächen, Mikroskopie |
-| OpenFocus C | Schnell | Sehr gut | Texturierte Motive, natürliche Wirkung |
+| OpenFocus A | — | — | Fokusauswahl |
+| OpenFocus B | — | — | Tiefenkartengesteuerte Mischung |
+| OpenFocus C | — | — | Tiefenkartengesteuerte Bandrekonstruktion |
 
 ### Schnellvorschau (Entwurfsrendering)
 
@@ -895,9 +882,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--base-frame` | Optionaler Schritt nach der Fusion: die niedrigen Frequenzen der Ausgabe an das `last`/`first`-Bild angleichen (Standard `none`) |
 | `--sort` | Bildreihenfolge für `openfocus_a/b/c`: `asc` (Standard, Dateireihenfolge), `desc` (kehrt einen Fern-nach-Nah-Durchlauf um), `off` |
 | `--dust-map WHITE` | Flat-Field-Korrektur (Staubkarte) aus einer defokussierten Weißfeldaufnahme |
-| `--kernel, -k` | Kernelgröße (ungerade erzwungen; bei der OpenFocus-Familie die Quelle für den Radius des Varianzfensters) |
-| `--depth-smoothing SIGMA` | Nur `openfocus_b`: Gauß-Sigma des Tiefenübergangs von Bild zu Bild (Standard 1,2; 0 behält das feinste Detail) |
-| `--blend-smoothing SIGMA` | Nur `openfocus_a` / `openfocus_c`: Gauß-Sigma der Gewichtskarte pro Bild (Standard 2,0 für A, 3,0 für C; 0 behält die schärfste Auswahl pro Pixel) |
+| `--kernel, -k` | Kernelgröße (ungerade; steuert bei OpenFocus A/B die Skala der Fokusantwort, bei C ohne Wirkung) |
+| `--depth-smoothing VALUE` | Nur `openfocus_b`: Stärke der Tiefenglättung (Standard 1,2) |
+| `--blend-smoothing VALUE` | Nur `openfocus_a` / `openfocus_c`: Stärke der Mischungsglättung (Standard 2,0 für A, 3,0 für C) |
 | `--threads, -t` | Thread-Obergrenze; `0` = automatisch (Standard), positive Werte begrenzen die Parallelität |
 | `--resource-preference` | Ressourcenmodus: `balanced` (Standard), `responsive` oder `maximum` |
 | `--batch-size` | KI-Kachel-Batch-Obergrenze (Standard 2); tatsächlich derzeit eine Kachel pro Aufruf |

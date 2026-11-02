@@ -209,9 +209,9 @@ pela pilha atual. Cálculo, textura e exportação ficam vinculados ao mesmo ins
 Os seis métodos exigem um clique explícito em **Calcular**. Abrir o diálogo ou mudar
 a medida, a origem, o registro ou os parâmetros não inicia o cálculo. O editor fica logo
 abaixo do seletor de medida: os kernels mediano DCT e inicial GFG aceitam ímpares de 1 a 51
-(padrão 7); B usa uma janela de variância e C uma de energia passa-faixa, ímpares de 1 a 21 px
-(padrão 11). Os níveis de decomposição DTCWT são editáveis aqui como rascunho local,
-inicializado com os parâmetros da origem. StackMFF V3 mostra o próprio modo de saída de IA
+(padrão 7). B usa o raio e a suavização da profundidade (padrão 1,2); C usa a
+suavização da mistura (padrão 3,0). Os níveis de decomposição DTCWT são editáveis aqui
+como rascunho local, inicializado com os parâmetros da origem. StackMFF V3 mostra o próprio modo de saída de IA
 (mistura suave por padrão, ou seleção rígida) e uma explicação, sem kernel numérico: a
 mistura suave estima uma posição contínua ponderada por probabilidade, a seleção rígida usa
 o quadro mais provável por pixel. Nenhuma é uma distância física. Os rascunhos começam com os parâmetros da saída correspondente
@@ -394,7 +394,7 @@ perspectiva.
 
 - Alinhamento por similaridade limitada (translação + rotação + escala),
   com equalização de brilho por quadro e corte automático
-- Menos de um segundo por quadro — bem mais rápido que ECC ou Homografia
+- A busca avalia diferenças amostradas entre imagens; a transformação usa interpolação Lanczos
 - Quadros que se deslocam mais de **8% do tamanho do quadro são deixados sem
   alinhamento** em vez de corrigidos pela metade. Ajuste com a opção de CLI
   `--align-shift-limit`
@@ -507,34 +507,22 @@ Cada um tem características próprias, adequadas a diferentes tipos de imagem.
 
 ### OpenFocus A / B / C
 
-- **Algoritmo**: média ponderada por variância, seleção por mapa de profundidade de
-  variância e fusão por pirâmide laplaciana
-- **OpenFocus A**: média ponderada por variância com prior do último quadro —
-  rápida, com cores estáveis em pilhas curtas
-- **OpenFocus B**: seleção por mapa de profundidade de variância — escolhe o quadro
-  mais nítido por pixel; melhor em superfícies lisas e em microscopia
-- **OpenFocus C**: mistura por faixa com pirâmide laplaciana — aparência natural em
-  assuntos texturizados, realça o contraste local
-- **Parâmetros**: A e B aceitam uma janela de variância (controle de kernel); C não
-  tem raio. Os três aceitam um sigma de suavização.
+- **OpenFocus A**: seleciona pixels em foco com uma resposta de foco multiescala.
+- **OpenFocus B**: mistura quadros vizinhos guiado por um mapa de profundidade suavizado.
+- **OpenFocus C**: reconstrói bandas multiescala guiado por um mapa de profundidade suavizado.
+- **Parâmetros**: o kernel controla a escala da resposta de foco em A e B; C não tem raio.
 
-**Suavização**: uma caixa de rotação abaixo do controle de kernel, com o
-significado do método selecionado (faixa 0–8, passo 0,2):
+**Suavização** (0–8, passo 0,2) atua de forma diferente em cada método:
 
-| Método | Rótulo | Padrão | Efeito |
+| Método | Parâmetro | Padrão | Efeito |
 |---|---|---|---|
-| OpenFocus A | Suavização da mistura (σ) | 2,0 | Suavização gaussiana do mapa de pesos por quadro — com que amplitude as regiões nítidas dos quadros vizinhos são misturadas |
-| OpenFocus B | Suavização da profundidade (σ) | 1,2 | Suavização gaussiana do mapa de profundidade — largura da transição entre quadros |
-| OpenFocus C | Suavização da mistura (σ) | 3,0 | Suavização gaussiana do mapa de pesos de cada faixa da pirâmide |
+| OpenFocus A | Suavização da mistura | 2,0 | Suaviza o mapa de resposta de foco antes da seleção dos pixels |
+| OpenFocus B | Suavização da profundidade | 1,2 | Controla a suavização do mapa e as transições entre quadros |
+| OpenFocus C | Suavização da mistura | 3,0 | Controla o mapa de profundidade usado na reconstrução das bandas |
 
-0 mantém a escolha por pixel mais nítida (detalhe máximo, mas com ruído pontual em
-pilhas ruidosas); valores maiores suavizam transições e halos. Cada método lembra o
-próprio valor entre sessões, e o processamento em lote usa a mesma regra.
+Cada método mantém seu valor entre sessões; o processamento em lote também o usa.
 
-C não tem Raio: o Método C do Helicon expõe apenas Suavização, então o controle de
-kernel fica oculto em C em vez de não fazer nada silenciosamente.
-
-CLI: `--depth-smoothing SIGMA` (B) e `--blend-smoothing SIGMA` (A, C).
+CLI: `--depth-smoothing VALUE` (B) e `--blend-smoothing VALUE` (A, C).
 
 **As opções de brilho são por método.** *Igualar exposição antes da fusão* e
 *Remover deriva de brilho* são lembradas separadamente para cada método de fusão,
@@ -568,9 +556,9 @@ a qualidade do registro ou exportar quadros alinhados.
 | DTCWT | Média | Muito boa | Cenas complexas |
 | GFG-FGF | Rápida | Boa | Regiões de foco |
 | Fusão por IA (StackMFF V3) | Lenta (GPU) | Excelente | Melhor qualidade |
-| OpenFocus A | Muito rápida | Muito boa | Pilhas curtas, estabilidade de cor |
-| OpenFocus B | Muito rápida | Muito boa | Superfícies lisas, microscopia |
-| OpenFocus C | Rápida | Muito boa | Assuntos texturizados, aparência natural |
+| OpenFocus A | — | — | Seleção por foco |
+| OpenFocus B | — | — | Mistura guiada pela profundidade |
+| OpenFocus C | — | — | Reconstrução de bandas guiada pela profundidade |
 
 ### Prévia rápida (renderização de rascunho)
 
@@ -897,9 +885,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--base-frame` | Etapa opcional após a fusão: iguala as baixas frequências da saída ao quadro `last`/`first` (`none` por padrão) |
 | `--sort` | Ordem dos quadros para `openfocus_a/b/c`: `asc` (padrão, ordem dos arquivos), `desc` (inverte uma varredura de longe para perto), `off` |
 | `--dust-map WHITE` | Correção de campo plano (mapa de poeira) a partir de uma foto desfocada de campo branco |
-| `--kernel, -k` | Tamanho do kernel (forçado a ímpar; na família openfocus é a origem do raio da janela de variância) |
-| `--depth-smoothing SIGMA` | apenas `openfocus_b`: sigma gaussiano da transição de profundidade entre quadros (padrão 1,2; 0 preserva o máximo de detalhe) |
-| `--blend-smoothing SIGMA` | apenas `openfocus_a` / `openfocus_c`: sigma gaussiano do mapa de pesos por quadro (padrões 2,0 para A e 3,0 para C; 0 mantém a escolha mais nítida por pixel) |
+| `--kernel, -k` | Tamanho do kernel (ímpar; controla a escala da resposta de foco em OpenFocus A/B, sem efeito em C) |
+| `--depth-smoothing VALUE` | Apenas `openfocus_b`: intensidade da suavização da profundidade (padrão 1,2) |
+| `--blend-smoothing VALUE` | Apenas `openfocus_a` / `openfocus_c`: intensidade da suavização da mistura (padrão 2,0 para A e 3,0 para C) |
 | `--threads, -t` | Limite de threads; `0` = automático (padrão), valores positivos limitam a concorrência |
 | `--resource-preference` | Modo de recursos: `balanced` (padrão), `responsive` ou `maximum` |
 | `--batch-size` | Limite do lote de blocos de IA (padrão 2); atualmente um bloco por chamada |

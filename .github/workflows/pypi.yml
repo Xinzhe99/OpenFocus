@@ -80,16 +80,33 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      contents: read
       id-token: write
     # Job-level so the step conditions below can read it: a step's own `env`
     # is not in scope for that step's `if`.
     env:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
+
+      - name: Wait for the verified desktop release
+        timeout-minutes: 90
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TAG="v$(python -c 'from constants import APP_VERSION; print(APP_VERSION)')"
+          for attempt in {1..180}; do
+            if [ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "The desktop release was not published; refusing to publish to PyPI."
+          exit 1
 
       # Two publish paths, in order of preference:
       #   1. PYPI_API_TOKEN (a project-scoped token in repo secrets). Works

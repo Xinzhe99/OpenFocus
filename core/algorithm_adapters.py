@@ -111,10 +111,13 @@ def stackmffv2_needs_tiles(frames, threshold):
 
 
 def depth_openfocus_b(images, progress_callback=None, should_cancel=None, **parameters):
-    from core.depth_map import _measure_openfocus
-    return _measure_openfocus(images, progress_callback, should_cancel, kernel_size=parameters['kernel_size'])
+    from fusion_methods.openfocus_depth import depth_map
+    smoothing = parameters['depth_smoothing'] * (5.0 / 1.2)
+    return depth_map(images, None, parameters['kernel_size'], smoothing,
+                     should_cancel, progress_callback)
 
 
 def depth_openfocus_c(images, progress_callback=None, should_cancel=None, **parameters):
-    from core.depth_map import _measure_openfocus_c
-    return _measure_openfocus_c(images, progress_callback, should_cancel, kernel_size=parameters['kernel_size'])
+    from fusion_methods.openfocus_depth import depth_map
+    smoothing = parameters['blend_smoothing'] * (5.0 / 3.0)
+    return depth_map(images, None, 11, smoothing, should_cancel, progress_callback)

@@ -324,8 +324,8 @@ class MultiFocusFusion:
                           img_resize: Optional[Tuple[int, int]] = None,
                           kernel_size: int = 11,
                           **kwargs) -> np.ndarray:
-        """OpenFocus - A：方差加权平均（末帧先验）。"""
-        from fusion_methods.openfocus_ab import openfocus_a_impl
+        """OpenFocus A: multiscale focus-response selection."""
+        from fusion_methods.openfocus_a import openfocus_a_impl
         return openfocus_a_impl(input_source, img_resize,
                                 kernel_size=kernel_size,
                                 thread_count=kwargs.get('thread_count', None),
@@ -337,27 +337,26 @@ class MultiFocusFusion:
                           img_resize: Optional[Tuple[int, int]] = None,
                           kernel_size: int = 11,
                           **kwargs) -> np.ndarray:
-        """OpenFocus - B：方差深度图选择。"""
-        from fusion_methods.openfocus_ab import openfocus_b_impl
+        """OpenFocus B: depth-guided source blending."""
+        from fusion_methods.openfocus_bc import openfocus_b_impl
         return openfocus_b_impl(input_source, img_resize,
                                 kernel_size=kernel_size,
                                 thread_count=kwargs.get('thread_count', None),
                                 depth_smoothing=kwargs.get('depth_smoothing', None),
-                                should_cancel=kwargs.get('should_cancel'))
+                                should_cancel=kwargs.get('should_cancel'),
+                                depth_override=kwargs.get('depth_override'))
 
     def _fuse_openfocus_c(self,
                           input_source: Union[str, List[np.ndarray]],
                           img_resize: Optional[Tuple[int, int]] = None,
                           **kwargs) -> np.ndarray:
-        """OpenFocus - C：拉普拉斯金字塔融合。
-
-        C exposes only the blending smoothing parameter.
-        """
-        from fusion_methods.openfocus_ab import openfocus_c_impl
+        """OpenFocus C: depth-guided pyramid reconstruction."""
+        from fusion_methods.openfocus_bc import openfocus_c_impl
         return openfocus_c_impl(input_source, img_resize,
                                 thread_count=kwargs.get('thread_count', None),
                                 blend_smoothing=kwargs.get('blend_smoothing', None),
-                                should_cancel=kwargs.get('should_cancel'))
+                                should_cancel=kwargs.get('should_cancel'),
+                                depth_override=kwargs.get('depth_override'))
 
     # ------------------------------------------------------------------
     # 基底校正（消除亮度漂移）
@@ -414,7 +413,7 @@ class MultiFocusFusion:
     # ------------------------------------------------------------------
     # Frame-order sensitivity is declared by the selected descriptor.
 
-    def _maybe_sort_input(self, input_source):
+    def _maybe_sort_input(self, input_source, should_cancel=None):
         if (self.sort_mode == "off"
                 or not self.descriptor.sort_frames):
             return input_source
@@ -426,7 +425,7 @@ class MultiFocusFusion:
         elif isinstance(input_source, str) and os.path.isdir(input_source):
             # 目录输入：物化帧列表后排序（实现本来也要整栈读取）
             frames, flipped = sort_frames_for_openfocus(
-                _collect_images(input_source), self.sort_mode)
+                _collect_images(input_source, should_cancel=should_cancel), self.sort_mode)
         else:
             return input_source
         if flipped:
@@ -435,7 +434,7 @@ class MultiFocusFusion:
                   "anchor to the other end).")
         return frames
 
-    def _exposure_gains_for_source(self, input_source):
+    def _exposure_gains_for_source(self, input_source, should_cancel=None):
         """Gains for a whole stack, streaming directory input one frame at a
         time (an exposure pass must not defeat the lazy tiled loader)."""
         if isinstance(input_source, (list, tuple)):
@@ -450,6 +449,9 @@ class MultiFocusFusion:
                      if f.lower().endswith(exts)]
             means = []
             for name in names:
+                if should_cancel is not None and should_cancel():
+                    from core.registration import RegistrationCancelled
+                    raise RegistrationCancelled()
                 data = np.fromfile(os.path.join(input_source, name),
                                    dtype=np.uint8)
                 img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH |
@@ -467,7 +469,7 @@ class MultiFocusFusion:
             return [1.0 if m <= 1e-6 else target / m for m in means]
         return None
 
-    def _materialize_exposure(self, input_source, gains):
+    def _materialize_exposure(self, input_source, gains, should_cancel=None):
         """Load a directory stack with the per-frame gains already applied."""
         if not isinstance(input_source, str) or not os.path.isdir(input_source):
             return input_source
@@ -479,6 +481,9 @@ class MultiFocusFusion:
                  if f.lower().endswith(exts)]
         frames = []
         for name, gain in zip(names, gains):
+            if should_cancel is not None and should_cancel():
+                from core.registration import RegistrationCancelled
+                raise RegistrationCancelled()
             data = np.fromfile(os.path.join(input_source, name),
                                dtype=np.uint8)
             img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
@@ -620,31 +625,30 @@ class MultiFocusFusion:
                 raise ValueError(f"No image files found in directory: {input_source}")
             first = cv2.imdecode(
                 np.fromfile(os.path.join(input_source, names[0]), dtype=np.uint8),
-                cv2.IMREAD_UNCHANGED)
+                cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
             if first is None:
                 raise RuntimeError(f"Unable to read image: {names[0]}")
             count = len(names)
-            stack_bytes = count * first.nbytes
-            source_allocation = stack_bytes
+            # Sorting may normalize a 16-bit directory to a float stack.
+            source_allocation = count * first.size * max(first.itemsize, 4)
         elif isinstance(input_source, (list, tuple)) and len(input_source):
             input_source = list(input_source)
             first = input_source[0]
             count = len(input_source)
-            stack_bytes = sum(f.nbytes for f in input_source)
             source_allocation = 0
         else:
             raise ValueError("Fusion requires a non-empty image stack or directory")
 
         preparation = source_allocation + first.size * 8
         if self.exposure_match:
-            preparation += stack_bytes
+            preparation += count * first.size * max(first.itemsize, 4)
         policy.require_memory(preparation, user_limit=memory_budget_bytes())
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.
-        input_source = self._maybe_sort_input(input_source)
+        input_source = self._maybe_sort_input(input_source, should_cancel)
         exposure_gains_ = None
         if self.exposure_match:
-            exposure_gains_ = self._exposure_gains_for_source(input_source)
+            exposure_gains_ = self._exposure_gains_for_source(input_source, should_cancel)
             check_cancel()
             if exposure_gains_ is not None and isinstance(input_source, list):
                 matched = []
@@ -662,7 +666,8 @@ class MultiFocusFusion:
                        if spec.tile_decider else max(h, w) > self.tile_threshold)
 
         check_cancel()
-        if self.tile_enabled and needs_tiles:
+        if (self.tile_enabled and needs_tiles and
+                (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c'))):
             # Memory pressure can lower concurrency, never the spatial grid.
             kws = dict(kwargs)
             kws.pop('block_size', None)
@@ -674,7 +679,7 @@ class MultiFocusFusion:
                 exposure_gains=exposure_gains_, **kws)
         else:
             if exposure_gains_ is not None and isinstance(input_source, str):
-                input_source = self._materialize_exposure(input_source, exposure_gains_)
+                input_source = self._materialize_exposure(input_source, exposure_gains_, should_cancel)
             check_cancel()
             if not spec.neural:
                 height = max(h, img_resize[1]) if img_resize else h
@@ -1052,7 +1057,9 @@ class MultiFocusFusion:
             files = [f for f in sorted(os.listdir(img_dir), key=natural_sort_key) if f.lower().endswith(exts)]
             if len(files) == 0:
                 raise ValueError(f"No image files found in directory: {img_dir}")
-            first_img = cv2.imread(os.path.join(img_dir, files[0]), cv2.IMREAD_UNCHANGED)
+            mode = (cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
+                    if algorithm in ('openfocus_b', 'openfocus_c') else cv2.IMREAD_UNCHANGED)
+            first_img = cv2.imdecode(np.fromfile(os.path.join(img_dir, files[0]), dtype=np.uint8), mode)
             if first_img is None:
                 raise RuntimeError(f"Unable to read image: {os.path.join(img_dir, files[0])}")
             h, w = first_img.shape[:2]
@@ -1108,6 +1115,39 @@ class MultiFocusFusion:
                 exposure_gains=exposure_gains,
             )
 
+        global_depth = None
+        if algorithm in ('openfocus_b', 'openfocus_c'):
+            from core import resource_policy as policy
+            from fusion_methods.openfocus_depth import depth_map
+            from fusion_methods.openfocus_ab import _collect_images
+            # Admit both the depth scratch and directory stack before loading it.
+            source_bytes = (2 * num_images * h * w * channels * max(4, np.dtype(src_dtype).itemsize)
+                            if imgs is None else 0)
+            fixed, per_worker = policy.estimate_working_set(policy.Workload(
+                algorithm=algorithm, frames=num_images, height=h, width=w,
+                channels=channels, itemsize=np.dtype(src_dtype).itemsize))
+            policy.require_memory(source_bytes + fixed + per_worker,
+                                  user_limit=memory_budget_bytes())
+            if imgs is None:
+                imgs = _collect_images(img_dir, normalize=False, should_cancel=should_cancel)
+                if exposure_gains is not None:
+                    matched = []
+                    for frame, gain in zip(imgs, exposure_gains):
+                        from fusion_methods.openfocus_ab import _check_cancel
+                        _check_cancel(should_cancel)
+                        matched.append(apply_exposure_gain(frame, gain))
+                    imgs = matched
+                    del matched, frame
+            if algorithm == 'openfocus_b':
+                kernel = kwargs.get('kernel_size', 11)
+                smoothing = kwargs.get('depth_smoothing')
+                smoothing = (1.2 if smoothing is None else smoothing) * (5.0 / 1.2)
+            else:
+                kernel = 11
+                smoothing = kwargs.get('blend_smoothing')
+                smoothing = (3.0 if smoothing is None else smoothing) * (5.0 / 3.0)
+            global_depth = depth_map(imgs, None, kernel, smoothing, should_cancel)
+
         if get_fusion(algorithm).resource_estimator:
             # Each tile is fused with a serial inner plan, so the parent's
             # concurrency cost is one tile's DTCWT working set — not the whole
@@ -1140,7 +1180,7 @@ class MultiFocusFusion:
 
         print(f"Tiled fusion: {optimal_threads} parallel workers (memory-optimized)")
 
-        def call_algo(crops):
+        def call_algo(crops, coords):
             # Share cancellation with the backend's frame/channel boundaries.
             algo_kwargs = {k: v for k, v in kwargs.items()
                            if k not in ('should_cancel', 'progress_callback')}
@@ -1149,6 +1189,9 @@ class MultiFocusFusion:
             # oversubscribed the machine.
             algo_kwargs['thread_count'] = 1
             algo_kwargs['should_cancel'] = should_cancel
+            if global_depth is not None:
+                x0, y0, x1, y1 = coords
+                algo_kwargs['depth_override'] = global_depth[y0:y1, x0:x1]
             if get_fusion(algorithm).ordered_plan:
                 # This tile runs inside the parent's pool and under its
                 # lease: hand the backend a serial child plan instead of
@@ -1193,7 +1236,7 @@ class MultiFocusFusion:
             x0, y0, x1, y1 = coords
             crops = _crop_frames(coords)
 
-            fused_tile = call_algo(crops)
+            fused_tile = call_algo(crops, coords)
             _check_cancel()
             if fused_tile is None:
                 raise RuntimeError("Fusion returned None for a tile")

@@ -213,9 +213,9 @@ y exportación permanecen vinculados a la misma instantánea del origen.
 Los seis métodos requieren pulsar **Calcular** expresamente. Abrir el diálogo o cambiar
 la medida, el origen, el registro o los parámetros no inicia el cálculo. El editor aparece
 justo debajo del selector de medida: los núcleos de mediana DCT e inicial GFG aceptan
-impares de 1 a 51 (7 por defecto); B usa una ventana de varianza y C una de energía de paso
-de banda, impares de 1 a 21 px (11 por defecto). Los niveles de descomposición DTCWT
-se editan aquí como borrador local, inicializado con los parámetros del origen. StackMFF V3
+impares de 1 a 51 (7 por defecto); B usa un radio de respuesta de enfoque y suavizado
+de profundidad, mientras que C usa **Suavizado de mezcla** para suavizar el mapa de profundidad, sin radio. Los niveles de
+descomposición DTCWT se editan aquí como borrador local, inicializado con los parámetros del origen. StackMFF V3
 muestra su propio modo de salida de IA (mezcla suave por defecto o selección dura) y una
 explicación, sin núcleo numérico: la mezcla suave estima una posición continua ponderada
 por probabilidad; la dura toma el fotograma más probable por píxel. Ninguna es una
@@ -391,7 +391,7 @@ El registro de imágenes corrige la desalineación espacial entre los fotogramas
 
 - Alineación por similitud acotada (traslación + rotación + escala),
   con ecualización de brillo por fotograma y recorte automático
-- Menos de un segundo por fotograma: mucho más rápida que ECC u Homografía
+- Busca transformaciones de similitud acotadas mediante diferencias de imagen muestreadas y transforma las imágenes con interpolación Lanczos
 - Los fotogramas con un desplazamiento superior al **8 % del tamaño del
   fotograma se dejan sin alinear** en lugar de corregirlos parcialmente. Puedes
   cambiar el límite con `--align-shift-limit` en la CLI
@@ -507,35 +507,27 @@ OpenFocus ofrece diez algoritmos de fusión (además de un modo de solo alineaci
 
 ### OpenFocus A / B / C
 
-- **Algoritmo**: media ponderada por varianza, selección por mapa de
-  profundidad de varianza y fusión por pirámide laplaciana
-- **OpenFocus A**: media ponderada por varianza con prior del último fotograma;
-  rápido y estable en color en pilas cortas
-- **OpenFocus B**: selección por mapa de profundidad de varianza; elige el
-  fotograma más nítido por píxel; ideal para superficies lisas y microscopía
-- **OpenFocus C**: mezcla por banda con pirámide laplaciana; aspecto natural en
-  sujetos texturados y realza el contraste local
-- **Parámetros**: A y B usan una ventana de varianza (deslizador de núcleo); C
-  no tiene radio. Los tres usan una sigma de suavizado.
+- **OpenFocus A**: suaviza su mapa de respuesta de enfoque multiescala y después selecciona los píxeles enfocados.
+- **OpenFocus B**: mezcla fotogramas vecinos guiándose por un mapa de profundidad suavizado.
+- **OpenFocus C**: reconstruye bandas multiescala guiándose por un mapa de profundidad suavizado.
+- **Parámetros**: el deslizador de núcleo de A y B controla la escala de respuesta de enfoque;
+  C no tiene radio. Los tres usan un parámetro de suavizado que controla la intensidad de transición.
 
 **Suavizado**: un único campo numérico bajo el deslizador de núcleo, cuyo
 significado depende del método seleccionado (rango 0–8, paso 0,2):
 
 | Método | Etiqueta | Predeterminado | Efecto |
 |---|---|---|---|
-| OpenFocus A | Suavizado de mezcla (σ) | 2,0 | Suavizado gaussiano del mapa de pesos por fotograma: con qué amplitud se mezclan las regiones nítidas de fotogramas vecinos |
-| OpenFocus B | Suavizado de profundidad (σ) | 1,2 | Suavizado gaussiano del mapa de profundidad: anchura de la transición entre fotogramas |
-| OpenFocus C | Suavizado de mezcla (σ) | 3,0 | Suavizado gaussiano del mapa de pesos de cada banda de la pirámide |
+| OpenFocus A | Suavizado de mezcla | 2,0 | Controla el suavizado del mapa de respuesta de enfoque antes de seleccionar los píxeles |
+| OpenFocus B | Suavizado de profundidad | 1,2 | Controla el suavizado del mapa de profundidad que guía la mezcla |
+| OpenFocus C | Suavizado de mezcla | 3,0 | Controla el suavizado del mapa de profundidad que guía la reconstrucción multiescala |
 
-0 conserva la elección por píxel más nítida (máximo detalle, pero con motas en
-pilas ruidosas); los valores mayores suavizan transiciones y halos. Cada método
-recuerda su propio valor entre sesiones, y el procesamiento por lotes aplica la
-misma regla.
+Los valores mayores aumentan el suavizado de las transiciones. Cada método recuerda su
+propio valor entre sesiones, y el procesamiento por lotes aplica la misma regla.
 
-C no tiene Radio: el método C de Helicon solo expone Suavizado, así que el
-deslizador de núcleo se oculta para C en lugar de no hacer nada en silencio.
+C no tiene parámetro de Radio, por lo que se oculta su deslizador de núcleo.
 
-CLI: `--depth-smoothing SIGMA` (B) y `--blend-smoothing SIGMA` (A, C).
+CLI: `--depth-smoothing VALUE` (B) y `--blend-smoothing VALUE` (A, C).
 
 **Las opciones de brillo son por método.** *Igualar exposición antes de
 fusionar* y *Eliminar deriva de brillo* se recuerdan por separado para cada
@@ -570,9 +562,9 @@ alineados.
 | DTCWT | Media | Muy buena | Escenas complejas |
 | GFG-FGF | Rápida | Buena | Regiones de enfoque |
 | Fusión por IA (StackMFF V3) | Lenta (GPU) | Excelente | Máxima calidad |
-| OpenFocus A | Muy rápida | Muy buena | Pilas cortas, estabilidad de color |
-| OpenFocus B | Muy rápida | Muy buena | Superficies lisas, microscopía |
-| OpenFocus C | Rápida | Muy buena | Sujetos texturados, aspecto natural |
+| OpenFocus A | Depende de la pila | Depende de la pila | Selección multiescala de píxeles enfocados |
+| OpenFocus B | Depende de la pila | Depende de la pila | Mezcla de fotogramas vecinos guiada por profundidad |
+| OpenFocus C | Depende de la pila | Depende de la pila | Reconstrucción multiescala guiada por profundidad |
 
 ### Vista previa rápida (renderizado de borrador)
 
@@ -899,9 +891,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--base-frame` | Paso opcional posterior a la fusión: iguala las bajas frecuencias de la salida al fotograma `last`/`first` (`none` por defecto) |
 | `--sort` | Orden de los fotogramas para `openfocus_a/b/c`: `asc` (predeterminado, orden de archivo), `desc` (invierte un barrido de lejos a cerca), `off` |
 | `--dust-map WHITE` | Corrección de campo plano (mapa de polvo) a partir de una toma blanca desenfocada |
-| `--kernel, -k` | Tamaño de núcleo (se fuerza a impar; en la familia openfocus es el origen del radio de la ventana de varianza) |
-| `--depth-smoothing SIGMA` | Solo `openfocus_b`: sigma gaussiana de la transición de profundidad entre fotogramas (1,2 por defecto; 0 conserva el detalle más fino) |
-| `--blend-smoothing SIGMA` | Solo `openfocus_a` / `openfocus_c`: sigma gaussiana del mapa de pesos por fotograma (2,0 para A y 3,0 para C por defecto; 0 conserva la elección por píxel más nítida) |
+| `--kernel, -k` | Tamaño de núcleo (se fuerza a impar); controla la escala de respuesta de enfoque de `openfocus_a` y `openfocus_b`; C no tiene radio |
+| `--depth-smoothing VALUE` | Solo `openfocus_b`: intensidad del suavizado de la transición de profundidad (1,2 por defecto) |
+| `--blend-smoothing VALUE` | Solo `openfocus_a` / `openfocus_c`: intensidad del suavizado de transición (2,0 para A y 3,0 para C por defecto) |
 | `--threads, -t` | Límite de hilos; `0` = automático (por defecto), los valores positivos limitan la concurrencia |
 | `--resource-preference` | Modo de recursos: `balanced` (por defecto), `responsive` o `maximum` |
 | `--batch-size` | Límite de lote de mosaicos de IA (2 por defecto); actualmente un mosaico por llamada |

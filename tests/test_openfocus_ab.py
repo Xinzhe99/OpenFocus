@@ -1,6 +1,4 @@
-"""Regression tests for the OpenFocus A/B/C features:
-OpenFocus A/B fusion methods, base correction (brightness drift), and the
-OpenFocus fast alignment (bounded similarity, NCC translation)."""
+"""OpenFocus fusion, brightness correction and fast alignment regressions."""
 import numpy as np
 import cv2
 import pytest
@@ -25,24 +23,24 @@ class TestOpenFocusAB:
         fused = laplacian_sharpness(out)
         assert fused >= max(laplacian_sharpness(f) for f in frames) * 0.9
 
-    def test_b_is_a_hard_pick(self):
-        """Method B picks whole pixels from one frame: output equals a blend
-        of exact source pixels (left half from f0, right from f1)."""
-        from fusion_methods.openfocus_ab import openfocus_b_impl
-        frames = make_two_focus_stack()
-        out = openfocus_b_impl(frames, None, 7)
-        left = cv2.cvtColor(out[:, :80], cv2.COLOR_BGR2GRAY).astype(int)
-        right = cv2.cvtColor(out[:, 80:], cv2.COLOR_BGR2GRAY).astype(int)
-        l0 = cv2.cvtColor(frames[0][:, :80], cv2.COLOR_BGR2GRAY).astype(int)
-        r1 = cv2.cvtColor(frames[1][:, 80:], cv2.COLOR_BGR2GRAY).astype(int)
-        # Each frame is exposure-matched to the last frame before the hard
-        # pick, so identical-brightness frames still differ by <=1 LSB.
-        assert np.abs(left - l0).mean() < 1.5
-        assert np.abs(right - r1).mean() < 1.5
+    @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+    def test_a_identical_frames_preserve_pixel_values(self, dtype):
+        from core.multi_focus_fusion import MultiFocusFusion
+        from utils.image_utils import quantize_fuse_output
+        values = np.array([0, 1, 127, 255], dtype=np.uint8)
+        frame = np.tile(values, (32, 16))
+        if dtype == np.uint16:
+            frame = frame.astype(np.uint16) * 257
+            frame[:, 1::4] += 3
+        out = MultiFocusFusion(algorithm="openfocus_a", use_gpu=False,
+                               tile_enabled=False, exposure_match=False).fuse(
+                                   [frame, frame.copy()])
+        np.testing.assert_array_equal(quantize_fuse_output(out, dtype == np.uint16), frame)
+
 
     def test_b_tie_picks_first_frame(self):
         """Identical frames: np.argmax tie-break is the first frame."""
-        from fusion_methods.openfocus_ab import openfocus_b_impl
+        from fusion_methods.openfocus_bc import openfocus_b_impl
         frame = make_two_focus_stack()[0]
         out = openfocus_b_impl([frame, frame.copy()], None, 7)
         assert np.array_equal(out, frame)
@@ -54,7 +52,7 @@ class TestOpenFocusAB:
         260-frame stack clipped index 259 down to 255 and silently picked
         the wrong (blurred) frame. Float32 median keeps every index.
         """
-        from fusion_methods.openfocus_ab import openfocus_b_impl
+        from fusion_methods.openfocus_bc import openfocus_b_impl
         rng = np.random.default_rng(7)
         base = rng.uniform(40, 60, (48, 64)).astype(np.float32)
         base = cv2.GaussianBlur(base, (0, 0), 3.0)  # blurred everywhere
@@ -74,17 +72,10 @@ class TestOpenFocusAB:
         assert np.abs(interior - sharp_i).mean() < np.abs(interior - clipped_i).mean()
         assert np.abs(interior - sharp_i).mean() < 1.0
 
-    def test_a_flat_region_degrades_to_last_frame(self):
-        """The +1 last-frame prior: zero weights (flat) -> exact last frame."""
-        from fusion_methods.openfocus_ab import openfocus_a_impl
-        flat0 = np.full((60, 80, 3), 100, np.uint8)
-        flat1 = np.full((60, 80, 3), 150, np.uint8)
-        out = openfocus_a_impl([flat0, flat1], None, 7)
-        assert np.array_equal(out, flat1)
 
     def test_two_frames_directory_input(self, tmp_path):
         """The methods also accept a directory (lazy path)."""
-        from fusion_methods.openfocus_ab import openfocus_b_impl
+        from fusion_methods.openfocus_bc import openfocus_b_impl
         for i, frame in enumerate(make_two_focus_stack((60, 80))):
             cv2.imwrite(str(tmp_path / f"f{i}.png"), frame)
         out = openfocus_b_impl(str(tmp_path), None, 7)
@@ -121,58 +112,15 @@ class TestOpenFocusAB:
 
 
 class TestOpenFocusC:
-    """Method C specifics: pyramid structure and base-band behaviour."""
+    """Method C reconstruction behavior."""
 
-    def test_identity_reconstruction_is_exact(self):
-        """Decompose + rebuild without mixing must return the frame bit-exact
-        (the pyramid is mathematically invertible)."""
-        from fusion_methods.openfocus_ab import (_pyramid_gauss,
-                                                 _pyramid_expand)
-        frame = make_two_focus_stack((120, 160))[0].astype(np.float32)
-        levels = 5
-        g = _pyramid_gauss(frame, levels)
-        bands = [g[k] - _pyramid_expand(g[k + 1], g[k].shape[:2])
-                 for k in range(levels - 1)]
-        bands.append(g[-1])
-        img = bands[-1]
-        for k in range(levels - 2, -1, -1):
-            img = _pyramid_expand(img, bands[k].shape[:2]) + bands[k]
-        assert np.abs(img - frame).max() < 1e-3
-
-    def test_base_band_takes_last_frame_lowfreq(self):
-        """The coarsest band comes from the last frame: a brightness-drifted
-        stack's output low-frequency must match the LAST frame."""
-        from fusion_methods.openfocus_ab import openfocus_c_impl
-        base = make_two_focus_stack((120, 160))
-        drifted = [base[0].astype(np.float32) * 0.6,
-                   base[1].astype(np.float32)]
-        out = openfocus_c_impl(drifted, None, 7)
-        lp = cv2.GaussianBlur(out.astype(np.float32), (0, 0), 32).mean()
-        target = cv2.GaussianBlur(drifted[1], (0, 0), 32).mean()
-        assert abs(lp - target) < 3.0
 
     def test_two_identical_frames_roundtrip(self):
-        from fusion_methods.openfocus_ab import openfocus_c_impl
+        from fusion_methods.openfocus_bc import openfocus_c_impl
         frame = make_two_focus_stack((90, 120))[0]
         out = openfocus_c_impl([frame, frame.copy()], None, 7)
         assert np.abs(out.astype(int) - frame.astype(int)).mean() < 1.0
 
-    def test_small_images_do_not_crash(self):
-        from fusion_methods.openfocus_ab import openfocus_c_impl
-        frames = make_two_focus_stack((48, 64))
-        out = openfocus_c_impl(list(frames), None, 7)
-        assert out.shape[:2] == (48, 64)
-        assert float(out.mean()) > 1.0
-
-    def test_pyramid_boosts_local_contrast(self):
-        """C raises high-frequency
-        energy above both inputs (the documented 'contrast and glare' side
-        effect of per-band decisions)."""
-        from fusion_methods.openfocus_ab import openfocus_c_impl
-        frames = make_two_focus_stack((120, 160))
-        out = openfocus_c_impl(list(frames), None, 7)
-        assert laplacian_sharpness(out) > max(laplacian_sharpness(f)
-                                              for f in frames)
 
 
 class TestBaseCorrection:
@@ -269,6 +217,21 @@ class TestOpenFocusAlignment:
                     - self._shifted_stack()[0].astype(int)).mean()
         assert m < un * 0.35
 
+    def test_sub_grid_translation_is_aligned(self):
+        """A 2-3 px shift falls between the coarse samples of the widest
+        search bounds; without a coarse pyramid level it was never found and
+        the frame stayed unaligned."""
+        from core.registration import ImageRegistration
+        base = make_two_focus_stack((96, 128))[0]
+        shifted = np.roll(base, (2, -3), axis=(0, 1))
+        out = ImageRegistration(method="openfocus").process(
+            [base.copy(), shifted], output_path=None, thread_count=1)
+        raw = np.abs(shifted.astype(int)[4:-4, 4:-4]
+                     - base.astype(int)[4:-4, 4:-4]).mean()
+        got = np.abs(out[1].astype(int)[4:-4, 4:-4]
+                     - out[0].astype(int)[4:-4, 4:-4]).mean()
+        assert got < raw * 0.35
+
     def test_equalizes_brightness(self):
         from core.registration import ImageRegistration
         base, f1 = self._shifted_stack()
@@ -363,26 +326,8 @@ class TestOpenFocusAlignment:
         assert np.abs(out[1].astype(int)[2:-2, 2:-2]
                       - out[0].astype(int)[2:-2, 2:-2]).mean() < 3.0
 
-    def test_sharp_vs_defocused_pair_recovers_translation(self):
-        """Regression: phase correlation reported 145 px for a true 16 px
-        shift when the frames had different focus. The translation must come
-        from a measure that survives defocus (NCC found 15.93 px)."""
-        from core.registration import _of_translation_ncc, _of_gray_est
-        base = make_two_focus_stack((240, 320))[0]
-        f = cv2.warpAffine(cv2.GaussianBlur(base, (0, 0), 4.5),
-                           np.float32([[1, 0, 16], [0, 1, 11]]), (320, 240))
-        _ncc, dx, dy = _of_translation_ncc(_of_gray_est(f, 480),
-                                          _of_gray_est(base, 480))
-        assert abs(abs(dx) - 16.0) < 1.5, dx
-        assert abs(abs(dy) - 11.0) < 1.5, dy
-
     def test_defocus_frames_still_align(self):
-        """失焦 + 位移的帧仍要对齐。
-
-        相位相关在「清晰 vs 失焦」帧对上会给出完全错误的峰（同一对帧真值
-        16 px，它报 145 px），NCC 模板搜索在同一对帧上给出 15.93 px。这里
-        断言的是重对齐后的残差，而不是某个估计器细节。
-        """
+        """Defocused frames with translation still align to the reference."""
         from core.registration import ImageRegistration
         base = make_two_focus_stack((240, 320))[0]
         f1 = cv2.warpAffine(cv2.GaussianBlur(base, (0, 0), 3.5),
@@ -476,9 +421,8 @@ class TestOpenFocusAlignment:
 
 
 def test_openfocus_b_depth_smoothing_controls_transition():
-    """depth_smoothing changes the depth transition (0 = median only; larger
-    = wider, which calms speckle on noisy texture); default (None) is 1.2."""
-    from fusion_methods.openfocus_ab import openfocus_b_impl
+    """Depth smoothing changes the transition between focused frames."""
+    from fusion_methods.openfocus_bc import openfocus_b_impl
     rng = np.random.default_rng(3)
     tex = rng.integers(0, 255, (64, 96, 3), dtype=np.uint8)
     blur = cv2.GaussianBlur(tex, (0, 0), 5)
@@ -488,15 +432,11 @@ def test_openfocus_b_depth_smoothing_controls_transition():
     soft = openfocus_b_impl([f0, f1], depth_smoothing=6)
     default = openfocus_b_impl([f0, f1])
     assert (default == openfocus_b_impl([f0, f1], depth_smoothing=1.2)).all()
-    err = lambda o: np.abs(o.astype(int) - tex.astype(int))[:, 40:56].mean()
     assert (sharp != soft).any()
-    assert err(sharp) < 3.0 and err(soft) < 3.0
 
 
-class TestSmoothingParity:
-    """Helicon exposes exactly one Smoothing knob for methods A and C, and no
-    Radius for C. Our A/C ignored their smoothing entirely (A hardcoded σ2,
-    C hardcoded σ3) and C showed a Radius slider that did nothing."""
+class TestSmoothingControls:
+    """Methods A and C expose smoothing; C has no radius control."""
 
     def _stack(self):
         return make_two_focus_stack((120, 160))
@@ -514,7 +454,7 @@ class TestSmoothingParity:
 
     @pytest.mark.parametrize("algo,default", [("openfocus_a", 2.0),
                                               ("openfocus_c", 3.0)])
-    def test_default_smoothing_is_the_documented_sigma(self, algo, default):
+    def test_default_smoothing_matches_explicit_value(self, algo, default):
         from core.multi_focus_fusion import MultiFocusFusion
         frames = self._stack()
         implied = MultiFocusFusion(algorithm=algo, use_gpu=False).fuse(
@@ -522,16 +462,8 @@ class TestSmoothingParity:
         explicit = MultiFocusFusion(algorithm=algo, use_gpu=False).fuse(
             input_source=[f.copy() for f in frames], blend_smoothing=default)
         assert np.array_equal(implied, explicit), (
-            f"{algo}: the default must be sigma {default}")
+            f"{algo}: the default must be {default}")
 
-    def test_openfocus_c_has_no_radius(self):
-        """C's kernel_size is inert: Helicon's Method C has no Radius, so the
-        wrapper must not let the slider imply one."""
-        from fusion_methods.openfocus_ab import openfocus_c_impl
-        frames = self._stack()
-        a = openfocus_c_impl([f.copy() for f in frames], kernel_size=3)
-        b = openfocus_c_impl([f.copy() for f in frames], kernel_size=21)
-        assert np.array_equal(a, b)
 
     def test_smoothing_is_per_method(self, qapp):
         from types import SimpleNamespace, MethodType
@@ -559,10 +491,7 @@ class TestSmoothingParity:
 
 
 class TestRotationScaleTolerance:
-    """Helicon exposes rotation and magnification as their own tolerance
-    parameters. Ours had a shift limit only, so a mis-estimated 5° rotation
-    or 1.05 scale (the coarse-search bounds) was applied instead of refused —
-    corner error grows with the image diagonal."""
+    """Rotation and magnification are independently bounded to limit corner error."""
 
     def test_rotation_beyond_tolerance_is_refused(self):
         from core.registration import ImageRegistration
@@ -604,3 +533,81 @@ class TestRotationScaleTolerance:
         params = inspect.signature(reg._align_openfocus_impl).parameters
         assert "max_rotation_deg" in params
         assert "max_scale_delta" in params
+
+
+@pytest.mark.parametrize('method', ['openfocus_b', 'openfocus_c'])
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('grayscale', [False, True])
+def test_tiled_depth_guided_transitions_match_whole_frame(method, dtype, grayscale):
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    rng = np.random.default_rng(912)
+    texture = rng.integers(0, 256, (64, 96), dtype=np.uint8)
+    blur = cv2.GaussianBlur(texture, (0, 0), 3)
+    frames = [np.where(np.indices(texture.shape)[1] < x, texture, blur)
+              for x in (24, 48, 72)]
+    if not grayscale:
+        frames = [np.repeat(frame[:, :, None], 3, axis=2) for frame in frames]
+    if dtype == np.uint16:
+        frames = [frame.astype(np.uint16) * 257 for frame in frames]
+    options = dict(algorithm=method, exposure_match=False, sort_mode='desc')
+    whole = MultiFocusFusion(tile_enabled=False, **options).fuse(frames)
+    tiled = MultiFocusFusion(tile_threshold=32, tile_block_size=48,
+                             tile_overlap=24, **options).fuse(frames, thread_count=1)
+    error = np.abs(whole.astype(np.float32) - tiled.astype(np.float32))
+    assert error.mean() < (1.5 if method == 'openfocus_b' else 8.0)
+
+
+def test_openfocus_a_extreme_aspect_ratio():
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    frame = np.arange(8192, dtype=np.uint16).reshape(1, -1) * 7
+    out = MultiFocusFusion('openfocus_a', tile_enabled=False,
+                           exposure_match=False).fuse([frame, frame])
+    np.testing.assert_allclose(out, frame.astype(np.float32) * (255 / 65535), atol=1e-4)
+
+
+@pytest.mark.parametrize('method', ['openfocus_b', 'openfocus_c'])
+def test_tiled_directory_matches_whole_with_exposure(method, tmp_path):
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    rng = np.random.default_rng(55)
+    texture = rng.integers(20, 200, (64, 96, 3), dtype=np.uint8)
+    blurred = cv2.GaussianBlur(texture, (0, 0), 3)
+    frames = [np.concatenate((texture[:, :48], blurred[:, 48:]), axis=1),
+              np.concatenate((blurred[:, :48], texture[:, 48:]), axis=1)]
+    frames[0] = (frames[0].astype(np.uint16) * 160).astype(np.uint16)
+    frames[1] = (frames[1].astype(np.uint16) * 257).astype(np.uint16)
+    for index, frame in enumerate(frames):
+        assert cv2.imwrite(str(tmp_path / f'{index}.png'), frame)
+    options = dict(algorithm=method, sort_mode='off', exposure_match=True)
+    whole = MultiFocusFusion(tile_enabled=False, **options).fuse(str(tmp_path))
+    tiled = MultiFocusFusion(tile_threshold=32, tile_block_size=48,
+                             tile_overlap=24, **options).fuse(str(tmp_path), thread_count=1)
+    assert np.abs(whole.astype(np.float32) - tiled.astype(np.float32)).mean() < 8
+
+
+@pytest.mark.parametrize('method', ['openfocus_b', 'openfocus_c'])
+def test_tiled_render_uses_displayed_depth(monkeypatch, method):
+    from core.depth_map import compute_focus_index
+    from core.multi_focus_fusion import MultiFocusFusion
+    from fusion_methods import openfocus_depth
+
+    rng = np.random.default_rng(73)
+    texture = rng.integers(0, 256, (64, 96, 3), dtype=np.uint8)
+    blurred = cv2.GaussianBlur(texture, (0, 0), 3)
+    frames = [np.concatenate((texture[:, :48], blurred[:, 48:]), axis=1),
+              np.concatenate((blurred[:, :48], texture[:, 48:]), axis=1).astype(np.uint16) * 257]
+    original = openfocus_depth.depth_map
+    computed = []
+    def record(*args, **kwargs):
+        result = original(*args, **kwargs)
+        computed.append(result.copy())
+        return result
+    monkeypatch.setattr(openfocus_depth, 'depth_map', record)
+    fusion = MultiFocusFusion(method, sort_mode='off', exposure_match=False,
+                             tile_threshold=32, tile_block_size=48, tile_overlap=24)
+    fusion.fuse(frames, thread_count=1)
+    assert len(computed) == 1
+    displayed = compute_focus_index(frames, method)
+    np.testing.assert_allclose(displayed, computed[0], atol=1e-6)

@@ -210,8 +210,8 @@ door de huidige stapel. Berekening, textuur en export blijven aan dezelfde brono
 Alle zes methoden vereisen een expliciete klik op **Berekenen**. Openen of wijzigen van
 maat, bron, registratie of parameters start geen berekening. De parametereditor staat
 direct onder de maatkeuze: DCT-mediaankernel en GFG-basiskernel gebruiken oneven waarden
-1–51 (standaard 7); B gebruikt een variantievenster en C een venster voor banddoorlaatenergie,
-beide oneven 1–21 px (standaard 11). DTCWT-decompositieniveaus zijn hier te bewerken
+1–51 (standaard 7). B gebruikt de straal en dieptevervaging (standaard 1,2), C de
+mengvervaging (standaard 3,0). DTCWT-decompositieniveaus zijn hier te bewerken
 als lokaal concept, geïnitialiseerd met de bronparameters. StackMFF V3 toont een eigen
 AI-uitvoermodus (standaard zachte menging, of harde selectie) en uitleg in plaats van een
 getalsveld: zachte menging schat een kansgewogen continue framepositie, harde selectie
@@ -398,7 +398,7 @@ perspectiefveranderingen vertonen.
 
 - Begrensde similariteitsuitlijning (translatie + rotatie + schaal),
   met helderheidsvereffening per frame en automatisch bijsnijden
-- Minder dan een seconde per frame — veel sneller dan ECC of Homografie
+- De zoekopdracht beoordeelt bemonsterde beeldverschillen; de transformatie gebruikt Lanczos
 - Frames die meer dan **8% van de beeldgrootte verschuiven, blijven onuitgelijnd**
   in plaats van half gecorrigeerd. Overschrijf dit met de CLI-optie
   `--align-shift-limit`
@@ -515,35 +515,22 @@ Elk heeft andere eigenschappen en past bij andere soorten afbeeldingen.
 
 ### OpenFocus A / B / C
 
-- **Algoritme**: variantiegewogen gemiddelde, dieptekaartkeuze op variantie en
-  Laplaciaanse-piramidefusie
-- **OpenFocus A**: variantiegewogen gemiddelde met voorkeur voor het laatste
-  frame — snel en kleurvast bij korte stapels
-- **OpenFocus B**: dieptekaartkeuze op variantie — kiest per pixel het scherpste
-  frame; het best op gladde oppervlakken en in microscopie
-- **OpenFocus C**: Laplaciaanse piramide per band — natuurlijke uitstraling bij
-  getextureerde onderwerpen, versterkt lokaal contrast
-- **Parameters**: A en B gebruiken een variantievenster (kernelschuif); C heeft
-  geen straal. Alle drie hebben ze een vervagingssigma.
+- **OpenFocus A**: selecteert scherpe pixels met een focusrespons op meerdere schalen.
+- **OpenFocus B**: mengt naburige frames op basis van een vervaagde dieptekaart.
+- **OpenFocus C**: reconstrueert banden op meerdere schalen op basis van een vervaagde dieptekaart.
+- **Parameters**: de kernel bepaalt bij A en B de schaal van de focusrespons; C heeft geen straal.
 
-**Vervaging**: één spinbox onder de kernelschuif, met de betekenis van de
-gekozen methode (bereik 0–8, stap 0,2):
+**Vervaging** (0–8, stap 0,2) werkt verschillend per methode:
 
-| Methode | Label | Standaard | Effect |
+| Methode | Parameter | Standaard | Effect |
 |---|---|---|---|
-| OpenFocus A | Mengvervaging (σ) | 2,0 | Gaussische vervaging van de gewichtsmap per frame — hoe breed de scherpe gebieden van naburige frames worden gemengd |
-| OpenFocus B | Dieptevervaging (σ) | 1,2 | Gaussische vervaging van de dieptekaart — breedte van de overgang tussen frames |
-| OpenFocus C | Mengvervaging (σ) | 3,0 | Gaussische vervaging van de gewichtsmap van elke piramideband |
+| OpenFocus A | Mengvervaging | 2,0 | Vervaagt de focusresponskaart vóór de selectie van pixels |
+| OpenFocus B | Dieptevervaging | 1,2 | Bepaalt de vervaging van de dieptekaart en de overgangen tussen frames |
+| OpenFocus C | Mengvervaging | 3,0 | Bepaalt de dieptekaart voor de bandreconstructie |
 
-0 houdt de scherpste keuze per pixel (fijnste detail, maar spikkels bij ruisige
-stapels); grotere waarden verzachten overgangen en halo's. Elke methode
-onthoudt zijn eigen waarde tussen sessies, en batchverwerking gebruikt dezelfde
-regel.
+Elke methode onthoudt zijn waarde tussen sessies; batchverwerking gebruikt die ook.
 
-C heeft geen straal: de methode C van Helicon biedt alleen Vervaging, dus de
-kernelschuif wordt bij C verborgen in plaats van stilzwijgend niets te doen.
-
-CLI: `--depth-smoothing SIGMA` (B) en `--blend-smoothing SIGMA` (A, C).
+CLI: `--depth-smoothing VALUE` (B) en `--blend-smoothing VALUE` (A, C).
 
 **Helderheidsopties gelden per methode.** *Belichting afstemmen vóór fusie* en
 *Helderheidsdrift verwijderen* worden per fusiemethode apart onthouden, omdat
@@ -578,9 +565,9 @@ exporteren.
 | DTCWT | Gemiddeld | Zeer goed | Complexe scènes |
 | GFG-FGF | Snel | Goed | Focusgebieden |
 | AI-fusie (StackMFF V3) | Langzaam (GPU) | Uitstekend | Beste kwaliteit |
-| OpenFocus A | Zeer snel | Zeer goed | Korte stapels, kleurstabiliteit |
-| OpenFocus B | Zeer snel | Zeer goed | Gladde oppervlakken, microscopie |
-| OpenFocus C | Snel | Zeer goed | Getextureerde onderwerpen, natuurlijke uitstraling |
+| OpenFocus A | — | — | Selectie op focus |
+| OpenFocus B | — | — | Mengeling op basis van diepte |
+| OpenFocus C | — | — | Bandreconstructie op basis van diepte |
 
 ### Snel voorbeeld (concept-render)
 
@@ -911,9 +898,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--base-frame` | Optionele stap na de fusie: stem de laagfrequente delen van de uitvoer af op het `last`/`first` frame (`none` is standaard) |
 | `--sort` | Framevolgorde voor `openfocus_a/b/c`: `asc` (standaard, bestandsvolgorde), `desc` (keert een veer-naar-dichtbij-scan om), `off` |
 | `--dust-map WHITE` | Flat-field-correctie (stofkaart) op basis van een onscherpe witveldopname |
-| `--kernel, -k` | Kernelgrootte (oneven gemaakt; voor de openfocus-familie bepaalt deze de straal van het variantievenster) |
-| `--depth-smoothing SIGMA` | Alleen `openfocus_b`: Gaussische sigma van de diepteovergang tussen frames (standaard 1,2; 0 behoudt het fijnste detail) |
-| `--blend-smoothing SIGMA` | Alleen `openfocus_a` / `openfocus_c`: Gaussische sigma van de gewichtsmap per frame (standaard 2,0 voor A, 3,0 voor C; 0 behoudt de scherpste keuze per pixel) |
+| `--kernel, -k` | Kernelgrootte (oneven; bepaalt voor OpenFocus A/B de schaal van de focusrespons, heeft geen effect op C) |
+| `--depth-smoothing VALUE` | Alleen `openfocus_b`: sterkte van de dieptevervaging (standaard 1,2) |
+| `--blend-smoothing VALUE` | Alleen `openfocus_a` / `openfocus_c`: sterkte van de mengvervaging (standaard 2,0 voor A, 3,0 voor C) |
 | `--threads, -t` | Threadlimiet; `0` = automatisch (standaard), positieve waarden beperken de gelijktijdigheid |
 | `--resource-preference` | Resourcemodus: `balanced` (standaard), `responsive` of `maximum` |
 | `--batch-size` | Batchlimiet voor AI-tegels (standaard 2); momenteel één tegel per aanroep |

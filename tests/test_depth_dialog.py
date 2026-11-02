@@ -194,7 +194,7 @@ def test_depth_compute_click_publishes_only_one_current_result(depth_dialog, mon
 
 
 def _measurement_case(method):
-    """Analytic scale fixtures; each returns fixed decision/control regions."""
+    """Analytic kernel fixtures for the classical measures."""
     h = w = 128
     yy, xx = np.indices((h, w))
     checker = ((xx + yy) % 2 * 2 - 1)
@@ -204,28 +204,17 @@ def _measurement_case(method):
         second = first.copy()
         second[48:72, 48:72] = (128 + 70 * checker[48:72, 48:72]).astype(np.uint8)
         values, region, expected = (1, 7), np.s_[56:64, 56:64], (1, 0)
-    elif method == "openfocus_b":
-        second = (128 + 50 * checker).astype(np.uint8)
-        values, region, expected = (1, 11), np.s_[32:96, 32:96], (0, 1)
-    elif method == "openfocus_c":
-        first = (128 + checker).astype(np.uint8)
-        second = np.where(xx < 64, 48, 208).astype(np.uint8)
-        # Four pixels from the step: local high-pass is weaker than the
-        # checkerboard; a 21px energy window includes the strong step.
-        values, region, expected = (1, 21), np.s_[32:96, 59:60], (0, 1)
     elif method == "gfgfgf":
         # A one-code-value step stays below the GFG threshold. k=1 has no
         # residual; k=31 exposes the low-contrast boundary through IR.
         second = np.where(xx < 64, 128, 129).astype(np.uint8)
         values, region, expected = (1, 31), np.s_[40:88, 58:62], (0, 1)
     else:
-        first = (128 + 8 * checker).astype(np.uint8)
-        second = np.rint(128 + 60 * np.sin(2 * np.pi * xx / 64)).astype(np.uint8)
-        values, region, expected = (1, 4), np.s_[32:96, 32:96], (0, 1)
+        raise ValueError(method)
     return [cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) for image in (first, second)], values, region, expected
 
 
-@pytest.mark.parametrize("method", ["dct", "gfgfgf", "openfocus_b", "openfocus_c"])
+@pytest.mark.parametrize("method", ["dct", "gfgfgf"])
 def test_depth_parameter_edits_change_measurement(depth_dialog, qapp, method):
     """DM-A03: actual backend decisions in a predefined image region."""
     frames, values, region, expected = _measurement_case(method)
@@ -236,9 +225,44 @@ def test_depth_parameter_edits_change_measurement(depth_dialog, qapp, method):
         _click_and_finish(qapp, dialog)
         decisions = dialog._index01[region]
         assert np.mean(decisions == winning_frame) > 0.9, (method, value, decisions.mean())
-        if method in ("dct", "gfgfgf"):
-            # Remote flat background is unaffected by the local feature.
-            assert np.mean(dialog._index01[16:24, 16:24] == 0) > 0.95
+        # Remote flat background is unaffected by the local feature.
+        assert np.mean(dialog._index01[16:24, 16:24] == 0) > 0.95
+
+
+def _openfocus_transition_frames():
+    """Sharp checkerboard halves in opposite frames, so the depth map has
+    exactly one transition band between them."""
+    h = w = 128
+    yy, xx = np.indices((h, w))
+    checker = ((xx + yy) % 2 * 2 - 1)
+    sharp = (128 + 50 * checker).astype(np.uint8)
+    flat = np.full((h, w), 128, np.uint8)
+    first = sharp.copy()
+    first[:, 64:] = flat[:, 64:]
+    second = sharp.copy()
+    second[:, :64] = flat[:, :64]
+    return [cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) for image in (first, second)]
+
+
+@pytest.mark.parametrize("method,control", [
+    ("openfocus_b", "depth_smoothing"),
+    ("openfocus_c", "blend_smoothing"),
+])
+def test_openfocus_depth_smoothing_edit_changes_measurement(
+        depth_dialog, qapp, method, control):
+    """B and C expose their fusion smoothing to the depth dialog; editing it
+    must reach the shared estimator and soften the decision boundary."""
+    dialog, _ = depth_dialog(method, _openfocus_transition_frames())
+    editor = dialog.fusion_parameter_panel.editors[control]
+    editor.setValue(0)
+    _click_and_finish(qapp, dialog)
+    unsmoothed = dialog._index01.copy()
+    assert not np.any((unsmoothed > 1e-6) & (unsmoothed < 1 - 1e-6))
+    editor.setValue(8)
+    _click_and_finish(qapp, dialog)
+    smoothed = dialog._index01
+    assert np.any((smoothed > 1e-6) & (smoothed < 1 - 1e-6))
+    assert not np.array_equal(unsmoothed, smoothed)
 
 
 def test_depth_parameter_drafts_are_local_and_not_overridden(depth_dialog, monkeypatch, qapp):
@@ -247,8 +271,9 @@ def test_depth_parameter_drafts_are_local_and_not_overridden(depth_dialog, monke
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
     from copy import deepcopy
     from core.algorithms import resolve_fusion_parameters
-    drafts = {'dct': {'kernel_size': 9}, 'openfocus_b': {'kernel_size': 15},
-              'openfocus_c': {'kernel_size': 15}, 'dtcwt': {'N': 5}}
+    drafts = {'dct': {'kernel_size': 9},
+              'openfocus_b': {'kernel_size': 15, 'depth_smoothing': 2.0},
+              'openfocus_c': {'blend_smoothing': 4.0}, 'dtcwt': {'N': 5}}
     before = deepcopy(drafts)
     def parameters_for(method, depth=False):
         return resolve_fusion_parameters(method, drafts.get(method), depth=depth)
@@ -257,25 +282,37 @@ def test_depth_parameter_drafts_are_local_and_not_overridden(depth_dialog, monke
     context = _output_context(frames, output, parameters={"kernel_size": 19})
     dialog, window = depth_dialog("dct", frames, output, context,
         fusion_parameters_for=parameters_for)
-    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 19
-    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(23)
+    editors = dialog.fusion_parameter_panel.editors
+    assert editors['kernel_size'].value() == 19
+    editors['kernel_size'].setValue(23)
     _select(dialog.method_combo, "openfocus_b")
-    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 15
-    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(3)
+    editors = dialog.fusion_parameter_panel.editors
+    assert editors['kernel_size'].value() == 15
+    assert editors['depth_smoothing'].value() == pytest.approx(2.0)
+    editors['kernel_size'].setValue(3)
+    editors['depth_smoothing'].setValue(6.0)
     _select(dialog.method_combo, "openfocus_c")
-    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 15
-    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(5)
+    editors = dialog.fusion_parameter_panel.editors
+    # C exposes only its fusion smoothing to the depth map.
+    assert set(editors) == {'blend_smoothing'}
+    assert editors['blend_smoothing'].value() == pytest.approx(4.0)
+    editors['blend_smoothing'].setValue(5.0)
     _select(dialog.method_combo, "openfocus_b")
-    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 3
+    editors = dialog.fusion_parameter_panel.editors
+    assert editors['kernel_size'].value() == 3
+    assert editors['depth_smoothing'].value() == pytest.approx(6.0)
     _select(dialog.method_combo, "dtcwt")
     assert 'mode' not in dialog.fusion_parameter_panel.editors
     _select(dialog.method_combo, "dct")
-    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 23
+    editors = dialog.fusion_parameter_panel.editors
+    assert editors['kernel_size'].value() == 23
     _select(dialog.source_combo, "current")
-    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 9
-    dialog.fusion_parameter_panel.editors['kernel_size'].setValue(11)
+    editors = dialog.fusion_parameter_panel.editors
+    assert editors['kernel_size'].value() == 9
+    editors['kernel_size'].setValue(11)
     _select(dialog.source_combo, "output")
-    assert dialog.fusion_parameter_panel.editors['kernel_size'].value() == 23
+    editors = dialog.fusion_parameter_panel.editors
+    assert editors['kernel_size'].value() == 23
     _click_and_finish(qapp, dialog)
     assert dialog._map_parameters["kernel_size"] == 23
     assert context.parameters == {"kernel_size": 19}

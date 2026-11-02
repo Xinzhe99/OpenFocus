@@ -5,7 +5,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.74.0] - 2026-11-02
+
 ### Changed
+- **Local agent control starts with the desktop app.** Agents can use
+  `openfocus ctl` immediately against the running window through the
+  authenticated per-user local channel.
+- **Agent skill location.** The control skill now lives at
+  `skills/openfocus-control/SKILL.md`, with documentation links updated.
+- **OpenFocus A/B/C and fast alignment use updated focus-stack models.** A
+  selects pixels using a multiscale focus response; B blends neighboring
+  frames using a smoothed depth map; C reconstructs a depth-guided pyramid.
+  The depth-map dialog uses the same B/C depth estimation and smoothing as
+  fusion. Fast alignment uses a bounded similarity search and sampled
+  difference score for translation, rotation and scale. B/C can take
+  substantially longer than the previous implementations on large frames.
+  See `docs/FUSION_METHODS.md` for method descriptions and observations.
 - **One locale package instead of eleven root modules.** `locales.py`,
   `locales_extra.py` and the eight `locales_<code>.py` packs became the
   `locales/` package (`__init__.py`, `en.py`, `zh.py`, `_extra.py`, one
@@ -22,6 +37,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `_chk.py`, a leftover window-luminance probe script.
 
 ### Fixed
+- **OpenFocus B/C depth and tiled fusion.** Depth estimation now preserves
+  frame indices across long stacks, and all tiles share the same full-image
+  depth map. Method C reconstructs its blended pyramid from coarse to fine.
+  Resized B/C renders use the whole-frame path so depth coordinates match.
+- **OpenFocus A pixel fidelity and extreme image shapes.** Identical 8-bit
+  frames retain their original pixel values, and pyramid expansion stays
+  bounded for very long, narrow images.
+- **Fast alignment input handling.** Underdetermined one-dimensional gradients
+  no longer produce arbitrary shifts; EXIF orientation is respected for
+  folder inputs and brightness adjustment preserves alpha channels.
+- **Packaged CLI output.** Windows and macOS desktop builds recover inherited
+  output streams for CLI commands. Release builds exercise CLI-driven 16-bit
+  loading, rendering and export before publication.
+
+- **Fast alignment geometry and input depth.** Residual translation is now
+  applied after rotation/scale, and the common crop uses the same forward
+  transforms as the warp. Grayscale and 16-bit folder inputs retain their
+  channels and depth. Cached alignment results are invalidated so older
+  geometry is not reused; previous cache entries still count toward the disk
+  quota and can be evicted.
+- The synthetic benchmark draws text through an 8-bit mask, restoring
+  compatibility with OpenCV 5.
 - **Control-channel follow-ups from the PR review (issue #8).** Loads and
   renders now carry a generation (`load_id`/`render_id`) that every entry
   point advances, so `--wait` can no longer accept a previous stack or a
@@ -83,8 +120,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   active window, focused widget and view state, and duplicate widget paths are
   disambiguated (`panelRoot[0]` / `panelRoot[1]`). `ui.click --async` prevents
   a modal-opening button from blocking the command response.
-- **Agent skill and closed-loop smoke test.** `.claude/skills/openfocus-control/
-  SKILL.md` documents the level model, command recipes, dialog/file-picker
+- **Agent skill and closed-loop smoke test.** `skills/openfocus-control/SKILL.md`
+  documents the level model, command recipes, dialog/file-picker
   handling, gestures and safety rules. `tools/agent_gui_smoke.py` drives a live
   window through load, render, export, depth, comparison, retouch apply, wipe,
   labels/color, project round-trip, batch and a menu action with a file picker.
@@ -1136,7 +1173,7 @@ Zoom, batch-dialog theming, brightness options and dust-map correctness.
 
 ## [v1.59] — 2026-10-20
 
-Startup visibility, OpenFocus parameter parity and a UI pass.
+Startup visibility, OpenFocus parameter controls and a UI pass.
 
 ### Added
 - **A startup update banner.** The daily check was deliberately silent, so a
@@ -1148,20 +1185,16 @@ Startup visibility, OpenFocus parameter parity and a UI pass.
   it. Four languages.
 - **Smoothing for OpenFocus A and C** (`Blend smoothing (σ)`, CLI
   `--blend-smoothing`). Both methods had a hard-coded sigma — A at 2.0, C at
-  3.0 — with no way to change it, while Helicon exposes Smoothing as the
-  primary control for its methods A and C. Each method now remembers its own
-  value.
+  3.0 — with no way to change it. Each method now remembers its own value.
 - **Rotation and magnification tolerance** for OpenFocus alignment
   (`_OF_MAX_ROTATION_DEG`, `_OF_MAX_SCALE_DELTA`). Shift had a limit but
   rotation and scale did not, so a mis-estimated 5° rotation (the coarse
   search bound) was applied instead of refused.
-- `docs/ALGORITHM_PARITY.md` — a behavioural comparison with Helicon Focus,
-  including the gaps that are still open.
+- `docs/FUSION_METHODS.md` — descriptions of the fusion methods and alignment.
 
 ### Fixed
 - **OpenFocus C showed a radius slider that did nothing.** C has no spatial
-  window (Helicon's Method C has no Radius), and the wrapper passed the value
-  to an implementation that ignored it.
+  window, and the wrapper passed the value to an implementation that ignored it.
 - **The AI method showed "Kernel: 11"** and a slider whose value had no
   effect. The kernel row now appears only for methods that use it.
 - **Fusion and registration dropdowns were truncated** to "OpenFocus -" at the
@@ -1214,7 +1247,7 @@ frames with different focus — the defining case for focus stacking.
 
 ## [v1.57] — 2026-10-20
 
-A parity and exposure-handling release for the OpenFocus fusion family.
+An exposure-handling release for the OpenFocus fusion family.
 
 ### Added
 - **Exposure matching before fusion** (`Match exposure before fusion`,
@@ -1223,11 +1256,9 @@ A parity and exposure-handling release for the OpenFocus fusion family.
   every fusion method. Gains are computed on the whole stack before tiling,
   so tiled output stays seamless, and the OpenFocus aligner now uses the
   same last-frame brightness reference when this option is on.
-- **A/B/C parity work**: the OpenFocus A/B/C methods were brought
-  substantially in line with the A/B/C methods in Helicon Focus — per-frame
-  exposure calibration, `base_frame` as an independent optional post-step,
-  method-specific depth-map kernel defaults, and natural frame ordering for
-  directory input. Behavioral parity only; no code or binaries from that product are included.
+- **A/B/C improvements**: per-frame exposure calibration, `base_frame` as an
+  independent optional post-step, method-specific depth-map kernel defaults,
+  and natural frame ordering for directory input.
 
 ### Changed
 - **One OpenFocus kernel default (11)** across the fusion wrappers, the

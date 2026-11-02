@@ -226,7 +226,7 @@ KI-Modell, Gewichte, HEIC- und Kamera-RAW-Dekodierung stecken in dieser einen In
 <a id="community"></a>
 ## Community & Support
 
-- **Dokumentation** — [Handbuch](./docs/USER_MANUAL_DE.md) (zwölf Sprachen) · [Änderungen](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Algorithmus-Parität](./docs/ALGORITHM_PARITY.md)
+- **Dokumentation** — [Handbuch](./docs/USER_MANUAL_DE.md) (zwölf Sprachen) · [Änderungen](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Fusionsmethoden](../FUSION_METHODS.md)
 - **Zitation** — [CITATION.cff](./CITATION.cff); jede Version wird auf Zenodo archiviert ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — [Issue](https://github.com/Xinzhe99/OpenFocus/issues) für Fehler, Ideen und Algorithmusarbeit
 - **Danksagung** — jedes Fusions-/Registrierungsverfahren behält seine ursprüngliche Forschungslizenz; StackMFF V3 liegt unter [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)

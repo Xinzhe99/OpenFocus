@@ -79,14 +79,14 @@ def request(cmd, args=None, *, timeout=60.0, discovery=None, token=None):
         raise ControlError(
             "not_running",
             f"Could not connect to {discovery['socket']}: {socket.errorString()}",
-            "The GUI may have exited; launch it with `openfocus gui --control`.")
+            "The GUI may have exited; launch it with `openfocus gui`.")
     request_id = f"{os.getpid()}-{time.monotonic_ns()}"
     payload = request_payload(cmd, _resolve_paths(args, cmd),
                               token=token or discovery.get("token"),
                               request_id=request_id)
     try:
-        socket.write(encode(payload))
-        if not socket.waitForBytesWritten(int(timeout * 1000)):
+        if socket.write(encode(payload)) < 0 or (
+                socket.bytesToWrite() and not socket.waitForBytesWritten(int(timeout * 1000))):
             raise ControlError("internal", "Could not send the request")
         buffer = b""
         deadline = time.monotonic() + timeout
@@ -108,7 +108,9 @@ def request(cmd, args=None, *, timeout=60.0, discovery=None, token=None):
                 raise ControlError(
                     "internal", f"Timed out waiting for {cmd}",
                     "Increase --timeout; a modal dialog may be waiting for input.")
-            if not socket.bytesAvailable() and not socket.waitForReadyRead(int(remaining * 1000) + 1):
+            if (not socket.bytesAvailable()
+                    and not socket.waitForReadyRead(int(remaining * 1000) + 1)
+                    and not socket.bytesAvailable()):
                 if socket.state() == QLocalSocket.LocalSocketState.UnconnectedState:
                     raise ControlError("internal", "The GUI closed the connection")
                 continue
@@ -116,7 +118,7 @@ def request(cmd, args=None, *, timeout=60.0, discovery=None, token=None):
             if len(buffer) > MAX_LINE and b"\n" not in buffer:
                 raise ControlError("internal", "Response is too large")
     finally:
-        socket.disconnectFromServer()
+        socket.abort()
 
 
 def require_ok(response):
@@ -169,7 +171,7 @@ def _launch_command(socket_name=None, paths=()):
                 "The pip wheel is headless-only: install the desktop build "
                 "or run from a source checkout.")
         command = [sys.executable, str(entry)]
-    command.append("--control")
+    # Control starts automatically with the desktop application.
     if socket_name:
         command.extend(["--control-socket", socket_name])
     command.extend(os.path.abspath(os.path.expanduser(str(path))) for path in paths)
@@ -177,7 +179,7 @@ def _launch_command(socket_name=None, paths=()):
 
 
 def launch_gui(socket_name=None, timeout=45.0, paths=()):
-    """Start a detached GUI with control enabled and wait for discovery."""
+    """Start a detached GUI and wait for its control discovery file."""
     before = None
     path = discovery_path()
     try:
@@ -201,18 +203,27 @@ def launch_gui(socket_name=None, timeout=45.0, paths=()):
         if process.poll() is not None and process.returncode not in (0, None):
             raise ControlError(
                 "internal", f"OpenFocus exited during startup ({process.returncode})",
-                "Start it manually with `openfocus gui --control` to see the error.")
+                "Start it manually with `openfocus gui` to see the error.")
         try:
             payload = read_discovery()
+            matching = socket_name is None or payload["socket"] == socket_name
             fresh = before is None or path.stat().st_mtime_ns != before
-            if fresh and (socket_name is None or payload["socket"] == socket_name):
+            if matching and fresh:
                 return payload
-        except ControlError:
+            # A second GUI process forwards paths to the existing instance and
+            # exits without rewriting its discovery file.
+            if matching and process.poll() == 0:
+                try:
+                    if require_ok(request("ping", discovery=payload, timeout=2)).get("pong"):
+                        return payload
+                except ControlError:
+                    pass
+        except (ControlError, OSError):
             pass
         time.sleep(0.25)
     raise ControlError(
         "internal", "OpenFocus did not open the control channel in time",
-        "Start it with `openfocus gui --control` and retry.")
+        "Start it with `openfocus gui` and retry.")
 
 class Session:
     """One persistent local connection for a sequence of commands.
@@ -244,7 +255,7 @@ class Session:
                 "not_running",
                 f"Could not connect to {self.discovery['socket']}: "
                 f"{self.socket.errorString()}",
-                "The GUI may have exited; launch it with `openfocus gui --control`.")
+                "The GUI may have exited; launch it with `openfocus gui`.")
         self.buffer = b""
 
     def _ensure_connected(self, timeout):
@@ -262,7 +273,7 @@ class Session:
                 "not_running",
                 f"Could not reconnect to {self.discovery['socket']}: "
                 f"{self.socket.errorString()}",
-                "The GUI may have exited; launch it with `openfocus gui --control`.")
+                "The GUI may have exited; launch it with `openfocus gui`.")
 
     def _reset(self):
         self.buffer = b""
@@ -278,8 +289,8 @@ class Session:
         payload = request_payload(
             cmd, _resolve_paths(args, cmd), token=self.discovery.get("token"),
             request_id=request_id)
-        self.socket.write(encode(payload))
-        if not self.socket.waitForBytesWritten(int(timeout * 1000)):
+        if self.socket.write(encode(payload)) < 0 or (
+                self.socket.bytesToWrite() and not self.socket.waitForBytesWritten(int(timeout * 1000))):
             self._reset()
             raise ControlError("internal", f"Could not send {cmd}")
         deadline = time.monotonic() + timeout
@@ -302,7 +313,9 @@ class Session:
                     "internal", f"Timed out waiting for {cmd}",
                     "Check ui.context; the GUI may be in a modal dialog. "
                     "The socket was reset and the next request reconnects.")
-            if not self.socket.bytesAvailable() and not self.socket.waitForReadyRead(int(remaining * 1000) + 1):
+            if (not self.socket.bytesAvailable()
+                    and not self.socket.waitForReadyRead(int(remaining * 1000) + 1)
+                    and not self.socket.bytesAvailable()):
                 if self.socket.state() == QLocalSocket.LocalSocketState.UnconnectedState:
                     self.buffer = b""
                     raise ControlError("internal", "The GUI closed the connection")
@@ -316,7 +329,7 @@ class Session:
         return require_ok(self.request(cmd, args, timeout=timeout))
 
     def close(self):
-        self.socket.disconnectFromServer()
+        self.socket.abort()
         self.socket.deleteLater()
 
 

@@ -226,7 +226,7 @@ Modello IA, pesi, decodifica HEIC e RAW sono tutti in questa singola installazio
 <a id="community"></a>
 ## Community e supporto
 
-- **Documentazione** — [Manuale](./docs/USER_MANUAL_IT.md) (dodici lingue) · [Modifiche](./CHANGELOG.md) · [Prestazioni](./docs/PERFORMANCE.md) · [Parità algoritmi](./docs/ALGORITHM_PARITY.md)
+- **Documentazione** — [Manuale](./docs/USER_MANUAL_IT.md) (dodici lingue) · [Modifiche](./CHANGELOG.md) · [Prestazioni](./docs/PERFORMANCE.md) · [Metodi di fusione](../FUSION_METHODS.md)
 - **Citazione** — [CITATION.cff](./CITATION.cff); ogni versione è archiviata su Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — apri una [issue](https://github.com/Xinzhe99/OpenFocus/issues) per bug, idee e lavoro sugli algoritmi
 - **Crediti** — ogni algoritmo di fusione e registrazione mantiene la licenza di ricerca originale; StackMFF V3 è su [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)

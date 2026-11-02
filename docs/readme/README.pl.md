@@ -226,7 +226,7 @@ Model AI, wagi, dekodowanie HEIC i RAW są w tej jednej instalacji. Na Pythonie 
 <a id="community"></a>
 ## Społeczność i wsparcie
 
-- **Dokumentacja** — [Podręcznik](./docs/USER_MANUAL_PL.md) (dwanaście języków) · [Zmiany](./CHANGELOG.md) · [Wydajność](./docs/PERFORMANCE.md) · [Zgodność algorytmów](./docs/ALGORITHM_PARITY.md)
+- **Dokumentacja** — [Podręcznik](./docs/USER_MANUAL_PL.md) (dwanaście języków) · [Zmiany](./CHANGELOG.md) · [Wydajność](./docs/PERFORMANCE.md) · [Metody fuzji](../FUSION_METHODS.md)
 - **Cytowanie** — [CITATION.cff](./CITATION.cff); każda wersja jest archiwizowana w Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Opinie** — otwórz [issue](https://github.com/Xinzhe99/OpenFocus/issues) dla błędów, pomysłów i prac nad algorytmami
 - **Podziękowania** — każdy algorytm fuzji i rejestracji zachowuje swoją pierwotną licencję badawczą; StackMFF V3 jest na [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)

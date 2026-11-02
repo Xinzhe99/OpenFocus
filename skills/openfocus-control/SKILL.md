@@ -14,14 +14,13 @@ paint with the retouch brush, answer file pickers and take screenshots.
 ## 1. Start and connect
 
 ```bash
-openfocus gui --control           # launch the desktop build / checkout
+openfocus gui                     # launch the desktop build / checkout
 openfocus ctl ping --pretty       # verify the window
 openfocus ctl ping --launch       # launch only if no window is running
 ```
 
-From a checkout use `python main.py --control` and
-`python main.py ctl <command>`. `OPENFOCUS_CONTROL=1` enables control for a
-normal launch. The control server is **off** by default.
+From a checkout use `python main.py` and `python main.py ctl <command>`.
+The control server starts automatically with the desktop GUI.
 
 Never connect to a window you did not start unless the user asked for it. The
 token in `<user-data>/control.json` grants full GUI input. Keep one agent per
@@ -222,7 +221,7 @@ openfocus ctl ui.grab --path 'dialog[0]' --output 'F:/tmp/dialog.png'
 ## 9. Automation / CI
 
 The same commands are an automation API. A test can start an offscreen or
-visible window with `--control`, then drive it through `openfocus ctl` or
+visible window normally, then drive it through `openfocus ctl` or
 `core.control.client.request`, asserting on returned JSON. Discovery and
 tokens can be isolated with `OPENFOCUS_CONTROL_FILE` and
 `OPENFOCUS_INSTANCE_NAME`. Prefer `output.export`, `project.save/open` and

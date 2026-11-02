@@ -223,8 +223,8 @@ All six methods — DCT, DTCWT, GFG-FGF, OpenFocus B, OpenFocus C and StackMFF V
 require an explicit **Compute** click. Opening the dialog or changing the measure,
 source, registration or parameters never starts computation. The parameter editor
 appears directly below the measure selector: DCT median kernel and GFG initial kernel
-use odd values 1–51 (default 7); OpenFocus B uses a variance window and OpenFocus C a
-band-pass energy window, both odd 1–21 px (default 11). DTCWT decomposition levels
+use odd values 1–51 (default 7). OpenFocus B uses a focus-response radius
+and depth smoothing; OpenFocus C uses **Blend smoothing** to smooth its depth map, without a radius. DTCWT decomposition levels
 are editable here as a local draft, initialized from the source parameters. StackMFF V3
 shows its own AI output mode (Soft blend by default, or Hard pick) and an explanation
 instead of a numeric kernel: the map reports a continuous frame position, not a
@@ -398,7 +398,7 @@ Image registration corrects spatial misalignment between frames in your image st
 
 - Bounded similarity alignment (translation + rotation + scale),
   with per-frame brightness equalization and auto-crop
-- Sub-second per frame — much faster than ECC or Homography
+- Searches bounded similarity transforms using sampled image differences and warps with Lanczos interpolation
 - Frames shifting more than **8% of the frame size are left unaligned**
   rather than partially corrected. Override with the CLI
   `--align-shift-limit`
@@ -510,34 +510,27 @@ OpenFocus offers ten fusion algorithms (plus an alignment-only mode). Each has d
 
 ### OpenFocus A / B / C
 
-- **Algorithm**: Variance-weighted average, variance depth-map pick, and
-  Laplacian-pyramid fusion
-- **OpenFocus A**: variance-weighted average with a last-frame prior —
-  fast, colour-stable on short stacks
-- **OpenFocus B**: variance depth-map pick — selects the sharpest frame
-  per pixel; best on smooth surfaces and microscopy
-- **OpenFocus C**: Laplacian-pyramid per-band blend — natural look on
-  textured subjects, boosts local contrast
-- **Parameters**: A and B take a Variance window (kernel slider); C has no
-  radius. All three take a Smoothing sigma.
+- **OpenFocus A**: smooths its multiscale focus-response map, then selects focused pixels.
+- **OpenFocus B**: blends neighboring frames guided by a smoothed depth map.
+- **OpenFocus C**: reconstructs multiscale bands guided by a smoothed depth map.
+- **Parameters**: A and B use the kernel slider to control focus-response scale;
+  C has no radius. All three have a smoothing parameter controlling transition strength.
 
 **Smoothing**: one spin box under the kernel slider, with the meaning of the
 selected method (range 0–8, step 0.2):
 
 | Method | Label | Default | Effect |
 |---|---|---|---|
-| OpenFocus A | Blend smoothing (σ) | 2.0 | Gaussian smoothing of the per-frame weight map — how widely the sharp regions of neighbouring frames are blended |
-| OpenFocus B | Depth smoothing (σ) | 1.2 | Gaussian smoothing of the depth map — width of the transition between frames |
-| OpenFocus C | Blend smoothing (σ) | 3.0 | Gaussian smoothing of each pyramid band's weight map |
+| OpenFocus A | Blend smoothing | 2.0 | Controls smoothing of the focus-response map before pixels are selected |
+| OpenFocus B | Depth smoothing | 1.2 | Controls smoothing of the depth map that guides blending |
+| OpenFocus C | Blend smoothing | 3.0 | Controls smoothing of the depth map that guides multiscale reconstruction |
 
-0 keeps the crispest per-pixel choice (finest detail, but speckles on noisy
-stacks); larger values soften transitions and halos. Each method remembers
-its own value across sessions, and batch processing uses the same rule.
+Higher values increase transition smoothing. Each method remembers its own value
+across sessions, and batch processing uses the same rule.
 
-C has no Radius: Helicon's Method C exposes only Smoothing, so the kernel
-slider is hidden for C instead of silently doing nothing.
+C has no Radius parameter, so its kernel slider is hidden.
 
-CLI: `--depth-smoothing SIGMA` (B) and `--blend-smoothing SIGMA` (A, C).
+CLI: `--depth-smoothing VALUE` (B) and `--blend-smoothing VALUE` (A, C).
 
 **Brightness options are per method.** *Match exposure before fusion* and
 *Remove brightness drift* are remembered separately for each fusion method,
@@ -574,9 +567,9 @@ filename stems are retained, with the extension of the format you select.
 | DTCWT | Medium | Very Good | Complex scenes |
 | GFG-FGF | Fast | Good | Focus regions |
 | AI Fusion (StackMFF V3) | Slow (GPU) | Excellent | Best quality |
-| OpenFocus A | Very Fast | Very Good | Short stacks, colour stability |
-| OpenFocus B | Very Fast | Very Good | Smooth surfaces, microscopy |
-| OpenFocus C | Fast | Very Good | Textured subjects, natural look |
+| OpenFocus A | Depends on stack | Depends on stack | Multiscale focused-pixel selection |
+| OpenFocus B | Depends on stack | Depends on stack | Depth-guided blending of neighboring frames |
+| OpenFocus C | Depends on stack | Depends on stack | Depth-guided multiscale reconstruction |
 
 Open **Tools → Method comparison** to adjust several methods independently.
 Each method's name, parameter labels and controls stay together when the window
@@ -1006,9 +999,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--base-frame` | Optional post-fusion step: match the output's low frequencies to the `last`/`first` frame (`none` default) |
 | `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |
 | `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
-| `--kernel, -k` | Kernel size (forced odd; for the openfocus family it is the source of the variance-window radius) |
-| `--depth-smoothing SIGMA` | `openfocus_b` only: Gaussian sigma of the frame-to-frame depth transition (default 1.2; 0 keeps the finest detail) |
-| `--blend-smoothing SIGMA` | `openfocus_a` / `openfocus_c` only: Gaussian sigma of the per-frame weight map (defaults 2.0 for A, 3.0 for C; 0 keeps the crispest per-pixel choice) |
+| `--kernel, -k` | Kernel size (forced odd); controls focus-response scale for `openfocus_a` and `openfocus_b`; C has no radius |
+| `--depth-smoothing VALUE` | `openfocus_b` only: depth-transition smoothing strength (default 1.2) |
+| `--blend-smoothing VALUE` | `openfocus_a` / `openfocus_c` only: transition smoothing strength (defaults 2.0 for A, 3.0 for C) |
 | `--threads, -t` | Worker thread upper limit; `0` = automatic (default), positive values cap concurrency |
 | `--resource-preference` | `balanced` (default), `responsive`, or `maximum`; controls resource scheduling |
 | `--batch-size` | AI tile batch upper limit (default 2); actual inference currently uses one tile per call |

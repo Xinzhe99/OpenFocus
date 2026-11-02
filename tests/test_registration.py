@@ -113,6 +113,105 @@ def test_registration_output_is_cropped_to_common_region():
     assert aligned[0].shape[1] <= frames[0].shape[1]
 
 
+def test_openfocus_recovers_rotation_scale_and_translation_together():
+    rng = np.random.default_rng(42)
+    height, width = 240, 320
+    small = rng.integers(15, 240, (20, 27), dtype=np.uint8)
+    gray = cv2.resize(small, (width, height), interpolation=cv2.INTER_CUBIC)
+    base = np.repeat(gray[:, :, None], 3, axis=2)
+    transform = cv2.getRotationMatrix2D((width / 2, height / 2), 3.0, 1.03)
+    transform[:, 2] += (8, -5)
+    moved = cv2.warpAffine(base, transform, (width, height),
+                           borderMode=cv2.BORDER_REFLECT)
+
+    aligned = ImageRegistration(method="openfocus").process(
+        [base, moved], thread_count=1)
+    raw_error = np.abs(base[20:-20, 20:-20].astype(np.float32)
+                       - moved[20:-20, 20:-20]).mean()
+    aligned_error = np.abs(aligned[0].astype(np.float32) - aligned[1]).mean()
+    assert aligned_error < raw_error * 0.15
+
+
+def test_openfocus_aligns_color_texture_with_constant_channel_sum():
+    rng = np.random.default_rng(5)
+    small = rng.integers(20, 180, (20, 27), dtype=np.uint8)
+    green = np.clip(cv2.resize(small, (320, 240),
+                               interpolation=cv2.INTER_CUBIC), 20, 180)
+    base = np.dstack([np.full_like(green, 50), green, 200 - green])
+    moved = np.roll(base, 8, axis=1)
+
+    aligned = ImageRegistration(method="openfocus").process(
+        [base, moved], thread_count=1)
+    raw_error = np.abs(base.astype(np.int16) - moved.astype(np.int16)).mean()
+    aligned_error = np.abs(aligned[0].astype(np.int16)
+                           - aligned[1].astype(np.int16)).mean()
+    assert aligned_error < raw_error * 0.35
+
+
+def test_openfocus_directory_preserves_grayscale_16bit(tmp_path):
+    from utils.image_utils import imwrite_auto
+
+    folder = tmp_path / "样本"
+    folder.mkdir()
+    rng = np.random.default_rng(42)
+    base = cv2.resize(rng.integers(1000, 60000, (12, 16), dtype=np.uint16),
+                      (128, 96), interpolation=cv2.INTER_CUBIC)
+    assert imwrite_auto(str(folder / "帧1.tif"), base)
+    assert imwrite_auto(str(folder / "帧2.tif"), base)
+
+    aligned = ImageRegistration(method="openfocus").process(
+        str(folder), thread_count=1)
+    for image in aligned:
+        assert image.dtype == np.uint16
+        assert image.ndim == 2
+        np.testing.assert_array_equal(image, base[2:-2, 2:-2])
+
+
+def test_openfocus_identical_ramps_do_not_invent_motion():
+    ramp = np.tile(np.arange(100, dtype=np.uint8), (100, 1))
+    aligned = ImageRegistration(method="openfocus").process(
+        [ramp, ramp.copy()], thread_count=1)
+    for image in aligned:
+        np.testing.assert_array_equal(image, ramp[2:-2, 2:-2])
+
+
+def test_openfocus_directory_applies_exif_orientation_on_unicode_paths(tmp_path):
+    from PIL import Image
+
+    folder = tmp_path / "样本"
+    folder.mkdir()
+    pixels = np.zeros((40, 64, 3), dtype=np.uint8)
+    pixels[:20, :32] = (230, 30, 60)
+    pixels[20:, 32:] = (40, 180, 90)
+    exif = Image.Exif()
+    exif[274] = 6
+    for name in ("帧1.jpg", "帧2.jpg"):
+        Image.fromarray(pixels).save(folder / name, exif=exif)
+    decoded = cv2.imdecode(np.fromfile(str(folder / "帧1.jpg"), dtype=np.uint8),
+                           cv2.IMREAD_UNCHANGED)
+    expected = np.rot90(decoded, -1)[2:-2, 2:-2]
+    aligned = ImageRegistration(method="openfocus").process(str(folder), thread_count=1)
+    for image in aligned:
+        np.testing.assert_array_equal(image, expected)
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+@pytest.mark.parametrize("brightness_reference", ["first", "last"])
+def test_openfocus_brightness_correction_preserves_bgra_alpha(dtype, brightness_reference):
+    alpha = np.tile(np.arange(64, dtype=dtype), (48, 1))
+    frames = []
+    for value in (40, 80):
+        frame = np.full((48, 64, 4), value, dtype=dtype)
+        frame[:, :, 3] = alpha
+        frames.append(frame)
+    aligned = ImageRegistration(method="openfocus", brightness_reference=brightness_reference).process(
+        frames, thread_count=1)
+    target = 40 if brightness_reference == "first" else 80
+    for image in aligned:
+        np.testing.assert_array_equal(image[:, :, 3], alpha[2:-2, 2:-2])
+        np.testing.assert_array_equal(image[:, :, :3], target)
+
+
 def _mixed_name_folder(tmp_path):
     """A stack folder where some names carry no digits at all."""
     folder = tmp_path / "mixed"

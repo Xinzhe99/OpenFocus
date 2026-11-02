@@ -226,7 +226,7 @@ Le modèle IA, ses poids, le décodage HEIC et RAW y sont tous inclus. Sous Pyth
 <a id="community"></a>
 ## Communauté et support
 
-- **Documentation** — [Manuel](./docs/USER_MANUAL_FR.md) (douze langues) · [Journal](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Parité des algorithmes](./docs/ALGORITHM_PARITY.md)
+- **Documentation** — [Manuel](./docs/USER_MANUAL_FR.md) (douze langues) · [Journal](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Méthodes de fusion](../FUSION_METHODS.md)
 - **Citation** — [CITATION.cff](./CITATION.cff) ; chaque version est archivée sur Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Retours** — ouvrez une [issue](https://github.com/Xinzhe99/OpenFocus/issues) pour les bugs, idées et travaux d'algorithmes
 - **Crédits** — chaque algorithme de fusion et de recalage conserve sa licence de recherche d'origine ; StackMFF V3 est sur [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)

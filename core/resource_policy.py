@@ -221,7 +221,18 @@ def estimate_working_set(workload: Workload) -> tuple:
     channels = max(1, workload.channels)
     frames = max(1, workload.frames)
     frame_float = pixels * channels * np.dtype(np.float32).itemsize
-    if workload.block_size:
+    if workload.algorithm in ('openfocus_b', 'openfocus_c'):
+        # The depth estimator retains several int64 maps, filter intermediates,
+        # and histogram/LUT scratch. C additionally holds pyramid reconstructions.
+        scratch = 192 + channels * (64 if workload.algorithm == 'openfocus_c' else 16)
+        if workload.block_size:
+            tile_pixels = int(workload.block_size) ** 2
+            fixed = pixels * ((channels + 1) * 4 + 4 + channels * 4)
+            per_worker = tile_pixels * (scratch + frames * channels * (max(1, workload.itemsize) + 4))
+        else:
+            fixed = pixels * (scratch + frames * channels * 4) + 4 * 1024 * 1024
+            per_worker = max(1, pixels * channels * 4)
+    elif workload.block_size:
         fixed = pixels * (channels + 1) * 4
         per_worker = math.ceil(frames * int(workload.block_size) ** 2 * channels
                                * (max(1, workload.itemsize) + 4) * 5.6)

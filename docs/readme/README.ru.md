@@ -226,7 +226,7 @@ openfocus -i ./stack_folder -o ./result/fused.png
 <a id="community"></a>
 ## Сообщество и поддержка
 
-- **Документация** — [Руководство](./docs/USER_MANUAL_RU.md) (двенадцать языков) · [Изменения](./CHANGELOG.md) · [Производительность](./docs/PERFORMANCE.md) · [Соответствие алгоритмов](./docs/ALGORITHM_PARITY.md)
+- **Документация** — [Руководство](./docs/USER_MANUAL_RU.md) (двенадцать языков) · [Изменения](./CHANGELOG.md) · [Производительность](./docs/PERFORMANCE.md) · [Методы слияния](../FUSION_METHODS.md)
 - **Цитирование** — [CITATION.cff](./CITATION.cff); каждый релиз архивируется на Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Обратная связь** — [issue](https://github.com/Xinzhe99/OpenFocus/issues) для ошибок, идей и работы над алгоритмами
 - **Благодарности** — каждый алгоритм фузии и совмещения сохраняет свою исходную исследовательскую лицензию; StackMFF V3 — [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)

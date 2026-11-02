@@ -226,7 +226,7 @@ AI モデル、重み、HEIC とカメラ RAW のデコードはすべてこの 
 <a id="community"></a>
 ## コミュニティとサポート
 
-- **ドキュメント** — [ユーザーマニュアル](./docs/USER_MANUAL_JA.md)（12 言語） · [変更履歴](./CHANGELOG.md) · [パフォーマンス](./docs/PERFORMANCE.md) · [アルゴリズム比較](./docs/ALGORITHM_PARITY.md)
+- **ドキュメント** — [ユーザーマニュアル](./docs/USER_MANUAL_JA.md)（12 言語） · [変更履歴](./CHANGELOG.md) · [パフォーマンス](./docs/PERFORMANCE.md) · [合成手法](../FUSION_METHODS.md)
 - **引用** — [CITATION.cff](./CITATION.cff)。各リリースは Zenodo に保存されています（[DOI](https://doi.org/10.5281/zenodo.23050823)）
 - **フィードバック** — 不具合、提案、アルゴリズムの改善は [issue](https://github.com/Xinzhe99/OpenFocus/issues) へ
 - **クレジット** — 各合成・位置合わせアルゴリズムは元の研究ライセンスに従います。StackMFF V3 は [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3) にあります

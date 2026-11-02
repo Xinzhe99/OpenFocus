@@ -55,13 +55,9 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.73.0** — An agent can now drive the whole app. `openfocus gui --control`
-> opens a token-protected local channel and `openfocus ctl` (or any language
-> over the same protocol) loads stacks, renders, retouches, compares, exports
-> and answers every dialog — by widget, by menu action, or with real mouse and
-> keyboard events. A bundled skill documents the surface, a 14-check smoke
-> runner and a full action sweep keep it honest in CI, and nothing changes for
-> a normal launch.
+> **v1.74.0** — Updated OpenFocus A/B/C fusion and fast alignment. The desktop
+> app now starts its authenticated local agent channel automatically, so
+> `openfocus ctl` can operate the running window without a special launch flag.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
@@ -215,10 +211,10 @@ Save, Save As, drag-out and Export All.
 Every window, widget and menu is addressable over a token-protected local
 channel: an agent loads a stack, renders, retouches, compares, solves depth,
 exports and answers dialogs — by typed command, by widget path, or with real
-mouse and keyboard events. No screen scraping, no OCR; a normal launch keeps
-the channel closed.
+mouse and keyboard events. No screen scraping or OCR is required; the channel
+starts with the desktop app.
 
-[Protocol →](docs/AGENT_CONTROL_SPEC.md) · [Skill →](.claude/skills/openfocus-control/SKILL.md)
+[Protocol →](docs/AGENT_CONTROL_SPEC.md) · [Skill →](skills/openfocus-control/SKILL.md)
 
 </td>
 <td width="54%">
@@ -264,18 +260,16 @@ The app is unsigned, so the first launch may show a security prompt: **Windows**
 
 ### 🤖 Agent integration
 
-The desktop app can be driven by a local agent without screen scraping:
-`openfocus gui --control` opens a token-protected local command channel and
-`openfocus ctl` runs typed commands or generic UI actions against the live
-window. Agents can load stacks, render, export, open and fill every dialog,
+The desktop app starts a token-protected local agent channel automatically.
+Use `openfocus ctl` for typed commands or generic UI actions against the live
+window. Agents can load stacks, render, export, open and fill dialogs,
 answer file pickers, send mouse/keyboard events and take screenshots.
 
-- Skill: [`.claude/skills/openfocus-control/SKILL.md`](.claude/skills/openfocus-control/SKILL.md)
+- Skill: [`skills/openfocus-control/SKILL.md`](skills/openfocus-control/SKILL.md)
 - Protocol and command reference: [`docs/AGENT_CONTROL_SPEC.md`](docs/AGENT_CONTROL_SPEC.md)
 - End-to-end runner: `python tools/agent_gui_smoke.py --launch`
 - Every-action sweep: `python tools/agent_action_sweep.py --launch`
 
-Control is opt-in; a normal launch is unchanged.
 
 ### 💻 Command Line Usage
 
@@ -291,7 +285,7 @@ The AI model, its weights, HEIC and camera-RAW decoding are all in that single i
 <a id="community"></a>
 ## Community & Support
 
-- **Docs** — [User Manual](./docs/USER_MANUAL_EN.md) (twelve languages) · [Changelog](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Algorithm parity](./docs/ALGORITHM_PARITY.md)
+- **Docs** — [User Manual](./docs/USER_MANUAL_EN.md) (twelve languages) · [Changelog](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Fusion methods](./docs/FUSION_METHODS.md)
 - **Citation** — [CITATION.cff](./CITATION.cff); every release is archived on Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open an [issue](https://github.com/Xinzhe99/OpenFocus/issues) for bugs, ideas and algorithm work
 - **Credits** — each fusion/registration algorithm keeps its original research licence; StackMFF V3 lives at [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)

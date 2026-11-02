@@ -9,7 +9,7 @@ passed.
     python tools/agent_gui_smoke.py [--launch] [--quit] [--keep]
 
 This is the executable version of the workflow in
-`.claude/skills/openfocus-control/SKILL.md`.
+`skills/openfocus-control/SKILL.md`.
 """
 from __future__ import annotations
 

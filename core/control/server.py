@@ -17,7 +17,8 @@ from PyQt6.QtWidgets import (QApplication, QColorDialog, QFileDialog,
                              QLineEdit, QMenu)
 
 from constants import APP_VERSION
-from core.control.file_dialogs import install_non_native_file_dialogs
+from core.control.file_dialogs import (install_non_native_file_dialogs,
+                                       uninstall_non_native_file_dialogs)
 from core.control.protocol import (
     COMMANDS as _COMMANDS, ControlError, MAX_LINE, SCHEMA, SOCKET_PREFIX,
     clear_discovery, decode, encode, error_response, ok_response,
@@ -231,9 +232,11 @@ class ControlServer(QObject):
         self._render_id = 0
         self._tracked_load_bound = None
         self._tracked_render_bound = None
-        # A native file picker cannot be scripted; the portable Qt dialog can.
-        install_non_native_file_dialogs()
+        self._dialogs_patched = False
+        self._closed = False
+        self._watchdog_stop = None
         self._server = QLocalServer(self)
+        self._server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
         if not self._server.listen(self.socket_name):
             # Only clear the name when it is really blocked, and never
             # delete a non-socket file a custom --control-socket may point
@@ -249,12 +252,16 @@ class ControlServer(QObject):
                     f"Could not listen on {self.socket_name}: "
                     f"{self._server.errorString()}")
         self._server.newConnection.connect(self._accept)
-        self._watchdog_stop = None
-        if os.environ.get("OPENFOCUS_CONTROL_WATCHDOG"):
-            self._start_watchdog()
-        self.discovery = write_discovery(
-            self.socket_name, self.token, os.getpid(), APP_VERSION)
-        self._install_tracking()
+        try:
+            self.discovery = write_discovery(
+                self.socket_name, self.token, os.getpid(), APP_VERSION)
+            self._install_tracking()
+            self._dialogs_patched = install_non_native_file_dialogs()
+            if os.environ.get("OPENFOCUS_CONTROL_WATCHDOG"):
+                self._start_watchdog()
+        except Exception:
+            self.close()
+            raise
         _log.info("control channel listening on %s", self.socket_name)
 
     @staticmethod
@@ -431,6 +438,10 @@ class ControlServer(QObject):
             connection.setReadBufferSize(MAX_LINE + 1)
             connection.readyRead.connect(lambda c=connection: self._read(c))
             connection.disconnected.connect(lambda c=connection: self._drop(c))
+            # Data can arrive before newConnection reaches this slot. Qt will
+            # not emit readyRead again for bytes already buffered.
+            if connection.bytesAvailable():
+                self._read(connection)
 
     @staticmethod
     def _client_is_local(connection) -> bool:
@@ -456,7 +467,7 @@ class ControlServer(QObject):
                 return False
             ctypes.set_last_error(0)
             if not get_client(wintypes.HANDLE(handle), client_name,
-                              ctypes.sizeof(client_name)):
+                              len(client_name)):
                 # A local client is reported as ERROR_PIPE_LOCAL rather than
                 # a computer name; that answer is itself proof of locality.
                 if ctypes.get_last_error() == 229:  # ERROR_PIPE_LOCAL
@@ -548,6 +559,9 @@ class ControlServer(QObject):
         connection.disconnectFromServer()
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         if self._watchdog_stop is not None:
             self._watchdog_stop.set()
         self._remove_tracking()
@@ -557,8 +571,15 @@ class ControlServer(QObject):
             except RuntimeError:
                 pass
         self._dialogs.clear()
+        for connection in list(self._buffers):
+            connection.abort()
+            if connection in self._buffers:
+                self._drop(connection)
         self._server.close()
         clear_discovery(os.getpid())
+        if self._dialogs_patched:
+            uninstall_non_native_file_dialogs()
+            self._dialogs_patched = False
 
     # ------------------------------------------------------------ dispatch
     def handle_line(self, line, token=None):

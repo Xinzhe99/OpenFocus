@@ -211,8 +211,8 @@ export restent liés au même instantané de la source.
 Les six méthodes exigent un clic explicite sur **Calculer**. Ouvrir la fenêtre ou changer
 la mesure, la source, le recalage ou les paramètres ne lance aucun calcul. L’éditeur se
 trouve juste sous le sélecteur de mesure : les noyaux médian DCT et initial GFG prennent
-des valeurs impaires de 1 à 51 (7 par défaut) ; B utilise une fenêtre de variance et C une
-fenêtre d’énergie passe-bande, impaires de 1 à 21 px (11 par défaut). Les niveaux DTCWT
+des valeurs impaires de 1 à 51 (7 par défaut). B utilise le rayon et le lissage de profondeur
+(1,2 par défaut), C le lissage du mélange (3,0 par défaut). Les niveaux DTCWT
 sont modifiables ici dans un brouillon local initialisé avec les paramètres de la source.
 StackMFF V3 affiche son propre mode de sortie IA (mélange doux par défaut, ou
 sélection dure) et une explication, sans noyau numérique : le mélange doux estime une
@@ -380,7 +380,7 @@ Le recalage d'images corrige le désalignement spatial entre les images de votre
 
 - Alignement par similarité bornée (translation + rotation + échelle),
   avec égalisation de la luminosité par image et recadrage automatique
-- Moins d'une seconde par image — bien plus rapide que l'ECC ou l'homographie
+- La recherche évalue des différences d’images échantillonnées ; la transformation utilise Lanczos
 - Les images décalées de plus de **8 % de leur taille restent non alignées**
   plutôt que partiellement corrigées. Modifiez ce seuil avec l'option CLI
   `--align-shift-limit`
@@ -493,34 +493,22 @@ OpenFocus propose dix algorithmes de fusion (plus un mode d'alignement seul). Ch
 
 ### OpenFocus A / B / C
 
-- **Algorithme** : moyenne pondérée par la variance, sélection par carte de profondeur de variance, et
-  fusion par pyramide laplacienne
-- **OpenFocus A** : moyenne pondérée par la variance avec a priori sur la dernière image —
-  rapide, couleurs stables sur les piles courtes
-- **OpenFocus B** : sélection par carte de profondeur de variance — prend l'image la plus nette
-  par pixel ; idéal sur les surfaces lisses et en microscopie
-- **OpenFocus C** : mélange par bande de fréquence de la pyramide laplacienne — rendu naturel sur
-  les sujets texturés, renforce le contraste local
-- **Paramètres** : A et B utilisent une Fenêtre de variance (curseur de noyau) ; C n'a pas de
-  rayon. Toutes les trois prennent un sigma de Lissage.
+- **OpenFocus A** : sélectionne les pixels nets selon une réponse de mise au point multiscalaire.
+- **OpenFocus B** : mélange les images voisines selon une carte de profondeur lissée.
+- **OpenFocus C** : reconstruit les bandes multiscalaires selon une carte de profondeur lissée.
+- **Paramètres** : le noyau règle l’échelle de la réponse de mise au point pour A et B ; C n’a pas de rayon.
 
-**Lissage** : une seule zone numérique sous le curseur de noyau, dont la signification dépend de la
-méthode sélectionnée (plage 0–8, pas de 0,2) :
+**Lissage** (0–8, pas de 0,2) agit différemment selon la méthode :
 
-| Méthode | Libellé | Défaut | Effet |
+| Méthode | Paramètre | Défaut | Effet |
 |---|---|---|---|
-| OpenFocus A | Lissage du mélange (σ) | 2,0 | Lissage gaussien de la carte de pondération par image — ampleur du mélange des zones nettes des images voisines |
-| OpenFocus B | Lissage de profondeur (σ) | 1,2 | Lissage gaussien de la carte de profondeur — largeur de la transition entre images |
-| OpenFocus C | Lissage du mélange (σ) | 3,0 | Lissage gaussien de la carte de pondération de chaque bande de la pyramide |
+| OpenFocus A | Lissage du mélange | 2,0 | Lisse la carte de réponse de mise au point avant la sélection des pixels |
+| OpenFocus B | Lissage de profondeur | 1,2 | Règle le lissage de la carte et les transitions entre images |
+| OpenFocus C | Lissage du mélange | 3,0 | Règle la carte de profondeur utilisée pour reconstruire les bandes |
 
-0 conserve le choix le plus net par pixel (détail le plus fin, mais du grain sur les
-piles bruitées) ; des valeurs plus grandes adoucissent les transitions et les halos. Chaque méthode mémorise
-sa propre valeur d'une session à l'autre, et le traitement par lot applique la même règle.
+Chaque méthode mémorise sa valeur entre les sessions ; le traitement par lot l’utilise aussi.
 
-C n'a pas de Rayon : la méthode C d'Helicon n'expose que le Lissage, le curseur de noyau
-est donc masqué pour C plutôt que d'agir dans le vide.
-
-CLI : `--depth-smoothing SIGMA` (B) et `--blend-smoothing SIGMA` (A, C).
+CLI : `--depth-smoothing VALUE` (B) et `--blend-smoothing VALUE` (A, C).
 
 **Les options de luminosité sont propres à chaque méthode.** *Harmoniser l'exposition avant la fusion* et
 *Supprimer la dérive de luminosité* sont mémorisés séparément pour chaque méthode de fusion,
@@ -553,9 +541,9 @@ et envoyer les images alignées dans la liste de sortie sans fusion — pratique
 | DTCWT | Moyenne | Très bonne | Scènes complexes |
 | GFG-FGF | Rapide | Bonne | Zones nettes |
 | Fusion IA (StackMFF V3) | Lente (GPU) | Excellente | Qualité maximale |
-| OpenFocus A | Très rapide | Très bonne | Piles courtes, stabilité des couleurs |
-| OpenFocus B | Très rapide | Très bonne | Surfaces lisses, microscopie |
-| OpenFocus C | Rapide | Très bonne | Sujets texturés, rendu naturel |
+| OpenFocus A | — | — | Sélection selon la netteté |
+| OpenFocus B | — | — | Mélange guidé par la profondeur |
+| OpenFocus C | — | — | Reconstruction des bandes guidée par la profondeur |
 
 ### Aperçu rapide (rendu brouillon)
 
@@ -874,9 +862,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--base-frame` | Étape post-fusion facultative : aligne les basses fréquences de la sortie sur l'image `last`/`first` (`none` par défaut) |
 | `--sort` | Ordre des images pour `openfocus_a/b/c` : `asc` (par défaut, ordre des fichiers), `desc` (inverse un balayage loin → près), `off` |
 | `--dust-map WHITE` | Correction de champ plat (carte de poussière) à partir d'une prise de vue défocalisée d'une zone blanche |
-| `--kernel, -k` | Taille du noyau (forcée impaire ; pour la famille openfocus, c'est la source du rayon de la fenêtre de variance) |
-| `--depth-smoothing SIGMA` | `openfocus_b` uniquement : sigma gaussien de la transition de profondeur entre images (1,2 par défaut ; 0 conserve le détail le plus fin) |
-| `--blend-smoothing SIGMA` | `openfocus_a` / `openfocus_c` uniquement : sigma gaussien de la carte de pondération par image (2,0 par défaut pour A, 3,0 pour C ; 0 conserve le choix le plus net par pixel) |
+| `--kernel, -k` | Taille du noyau (impaire ; règle l’échelle de la réponse de mise au point pour OpenFocus A/B, sans effet sur C) |
+| `--depth-smoothing VALUE` | `openfocus_b` uniquement : force du lissage de profondeur (1,2 par défaut) |
+| `--blend-smoothing VALUE` | `openfocus_a` / `openfocus_c` uniquement : force du lissage du mélange (2,0 pour A, 3,0 pour C par défaut) |
 | `--threads, -t` | Plafond de threads ; `0` = automatique (par défaut), les valeurs positives limitent la concurrence |
 | `--resource-preference` | Mode de ressources : `balanced` (par défaut), `responsive` ou `maximum` |
 | `--batch-size` | Plafond de tuiles IA par lot (2 par défaut) ; actuellement une tuile par appel |

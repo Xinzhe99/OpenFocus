@@ -34,6 +34,7 @@ import io
 from typing import Union, List, Optional
 
 from utils.sorting import natural_sort_key as _image_sort_key
+from core.image_loader import apply_exif_orientation
 
 # Windowed/Windows console mojibake fix — frozen builds only. Rebinding
 # sys.stdout at import time closes the ORIGINAL wrapper once it is collected
@@ -533,15 +534,9 @@ def _save_registration(images, output_path, filenames, should_cancel):
 
 # ========== OpenFocus 对齐：有界相似变换（平移+旋转+缩放） ==========
 
-_OF_EST_WIDTH = 480  # 估计阶段长边上限（旋转/缩放网格在低分辨率上搜索）
-# 位移上限（帧尺寸比例）：较大的位移估计不可靠，强行校正会得到半错位
-# 并让有效区交集被裁掉一大块（25% 上限 = 单边最多丢 1/4 画面）。取 8%——
-# 本对齐器有 NCC 置信门限，可用 ImageRegistration(max_shift_ratio=) /
-# CLI --align-shift-limit 按需放宽。
+_OF_EST_WIDTH = 480  # Maximum long edge used for transform estimation.
 _OF_MAX_SHIFT_RATIO = 0.08
-# 旋转/放大率容差：Helicon 把它们与位移分开暴露为独立参数，我们的实现
-# 此前只有位移上限，旋转和缩放可以取到搜索边界（8° / ±5%）而不被拒——
-# 一帧被误估出 5° 旋转会以角点错位 0.087·对角线的方式污染整幅画面。
+# Independent bounds for rotation and magnification.
 _OF_MAX_ROTATION_DEG = 8.0
 _OF_MAX_SCALE_DELTA = 0.05
 
@@ -561,9 +556,9 @@ def _of_gray_est(img, est_width):
         if take == 1:
             g = img[:, :, 0].astype(np.float32)
         else:
-            m = np.array([0.114, 0.587, 0.299], np.float32)
+            weights = np.array([0.114, 0.587, 0.299], np.float32)[:take]
             g = cv2.transform(img[:, :, :take].astype(np.float32),
-                              m.reshape(1, -1))
+                              weights.reshape(1, -1))
             g = g if g.ndim == 2 else g[:, :, 0]
     h, w = g.shape[:2]
     if max(h, w) > est_width:
@@ -574,129 +569,14 @@ def _of_gray_est(img, est_width):
     return np.ascontiguousarray(g, np.float32)
 
 
-def _of_translation_ncc(ref_est, cur_est, patch_frac=0.7):
-    """Translation cur→ref by normalized cross-correlation.
-
-    Phase correlation silently fails on "sharp vs defocused" pairs: measured
-    on a synthetic stack with a true 16 px shift it reported 145 px, while
-    NCC found 15.93 px. Focus stacking always compares differently blurred
-    frames, so the translation estimate must not rely on the phase peak.
-
-    A central patch of `cur_est` is matched inside `ref_est`; the returned
-    shift is where the patch content moved. Sub-pixel peak by parabola.
-
-    Take the global peak as-is (no tie-breaking): a defocused frame smears
-    the correlation peak into a broad plateau, and preferring the smallest
-    displacement among near-ties then walks off the true peak (σ9 blur:
-    peak 0.805 at the correct −16 px, but shifts within 0.01 of it span
-    several pixels, and "smallest" picked +5 px). Restricting the search
-    window is just as harmful: when the true shift lies outside it, the
-    best remaining in-window peak is a spurious match that silently
-    translates the frame. The caller owns the acceptance range instead.
-    """
-    h, w = ref_est.shape[:2]
-    ph = max(16, int(h * patch_frac))
-    pw = max(16, int(w * patch_frac))
-    y0, x0 = (h - ph) // 2, (w - pw) // 2
-    patch = np.ascontiguousarray(cur_est[y0:y0 + ph, x0:x0 + pw])
-    # 平坦块（全黑/全白的边框帧、无纹理区域）：NCC 无定义，模板匹配会
-    # 在角落给出 1.0 的假峰。报告无对应关系，由调用方回退到恒等。
-    if float(patch.std()) < 1e-3 or float(ref_est.std()) < 1e-3:
-        return -1.0, 0.0, 0.0
-    try:
-        res = cv2.matchTemplate(ref_est, patch, cv2.TM_CCOEFF_NORMED)
-    except cv2.error:
-        return -1.0, 0.0, 0.0
-    px = int(np.argmax(res.max(axis=0)))
-    py = int(np.argmax(res[:, px]))
-
-    def _parabola(v0, v1, v2):
-        den = v0 - 2.0 * v1 + v2
-        return 0.0 if abs(den) < 1e-9 else 0.5 * (v0 - v2) / den
-
-    sx = sy = 0.0
-    if 0 < px < res.shape[1] - 1:
-        sx = float(np.clip(_parabola(res[py, px - 1], res[py, px],
-                                     res[py, px + 1]), -1.0, 1.0))
-    if 0 < py < res.shape[0] - 1:
-        sy = float(np.clip(_parabola(res[py - 1, px], res[py, px],
-                                     res[py + 1, px]), -1.0, 1.0))
-    # Content moved from (x0, y0) in cur to (px, py) in ref.
-    dx = (x0 + sx) - px
-    dy = (y0 + sy) - py
-    return float(res[py, px]), dx, dy
-
-
-def _of_ncc_score(ref_est, fixed, patch_frac=0.7):
-    """重叠区归一化互相关：旋转/缩放候选的判别评分。
-
-    平移用 NCC 模板搜索（相位相关在清晰/失焦帧对上有假峰，见
-    `_of_translation_ncc`）；NCC 在正确校正时 →1，旋转错 0.5° 以上
-    急剧下降。返回 (ncc, dx, dy)。
-    """
-    ncc, dx, dy = _of_translation_ncc(ref_est, fixed, patch_frac=patch_frac)
-    if not np.isfinite(ncc):
-        return -1.0, 0.0, 0.0
-    return ncc, dx, dy
-
-
-def _of_estimate_similarity(ref_est, cur_est, patch_frac=0.7,
+def _of_estimate_similarity(ref_est, cur_est, shift_ratio=0.08,
                             rot_bound=8.0, scale_range=(0.95, 1.05),
                             should_cancel=None):
-    """有界网格搜索 cur→ref 的相似变换（旋转+缩放），NCC 评分。
+    """Estimate a bounded similarity transform with the sampled detector."""
+    from core.openfocus_align import estimate
 
-    返回 (ncc, theta_deg, scale, dx, dy)：
-    theta/scale 满足 warpAffine(cur, getRotationMatrix2D(center, theta,
-    scale)) ≈ ref（内容层面），(dx, dy) 是残差平移（内容仍需移动的量，
-    由 `_of_translation_ncc` 的 NCC 峰给出）。
-    """
-    h, w = ref_est.shape[:2]
-    cy, cx = h / 2.0, w / 2.0
-
-    def _eval(theta, scale):
-        _check_cancel(should_cancel)
-        M = cv2.getRotationMatrix2D((cx, cy), theta, scale)
-        fixed = cv2.warpAffine(cur_est, M, (w, h))
-        result = _of_ncc_score(ref_est, fixed, patch_frac=patch_frac)
-        _check_cancel(should_cancel)
-        return result
-
-    best = (-1.0, 0.0, 1.0, 0.0, 0.0)
-    # 平移-only 基准：模糊与缩放在 NCC 上天然相似，无显著增益时坚持
-    # s=1 的简约解（否则失焦帧会被误判出假旋转/假缩放）
-    base_ncc, base_dx, base_dy = _eval(0.0, 1.0)
-    best = (base_ncc, 0.0, 1.0, base_dx, base_dy)
-    for th in np.arange(-rot_bound, rot_bound + 1e-6, 1.0):
-        for sc in (0.95, 1.0, 1.05):
-            if not (scale_range[0] - 1e-9 <= sc <= scale_range[1] + 1e-9):
-                continue
-            ncc, dx, dy = _eval(th, sc)
-            if ncc > best[0]:
-                best = (ncc, th, sc, dx, dy)
-    # 非平凡 (θ, s) 必须显著优于平移-only 基准（≥0.05 NCC）才采纳
-    if (best[1] != 0.0 or best[2] != 1.0) and best[0] < base_ncc + 0.05:
-        best = (base_ncc, 0.0, 1.0, base_dx, base_dy)
-    if best[1] == 0.0 and best[2] == 1.0 and best[0] >= 0.97:
-        # 常见情形：纯平移已高度吻合——跳过两级精修（省一半耗时）
-        return best
-    # 两级精修：角度 0.25°、缩放 0.01
-    for _ in range(2):
-        th0, sc0 = best[1], best[2]
-        improved = False
-        for th in np.arange(max(-rot_bound, th0 - 1.0),
-                            min(rot_bound, th0 + 1.0) + 1e-9, 0.25):
-            for sc in np.arange(max(scale_range[0], sc0 - 0.02),
-                                min(scale_range[1], sc0 + 0.02) + 1e-9, 0.01):
-                ncc, dx, dy = _eval(th, sc)
-                if ncc > best[0] + 1e-6:
-                    best = (ncc, th, sc, dx, dy)
-                    improved = True
-        if not improved:
-            break
-    # 精修后复检：非平凡解仍须显著优于平移-only 基准
-    if (best[1] != 0.0 or best[2] != 1.0) and best[0] < base_ncc + 0.05:
-        best = (base_ncc, 0.0, 1.0, base_dx, base_dy)
-    return best
+    return estimate(ref_est, cur_est, shift_ratio, rot_bound, scale_range,
+                    lambda: _check_cancel(should_cancel))
 
 
 def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
@@ -707,11 +587,9 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
     """
     OpenFocus 快速对齐：有界相似变换（平移+旋转+缩放）+ 亮度均衡 + 自动裁边。
 
-    几何参考帧是**首帧**（固定锚点）。旋转/缩放用有界
-    网格搜索（NCC 判别评分），平移用 NCC 模板搜索的亚像素峰（相位相关
-    在清晰/失焦帧对上有假峰）；低置信帧放弃该帧对齐；位移超过
-    max_shift_ratio 时也放弃（强行钳制会得到一半错位 + 污染有效区），
-    最后按有效区交集自动裁边。
+    Geometry uses the first frame as its anchor. A bounded sampled-difference
+    grid estimates translation, rotation and scale; the common valid region
+    is cropped after brightness equalization and warping.
     """
     if max_shift_ratio is None:
         max_shift_ratio = _OF_MAX_SHIFT_RATIO
@@ -726,7 +604,10 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
              if os.path.splitext(f)[1].lower() in valid_exts),
             key=_image_sort_key
         )
-        images = [cv2.imread(path) for path in img_paths]
+        images = []
+        for path in img_paths:
+            img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+            images.append(apply_exif_orientation(path, img) if img is not None else None)
         img_filenames = [os.path.basename(path) for path in img_paths]
     else:
         images = input_source
@@ -735,7 +616,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
 
     n = len(images)
     h, w = images[0].shape[:2]
-    max_shift = (int(w * max_shift_ratio), int(h * max_shift_ratio))
+    max_shift = (w * max_shift_ratio, h * max_shift_ratio)
     est_width = min(_OF_EST_WIDTH, max(320, w))
 
     def _gray_float(img):
@@ -745,6 +626,8 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
             take = min(img.shape[2], 3)
             if take == 1:
                 g = img[:, :, 0]
+            elif take == 2:
+                g = img[:, :, :2].astype(np.float32).mean(axis=2)
             else:
                 m = np.array([0.114, 0.587, 0.299], np.float32)
                 g = cv2.transform(img[:, :, :take].astype(np.float32),
@@ -767,7 +650,6 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
 
     ref_est = _of_gray_est(images[ref_idx], est_width)
     eh, ew = ref_est.shape[:2]
-    patch_frac = min(0.7, max(0.34, 1.0 - 2.0 * float(max_shift_ratio) - 0.02))
 
     def _prepare(i):
         """Everything about frame i that does not depend on the state machine.
@@ -791,8 +673,8 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
 
         warpAffine 的 M 是内容正向变换（实测：[I|+10] 把内容右移 10px；
         getRotationMatrix2D(θ,s) 的搜索语义已在网格中验证）。完整校正 =
-        先施加旋转/缩放 Rs，再把内容平移 −d（d 为 NCC 峰给出的残差内容
-        位移）。矩阵复合：M_total = [I|−d]·Rs_full；d 从估计分辨率按
+        先施加旋转/缩放 Rs，再把内容平移 −d（d 为估计器的残差位移）。
+        矩阵复合：M_total = [I|−d]·Rs_full；d 从估计分辨率按
         比例换算回全分辨率。
         """
         _ncc, theta, scale, dx, dy = ncc_pack
@@ -802,13 +684,34 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
         d_full = np.array([-dx / sx, -dy / sy])
         M = np.eye(3)
         M[:2, :2] = Rs[:2, :2]
-        M[:2, 2] = Rs[:2, :2] @ d_full + Rs[:2, 2]
+        M[:2, 2] = d_full + Rs[:2, 2]
         return M
 
     # 死区：低于这些分量视为无运动（固定机位栈的噪声保护）
     dead_t, dead_rot, dead_scale = 0.15, 0.05, 1e-3
     min_ncc = 0.06          # 低于此视为无可靠对应关系
     chain_ncc = 0.10        # 对参考帧置信不足 → 链到上一帧重估
+    # Keep the fine search narrow; probe a wider range when its score is weak
+    # or rotation touches the bound, so out-of-range motion can be rejected.
+    search_shift = min(3.0 * max_shift_ratio, max(0.5, max_shift_ratio))
+    search_rotation = 1.5 * max_rotation_deg
+
+    def _estimate(reference, current):
+        scale_range = (1.0 - max_scale_delta, 1.0 + max_scale_delta)
+        estimate = _of_estimate_similarity(
+            reference, current, shift_ratio=max_shift_ratio,
+            rot_bound=max_rotation_deg, scale_range=scale_range,
+            should_cancel=should_cancel)
+        at_rotation_limit = (max_rotation_deg > 0 and
+                             abs(estimate[1]) >= 0.95 * max_rotation_deg)
+        if estimate[0] < 0.9 or at_rotation_limit:
+            wider = _of_estimate_similarity(
+                reference, current, shift_ratio=search_shift,
+                rot_bound=search_rotation, scale_range=scale_range,
+                should_cancel=should_cancel)
+            if wider[0] > estimate[0] + 0.05:
+                estimate = wider
+        return estimate
 
     corrections = [None] * n  # cur→ref 的校正矩阵；参考帧为 None
     corrections[ref_idx] = np.eye(3, dtype=np.float64)
@@ -824,18 +727,11 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
             if i == ref_idx:
                 continue
 
-            # 模板必须给可接受的位移留出搜索余量：patch_frac=0.7 最多覆盖
-            # 单边 15% 的位移；用户把上限放宽到 25% 时若不缩小模板，真位移
-            # 落在搜索窗外，估计器只能返回窗内的伪峰（并真的平移该帧）。
-            est = _of_estimate_similarity(ref_est, cur_est,
-                                          patch_frac=patch_frac,
-                                          should_cancel=should_cancel)
+            est = _estimate(ref_est, cur_est)
             chained = False
             if est[0] < chain_ncc and i >= 2:
                 # 失焦/弱纹理帧：与相邻帧（模糊程度接近）更相关——链式估计
-                est2 = _of_estimate_similarity(prev_est, cur_est,
-                                               patch_frac=patch_frac,
-                                               should_cancel=should_cancel)
+                est2 = _estimate(prev_est, cur_est)
                 if est2[0] > est[0] + 0.02:
                     M = corrections[i - 1] @ _compose_full(est2)
                     chained = True
@@ -858,9 +754,7 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
             # 旧的"钳制到上限"会把大位移校正成半错位，还让有效区交集被裁掉
             # 一大块（25% 上限意味着单边最多裁 1/4 画面）。
             over = (abs(tx) > max_shift[0] or abs(ty) > max_shift[1])
-            # 旋转/放大率各自独立设限（Helicon 的 Rotation / Magnification
-            # adjustment）：搜索范围本身就是这两个值，超出即说明估计不可信，
-            # 与位移超限同样放弃整帧而不是半校正。
+            # 旋转和放大率各自独立设限，超出时放弃整帧而不是半校正。
             rot_deg = float(np.degrees(np.arctan2(M[1, 0], M[0, 0])))
             scale_now = float(np.sqrt(abs(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])))
             if (abs(rot_deg) > max_rotation_deg + 1e-6
@@ -878,10 +772,21 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
             corrections[i] = M
             prev_est = cur_est
             print("  frame %d/%d: rot %+.2f° scale %.3f shift (%+.2f, %+.2f)"
-                  " ncc %.2f%s%s" % (i + 1, n, rot_deg, scale_now, tx, ty, ncc,
+                  " detector quality %.2f%s%s" % (i + 1, n, rot_deg, scale_now, tx, ty, ncc,
                                      " (chained)" if chained else "",
-                                     " (DROPPED: shift over %.0f%% of frame)"
-                                     % (100.0 * max_shift_ratio) if over else ""))
+                                     " (DROPPED: outside limits)" if over else
+                                     " (DROPPED: low detector quality)" if ncc < min_ncc else ""))
+
+    def _apply_gain(img, gain):
+        if gain == 1.0:
+            return img
+        limit = 65535 if img.dtype == np.uint16 else 255
+        if img.ndim == 3 and img.shape[2] == 4:
+            result = img.copy()
+            result[:, :, :3] = np.clip(img[:, :, :3].astype(np.float32) * gain,
+                                        0, limit).astype(img.dtype)
+            return result
+        return np.clip(img.astype(np.float32) * gain, 0, limit).astype(img.dtype)
 
     def _warp(args):
         idx, img, M, gain = args
@@ -889,21 +794,13 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                                 flags=cv2.INTER_LANCZOS4
                                 | cv2.WARP_FILL_OUTLIERS,
                                 borderMode=cv2.BORDER_REFLECT)
-        if gain != 1.0:
-            # 亮度均衡同步应用到输出帧：均衡后的帧进入融合，消除曝光漂移
-            warped = np.clip(warped.astype(np.float32) * gain, 0,
-                             255 if img.dtype == np.uint8 else 65535)
-            warped = warped.astype(img.dtype)
+        if img.ndim == 3 and img.shape[2] == 1 and warped.ndim == 2:
+            warped = warped[:, :, None]
+        warped = _apply_gain(warped, gain)
         return idx, warped
 
     aligned = [None] * n
-    if gains[ref_idx] == 1.0:
-        aligned[ref_idx] = images[ref_idx]
-    else:
-        ref = images[ref_idx]
-        scaled = np.clip(ref.astype(np.float32) * gains[ref_idx], 0,
-                         255 if ref.dtype == np.uint8 else 65535)
-        aligned[ref_idx] = scaled.astype(ref.dtype)
+    aligned[ref_idx] = _apply_gain(images[ref_idx], gains[ref_idx])
     warp_args = ((i, images[i], corrections[i], gains[i])
                  for i in range(n) if i != ref_idx)
     with _bounded_registration_map(_warp, warp_args, max(1, int(thread_count)),
@@ -911,13 +808,11 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
         for idx, warped in results:
             aligned[idx] = warped
 
-    # 有效区 = 各帧"正向映射矩形"（corrections 的逆）的交集内接框：
-    # dst(x) = cur(A·x) 有效 ⟺ A·x ∈ 源图 ⟺ x ∈ A⁻¹(源图矩形)
-    fwd = [np.linalg.inv(M) if M is not None else None for M in corrections]
+    # corrections map source coordinates into the output canvas.
     top, bottom, left, right = _compute_valid_region_from_transforms(
-        fwd, (h, w))
+        corrections, (h, w), margin=0 if min(h, w) <= 4 else 2)
     if top >= bottom or left >= right:
-        top, bottom, left, right = 0, h, 0, w
+        raise ValueError("Registration transforms have no common valid crop")
     aligned = [img[top:bottom, left:right] for img in aligned]
 
     _save_registration(aligned, output_path, img_filenames, should_cancel)
@@ -1431,8 +1326,8 @@ class ImageRegistration:
             filenames = None
             images = input_source
             if isinstance(input_source, str):
-                # Header inspection admits the decoded stack before allocation;
-                # cv2.imread retains the directory API's existing color contract.
+                # Admit the decoded stack before allocation. OpenFocus keeps
+                # the original depth and channels for its alignment output.
                 from PIL import Image
                 extensions = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png',
                               '.bmp', '.tif', '.tiff', '.webp'}
@@ -1445,7 +1340,8 @@ class ImageRegistration:
                 for path in paths:
                     _check_cancel(should_cancel)
                     with Image.open(path) as header:
-                        frame_bytes = header.width * header.height * 3
+                        # Bound unchanged decoding by four uint16 channels.
+                        frame_bytes = header.width * header.height * (8 if self.method == 'openfocus' else 3)
                     decoded_bytes += frame_bytes
                     largest_frame = max(largest_frame, frame_bytes)
                 if paths:
@@ -1453,10 +1349,14 @@ class ImageRegistration:
                 images = []
                 for path in paths:
                     _check_cancel(should_cancel)
-                    image = cv2.imread(path)
+                    flags = cv2.IMREAD_UNCHANGED if self.method == 'openfocus' else cv2.IMREAD_COLOR
+                    data = np.fromfile(path, dtype=np.uint8)
+                    image = cv2.imdecode(data, flags) if data.size else None
                     _check_cancel(should_cancel)
                     if image is None:
                         raise ValueError(f"Could not decode registration frame: {path}")
+                    if flags == cv2.IMREAD_UNCHANGED:
+                        image = apply_exif_orientation(path, image)
                     images.append(image)
                 filenames = [os.path.basename(path) for path in paths]
 

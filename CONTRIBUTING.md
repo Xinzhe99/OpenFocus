@@ -35,7 +35,7 @@ an agent drive the running GUI. Keep it working when you add UI:
 - A button whose slot calls `QDialog.exec()` blocks a synchronous
   `ui.click`; test and document `ui.click --async` for these controls, then
   poll `dialog.list`/`ui.context`. Prefer `ui.trigger` for menu actions.
-- Keep the agent workflow current: `.claude/skills/openfocus-control/SKILL.md`
+- Keep the agent workflow current: `skills/openfocus-control/SKILL.md`
   and `tools/agent_gui_smoke.py` exercise the surface end to end.
 - Open dialogs modelessly in the control path (`dialog.open`). Never call
   `exec()` inside a command handler; a blocking call stalls the response and

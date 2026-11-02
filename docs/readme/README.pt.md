@@ -226,7 +226,7 @@ O modelo de IA, seus pesos, a decodificação HEIC e RAW de câmera estão nessa
 <a id="community"></a>
 ## Comunidade e suporte
 
-- **Documentação** — [Manual](./docs/USER_MANUAL_PT.md) (doze idiomas) · [Alterações](./CHANGELOG.md) · [Desempenho](./docs/PERFORMANCE.md) · [Paridade de algoritmos](./docs/ALGORITHM_PARITY.md)
+- **Documentação** — [Manual](./docs/USER_MANUAL_PT.md) (doze idiomas) · [Alterações](./CHANGELOG.md) · [Desempenho](./docs/PERFORMANCE.md) · [Métodos de fusão](../FUSION_METHODS.md)
 - **Citação** — [CITATION.cff](./CITATION.cff); cada versão é arquivada no Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — abra uma [issue](https://github.com/Xinzhe99/OpenFocus/issues) para bugs, ideias e trabalho de algoritmos
 - **Créditos** — cada algoritmo de fusão e registro mantém sua licença de pesquisa original; o StackMFF V3 está em [Xinzhe99/StackMFF V3](https://github.com/Xinzhe99/StackMFF V3)

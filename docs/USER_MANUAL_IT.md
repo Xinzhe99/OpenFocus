@@ -207,8 +207,8 @@ istantanea della sorgente.
 Tutti e sei i metodi richiedono un clic esplicito su **Calcola**. Aprire la finestra o
 cambiare misura, sorgente, registrazione o parametri non avvia il calcolo. L’editor si
 trova subito sotto il selettore della misura: i kernel mediano DCT e iniziale GFG accettano
-dispari da 1 a 51 (predefinito 7); B usa una finestra di varianza e C una di energia
-passa-banda, dispari da 1 a 21 px (predefinito 11). I livelli di decomposizione DTCWT
+dispari da 1 a 51 (predefinito 7). B usa il raggio e la levigatura della profondità
+(predefinita 1,2), C la levigatura della miscelazione (predefinita 3,0). I livelli DTCWT
 si modificano qui in una bozza locale, inizializzata dai parametri della sorgente. StackMFF V3
 mostra invece una propria modalità di output IA (miscelazione morbida per impostazione
 predefinita, o selezione netta) e una spiegazione, senza kernel numerico: la miscelazione
@@ -393,7 +393,7 @@ prospettiva.
 
 - Allineamento per similarità limitata (traslazione + rotazione + scala),
   con equalizzazione della luminosità per frame e ritaglio automatico
-- Meno di un secondo per frame — molto più veloce di ECC o Omografia
+- La ricerca valuta differenze campionate tra immagini; la trasformazione usa Lanczos
 - I frame che si spostano più dell'**8% della dimensione del frame vengono lasciati non allineati**
   anziché corretti a metà. Puoi modificare la soglia con l'opzione CLI
   `--align-shift-limit`
@@ -507,34 +507,22 @@ ha caratteristiche diverse, adatte a tipi di immagine differenti.
 
 ### OpenFocus A / B / C
 
-- **Algoritmo**: media ponderata per la varianza, selezione dalla mappa di profondità
-  della varianza e fusione a piramide laplaciana
-- **OpenFocus A**: media ponderata per la varianza con prior sull'ultimo frame —
-  veloce, colori stabili su stack brevi
-- **OpenFocus B**: selezione basata sulla mappa di profondità della varianza — sceglie
-  il frame più nitido per ogni pixel; ideale su superfici lisce e in microscopia
-- **OpenFocus C**: miscelazione per banda con piramide laplaciana — aspetto naturale su
-  soggetti texturizzati, aumenta il contrasto locale
-- **Parametri**: A e B usano una Finestra varianza (cursore del kernel); C non ha
-  raggio. Tutti e tre usano un sigma di levigatura.
+- **OpenFocus A**: seleziona i pixel a fuoco usando una risposta di fuoco multiscala.
+- **OpenFocus B**: miscela i frame vicini guidandosi con una mappa di profondità levigata.
+- **OpenFocus C**: ricostruisce le bande multiscala guidandosi con una mappa di profondità levigata.
+- **Parametri**: il kernel regola la scala della risposta di fuoco in A e B; C non ha raggio.
 
-**Levigatura**: un unico campo numerico sotto il cursore del kernel, con il significato
-del metodo selezionato (intervallo 0–8, passo 0,2):
+**Levigatura** (0–8, passo 0,2) agisce in modo diverso a seconda del metodo:
 
-| Metodo | Etichetta | Predefinito | Effetto |
+| Metodo | Parametro | Predefinito | Effetto |
 |---|---|---|---|
-| OpenFocus A | Levigatura miscelazione (σ) | 2.0 | Levigatura gaussiana della mappa dei pesi per frame — quanto ampiamente vengono miscelate le regioni nitide dei frame vicini |
-| OpenFocus B | Levigatura profondità (σ) | 1.2 | Levigatura gaussiana della mappa di profondità — larghezza della transizione tra i frame |
-| OpenFocus C | Levigatura miscelazione (σ) | 3.0 | Levigatura gaussiana della mappa dei pesi di ciascuna banda della piramide |
+| OpenFocus A | Levigatura miscelazione | 2,0 | Leviga la mappa della risposta di fuoco prima della selezione dei pixel |
+| OpenFocus B | Levigatura profondità | 1,2 | Regola la levigatura della mappa e le transizioni tra frame |
+| OpenFocus C | Levigatura miscelazione | 3,0 | Regola la mappa di profondità per la ricostruzione delle bande |
 
-0 mantiene la scelta per pixel più nitida (dettaglio più fine, ma maculature sugli stack
-rumorosi); valori più alti ammorbidiscono transizioni e aloni. Ogni metodo ricorda il
-proprio valore tra le sessioni e l'elaborazione batch applica la stessa regola.
+Ogni metodo conserva il proprio valore tra le sessioni; anche l’elaborazione batch lo usa.
 
-C non ha Raggio: il Metodo C di Helicon espone solo la Levigatura, quindi per C il
-cursore del kernel viene nascosto invece di non fare nulla in silenzio.
-
-CLI: `--depth-smoothing SIGMA` (B) e `--blend-smoothing SIGMA` (A, C).
+CLI: `--depth-smoothing VALUE` (B) e `--blend-smoothing VALUE` (A, C).
 
 **Le opzioni di luminosità sono per metodo.** *Uniforma l'esposizione prima della fusione* e
 *Rimuovi deriva di luminosità* vengono ricordate separatamente per ciascun metodo di fusione,
@@ -568,9 +556,9 @@ qualità della registrazione o esportare i frame allineati.
 | DTCWT | Media | Molto buona | Scene complesse |
 | GFG-FGF | Veloce | Buona | Regioni a fuoco |
 | AI (StackMFF V3) | Lenta (GPU) | Eccellente | Massima qualità |
-| OpenFocus A | Molto veloce | Molto buona | Stack brevi, stabilità dei colori |
-| OpenFocus B | Molto veloce | Molto buona | Superfici lisce, microscopia |
-| OpenFocus C | Veloce | Molto buona | Soggetti texturizzati, aspetto naturale |
+| OpenFocus A | — | — | Selezione per messa a fuoco |
+| OpenFocus B | — | — | Miscelazione guidata dalla profondità |
+| OpenFocus C | — | — | Ricostruzione delle bande guidata dalla profondità |
 
 ### Anteprima rapida (render di bozza)
 
@@ -893,9 +881,9 @@ python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 | `--base-frame` | Passaggio opzionale dopo la fusione: allinea le basse frequenze dell'output al frame `last`/`first` (predefinito `none`) |
 | `--sort` | Ordine dei frame per `openfocus_a/b/c`: `asc` (predefinito, ordine dei file), `desc` (inverte una scansione da lontano a vicino), `off` |
 | `--dust-map WHITE` | Correzione campo piatto (mappa polvere) da uno scatto fuori fuoco di un campo bianco |
-| `--kernel, -k` | Dimensione del kernel (forzata dispari; per la famiglia openfocus è l'origine del raggio della finestra di varianza) |
-| `--depth-smoothing SIGMA` | Solo `openfocus_b`: sigma gaussiano della transizione di profondità tra un frame e l'altro (predefinito 1.2; 0 mantiene il dettaglio più fine) |
-| `--blend-smoothing SIGMA` | Solo `openfocus_a` / `openfocus_c`: sigma gaussiano della mappa dei pesi per frame (predefinito 2.0 per A, 3.0 per C; 0 mantiene la scelta per pixel più nitida) |
+| `--kernel, -k` | Dimensione del kernel (dispari; regola la scala della risposta di fuoco per OpenFocus A/B, senza effetto su C) |
+| `--depth-smoothing VALUE` | Solo `openfocus_b`: intensità della levigatura della profondità (predefinita 1,2) |
+| `--blend-smoothing VALUE` | Solo `openfocus_a` / `openfocus_c`: intensità della levigatura della miscelazione (predefinita 2,0 per A e 3,0 per C) |
 | `--threads, -t` | Limite dei thread; `0` = automatico (predefinito), i valori positivi limitano la concorrenza |
 | `--resource-preference` | Modalità risorse: `balanced` (predefinito), `responsive` o `maximum` |
 | `--batch-size` | Limite batch dei tasselli AI (predefinito 2); attualmente un tassello per chiamata |

@@ -100,3 +100,19 @@ def test_memory_limited_tile_concurrency_preserves_pixels(monkeypatch):
     monkeypatch.setattr(mff, "memory_budget_bytes", lambda: 2 * 1024 ** 2)
     tight = fusion.fuse(frames, thread_count=4)
     assert np.array_equal(tight, roomy)
+
+
+@pytest.mark.parametrize('method', ['openfocus_b', 'openfocus_c'])
+def test_tiled_depth_is_admitted_before_computation(monkeypatch, method):
+    from core import multi_focus_fusion as mff, resource_policy as policy
+    from fusion_methods import openfocus_depth
+
+    frames = [np.full((64, 96, 3), value, np.uint8) for value in (40, 80)]
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 1024 * 1024)
+    def unexpected_depth(*args, **kwargs):
+        raise AssertionError('depth allocation preceded memory admission')
+    monkeypatch.setattr(openfocus_depth, 'depth_map', unexpected_depth)
+    fusion = mff.MultiFocusFusion(method, exposure_match=False, tile_threshold=32,
+                                  tile_block_size=48, tile_overlap=16)
+    with pytest.raises(policy.ResourceLimitError):
+        fusion.fuse(frames, thread_count=1)

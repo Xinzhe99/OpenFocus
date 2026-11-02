@@ -175,14 +175,14 @@ def read_discovery():
     except FileNotFoundError:
         raise ControlError(
             "not_running",
-            "OpenFocus is not running with the control channel enabled.",
-            "Launch it with `openfocus gui --control` or add --launch.")
+            "OpenFocus is not running or its control channel is unavailable.",
+            "Launch it with `openfocus gui` or add --launch.")
     except (OSError, ValueError) as exc:
         raise ControlError("not_running", f"Unreadable control file: {exc}",
-                           "Launch the GUI with --control to recreate it.")
+                           "Launch the GUI to recreate it.")
     if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
         raise ControlError("not_running", "Control file has an unknown schema.",
-                           "Start the GUI from this version with --control.")
+                           "Start the GUI from this version.")
     for key in ("socket", "token", "pid"):
         if key not in payload:
             raise ControlError("not_running", f"Control file lacks {key}.")

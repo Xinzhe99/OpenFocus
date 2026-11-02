@@ -72,8 +72,6 @@ docs/OpenFocus.spec
 /.shot_*.png
 assets/demo_stack/.openfocus_cache/
 
-/.review_skill/
-
 # PyPI build artifacts
 /dist/
 /build/
