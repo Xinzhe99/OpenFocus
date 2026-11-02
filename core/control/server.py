@@ -929,6 +929,8 @@ class ControlServer(QObject):
             raise ControlError("invalid_argument",
                                "The stack changed while the ROI was active",
                                "Reset the ROI selection and retry.")
+        if status in ("sensor_history_unsupported", "sensor_roi_unsupported"):
+            raise ControlError("invalid_argument", manager.last_error)
         if status == "cancelled":
             raise ControlError("internal",
                                "The render was cancelled before it started",

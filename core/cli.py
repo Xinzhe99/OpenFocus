@@ -454,7 +454,9 @@ def _fuse_stack_admitted(images, args):
     _resolve_algorithm_arguments(args)
     images, transparent = _transparent_region(images, args)
     if getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False):
-        from utils.sensor_cleanup import cleanup_sensor_image
+        from utils.sensor_cleanup import cleanup_sensor_image, require_sensor_cleanup_stack
+        require_sensor_cleanup_stack(images, getattr(args, "defect_mask_path", None),
+                                     getattr(args, "sensor_denoise", False))
         mask = _sensor_mask(args)
         images = [cleanup_sensor_image(image, mask, getattr(args, "sensor_denoise", False),
                                        cancel_callback=getattr(args, "_should_cancel", None))
@@ -566,11 +568,17 @@ def _fuse_grouped(paths, args):
         from utils.dust_map import grouped_flat_field_gain
         gain = grouped_flat_field_gain(args.dust_map)
     preprocess = None
-    mask = _sensor_mask(args)
+    mask = None
     if gain is not None or getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False):
         def preprocess(image):
+            nonlocal mask
             if getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False):
-                from utils.sensor_cleanup import cleanup_sensor_image
+                from utils.sensor_cleanup import cleanup_sensor_image, require_sensor_cleanup_stack
+                mask_path = getattr(args, "defect_mask_path", None)
+                require_sensor_cleanup_stack([image], mask if mask is not None else mask_path,
+                                             getattr(args, "sensor_denoise", False))
+                if mask is None and mask_path:
+                    mask = _sensor_mask(args)
                 image = cleanup_sensor_image(image, mask,
                                              getattr(args, "sensor_denoise", False),
                                              cancel_callback=getattr(args, "_should_cancel", None))

@@ -27,7 +27,7 @@ class _Inspection(QThread):
 
 
 class SensorCleanupControls(QWidget):
-    def __init__(self, path='', denoise=False, parent=None):
+    def __init__(self, path='', denoise=False, parent=None, *, show_scope=True):
         super().__init__(parent)
         self._serial = 0
         self._inspected_path = None
@@ -53,6 +53,10 @@ class SensorCleanupControls(QWidget):
         layout.addWidget(hint)
         self.denoise = QCheckBox(trans.t('sensor_denoise'))
         layout.addWidget(self.denoise)
+        if show_scope:
+            scope = QLabel(trans.t('sensor_settings_scope'))
+            scope.setWordWrap(True)
+            layout.addWidget(scope)
         self.denoise.setChecked(bool(denoise))
         self.path.editingFinished.connect(self._inspect)
         self._inspect()

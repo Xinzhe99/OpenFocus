@@ -398,6 +398,29 @@ class RenderManager:
             self._start_status = "no_frames"
             self._abort_compare_run()
             return
+        cleanup = bool(getattr(window, "defect_mask_path", "")
+                       or getattr(window, "sensor_denoise", False))
+        if cleanup:
+            if (getattr(window, "source_transforms", None)
+                    or getattr(window, "unrecoverable_source_changes", None)):
+                message = trans.t("sensor_history_unsupported")
+                self._start_status = "sensor_history_unsupported"
+            elif (getattr(window, "roi_mode_active", False)
+                  and getattr(window, "roi_aligned_images", None)):
+                message = trans.t("sensor_roi_unsupported")
+                self._start_status = "sensor_roi_unsupported"
+            else:
+                message = None
+            if message:
+                self.last_state = "error"
+                self.last_error = message
+                self.last_result = None
+                self._abort_compare_run()
+                self._restore_ui_controls()
+                if interactive:
+                    show_warning_box(window, trans.t("msg_error"), message)
+                return
+
 
         if self._ai_confirmation_needed(force_algorithm) and not confirmed:
             if not interactive:
@@ -481,8 +504,6 @@ class RenderManager:
         
         # 检查ROI模式是否激活，并从右侧面板获取ROI区域
         if getattr(window, 'roi_mode_active', False) and window.roi_aligned_images:
-            if getattr(window, "defect_mask_path", "") or getattr(window, "sensor_denoise", False):
-                raise ValueError('Sensor cleanup cannot use ROI frames aligned before cleanup; disable ROI mode')
             if (getattr(window, "roi_source_revision", None) !=
                     getattr(window, "source_revision", 0)
                     or list(getattr(window, "roi_included_indices", None) or []) != list(included_idx)

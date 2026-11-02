@@ -611,6 +611,39 @@ def test_grouped_sensor_cleanup_only_processes_original_frames(tmp_path, monkeyp
     assert calls == [30, 31, 32, 33]
 
 
+@pytest.mark.parametrize('grouped', [False, True])
+def test_sensor_cleanup_admission_precedes_mask_and_frame_processing(tmp_path, monkeypatch, grouped):
+    from core import cli, grouped_fusion, resource_policy
+    from utils import sensor_cleanup
+
+    mask_path = tmp_path / 'mask.png'
+    assert cv2.imwrite(str(mask_path), np.zeros((16, 16), np.uint8))
+    args = cli.build_parser().parse_args(['-i', 'unused', '-o', 'unused.png',
+                                         '-m', 'dct', '--defect-mask-path', str(mask_path)])
+    image = np.zeros((16, 16, 3), np.uint8)
+    requests = []
+
+    def reject(amount):
+        requests.append(amount)
+        raise resource_policy.ResourceLimitError('full')
+
+    monkeypatch.setattr(resource_policy, 'require_memory', reject)
+    monkeypatch.setattr(sensor_cleanup, 'load_sensor_defect_mask',
+                        lambda *a, **k: pytest.fail('mask loaded before admission'))
+    monkeypatch.setattr(sensor_cleanup, 'cleanup_sensor_image',
+                        lambda *a, **k: pytest.fail('frame cleaned before admission'))
+    if grouped:
+        monkeypatch.setattr(cli, '_inspect_grouped_cli', lambda *a: None)
+        monkeypatch.setattr(grouped_fusion, 'grouped_fuse',
+                            lambda *a, **k: k['preprocess'](image))
+        action = lambda: cli._fuse_grouped(['unused'], args)
+    else:
+        action = lambda: cli._fuse_stack_admitted([image, image], args)
+    with pytest.raises(resource_policy.ResourceLimitError):
+        action()
+    assert requests and requests[0] >= image.nbytes + mask_path.stat().st_size + 16 * 16 * 16
+
+
 @pytest.mark.parametrize('batch', [False, True])
 def test_sensor_mask_cannot_be_output(tmp_path, batch):
     folder = tmp_path / 'stack'

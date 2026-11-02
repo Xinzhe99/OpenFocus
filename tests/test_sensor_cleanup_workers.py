@@ -53,4 +53,55 @@ def test_batch_excludes_and_applies_mask_before_processing(qapp, tmp_path, monke
     worker.run()
     assert outcome['success'] == 1
     assert len(seen[0]) == 2
-    assert all(frame[5, 5, 0] < 0.5 for frame in seen[0])
+    for frame in seen[0]:
+        assert frame.dtype == np.float32
+        np.testing.assert_allclose(frame, 10001.0 / 257.0, rtol=1e-6)
+
+
+def test_render_admits_full_cleanup_stack_before_mask_or_copy(qapp, tmp_path, monkeypatch):
+    from core.workers import RenderWorker
+    import utils.sensor_cleanup as sensor
+    path, image = _inputs(tmp_path)
+    frames = [image, image.copy()]
+    seen = []
+    def reject(images, mask_path, denoise):
+        seen.append((list(images), mask_path, denoise))
+        raise MemoryError('cleanup budget')
+    def unexpected(*args, **kwargs):
+        pytest.fail('cleanup allocated before admission')
+    monkeypatch.setattr(sensor, 'require_sensor_cleanup_stack', reject)
+    monkeypatch.setattr(sensor, 'load_sensor_defect_mask', unexpected)
+    monkeypatch.setattr(sensor, 'cleanup_sensor_image', unexpected)
+    worker = RenderWorker(frames, algorithm=None, need_fusion=False,
+                          defect_mask_path=str(path), sensor_denoise=True)
+    with pytest.raises(MemoryError, match='cleanup budget'):
+        worker._run_admitted()
+    assert len(seen) == 1
+    assert seen[0][0][0] is frames[0] and seen[0][0][1] is frames[1]
+    assert seen[0][1:] == (str(path), True)
+
+
+def test_batch_admits_cleanup_before_mask_decode(qapp, tmp_path, monkeypatch):
+    from core.workers import BatchWorker
+    import utils.sensor_cleanup as sensor
+    source = tmp_path / 'source'
+    source.mkdir()
+    path, image = _inputs(source)
+    for index in range(2):
+        assert cv2.imwrite(str(source / f'{index}.png'), image)
+    admitted = []
+    def reject(images, mask_path, denoise):
+        admitted.append((len(images), mask_path, denoise))
+        raise MemoryError('cleanup budget')
+    def unexpected(*args, **kwargs):
+        pytest.fail('mask decoded before admission')
+    monkeypatch.setattr(sensor, 'require_sensor_cleanup_stack', reject)
+    monkeypatch.setattr(sensor, 'load_sensor_defect_mask', unexpected)
+    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'),
+        {'format': 'png', 'fusion_method': 'dct', 'alignment': 'none',
+         'defect_mask_path': str(path), 'sensor_denoise': True}, use_gpu=False)
+    outcome = {}
+    worker.finished.connect(outcome.update)
+    worker.run()
+    assert admitted == [(2, str(path), True)]
+    assert outcome['success'] == 0
