@@ -1000,6 +1000,34 @@ def test_load_scale_prompt_can_be_skipped(monkeypatch):
     assert mgr._ask_load_scale() == 0.5
     assert len(shown) == 1, "second import must not prompt"
 
+def test_last_confirmed_import_scale_is_used_when_prompt_is_disabled(monkeypatch):
+    from types import SimpleNamespace
+
+    import controllers.source_manager as sm_mod
+
+    class Dialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return True
+
+        def get_scale_factor(self):
+            return 0.75
+
+        def dont_ask_again(self):
+            return False
+
+    monkeypatch.setattr(sm_mod, "DownsampleDialog", Dialog)
+    window = SimpleNamespace(ask_load_scale=True, load_scale_default=0.25,
+                             current_scale_factor=1.0, persist_settings=lambda: None)
+    manager = sm_mod.SourceManager.__new__(sm_mod.SourceManager)
+    manager.window = window
+    assert manager._ask_load_scale() == 0.75
+    window.ask_load_scale = False
+    assert manager._ask_load_scale() == 0.75
+
+
 
 def test_new_output_is_the_only_selected_item(qapp):
     from PyQt6.QtWidgets import QAbstractItemView, QLabel, QListWidget

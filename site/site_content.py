@@ -11,6 +11,8 @@ template.html must exist under the matching locale.
 
 import os
 
+from constants import APP_VERSION
+
 REPO = "https://github.com/Xinzhe99/OpenFocus"
 RELEASES = f"{REPO}/releases"
 MANUAL = {
@@ -18,15 +20,15 @@ MANUAL = {
     "zh": f"{REPO}/blob/main/docs/USER_MANUAL_ZH.md",
 }
 
-# Single source of truth for the version the download cards point at.
-# A release-backed card's kind_id must match an assets key in site/worker.js.
+# Download endpoints resolve the newest complete release even without JavaScript.
+ORIGIN = os.environ.get("SITE_ORIGIN", "").strip().rstrip("/") or "https://openfocus.top"
 RELEASE = {
-    "tag": "v1.74.0",
-    "page": f"{RELEASES}/tag/v1.74.0",
-    "windows_setup": f"{RELEASES}/download/v1.74.0/OpenFocus-v1.74.0-setup.exe",
-    "windows_zip": f"{RELEASES}/download/v1.74.0/OpenFocus-v1.74.0-windows-x64.zip",
-    "macos_dmg": f"{RELEASES}/download/v1.74.0/OpenFocus-v1.74.0-macos.dmg",
-    "macos_zip": f"{RELEASES}/download/v1.74.0/OpenFocus-v1.74.0-macos-arm64.zip",
+    "tag": f"v{APP_VERSION}",
+    "page": f"{RELEASES}/latest",
+    "windows_setup": f"{ORIGIN}/download/latest/windows-setup",
+    "windows_zip": f"{ORIGIN}/download/latest/windows-zip",
+    "macos_dmg": f"{ORIGIN}/download/latest/macos-dmg",
+    "macos_zip": f"{ORIGIN}/download/latest/macos-zip",
     "pypi": "https://pypi.org/project/openfocus/",
 }
 
@@ -77,7 +79,7 @@ def _en() -> dict:
             "cta_macos": "Download for macOS",
             "cta_linux": "Install with pip",
             "cta_github": "View on GitHub",
-            "meta": "v1.74.0 · Windows 10/11 · macOS Apple Silicon · Linux CLI",
+            "meta": f"{RELEASE['tag']} · Windows 10/11 · macOS Apple Silicon · Linux CLI",
             "shot_alt": (
                 "The OpenFocus window: a nine-frame stack, a wipe comparison "
                 "and a 50 mm scale bar on the fused result."
@@ -233,10 +235,10 @@ def _en() -> dict:
             "eyebrow": "Download",
             "title": "Install OpenFocus",
             "sub": (
-                "Code signing policy: Windows builds use free code signing "
-                "provided by SignPath.io, certificate by SignPath Foundation; "
-                "older releases remain unsigned. If SmartScreen appears, choose "
-                "More info → Run anyway; "
+                "Windows code signing, when available, is provided free by "
+                "SignPath.io with a SignPath Foundation certificate. Check each "
+                "release's notes for its signing status. If SmartScreen appears, "
+                "choose More info → Run anyway; "
                 "the first start can take 30–60 seconds. On macOS, run xattr -cr, "
                 "or allow the app in System Settings → Privacy & Security → "
                 "Open Anyway."
@@ -245,7 +247,6 @@ def _en() -> dict:
                 {
                     "os": "Windows 10/11 · x64",
                     "kind": "Installer",
-                    "size": "277 MB",
                     "kind_id": "windows-setup",
                     "url": RELEASE["windows_setup"],
                     "primary": True,
@@ -253,14 +254,12 @@ def _en() -> dict:
                 {
                     "os": "Windows 10/11 · x64",
                     "kind": "Portable ZIP",
-                    "size": "395 MB",
                     "kind_id": "windows-zip",
                     "url": RELEASE["windows_zip"],
                 },
                 {
                     "os": "macOS Apple Silicon",
                     "kind": "Disk image",
-                    "size": "359 MB",
                     "kind_id": "macos-dmg",
                     "url": RELEASE["macos_dmg"],
                     "primary": True,
@@ -268,7 +267,6 @@ def _en() -> dict:
                 {
                     "os": "macOS Apple Silicon",
                     "kind": "Portable ZIP",
-                    "size": "327 MB",
                     "kind_id": "macos-zip",
                     "url": RELEASE["macos_zip"],
                 },
@@ -285,7 +283,7 @@ def _en() -> dict:
             "copy": "Copy",
             "copied": "Copied",
             "all": "All releases and checksums",
-            "note": "Latest release: v1.74.0 · MIT License",
+            "note": f"Latest release: {RELEASE['tag']} · MIT License",
         },
         "footer": {
             "tagline": "Every pixel, its sharpest frame.",
@@ -350,7 +348,7 @@ def _zh() -> dict:
             "cta_macos": "下载 macOS 版",
             "cta_linux": "用 pip 安装",
             "cta_github": "查看源码",
-            "meta": "v1.74.0 · Windows 10/11 · macOS Apple Silicon · Linux 命令行",
+            "meta": f"{RELEASE['tag']} · Windows 10/11 · macOS Apple Silicon · Linux 命令行",
             "shot_alt": "OpenFocus 主窗口：九帧源图、拖拽对比，以及融合结果上的 50 mm 比例尺。",
         },
         "why": {
@@ -476,12 +474,11 @@ def _zh() -> dict:
         "download": {
             "eyebrow": "下载",
             "title": "安装 OpenFocus",
-            "sub": "代码签名政策：Windows 构建使用 SignPath.io 提供的免费代码签名，证书由 SignPath Foundation 签发；旧版本仍未签名。若被 SmartScreen 拦截，请点“更多信息 → 仍要运行”；首次启动可能需要 30–60 秒。macOS 请执行 xattr -cr，或在“系统设置 → 隐私与安全性”中点“仍要打开”。",
+            "sub": "Windows 代码签名启用后，由 SignPath.io 免费提供签名服务、SignPath Foundation 签发证书；请查看各版本说明中的签名状态。若被 SmartScreen 拦截，请点“更多信息 → 仍要运行”；首次启动可能需要 30–60 秒。macOS 请执行 xattr -cr，或在“系统设置 → 隐私与安全性”中点“仍要打开”。",
             "cards": [
                 {
                     "os": "Windows 10/11 · x64",
                     "kind": "安装程序",
-                    "size": "277 MB",
                     "kind_id": "windows-setup",
                     "url": RELEASE["windows_setup"],
                     "primary": True,
@@ -489,14 +486,12 @@ def _zh() -> dict:
                 {
                     "os": "Windows 10/11 · x64",
                     "kind": "便携 ZIP",
-                    "size": "395 MB",
                     "kind_id": "windows-zip",
                     "url": RELEASE["windows_zip"],
                 },
                 {
                     "os": "macOS Apple Silicon",
                     "kind": "磁盘映像",
-                    "size": "359 MB",
                     "kind_id": "macos-dmg",
                     "url": RELEASE["macos_dmg"],
                     "primary": True,
@@ -504,7 +499,6 @@ def _zh() -> dict:
                 {
                     "os": "macOS Apple Silicon",
                     "kind": "便携 ZIP",
-                    "size": "327 MB",
                     "kind_id": "macos-zip",
                     "url": RELEASE["macos_zip"],
                 },
@@ -521,7 +515,7 @@ def _zh() -> dict:
             "copy": "复制",
             "copied": "已复制",
             "all": "所有版本与校验值",
-            "note": "最新版本：v1.74.0 · MIT 许可",
+            "note": f"最新版本：{RELEASE['tag']} · MIT 许可",
         },
         "footer": {
             "tagline": "每一像素，皆取自最清晰的一帧。",
@@ -544,7 +538,3 @@ def _zh() -> dict:
 
 LOCALES = {"en": _en(), "zh": _zh()}
 
-# Canonical origin.  Production builds use the public domain; set SITE_ORIGIN
-# for local previews (e.g. http://127.0.0.1:8788) or another host:
-#   SITE_ORIGIN=http://127.0.0.1:8788 python tools/build_site.py
-ORIGIN = os.environ.get("SITE_ORIGIN", "").strip().rstrip("/") or "https://openfocus.top"

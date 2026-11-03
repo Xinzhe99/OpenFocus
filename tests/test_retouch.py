@@ -566,6 +566,37 @@ def test_dialog_preserves_zoom_and_frame_when_switching(qapp):
     dlg.close()
 
 
+def test_zoom_indicator_tracks_wheel_and_keeps_canvases_aligned(qapp):
+    from PyQt6.QtCore import QPoint, QPointF, Qt
+    from PyQt6.QtGui import QWheelEvent
+    from locales import trans
+    from ui.styles import get_theme_style
+
+    previous_style = qapp.styleSheet()
+    qapp.setStyleSheet(get_theme_style("light"))
+    dlg, _ = _dialog(qapp)
+    try:
+        dlg.resize(1280, 820)
+        dlg._set_focus_layout(False, True)
+        qapp.processEvents()
+        assert dlg.source_canvas.mapTo(dlg, QPoint()).y() == \
+            dlg.result_canvas.mapTo(dlg, QPoint()).y()
+        assert dlg.source_canvas.height() == dlg.result_canvas.height()
+
+        dlg.btn_100.click()
+        assert dlg.lbl_zoom.text() == trans.t("retouch_zoom_level").format(percent=100)
+        point = QPointF(dlg.result_canvas.rect().center())
+        wheel = QWheelEvent(point, point, QPoint(), QPoint(0, 120),
+                            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                            Qt.ScrollPhase.NoScrollPhase, False)
+        qapp.sendEvent(dlg.result_canvas, wheel)
+        assert dlg.lbl_zoom.text() == trans.t("retouch_zoom_level").format(percent=125)
+    finally:
+        dlg._allow_close = True
+        dlg.close()
+        qapp.setStyleSheet(previous_style)
+
+
 def test_dialog_keeps_16bit_through_display_and_apply(qapp):
     from PyQt6.QtWidgets import QApplication
     from controllers.output_manager import OutputRecord

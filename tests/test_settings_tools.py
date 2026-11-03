@@ -213,6 +213,47 @@ def test_settings_failure_does_not_partially_commit(settings_window):
     assert "disk full" in dialog.status.text()
     dialog.deleteLater()
 
+def test_registration_failure_policy_is_shared_and_persisted(settings_window, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from core.algorithms import resolve_registration_parameters
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils import settings_store
+
+    store = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_store, "get_settings", lambda: store)
+    window = settings_window
+    window._registration_parameters_by_method = {"openfocus": {"reference_frame": 4}}
+    window.current_alignment_method = lambda: "openfocus"
+    window.registration_parameters_for = lambda method: resolve_registration_parameters(
+        method, window._registration_parameters_by_method.get(method))
+    window.persist_settings = lambda: settings_store.save_parameter_memories(window)
+
+    dialog = AdvancedSettingsDialog(window)
+    dialog.combo_align_failure.setCurrentIndex(dialog.combo_align_failure.findData("fail"))
+    dialog.reject()
+    assert window.registration_parameters_for("openfocus")["failure_policy"] == "continue"
+
+    dialog = AdvancedSettingsDialog(window)
+    dialog.combo_align_failure.setCurrentIndex(dialog.combo_align_failure.findData("fail"))
+    dialog._apply()
+    restored = SimpleNamespace()
+    settings_store.load_parameter_memories(restored)
+    for method in ("homography", "ecc", "openfocus", "both"):
+        parameters = resolve_registration_parameters(
+            method, restored._registration_parameters_by_method.get(method))
+        assert parameters["failure_policy"] == "fail"
+    assert restored._registration_parameters_by_method["openfocus"]["reference_frame"] == 4
+
+
+def test_advanced_settings_preserve_high_saved_thread_limit(settings_window):
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    settings_window.thread_count = 300
+    dialog = AdvancedSettingsDialog(settings_window)
+    dialog._apply()
+    assert settings_window.thread_count == 300
+
+
 
 def test_settings_invalid_text_prevents_any_commit(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog

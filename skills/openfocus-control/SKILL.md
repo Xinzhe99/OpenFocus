@@ -1,7 +1,7 @@
 ---
 name: openfocus-control
 description: Operate the live OpenFocus desktop GUI as a user would. Use for loading focus stacks, fusing, comparing methods, retouching, batch jobs, exports, screenshots and any menu action, including dialogs and file pickers. Prefer this over guessing CLI flags when the task needs the running application.
-allowed-tools: Read, Grep, Glob, Bash(openfocus *), Bash(python main.py *), Bash(python -c *)
+allowed-tools: Read, Grep, Glob, Bash(openfocus *), Bash(python main.py *), Bash(python -c *), Bash(python tools/agent_gui_smoke.py *), Bash(python tools/agent_action_sweep.py *)
 ---
 
 # OpenFocus GUI control
@@ -21,6 +21,10 @@ openfocus ctl ping --launch       # launch only if no window is running
 
 From a checkout use `python main.py` and `python main.py ctl <command>`.
 The control server starts automatically with the desktop GUI.
+
+The PyPI wheel is headless and cannot launch the desktop app. To use its
+`openfocus ctl` against a separately running desktop window, first install
+the transport dependency with `pip install PyQt6`.
 
 Never connect to a window you did not start unless the user asked for it. The
 token in `<user-data>/control.json` grants full GUI input. Keep one agent per
@@ -84,7 +88,6 @@ popup[0]/...
 ```bash
 # semantic actions
 openfocus ctl ui.click --path 'main/.../btn_render'
-openfocus ctl ui.click --path 'main/.../btn_color' --async   # slot opens a modal
 openfocus ctl ui.set --path 'main/.../combo_fusion' --value dct
 openfocus ctl ui.set --path 'main/.../chk_quick_preview' --value true
 openfocus ctl ui.focus --path 'main/.../view_source'
@@ -131,7 +134,8 @@ openfocus ctl output.export --path 'F:/out/result.tif' --index 0
 ```
 
 `render.start --wait` exits when the returned `render_id` reaches `done`,
-`error`, `cancelled` or `discarded`; only `done` is success. Without it poll
+`error`, `cancelled` or `discarded`, or when a newer render supersedes it;
+only completion of the requested render is success. Without it poll
 `render.state` until `busy` is false and compare `render_id`. `output.export`
 bypasses the file picker and writes through the normal export path (labels,
 scale bar, bit depth).
@@ -153,8 +157,8 @@ uses temporary disk space, and does not produce original-frame depth maps.
 Sensor defect repair and denoising are configured in the settings dialog or
 the batch dialog. Inspect the controls and allow mask inspection to finish
 before accepting. Alignment diagnostic collection is in Advanced Settings
-(`dialog.open --name settings`, `chk_collect_alignment_report`); the report
-viewer remains a menu action. Collection requires alignment.
+(`dialog.open --name settings`, `chk_collect_alignment_report`); use the
+`btn_alignment_report` button in that dialog to view it. Collection requires alignment.
 
 For a layered TIFF, right-click the desired result in the output list, select
 the layered TIFF export from `ui.menu`, answer the file picker, and wait for
@@ -264,9 +268,10 @@ token or enable control on a shared account.
 - `python tools/agent_gui_smoke.py --launch` runs the pipeline end to end
   (load, render, export, depth, compare, retouch apply, wipe, labels/color,
   project, grouped batch, file picker) and exits non-zero on failure.
-- `python tools/agent_action_sweep.py --launch` triggers enabled actions exposed
-  by `ui.actions` and resolves their dialogs/pickers; disabled, updater and
-  exit actions are reported as skipped. Context menus are outside its scope.
+- `python tools/agent_action_sweep.py --launch` triggers enabled fixed catalog
+  actions and resolves their dialogs/pickers; disabled, updater, exit,
+  language switches and dynamic recent items are skipped. Context menus are
+  outside its scope.
 - Both tools are destructive: `--launch` starts a private instance with its
   own data and settings directory, discovery file, control socket and
   single-instance name. Attaching to an already-running window requires

@@ -38,6 +38,7 @@ from locales import trans
 from utils import scalebar
 from widgets.stepper import StepperSpinBox
 from utils.image_utils import cv2_to_pixmap, to_display_uint8
+from utils.ui_utils import size_dialog_to_content
 from widgets.magnifier_label import MagnifierLabel
 
 CALIBRATION_METADATA = "metadata"
@@ -50,7 +51,6 @@ class ScaleBarDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(trans.t("dialog_scalebar_title"))
-        self.setMinimumSize(880, 560)
         self._apply_style()
 
         window = parent
@@ -64,19 +64,26 @@ class ScaleBarDialog(QDialog):
         root.setContentsMargins(14, 12, 14, 10)
         root.setSpacing(8)
 
-        self.header = QLabel(self._header_text())
-        self.header.setObjectName("mutedLabel")
-        self.header.setWordWrap(True)
-        root.addWidget(self.header)
-
-        body = QHBoxLayout()
-        body.setSpacing(14)
-        root.addLayout(body, 1)
-
-        # ---- left: scrollable form --------------------------------------
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        content = QWidget()
+        content_col = QVBoxLayout(content)
+        content_col.setContentsMargins(0, 0, 0, 0)
+        content_col.setSpacing(8)
+        scroll.setWidget(content)
+        root.addWidget(scroll, 1)
+
+        self.header = QLabel(self._header_text())
+        self.header.setObjectName("mutedLabel")
+        self.header.setWordWrap(True)
+        content_col.addWidget(self.header)
+
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        content_col.addLayout(body, 1)
+
+        # ---- left: form -------------------------------------------------
         form_host = QWidget()
         form_col = QVBoxLayout(form_host)
         form_col.setContentsMargins(0, 0, 8, 0)
@@ -252,8 +259,7 @@ class ScaleBarDialog(QDialog):
         text_form.addRow("", self.font_note)
 
         form_col.addStretch()
-        scroll.setWidget(form_host)
-        body.addWidget(scroll, 1)
+        body.addWidget(form_host, 1)
 
         # ---- right: preview ---------------------------------------------
         preview_col = QVBoxLayout()
@@ -335,7 +341,12 @@ class ScaleBarDialog(QDialog):
         self.target_combo.currentIndexChanged.connect(self._target_changed)
         self.output_combo.currentIndexChanged.connect(self._target_changed)
         self._target_changed()
+        if (self.calibration_mode() == CALIBRATION_METADATA
+                and self.effective_px_um() is None):
+            self.mode_combo.setCurrentIndex(
+                self.mode_combo.findData(CALIBRATION_MANUAL))
         self._refresh_preview()
+        size_dialog_to_content(self, scroll)
 
     # ------------------------------------------------------------------
     def _header_text(self) -> str:

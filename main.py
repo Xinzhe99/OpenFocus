@@ -3508,6 +3508,7 @@ class OpenFocus(QMainWindow):
         self.refresh_algorithm_parameters()
         self.refresh_registration_parameters()
         c.btn_reset.setText(trans.t('btn_reset'))
+        c.btn_render_settings.setText(trans.t('render_settings_title'))
         c.btn_select_all.setText(trans.t('btn_select_all'))
         c.btn_select_all.setToolTip(trans.t('btn_select_all_hint'))
         c.btn_select_none.setText(trans.t('btn_select_none'))
@@ -3539,6 +3540,9 @@ class OpenFocus(QMainWindow):
             self.lbl_result_title.setText(trans.t('panel_output'))
         set_panel_label(c.chk_quick_preview, trans.t('chk_quick_preview'),
                         trans.t('chk_quick_preview_hint'))
+        dialog = getattr(self, '_render_settings_dialog', None)
+        if dialog is not None:
+            dialog.retranslate()
         
         # ROI Button
         if hasattr(self, 'btn_preview_roi'):

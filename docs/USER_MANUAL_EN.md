@@ -257,6 +257,9 @@ a rounded 1-2-5 length (~12% of the image width) with stroked, readable
 text. The CLI supports it via `--scale-bar` (auto calibration) and
 `--scale-um <um/px>`.
 
+When the selected target has no usable metadata, the dialog starts in manual
+calibration mode and waits for a valid pixel size.
+
 The preview draws at the target's native pixel geometry before fitting it to
 the viewport. Fit, 100%, pan and frame navigation change only the view. Apply
 commits one undoable edit; Cancel preserves the previous calibration. Historical
@@ -625,9 +628,8 @@ various image types.
 
 - **Algorithm**: a 3D U-Net that predicts the fused luma for the whole stack
   in one pass; Cb/Cr are taken from the source frame closest to that luma
-- **Best for**: stacks where the focus sweep is unordered or the frames were
-  not captured as a continuous series
-- **Advantages**: order-independent, no parameters, colour stays in gamut
+- **Best for**: neural fusion of a complete focus stack
+- **Advantages**: no parameters; colour stays in gamut. Frame order can affect the result.
 - **Note**: 6M parameters; larger stacks benefit from GPU acceleration
 
 ### StackMFF V2 (deep learning)
@@ -722,7 +724,7 @@ filename stems are retained, with the extension of the format you select.
 | DCT | Medium | Good | Textures |
 | DTCWT | Medium | Very Good | Complex scenes |
 | GFG-FGF | Fast | Good | Focus regions |
-| StackMFF (V1) | Slow (GPU) | Not benchmarked here | Unordered or discontinuous stacks |
+| StackMFF (V1) | Slow (GPU) | Not benchmarked here | Whole-stack neural fusion; order can affect results |
 | StackMFF V2 | Fast (GPU) | Not benchmarked here | Continuous sweeps with a tiny model |
 | StackMFF V3 | Slow (GPU) | Excellent | Best quality |
 | OpenFocus A | Depends on stack | Depends on stack | Multiscale focused-pixel selection |
@@ -736,6 +738,7 @@ the selected area with surrounding context; **Full-image fusion** checks the
 whole-image result and lets you inspect another area without rendering again.
 ROI results can differ from full-image results because exposure statistics and
 some algorithms depend on the image extent.
+Full-image fusion is selected by default.
 
 Use **Preview size (px)** above the right panes to choose a square size from
 160 to 960 pixels, by dragging the slider or entering a number. All methods
@@ -1359,7 +1362,7 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--suggest-duplicates` | Report nearly identical adjacent frames for manual review; does not fuse or exclude them |
 | `--input, -i` | Image folder(s), video file, one or more image files, or multi-page TIFF |
 | `--output, -o` | Output image path (extension sets the format) |
-| `--output-dir, -d` | Batch mode: fuse every input folder, writing `<folder>.<ext>` per stack |
+| `--output-dir, -d` | Batch mode: fuse every input folder, writing `<folder>.png` per stack |
 | `--resume` | Batch mode: skip folders whose output already exists |
 | `--config FILE` | Batch mode: JSON per-folder overrides, e.g. `{"stackA": {"method": "dct"}}` |
 | `--method, -m` | `stackmffv3` (default), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
@@ -1587,19 +1590,23 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 
 #### Windows SmartScreen Warning on First Launch
 
-The released binaries are unsigned. Download them from
-**https://openfocus.top** rather than a third-party mirror, then click
-**More info → Run anyway**. The first launch after unzipping may take
-30–60 seconds.
+Windows code-signing status varies by release; see the release notes. Signing
+is not guaranteed. Download the build from **https://openfocus.top** rather
+than a third-party mirror. If SmartScreen warns, click **More info → Run
+anyway**. The first launch after unzipping may take 30–60 seconds.
 
 #### macOS Says the App "Cannot Be Opened" or "Is Damaged"
 
-The app is unsigned and not notarized. Download the Apple Silicon build from
-**https://openfocus.top**, move `OpenFocus.app` to Applications, then run:
+macOS builds are not notarized. Download the Apple Silicon build from
+**https://openfocus.top**. If you installed from the DMG by moving
+`OpenFocus.app` to Applications, run:
 
 ```bash
 xattr -cr /Applications/OpenFocus.app
 ```
+
+If you installed from a terminal with `install.sh`, the app is in
+`~/Applications`; run `xattr -cr ~/Applications/OpenFocus.app` instead.
 
 On macOS 15 Sequoia and later, right-clicking the app and choosing **Open** no
 longer bypasses Gatekeeper. If you prefer the UI, try to open the app once,

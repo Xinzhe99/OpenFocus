@@ -70,11 +70,7 @@ class SourceCanvas(_Canvas):
         return self._pixmap is not None and not self._pixmap.isNull()
 
     def set_region_enabled(self, enabled: bool) -> None:
-        """Show and accept the inspection square only while a ROI is used.
-
-        A full-frame comparison ignores the region, so leaving a draggable
-        square on the source implied it changed the result.
-        """
+        """Show and accept the inspection square when enabled."""
         enabled = bool(enabled)
         if enabled == self._region_enabled:
             return
@@ -273,6 +269,9 @@ class DetailCanvas(_Canvas):
         # crop read as "the full frame was not really rendered".
         self._view_mode = "detail"
         self._selected = False
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(trans.t("compare_candidate_hint"))
         self.setFixedSize(DEFAULT_DETAIL_SIZE, DEFAULT_DETAIL_SIZE)
 
     def set_selected(self, selected: bool) -> None:
@@ -358,5 +357,9 @@ class DetailCanvas(_Canvas):
             painter.setPen(QPen(QColor(theme["accent"]), 3))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+        if self.hasFocus():
+            painter.setPen(QPen(QColor(theme["accent"]), 2, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(self.rect().adjusted(5, 5, -6, -6))
         self._label(painter, theme)
         painter.end()

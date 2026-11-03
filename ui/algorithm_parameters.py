@@ -13,10 +13,12 @@ class AlgorithmParameterPanel(QWidget):
 
     valuesChanged = pyqtSignal(dict)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, hidden_parameters=()):
         super().__init__(parent)
         self.editors = {}
         self._specs = ()
+        self._hidden_parameters = frozenset(hidden_parameters)
+        self._hidden_values = {}
         self._form = QFormLayout(self)
         self._form.setContentsMargins(0, 0, 0, 0)
         self._form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -30,6 +32,9 @@ class AlgorithmParameterPanel(QWidget):
             raise ValueError(f"Unknown parameters: {', '.join(sorted(unknown))}")
         resolved = {spec.key: validate_parameter(spec, supplied.get(spec.key, spec.default))
                     for spec in specs}
+        self._hidden_values = {spec.key: resolved[spec.key] for spec in specs
+                               if spec.key in self._hidden_parameters}
+        specs = tuple(spec for spec in specs if spec.key not in self._hidden_parameters)
         if specs == self._specs:
             for spec in specs:
                 editor = self.editors[spec.key]
@@ -88,7 +93,7 @@ class AlgorithmParameterPanel(QWidget):
 
 
     def values(self):
-        result = {}
+        result = dict(self._hidden_values)
         for spec in self._specs:
             editor = self.editors[spec.key]
             value = editor.currentData() if spec.choices else editor.value()

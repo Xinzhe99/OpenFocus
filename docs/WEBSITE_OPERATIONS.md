@@ -105,9 +105,9 @@ page and asset request therefore counts as a Worker invocation.
 - The primary download button picks the visitor's OS (Windows/macOS/Linux).
 - The language menu writes a `lang` cookie before navigating, so a manual
   choice beats `Accept-Language`.
-- After load the page fetches `/api/latest` and updates the version label,
-  file sizes and card links to `/download/latest/<kind>`. If that request
-  fails, the static fallback links in `site_content.py` remain usable.
+- After load the page fetches `/api/latest` and updates the version label and
+  file sizes. Download links use `/download/latest/<kind>` even without
+  JavaScript, so they follow the latest release through the Worker.
 - No third-party scripts, fonts or analytics.
 
 ---
@@ -171,9 +171,9 @@ template resolves `{{dotted.key}}` placeholders; missing keys fail the build.
   registries in `core/algorithms.py`; check before changing them.
 - Media is copied from `assets/` (app screenshot, README posters, benchmark
   chart) — do not duplicate binaries under `site/`.
-- `RELEASE` in `site_content.py` is the **no-JavaScript fallback**. The live
-  page and installers read the latest release at runtime, but the static links,
-  JSON-LD version and sizes should still be bumped when a release is cut.
+- `site_content.py` derives the static version from `constants.APP_VERSION`.
+  Static download links use the Worker's latest endpoints; rebuild and
+  redeploy to refresh no-JavaScript version labels and JSON-LD.
 - The English and Chinese slogans are intentionally different: the English
   line is "Every pixel, its sharpest frame."; the Chinese line is
   "每一像素，皆取自最清晰的一帧。"
@@ -257,10 +257,11 @@ Steps:
 4. If the mirrored tag is still GitHub's latest release, publish metadata for
    those four exact assets to `openfocus-meta/latest-release.json` only after
    their uploads complete. Older manual runs never replace that manifest.
-5. If the mirrored tag is not the latest release, skip pruning. Otherwise list
-   the bucket and delete only older keys matching the four recognized
-   `OpenFocus-v*-...` asset names. Current assets, the manifest and unrelated
-   objects are kept.
+5. Wait 330 seconds for the five-minute Worker metadata cache to expire. If
+   the mirrored tag is still the latest release, delete older keys matching
+   the four recognized `OpenFocus-v*-...` asset names. This keeps range
+   requests using cached metadata working while releases change. Current
+   assets, the manifest and unrelated objects are kept.
 
 The workflow does not purge the Worker cache. Successful GitHub metadata can
 remain cached for five minutes per data center. During a GitHub outage the
@@ -307,8 +308,9 @@ redeploy is needed.
      fallback and does not occur for a range request;
    - `https://openfocus.top/` shows the new version within 5 minutes per data
      center.
-5. Bump `RELEASE` in `site/site_content.py` and redeploy the site (optional,
-   but keeps the no-JS fallback and JSON-LD current).
+5. Rebuild and redeploy the site when the static version labels and JSON-LD
+   need refreshing. They are generated from `constants.APP_VERSION`; the
+   download links themselves follow the latest release without a redeploy.
 
 ---
 

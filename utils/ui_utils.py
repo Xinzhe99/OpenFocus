@@ -2,9 +2,47 @@ import os
 import sys
 from typing import Optional
 
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QApplication, QMessageBox, QStyle
 from PyQt6.QtGui import QPixmap, QImage
 
+
+def size_dialog_to_content(dialog, scroll, preferred_width=0):
+    """Fit a dialog's scrollable content and fixed controls to its screen.
+
+    Call after populating the scroll area's widget and initializing visibility.
+    Content that does not fit remains reachable through the scroll area.
+    """
+    content = scroll.widget()
+    layout = dialog.layout()
+    content.ensurePolished()
+    dialog.ensurePolished()
+    content.layout().activate()
+    layout.activate()
+    hint = content.sizeHint().expandedTo(content.minimumSizeHint())
+    scroll_hint = scroll.sizeHint()
+    dialog_hint = dialog.sizeHint()
+    extra_width = max(0, dialog_hint.width() - scroll_hint.width())
+    extra_height = max(0, dialog_hint.height() - scroll_hint.height())
+
+    screen = dialog.screen() or QApplication.primaryScreen()
+    if screen is None:
+        dialog.resize(max(preferred_width, hint.width() + extra_width),
+                      hint.height() + extra_height)
+        return
+
+    available = screen.availableGeometry()
+    style = dialog.style()
+    frame = style.pixelMetric(QStyle.PixelMetric.PM_DefaultFrameWidth, None, dialog)
+    title = style.pixelMetric(QStyle.PixelMetric.PM_TitleBarHeight, None, dialog)
+    max_width = max(1, available.width() - 2 * frame)
+    max_height = max(1, available.height() - title - 2 * frame)
+    width = min(max_width, max(preferred_width, hint.width() + extra_width))
+    content_width = max(1, width - extra_width)
+    content_layout = content.layout()
+    height = hint.height()
+    if content_layout.hasHeightForWidth():
+        height = max(height, content_layout.totalHeightForWidth(content_width))
+    dialog.resize(width, min(max_height, height + extra_height))
 
 def resource_path(*relative_parts: str) -> str:
     """Get the absolute path for resources, compatible with PyInstaller.

@@ -9,7 +9,7 @@
 <p align="center"><strong>모든 초점면을 하나의 올인포커스 이미지로.</strong></p>
 
 <p align="center">
-  열 가지 합성 알고리즘, 네 가지 정합 모드, 그리고 매크로·현미경·산업용 스택을 위한 소스 고정 리터치 작업 공간. 16비트를 끝까지 유지하고, 헤드리스 CLI와 12개 언어 UI를 제공합니다.
+  열 가지 합성 알고리즘, 다섯 가지 정합 옵션(정합 안 함 포함), 그리고 매크로·현미경·산업용 스택을 위한 소스 고정 리터치 작업 공간. 16비트를 끝까지 유지하고, 헤드리스 CLI와 12개 언어 UI를 제공합니다.
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@
 ## 📢 소식
 
 > [!NOTE]
-> **v1.74.0** — OpenFocus A/B/C 합성과 빠른 정합을 업데이트했습니다. 데스크톱 앱이 인증된 로컬 Agent 채널을 자동으로 시작하므로, `openfocus ctl`은 특별한 실행 플래그 없이 실행 중인 창을 조작할 수 있습니다.
+> **v1.75.0** — 그룹 합성, 재사용 가능한 처리 워크플로, 투명 PNG 스택, 정합 진단, 강화된 깊이 내보내기, 새로워진 데스크톱 워크플로를 제공합니다. 지원 입력과 제한은 변경 기록을 참고하세요.
 
 이전 릴리스는 [변경 기록](../../CHANGELOG.md)에서 확인할 수 있습니다.
 
@@ -106,12 +106,12 @@
 
 ### 방식 비교
 
-모든 방식을 한 번에 렌더링하고 같은 크롭에서 나란히 확인한 뒤, 가장 좋은 결과를 새 출력으로 채택하거나 매개변수를 메인 창으로 되돌릴 수 있습니다.
+기본적으로 각 방식으로 전체 이미지를 합성하며, 소스 확인 사각형은 전체 이미지 계산을 반복하지 않고 계속 조작할 수 있습니다. 그다음 같은 크롭에서 결과를 나란히 보고 가장 좋은 결과를 새 출력으로 채택하거나 매개변수를 메인 창으로 되돌릴 수 있습니다.
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="여러 합성 방식의 나란한 비교" width="100%" /></picture></a>
+<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="여덟 가지 합성 방식의 나란한 비교" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -120,7 +120,7 @@
 
 ### 깊이 맵과 3D
 
-여러 초점 척도로 픽셀별 초점 위치를 추정하고, 연구용 색상 맵과 TIFF 메타데이터의 물리 Z 보정, 텍스처가 있는 OBJ 표면 내보내기를 지원합니다.
+일곱 가지 깊이 지원 방식으로 픽셀별 초점 위치를 추정하고, 연구용 색상 맵, 물리 Z 수동 보정(시작값과 단계, TIFF 메타데이터는 XY 보정만 제공), 텍스처가 있는 OBJ 표면 내보내기를 지원합니다.
 
 </td>
 <td width="54%">
@@ -229,9 +229,9 @@ TIFF 메타데이터 또는 직접 입력으로 보정하고, 실제 글꼴과 �
 | macOS Apple Silicon(M1–M4) | `OpenFocus-*-macos.dmg` | 디스크 이미지(Applications로 드래그) |
 | macOS Apple Silicon(M1–M4) | `OpenFocus-*-macos-arm64.zip` | 포터블(압축 해제) |
 
-앱은 서명되지 않았으므로 첫 실행 때 보안 경고가 나타날 수 있습니다. **Windows**는 "추가 정보 → 실행"을 선택합니다(첫 실행에 30–60초 걸릴 수 있음). **macOS**는 오른쪽 클릭 → "열기"를 선택하거나 터미널에서 `xattr -cr /Applications/OpenFocus.app`을 실행합니다.
+Windows 빌드의 서명 상태는 릴리스 노트에 명시되어 있습니다. macOS 빌드는 공증되지 않아 첫 실행 때 보안 경고가 나타날 수 있습니다. **Windows**는 "추가 정보 → 실행"을 선택합니다(첫 실행에 30–60초 걸릴 수 있음). **macOS**는 터미널에서 `xattr -cr /Applications/OpenFocus.app`을 실행하거나, 앱을 한 번 열어 본 뒤 **시스템 설정 → 개인정보 보호 및 보안**에서 "그래도 열기"를 허용합니다(macOS 15부터는 오른쪽 클릭 → "열기"로 Gatekeeper를 우회할 수 없습니다).
 
-터미널에서도 설치할 수 있습니다. 먼저 macOS 또는 Linux 명령을 `--dry-run`으로 확인한 뒤 플래그를 빼고 실행하세요. Linux에는 헤드리스 CLI가 설치되고, macOS 빌드는 Apple Silicon이 필요하며 `~/Applications`에 설치됩니다.
+터미널에서도 설치할 수 있습니다. 먼저 macOS 또는 Linux 명령을 `--dry-run`으로 확인한 뒤 플래그를 빼고 실행하세요. Linux에는 헤드리스 CLI가 설치되고, macOS 빌드는 Apple Silicon이 필요하며 DMG의 앱은 `/Applications`에, 터미널 설치는 `~/Applications`에 설치됩니다.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run

@@ -30,6 +30,7 @@ SITE = ROOT / "site"
 DIST = SITE / "dist"
 ASSETS = DIST / "assets"
 
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SITE))
 from site_content import LOCALES, ORIGIN, RELEASE, REPO, MANUAL  # noqa: E402
 
@@ -75,11 +76,11 @@ def render_downloads(locale: dict) -> str:
     cards = []
     for card in locale["download"]["cards"]:
         kind = esc(card["kind"])
-        size = esc(card["size"])
+        size = f" · {esc(card['size'])}" if card.get("size") else ""
         kind_attr = f' data-kind="{esc(card["kind_id"])}"' if card.get("kind_id") else ""
         cards.append(
             '<a class="plat" href="{url}"{kind_attr} rel="noopener">'
-            "<b>{os}</b><span>{kind} · {size}</span><i>{action} →</i></a>".format(
+            "<b>{os}</b><span>{kind}{size}</span><i>{action} →</i></a>".format(
                 url=esc(card["url"]),
                 kind_attr=kind_attr,
                 os=esc(card["os"]),

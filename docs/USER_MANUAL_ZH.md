@@ -83,7 +83,7 @@ OpenFocus 是一款面向科研人员、工程师和图像处理从业者的专�
 安装完成后，通过以下方式启动 OpenFocus：
 
 1. **Windows（可执行包）**：双击 OpenFocus 快捷方式或可执行文件
-2. **macOS**：把 `OpenFocus.app` 拖入"应用程序"后双击；未签名版本若被拦截，请先在 **系统设置 → 隐私与安全性** 中点 **仍要打开**，或执行 `xattr -cr /Applications/OpenFocus.app`（macOS 15 起右键"打开"不再绕过 Gatekeeper）
+2. **macOS**：把 DMG 中的 `OpenFocus.app` 拖入"应用程序"后双击；未公证版本若被拦截，请先在 **系统设置 → 隐私与安全性** 中点 **仍要打开**，或执行 `xattr -cr /Applications/OpenFocus.app`；用 `install.sh` 安装到 `~/Applications` 的，执行 `xattr -cr ~/Applications/OpenFocus.app`（macOS 15 起右键"打开"不再绕过 Gatekeeper）
 3. **Linux**：不提供桌面构建，请安装 pip 包并使用 `openfocus` 命令行
 4. **Python 源码**：在激活的 conda 环境中执行 `python main.py`
 
@@ -233,6 +233,8 @@ OpenFocus 界面分为三个主要区域：
 12%）、带描边的清晰文字。图形长度与文字标注始终描述同一距离；图像过小时
 明确提示无法放置，而不是画一条与文字不符的短条。CLI 通过 `--scale-bar`
 （自动标定）和 `--scale-um <µm/px>` 支持。
+
+所选目标没有可用元数据时，窗口默认选择手动标定，并等待输入有效像素尺寸。
 
 再次移除请用 **工具 → 比例尺 → 删除比例尺**：*从源图像栈* / *从结果*
 会把对话框中的"应用到"收窄到仍保留的一侧，*全部删除* 则直接关闭比例尺。
@@ -525,8 +527,8 @@ OpenFocus 提供十种融合算法（外加"仅对齐"的配准模式），各�
 ### StackMFF（V1，深度学习）
 
 - **算法**：3D U-Net 一次前向预测整栈融合亮度；Cb/Cr 取自亮度最接近的源帧
-- **适用**：对焦扫描顺序不固定、或帧并非连续采集的栈
-- **优势**：层序无关、无需参数、颜色保持在色域内
+- **适用**：需要对完整焦点栈进行神经网络融合的场景
+- **优势**：无需参数、颜色保持在色域内；帧顺序可能影响结果
 - **注意**：约 6M 参数；较大图像栈建议使用 GPU
 
 ### StackMFF V2（深度学习）
@@ -603,7 +605,7 @@ A/B/C 两者都默认开启（它们没有内置曝光标定）；其余算法�
 | DCT | 中 | 好 | 纹理 |
 | DTCWT | 中 | 很好 | 复杂场景 |
 | GFG-FGF | 快 | 好 | 焦点区域 |
-| StackMFF（V1） | 慢（GPU） | 此处未做基准测试 | 无序或不连续的图像栈 |
+| StackMFF（V1） | 慢（GPU） | 此处未做基准测试 | 整栈神经网络融合；帧序可能影响结果 |
 | StackMFF V2 | 快（GPU） | 此处未做基准测试 | 使用极小模型的连续扫描 |
 | AI 融合（StackMFF V3） | 慢（GPU） | 极好 | 最高质量 |
 | OpenFocus A | 取决于图像栈 | 取决于图像栈 | 多尺度清晰像素选择 |
@@ -615,6 +617,7 @@ A/B/C 两者都默认开启（它们没有内置曝光标定）；其余算法�
 **ROI 局部预览（快速）**融合选区及周边区域；**整图融合对照**计算整幅图像，
 随后移动检查区域可直接查看已有结果，无须重新融合。由于曝光统计和部分算法
 依赖图像范围，ROI 预览可能与整图结果不同。
+默认选择**整图融合对照**。
 
 右侧预览上方的 **预览窗口大小 (px)** 可通过滑块或数字输入调整，范围为
 160–960 像素。所有方法使用相同尺寸，并按可用宽度自动换行；下次打开会
@@ -1295,15 +1298,17 @@ openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2
 
 #### Windows 首次启动弹出 SmartScreen 警告
 
-发布包未做数字签名。请从 **https://openfocus.top** 下载，而不要使用第三方镜像，然后点击 **更多信息 → 仍要运行**。解压后的首次启动可能需要 30–60 秒。
+Windows 构建的签名状态因具体 release 而异，见发布说明；不保证签名。请从 **https://openfocus.top** 下载，而不要使用第三方镜像；若出现 SmartScreen 警告，点击 **更多信息 → 仍要运行**。解压后的首次启动可能需要 30–60 秒。
 
 #### macOS 提示"无法打开"或"已损坏"
 
-应用未签名未公证。请从 **https://openfocus.top** 下载 Apple Silicon 构建，将 `OpenFocus.app` 移入"应用程序"后，在终端执行：
+macOS 构建未公证。请从 **https://openfocus.top** 下载 Apple Silicon 构建。若通过 DMG 将 `OpenFocus.app` 移入"应用程序"，在终端执行：
 
 ```bash
 xattr -cr /Applications/OpenFocus.app
 ```
+
+若通过终端 `install.sh` 安装到 `~/Applications`，执行 `xattr -cr ~/Applications/OpenFocus.app`。
 
 macOS 15 Sequoia 起，右键点击应用选择 **打开** 不再绕过 Gatekeeper。若想走图形界面，请先尝试打开一次，再到 **系统设置 → 隐私与安全性** 中点 **仍要打开**。发布的 macOS 包面向 Apple Silicon（M1/M2/M3/M4）；Intel Mac 请从源码运行。
 

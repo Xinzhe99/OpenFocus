@@ -144,6 +144,14 @@ class FlowPanel(QWidget):
         self._flow.addWidget(widget)
         return widget
 
+    def sizeHint(self):  # noqa: N802
+        # QWidget caches a layout's size hint; after wrapping changes, that
+        # stale height can keep a dialog taller than the screen.
+        return self._flow.minimumSize()
+
+    def minimumSizeHint(self):  # noqa: N802
+        return self._flow.minimumSize()
+
     def hasHeightForWidth(self):  # noqa: N802
         return True
 

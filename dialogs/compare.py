@@ -138,7 +138,7 @@ class CompareDialog(QDialog):
             # parameter strip and disabled Run button honest.
             self.param_scroll.setVisible(False)
             self.btn_run.setEnabled(False)
-            self.status_label.setText(box.toolTip() if box is not None else "")
+            self.status_label.setText(box.property("unavailableReason") if box is not None else "")
         for _control in ("btn_run", "btn_adopt_params", "btn_adopt_output",
                          "btn_retry", "btn_verify", "align_combo",
                          "mode_combo", "view_combo", "registration_parameter_panel"):
@@ -164,7 +164,9 @@ class CompareDialog(QDialog):
                 continue
             reason = fusion_unavailable_reason(spec, available)
             box.setEnabled(not reason)
-            box.setToolTip(reason)
+            box.setProperty("unavailableReason", reason)
+            hint = trans.t(spec.hint_key) if spec.hint_key else ""
+            box.setToolTip("\n\n".join(text for text in (hint, reason) if text))
 
     def _update_source_summary(self):
         """State which frames are compared, including excluded ones."""
@@ -203,7 +205,15 @@ class CompareDialog(QDialog):
         return settings
 
     def _build_ui(self):
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        root = QVBoxLayout(content)
+        root.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
         root.setSpacing(8)
         methods_row = QHBoxLayout()
         methods_host = QWidget()
@@ -249,8 +259,12 @@ class CompareDialog(QDialog):
         self.source_summary.setWordWrap(True)
         root.addWidget(self.source_summary)
 
-        settings = QHBoxLayout()
-        settings.addWidget(QLabel(trans.t("group_registration")))
+        settings = FlowPanel(h_spacing=12, v_spacing=6)
+        registration_group = QWidget()
+        registration_row = QHBoxLayout(registration_group)
+        registration_row.setContentsMargins(0, 0, 0, 0)
+        registration_label = QLabel(trans.t("group_registration"))
+        registration_row.addWidget(registration_label)
         self.align_combo = QComboBox()
         for spec in registration_algorithms():
             self.align_combo.addItem(trans.t(spec.label_key), spec.id)
@@ -258,35 +272,47 @@ class CompareDialog(QDialog):
                          if hasattr(self.window_main, "current_alignment_method") else "none")
         self.align_combo.setCurrentIndex(max(0, self.align_combo.findData(current_align)))
         self.align_combo.currentIndexChanged.connect(self._alignment_changed)
-        settings.addWidget(self.align_combo)
-        settings.addSpacing(12)
-        settings.addWidget(QLabel(trans.t("compare_mode")))
+        registration_label.setBuddy(self.align_combo)
+        registration_row.addWidget(self.align_combo)
+        settings.add(registration_group)
+        mode_group = QWidget()
+        mode_row = QHBoxLayout(mode_group)
+        mode_row.setContentsMargins(0, 0, 0, 0)
+        mode_label = QLabel(trans.t("compare_mode"))
+        mode_row.addWidget(mode_label)
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem(trans.t("compare_roi"), True)
         self.mode_combo.addItem(trans.t("compare_full"), False)
+        self.mode_combo.addItem(trans.t("compare_roi"), True)
         self.mode_combo.setToolTip(trans.t("compare_mode_hint"))
         self.mode_combo.currentIndexChanged.connect(self._mode_changed)
-        settings.addWidget(self.mode_combo)
-        settings.addSpacing(12)
+        mode_label.setBuddy(self.mode_combo)
+        mode_row.addWidget(self.mode_combo)
+        settings.add(mode_group)
         # Viewing is independent of computing: a full result can be inspected
         # as a detail crop or as the whole frame without re-fusing.
-        settings.addWidget(QLabel(trans.t("compare_view")))
+        view_group = QWidget()
+        view_row = QHBoxLayout(view_group)
+        view_row.setContentsMargins(0, 0, 0, 0)
+        view_label = QLabel(trans.t("compare_view"))
+        view_row.addWidget(view_label)
         self.view_combo = QComboBox()
         self.view_combo.addItem(trans.t("compare_view_detail"), "detail")
         self.view_combo.addItem(trans.t("compare_view_full"), "full")
         self.view_combo.setToolTip(trans.t("compare_view_hint"))
         self.view_combo.currentIndexChanged.connect(self._view_changed)
-        settings.addWidget(self.view_combo)
-        settings.addStretch()
+        view_label.setBuddy(self.view_combo)
+        view_row.addWidget(self.view_combo)
+        settings.add(view_group)
         self.fit_button = QPushButton(trans.t("retouch_fit"))
-        settings.addWidget(self.fit_button)
+        settings.add(self.fit_button)
         self.fullscreen_button = QPushButton(trans.t("compare_fullscreen"))
         self.fullscreen_button.clicked.connect(self._toggle_fullscreen)
-        settings.addWidget(self.fullscreen_button)
-        root.addLayout(settings)
+        settings.add(self.fullscreen_button)
+        root.addWidget(settings)
         self._registration_drafts = {}
         self._editing_alignment = None
-        self.registration_parameter_panel = AlgorithmParameterPanel(self)
+        self.registration_parameter_panel = AlgorithmParameterPanel(
+            self, hidden_parameters=('failure_policy',))
         self.registration_parameter_panel.valuesChanged.connect(self._registration_parameters_changed)
         root.addWidget(self.registration_parameter_panel)
         self._sync_registration_parameters()
@@ -308,6 +334,7 @@ class CompareDialog(QDialog):
         self.preview_note = QLabel(trans.t("compare_preview_note"))
         self.preview_note.setWordWrap(True)
         self.preview_note.setObjectName("mutedLabel")
+        self.preview_note.setVisible(False)
         root.addWidget(self.preview_note)
 
         self.split = QSplitter(Qt.Orientation.Horizontal)
@@ -365,6 +392,10 @@ class CompareDialog(QDialog):
         size_label.setBuddy(self.preview_size_spin.lineEdit())
         size_row.addWidget(self.preview_size_spin)
         right_layout.addLayout(size_row)
+        candidate_hint = QLabel(trans.t("compare_candidate_hint"))
+        candidate_hint.setWordWrap(True)
+        candidate_hint.setObjectName("mutedLabel")
+        right_layout.addWidget(candidate_hint)
         self.preview_size_slider.valueChanged.connect(
             self._preview_size_changed)
         self.preview_size_spin.valueChanged.connect(self._preview_size_changed)
@@ -431,7 +462,7 @@ class CompareDialog(QDialog):
         close_button = QPushButton(trans.t("btn_close"))
         close_button.clicked.connect(self.reject)
         actions.add(close_button)
-        root.addWidget(actions)
+        outer.addWidget(actions)
         self._layout_timer.start(0)
 
     def _initial_params(self, method):
@@ -443,6 +474,10 @@ class CompareDialog(QDialog):
         for method in self._checks:
             params = self._initial_params(method)
             self._method_params[method] = params
+            specs = get_fusion(method).parameters
+            if not specs:
+                self.param_widgets[method] = {}
+                continue
             group = QFrame(self.param_host)
             group.setFrameShape(QFrame.Shape.StyledPanel)
             group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -453,15 +488,19 @@ class CompareDialog(QDialog):
             font = title.font()
             font.setBold(True)
             title.setFont(font)
-            row.addWidget(title)
+            row.addWidget(title, 0, Qt.AlignmentFlag.AlignTop)
             panel = AlgorithmParameterPanel(group)
-            panel.set_parameters(get_fusion(method).parameters, params)
+            panel.set_parameters(specs, params)
             panel.valuesChanged.connect(lambda values, m=method: self._params_changed(m, values))
-            row.addWidget(panel)
+            row.addWidget(panel, 0, Qt.AlignmentFlag.AlignTop)
             self.param_widgets[method] = panel.editors
             self.param_host.add(group)
             self._param_rows[method] = group
             group.hide()
+        height = max((group.sizeHint().height() for group in self._param_rows.values()),
+                     default=0)
+        for group in self._param_rows.values():
+            group.setFixedHeight(height)
 
     def _selected_methods(self):
         return [m for m, check in self._checks.items() if check.isChecked()]
@@ -470,7 +509,7 @@ class CompareDialog(QDialog):
         selected = self._selected_methods()
         for method, group in self._param_rows.items():
             group.setVisible(method in selected)
-        self.param_scroll.setVisible(bool(selected))
+        self.param_scroll.setVisible(any(method in self._param_rows for method in selected))
         self.param_host.relayout()
         self._layout_timer.start(0)
         self._request_changed()
@@ -495,7 +534,7 @@ class CompareDialog(QDialog):
         self._editing_alignment = method
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
-        self.registration_parameter_panel.setVisible(bool(specs))
+        self.registration_parameter_panel.setVisible(bool(self.registration_parameter_panel.editors))
         self._shared['registration_parameters'] = dict(self._registration_drafts[method])
 
     def _registration_parameters_changed(self, values):
@@ -517,9 +556,6 @@ class CompareDialog(QDialog):
     def _mode_changed(self, _index):
         roi = bool(self.mode_combo.currentData())
         self.preview_note.setVisible(roi)
-        # Full-frame comparison ignores the square; hiding it stops a drag
-        # from looking like it changed the full result.
-        self.ref_canvas.set_region_enabled(roi)
         self._stale_methods.update(self._results)
         self._results.clear()
         self._full_results.clear()
@@ -745,11 +781,11 @@ class CompareDialog(QDialog):
         self.btn_verify.setEnabled(available and self._result_is_current(method))
         self.btn_retry.setVisible(bool(method) and method in self._errors)
         self.btn_retry.setEnabled(available and method in self._errors)
-        overview = self.view_combo.model().item(1)
+        overview = self.view_combo.model().item(self.view_combo.findData("full"))
         if overview is not None:
             overview.setEnabled(not bool(self.mode_combo.currentData()))
         if self.mode_combo.currentData() and self.view_combo.currentData() == "full":
-            self.view_combo.setCurrentIndex(0)
+            self.view_combo.setCurrentIndex(self.view_combo.findData("detail"))
         eligible = (bool(method) and method in self._selected_methods()
                     and self._result_is_current(method)
                     and self._worker is None and not self._closing
@@ -963,6 +999,13 @@ class CompareDialog(QDialog):
         if method and event.type() == QEvent.Type.MouseButtonPress:
             self._select_method(str(method))
             return True
+        if method and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+                if not event.isAutoRepeat():
+                    self._select_method(str(method))
+                return True
+        if method and event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+            watched.update()
         return super().eventFilter(watched, event)
 
     def _toggle_fullscreen(self):

@@ -9,7 +9,7 @@
 <p align="center"><strong>每个焦平面，一张全清晰图像。</strong></p>
 
 <p align="center">
-  十种融合算法、四种配准方式，以及为微距、显微与工业图像栈准备的源帧修饰工作区。端到端 16 位、无界面 CLI，界面支持十二种语言。
+  十种融合算法、五种配准选项（含不配准），以及为微距、显微与工业图像栈准备的源帧修饰工作区。端到端 16 位、无界面 CLI，界面支持十二种语言。
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@
 ## 📢 最新动态
 
 > [!NOTE]
-> **v1.74.0** — 更新了 OpenFocus A/B/C 融合与快速配准。桌面版现在会自动启动受令牌保护的本地 Agent 通道，`openfocus ctl` 无需特殊启动参数即可操作正在运行的窗口。
+> **v1.75.0** — 分组融合、可复用的处理工作流、透明 PNG 图像栈、对齐诊断、增强的深度导出，以及刷新的桌面工作流。支持的输入与功能限制见更新日志。
 
 更早的版本见 [更新日志](../../CHANGELOG.md)。
 
@@ -106,12 +106,12 @@
 
 ### 方法对比
 
-一次渲染所有方法，在同一裁剪区域并排检查，再把胜出的结果采用为新输出，或把参数回填到主窗口。
+默认对整图执行每种方法的融合，源图检查方框保持可交互，不重复整图计算；随后在同一裁剪区域并排比较结果，再把胜出的结果采用为新输出，或把参数回填到主窗口。
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="多种融合方法并排对比" width="100%" /></picture></a>
+<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="八种融合方法的并排对比" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -120,7 +120,7 @@
 
 ### 深度图与 3D
 
-用多种焦点度量逐像素估计焦点位置，支持科研配色、从 TIFF 元数据读取物理 Z 标定，并可导出带纹理的 OBJ 曲面。
+用七种支持焦点位置图的方法逐像素估计焦点位置，支持科研配色、手动物理 Z 标定（起点与步长；TIFF 元数据只提供 XY 标定），并可导出带纹理的 OBJ 曲面。
 
 </td>
 <td width="54%">
@@ -229,10 +229,10 @@
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | 磁盘映像（拖入“应用程序”） |
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | 便携版（解压即用） |
 
-应用未签名、未公证，首次启动可能触发系统安全提示：**Windows** 选择“更多信息 → 仍要运行”（首次启动约需 30–60 秒）；**macOS** 执行 `xattr -cr /Applications/OpenFocus.app`，或先尝试打开一次，再到 **系统设置 → 隐私与安全性** 中点“仍要打开”（macOS 15 起右键“打开”不再绕过 Gatekeeper）。
+Windows 版本的签名状态以具体 release 的发布说明为准；macOS 版本未公证，首次启动可能触发系统安全提示：**Windows** 选择“更多信息 → 仍要运行”（首次启动约需 30–60 秒）；**macOS** 执行 `xattr -cr /Applications/OpenFocus.app`，或先尝试打开一次，再到 **系统设置 → 隐私与安全性** 中点“仍要打开”（macOS 15 起右键“打开”不再绕过 Gatekeeper）。
 
 也可以从终端安装。先预览 macOS 或 Linux 的安装命令，再去掉 `--dry-run` 实际执行。
-Linux 上安装的是无界面 CLI；macOS 构建需要 Apple Silicon，并安装到 `~/Applications`。
+Linux 上安装的是无界面 CLI；macOS 构建需要 Apple Silicon，DMG 中的应用安装到 `/Applications`，终端安装到 `~/Applications`。
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run

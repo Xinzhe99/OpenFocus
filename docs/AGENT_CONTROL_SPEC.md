@@ -45,7 +45,7 @@ At startup the server writes `<user-data>/control.json`:
 ```json
 {
   "schema": "openfocus/control/1",
-  "version": "1.74.0",
+  "version": "1.75.0",
   "pid": 12345,
   "socket": "OpenFocus-control-12345",
   "token": "…",
@@ -170,7 +170,7 @@ list's context menu through `ui.menu`).
 | Command | Args | Result |
 |---|---|---|
 | `project.save` | `path?` | `{saved:true, path}`; without `path` saves the open project |
-| `project.open` | `path`, `force?` | `{loading:true, path, discarded_unsaved}` |
+| `project.open` | `path`, `force?` | `{loading:true, path, load_id, discarded_unsaved}` |
 
 Both commands share the GUI's project lifecycle: `project.save` updates
 `project_path` and clears the dirty marker, `project.open` refuses with
@@ -250,7 +250,7 @@ copy a path from `ui.find`/`ui.tree`; never guess a bare duplicate name.
 `ui.tree`/`ui.find` nodes include `geometry` and `global_origin`. Use these
 to aim `ui.mouse` at a canvas: coordinates in `ui.mouse` are relative to the
 addressed widget. `ui.context` is the level indicator: `level` is `main`,
-`dialog` or `modal`; `active.root` is the topmost input target; `focus.path`
+`dialog`, `popup` or `modal`; `active.root` is the topmost input target; `focus.path`
 is the keyboard target. This is how an agent knows whether it is typing into
 the main window, a dialog, or a message box.
 
@@ -265,9 +265,10 @@ multi-page TIFF, updates, help, …).
 | `batch.state` | — | `{busy, results, error}` |
 | `batch.cancel` | — | `{cancelling:true}` |
 
-Start a batch by opening the dialog (`dialog.open batch`), filling it through
-`ui.set`, and clicking Start (or `dialog.accept`); the server forwards the
-accepted settings to `BatchManager` just like the menu flow. `dialog.open batch`
+Start a batch by opening the dialog (`dialog.open --name batch`), filling it
+through `ui.set`, and clicking Start (or `dialog.accept`); both paths run the
+dialog's validation before the server forwards settings to `BatchManager`.
+`dialog.open --name batch`
 also accepts `folders` (a list of stack folders) and `output_dir` (switches to
 the custom output folder). For grouped processing, set `chk_grouping` to true
 before `group_size_spin`/`group_overlap_spin`; those controls are hidden while
@@ -283,14 +284,13 @@ and produces no original-frame depth, provenance or aligned-frame export.
   user can read it, so a shared account also shares control of the GUI.
 - The channel exposes file reads/writes the GUI itself can perform; it does not
   add privileges beyond the user's own.
-- Install scope: the pip wheel is headless-only — `openfocus gui` and the
-  `ctl` transport (PyQt6) report a clear error there instead of failing
-  silently. Use the packaged desktop build (download it from
-  **https://openfocus.top**) or a source checkout for GUI control.
-  The windowed desktop executable can return CLI output through inherited
-  standard handles, such as pipes supplied by a subprocess. If no usable
-  handle is supplied, output is discarded; no console is opened. The headless
-  wheel needs PyQt6 installed separately to use `ctl`.
+- Install scope: the pip wheel is headless-only and cannot launch the desktop
+  app. Use the packaged desktop build (download it from
+  **https://openfocus.top**) or a source checkout to start the GUI. To use the
+  wheel's `ctl` command against that running GUI, install PyQt6 separately
+  with `pip install PyQt6`. The windowed desktop executable can return CLI
+  output through inherited standard handles, such as pipes supplied by a
+  subprocess; without usable handles it discards output and opens no console.
 
 ## 7. CLI additions
 
@@ -312,6 +312,8 @@ are redirected to stderr, and events are written to the stream saved at CLI
 startup. Batch folder events and result summaries are emitted with
 `json.dumps`, so names with quotes or backslashes cannot corrupt the stream.
 `--version` and `--describe` work without an input.
+`describe` also lists available CLI subcommands and long options, including
+grouped fusion, cleanup, depth and calibration exports.
 
 `ctl --launch` starts the GUI when no live discovery file exists.
 `OPENFOCUS_CONTROL_FILE` isolates the discovery file for tests or parallel

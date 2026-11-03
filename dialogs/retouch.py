@@ -516,6 +516,15 @@ class _RetouchCanvas(QWidget):
 
     def wheelEvent(self, event) -> None:
         delta = event.angleDelta().y()
+        modifiers = event.modifiers()
+        if modifiers & (Qt.KeyboardModifier.ControlModifier
+                        | Qt.KeyboardModifier.MetaModifier):
+            # Some trackpads supply pixel deltas instead of angle deltas.
+            delta = delta or event.pixelDelta().y()
+            if delta:
+                self.dlg._bump_diameter(1.25 if delta > 0 else 0.8)
+            event.accept()
+            return
         if delta == 0:
             return
         factor = 1.25 if delta > 0 else 0.8
@@ -620,6 +629,7 @@ class RetouchDialog(QDialog):
         self._update_titles()
         self._update_brush_labels()
         self._update_controls()
+        self._refresh_help_text()
         self._focus_signal = QApplication.instance().focusChanged
         self._focus_signal.connect(self._on_focus_changed)
         self.finished.connect(lambda _result: self._save_geometry())
@@ -678,8 +688,6 @@ class RetouchDialog(QDialog):
         self.btn_fit.clicked.connect(self._fit)
         self.btn_100 = QPushButton(trans.t("retouch_zoom_100"))
         self.btn_100.clicked.connect(self._zoom_100)
-        self.lbl_zoom = QLabel("100%")
-        self.lbl_zoom.setMinimumWidth(48)
         self.btn_layout = QPushButton(trans.t("retouch_layout_focus_short"))
         self.btn_layout.setToolTip(trans.t("retouch_layout_focus"))
         self.btn_layout.clicked.connect(
@@ -694,8 +702,7 @@ class RetouchDialog(QDialog):
         self.btn_peek.released.connect(lambda: self._release_preview("source"))
         for widget in (self.btn_undo, self.btn_redo, self.btn_save_checkpoint,
                        self.btn_load_checkpoint, self.btn_fit, self.btn_100,
-                       self.btn_layout, self.lbl_zoom, self.btn_peek,
-                       self.btn_before):
+                       self.btn_layout, self.btn_peek, self.btn_before):
             toolbar.add(widget)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -722,8 +729,17 @@ class RetouchDialog(QDialog):
         self.lbl_result_header.setObjectName("mutedLabel")
         self.lbl_result_header.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_zoom = QLabel(trans.t("retouch_zoom_level").format(percent=100))
+        self.lbl_zoom.setObjectName("retouchZoom")
+        self.lbl_zoom.setProperty("controlId", "retouch_zoom")
+        result_heading = QHBoxLayout()
+        result_heading.setContentsMargins(0, 0, 0, 0)
+        result_heading.addWidget(self.lbl_result_header, 1)
+        result_heading.addWidget(self.lbl_zoom, 0, Qt.AlignmentFlag.AlignRight)
         self.result_canvas = _RetouchCanvas(self, "result")
-        right_layout.addWidget(self.lbl_result_header)
+        right_layout.addLayout(result_heading)
+        self.lbl_zoom.ensurePolished()
+        self.lbl_source_header.setMinimumHeight(self.lbl_zoom.sizeHint().height())
         right_layout.addWidget(self.result_canvas, 1)
         self.splitter.addWidget(right_panel)
 
@@ -745,7 +761,8 @@ class RetouchDialog(QDialog):
         self.lbl_help = QLabel(trans.t("retouch_help"))
         self.lbl_help.setWordWrap(True)
         self.lbl_help.setObjectName("mutedLabel")
-        self.lbl_help.setToolTip(trans.t("retouch_shortcuts"))
+        self.lbl_help.setToolTip(trans.t("retouch_shortcuts") + "\n"
+                                 + trans.t("retouch_brush_wheel_hint"))
         side.addWidget(self.lbl_help)
         # The full key list is reachable as a visible entry, not only by
         # hovering the help paragraph.
@@ -896,13 +913,11 @@ class RetouchDialog(QDialog):
 
         status = QHBoxLayout()
         status.setContentsMargins(6, 0, 6, 0)
-        self.lbl_zoom_status = QLabel("100%")
         self.lbl_coords = QLabel("")
         self.lbl_frame_status = QLabel("")
         self.lbl_state = QLabel("")
         self.lbl_state.setSizePolicy(QSizePolicy.Policy.Expanding,
                                      QSizePolicy.Policy.Preferred)
-        status.addWidget(self.lbl_zoom_status)
         status.addWidget(self.lbl_coords)
         status.addWidget(self.lbl_frame_status, 1)
         status.addWidget(self.lbl_state)
@@ -1277,8 +1292,7 @@ class RetouchDialog(QDialog):
     def _update_status(self) -> None:
         dpr = max(1.0, self.result_canvas.devicePixelRatioF())
         percent = int(round(self.view.scale * dpr * 100))
-        self.lbl_zoom.setText(f"{percent}%")
-        self.lbl_zoom_status.setText(f"{percent}%")
+        self.lbl_zoom.setText(trans.t("retouch_zoom_level").format(percent=percent))
         if self.cursor_pos is None:
             self.lbl_coords.setText("")
         else:
@@ -1329,7 +1343,7 @@ class RetouchDialog(QDialog):
         from utils.ui_utils import show_message_box
         show_message_box(
             self, trans.t("retouch_shortcuts_help"),
-            trans.t("retouch_shortcuts"))
+            trans.t("retouch_shortcuts") + "\n" + trans.t("retouch_brush_wheel_hint"))
 
     def _refresh_help_text(self) -> None:
         """The help line follows the active tool (it used to stay on source)."""
@@ -1337,7 +1351,7 @@ class RetouchDialog(QDialog):
             return
         key = {"source": "retouch_help", "restore": "retouch_help_restore",
                "exposure": "retouch_exposure_hint"}[self.doc.tool]
-        self.lbl_help.setText(trans.t(key))
+        self.lbl_help.setText(trans.t(key) + "\n" + trans.t("retouch_brush_wheel_hint"))
 
     def _sync_tool_buttons(self) -> None:
         self._syncing_tools = True
@@ -1367,7 +1381,7 @@ class RetouchDialog(QDialog):
             trans.t("retouch_opacity").format(self.num_opacity.value()))
 
     def _bump_diameter(self, factor: float) -> None:
-        """Resize the brush from the keyboard.
+        """Resize the brush from a shortcut.
 
         `_NumberRow.setValue` intentionally does not emit valueChanged (it is
         also used to seed the controls), so calling it alone left the document

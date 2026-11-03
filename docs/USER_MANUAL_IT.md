@@ -88,7 +88,7 @@ Il primo avvio apre la finestra di benvenuto, dove puoi scegliere il tema e cari
 2. Configura le impostazioni di fusione nel pannello destro
 3. La registrazione parte su **ECC**; scegli **Nessun allineamento** se i fotogrammi sono già allineati
 4. Regola la dimensione del kernel se necessario
-5. *(facoltativo)* Seleziona **Anteprima rapida** per provare prima i parametri su una bozza ridotta
+5. *(facoltativo)* Apri **Impostazioni di rendering** e seleziona **Anteprima rapida** per provare prima i parametri su una bozza ridotta
 6. Fai clic su **Avvia render** per iniziare l'elaborazione
 7. Esporta i risultati
 
@@ -115,7 +115,7 @@ Il pannello destro raccoglie tutte le opzioni di configurazione, dall'alto verso
 
 1. **Impostazioni di fusione**: selezione dell'algoritmo e dei relativi parametri
 2. **Impostazioni di registrazione**: attivazione o disattivazione dei metodi di allineamento
-3. **Pulsanti di azione**: Reimposta e Avvia render
+3. **Pulsanti di azione**: Avvia render e le azioni secondarie Reimposta, Impostazioni di rendering e rendering di tutti i metodi. La finestra delle impostazioni raccoglie anteprima rapida, ordine dei fotogrammi, abbinamento dell'esposizione, rimozione della deriva di luminosità e nitidezza dell'output
 4. **Elenco immagini sorgente**: tutte le immagini caricate con i nomi dei file
 5. **Elenco output**: i risultati generati
 
@@ -182,6 +182,8 @@ Una piccola curva sopra il cursore di navigazione sorgente mostra la nitidezza d
 I software di microscopia (ZEN, NIS-Elements, ImageJ/Fiji) esportano spesso un intero stack Z come UN unico file TIFF multipagina. OpenFocus legge ogni pagina di quel file come fotogramma individuale dello stack: trascina o apri il file e lo stack appare completo (i fotogrammi sono denominati `<file>_page_001` e così via). I TIFF a pagina singola si comportano esattamente come prima. Funziona anche il contrario: **File → Salva stack → (Stack registrato / Stack di input) → Salva come TIFF multipagina** scrive l'intero stack in un unico `.tif`, conservando la profondità a 16 bit.
 
 ### Barra di scala (figure per pubblicazioni)
+
+Se la destinazione scelta non ha metadati utilizzabili, viene selezionata la calibrazione manuale ed è richiesta una dimensione pixel valida.
 
 Strumenti → Barra di scala… configura una barra di scala impressa nelle immagini esportate. La dimensione del pixel (µm/px) viene rilevata automaticamente dai metadati TIFF (convenzione `unit=micron` di ImageJ, `PhysicalSizeX` di OME-TIFF o unità di risoluzione esplicita in centimetri), così gli stack di microscopia (inclusi i TIFF multipagina) si calibrano da soli. La risoluzione di stampa (72/300 dpi e simili) *non* viene deliberatamente trattata come calibrazione, e un valore inserito manualmente prevale sempre sui metadati rilevati: una barra sbagliata ma credibile in una figura è peggio di nessuna barra. Scegli l'angolo e il colore (Auto inverte rispetto allo sfondo); la finestra mostra un'anteprima dal vivo. Con la barra attiva, ogni esportazione (immagine singola, stack in cartelle, TIFF multipagina, GIF, esporta tutto, batch) porta una barra in stile pubblicazione: una lunghezza arrotondata della serie 1-2-5 (~12% della larghezza dell'immagine) con testo contornato e leggibile. La CLI la supporta con `--scale-bar` (calibrazione automatica) e `--scale-um <um/px>`.
 
@@ -343,7 +345,7 @@ Per ispezionare un rendering, attiva **Impostazioni → Impostazioni avanzate �
 
 1. Nel pannello destro, individua il gruppo **Registrazione**
 2. Scegli un metodo dall'elenco: **Nessun allineamento**, **OpenFocus (veloce)**, **Allinea (ECC)**, **Allinea (omografia)** o **Omografia → ECC** (concatenato)
-3. Per OpenFocus (veloce), scegli la gestione dei fotogrammi rifiutati e un fotogramma di riferimento; anche ECC e omografia offrono **Gestione fotogrammi rifiutati**
+3. Per OpenFocus (veloce), scegli un fotogramma di riferimento. In **Impostazioni → Impostazioni avanzate → Registrazione**, scegli **Gestione fotogrammi rifiutati**; la modifica viene applicata ai metodi di registrazione
 4. **Raccogli diagnostica di allineamento** ora si trova in Impostazioni avanzate (vedi sopra)
 
 ### Quando usare la registrazione
@@ -402,8 +404,8 @@ OpenFocus offre dieci algoritmi di fusione (più una modalità solo allineamento
 ### StackMFF (V1, apprendimento profondo)
 
 - **Algoritmo**: una U-Net 3D che predice la luminanza fusa dell'intero stack in una passata; Cb/Cr provengono dal fotogramma sorgente più vicino a quella luminanza
-- **Ideale per**: stack in cui la scansione di fuoco non è ordinata o i fotogrammi non sono stati ripresi come serie continua
-- **Vantaggi**: indipendente dall'ordine, nessun parametro, colori entro la gamma
+- **Ideale per**: fusione neurale di un intero stack di messa a fuoco
+- **Vantaggi**: nessun parametro e colori entro la gamma; l'ordine dei fotogrammi può influire sul risultato
 - **Nota**: 6 M di parametri; gli stack grandi traggono vantaggio dalla GPU
 
 ### StackMFF V2 (apprendimento profondo)
@@ -449,7 +451,7 @@ CLI: `--depth-smoothing VALUE` (B) e `--blend-smoothing VALUE` (A, C).
 
 **Le opzioni di luminosità sono per metodo.** *Abbina l'esposizione prima della fusione* e *Rimuovi la deriva di luminosità* sono ricordate separatamente per ogni metodo di fusione, perché rispondono a una domanda specifica dello stack più che a una preferenza globale. Entrambe sono attive per impostazione predefinita in OpenFocus A/B/C (che non hanno calibrazione dell'esposizione integrata); gli altri metodi mantengono i valori storici (abbinamento esposizione attivo, rimozione deriva disattivata). Cambiando metodo vengono mostrati i valori di quel metodo, che sopravvivono al riavvio. **Reimposta** cancella i valori memorizzati di luminosità, levigatura e raggio di tutti i metodi.
 
-**Nitidezza dell'output fuso** applica una leggera maschera di contrasto dopo la fusione, prima che il risultato venga convertito nella profondità di output. È disattivata per impostazione predefinita e può essere attivata nelle opzioni di fusione principali o batch; il flag CLI equivalente è `--sharpen-output`. Influisce sull'immagine fusa, non sui fotogrammi registrati né sulle mappe di profondità. Può rendere i bordi più distinti, ma può amplificare rumore e aloni. Viene salvata con il progetto e ricordata tra le sessioni.
+**Nitidezza dell'output fuso** applica una leggera maschera di contrasto dopo la fusione, prima che il risultato venga convertito nella profondità di output. È disattivata per impostazione predefinita e può essere attivata in **Impostazioni di rendering** o nelle opzioni batch; il flag CLI equivalente è `--sharpen-output`. Influisce sull'immagine fusa, non sui fotogrammi registrati né sulle mappe di profondità. Può rendere i bordi più distinti, ma può amplificare rumore e aloni. Viene salvata con il progetto e ricordata tra le sessioni.
 
 ### Solo allineamento (nessuna fusione)
 
@@ -470,7 +472,7 @@ Seleziona **Solo allineamento (nessuna fusione)** per registrare lo stack e aggi
 | DCT | Media | Buona | Texture |
 | DTCWT | Media | Molto buona | Scene complesse |
 | GFG-FGF | Veloce | Buona | Regioni a fuoco |
-| StackMFF (V1) | Lenta (GPU) | Non valutata qui | Stack non ordinati o discontinui |
+| StackMFF (V1) | Lenta (GPU) | Non valutata qui | Fusione neurale dello stack; l'ordine può influire sul risultato |
 | StackMFF V2 | Veloce (GPU) | Non valutata qui | Scansioni continue con un modello minuscolo |
 | StackMFF V3 | Lenta (GPU) | Eccellente | Massima qualità |
 | OpenFocus A | Dipende dallo stack | Dipende dallo stack | Selezione multi-scala dei pixel a fuoco |
@@ -478,6 +480,9 @@ Seleziona **Solo allineamento (nessuna fusione)** per registrare lo stack e aggi
 | OpenFocus C | Dipende dallo stack | Dipende dallo stack | Ricostruzione multi-scala guidata dalla profondità |
 
 Apri **Strumenti → Confronto metodi** per regolare più metodi in modo indipendente. Nome, etichette dei parametri e controlli di ogni metodo restano insieme quando la finestra si restringe. Le modifiche aggiornano automaticamente l'anteprima. **Anteprima ROI (veloce)** fonde l'area selezionata con il contesto circostante; **Fusione immagine intera** verifica il risultato sull'intera immagine e permette di ispezionare un'altra area senza renderizzare di nuovo. I risultati ROI possono differire da quelli a immagine intera perché le statistiche di esposizione e alcuni algoritmi dipendono dall'estensione dell'immagine.
+La **fusione immagine intera** è selezionata per impostazione predefinita.
+
+Un suggerimento visibile spiega come selezionare o deselezionare un risultato: fai clic su di esso oppure raggiungilo con `Tab` e premi `Invio` o `Spazio`.
 
 Usa **Dimensione anteprima (px)** sopra i riquadri di destra per scegliere una dimensione quadrata da 160 a 960 pixel, trascinando il cursore o inserendo un numero. Tutti i metodi usano la stessa dimensione e si adattano alla larghezza disponibile. La dimensione viene ricordata per la prossima apertura. Cambiarla mantiene l'ingrandimento corrente e regola il quadrato di ispezione intorno al centro, limitandolo ai bordi dell'immagine.
 
@@ -487,7 +492,7 @@ Trascina l'immagine sorgente con il tasto sinistro per spostare il quadrato bian
 
 ### Anteprima rapida (render di bozza)
 
-Regolare i parametri su stack grandi è lento a risoluzione piena. Seleziona **Anteprima rapida** sopra il pulsante di rendering: OpenFocus produce prima una bozza a metà della dimensione lineare (mai sotto 320 px sul lato lungo), in genere diverse volte più veloce, registrazione inclusa. Il messaggio di completamento (e il tooltip del risultato più recente) indica **Qualità: anteprima**, e la bozza **non** viene aggiunta alla cronologia output. Deseleziona la casella e renderizza di nuovo per ottenere il risultato a risoluzione piena. La modalità anteprima non si applica ai rendering ROI e non inquina mai la cache di allineamento a risoluzione piena.
+Regolare i parametri su stack grandi è lento a risoluzione piena. Apri **Impostazioni di rendering** e seleziona **Anteprima rapida**: OpenFocus produce prima una bozza a metà della dimensione lineare (mai sotto 320 px sul lato lungo), in genere diverse volte più veloce, registrazione inclusa. Il messaggio di completamento (e il tooltip del risultato più recente) indica **Qualità: anteprima**, e la bozza **non** viene aggiunta alla cronologia output. Deseleziona la casella e renderizza di nuovo per ottenere il risultato a risoluzione piena. La modalità anteprima non si applica ai rendering ROI e non inquina mai la cache di allineamento a risoluzione piena.
 
 ---
 
@@ -530,7 +535,7 @@ La fusione può ancora lasciare un difetto locale — un alone attorno a un bord
 1. Seleziona un output nell'elenco (funziona anche clic destro → *Ritocca risultato…*) e premi `Ctrl+T`. Senza selezione, un selettore elenca tutti i risultati e indica quali hanno fotogrammi sorgente registrati.
 2. Il fotogramma sorgente è a sinistra, il risultato a destra. Entrambi condividono zoom e posizione: la rotella zooma, il trascinamento con tasto destro o centrale (o Spazio+trascina) sposta, `F` adatta e `1` mostra il 100%.
 3. Scegli una miniatura, trascina il cursore dei fotogrammi o premi `,` / `.`. Un tratto è bloccato su quel fotogramma e sulle impostazioni correnti del pennello; il fotogramma non può cambiare finché il tratto non termina.
-4. Scegli **Pennello sorgente** (`B`) o **Pennello di ripristino** (`E`). Diametro, durezza e opacità hanno sia cursore sia campo numerico; `[` / `]` regola il diametro. Il pennello di ripristino riporta i pixel all'immagine che hai aperto, non a un output precedente.
+4. Scegli **Pennello sorgente** (`B`) o **Pennello di ripristino** (`E`). Diametro, durezza e opacità hanno sia cursore sia campo numerico; `[` / `]` regola il diametro. Con `Ctrl` e la rotella verso l'alto aumenti il diametro, verso il basso lo riduci. La rotella senza modificatori regola lo zoom. Il pennello di ripristino riporta i pixel all'immagine che hai aperto, non a un output precedente.
 5. Tieni premuto `Tab` per vedere il risultato prima di questa sessione e `Alt` per sbirciare il fotogramma sorgente. Il riferimento di nitidezza è facoltativo, copre solo la tela sorgente e usa una scala condivisa per tutti i fotogrammi.
 6. `Ctrl+Z` / `Ctrl+Y` annullano e ripristinano interi tratti. **Ripristina tutto…** è un'unica operazione annullabile. **Applica come nuovo output** aggiunge una voce chiamata `<nome> · Ritoccato N` e la seleziona; l'originale resta intatto. La nuova voce è contrassegnata come *Non esportata* finché non la esporti dalla finestra principale, e OpenFocus la protegge dall'eliminazione automatica dalla cronologia e dalla chiusura senza decisione.
 
@@ -809,7 +814,7 @@ Ad esempio, aggiungi `--align openfocus --alignment-report alignment.json` a un 
 | `--suggest-duplicates` | Segnala fotogrammi adiacenti quasi identici per la revisione manuale; non li fonde né li esclude |
 | `--input, -i` | Cartella/e di immagini, file video, uno o più file immagine o TIFF multipagina |
 | `--output, -o` | Percorso dell'immagine di output (l'estensione determina il formato) |
-| `--output-dir, -d` | Modalità batch: fonde ogni cartella di input scrivendo `<cartella>.<ext>` per stack |
+| `--output-dir, -d` | Modalità batch: fonde ogni cartella di input scrivendo `<cartella>.png` per stack |
 | `--resume` | Modalità batch: salta le cartelle il cui output esiste già |
 | `--config FILE` | Modalità batch: override JSON per cartella, ad es. `{"stackA": {"method": "dct"}}` |
 | `--method, -m` | `stackmffv3` (predefinito), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
@@ -986,15 +991,17 @@ Codici di uscita: `0` successo, `1` errore di elaborazione, `2` errore d'uso. `p
 
 #### Avviso di Windows SmartScreen al primo avvio
 
-I binari pubblicati non sono firmati. Scaricali da **https://openfocus.top** invece che da un mirror di terze parti, poi fai clic su **Ulteriori informazioni → Esegui comunque**. Il primo avvio dopo la decompressione può richiedere 30–60 secondi.
+La firma dei binari Windows dipende dalla release specifica (vedi le note di rilascio); la firma non è garantita. Scaricali da **https://openfocus.top** invece che da un mirror di terze parti. Se SmartScreen avvisa, fai clic su **Ulteriori informazioni → Esegui comunque**. Il primo avvio dopo la decompressione può richiedere 30–60 secondi.
 
 #### macOS segnala che l'app «non può essere aperta» o «è danneggiata»
 
-L'app non è firmata né notarizzata. Scarica la build Apple Silicon da **https://openfocus.top**, sposta `OpenFocus.app` in Applicazioni, poi esegui:
+La build macOS non è notarizzata. Scarica la build Apple Silicon da **https://openfocus.top**. Se installi dal DMG spostando `OpenFocus.app` in Applicazioni, esegui:
 
 ```bash
 xattr -cr /Applications/OpenFocus.app
 ```
+
+Se installi dal terminale con `install.sh`, l'app si trova in `~/Applications`; esegui `xattr -cr ~/Applications/OpenFocus.app`.
 
 oppure fai clic destro sull'app e scegli **Apri**. Le build macOS pubblicate sono per Apple Silicon (M1/M2/M3/M4); i Mac Intel possono eseguire dai sorgenti.
 

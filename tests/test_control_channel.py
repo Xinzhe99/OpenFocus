@@ -411,6 +411,9 @@ def test_describe_matches_registry(monkeypatch, tmp_path):
     assert {method["id"] for method in description["methods"]} == {
         spec.id for spec in fusion_algorithms()}
     assert "render.start" in description["control"]["commands"]
+    assert {"recipe", "retouch"} <= set(description["cli"]["subcommands"])
+    assert {"--group-size", "--group-overlap", "--defect-mask-path",
+            "--sensor-denoise", "--scale-bar", "--depth-map"} <= set(description["cli"]["options"])
     assert run_cli(["version"]) == 0
 
 
@@ -775,6 +778,50 @@ def test_project_open_sets_lifecycle_state(server, control_window, monkeypatch):
     assert control_window._project_dirty is False
 
 
+def test_batch_accept_validates_before_starting(server, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    warnings = []
+    started = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+    monkeypatch.setattr(server.window, "_start_batch_from_dialog",
+                        lambda dialog: started.append(True))
+    assert call(server, "dialog.open", name="batch")["ok"]
+    try:
+        result = call(server, "dialog.accept")
+        assert result["error"]["code"] == "invalid_argument"
+        assert warnings and not started
+    finally:
+        call(server, "dialog.close")
+
+
+def test_dialog_accept_reports_pending_mask_inspection(server):
+    assert call(server, "dialog.open", name="settings")["ok"]
+    dialog = server._dialogs["settings"]
+    dialog.sensor_cleanup._pending = True
+    try:
+        result = call(server, "dialog.accept")
+        assert result["error"]["code"] == "busy"
+        assert dialog.isVisible()
+    finally:
+        dialog.sensor_cleanup._pending = False
+        call(server, "dialog.close")
+
+
+def test_render_wait_rejects_a_newer_render_result(monkeypatch, capsys):
+    from core import cli
+    from core.control import client
+
+    monkeypatch.setattr(client, "request", lambda *args, **kwargs: {
+        "id": "1", "ok": True, "result": {"started": True, "render_id": 7}})
+    monkeypatch.setattr(client, "wait_for", lambda *args, **kwargs: {
+        "render_id": 8, "state": "done", "busy": False})
+    assert cli.run_cli(["ctl", "render.start", "--wait"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert not result["ok"]
+    assert "supersed" in result["error"]["message"].lower()
+
+
 def test_dialog_accept_refuses_disabled_commit_action(server, control_window):
     from PyQt6.QtWidgets import QDialog, QPushButton
 
@@ -792,10 +839,9 @@ def test_dialog_accept_refuses_disabled_commit_action(server, control_window):
         clicked = []
         dialog.btn_ok.setEnabled(True)
         dialog.btn_ok.clicked.connect(lambda: clicked.append(True))
-        # Keep the dialog open: only the commit routing is under test.
-        dialog.btn_ok.clicked.connect(lambda: None)
-        dialog.accept = lambda: None
-        call(server, "dialog.accept", title="Commit check")
+        dialog.btn_ok.clicked.connect(dialog.accept)
+        accepted = call(server, "dialog.accept", title="Commit check")
+        assert accepted["result"]["accepted"] is True
         assert clicked == [True]
     finally:
         dialog.deleteLater()

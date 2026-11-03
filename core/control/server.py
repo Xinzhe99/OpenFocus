@@ -1125,6 +1125,9 @@ class ControlServer(QObject):
     def _dialog_busy(dialog):
         if getattr(dialog, "_import_busy", False):
             return True
+        sensor = getattr(dialog, "sensor_cleanup", None)
+        if getattr(sensor, "_pending", False):
+            return True
         for attribute in ("_worker", "_export_worker"):
             worker = getattr(dialog, attribute, None)
             if worker is not None and hasattr(worker, "isRunning") \
@@ -1312,6 +1315,7 @@ class ControlServer(QObject):
     def _cmd_dialog_accept(self, args):
         from PyQt6.QtWidgets import QDialogButtonBox, QPushButton
         dialog = self._find_dialog(args)
+        title = dialog.windowTitle()
         if self._dialog_busy(dialog):
             raise ControlError("busy", "The dialog is still working",
                                "Poll dialog.list until busy is false, then retry.")
@@ -1324,7 +1328,11 @@ class ControlServer(QObject):
         apply_button = getattr(dialog, "btn_apply", None)
         if isinstance(apply_button, QPushButton) and apply_button.isEnabled():
             apply_button.click()
-        ok_button = getattr(dialog, "btn_ok", None)
+        # Batch's Start action validates before accepting; raw accept() would
+        # launch an unvalidated job.
+        ok_button = getattr(dialog, "btn_start", None)
+        if not isinstance(ok_button, QPushButton):
+            ok_button = getattr(dialog, "btn_ok", None)
         if not isinstance(ok_button, QPushButton):
             for box in dialog.findChildren(QDialogButtonBox):
                 ok_button = box.button(QDialogButtonBox.StandardButton.Ok)
@@ -1339,7 +1347,17 @@ class ControlServer(QObject):
             ok_button.click()
         else:
             dialog.accept()
-        return {"accepted": True, "title": dialog.windowTitle()}
+        try:
+            still_open = dialog.isVisible()
+        except RuntimeError:  # a delete-on-close dialog was destroyed
+            still_open = False
+        if still_open:
+            if self._dialog_busy(dialog):
+                raise ControlError("busy", "The dialog is still working",
+                                   "Poll dialog.list until busy is false, then retry.")
+            raise ControlError("invalid_argument", "The dialog did not accept its inputs",
+                               "Check the dialog for invalid inputs or required confirmation.")
+        return {"accepted": True, "title": title}
 
     def _cmd_dialog_reject(self, args):
         dialog = self._find_dialog(args)

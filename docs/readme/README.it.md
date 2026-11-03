@@ -9,7 +9,7 @@
 <p align="center"><strong>Ogni pixel, dal suo fotogramma più nitido.</strong></p>
 
 <p align="center">
-  Dieci algoritmi di fusione, quattro modalità di registrazione e uno spazio di ritocco legato alla sorgente per macro, microscopia e stack industriali. 16 bit end-to-end, una CLI senza interfaccia e un'interfaccia in dodici lingue.
+  Dieci algoritmi di fusione, cinque opzioni di allineamento (inclusa nessuna) e uno spazio di ritocco legato alla sorgente per macro, microscopia e stack industriali. 16 bit end-to-end, una CLI senza interfaccia e un'interfaccia in dodici lingue.
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@
 ## 📢 Novità
 
 > [!NOTE]
-> **v1.74.0** — Fusione OpenFocus A/B/C e allineamento rapido aggiornati. L'app desktop ora avvia automaticamente il proprio canale agente locale autenticato, quindi `openfocus ctl` può controllare la finestra in esecuzione senza flag di avvio speciali.
+> **v1.75.0** — Fusione raggruppata, flussi di elaborazione riutilizzabili, stack PNG trasparenti, diagnostica di allineamento, esportazioni di profondità migliorate e flusso desktop rinnovato. Consulta il registro delle modifiche per input supportati e limitazioni.
 
 Le versioni precedenti sono nel [registro delle modifiche](../../CHANGELOG.md).
 
@@ -106,7 +106,7 @@ Trascina il divisore tra un fotogramma e il risultato fuso per vedere esattament
 
 ### Confronto metodi
 
-Renderizza ogni metodo una volta, confrontali affiancati sullo stesso ritaglio, poi adotta il migliore come nuova uscita o copia i suoi parametri nella finestra principale.
+Per impostazione predefinita ogni metodo fonde l'immagine intera; il riquadro di ispezione della sorgente resta interattivo senza ripetere i calcoli sull'immagine intera. Poi confronta i risultati affiancati sullo stesso ritaglio e adotta il migliore come nuova uscita o copia i suoi parametri nella finestra principale.
 
 </td>
 <td width="54%">
@@ -120,7 +120,7 @@ Renderizza ogni metodo una volta, confrontali affiancati sullo stesso ritaglio, 
 
 ### Mappa di profondità e 3D
 
-Posizione di messa a fuoco per pixel con cinque misure, palette scientifiche, calibrazione Z fisica dai metadati TIFF ed esportazione OBJ texturizzata della superficie.
+Posizione di messa a fuoco per pixel con sette metodi compatibili con la profondità, palette scientifiche, calibrazione Z fisica manuale (inizio e passo; i metadati TIFF forniscono solo la calibrazione XY) ed esportazione OBJ texturizzata della superficie.
 
 </td>
 <td width="54%">
@@ -229,9 +229,9 @@ Scarica l'ultima build per Windows o macOS dal [sito di OpenFocus](https://openf
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Immagine disco (trascina in Applicazioni) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portatile (scompatta) |
 
-L'app non è firmata, quindi il primo avvio può mostrare un avviso di sicurezza: **Windows** SmartScreen → «Ulteriori informazioni» → «Esegui comunque» (il primo avvio può richiedere 30–60 s); **macOS** clic destro → Apri, oppure `xattr -cr /Applications/OpenFocus.app` nel Terminale.
+Lo stato della firma delle build Windows è indicato nelle note di versione. Le build macOS non sono notarizzate, quindi il primo avvio può mostrare un avviso: **Windows** SmartScreen → «Ulteriori informazioni» → «Esegui comunque» (il primo avvio può richiedere 30–60 s); **macOS** esegui `xattr -cr /Applications/OpenFocus.app` nel Terminale, oppure prova ad aprire l'app una volta e consentila in **Impostazioni di Sistema → Privacy e sicurezza → Apri comunque** (da macOS 15, clic destro → Apri non aggira più Gatekeeper).
 
-Per installare da terminale, visualizza prima l'anteprima del comando per macOS o Linux, poi eseguilo senza `--dry-run`. Su Linux installa la CLI senza interfaccia; le build macOS richiedono Apple Silicon e vengono installate in `~/Applications`.
+Per installare da terminale, visualizza prima l'anteprima del comando per macOS o Linux, poi eseguilo senza `--dry-run`. Su Linux installa la CLI senza interfaccia; le build macOS richiedono Apple Silicon; l'app del DMG si installa in `/Applications` e l'installazione da terminale in `~/Applications`.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run

@@ -17,7 +17,6 @@ from typing import Any, Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -49,6 +48,7 @@ from utils import (
 )
 from utils.label_model import Label, LabelSet, normalize_target
 from utils.validators import LabelConfig, parse_label_range
+from utils.ui_utils import size_dialog_to_content
 from locales import trans
 from widgets.stepper import StepperSpinBox
 
@@ -362,16 +362,6 @@ class LabelManager:
         window = self.window
         dialog = QDialog(window)
         dialog.setWindowTitle(trans.t('label_manage_title'))
-        dialog.setMinimumSize(820, 560)
-        screen = window.screen() if hasattr(window, "screen") else None
-        if screen is None:
-            screen = QApplication.primaryScreen()
-        if screen is not None:
-            available = screen.availableGeometry()
-            dialog.resize(min(1000, max(820, available.width() - 80)),
-                          min(700, max(560, available.height() - 100)))
-        else:
-            dialog.resize(1000, 700)
 
         from ui.styles import CURRENT_THEME
         dialog.setStyleSheet(get_add_label_dialog_style(CURRENT_THEME))
@@ -380,14 +370,24 @@ class LabelManager:
         root.setContentsMargins(14, 12, 14, 10)
         root.setSpacing(8)
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        content = QWidget()
+        content_col = QVBoxLayout(content)
+        content_col.setContentsMargins(0, 0, 0, 0)
+        content_col.setSpacing(8)
+        scroll.setWidget(content)
+        root.addWidget(scroll, 1)
+
         header = QLabel(self._header_text())
         header.setObjectName("mutedLabel")
         header.setWordWrap(True)
-        root.addWidget(header)
+        content_col.addWidget(header)
 
         body = QHBoxLayout()
         body.setSpacing(12)
-        root.addLayout(body, 1)
+        content_col.addLayout(body, 1)
 
         # ---- left: caption list ------------------------------------------
         left = QVBoxLayout()
@@ -421,9 +421,6 @@ class LabelManager:
         # ---- middle: form ------------------------------------------------
         middle = QVBoxLayout()
         middle.setSpacing(6)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         form_host = QWidget()
         form_col = QVBoxLayout(form_host)
         self._form_host = form_host
@@ -486,6 +483,7 @@ class LabelManager:
 
         text_form = _group('label_group_text')
         self.format_edit = QLineEdit("{value}")
+        self.format_edit.setProperty("controlId", "label_format_edit")
         self.format_edit.setToolTip(trans.t('label_format_hint'))
         text_form.addRow(trans.t('label_group_text'), self.format_edit)
         insert_button = QPushButton(trans.t('label_insert_value'))
@@ -562,8 +560,7 @@ class LabelManager:
             self._sync_background_color_control)
 
         form_col.addStretch()
-        scroll.setWidget(form_host)
-        middle.addWidget(scroll, 1)
+        middle.addWidget(form_host, 1)
         body.addLayout(middle, 2)
 
         # ---- right: preview ---------------------------------------------
@@ -634,7 +631,7 @@ class LabelManager:
         first_row = QHBoxLayout()
         first_row.addWidget(self._first_applicable)
         first_row.addStretch()
-        root.addLayout(first_row)
+        content_col.addLayout(first_row)
 
         # ---- bottom: fixed actions --------------------------------------
         self._dialog_error = QLabel("")
@@ -685,6 +682,7 @@ class LabelManager:
         # initial refresh the dialog showed "/ 0" until the target changed.
         self._on_target_changed()
         self._sync_background_color_control()
+        size_dialog_to_content(dialog, scroll)
 
         dialog.exec()
         self._clear_dialog_state()
@@ -1208,7 +1206,6 @@ class LabelManager:
         self.y_location_spin: Optional[QSpinBox] = None
         self.font_size_spin: Optional[QSpinBox] = None
         self.font_family_combo: Optional[QFontComboBox] = None
-        self.text_edit: Optional[QLineEdit] = None
         self.range_edit: Optional[QLineEdit] = None
         self.transparent_bg_checkbox: Optional[QCheckBox] = None
         self.bg_color_button: Optional[QPushButton] = None

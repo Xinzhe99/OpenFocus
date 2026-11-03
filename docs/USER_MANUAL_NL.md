@@ -81,7 +81,7 @@ Download de nieuwste Windows- of macOS-build van de [OpenFocus-website](https://
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Schijfimage (naar Programma's slepen) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Draagbaar (uitpakken) |
 
-De app is niet ondertekend. Bij de eerste start kan daarom een beveiligingsvraag verschijnen: onder **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren); onder **macOS** met rechtsklik op de app → **Open**, of voer in Terminal `xattr -cr /Applications/OpenFocus.app` uit.
+Of de Windows-builds ondertekend zijn, hangt af van de specifieke release (zie de releaseopmerkingen); een handtekening is niet gegarandeerd. Bij de eerste start kan daarom een beveiligingsvraag verschijnen: onder **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren). De macOS-builds zijn niet genotariseerd; na de DMG-installatie (naar Programma's) voert u indien nodig `xattr -cr /Applications/OpenFocus.app` uit, na de terminalinstallatie (naar `~/Applications`) `xattr -cr ~/Applications/OpenFocus.app`, of u klikt met rechts op de app → **Open**.
 
 Bekijk voor installatie vanaf de terminal eerst de opdracht voor macOS of Linux met `--dry-run` en voer die daarna zonder die optie uit. Op Linux installeert dit de headless CLI; macOS-builds vereisen Apple Silicon en worden in `~/Applications` geïnstalleerd.
 
@@ -119,7 +119,7 @@ De eerste start opent het welkomstvenster, waar je het thema kiest en de meegele
 2. Stel de fusie-instellingen in op het rechterpaneel
 3. De registratie start met **ECC**; kies **Geen uitlijning** als de frames al zijn uitgelijnd
 4. Pas de kernelgrootte of methodespecifieke parameters aan als dat nodig is
-5. *(optioneel)* Vink **Snel voorbeeld** aan om de parameters eerst op een verkleind concept te testen
+5. *(optioneel)* Open **Renderinstellingen** en vink **Snel voorbeeld** aan om de parameters eerst op een verkleind concept te testen
 6. Klik op **▶ Renderen** om de verwerking te starten
 7. Exporteer je resultaten
 
@@ -146,8 +146,8 @@ Het rechterpaneel bevat alle configuratieopties, verticaal gegroepeerd:
 
 1. **Fusie-instellingen**: fusiemethode en bijbehorende parameters kiezen
 2. **Registratie-instellingen**: uitlijningsmethode en bijbehorende parameters kiezen
-3. **Helderheids- en uitvoeropties**: belichtingsafstemming, helderheidsdrift, verscherping en stapelvolgorde
-4. **Actieknoppen**: herstellen en renderen starten
+3. **Renderinstellingen**: de dialoog bevat snel voorbeeld, framevolgorde, belichtingsafstemming, verwijdering van helderheidsdrift en uitvoerverscherping
+4. **Actieknoppen**: renderen starten, herstellen, renderinstellingen openen en alle methoden renderen
 5. **Lijst met bronframes**: alle geladen afbeeldingen met bestandsnamen en selectievakjes
 6. **Uitvoerlijst**: de gegenereerde resultaten
 
@@ -212,6 +212,8 @@ Een kleine curve boven de navigatieschuif van de bron toont de scherpte per fram
 Microscopiesoftware (ZEN, NIS-Elements, ImageJ/Fiji) exporteert een volledige Z-stapel vaak als ÉÉN meerbladig TIFF-bestand. OpenFocus leest elke pagina van zo'n bestand als een afzonderlijk frame van de stapel — sleep of open het bestand en de stapel verschijnt compleet (frames heten `<file>_page_001` enzovoort). Enkelbladige TIFF's gedragen zich precies zoals voorheen. Het omgekeerde werkt ook: **Bestand → Stapel opslaan → Uitgelijnde stapel / Invoerstapel → Opslaan als meerbladige TIFF** schrijft de hele stapel terug naar één `.tif` en behoudt de 16-bitdiepte.
 
 ### Schaalbalk (publicatieafbeeldingen)
+
+Als het gekozen doel geen bruikbare metadata heeft, wordt handmatige kalibratie geselecteerd en is een geldige pixelgrootte vereist.
 
 **Extra → Schaalbalk…** configureert een schaalbalk die in geëxporteerde afbeeldingen wordt ingebrand. De pixelgrootte (µm/px) wordt automatisch uit TIFF-metadata gedetecteerd — via ImageJ's `unit=micron`-conventie, OME-TIFF's `PhysicalSizeX` of een expliciete resolutie-eenheid in centimeters — zodat microscopiestapels (inclusief meerbladige TIFF's) zichzelf kalibreren. Printerresolutie (72/300 dpi en dergelijke) wordt bewust *niet* als kalibratie behandeld, en een handmatig ingevoerde waarde wint altijd van gedetecteerde metadata: een plausibel ogende maar foute balk in een figuur is erger dan geen balk. Kies de hoek en kleur (Auto keert om tegen de achtergrond); het dialoog toont een live voorbeeld. Met de balk ingeschakeld draagt elke export (losse afbeelding, mapstapels, meerbladige TIFF, GIF, alles exporteren, batchverwerking) een publicatiestijl-balk: een afgeronde 1-2-5-lengte (ongeveer 12 % van de beeldbreedte) met omlijnde, leesbare tekst. De CLI ondersteunt dit via `--scale-bar` (automatische kalibratie) en `--scale-um <um/px>`.
 
@@ -380,7 +382,7 @@ Om een rendering te onderzoeken, schakel je **Instellingen → Geavanceerde inst
 
 1. Zoek in het rechterpaneel de groep **Registratie**
 2. Kies een methode in de vervolgkeuzelijst: **Geen uitlijning**, **OpenFocus (snel)**, **ECC**, **Homografie** of **Homografie → ECC**. Zonder opgeslagen keuze start een nieuwe sessie met ECC; de laatst gekozen methode wordt bewaard.
-3. Kies bij OpenFocus (snel) in de instellingen hoe met afgewezen frames wordt omgegaan; ECC en homografie bieden ook **Afgewezen beelden verwerken**.
+3. Kies **Afgewezen beelden verwerken** onder **Instellingen → Geavanceerde instellingen… → Registratie**. Wijzigingen gelden voor de methoden; bij OpenFocus (snel) kun je ook het referentieframe instellen.
 4. **Uitlijningsdiagnose verzamelen** staat nu onder **Instellingen → Geavanceerde instellingen… → Registratie** (zie hierboven).
 
 ### Wanneer registratie zinvol is
@@ -440,8 +442,8 @@ OpenFocus biedt tien fusiealgorithmen plus een modus met alleen uitlijning. Een 
 ### StackMFF (V1, deep learning)
 
 - **Algoritme**: een 3D U-Net dat de gefuseerde luma van de hele stapel in één pass voorspelt; Cb/Cr komen uit het bronframe dat het dichtst bij die luma ligt
-- **Het beste voor**: stapels zonder vaste focusvolgorde of zonder continue opnamereeks
-- **Voordelen**: volgordeonafhankelijk, geen parameters, kleuren blijven binnen het gamut
+- **Het beste voor**: neurale fusie van een volledige focusstapel
+- **Voordelen**: geen parameters, kleuren blijven binnen het gamut; de volgorde kan het resultaat beïnvloeden
 - **Opmerking**: 6 miljoen parameters; grotere stapels profiteren van GPU-versnelling
 
 ### StackMFF V2 (deep learning)
@@ -507,7 +509,7 @@ Kies **Alleen uitlijning (geen fusie)** om de stapel te registreren en één sta
 | DCT | Gemiddeld | Goed | Texturen |
 | DTCWT | Gemiddeld | Zeer goed | Complexe scènes |
 | GFG-FGF | Snel | Goed | Focusgebieden |
-| StackMFF (V1) | Langzaam (GPU) | Hier niet beoordeeld | Ongeordende of discontinue stapels |
+| StackMFF (V1) | Langzaam (GPU) | Hier niet beoordeeld | Neurale stapelfusie; volgorde kan het resultaat beïnvloeden |
 | StackMFF V2 | Snel (GPU) | Hier niet beoordeeld | Continue focusreeksen met een klein model |
 | StackMFF V3 | Langzaam (GPU) | Uitstekend | Beste kwaliteit |
 | OpenFocus A | Afhankelijk van stapel | Afhankelijk van stapel | Meerschalige focusselectie |
@@ -515,6 +517,9 @@ Kies **Alleen uitlijning (geen fusie)** om de stapel te registreren en één sta
 | OpenFocus C | Afhankelijk van stapel | Afhankelijk van stapel | Dieptegestuurde meerschalige reconstructie |
 
 **Extra → Methoden vergelijken…** opent een dialoog waarin meerdere methoden onafhankelijk worden ingesteld. Naam, parameterlabels en bedieningselementen van elke methode blijven bij elkaar wanneer het venster smaller wordt. Wijzigingen werken het voorbeeld automatisch bij. **ROI-voorbeeld (snel)** fuseert het geselecteerde gebied met omringende context; **Fusie van het hele beeld** controleert het resultaat van het hele beeld en laat je een ander gebied bekijken zonder opnieuw te renderen. ROI-resultaten kunnen afwijken van resultaten van het hele beeld, omdat belichtingsstatistieken en sommige algoritmen van de beeldomvang afhangen.
+**Fusie van het hele beeld** is standaard geselecteerd.
+
+Een zichtbare aanwijzing legt de resultaatkeuze uit: klik op een resultaat of geef het met `Tab` de focus en selecteer het met `Enter` of de spatiebalk.
 
 Kies boven de rechterpanelen met **Voorbeeldgrootte (px)** een vierkante grootte van 160 tot 960 pixels, door de schuif te slepen of een getal in te voeren. Alle methoden gebruiken dezelfde grootte en wikkelen passend bij de beschikbare breedte. De grootte wordt onthouden voor de volgende opening. Een wijziging behoudt de huidige vergroting en past het inspectievierkant rond zijn midden aan, begrensd door de beeldranden.
 
@@ -524,7 +529,7 @@ Sleep de bronafbeelding met de linkermuisknop om het witte inspectievierkant te 
 
 ### Snel voorbeeld (conceptrender)
 
-Parameters afstellen op grote stapels is traag op volledige resolutie. Vink **Snel voorbeeld** boven de renderknop aan: OpenFocus rendert dan eerst een verkleind concept (de helft van de lineaire afmeting, minimaal 320 px aan de langste zijde) — meestal meerdere keren sneller, inclusief registratie. De voltooiingsmelding (en de tooltip van het nieuwste resultaat) meldt **Kwaliteit: voorbeeld**; het concept wordt **niet** aan de uitvoergeschiedenis toegevoegd. Vink het vakje uit en render opnieuw voor het resultaat op volledige resolutie. De voorbeeldmodus geldt niet voor ROI-renders en vervuilt nooit de uitlijningscache op volledige resolutie.
+Parameters afstellen op grote stapels is traag op volledige resolutie. Open **Renderinstellingen** en vink **Snel voorbeeld** aan: OpenFocus rendert dan eerst een verkleind concept (de helft van de lineaire afmeting, minimaal 320 px aan de langste zijde) — meestal meerdere keren sneller, inclusief registratie. De voltooiingsmelding (en de tooltip van het nieuwste resultaat) meldt **Kwaliteit: voorbeeld**; het concept wordt **niet** aan de uitvoergeschiedenis toegevoegd. Vink het vakje uit en render opnieuw voor het resultaat op volledige resolutie. De voorbeeldmodus geldt niet voor ROI-renders en vervuilt nooit de uitlijningscache op volledige resolutie.
 
 ---
 
@@ -567,7 +572,7 @@ Fusie kan nog steeds een lokaal defect achterlaten — een halo rond een contras
 1. Selecteer één uitvoer in de uitvoerlijst (rechtsklik → *Resultaat retoucheren…* werkt ook) en druk op `Ctrl+T`. Zonder selectie toont een kiesdialoog elke uitvoer en markeert welke vastgelegde bronframes hebben.
 2. Het bronframe staat links, het resultaat rechts. Beide delen zoom en positie: wiel zoomt, rechts-/middelslepen (of Space+slepen) versleept, `F` past in, `1` toont 100 %.
 3. Kies een miniatuur, sleep de frameslider of druk op `,` / `.`. Een streek is vergrendeld aan dat frame en de huidige kwastinstellingen; het frame kan niet wisselen voordat de streek eindigt.
-4. Kies **Bronkwast** (`B`) of **Herstelkwast** (`E`). Diameter, hardheid en dekking hebben zowel schuiven als numerieke velden; `[` / `]` past de diameter aan. De herstelkwast zet pixels terug naar de afbeelding die je hebt geopend, niet naar een oudere uitvoer.
+4. Kies **Bronkwast** (`B`) of **Herstelkwast** (`E`). Diameter, hardheid en dekking hebben zowel schuiven als numerieke velden; `[` / `]` past de diameter aan. Met `Ctrl` + muiswiel omhoog vergroot je de kwastdiameter en omlaag verklein je die; het muiswiel zonder `Ctrl` blijft zoomen. De herstelkwast zet pixels terug naar de afbeelding die je hebt geopend, niet naar een oudere uitvoer.
 5. Houd `Tab` ingedrukt om het resultaat vóór deze sessie te zien en `Alt` om een glimp van het bronframe op te vangen. De scherptereferentie is optioneel, dekt alleen het broncanvas en gebruikt één gedeelde schaal voor elk frame.
 6. `Ctrl+Z` / `Ctrl+Y` maken hele streken ongedaan en herhalen ze. **Alles herstellen…** is één ongedaan-maakbare stap. **Toepassen als nieuwe uitvoer** voegt een item met de naam `<naam> · Geretoucheerd N` toe en selecteert het; het origineel blijft onaangetast. Het nieuwe item is gemarkeerd als *Niet geëxporteerd* tot je het vanuit het hoofdvenster exporteert, en OpenFocus beschermt het tegen automatische verdringing uit de geschiedenis en tegen afsluiten zonder beslissing.
 
@@ -847,7 +852,7 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 |--------|-------------|
 | `--input, -i` | Beeldmap of -mappen, videobestand, een of meer beeldbestanden of een meerbladige TIFF |
 | `--output, -o` | Pad van het uitvoerbeeld (de extensie bepaalt het formaat) |
-| `--output-dir, -d` | Batchmodus: elke invoermap fuseren en per stapel `<map>.<ext>` schrijven |
+| `--output-dir, -d` | Batchmodus: elke invoermap fuseren en per stapel `<map>.png` schrijven |
 | `--method, -m` | `stackmffv3` (standaard), `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2` |
 | `--align, -a` | `none` (standaard), `homography`, `ecc`, `both`, `openfocus` |
 | `--param KEY=JSON_VALUE` | Fusieparameter; herhaal voor meerdere sleutels; overschrijft oudere flags |
@@ -1030,15 +1035,17 @@ Exitcodes: `0` succes, `1` verwerkingsfout, `2` gebruiksfout. `python main.py --
 
 #### Windows SmartScreen-waarschuwing bij de eerste start
 
-De vrijgegeven binaries zijn niet ondertekend. Download ze van **https://openfocus.top** in plaats van een externe mirror en klik op **Meer informatie → Toch uitvoeren**. De eerste start na uitpakken kan 30–60 seconden duren.
+Of de Windows-binaries ondertekend zijn, hangt af van de specifieke release (zie de releaseopmerkingen); een handtekening is niet gegarandeerd. Download ze van **https://openfocus.top** in plaats van een externe mirror. Als SmartScreen waarschuwt, klik op **Meer informatie → Toch uitvoeren**. De eerste start na uitpakken kan 30–60 seconden duren.
 
 #### macOS meldt dat de app „niet kan worden geopend” of „beschadigd is”
 
-De app is niet ondertekend en niet genotariseerd. Download de Apple Silicon-build van **https://openfocus.top**, verplaats `OpenFocus.app` naar Programma's en voer uit:
+De macOS-builds zijn niet genotariseerd. Download de Apple Silicon-build van **https://openfocus.top**. Als u de DMG gebruikt en `OpenFocus.app` naar Programma's verplaatst, voer uit:
 
 ```bash
 xattr -cr /Applications/OpenFocus.app
 ```
+
+Bij een terminalinstallatie met `install.sh` staat de app in `~/Applications`; voer dan `xattr -cr ~/Applications/OpenFocus.app` uit.
 
 of klik met rechts op de app en kies **Open**. De vrijgegeven macOS-builds zijn voor Apple Silicon (M1/M2/M3/M4); Intel-Macs kunnen vanuit de broncode draaien.
 

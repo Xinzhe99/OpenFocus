@@ -93,7 +93,7 @@ curl -fsSL https://openfocus.top/install.sh | sh
 irm https://openfocus.top/install.ps1 | iex
 ```
 
-Skrypt `install.sh` instaluje kompilację macOS w `~/Applications`, a w systemie Linux — headless CLI. Aplikacja nie jest podpisana: w systemie Windows SmartScreen wybierz „Więcej informacji → Uruchom mimo to”, w systemie macOS kliknij aplikację prawym przyciskiem i wybierz „Otwórz” albo wykonaj `xattr -cr /Applications/OpenFocus.app`.
+Skrypt `install.sh` instaluje kompilację macOS w `~/Applications`, a w systemie Linux — headless CLI. Podpis kompilacji Windows zależy od konkretnego wydania (zobacz informacje o wydaniu); podpis nie jest gwarantowany. W systemie Windows przy ostrzeżeniu SmartScreen wybierz „Więcej informacji → Uruchom mimo to”. Kompilacje macOS nie są notaryzowane: po instalacji z DMG (do Programów) w razie potrzeby wykonaj `xattr -cr /Applications/OpenFocus.app`, po instalacji z terminala (do `~/Applications`) — `xattr -cr ~/Applications/OpenFocus.app`, albo kliknij aplikację prawym przyciskiem i wybierz „Otwórz”.
 
 Przy pierwszym uruchomieniu otwiera się okno powitalne, w którym można wybrać motyw i wczytać stos demonstracyjny. Domyślnie używany jest jasny motyw; ciemny wybiera się w oknie powitalnym lub później w **Ustawienia → Motyw**. Wybór jest pamiętany.
 
@@ -103,7 +103,7 @@ Przy pierwszym uruchomieniu otwiera się okno powitalne, w którym można wybra�
 2. Wybierz metodę fuzji na prawym panelu; domyślnie wybrany jest **StackMFF V3**
 3. Wybierz metodę rejestracji; domyślnie wybrany jest **ECC**. Jeśli stos jest już wyrównany, wybierz **Bez wyrównania**
 4. W razie potrzeby zmień rozmiar jądra lub parametry wybranej metody
-5. *(opcjonalnie)* Zaznacz **Szybki podgląd**, aby najpierw dobrać parametry na zmniejszonym szkicu
+5. *(opcjonalnie)* Otwórz **Ustawienia renderowania** i zaznacz **Szybki podgląd**, aby najpierw dobrać parametry na zmniejszonym szkicu
 6. Kliknij **Rozpocznij renderowanie**
 7. Wyeksportuj wynik
 
@@ -130,8 +130,8 @@ Prawy panel zawiera parametry i listy:
 
 1. **Rejestracja**: lista rozwijana metod i parametry wybranej metody
 2. **Fuzja**: lista rozwijana metod, parametry i tryb wyjścia AI
-3. **Opcje renderowania**: szybki podgląd, odwrócona kolejność klatek, dopasowanie ekspozycji, usuwanie dryfu jasności, wyostrzanie
-4. **Przyciski akcji**: przywrócenie domyślnych, rozpoczęcie renderowania i renderowanie wszystkimi metodami
+3. **Ustawienia renderowania**: okno zawiera szybki podgląd, odwróconą kolejność klatek, dopasowanie ekspozycji, usuwanie dryfu jasności i wyostrzanie wyniku
+4. **Przyciski akcji**: rozpoczęcie renderowania oraz przywrócenie domyślnych, ustawienia renderowania i renderowanie wszystkimi metodami
 5. **Lista obrazów źródłowych**: wczytane klatki, pola wyboru i przycisk **Sprawdź klatki**
 6. **Lista wyników**: utworzone wyniki i ich menu kontekstowe
 
@@ -195,6 +195,8 @@ Niewielka krzywa nad suwakiem stosu źródłowego pokazuje ostrość każdej kla
 Programy mikroskopowe (ZEN, NIS-Elements, ImageJ/Fiji) często eksportują cały stos Z jako JEDEN wielostronicowy plik TIFF. OpenFocus czyta każdą stronę takiego pliku jako osobną klatkę stosu — przeciągnij lub otwórz plik, a stos pojawi się w całości (klatki nazywają się `<file>_page_001` itd.). Jednostronicowe pliki TIFF działają jak wcześniej. Odwrotnie również: **Plik → Zapisz stos → (Zarejestrowany / Wejściowy) → Zapisz jako wielostronicowy TIFF** zapisuje cały stos z powrotem do jednego `.tif` z zachowaniem głębi 16 bitów.
 
 ### Pasek skali (ryciny publikacyjne)
+
+Jeśli wybrany cel nie ma użytecznych metadanych, domyślnie wybierana jest kalibracja ręczna i wymagany jest prawidłowy rozmiar piksela.
 
 **Narzędzia → Pasek skali…** konfiguruje pasek skali wpalany w eksportowane obrazy. Rozmiar piksela (µm/px) jest wykrywany automatycznie z metadanych TIFF — konwencja ImageJ `unit=micron`, `PhysicalSizeX` w OME-TIFF lub jawnie podana jednostka rozdzielczości w centymetrach — więc stosy mikroskopowe (w tym wielostronicowe TIFF) kalibrują się same. Rozdzielczość drukarki (72/300 dpi i podobne) celowo *nie* jest traktowana jako kalibracja, a wartość wpisana ręcznie zawsze wygrywa z wykrytymi metadanymi: prawdopodobnie wyglądający, ale błędny pasek na rycinie jest gorszy niż jego brak. Wybierz narożnik i kolor (tryb „Auto” odwraca kolor względem tła); okno pokazuje podgląd na żywo. Przy włączonym pasku każdy eksport (pojedynczy obraz, stosy do folderu, wielostronicowy TIFF, GIF, eksport wszystkich wyników, przetwarzanie wsadowe) otrzymuje pasek w stylu publikacyjnym: zaokrągloną długość z szeregu 1-2-5 (około 12 % szerokości obrazu) i obrysowany, czytelny tekst. W CLI jest dostępny przez `--scale-bar` (automatyczna kalibracja) i `--scale-um <um/px>`.
 
@@ -361,7 +363,7 @@ Aby zbadać render, włącz **Ustawienia → Ustawienia zaawansowane → Rejestr
 
 1. Na prawym panelu znajdź grupę **Rejestracja**
 2. Wybierz jedną metodę z listy rozwijanej: **Bez wyrównania**, **OpenFocus (szybko)**, **ECC**, **Homografia** lub **Homografia → ECC**
-3. Dla OpenFocus (szybko) ustaw obsługę odrzuconych klatek i klatkę odniesienia; ECC i homografia również oferują **Obsługę odrzuconych klatek**
+3. Wybierz **Obsługę odrzuconych klatek** w **Ustawienia → Ustawienia zaawansowane → Rejestracja**; zmiana jest stosowana do metod. Dla OpenFocus (szybko) ustaw także klatkę odniesienia.
 4. **Zbieraj diagnostykę wyrównania** znajduje się teraz w ustawieniach zaawansowanych (patrz wyżej)
 
 Domyślnie wybrane jest **ECC**. Jeśli stos jest już wyrównany, na przykład pochodzi ze sztywnego stanowiska, wybierz **Bez wyrównania**: jest szybciej i unika zbędnych przekształceń.
@@ -410,8 +412,8 @@ OpenFocus oferuje dziesięć algorytmów fuzji plus tryb tylko wyrównania. W no
 ### StackMFF (V1, uczenie głębokie)
 
 - **Algorytm**: 3D U-Net przewiduje jasność połączonego obrazu dla całego stosu w jednym przebiegu; Cb/Cr są brane z najbliższej klatki źródłowej
-- **Najlepsza do**: stosów bez ustalonej kolejności ogniskowania lub wykonanych nieciągłą serią
-- **Zalety**: niezależna od kolejności, bez parametrów, kolor pozostaje w gamucie
+- **Najlepsza do**: neuronowej fuzji całego stosu ostrości
+- **Zalety**: bez parametrów, kolor pozostaje w gamucie; kolejność klatek może wpływać na wynik
 - **Uwaga**: 6 mln parametrów; większym stosom pomaga GPU
 
 ### Filtr sterowany
@@ -489,7 +491,7 @@ Wybierz **Tylko wyrównanie (bez fuzji)**, aby zarejestrować stos i dodać do l
 | DCT | Średnio | Dobra | Tekstur |
 | DTCWT | Średnio | Bardzo dobra | Złożonych scen |
 | GFG-FGF | Szybko | Dobra | Obszarów ostrości |
-| StackMFF (V1) | Wolno (GPU) | Nie badano tutaj | Stosów bez kolejności ogniskowania lub nieciągłych |
+| StackMFF (V1) | Wolno (GPU) | Nie badano tutaj | Neuronowa fuzja stosu; kolejność może wpływać na wynik |
 | StackMFF V2 | Szybko (GPU) | Nie badano tutaj | Ciągłych serii z bardzo małym modelem |
 | StackMFF V3 | Wolno (GPU) | Doskonała | Najwyższej jakości |
 | OpenFocus A | Zależy od stosu | Zależy od stosu | Wyboru ostrych pikseli według odpowiedzi wieloskalowej |
@@ -497,6 +499,9 @@ Wybierz **Tylko wyrównanie (bez fuzji)**, aby zarejestrować stos i dodać do l
 | OpenFocus C | Zależy od stosu | Zależy od stosu | Rekonstrukcji wieloskalowej według mapy głębi |
 
 **Narzędzia → Porównaj metody…** pozwala niezależnie ustawić kilka metod. Nazwa metody, etykiety parametrów i kontrolki pozostają razem przy zwężaniu okna. Zmiany automatycznie aktualizują podgląd. **Podgląd ROI (szybko)** łączy wybrany obszar z otaczającym kontekstem; **Fuzja całego obrazu** sprawdza wynik całego obrazu i pozwala zbadać inny obszar bez ponownego renderowania. Wyniki ROI mogą różnić się od pełnego obrazu, ponieważ statystyki ekspozycji i niektóre algorytmy zależą od rozmiaru obrazu.
+Domyślnie wybrana jest **fuzja całego obrazu**.
+
+Widoczna wskazówka wyjaśnia wybór wyniku: kliknij wynik albo przejdź do niego klawiszem `Tab` i wybierz go klawiszem `Enter` lub `Spacja`.
 
 **Rozmiar podglądu (px)** nad prawymi panelami ustawia kwadrat od 160 do 960 pikseli przez przeciągnięcie suwaka lub wpisanie liczby. Wszystkie metody używają tego samego rozmiaru i zawijają się do dostępnej szerokości. Rozmiar jest pamiętany przy następnym otwarciu. Zmiana zachowuje bieżące powiększenie i dopasowuje kwadrat inspekcji wokół środka z ograniczeniem do granic obrazu.
 
@@ -506,7 +511,7 @@ Przeciągaj obraz źródłowy lewym przyciskiem, aby przesuwać biały kwadrat i
 
 ### Szybki podgląd (szkic renderu)
 
-Dostrajanie parametrów na dużych stosach w pełnej rozdzielczości jest wolne. Zaznacz **Szybki podgląd** nad przyciskiem renderowania, a OpenFocus najpierw wyrenderuje szkic w połowie liniowego rozmiaru (lecz nie mniejszy niż 320 px na dłuższym boku) — zwykle kilka razy szybciej, łącznie z rejestracją. Komunikat o zakończeniu (oraz podpowiedź najnowszego wyniku) pokazuje **Jakość: Podgląd**, a szkic **nie jest dodawany** do historii wyników. Odznacz pole i wyrenderuj ponownie, aby uzyskać wynik w pełnej rozdzielczości. Tryb podglądu nie dotyczy renderów ROI i nigdy nie zanieczyszcza pamięci podręcznej wyrównania w pełnej rozdzielczości.
+Dostrajanie parametrów na dużych stosach w pełnej rozdzielczości jest wolne. Otwórz **Ustawienia renderowania** i zaznacz **Szybki podgląd**, a OpenFocus najpierw wyrenderuje szkic w połowie liniowego rozmiaru (lecz nie mniejszy niż 320 px na dłuższym boku) — zwykle kilka razy szybciej, łącznie z rejestracją. Komunikat o zakończeniu (oraz podpowiedź najnowszego wyniku) pokazuje **Jakość: Podgląd**, a szkic **nie jest dodawany** do historii wyników. Odznacz pole i wyrenderuj ponownie, aby uzyskać wynik w pełnej rozdzielczości. Tryb podglądu nie dotyczy renderów ROI i nigdy nie zanieczyszcza pamięci podręcznej wyrównania w pełnej rozdzielczości.
 
 ---
 
@@ -549,7 +554,7 @@ Fuzja może pozostawić lokalną wadę — obwódkę przy kontrastowej krawędzi
 1. Wybierz jeden wynik na liście wyników (kliknięcie prawym przyciskiem → *Retusz wyniku…* również działa) i naciśnij `Ctrl+T`. Bez zaznaczenia otwiera się lista wszystkich wyników z oznaczeniem tych, które mają zapisane klatki źródłowe.
 2. Klatka źródłowa jest po lewej, wynik po prawej. Oba współdzielą powiększenie i położenie: kółko powiększa, przeciąganie prawym/środkowym przyciskiem (lub `Spacja`+przeciąganie) przesuwa, `F` dopasowuje, `1` pokazuje 100 %.
 3. Wybierz miniaturę, przeciągnij suwak klatki lub naciśnij `,` / `.`. Pociągnięcie jest zablokowane na tej klatce i bieżących ustawieniach pędzla; klatki nie można zmienić do zakończenia pociągnięcia.
-4. Wybierz **Pędzel źródłowy** (`B`) lub **Pędzel przywracania** (`E`). Średnica, twardość i krycie mają suwaki i pola liczbowe; `[` / `]` zmienia średnicę. Pędzel przywracania przywraca piksele do obrazu otwartego na początku, a nie do starszego wyniku.
+4. Wybierz **Pędzel źródłowy** (`B`) lub **Pędzel przywracania** (`E`). Średnica, twardość i krycie mają suwaki i pola liczbowe; `[` / `]` zmienia średnicę. `Ctrl` + kółko w górę zwiększa średnicę pędzla, a w dół ją zmniejsza; samo kółko nadal zmienia powiększenie. Pędzel przywracania przywraca piksele do obrazu otwartego na początku, a nie do starszego wyniku.
 5. Przytrzymaj `Tab`, aby zobaczyć wynik sprzed tej sesji, i `Alt`, aby podejrzeć klatkę źródłową. Opcjonalne odniesienie ostrości obejmuje tylko płótno źródła i używa jednej wspólnej skali dla wszystkich klatek.
 6. `Ctrl+Z` / `Ctrl+Y` cofają i ponawiają całe pociągnięcia. **Przywróć wszystko…** to jedna operacja do cofnięcia. **Zastosuj jako nowy wynik** dodaje pozycję `<nazwa> · Retusz N` i wybiera ją; oryginalny wynik pozostaje nietknięty. Nowa pozycja jest oznaczona jako *Nie wyeksportowano*, dopóki nie wyeksportujesz jej z głównego okna; OpenFocus chroni ją przed automatycznym usunięciem z historii i przed wyjściem bez decyzji.
 
@@ -1038,15 +1043,17 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 
 #### Ostrzeżenie Windows SmartScreen przy pierwszym uruchomieniu
 
-Opublikowane kompilacje nie są podpisane. Pobieraj je z **https://openfocus.top**, a nie z lustra strony trzeciej, następnie kliknij **Więcej informacji → Uruchom mimo to**. Pierwsze uruchomienie po rozpakowaniu może potrwać 30–60 sekund.
+Podpis kompilacji Windows zależy od konkretnego wydania (zobacz informacje o wydaniu); podpis nie jest gwarantowany. Pobieraj je z **https://openfocus.top**, a nie z lustra strony trzeciej. Jeśli SmartScreen ostrzega, kliknij **Więcej informacji → Uruchom mimo to**. Pierwsze uruchomienie po rozpakowaniu może potrwać 30–60 sekund.
 
 #### macOS zgłasza, że aplikacji „nie można otworzyć” lub że „jest uszkodzona”
 
-Aplikacja nie jest podpisana ani notaryzowana. Pobierz kompilację dla Apple Silicon z **https://openfocus.top**, przenieś `OpenFocus.app` do Programów, a następnie wykonaj:
+Kompilacja macOS nie jest notaryzowana. Pobierz kompilację dla Apple Silicon z **https://openfocus.top**. Jeśli instalujesz z DMG, przenosząc `OpenFocus.app` do Programów, wykonaj:
 
 ```bash
 xattr -cr /Applications/OpenFocus.app
 ```
+
+Jeśli instalujesz z terminala za pomocą `install.sh`, aplikacja znajduje się w `~/Applications`; wykonaj `xattr -cr ~/Applications/OpenFocus.app`.
 
 albo kliknij aplikację prawym przyciskiem i wybierz **Otwórz**. Opublikowane kompilacje macOS są przeznaczone dla Apple Silicon (M1/M2/M3/M4); na Macu z Intel można uruchamiać ze źródeł.
 

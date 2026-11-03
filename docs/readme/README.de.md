@@ -9,7 +9,7 @@
 <p align="center"><strong>Jedes Pixel aus seinem schärfsten Bild.</strong></p>
 
 <p align="center">
-  Zehn Fusionsverfahren, fünf Ausrichtungsoptionen und eine quellengebundene Retusche für Makro-, Mikroskopie- und Industriestapel. 16 Bit durchgängig, eine Headless-CLI und eine Oberfläche in zwölf Sprachen.
+  Zehn Fusionsverfahren, fünf Ausrichtungsoptionen (einschließlich keiner Ausrichtung) und eine quellengebundene Retusche für Makro-, Mikroskopie- und Industriestapel. 16 Bit durchgängig, eine Headless-CLI und eine Oberfläche in zwölf Sprachen.
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.74.0** — Die OpenFocus-A/B/C-Fusion und die schnelle Ausrichtung wurden aktualisiert. Die Desktop-App startet ihren authentifizierten lokalen Agent-Kanal jetzt automatisch, sodass `openfocus ctl` das laufende Fenster ohne spezielles Startflag steuern kann.
+> **v1.75.0** — Gruppenfusion, wiederverwendbare Verarbeitungsvorlagen, transparente PNG-Stapel, Ausrichtungsdiagnose, erweiterte Tiefenexporte und ein überarbeiteter Desktop-Workflow. Unterstützte Eingaben und Einschränkungen stehen im Änderungsprotokoll.
 
 Ältere Versionen stehen im [Änderungsprotokoll](../../CHANGELOG.md).
 
@@ -106,7 +106,7 @@ Ziehen Sie den Trenner über ein Quellbild und das Fusionsergebnis, um genau zu 
 
 ### Methodenvergleich
 
-Alle Verfahren einmal rendern, nebeneinander am gleichen Ausschnitt prüfen und den Gewinner als neue Ausgabe übernehmen oder seine Parameter ins Hauptfenster zurückschreiben.
+Standardmäßig wird jedes Verfahren auf dem gesamten Bild fusioniert; das Quadrat zur Quellbildprüfung bleibt interaktiv, ohne die Berechnung des ganzen Bildes zu wiederholen. Prüfen Sie die Ergebnisse anschließend am gemeinsamen Ausschnitt nebeneinander und übernehmen Sie den Gewinner als neue Ausgabe oder schreiben Sie seine Parameter ins Hauptfenster zurück.
 
 </td>
 <td width="54%">
@@ -120,7 +120,7 @@ Alle Verfahren einmal rendern, nebeneinander am gleichen Ausschnitt prüfen und 
 
 ### Tiefenkarte &amp; 3D
 
-Fokusposition pro Pixel aus fünf Fokusmaßen, wissenschaftliche Farbskalen, physikalische Z-Kalibrierung aus TIFF-Metadaten und texturierter OBJ-Export der Oberfläche.
+Fokusposition pro Pixel aus sieben tiefenfähigen Verfahren, wissenschaftliche Farbskalen, manuelle physikalische Z-Kalibrierung (Startwert und Schrittweite; TIFF-Metadaten liefern nur die XY-Kalibrierung) und texturierter OBJ-Export der Oberfläche.
 
 </td>
 <td width="54%">
@@ -231,9 +231,9 @@ Laden Sie den aktuellen Windows- oder macOS-Build von der [OpenFocus-Website](ht
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk-Image (in „Programme“ ziehen) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portabel (entpacken) |
 
-Die App ist nicht signiert, daher kann der erste Start einen Sicherheitshinweis zeigen: **Windows** SmartScreen → „Weitere Informationen“ → „Trotzdem ausführen“ (der erste Start kann 30–60 s dauern); **macOS** Rechtsklick → Öffnen, oder `xattr -cr /Applications/OpenFocus.app` im Terminal.
+Der Signaturstatus der Windows-Builds steht in den Versionshinweisen. Die macOS-Builds sind nicht notarisiert, daher kann der erste Start einen Sicherheitshinweis zeigen: **Windows** SmartScreen → „Weitere Informationen“ → „Trotzdem ausführen“ (der erste Start kann 30–60 s dauern); **macOS** führen Sie `xattr -cr /Applications/OpenFocus.app` im Terminal aus, oder versuchen Sie, die App einmal zu öffnen, und lassen Sie sie dann unter **Systemeinstellungen → Datenschutz & Sicherheit** mit „Trotzdem öffnen“ zu (ab macOS 15 umgeht Rechtsklick → „Öffnen“ Gatekeeper nicht mehr).
 
-Für die Installation im Terminal prüfen Sie zuerst den Befehl für macOS oder Linux mit `--dry-run` und führen ihn dann ohne diese Option aus. Unter Linux installiert das die Headless-CLI; macOS-Builds erfordern Apple Silicon und werden nach `~/Applications` installiert.
+Für die Installation im Terminal prüfen Sie zuerst den Befehl für macOS oder Linux mit `--dry-run` und führen ihn dann ohne diese Option aus. Unter Linux installiert das die Headless-CLI; macOS-Builds erfordern Apple Silicon: Die App aus dem DMG wird nach `/Applications` installiert, die Terminal-Installation nach `~/Applications`.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run

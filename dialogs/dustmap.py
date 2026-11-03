@@ -5,14 +5,15 @@ import numpy as np
 from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QHBoxLayout,
-    QLabel, QPushButton, QRadioButton, QVBoxLayout,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFrame, QHBoxLayout,
+    QLabel, QPushButton, QRadioButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from locales import trans
 from widgets.stepper import StepperSpinBox
 from utils.dust_map import (DEFAULT_SIGMA, compute_flat_field, apply_flat_field,
                             load_flat_field_reference)
+from utils.ui_utils import size_dialog_to_content
 
 
 def _to_pixmap(img, width=340):
@@ -98,14 +99,22 @@ class DustMapDialog(QDialog):
         self._gain_sources = None
         self.setWindowTitle(trans.t("dust_title"))
         self.setModal(True)
-        self.setMinimumWidth(760)
         self._build_ui()
         self._apply_style()
+        size_dialog_to_content(self, self._scroll)
 
     # ---------------------------------------------------------------- UI
     def _build_ui(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 12, 14, 12)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self._scroll.setWidget(content)
+        outer.addWidget(self._scroll, 1)
 
         intro = QLabel(trans.t("dust_intro"))
         intro.setWordWrap(True)
@@ -218,7 +227,7 @@ class DustMapDialog(QDialog):
         self.btn_close = QPushButton(trans.t("dialog_close"))
         self.btn_close.clicked.connect(self.reject)
         btns.addWidget(self.btn_close)
-        lay.addLayout(btns)
+        outer.addLayout(btns)
 
         self.rb_file.toggled.connect(self._source_changed)
         self.rb_stack.toggled.connect(self._source_changed)
