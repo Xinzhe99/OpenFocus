@@ -124,10 +124,6 @@ class WipeCompareWidget(QWidget):
         self._draw_title_chip(painter, self._left_title, left=True)
         self._draw_title_chip(painter, self._right_title, left=False)
 
-    @staticmethod
-    def _pixmap_bounds(pixmap: QPixmap) -> QRectF:
-        return QRectF(pixmap.rect())
-
     def _draw_title_chip(self, painter: QPainter, text: str, left: bool) -> None:
         if not text:
             return

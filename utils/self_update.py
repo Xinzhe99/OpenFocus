@@ -223,16 +223,6 @@ def _short_path(path: str) -> str:
     return path
 
 
-def _bat_path(path: str) -> str:
-    """Quote a path for cmd, refusing anything that could escape the quotes."""
-    abspath = _short_path(os.path.abspath(path))
-    if '"' in abspath or "\n" in abspath or "\r" in abspath:
-        raise ValueError("Unsafe path for the update script")
-    if not abspath.isascii():
-        raise ValueError("Path cannot be made ASCII-safe for the update script")
-    return f'"{abspath}"'
-
-
 def portable_zip_path(tag: str) -> str:
     """Canonical download target for a release's portable zip."""
     return os.path.join(tempfile.gettempdir(),

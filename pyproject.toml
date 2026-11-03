@@ -11,7 +11,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Xinzhe Xie", email = "xiexinzheyyy@163.com" }]
 license = "MIT"
-license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+license-files = ["LICENSE", "docs/THIRD_PARTY_NOTICES.md"]
 keywords = ["image-fusion", "focus-stacking", "multifocus", "microscopy", "photography", "depth-map"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",

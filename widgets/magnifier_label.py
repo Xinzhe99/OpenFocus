@@ -982,15 +982,3 @@ class MagnifierLabel(QLabel):
             self.unsetCursor()
         else:
             self.setCursor(new_cursor)
-
-    def _scaled_pixmap_rect(self, pixmap: QPixmap) -> QRectF:
-        if pixmap is None or pixmap.isNull():
-            return QRectF()
-
-        pm_width = float(pixmap.width())
-        pm_height = float(pixmap.height())
-
-        x_offset = (self.width() - pm_width) / 2.0
-        y_offset = (self.height() - pm_height) / 2.0
-
-        return QRectF(x_offset, y_offset, pm_width, pm_height)

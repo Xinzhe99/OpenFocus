@@ -74,7 +74,7 @@ Dit is niet verplicht, maar wel zeer gewaardeerd.
 
 ### AI-fusie: StackMFF V3
 
-De standaardmethode gebruikt een neuraal netwerk om voor elke pixel het waarschijnlijkste bronframe te schatten en mengt vervolgens de voorspelde bijdragen of kiest het waarschijnlijkste frame. De synthetische benchmark vergelijkt methoden met een bekende referentie; de resultaten hangen af van de stapel en de instellingen.
+StackMFF V3 combineert met AI de scherpe delen van de bronframes.
 
 [StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](../../tools/synthetic_benchmark.py)
 
@@ -90,7 +90,7 @@ De standaardmethode gebruikt een neuraal netwerk om voor elke pixel het waarschi
 
 ### Veegvergelijking
 
-Sleep de scheiding over een bronframe en het fusieresultaat om precies te zien wat de fusie veranderde: uitlijningsdrift, halo's langs randen en verloren detail zijn in één oogopslag zichtbaar, bij elke zoomstand.
+Vergelijk een bronframe en het fusieresultaat met een versleepbare scheiding.
 
 [Handleiding →](../USER_MANUAL_NL.md)
 
@@ -106,7 +106,7 @@ Sleep de scheiding over een bronframe en het fusieresultaat om precies te zien w
 
 ### Methodenvergelijking
 
-Standaard wordt elk beeld met elke methode op volledige grootte gefuseerd; het vierkant voor broninspectie blijft interactief zonder de berekeningen op volledige grootte te herhalen. Vergelijk daarna de resultaten naast elkaar op dezelfde uitsnede en neem de winnaar over als nieuwe uitvoer of kopieer de parameters terug naar het hoofdvenster.
+Vergelijk methoden naast elkaar en neem het resultaat of de instellingen over.
 
 </td>
 <td width="54%">
@@ -120,7 +120,7 @@ Standaard wordt elk beeld met elke methode op volledige grootte gefuseerd; het v
 
 ### Dieptekaart en 3D
 
-Focuspositie per pixel uit zeven dieptegeschikte methoden, wetenschappelijke kleurenschalen, handmatige fysieke Z-kalibratie (start en stap; TIFF-metadata levert alleen de XY-kalibratie) en getextureerde OBJ-export van het oppervlak.
+Maak dieptekaarten en exporteer getextureerde 3D-oppervlakken.
 
 </td>
 <td width="54%">
@@ -134,8 +134,7 @@ Focuspositie per pixel uit zeven dieptegeschikte methoden, wetenschappelijke kle
 
 ### Bronvaste retouche
 
-Schilder vanuit de frames die het resultaat echt hebben gemaakt: gedeelde zoom en pan, schuifregelaar voor het bronframe, zachte penseel, herstelpenseel, ongedaan maken per streek en bescherming van niet-geëxporteerde pixels.
-Pas de retouche toe als nieuwe uitvoer en kies daarna in het hoofdvenster met rechtsklik op die uitvoer **TIFF met lagen exporteren** om het resultaat samen met zijn bronframes op te slaan. Live labels en schaalbalken worden niet meegenomen. GIMP 3.2.6 op Windows opent het resultaat en de bronlagen; andere editors zijn niet getest.
+Retoucheer het resultaat met pixels uit de bronframes.
 
 </td>
 <td width="54%">
@@ -149,7 +148,7 @@ Pas de retouche toe als nieuwe uitvoer en kies daarna in het hoofdvenster met re
 
 ### Batchverwerking
 
-Wijs een map met stapels aan, kies een methode en bestemming en laat het lopen. Alleen-uitlijnen schrijft één map per stapel; fusieregels schrijven het gefuseerde beeld en tonen precies dat. Optionele groepsfusie ruilt exacte gelijkwaardigheid met de volledige stapel in voor begrensd groepsgeheugen en tijdelijke schijfruimte.
+Verwerk meerdere stapels met optionele groepsfusie voor begrensd geheugengebruik.
 
 </td>
 <td width="54%">
@@ -163,7 +162,7 @@ Wijs een map met stapels aan, kies een methode en bestemming en laat het lopen. 
 
 ### Schaalbalken voor publicaties
 
-Gekalibreerd uit TIFF-metadata of handmatig ingevoerd, getekend met het echte lettertype op de echte lengte en ingebrand in elke export: losse afbeeldingen, stapels, meerbladige TIFF, GIF en batchuitvoer. Een balk die niet leesbaar past, meldt dat in plaats van een lengte af te drukken die hij niet tekent.
+Voeg schaalbalken toe aan exports, gekalibreerd met TIFF-metadata of handmatig.
 
 [Handleiding →](../USER_MANUAL_NL.md)
 
@@ -179,7 +178,7 @@ Gekalibreerd uit TIFF-metadata of handmatig ingevoerd, getekend met het echte le
 
 ### Labels en bijschriften
 
-Labels blijven een beheerde lijst; elk label heeft een eigen bereik (bron, uitgelijnde stapel of een specifieke uitvoer), framebereik en stijl. Voorbeeld en elke export gebruiken hetzelfde doel en hetzelfde framenummer, zodat `{value}` identiek leest in Opslaan, Opslaan als, slepen en Alles exporteren.
+Beheer labels en bijschriften met een eigen bereik en stijl.
 
 </td>
 <td width="54%">
@@ -193,7 +192,7 @@ Labels blijven een beheerde lijst; elk label heeft een eigen bereik (bron, uitge
 
 ### Aanstuurbare agent
 
-Elk venster, elke widget en elk menu is bereikbaar via een tokenbeveiligd lokaal kanaal: een agent laadt een stapel, rendert, retoucheert, vergelijkt, berekent diepte, exporteert en beantwoordt dialoogen — via getypte opdrachten, widgetpaden of echte muis- en toetsgebeurtenissen. Geen screen scraping of OCR nodig; het kanaal start met de desktopapp.
+Bestuur de desktopapp via een tokenbeveiligd lokaal agentkanaal.
 
 [Protocol →](../AGENT_CONTROL_SPEC.md) · [Skill →](../../skills/openfocus-control/SKILL.md)
 
@@ -208,32 +207,24 @@ Elk venster, elke widget en elk menu is bereikbaar via een tokenbeveiligd lokaal
 
 **Ook inbegrepen:**
 
-- **Focus-stackingworkflow** — stapelbrowser, scherptecurve, snel voorbeeld, ROI-render en per methode onthouden instellingen na een herstart.
-- **Klaar voor microscopie** — 16-bit van begin tot eind, µm/px uit TIFF-metadata, flat-fieldcorrectie met een stofkaart, meerbladige TIFF-Z-stapels, getextureerde OBJ-export.
-- **Kleurprofielen** — export van losse afbeeldingen als PNG, TIFF, JPEG en WebP behoudt een gedeeld RGB-ICC-profiel wanneer elk bronframe hetzelfde profiel heeft. Gemengde of ongetagde stapels krijgen geen profiel; pixels worden niet kleurgeconverteerd.
-- **Transparante PNG** — stapels met overeenkomende rechthoekige maskers met constante dekking kunnen op volledige grootte worden gefuseerd en als PNG worden opgeslagen. Beperkingen staan in de handleiding.
-- **Headless CLI** — dezelfde pijplijn als `openfocus`, met batchmodus, `--dry-run`, `--resume` en JSON-uitvoer voor scripts.
-- **Aanstuurbare agent** — een tokenbeveiligd lokaal kanaal bestuurt de live GUI (getypte pijplijnopdrachten plus generieke widget-, menu-, muis- en toetsbesturing), met een skill, een smoke-runner met 14 controles en een volledige menuhandelingenscan.
-- **Verwerkingssjablonen** — fusie-, registratie- en resource-instellingen zonder bronpaden opslaan als `.oftemplate` en op elke geladen stapel toepassen; de kiezer accepteert ook projecten en projectgebaseerde recepten.
-- **Projecten en herstel** — `.ofproj`-sessies, automatisch herstel na een crash, ongedaan maken/opnieuw uitvoeren voor stapelbewerkingen en annotaties.
-- **Twaalf UI-talen** — English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski. Automatisch gedetecteerd uit de systeemtaal; een nieuwe taal is één bestand `locales/<code>.py`.
-- **Zuinig met geheugen** — het neurale netwerk wordt alleen geladen als de neurale methode wordt gebruikt; een sessie met een klassieke methode blijft rond 110 MB in plaats van 260 MB.
+- **Focus-stackingworkflow** — stapelbrowser, scherptecurve, snel voorbeeld, ROI-render en opgeslagen instellingen.
+- **Klaar voor microscopie** — 16-bit, TIFF-kalibratie, flat-fieldcorrectie en meerbladige Z-stapels.
+- **Kleurprofielen** — export van losse afbeeldingen behoudt gedeelde RGB-ICC-profielen zonder kleurconversie.
+- **Transparante PNG** — compatibele stapels met rechthoekige maskers op volledige grootte samenvoegen en exporteren.
+- **Headless CLI** — `openfocus` met batchmodus, `--dry-run`, `--resume` en JSON-uitvoer.
+- **Verwerkingssjablonen** — instellingen als `.oftemplate` opslaan en hergebruiken; projecten en recepten worden ondersteund.
+- **Projecten en herstel** — `.ofproj`-sessies, crashherstel en ongedaan maken/opnieuw uitvoeren.
+- **Twaalf UI-talen** — automatische detectie; voeg nieuwe talen toe in `locales/<code>.py`.
+- **Zuinig met geheugen** — het neurale netwerk wordt alleen geladen wanneer nodig.
 
 <a id="install"></a>
 ## ⬇️ Installatie
 
 Download de nieuwste Windows- of macOS-build van de [OpenFocus-website](https://openfocus.top/#download). Dezelfde bestanden en oudere versies staan ook op [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
-| Platform | Bestand | Type |
-|----------|---------|------|
-| Windows 10/11 (64-bit) | `OpenFocus-*-setup.exe` | **Installer** (aanbevolen) |
-| Windows 10/11 (64-bit) | `OpenFocus-*-windows-x64.zip` | Draagbaar (uitpakken en starten) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Schijfimage (naar Programma's slepen) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Draagbaar (uitpakken) |
+Zie de [handleiding](../USER_MANUAL_NL.md) voor installatie en probleemoplossing.
 
-De ondertekeningsstatus van Windows-builds staat in de release-opmerkingen. De macOS-builds zijn niet genotariseerd, dus de eerste start kan een beveiligingswaarschuwing tonen: **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren); **macOS** voer `xattr -cr /Applications/OpenFocus.app` uit in Terminal, of probeer de app één keer te openen en sta het toe via **Systeeminstellingen → Privacy en beveiliging → Toch openen** (vanaf macOS 15 omzeilt rechtsklik → Open Gatekeeper niet meer).
-
-Voor installatie vanaf de terminal bekijk je eerst de opdracht voor macOS of Linux met `--dry-run` en voer je die daarna zonder die optie uit. Op Linux installeert dit de headless CLI; macOS-builds vereisen Apple Silicon; de app uit de DMG installeert in `/Applications` en de terminalinstallatie in `~/Applications`.
+Op Linux installeert de terminalopdracht de headless CLI; macOS vereist Apple Silicon. De DMG-app komt in `/Applications`, de terminalinstallatie in `~/Applications`.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -248,8 +239,8 @@ irm https://openfocus.top/install.ps1 | iex
 
 De Windows-setup rechtstreeks downloaden:
 
-```bash
-curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
+```powershell
+curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
 ```
 
 ### 🤖 Agentintegratie

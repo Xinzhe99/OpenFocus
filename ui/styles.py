@@ -978,21 +978,6 @@ def get_progress_dialog_style(theme: str) -> str:
             else PROGRESS_DIALOG_STYLE_DARK)
 
 
-def _theme_bound(getter):
-    """A module-level stylesheet constant that follows the active theme.
-
-    `MESSAGE_BOX_STYLE` and `PROGRESS_DIALOG_STYLE` used to be plain strings
-    built once for the dark palette. Five call sites import them by name, so
-    every message box and progress dialog stayed black in light mode - seen as
-    a dark "batch finished" panel over a light app.
-
-    A Qt stylesheet must be a real ``str`` (``setStyleSheet`` rejects anything
-    else), so the constants are rebindable module globals refreshed by
-    ``set_current_theme``. Same names, same type, always current.
-    """
-    return getter
-
-
 MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK
 PROGRESS_DIALOG_STYLE = PROGRESS_DIALOG_STYLE_DARK
 WARNING_MESSAGE_BOX_STYLE = MESSAGE_BOX_STYLE_DARK

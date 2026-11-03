@@ -14,9 +14,9 @@ input frames. Two output modes consume that distribution:
 The network sees luma only; the resulting per-pixel weights or indices are
 applied to the three colour channels, exactly as in the reference code.
 
-Unlike the V4 back-end this needs only ``torch``: the architecture is vendored
-in ``core/models/stackmff_v3`` (MIT, see ``THIRD_PARTY_NOTICES.md``) and the
-weights are a 0.66 MB self-contained checkpoint shipped in ``weights/``.
+The architecture is vendored in ``core/models/stackmff_v3`` (MIT, see
+``docs/THIRD_PARTY_NOTICES.md``); it needs only ``torch`` and a 0.66 MB
+checkpoint shipped in ``weights/``.
 """
 torch = None
 
