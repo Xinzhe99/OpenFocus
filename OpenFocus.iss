@@ -5,6 +5,9 @@
 #ifndef APP_VERSION
 #define APP_VERSION "dev"
 #endif
+#ifndef APP_VERSION_NUM
+#define APP_VERSION_NUM "0.0.0"
+#endif
 #define MyAppVersion APP_VERSION
 #define MyAppExeName "OpenFocus.exe"
 
@@ -13,6 +16,14 @@ AppId={{8C1F4E52-9B7A-4A2E-9C1D-3F5A7B9E1D42}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
+VersionInfoCompany=OpenFocus Contributors
+VersionInfoDescription={#MyAppName} installer
+VersionInfoProductName={#MyAppName}
+VersionInfoProductVersion={#APP_VERSION_NUM}
+VersionInfoVersion={#APP_VERSION_NUM}
+VersionInfoTextVersion={#APP_VERSION_NUM}
+VersionInfoProductTextVersion={#APP_VERSION_NUM}
+VersionInfoCopyright=MIT License
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes

@@ -114,7 +114,7 @@ choice is remembered.
 3. Registration starts on **ECC**; choose **No alignment** if the frames are
    already aligned
 4. Adjust kernel size if needed
-5. *(optional)* Check **Quick preview** to test parameters on a downscaled draft first
+5. *(optional)* Open **Render settings** and check **Quick preview** to test parameters on a downscaled draft first
 6. Click "Start Render" to begin processing
 7. Export your results
 
@@ -141,7 +141,7 @@ The right panel contains all configuration options organized vertically:
 
 1. **Fusion Settings**: Select fusion algorithm and kernel size
 2. **Registration Settings**: Enable/disable alignment methods
-3. **Action Buttons**: Reset defaults and Start Render
+3. **Action Buttons**: Start Render, plus reset, **Render settings**, and render all methods. The render settings dialog contains quick preview, frame order, exposure matching, brightness drift removal, and output sharpening
 4. **Source Images List**: Shows all loaded images with filenames
 5. **Output List**: Shows generated results
 
@@ -553,8 +553,7 @@ and grouped renders do not provide this report.
 1. In the right panel, locate the **Registration** group
 2. Pick one method from the dropdown: **No alignment**, **OpenFocus (fast)**,
    **ECC**, **Homography**, or **Homography → ECC**
-3. For OpenFocus (fast), choose rejected-frame handling and a reference frame;
-   ECC and Homography also offer **Rejected frame handling**
+3. For OpenFocus (fast), choose a reference frame. Set **Rejected frame handling** under **Settings → Advanced Settings → Registration**; changes apply to the methods
 4. **Collect alignment diagnostics** now lives in Advanced Settings (see above)
 
 ### When to Use Registration
@@ -750,6 +749,9 @@ maximise the window. **Esc** leaves fullscreen first and only closes the dialog
 on a second press. Returning from fullscreen restores the previous window size,
 and the result grid reflows to the available width either way.
 
+The workspace displays a selection hint: click a result, or focus it with `Tab`
+and press `Enter` or `Space`, to select or deselect it.
+
 Left-drag the source image to move the white inspection square; releasing the
 button keeps it in place. The right panes show exactly that region from the
 same aligned stack. Use the wheel to change the region's magnification,
@@ -761,8 +763,8 @@ return safely.
 
 ### Quick Preview (Draft Render)
 
-Tuning parameters on large stacks is slow at full resolution. Check
-**Quick preview** above the render button and OpenFocus first renders a draft
+Tuning parameters on large stacks is slow at full resolution. Open **Render settings**
+and check **Quick preview**; OpenFocus first renders a draft
 at half the linear size (never below 320 px on the long edge) — typically
 several times faster, including registration. The completion message (and the
 newest result's tooltip) reports **Quality: Preview**, and the draft is **not**
@@ -821,8 +823,9 @@ copies pixels from the exact frames that produced the selected result:
    until the stroke ends.
 4. Choose **Source Brush** (`B`) or **Restore Brush** (`E`). Diameter,
    hardness and opacity have both sliders and numeric fields; `[` / `]`
-   adjusts the diameter. The restore brush returns pixels to the image you
-   opened, not to an older output.
+   adjusts the diameter. Hold `Ctrl` and scroll up to increase the diameter or
+   down to decrease it; the wheel alone zooms. The restore brush returns pixels
+   to the image you opened, not to an older output.
 5. Hold `Tab` to see the result before this session and `Alt` to peek at the
    source frame. The sharpness reference is optional, covers only the source
    canvas and uses one shared scale for every frame.
@@ -1598,8 +1601,11 @@ The app is unsigned and not notarized. Download the Apple Silicon build from
 xattr -cr /Applications/OpenFocus.app
 ```
 
-or right-click the app and choose **Open**. Released macOS builds are for
-Apple Silicon (M1/M2/M3/M4); Intel Macs can run from source.
+On macOS 15 Sequoia and later, right-clicking the app and choosing **Open** no
+longer bypasses Gatekeeper. If you prefer the UI, try to open the app once,
+then go to **System Settings → Privacy & Security** and click **Open Anyway**.
+Released macOS builds are for Apple Silicon (M1/M2/M3/M4); Intel Macs can run
+from source.
 
 ### Getting Help
 

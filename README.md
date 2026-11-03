@@ -271,7 +271,7 @@ Download the latest Windows or macOS build from the [OpenFocus website](https://
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk image (drag to Applications) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portable (unzip) |
 
-The app is unsigned, so the first launch may show a security prompt: **Windows** SmartScreen → "More info" → "Run anyway" (the first start may take 30–60 s); **macOS** right-click → Open, or run `xattr -cr /Applications/OpenFocus.app` in Terminal.
+The app is unsigned and not notarized, so the first launch may show a security prompt: **Windows** SmartScreen → "More info" → "Run anyway" (the first start may take 30–60 s); **macOS** run `xattr -cr /Applications/OpenFocus.app` in Terminal, or try to open the app once and then allow it in **System Settings → Privacy & Security → Open Anyway** (macOS 15 Sequoia and later no longer bypass Gatekeeper via right-click → Open).
 
 To install from a terminal, preview the macOS or Linux command first, then run
 it without `--dry-run`. On Linux this installs the headless CLI; macOS builds
@@ -290,6 +290,18 @@ irm https://openfocus.top/install.ps1 | iex
 
 The direct Windows setup download is also available with
 `curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`.
+
+## Code signing policy
+
+Free code signing on Windows provided by [SignPath.io](https://about.signpath.io),
+certificate by [SignPath Foundation](https://signpath.org).
+
+- **Committers and reviewers**: the project's repository maintainers with write
+  access ([GitHub repository](https://github.com/Xinzhe99/OpenFocus)).
+- **Approvers**: repository owner [@Xinzhe99](https://github.com/Xinzhe99).
+- **Privacy**: OpenFocus collects no telemetry and uploads no user data. The
+  only automatic network request is the daily GitHub Releases update check; see
+  the [Privacy Policy](docs/PRIVACY.md).
 
 ### 🤖 Agent integration
 

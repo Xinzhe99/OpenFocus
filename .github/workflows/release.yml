@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # Two runs for one tag (moved tag, re-run, workflow_dispatch) used to
 # delete-then-create the same release concurrently and clobber assets.
@@ -19,6 +20,8 @@ jobs:
   build-windows:
     name: Build Windows (x64)
     runs-on: windows-latest
+    outputs:
+      signed: ${{ steps.signpath.outputs.enabled }}
     steps:
       - uses: actions/checkout@v5
 
@@ -28,6 +31,7 @@ jobs:
           cache: 'pip'
 
       - name: Verify APP_VERSION matches the tag
+        id: app-version
         shell: bash
         run: |
           V="v$(python -c 'import constants; print(constants.APP_VERSION)')"
@@ -35,12 +39,16 @@ jobs:
             echo "::error::constants.py APP_VERSION ($V) != tag (${{ github.ref_name }})."
             exit 1
           fi
+          echo "version=$(python -c 'import constants; print(constants.APP_VERSION)')" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+
+      - name: Write Windows version resource
+        run: python tools/write_version_file.py
 
       - name: Verify the shipped AI model is present
         shell: pwsh
@@ -56,6 +64,7 @@ jobs:
         run: |
           pyinstaller --clean --noconfirm --onedir --noconsole --noupx `
             --name OpenFocus `
+            --version-file build/version_info.txt `
             --additional-hooks-dir hooks `
             --icon "assets/OpenFocus.ico" `
             --add-data "assets;assets" `
@@ -114,6 +123,80 @@ jobs:
           $before = (Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum
           Write-Output ("bundle after prune: {0:N0} MB" -f ($before/1MB))
 
+      - name: Detect SignPath signing configuration
+        id: signpath
+        shell: pwsh
+        env:
+          API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          EXE_CONFIG: ${{ vars.SIGNPATH_EXE_ARTIFACT_CONFIG }}
+          SETUP_CONFIG: ${{ vars.SIGNPATH_SETUP_ARTIFACT_CONFIG }}
+        run: |
+          $values = [ordered]@{
+            SIGNPATH_API_TOKEN = $env:API_TOKEN
+            SIGNPATH_ORGANIZATION_ID = $env:ORGANIZATION_ID
+            SIGNPATH_PROJECT_SLUG = $env:PROJECT_SLUG
+            SIGNPATH_SIGNING_POLICY_SLUG = $env:SIGNING_POLICY_SLUG
+            SIGNPATH_EXE_ARTIFACT_CONFIG = $env:EXE_CONFIG
+            SIGNPATH_SETUP_ARTIFACT_CONFIG = $env:SETUP_CONFIG
+          }
+          $missing = @($values.Keys | Where-Object {
+            [string]::IsNullOrWhiteSpace($values[$_])
+          })
+          if ($missing.Count -eq $values.Count) {
+            "enabled=false" >> $env:GITHUB_OUTPUT
+            Write-Output "SignPath signing disabled (no configuration found)."
+            exit 0
+          }
+          if ($missing.Count -gt 0) {
+            throw "Incomplete SignPath configuration; missing: $($missing -join ', ')."
+          }
+          "enabled=true" >> $env:GITHUB_OUTPUT
+          Write-Output "SignPath signing enabled."
+
+      - name: Upload unsigned executable
+        id: upload-exe
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: openfocus-exe-unsigned
+          path: dist/OpenFocus/OpenFocus.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign executable with SignPath
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_EXE_ARTIFACT_CONFIG }}
+          github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+          output-artifact-directory: ${{ runner.temp }}/signed-exe
+          parameters: |
+            version: "${{ steps.app-version.outputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+
+      - name: Restore signed executable
+        if: steps.signpath.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $signed = Join-Path $env:RUNNER_TEMP "signed-exe/OpenFocus.exe"
+          if (-not (Test-Path $signed)) {
+            throw "SignPath did not return OpenFocus.exe."
+          }
+          Copy-Item $signed "dist/OpenFocus/OpenFocus.exe" -Force
+          $sig = Get-AuthenticodeSignature "dist/OpenFocus/OpenFocus.exe"
+          if ($sig.Status -ne "Valid") {
+            throw "Signed executable is not valid: $($sig.Status) $($sig.StatusMessage)"
+          }
+          Write-Output ("Signed by: {0}" -f $sig.SignerCertificate.Subject)
+
       - name: Verify packaged CLI and desktop control
         env:
           QT_QPA_PLATFORM: offscreen
@@ -132,8 +215,53 @@ jobs:
           # installed copies live in Program Files and must use the normal
           # user-profile settings location, not a portable data folder.
           Remove-Item -Path "dist/OpenFocus/OpenFocus.portable" -Force -ErrorAction SilentlyContinue
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAPP_VERSION=${{ github.ref_name }} OpenFocus.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            /DAPP_VERSION=${{ github.ref_name }} `
+            /DAPP_VERSION_NUM=${{ steps.app-version.outputs.version }} `
+            OpenFocus.iss
           Copy-Item installer/OpenFocus-*-setup.exe .
+
+      - name: Upload unsigned installer
+        id: upload-setup
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: openfocus-setup-unsigned
+          path: OpenFocus-*-setup.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign installer with SignPath
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_SETUP_ARTIFACT_CONFIG }}
+          github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
+          output-artifact-directory: ${{ runner.temp }}/signed-setup
+          parameters: |
+            version: "${{ steps.app-version.outputs.version }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+
+      - name: Restore signed installer
+        if: steps.signpath.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem "$env:RUNNER_TEMP/signed-setup/OpenFocus-*-setup.exe" |
+            Select-Object -First 1
+          if (-not $setup) {
+            throw "SignPath did not return the installer."
+          }
+          Copy-Item $setup.FullName . -Force
+          $sig = Get-AuthenticodeSignature $setup.FullName
+          if ($sig.Status -ne "Valid") {
+            throw "Signed installer is not valid: $($sig.Status) $($sig.StatusMessage)"
+          }
+          Write-Output ("Signed by: {0}" -f $sig.SignerCertificate.Subject)
 
       - uses: actions/upload-artifact@v5
         with:
@@ -302,6 +430,8 @@ jobs:
           path: release
 
       - name: Create release notes
+        env:
+          WINDOWS_SIGNED: ${{ needs.build-windows.outputs.signed }}
         run: |
           cat > release_notes.md <<'EOF'
           ## Downloads
@@ -332,6 +462,8 @@ jobs:
           - Windows: click "More info" → "Run anyway".
           - macOS: if you see *"cannot be opened"* or *"is damaged"*, run
             `xattr -cr /Applications/OpenFocus.app` in Terminal, then open normally.
+            On macOS 15 Sequoia and later, right-click → Open no longer bypasses
+            Gatekeeper; use System Settings → Privacy & Security → Open Anyway.
 
           ## Full history
 
@@ -341,7 +473,7 @@ jobs:
           # in-app update dialog shows release bodies as per-version notes,
           # and a body of install boilerplate told users nothing.
           python3 - "${{ github.ref_name }}" <<'PY'
-          import re, sys
+          import os, re, sys
           tag = sys.argv[1]
           version = tag[1:] if tag.startswith('v') else tag
           text = open("CHANGELOG.md", encoding="utf-8").read()
@@ -349,6 +481,13 @@ jobs:
           if not m:
               raise SystemExit(f"No changelog section found for {tag}")
           notes = open("release_notes.md", encoding="utf-8").read()
+          if os.environ.get("WINDOWS_SIGNED") == "true":
+              notes = notes.replace(
+                  "The app is unsigned, so SmartScreen/Gatekeeper may warn on first launch:",
+                  "Windows builds are code-signed by SignPath Foundation (SmartScreen "
+                  "may still warn until reputation accumulates); macOS builds are not "
+                  "notarized:",
+              )
           notes = "## What's new\n" + m.group(1).strip() + "\n\n" + notes
           open("release_notes.md", "w", encoding="utf-8").write(notes)
           PY
