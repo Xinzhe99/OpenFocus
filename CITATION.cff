@@ -16,9 +16,9 @@ identifiers:
 abstract: >-
   OpenFocus is an open-source multi-focus image fusion workstation for
   PyQt6-based desktop use and headless command-line pipelines. It combines
-  fast similarity, homography and ECC image registration with eight fusion
+  fast similarity, homography and ECC image registration with ten fusion
   algorithms (guided filter, DCT, dual-tree complex wavelet transform,
-  GFG-FGF, the StackMFF-V3 deep model and OpenFocus A/B/C), supports 8- and
+  GFG-FGF, StackMFF V1/V2/V3 and OpenFocus A/B/C), supports 8- and
   16-bit stacks, HEIC input, source-locked retouching, batch processing and
   project files, and ships for Windows and macOS (Apple Silicon) as well as
   through PyPI (`pip install openfocus`).

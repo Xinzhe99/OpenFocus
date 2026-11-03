@@ -235,7 +235,7 @@ if [ ! -f "$stage/Contents/Info.plist" ] || [ ! -x "$stage/Contents/MacOS/OpenFo
   fail "the staged app is incomplete; the existing installation was not changed"
 fi
 
-# The build is unsigned; clear quarantine on the staged copy before it moves.
+# The build is not notarized; clear quarantine on the staged copy before it moves.
 xattr -cr "$stage" 2>/dev/null || true
 
 had_previous=0
@@ -263,5 +263,5 @@ if [ "$had_previous" = 1 ] && { [ -e "$backup" ] || [ -L "$backup" ]; }; then
 fi
 
 say "Installed: $dest"
-say "The app is unsigned: on first launch use right-click → Open if macOS blocks it."
+say "The app is not notarized. If macOS blocks it, use System Settings → Privacy & Security → Open Anyway."
 open "$dest" 2>/dev/null || true

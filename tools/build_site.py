@@ -297,7 +297,8 @@ def main() -> int:
     (DIST / "404.html").write_text(not_found(css), encoding="utf-8", newline="\n")
 
     for installer in ("install.sh", "install.ps1"):
-        shutil.copyfile(SITE / installer, DIST / installer)
+        text = (SITE / installer).read_text(encoding="utf-8")
+        (DIST / installer).write_text(text, encoding="utf-8", newline="\n")
 
     (DIST / "robots.txt").write_text(
         f"User-agent: *\nAllow: /\n\nSitemap: {ORIGIN}/sitemap.xml\n",

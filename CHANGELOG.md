@@ -80,7 +80,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Website and installers** include a maintained deployment runbook, safer
   installation rollback, range-aware mirrored downloads, and latest-release
   links that work without JavaScript. Mobile command blocks stay within the
-  screen width.
+  screen width, and built shell installers use Unix line endings on every OS.
 - **Manual checks** validate numbered chapters, code-fence balance and local
   file links without requiring translated examples to have identical layouts.
 - **License notices** distinguish the bundled MIT-licensed StackMFF V3 snapshot
