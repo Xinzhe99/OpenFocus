@@ -199,12 +199,19 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
             # 分母项直接返回单通道权重即可
             return base_num, weight_base_k, detail_num, weight_detail_k
 
+        # A frame that wins no pixel has an all-zero mask, so both guided
+        # filters return exactly 0 and it adds nothing to any accumulator.
+        # Skipping it is bit-identical and saves most of the work in tiled
+        # renders, where each tile is sharp in only a few frames.
+        wins = np.bincount(max_indices.ravel(), minlength=num_images)
+        contributing = [k for k in range(num_images) if wins[k] > 0]
+
         # Submit only a worker-sized window; consume and release in frame order.
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for start in range(0, num_images, max_workers):
+            for start in range(0, len(contributing), max_workers):
                 check_cancel()
-                stop = min(num_images, start + max_workers)
-                for bn, bd, dn, dd in executor.map(process_weight_fusion, range(start, stop)):
+                batch = contributing[start:start + max_workers]
+                for bn, bd, dn, dd in executor.map(process_weight_fusion, batch):
                     check_cancel()
                     fused_base_numerator += bn
                     fused_base_denominator += bd

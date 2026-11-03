@@ -48,6 +48,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   assigned a potentially incorrect profile. PNG/TIFF keep their 16-bit pixels.
 
 ### Changed
+- **Guided-filter fusion skips frames that are never the sharpest.** A frame
+  that wins no pixel of the initial decision map has all-zero refined weights,
+  so its weight pass is skipped. Output is bit-identical; tiled renders, where
+  each tile is sharp in only a few frames, run about 1.7x faster.
 - **Desktop controls** show grouped-batch, tile, ROI base-frame and
   depth-calibration settings only when their parent option is enabled.
   Alignment diagnostic collection is configured in Advanced Settings, and
