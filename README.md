@@ -291,20 +291,6 @@ irm https://openfocus.top/install.ps1 | iex
 The direct Windows setup download is also available with
 `curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`.
 
-## Code signing policy
-
-When enabled, free code signing on Windows is provided by
-[SignPath.io](https://about.signpath.io), certificate by
-[SignPath Foundation](https://signpath.org). Check the release notes for each
-build's signing status.
-
-- **Committers and reviewers**: the project's repository maintainers with write
-  access ([GitHub repository](https://github.com/Xinzhe99/OpenFocus)).
-- **Approvers**: repository owner [@Xinzhe99](https://github.com/Xinzhe99).
-- **Privacy**: OpenFocus collects no telemetry and uploads no user data. The
-  only automatic network request is the daily GitHub Releases update check; see
-  the [Privacy Policy](docs/PRIVACY.md).
-
 ### 🤖 Agent integration
 
 The desktop app starts a token-protected local agent channel automatically.
@@ -337,6 +323,7 @@ See the [CLI manual](./docs/USER_MANUAL_EN.md#14-command-line-interface).
 ## Community & Support
 
 - **Docs** — [User Manual](./docs/USER_MANUAL_EN.md) (twelve languages) · [Changelog](./CHANGELOG.md) · [Performance](./docs/PERFORMANCE.md) · [Fusion methods](./docs/FUSION_METHODS.md)
+- <a id="code-signing-policy"></a>[Code signing policy](./docs/CODE_SIGNING_POLICY.md) · [Privacy policy](./docs/PRIVACY.md)
 - **Citation** — [CITATION.cff](./CITATION.cff); every release is archived on Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open an [issue](https://github.com/Xinzhe99/OpenFocus/issues) for bugs, ideas and algorithm work
 - **Credits** — each fusion/registration algorithm keeps its original research licence; StackMFF V3 lives at [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)

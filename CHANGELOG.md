@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Move the code signing policy to a dedicated document and keep links from the
+  README, website and release notes.
+
 ## [1.75.0] - 2026-11-03
 
 ### Added
