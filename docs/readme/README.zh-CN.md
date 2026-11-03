@@ -229,7 +229,7 @@
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | 磁盘映像（拖入“应用程序”） |
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | 便携版（解压即用） |
 
-应用未签名，首次启动可能触发系统安全提示：**Windows** 选择“更多信息 → 仍要运行”（首次启动约需 30–60 秒）；**macOS** 右键“打开”，或执行 `xattr -cr /Applications/OpenFocus.app`。
+应用未签名、未公证，首次启动可能触发系统安全提示：**Windows** 选择“更多信息 → 仍要运行”（首次启动约需 30–60 秒）；**macOS** 执行 `xattr -cr /Applications/OpenFocus.app`，或先尝试打开一次，再到 **系统设置 → 隐私与安全性** 中点“仍要打开”（macOS 15 起右键“打开”不再绕过 Gatekeeper）。
 
 也可以从终端安装。先预览 macOS 或 Linux 的安装命令，再去掉 `--dry-run` 实际执行。
 Linux 上安装的是无界面 CLI；macOS 构建需要 Apple Silicon，并安装到 `~/Applications`。

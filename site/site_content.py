@@ -233,9 +233,12 @@ def _en() -> dict:
             "eyebrow": "Download",
             "title": "Install OpenFocus",
             "sub": (
-                "Builds are unsigned. On Windows, SmartScreen → More info → Run "
-                "anyway; the first start can take 30–60 seconds. On macOS, "
-                "right-click → Open."
+                "Windows builds use free code signing provided by SignPath.io, "
+                "certificate by SignPath Foundation; older releases remain "
+                "unsigned. If SmartScreen appears, choose More info → Run anyway; "
+                "the first start can take 30–60 seconds. On macOS, run xattr -cr, "
+                "or allow the app in System Settings → Privacy & Security → "
+                "Open Anyway."
             ),
             "cards": [
                 {
@@ -289,6 +292,7 @@ def _en() -> dict:
                 ("GitHub", REPO),
                 ("Docs", MANUAL["en"]),
                 ("Changelog", f"{REPO}/blob/main/CHANGELOG.md"),
+                ("Code signing", f"{REPO}/blob/main/README.md#code-signing-policy"),
                 ("Cite", "https://doi.org/10.5281/zenodo.23050823"),
             ],
             "license": "© 2026 OpenFocus Contributors · MIT License",
@@ -471,7 +475,7 @@ def _zh() -> dict:
         "download": {
             "eyebrow": "下载",
             "title": "安装 OpenFocus",
-            "sub": "安装包未签名。Windows 首次运行时若被 SmartScreen 拦截，请点“更多信息 → 仍要运行”；首次启动可能需要 30–60 秒。macOS 请右键选择“打开”。",
+            "sub": "Windows 构建使用 SignPath.io 提供的免费代码签名，证书由 SignPath Foundation 签发；旧版本仍未签名。若被 SmartScreen 拦截，请点“更多信息 → 仍要运行”；首次启动可能需要 30–60 秒。macOS 请执行 xattr -cr，或在“系统设置 → 隐私与安全性”中点“仍要打开”。",
             "cards": [
                 {
                     "os": "Windows 10/11 · x64",
@@ -524,6 +528,7 @@ def _zh() -> dict:
                 ("GitHub", REPO),
                 ("文档", MANUAL["zh"]),
                 ("更新日志", f"{REPO}/blob/main/CHANGELOG.md"),
+                ("代码签名", f"{REPO}/blob/main/README.md#code-signing-policy"),
                 ("引用", "https://doi.org/10.5281/zenodo.23050823"),
             ],
             "license": "© 2026 OpenFocus Contributors · MIT 许可",

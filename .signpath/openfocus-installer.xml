@@ -1,0 +1,19 @@
+<!--
+SignPath artifact configuration for the Inno Setup installer.
+
+Create this configuration in the SignPath project, then set the repository
+variable SIGNPATH_SETUP_ARTIFACT_CONFIG to its slug. The workflow uploads the
+unsigned installer as a GitHub artifact, so the root element is <zip-file>.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="OpenFocus-*-setup.exe"
+             product-name="OpenFocus"
+             product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
