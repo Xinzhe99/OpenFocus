@@ -577,6 +577,11 @@ QLabel#metricValue {{
     font-size: {f['display']}pt;
     font-weight: {WEIGHT['bold']};
 }}
+QLabel#retouchZoom {{
+    color: {t['text']};
+    font-size: {f['subtitle']}pt;
+    font-weight: {WEIGHT['semibold']};
+}}
 QLabel#mutedLabel {{ color: {t['textMuted']}; font-size: {f['caption']}pt; }}
 
 QFrame#card {{

@@ -58,6 +58,16 @@ def test_shutdown_ignores_late_checks(manager):
     assert not manager._idle_timer.isActive()
 
 
+def test_auto_download_defaults_on_and_preserves_opt_out(manager):
+    assert manager.auto_download is True
+    manager.set_auto_download(False)
+    restored = um.UpdateManager(manager._window)
+    try:
+        assert restored.auto_download is False
+    finally:
+        restored._idle_timer.stop()
+        restored.deleteLater()
+
 def test_disable_auto_download_stops_schedule_without_cancelling_work(manager):
     manager._idle_timer.start(10000)
     calls = []

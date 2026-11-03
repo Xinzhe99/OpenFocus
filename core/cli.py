@@ -2,8 +2,8 @@
 
 Lets batch users and CI pipelines run registration + fusion without the GUI:
 
-    python main.py --input ./stack_folder --output ./out --method stackmffv3
-    python main.py --input ./stackA ./stackB --output-dir ./results   (batch)
+    openfocus --input ./stack_folder --output ./out.png --method stackmffv3
+    openfocus --input ./stackA ./stackB --output-dir ./results   (batch)
 
 Exit codes: 0 success, 1 processing error, 2 usage error.
 """
@@ -72,10 +72,10 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
-            "  python main.py --input ./stack --output ./result/fused.png\n"
-            "  python main.py --input ./stack --output ./result/fused.png --method dtcwt --align ecc --threads 8\n"
-            "  python main.py --input ./stackA ./stackB --output-dir ./results -m stackmffv3\n"
-            "  python main.py --input img1.jpg img2.jpg img3.jpg --output fused.png --method gfgfgf\n"
+            "  openfocus --input ./stack --output ./result/fused.png\n"
+            "  openfocus --input ./stack --output ./result/fused.png --method dtcwt --align ecc --threads 8\n"
+            "  openfocus --input ./stackA ./stackB --output-dir ./results -m stackmffv3\n"
+            "  openfocus --input img1.jpg img2.jpg img3.jpg --output fused.png --method gfgfgf\n"
             "\nTransparent input: PNG frames must share one rectangular, constant-opacity\n"
             "region and bit depth. Output must be PNG; alignment, dust correction,\n"
             "sensor cleanup, depth maps and scale bars are unsupported. See the user manual.\n"
@@ -99,8 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Frames shared by consecutive groups (default 0; at most group size minus 2).")
     parser.add_argument("--method", "-m", default="stackmffv3",
                         choices=[spec.id for spec in fusion_algorithms()],
-                        help="OpenFocus methods: A = multiscale response selection, "
-                             "B = depth-guided blending, C = depth-guided pyramid")
+                        help="Fusion method (default: stackmffv3); use `openfocus describe` "
+                             "for available methods and their parameters")
     parser.add_argument("--align", "-a", default="none",
                         choices=[spec.id for spec in registration_algorithms()],
                         help="Registration applied before fusion (default: none); openfocus = "
@@ -1355,6 +1355,12 @@ def describe_payload() -> dict:
             "batch": ["--output-dir", "--resume", "--config"],
             "machine": ["--json", "--json-progress", "--alignment-report", "--dry-run"],
             "review": ["--suggest-duplicates"],
+            "grouped": ["--group-size", "--group-overlap"],
+            "cleanup": ["--dust-map", "--defect-mask-path", "--sensor-denoise"],
+            "export": ["--scale-bar", "--scale-um", "--depth-map", "--depth-colormap"],
+            "subcommands": sorted(SUBCOMMANDS),
+            "options": sorted(option for action in build_parser()._actions
+                              for option in action.option_strings if option.startswith("--")),
             "control": ["gui", "ctl <command>", "describe", "version"],
         },
     }
@@ -1581,14 +1587,16 @@ def _run_ctl(argv: List[str]) -> int:
 
                 state = wait_for("render.state", finished,
                                  timeout=flags["timeout"])
-                ok = state.get("state") == "done"
+                superseded = state.get("render_id") != render_id
+                ok = not superseded and state.get("state") == "done"
                 response = {"id": response.get("id", "0"), "ok": ok,
                             "result": state,
                             "elapsed_ms": response.get("elapsed_ms", 0)}
                 if not ok:
                     response["error"] = {
                         "code": "internal",
-                        "message": (state.get("error")
+                        "message": ("Render was superseded by a newer render"
+                                    if superseded else state.get("error")
                                     or "The render did not finish (cancelled?)")}
             elif command in ("stack.load", "project.open"):
                 load_id = result.get("load_id")

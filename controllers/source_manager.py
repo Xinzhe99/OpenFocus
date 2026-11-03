@@ -348,15 +348,13 @@ class SourceManager(QObject):
         if not dlg.exec():
             return None
         scale = dlg.get_scale_factor()
+        window.load_scale_default = scale
         dont_ask = getattr(dlg, "dont_ask_again", None)
         if callable(dont_ask) and dont_ask():
             window.ask_load_scale = False
-            window.load_scale_default = scale
-            # No menu action to mirror any more: the flag lives in the
-            # Advanced settings page and is read from the window attribute.
-            persist = getattr(window, "persist_settings", None)
-            if callable(persist):
-                persist()
+        persist = getattr(window, "persist_settings", None)
+        if callable(persist):
+            persist()
         return scale
 
     def load_image_stack(self, folder_path: str, append: bool = False) -> None:

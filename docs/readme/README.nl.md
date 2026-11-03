@@ -9,7 +9,7 @@
 <p align="center"><strong>Elke pixel uit zijn scherpste frame.</strong></p>
 
 <p align="center">
-  Tien fusiemethoden, vijf uitlijningsopties en een bronvaste retoucheerwerkruimte voor macro-, microscopie- en industriële stapels. 16-bit van begin tot eind, een headless CLI en een interface in twaalf talen.
+  Tien fusiemethoden, vijf uitlijningsopties (inclusief geen uitlijning) en een bronvaste retoucheerwerkruimte voor macro-, microscopie- en industriële stapels. 16-bit van begin tot eind, een headless CLI en een interface in twaalf talen.
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.74.0** — De OpenFocus A/B/C-fusie en snelle uitlijning zijn bijgewerkt. De desktopapp start nu automatisch een geauthenticeerd lokaal agentkanaal, zodat `openfocus ctl` het draaiende venster kan bedienen zonder speciale startoptie.
+> **v1.75.0** — Groepsfusie, herbruikbare verwerkingsworkflows, transparante PNG-stapels, uitlijningsdiagnose, uitgebreidere diepte-exports en een vernieuwde desktopworkflow. Zie het wijzigingslogboek voor ondersteunde invoer en beperkingen.
 
 Oudere versies staan in het [wijzigingslogboek](../../CHANGELOG.md).
 
@@ -106,7 +106,7 @@ Sleep de scheiding over een bronframe en het fusieresultaat om precies te zien w
 
 ### Methodenvergelijking
 
-Render elke methode één keer, vergelijk ze naast elkaar op dezelfde uitsnede en neem de winnaar over als nieuwe uitvoer of kopieer de parameters terug naar het hoofdvenster.
+Standaard wordt elk beeld met elke methode op volledige grootte gefuseerd; het vierkant voor broninspectie blijft interactief zonder de berekeningen op volledige grootte te herhalen. Vergelijk daarna de resultaten naast elkaar op dezelfde uitsnede en neem de winnaar over als nieuwe uitvoer of kopieer de parameters terug naar het hoofdvenster.
 
 </td>
 <td width="54%">
@@ -120,7 +120,7 @@ Render elke methode één keer, vergelijk ze naast elkaar op dezelfde uitsnede e
 
 ### Dieptekaart en 3D
 
-Focuspositie per pixel uit vijf focusmaten, wetenschappelijke kleurenschalen, fysieke Z-kalibratie uit TIFF-metadata en getextureerde OBJ-export van het oppervlak.
+Focuspositie per pixel uit zeven dieptegeschikte methoden, wetenschappelijke kleurenschalen, handmatige fysieke Z-kalibratie (start en stap; TIFF-metadata levert alleen de XY-kalibratie) en getextureerde OBJ-export van het oppervlak.
 
 </td>
 <td width="54%">
@@ -231,9 +231,9 @@ Download de nieuwste Windows- of macOS-build van de [OpenFocus-website](https://
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Schijfimage (naar Programma's slepen) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Draagbaar (uitpakken) |
 
-De app is niet ondertekend, dus de eerste start kan een beveiligingswaarschuwing tonen: **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren); **macOS** rechtsklik → Open, of `xattr -cr /Applications/OpenFocus.app` in Terminal.
+De ondertekeningsstatus van Windows-builds staat in de release-opmerkingen. De macOS-builds zijn niet genotariseerd, dus de eerste start kan een beveiligingswaarschuwing tonen: **Windows** SmartScreen → 'Meer informatie' → 'Toch uitvoeren' (de eerste start kan 30–60 s duren); **macOS** voer `xattr -cr /Applications/OpenFocus.app` uit in Terminal, of probeer de app één keer te openen en sta het toe via **Systeeminstellingen → Privacy en beveiliging → Toch openen** (vanaf macOS 15 omzeilt rechtsklik → Open Gatekeeper niet meer).
 
-Voor installatie vanaf de terminal bekijk je eerst de opdracht voor macOS of Linux met `--dry-run` en voer je die daarna zonder die optie uit. Op Linux installeert dit de headless CLI; macOS-builds vereisen Apple Silicon en worden in `~/Applications` geïnstalleerd.
+Voor installatie vanaf de terminal bekijk je eerst de opdracht voor macOS of Linux met `--dry-run` en voer je die daarna zonder die optie uit. Op Linux installeert dit de headless CLI; macOS-builds vereisen Apple Silicon; de app uit de DMG installeert in `/Applications` en de terminalinstallatie in `~/Applications`.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run

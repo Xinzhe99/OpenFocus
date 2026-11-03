@@ -40,6 +40,7 @@ from core.algorithms import (alignment_steps, depth_algorithms, get_fusion, regi
     registration_algorithms, resolve_fusion_parameters, resolve_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from locales import trans
+from widgets.flow_layout import FlowPanel
 from widgets.stepper import StepperSpinBox
 from utils import colormap as cmap
 from utils.image_utils import imwrite_auto
@@ -463,7 +464,7 @@ class DepthMapDialog(QDialog):
         pvlay.setContentsMargins(0, 0, 0, 0)
         self.preview_lbl = QLabel(trans.t("depth_no_map_yet"))
         self.preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_lbl.setMinimumSize(420, 320)
+        self.preview_lbl.setMinimumSize(180, 130)
         # Preview placeholder follows the palette instead of a fixed near-black.
         from ui.styles import CURRENT_THEME
         from utils.design_tokens import palette
@@ -488,6 +489,7 @@ class DepthMapDialog(QDialog):
         surf_lay = QVBoxLayout(surf_page)
         surf_lay.setContentsMargins(0, 0, 0, 0)
         self.surface = DepthSurface()
+        self.surface.setMinimumSize(180, 130)
         surf_lay.addWidget(self.surface, 1)
         # Detail slider: the surface is sampled at a working resolution to
         # stay interactive; this exposes that trade-off instead of hiding it.
@@ -568,7 +570,8 @@ class DepthMapDialog(QDialog):
         current_alignment = getattr(self.window_main, 'current_alignment_method', lambda: 'none')()
         alignment_steps(current_alignment)
         self.align_combo.setCurrentIndex(self.align_combo.findData(current_alignment))
-        self.registration_parameter_panel = AlgorithmParameterPanel(self)
+        self.registration_parameter_panel = AlgorithmParameterPanel(
+            self, hidden_parameters=('failure_policy',))
         self.registration_parameter_panel.valuesChanged.connect(self._on_registration_parameter_changed)
         form.addRow(self.registration_parameter_panel)
         self._sync_registration_controls()
@@ -717,7 +720,7 @@ class DepthMapDialog(QDialog):
         layout.addWidget(self.status_lbl)
 
         # ---- actions ----
-        btns = QHBoxLayout()
+        btns = FlowPanel(h_spacing=6, v_spacing=6)
         self.compute_btn = QPushButton(trans.t("depth_compute"))
         self.compute_btn.clicked.connect(self._compute)
         self.cancel_btn = QPushButton(trans.t("btn_cancel_compute"))
@@ -731,24 +734,17 @@ class DepthMapDialog(QDialog):
         self.btn_save_3d.clicked.connect(self._export_3d)
         close_btn = QPushButton(trans.t("btn_close"))
         close_btn.clicked.connect(self.reject)
-        btns.addWidget(self.compute_btn)
-        btns.addWidget(self.cancel_btn)
-        btns.addStretch()
-        btns.addWidget(self.btn_save_color)
-        btns.addWidget(self.btn_save_raw)
-        btns.addWidget(self.btn_save_3d)
-        btns.addWidget(close_btn)
-        layout.addLayout(btns)
-        product_btns = QHBoxLayout()
         self.btn_save_indices = QPushButton(trans.t("depth_save_indices"))
         self.btn_save_render = QPushButton(trans.t("depth_save_render"))
         for button in (self.btn_save_indices, self.btn_save_render):
             button.setToolTip(trans.t("depth_products_hint"))
-            product_btns.addWidget(button)
         self.btn_save_indices.clicked.connect(lambda: self._export_product(False))
         self.btn_save_render.clicked.connect(lambda: self._export_product(True))
-        product_btns.addStretch()
-        layout.addLayout(product_btns)
+        for button in (self.compute_btn, self.cancel_btn, self.btn_save_indices,
+                       self.btn_save_render, self.btn_save_color,
+                       self.btn_save_raw, self.btn_save_3d, close_btn):
+            btns.add(button)
+        layout.addWidget(btns)
 
         for w in (self.map_combo, self.invert_chk, self.gamma_spin,
                   self.smooth_spin, self.opacity_spin):
@@ -771,6 +767,24 @@ class DepthMapDialog(QDialog):
             _widget = getattr(self, _control, None)
             if _widget is not None:
                 _widget.setProperty("controlId", _control)
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        if not getattr(self, "_initial_screen_checked", False):
+            self._initial_screen_checked = True
+            QTimer.singleShot(0, self._fit_initial_screen)
+
+    def _fit_initial_screen(self):
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        self.layout().activate()
+        available = screen.availableGeometry()
+        frame = self.frameGeometry()
+        max_width = max(1, available.width() - max(0, frame.width() - self.width()))
+        max_height = max(1, available.height() - max(0, frame.height() - self.height()))
+        self.resize(min(self.width(), max_width), min(self.height(), max_height))
+
 
     # ------------------------------------------------------------------
     def _apply_style(self):
@@ -1113,7 +1127,7 @@ class DepthMapDialog(QDialog):
                 else resolve_registration_parameters(method))
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
-        self.registration_parameter_panel.setVisible(bool(specs))
+        self.registration_parameter_panel.setVisible(bool(self.registration_parameter_panel.editors))
 
     def _on_alignment_changed(self):
         self._sync_registration_controls()

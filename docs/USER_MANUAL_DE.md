@@ -81,7 +81,7 @@ Laden Sie den aktuellen Windows- oder macOS-Build von der [OpenFocus-Website](ht
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk-Image (in „Programme“ ziehen) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portabel (entpacken) |
 
-Die App ist nicht signiert. Beim ersten Start kann daher eine Sicherheitsabfrage erscheinen: unter **Windows** SmartScreen → „Weitere Informationen“ → „Trotzdem ausführen“ (der erste Start kann 30–60 s dauern); unter **macOS** mit der rechten Maustaste auf die App klicken und **Öffnen** wählen, oder im Terminal `xattr -cr /Applications/OpenFocus.app` ausführen.
+Ob die Windows-Builds signiert sind, hängt vom jeweiligen Release ab (siehe Release-Notes); eine Signatur ist nicht garantiert. Beim ersten Start kann daher eine Sicherheitsabfrage erscheinen: unter **Windows** SmartScreen → „Weitere Informationen“ → „Trotzdem ausführen“ (der erste Start kann 30–60 s dauern). Die macOS-Builds sind nicht notarisiert; nach der DMG-Installation (in „Programme“) führen Sie bei Bedarf `xattr -cr /Applications/OpenFocus.app` aus, nach der Terminal-Installation (nach `~/Applications`) `xattr -cr ~/Applications/OpenFocus.app`, oder Sie klicken mit der rechten Maustaste auf die App und wählen **Öffnen**.
 
 Für die Installation im Terminal zuerst den Befehl für macOS oder Linux mit `--dry-run` prüfen und anschließend ohne diese Option ausführen. Unter Linux installiert das die Headless-CLI; macOS-Builds erfordern Apple Silicon und werden nach `~/Applications` installiert.
 
@@ -119,7 +119,7 @@ Der erste Start öffnet den Willkommensdialog, in dem Sie das Design wählen und
 2. Fusionseinstellungen im rechten Bereich konfigurieren
 3. Die Registrierung startet mit **ECC**; wählen Sie **Keine Ausrichtung**, wenn die Bilder bereits ausgerichtet sind
 4. Kernelgröße oder methodspezifische Parameter bei Bedarf ändern
-5. *(optional)* **Schnellvorschau** aktivieren, um die Parameter zuerst an einem verkleinerten Entwurf zu testen
+5. *(optional)* **Rendereinstellungen** öffnen und **Schnellvorschau** aktivieren, um die Parameter zuerst an einem verkleinerten Entwurf zu testen
 6. Auf **▶ Rendern starten** klicken, um die Verarbeitung zu beginnen
 7. Ergebnisse exportieren
 
@@ -146,8 +146,8 @@ Der rechte Bereich enthält alle Konfigurationsoptionen, vertikal gegliedert:
 
 1. **Fusionseinstellungen**: Fusionsverfahren und dessen Parameter wählen
 2. **Registrierungseinstellungen**: Ausrichtungsmethode und zugehörige Parameter wählen
-3. **Helligkeits- und Ausgabeoptionen**: Belichtungsabgleich, Helligkeitsdrift, Schärfung und Stapelreihenfolge
-4. **Aktionsschaltflächen**: Zurücksetzen und Rendern starten
+3. **Rendereinstellungen**: Der Dialog enthält Schnellvorschau, Bildreihenfolge, Belichtungsabgleich, Entfernung der Helligkeitsdrift und Ausgabeschärfung
+4. **Aktionsschaltflächen**: Rendern starten sowie Zurücksetzen, Rendereinstellungen und alle Methoden rendern
 5. **Liste der Quellbilder**: alle geladenen Bilder mit Dateinamen und Auswahlkästchen
 6. **Ausgabeliste**: die erzeugten Ergebnisse
 
@@ -212,6 +212,8 @@ Eine kleine Kurve über dem Navigationsregler der Quelle zeigt die Schärfe pro 
 Mikroskopiesoftware (ZEN, NIS-Elements, ImageJ/Fiji) exportiert einen ganzen Z-Stapel häufig als EINE mehrseitige TIFF-Datei. OpenFocus liest jede Seite einer solchen Datei als eigenes Einzelbild des Stapels – die Datei ablegen oder öffnen, und der Stapel erscheint vollständig (die Einzelbilder heißen `<file>_page_001` und so weiter). Einseitige TIFFs verhalten sich genau wie bisher. Auch der umgekehrte Weg funktioniert: **Datei → Stack speichern → Registrierter Stack / Eingabe-Stack → Als mehrseitige TIFF speichern** schreibt den gesamten Stapel zurück in eine einzige `.tif` und behält dabei die 16-Bit-Tiefe bei.
 
 ### Maßstabsbalken (Publikationsabbildungen)
+
+Fehlen für das gewählte Ziel nutzbare Metadaten, wird die manuelle Kalibrierung vorausgewählt und eine gültige Pixelgröße benötigt.
 
 **Werkzeuge → Maßstabsbalken…** konfiguriert einen Maßstabsbalken, der in exportierte Bilder eingebrannt wird. Die Pixelgröße (µm/px) wird automatisch aus den TIFF-Metadaten erkannt – über die `unit=micron`-Konvention von ImageJ, das `PhysicalSizeX` von OME-TIFF oder eine explizite Auflösungseinheit in Zentimetern –, sodass sich Mikroskopie-Stapel (auch mehrseitige TIFFs) selbst kalibrieren. Druckerauflösungen (72/300 dpi und ähnliche) werden bewusst *nicht* als Kalibrierung behandelt, und ein manuell eingegebener Wert hat immer Vorrang vor erkannten Metadaten: ein plausibel aussehender falscher Balken in einer Abbildung ist schlimmer als gar keiner. Ecke und Farbe wählen – **Auto** invertiert gegenüber dem Hintergrund; der Dialog zeigt eine Live-Vorschau. Bei aktiviertem Balken trägt jeder Export (Einzelbild, Ordner-Stapel, mehrseitige TIFF, GIF, Alle exportieren, Stapelverarbeitung) einen Balken im Publikationsstil: eine gerundete 1-2-5-Länge (etwa 12 % der Bildbreite) mit konturierter, gut lesbarer Beschriftung. Die CLI unterstützt ihn über `--scale-bar` (automatische Kalibrierung) und `--scale-um <um/px>`.
 
@@ -380,7 +382,7 @@ Um ein Rendering zu untersuchen, aktivieren Sie **Einstellungen → Erweiterte E
 
 1. Im rechten Bereich die Gruppe **Registrierung** suchen
 2. Eine Methode im Dropdown wählen: **Keine Ausrichtung**, **OpenFocus (schnell)**, **ECC**, **Homographie** oder **Homographie → ECC**. Ohne gespeicherte Auswahl startet eine neue Sitzung mit ECC; die zuletzt gewählte Methode wird gespeichert.
-3. Bei OpenFocus (schnell) in den Einstellungen festlegen, wie mit abgelehnten Bildern umgegangen wird; ECC und Homographie bieten ebenfalls **Behandlung abgelehnter Bilder**.
+3. Unter **Einstellungen → Erweiterte Einstellungen… → Registrierung** die **Behandlung abgelehnter Bilder** wählen. Änderungen gelten für die Methoden; für OpenFocus (schnell) lässt sich außerdem das Referenzbild festlegen.
 4. **Ausrichtungsdiagnose erfassen** befindet sich jetzt unter **Einstellungen → Erweiterte Einstellungen… → Registrierung** (siehe oben).
 
 ### Wann Registrierung sinnvoll ist
@@ -440,8 +442,8 @@ OpenFocus bietet zehn Fusionsalgorithmen plus einen reinen Ausrichtungsmodus. Ei
 ### StackMFF (V1, Deep Learning)
 
 - **Algorithmus**: ein 3D-U-Net, das die fusionierte Luma des gesamten Stapels in einem Durchlauf vorhersagt; Cb/Cr stammen aus dem Quellbild, das dieser Luma am nächsten liegt
-- **Am besten für**: Stapel ohne feste Fokusreihenfolge oder ohne kontinuierliche Aufnahmeserie
-- **Vorteile**: reihenfolgeunabhängig, keine Parameter, Farben bleiben im Gamut
+- **Am besten für**: neuronale Fusion eines vollständigen Fokusstapels
+- **Vorteile**: keine Parameter, Farben bleiben im Gamut; die Bildreihenfolge kann das Ergebnis beeinflussen
 - **Hinweis**: 6 Mio. Parameter; große Stapel profitieren von einer GPU
 
 ### StackMFF V2 (Deep Learning)
@@ -507,7 +509,7 @@ CLI: `--depth-smoothing VALUE` (B) und `--blend-smoothing VALUE` (A, C).
 | DCT | Mittel | Gut | Texturen |
 | DTCWT | Mittel | Sehr gut | Komplexe Szenen |
 | GFG-FGF | Schnell | Gut | Fokusbereiche |
-| StackMFF (V1) | Langsam (GPU) | Hier nicht bewertet | Ungeordnete oder diskontinuierliche Stapel |
+| StackMFF (V1) | Langsam (GPU) | Hier nicht bewertet | Neuronale Stapelfusion; Reihenfolge kann das Ergebnis beeinflussen |
 | StackMFF V2 | Schnell (GPU) | Hier nicht bewertet | Kontinuierliche Fokusserien mit einem winzigen Modell |
 | StackMFF V3 | Langsam (GPU) | Hervorragend | Beste Qualität |
 | OpenFocus A | Abhängig vom Stapel | Abhängig vom Stapel | Mehrskalige Fokusauswahl |
@@ -515,6 +517,9 @@ CLI: `--depth-smoothing VALUE` (B) und `--blend-smoothing VALUE` (A, C).
 | OpenFocus C | Abhängig vom Stapel | Abhängig vom Stapel | Tiefenkartengesteuerte mehrskalige Rekonstruktion |
 
 **Werkzeuge → Methoden vergleichen…** öffnet einen Dialog, in dem mehrere Verfahren unabhängig eingestellt werden. Name, Parameterbeschriftungen und Bedienelemente jeder Methode bleiben zusammen, wenn das Fenster schmaler wird. Änderungen aktualisieren die Vorschau automatisch. **ROI-Vorschau (schnell)** fusioniert den ausgewählten Bereich mit umgebendem Kontext; **Ganzbild-Fusion** prüft das Ergebnis des gesamten Bildes und erlaubt die Untersuchung eines anderen Bereichs ohne erneutes Rendern. ROI-Ergebnisse können von Ganzbild-Ergebnissen abweichen, weil Belichtungsstatistiken und einige Algorithmen von der Bildausdehnung abhängen.
+Die **Ganzbild-Fusion** ist standardmäßig ausgewählt.
+
+Ein sichtbarer Hinweis erklärt die Ergebnisauswahl: Ein Ergebnis anklicken oder es mit `Tab` fokussieren und mit `Enter` oder der Leertaste auswählen.
 
 Über den rechten Bereichen wählt **Vorschaugröße (px)** eine quadratische Größe von 160 bis 960 Pixeln, per Regler oder Zahleneingabe. Alle Methoden verwenden dieselbe Größe und umbrechen passend zur verfügbaren Breite. Die Größe wird für das nächste Öffnen gemerkt. Eine Änderung behält die aktuelle Vergrößerung bei und passt das Prüfquadrat um seinen Mittelpunkt an, begrenzt auf die Bildränder.
 
@@ -524,7 +529,7 @@ Das Quellbild mit der linken Maustaste ziehen, um das weiße Prüfquadrat zu ver
 
 ### Schnellvorschau (Entwurfsrendering)
 
-Das Abstimmen von Parametern auf großen Stapeln ist in voller Auflösung langsam. **Schnellvorschau** über der Rendern-Schaltfläche aktivieren: OpenFocus rendert dann zuerst einen verkleinerten Entwurf (halbe Kantenlänge, mindestens 320 px auf der längsten Seite) – typischerweise mehrere Male schneller, einschließlich Registrierung. Die Abschlussmeldung (und der Tooltip des neuesten Ergebnisses) meldet **Qualität: Vorschau**; der Entwurf wird **nicht** zum Ausgabeverlauf hinzugefügt. Häkchen entfernen und erneut rendern, um das Ergebnis in voller Auflösung zu erhalten. Der Vorschaumodus gilt nicht für ROI-Renderings und verunreinigt nie den Ausrichtungs-Cache in voller Auflösung.
+Das Abstimmen von Parametern auf großen Stapeln ist in voller Auflösung langsam. **Rendereinstellungen** öffnen und **Schnellvorschau** aktivieren: OpenFocus rendert dann zuerst einen verkleinerten Entwurf (halbe Kantenlänge, mindestens 320 px auf der längsten Seite) – typischerweise mehrere Male schneller, einschließlich Registrierung. Die Abschlussmeldung (und der Tooltip des neuesten Ergebnisses) meldet **Qualität: Vorschau**; der Entwurf wird **nicht** zum Ausgabeverlauf hinzugefügt. Häkchen entfernen und erneut rendern, um das Ergebnis in voller Auflösung zu erhalten. Der Vorschaumodus gilt nicht für ROI-Renderings und verunreinigt nie den Ausrichtungs-Cache in voller Auflösung.
 
 ---
 
@@ -567,7 +572,7 @@ Die Fusion kann örtliche Fehler hinterlassen – einen Halo an einer kontrastre
 1. Ein Ergebnis in der Ausgabeliste auswählen (Rechtsklick → *Ergebnis retuschieren…* funktioniert ebenfalls) und `Ctrl+T` drücken. Ohne Auswahl listet ein Auswahldialog jedes Ergebnis auf und markiert diejenigen mit aufgezeichneten Quellbildern.
 2. Das Quellbild steht links, das Ergebnis rechts. Beide teilen sich Zoom und Position: Mausrad zoomt, Rechts-/Mittelklick-Ziehen (oder Leertaste+Ziehen) verschiebt, `F` passt ein, `1` zeigt 100 %.
 3. Ein Vorschaubild wählen, den Bildregler ziehen oder `,` / `.` drücken. Ein Strich ist an dieses Bild und die aktuellen Pinseleinstellungen gebunden; das Bild kann erst nach dem Ende des Strichs gewechselt werden.
-4. **Quellpinsel** (`B`) oder **Wiederherstellungspinsel** (`E`) wählen. Durchmesser, Härte und Deckkraft haben Regler und Zahlenfelder; `[` / `]` ändert den Durchmesser. Der Wiederherstellungspinsel setzt Pixel auf das Bild zurück, das Sie geöffnet haben, nicht auf eine ältere Ausgabe.
+4. **Quellpinsel** (`B`) oder **Wiederherstellungspinsel** (`E`) wählen. Durchmesser, Härte und Deckkraft haben Regler und Zahlenfelder; `[` / `]` ändert den Durchmesser. `Ctrl` + Mausrad nach oben vergrößert, nach unten verkleinert den Pinseldurchmesser; das Mausrad ohne `Ctrl` zoomt weiterhin. Der Wiederherstellungspinsel setzt Pixel auf das Bild zurück, das Sie geöffnet haben, nicht auf eine ältere Ausgabe.
 5. **Tab** gedrückt halten, um das Ergebnis vor dieser Sitzung zu sehen, und **Alt**, um einen Blick auf das Quellbild zu werfen. Die Schärfereferenz ist optional, deckt nur die Quellleinwand ab und verwendet einen gemeinsamen Maßstab für alle Bilder.
 6. `Ctrl+Z` / `Ctrl+Y` machen ganze Striche rückgängig bzw. wiederholen sie. **Alles wiederherstellen…** ist ein rückgängig machbarer Schritt. **Als neue Ausgabe übernehmen** fügt einen Eintrag namens `<Name> · Retuschiert N` hinzu und wählt ihn aus; das Original bleibt unverändert. Der neue Eintrag ist als *Nicht exportiert* markiert, bis Sie ihn im Hauptfenster exportieren, und OpenFocus schützt ihn vor automatischer Verdrängung aus dem Verlauf und vor dem Beenden ohne Entscheidung.
 
@@ -847,7 +852,7 @@ Für ein einzelnes Rendering lässt sich beispielsweise `--align openfocus --ali
 |--------|-------------|
 | `--input, -i` | Bildordner (auch mehrere), Videodatei, eine bzw. mehrere Bilddateien oder eine mehrseitige TIFF |
 | `--output, -o` | Pfad des Ausgabebildes (die Endung bestimmt das Format) |
-| `--output-dir, -d` | Stapelmodus: jeden Eingabeordner fusionieren und pro Stapel `<Ordner>.<ext>` schreiben |
+| `--output-dir, -d` | Stapelmodus: jeden Eingabeordner fusionieren und pro Stapel `<Ordner>.png` schreiben |
 | `--method, -m` | `stackmffv3` (Standard), `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf`, `stackmff`, `stackmffv2` |
 | `--align, -a` | `none` (Standard), `homography`, `ecc`, `both`, `openfocus` |
 | `--param KEY=JSON_VALUE` | Fusionsparameter; für mehrere Schlüssel wiederholen; überschreibt ältere Flags |
@@ -1030,15 +1035,17 @@ Exit-Codes: `0` Erfolg, `1` Verarbeitungsfehler, `2` Nutzungsfehler. Der Aufruf 
 
 #### Windows-SmartScreen-Warnung beim ersten Start
 
-Die veröffentlichten Binärdateien sind nicht signiert. Laden Sie sie von **https://openfocus.top** statt von einem Drittanbieter-Spiegel und klicken Sie auf **Weitere Informationen → Trotzdem ausführen**. Der erste Start nach dem Entpacken kann 30–60 Sekunden dauern.
+Ob die Windows-Binärdateien signiert sind, hängt vom jeweiligen Release ab (siehe Release-Notes); eine Signatur ist nicht garantiert. Laden Sie sie von **https://openfocus.top** statt von einem Drittanbieter-Spiegel. Falls SmartScreen warnt, klicken Sie auf **Weitere Informationen → Trotzdem ausführen**. Der erste Start nach dem Entpacken kann 30–60 Sekunden dauern.
 
 #### macOS meldet, die App „kann nicht geöffnet werden“ oder „ist beschädigt“
 
-Die App ist nicht signiert und nicht notarisiert. Laden Sie den Apple-Silicon-Build von **https://openfocus.top**, verschieben Sie `OpenFocus.app` in den Ordner Programme und führen Sie aus:
+Die macOS-Builds sind nicht notarisiert. Laden Sie den Apple-Silicon-Build von **https://openfocus.top**. Wenn Sie das DMG verwenden und `OpenFocus.app` in den Ordner Programme verschieben, führen Sie aus:
 
 ```bash
 xattr -cr /Applications/OpenFocus.app
 ```
+
+Bei einer Terminal-Installation mit `install.sh` liegt die App in `~/Applications`; führen Sie dann `xattr -cr ~/Applications/OpenFocus.app` aus.
 
 oder mit der rechten Maustaste auf die App klicken und **Öffnen** wählen. Die veröffentlichten macOS-Builds sind für Apple Silicon (M1/M2/M3/M4); Intel-Macs können aus dem Quellcode laufen.
 

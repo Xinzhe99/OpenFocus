@@ -18,8 +18,8 @@ Output goes to `site/dist/` (git-ignored). The build also writes `robots.txt`,
 `sitemap.xml`, `_headers` and a bilingual `404.html`, and derives the icon,
 Open Graph image and WebP screenshots from `assets/`.
 
-Set the public origin so canonical URLs, Open Graph tags and the sitemap are
-correct:
+Set the public Worker origin so canonical URLs, Open Graph tags, the sitemap
+and no-JavaScript download links point at the correct deployment:
 
 ```bash
 SITE_ORIGIN=https://openfocus.example.com python tools/build_site.py
@@ -37,8 +37,8 @@ $env:SITE_ORIGIN = "https://openfocus.example.com"; python tools/build_site.py
 python -m http.server 8788 --directory site/dist
 ```
 
-`http://127.0.0.1:8788/` is English, `/zh/` is Chinese. The local server does
-not serve the custom 404 page; Cloudflare does.
+`http://127.0.0.1:8788/` is English, `/zh/` is Chinese. This static server
+does not implement the Worker download/API routes or the custom 404 page.
 
 ## Deploy
 
@@ -71,7 +71,7 @@ bucket, so it is not a preview path for this configuration.
 
 | File | Holds |
 |---|---|
-| `site/site_content.py` | All copy, links, release tag and download assets |
+| `site/site_content.py` | Copy, links and download cards; static version comes from `constants.APP_VERSION` |
 | `site/template.html` | Page structure; `{{placeholders}}` resolve from the content |
 | `site/style.css` | Design tokens (light/dark), layout, responsive rules |
 | `site/app.js` | Theme, OS-aware download button, copy button, menus |
@@ -91,8 +91,11 @@ follow the latest release without a rebuild. Successful GitHub metadata is
 cached for five minutes per data center, while clients receive `no-store`. If
 GitHub is unavailable, the Worker serves the last complete mirror manifest
 with `X-OpenFocus-Release-Source: mirror`; it may lag until mirroring succeeds.
-The values in `site/site_content.py` are the no-JavaScript fallback — bump
-`RELEASE` when a release is cut so that fallback stays current.
+Without JavaScript, download links still use `/download/latest/*`. Static
+version labels and JSON-LD are generated from `constants.APP_VERSION`; rebuild
+and redeploy when those labels must match the latest release.
+File sizes are shown only when live release metadata is available, avoiding
+stale sizes in static pages.
 
 ## Download mirror (R2)
 
@@ -107,7 +110,8 @@ falls back to the GitHub release asset for a full request when it does not.
   on manual dispatch (`tag` input). It downloads and verifies the four assets,
   uploads them under their release filenames, and publishes a manifest under
   `openfocus-meta/latest-release.json` only for the current latest release.
-  It then prunes older recognized `OpenFocus-v*` keys. Runs are serialized.
+  After the five-minute metadata cache expires, it prunes older recognized
+  `OpenFocus-v*` keys. Runs are serialized.
 - Secrets: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (an R2
   API token with Object Read & Write on the bucket).
 - Free tier: 10 GB-month storage, 1M Class A and 10M Class B operations per

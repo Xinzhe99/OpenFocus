@@ -9,7 +9,7 @@
 <p align="center"><strong>Każdy piksel z najostrzejszej klatki.</strong></p>
 
 <p align="center">
-  Dziesięć algorytmów fuzji, tryb tylko wyrównania, cztery metody rejestracji i przestrzeń retuszu powiązana ze źródłami dla makrofotografii, mikroskopii i stosów przemysłowych. 16 bitów na całej ścieżce, headless CLI i interfejs w dwunastu językach.
+  Dziesięć algorytmów fuzji, pięć opcji wyrównania (w tym brak wyrównania) i przestrzeń retuszu powiązana ze źródłami dla makrofotografii, mikroskopii i stosów przemysłowych. 16 bitów na całej ścieżce, headless CLI i interfejs w dwunastu językach.
 </p>
 
 <p align="center">
@@ -55,10 +55,10 @@
 ## 📢 Aktualności
 
 > [!NOTE]
-> **v1.74.0** — Zaktualizowano fuzję OpenFocus A/B/C i szybkie wyrównanie.
-> Aplikacja desktopowa uruchamia teraz automatycznie uwierzytelniony lokalny
-> kanał agenta, więc `openfocus ctl` może sterować działającym oknem bez
-> specjalnej flagi uruchomienia.
+> **v1.75.0** — Fuzja grupowa, wielokrotnego użytku przepływy przetwarzania,
+> przezroczyste stosy PNG, diagnostyka wyrównania, rozszerzone eksporty głębi
+> i odświeżony przepływ pracy na pulpicie. Obsługiwane dane wejściowe i
+> ograniczenia opisuje historia zmian.
 
 Wcześniejsze wydania opisuje [historia zmian](../../CHANGELOG.md).
 
@@ -114,9 +114,10 @@ szczegóły są widoczne od razu, przy dowolnym powiększeniu.
 
 ### Porównanie metod
 
-Wyrenderuj wszystkie metody za jednym razem, obejrzyj je obok siebie na wspólnym
-fragmencie, a następnie przyjmij zwycięzcę jako nowy wynik albo przenieś jego
-parametry z powrotem do głównego okna.
+Domyślnie każda metoda fuzjuje cały obraz; kwadratowy podgląd źródła pozostaje
+interaktywny bez powtarzania obliczeń dla całego obrazu. Następnie porównaj wyniki
+obok siebie na wspólnym fragmencie i przyjmij zwycięzcę jako nowy wynik albo
+przenieś jego parametry z powrotem do głównego okna.
 
 </td>
 <td width="54%">
@@ -130,8 +131,9 @@ parametry z powrotem do głównego okna.
 
 ### Mapa głębi i 3D
 
-Położenie ostrości dla każdego piksela według siedmiu miar, naukowe palety barw,
-kalibracja fizycznej osi Z z metadanych TIFF oraz eksport teksturowanej siatki OBJ.
+Położenie ostrości dla każdego piksela według siedmiu metod obsługujących głębię,
+naukowe palety barw, ręczna kalibracja fizycznej osi Z (początek i krok; metadane
+TIFF podają tylko kalibrację XY) oraz eksport teksturowanej siatki OBJ.
 
 </td>
 <td width="54%">
@@ -277,15 +279,19 @@ Pobierz najnowszą kompilację dla Windows lub macOS ze [strony OpenFocus](https
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Obraz dysku (przeciągnij do Programów) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Wersja przenośna (rozpakuj) |
 
-Aplikacja nie jest podpisana, więc przy pierwszym uruchomieniu może pojawić się
-ostrzeżenie: **Windows** SmartScreen → „Więcej informacji” → „Uruchom mimo to”
-(pierwsze uruchomienie może potrwać 30–60 s); **macOS** kliknij prawym przyciskiem →
-„Otwórz” albo wykonaj `xattr -cr /Applications/OpenFocus.app` w Terminalu.
+Status podpisu kompilacji Windows podają notatki do wydania. Kompilacje macOS nie są
+notaryzowane, więc przy pierwszym uruchomieniu może pojawić się ostrzeżenie:
+**Windows** SmartScreen → „Więcej informacji” → „Uruchom
+mimo to” (pierwsze uruchomienie może potrwać 30–60 s); **macOS** wykonaj
+`xattr -cr /Applications/OpenFocus.app` w Terminalu albo spróbuj raz otworzyć
+aplikację i zezwól jej w **Ustawienia systemowe → Prywatność i bezpieczeństwo →
+Otwórz mimo to** (od macOS 15 kliknięcie prawym przyciskiem → „Otwórz” nie omija już
+Gatekeeper).
 
 Aby zainstalować z terminala, najpierw obejrzyj polecenie dla macOS lub Linux z
 flagą `--dry-run`, a potem uruchom je bez niej. W systemie Linux instaluje się w ten sposób
-headless CLI; kompilacje macOS wymagają Apple Silicon i są instalowane w
-`~/Applications`.
+headless CLI; kompilacje macOS wymagają Apple Silicon; aplikacja z DMG instaluje się w
+`/Applications`, a instalacja z terminala w `~/Applications`.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run

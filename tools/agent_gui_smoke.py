@@ -1,12 +1,12 @@
 """Closed-loop agent smoke test for the live OpenFocus GUI.
 
-Runs against an already-running window (`--control`) or launches one with
+Runs against an already-running window (`--allow-existing`) or launches one with
 `--launch`. It exercises the same commands an agent uses: stack load, render,
 export, depth/compare/retouch dialogs, canvas gestures, a menu action with a
 file picker, project round-trip and grouped batch. Exit code 0 means every assertion
 passed.
 
-    python tools/agent_gui_smoke.py [--launch] [--quit]
+    python tools/agent_gui_smoke.py [--launch | --allow-existing] [--quit]
 
 This is the executable version of the workflow in
 `skills/openfocus-control/SKILL.md`.
@@ -289,10 +289,11 @@ class Smoke:
         window = self.wait_windows(
             lambda items: any(item["title"] in titles
                               for item in items))[0]
-        edits = self.call("ui.find", window=window["root"],
-                          **{"class": "QLineEdit"})["matches"]
-        self.call("ui.set", path=edits[0]["path"], value="AGENT")
         self.click_text(window["root"], _texts("label_add", "Add"))
+        edits = self.call("ui.find", window=window["root"],
+                          control_id="label_format_edit")["matches"]
+        assert len(edits) == 1, "label format editor not found"
+        self.call("ui.set", path=edits[0]["path"], value="AGENT")
         for text in _texts("label_transparent_bg", "Transparent Background"):
             matches = self.call("ui.find", window=window["root"],
                                 text=text)["matches"]
@@ -317,6 +318,11 @@ class Smoke:
             if item["class"] == "QColorDialog")
         self.call("dialog.color", index=color_window["index"], color="#336699")
         self.click_text(window["root"], _texts("label_apply_close", "Apply and Close"))
+        label_project = self.work / "labels.ofproj"
+        self.call("project.save", path=str(label_project))
+        saved = json.loads(label_project.read_text(encoding="utf-8"))
+        assert any(label.get("format") == "AGENT"
+                   for label in saved["labels"]["labels_v2"]), saved["labels"]
         actions = {item["key"]: item["enabled"]
                    for item in self.call("ui.actions")["actions"]}
         assert actions["action_del_input_label"]

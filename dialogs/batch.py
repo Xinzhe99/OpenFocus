@@ -35,6 +35,7 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     resolve_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from locales import trans
+from utils.ui_utils import size_dialog_to_content
 from widgets.stepper import StepperSpinBox
 
 
@@ -80,11 +81,6 @@ class BatchProcessingDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(trans.t('batch_title'))
-        # Height follows the screen, never past it: on a 1080p display with a
-        # scaled UI the old fixed 800 px pushed the action buttons under the
-        # taskbar and they could not be clicked at all.
-        self.resize(800, 800)
-        self.setMinimumSize(720, 480)
         
         # 存储选中的文件夹路径和对应的缩略图
         self.folder_paths = []
@@ -126,8 +122,6 @@ class BatchProcessingDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content = QWidget()
         layout = QVBoxLayout(content)
         scroll.setWidget(content)
@@ -404,7 +398,8 @@ class BatchProcessingDialog(QDialog):
         self._editing_method = None
         self._editing_alignment = None
         self.fusion_parameter_panel = AlgorithmParameterPanel(self)
-        self.registration_parameter_panel = AlgorithmParameterPanel(self)
+        self.registration_parameter_panel = AlgorithmParameterPanel(
+            self, hidden_parameters=('failure_policy',))
         options_layout.addWidget(self.fusion_parameter_panel)
         options_layout.addWidget(self.registration_parameter_panel)
         self.fusion_parameter_panel.valuesChanged.connect(self._remember_fusion_parameters)
@@ -577,6 +572,7 @@ class BatchProcessingDialog(QDialog):
             _widget = getattr(self, _control, None)
             if _widget is not None:
                 _widget.setProperty("controlId", _control)
+        size_dialog_to_content(self, scroll, preferred_width=800)
 
     def _fit_folder_list(self) -> None:
         """Size the list to its rows (3..6) instead of stretching it."""
@@ -1282,8 +1278,8 @@ class BatchProcessingDialog(QDialog):
         self._editing_alignment = method
         specs = registration_parameter_specs(method)
         self.registration_parameter_panel.set_parameters(specs, self._registration_drafts[method])
-        self.registration_parameter_panel.setVisible(bool(specs))
-        self._registration_has_specs = bool(specs)
+        self.registration_parameter_panel.setVisible(bool(self.registration_parameter_panel.editors))
+        self._registration_has_specs = bool(self.registration_parameter_panel.editors)
         self._sync_parameters_heading()
 
     def _sync_parameters_heading(self) -> None:

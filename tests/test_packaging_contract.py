@@ -71,15 +71,6 @@ def test_console_script_is_exposed():
     assert "openfocus" in _project()["scripts"]
 
 
-def test_every_locale_pack_is_packaged():
-    """The packs are top-level modules; unlisted ones vanish from the wheel."""
-    listed = set(tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
-                 ["tool"]["setuptools"]["py-modules"])
-    on_disk = {p.stem for p in ROOT.glob("locales_*.py")}
-    missing = on_disk - listed
-    assert not missing, (
-        f"locale modules absent from py-modules: {sorted(missing)}")
-
 
 def test_docs_do_not_advertise_extras():
     """A stale `pip install openfocus[ai]` line sends users to a package

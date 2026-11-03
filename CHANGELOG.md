@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.75.0] - 2026-11-03
+
 ### Added
 - **Grouped fusion** processes long stacks in overlapping groups using
   disk-backed intermediates. The result approximates whole-stack fusion;
@@ -48,6 +50,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   assigned a potentially incorrect profile. PNG/TIFF keep their 16-bit pixels.
 
 ### Changed
+- **Render settings** collect preview, frame order, brightness and sharpening
+  options in a compact dialog with explanations; rejected-frame handling is in
+  Advanced Settings. Fusion and alignment help describe all registered methods.
+- **Method comparison** defaults to full-image fusion and keeps the source
+  inspection square interactive without repeating full-image calculations.
+  Method hints and parameter cards reflect each algorithm's settings.
+- **Scale-bar calibration** defaults to manual input when the selected target
+  has no usable metadata. Existing explicit manual calibration is preserved.
+- Scale-bar, label, batch, comparison and flat-field dialogs adapt to the
+  available screen. Comparison results can be selected with the keyboard.
+- **Retouch** shows the current zoom beside the result canvas and adjusts brush
+  diameter with Ctrl+wheel while the wheel alone continues to zoom.
+- **Guided filter** skips frames that cannot contribute, while preserving the
+  original behavior for nonfinite or out-of-range floating-point inputs.
+  Based on a contribution by @AlanRockefeller (PR #11).
 - **Desktop controls** show grouped-batch, tile, ROI base-frame and
   depth-calibration settings only when their parent option is enabled.
   Alignment diagnostic collection is configured in Advanced Settings, and
@@ -58,9 +75,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Method selectors** explain when the optional DTCWT backend or neural
   dependency is unavailable across the main, batch, comparison and depth views.
 - **Agent tooling** can isolate application data and discovery files for GUI
-  automation, and the control guide documents the current workflows.
+  automation. `openfocus describe` lists current CLI options and subcommands,
+  and the control guide explains how the headless wheel connects to the GUI.
 - **Website and installers** include a maintained deployment runbook, safer
-  installation rollback, and range-aware mirrored downloads.
+  installation rollback, range-aware mirrored downloads, and latest-release
+  links that work without JavaScript. Mobile command blocks stay within the
+  screen width.
 - **Manual checks** validate numbered chapters, code-fence balance and local
   file links without requiring translated examples to have identical layouts.
 - **License notices** distinguish the bundled MIT-licensed StackMFF V3 snapshot
@@ -69,6 +89,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Windows and Linux.
 
 ### Fixed
+- **Exposure matching** estimates matched copies using their actual pixel
+  types and frame sizes, avoiding unnecessary memory refusals. Based on a
+  contribution by @AlanRockefeller (PR #12).
+- Agent dialog acceptance now validates batch settings and waits for sensor
+  mask inspection; a superseded render cannot report another render's result
+  as its own success.
+- Import-scale preferences retain the last confirmed value, and Advanced
+  Settings no longer clamps an existing thread limit when opened.
 - **Memory status** now uses the same cross-platform physical-memory probe as
   the resource planner, so it can report available readings on macOS and Linux.
 - **OpenFocus alignment** samples translation more densely at the coarsest

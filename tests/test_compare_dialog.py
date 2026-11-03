@@ -4,10 +4,12 @@ from time import monotonic
 
 import pytest
 from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from conftest import make_two_focus_stack
+from core.algorithms import get_fusion
 from core.compare_worker import PreviewWorker
 from dialogs.compare import CompareDialog
 
@@ -59,6 +61,7 @@ def _finished(dialog):
 
 
 def test_queued_old_roi_cannot_reappear_after_selection_changes(dialog, qapp):
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(True))
     dialog._start_request()
     old_worker = dialog._worker
     assert old_worker.wait(30000)
@@ -85,7 +88,7 @@ def test_full_fusion_continues_when_only_inspection_region_moves(
         return original(worker, method)
 
     monkeypatch.setattr(PreviewWorker, "_fuse", held_fusion)
-    dialog.mode_combo.setCurrentIndex(1)
+    assert dialog.mode_combo.currentData() is False
     dialog._preview_timer.stop()
     dialog._start_request()
     worker = dialog._worker
@@ -208,7 +211,7 @@ def test_fullscreen_toggle_restores_window_and_escape_exits_first(dialog, qapp):
 def test_resizing_all_previews_reuses_full_results(dialog, qapp):
     dialog._checks["dct"].setChecked(True)
     dialog.ref_canvas.set_magnification(4)
-    dialog.mode_combo.setCurrentIndex(1)
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(False))
     dialog._preview_timer.stop()
     dialog._start_request()
     _until(qapp, lambda: _finished(dialog))
@@ -296,21 +299,43 @@ def test_comparison_requires_two_effective_frames(qapp, included):
         instance.reject()
 
 
-def test_full_comparison_hides_the_inspection_square(dialog, qapp):
-    """The region cannot be changed while a full frame is being compared."""
-    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(False))
+def test_full_comparison_keeps_inspection_selection_interactive(dialog, qapp):
+    assert dialog.mode_combo.currentData() is False
+    dialog.ref_canvas.set_magnification(4)
     dialog._preview_timer.stop()
+    dialog._start_request()
+    _until(qapp, lambda: _finished(dialog) and dialog._results)
+    result = dialog._results["openfocus_a"]
+    old_region = dialog.ref_canvas.region()
+    point = dialog.ref_canvas.image_to_widget(QPointF(90, 80)).toPoint()
+    QTest.mouseClick(dialog.ref_canvas, Qt.MouseButton.LeftButton, pos=point)
+    assert dialog.ref_canvas.region() != old_region
+    assert dialog._canvases["openfocus_a"]._region == dialog.ref_canvas.region()
+    assert dialog._results["openfocus_a"] is result
+    assert not dialog._preview_timer.isActive()
+    old_region = dialog.ref_canvas.region()
+    wheel = QWheelEvent(QPointF(point), QPointF(point), QPoint(), QPoint(0, 120),
+                        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                        Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(dialog.ref_canvas, wheel)
+    assert dialog.ref_canvas.region() != old_region
+    assert dialog._canvases["openfocus_a"]._region == dialog.ref_canvas.region()
+    assert dialog._results["openfocus_a"] is result
+    assert not dialog._preview_timer.isActive()
+
+
+def test_queued_full_result_is_rejected_after_method_changes(dialog, qapp):
+    dialog._start_request()
+    old_worker = dialog._worker
+    assert old_worker.wait(30000)
+    dialog._checks["openfocus_a"].setChecked(False)
+    dialog._checks["openfocus_a"].setChecked(True)
+    dialog.ref_canvas.set_region_centre(QPointF(90, 80))
     qapp.processEvents()
-    assert not dialog.ref_canvas.region_enabled()
-    region = dialog.ref_canvas.region()
-    QTest.mouseClick(dialog.ref_canvas, Qt.MouseButton.LeftButton,
-                     pos=QPoint(60, 60))
-    qapp.processEvents()
-    assert dialog.ref_canvas.region() == region
-    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(True))
-    dialog._preview_timer.stop()
-    qapp.processEvents()
-    assert dialog.ref_canvas.region_enabled()
+    assert "openfocus_a" not in dialog._results
+    _until(qapp, lambda: _finished(dialog) and dialog._results)
+    assert dialog._canvases["openfocus_a"]._region == dialog.ref_canvas.region()
+    assert dialog._canvases["openfocus_a"].has_region()
 
 
 def test_method_checkboxes_follow_the_shared_family_groups(dialog):
@@ -351,7 +376,8 @@ def test_unavailable_methods_stay_visible_with_a_reason(
             box = instance._checks[method]
             assert not box.isHidden()
             assert not box.isEnabled()
-            assert box.toolTip() == trans.t("msg_stackmff_unavailable_text")
+            assert trans.t(get_fusion(method).hint_key) in box.toolTip()
+            assert trans.t("msg_stackmff_unavailable_text") in box.toolTip()
         # The inherited unavailable method is not silently replaced: nothing
         # is selected, so no comparison starts behind the user's back.
         assert not instance._checks["stackmffv3"].isChecked()
@@ -360,7 +386,7 @@ def test_unavailable_methods_stay_visible_with_a_reason(
             "msg_stackmff_unavailable_text")
         assert instance._checks["openfocus_a"].isEnabled()
         assert not instance._checks['dtcwt'].isEnabled()
-        assert instance._checks['dtcwt'].toolTip() == trans.t('env_dtcwt_unavailable')
+        assert trans.t('env_dtcwt_unavailable') in instance._checks['dtcwt'].toolTip()
     finally:
         instance.reject()
         window.close()
@@ -385,7 +411,7 @@ def test_retry_failed_method_keeps_successful_candidate(dialog, qapp, monkeypatc
         return np.full((160, 560, 3), 12345, np.uint16), (0, 0, 560, 160)
     monkeypatch.setattr(PreviewWorker, "_fuse", fuse)
     dialog._checks["dct"].setChecked(True)
-    dialog.mode_combo.setCurrentIndex(1)
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(False))
     dialog._preview_timer.stop()
     dialog._start_request()
     _until(qapp, lambda: _finished(dialog))
@@ -398,6 +424,7 @@ def test_retry_failed_method_keeps_successful_candidate(dialog, qapp, monkeypatc
 
 
 def test_roi_at_origin_is_never_adoptable_as_full_output(dialog, qapp, monkeypatch):
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(True))
     import numpy as np
     monkeypatch.setattr(PreviewWorker, "_fuse", lambda worker, method:
         (np.zeros((160, 160, 3), np.uint16), (0, 0, 160, 160)))
@@ -411,6 +438,7 @@ def test_roi_at_origin_is_never_adoptable_as_full_output(dialog, qapp, monkeypat
 
 
 def test_selected_roi_verification_computes_only_candidate(dialog, qapp, monkeypatch):
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(True))
     import numpy as np
     calls = []
     def fuse(worker, method):
@@ -438,7 +466,7 @@ def test_full_adoption_keeps_exact_uint16_pixels_and_source_snapshot(dialog, qap
                         (image, (0, 0, 560, 160)))
     records = []
     dialog.window_main.output_manager = SimpleNamespace(publish_compare_output=records.append)
-    dialog.mode_combo.setCurrentIndex(1)
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findData(False))
     dialog._preview_timer.stop()
     dialog._start_request()
     _until(qapp, lambda: _finished(dialog))

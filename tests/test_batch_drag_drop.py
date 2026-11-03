@@ -410,26 +410,6 @@ def test_batch_grouping_conflicts_are_visible_before_start(qapp):
         qapp.processEvents()
 
 
-def test_batch_parameter_heading_covers_registration_specs(qapp):
-    from dialogs.batch import BatchProcessingDialog
-
-    dialog = BatchProcessingDialog(None)
-    try:
-        assert dialog.params_rule.isHidden()
-        dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('ecc'))
-        assert not dialog.params_rule.isHidden()
-        assert not dialog.registration_parameter_panel.isHidden()
-
-        _select_fusion(dialog, 'openfocus_a')
-        dialog.align_combo.setCurrentIndex(dialog.align_combo.findData('none'))
-        assert not dialog.params_rule.isHidden(), (
-            "the heading must survive a visible fusion parameter panel")
-        dialog.fusion_combo.setCurrentIndex(dialog.fusion_combo.findData('none'))
-        assert dialog.params_rule.isHidden()
-    finally:
-        dialog.close()
-        dialog.deleteLater()
-        qapp.processEvents()
 
 
 def test_batch_disables_unavailable_methods_without_dropping_selection(

@@ -55,9 +55,9 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.74.0** — Updated OpenFocus A/B/C fusion and fast alignment. The desktop
-> app now starts its authenticated local agent channel automatically, so
-> `openfocus ctl` can operate the running window without a special launch flag.
+> **v1.75.0** — Grouped fusion, reusable processing workflows, transparent PNG
+> stacks, alignment diagnostics, enhanced depth exports and a refreshed desktop
+> workflow. See the changelog for supported inputs and feature limitations.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 
@@ -113,14 +113,14 @@ glance, at any zoom.
 
 ### Method comparison
 
-Render every method once, inspect them side by side at a shared crop, then
-adopt the winner as a new output or copy its parameters back to the main
+Fuse the full image with each method, inspect matching details side by side,
+then adopt the winner as a new output or copy its parameters back to the main
 window.
 
 </td>
 <td width="54%">
 
-<a href="assets/readme/method-comparison.mp4"><picture><source srcset="assets/readme/method-comparison.gif" type="image/gif"><img src="assets/readme/method-comparison_poster.jpg" alt="Side-by-side comparison of eight fusion methods" width="100%" /></picture></a>
+<a href="assets/readme/method-comparison.mp4"><picture><source srcset="assets/readme/method-comparison.gif" type="image/gif"><img src="assets/readme/method-comparison_poster.jpg" alt="Side-by-side comparison of fusion methods" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -129,9 +129,9 @@ window.
 
 ### Depth map &amp; 3D
 
-Per-pixel focus position from five focus measures, with research colour maps,
-physical Z calibration from TIFF metadata, and a textured OBJ export of the
-surface.
+Estimated per-pixel focus positions from seven supported methods, with
+research colour maps and textured OBJ export. Physical Z calibration uses a
+manually entered start and step; TIFF metadata may supply XY pixel size.
 
 </td>
 <td width="54%">
@@ -271,7 +271,7 @@ Download the latest Windows or macOS build from the [OpenFocus website](https://
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk image (drag to Applications) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portable (unzip) |
 
-The app is unsigned and not notarized, so the first launch may show a security prompt: **Windows** SmartScreen → "More info" → "Run anyway" (the first start may take 30–60 s); **macOS** run `xattr -cr /Applications/OpenFocus.app` in Terminal, or try to open the app once and then allow it in **System Settings → Privacy & Security → Open Anyway** (macOS 15 Sequoia and later no longer bypass Gatekeeper via right-click → Open).
+Windows signing varies by release; check the release notes. macOS builds are not notarized, and either platform may show a security prompt on first launch. On **Windows**, choose SmartScreen → "More info" → "Run anyway" (the first start may take 30–60 s). On **macOS**, run `xattr -cr /Applications/OpenFocus.app` for an app installed from the DMG, or `xattr -cr ~/Applications/OpenFocus.app` for a terminal installation; alternatively open the app once and allow it in **System Settings → Privacy & Security → Open Anyway**.
 
 To install from a terminal, preview the macOS or Linux command first, then run
 it without `--dry-run`. On Linux this installs the headless CLI; macOS builds
@@ -293,8 +293,10 @@ The direct Windows setup download is also available with
 
 ## Code signing policy
 
-Free code signing on Windows provided by [SignPath.io](https://about.signpath.io),
-certificate by [SignPath Foundation](https://signpath.org).
+When enabled, free code signing on Windows is provided by
+[SignPath.io](https://about.signpath.io), certificate by
+[SignPath Foundation](https://signpath.org). Check the release notes for each
+build's signing status.
 
 - **Committers and reviewers**: the project's repository maintainers with write
   access ([GitHub repository](https://github.com/Xinzhe99/OpenFocus)).
@@ -309,6 +311,10 @@ The desktop app starts a token-protected local agent channel automatically.
 Use `openfocus ctl` for typed commands or generic UI actions against the live
 window. Agents can load stacks, render, export, open and fill dialogs,
 answer file pickers, send mouse/keyboard events and take screenshots.
+
+The `pip install openfocus` package is headless. To use its `ctl` command
+with a separately running desktop app, also install PyQt6 (`pip install PyQt6`).
+The wheel cannot launch the desktop app; use the desktop build or a checkout.
 
 - Skill: [`skills/openfocus-control/SKILL.md`](skills/openfocus-control/SKILL.md)
 - Protocol and command reference: [`docs/AGENT_CONTROL_SPEC.md`](docs/AGENT_CONTROL_SPEC.md)

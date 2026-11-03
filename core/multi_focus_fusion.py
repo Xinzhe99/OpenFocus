@@ -521,7 +521,7 @@ class MultiFocusFusion:
             import cv2  # noqa: F401
         except ImportError as exc:  # pragma: no cover - env dependency
             raise RuntimeError(
-                "DCT fusion requires OpenCV. Install it with: pip install opencv-python"
+                "DCT fusion requires OpenCV. Install it with: pip install opencv-python-headless"
             ) from exc
 
         if self.use_gpu:
@@ -539,7 +539,8 @@ class MultiFocusFusion:
 
         if not dtcwt_available:
             raise RuntimeError(
-                "DTCWT fusion is CPU-only. Install the dtcwt package with: pip install dtcwt scipy"
+                "DTCWT fusion requires dtcwt and scipy. Install them with: pip install dtcwt scipy "
+                "(dtcwt installs on Python 3.10–3.12; it has no wheels for Python 3.13+)."
             )
 
         if self.use_gpu:
@@ -613,24 +614,31 @@ class MultiFocusFusion:
             if not names:
                 raise ValueError(f"No image files found in directory: {input_source}")
             from core.image_loader import decode_image, _read_tiff_pages
+            frame_specs = []
             for name in names:
                 check_cancel()
                 path = os.path.join(input_source, name)
                 _read_tiff_pages(path)
-                decode_image(path)
+                frame = decode_image(path)
+                if frame is None:
+                    raise RuntimeError(f"Unable to read image: {name}")
+                frame_specs.append((frame.size, frame.dtype))
+            del frame
             first = cv2.imdecode(
                 np.fromfile(os.path.join(input_source, names[0]), dtype=np.uint8),
                 cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
             if first is None:
                 raise RuntimeError(f"Unable to read image: {names[0]}")
             count = len(names)
-            # Sorting may normalize a 16-bit directory to a float stack.
-            source_allocation = count * first.size * max(first.itemsize, 4)
+            # Sorting may normalize 16-bit directory frames to float32.
+            source_allocation = sum(size * max(dtype.itemsize, 4)
+                                    for size, dtype in frame_specs)
         elif isinstance(input_source, (list, tuple)) and len(input_source):
             input_source = list(input_source)
             first = input_source[0]
             count = len(input_source)
             source_allocation = 0
+            frame_specs = [(frame.size, frame.dtype) for frame in input_source]
             from core.image_loader import _has_transparency, UnsupportedTransparency
             for frame in input_source:
                 check_cancel()
@@ -639,9 +647,16 @@ class MultiFocusFusion:
         else:
             raise ValueError("Fusion requires a non-empty image stack or directory")
 
-        preparation = source_allocation + first.size * 8
+        preparation = source_allocation + max(size for size, _ in frame_specs) * 8
         if self.exposure_match:
-            preparation += count * first.size * max(first.itemsize, 4)
+            sorted_directory = (isinstance(input_source, str) and self.sort_mode != "off"
+                                and self.descriptor.sort_frames)
+            for size, dtype in frame_specs:
+                # Sorted directory uint16 frames are normalized before matching.
+                matched_itemsize = (dtype.itemsize if dtype in (np.uint8, np.uint16)
+                                    and not (sorted_directory and dtype == np.uint16)
+                                    else 4)
+                preparation += size * matched_itemsize
         policy.require_memory(preparation, user_limit=memory_budget_bytes())
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.
@@ -1051,7 +1066,7 @@ class MultiFocusFusion:
             try:
                 import cv2
             except Exception as exc:
-                raise RuntimeError("OpenCV is required to read image files for tiled fusion. Install with: pip install opencv-python") from exc
+                raise RuntimeError("OpenCV is required to read image files for tiled fusion. Install with: pip install opencv-python-headless") from exc
 
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp', '.tif', '.tiff', '.bmp')
             files = [f for f in sorted(os.listdir(img_dir), key=natural_sort_key) if f.lower().endswith(exts)]

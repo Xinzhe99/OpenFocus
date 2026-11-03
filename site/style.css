@@ -218,7 +218,7 @@ figure { margin: 0; }
 .small a:hover { color: var(--ink); text-decoration: underline; }
 
 /* cli */
-.cli { display: grid; grid-template-columns: 1.02fr .98fr; gap: 44px; align-items: start; }
+.cli { display: grid; grid-template-columns: minmax(0, 1.02fr) minmax(0, .98fr); gap: 44px; align-items: start; }
 .install {
   display: flex; align-items: center; gap: 10px;
   max-width: 420px; margin-top: 22px; padding: 5px 5px 5px 14px;
@@ -229,7 +229,7 @@ figure { margin: 0; }
   font: 13.5px/1.6 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 }
 .install code::before { content: "$ "; color: var(--ink3); }
-.install-block { margin-top: 24px; display: grid; gap: 6px; }
+.install-block { margin-top: 24px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .install-block .install { margin-top: 0; max-width: 680px; }
 .install-block .note { margin: 14px 0 0; }
 .install-block .note:first-child { margin-top: 0; }
@@ -299,7 +299,7 @@ footer .brand img { width: 20px; height: 20px; }
   nav .links a:last-child { border-bottom: 0; }
   .menu { display: inline-grid; }
   .hero { grid-template-columns: 1fr; gap: 34px; padding-top: 48px; }
-  .split, .cli { grid-template-columns: 1fr; gap: 28px; }
+  .split, .cli { grid-template-columns: minmax(0, 1fr); gap: 28px; }
   .split.rev figure { order: 0; }
   .grid { grid-template-columns: 1fr 1fr; }
 }

@@ -199,12 +199,28 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
             # 分母项直接返回单通道权重即可
             return base_num, weight_base_k, detail_num, weight_detail_k
 
+        # Empty masks contribute zero only for bounded finite images. Preserve
+        # the original NaN/overflow behaviour for other floating-point data.
+        check_cancel()
+        wins = np.bincount(max_indices.ravel(), minlength=num_images)
+
+        def contributes(k):
+            if wins[k]:
+                return True
+            frame = stack_ori[k]
+            if frame.dtype in (np.uint8, np.uint16):
+                return False
+            if frame.dtype.kind == 'f':
+                return not (-255.0 <= np.min(frame) and np.max(frame) <= 255.0)
+            return True
+
         # Submit only a worker-sized window; consume and release in frame order.
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             for start in range(0, num_images, max_workers):
                 check_cancel()
                 stop = min(num_images, start + max_workers)
-                for bn, bd, dn, dd in executor.map(process_weight_fusion, range(start, stop)):
+                batch = [k for k in range(start, stop) if contributes(k)]
+                for bn, bd, dn, dd in executor.map(process_weight_fusion, batch):
                     check_cancel()
                     fused_base_numerator += bn
                     fused_base_denominator += bd

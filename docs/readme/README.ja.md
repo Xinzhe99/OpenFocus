@@ -9,7 +9,7 @@
 <p align="center"><strong>すべての焦点面を、1 枚の全焦点画像に。</strong></p>
 
 <p align="center">
-  10 種類の融合アルゴリズム、4 つの位置合わせモード、マクロ・顕微鏡・産業用スタック向けのソース固定レタッチ。16 ビットを一貫して保持し、ヘッドレス CLI と 12 言語の UI を備えます。
+  10 種類の融合アルゴリズム、5 つの位置合わせオプション（位置合わせなしを含む）、マクロ・顕微鏡・産業用スタック向けのソース固定レタッチ。16 ビットを一貫して保持し、ヘッドレス CLI と 12 言語の UI を備えます。
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@
 ## 📢 お知らせ
 
 > [!NOTE]
-> **v1.74.0** — OpenFocus A/B/C の融合と高速位置合わせを更新しました。デスクトップ版は認証付きローカル Agent チャネルを自動で開始するため、`openfocus ctl` は特別な起動フラグなしで実行中のウィンドウを操作できます。
+> **v1.75.0** — グループ融合、再利用可能な処理ワークフロー、透明 PNG スタック、位置合わせ診断、強化された深度エクスポート、刷新されたデスクトップワークフロー。対応入力と制限は変更履歴を参照してください。
 
 以前のリリースは [変更履歴](../../CHANGELOG.md) にあります。
 
@@ -106,12 +106,12 @@
 
 ### 手法比較
 
-すべての手法を一度にレンダリングし、同じクロップで並べて確認できます。勝った結果を新しい出力として採用するか、パラメータをメインウィンドウに戻せます。
+既定では各手法で画像全体を融合し、ソース確認用の正方形は画像全体の計算を繰り返さずに操作できます。その後、同じクロップで結果を並べて確認し、勝った結果を新しい出力として採用するか、パラメータをメインウィンドウに戻せます。
 
 </td>
 <td width="54%">
 
-<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="複数の融合手法の並列比較" width="100%" /></picture></a>
+<a href="../../assets/readme/method-comparison.mp4"><picture><source srcset="../../assets/readme/method-comparison.gif" type="image/gif"><img src="../../assets/readme/method-comparison_poster.jpg" alt="8 つの融合手法の並列比較" width="100%" /></picture></a>
 
 </td>
 </tr>
@@ -120,7 +120,7 @@
 
 ### 深度マップと 3D
 
-複数のフォーカス尺度で画素ごとの焦点位置を推定します。研究用カラーマップ、TIFF メタデータからの物理 Z 校正、テクスチャ付き OBJ 曲面の書き出しに対応します。
+7 つの深度対応手法で画素ごとの焦点位置を推定します。研究用カラーマップ、物理 Z の手動校正（開始位置とステップ。TIFF メタデータは XY 校正のみ）、テクスチャ付き OBJ 曲面の書き出しに対応します。
 
 </td>
 <td width="54%">
@@ -229,9 +229,9 @@ TIFF メタデータまたは手入力で校正し、実際のフォントと実
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | ディスクイメージ（Applications へドラッグ） |
 | macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | ポータブル（解凍して実行） |
 
-アプリは未署名のため、初回起動で警告が出る場合があります。**Windows** は「詳細情報 → 実行」を選びます（初回は 30〜60 秒かかることがあります）。**macOS** は右クリック →「開く」、またはターミナルで `xattr -cr /Applications/OpenFocus.app` を実行します。
+Windows ビルドの署名状態はリリースノートに記載されています。macOS ビルドは公証されていないため、初回起動で警告が出る場合があります。**Windows** は「詳細情報 → 実行」を選びます（初回は 30〜60 秒かかることがあります）。**macOS** はターミナルで `xattr -cr /Applications/OpenFocus.app` を実行するか、一度アプリを開いてから **システム設定 → プライバシーとセキュリティ** で「このまま開く」を許可します（macOS 15 以降、右クリック →「開く」では Gatekeeper を回避できません）。
 
-ターミナルからもインストールできます。まず macOS または Linux のコマンドを `--dry-run` で確認し、その後フラグを外して実行します。Linux ではヘッドレス CLI が入り、macOS ビルドは Apple Silicon が必要で `~/Applications` にインストールされます。
+ターミナルからもインストールできます。まず macOS または Linux のコマンドを `--dry-run` で確認し、その後フラグを外して実行します。Linux ではヘッドレス CLI が入り、macOS ビルドは Apple Silicon が必要で、DMG のアプリは `/Applications` に、ターミナルからのインストールは `~/Applications` に入ります。
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run

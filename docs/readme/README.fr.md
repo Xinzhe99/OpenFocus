@@ -9,7 +9,7 @@
 <p align="center"><strong>Chaque pixel, depuis son image la plus nette.</strong></p>
 
 <p align="center">
-  Dix algorithmes de fusion, quatre modes de recalage et un espace de retouche lié à la source pour la macro, la microscopie et les piles industrielles. 16 bits de bout en bout, une CLI sans interface et une interface en douze langues.
+  Dix algorithmes de fusion, cinq options de recalage (dont aucune) et un espace de retouche lié à la source pour la macro, la microscopie et les piles industrielles. 16 bits de bout en bout, une CLI sans interface et une interface en douze langues.
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@
 ## 📢 Actualités
 
 > [!NOTE]
-> **v1.74.0** — Refonte des fusions OpenFocus A/B/C et du recalage rapide. L'application de bureau lance désormais automatiquement son canal d'agent local authentifié, si bien que `openfocus ctl` peut piloter la fenêtre en cours d'exécution sans indicateur de lancement particulier.
+> **v1.75.0** — Fusion groupée, flux de traitement réutilisables, piles PNG transparentes, diagnostics de recalage, exports de profondeur enrichis et flux de bureau remanié. Consultez le journal des modifications pour les entrées prises en charge et les limitations.
 
 Les versions précédentes figurent dans le [journal des modifications](../../CHANGELOG.md).
 
@@ -106,7 +106,7 @@ Faites glisser le séparateur entre une image et le résultat fusionné pour voi
 
 ### Comparaison de méthodes
 
-Rendez toutes les méthodes une fois, comparez-les côte à côte sur le même recadrage, puis adoptez la gagnante comme nouvelle sortie ou copiez ses paramètres dans la fenêtre principale.
+Par défaut, chaque méthode fusionne l'image entière ; le carré d'inspection de la source reste interactif sans répéter les calculs sur l'image complète. Comparez ensuite les résultats côte à côte sur le même recadrage, puis adoptez la gagnante comme nouvelle sortie ou copiez ses paramètres dans la fenêtre principale.
 
 </td>
 <td width="54%">
@@ -120,7 +120,7 @@ Rendez toutes les méthodes une fois, comparez-les côte à côte sur le même r
 
 ### Carte de profondeur et 3D
 
-Position de mise au point par pixel selon cinq mesures, palettes scientifiques, calibration Z physique à partir des métadonnées TIFF et export OBJ texturé de la surface.
+Position de mise au point par pixel avec sept méthodes compatibles avec la profondeur, palettes scientifiques, calibration Z physique manuelle (début et pas ; les métadonnées TIFF ne fournissent que la calibration XY) et export OBJ texturé de la surface.
 
 </td>
 <td width="54%">
@@ -229,9 +229,9 @@ Téléchargez la dernière version Windows ou macOS depuis le [site web d'OpenFo
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Image disque (glisser dans Applications) |
 | macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portable (décompresser) |
 
-L'application n'est pas signée : le premier lancement peut afficher un avertissement. **Windows** : SmartScreen → « Informations complémentaires » → « Exécuter quand même » (le premier démarrage peut prendre 30 à 60 s). **macOS** : clic droit → Ouvrir, ou `xattr -cr /Applications/OpenFocus.app` dans le Terminal.
+Le statut de signature des versions Windows est indiqué dans les notes de version. Les versions macOS ne sont pas notariées : le premier lancement peut donc afficher un avertissement. **Windows** : SmartScreen → « Informations complémentaires » → « Exécuter quand même » (le premier démarrage peut prendre 30 à 60 s). **macOS** : exécutez `xattr -cr /Applications/OpenFocus.app` dans le Terminal, ou essayez d'ouvrir l'application une fois puis autorisez-la dans **Réglages Système → Confidentialité et sécurité → Ouvrir quand même** (depuis macOS 15, clic droit → Ouvrir ne contourne plus Gatekeeper).
 
-Pour installer depuis un terminal, prévisualisez d'abord la commande macOS ou Linux, puis exécutez-la sans `--dry-run`. Sous Linux, cela installe la CLI sans interface ; les versions macOS exigent Apple Silicon et s'installent dans `~/Applications`.
+Pour installer depuis un terminal, prévisualisez d'abord la commande macOS ou Linux, puis exécutez-la sans `--dry-run`. Sous Linux, cela installe la CLI sans interface ; les versions macOS exigent Apple Silicon ; l'app du DMG s'installe dans `/Applications` et l'installation par terminal dans `~/Applications`.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run

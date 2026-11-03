@@ -116,3 +116,59 @@ def test_tiled_depth_is_admitted_before_computation(monkeypatch, method):
                                   tile_block_size=48, tile_overlap=16)
     with pytest.raises(policy.ResourceLimitError):
         fusion.fuse(frames, thread_count=1)
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
+def test_exposure_match_admits_actual_matched_dtype(monkeypatch, dtype):
+    from core import multi_focus_fusion as mff, resource_policy as policy
+
+    frames = [np.full((40, 50, 3), value, dtype) for value in (10, 20, 30, 40, 50)]
+    size = frames[0].size
+    budget = size * (8 + len(frames) * np.dtype(dtype).itemsize)
+    monkeypatch.setattr(policy, "probe_resources", lambda: policy.ResourceSnapshot(
+        available_ram=8 * 1024 ** 3, total_ram=8 * 1024 ** 3))
+    limits = iter((budget, 8 * 1024 ** 3))
+    monkeypatch.setattr(mff, "memory_budget_bytes", lambda: next(limits, 8 * 1024 ** 3))
+    fusion = mff.MultiFocusFusion("dct", exposure_match=True, tile_enabled=False)
+    result = fusion.fuse(frames)
+    expected = 50 * (255.0 / 65535.0) if dtype == np.uint16 else 50
+    expected_dtype = np.uint8 if dtype == np.uint8 else np.float32
+    assert result.dtype == expected_dtype
+    np.testing.assert_allclose(result, expected, atol=1e-4)
+
+
+def test_exposure_match_refuses_larger_mixed_frames_before_copy(monkeypatch):
+    from core import multi_focus_fusion as mff, resource_policy as policy
+
+    frames = [np.full((10, 10, 3), 10, np.uint8),
+              np.full((40, 50, 3), 20, np.float64)]
+    monkeypatch.setattr(policy, "probe_resources", lambda: policy.ResourceSnapshot(
+        available_ram=8 * 1024 ** 3, total_ram=8 * 1024 ** 3))
+    monkeypatch.setattr(mff, "memory_budget_bytes", lambda: 10_000)
+    fusion = mff.MultiFocusFusion("dct", exposure_match=True)
+    def unexpected_gain(*args, **kwargs):
+        raise AssertionError("exposure computation preceded admission")
+    monkeypatch.setattr(fusion, "_exposure_gains_for_source", unexpected_gain)
+    with pytest.raises(policy.ResourceLimitError):
+        fusion.fuse(frames)
+
+
+def test_directory_exposure_match_admits_mixed_bit_depths(monkeypatch, tmp_path):
+    import cv2
+    from core import multi_focus_fusion as mff, resource_policy as policy
+
+    for index, dtype in enumerate((np.uint8, np.uint16, np.uint16)):
+        frame = np.full((40, 50, 3), (index + 1) * 10, dtype)
+        assert cv2.imwrite(str(tmp_path / f"{index}.png"), frame)
+    size = 40 * 50 * 3
+    # Directory source reserve plus serial scratch and actual matched dtypes.
+    budget = size * (3 * 4 + 8 + 1 + 2 + 2)
+    monkeypatch.setattr(policy, "probe_resources", lambda: policy.ResourceSnapshot(
+        available_ram=8 * 1024 ** 3, total_ram=8 * 1024 ** 3))
+    limits = iter((budget, 8 * 1024 ** 3))
+    monkeypatch.setattr(mff, "memory_budget_bytes", lambda: next(limits, 8 * 1024 ** 3))
+    fusion = mff.MultiFocusFusion("dct", exposure_match=True, tile_enabled=False)
+    result = fusion.fuse(str(tmp_path))
+    unrestricted = mff.MultiFocusFusion(
+        "dct", exposure_match=True, tile_enabled=False).fuse(str(tmp_path))
+    np.testing.assert_array_equal(result, unrestricted)

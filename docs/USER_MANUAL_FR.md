@@ -88,7 +88,7 @@ Le premier lancement ouvre la boîte de bienvenue, où vous pouvez choisir le th
 2. Configurez les réglages de fusion dans le panneau de droite
 3. Le recalage démarre sur **ECC** ; choisissez **Aucun alignement** si les images sont déjà alignées
 4. Ajustez la taille du noyau si nécessaire
-5. *(facultatif)* Cochez **Aperçu rapide** pour tester d'abord les paramètres sur un brouillon réduit
+5. *(facultatif)* Ouvrez **Paramètres de rendu** et cochez **Aperçu rapide** pour tester d'abord les paramètres sur un brouillon réduit
 6. Cliquez sur **Lancer le rendu** pour lancer le traitement
 7. Exportez les résultats
 
@@ -115,7 +115,7 @@ Le panneau droit regroupe toutes les options de configuration, de haut en bas :
 
 1. **Réglages de fusion** : choix de l'algorithme et de ses paramètres
 2. **Réglages de recalage** : activation ou désactivation des méthodes d'alignement
-3. **Boutons d'action** : Réinitialiser et Lancer le rendu
+3. **Boutons d'action** : lancer le rendu, réinitialiser, ouvrir les paramètres de rendu et lancer toutes les méthodes. La boîte **Paramètres de rendu** contient l'aperçu rapide, l'ordre des images, l'égalisation de l'exposition, la suppression de la dérive de luminosité et la netteté de sortie
 4. **Liste des images sources** : toutes les images chargées avec leur nom de fichier
 5. **Liste des sorties** : les résultats générés
 
@@ -182,6 +182,8 @@ Une petite courbe au-dessus du curseur de navigation source montre la netteté d
 Les logiciels de microscopie (ZEN, NIS-Elements, ImageJ/Fiji) exportent souvent toute une pile Z dans UN seul fichier TIFF multipage. OpenFocus lit chaque page de ce fichier comme une image individuelle de la pile : déposez ou ouvrez le fichier et la pile apparaît complète (les images sont nommées `<file>_page_001`, etc.). Les TIFF d'une seule page se comportent exactement comme avant. L'inverse fonctionne aussi : **Fichier → Enregistrer la pile → (Pile recalée / Pile d'entrée) → Enregistrer en TIFF multipage** écrit toute la pile dans un seul `.tif`, en conservant la profondeur 16 bits.
 
 ### Barre d'échelle (figures de publication)
+
+Si la cible choisie ne possède pas de métadonnées utilisables, la calibration manuelle est présélectionnée et attend une taille de pixel valide.
 
 Outils → Barre d'échelle… configure une barre d'échelle intégrée aux images exportées. La taille du pixel (µm/px) est détectée automatiquement dans les métadonnées TIFF (convention `unit=micron` d'ImageJ, `PhysicalSizeX` d'OME-TIFF ou unité de résolution explicite en centimètres), de sorte que les piles de microscopie (y compris multipage) se calibrent seules. La résolution d'imprimante (72/300 dpi et autres) n'est délibérément *pas* traitée comme une calibration, et une valeur saisie manuellement l'emporte toujours sur les métadonnées détectées : une barre fausse mais plausible dans une figure est pire que pas de barre. Choisissez le coin et la couleur (Auto inverse selon le fond) ; la boîte de dialogue affiche un aperçu en direct. Une fois la barre activée, chaque export (image seule, piles en dossiers, TIFF multipage, GIF, tout exporter, lots) porte une barre de style publication : une longueur arrondie de la série 1-2-5 (~12 % de la largeur de l'image) avec un texte contourné et lisible. La CLI l'accepte via `--scale-bar` (calibration automatique) et `--scale-um <um/px>`.
 
@@ -343,7 +345,7 @@ Pour inspecter un rendu, activez **Paramètres → Paramètres avancés → Reca
 
 1. Dans le panneau droit, repérez le groupe **Recalage**
 2. Choisissez une méthode dans la liste : **Aucun alignement**, **OpenFocus (rapide)**, **Aligner (ECC)**, **Aligner (homographie)** ou **Homographie → ECC** (enchaîné)
-3. Pour OpenFocus (rapide), choisissez la gestion des images rejetées et une image de référence ; ECC et l'homographie proposent aussi **Gestion des images rejetées**
+3. Choisissez **Gestion des images rejetées** dans **Paramètres → Paramètres avancés → Recalage** ; toute modification s'applique aux méthodes. Pour OpenFocus (rapide), choisissez aussi une image de référence.
 4. **Collecter les diagnostics d'alignement** se trouve désormais dans Paramètres avancés (voir ci-dessus)
 
 ### Quand utiliser le recalage
@@ -402,8 +404,8 @@ OpenFocus propose dix algorithmes de fusion (plus un mode alignement seul). Un p
 ### StackMFF (V1, apprentissage profond)
 
 - **Algorithme** : un U-Net 3D qui prédit la luminance fusionnée de toute la pile en une passe ; Cb/Cr proviennent de l'image source la plus proche de cette luminance
-- **Idéal pour** : piles dont le balayage de mise au point n'est pas ordonné ou dont les images n'ont pas été prises en série continue
-- **Avantages** : indépendant de l'ordre, sans paramètres, couleurs dans la gamme
+- **Idéal pour** : fusion neuronale d'une pile de mise au point complète
+- **Avantages** : sans paramètres, couleurs dans la gamme ; l'ordre des images peut modifier le résultat
 - **Remarque** : 6 M de paramètres ; les grandes piles gagnent à utiliser le GPU
 
 ### StackMFF V2 (apprentissage profond)
@@ -470,7 +472,7 @@ Sélectionnez **Alignement seul (sans fusion)** pour recaler la pile et ajouter 
 | DCT | Moyenne | Bonne | Textures |
 | DTCWT | Moyenne | Très bonne | Scènes complexes |
 | GFG-FGF | Rapide | Bonne | Régions nettes |
-| StackMFF (V1) | Lente (GPU) | Non évaluée ici | Piles non ordonnées ou discontinues |
+| StackMFF (V1) | Lente (GPU) | Non évaluée ici | Fusion neuronale de la pile ; l'ordre peut influencer le résultat |
 | StackMFF V2 | Rapide (GPU) | Non évaluée ici | Balayages continus avec un modèle minuscule |
 | StackMFF V3 | Lente (GPU) | Excellente | Qualité maximale |
 | OpenFocus A | Dépend de la pile | Dépend de la pile | Sélection multi-échelles des pixels nets |
@@ -478,6 +480,9 @@ Sélectionnez **Alignement seul (sans fusion)** pour recaler la pile et ajouter 
 | OpenFocus C | Dépend de la pile | Dépend de la pile | Reconstruction multi-échelles guidée par la profondeur |
 
 Ouvrez **Outils → Comparaison de méthodes** pour régler plusieurs méthodes indépendamment. Le nom, les libellés de paramètres et les contrôles de chaque méthode restent groupés lorsque la fenêtre se rétrécit. Les modifications actualisent l'aperçu automatiquement. **Aperçu ROI (rapide)** fusionne la zone sélectionnée avec le contexte environnant ; **Fusion pleine image** vérifie le résultat sur toute l'image et permet d'inspecter une autre zone sans relancer le rendu. Les résultats ROI peuvent différer de ceux en pleine image, car les statistiques d'exposition et certains algorithmes dépendent de l'étendue de l'image.
+La **fusion pleine image** est sélectionnée par défaut.
+
+Une indication visible explique la sélection : cliquez sur un résultat ou utilisez `Tab` pour lui donner le focus, puis `Entrée` ou `Espace` pour le sélectionner.
 
 Utilisez **Taille de l'aperçu (px)** au-dessus des volets de droite pour choisir un carré de 160 à 960 pixels, en faisant glisser le curseur ou en saisissant un nombre. Toutes les méthodes utilisent la même taille et s'adaptent à la largeur disponible. La taille est mémorisée pour la prochaine ouverture. La modifier conserve l'agrandissement courant et ajuste le carré d'inspection autour de son centre, en le limitant aux bords de l'image.
 
@@ -487,7 +492,7 @@ Faites glisser l'image source avec le bouton gauche pour déplacer le carré d'i
 
 ### Aperçu rapide (rendu brouillon)
 
-Régler les paramètres sur de grandes piles est lent en pleine résolution. Cochez **Aperçu rapide** au-dessus du bouton de rendu : OpenFocus produit d'abord un brouillon à la moitié de la taille linéaire (jamais moins de 320 px sur le côté long), généralement plusieurs fois plus rapide, recalage compris. Le message de fin (et l'infobulle du résultat le plus récent) indique **Qualité : aperçu**, et le brouillon n'est **pas** ajouté à l'historique des sorties. Décochez la case et relancez le rendu pour obtenir le résultat en pleine résolution. Le mode aperçu ne s'applique pas aux rendus ROI et ne pollue jamais le cache d'alignement pleine résolution.
+Régler les paramètres sur de grandes piles est lent en pleine résolution. Ouvrez **Paramètres de rendu** et cochez **Aperçu rapide** : OpenFocus produit d'abord un brouillon à la moitié de la taille linéaire (jamais moins de 320 px sur le côté long), généralement plusieurs fois plus rapide, recalage compris. Le message de fin (et l'infobulle du résultat le plus récent) indique **Qualité : aperçu**, et le brouillon n'est **pas** ajouté à l'historique des sorties. Décochez la case et relancez le rendu pour obtenir le résultat en pleine résolution. Le mode aperçu ne s'applique pas aux rendus ROI et ne pollue jamais le cache d'alignement pleine résolution.
 
 ---
 
@@ -530,7 +535,7 @@ La fusion peut encore laisser un défaut local — un halo autour d'un contour t
 1. Sélectionnez une sortie dans la liste (clic droit → *Retoucher le résultat…* fonctionne aussi) et appuyez sur `Ctrl+T`. Sans sélection, un sélecteur liste tous les résultats et indique ceux qui ont des images sources enregistrées.
 2. L'image source est à gauche, le résultat à droite. Les deux partagent le zoom et la position : la molette zoome, le glisser avec le bouton droit ou central (ou Espace+glisser) déplace, `F` ajuste et `1` affiche 100 %.
 3. Choisissez une vignette, faites glisser le curseur d'image ou appuyez sur `,` / `.`. Un trait est verrouillé sur cette image et les réglages de pinceau courants ; l'image ne peut pas changer avant la fin du trait.
-4. Choisissez **Pinceau source** (`B`) ou **Pinceau de restauration** (`E`). Le diamètre, la dureté et l'opacité disposent d'un curseur et d'un champ numérique ; `[` / `]` ajuste le diamètre. Le pinceau de restauration ramène les pixels à l'image que vous avez ouverte, pas à une sortie antérieure.
+4. Choisissez **Pinceau source** (`B`) ou **Pinceau de restauration** (`E`). Le diamètre, la dureté et l'opacité disposent d'un curseur et d'un champ numérique ; `[` / `]` ajuste le diamètre. `Ctrl` + molette vers le haut augmente le diamètre du pinceau, vers le bas le diminue ; la molette seule continue de zoomer. Le pinceau de restauration ramène les pixels à l'image que vous avez ouverte, pas à une sortie antérieure.
 5. Maintenez `Tab` pour voir le résultat avant cette session et `Alt` pour jeter un œil à l'image source. La référence de netteté est facultative, ne couvre que le canevas source et utilise une échelle commune à toutes les images.
 6. `Ctrl+Z` / `Ctrl+Y` annulent et rétablissent des traits entiers. **Tout restaurer…** est une seule étape annulable. **Appliquer comme nouvelle sortie** ajoute une entrée nommée `<nom> · Retouché N` et la sélectionne ; l'original reste intact. La nouvelle entrée est marquée *Non exportée* jusqu'à son export depuis la fenêtre principale, et OpenFocus la protège de l'éviction automatique de l'historique et d'une fermeture sans décision.
 
@@ -809,7 +814,7 @@ Par exemple, ajoutez `--align openfocus --alignment-report alignment.json` à un
 | `--suggest-duplicates` | Signale les images adjacentes presque identiques pour examen manuel ; ne les fusionne ni ne les exclut |
 | `--input, -i` | Dossier(s) d'images, fichier vidéo, un ou plusieurs fichiers image, ou TIFF multipage |
 | `--output, -o` | Chemin de l'image de sortie (l'extension détermine le format) |
-| `--output-dir, -d` | Mode lot : fusionne chaque dossier d'entrée et écrit `<dossier>.<ext>` par pile |
+| `--output-dir, -d` | Mode lot : fusionne chaque dossier d'entrée et écrit `<dossier>.png` par pile |
 | `--resume` | Mode lot : ignore les dossiers dont la sortie existe déjà |
 | `--config FILE` | Mode lot : surcharges JSON par dossier, p. ex. `{"stackA": {"method": "dct"}}` |
 | `--method, -m` | `stackmffv3` (défaut), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
@@ -986,15 +991,17 @@ Codes de sortie : `0` succès, `1` erreur de traitement, `2` erreur d'utilisatio
 
 #### Avertissement Windows SmartScreen au premier lancement
 
-Les binaires publiés ne sont pas signés. Téléchargez-les depuis **https://openfocus.top** plutôt que depuis un miroir tiers, puis cliquez sur **Informations complémentaires → Exécuter quand même**. Le premier lancement après décompression peut prendre 30 à 60 secondes.
+La signature des binaires Windows dépend de la release concernée (voir les notes de version) ; la signature n'est pas garantie. Téléchargez-les depuis **https://openfocus.top** plutôt que depuis un miroir tiers. Si SmartScreen vous avertit, cliquez sur **Informations complémentaires → Exécuter quand même**. Le premier lancement après décompression peut prendre 30 à 60 secondes.
 
 #### macOS indique que l'application « ne peut pas être ouverte » ou « est endommagée »
 
-L'application n'est ni signée ni notarizée. Téléchargez la version Apple Silicon depuis **https://openfocus.top**, déplacez `OpenFocus.app` dans Applications, puis exécutez :
+La version macOS n'est pas notarizée. Téléchargez la version Apple Silicon depuis **https://openfocus.top**. Si vous installez depuis le DMG en déplaçant `OpenFocus.app` dans Applications, exécutez :
 
 ```bash
 xattr -cr /Applications/OpenFocus.app
 ```
+
+Si vous installez depuis le terminal avec `install.sh`, l'application se trouve dans `~/Applications` ; exécutez alors `xattr -cr ~/Applications/OpenFocus.app`.
 
 ou cliquez droit sur l'application et choisissez **Ouvrir**. Les versions macOS publiées sont pour Apple Silicon (M1/M2/M3/M4) ; les Mac Intel peuvent s'exécuter depuis les sources.
 

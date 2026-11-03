@@ -88,7 +88,7 @@ A primeira inicialização abre a janela de boas-vindas, onde você pode escolhe
 2. Configure as opções de fusão no painel direito
 3. O registro começa em **ECC**; escolha **Sem alinhamento** se os quadros já estiverem alinhados
 4. Ajuste o tamanho do kernel, se preciso
-5. *(opcional)* Marque **Prévia rápida** para testar os parâmetros primeiro em um rascunho reduzido
+5. *(opcional)* Abra **Configurações de renderização** e marque **Prévia rápida** para testar os parâmetros primeiro em um rascunho reduzido
 6. Clique em **Iniciar renderização** para começar o processamento
 7. Exporte os resultados
 
@@ -115,7 +115,7 @@ O painel direito reúne todas as opções de configuração, de cima para baixo:
 
 1. **Configurações de fusão**: seleção do algoritmo e de seus parâmetros
 2. **Configurações de registro**: ativação ou desativação dos métodos de alinhamento
-3. **Botões de ação**: Redefinir e Iniciar renderização
+3. **Botões de ação**: Iniciar renderização e as ações secundárias Redefinir, Configurações de renderização e renderizar todos os métodos. A janela de configurações reúne prévia rápida, ordem dos quadros, igualação de exposição, remoção de deriva de brilho e nitidez da saída
 4. **Lista de imagens de origem**: todas as imagens carregadas com seus nomes de arquivo
 5. **Lista de saídas**: os resultados gerados
 
@@ -182,6 +182,8 @@ Uma pequena curva acima do controle de navegação de origem mostra a nitidez de
 Softwares de microscopia (ZEN, NIS-Elements, ImageJ/Fiji) frequentemente exportam toda uma pilha Z como UM único arquivo TIFF multipágina. O OpenFocus lê cada página desse arquivo como um quadro individual da pilha: solte ou abra o arquivo e a pilha aparece completa (os quadros são nomeados `<file>_page_001` e assim por diante). TIFFs de página única se comportam exatamente como antes. O inverso também funciona: **Arquivo → Salvar pilha → (Pilha registrada / Pilha de entrada) → Salvar como TIFF multipágina** grava a pilha inteira em um único `.tif`, preservando a profundidade de 16 bits.
 
 ### Barra de escala (figuras para publicação)
+
+Se o destino escolhido não tiver metadados utilizáveis, a calibração manual será selecionada e exigirá um tamanho de pixel válido.
 
 Ferramentas → Barra de escala… configura uma barra de escala gravada nas imagens exportadas. O tamanho do pixel (µm/px) é detectado automaticamente nos metadados TIFF (convenção `unit=micron` do ImageJ, `PhysicalSizeX` do OME-TIFF ou unidade de resolução explícita em centímetros), então pilhas de microscopia (incluindo TIFF multipágina) se calibram sozinhas. A resolução de impressora (72/300 dpi e similares) deliberadamente *não* é tratada como calibração, e um valor digitado manualmente sempre prevalece sobre os metadados detectados: uma barra errada mas plausível em uma figura é pior que nenhuma. Escolha o canto e a cor (Auto inverte conforme o fundo); a janela mostra uma prévia ao vivo. Com a barra ativada, toda exportação (imagem única, pilhas em pastas, TIFF multipágina, GIF, exportar tudo, lote) carrega uma barra em estilo de publicação: um comprimento arredondado da série 1-2-5 (~12% da largura da imagem) com texto contornado e legível. A CLI oferece suporte com `--scale-bar` (calibração automática) e `--scale-um <um/px>`.
 
@@ -343,7 +345,7 @@ Para inspecionar uma renderização, ative **Configurações → Configurações
 
 1. No painel direito, localize o grupo **Registro**
 2. Escolha um método na lista: **Sem alinhamento**, **OpenFocus (rápido)**, **Alinhar (ECC)**, **Alinhar (homografia)** ou **Homografia → ECC** (encadeado)
-3. Para OpenFocus (rápido), escolha o tratamento de quadros rejeitados e um quadro de referência; ECC e homografia também oferecem **Tratamento de quadros rejeitados**
+3. Para OpenFocus (rápido), escolha um quadro de referência. Em **Configurações → Configurações avançadas → Registro**, escolha **Tratamento de quadros rejeitados**; ao alterá-lo, a escolha é aplicada aos métodos de registro
 4. **Coletar diagnósticos de alinhamento** agora fica em Configurações avançadas (veja acima)
 
 ### Quando usar registro
@@ -402,8 +404,8 @@ O OpenFocus oferece dez algoritmos de fusão (além de um modo somente alinhamen
 ### StackMFF (V1, aprendizado profundo)
 
 - **Algoritmo**: uma U-Net 3D que prediz a luminância fundida de toda a pilha em uma passada; Cb/Cr vêm do quadro de origem mais próximo dessa luminância
-- **Ideal para**: pilhas em que a varredura de foco não é ordenada ou os quadros não foram capturados como série contínua
-- **Vantagens**: independente da ordem, sem parâmetros, cor dentro da gama
+- **Ideal para**: fusão neural de uma pilha de foco completa
+- **Vantagens**: sem parâmetros e cor dentro da gama; a ordem dos quadros pode afetar o resultado
 - **Nota**: 6 M de parâmetros; pilhas maiores se beneficiam da GPU
 
 ### StackMFF V2 (aprendizado profundo)
@@ -449,7 +451,7 @@ CLI: `--depth-smoothing VALUE` (B) e `--blend-smoothing VALUE` (A, C).
 
 **As opções de brilho são por método.** *Igualar exposição antes da fusão* e *Remover deriva de brilho* são lembradas separadamente para cada método de fusão, porque respondem a uma questão de cada pilha e não a uma preferência global. Ambas ficam ativadas por padrão em OpenFocus A/B/C (que não têm calibração de exposição integrada); os outros métodos mantêm os padrões históricos (igualação de exposição ativada, remoção de deriva desativada). Trocar de método mostra os valores daquele método, e esses valores sobrevivem ao reinício. **Redefinir** limpa os valores lembrados de brilho, suavização e raio de todos os métodos.
 
-**Nitidez da saída fundida** aplica uma máscara de nitidez suave após a fusão, antes de o resultado ser convertido para sua profundidade de saída. Fica desativada por padrão e pode ser ativada nas opções principais de fusão ou nas do lote; o sinalizador equivalente da CLI é `--sharpen-output`. Afeta a imagem fundida, não os quadros registrados nem os mapas de profundidade. Pode tornar as bordas mais distintas, mas amplificar ruído e halos. É salva com o projeto e lembrada entre sessões.
+**Nitidez da saída fundida** aplica uma máscara de nitidez suave após a fusão, antes de o resultado ser convertido para sua profundidade de saída. Fica desativada por padrão e pode ser ativada em **Configurações de renderização** ou nas opções do lote; o sinalizador equivalente da CLI é `--sharpen-output`. Afeta a imagem fundida, não os quadros registrados nem os mapas de profundidade. Pode tornar as bordas mais distintas, mas amplificar ruído e halos. É salva com o projeto e lembrada entre sessões.
 
 ### Somente alinhamento (sem fusão)
 
@@ -470,7 +472,7 @@ Selecione **Somente alinhamento (sem fusão)** para registrar a pilha e adiciona
 | DCT | Média | Boa | Texturas |
 | DTCWT | Média | Muito boa | Cenas complexas |
 | GFG-FGF | Rápida | Boa | Regiões de foco |
-| StackMFF (V1) | Lenta (GPU) | Não avaliada aqui | Pilhas desordenadas ou descontínuas |
+| StackMFF (V1) | Lenta (GPU) | Não avaliada aqui | Fusão neural da pilha; a ordem pode afetar o resultado |
 | StackMFF V2 | Rápida (GPU) | Não avaliada aqui | Varreduras contínuas com um modelo minúsculo |
 | StackMFF V3 | Lenta (GPU) | Excelente | Qualidade máxima |
 | OpenFocus A | Depende da pilha | Depende da pilha | Seleção multiescala de pixels em foco |
@@ -478,6 +480,9 @@ Selecione **Somente alinhamento (sem fusão)** para registrar a pilha e adiciona
 | OpenFocus C | Depende da pilha | Depende da pilha | Reconstrução multiescala guiada por profundidade |
 
 Abra **Ferramentas → Comparação de métodos** para ajustar vários métodos independentemente. Nome, rótulos de parâmetros e controles de cada método permanecem juntos quando a janela estreita. As mudanças atualizam a prévia automaticamente. **Prévia ROI (rápida)** funde a área selecionada com o contexto ao redor; **Fusão de imagem inteira** verifica o resultado da imagem toda e permite inspecionar outra área sem renderizar novamente. Resultados ROI podem diferir dos de imagem inteira porque estatísticas de exposição e alguns algoritmos dependem da extensão da imagem.
+A **fusão de imagem inteira** é selecionada por padrão.
+
+Uma dica visível explica como selecionar ou desmarcar um resultado: clique nele ou use `Tab` para colocá-lo em foco e pressione `Enter` ou `Espaço`.
 
 Use **Tamanho da prévia (px)** acima dos painéis direitos para escolher um tamanho quadrado de 160 a 960 pixels, arrastando o controle ou digitando um número. Todos os métodos usam o mesmo tamanho e se ajustam à largura disponível. O tamanho é lembrado para a próxima abertura. Alterá-lo mantém a ampliação atual e ajusta o quadrado de inspeção ao redor do centro, limitado às bordas da imagem.
 
@@ -487,7 +492,7 @@ Arraste a imagem de origem com o botão esquerdo para mover o quadrado branco de
 
 ### Prévia rápida (renderização de rascunho)
 
-Ajustar parâmetros em pilhas grandes é lento em resolução total. Marque **Prévia rápida** acima do botão de renderização e o OpenFocus renderiza primeiro um rascunho com metade do tamanho linear (nunca abaixo de 320 px no lado maior), normalmente várias vezes mais rápido, incluindo registro. A mensagem de conclusão (e a dica do resultado mais recente) indica **Qualidade: prévia**, e o rascunho **não** é adicionado ao histórico de saídas. Desmarque a caixa e renderize novamente para obter o resultado em resolução total. O modo de prévia não se aplica a renderizações ROI e nunca contamina o cache de alinhamento em resolução total.
+Ajustar parâmetros em pilhas grandes é lento em resolução total. Abra **Configurações de renderização** e marque **Prévia rápida**; o OpenFocus renderiza primeiro um rascunho com metade do tamanho linear (nunca abaixo de 320 px no lado maior), normalmente várias vezes mais rápido, incluindo registro. A mensagem de conclusão (e a dica do resultado mais recente) indica **Qualidade: prévia**, e o rascunho **não** é adicionado ao histórico de saídas. Desmarque a caixa e renderize novamente para obter o resultado em resolução total. O modo de prévia não se aplica a renderizações ROI e nunca contamina o cache de alinhamento em resolução total.
 
 ---
 
@@ -530,7 +535,7 @@ A fusão ainda pode deixar um defeito local — um halo ao redor de uma borda de
 1. Selecione uma saída na lista (clicar com o botão direito → *Retocar resultado…* também funciona) e pressione `Ctrl+T`. Sem seleção, um seletor lista todos os resultados e indica quais têm quadros de origem registrados.
 2. O quadro de origem fica à esquerda e o resultado à direita. Ambos compartilham zoom e posição: a roda amplia, arrastar com o botão direito ou central (ou Espaço+arrastar) desloca, `F` ajusta e `1` mostra 100%.
 3. Escolha uma miniatura, arraste o controle de quadros ou pressione `,` / `.`. Um traço fica bloqueado nesse quadro e nas configurações atuais do pincel; o quadro não pode mudar até o traço terminar.
-4. Escolha **Pincel de origem** (`B`) ou **Pincel de restauração** (`E`). Diâmetro, dureza e opacidade têm controle e campo numérico; `[` / `]` ajusta o diâmetro. O pincel de restauração devolve os pixels à imagem que você abriu, não a uma saída anterior.
+4. Escolha **Pincel de origem** (`B`) ou **Pincel de restauração** (`E`). Diâmetro, dureza e opacidade têm controle e campo numérico; `[` / `]` ajusta o diâmetro. Com `Ctrl` e a roda para cima, o diâmetro aumenta; para baixo, diminui. A roda sem modificadores ajusta o zoom. O pincel de restauração devolve os pixels à imagem que você abriu, não a uma saída anterior.
 5. Mantenha `Tab` para ver o resultado antes desta sessão e `Alt` para espiar o quadro de origem. A referência de nitidez é opcional, cobre apenas a tela de origem e usa uma escala compartilhada por todos os quadros.
 6. `Ctrl+Z` / `Ctrl+Y` desfazem e refazem traços inteiros. **Restaurar tudo…** é uma única etapa desfazível. **Aplicar como nova saída** adiciona uma entrada chamada `<nome> · Retocado N` e a seleciona; o original permanece intacto. A nova entrada é marcada como *Não exportada* até você exportá-la pela janela principal, e o OpenFocus a protege da remoção automática do histórico e de fechar sem uma decisão.
 
@@ -809,7 +814,7 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--suggest-duplicates` | Relata quadros adjacentes quase idênticos para revisão manual; não os funde nem os exclui |
 | `--input, -i` | Pasta(s) de imagens, arquivo de vídeo, um ou mais arquivos de imagem ou TIFF multipágina |
 | `--output, -o` | Caminho da imagem de saída (a extensão define o formato) |
-| `--output-dir, -d` | Modo lote: funde cada pasta de entrada gravando `<pasta>.<ext>` por pilha |
+| `--output-dir, -d` | Modo lote: funde cada pasta de entrada gravando `<pasta>.png` por pilha |
 | `--resume` | Modo lote: ignora pastas cuja saída já existe |
 | `--config FILE` | Modo lote: substituições JSON por pasta, p. ex. `{"stackA": {"method": "dct"}}` |
 | `--method, -m` | `stackmffv3` (padrão), `stackmffv2`, `stackmff`, `openfocus_a`, `openfocus_b`, `openfocus_c`, `guided_filter`, `dct`, `dtcwt`, `gfgfgf` |
@@ -986,15 +991,17 @@ Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Exe
 
 #### Aviso do Windows SmartScreen na primeira inicialização
 
-Os binários publicados não são assinados. Baixe-os de **https://openfocus.top** em vez de um espelho de terceiros, depois clique em **Mais informações → Executar assim mesmo**. A primeira inicialização após descompactar pode levar 30–60 segundos.
+A assinatura dos binários do Windows depende da versão específica (consulte as notas da versão); a assinatura não é garantida. Baixe-os de **https://openfocus.top** em vez de um espelho de terceiros. Se o SmartScreen avisar, clique em **Mais informações → Executar assim mesmo**. A primeira inicialização após descompactar pode levar 30–60 segundos.
 
 #### O macOS diz que o aplicativo "não pode ser aberto" ou "está danificado"
 
-O aplicativo não é assinado nem notarizado. Baixe a compilação Apple Silicon em **https://openfocus.top**, mova `OpenFocus.app` para Aplicativos e execute:
+A compilação do macOS não é notarizada. Baixe a compilação Apple Silicon em **https://openfocus.top**. Se instalar pelo DMG movendo `OpenFocus.app` para Aplicativos, execute:
 
 ```bash
 xattr -cr /Applications/OpenFocus.app
 ```
+
+Se instalar pelo terminal com `install.sh`, o app fica em `~/Applications`; execute `xattr -cr ~/Applications/OpenFocus.app`.
 
 ou clique com o botão direito no aplicativo e escolha **Abrir**. As compilações macOS publicadas são para Apple Silicon (M1/M2/M3/M4); Macs Intel podem executar a partir do código-fonte.
 

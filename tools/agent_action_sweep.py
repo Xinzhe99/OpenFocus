@@ -6,9 +6,9 @@ the dialogs and file pickers they open; context menus are outside its scope.
 
     python tools/agent_action_sweep.py [--launch] [--timeout 120]
 
-Exit code 0 means no action timed out or left an unresolved window. Actions
-that are disabled in the current state, or that would change the installation
-(exit, update, open logs, GPU), are reported as skipped.
+Exit code 0 means no action timed out or left an unresolved window. Disabled
+actions, language switches, dynamic recent items, and actions that would
+change the installation (exit, update, open logs, GPU) are skipped.
 """
 from __future__ import annotations
 

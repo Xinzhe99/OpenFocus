@@ -145,7 +145,7 @@
         const size = a.querySelector('span');
         if (size && asset.size) {
           const mb = Math.max(1, Math.round(asset.size / 1000000));
-          size.textContent = size.textContent.replace(/[\d.]+ ?(MB|GB)/, mb + ' MB');
+          size.textContent += ' · ' + mb + ' MB';
         }
       });
       dlButtons.forEach((el) => {

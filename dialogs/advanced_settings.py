@@ -14,6 +14,8 @@ from constants import (
     TILE_BLOCK_MAX, TILE_BLOCK_MIN, TILE_OVERLAP_MAX, TILE_THRESHOLD_MAX,
     TILE_THRESHOLD_MIN,
 )
+from core.algorithms import (registration_algorithms, registration_parameter_specs,
+                             resolve_registration_parameters)
 from locales import trans
 from utils.export_paths import prefix_output_name, valid_output_prefix
 from widgets.stepper import StepperSpinBox
@@ -94,9 +96,10 @@ class AdvancedSettingsDialog(QDialog):
             minimum=TILE_THRESHOLD_MIN, maximum=TILE_THRESHOLD_MAX, step=256,
             decimals=0, value=int(getattr(w, "tile_threshold", 2048)))
         perf.addRow(trans.t("advanced_tile_threshold"), self.spin_threshold)
+        saved_threads = max(0, int(getattr(w, "thread_count", 0)))
         self.spin_threads = StepperSpinBox(
-            minimum=0, maximum=64, step=1, decimals=0,
-            value=int(getattr(w, "thread_count", 0)))
+            minimum=0, maximum=max(256, saved_threads), step=1, decimals=0,
+            value=saved_threads)
         perf.addRow(trans.t("advanced_threads"), self.spin_threads)
         self.combo_resources = QComboBox()
         for mode in ("balanced", "responsive", "maximum"):
@@ -122,6 +125,23 @@ class AdvancedSettingsDialog(QDialog):
             minimum=REG_WIDTH_MIN, maximum=REG_WIDTH_MAX, step=64, decimals=0,
             value=int(getattr(w, "reg_downscale_width", 1024)))
         reg.addRow(trans.t("advanced_reg_width"), self.spin_reg_width)
+        self.combo_align_failure = QComboBox()
+        self.combo_align_failure.setProperty("controlId", "combo_align_failure")
+        failure_spec = next(spec for spec in registration_parameter_specs("homography")
+                            if spec.key == "failure_policy")
+        for value, label in zip(failure_spec.choices, failure_spec.choice_labels):
+            self.combo_align_failure.addItem(trans.t(label), value)
+        method = getattr(w, "current_alignment_method", lambda: "none")()
+        if method == "none":
+            method = "homography"
+        getter = getattr(w, "registration_parameters_for", None)
+        parameters = getter(method) if callable(getter) else {}
+        if callable(getter) and parameters.get("failure_policy") not in failure_spec.choices:
+            parameters = getter("homography")
+        self._initial_align_failure = parameters.get("failure_policy", failure_spec.default)
+        self.combo_align_failure.setCurrentIndex(max(
+            0, self.combo_align_failure.findData(self._initial_align_failure)))
+        reg.addRow(trans.t(failure_spec.label_key), self.combo_align_failure)
         self.chk_align_cache = QCheckBox()
         self.chk_align_cache.setChecked(
             bool(getattr(w, "align_cache_enabled", True)))
@@ -170,7 +190,14 @@ class AdvancedSettingsDialog(QDialog):
         other.addRow(trans.t("action_restore_last_stack"), self.chk_restore)
         self.chk_ask_scale = QCheckBox()
         self.chk_ask_scale.setChecked(bool(getattr(w, "ask_load_scale", True)))
+        self.chk_ask_scale.setToolTip(trans.t("action_ask_load_scale_hint"))
         other.addRow(trans.t("action_ask_load_scale"), self.chk_ask_scale)
+        self.lbl_load_scale = QLabel(
+            f"{float(getattr(w, 'load_scale_default', 1.0)) * 100:g}%")
+        other.addRow(trans.t("ds_title"), self.lbl_load_scale)
+        self.chk_ask_scale.toggled.connect(
+            lambda checked: other.setRowVisible(self.lbl_load_scale, not checked))
+        other.setRowVisible(self.lbl_load_scale, not self.chk_ask_scale.isChecked())
         self.chk_auto_update = QCheckBox()
         try:
             self.chk_auto_update.setChecked(
@@ -266,6 +293,18 @@ class AdvancedSettingsDialog(QDialog):
             "defect_mask_path": self.sensor_cleanup.path.text().strip(),
             "sensor_denoise": self.sensor_cleanup.denoise.isChecked(),
         }
+        failure_policy = self.combo_align_failure.currentData()
+        if failure_policy != self._initial_align_failure:
+            memory = {method: dict(values) for method, values in
+                      getattr(w, "_registration_parameters_by_method", {}).items()}
+            for spec in registration_algorithms():
+                policy_spec = next((p for p in registration_parameter_specs(spec.id)
+                                    if p.key == "failure_policy"), None)
+                if policy_spec and failure_policy in policy_spec.choices:
+                    values = dict(memory.get(spec.id, {}))
+                    values["failure_policy"] = failure_policy
+                    memory[spec.id] = resolve_registration_parameters(spec.id, values)
+            draft["_registration_parameters_by_method"] = memory
         previous = {key: getattr(w, key, None) for key in draft}
         manager = getattr(w, "update_manager", None)
         previous_auto = manager.auto_download if manager is not None else None
@@ -276,11 +315,19 @@ class AdvancedSettingsDialog(QDialog):
                     raise RuntimeError(trans.t("action_auto_download"))
             for key, value in draft.items():
                 setattr(w, key, value)
+            if "_registration_parameters_by_method" in draft:
+                refresh = getattr(w, "refresh_registration_parameters", None)
+                if callable(refresh):
+                    refresh()
             if hasattr(w, "persist_settings"):
                 w.persist_settings()
         except Exception as exc:
             for key, value in previous.items():
                 setattr(w, key, value)
+            if "_registration_parameters_by_method" in draft:
+                refresh = getattr(w, "refresh_registration_parameters", None)
+                if callable(refresh):
+                    refresh()
             try:
                 if manager is not None and manager.auto_download != previous_auto:
                     manager.set_auto_download(previous_auto)

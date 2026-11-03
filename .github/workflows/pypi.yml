@@ -37,37 +37,47 @@ jobs:
           print('version', version, 'ref', ref)
           PY
 
-      - name: Verify the AI model ships in the sdist
+      - name: Verify neural model checkpoints
         run: |
-          test -f weights/stackmff_v3_final.pth || {
-            echo "weights/stackmff_v3_final.pth is missing"; exit 1; }
-          test "$(wc -c < weights/stackmff_v3_final.pth)" -gt 600000 || {
-            echo "weights file is truncated"; exit 1; }
+          test "$(wc -c < weights/stackmff_final.pth)" -gt 20000000
+          test "$(wc -c < weights/stackmff_v2_final.pth)" -gt 200000
+          test "$(wc -c < weights/stackmff_v3_final.pth)" -gt 600000
 
       - name: Build
         run: |
           python -m pip install --upgrade build
           python -m build
 
-      - name: Check the wheel contents
+      - name: Check the wheel and source distribution contents
         run: |
           python - <<'PY'
-          import glob, sys, zipfile
+          import glob, pathlib, sys, tarfile, zipfile
           wheel = glob.glob('dist/*.whl')[0]
-          names = zipfile.ZipFile(wheel).namelist()
-          required = ['weights/stackmff_v3_final.pth',
-                      'core/models/stackmff_v3/network.py',
-                      'fusion_methods/stackmffv3.py',
-                      'locales/__init__.py', 'locales/en.py', 'locales/zh.py',
-                      'locales/_extra.py',
-                      'locales/de.py', 'locales/fr.py', 'locales/ru.py',
-                      'locales/ko.py', 'locales/pt.py', 'locales/it.py',
-                      'locales/nl.py', 'locales/pl.py']
-          missing = [r for r in required if r not in names]
-          stale = [n for n in names if 'stackmffv4' in n]
-          if missing: sys.exit(f'missing from wheel: {missing}')
-          if stale: sys.exit(f'stale modules in wheel: {stale}')
-          print(f'{wheel}: {len(names)} entries, all required files present')
+          sdist = glob.glob('dist/*.tar.gz')[0]
+          required = [
+              'core/cli.py', 'core/control/protocol.py', 'utils/weights.py',
+              'core/models/stackmff_v1/network.py',
+              'core/models/stackmff_v2/network.py',
+              'core/models/stackmff_v3/network.py',
+              'fusion_methods/stackmffv3.py',
+              *[f'locales/{p.name}' for p in pathlib.Path('locales').glob('*.py')],
+          ]
+          weights = {'weights/stackmff_final.pth': 20000000,
+                     'weights/stackmff_v2_final.pth': 200000,
+                     'weights/stackmff_v3_final.pth': 600000}
+          with zipfile.ZipFile(wheel) as archive:
+              files = {info.filename: info.file_size for info in archive.infolist()}
+          with tarfile.open(sdist, 'r:gz') as archive:
+              source = {entry.name.split('/', 1)[1]: entry.size
+                        for entry in archive.getmembers() if '/' in entry.name}
+          for name, entries in ((wheel, files), (sdist, source)):
+              missing = [path for path in [*required, *weights] if path not in entries]
+              small = [path for path, size in weights.items()
+                       if path in entries and entries[path] < size]
+              stale = [path for path in entries if 'stackmffv4' in path]
+              if missing or small or stale:
+                  sys.exit(f'{name}: missing={missing}, truncated={small}, stale={stale}')
+              print(f'{name}: required modules, locales and model weights present')
           PY
 
       - uses: actions/upload-artifact@v4

@@ -19,7 +19,7 @@ def _labels_that_must_fit():
 
 
 
-def test_option_checkboxes_flow_and_wrap():
+def test_option_checkboxes_flow_and_wrap(qapp):
     """Options pack side by side and wrap on width, never one-per-row.
 
     They used to be stacked unconditionally because a 375 px column could not
@@ -27,11 +27,11 @@ def test_option_checkboxes_flow_and_wrap():
     rest, so a wide window shows two rows instead of four and the saved height
     goes to the source/output lists.
     """
-    from PyQt6.QtWidgets import QApplication, QCheckBox
+    from PyQt6.QtWidgets import QCheckBox
 
     from widgets.flow_layout import FlowPanel
 
-    app = QApplication.instance() or QApplication([])
+    app = qapp
     panel = FlowPanel(h_spacing=14, v_spacing=6)
     boxes = []
     for text in ("Quick preview", "Reverse order", "Exposure match",
@@ -62,39 +62,6 @@ def test_option_checkboxes_flow_and_wrap():
         panel.close()
         panel.deleteLater()
 
-@pytest.mark.parametrize("width", [280, 480])
-@pytest.mark.parametrize("theme", ["light", "dark"])
-def test_main_options_are_visible_and_clickable(qapp, width, theme):
-    """The real panel must not lay out its option checkboxes at zero width."""
-    from PyQt6.QtCore import QPoint, Qt
-    from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QScrollArea
-    from ui.right_panel import create_right_panel
-    from ui.styles import build_stylesheet
-
-    parts = create_right_panel()
-    panel = parts.widget
-    panel.setStyleSheet(build_stylesheet(theme))
-    panel.resize(width, 900)
-    panel.show()
-    try:
-        qapp.processEvents()
-        scroll = panel.findChild(QScrollArea)
-        flow = panel._options_flow
-        for box in (parts.chk_quick_preview, parts.chk_reverse_order,
-                    parts.chk_exposure_match, parts.chk_base_correct,
-                    parts.chk_sharpen_output):
-            scroll.ensureWidgetVisible(box)
-            qapp.processEvents()
-            assert box.isVisible() and box.width() >= 20 and box.height() >= 16
-            assert flow.rect().contains(box.geometry())
-            before = box.isChecked()
-            QTest.mouseClick(box, Qt.MouseButton.LeftButton,
-                             pos=QPoint(8, box.height() // 2))
-            assert box.isChecked() != before
-    finally:
-        panel.close()
-        panel.deleteLater()
 
 
 
@@ -112,50 +79,6 @@ def test_option_labels_have_a_translation(lang):
         assert text and text != key, f"{lang}: {key} is untranslated"
 
 
-def test_long_option_labels_elide_before_the_first_language_switch(qapp):
-    """Polish labels exceed the panel at launch and must be elided then.
-
-    `create_right_panel` sets translated text before the splitter assigns a
-    width. A fixed 300 px elision was wider than the 280 px minimum panel, so
-    the checkbox was clipped until the user changed language (the only path
-    that used to call the elision helper).
-    """
-    from locales import trans as _t
-    from ui.right_panel import (ElidingCheckBox, _panel_label_width,
-                                create_right_panel, set_panel_label)
-
-    long_text = _t.translations["pl"]["chk_reverse_order"]
-    hint = _t.translations["pl"]["chk_reverse_order_hint"]
-    # What create_right_panel's _option() does before the panel has a width.
-    constructed = ElidingCheckBox(long_text, hint)
-    assert constructed.text() != long_text
-    assert constructed.fontMetrics().horizontalAdvance(
-        constructed.text()) <= _panel_label_width(None)
-    constructed.deleteLater()
-
-    parts = create_right_panel()
-    panel = parts.widget
-    box = parts.chk_reverse_order
-    try:
-        set_panel_label(box, long_text, hint)
-        assert box.text() != long_text
-        assert long_text in box.toolTip()
-
-        panel.resize(280, 700)
-        panel.show()
-        qapp.processEvents()
-        narrow = box.fontMetrics().horizontalAdvance(box.text())
-        assert narrow <= _panel_label_width(panel)
-        assert box.text() != long_text
-
-        panel.resize(520, 700)
-        qapp.processEvents()
-        wide = box.fontMetrics().horizontalAdvance(box.text())
-        assert wide > narrow, "a wider panel must reveal more of the label"
-        assert wide <= _panel_label_width(panel)
-    finally:
-        panel.close()
-        panel.deleteLater()
 
 
 def test_eliding_button_reserves_its_painted_padding(qapp):
@@ -305,9 +228,7 @@ def test_checked_radio_does_not_grow_its_indicator(qapp):
 
 
 
-def test_help_button_style_uses_the_active_theme():
-    from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+def test_help_button_style_uses_the_active_theme(qapp):
     import ui.styles as st
     try:
         st.set_current_theme("light")

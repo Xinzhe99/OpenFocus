@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to mirror (for example v1.74.0)
+        description: Release tag to mirror (for example v1.75.0)
         required: true
         type: string
 
@@ -130,6 +130,9 @@ jobs:
       - name: Prune older mirrored releases
         run: |
           set -euo pipefail
+          # Old release metadata can remain in a Worker's edge cache for five
+          # minutes. Keep its R2 objects until those cached names have expired.
+          sleep 330
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           tag="${{ steps.release.outputs.tag }}"
           latest="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"

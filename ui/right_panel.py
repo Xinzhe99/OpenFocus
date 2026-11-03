@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QEvent, QObject, Qt, QSize
+from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QKeySequence, QShortcut, QFont
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -33,7 +33,6 @@ from ui.styles import (
 from locales import trans
 from core.algorithms import fusion_algorithms, registration_algorithms, get_fusion
 from ui.algorithm_parameters import AlgorithmParameterPanel
-from widgets.flow_layout import FlowPanel
 
 # Widest text column that fits a 375 px panel. This is an upper bound: the
 # real width is read from the panel and its option labels are re-elided when
@@ -66,20 +65,11 @@ def _panel_label_width(panel=None) -> int:
     """
     width = (panel.width() if panel is not None else 0) or PANEL_MIN_WIDTH
     available = width - _PANEL_H_MARGIN
-    flow = getattr(panel, "_options_flow", None)
-    if flow is not None and flow.isVisible() and flow.width() > 0:
-        available = min(available, flow.width())
     return max(60, min(PANEL_TEXT_WIDTH, available - _LABEL_CHROME))
 
 
 class ElidingCheckBox(QCheckBox):
-    """QCheckBox whose translated label elides to the panel width.
-
-    QCheckBox cannot word-wrap and FlowPanel lays each item at its sizeHint,
-    so Polish/German labels (400-800 px) grew wider than the 280-375 px
-    column and were clipped at launch. The full label and its hint stay in
-    the tooltip; refit() re-elides after a language switch or a panel resize.
-    """
+    """Checkbox with a full translated label and hint for the settings dialog."""
 
     def __init__(self, text: str = "", tooltip: str = "", parent=None):
         super().__init__(parent)
@@ -112,15 +102,29 @@ class ElidingCheckBox(QCheckBox):
     def full_text(self) -> str:
         return self._full_text
 
+    def text(self) -> str:
+        if getattr(self, "_dialog_label", None) is not None:
+            return self._full_text
+        return super().text()
+
+
     def refit(self, width: int = None) -> None:
         if width is None:
             width = _panel_label_width(_right_panel_for(self))
-        super().setText(self.fontMetrics().elidedText(
-            self._full_text, Qt.TextElideMode.ElideRight, max(1, width)))
+        label = getattr(self, "_dialog_label", None)
+        self.setAccessibleName(self._full_text)
+        if label is None:
+            super().setText(self.fontMetrics().elidedText(
+                self._full_text, Qt.TextElideMode.ElideRight, max(1, width)))
+        else:
+            super().setText("")
+            label.setText(self._full_text)
         tip = self._full_text if self._include_label else ""
         if self._hint:
             tip = f"{tip}\n{self._hint}" if tip else self._hint
         super().setToolTip(tip)
+        if label is not None:
+            label.setToolTip(tip)
 
 
 class ElidingButton(QPushButton):
@@ -214,47 +218,6 @@ def set_panel_label(button, text: str, tooltip: str = None) -> None:
         if tooltip:
             tip = f"{full}\n{tooltip}"
         button.setToolTip(tip)
-    # A language switch can shorten or lengthen the widest option; without
-    # this the flow keeps the previous row geometry until the panel is
-    # resized (the tab order looks right but the painted rows do not).
-    refitter = getattr(panel, "_label_refitter", None)
-    if refitter is not None:
-        refitter.relayout()
-
-
-class _PanelLabelRefitter(QObject):
-    """Re-elide the option column when the right panel changes width.
-
-    The first layout pass assigns the panel's width after the checkboxes
-    have been constructed; leaving their startup estimate would keep a
-    Polish label clipped until the next language switch.
-    """
-
-    def __init__(self, panel, flow, labels):
-        super().__init__(panel)
-        self._panel = panel
-        self._flow = flow
-        self._labels = list(labels)
-        self._width = -1
-
-    def eventFilter(self, watched, event):  # noqa: N802 (Qt casing)
-        if watched in (self._panel, self._flow) and event.type() in (
-                QEvent.Type.Resize, QEvent.Type.Show):
-            self.refit()
-        return False
-
-    def refit(self) -> None:
-        width = _panel_label_width(self._panel)
-        if width == self._width:
-            return
-        self._width = width
-        for label in self._labels:
-            label.refit(width)
-        self._flow.relayout()
-
-    def relayout(self) -> None:
-        """Repack after a label's size hint changed (language switch)."""
-        self._flow.relayout()
 
 
 from widgets.output_list import OutputListWidget
@@ -279,6 +242,7 @@ class RightPanelComponents:
     btn_reset: QPushButton
     btn_render: QPushButton
     btn_compare: QPushButton
+    btn_render_settings: QPushButton
     chk_quick_preview: QCheckBox
     btn_method_help: QPushButton
     btn_reg_help: QPushButton
@@ -382,7 +346,8 @@ def create_right_panel() -> RightPanelComponents:
     btn_reg_help.setObjectName("helpButton")
     reg_help_layout.addWidget(btn_reg_help)
     registration_layout.addLayout(reg_help_layout)
-    registration_parameter_panel = AlgorithmParameterPanel(parent=registration_group)
+    registration_parameter_panel = AlgorithmParameterPanel(
+        parent=registration_group, hidden_parameters=('failure_policy',))
     registration_layout.addWidget(registration_parameter_panel)
 
     # 融合/对齐并排时面板宽 375px，两个下拉各只剩 ~114px —— 比
@@ -398,14 +363,13 @@ def create_right_panel() -> RightPanelComponents:
     config_layout.addWidget(method_group)
 
 
-    # Primary action on its own row, the two secondary actions underneath.
-    # One row of three does not fit the panel: "▶ Rozpocznij renderowanie"
-    # needs 343 px while the panel hands each button ~113 px, so German,
-    # French, Russian and Polish all rendered truncated labels.
+    # Keep the main render action separate from the secondary actions.
     btn_reset = ElidingButton(trans.t('btn_reset'))
     btn_reset.setObjectName("secondaryButton")
     btn_render = ElidingButton(trans.t('btn_render'))
     btn_render.setObjectName("primaryButton")
+    btn_render_settings = ElidingButton(trans.t('render_settings_title'))
+    btn_render_settings.setObjectName("secondaryButton")
     btn_compare = ElidingButton(trans.t('btn_compare_all'))
     btn_compare.setObjectName("secondaryButton")
     btn_compare.setToolTip(
@@ -414,7 +378,7 @@ def create_right_panel() -> RightPanelComponents:
     # 343 px for the render button, the panel offers ~113 px per button).
     # Let each button shrink to an elided label and keep the full string in
     # the tooltip, so a long translation degrades instead of clipping.
-    for _btn in (btn_reset, btn_render, btn_compare):
+    for _btn in (btn_reset, btn_render, btn_render_settings, btn_compare):
         _btn.setSizePolicy(QSizePolicy.Policy.Ignored,
                            QSizePolicy.Policy.Fixed)
         # Only give a fallback tooltip to buttons that have none: the compare
@@ -426,39 +390,23 @@ def create_right_panel() -> RightPanelComponents:
     secondary_bar = QHBoxLayout()
     secondary_bar.setSpacing(8)
     secondary_bar.addWidget(btn_reset, 1)
+    secondary_bar.addWidget(btn_render_settings, 1)
     secondary_bar.addWidget(btn_compare, 1)
     config_layout.addLayout(secondary_bar)
 
-    # Options flow instead of one-per-row. They used to be stacked because a
-    # 375 px column could not fit two long translations; the column is wider
-    # now and the window is resizable, so a fixed one-per-row rule just burned
-    # vertical space that the source and output lists need. FlowPanel packs as
-    # many as actually fit and re-flows on resize; a long translation still
-    # takes a whole row by itself, so nothing is clipped.
-    option_boxes = []
-
+    # The same checkbox instances remain owned by the panel until the dialog
+    # adopts them; their signals and per-method state continue to work.
     def _option(key, checked):
-        box = ElidingCheckBox(trans.t(key), trans.t(key + '_hint'))
+        box = ElidingCheckBox(trans.t(key), trans.t(key + '_hint'), right_panel)
         box.setChecked(checked)
-        option_boxes.append(box)
+        box.hide()
         return box
 
-    options_flow = FlowPanel(h_spacing=14, v_spacing=6)
-    # 反转帧序（倒序栈）：远→近扫的栈勾选后按规范方向处理，仅影响
-    # OpenFocus A/B/C 的 base 参考端 / 末帧先验 / 深度图标签方向
-    chk_quick_preview = options_flow.add(_option('chk_quick_preview', False))
-    chk_reverse_order = options_flow.add(_option('chk_reverse_order', False))
-    chk_exposure_match = options_flow.add(_option('chk_exposure_match', True))
-    chk_base_correct = options_flow.add(_option('chk_base_correct', False))
-    chk_sharpen_output = options_flow.add(_option('chk_sharpen_output', False))
-    config_layout.addWidget(options_flow)
-    # The splitter assigns the panel's real width after construction; a long
-    # Polish label must be re-elided then, not only after a language switch.
-    right_panel._options_flow = options_flow
-    label_refitter = _PanelLabelRefitter(right_panel, options_flow, option_boxes)
-    right_panel.installEventFilter(label_refitter)
-    options_flow.installEventFilter(label_refitter)
-    right_panel._label_refitter = label_refitter
+    chk_quick_preview = _option('chk_quick_preview', False)
+    chk_reverse_order = _option('chk_reverse_order', False)
+    chk_exposure_match = _option('chk_exposure_match', True)
+    chk_base_correct = _option('chk_base_correct', False)
+    chk_sharpen_output = _option('chk_sharpen_output', False)
 
     # Any leftover height goes to the bottom of the column instead of being
     # shared between the parameter rows.
@@ -553,7 +501,7 @@ def create_right_panel() -> RightPanelComponents:
     # Start with the config block fully readable and give the lists the rest.
     # The user can drag it smaller now (it is inside a scroll area), which was
     # impossible while its minimum height was the sum of every control.
-    right_splitter.setSizes([430, 300, 300])
+    right_splitter.setSizes([335, 345, 345])
 
     # Status Panel -----------------------------------------
     status_widget = QFrame()
@@ -585,7 +533,7 @@ def create_right_panel() -> RightPanelComponents:
     # Stable identifiers for agents, independent of QSS object names.
     for _control in ("combo_fusion", "combo_align", "fusion_parameter_panel",
                      "registration_parameter_panel", "btn_reset", "btn_render",
-                     "btn_compare", "chk_quick_preview", "chk_reverse_order",
+                     "btn_render_settings", "btn_compare", "chk_quick_preview", "chk_reverse_order",
                      "chk_exposure_match", "chk_base_correct", "chk_sharpen_output", "file_list",
                      "output_list"):
         _widget = locals().get(_control)
@@ -598,6 +546,7 @@ def create_right_panel() -> RightPanelComponents:
         btn_reset=btn_reset,
         btn_render=btn_render,
         btn_compare=btn_compare,
+        btn_render_settings=btn_render_settings,
         chk_quick_preview=chk_quick_preview,
         btn_method_help=btn_method_help,
         btn_reg_help=btn_reg_help,
@@ -690,6 +639,13 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.btn_render.clicked.connect(
         lambda: window.render_manager.start_render())
     components.btn_reset.clicked.connect(window.reset_to_default)
+    def _show_render_settings():
+        from dialogs.render_settings import RenderSettingsDialog
+        if not hasattr(window, '_render_settings_dialog'):
+            window._render_settings_dialog = RenderSettingsDialog(window)
+        window._render_settings_dialog.exec()
+
+    components.btn_render_settings.clicked.connect(_show_render_settings)
 
 
     components.file_list.customContextMenuRequested.connect(window.source_manager.show_source_context_menu)

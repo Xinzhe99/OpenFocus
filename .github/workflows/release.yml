@@ -527,7 +527,8 @@ jobs:
             gh release upload "${{ github.ref_name }}" release/* \
               --repo "${{ github.repository }}" --clobber
             gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" \
-              --title "OpenFocus ${{ github.ref_name }}" --notes-file release_notes.md
+              --title "OpenFocus ${{ github.ref_name }}" --notes-file release_notes.md \
+              --draft=false --prerelease=false
           else
             gh release create "${{ github.ref_name }}" \
               --repo "${{ github.repository }}" \

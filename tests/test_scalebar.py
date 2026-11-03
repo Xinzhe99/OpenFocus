@@ -186,6 +186,47 @@ def _scale_dialog_host(image):
     host.source_px_um = None
     return host
 
+@pytest.mark.parametrize("source_px_um, expected_mode", [
+    (None, "manual"),
+    (0.8, "metadata"),
+])
+def test_scale_dialog_defaults_to_available_calibration(qapp, source_px_um, expected_mode):
+    from dialogs.scalebar import ScaleBarDialog
+
+    host = _scale_dialog_host(np.zeros((240, 400, 3), np.uint8))
+    host.scale_um_per_px_manual = 0.0
+    host.source_px_um = source_px_um
+    dialog = ScaleBarDialog(host)
+    assert dialog.calibration_mode() == expected_mode
+    assert dialog.effective_px_um() == source_px_um
+    assert dialog.px_spin.isEnabled() == (expected_mode == "manual")
+    if source_px_um is None:
+        assert not dialog._ok_button.isEnabled()
+    dialog.reject()
+    host.deleteLater()
+
+
+def test_scale_dialog_uses_selected_output_metadata_for_default(qapp):
+    from types import SimpleNamespace
+    from dialogs.scalebar import ScaleBarDialog
+
+    image = np.zeros((240, 400, 3), np.uint8)
+    record = SimpleNamespace(kind="fusion", label="result", image=image,
+                             context=None, scale_bar_config=None)
+    host = _scale_dialog_host(image)
+    host.scale_bar_target = "output"
+    host.source_px_um = 0.8
+    host.scale_um_per_px_manual = 0.0
+    host.output_manager = SimpleNamespace(
+        record_for_row=lambda row: record, record_for_item=lambda item: record)
+    host.output_list = SimpleNamespace(count=lambda: 1, currentItem=lambda: "item")
+    dialog = ScaleBarDialog(host)
+    assert dialog.calibration_mode() == "manual"
+    assert dialog.effective_px_um() is None
+    assert not dialog._ok_button.isEnabled()
+    dialog.reject()
+    host.deleteLater()
+
 
 def test_preview_uses_native_geometry_and_uint16_display(qapp):
     from dialogs.scalebar import ScaleBarDialog
