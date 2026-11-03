@@ -641,7 +641,12 @@ class MultiFocusFusion:
 
         preparation = source_allocation + first.size * 8
         if self.exposure_match:
-            preparation += count * first.size * max(first.itemsize, 4)
+            # apply_exposure_gain keeps uint8/uint16 frames in their own dtype
+            # (its float32 scratch is one frame, covered above); only other
+            # dtypes come back as float32.
+            matched_itemsize = (first.itemsize if first.dtype in (np.uint8, np.uint16)
+                                else 4)
+            preparation += count * first.size * matched_itemsize
         policy.require_memory(preparation, user_limit=memory_budget_bytes())
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.

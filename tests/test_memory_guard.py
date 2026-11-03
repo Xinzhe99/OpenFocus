@@ -116,3 +116,24 @@ def test_tiled_depth_is_admitted_before_computation(monkeypatch, method):
                                   tile_block_size=48, tile_overlap=16)
     with pytest.raises(policy.ResourceLimitError):
         fusion.fuse(frames, thread_count=1)
+
+
+@pytest.mark.parametrize("dtype, itemsize", [(np.uint8, 1), (np.uint16, 2), (np.float32, 4)])
+def test_exposure_match_admission_counts_the_matched_dtype(monkeypatch, dtype, itemsize):
+    """Matched copies keep uint8/uint16; budgeting them as float32 refused
+    16-bit stacks that fit (53 x 20 MP needed 12.8 GB, really ~6.7 GB)."""
+    from core import multi_focus_fusion as mff, resource_policy as policy
+
+    frames = [np.zeros((40, 50, 3), dtype) for _ in range(5)]
+    requested = []
+
+    def refuse(required, snapshot=None, user_limit=None):
+        requested.append(required)
+        raise policy.ResourceLimitError("stop")
+
+    monkeypatch.setattr(policy, "require_memory", refuse)
+    fusion = mff.MultiFocusFusion("dct", exposure_match=True, tile_enabled=False)
+    with pytest.raises(policy.ResourceLimitError):
+        fusion.fuse(frames)
+    size = frames[0].size
+    assert requested[0] == size * 8 + len(frames) * size * itemsize
