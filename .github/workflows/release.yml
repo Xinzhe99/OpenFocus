@@ -443,6 +443,8 @@ jobs:
           | macOS Apple Silicon (M1/M2/M3/M4) | `OpenFocus-*-macos.dmg` | **Installer image** (recommended) |
           | macOS Apple Silicon (M1/M2/M3/M4) | `OpenFocus-*-macos-arm64.zip` | Portable (unzip) |
 
+          [Code signing policy](https://github.com/${{ github.repository }}/blob/main/docs/CODE_SIGNING_POLICY.md)
+
           ## Installation
 
           ### Windows (installer)
