@@ -88,18 +88,6 @@ def _segment(widget, index):
     return f"{type(widget).__name__}[{index}]"
 
 
-def _sibling_indices(widget):
-    parent = widget.parentWidget()
-    if parent is None:
-        return 0
-    same = [child for child in _widget_children(parent)
-            if type(child) is type(widget)]
-    try:
-        return same.index(widget)
-    except ValueError:
-        return 0
-
-
 def _summary(widget, path):
     global_origin = widget.mapToGlobal(QPoint(0, 0))
     node = {

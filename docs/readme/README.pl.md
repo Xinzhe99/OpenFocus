@@ -77,10 +77,7 @@ Nie jest to obowiązkowe, ale bardzo mile widziane.
 
 ### Fuzja AI: StackMFF V3
 
-Domyślna metoda wykorzystuje sieć neuronową do oszacowania najbardziej
-prawdopodobnej klatki źródłowej dla każdego piksela, a następnie miesza wkłady
-klatek lub wybiera najbardziej prawdopodobną klatkę. Benchmark syntetyczny
-porównuje metody ze znanym wzorcem; wyniki zależą od stosu i ustawień.
+StackMFF V3 wykorzystuje AI do łączenia ostrych fragmentów klatek źródłowych.
 
 [StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](../../tools/synthetic_benchmark.py)
 
@@ -96,9 +93,7 @@ porównuje metody ze znanym wzorcem; wyniki zależą od stosu i ustawień.
 
 ### Porównanie suwakiem
 
-Przeciągnij dzielnik po klatce źródłowej i wyniku fuzji, aby dokładnie zobaczyć,
-co zmieniło mieszanie: przesunięcie wyrównania, obwódki na krawędziach i utracone
-szczegóły są widoczne od razu, przy dowolnym powiększeniu.
+Porównuj klatkę źródłową z wynikiem fuzji za pomocą przesuwanego podziału.
 
 [Podręcznik →](../USER_MANUAL_PL.md)
 
@@ -114,10 +109,7 @@ szczegóły są widoczne od razu, przy dowolnym powiększeniu.
 
 ### Porównanie metod
 
-Domyślnie każda metoda fuzjuje cały obraz; kwadratowy podgląd źródła pozostaje
-interaktywny bez powtarzania obliczeń dla całego obrazu. Następnie porównaj wyniki
-obok siebie na wspólnym fragmencie i przyjmij zwycięzcę jako nowy wynik albo
-przenieś jego parametry z powrotem do głównego okna.
+Porównuj metody obok siebie i wykorzystaj wybrany wynik lub jego ustawienia.
 
 </td>
 <td width="54%">
@@ -131,9 +123,7 @@ przenieś jego parametry z powrotem do głównego okna.
 
 ### Mapa głębi i 3D
 
-Położenie ostrości dla każdego piksela według siedmiu metod obsługujących głębię,
-naukowe palety barw, ręczna kalibracja fizycznej osi Z (początek i krok; metadane
-TIFF podają tylko kalibrację XY) oraz eksport teksturowanej siatki OBJ.
+Twórz mapy głębi i eksportuj teksturowane powierzchnie 3D.
 
 </td>
 <td width="54%">
@@ -147,13 +137,7 @@ TIFF podają tylko kalibrację XY) oraz eksport teksturowanej siatki OBJ.
 
 ### Retusz powiązany ze źródłami
 
-Maluj pikselami z klatek, które naprawdę utworzyły wynik: wspólne powiększenie
-i przesuwanie, suwak klatki źródłowej, miękki pędzel, pędzel przywracania,
-cofanie całych pociągnięć i ochrona niewyeksportowanych pikseli.
-Zastosuj retusz jako nowy wynik, a następnie kliknij go prawym przyciskiem i
-wybierz **Eksportuj TIFF z warstwami…**, aby zapisać go razem z klatkami
-źródłowymi. Etykiety na żywo i paski skali nie są dołączane. GIMP 3.2.6 w systemie Windows
-otwiera wynik i warstwy źródeł; inne edytory nie były testowane.
+Retuszuj wynik pikselami z klatek źródłowych.
 
 </td>
 <td width="54%">
@@ -167,11 +151,7 @@ otwiera wynik i warstwy źródeł; inne edytory nie były testowane.
 
 ### Przetwarzanie wsadowe
 
-Wskaż folder ze stosami, wybierz metodę i miejsce docelowe, a potem zostaw
-program. Tryb tylko wyrównania zapisuje jeden folder na stos; fuzja zapisuje
-obraz wynikowy i pokazuje w liście wyłącznie jego. Opcjonalna fuzja grupowa
-wymienia dokładną równoważność z przetwarzaniem całego stosu na ograniczone
-zużycie pamięci i miejsca tymczasowego na dysku.
+Przetwarzaj wiele stosów z opcjonalną fuzją grupową ograniczającą zużycie pamięci.
 
 </td>
 <td width="54%">
@@ -185,10 +165,7 @@ zużycie pamięci i miejsca tymczasowego na dysku.
 
 ### Paski skali publikacyjnej
 
-Kalibrowane z metadanych TIFF lub wpisywane ręcznie, rysowane prawdziwą czcionką
-w rzeczywistej długości i wpalane w każdy eksport — pojedyncze obrazy, stosy,
-wielostronicowy TIFF, GIF i wyniki wsadowe. Jeśli pasek nie mieści się czytelnie,
-program to zgłasza zamiast drukować długość, której nie rysuje.
+Dodawaj do eksportów paski skali kalibrowane ręcznie lub na podstawie metadanych TIFF.
 
 [Podręcznik →](../USER_MANUAL_PL.md)
 
@@ -204,10 +181,7 @@ program to zgłasza zamiast drukować długość, której nie rysuje.
 
 ### Etykiety i adnotacje
 
-Prowadź zarządzaną listę etykiet; każda ma własny zakres (stos źródłowy, stos
-wyrównany lub konkretny wynik), zakres klatek i styl. Podgląd i każdy eksport
-używają tego samego celu i numeru klatki, więc `{value}` czyta się tak samo w
-„Zapisz”, „Zapisz jako”, przeciąganiu i „Eksportuj wszystko”.
+Zarządzaj etykietami i adnotacjami o własnym zakresie i stylu.
 
 </td>
 <td width="54%">
@@ -221,11 +195,7 @@ używają tego samego celu i numeru klatki, więc `{value}` czyta się tak samo 
 
 ### Sterowanie przez agenta
 
-Każde okno, widżet i menu są osiągalne przez lokalny kanał chroniony tokenem:
-agent ładuje stos, renderuje, retuszuje, porównuje, oblicza głębię, eksportuje i
-odpowiada na okna dialogowe — poleceniem typowanym, ścieżką widżetu albo
-rzeczywistymi zdarzeniami myszy i klawiatury. Nie potrzeba odczytywania ekranu
-ani OCR; kanał startuje razem z aplikacją desktopową.
+Steruj aplikacją przez lokalny kanał agenta chroniony tokenem.
 
 [Protokół →](../AGENT_CONTROL_SPEC.md) · [Umiejętność →](../../skills/openfocus-control/SKILL.md)
 
@@ -240,58 +210,23 @@ ani OCR; kanał startuje razem z aplikacją desktopową.
 
 **W zestawie także:**
 
-- **Przepływ pracy ze stosem ostrości** — przeglądarka stosu, krzywa ostrości,
-  szybki podgląd, render ROI i zapamiętywane ustawienia każdej metody między
-  uruchomieniami.
-- **Gotowość do mikroskopii** — 16 bitów na całej ścieżce, µm/px z metadanych
-  TIFF, korekcja pola płaskiego z mapy pyłu, wielostronicowe stosy Z TIFF, eksport
-  teksturowanego OBJ.
-- **Profile kolorów** — eksport pojedynczych obrazów PNG, TIFF, JPEG i WebP
-  zachowuje wspólny profil RGB ICC, gdy wszystkie klatki źródłowe mają ten sam
-  profil. Stosy mieszane lub bez profilu są zapisywane bez profilu ICC; piksele nie
-  są konwertowane do wspólnej przestrzeni barw.
-- **Przezroczysty PNG** — stosy z identycznymi prostokątnymi maskami stałej
-  nieprzezroczystości można połączyć w pełnym rozmiarze i zapisać jako PNG.
-  Ograniczenia opisuje podręcznik.
-- **Headless CLI** — ten sam potok jako `openfocus`, z trybem wsadowym,
-  `--dry-run`, `--resume` i wyjściem JSON dla skryptów.
-- **Sterowanie przez agenta** — lokalny kanał chroniony tokenem steruje działającym
-  interfejsem (typowe polecenia potoku oraz uniwersalna kontrola widżetów, menu,
-  myszy i klawiatury), z umiejętnością, runnerem smoke z 14 sprawdzeniami i pełnym
-  przemarszem po akcjach menu.
-- **Projekty i odzyskiwanie** — sesje `.ofproj`, automatyczne odzyskiwanie po
-  awarii, cofanie i ponawianie zmian stosu oraz adnotacji.
-- **Dwanaście języków interfejsu** — English, 中文, 日本語, Español, Deutsch,
-  Français, Русский, 한국어, Português, Italiano, Nederlands, Polski.
-  Wykrywane z ustawień systemowych; nowy język to jeden plik `locales/<code>.py`.
-- **Oszczędność pamięci** — sieć neuronowa jest ładowana tylko przy użyciu metody
-  neuronowej, więc sesja z metodą klasyczną zajmuje około 110 MB zamiast 260 MB.
+- **Przepływ pracy ze stosem ostrości** — przeglądarka stosu, krzywa ostrości, szybki podgląd, render ROI i zapamiętane ustawienia.
+- **Gotowość do mikroskopii** — 16 bitów, kalibracja TIFF, korekcja pola płaskiego i wielostronicowe stosy Z.
+- **Profile kolorów** — eksport pojedynczych obrazów zachowuje wspólny profil RGB ICC bez konwersji kolorów.
+- **Przezroczysty PNG** — łączenie i eksport zgodnych stosów z prostokątnymi maskami w pełnym rozmiarze.
+- **Headless CLI** — `openfocus` z trybem wsadowym, `--dry-run`, `--resume` i wyjściem JSON.
+- **Projekty i odzyskiwanie** — sesje `.ofproj`, odzyskiwanie po awarii oraz cofanie i ponawianie zmian.
+- **Dwanaście języków interfejsu** — automatyczne wykrywanie; nowe języki można dodać w `locales/<code>.py`.
+- **Oszczędność pamięci** — sieć neuronowa jest ładowana tylko w razie potrzeby.
 
 <a id="install"></a>
 ## ⬇️ Instalacja
 
 Pobierz najnowszą kompilację dla Windows lub macOS ze [strony OpenFocus](https://openfocus.top/#download). Te same pliki i starsze wersje są dostępne na [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
-| Platforma | Plik | Typ |
-|-----------|------|-----|
-| Windows 10/11 (64 bity) | `OpenFocus-*-setup.exe` | **Instalator** (zalecany) |
-| Windows 10/11 (64 bity) | `OpenFocus-*-windows-x64.zip` | Wersja przenośna (rozpakuj i uruchom) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Obraz dysku (przeciągnij do Programów) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Wersja przenośna (rozpakuj) |
+Informacje o instalacji i rozwiązywaniu problemów zawiera [podręcznik](../USER_MANUAL_PL.md).
 
-Status podpisu kompilacji Windows podają notatki do wydania. Kompilacje macOS nie są
-notaryzowane, więc przy pierwszym uruchomieniu może pojawić się ostrzeżenie:
-**Windows** SmartScreen → „Więcej informacji” → „Uruchom
-mimo to” (pierwsze uruchomienie może potrwać 30–60 s); **macOS** wykonaj
-`xattr -cr /Applications/OpenFocus.app` w Terminalu albo spróbuj raz otworzyć
-aplikację i zezwól jej w **Ustawienia systemowe → Prywatność i bezpieczeństwo →
-Otwórz mimo to** (od macOS 15 kliknięcie prawym przyciskiem → „Otwórz” nie omija już
-Gatekeeper).
-
-Aby zainstalować z terminala, najpierw obejrzyj polecenie dla macOS lub Linux z
-flagą `--dry-run`, a potem uruchom je bez niej. W systemie Linux instaluje się w ten sposób
-headless CLI; kompilacje macOS wymagają Apple Silicon; aplikacja z DMG instaluje się w
-`/Applications`, a instalacja z terminala w `~/Applications`.
+W systemie Linux polecenie terminala instaluje headless CLI; macOS wymaga Apple Silicon. Aplikacja z DMG trafia do `/Applications`, a instalacja z terminala do `~/Applications`.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -304,8 +239,11 @@ W systemie Windows uruchom instalator z PowerShell:
 irm https://openfocus.top/install.ps1 | iex
 ```
 
-Bezpośrednie pobranie instalatora Windows jest też dostępne przez
-`curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`.
+Bezpośrednie pobranie instalatora Windows:
+
+```powershell
+curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
+```
 
 ### 🤖 Integracja z agentami
 

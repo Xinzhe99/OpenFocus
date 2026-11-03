@@ -195,15 +195,6 @@ def fetch_release_notes(current_version: str, latest_tag: str,
     return ("\n\n".join(blocks))[:12000]
 
 
-def _notes_text(tag: str) -> str:
-    """Best-effort notes for a just-published release; '' on any failure."""
-    from constants import APP_VERSION
-    try:
-        return fetch_release_notes(APP_VERSION, tag)
-    except Exception:
-        return ""
-
-
 class DownloadCancelled(Exception):
     """Raised out of download_to_file when should_cancel() asked to stop."""
 

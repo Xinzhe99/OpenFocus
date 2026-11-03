@@ -96,7 +96,6 @@ pyinstaller --clean --noconfirm --onedir --noconsole --noupx `
   --add-data "weights;weights" `
   --add-data "ui;ui" `
   --add-data "docs;docs" `
-  --add-data "THIRD_PARTY_NOTICES.md;." `
   --collect-submodules PyQt6 `
   --collect-submodules fusion_methods `
   --collect-submodules locales `

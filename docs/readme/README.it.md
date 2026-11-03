@@ -74,7 +74,7 @@ Non è obbligatorio, ma è molto apprezzato.
 
 ### Fusione IA: StackMFF V3
 
-Il metodo predefinito usa una rete neurale per stimare il fotogramma sorgente più probabile per ogni pixel, quindi miscela i contributi previsti oppure sceglie il fotogramma più probabile. Il benchmark sintetico confronta i metodi con un riferimento noto; i risultati dipendono dallo stack e dalle impostazioni.
+StackMFF V3 usa l'IA per combinare le parti nitide dei fotogrammi di uno stack.
 
 [StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](../../tools/synthetic_benchmark.py)
 
@@ -90,7 +90,7 @@ Il metodo predefinito usa una rete neurale per stimare il fotogramma sorgente pi
 
 ### Confronto Wipe (a tendina)
 
-Trascina il divisore tra un fotogramma e il risultato fuso per vedere esattamente cosa ha cambiato la miscelazione: deriva di allineamento, aloni sui bordi e dettaglio perso, a qualsiasi zoom.
+Trascina il divisore per confrontare un fotogramma sorgente con il risultato fuso.
 
 [Manuale →](../USER_MANUAL_IT.md)
 
@@ -106,7 +106,7 @@ Trascina il divisore tra un fotogramma e il risultato fuso per vedere esattament
 
 ### Confronto metodi
 
-Per impostazione predefinita ogni metodo fonde l'immagine intera; il riquadro di ispezione della sorgente resta interattivo senza ripetere i calcoli sull'immagine intera. Poi confronta i risultati affiancati sullo stesso ritaglio e adotta il migliore come nuova uscita o copia i suoi parametri nella finestra principale.
+Confronta i metodi affiancati e riutilizza il risultato o le impostazioni che preferisci.
 
 </td>
 <td width="54%">
@@ -120,7 +120,7 @@ Per impostazione predefinita ogni metodo fonde l'immagine intera; il riquadro di
 
 ### Mappa di profondità e 3D
 
-Posizione di messa a fuoco per pixel con sette metodi compatibili con la profondità, palette scientifiche, calibrazione Z fisica manuale (inizio e passo; i metadati TIFF forniscono solo la calibrazione XY) ed esportazione OBJ texturizzata della superficie.
+Crea una mappa di profondità ed esporta una superficie 3D texturizzata.
 
 </td>
 <td width="54%">
@@ -134,7 +134,7 @@ Posizione di messa a fuoco per pixel con sette metodi compatibili con la profond
 
 ### Ritocco legato alla sorgente
 
-Dipingi dai fotogrammi che hanno davvero prodotto il risultato: zoom e panoramica condivisi, cursore del fotogramma sorgente, pennello morbido, pennello di ripristino, annullamento per tratto e protezione dei pixel non esportati. Applica il ritocco come nuova uscita, poi **Esporta TIFF a livelli** per salvarla con i fotogrammi sorgente. Etichette e barre di scala attive non sono incluse. GIMP 3.2.6 su Windows apre il risultato e i livelli sorgente; altri editor non sono stati testati.
+Ritocca il risultato dipingendo dai fotogrammi sorgente ed esportalo insieme a questi in un TIFF a livelli.
 
 </td>
 <td width="54%">
@@ -148,7 +148,7 @@ Dipingi dai fotogrammi che hanno davvero prodotto il risultato: zoom e panoramic
 
 ### Elaborazione batch
 
-Indica una cartella di stack, scegli metodo e destinazione, poi lascia lavorare. Il solo allineamento scrive una cartella per stack; la fusione scrive l'immagine fusa e mostra solo quella. La fusione raggruppata opzionale scambia l'equivalenza esatta con lo stack completo con memoria e spazio temporaneo limitati.
+Elabora più stack alla volta, con fusione raggruppata opzionale per limitare memoria e spazio temporaneo.
 
 </td>
 <td width="54%">
@@ -162,7 +162,7 @@ Indica una cartella di stack, scegli metodo e destinazione, poi lascia lavorare.
 
 ### Barre di scala per pubblicazione
 
-Calibrate dai metadati TIFF o inserite a mano, disegnate con font e lunghezza reali e impresse in ogni esportazione: immagini singole, stack, TIFF multipagina, GIF e batch. Una barra che non può essere resa leggibile lo segnala invece di stampare una lunghezza che non disegna.
+Aggiungi barre di scala calibrate dai metadati TIFF o inserite manualmente.
 
 [Manuale →](../USER_MANUAL_IT.md)
 
@@ -178,7 +178,7 @@ Calibrate dai metadati TIFF o inserite a mano, disegnate con font e lunghezza re
 
 ### Didascalie ed etichette
 
-Mantieni un elenco gestito di didascalie, ciascuna con il proprio ambito (stack sorgente, stack allineato o un'uscita specifica), intervallo di fotogrammi e stile. Anteprima ed esportazioni usano la stessa destinazione e lo stesso numero di fotogramma, quindi `{value}` si legge allo stesso modo in Salva, Salva con nome, trascinamento ed Esporta tutto.
+Aggiungi didascalie ed etichette definendone ambito, intervallo di fotogrammi e stile.
 
 </td>
 <td width="54%">
@@ -192,7 +192,7 @@ Mantieni un elenco gestito di didascalie, ciascuna con il proprio ambito (stack 
 
 ### Controllabile da un agente
 
-Ogni finestra, widget e menu è raggiungibile tramite un canale locale protetto da token: un agente carica uno stack, renderizza, ritocca, confronta, calcola la profondità, esporta e risponde ai dialoghi tramite comandi tipizzati, percorsi di widget o eventi reali di mouse e tastiera. Non servono cattura schermo o OCR; il canale si avvia con l'app desktop.
+Un agente può controllare l'applicazione tramite un canale locale protetto da token.
 
 [Protocollo →](../AGENT_CONTROL_SPEC.md) · [Skill →](../../skills/openfocus-control/SKILL.md)
 
@@ -207,34 +207,26 @@ Ogni finestra, widget e menu è raggiungibile tramite un canale locale protetto 
 
 **In dotazione anche:**
 
-- **Flusso focus stacking** — browser degli stack, curva di nitidezza, anteprima rapida, render ROI e impostazioni per metodo memorizzate tra un riavvio e l'altro.
-- **Pronto per la microscopia** — 16 bit end-to-end, µm/px dai metadati TIFF, correzione di campo piatto con mappa polvere, stack Z TIFF multipagina ed esportazione OBJ texturizzata.
-- **Profili colore** — le esportazioni singole PNG, TIFF, JPEG e WebP conservano un profilo ICC RGB condiviso quando tutti i fotogrammi sorgente hanno lo stesso profilo. Stack misti o senza profilo vengono esportati senza profilo; i pixel non vengono convertiti tra spazi colore.
-- **PNG trasparente** — gli stack con maschere rettangolari a opacità costante corrispondenti possono essere fusi a dimensione piena e salvati come PNG. Vedi le restrizioni nel manuale.
-- **CLI senza interfaccia** — la stessa pipeline come `openfocus`, con modalità batch, `--dry-run`, `--resume` e output JSON per gli script.
-- **Controllabile da un agente** — un canale locale protetto da token guida l'interfaccia in tempo reale (comandi pipeline tipizzati e controllo generico di widget, menu, mouse e tastiera), con una skill, un esecutore smoke a 14 controlli e una scansione completa delle azioni di menu.
-- **Progetti e recupero** — sessioni `.ofproj`, recupero automatico dopo crash, annulla/ripeti su modifiche allo stack e annotazioni.
-- **Dodici lingue dell'interfaccia** — English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski. Rilevate dalle impostazioni locali del sistema; una nuova lingua è un file `locales/<code>.py`.
-- **Leggero in memoria** — la rete neurale viene caricata solo quando si usa il metodo IA, quindi una sessione con metodi classici resta intorno ai 110 MB invece di 260 MB.
+- **Focus stacking** — browser degli stack, curva di nitidezza, anteprima, render ROI e impostazioni salvate.
+- **Microscopia** — 16 bit, calibrazione TIFF, correzione di campo piatto e stack Z TIFF multipagina.
+- **Profili colore** — conserva il profilo ICC RGB comune nelle esportazioni singole compatibili.
+- **PNG trasparente** — fusione di stack con maschere rettangolari compatibili; restrizioni nel manuale.
+- **CLI senza interfaccia** — batch, `--dry-run`, `--resume` e output JSON con `openfocus`.
+- **Progetti e recupero** — sessioni `.ofproj`, recupero automatico e annulla/ripeti.
+- **Dodici lingue** — rilevamento automatico e aggiunta tramite file `locales/<code>.py`.
+- **Memoria** — la rete neurale viene caricata solo quando si usa il metodo IA.
 
 <a id="install"></a>
 ## ⬇️ Installazione
 
 Scarica l'ultima build per Windows o macOS dal [sito di OpenFocus](https://openfocus.top/#download). Gli stessi file e le versioni precedenti sono disponibili anche su [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
-| Piattaforma | File | Tipo |
-|------------|---------|------|
-| Windows 10/11 (64 bit) | `OpenFocus-*-setup.exe` | **Programma di installazione** (consigliato) |
-| Windows 10/11 (64 bit) | `OpenFocus-*-windows-x64.zip` | Portatile (scompatta ed esegui) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Immagine disco (trascina in Applicazioni) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portatile (scompatta) |
+Consulta il [manuale](../USER_MANUAL_IT.md) per l'installazione e la risoluzione dei problemi.
 
-Lo stato della firma delle build Windows è indicato nelle note di versione. Le build macOS non sono notarizzate, quindi il primo avvio può mostrare un avviso: **Windows** SmartScreen → «Ulteriori informazioni» → «Esegui comunque» (il primo avvio può richiedere 30–60 s); **macOS** esegui `xattr -cr /Applications/OpenFocus.app` nel Terminale, oppure prova ad aprire l'app una volta e consentila in **Impostazioni di Sistema → Privacy e sicurezza → Apri comunque** (da macOS 15, clic destro → Apri non aggira più Gatekeeper).
-
-Per installare da terminale, visualizza prima l'anteprima del comando per macOS o Linux, poi eseguilo senza `--dry-run`. Su Linux installa la CLI senza interfaccia; le build macOS richiedono Apple Silicon; l'app del DMG si installa in `/Applications` e l'installazione da terminale in `~/Applications`.
+Su macOS con Apple Silicon o su Linux, installa dal terminale; su Linux viene installata la CLI senza interfaccia e su macOS l'applicazione viene salvata in `~/Applications`:
 
 ```bash
-curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
+curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run # facoltativo: anteprima
 curl -fsSL https://openfocus.top/install.sh | sh
 ```
 
@@ -244,8 +236,11 @@ Su Windows, esegui il programma di installazione da PowerShell:
 irm https://openfocus.top/install.ps1 | iex
 ```
 
-Il download diretto del programma di installazione Windows è disponibile anche con
-`curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`.
+Download diretto del programma di installazione Windows:
+
+```powershell
+curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
+```
 
 ### 🤖 Integrazione con agenti
 

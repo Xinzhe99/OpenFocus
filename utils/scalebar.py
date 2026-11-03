@@ -157,19 +157,6 @@ def format_length(um: float) -> str:
     return f"{um:g} µm"
 
 
-def _load_font(size: int, family: str = None, bold: bool = False):
-    """A PIL font at `size`, preferring `family` when one is named.
-
-    Resolution lives in utils.fonts so labels and scale bars agree on which
-    typeface a family name maps to. The cache key includes the family and the
-    weight: caching by size alone meant the first font requested was reused
-    for every later one, so picking a typeface in the dialog had no effect.
-    """
-    from utils.fonts import load_font
-    font, _actual = load_font(size, family, bold)
-    return font
-
-
 def font_substitution(size: int, family: str = None,
                       bold: bool = False) -> str:
     """Requested family vs the one actually used ("" when they agree)."""

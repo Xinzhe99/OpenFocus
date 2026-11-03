@@ -228,13 +228,6 @@ class AdvancedSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
-    @staticmethod
-    def _rule():
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setObjectName("mutedLabel")
-        return line
-
     def _sync_overlap_limit(self, block: float) -> None:
         """Keep the dialog's overlap cap in step with the chosen tile size.
 

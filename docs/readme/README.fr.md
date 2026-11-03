@@ -74,7 +74,7 @@ Ce n'est pas obligatoire, mais vivement apprécié.
 
 ### Fusion IA : StackMFF V3
 
-La méthode par défaut utilise un réseau de neurones pour estimer l'image source la plus probable de chaque pixel, puis mélange les contributions prédites ou choisit l'image la plus probable. Le banc d'essai synthétique compare les méthodes à une référence connue ; les résultats dépendent de la pile et des réglages.
+StackMFF V3 utilise l'IA pour combiner les parties nettes des images d'une pile.
 
 [StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Banc d'essai →](../../tools/synthetic_benchmark.py)
 
@@ -90,7 +90,7 @@ La méthode par défaut utilise un réseau de neurones pour estimer l'image sour
 
 ### Comparaison par balayage
 
-Faites glisser le séparateur entre une image et le résultat fusionné pour voir exactement ce que le mélange a changé : dérive de recalage, halos sur les bords et détail perdu, à n'importe quel zoom.
+Faites glisser le séparateur pour comparer une image source au résultat fusionné.
 
 [Manuel →](../USER_MANUAL_FR.md)
 
@@ -106,7 +106,7 @@ Faites glisser le séparateur entre une image et le résultat fusionné pour voi
 
 ### Comparaison de méthodes
 
-Par défaut, chaque méthode fusionne l'image entière ; le carré d'inspection de la source reste interactif sans répéter les calculs sur l'image complète. Comparez ensuite les résultats côte à côte sur le même recadrage, puis adoptez la gagnante comme nouvelle sortie ou copiez ses paramètres dans la fenêtre principale.
+Comparez les méthodes côte à côte et réutilisez le résultat ou les paramètres de votre choix.
 
 </td>
 <td width="54%">
@@ -120,7 +120,7 @@ Par défaut, chaque méthode fusionne l'image entière ; le carré d'inspection 
 
 ### Carte de profondeur et 3D
 
-Position de mise au point par pixel avec sept méthodes compatibles avec la profondeur, palettes scientifiques, calibration Z physique manuelle (début et pas ; les métadonnées TIFF ne fournissent que la calibration XY) et export OBJ texturé de la surface.
+Créez une carte de profondeur et exportez une surface 3D texturée.
 
 </td>
 <td width="54%">
@@ -134,7 +134,7 @@ Position de mise au point par pixel avec sept méthodes compatibles avec la prof
 
 ### Retouche liée à la source
 
-Peignez depuis les images qui ont réellement produit le résultat : zoom et déplacement partagés, curseur d'image source, pinceau doux, pinceau de restauration, annulation par trait et protection des pixels non exportés. Appliquez la retouche comme nouvelle sortie, puis **Exporter un TIFF multicouche** pour l'enregistrer avec ses images sources. Les libellés et barres d'échelle actifs ne sont pas inclus. GIMP 3.2.6 sous Windows ouvre le résultat et les calques sources ; les autres éditeurs n'ont pas été testés.
+Retouchez le résultat en peignant à partir des images sources et exportez-le avec celles-ci en TIFF multicouche.
 
 </td>
 <td width="54%">
@@ -148,7 +148,7 @@ Peignez depuis les images qui ont réellement produit le résultat : zoom et dé
 
 ### Traitement par lots
 
-Indiquez un dossier de piles, choisissez une méthode et une destination, puis laissez tourner. Le mode alignement seul écrit un dossier par pile ; la fusion écrit l'image fusionnée et ne liste que celle-ci. La fusion groupée facultative échange l'équivalence exacte avec la pile complète contre une mémoire et un espace disque temporaire bornés.
+Traitez plusieurs piles à la fois, avec une fusion groupée facultative pour limiter la mémoire et l'espace temporaire.
 
 </td>
 <td width="54%">
@@ -162,7 +162,7 @@ Indiquez un dossier de piles, choisissez une méthode et une destination, puis l
 
 ### Barres d'échelle de publication
 
-Calibrées depuis les métadonnées TIFF ou saisies à la main, dessinées avec la police et la longueur réelles, et intégrées à chaque export : images seules, piles, TIFF multipage, GIF et lots. Une barre qui ne peut pas être dessinée lisiblement l'indique au lieu d'afficher une longueur qu'elle ne trace pas.
+Ajoutez des barres d'échelle calibrées à partir des métadonnées TIFF ou saisies manuellement.
 
 [Manuel →](../USER_MANUAL_FR.md)
 
@@ -178,7 +178,7 @@ Calibrées depuis les métadonnées TIFF ou saisies à la main, dessinées avec 
 
 ### Légendes et libellés
 
-Gérez une liste de légendes, chacune avec sa portée (pile source, pile alignée ou une sortie précise), sa plage d'images et son style. L'aperçu et chaque export utilisent la même cible et le même numéro d'image ; `{value}` se lit donc de la même façon dans Enregistrer, Enregistrer sous, le glisser-déposer et Tout exporter.
+Ajoutez des légendes et libellés avec une portée, une plage d'images et un style définis.
 
 </td>
 <td width="54%">
@@ -192,7 +192,7 @@ Gérez une liste de légendes, chacune avec sa portée (pile source, pile align�
 
 ### Pilotable par un agent
 
-Chaque fenêtre, widget et menu est accessible via un canal local protégé par jeton : un agent charge une pile, rend, retouche, compare, calcule la profondeur, exporte et répond aux boîtes de dialogue par commande typée, chemin de widget ou vrais événements souris et clavier. Aucune capture d'écran ni OCR n'est nécessaire ; le canal démarre avec l'application de bureau.
+Un agent peut piloter l'application via un canal local protégé par jeton.
 
 [Protocole →](../AGENT_CONTROL_SPEC.md) · [Skill →](../../skills/openfocus-control/SKILL.md)
 
@@ -207,34 +207,26 @@ Chaque fenêtre, widget et menu est accessible via un canal local protégé par 
 
 **Également inclus :**
 
-- **Flux de travail focus stacking** — navigateur de piles, courbe de netteté, aperçu rapide, rendu ROI et réglages par méthode mémorisés entre les sessions.
-- **Prêt pour la microscopie** — 16 bits de bout en bout, µm/px depuis les métadonnées TIFF, correction de champ plat par carte de poussière, piles Z TIFF multipage et export OBJ texturé.
-- **Profils colorimétriques** — les exports PNG, TIFF, JPEG et WebP d'une seule image conservent un profil ICC RVB commun lorsque toutes les images sources ont le même profil. Les piles mixtes ou sans profil sont exportées sans profil ; les pixels ne sont pas convertis entre espaces colorimétriques.
-- **PNG transparent** — les piles dont les masques rectangulaires à opacité constante coïncident peuvent être fusionnées en pleine taille et enregistrées en PNG. Voir les restrictions dans le manuel.
-- **CLI sans interface** — le même pipeline sous `openfocus`, avec mode lot, `--dry-run`, `--resume` et sortie JSON pour les scripts.
-- **Pilotable par un agent** — un canal local protégé par jeton pilote l'interface en direct (commandes de pipeline typées et contrôle générique des widgets, menus, souris et clavier), avec une skill, un exécuteur de fumée à 14 contrôles et un balayage complet des actions de menu.
-- **Projets et récupération** — sessions `.ofproj`, récupération automatique après plantage, annuler/rétablir sur les modifications de pile et les annotations.
-- **Douze langues d'interface** — English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski. Détection depuis la locale du système ; une nouvelle langue correspond à un fichier `locales/<code>.py`.
-- **Peu gourmand en mémoire** — le réseau de neurones n'est chargé que lorsque la méthode IA est utilisée ; une session avec les méthodes classiques reste donc autour de 110 Mo au lieu de 260 Mo.
+- **Focus stacking** — navigateur de piles, courbe de netteté, aperçu rapide, rendu ROI et réglages mémorisés.
+- **Microscopie** — 16 bits, calibration TIFF, correction de champ plat et piles Z TIFF multipage.
+- **Profils colorimétriques** — conservation du profil ICC RVB commun dans les exports individuels compatibles.
+- **PNG transparent** — fusion des piles aux masques rectangulaires compatibles ; restrictions dans le manuel.
+- **CLI sans interface** — lots, `--dry-run`, `--resume` et sortie JSON sous `openfocus`.
+- **Projets et récupération** — sessions `.ofproj`, récupération automatique et annuler/rétablir.
+- **Douze langues** — détection automatique et ajout par fichier `locales/<code>.py`.
+- **Mémoire** — le réseau neuronal est chargé uniquement pour la méthode IA.
 
 <a id="install"></a>
 ## ⬇️ Installation
 
 Téléchargez la dernière version Windows ou macOS depuis le [site web d'OpenFocus](https://openfocus.top/#download). Les mêmes fichiers et les versions antérieures sont aussi disponibles sur [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
-| Plateforme | Fichier | Type |
-|------------|---------|------|
-| Windows 10/11 (64 bits) | `OpenFocus-*-setup.exe` | **Programme d'installation** (recommandé) |
-| Windows 10/11 (64 bits) | `OpenFocus-*-windows-x64.zip` | Portable (décompresser et lancer) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Image disque (glisser dans Applications) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portable (décompresser) |
+Consultez le [manuel](../USER_MANUAL_FR.md) pour l'installation et le dépannage.
 
-Le statut de signature des versions Windows est indiqué dans les notes de version. Les versions macOS ne sont pas notariées : le premier lancement peut donc afficher un avertissement. **Windows** : SmartScreen → « Informations complémentaires » → « Exécuter quand même » (le premier démarrage peut prendre 30 à 60 s). **macOS** : exécutez `xattr -cr /Applications/OpenFocus.app` dans le Terminal, ou essayez d'ouvrir l'application une fois puis autorisez-la dans **Réglages Système → Confidentialité et sécurité → Ouvrir quand même** (depuis macOS 15, clic droit → Ouvrir ne contourne plus Gatekeeper).
-
-Pour installer depuis un terminal, prévisualisez d'abord la commande macOS ou Linux, puis exécutez-la sans `--dry-run`. Sous Linux, cela installe la CLI sans interface ; les versions macOS exigent Apple Silicon ; l'app du DMG s'installe dans `/Applications` et l'installation par terminal dans `~/Applications`.
+Sous macOS Apple Silicon ou Linux, installez depuis le terminal ; sous Linux, seule la CLI sans interface est installée et, sous macOS, l'application est placée dans `~/Applications` :
 
 ```bash
-curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
+curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run # facultatif : aperçu
 curl -fsSL https://openfocus.top/install.sh | sh
 ```
 
@@ -244,8 +236,11 @@ Sous Windows, lancez l'installateur depuis PowerShell :
 irm https://openfocus.top/install.ps1 | iex
 ```
 
-Le téléchargement direct du programme d'installation Windows est aussi disponible avec
-`curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`.
+Téléchargement direct du programme d'installation Windows :
+
+```powershell
+curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
+```
 
 ### 🤖 Intégration d'agent
 

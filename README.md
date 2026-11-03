@@ -76,10 +76,7 @@ This is not mandatory, but highly appreciated.
 
 ### AI fusion: StackMFF V3
 
-The default method uses a neural network to estimate the most probable source
-frame for each pixel, then blends the predicted contributions or selects the
-most probable frame. The synthetic benchmark compares methods against known
-ground truth; results depend on the stack and settings.
+StackMFF V3 uses AI to combine the sharpest parts of your source frames.
 
 [StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](tools/synthetic_benchmark.py)
 
@@ -95,9 +92,7 @@ ground truth; results depend on the stack and settings.
 
 ### Wipe compare
 
-Drag the divider across a frame and the fused result to see exactly what the
-blend changed — alignment drift, haloed edges and lost detail are visible at a
-glance, at any zoom.
+Compare a source frame with the result using a draggable divider.
 
 [Manual →](./docs/USER_MANUAL_EN.md)
 
@@ -113,9 +108,7 @@ glance, at any zoom.
 
 ### Method comparison
 
-Fuse the full image with each method, inspect matching details side by side,
-then adopt the winner as a new output or copy its parameters back to the main
-window.
+Compare methods side by side and reuse the best result or settings.
 
 </td>
 <td width="54%">
@@ -129,9 +122,7 @@ window.
 
 ### Depth map &amp; 3D
 
-Estimated per-pixel focus positions from seven supported methods, with
-research colour maps and textured OBJ export. Physical Z calibration uses a
-manually entered start and step; TIFF metadata may supply XY pixel size.
+Create depth maps, calibrate physical Z, and export textured 3D surfaces.
 
 </td>
 <td width="54%">
@@ -145,13 +136,7 @@ manually entered start and step; TIFF metadata may supply XY pixel size.
 
 ### Source-locked retouch
 
-Paint from the frames that actually produced the result: shared zoom and pan,
-a source-frame slider, soft brush, restore brush, whole-stroke undo and a
-"not exported" guard for new pixels.
-Apply the retouch as a new output, then right-click that output and choose
-**Export layered TIFF** to save it with its source frames. Live labels and
-scale bars are not included. GIMP 3.2.6 on Windows opens the result and source
-layers; other editors have not been tested.
+Paint details from contributing source frames onto the fused result.
 
 </td>
 <td width="54%">
@@ -165,10 +150,7 @@ layers; other editors have not been tested.
 
 ### Batch processing
 
-Point it at a folder of stacks, choose a method and a destination, and walk
-away. Align-only runs write one folder per stack; fusion runs write the fused
-image and list exactly that. Optional grouped fusion trades exact whole-stack
-equivalence for bounded group memory and temporary disk space.
+Process multiple stacks at once, with optional grouped fusion for large stacks.
 
 </td>
 <td width="54%">
@@ -182,10 +164,7 @@ equivalence for bounded group memory and temporary disk space.
 
 ### Publication scale bars
 
-Calibrated from TIFF metadata or typed in, drawn with the real font at the
-real length, and burned into every export — single images, stacks, multi-page
-TIFF, GIF and batch output alike. A bar that cannot fit legibly says so
-instead of printing a length it does not draw.
+Add calibrated scale bars to images and exports.
 
 [Manual →](./docs/USER_MANUAL_EN.md)
 
@@ -201,10 +180,7 @@ instead of printing a length it does not draw.
 
 ### Captions and labels
 
-Keep a managed list of captions, each with its own scope (source, aligned
-stack or a specific output), frame range and style. The preview and every
-export use the same target and frame number, so `{value}` reads the same in
-Save, Save As, drag-out and Export All.
+Add styled labels and captions to source frames, aligned stacks, or results.
 
 </td>
 <td width="54%">
@@ -218,11 +194,7 @@ Save, Save As, drag-out and Export All.
 
 ### Agent-drivable
 
-Every window, widget and menu is addressable over a token-protected local
-channel: an agent loads a stack, renders, retouches, compares, solves depth,
-exports and answers dialogs — by typed command, by widget path, or with real
-mouse and keyboard events. No screen scraping or OCR is required; the channel
-starts with the desktop app.
+Control the desktop app through a token-protected local channel.
 
 [Protocol →](docs/AGENT_CONTROL_SPEC.md) · [Skill →](skills/openfocus-control/SKILL.md)
 
@@ -237,48 +209,23 @@ starts with the desktop app.
 
 **Also in the box:**
 
-- **Focus-stack workflow** — stack browser, sharpness curve, quick preview,
-  ROI render, and per-method settings remembered across restarts.
-- **Microscopy-ready** — 16-bit end to end, µm/px from TIFF metadata, dust-map
-  flat-field correction, multi-page TIFF Z-stacks, textured OBJ export.
-- **Color profiles** — single-image PNG, TIFF, JPEG and WebP exports retain
-  a shared RGB ICC profile when every source frame has the same profile. Mixed
-  or untagged stacks have no profile attached; pixels are not color-converted.
-- **Transparent PNG** — stacks with matching rectangular constant-opacity masks
-  can be fused at full size and saved as PNG. See the manual for restrictions.
-- **Headless CLI** — the same pipeline as `openfocus`, with batch mode,
-  `--dry-run`, `--resume` and JSON output for scripting.
-- **Agent-drivable** — a token-protected local channel drives the live GUI
-  (typed pipeline commands plus generic widget/menu/mouse/keyboard control),
-  with a skill, a 14-check smoke runner and a full menu-action sweep.
-- **Projects and recovery** — `.ofproj` sessions, crash auto-recovery,
-  undo/redo across stack edits and annotations.
-- **Twelve UI languages** — English, 中文, 日本語, Español, Deutsch, Français,
-  Русский, 한국어, Português, Italiano, Nederlands, Polski. Auto-detected from
-  the system locale; a new language is one `locales/<code>.py` file.
-- **Light on memory** — the neural stack is loaded only when the neural method
-  is used, so a classical-method session idles around 110 MB instead of 260 MB.
+- **Workflow** — stack browser, sharpness curve, previews, ROI and reusable settings.
+- **Microscopy** — 16-bit processing, TIFF Z-stacks, calibration and dust correction.
+- **Image formats** — supported transparent PNG stacks and ICC profile preservation.
+- **Headless CLI** — batch processing and JSON output for scripting.
+- **Projects and recovery** — session files, undo/redo and crash recovery.
+- **Languages** — twelve UI languages with automatic locale detection.
+- **Memory** — neural models load only when selected.
 
 <a id="install"></a>
 ## ⬇️ Install
 
-Download the latest Windows or macOS build from the [OpenFocus website](https://openfocus.top/#download). The same files and older versions are also available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
+Download the latest Windows or macOS build from the [OpenFocus website](https://openfocus.top/#download). Portable builds and older versions are also available on [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
-| Platform | File | Type |
-|----------|------|------|
-| Windows 10/11 (64-bit) | `OpenFocus-*-setup.exe` | **Installer** (recommended) |
-| Windows 10/11 (64-bit) | `OpenFocus-*-windows-x64.zip` | Portable (unzip and run) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk image (drag to Applications) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portable (unzip) |
-
-Windows signing varies by release; check the release notes. macOS builds are not notarized, and either platform may show a security prompt on first launch. On **Windows**, choose SmartScreen → "More info" → "Run anyway" (the first start may take 30–60 s). On **macOS**, run `xattr -cr /Applications/OpenFocus.app` for an app installed from the DMG, or `xattr -cr ~/Applications/OpenFocus.app` for a terminal installation; alternatively open the app once and allow it in **System Settings → Privacy & Security → Open Anyway**.
-
-To install from a terminal, preview the macOS or Linux command first, then run
-it without `--dry-run`. On Linux this installs the headless CLI; macOS builds
-require Apple Silicon and are installed into `~/Applications`.
+On macOS (Apple Silicon) or Linux, install from a terminal. Linux installs the
+headless CLI; macOS installs the app in `~/Applications`.
 
 ```bash
-curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
 curl -fsSL https://openfocus.top/install.sh | sh
 ```
 
@@ -288,8 +235,13 @@ On Windows, run the installer from PowerShell:
 irm https://openfocus.top/install.ps1 | iex
 ```
 
-The direct Windows setup download is also available with
-`curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`.
+To download the Windows installer without running it:
+
+```powershell
+curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
+```
+
+For installation and first-launch help, see the [user manual](./docs/USER_MANUAL_EN.md#16-troubleshooting).
 
 ### 🤖 Agent integration
 
@@ -332,6 +284,7 @@ See the [CLI manual](./docs/USER_MANUAL_EN.md#14-command-line-interface).
 ## License
 
 The OpenFocus application is released under the [MIT License](./LICENSE).
+See also the [third-party notices](./docs/THIRD_PARTY_NOTICES.md).
 
 **StackMFF series exception.** The StackMFF fusion algorithms — currently
 StackMFF V3 and any future state-of-the-art editions — remain the property of

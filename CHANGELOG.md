@@ -8,6 +8,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - Move the code signing policy to a dedicated document and keep links from the
   README, website and release notes.
+- Shorten the README feature and installation sections, with details in the
+  user manuals.
+- Move third-party notices into `docs/` and retain them in desktop and wheel
+  distributions.
+- Remove unused private helpers and mark historical design specifications as
+  snapshots.
 
 ## [1.75.0] - 2026-11-03
 
@@ -252,7 +258,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   original focus order, and provides depth maps. Both appear in the main
   window, comparison, batch, depth (V2), settings, projects and the CLI
   without new flags. (Weights and network code are MIT, see
-  `THIRD_PARTY_NOTICES.md`.)
+  `docs/THIRD_PARTY_NOTICES.md`.)
 - **A selection hint and a family grouping for every method.** The right
   panel, batch and depth dropdowns now show non-selectable AI / spatial-domain
   / transform-domain headers, and every fusion and registration method
@@ -1063,7 +1069,7 @@ output.
   The choice persists in settings and project files, reaches the tiled path,
   the batch worker and the depth-map estimator, and is available on the CLI as
   `--ai-mode {soft,hard}`.
-- `THIRD_PARTY_NOTICES.md` records the vendored StackMFF V3 code and weights
+- `docs/THIRD_PARTY_NOTICES.md` records the vendored StackMFF V3 code and weights
   (MIT, Copyright (c) 2026 Xinzhe Xie) and the modifications made here.
 - The release workflow now fails early when `weights/stackmff_v3_final.pth` is
   missing or truncated. The checkpoint is force-added past the repository's

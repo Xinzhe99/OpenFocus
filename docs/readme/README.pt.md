@@ -74,7 +74,7 @@ Não é obrigatório, mas é muito apreciado.
 
 ### Fusão por IA: StackMFF V3
 
-O método padrão usa uma rede neural para estimar o quadro de origem mais provável de cada pixel e depois mistura as contribuições previstas ou escolhe o quadro mais provável. O benchmark sintético compara os métodos com uma referência conhecida; os resultados dependem da pilha e das configurações.
+O StackMFF V3 usa IA para combinar as partes nítidas dos quadros de uma pilha.
 
 [StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](../../tools/synthetic_benchmark.py)
 
@@ -90,7 +90,7 @@ O método padrão usa uma rede neural para estimar o quadro de origem mais prov�
 
 ### Comparação cortina
 
-Arraste o divisor entre um quadro e o resultado fundido para ver exatamente o que a mistura mudou: deriva de alinhamento, halos nas bordas e detalhe perdido, em qualquer zoom.
+Arraste o divisor para comparar um quadro de origem com o resultado fundido.
 
 [Manual →](../USER_MANUAL_PT.md)
 
@@ -106,7 +106,7 @@ Arraste o divisor entre um quadro e o resultado fundido para ver exatamente o qu
 
 ### Comparação de métodos
 
-Por padrão, cada método funde a imagem inteira; o quadrado de inspeção da origem permanece interativo sem repetir os cálculos da imagem inteira. Depois, compare os resultados lado a lado no mesmo recorte e adote o vencedor como nova saída ou copie seus parâmetros para a janela principal.
+Compare os métodos lado a lado e reutilize o resultado ou as configurações escolhidas.
 
 </td>
 <td width="54%">
@@ -120,7 +120,7 @@ Por padrão, cada método funde a imagem inteira; o quadrado de inspeção da or
 
 ### Mapa de profundidade e 3D
 
-Posição de foco por pixel com sete métodos compatíveis com profundidade, mapas de cor científicos, calibração Z física manual (início e passo; os metadados TIFF fornecem apenas a calibração XY) e exportação OBJ texturizada da superfície.
+Crie um mapa de profundidade e exporte uma superfície 3D texturizada.
 
 </td>
 <td width="54%">
@@ -134,7 +134,7 @@ Posição de foco por pixel com sete métodos compatíveis com profundidade, map
 
 ### Retoque vinculado à fonte
 
-Pinte a partir dos quadros que realmente produziram o resultado: zoom e deslocamento compartilhados, controle do quadro de origem, pincel suave, pincel de restauração, desfazer por traço e proteção de pixels não exportados. Aplique o retoque como nova saída e use **Exportar TIFF em camadas** para salvá-la com seus quadros de origem. Rótulos e barras de escala ativos não são incluídos. O GIMP 3.2.6 no Windows abre o resultado e as camadas de origem; outros editores não foram testados.
+Retoque o resultado pintando a partir dos quadros de origem e exporte-o com eles em um TIFF em camadas.
 
 </td>
 <td width="54%">
@@ -148,7 +148,7 @@ Pinte a partir dos quadros que realmente produziram o resultado: zoom e deslocam
 
 ### Processamento em lote
 
-Aponte para uma pasta de pilhas, escolha um método e um destino, e deixe trabalhar. O modo somente alinhamento grava uma pasta por pilha; a fusão grava a imagem fundida e lista exatamente isso. A fusão agrupada opcional troca a equivalência exata com a pilha completa por memória e espaço temporário limitados.
+Processe várias pilhas de uma vez, com fusão agrupada opcional para limitar a memória e o espaço temporário.
 
 </td>
 <td width="54%">
@@ -162,7 +162,7 @@ Aponte para uma pasta de pilhas, escolha um método e um destino, e deixe trabal
 
 ### Barras de escala para publicação
 
-Calibradas a partir de metadados TIFF ou digitadas manualmente, desenhadas com a fonte e o comprimento reais e incorporadas em todas as exportações: imagens avulsas, pilhas, TIFF multipágina, GIF e lotes. Uma barra que não cabe de forma legível avisa em vez de imprimir um comprimento que não desenha.
+Adicione barras de escala calibradas por metadados TIFF ou inseridas manualmente.
 
 [Manual →](../USER_MANUAL_PT.md)
 
@@ -178,7 +178,7 @@ Calibradas a partir de metadados TIFF ou digitadas manualmente, desenhadas com a
 
 ### Rótulos e legendas
 
-Mantenha uma lista gerenciada de legendas, cada uma com seu escopo (pilha de origem, pilha alinhada ou uma saída específica), intervalo de quadros e estilo. A prévia e todas as exportações usam o mesmo destino e número de quadro, então `{value}` é lido da mesma forma em Salvar, Salvar como, arrastar e Exportar tudo.
+Adicione rótulos e legendas com escopo, intervalo de quadros e estilo definidos.
 
 </td>
 <td width="54%">
@@ -192,7 +192,7 @@ Mantenha uma lista gerenciada de legendas, cada uma com seu escopo (pilha de ori
 
 ### Controlável por agente
 
-Cada janela, widget e menu é acessível por um canal local protegido por token: um agente carrega uma pilha, renderiza, retoca, compara, calcula profundidade, exporta e responde a diálogos por comando tipado, caminho de widget ou eventos reais de mouse e teclado. Não é preciso capturar tela nem usar OCR; o canal inicia com o aplicativo de desktop.
+Um agente pode controlar o aplicativo por um canal local protegido por token.
 
 [Protocolo →](../AGENT_CONTROL_SPEC.md) · [Skill →](../../skills/openfocus-control/SKILL.md)
 
@@ -207,34 +207,26 @@ Cada janela, widget e menu é acessível por um canal local protegido por token:
 
 **Também incluído:**
 
-- **Fluxo de focus stacking** — navegador de pilhas, curva de nitidez, prévia rápida, render por ROI e ajustes por método lembrados entre reinicializações.
-- **Pronto para microscopia** — 16 bits de ponta a ponta, µm/px dos metadados TIFF, correção de campo plano por mapa de poeira, pilhas Z TIFF multipágina e exportação OBJ texturizada.
-- **Perfis de cor** — exportações avulsas em PNG, TIFF, JPEG e WebP mantêm um perfil ICC RGB compartilhado quando todos os quadros de origem têm o mesmo perfil. Pilhas mistas ou sem perfil são exportadas sem perfil; os pixels não são convertidos entre espaços de cor.
-- **PNG transparente** — pilhas com máscaras retangulares de opacidade constante correspondentes podem ser fundidas em tamanho real e salvas como PNG. Consulte as restrições no manual.
-- **CLI sem interface** — o mesmo pipeline como `openfocus`, com modo lote, `--dry-run`, `--resume` e saída JSON para scripts.
-- **Controlável por agente** — um canal local protegido por token controla a interface ao vivo (comandos de pipeline tipados e controle genérico de widgets, menus, mouse e teclado), com uma skill, um executor de fumaça de 14 verificações e uma varredura completa de ações de menu.
-- **Projetos e recuperação** — sessões `.ofproj`, recuperação automática após falhas e desfazer/refazer em edições de pilha e anotações.
-- **Doze idiomas de interface** — English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski. Detectados pela localidade do sistema; um novo idioma é um arquivo `locales/<code>.py`.
-- **Leve em memória** — a rede neural só é carregada quando o método de IA é usado, então uma sessão com métodos clássicos fica em torno de 110 MB em vez de 260 MB.
+- **Focus stacking** — navegador de pilhas, curva de nitidez, prévia, render por ROI e ajustes salvos.
+- **Microscopia** — 16 bits, calibração TIFF, correção de campo plano e pilhas Z TIFF multipágina.
+- **Perfis de cor** — preserva o perfil ICC RGB comum nas exportações individuais compatíveis.
+- **PNG transparente** — fusão de pilhas com máscaras retangulares compatíveis; consulte as restrições no manual.
+- **CLI sem interface** — lotes, `--dry-run`, `--resume` e saída JSON com `openfocus`.
+- **Projetos e recuperação** — sessões `.ofproj`, recuperação automática e desfazer/refazer.
+- **Doze idiomas** — detecção automática e inclusão por arquivo `locales/<code>.py`.
+- **Memória** — a rede neural só é carregada ao usar o método de IA.
 
 <a id="install"></a>
 ## ⬇️ Instalação
 
 Baixe a compilação mais recente para Windows ou macOS no [site do OpenFocus](https://openfocus.top/#download). Os mesmos arquivos e versões anteriores também estão no [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
-| Plataforma | Arquivo | Tipo |
-|------------|---------|------|
-| Windows 10/11 (64 bits) | `OpenFocus-*-setup.exe` | **Instalador** (recomendado) |
-| Windows 10/11 (64 bits) | `OpenFocus-*-windows-x64.zip` | Portátil (descompacte e execute) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Imagem de disco (arraste para Aplicativos) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portátil (descompacte) |
+Consulte o [manual](../USER_MANUAL_PT.md) para instalação e solução de problemas.
 
-O estado de assinatura das compilações do Windows consta nas notas da versão. As compilações do macOS não são notarizadas, então a primeira inicialização pode exibir um aviso de segurança: **Windows** SmartScreen → "Mais informações" → "Executar assim mesmo" (a primeira inicialização pode levar 30–60 s); **macOS** execute `xattr -cr /Applications/OpenFocus.app` no Terminal, ou tente abrir o aplicativo uma vez e permita-o em **Ajustes do Sistema → Privacidade e Segurança → Abrir assim mesmo** (a partir do macOS 15, clicar com o botão direito → Abrir não contorna mais Gatekeeper).
-
-Para instalar pelo terminal, visualize primeiro o comando para macOS ou Linux e depois execute-o sem `--dry-run`. No Linux, isso instala a CLI sem interface; as compilações para macOS exigem Apple Silicon; o app do DMG instala-se em `/Applications` e a instalação pelo terminal em `~/Applications`.
+No macOS com Apple Silicon ou no Linux, instale pelo terminal; no Linux, instala-se a CLI sem interface e, no macOS, o aplicativo fica em `~/Applications`:
 
 ```bash
-curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
+curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run # opcional: prévia
 curl -fsSL https://openfocus.top/install.sh | sh
 ```
 
@@ -244,8 +236,11 @@ No Windows, execute o instalador pelo PowerShell:
 irm https://openfocus.top/install.ps1 | iex
 ```
 
-O download direto do instalador do Windows também está disponível com
-`curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`.
+Download direto do instalador do Windows:
+
+```powershell
+curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
+```
 
 ### 🤖 Integração com agentes
 

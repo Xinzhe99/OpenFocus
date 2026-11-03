@@ -74,7 +74,7 @@ Das ist nicht verpflichtend, aber sehr willkommen.
 
 ### KI-Fusion: StackMFF V3
 
-Das Standardverfahren nutzt ein neuronales Netz, um für jeden Pixel das wahrscheinlichste Quellbild zu schätzen, und mischt anschließend die vorhergesagten Beiträge oder wählt das wahrscheinlichste Bild. Der synthetische Benchmark vergleicht die Verfahren mit einer bekannten Referenz; die Ergebnisse hängen vom Stapel und den Einstellungen ab.
+StackMFF V3 kombiniert mit KI die scharfen Bereiche der Quellbilder.
 
 [StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [Benchmark →](../../tools/synthetic_benchmark.py)
 
@@ -90,7 +90,7 @@ Das Standardverfahren nutzt ein neuronales Netz, um für jeden Pixel das wahrsch
 
 ### Wischvergleich
 
-Ziehen Sie den Trenner über ein Quellbild und das Fusionsergebnis, um genau zu sehen, was die Fusion verändert hat – Ausrichtungsdrift, Ränder mit Halos und verlorene Details sind auf einen Blick sichtbar, in jeder Zoomstufe.
+Vergleichen Sie Quellbild und Fusionsergebnis mit einem verschiebbaren Trenner.
 
 [Handbuch →](../USER_MANUAL_DE.md)
 
@@ -106,7 +106,7 @@ Ziehen Sie den Trenner über ein Quellbild und das Fusionsergebnis, um genau zu 
 
 ### Methodenvergleich
 
-Standardmäßig wird jedes Verfahren auf dem gesamten Bild fusioniert; das Quadrat zur Quellbildprüfung bleibt interaktiv, ohne die Berechnung des ganzen Bildes zu wiederholen. Prüfen Sie die Ergebnisse anschließend am gemeinsamen Ausschnitt nebeneinander und übernehmen Sie den Gewinner als neue Ausgabe oder schreiben Sie seine Parameter ins Hauptfenster zurück.
+Vergleichen Sie Verfahren nebeneinander und übernehmen Sie das Ergebnis oder seine Einstellungen.
 
 </td>
 <td width="54%">
@@ -120,7 +120,7 @@ Standardmäßig wird jedes Verfahren auf dem gesamten Bild fusioniert; das Quadr
 
 ### Tiefenkarte &amp; 3D
 
-Fokusposition pro Pixel aus sieben tiefenfähigen Verfahren, wissenschaftliche Farbskalen, manuelle physikalische Z-Kalibrierung (Startwert und Schrittweite; TIFF-Metadaten liefern nur die XY-Kalibrierung) und texturierter OBJ-Export der Oberfläche.
+Erstellen Sie Tiefenkarten und exportieren Sie texturierte 3D-Oberflächen.
 
 </td>
 <td width="54%">
@@ -134,8 +134,7 @@ Fokusposition pro Pixel aus sieben tiefenfähigen Verfahren, wissenschaftliche F
 
 ### Quellengebundene Retusche
 
-Malen Sie aus den Bildern, die das Ergebnis tatsächlich erzeugt haben: gemeinsamer Zoom und gemeinsame Verschiebung, Regler für das Quellbild, weicher Pinsel, Wiederherstellungspinsel, Rückgängig für ganze Striche und Schutz für nicht exportierte Pixel.
-Übernehmen Sie die Retusche als neue Ausgabe und wählen Sie dann im Hauptfenster im Kontextmenü dieser Ausgabe **TIFF mit Ebenen exportieren**, um sie zusammen mit ihren Quellbildern zu speichern. Live-Beschriftungen und Maßstabsbalken sind nicht enthalten. GIMP 3.2.6 unter Windows öffnet das Ergebnis und die Quellbilder als Ebenen; andere Editoren wurden nicht geprüft.
+Retuschieren Sie das Ergebnis mit Pixeln aus den Quellbildern.
 
 </td>
 <td width="54%">
@@ -149,7 +148,7 @@ Malen Sie aus den Bildern, die das Ergebnis tatsächlich erzeugt haben: gemeinsa
 
 ### Stapelverarbeitung
 
-Auf einen Ordner voller Stapel zeigen, Verfahren und Ziel wählen und laufen lassen. Läufe mit ausschließlicher Ausrichtung schreiben einen Ordner pro Stapel; Fusionsläufe schreiben das fusionierte Bild und listen genau dieses. Eine optionale Gruppenfusion tauscht exakte Gleichwertigkeit zum vollständigen Stapel gegen begrenzten Gruppenspeicher und temporären Speicherplatz.
+Verarbeiten Sie mehrere Stapel mit optionaler Gruppenfusion für begrenzten Speicherbedarf.
 
 </td>
 <td width="54%">
@@ -163,7 +162,7 @@ Auf einen Ordner voller Stapel zeigen, Verfahren und Ziel wählen und laufen las
 
 ### Maßstabsbalken für Publikationen
 
-Aus TIFF-Metadaten oder manuell kalibriert, mit der echten Schrift in der echten Länge gezeichnet und in jeden Export eingebrannt – Einzelbilder, Stapel, mehrseitige TIFF, GIF und Batch-Ausgaben gleichermaßen. Ein Balken, der nicht lesbar hineinpasst, meldet das, statt eine Länge zu drucken, die er nicht zeichnet.
+Fügen Sie anhand von TIFF-Metadaten oder manuell kalibrierte Maßstabsbalken zu Exporten hinzu.
 
 [Handbuch →](../USER_MANUAL_DE.md)
 
@@ -179,7 +178,7 @@ Aus TIFF-Metadaten oder manuell kalibriert, mit der echten Schrift in der echten
 
 ### Beschriftungen und Legenden
 
-Beschriftungen bleiben eine verwaltete Liste; jede hat einen eigenen Geltungsbereich (Quelle, ausgerichteter Stapel oder eine bestimmte Ausgabe), einen Bildbereich und einen Stil. Vorschau und jeder Export verwenden dasselbe Ziel und dieselbe Bildnummer, sodass `{value}` in Speichern, Speichern unter, Herausziehen und Alles exportieren gleich liest.
+Verwalten Sie Beschriftungen und Legenden mit eigenem Geltungsbereich und Stil.
 
 </td>
 <td width="54%">
@@ -193,7 +192,7 @@ Beschriftungen bleiben eine verwaltete Liste; jede hat einen eigenen Geltungsber
 
 ### Agent-steuerbar
 
-Jedes Fenster, jedes Widget und jedes Menü ist über einen token-geschützten lokalen Kanal ansprechbar: Ein Agent lädt einen Stapel, rendert, retuschiert, vergleicht, berechnet Tiefen, exportiert und beantwortet Dialoge – per typisiertem Befehl, per Widget-Pfad oder mit echten Maus- und Tastaturereignissen. Kein Screen-Scraping und keine OCR nötig; der Kanal startet mit der Desktop-App.
+Steuern Sie die Desktop-App über einen token-geschützten lokalen Agent-Kanal.
 
 [Protokoll →](../AGENT_CONTROL_SPEC.md) · [Skill →](../../skills/openfocus-control/SKILL.md)
 
@@ -208,32 +207,24 @@ Jedes Fenster, jedes Widget und jedes Menü ist über einen token-geschützten l
 
 **Außerdem enthalten:**
 
-- **Fokus-Stacking-Workflow** — Stapelbrowser, Schärfekurve, Schnellvorschau, ROI-Rendern und pro Verfahren gemerkte Einstellungen über Neustarts hinweg.
-- **Mikroskopiebereit** — 16 Bit durchgängig, µm/px aus TIFF-Metadaten, Flat-Field-Korrektur per Staubkarte, mehrseitige TIFF-Z-Stapel, texturierter OBJ-Export.
-- **Farbprofile** — Einzelbild-Exporte als PNG, TIFF, JPEG und WebP behalten ein gemeinsames RGB-ICC-Profil, wenn alle Quellbilder dasselbe Profil tragen. Gemischte oder unmarkierte Stapel erhalten kein Profil; die Pixel werden nicht farbkonvertiert.
-- **Transparentes PNG** — Stapel mit übereinstimmenden rechteckigen Masken konstanter Deckkraft lassen sich in voller Größe fusionieren und als PNG speichern. Einschränkungen stehen im Handbuch.
-- **Headless-CLI** — dieselbe Pipeline als `openfocus`, mit Batch-Modus, `--dry-run`, `--resume` und JSON-Ausgabe für Skripte.
-- **Agent-steuerbar** — ein token-geschützter lokaler Kanal steuert die laufende GUI (typisierte Pipeline-Befehle sowie generische Widget-, Menü-, Maus- und Tastatursteuerung), mit Skill, 14-Prüfungen-Smoke-Runner und vollständigem Menüaktions-Durchlauf.
-- **Verarbeitungsvorlagen** — Fusions-, Registrierungs- und Ressourceneinstellungen ohne Quellpfade als `.oftemplate` speichern und auf jeden geladenen Stapel anwenden; der Dialog akzeptiert auch Projekte und projektbasierte Rezepte.
-- **Projekte und Wiederherstellung** — `.ofproj`-Sitzungen, automatische Absturzwiederherstellung, Rückgängig/Wiederholen für Stapelbearbeitungen und Beschriftungen.
-- **Zwölf UI-Sprachen** — English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português, Italiano, Nederlands, Polski. Automatisch aus der Systemsprache erkannt; eine neue Sprache ist eine einzige Datei `locales/<code>.py`.
-- **Speicherschonend** — das neuronale Netz wird nur beim neuronalen Verfahren geladen; eine Sitzung mit klassischem Verfahren ruht bei rund 110 MB statt 260 MB.
+- **Fokus-Stacking-Workflow** — Stapelbrowser, Schärfekurve, Schnellvorschau, ROI-Rendern und gespeicherte Einstellungen.
+- **Mikroskopiebereit** — 16 Bit, TIFF-Kalibrierung, Flat-Field-Korrektur und mehrseitige Z-Stapel.
+- **Farbprofile** — Einzelbild-Exporte behalten gemeinsame RGB-ICC-Profile ohne Farbkonvertierung.
+- **Transparentes PNG** — kompatible Stapel mit rechteckigen Masken in voller Größe fusionieren und exportieren.
+- **Headless-CLI** — `openfocus` mit Batch-Modus, `--dry-run`, `--resume` und JSON-Ausgabe.
+- **Verarbeitungsvorlagen** — Einstellungen als `.oftemplate` speichern und erneut anwenden; Projekte und Rezepte werden unterstützt.
+- **Projekte und Wiederherstellung** — `.ofproj`-Sitzungen, Absturzwiederherstellung und Rückgängig/Wiederholen.
+- **Zwölf UI-Sprachen** — automatische Erkennung; neue Sprachen ergänzen Sie in `locales/<code>.py`.
+- **Speicherschonend** — das neuronale Netz wird nur bei Bedarf geladen.
 
 <a id="install"></a>
 ## ⬇️ Installation
 
 Laden Sie den aktuellen Windows- oder macOS-Build von der [OpenFocus-Website](https://openfocus.top/#download). Dieselben Dateien und ältere Versionen gibt es auch unter [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases).
 
-| Plattform | Datei | Typ |
-|----------|------|------|
-| Windows 10/11 (64 Bit) | `OpenFocus-*-setup.exe` | **Installer** (empfohlen) |
-| Windows 10/11 (64 Bit) | `OpenFocus-*-windows-x64.zip` | Portabel (entpacken und starten) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos.dmg` | Disk-Image (in „Programme“ ziehen) |
-| macOS Apple Silicon (M1–M4) | `OpenFocus-*-macos-arm64.zip` | Portabel (entpacken) |
+Hinweise zur Installation und Fehlerbehebung stehen im [Handbuch](../USER_MANUAL_DE.md).
 
-Der Signaturstatus der Windows-Builds steht in den Versionshinweisen. Die macOS-Builds sind nicht notarisiert, daher kann der erste Start einen Sicherheitshinweis zeigen: **Windows** SmartScreen → „Weitere Informationen“ → „Trotzdem ausführen“ (der erste Start kann 30–60 s dauern); **macOS** führen Sie `xattr -cr /Applications/OpenFocus.app` im Terminal aus, oder versuchen Sie, die App einmal zu öffnen, und lassen Sie sie dann unter **Systemeinstellungen → Datenschutz & Sicherheit** mit „Trotzdem öffnen“ zu (ab macOS 15 umgeht Rechtsklick → „Öffnen“ Gatekeeper nicht mehr).
-
-Für die Installation im Terminal prüfen Sie zuerst den Befehl für macOS oder Linux mit `--dry-run` und führen ihn dann ohne diese Option aus. Unter Linux installiert das die Headless-CLI; macOS-Builds erfordern Apple Silicon: Die App aus dem DMG wird nach `/Applications` installiert, die Terminal-Installation nach `~/Applications`.
+Unter Linux installiert der Terminalbefehl die Headless-CLI; macOS erfordert Apple Silicon. Die DMG-App wird nach `/Applications`, die Terminal-Version nach `~/Applications` installiert.
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -248,8 +239,8 @@ irm https://openfocus.top/install.ps1 | iex
 
 Das Windows-Setup direkt herunterladen:
 
-```bash
-curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
+```powershell
+curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
 ```
 
 ### 🤖 Agent-Integration

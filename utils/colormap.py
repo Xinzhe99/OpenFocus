@@ -44,10 +44,6 @@ def _hex_to_bgr(hex_color: str) -> Tuple[int, int, int]:
     return (b, g, r)
 
 
-def _bgr_to_hex(bgr: Sequence[int]) -> str:
-    return "#{:02X}{:02X}{:02X}".format(bgr[2], bgr[1], bgr[0])
-
-
 def _cv_lut(attr: str) -> np.ndarray:
     ramp = np.arange(256, dtype=np.uint8).reshape(1, 256)
     return cv2.applyColorMap(ramp, getattr(cv2, attr)).reshape(256, 3)

@@ -74,7 +74,7 @@
 
 ### AI 融合：StackMFF V3
 
-默认方法使用神经网络估计每个像素最可能的来源帧，再根据预测结果混合各帧或选择概率最高的一帧。合成基准以已知真值比较各方法；结果取决于图像栈和设置。
+StackMFF V3 使用 AI 合并各帧的清晰部分，生成景深合成图像。
 
 [StackMFF V3 →](https://github.com/Xinzhe99/StackMFF-V3) · [基准脚本 →](../../tools/synthetic_benchmark.py)
 
@@ -90,7 +90,7 @@
 
 ### 滑动 (Wipe) 对比
 
-拖动分割线横跨源帧与融合结果，直接看到混合改变了什么——配准漂移、边缘光晕与细节丢失一眼可见，任意缩放都成立。
+拖动分割线，直接对比源帧与融合结果。
 
 [用户手册 →](../USER_MANUAL_ZH.md)
 
@@ -106,7 +106,7 @@
 
 ### 方法对比
 
-默认对整图执行每种方法的融合，源图检查方框保持可交互，不重复整图计算；随后在同一裁剪区域并排比较结果，再把胜出的结果采用为新输出，或把参数回填到主窗口。
+并排比较融合方法，采用选中的结果或将其设置应用到主窗口。
 
 </td>
 <td width="54%">
@@ -120,7 +120,7 @@
 
 ### 深度图与 3D
 
-用七种支持焦点位置图的方法逐像素估计焦点位置，支持科研配色、手动物理 Z 标定（起点与步长；TIFF 元数据只提供 XY 标定），并可导出带纹理的 OBJ 曲面。
+生成深度图，支持手动 Z 标定和带纹理的 3D OBJ 导出。
 
 </td>
 <td width="54%">
@@ -134,8 +134,7 @@
 
 ### 源帧修饰
 
-从真正生成该结果的帧取材：共享缩放与平移、源帧滑动条、软边画笔、还原画笔、整笔撤销，以及未导出新像素的保护。
-作为新输出应用后，右键该输出并选择 **导出分层 TIFF**，可连同源帧一起保存。实时标签与比例尺不会写入分层文件。Windows 上的 GIMP 3.2.6 可以打开结果层与源层；其他编辑器尚未测试。
+使用生成结果的源帧进行画笔修饰，并可导出包含源帧的分层 TIFF。
 
 </td>
 <td width="54%">
@@ -149,7 +148,7 @@
 
 ### 批处理
 
-指向一个装满图像栈的文件夹，选好方法与目标，然后走开即可。仅对齐模式每个栈写一个文件夹，融合模式只写并只列融合图。可选的分组融合用有限的组内存和临时磁盘空间，换取接近整栈一次处理的结果。
+批量处理多个图像栈，并可选择分组融合以控制内存占用。
 
 </td>
 <td width="54%">
@@ -163,7 +162,7 @@
 
 ### 出版级比例尺
 
-从 TIFF 元数据或手动输入标定，用真实字体按真实长度绘制，并烙进所有导出——单张、图像栈、多页 TIFF、GIF 与批处理输出。过小、无法清晰放置时会明确提示，而不是画一条与标注不符的短条。
+通过 TIFF 元数据或手动输入标定比例尺，并将其绘制到导出图像中。
 
 [用户手册 →](../USER_MANUAL_ZH.md)
 
@@ -179,7 +178,7 @@
 
 ### 标签与图注
 
-把图注当成受管理的列表：每条都有自己的作用范围（源图、对齐栈或某个输出）、帧范围与样式。预览与所有导出共用同一目标与帧号，因此 `{value}` 在保存、另存为、拖出和导出全部中读数一致。
+为源图、对齐栈或输出添加具有独立帧范围和样式的标签与图注。
 
 </td>
 <td width="54%">
@@ -193,7 +192,7 @@
 
 ### 可由 Agent 驱动
 
-每个窗口、控件与菜单都能通过受令牌保护的本地通道寻址：Agent 可以加载图像栈、渲染、修饰、对比、求解深度、导出并应答对话框——可用类型化命令、控件路径，或真实的鼠标键盘事件。无需截屏或 OCR；桌面版启动时即开启该通道。
+通过受令牌保护的本地通道，让 Agent 控制窗口、处理图像并导出结果。
 
 [协议 →](../../docs/AGENT_CONTROL_SPEC.md) · [技能 →](../../skills/openfocus-control/SKILL.md)
 
@@ -210,29 +209,21 @@
 
 - **完整景深合成流程**——图像栈浏览、清晰度曲线、快速预览、ROI 渲染，逐方法设置跨重启保留。
 - **显微就绪**——端到端 16 位、TIFF µm/px、平场校正、传感器坏点校正、多页 TIFF Z 栈、带纹理的 OBJ 导出。
-- **色彩配置文件**——当所有源帧嵌入相同的 RGB ICC 配置时，单张 PNG、TIFF、JPEG 与 WebP 导出会保留该配置；混合或未标记的图像栈不附加配置（像素不做色彩转换）。
+- **色彩配置文件**——单张 PNG、TIFF、JPEG 和 WebP 导出保留所有源帧共有的 RGB ICC 配置；混合或未标记的图像栈不附加配置，也不转换像素颜色。
 - **透明 PNG**——具有相同矩形等透明度蒙版的图像栈可按原尺寸融合并保存为 PNG，限制见用户手册。
 - **无界面 CLI**——与 GUI 同一管线，提供 `openfocus` 命令、批处理、`--dry-run`、`--resume` 与 JSON 输出。
 - **工程与恢复**——`.ofproj` 会话、崩溃自动恢复、图像栈编辑与标注的撤销/重做。
-- **十二种界面语言**——English、简体中文、日本語、Español、Deutsch、Français、Русский、한국어、Português、Italiano、Nederlands、Polski；按系统区域自动检测，新增语言只需一个 `locales/<code>.py`。
-- **省内存**——神经网络权重只在使用 AI 方法时加载，经典方法会话常驻约 110 MB，而不是 260 MB。
+- **十二种界面语言**——按系统区域自动检测，可通过 `locales/<code>.py` 添加语言。
+- **省内存**——仅在使用 AI 方法时加载神经网络权重。
 
 <a id="install"></a>
 ## ⬇️ 安装
 
 从 [OpenFocus 官网](https://openfocus.top/#download) 下载最新的 Windows 或 macOS 版本；同样的文件和旧版本也保留在 [GitHub Releases](https://github.com/Xinzhe99/OpenFocus/releases)。
 
-| 平台 | 文件 | 类型 |
-|------|------|------|
-| Windows 10/11（64 位） | `OpenFocus-*-setup.exe` | **安装版**（推荐） |
-| Windows 10/11（64 位） | `OpenFocus-*-windows-x64.zip` | 便携版（解压即用） |
-| macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos.dmg` | 磁盘映像（拖入“应用程序”） |
-| macOS Apple Silicon（M1–M4） | `OpenFocus-*-macos-arm64.zip` | 便携版（解压即用） |
+安装和故障排除请参阅[用户手册](../USER_MANUAL_ZH.md)。
 
-Windows 版本的签名状态以具体 release 的发布说明为准；macOS 版本未公证，首次启动可能触发系统安全提示：**Windows** 选择“更多信息 → 仍要运行”（首次启动约需 30–60 秒）；**macOS** 执行 `xattr -cr /Applications/OpenFocus.app`，或先尝试打开一次，再到 **系统设置 → 隐私与安全性** 中点“仍要打开”（macOS 15 起右键“打开”不再绕过 Gatekeeper）。
-
-也可以从终端安装。先预览 macOS 或 Linux 的安装命令，再去掉 `--dry-run` 实际执行。
-Linux 上安装的是无界面 CLI；macOS 构建需要 Apple Silicon，DMG 中的应用安装到 `/Applications`，终端安装到 `~/Applications`。
+也可以从终端安装：Linux 安装无界面 CLI；macOS 需要 Apple Silicon，DMG 安装到 `/Applications`，终端安装到 `~/Applications`。
 
 ```bash
 curl -fsSL https://openfocus.top/install.sh | sh -s -- --dry-run
@@ -246,7 +237,10 @@ irm https://openfocus.top/install.ps1 | iex
 ```
 
 也可以直接下载 Windows 安装包：
-`curl -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe`。
+
+```powershell
+curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-setup.exe
+```
 
 ### 🤖 Agent 集成
 
