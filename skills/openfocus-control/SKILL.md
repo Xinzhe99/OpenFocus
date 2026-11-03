@@ -270,7 +270,7 @@ token or enable control on a shared account.
   project, grouped batch, file picker) and exits non-zero on failure.
 - `python tools/agent_action_sweep.py --launch` triggers enabled fixed catalog
   actions and resolves their dialogs/pickers; disabled, updater, exit,
-  language switches and dynamic recent items are skipped. Context menus are
+  non-English language switches and dynamic recent items are skipped. Context menus are
   outside its scope.
 - Both tools are destructive: `--launch` starts a private instance with its
   own data and settings directory, discovery file, control socket and
