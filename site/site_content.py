@@ -114,7 +114,7 @@ def _en() -> dict:
                     "title": "16-bit, end to end",
                     "body": (
                         "Load, fuse and export without dropping to 8-bit. µm/px "
-                        "comes from TIFF metadata, and multi-page TIFF Z-stacks "
+                        "can come from TIFF metadata, and multi-page TIFF Z-stacks "
                         "stay intact."
                     ),
                 },
@@ -158,11 +158,11 @@ def _en() -> dict:
                 },
                 {
                     "b": "Method comparison",
-                    "t": "Every algorithm rendered once, side by side at a shared crop.",
+                    "t": "Fuse the full image once per method, then compare the same detail side by side.",
                 },
                 {
                     "b": "Depth map & 3D",
-                    "t": "Five focus measures, research colour maps, physical Z from TIFF metadata, textured OBJ export.",
+                    "t": "Seven depth-capable methods, colour maps, manual physical Z calibration and textured OBJ export.",
                 },
                 {
                     "b": "Scale bars and labels",
@@ -190,7 +190,7 @@ def _en() -> dict:
                 },
                 {
                     "b": "Depth and surface",
-                    "t": "Five focus measures, research colour maps, and a textured OBJ of the surface.",
+                    "t": "Seven depth-capable methods, research colour maps, and a textured OBJ of the surface.",
                 },
             ],
             "img_alt": "The retouch workspace with a source frame beside the fused result.",
@@ -374,8 +374,8 @@ def _zh() -> dict:
                 {
                     "title": "全程 16-bit",
                     "body": (
-                        "从载入、融合到导出，全程不降至 8-bit；µm/px 直接从 TIFF "
-                        "元数据读取，多页 TIFF Z 堆栈保持原样。"
+                        "从载入、融合到导出，全程不降至 8-bit；可从 TIFF 元数据 "
+                        "读取 µm/px，多页 TIFF Z 堆栈保持原样。"
                     ),
                 },
                 {
@@ -413,11 +413,11 @@ def _zh() -> dict:
                 },
                 {
                     "b": "算法对比",
-                    "t": "一次渲染全部算法，于同一裁切处并排查看。",
+                    "t": "每种算法默认融合整图，再并排查看相同的局部细节。",
                 },
                 {
                     "b": "深度图与 3D",
-                    "t": "五种清晰度评价、科研级配色、依 TIFF 元数据标定物理 Z，导出带纹理的 OBJ。",
+                    "t": "七种方法可估计焦点位置，支持科研级配色、手动标定物理 Z 及纹理 OBJ 导出。",
                 },
                 {
                     "b": "比例尺与标注",
@@ -441,7 +441,7 @@ def _zh() -> dict:
                 },
                 {
                     "b": "深度与表面",
-                    "t": "五种清晰度评价、科研级配色，以及带纹理的表面 OBJ。",
+                    "t": "七种方法可估计焦点位置，支持科研级配色和带纹理的表面 OBJ。",
                 },
             ],
             "img_alt": "修饰工作区：源帧与融合结果并排显示。",
