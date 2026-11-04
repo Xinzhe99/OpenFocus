@@ -85,6 +85,29 @@ def test_one_gib_reserve_and_resident_buffers_not_recharged():
     assert policy.ram_budget(replace(snapshot, process_rss=GiB)) == GiB // 4
 
 
+def test_proportional_reserve_is_capped_on_large_machines():
+    # 64 GiB box with 11 GiB free: an uncapped 15% reserve (9.6 GiB) left
+    # ~1.4 GiB; the 4 GiB cap leaves min(0.45 * 11, 7) GiB.
+    snapshot = _snapshot(available_ram=11 * GiB, total_ram=64 * GiB)
+    assert policy.ram_budget(snapshot) == int(0.45 * 11 * GiB)
+    assert policy.ram_budget(replace(snapshot, available_ram=5 * GiB)) == GiB
+
+
+def test_single_working_set_may_exceed_share_up_to_reserve_ceiling():
+    snapshot = _snapshot(available_ram=10 * GiB, total_ram=64 * GiB)
+    share = policy.ram_budget(snapshot)                 # 4.5 GiB
+    assert policy.require_memory(GiB, snapshot) == share
+    # Beyond the share but within available - 4 GiB reserve: admitted alone.
+    assert policy.require_memory(5 * GiB, snapshot) == 5 * GiB
+    plan = policy.plan_execution(
+        policy.Workload(fixed_bytes=4 * GiB, per_worker_bytes=GiB), snapshot)
+    assert plan.workers == 1 and plan.ram_budget == 5 * GiB
+    with pytest.raises(policy.ResourceLimitError):
+        policy.require_memory(6 * GiB + 1, snapshot)
+    with pytest.raises(policy.ResourceLimitError):
+        policy.require_memory(5 * GiB, snapshot, user_limit=4 * GiB)
+
+
 @pytest.mark.parametrize("required,budget,expected", [(100, 0, False),
     (100, -1, False), (0, 0, True), (100, 100, True), (101, 100, False)])
 def test_budget_check_never_treats_zero_as_unlimited(required, budget, expected):

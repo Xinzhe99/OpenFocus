@@ -286,6 +286,28 @@ def test_cancel_from_final_progress_prevents_fusion_return():
                            thread_count=1)
 
 
+def test_fine_head_rejects_working_set_larger_than_cuda_budget(monkeypatch):
+    from core import resource_policy
+    from core.models.stackmff_v3.network import StackMFFLoop
+    from fusion_methods import stackmffv3 as ai
+
+    ai._ensure_torch()
+    model = StackMFFLoop(C1=16, C2=32, heads=(2, 2),
+                         single_scale=True, fine_head=True)
+    device = torch.device('cuda')
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=64 * 1024**3, total_ram=128 * 1024**3,
+        physical_cores=8, logical_cpus=8, device_kind='CUDA',
+        free_vram=int(23.5 * 1024**3), total_vram=24 * 1024**3)
+    monkeypatch.setattr(ai, '_resolve_device', lambda _use_gpu: device)
+    monkeypatch.setattr(ai, '_get_model_and_device', lambda *_args: (model, device))
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda _kind: snapshot)
+    # Broadcasted views represent the image dimensions without allocating the stack.
+    frame = np.broadcast_to(np.zeros(1, dtype=np.uint8), (2432, 2432))
+    with pytest.raises(resource_policy.ResourceLimitError, match='VRAM|memory'):
+        ai._prepare_inference([frame] * 20, WEIGHTS, True)
+
+
 def test_direct_probability_inference_cannot_bypass_memory_budget(monkeypatch):
     from core import resource_policy
     from fusion_methods import stackmffv3 as ai

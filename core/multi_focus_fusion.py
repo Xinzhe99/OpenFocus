@@ -159,9 +159,9 @@ def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
 
 
 def memory_budget_bytes() -> int:
-    """Additional RAM available to fusion, including the desktop reserve."""
-    from core.resource_policy import probe_resources, ram_budget
-    return ram_budget(probe_resources())
+    """Most additional RAM fusion may take, above the desktop reserve."""
+    from core.resource_policy import probe_resources, ram_ceiling
+    return ram_ceiling(probe_resources())
 
 
 # Bound OpenCV's internal parallelism as soon as this module is imported:
