@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import (
 from constants import APP_VERSION
 from locales import trans
 from utils import logging_setup
-from utils.platform_utils import has_compute_gpu
 
 ISSUES_URL = "https://github.com/Xinzhe99/OpenFocus/issues"
 
@@ -35,7 +34,10 @@ def _system_facts() -> str:
     except Exception:
         pass
     try:
-        lines.append(f"- CUDA/ROCm/XPU/MPS GPU: {has_compute_gpu()}")
+        from core import torch_backend
+        kind = torch_backend.cached_kind()
+        status = "not checked" if kind is None else torch_backend.display_name(kind)
+        lines.append(f"- CUDA/ROCm/XPU/MPS GPU: {status}")
     except Exception:
         pass
     return "\n".join(lines)

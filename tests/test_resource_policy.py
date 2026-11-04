@@ -361,6 +361,7 @@ def test_probe_resources_reads_rocm_and_xpu_memory_but_not_mps(monkeypatch):
     fake = SimpleNamespace(cuda=Cuda(), xpu=Xpu(),
                            version=SimpleNamespace(hip=None))
     monkeypatch.setattr(policy.torch_backend, "loaded_torch", lambda: fake)
+    monkeypatch.setattr(policy.torch_backend, "_XPU_AVAILABLE", True)
     rocm = policy.probe_resources("ROCM")
     assert (rocm.device_kind, rocm.free_vram, rocm.total_vram) == (
         "ROCM", 2 * GiB, 8 * GiB)

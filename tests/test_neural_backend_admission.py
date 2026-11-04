@@ -88,6 +88,7 @@ def _snapshot(kind, free_vram=0, total_vram=0):
 def test_shared_plan_accounts_for_rocm_and_xpu_device_memory(
         monkeypatch, tmp_path, algorithm, kind):
     fake = FakeTorch(kind=kind, hip="6.2" if kind == "ROCM" else None)
+    monkeypatch.setattr(torch_backend, "_XPU_AVAILABLE", kind == "XPU")
     monkeypatch.setattr(neural_common, "torch", fake)
     monkeypatch.setattr(resource_policy, "probe_resources",
                         lambda _kind: _snapshot(kind, 6 * GiB, 8 * GiB))
@@ -104,6 +105,7 @@ def test_shared_plan_accounts_for_rocm_and_xpu_device_memory(
 def test_unknown_device_memory_refuses_instead_of_running_unbounded(
         monkeypatch, tmp_path, algorithm):
     fake = FakeTorch(kind="XPU")
+    monkeypatch.setattr(torch_backend, "_XPU_AVAILABLE", True)
     monkeypatch.setattr(neural_common, "torch", fake)
     monkeypatch.setattr(resource_policy, "probe_resources",
                         lambda _kind: _snapshot("XPU"))
@@ -117,6 +119,7 @@ def test_unknown_device_memory_refuses_instead_of_running_unbounded(
 def test_mps_budget_uses_shared_memory_and_refuses_when_unknown(
         monkeypatch, tmp_path):
     fake = FakeTorch(kind="MPS")
+    monkeypatch.setattr(torch_backend, "_XPU_AVAILABLE", False)
     monkeypatch.setattr(neural_common, "torch", fake)
     monkeypatch.setattr(resource_policy, "probe_resources",
                         lambda _kind: _snapshot("MPS"))
