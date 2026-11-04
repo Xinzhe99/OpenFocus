@@ -31,19 +31,11 @@ import numpy as np
 import os
 import glob
 import sys
-import io
 from typing import Union, List, Optional
 
 from utils.sorting import natural_sort_key as _image_sort_key
 from core.image_loader import apply_exif_orientation
 
-# Windowed/Windows console mojibake fix — frozen builds only. Rebinding
-# sys.stdout at import time closes the ORIGINAL wrapper once it is collected
-# (TextIOWrapper.__del__ closes its buffer), which under pytest silently kills
-# the terminal output mid-session (the ubuntu CI job failed exactly there) and
-# made any redirected run lose its report tail.
-if getattr(sys, "frozen", False) and sys.stdout is not None and hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 
 # ========== 基于变换矩阵的精确裁切函数 ==========

@@ -262,6 +262,20 @@ jobs:
           }
           Write-Output ("Signed by: {0}" -f $sig.SignerCertificate.Subject)
 
+      - name: Verify installed first launch without a console
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: windows
+        run: |
+          $setup = (Resolve-Path "OpenFocus-${{ github.ref_name }}-setup.exe").Path
+          $target = Join-Path $env:RUNNER_TEMP "OpenFocus-installed"
+          $install = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=`"$target`""
+          )
+          if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
+          python tools/frozen_cli_smoke.py --executable "$target/OpenFocus.exe" --installed-startup
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - uses: actions/upload-artifact@v5
         with:
           name: OpenFocus-windows
