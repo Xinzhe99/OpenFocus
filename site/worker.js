@@ -488,7 +488,8 @@ async function handleDownload(request, env, ctx) {
   }
   const asset = data && data.assets ? data.assets[kind] : null;
   if (!asset) {
-    return textResponse(`The latest release has no ${kind} asset`, 404, {}, method);
+    return textResponse(`The latest ${kind} download is not ready; retry the download.`,
+      503, { "Retry-After": "60" }, method);
   }
 
   const name = safeObjectKey(asset.name);
