@@ -280,6 +280,10 @@ See the [CLI manual](./docs/USER_MANUAL_EN.md#14-command-line-interface).
 - **Feedback** — open an [issue](https://github.com/Xinzhe99/OpenFocus/issues) for bugs, ideas and algorithm work
 - **Credits** — each fusion/registration algorithm keeps its original research licence; StackMFF V3 lives at [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
 
+**WeChat community:** Scan with WeChat to join the OpenFocus group.
+
+<img src="assets/readme/wechat-group.jpg" alt="QR code for the OpenFocus WeChat group" width="260">
+
 <a id="license"></a>
 ## License
 
