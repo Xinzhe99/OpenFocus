@@ -134,7 +134,9 @@ class TestWipePixmapCache:
 
         window = SimpleNamespace(
             fusion_results=[],
-            output_manager=SimpleNamespace(record_for_image=lambda _image: None),
+            output_manager=SimpleNamespace(record_for_image=lambda _image: None,
+                                           record_for_item=lambda _item: None),
+            output_list=SimpleNamespace(currentItem=lambda: None),
             _bgr_to_pixmap=cv2_to_pixmap)
         window._wipe_right_shows_registration = lambda: True
         window.label_manager = LabelManager(window)

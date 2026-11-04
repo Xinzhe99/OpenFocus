@@ -265,6 +265,8 @@ openfocus -i ./stack_folder -o ./result/fused.png
 <a id="community"></a>
 ## 社区与支持
 
+有问题、建议或反馈？欢迎加入 [Discord 社区](https://discord.gg/afzmwgPt)。我们会尽快回复；我们使用北京时间（UTC+8），回复时间可能受时差影响。
+
 - **文档** — [用户手册](../USER_MANUAL_ZH.md)（十二种语言） · [更新日志](../../CHANGELOG.md) · [性能](../../docs/PERFORMANCE.md) · [融合算法](../../docs/FUSION_METHODS.md)
 - **官网** — [openfocus.top](https://openfocus.top/)，提供下载、安装脚本与镜像
 - **引用** — [CITATION.cff](../../CITATION.cff)；每个版本都归档在 Zenodo（[DOI](https://doi.org/10.5281/zenodo.23050823)）

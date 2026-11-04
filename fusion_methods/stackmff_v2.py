@@ -68,10 +68,9 @@ def _probabilities(planes, model, device, should_cancel=None):
             probs = common.torch.softmax(focus, dim=1)
         common.cancel(should_cancel)
     finally:
-        if getattr(device, 'type', '') == 'cuda':
-            common.torch.cuda.synchronize(device)
-        elif getattr(device, 'type', '') == 'mps':
-            common.torch.mps.synchronize()
+        # Device calls enqueue work. Cancellation must not release the heavy
+        # lease while kernels from this invocation still use its resources.
+        common.synchronize(device)
     return probs[0].cpu().numpy()
 
 

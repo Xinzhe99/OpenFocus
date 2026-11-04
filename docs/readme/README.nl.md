@@ -266,6 +266,8 @@ Zie de [CLI-handleiding](../USER_MANUAL_NL.md#14-opdrachtregelinterface).
 <a id="community"></a>
 ## Community en ondersteuning
 
+Vragen, ideeën of feedback? Word lid van onze [Discord-community](https://discord.gg/afzmwgPt). We reageren zo snel mogelijk; we gebruiken de tijd van Beijing (UTC+8), dus het tijdsverschil kan de reactietijd beïnvloeden.
+
 - **Documentatie** — [Gebruikershandleiding](../USER_MANUAL_NL.md) (twaalf talen) · [Wijzigingen](../../CHANGELOG.md) · [Prestaties](../PERFORMANCE.md) · [Fusiemethoden](../FUSION_METHODS.md)
 - **Citeren** — [CITATION.cff](../../CITATION.cff); elke versie wordt gearchiveerd op Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — open een [issue](https://github.com/Xinzhe99/OpenFocus/issues) voor bugs, ideeën en algoritmewerk

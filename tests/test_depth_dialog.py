@@ -582,6 +582,68 @@ def test_depth_automatic_texture_uses_matching_output(depth_dialog, monkeypatch,
     np.testing.assert_array_equal(dialog._mesh_texture, expected)
 
 
+def test_depth_overlay_develops_texture_with_the_pixels_own_metadata(depth_dialog, qapp):
+    from core.render_context import build_render_context
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+    from utils.image_utils import to_display_uint8
+
+    def metadata(model, neutral):
+        return LinearDNGMetadata(
+            ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+            neutral, "Maker", model)
+
+    record_meta = metadata("Historical", (0.5, 1.0, 0.7))
+    stack_meta = metadata("Current", (0.8, 1.0, 0.6))
+    frames = [np.full((24, 32, 3), 9000, np.uint16)]
+    image = np.full((24, 32, 3), 7000, np.uint16)
+
+    context = build_render_context(frames, image,
+                                   linear_dng_metadata=record_meta)
+    dialog, window = depth_dialog("dct", frames, image, context)
+    window.linear_dng_metadata = stack_meta
+    dialog._index01 = np.zeros((24, 32), np.float32)
+    dialog._map_output_texture = image
+    dialog._map_context = context
+    dialog._map_linear_dng_metadata = record_meta
+    dialog._map_request = dialog._request
+    dialog._stale = False
+    dialog._map_valid_mask = None
+    dialog.overlay_chk.blockSignals(True)
+    dialog.overlay_chk.setChecked(False)
+    colored = dialog._colorized_full()
+    dialog.overlay_chk.setChecked(True)
+    dialog.opacity_spin.blockSignals(True)
+    dialog.opacity_spin.setValue(0.5)
+    out = dialog._colorized_full()
+    base = to_display_uint8(develop_linear(image, record_meta)).astype(np.float32)
+    expected = np.clip(base * 0.5 + colored.astype(np.float32) * 0.5,
+                       0, 255).astype(np.uint8)
+    np.testing.assert_array_equal(out, expected)
+
+    # A historical map without its own metadata must stay undisplayed rather
+    # than inheriting the currently loaded stack calibration.
+    context_no_meta = build_render_context(frames, image)
+    dialog2, window2 = depth_dialog("dct", frames, image, context_no_meta)
+    window2.linear_dng_metadata = stack_meta
+    dialog2._index01 = np.zeros((24, 32), np.float32)
+    dialog2._map_output_texture = image
+    dialog2._map_context = context_no_meta
+    dialog2._map_linear_dng_metadata = None
+    dialog2._map_request = dialog2._request
+    dialog2._stale = False
+    dialog2._map_valid_mask = None
+    dialog2.overlay_chk.blockSignals(True)
+    dialog2.overlay_chk.setChecked(False)
+    colored2 = dialog2._colorized_full()
+    dialog2.overlay_chk.setChecked(True)
+    dialog2.opacity_spin.blockSignals(True)
+    dialog2.opacity_spin.setValue(0.5)
+    base2 = to_display_uint8(image).astype(np.float32)
+    expected2 = np.clip(base2 * 0.5 + colored2.astype(np.float32) * 0.5,
+                        0, 255).astype(np.uint8)
+    np.testing.assert_array_equal(dialog2._colorized_full(), expected2)
+
+
 @pytest.mark.parametrize("method,reverse", [("dct", False), ("openfocus_b", True), ("openfocus_c", True)])
 def test_depth_automatic_texture_uses_completed_source_frame(depth_dialog, monkeypatch, qapp, method, reverse):
     """DM-A10: registration and reversal determine first-frame pixels/identity."""
@@ -682,6 +744,28 @@ def test_depth_texture_handles_domain_and_bit_depth(depth_dialog, monkeypatch, q
     assert dialog.texture_combo.currentData() == "auto"
     output_index = dialog.texture_combo.findData("output")
     assert output_index < 0 or not dialog.texture_combo.model().item(output_index).isEnabled()
+
+
+@pytest.mark.parametrize('source_mode', ['current', 'output'])
+def test_depth_texture_develops_native_raw(depth_dialog, monkeypatch, qapp, source_mode):
+    from core import depth_map
+    from utils.linear_dng import LinearDNGMetadata
+
+    monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
+    frame = np.full((48, 64, 3), [7000, 11000, 14000], np.uint16)
+    frames = [frame, frame.copy()]
+    metadata = LinearDNGMetadata(
+        ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
+         (-0.1013, 0.2415, 0.5509)),
+        (1024 / 1853, 1.0, 1024 / 1667), 'Canon', 'Canon EOS R6')
+    if source_mode == 'output':
+        result = frame.copy()
+        context = _output_context(frames, result, linear_dng_metadata=metadata)
+        dialog, _ = depth_dialog('dct', frames, result, context)
+    else:
+        dialog, _ = depth_dialog('dct', frames, linear_dng_metadata=metadata)
+    _click_and_finish(qapp, dialog)
+    assert tuple(map(int, dialog._mesh_texture[0, 0])) == pytest.approx([103, 85, 189], abs=1)
 
 
 @pytest.mark.parametrize("texture_kind", ["auto", "frame", "output"])

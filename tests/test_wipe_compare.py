@@ -316,3 +316,43 @@ def test_missing_aligned_source_is_explained(qapp):
     assert host.wipe_widget._left_pixmap is None
     assert host.wipe_widget._right_pixmap is not None
     assert host.wipe_widget._notice == trans.t("wipe_source_unavailable")
+
+
+def _linear_profile():
+    from utils.linear_dng import LinearDNGMetadata
+    return LinearDNGMetadata(
+        ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
+         (-0.1013, 0.2415, 0.5509)),
+        (1024 / 1853, 1.0, 1024 / 1667), 'Canon', 'Canon EOS R6')
+
+
+def _assert_developed_color(pixmap):
+    # Independently decoded by LibRaw from a DNG with this camera profile.
+    color = _color(pixmap)
+    assert color.red() == pytest.approx(189, abs=1)
+    assert color.green() == pytest.approx(85, abs=1)
+    assert color.blue() == pytest.approx(103, abs=1)
+
+
+def test_wipe_develops_historical_aligned_raw_source(qapp):
+    frame = np.full((64, 80, 3), [7000, 11000, 14000], np.uint16)
+    record = _record([frame], frame.copy(), aligned=True,
+                     linear_dng_metadata=_linear_profile())
+    host = _host([record])
+    host._update_wipe_images()
+    _assert_developed_color(host.wipe_widget._left_pixmap)
+
+
+def test_wipe_develops_quick_preview_result(qapp, monkeypatch):
+    from utils import scalebar
+    frame = np.full((64, 80, 3), [7000, 11000, 14000], np.uint16)
+    previous = _record([frame], frame.copy())
+    preview = _record([frame], frame.copy(), linear_dng_metadata=_linear_profile())
+    host = _host([previous])
+    host._wipe_preview_record = preview
+    host.fusion_result = preview.image
+    host.label_manager = SimpleNamespace(is_enabled_for_target=lambda _target: False, revision=0)
+    host._wipe_pixmap = MethodType(OpenFocus._wipe_pixmap, host)
+    monkeypatch.setattr(scalebar, 'export_cfg', lambda *args, **kwargs: None)
+    host._update_wipe_images()
+    _assert_developed_color(host.wipe_widget._right_pixmap)

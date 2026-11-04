@@ -40,6 +40,77 @@ def _capture(worker):
 
 
 @pytest.mark.parametrize("cancel_waiter", [False, True])
+def test_stack_load_waits_for_active_render_and_can_cancel(tmp_path, cancel_waiter):
+    from core.image_loader import ImageStackLoader
+    from core.resource_policy import heavy_job
+    from core.workers import StackLoadWorker
+    from utils.image_utils import imwrite_auto
+
+    source = tmp_path / "frame.png"
+    assert imwrite_auto(str(source), _frames()[0])
+    worker = StackLoadWorker(ImageStackLoader(), filepaths=[str(source)], thread_count=1)
+    started, finished = Event(), Event()
+    results = []
+    worker.started.connect(started.set, Qt.ConnectionType.DirectConnection)
+
+    def record(*args):
+        results.append(args)
+        finished.set()
+
+    worker.finished_load.connect(record, Qt.ConnectionType.DirectConnection)
+    try:
+        with heavy_job():
+            worker.start()
+            assert started.wait(5)
+            assert not finished.wait(0.25), "stack decoding overlapped an active heavy job"
+            if cancel_waiter:
+                worker.request_cancel()
+                assert finished.wait(2), "cancelled load did not stop while waiting"
+        assert finished.wait(10)
+        assert worker.wait(10000)
+    finally:
+        worker.request_cancel()
+        worker.wait(10000)
+    if cancel_waiter:
+        assert results == [(False, 'CANCELLED', [], [])]
+    else:
+        assert results[0][0]
+        np.testing.assert_array_equal(results[0][2][0], _frames()[0])
+
+
+@pytest.mark.parametrize("mode", ['stack', 'folders'])
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+def test_batch_import_waits_for_active_render_and_can_cancel(tmp_path, mode, cancel_waiter):
+    from core.resource_policy import heavy_job
+    from core.workers import BatchImportWorker
+    from utils.image_utils import imwrite_auto
+
+    assert imwrite_auto(str(tmp_path / 'frame.png'), _frames()[0])
+    worker = BatchImportWorker(mode, folder_path=str(tmp_path),
+                               folder_paths=[str(tmp_path)], thread_count=1)
+    started, finished = Event(), Event()
+    results = []
+    worker.started.connect(started.set, Qt.ConnectionType.DirectConnection)
+    worker.finished.connect(finished.set, Qt.ConnectionType.DirectConnection)
+    signal = worker.stack_loaded if mode == 'stack' else worker.folders_loaded
+    signal.connect(lambda *args: results.append(args), Qt.ConnectionType.DirectConnection)
+    try:
+        with heavy_job():
+            worker.start()
+            assert started.wait(5)
+            assert not finished.wait(0.25), "batch import overlapped an active heavy job"
+            if cancel_waiter:
+                worker.cancel()
+                assert finished.wait(2), "cancelled batch import did not stop while waiting"
+        assert finished.wait(10)
+        assert worker.wait(10000)
+    finally:
+        worker.cancel()
+        worker.wait(10000)
+    assert bool(results) is not cancel_waiter
+
+
+@pytest.mark.parametrize("cancel_waiter", [False, True])
 def test_render_lease_covers_normalization_and_cancellable_wait(monkeypatch, cancel_waiter):
     import utils.image_utils as image_utils
 
@@ -281,3 +352,18 @@ def test_report_context_restored_after_registration_error(monkeypatch):
         alignment_report.reset(token)
     assert results == [] and errors == ['registration failed']
     assert worker.alignment_report_provenance is None
+
+
+def test_tiled_v3_worker_keeps_source_depth_until_tiles(monkeypatch):
+    from types import SimpleNamespace
+    import core.workers as workers
+    from core.algorithms import get_fusion
+
+    frames = _frames(np.uint16)
+    fusion = SimpleNamespace(algorithm='stackmffv3', descriptor=get_fusion('stackmffv3'),
+                             tile_enabled=True, tile_threshold=1)
+    monkeypatch.setattr(workers, 'require_memory',
+                        lambda *args, **kwargs: pytest.fail('unexpected whole-stack allocation'))
+    prepared, is_16bit = workers._prepare_fusion_input(frames, fusion)
+    assert is_16bit
+    assert all(actual is original for actual, original in zip(prepared, frames))

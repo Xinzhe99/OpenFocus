@@ -120,6 +120,10 @@ class ROIRenderOptionsDialog(QDialog):
                 image = cv2.resize(image, (max(1, round(width * factor)),
                                            max(1, round(height * factor))),
                                    interpolation=cv2.INTER_AREA)
+            metadata = getattr(self.parent(), 'linear_dng_metadata', None)
+            if metadata is not None:
+                from utils.linear_dng import develop_linear
+                image = develop_linear(image, metadata)
             self.lbl_preview.setPixmap(cv2_to_pixmap(image))
             self._output_size = (width, height)
         self.lbl_preview.setVisible(not crop)

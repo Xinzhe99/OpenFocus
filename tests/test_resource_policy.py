@@ -4,6 +4,7 @@ import queue
 import struct
 import threading
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -83,6 +84,29 @@ def test_one_gib_reserve_and_resident_buffers_not_recharged():
     snapshot = _snapshot(available_ram=GiB + GiB // 4, total_ram=2 * GiB)
     assert policy.ram_budget(snapshot) == GiB // 4
     assert policy.ram_budget(replace(snapshot, process_rss=GiB)) == GiB // 4
+
+
+def test_proportional_reserve_is_capped_on_large_machines():
+    # 64 GiB box with 11 GiB free: an uncapped 15% reserve (9.6 GiB) left
+    # ~1.4 GiB; the 4 GiB cap leaves min(0.45 * 11, 7) GiB.
+    snapshot = _snapshot(available_ram=11 * GiB, total_ram=64 * GiB)
+    assert policy.ram_budget(snapshot) == int(0.45 * 11 * GiB)
+    assert policy.ram_budget(replace(snapshot, available_ram=5 * GiB)) == GiB
+
+
+def test_single_working_set_may_exceed_share_up_to_reserve_ceiling():
+    snapshot = _snapshot(available_ram=10 * GiB, total_ram=64 * GiB)
+    share = policy.ram_budget(snapshot)
+    assert policy.require_memory(GiB, snapshot) == share
+    # Beyond the share but within available - 4 GiB reserve: admitted alone.
+    assert policy.require_memory(5 * GiB, snapshot) == 5 * GiB
+    plan = policy.plan_execution(
+        policy.Workload(fixed_bytes=4 * GiB, per_worker_bytes=GiB), snapshot)
+    assert plan.workers == 1 and plan.ram_budget == 5 * GiB
+    with pytest.raises(policy.ResourceLimitError):
+        policy.require_memory(6 * GiB + 1, snapshot)
+    with pytest.raises(policy.ResourceLimitError):
+        policy.require_memory(5 * GiB, snapshot, user_limit=4 * GiB)
 
 
 @pytest.mark.parametrize("required,budget,expected", [(100, 0, False),
@@ -303,3 +327,70 @@ def test_missing_memory_availability_is_never_invented(monkeypatch):
     _files(monkeypatch, {"/proc/meminfo": "MemTotal: 8388608 kB\n"})
     assert memory.available_memory_bytes() == 0
     assert memory.total_memory_bytes() == 8 * GiB
+
+
+@pytest.mark.parametrize("kind", ["ROCM", "XPU"])
+def test_rocm_and_xpu_require_known_vram_like_cuda(kind):
+    workload = _workload(algorithm='stackmffv3', parallel_layer='native',
+                         fixed_vram_bytes=GiB, per_worker_vram_bytes=0)
+    snapshot = _snapshot(device_kind=kind, free_vram=4 * GiB, total_vram=8 * GiB)
+    plan = policy.plan_execution(workload, snapshot, user_threads=3)
+    assert (plan.workers, plan.native_threads) == (1, 3)
+    assert plan.device_kind == kind
+    assert plan.vram_budget > 0
+    with pytest.raises(policy.ResourceLimitError):
+        policy.plan_execution(workload, replace(snapshot, free_vram=0,
+                                                total_vram=0))
+
+
+def test_probe_resources_reads_rocm_and_xpu_memory_but_not_mps(monkeypatch):
+    class Cuda:
+        def is_available(self):
+            return True
+
+        def mem_get_info(self):
+            return (2 * GiB, 8 * GiB)
+
+    class Xpu:
+        def is_available(self):
+            return True
+
+        def mem_get_info(self):
+            return (3 * GiB, 12 * GiB)
+
+    fake = SimpleNamespace(cuda=Cuda(), xpu=Xpu(),
+                           version=SimpleNamespace(hip=None))
+    monkeypatch.setattr(policy.torch_backend, "loaded_torch", lambda: fake)
+    rocm = policy.probe_resources("ROCM")
+    assert (rocm.device_kind, rocm.free_vram, rocm.total_vram) == (
+        "ROCM", 2 * GiB, 8 * GiB)
+    xpu = policy.probe_resources("XPU")
+    assert (xpu.device_kind, xpu.free_vram, xpu.total_vram) == (
+        "XPU", 3 * GiB, 12 * GiB)
+    mps = policy.probe_resources("MPS")
+    assert (mps.free_vram, mps.total_vram) == (0, 0)
+
+
+def test_unknown_device_memory_never_becomes_a_zero_budget_approval(monkeypatch):
+    class UnreadableCuda:
+        def is_available(self):
+            return True
+
+        def mem_get_info(self):
+            raise RuntimeError("driver query failed")
+
+    class XpuWithoutMemoryQuery:
+        def is_available(self):
+            return True
+
+    fake = SimpleNamespace(cuda=UnreadableCuda(),
+                           xpu=XpuWithoutMemoryQuery(),
+                           version=SimpleNamespace(hip=None))
+    monkeypatch.setattr(policy.torch_backend, "loaded_torch", lambda: fake)
+    snapshot = policy.probe_resources("XPU")
+    assert snapshot.free_vram == 0 and not snapshot.vram_known
+    workload = _workload(algorithm='stackmffv3', parallel_layer='native',
+                         fixed_vram_bytes=1)
+    with pytest.raises(policy.ResourceLimitError,
+                       match="Insufficient or unknown"):
+        policy.plan_execution(workload, snapshot)

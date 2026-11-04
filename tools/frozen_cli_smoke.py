@@ -160,6 +160,22 @@ def _exercise(executable: Path, environment: dict, root: Path,
             or len(layers.layers) != 3):
         raise RuntimeError("Packaged layered TIFF lost its composite or source layers")
 
+    # A CUDA-enabled torch build must still execute the actual neural model
+    # on machines without an NVIDIA device, including from the frozen bundle.
+    ai_output = root / "ai-result.tif"
+    ai = subprocess.run(
+        [str(executable), "-i", str(root / "stack"), "-o", str(ai_output),
+         "--method", "stackmffv3", "--cpu", "--threads", "1",
+         "--no-exposure-match"],
+        env=environment, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=180,
+    )
+    if ai.returncode:
+        raise RuntimeError(f"Packaged CPU AI inference failed: {ai.stdout!r} {ai.stderr!r}")
+    ai_image = cv2.imdecode(np.fromfile(str(ai_output), np.uint8), cv2.IMREAD_UNCHANGED)
+    if ai_image is None or ai_image.shape != shape or ai_image.dtype != np.uint16:
+        raise RuntimeError("Packaged CPU AI inference lost image shape or bit depth")
+
 
 def run(executable: Path) -> None:
     executable = executable.resolve()

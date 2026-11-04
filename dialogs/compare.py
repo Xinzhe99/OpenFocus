@@ -109,6 +109,9 @@ class CompareDialog(QDialog):
             "source_px_um": getattr(window_main, "source_px_um", None),
             "source_scale_factor": getattr(window_main, "current_scale_factor", 1.0),
             "icc_profile": stack_icc_profile(window_main, self._source_indices),
+            "linear_dng_metadata": getattr(window_main, "linear_dng_metadata", None),
+            "source_paths": [window_main.image_source_paths[i] for i in self._source_indices]
+                if len(getattr(window_main, "image_source_paths", ())) == self._total_frames else [],
         }
 
         self._preview_timer = QTimer(self)
@@ -568,7 +571,12 @@ class CompareDialog(QDialog):
             return
         self._ref_index = max(0, min(index, len(self._frames) - 1))
         with QSignalBlocker(self.ref_canvas):
-            self.ref_canvas.set_pixmap(cv2_to_pixmap(self._frames[self._ref_index]))
+            image = self._frames[self._ref_index]
+            metadata = self._calibration["linear_dng_metadata"]
+            if metadata is not None:
+                from utils.linear_dng import develop_linear
+                image = develop_linear(image, metadata)
+            self.ref_canvas.set_pixmap(cv2_to_pixmap(image))
         names = self._source_names
         name = (os.path.basename(str(names[self._ref_index]))
                 if self._ref_index < len(names) else "")
@@ -906,7 +914,12 @@ class CompareDialog(QDialog):
         key = self._active_keys.get(method)
         if key != self._result_key(method):
             return
-        pixmap = cv2_to_pixmap(image)
+        display = image
+        metadata = self._calibration["linear_dng_metadata"]
+        if metadata is not None:
+            from utils.linear_dng import develop_linear
+            display = develop_linear(image, metadata)
+        pixmap = cv2_to_pixmap(display)
         if pixmap.isNull():
             self._preview_failed(method, trans.t("msg_proc_error"))
             return

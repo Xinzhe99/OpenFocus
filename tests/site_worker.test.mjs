@@ -62,7 +62,7 @@ function installCache() {
   return entries;
 }
 
-function installReleaseFetch({ fail = false } = {}) {
+function installReleaseFetch({ fail = false, release = releaseBody() } = {}) {
   let calls = 0;
   globalThis.fetch = async (input) => {
     calls += 1;
@@ -71,7 +71,7 @@ function installReleaseFetch({ fail = false } = {}) {
       throw new Error(`unexpected fetch: ${url}`);
     }
     if (fail) return new Response("upstream unavailable", { status: 503 });
-    return new Response(JSON.stringify(releaseBody()), {
+    return new Response(JSON.stringify(release), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
@@ -333,6 +333,86 @@ test("mirror metadata keeps downloads available when GitHub is rate limited", as
   assert.equal(await download.text(), "234");
 });
 
+test("split Windows release is served from its complete, verified mirror", async () => {
+  installCache();
+  const release = releaseBody();
+  release.assets = release.assets.filter((asset) => asset.name !== NAMES["windows-zip"]);
+  installReleaseFetch({ release });
+  const manifest = {
+    tag: TAG,
+    assets: Object.fromEntries(Object.entries(NAMES).map(([kind, name]) => [kind, {
+      name, size: PAYLOAD.length, digest: `sha256:${"a".repeat(64)}`,
+      ...(kind === "windows-zip" ? { source: "r2", url: null } : {
+        url: `https://github.com/Xinzhe99/OpenFocus/releases/download/${TAG}/${name}`,
+      }),
+    }])),
+  };
+  const metadata = new TextEncoder().encode(JSON.stringify(manifest));
+  const env = makeEnv({
+    "openfocus-meta/latest-release.json": metadata,
+    [NAMES["windows-zip"]]: PAYLOAD,
+  });
+  const latest = await run("https://openfocus.top/api/latest", { env });
+  assert.equal((await latest.json()).assets["windows-zip"].source, "r2");
+  const download = await run("https://openfocus.top/download/latest/windows-zip", {
+    env, headers: { Range: "bytes=2-4" },
+  });
+  assert.equal(download.status, 206);
+  assert.equal(await download.text(), "234");
+  const updates = await run("https://openfocus.top/api/updates", { env });
+  assert.equal((await updates.json()).assets["windows-zip"].digest,
+               `sha256:${"a".repeat(64)}`);
+});
+
+test("a missing split mirror returns 503 instead of redirecting to a nonexistent file", async () => {
+  installCache();
+  const release = releaseBody();
+  release.assets = release.assets.filter((asset) => asset.name !== NAMES["windows-zip"]);
+  installReleaseFetch({ release });
+  const manifest = {
+    tag: TAG,
+    assets: Object.fromEntries(Object.entries(NAMES).map(([kind, name]) => [kind, {
+      name, size: PAYLOAD.length, digest: `sha256:${"b".repeat(64)}`,
+      ...(kind === "windows-zip" ? { source: "r2", url: null } : {
+        url: `https://github.com/Xinzhe99/OpenFocus/releases/download/${TAG}/${name}`,
+      }),
+    }])),
+  };
+  const env = makeEnv({
+    "openfocus-meta/latest-release.json": new TextEncoder().encode(JSON.stringify(manifest)),
+  });
+  for (const headers of [{}, { Range: "bytes=0-2" }]) {
+    const response = await run("https://openfocus.top/download/latest/windows-zip", { env, headers });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("location"), null);
+  }
+});
+
+test("an older mirror never supplies assets for a newer GitHub release", async () => {
+  installCache();
+  const release = releaseBody();
+  release.tag_name = "v1.0.1";
+  release.assets = release.assets.filter((asset) => asset.name !== NAMES["windows-zip"]);
+  installReleaseFetch({ release });
+  const manifest = {
+    tag: TAG,
+    assets: Object.fromEntries(Object.entries(NAMES).map(([kind, name]) => [kind, {
+      name, size: PAYLOAD.length, digest: `sha256:${"c".repeat(64)}`,
+      ...(kind === "windows-zip" ? { source: "r2", url: null } : {
+        url: `https://github.com/Xinzhe99/OpenFocus/releases/download/${TAG}/${name}`,
+      }),
+    }])),
+  };
+  const env = makeEnv({
+    "openfocus-meta/latest-release.json": new TextEncoder().encode(JSON.stringify(manifest)),
+  });
+  const latest = await run("https://openfocus.top/api/latest", { env });
+  const data = await latest.json();
+  assert.equal(data.tag, "v1.0.1");
+  assert.equal(data.assets["windows-zip"], null);
+});
+
+
 test("invalid mirror metadata cannot redirect downloads", async () => {
   installCache();
   installReleaseFetch({ fail: true });
@@ -342,6 +422,25 @@ test("invalid mirror metadata cannot redirect downloads", async () => {
   const response = await run("https://openfocus.top/api/latest", { env });
   assert.equal(response.status, 502);
   assert.match(await response.text(), /GitHub release API returned 503/);
+});
+
+test("split mirror metadata without a SHA-256 is rejected", async () => {
+  installCache();
+  installReleaseFetch({ fail: true });
+  const manifest = {
+    tag: TAG,
+    assets: Object.fromEntries(Object.entries(NAMES).map(([kind, name]) => [kind, {
+      name, size: PAYLOAD.length,
+      ...(kind === "windows-zip" ? { source: "r2", url: null } : {
+        url: `https://github.com/Xinzhe99/OpenFocus/releases/download/${TAG}/${name}`,
+      }),
+    }])),
+  };
+  const env = makeEnv({
+    "openfocus-meta/latest-release.json": new TextEncoder().encode(JSON.stringify(manifest)),
+  });
+  const response = await run("https://openfocus.top/api/updates", { env });
+  assert.equal(response.status, 503);
 });
 
 test("updates serves only the R2 manifest, including optional release notes and digests", async () => {

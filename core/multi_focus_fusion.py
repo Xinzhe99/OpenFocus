@@ -13,6 +13,7 @@ from utils.image_utils import (apply_exposure_gain, exposure_gains,
                                normalize_fuse_input)
 from utils.sorting import natural_sort_key
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
+from core import torch_backend
 
 
 # Tile 参数已改为 MultiFocusFusion 实例属性，见类构造函数中的默认值和访问器方法。
@@ -64,7 +65,7 @@ _STACKMFF_AVAILABLE_CACHE = None
 
 
 _TORCH_PROBE_LOCK = threading.Lock()
-_TORCH_DEVICE_KIND = None  # 'CUDA' | 'MPS' | 'N/A'，探测后缓存
+_TORCH_DEVICE_KIND = None  # 'CUDA' | 'ROCM' | 'XPU' | 'MPS' | 'N/A'，探测后缓存
 
 
 def is_ai_fusion_available() -> bool:
@@ -105,7 +106,7 @@ def is_ai_fusion_available() -> bool:
 
 
 def ensure_torch_device_kind():
-    """Import torch (once) and cache 'CUDA' | 'MPS' | 'N/A'.
+    """Import torch (once) and cache 'CUDA' | 'ROCM' | 'XPU' | 'MPS' | 'N/A'.
 
     Call this only where the accelerator genuinely matters — the render path
     and the status bar — never at startup. Returns the cached value when a
@@ -121,13 +122,9 @@ def ensure_torch_device_kind():
         if _TORCH_DEVICE_KIND is not None:
             return _TORCH_DEVICE_KIND
         try:
-            torch = importlib.import_module("torch")
-            if torch.cuda.is_available():
-                _TORCH_DEVICE_KIND = "CUDA"
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                _TORCH_DEVICE_KIND = "MPS"
-            else:
-                _TORCH_DEVICE_KIND = "N/A"
+            kind = torch_backend.probe_kind(import_if_needed=True)
+            _TORCH_DEVICE_KIND = (kind if torch_backend.is_accelerator(kind)
+                                  else "N/A")
         except Exception:  # broken/mismatched install
             _TORCH_DEVICE_KIND = "N/A"
         return _TORCH_DEVICE_KIND
@@ -159,9 +156,9 @@ def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
 
 
 def memory_budget_bytes() -> int:
-    """Additional RAM available to fusion, including the desktop reserve."""
-    from core.resource_policy import probe_resources, ram_budget
-    return ram_budget(probe_resources())
+    """Most additional RAM fusion may take, above the desktop reserve."""
+    from core.resource_policy import probe_resources, ram_ceiling
+    return ram_ceiling(probe_resources())
 
 
 # Bound OpenCV's internal parallelism as soon as this module is imported:
@@ -206,7 +203,7 @@ def _dtcwt_activity_bytes(frames) -> int:
 def _ai_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
     """Keep the requested spatial grid; admission may refuse it, never shrink it.
 
-    Batch one is the validated execution path on all devices. Larger CUDA
+    Batch one is the validated execution path on all devices. Larger GPU
     batches require their own numerical and device-memory qualification.
     """
     block = max(1, min(int(block_size), int(h), int(w)))
@@ -246,7 +243,7 @@ class MultiFocusFusion:
         
         Args:
             algorithm (str): 融合算法名称,可选 'guided_filter', 'dct', 'dtcwt', 'stackmffv3'
-            use_gpu (bool): 是否使用GPU加速(CUDA/MPS),默认为False
+            use_gpu (bool): 是否使用GPU加速(CUDA/ROCm/XPU/MPS),默认为False
             ai_batch_size (int): StackMFF V3 批量处理大小，默认为2
             exposure_match (bool): 融合前把每帧均值标定到末帧。整栈计算、
                 分块前应用；对所有算法生效。默认 True。
@@ -365,7 +362,7 @@ class MultiFocusFusion:
 
     def _base_frame_image(self, input_source,
                           which: Optional[str] = None,
-                          exposure_gains=None) -> Optional[np.ndarray]:
+                          exposure_gains=None, deferred_exposure=False) -> Optional[np.ndarray]:
         """取基底参考帧（末帧/首帧），统一到 float32 0-255 域。"""
         which = which if which in ("last", "first") else self.base_frame
         frame = None
@@ -398,13 +395,16 @@ class MultiFocusFusion:
                 return None
         if frame is None:
             return None
+        if (deferred_exposure and gain is not None and frame.dtype == np.uint8
+                and not any(item.dtype == np.uint16 for item in input_source)):
+            frame = apply_exposure_gain(frame, gain)
+            gain = None
         if frame.dtype == np.uint16:
             out = frame.astype(np.float32) * (255.0 / 65535.0)
         else:
             out = frame.astype(np.float32)
-        # List input has already been exposure-matched by fuse(); only a
-        # directory base frame still needs the gain (tiled directory path).
-        if gain is not None and isinstance(input_source, str):
+        # Deferred list input and tiled directory input still need their gain.
+        if gain is not None and (isinstance(input_source, str) or deferred_exposure):
             out = apply_exposure_gain(out, gain)
         return out
 
@@ -492,7 +492,8 @@ class MultiFocusFusion:
             frames.append(apply_exposure_gain(img, gain))
         return frames
 
-    def _apply_base_correction(self, fused, input_source, exposure_gains=None):
+    def _apply_base_correction(self, fused, input_source, exposure_gains=None,
+                               deferred_exposure=False):
         """out += LP(I_base) − LP(out)：细节层不动，基底低频对齐参考帧。
 
         这是用户显式选择 base_frame='last'/'first' 时的可选后处理，
@@ -504,7 +505,7 @@ class MultiFocusFusion:
         from core.resource_policy import require_memory
         require_memory(fused.size * 4 * 6, user_limit=memory_budget_bytes())
         which = self.base_frame
-        base = self._base_frame_image(input_source, which, exposure_gains)
+        base = self._base_frame_image(input_source, which, exposure_gains, deferred_exposure)
         if base is None or base.shape[:2] != fused.shape[:2]:
             return fused
         import cv2
@@ -561,11 +562,11 @@ class MultiFocusFusion:
                 f"{name} fusion requires PyTorch. Install it with: pip install torch"
             )
 
-        import torch
-
         if self.use_gpu:
-            if not torch.cuda.is_available() and not torch.backends.mps.is_available():
-                print(f"Warning: No GPU acceleration available (CUDA/MPS). Running {name} on CPU (slower).")
+            kind = torch_backend.probe_kind(import_if_needed=True)
+            if not torch_backend.is_accelerator(kind):
+                print(f"Warning: No GPU acceleration available (CUDA/ROCm/XPU/MPS). "
+                      f"Running {name} on CPU (slower).")
                 self.use_gpu = False
     
     def fuse(self,
@@ -647,8 +648,15 @@ class MultiFocusFusion:
         else:
             raise ValueError("Fusion requires a non-empty image stack or directory")
 
+        h, w = first.shape[:2]
+        spec = self.descriptor
+        needs_tiles = (resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
+                       if spec.tile_decider else max(h, w) > self.tile_threshold)
+        deferred_exposure = (self.algorithm == 'stackmffv3' and self.tile_enabled
+                             and needs_tiles and isinstance(input_source, list))
+
         preparation = source_allocation + max(size for size, _ in frame_specs) * 8
-        if self.exposure_match:
+        if self.exposure_match and not deferred_exposure:
             sorted_directory = (isinstance(input_source, str) and self.sort_mode != "off"
                                 and self.descriptor.sort_frames)
             for size, dtype in frame_specs:
@@ -663,22 +671,34 @@ class MultiFocusFusion:
         input_source = self._maybe_sort_input(input_source, should_cancel)
         exposure_gains_ = None
         if self.exposure_match:
-            exposure_gains_ = self._exposure_gains_for_source(input_source, should_cancel)
+            if deferred_exposure and any(frame.dtype == np.uint16 for frame in input_source):
+                # Match the former whole-stack float32 normalization exactly,
+                # but retain only one normalized frame at a time for the means.
+                from utils.image_utils import _exposure_mean
+                means = []
+                for frame in input_source:
+                    check_cancel()
+                    if frame.dtype == np.uint16:
+                        normalized = frame.astype(np.float32) * (255.0 / 65535.0)
+                    elif frame.dtype == np.float32:
+                        normalized = frame
+                    else:
+                        normalized = frame.astype(np.float32)
+                    means.append(_exposure_mean(normalized))
+                del normalized
+                target = means[-1]
+                exposure_gains_ = ([1.0] * len(means) if target <= 1e-6 else
+                                   [1.0 if mean <= 1e-6 else target / mean for mean in means])
+            else:
+                exposure_gains_ = self._exposure_gains_for_source(input_source, should_cancel)
             check_cancel()
-            if exposure_gains_ is not None and isinstance(input_source, list):
+            if exposure_gains_ is not None and isinstance(input_source, list) and not deferred_exposure:
                 matched = []
                 for frame, gain in zip(input_source, exposure_gains_):
                     check_cancel()
                     matched.append(apply_exposure_gain(frame, gain))
                 input_source = matched
 
-        if isinstance(input_source, list):
-            first = input_source[0]
-        h, w = first.shape[:2]
-        geometry_frames = [first] * count
-        spec = self.descriptor
-        needs_tiles = (resolve_runner(spec.tile_decider)(geometry_frames, self.tile_threshold)
-                       if spec.tile_decider else max(h, w) > self.tile_threshold)
 
         check_cancel()
         if (self.tile_enabled and needs_tiles and
@@ -719,7 +739,7 @@ class MultiFocusFusion:
             result = resolve_runner(spec.runner)(self, input_source, img_resize, **kwargs)
 
         check_cancel()
-        result = self._apply_base_correction(result, input_source, exposure_gains_)
+        result = self._apply_base_correction(result, input_source, exposure_gains_, deferred_exposure)
         check_cancel()
         return result
     
@@ -1371,12 +1391,30 @@ class MultiFocusFusion:
         if mode_normalizer is not None:
             kwargs['mode'] = mode_normalizer(
                 kwargs.get('mode', self.fusion_parameters.get('mode', 'soft')))
+        hard_pick = self.algorithm == 'stackmffv3' and kwargs.get('mode') == 'hard'
+        if imgs is not None and self.algorithm == 'stackmffv3' and exposure_gains is not None:
+            # The first normalized/matched crop stack is built before model
+            # admission, so account for it while the source stack is resident.
+            from core.resource_policy import require_memory
+            mixed_16 = any(frame.dtype == np.uint16 for frame in imgs)
+            elements = [block_size * block_size * (frame.shape[2] if frame.ndim == 3 else 1)
+                        for frame in imgs]
+            crop_bytes = sum(size * (4 if mixed_16 else frame.dtype.itemsize)
+                             for size, frame in zip(elements, imgs))
+            require_memory(2 * crop_bytes + max(elements) * 8,
+                           user_limit=memory_budget_bytes())
+
 
         def crop_frames(coords):
             check_cancel()
             x0, y0, x1, y1 = coords
             if imgs is not None:
-                return [frame[y0:y1, x0:x1] for frame in imgs]
+                crops = [frame[y0:y1, x0:x1] for frame in imgs]
+                if self.algorithm == 'stackmffv3' and exposure_gains is not None:
+                    crops = normalize_fuse_input(crops)[0]
+                    crops = [apply_exposure_gain(crop, gain)
+                             for crop, gain in zip(crops, exposure_gains)]
+                return crops
             crops = []
             for index, name in enumerate(files):
                 check_cancel()
@@ -1399,7 +1437,7 @@ class MultiFocusFusion:
             fixed_bytes=h * w * ((channels + 1) * 4 + channels * np.dtype(out_dtype).itemsize))
         check_cancel()
         acc = np.zeros((h, w, channels), dtype=np.float32)
-        weight = np.zeros((h, w, 1), dtype=np.float32)
+        weight = np.full((h, w, 1), -1 if hard_pick else 0, dtype=np.float32)
         total = len(tile_coords)
         print(f"{label} tiled fusion: {total} tiles, one per call ({device})")
         if progress_callback is not None:
@@ -1421,16 +1459,26 @@ class MultiFocusFusion:
             fh, fw = fused_tile.shape[:2]
             weight2d = self._compute_tile_weights(
                 x0, y0, x1, y1, fw, fh, w, h, overlap)
-            acc[y0:y1, x0:x1] += fused_tile.astype(np.float32) * weight2d[:, :, None]
-            weight[y0:y1, x0:x1, 0] += weight2d
+            if hard_pick:
+                # A hard result selects one source frame per pixel. In the
+                # overlap, take the tile whose interior weight is greatest
+                # instead of blending two independently selected pixels.
+                existing = weight[y0:y1, x0:x1, 0]
+                np.copyto(acc[y0:y1, x0:x1], fused_tile,
+                          where=(weight2d > existing)[:, :, None])
+                np.maximum(existing, weight2d, out=existing)
+            else:
+                acc[y0:y1, x0:x1] += fused_tile.astype(np.float32) * weight2d[:, :, None]
+                weight[y0:y1, x0:x1, 0] += weight2d
             del fused_tile, crops, weight2d
             check_cancel()
             if progress_callback is not None:
                 progress_callback(index + 1, total)
             check_cancel()
 
-        weight[weight == 0] = 1.0
-        np.divide(acc, weight, out=acc)
+        if not hard_pick:
+            weight[weight == 0] = 1.0
+            np.divide(acc, weight, out=acc)
         np.clip(acc, 0, 255, out=acc)
         fused = acc.astype(out_dtype, copy=False)
         check_cancel()
@@ -1476,16 +1524,11 @@ class MultiFocusFusion:
             dict: 包含算法名称、设备类型等信息
         """
         if self.use_gpu:
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    device_name = 'CUDA'
-                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                    device_name = 'MPS'
-                else:
-                    device_name = 'CPU (GPU unavailable)'
-            except ImportError:
-                device_name = 'CPU'
+            kind = torch_backend.probe_kind(import_if_needed=True)
+            if torch_backend.is_accelerator(kind):
+                device_name = torch_backend.display_name(kind)
+            else:
+                device_name = 'CPU (GPU unavailable)'
         else:
             device_name = 'CPU'
         info = {

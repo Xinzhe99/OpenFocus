@@ -406,3 +406,52 @@ def test_dtcwt_is_not_tiled_only_because_of_size(monkeypatch, two_focus_stack):
     out = fusion.fuse(input_source=two_focus_stack)
     assert out.shape[:2] == (120, 160)
     assert calls == []
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_v3_tiled_exposure_matches_whole_stack_preprocessing(dtype, monkeypatch):
+    import core.multi_focus_fusion as fusion_module
+    import fusion_methods.stackmffv3 as v3
+    from utils.image_utils import apply_exposure_gain, exposure_gains
+
+    monkeypatch.setattr(MultiFocusFusion, '_validate_ai_environment', lambda self: None)
+    monkeypatch.setattr(v3, '_prepare_inference', lambda *a, **k: (None, 'CPU', object()))
+
+    def fuse_crop(source, *args, **kwargs):
+        normalized, _ = normalize_fuse_input(source)
+        return sum(frame.astype(np.float32) for frame in normalized) / len(normalized)
+
+    monkeypatch.setattr(fusion_module, '_stackmffv3_impl', fuse_crop)
+    rng = np.random.default_rng(712)
+    frames = [rng.integers(5, high, (32, 40, 3), dtype=np.uint8)
+              for high in (110, 180, 240)]
+    if dtype == np.uint16:
+        frames = [frame.astype(np.uint16) * 251 + 19 for frame in frames]
+    normalized, _ = normalize_fuse_input(frames)
+    matched = [apply_exposure_gain(frame, gain)
+               for frame, gain in zip(normalized, exposure_gains(normalized))]
+    settings = dict(algorithm='stackmffv3', tile_enabled=True, tile_block_size=16,
+                    tile_overlap=4, tile_threshold=1, base_frame='first')
+    expected = MultiFocusFusion(exposure_match=False, **settings).fuse(matched)
+    actual = MultiFocusFusion(exposure_match=True, **settings).fuse(frames)
+    np.testing.assert_allclose(actual, expected, atol=1e-4)
+    assert all(frame.dtype == dtype for frame in frames)
+
+
+def test_v3_tiled_exposure_budget_excludes_full_stack_copy(monkeypatch):
+    import core.resource_policy as policy
+    import core.multi_focus_fusion as fusion_module
+    import fusion_methods.stackmffv3 as v3
+
+    monkeypatch.setattr(MultiFocusFusion, '_validate_ai_environment', lambda self: None)
+    monkeypatch.setattr(v3, '_prepare_inference', lambda *a, **k: (None, 'CPU', object()))
+    monkeypatch.setattr(fusion_module, '_stackmffv3_impl',
+                        lambda source, *a, **k: normalize_fuse_input(source)[0][0])
+    admitted = []
+    monkeypatch.setattr(policy, 'require_memory', lambda size, **kwargs: admitted.append(size))
+    frames = [np.full((32, 40, 3), 1000 + i, np.uint16) for i in range(24)]
+    fusion = MultiFocusFusion('stackmffv3', tile_enabled=True, tile_block_size=8,
+                              tile_overlap=2, tile_threshold=1, exposure_match=True)
+    fusion.fuse(frames)
+    full_copy = sum(frame.size * 4 for frame in frames)
+    assert admitted and max(admitted) < full_copy

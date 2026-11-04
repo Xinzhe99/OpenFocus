@@ -28,6 +28,7 @@ import numpy as np
 
 from utils.image_utils import fuse_output_dtype
 from utils.sorting import natural_sort_key
+from core import torch_backend
 
 # ================= 全局缓存变量 =================
 _GLOBAL_MODEL = None
@@ -36,7 +37,7 @@ _GLOBAL_MODEL_PATH = None
 _GLOBAL_MODEL_KEY = None
 _GLOBAL_MODEL_STATE = None
 
-# 'CUDA' | 'MPS' | 'CPU'，首次使用 torch 时探测一次
+# 'CUDA' | 'ROCM' | 'XPU' | 'MPS' | 'CPU'，首次使用 torch 时由共享后端探测
 MT = None
 
 # 网络以 4x4 卷积下采样 4 倍，模型内部把输入 pad 到 64 的倍数；这里用同一
@@ -52,29 +53,19 @@ VALID_MODES = ("soft", "hard")
 
 
 def _ensure_torch():
-    """Import torch on first use and probe available accelerators once."""
+    """Import torch on first use; the shared backend owns the probe."""
     global torch, MT
     if torch is not None:
+        if MT is None:
+            MT = torch_backend.detect_kind(torch)
         return
-    import torch as _torch
-    torch = _torch
-    try:
-        if torch.cuda.is_available():
-            MT = 'CUDA'
-        elif (hasattr(torch.backends, 'mps')
-              and torch.backends.mps.is_available()):
-            MT = 'MPS'
-        else:
-            MT = 'CPU'
-    except Exception:
-        MT = 'CPU'
+    torch = torch_backend.ensure_torch()
+    MT = torch_backend.detect_kind(torch)
 
 
 def _resolve_device(use_gpu):
     _ensure_torch()
-    if use_gpu and MT in ('CUDA', 'MPS'):
-        return torch.device('cuda' if MT == 'CUDA' else 'mps')
-    return torch.device('cpu')
+    return torch_backend.resolve_device(use_gpu, torch)
 
 
 def normalize_mode(mode):
@@ -148,10 +139,7 @@ def _forward_probabilities(batch_input, model, device, sigma, should_cancel):
     finally:
         # Device calls enqueue work. Cancellation must not release the heavy
         # lease while kernels from this invocation still use its resources.
-        if device.type == 'cuda':
-            torch.cuda.synchronize(device)
-        elif device.type == 'mps':
-            torch.mps.synchronize()
+        torch_backend.synchronize(device, torch)
 
 
 def _probabilities(batch_input, model, device, mode, should_cancel=None):
@@ -224,9 +212,21 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
     from core.resource_policy import Workload, plan_execution, probe_resources
 
     device = _resolve_device(use_gpu)
-    kind = str(device).split(':')[0].upper()
+    kind = torch_backend.kind_of_device(device, torch)
     snapshot = probe_resources(kind)
     cap = execution_plan.ram_budget if execution_plan is not None else None
+    if kind == torch_backend.KIND_MPS:
+        # MPS shares physical memory; budget the reported headroom and refuse
+        # when it cannot be read rather than running without a ceiling.
+        from core.resource_policy import ResourceLimitError
+        torch_backend.empty_cache(device, torch)
+        shared = torch_backend.mps_memory(torch)
+        if shared is None:
+            raise ResourceLimitError(
+                "Cannot determine the MPS working-set budget")
+        cap = min(cap if cap is not None else snapshot.available_ram,
+                  max(0, int(shared[0])))
+    vram_kind = torch_backend.has_device_memory(kind)
     if execution_plan is not None:
         thread_count = min(thread_count or execution_plan.native_threads,
                            execution_plan.native_threads)
@@ -242,21 +242,31 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
     load_plan = plan_execution(
         Workload(**base, fixed_bytes=model_bytes + fixed_bytes,
                  per_worker_bytes=0,
-                 fixed_vram_bytes=model_bytes if kind == 'CUDA' else 0),
+                 fixed_vram_bytes=model_bytes if vram_kind else 0),
         snapshot, preference=resource_preference,
         user_threads=thread_count, ram_budget_override=cap)
     torch.set_num_threads(load_plan.native_threads)
     model, device = _get_model_and_device(model_path, use_gpu)
     hp, wp = h + (-h) % PAD_ALIGN, w + (-w) % PAD_ALIGN
     pixels = hp * wp
-    # Live stage features, Q/K/V, MLP and native workspace. These are
-    # conservative allocation terms, not a calibrated RSS prediction.
+    # CPU calibration covers the bundled linear-head model; retain the
+    # previous conservative multiplier for unmeasured GPU backends.
     channels = model.C1 / 16 + (0 if getattr(model, 'single_scale', False)
                                else model.C2 / 64)
     heads = max((getattr(m, 'heads', 1) for m in model.modules()), default=1)
     expansion = max((m.fc1.out_features / m.fc1.in_features
                      for m in model.modules() if hasattr(m, 'fc1')), default=2)
-    features = int(n * pixels * channels * 4 * (12 + 2 * expansion))
+    calibrated_cpu = (kind == torch_backend.KIND_CPU
+                      and getattr(model, 'single_scale', False)
+                      and not getattr(model, 'fine_head', False)
+                      and model.C1 == 48 and model.C2 == 96
+                      and model.window == 8 and heads == 3 and expansion == 2)
+    feature_base = 7 if calibrated_cpu else 12
+    features = int(n * pixels * channels * 4 * (feature_base + 2 * expansion))
+    if getattr(model, 'fine_head', False):
+        # The guidance head retains the input and projected features while
+        # its concatenation and first convolution output are both live.
+        features = max(features, n * pixels * 4 * (1 + 5 * model.head.cf))
     scores = int(pixels / 16 * heads * 4
                  * (n * model.window ** 2 + n * n))
     probabilities = n * pixels * 4 * 6
@@ -265,20 +275,11 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
     # all returned tiles. Resident source arrays are not charged again.
     host = (fixed_bytes + n * pixels * 4 * (2 * c + 3)
             + result_count * h * w * c * 4)
-    if kind in ('CPU', 'MPS'):
+    if kind in (torch_backend.KIND_CPU, torch_backend.KIND_MPS):
         host += inference
-    if kind == 'MPS':
-        from core.resource_policy import ResourceLimitError
-        try:
-            shared_free = (torch.mps.recommended_max_memory()
-                           - torch.mps.driver_allocated_memory())
-        except (AttributeError, RuntimeError) as exc:
-            raise ResourceLimitError("Cannot determine the MPS working-set budget") from exc
-        cap = min(cap if cap is not None else snapshot.available_ram,
-                  max(0, int(shared_free)))
     plan = plan_execution(
         Workload(**base, fixed_bytes=host, per_worker_bytes=0,
-                 fixed_vram_bytes=inference if kind == 'CUDA' else 0),
+                 fixed_vram_bytes=inference if vram_kind else 0),
         snapshot, preference=resource_preference, user_threads=thread_count,
         ram_budget_override=cap)
     torch.set_num_threads(plan.native_threads)

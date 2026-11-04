@@ -606,8 +606,8 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
         lambda values: window.set_fusion_parameters(window.current_fusion_method(), values))
     components.registration_parameter_panel.valuesChanged.connect(
         lambda values: window.set_registration_parameters(window.current_alignment_method(), values))
-    # Resolving CUDA/MPS means importing torch (~2.1 s, ~193 MB). Do it when
-    # the user actually chooses the neural method, not on every launch.
+    # Resolving the PyTorch backend means importing torch (~2.1 s, ~193 MB).
+    # Do it when the user actually chooses the neural method, not on every launch.
     components.combo_fusion.currentIndexChanged.connect(
         lambda: components.combo_fusion.currentData() != "none"
         and get_fusion(components.combo_fusion.currentData()).neural

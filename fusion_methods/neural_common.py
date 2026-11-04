@@ -12,34 +12,32 @@ import numpy as np
 
 from utils.image_utils import normalize_fuse_input
 from utils.sorting import natural_sort_key
+from core import torch_backend
 
 torch = None
 DEVICE_KIND = None
 
 
 def ensure_torch():
-    """Import torch on first use and probe accelerators once."""
+    """Import torch on first use; the backend probe is shared and cached."""
     global torch, DEVICE_KIND
     if torch is not None:
+        if DEVICE_KIND is None:
+            DEVICE_KIND = torch_backend.detect_kind(torch)
         return
-    import torch as _torch
-    torch = _torch
-    try:
-        if torch.cuda.is_available():
-            DEVICE_KIND = 'CUDA'
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            DEVICE_KIND = 'MPS'
-        else:
-            DEVICE_KIND = 'CPU'
-    except Exception:
-        DEVICE_KIND = 'CPU'
+    torch = torch_backend.ensure_torch()
+    DEVICE_KIND = torch_backend.detect_kind(torch)
 
 
 def resolve_device(use_gpu):
     ensure_torch()
-    if use_gpu and DEVICE_KIND in ('CUDA', 'MPS'):
-        return torch.device('cuda' if DEVICE_KIND == 'CUDA' else 'mps')
-    return torch.device('cpu')
+    return torch_backend.resolve_device(use_gpu, torch)
+
+
+def synchronize(device):
+    """Wait for queued work before a cancellation path releases its lease."""
+    if torch is not None:
+        torch_backend.synchronize(device, torch)
 
 
 def cancel(should_cancel):
@@ -132,12 +130,23 @@ def plan_inference(algorithm, frames, model_path, use_gpu, thread_count,
                    resource_preference, execution_plan, *, workspace_bytes,
                    host_bytes):
     """Admit model load plus the caller's declared workspace."""
-    from core.resource_policy import Workload, plan_execution, probe_resources
+    from core.resource_policy import (ResourceLimitError, Workload,
+                                      plan_execution, probe_resources)
 
     device = resolve_device(use_gpu)
-    kind = str(device).split(':')[0].upper()
+    kind = torch_backend.kind_of_device(device, torch)
     snapshot = probe_resources(kind)
     cap = execution_plan.ram_budget if execution_plan is not None else None
+    if kind == torch_backend.KIND_MPS:
+        # MPS shares physical memory; there is no VRAM pool to plan against,
+        # so the reported shared-memory headroom is the admission ceiling.
+        torch_backend.empty_cache(device, torch)
+        shared = torch_backend.mps_memory(torch)
+        if shared is None:
+            raise ResourceLimitError("Cannot determine the MPS working-set budget")
+        cap = min(cap if cap is not None else snapshot.available_ram,
+                  max(0, int(shared[0])))
+    vram_kind = torch_backend.has_device_memory(kind)
     if execution_plan is not None:
         thread_count = min(thread_count or execution_plan.native_threads,
                            execution_plan.native_threads)
@@ -151,14 +160,14 @@ def plan_inference(algorithm, frames, model_path, use_gpu, thread_count,
     load_plan = plan_execution(
         Workload(**base, fixed_bytes=model_bytes + host_bytes,
                  per_worker_bytes=0,
-                 fixed_vram_bytes=model_bytes if kind == 'CUDA' else 0),
+                 fixed_vram_bytes=model_bytes if vram_kind else 0),
         snapshot, preference=resource_preference,
         user_threads=thread_count, ram_budget_override=cap)
     torch.set_num_threads(load_plan.native_threads)
     host = host_bytes + workspace_bytes
     plan = plan_execution(
         Workload(**base, fixed_bytes=host, per_worker_bytes=0,
-                 fixed_vram_bytes=workspace_bytes if kind == 'CUDA' else 0),
+                 fixed_vram_bytes=workspace_bytes if vram_kind else 0),
         snapshot, preference=resource_preference, user_threads=thread_count,
         ram_budget_override=cap)
     torch.set_num_threads(plan.native_threads)

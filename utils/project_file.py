@@ -266,6 +266,7 @@ def _collect_state(window) -> Dict[str, Any]:
         "source_folders": [os.path.dirname(p) if os.path.dirname(p) else ""
                            for p in abs_paths],
         "scale_factor": getattr(window, "current_scale_factor", 1.0),
+        "linear_raw": getattr(window, "linear_dng_metadata", None) is not None,
         "settings": settings,
         "labels": labels,
         "frame_order": frame_order,
@@ -369,6 +370,8 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
         return False, "invalid source folders", {}
     if not isinstance(state.get("settings", {}), dict) or not isinstance(state.get("labels", {}), dict):
         return False, "invalid project settings or labels", {}
+    if type(state.get("linear_raw", False)) is not bool:
+        return False, "invalid linear RAW setting", {}
     if "sharpen_output" in state.get("settings", {}) and not isinstance(
             state["settings"]["sharpen_output"], bool):
         return False, "invalid output sharpening setting", {}
@@ -617,6 +620,7 @@ def apply_project(window, state: Dict[str, Any],
         **({"video": sources[0]} if videos else {"filepaths": list(sources)}),
         scale=float(state.get("scale_factor", 1.0) or 1.0),
         append=False,
+        linear_raw=state.get("linear_raw", False),
         prepare_options=lambda options: _prepare_project_load(window, state, options),
         on_error=on_error,
         on_success=lambda: (_apply_after_load(window, state),

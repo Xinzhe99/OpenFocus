@@ -28,11 +28,16 @@ import numpy as np
 from utils import memory
 from utils.platform_utils import cpu_limits
 from core.algorithms import get_fusion
+from core import torch_backend
 
 # Share of currently-available physical memory one stage may plan to allocate.
 BUDGET_RATIO = 0.45
 # Never plan to leave the machine with less than this for the desktop.
 RESERVE_BYTES = 1024 ** 3
+# The proportional reserve (15% of total RAM) is capped so large machines do
+# not set aside ~10 GB for the desktop and starve every stage.
+RESERVE_RATIO = 0.15
+RESERVE_CAP_BYTES = 4 * 1024 ** 3
 
 # GPU reserves: the allocator keeps freed blocks, so free VRAM is what matters.
 VRAM_RESERVE_RATIO = 0.15
@@ -110,26 +115,20 @@ class ExecutionPlan:
                 f"device={self.device_kind}")
 
 
-def _gpu_memory() -> tuple:
-    """(free, total) VRAM bytes for the active accelerator, else (0, 0).
+def _gpu_memory(kind: str) -> tuple:
+    """(free, total) VRAM bytes for *kind*, else (0, 0).
 
     Never *imports* torch: this runs on the UI thread and in the CLI, where a
     multi-second import just to size a budget would be worse than reporting no
-    VRAM. If torch is already loaded (the render path loaded it), its allocator
+    VRAM. If torch is already loaded (the render path loaded it), its runtime
     knows the real numbers; otherwise there is no usable accelerator anyway.
+    An unavailable or unreadable figure stays zero so admission refuses the
+    job instead of treating unknown memory as unlimited.
     """
-    import sys
-    torch = sys.modules.get("torch")
-    if torch is None:
+    reading = torch_backend.device_memory(kind)
+    if reading is None:
         return 0, 0
-    try:
-        if torch.cuda.is_available():
-            free, total = torch.cuda.mem_get_info()
-            return int(free), int(total)
-    except Exception:
-        return 0, 0
-    # MPS shares physical memory; there is no separate VRAM pool to budget.
-    return 0, 0
+    return reading
 
 
 def probe_resources(device_kind: Optional[str] = None) -> ResourceSnapshot:
@@ -139,10 +138,10 @@ def probe_resources(device_kind: Optional[str] = None) -> ResourceSnapshot:
     available = memory.available_memory_bytes()
     total = memory.total_memory_bytes()
     rss = memory.process_rss_bytes()
-    kind = device_kind or "CPU"
+    kind = str(device_kind or "CPU").upper()
     free_vram = total_vram = 0
-    if kind == "CUDA":
-        free_vram, total_vram = _gpu_memory()
+    if torch_backend.has_device_memory(kind):
+        free_vram, total_vram = _gpu_memory(kind)
     return ResourceSnapshot(
         available_ram=int(available or 0),
         total_ram=int(total or 0),
@@ -166,9 +165,8 @@ def ram_budget(snapshot: ResourceSnapshot) -> int:
     """
     if not snapshot.ram_known:
         return 0
-    reserve = max(RESERVE_BYTES, int(0.15 * snapshot.total_ram))
-    headroom = snapshot.available_ram - reserve
-    return max(0, int(min(BUDGET_RATIO * snapshot.available_ram, headroom)))
+    return max(0, int(min(BUDGET_RATIO * snapshot.available_ram,
+                          ram_ceiling(snapshot))))
 
 
 def vram_budget(snapshot: ResourceSnapshot) -> int:
@@ -197,22 +195,46 @@ class ResourceLimitError(MemoryError):
     """The minimum working set cannot safely be admitted."""
 
 
+def ram_ceiling(snapshot: ResourceSnapshot) -> int:
+    """Most new RAM one stage may take: everything above the desktop reserve.
+
+    ``ram_budget`` is the comfortable share used to size concurrency; this is
+    the hard limit for admitting a single minimum working set that does not
+    fit in that share.
+    """
+    if not snapshot.ram_known:
+        return 0
+    reserve = max(RESERVE_BYTES,
+                  min(int(RESERVE_RATIO * snapshot.total_ram), RESERVE_CAP_BYTES))
+    return max(0, int(snapshot.available_ram - reserve))
+
+
 def require_memory(required_bytes: int, snapshot: Optional[ResourceSnapshot] = None,
                    user_limit: Optional[int] = None) -> int:
-    """Admit a known new allocation; return its capped available RAM budget."""
+    """Admit a known new allocation; return the RAM budget the stage may use.
+
+    Within the comfortable share the whole share is returned, so callers can
+    add workers. A larger minimum working set is still admitted up to the
+    reserve-protected ceiling, but then the budget is exactly that working
+    set, leaving no room for extra concurrency.
+    """
     if required_bytes < 0:
         raise ValueError("required_bytes must be nonnegative")
     snapshot = snapshot or probe_resources()
     budget = ram_budget(snapshot)
+    ceiling = ram_ceiling(snapshot)
     if user_limit is not None:
         budget = min(budget, max(0, int(user_limit)))
+        ceiling = min(ceiling, max(0, int(user_limit)))
     if not snapshot.ram_known:
         raise ResourceLimitError("Available physical memory could not be determined")
-    if budget <= 0 or required_bytes > budget:
-        raise ResourceLimitError(
-            f"Insufficient memory: need {memory.mb(required_bytes):.0f} MB "
-            f"of new allocations; budget is {memory.mb(budget):.0f} MB")
-    return budget
+    if budget > 0 and required_bytes <= budget:
+        return budget
+    if ceiling > 0 and required_bytes <= ceiling:
+        return max(1, int(required_bytes))
+    raise ResourceLimitError(
+        f"Insufficient memory: need {memory.mb(required_bytes):.0f} MB "
+        f"of new allocations; at most {memory.mb(ceiling):.0f} MB is available")
 
 
 def estimate_working_set(workload: Workload) -> tuple:
@@ -297,14 +319,16 @@ def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = No
             workers = by_memory
             reasons.append(f"memory: {workers} worker(s) fit after fixed buffers")
 
-    vram = vram_budget(snapshot) if snapshot.device_kind == "CUDA" else 0
+    vram = vram_budget(snapshot) if torch_backend.has_device_memory(
+        snapshot.device_kind) else 0
     gpu_fixed = workload.fixed_vram_bytes
     gpu_worker = workload.per_worker_vram_bytes
     if gpu_fixed < 0 or gpu_worker < 0:
         raise ValueError("VRAM estimates must be nonnegative")
-    if snapshot.device_kind == "CUDA":
+    if torch_backend.has_device_memory(snapshot.device_kind):
         if gpu_fixed + gpu_worker <= 0:
-            raise ResourceLimitError("CUDA requires an explicit working-set estimate")
+            raise ResourceLimitError(
+                f"{snapshot.device_kind} requires an explicit working-set estimate")
         if not fits_in_budget(gpu_fixed + gpu_worker, vram):
             raise ResourceLimitError("Insufficient or unknown available GPU memory")
         if gpu_worker:

@@ -17,6 +17,10 @@ from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 from utils.validators import LabelAdder, build_label_text
 
+# One display-depth copy of the current frame is enough for form edits. The
+# source stack already lives in the window; this cache must never grow with it.
+MAX_DEVELOPED_CACHE_BYTES = 512 * 1024 * 1024
+
 
 class LabelPreview(QLabel):
     """A scaled preview of a source frame carrying one label."""
@@ -30,6 +34,12 @@ class LabelPreview(QLabel):
         self.setObjectName("labelPreview")
         self._adder = LabelAdder()
         self._frame = None
+        self._linear_dng_metadata = None
+        self._developed_source = None
+        self._developed_image = None
+        self._developed_metadata = None
+        self._developed_shape = None
+        self._developed_dtype = None
         self._status = ""
         # Family actually used when the request could not be honoured.
         self.substituted_font = ""
@@ -41,12 +51,59 @@ class LabelPreview(QLabel):
         self._pan = (0, 0)
         self._drag_start = None
 
-    def set_preview(self, frame, config, index):
+    def set_preview(self, frame, config, index, *, linear_dng_metadata=None):
         """Update all dependent state before drawing once."""
-        self._frame = None if frame is None else np.asarray(frame)
+        source = None if frame is None else np.asarray(frame)
+        if source is not self._frame:
+            self.release_developed_cache()
+        self._frame = source
+        self._linear_dng_metadata = linear_dng_metadata
         self._adder.config.update_config(config)
         self._index = max(0, int(index))
         self.refresh()
+
+    def release_developed_cache(self):
+        """Drop the one display-depth frame cache immediately.
+
+        Large camera frames are held only while this dialog shows them; the
+        raw stack remains owned by the main window.
+        """
+        self._developed_source = None
+        self._developed_image = None
+        self._developed_metadata = None
+        self._developed_shape = None
+        self._developed_dtype = None
+
+    @staticmethod
+    def _same_metadata(first, second):
+        if first is second:
+            return True
+        try:
+            return bool(first == second)
+        except Exception:
+            return False
+
+    def _developed_frame(self, metadata):
+        """Display-depth pixels for the current frame, reused across edits."""
+        frame = self._frame
+        if (self._developed_image is not None
+                and self._developed_source is frame
+                and self._developed_shape == frame.shape
+                and self._developed_dtype == frame.dtype
+                and self._same_metadata(self._developed_metadata, metadata)):
+            return self._developed_image
+        # Release the previous frame before allocating its replacement so two
+        # full-resolution display buffers never coexist in this widget.
+        self.release_developed_cache()
+        from utils.linear_dng import develop_linear
+        developed = develop_linear(frame, metadata)
+        if developed.nbytes <= MAX_DEVELOPED_CACHE_BYTES:
+            self._developed_source = frame
+            self._developed_image = developed
+            self._developed_metadata = metadata
+            self._developed_shape = frame.shape
+            self._developed_dtype = frame.dtype
+        return developed
 
     def set_zoom_mode(self, mode):
         self._zoom_mode = mode
@@ -90,7 +147,9 @@ class LabelPreview(QLabel):
     # ------------------------------------------------------------------ data
     def set_frame(self, frame) -> None:
         """Use a real frame as the preview canvas (falls back to a placeholder)."""
+        self.release_developed_cache()
         self._frame = None if frame is None else np.asarray(frame)
+        self._linear_dng_metadata = None
         self.refresh()
 
     def set_index(self, index: int) -> None:
@@ -140,6 +199,15 @@ class LabelPreview(QLabel):
         from utils.image_utils import to_display_uint8
 
         canvas = self._canvas()
+        metadata = self._linear_dng_metadata
+        if (metadata is not None and self._frame is not None
+                and canvas.dtype == np.uint16 and canvas.ndim == 3
+                and canvas.shape[2] == 3):
+            # Draw in display space, never by scaling the linear pixels through
+            # to_display_uint8 (which turns native RAW midtones nearly black).
+            canvas = self._developed_frame(metadata)
+        else:
+            self.release_developed_cache()
         if canvas.ndim == 3 and canvas.shape[2] == 4:
             from utils.image_utils import composite_transparent_for_display
             canvas = composite_transparent_for_display(canvas)

@@ -204,7 +204,14 @@ class UpdateManager(QObject):
         return False
 
     def can_self_update(self) -> bool:
-        """Only a frozen build on Windows/macOS can swap itself."""
+        """Only a frozen stable build on Windows/macOS can swap itself.
+
+        GPU preview bundles carry a vendor-specific torch runtime. Replacing
+        them with the stable CUDA zip would silently remove ROCm/XPU support,
+        so those builds are updated manually from their preview release.
+        """
+        if self_update.gpu_variant():
+            return False
         return bool(self_update.is_frozen()
                     and (sys.platform == "win32" or
                          (sys.platform == "darwin" and self_update.mac_app_bundle())))
@@ -268,6 +275,8 @@ class UpdateManager(QObject):
 
     def start_idle(self) -> None:
         """Called once after startup: reuse a staged build, then check quietly."""
+        if self_update.gpu_variant():
+            return
         self._restore_staged_state()
         self.check(quiet=True)
 
@@ -298,6 +307,11 @@ class UpdateManager(QObject):
 
         if (getattr(self, "_shutting_down", False)
                 or getattr(self._window, "_shutting_down", False)):
+            return
+        if self_update.gpu_variant():
+            self._manual = self._manual or not quiet
+            if not quiet:
+                self._fail("msg_update_gpu_preview_manual")
             return
         if self._checking:
             self._manual = self._manual or not quiet

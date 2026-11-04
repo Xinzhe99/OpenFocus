@@ -357,16 +357,6 @@ QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {t['borderFocus']}; }}
 QSpinBox:disabled, QDoubleSpinBox:disabled {{
     background-color: {t['controlDisabled']}; color: {t['textFaint']};
 }}
-/* The generic rule reserves the 22 px stepper column on the trailing edge.
-   Controls that call setButtonSymbols(NoButtons) (scale-bar frame index,
-   label preview index, downscale percentage) paint no arrows there, so the
-   reserved gutter left the number visibly off-centre. buttonSymbols is a Qt
-   property, so QSS can match the no-button state without a dynamic
-   property. */
-QSpinBox[buttonSymbols="NoButtons"],
-QDoubleSpinBox[buttonSymbols="NoButtons"] {{
-    padding-right: {s['sm']}px;
-}}
 /* A spin box owns its border and padding. Styling its internal line edit as
    a standalone input applies a second set of padding and a minimum height,
    which can leave no room to paint the value. */

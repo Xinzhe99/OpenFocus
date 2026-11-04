@@ -94,6 +94,43 @@ def test_roi_base_preview_uses_included_snapshot_and_actual_dimensions(qapp):
     assert dialog.mode == "paste"
 
 
+def test_roi_base_preview_develops_native_raw(qapp):
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.roi import ROIRenderOptionsDialog
+    from utils.linear_dng import LinearDNGMetadata
+
+    parent = QWidget()
+    parent.linear_dng_metadata = LinearDNGMetadata(
+        ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
+         (-0.1013, 0.2415, 0.5509)),
+        (1024 / 1853, 1.0, 1024 / 1667), 'Canon', 'Canon EOS R6')
+    frame = np.full((64, 80, 3), [7000, 11000, 14000], np.uint16)
+    dialog = ROIRenderOptionsDialog(1, parent, frames=[frame])
+    dialog.rb_paste.setChecked(True)
+    color = dialog.lbl_preview.pixmap().toImage().pixelColor(0, 0)
+    assert (color.red(), color.green(), color.blue()) == pytest.approx((189, 85, 103), abs=1)
+
+
+def test_registration_preview_develops_native_raw(qapp, monkeypatch):
+    from tests.test_gui_units import _render_window, _patched_render_manager
+    from utils.linear_dng import LinearDNGMetadata
+
+    frame = np.full((64, 80, 3), [7000, 11000, 14000], np.uint16)
+    window = _render_window([frame, frame.copy()])
+    window.linear_dng_metadata = LinearDNGMetadata(
+        ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
+         (-0.1013, 0.2415, 0.5509)),
+        (1024 / 1853, 1.0, 1024 / 1667), 'Canon', 'Canon EOS R6')
+    window.set_fusion_method('none')
+    window.set_alignment_method('ecc')
+    window.chk_quick_preview.setChecked(True)
+    manager, _ = _patched_render_manager(monkeypatch, window)
+    assert manager.start_render(interactive=False) == 'started'
+    manager.on_render_finished([frame, frame.copy()], None, True, 0.1, 0, 'CPU')
+    color = window.lbl_result_img.pixmaps[-1].toImage().pixelColor(0, 0)
+    assert (color.red(), color.green(), color.blue()) == pytest.approx((189, 85, 103), abs=1)
+
+
 def test_project_preserves_reordered_and_removed_tiff_pages(tmp_path):
     container = tmp_path / "stack.tif"
     container.write_bytes(b"reference")
@@ -294,6 +331,7 @@ def test_failed_load_preserves_stack_and_reports_async_error(qapp, monkeypatch):
     from tests.test_gui_units import _StubSignal, _StubStatusBar
     class Worker:
         def __init__(self, *args, **kwargs):
+            self.progress = _StubSignal()
             self.finished_load = _StubSignal()
             self.finished = _StubSignal()
             self.disposed = False

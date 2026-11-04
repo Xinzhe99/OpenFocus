@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "description": "GPU build variants for the Windows desktop distribution. The stable CUDA build stays on the four-asset release channel; additional accelerator builds are independent previews because one PyTorch environment can only contain one accelerator runtime.",
+  "github_asset_limit_bytes": 2147483648,
+  "variants": [
+    {
+      "name": "cuda",
+      "display": "NVIDIA CUDA (RTX 3090 / sm_86)",
+      "python": "3.10",
+      "wheel_cp": "cp310",
+      "torch": "2.5.1+cu124",
+      "torch_wheel": "https://download.pytorch.org/whl/cu124/torch-2.5.1%2Bcu124-cp310-cp310-win_amd64.whl",
+      "torch_sha256": "6f99d8459369cfd6661c2aee14787592fe50156a33faf9ef643ba04e42d6543f",
+      "support_wheels": [],
+      "device_api": "torch.cuda",
+      "asset_suffix": "windows-x64.zip",
+      "channel": "stable",
+      "build": false,
+      "status": "pending-hardware-validation",
+      "hardware": [
+        "NVIDIA GeForce RTX 3090 (compute capability 8.6)"
+      ],
+      "requires": [
+        "NVIDIA display driver with CUDA 12.4 support"
+      ],
+      "expected": {
+        "cuda": "12.4",
+        "arch": [
+          "sm_86"
+        ]
+      },
+      "notes": "Built by .github/workflows/release.yml as one of the four stable assets. CI compiles/loads the CUDA runtime and asserts sm_86 without a GPU; drawing the model on an RTX 3090 remains a real-hardware validation step."
+    },
+    {
+      "name": "rocm",
+      "display": "AMD ROCm for Windows (preview)",
+      "python": "3.12",
+      "wheel_cp": "cp312",
+      "torch": "2.9.1+rocm7.2.1",
+      "torch_wheel": "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
+      "torch_sha256": "",
+      "torch_sha256_note": "AMD's Windows preview index does not publish a per-wheel SHA-256; the HTTPS URL is pinned but the download is not hash-verified.",
+      "support_wheels": [
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz"
+      ],
+      "device_api": "torch.cuda",
+      "asset_suffix": "windows-x64-rocm.zip",
+      "channel": "gpu-preview",
+      "build": true,
+      "status": "pending-hardware-validation",
+      "hardware": [
+        "AMD Radeon GPU listed in AMD's ROCm on Windows compatibility matrix"
+      ],
+      "requires": [
+        "AMD graphics driver 26.2.2 (ROCm 7.2.1 Windows preview)",
+        "Python 3.12 embedded runtime (the AMD wheel is cp312-only)"
+      ],
+      "expected": {
+        "hip_prefix": "7.2",
+        "cuda": null,
+        "arch_prefix": "gfx"
+      },
+      "notes": "AMD ships Windows ROCm PyTorch wheels only for CPython 3.12 (torch 2.9.1 at the time of writing), so this is a separate Python 3.12 build, not a drop-in torch swap in the Python 3.10 stable bundle. HIP exposes the torch.cuda API, so the existing inference device contract can use it, but no AMD hardware has run it in CI. The bundle must collect rocm_sdk and _rocm_sdk_* because torch/lib itself contains only 13 DLLs."
+    },
+    {
+      "name": "xpu",
+      "display": "Intel XPU for Windows (preview)",
+      "python": "3.10",
+      "wheel_cp": "cp310",
+      "torch": "2.6.0+xpu",
+      "torch_wheel": "https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp310-cp310-win_amd64.whl",
+      "torch_sha256": "6c6fce35e8c3a3ff9b7cc37ec8e03deff266702acc1110e4f4090177256d746c",
+      "support_wheels": [],
+      "device_api": "torch.xpu",
+      "asset_suffix": "windows-x64-xpu.zip",
+      "channel": "gpu-preview",
+      "build": true,
+      "status": "pending-hardware-validation",
+      "hardware": [
+        "Intel Arc / Intel Core Ultra integrated GPU"
+      ],
+      "requires": [
+        "Intel graphics driver supported by the XPU wheel",
+        "Intel GPU exposed as torch.xpu by torch 2.6.0+xpu"
+      ],
+      "expected": {
+        "xpu": true
+      },
+      "notes": "Official cp310 Windows XPU wheels exist. The shared core.torch_backend contract now resolves torch.xpu, uses torch.xpu.mem_get_info for VRAM admission and synchronizes XPU work, so this is a real Python 3.10 preview build. No Intel GPU has run it in CI; Conv3d/SDPA and the bundled model remain unverified on XPU."
+    }
+  ]
+}

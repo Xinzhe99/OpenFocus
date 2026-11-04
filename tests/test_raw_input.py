@@ -46,3 +46,31 @@ def test_raf_metadata_probe_does_not_read_the_image_payload(monkeypatch):
     assert reads == [4]
 
 
+def test_scaled_raw_preserves_full_decode_colors_and_size(monkeypatch):
+    """Scaling before the RGB-to-BGR copy must preserve the old pixels."""
+    from types import SimpleNamespace
+
+    rgb = np.random.default_rng(7).integers(0, 65536, (73, 95, 3), dtype=np.uint16)
+
+    class Raw:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def postprocess(self, **_kwargs):
+            return rgb.copy()
+
+    monkeypatch.setattr(il, 'RAWPY_AVAILABLE', True)
+    monkeypatch.setattr(il, 'rawpy', SimpleNamespace(imread=lambda _path: Raw()), raising=False)
+    original = np.ascontiguousarray(rgb[:, :, ::-1])
+    for scale in (0.16, 0.5, 1.0):
+        result = il._decode_one_source('frame.raf', scale)
+        expected = il._downscale_page(original, scale)
+        assert result.error is None
+        assert result.pages[0].dtype == np.uint16
+        assert result.pages[0].flags.c_contiguous
+        np.testing.assert_array_equal(result.pages[0], expected)
+
+

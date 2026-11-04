@@ -265,6 +265,8 @@ openfocus -i ./stack_folder -o ./result/fused.png
 <a id="community"></a>
 ## 커뮤니티와 지원
 
+질문이나 아이디어, 의견이 있으신가요? [Discord 커뮤니티](https://discord.gg/afzmwgPt)에 참여해 주세요. 가능한 한 빨리 답변드리지만, 베이징 시간(UTC+8)을 사용하므로 시차에 따라 답변이 늦어질 수 있습니다.
+
 - **문서** — [사용자 설명서](../USER_MANUAL_KO.md)(12개 언어) · [변경 기록](../../CHANGELOG.md) · [성능](../../docs/PERFORMANCE.md) · [합성 방식](../../docs/FUSION_METHODS.md)
 - **공식 사이트** — [openfocus.top](https://openfocus.top/)(다운로드, 설치 스크립트, 미러)
 - **인용** — [CITATION.cff](../../CITATION.cff). 모든 릴리스는 Zenodo에 보관됩니다([DOI](https://doi.org/10.5281/zenodo.23050823))

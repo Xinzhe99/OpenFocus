@@ -5,11 +5,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.75.4] - 2026-11-05
+
 ### Added
+- Add an optional camera-linear RAW workflow with developed previews and
+  16-bit Linear DNG output for compatible RAW editors.
 - Add a confirmed reset for restoring the imported stack and clearing its
   outputs and annotations without deleting files on disk.
+- Recognize additional LibRaw camera formats including Leica RWL, Hasselblad
+  FFF, Mamiya MEF and Kodak DCR.
+- Add experimental ROCm and Intel XPU inference backends with separate Windows
+  preview builds; NVIDIA, AMD and Intel GPU runs still require hardware validation.
 
 ### Fixed
+- Preserve physical µm/px calibration from native Linear DNG microscopy
+  metadata when every frame agrees, and carry it through DNG export/re-import.
+- Allow a single large operation to use available RAM above a capped desktop
+  reserve, while retaining conservative GPU workspace estimates.
+- Prevent concurrent stack loading and rendering from overcommitting memory;
+  a load waiting for another job remains cancellable.
+- Account for full-resolution guidance buffers when sizing custom StackMFF V3
+  models, preventing oversized inference from passing the memory check.
+- Bundle CUDA-enabled PyTorch in Windows release builds, with CPU fallback.
+- Reduce ECC memory overestimation and avoid whole-stack V3 preprocessing copies
+  for tiled JPEG and 16-bit RAW inputs.
+- Preserve single-frame pixel selection in overlapping V3 hard-mode tiles.
+- Show per-file image loading progress and avoid a full-size RAW color-channel
+  copy when loading at reduced resolution.
 - Avoid reading an entire RAF file merely to check for TIFF-style EXIF metadata.
 - Apply the correct clockwise and 180-degree rotations and retain the selected
   source frame after rotation.
@@ -20,8 +42,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to the source panel.
 - Clear old labels and scale bars when clearing a stack, and let users type or
   paste a folder path into the stack picker.
+- Keep frame numbers visible in label and scale-bar previews with styled Qt
+  controls, and preserve existing files when recovery from split downloads fails.
 
 ### Changed
+- Publish oversized Windows archives in verified GitHub parts and reconstruct
+  the complete downloads on the website mirror.
 - Move the code signing policy to a dedicated document and keep links from the
   README, website and release notes.
 - Shorten the README feature and installation sections, with details in the

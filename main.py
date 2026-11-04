@@ -284,8 +284,6 @@ def update_manager_for(window) -> UpdateManager:
 
 
 class OpenFocus(QMainWindow):
-    # Emitted from the background torch probe; auto-queued to the UI thread.
-    _stackmff_probe_done = pyqtSignal(bool)
 
     def __init__(self):
         super().__init__()
@@ -311,6 +309,7 @@ class OpenFocus(QMainWindow):
         self.current_img_index = -1
         self.image_filenames = []  # 文件名列表
         self.raw_images = []  # 存储原始的numpy数组图像，用于配准和融合
+        self.linear_dng_metadata = None
         self.base_images = []  # 存储首次加载的基准尺寸图像，用于恢复和resize计算
         # Scale the loader used to decode base_images, relative to the files on
         # disk; resize_all_images must never offer more detail than that.
@@ -348,6 +347,7 @@ class OpenFocus(QMainWindow):
         self.ai_batch_size = AI_BATCH_SIZE
         # GPU 加速开关（Settings 菜单可切换，QSettings 持久化）
         self.use_gpu = True
+        self._gpu_pending_enable = False
         # 基底校正（消除亮度漂移）：默认关闭，右面板开关控制
         self.base_frame_correct = False
         # 融合前曝光匹配：默认开启；整栈标定到末帧，所有算法共用
@@ -575,10 +575,9 @@ class OpenFocus(QMainWindow):
         self.chk_reverse_order.blockSignals(False)
         self.chk_sharpen_output.setChecked(bool(getattr(self, "sharpen_output", False)))
 
-        # Probe torch availability in a background thread: importing torch
-        # can block for seconds, and this only decides one checkbox state.
+        # Warm the torch-availability cache in a worker that holds no window
+        # reference; a window-owned QTimer applies the result on the UI thread.
         from PyQt6.QtCore import QTimer
-        self._stackmff_probe_done.connect(self._apply_stackmff_availability)
         self.update_manager.check_finished.connect(self._show_update_result)
         self.update_manager.state_changed.connect(self._on_update_state)
         self.update_manager.error.connect(
@@ -730,6 +729,7 @@ class OpenFocus(QMainWindow):
         # design) is only meaningful when an accelerator actually exists.
         from core.multi_focus_fusion import (torch_device_kind,
                                              is_ai_fusion_available)
+        from core import torch_backend
         try:
             if not getattr(self, 'use_gpu', True):
                 kind = 'N/A'                      # user disabled it
@@ -741,7 +741,9 @@ class OpenFocus(QMainWindow):
                     # Resolve once in the background; until then assume none.
                     self._probe_device_kind_async()
                     kind = 'N/A'
-                if kind not in ('CUDA', 'MPS'):
+                else:
+                    kind = torch_backend.display_name(kind)
+                if not torch_backend.is_accelerator(kind):
                     kind = 'N/A'
                 elif not self._ai_method_selected():
                     # Accelerator present but the selected method is one of
@@ -750,6 +752,7 @@ class OpenFocus(QMainWindow):
             self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind))
         except Exception:
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('Err'))
+        self._refresh_gpu_action()
 
     def _ai_method_selected(self) -> bool:
         try:
@@ -776,6 +779,7 @@ class OpenFocus(QMainWindow):
         """
         return {
             "raw": list(self.raw_images),
+            "linear_dng_metadata": getattr(self, "linear_dng_metadata", None),
             "stack_baseline": getattr(getattr(self, "source_manager", None), "_stack_baseline", None),
             "filenames": list(self.image_filenames),
             "source_paths": list(getattr(self, "image_source_paths", [])),
@@ -931,6 +935,7 @@ class OpenFocus(QMainWindow):
         if manager is not None:
             manager._stack_baseline = state.get("stack_baseline")
         self.raw_images = list(state["raw"])
+        self.linear_dng_metadata = state.get("linear_dng_metadata")
         self.image_filenames = list(state["filenames"])
         self.image_source_paths = list(state["source_paths"])
         self.image_icc_profiles = list(state.get("icc_profiles", []))
@@ -1060,36 +1065,120 @@ class OpenFocus(QMainWindow):
         self.refresh_method_availability()
 
     def _probe_device_kind_async(self) -> None:
-        """Resolve CUDA/MPS in the background, only once something needs it.
+        """Resolve the PyTorch backend off the UI thread, then poll for it.
 
-        Called when the neural method is selected. Importing torch costs ~2.1 s
-        and ~193 MB, which is why it is not done at startup any more.
+        Importing torch costs ~2.1 s and ~193 MB, so it must not run on the
+        UI thread. The worker deliberately touches no QObject: it only calls
+        the pure backend probe. A QTimer owned by this window polls the
+        backend cache, so destroying the window cannot leave a thread
+        emitting a signal on a deleted C++ object.
         """
         import threading
         if getattr(self, "_device_probe_started", False):
+            return
+        from core.multi_focus_fusion import torch_device_kind
+        cached = torch_device_kind()
+        if cached is not None:
+            # A previous window/probe already resolved the backend.
+            self._device_probe_started = True
+            self._apply_device_probe_kind(cached)
             return
         self._device_probe_started = True
 
         def worker():
             from core.multi_focus_fusion import ensure_torch_device_kind
-            ensure_torch_device_kind()
+            try:
+                ensure_torch_device_kind()
+            except Exception:
+                pass
 
-        threading.Thread(target=worker, daemon=True,
-                         name="torch-device-probe").start()
+        thread = threading.Thread(target=worker, daemon=True,
+                                  name="torch-device-probe")
+        self._device_probe_thread = thread
+        thread.start()
+
+        from PyQt6.QtCore import QTimer
+        timer = getattr(self, "_device_probe_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(100)
+            timer.timeout.connect(self._poll_device_probe)
+            self._device_probe_timer = timer
+        timer.start()
+        self._poll_device_probe()  # cached race: apply without waiting
+
+    def _poll_device_probe(self) -> None:
+        """UI-thread poll for the worker's cached backend decision."""
+        from core.multi_focus_fusion import torch_device_kind
+        kind = torch_device_kind()
+        if kind is None:
+            return
+        timer = getattr(self, "_device_probe_timer", None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+            self._device_probe_timer = None
+        self._apply_device_probe_kind(kind)
 
     def _probe_stackmff_availability_async(self) -> None:
-        """Probe torch availability off the UI thread, then apply the result."""
+        """Warm the torch-availability cache without touching this window.
+
+        The worker only calls the cached availability probe; a QTimer owned
+        by the window polls a plain threading.Event, so a window destroyed
+        mid-probe cannot be reached from the background thread.
+        """
         import threading
+        if getattr(self, "_stackmff_probe_started", False):
+            return
+        self._stackmff_probe_started = True
+
+        done = threading.Event()
+        self._stackmff_probe_event = done
 
         def worker():
-            available = is_ai_fusion_available()
-            self._stackmff_probe_done.emit(available)
+            from core.multi_focus_fusion import is_ai_fusion_available
+            try:
+                is_ai_fusion_available()
+            except Exception:
+                pass
+            finally:
+                done.set()
 
-        threading.Thread(target=worker, daemon=True, name="stackmff-probe").start()
+        thread = threading.Thread(target=worker, daemon=True,
+                                  name="stackmff-probe")
+        self._stackmff_probe_thread = thread
+        thread.start()
 
-        # The neural method is the default, so a default selection still needs
-        # the accelerator resolved. Only pay for it when that is the case: a
-        # user whose preference is a classical method never loads torch.
+        from PyQt6.QtCore import QTimer
+        timer = getattr(self, "_stackmff_probe_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setInterval(50)
+            timer.timeout.connect(self._poll_stackmff_probe)
+            self._stackmff_probe_timer = timer
+        timer.start()
+        self._maybe_probe_device_kind()
+
+    def _poll_stackmff_probe(self) -> None:
+        """UI-thread poll; applies the cached availability once warm."""
+        event = getattr(self, "_stackmff_probe_event", None)
+        if event is None or not event.is_set():
+            return
+        try:
+            from core.multi_focus_fusion import is_ai_fusion_available as availability
+            available = bool(availability())
+        except Exception:
+            available = False
+        timer = getattr(self, "_stackmff_probe_timer", None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+            self._stackmff_probe_timer = None
+        self._stackmff_probe_event = None
+        self._apply_stackmff_availability(available)
+
+    def _maybe_probe_device_kind(self) -> None:
+        """Resolve the accelerator only when the selected method uses it."""
         try:
             code = self.combo_fusion.currentData()
             if code != "none" and get_fusion(code).neural:
@@ -1104,6 +1193,49 @@ class OpenFocus(QMainWindow):
         # status bar kept its "GPU: …" placeholder until some unrelated timer
         # tick happened to run, so a finished probe still looked unfinished.
         self._update_dynamic_status()
+
+    def _apply_device_probe_kind(self, _kind: str = "N/A") -> None:
+        """Apply the background backend result to status and the GPU action."""
+        from core import torch_backend
+        from utils.platform_utils import has_compute_gpu
+        if (getattr(self, '_gpu_pending_enable', False)
+                and not torch_backend.is_accelerator(_kind)
+                and not has_compute_gpu()):
+            # The user enabled the switch while the answer was unknown and
+            # the probe found nothing. Revert only that speculative request;
+            # an explicit off is never touched here.
+            self.use_gpu = False
+            self.persist_settings()
+        self._gpu_pending_enable = False
+        self._update_dynamic_status()
+
+    def _refresh_gpu_action(self) -> None:
+        """Enable/check the GPU action from the authoritative backend state.
+
+        The action starts from a cheap OS hint, which can miss an Intel XPU
+        that has no xpu-smi/sycl-ls. Once the backend probe resolves, this
+        makes the switch reachable without ever opting a user back in: the
+        checked state always follows ``use_gpu``, including an explicit off.
+        """
+        action = getattr(self, 'ui_objs', {}).get('action_gpu_accel')
+        if action is None:
+            return
+        from core import torch_backend
+        from core.multi_focus_fusion import (is_ai_fusion_available,
+                                             torch_device_kind)
+        from utils.platform_utils import has_compute_gpu
+        kind = torch_device_kind()
+        try:
+            hardware = bool(has_compute_gpu())
+        except Exception:
+            hardware = False
+        enabled, checked = torch_backend.gpu_toggle_state(
+            hardware, kind, getattr(self, 'use_gpu', True),
+            is_ai_fusion_available() if kind is None else False)
+        action.setEnabled(enabled)
+        action.setChecked(checked)
+        action.setToolTip(trans.t('msg_gpu_accel_hint') if enabled
+                          else trans.t('msg_gpu_accel_unavailable'))
 
     def refresh_method_availability(self) -> None:
         """Keep unavailable entries disabled without changing the request."""
@@ -2246,8 +2378,11 @@ class OpenFocus(QMainWindow):
         """
         if 0 <= index < len(self.stack_images):
             if self.stack_images[index] is None and index < len(self.raw_images):
-                made = self.image_loader.create_pixmaps(
-                    [self.raw_images[index]], max_size=None)
+                image = self.raw_images[index]
+                if self.linear_dng_metadata is not None:
+                    from utils.linear_dng import develop_linear
+                    image = develop_linear(image, self.linear_dng_metadata)
+                made = self.image_loader.create_pixmaps([image], max_size=None)
                 self.stack_images[index] = made[0]
                 # 惰性生成但不设上限等于无界缓存：只保留当前帧±1，
                 # 跳回远处帧时按需重建（这正是惰性机制的本意）
@@ -2469,9 +2604,24 @@ class OpenFocus(QMainWindow):
                 and entry[4] == label_revision):
             return entry[5]
         display = image
+        if target == "registered":
+            selected = self.output_manager.record_for_item(self.output_list.currentItem())
+            metadata = (selected.linear_dng_metadata if selected is not None and selected.kind == "aligned"
+                        else getattr(self, "linear_dng_metadata", None))
+        elif target == "output":
+            metadata = getattr(record, "linear_dng_metadata", None)
+            if record is None:
+                preview_record = getattr(self, "_wipe_preview_record", None)
+                if preview_record is not None and preview_record.image is image:
+                    metadata = preview_record.linear_dng_metadata
+        else:
+            metadata = getattr(self, "linear_dng_metadata", None)
+        if metadata is not None:
+            from utils.linear_dng import develop_linear
+            display = develop_linear(image, metadata)
         if labeled or scale_cfg:
             display = self.label_manager.display_bgr_image(
-                target, image, index, scale_cfg=scale_cfg,
+                target, display, index, scale_cfg=scale_cfg,
                 output_id=record.output_id if record else None)
         pixmap = self._bgr_to_pixmap(display)
         if len(cache) > 4:
@@ -2687,7 +2837,12 @@ class OpenFocus(QMainWindow):
         elif cached is not None and cached[0] is frame.image:
             left_pix = cached[1]
         else:
-            left_pix = self._bgr_to_pixmap(frame.image)
+            image = frame.image
+            metadata = getattr(record, "linear_dng_metadata", None)
+            if metadata is not None:
+                from utils.linear_dng import develop_linear
+                image = develop_linear(image, metadata)
+            left_pix = self._bgr_to_pixmap(image)
             self._wipe_source_cache = (frame.image, left_pix)
         right_pix = self._wipe_pixmap("right", self._wipe_right_index(), right_image)
         left_title = trans.t("wipe_output_source").format(n=left_idx + 1) if frame is not None else "-"
@@ -2960,6 +3115,9 @@ class OpenFocus(QMainWindow):
         
         try:
             image = self.roi_aligned_images[index]
+            if self.linear_dng_metadata is not None:
+                from utils.linear_dng import develop_linear
+                image = develop_linear(image, self.linear_dng_metadata)
             self.lbl_result_img.set_display_pixmap(cv2_to_pixmap(image))
             self.lbl_result_info.setText(f"{index + 1} / {len(self.roi_aligned_images)}")
             # ROI模式下保持控制栏可见，以便用户切换图像
@@ -3216,6 +3374,10 @@ class OpenFocus(QMainWindow):
         layered_worker = getattr(export_manager, 'layered_worker', None) if export_manager else None
         if layered_worker is not None:
             running.append(layered_worker.isRunning())
+        output_manager = getattr(self, 'output_manager', None)
+        dng_worker = getattr(output_manager, 'linear_dng_worker', None) if output_manager else None
+        if dng_worker is not None:
+            running.append(dng_worker.isRunning())
         source_manager = getattr(self, 'source_manager', None)
         load_worker = getattr(source_manager, '_load_worker', None) if source_manager else None
         if load_worker is not None:
@@ -3325,6 +3487,8 @@ class OpenFocus(QMainWindow):
         if hasattr(self, 'export_manager'):
             _shutdown_worker(getattr(self.export_manager, 'gif_worker', None))
             _shutdown_worker(getattr(self.export_manager, 'layered_worker', None))
+        if hasattr(self, 'output_manager'):
+            _shutdown_worker(getattr(self.output_manager, 'linear_dng_worker', None))
 
         # Stop batch worker if running
         if hasattr(self, 'batch_manager') and self.batch_manager._thread is not None:
@@ -3388,15 +3552,27 @@ class OpenFocus(QMainWindow):
 
     def set_use_gpu(self, enabled: bool) -> None:
         """Toggle GPU acceleration (Settings menu); applies to future renders."""
+        enabled = bool(enabled)
+        pending = False
         if enabled:
-            # Nothing to accelerate without a device; the menu item is disabled
-            # in that case, but a saved project or a scripted call could still
-            # ask for it.
+            from core import torch_backend
+            from core.multi_focus_fusion import (is_ai_fusion_available,
+                                                 torch_device_kind)
             from utils.platform_utils import has_compute_gpu
-            if not has_compute_gpu():
+            kind = torch_device_kind()
+            if kind is None and is_ai_fusion_available():
+                # The authoritative answer is not in yet. Keep the request,
+                # resolve it in the background, and let the fusion path fall
+                # back to CPU if the probe finds no accelerator.
+                pending = True
+                self._probe_device_kind_async()
+            elif (not torch_backend.is_accelerator(kind)
+                  and not has_compute_gpu()):
                 enabled = False
-        self.use_gpu = bool(enabled)
+        self._gpu_pending_enable = pending
+        self.use_gpu = enabled
         self._update_dynamic_status()
+        self._refresh_gpu_action()
         self.persist_settings()
 
     def set_restore_last_stack(self, enabled: bool) -> None:

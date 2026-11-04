@@ -155,7 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "their predicted probabilities (default); 'hard' "
                              "takes the most probable frame per pixel")
     parser.add_argument("--cpu", action="store_true",
-                        help="Force CPU even if CUDA/MPS is available")
+                        help="Force CPU even if CUDA/ROCm/XPU/MPS is available")
     parser.add_argument("--downscale", type=int, default=None,
                         help="Registration feature-detection downscale width")
     parser.add_argument("--tile-size", type=int, default=None,
@@ -167,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tile-threshold", type=int, default=None,
                         help="Minimum image size for tiling (default: automatic)")
     parser.add_argument("--scale-bar", action="store_true",
-                        help="Draw a scale bar on the output (calibration auto-detected from TIFF metadata, or --scale-um)")
+                        help="Draw a scale bar on the output (calibration auto-detected from TIFF/DNG microscopy metadata, or --scale-um)")
     parser.add_argument("--scale-um", type=float, default=None,
                         help="Pixel size in um/px, overriding metadata (implies --scale-bar)")
     parser.add_argument("--depth-map", "-D", dest="depth_map", nargs="?", const=True, default=None,
@@ -707,7 +707,7 @@ def _save_depth(args, fused_out: str) -> None:
 
 
 def _resolve_scale_cfg(args, paths):
-    """Scale-bar config from --scale-bar/--scale-um + TIFF metadata.
+    """Scale-bar config from --scale-bar/--scale-um + TIFF/DNG metadata.
 
     Returns None when the bar was not requested or no calibration is
     available (raising in the latter case only when the user asked for it).

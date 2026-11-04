@@ -85,12 +85,13 @@ Adding a language: add one dict to `LOCALES` with the same keys, rebuild. The
 language menu, `hreflang` tags and sitemap pick it up automatically.
 
 Releasing: the Worker resolves `/api/latest` from GitHub and serves
-`/download/latest/*` from R2 (falling back to a `302` GitHub asset URL for a
-full request), so the page's version label, file sizes and download links
-follow the latest release without a rebuild. Successful GitHub metadata is
-cached for five minutes per data center, while clients receive `no-store`. If
-GitHub is unavailable, the Worker serves the last complete mirror manifest
-with `X-OpenFocus-Release-Source: mirror`; it may lag until mirroring succeeds.
+`/download/latest/*` from R2. For a split Windows release it fills missing
+complete assets from the validated same-tag mirror manifest. A complete GitHub
+asset is a fallback for full requests; a mirror-only asset or range request
+returns `503` until R2 is ready. Complete GitHub metadata is cached for five
+minutes per data center, while clients receive `no-store`. If GitHub is
+unavailable, the Worker serves the last complete mirror manifest with
+`X-OpenFocus-Release-Source: mirror`.
 Without JavaScript, download links still use `/download/latest/*`. Static
 version labels and JSON-LD are generated from `constants.APP_VERSION`; rebuild
 and redeploy when those labels must match the latest release.
@@ -100,8 +101,8 @@ stale sizes in static pages.
 ## Download mirror (R2)
 
 Installers are mirrored to Cloudflare R2 and served from
-`/download/latest/<kind>`. The Worker streams the R2 object when it exists and
-falls back to the GitHub release asset for a full request when it does not.
+`/download/latest/<kind>`. The Worker streams the complete R2 object; a full
+request can fall back to GitHub when the complete asset exists there.
 
 Desktop updates use `GET` or `HEAD /api/updates` to read the R2 manifest
 directly. It contains the latest mirrored tag, publication date and four
@@ -122,11 +123,11 @@ previously advertised version may become unavailable.
 - Workflow: `.github/workflows/r2-mirror.yml` runs after a successful
   **Build & Publish Release** run for a `v*` tag (the release event is
   suppressed for `GITHUB_TOKEN` releases), on manually published releases, and
-  on manual dispatch (`tag` input). It downloads and verifies the four assets,
-  uploads them under their release filenames, and publishes a manifest with
-  GitHub asset digests and stable release notes under
-  `openfocus-meta/latest-release.json` only after all four uploads succeed and
-  only for the current latest release.
+  on manual dispatch (`tag` input). It downloads and verifies Windows parts,
+  reassembles oversized files, downloads the macOS assets, and uploads the four
+  complete files under their release filenames. Only after all uploads succeed
+  does it publish digests and stable release notes under
+  `openfocus-meta/latest-release.json` for the current latest release.
   After the five-minute metadata cache expires, it prunes older recognized
   `OpenFocus-v*` keys. Runs are serialized.
 - Secrets: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (an R2

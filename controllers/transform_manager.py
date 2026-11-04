@@ -143,7 +143,19 @@ class TransformManager:
             # pixmaps for every frame costs seconds and hundreds of MB on
             # large stacks, while only one frame is visible at a time.
             window.stack_images = [None] * len(window.raw_images)
-            thumbnails = window.image_loader.create_thumbnails(window.raw_images, thumb_size=40)
+            metadata = getattr(window, "linear_dng_metadata", None)
+            if metadata is None:
+                thumbnails = window.image_loader.create_thumbnails(window.raw_images, thumb_size=40)
+            else:
+                from utils.linear_dng import develop_linear
+                thumbnails = []
+                for image in window.raw_images:
+                    h, w = image.shape[:2]
+                    scale = 40 / max(h, w)
+                    small = cv2.resize(image, (max(1, int(w * scale)), max(1, int(h * scale))),
+                                       interpolation=cv2.INTER_AREA)
+                    thumbnails.extend(window.image_loader.create_thumbnails(
+                        [develop_linear(small, metadata)], thumb_size=40))
 
             # Per-frame sharpness for the curve above the navigation slider
             self._update_sharpness_curve(window)

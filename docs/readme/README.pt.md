@@ -265,6 +265,8 @@ Consulte o [manual da CLI](../USER_MANUAL_PT.md#14-interface-de-linha-de-comando
 <a id="community"></a>
 ## Comunidade e suporte
 
+Dúvidas, ideias ou sugestões? Participe da nossa [comunidade no Discord](https://discord.gg/afzmwgPt). Respondemos assim que possível; usamos o horário de Pequim (UTC+8), então a diferença de fuso pode afetar o tempo de resposta.
+
 - **Documentação** — [Manual](../USER_MANUAL_PT.md) (doze idiomas) · [Alterações](../../CHANGELOG.md) · [Desempenho](../PERFORMANCE.md) · [Métodos de fusão](../FUSION_METHODS.md)
 - **Citação** — [CITATION.cff](../../CITATION.cff); cada versão é arquivada no Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Feedback** — abra uma [issue](https://github.com/Xinzhe99/OpenFocus/issues) para bugs, ideias e trabalho nos algoritmos

@@ -482,6 +482,28 @@ def test_environment_missing_torch_keeps_classic_methods_available(monkeypatch):
     assert "StackMFF-V3: CPU" not in text
 
 
+@pytest.mark.parametrize("cuda_version", [None, "12.4"])
+def test_environment_reports_cuda_build_without_gpu(monkeypatch, cuda_version):
+    import sys
+    from dialogs.about import EnvironmentInfoDialog
+    from locales import trans
+
+    torch = SimpleNamespace(
+        __version__="2.5.1+cu124" if cuda_version else "2.5.1+cpu",
+        version=SimpleNamespace(cuda=cuda_version),
+        cuda=SimpleNamespace(is_available=lambda: False),
+        backends=SimpleNamespace(),
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    text = EnvironmentInfoDialog.environment_report()
+    assert trans.t('env_no_gpu') in text
+    assert trans.t('env_cpu_mode') in text
+    if cuda_version:
+        assert trans.t('env_cuda_ver').format(cuda_version) in text
+    else:
+        assert trans.t('env_cuda_ver').format("None") not in text
+
+
 def test_environment_probe_does_not_block_dialog_and_copy_uses_report(qapp, monkeypatch):
     from dialogs import about
     monkeypatch.setattr(about._EnvironmentProbe, "start", lambda self: None)
