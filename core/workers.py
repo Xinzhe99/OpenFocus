@@ -104,30 +104,31 @@ class StackLoadWorker(QThread):
                 self.finished_load.emit(False, 'CANCELLED', [], [])
                 return
             try:
-                options = dict(thread_count=self.thread_count,
-                               resource_preference=self.resource_preference)
-                if self.folder:
-                    ok, msg, imgs, names = self.loader.load_from_folder(
-                        self.folder, scale_factor=self.scale, exclude_paths=self.exclude_paths, **options)
-                elif self.video:
-                    ok, msg, imgs, names = self.loader.load_from_video(self.video, scale_factor=self.scale)
-                else:
-                    from utils.path_identity import same_path
-                    paths = [path for path in self.filepaths if not any(
-                        same_path(path, excluded) for excluded in self.exclude_paths)]
-                    ok, msg, imgs, names = self.loader.load_from_filepaths(
-                        paths, scale_factor=self.scale, **options)
-                if ok:
-                    self.source_icc_profiles = dict(getattr(self.loader, 'source_icc_profiles', {}))
-                logger.info("stack decoded %s", frame_details(imgs))
-                # Video decoding does not populate the image failure counter.
-                image_load = bool(self.folder) or not self.video
-                if not ok or (image_load and getattr(self.loader, 'failed_count', 0)):
-                    if self.is_cancelled or msg == 'CANCELLED':
-                        operation.cancel()
+                with heavy_job(lambda: self.is_cancelled):
+                    options = dict(thread_count=self.thread_count,
+                                   resource_preference=self.resource_preference)
+                    if self.folder:
+                        ok, msg, imgs, names = self.loader.load_from_folder(
+                            self.folder, scale_factor=self.scale, exclude_paths=self.exclude_paths, **options)
+                    elif self.video:
+                        ok, msg, imgs, names = self.loader.load_from_video(self.video, scale_factor=self.scale)
                     else:
-                        operation.fail()
-                        logger.error("stack load failed: %s", msg)
+                        from utils.path_identity import same_path
+                        paths = [path for path in self.filepaths if not any(
+                            same_path(path, excluded) for excluded in self.exclude_paths)]
+                        ok, msg, imgs, names = self.loader.load_from_filepaths(
+                            paths, scale_factor=self.scale, **options)
+                    if ok:
+                        self.source_icc_profiles = dict(getattr(self.loader, 'source_icc_profiles', {}))
+                    logger.info("stack decoded %s", frame_details(imgs))
+                    # Video decoding does not populate the image failure counter.
+                    image_load = bool(self.folder) or not self.video
+                    if not ok or (image_load and getattr(self.loader, 'failed_count', 0)):
+                        if self.is_cancelled or msg == 'CANCELLED':
+                            operation.cancel()
+                        else:
+                            operation.fail()
+                            logger.error("stack load failed: %s", msg)
             except RegistrationCancelled as e:
                 operation.cancel()
                 ok, msg, imgs, names = False, str(e), [], []
@@ -685,14 +686,17 @@ class BatchImportWorker(QThread):
                            folder_count=len(self.folder_paths), thread_count=self.thread_count,
                            resource_preference=self.resource_preference) as operation:
             try:
-                if self.mode == 'stack':
-                    ok = self._load_stack()
-                else:
-                    ok = self._load_thumbnails()
+                with heavy_job(lambda: self.is_cancelled):
+                    if self.mode == 'stack':
+                        ok = self._load_stack()
+                    else:
+                        ok = self._load_thumbnails()
                 if self.is_cancelled:
                     operation.cancel()
                 elif ok is False:
                     operation.fail()
+            except RegistrationCancelled:
+                operation.cancel()
             except Exception as exc:  # noqa: BLE001 - surfaced by the dialog
                 operation.fail()
                 if self.mode == 'stack':
