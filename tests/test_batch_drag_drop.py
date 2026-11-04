@@ -307,13 +307,13 @@ def test_batch_picker_text_uses_current_language(qapp, monkeypatch):
 
 def test_open_stack_folder_accepts_a_typed_directory(qapp, tmp_path, monkeypatch):
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QComboBox, QWidget
+    from PyQt6.QtWidgets import QLineEdit, QWidget
     from controllers.source_manager import SourceManager
     from utils import settings_store
 
     target = tmp_path / "stack 文件夹"
     target.mkdir()
-    saved, loaded, seen, errors = [], [], [], []
+    saved, loaded, seen, invalid, errors = [], [], [], [], []
     monkeypatch.setattr(settings_store, "get_last_dialog_dir", lambda: str(tmp_path))
     monkeypatch.setattr(settings_store, "set_last_dialog_dir", saved.append)
     window = QWidget()
@@ -323,9 +323,11 @@ def test_open_stack_folder_accepts_a_typed_directory(qapp, tmp_path, monkeypatch
     def choose():
         dialog = qapp.activeModalWidget()
         try:
-            combo = dialog.findChild(QComboBox, "lookInCombo")
-            line = combo.lineEdit()
-            line.setText(str(target))
+            line = dialog.findChild(QLineEdit, "folderPathEdit")
+            line.setText(str(tmp_path / "missing"))
+            QTest.keyClick(line, Qt.Key.Key_Return)
+            invalid.append((dialog.isVisible(), line.text()))
+            line.setText(f'"{target}"')
             QTest.keyClick(line, Qt.Key.Key_Return)
             seen.append((dialog.isVisible(), dialog.directory().absolutePath()))
             dialog.accept()
@@ -338,6 +340,8 @@ def test_open_stack_folder_accepts_a_typed_directory(qapp, tmp_path, monkeypatch
         QTimer.singleShot(0, choose)
         manager.prompt_and_load_stack()
         assert not errors
+        assert invalid[0][0]
+        assert os.path.normcase(os.path.normpath(invalid[0][1])) == os.path.normcase(str(tmp_path))
         assert seen[0][0], "Enter should navigate without closing the picker"
         assert os.path.normcase(os.path.normpath(seen[0][1])) == os.path.normcase(str(target))
         assert [os.path.normcase(os.path.normpath(path)) for path in saved] == [os.path.normcase(str(target))]
@@ -350,7 +354,7 @@ def test_open_stack_folder_accepts_a_typed_directory(qapp, tmp_path, monkeypatch
 
 def test_batch_folder_picker_navigates_typed_path_on_enter(qapp, tmp_path):
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QComboBox, QFileDialog
+    from PyQt6.QtWidgets import QFileDialog, QLineEdit
     from dialogs.batch import BatchProcessingDialog
 
     target = tmp_path / "stack 文件夹"
@@ -361,9 +365,9 @@ def test_batch_folder_picker_navigates_typed_path_on_enter(qapp, tmp_path):
     def navigate():
         dialog = qapp.activeModalWidget()
         try:
-            combo = dialog.findChild(QComboBox, "lookInCombo")
-            combo.lineEdit().setText(str(target))
-            QTest.keyClick(combo.lineEdit(), Qt.Key.Key_Return)
+            line = dialog.findChild(QLineEdit, "folderPathEdit")
+            line.setText(str(target))
+            QTest.keyClick(line, Qt.Key.Key_Return)
             seen.append((dialog.isVisible(), dialog.directory().absolutePath()))
         except Exception as exc:
             errors.append(exc)

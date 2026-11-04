@@ -46,43 +46,46 @@ def size_dialog_to_content(dialog, scroll, preferred_width=0):
 
 
 def make_folder_path_editable(dialog) -> None:
-    """Allow typing or pasting a directory into a Qt folder picker's address bar."""
-    from PyQt6.QtCore import QEvent, QObject, Qt
-    from PyQt6.QtWidgets import QComboBox
+    """Add a path field without changing QFileDialog's internal controls."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QLineEdit, QSplitter, QVBoxLayout
     from locales import trans
 
-    combo = dialog.findChild(QComboBox, "lookInCombo")
-    if combo is None:
-        return
-    combo.setEditable(True)
-    combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-    line = combo.lineEdit()
-    if line is None:
-        return
-    line.setPlaceholderText(trans.t("batch_pick_path_hint"))
-    line.setClearButtonEnabled(True)
+    class _DirectoryPathEdit(QLineEdit):
+        def keyPressEvent(self, event):
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                picker = self.window()
+                raw = self.text().strip().strip('"').strip("'")
+                target = os.path.expandvars(os.path.expanduser(raw))
+                if target and os.path.isdir(target):
+                    picker.setDirectory(target)
+                self.setText(picker.directory().absolutePath())
+                event.accept()
+                return
+            super().keyPressEvent(event)
 
-    def navigate():
-        raw = combo.currentText().strip().strip('"').strip("'")
-        target = os.path.expandvars(os.path.expanduser(raw))
-        if target and os.path.isdir(target):
-            dialog.setDirectory(target)
-        else:
-            combo.setEditText(dialog.directory().absolutePath())
+    path_edit = _DirectoryPathEdit(dialog)
+    # Qt owns the C++ widget; retain its Python subclass for keyPressEvent.
+    dialog._folder_path_edit = path_edit
+    path_edit.setObjectName("folderPathEdit")
+    path_edit.setPlaceholderText(trans.t("batch_pick_path_hint"))
+    path_edit.setClearButtonEnabled(True)
+    path_edit.setText(dialog.directory().absolutePath())
+    dialog.directoryEntered.connect(path_edit.setText)
 
-    class _AddressBarKeys(QObject):
-        def eventFilter(self, watched, event):
-            if (event.type() == QEvent.Type.KeyPress
-                    and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)):
-                navigate()
-                return True
-            return super().eventFilter(watched, event)
-
-    # QFileDialog treats Enter as acceptance even when the combo's line edit
-    # handles returnPressed. Consume it here so it only navigates.
-    combo._address_bar_keys = _AddressBarKeys(combo)
-    line.installEventFilter(combo._address_bar_keys)
-    combo.activated.connect(lambda _index: navigate())
+    layout = dialog.layout()
+    splitter = dialog.findChild(QSplitter, "splitter")
+    index = layout.indexOf(splitter) if splitter is not None else -1
+    if index >= 0:
+        row, column, row_span, column_span = layout.getItemPosition(index)
+        layout.removeWidget(splitter)
+        content = QVBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.addWidget(path_edit)
+        content.addWidget(splitter, 1)
+        layout.addLayout(content, row, column, row_span, column_span)
+    else:
+        layout.addWidget(path_edit, layout.rowCount(), 0, 1, layout.columnCount())
 
 
 def resource_path(*relative_parts: str) -> str:
