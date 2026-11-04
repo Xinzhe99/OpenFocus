@@ -444,9 +444,9 @@ def package(name: str, bundle: str, output_dir: str) -> None:
 
 
 def asset_size_error(size: int, limit: int) -> str:
-    if int(size) <= int(limit):
+    if int(size) < int(limit):
         return ""
-    return (f"asset is {int(size)} bytes, above the {int(limit)}-byte "
+    return (f"asset is {int(size)} bytes, at or above the {int(limit)}-byte "
             "GitHub release-asset limit")
 
 

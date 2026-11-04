@@ -43,7 +43,8 @@ def test_preview_assets_never_satisfy_the_stable_updater():
 
 
 def test_release_asset_size_limit_is_enforced_before_upload():
-    assert gpu.asset_size_error(100, 100) == ""
+    assert gpu.asset_size_error(99, 100) == ""
+    assert "100-byte" in gpu.asset_size_error(100, 100)
     assert "100-byte" in gpu.asset_size_error(101, 100)
 
 
