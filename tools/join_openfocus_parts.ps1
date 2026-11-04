@@ -15,6 +15,22 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-Sha256([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+        }
+        finally {
+            $sha.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
 $manifestPath = (Resolve-Path -LiteralPath $Manifest).Path
 $sourceDirectory = Split-Path -Parent $manifestPath
 $data = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
@@ -56,7 +72,7 @@ foreach ($property in $data.assets.PSObject.Properties) {
                 if ($item.Length -ne [int64]$part.size) {
                     throw "Part size mismatch: $($part.name)"
                 }
-                $partHash = (Get-FileHash -LiteralPath $partPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                $partHash = Get-Sha256 $partPath
                 if ($partHash -ne ([string]$part.sha256).ToLowerInvariant()) {
                     throw "Part SHA-256 mismatch: $($part.name)"
                 }
@@ -77,7 +93,7 @@ foreach ($property in $data.assets.PSObject.Properties) {
         if ($joined.Length -ne [int64]$asset.size) {
             throw "Joined size mismatch: $($asset.name)"
         }
-        $joinedHash = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant()
+        $joinedHash = Get-Sha256 $temporary
         if ($joinedHash -ne ([string]$asset.sha256).ToLowerInvariant()) {
             throw "Joined SHA-256 mismatch: $($asset.name)"
         }
