@@ -43,6 +43,72 @@ def test_check_deduplicates_and_hops_to_gui_before_notification(manager, qapp, m
     assert not manager._checking
 
 
+@pytest.mark.parametrize("state", ["latest", "error", "update"])
+@pytest.mark.parametrize("mode", ["quiet", "manual", "joined"])
+def test_check_result_respects_manual_intent(manager, qapp, monkeypatch, state, mode):
+    import main
+    from PyQt6 import QtWidgets
+
+    callbacks, messages, banners, dialogs = [], [], [], []
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet: callbacks.append(callback))
+    monkeypatch.setattr(manager, "can_self_update", lambda: False)
+    monkeypatch.setattr(main.trans, "t", lambda key: key)
+    monkeypatch.setattr(main, "show_message_box", lambda *args, **kwargs: messages.append((args, kwargs)))
+    monkeypatch.setattr(main, "style_message_box", lambda box: None)
+
+    real_box = QtWidgets.QMessageBox
+
+    class FakeBox:
+        Icon = real_box.Icon
+        ButtonRole = real_box.ButtonRole
+
+        def __init__(self, parent):
+            dialogs.append(self)
+
+        def setIcon(self, icon):
+            pass
+
+        def setWindowTitle(self, title):
+            pass
+
+        def setText(self, text):
+            pass
+
+        def addButton(self, text, role):
+            return object()
+
+        def exec(self):
+            pass
+
+        def clickedButton(self):
+            return None
+
+    monkeypatch.setattr(QtWidgets, "QMessageBox", FakeBox)
+    host = SimpleNamespace(
+        _update_manager=lambda: manager,
+        update_manager=manager,
+        _show_update_banner=lambda tag, ready: banners.append((tag, ready)),
+    )
+    manager.check_finished.connect(lambda *args: main.OpenFocus._show_update_result(host, *args))
+    manager.check(quiet=mode != "manual")
+    if mode == "joined":
+        manager.check(quiet=False)
+    assert len(callbacks) == 1
+    callbacks[0](state, "v999", "page")
+    qapp.processEvents()
+
+    if state == "update":
+        assert banners == [("v999", False)]
+        assert len(dialogs) == (mode != "quiet")
+        assert not messages
+    else:
+        assert not banners and not dialogs
+        assert len(messages) == (mode != "quiet")
+        if messages:
+            title = "update_up_to_date_title" if state == "latest" else "update_check_failed_title"
+            assert messages[0][0][1] == title
+
+
 def test_check_result_cannot_rebind_active_download(manager):
     manager.tag, manager.zip_url, manager.zip_digest = "v999", "old.zip", "old-digest"
     manager.state = um.STATE_DOWNLOADING
@@ -201,7 +267,8 @@ def test_intel_mac_does_not_offer_unqualified_arm_installer(monkeypatch):
     import platform
     monkeypatch.setattr(updater.sys, "platform", "darwin")
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
-    release = {"assets": [{"name": "OpenFocus-macos.dmg", "browser_download_url": "arm.dmg"}]}
+    release = {"tag": "v9.9", "assets": {"macos-dmg": {
+        "name": "OpenFocus-v9.9-macos.dmg", "size": 1}}}
     assert updater.find_installer_asset(release) is None
 
 

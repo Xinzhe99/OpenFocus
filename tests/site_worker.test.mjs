@@ -344,6 +344,91 @@ test("invalid mirror metadata cannot redirect downloads", async () => {
   assert.match(await response.text(), /GitHub release API returned 503/);
 });
 
+test("updates serves only the R2 manifest, including optional release notes and digests", async () => {
+  const calls = installReleaseFetch({ fail: true });
+  const release = releaseBody();
+  const manifest = {
+    tag: TAG,
+    published: release.published_at,
+    assets: Object.fromEntries(Object.entries(NAMES).map(([kind, name]) => [kind, {
+      name, size: PAYLOAD.length,
+      url: `https://github.com/Xinzhe99/OpenFocus/releases/download/${TAG}/${name}`,
+      digest: `sha256:${"a".repeat(64)}`,
+    }])),
+    releases: [{ tag_name: TAG, body: "Release notes" }],
+  };
+  const key = "openfocus-meta/latest-release.json";
+  const env = makeEnv({ [key]: new TextEncoder().encode(JSON.stringify(manifest)) });
+  let response = await run("https://openfocus.top/api/updates", { env });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), manifest);
+  response = await run("https://openfocus.top/api/updates", { env, method: "HEAD" });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "");
+  assert.equal(calls(), 0);
+
+  manifest.releases = Array.from({ length: 30 }, (_, index) => ({
+    tag_name: `v1.0.${index}`,
+    body: "Release notes ".repeat(320),
+  }));
+  const largeManifest = new TextEncoder().encode(JSON.stringify(manifest));
+  assert.ok(largeManifest.length > 100000);
+  response = await run("https://openfocus.top/api/updates", { env: makeEnv({ [key]: largeManifest }) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), manifest);
+
+  delete manifest.releases;
+  for (const asset of Object.values(manifest.assets)) delete asset.digest;
+  const legacy = makeEnv({ [key]: new TextEncoder().encode(JSON.stringify(manifest)) });
+  response = await run("https://openfocus.top/api/updates", { env: legacy });
+  assert.deepEqual(await response.json(), manifest);
+  for (const unavailable of [makeEnv(), makeEnv({ [key]: new TextEncoder().encode("{}") }), { DOWNLOADS: { get: async () => { throw new Error("R2 unavailable"); } } }]) {
+    response = await run("https://openfocus.top/api/updates", { env: unavailable });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("location"), null);
+  }
+  response = await run("https://openfocus.top/api/updates", { env, method: "POST" });
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get("allow"), "GET, HEAD");
+  assert.equal(calls(), 0);
+});
+
+test("versioned downloads use only R2 with range, validators and HEAD", async () => {
+  const calls = installReleaseFetch({ fail: true });
+  const env = makeEnv(Object.fromEntries(Object.values(NAMES).map((name) => [name, PAYLOAD])));
+  for (const kind of Object.keys(NAMES)) {
+    const url = `https://openfocus.top/download/releases/${TAG}/${kind}`;
+    let response = await run(url, { env, headers: { Range: "bytes=2-4" } });
+    assert.equal(response.status, 206);
+    assert.equal(response.headers.get("content-range"), "bytes 2-4/10");
+    assert.equal(await response.text(), "234");
+    response = await run(url, { env, method: "HEAD" });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("etag"), ETAG);
+    assert.equal(await response.text(), "");
+    response = await run(url, { env, headers: { "If-None-Match": ETAG } });
+    assert.equal(response.status, 304);
+  }
+  const twoPartEnv = makeEnv({ "OpenFocus-v1.10-setup.exe": PAYLOAD });
+  const twoPart = await run("https://openfocus.top/download/releases/v1.10/windows-setup", { env: twoPartEnv });
+  assert.equal(twoPart.status, 200);
+  assert.equal(await twoPart.text(), "0123456789");
+  const missing = `https://openfocus.top/download/releases/v9.9.9/windows-setup`;
+  for (const method of ["GET", "HEAD"]) {
+    const response = await run(missing, { env, method });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("location"), null);
+  }
+  for (const path of ["v1.0.0/linux-deb", "v1.0.0-rc1/windows-setup", "v1..0/windows-setup", "v1.0.0/windows-setup/extra"]) {
+    const response = await run(`https://openfocus.top/download/releases/${path}`, { env });
+    assert.equal(response.status, 404);
+  }
+  const response = await run(`https://openfocus.top/download/releases/${TAG}/windows-setup`, { env, method: "POST" });
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get("allow"), "GET, HEAD");
+  assert.equal(calls(), 0);
+});
+
 test("unknown kinds are 404 and non-read methods are 405", async () => {
   installCache();
   installReleaseFetch();

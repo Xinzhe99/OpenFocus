@@ -109,19 +109,22 @@ jobs:
             exit 0
           fi
           manifest="$RUNNER_TEMP/openfocus-latest.json"
-          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json tagName,publishedAt,assets |
-            jq -e --arg tag "$tag" '
+          releases="$RUNNER_TEMP/openfocus-releases.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq '[.[][] | select(.draft == false and .prerelease == false) | {tag_name, body}] | .[:30]' > "$releases"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" |
+            jq -e --arg tag "$tag" --slurpfile releases "$releases" '
               def asset($name):
-                [.assets[] | select(.name == $name) | {name, size, url}]
-                | if length == 1 and .[0].size > 0 then .[0]
-                  else error("missing or empty asset: " + $name) end;
-              if .tagName != $tag then error("release tag changed") else . end |
-              {tag: .tagName, published: .publishedAt, assets: {
+                [.assets[] | select(.name == $name) | {name, size, url: .browser_download_url, digest}]
+                | if length == 1 and .[0].size > 0 and (.[0].digest | type == "string" and test("^sha256:[0-9a-fA-F]{64}$")) then .[0]
+                  else error("missing asset or SHA-256 digest: " + $name) end;
+              if .tag_name != $tag then error("release tag changed") else . end |
+              {tag: .tag_name, published: .published_at, assets: {
                 "windows-setup": asset("OpenFocus-" + $tag + "-setup.exe"),
                 "windows-zip": asset("OpenFocus-" + $tag + "-windows-x64.zip"),
                 "macos-dmg": asset("OpenFocus-" + $tag + "-macos.dmg"),
                 "macos-zip": asset("OpenFocus-" + $tag + "-macos-arm64.zip")
-              }}' > "$manifest"
+              }, releases: $releases[0]}' > "$manifest"
           aws s3 cp "$manifest" "s3://openfocus-downloads/openfocus-meta/latest-release.json" \
             --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
             --content-type "application/json" --cache-control "no-store" \

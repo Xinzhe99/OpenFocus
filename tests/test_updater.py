@@ -42,41 +42,71 @@ class TestIsNewer:
         assert not is_newer("garbage", "1.10")
 
 
-def _release(assets):
-    return {"tag_name": "v9.9", "html_url": "https://x/releases/tag/v9.9",
-            "assets": [{"name": n, "browser_download_url": "https://x/" + n,
-                        "size": 1} for n in assets]}
+def _release(kinds):
+    suffixes = {"windows-setup": "setup.exe", "windows-zip": "windows-x64.zip",
+                "macos-dmg": "macos.dmg", "macos-zip": "macos-arm64.zip"}
+    return {"tag": "v9.9", "assets": {
+        kind: {"name": f"OpenFocus-v9.9-{suffixes[kind]}", "size": 1,
+               "url": "https://github.com/unused", "digest": "sha256:" + "a" * 64}
+        for kind in kinds
+    }}
 
 
 class TestPortableZipAsset:
-    def test_windows_zip(self, monkeypatch):
+    def test_windows_zip_uses_version_pinned_mirror(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "win32")
-        rel = _release(["OpenFocus-9.9-win-setup.exe",
-                        "OpenFocus-9.9-windows-x64.zip"])
-        asset = find_portable_zip_asset(rel)
-        assert asset and asset["name"].endswith("windows-x64.zip")
+        asset = find_portable_zip_asset(_release(["windows-setup", "windows-zip"]))
+        assert asset["url"] == "https://openfocus.top/download/releases/v9.9/windows-zip"
+        assert asset["digest"] == "sha256:" + "a" * 64
 
     def test_installer_assets_are_not_zips(self, monkeypatch):
-        """A dmg/setup.exe must never be handed to the zip staging flow."""
         monkeypatch.setattr(sys, "platform", "darwin")
-        rel = _release(["OpenFocus-9.9-macos.dmg"])
+        assert find_portable_zip_asset(_release(["macos-dmg"])) is None
+
+    def test_missing_or_unverified_zip_is_not_offered(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert find_portable_zip_asset(_release([])) is None
+        rel = _release(["windows-zip"])
+        rel["assets"]["windows-zip"]["digest"] = ""
         assert find_portable_zip_asset(rel) is None
 
-    def test_missing_asset_yields_none(self, monkeypatch):
-        monkeypatch.setattr(sys, "platform", "win32")
-        assert find_portable_zip_asset(_release(["readme.txt"])) is None
-
     def test_macos_picks_only_its_own_arch(self, monkeypatch):
-        """An Apple Silicon app must never be swapped for an x86_64 build."""
-        import platform as _platform
+        import platform
         monkeypatch.setattr(sys, "platform", "darwin")
-        monkeypatch.setattr(_platform, "machine", lambda: "arm64")
-        rel = _release(["OpenFocus-9.9-macos-x86_64.zip",
-                        "OpenFocus-9.9-macos-arm64.zip"])
+        monkeypatch.setattr(platform, "machine", lambda: "arm64")
+        rel = _release(["macos-zip"])
         assert find_portable_zip_asset(rel)["name"].endswith("macos-arm64.zip")
-        monkeypatch.setattr(_platform, "machine", lambda: "x86_64")
-        assert find_portable_zip_asset(
-            _release(["OpenFocus-9.9-macos-arm64.zip"])) is None
+        monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+        assert find_portable_zip_asset(rel) is None
+
+
+def test_fetch_latest_release_uses_website_and_ignores_remote_asset_urls(monkeypatch):
+    import io
+    import json
+    from utils import updater
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    seen = []
+
+    def respond(request, timeout):
+        seen.append(request.full_url)
+        return io.BytesIO(json.dumps(_release(["windows-setup", "windows-zip"])).encode())
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", respond)
+    ok, tag, page, installer, portable = updater.fetch_latest_release()
+    assert ok and tag == "v9.9"
+    assert seen == ["https://openfocus.top/api/updates"]
+    assert page == "https://openfocus.top/#download"
+    assert installer["url"] == "https://openfocus.top/download/releases/v9.9/windows-setup"
+    assert portable["url"] == "https://openfocus.top/download/releases/v9.9/windows-zip"
+    assert portable["digest"] == "sha256:" + "a" * 64
+
+
+def test_invalid_mirror_metadata_is_an_error(monkeypatch):
+    from utils import updater
+    monkeypatch.setattr(updater, "_api_get", lambda *args: {"tag": "../../other"})
+    with pytest.raises(ValueError, match="Invalid update metadata"):
+        updater.fetch_latest_release()
 
 
 class TestCheckAsyncContract:

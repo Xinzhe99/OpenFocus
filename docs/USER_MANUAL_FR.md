@@ -672,7 +672,7 @@ Les photos iPhone se chargent directement. Nécessite `pillow-heif`, que `pip in
 
 ### Mises à jour
 
-**Aide → Rechercher des mises à jour** compare votre version à GitHub Releases. Une version plus récente est téléchargée en arrière-plan pendant que l'application est inactive ; une fois la version préparée, la bannière et la zone d'état proposent **Redémarrer et mettre à jour**, qui l'applique hors ligne. Les versions qui ne peuvent pas se mettre à jour elles-mêmes ouvrent la page des versions. La vérification s'exécute silencieusement au plus une fois par jour.
+**Aide → Rechercher des mises à jour** compare votre version aux informations de `openfocus.top`. Une version plus récente est téléchargée depuis ce site en arrière-plan pendant que l'application est inactive ; une fois la version préparée, la bannière et la zone d'état proposent **Redémarrer et mettre à jour**, qui l'applique hors ligne. Les versions qui ne peuvent pas se mettre à jour elles-mêmes ouvrent la page de téléchargement du site. La vérification automatique s'exécute silencieusement au plus une fois par jour.
 
 ### Cache de recalage
 
@@ -688,7 +688,7 @@ Changez à tout moment via **Paramètres → Langue**, qui liste les douze paque
 
 ### Vérification automatique des mises à jour
 
-Une fois par jour, quelques secondes après le lancement, OpenFocus vérifie silencieusement GitHub. Si une version plus récente existe, une bannière apparaît au-dessus des panneaux d'image : la version, **Mettre à jour maintenant** (applique une version préparée ou démarre le téléchargement), **Nouveautés** (notes de version) et un bouton de fermeture. La fermer masque la bannière pour cette version seulement ; la version suivante la réaffiche, et **Aide → Rechercher des mises à jour** la réactive immédiatement.
+Une fois par jour, quelques secondes après le lancement, OpenFocus vérifie silencieusement `openfocus.top`. Les notes de version proviennent aussi de ce site. Si une version plus récente existe, une bannière apparaît au-dessus des panneaux d'image : la version, **Mettre à jour maintenant** (applique une version préparée ou démarre le téléchargement), **Nouveautés** (notes de version) et un bouton de fermeture. La fermer masque la bannière pour cette version seulement ; la version suivante la réaffiche, et **Aide → Rechercher des mises à jour** la réactive immédiatement.
 
 Pendant le téléchargement en arrière-plan, la barre d'état affiche la progression. Vous pouvez aussi vérifier manuellement à tout moment via **Aide → Rechercher des mises à jour**.
 

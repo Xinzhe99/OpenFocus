@@ -352,7 +352,7 @@ PACK = {
     "update_up_to_date_title": "최신 버전",
     "update_up_to_date_text": "최신 버전의 OpenFocus를 사용 중입니다.",
     "update_check_failed_title": "업데이트 확인 실패",
-    "update_check_failed_text": "GitHub에 연결할 수 없습니다. 인터넷 연결을 확인하고 나중에 다시 시도하세요.",
+    "update_check_failed_text": "업데이트 서비스에 연결할 수 없습니다. 인터넷 연결을 확인하고 나중에 다시 시도하세요.",
     "update_available_oneclick_text": "OpenFocus {version} 버전을 사용할 수 있습니다. 지금 업데이트하고 현재 세션으로 재시작하시겠습니까?",
     "update_ready_text": "OpenFocus {version}을(를) 다운로드하고 검증했습니다. 지금 재시작하여 설치하시겠습니까? 먼저 종료한 경우, 앱을 다시 열면 재다운로드 없이 즉시 설치를 제안합니다.",
     "update_bg_downloading": "업데이트 {version} 다운로드 중… {percent}%",

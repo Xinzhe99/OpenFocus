@@ -147,7 +147,7 @@ class TestReleaseNotes:
 
         def fake(url, timeout=None):
             calls.append(url)
-            return payload
+            return {"releases": payload}
         monkeypatch.setattr(updater, "_api_get", fake)
         return calls
 
@@ -157,9 +157,7 @@ class TestReleaseNotes:
         assert "1.49" in notes and "1.48" in notes
         assert "1.47" not in notes          # installed version itself excluded
         assert "OLD" not in notes           # older versions excluded
-        # the LIST endpoint (not /latest), otherwise the body would be a
-        # single release dict and nothing would aggregate
-        assert calls and "/releases?" in calls[0]
+        assert calls == [updater.RELEASES_API_URL]
 
     def test_markdown_is_rendered_plain(self, monkeypatch):
         self._fake_api(monkeypatch, self.ITEMS)

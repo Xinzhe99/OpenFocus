@@ -672,7 +672,7 @@ Le foto iPhone si caricano direttamente. Richiede `pillow-heif`, installato da `
 
 ### Aggiornamenti
 
-**Aiuto → Controlla aggiornamenti** confronta la tua versione con GitHub Releases. Una versione più recente viene scaricata in background mentre l'applicazione è inattiva; una volta preparata la build, il banner e l'area di stato offrono **Riavvia e aggiorna**, che la applica offline. Le build che non possono aggiornarsi da sole aprono la pagina delle versioni. Il controllo avviene in silenzio al massimo una volta al giorno.
+**Aiuto → Controlla aggiornamenti** confronta la tua versione con le informazioni su `openfocus.top`. Una versione più recente viene scaricata dallo stesso sito in background mentre l'applicazione è inattiva; una volta preparata la build, il banner e l'area di stato offrono **Riavvia e aggiorna**, che la applica offline. Le build che non possono aggiornarsi da sole aprono la pagina di download del sito. Il controllo automatico avviene in silenzio al massimo una volta al giorno.
 
 ### Cache di registrazione
 
@@ -688,7 +688,7 @@ Cambia in qualsiasi momento in **Impostazioni → Lingua**, che elenca i dodici 
 
 ### Controllo automatico degli aggiornamenti
 
-Una volta al giorno, pochi secondi dopo l'avvio, OpenFocus controlla GitHub in silenzio. Se esiste una versione più recente, compare un banner sopra i pannelli immagine con la versione, **Aggiorna ora** (applica una build preparata o avvia il download), **Novità** (note di rilascio) e un pulsante per chiuderlo. Chiuderlo nasconde il banner solo per quella versione; la versione successiva lo ripropone, e **Aiuto → Controlla aggiornamenti** lo riattiva subito.
+Una volta al giorno, pochi secondi dopo l'avvio, OpenFocus controlla `openfocus.top` in silenzio. Anche le note di rilascio provengono dallo stesso sito. Se esiste una versione più recente, compare un banner sopra i pannelli immagine con la versione, **Aggiorna ora** (applica una build preparata o avvia il download), **Novità** (note di rilascio) e un pulsante per chiuderlo. Chiuderlo nasconde il banner solo per quella versione; la versione successiva lo ripropone, e **Aiuto → Controlla aggiornamenti** lo riattiva subito.
 
 Durante il download in background la barra di stato mostra l'avanzamento. Puoi anche controllare manualmente in qualsiasi momento con **Aiuto → Controlla aggiornamenti**.
 

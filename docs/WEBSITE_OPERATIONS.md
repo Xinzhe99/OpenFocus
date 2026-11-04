@@ -60,6 +60,10 @@ flowchart LR
   W -->|"www.openfocus.top"| WWW[301 to apex]
   W -->|"/api/latest"| API[latest release<br/>5 min cache per data center]
   W -->|"/download/latest/*"| D[download]
+  W -->|"/api/updates"| M[Mirror update metadata]
+  M --> R
+  W -->|"/download/releases/tag/kind"| V[Version-pinned update]
+  V --> R
   D -->|object exists| R[(R2: openfocus-downloads)]
   D -.->|"full request, object missing"| GH[302 GitHub release asset]
   D -.->|"range request, object missing"| E[503 retry]
@@ -70,9 +74,9 @@ flowchart LR
 ```
 
 With `run_worker_first: true` in `site/wrangler.jsonc`, every request reaches
-the Worker. It handles `/`, `/api/latest`, `/download/latest/*` and `www`
-canonicalisation; everything else is passed to the static asset binding. Every
-page and asset request therefore counts as a Worker invocation.
+the Worker. It handles `/`, the website and desktop update APIs and download
+routes, and `www` canonicalisation; other requests go to the static binding.
+Every page and asset request therefore counts as a Worker invocation.
 
 - `/` — prefers Chinese from `Accept-Language` (or the `lang` cookie) and
   redirects to `/zh/`; English otherwise. Response: `Vary: Accept-Language,
@@ -93,6 +97,13 @@ page and asset request therefore counts as a Worker invocation.
   `302` GitHub asset URL when the R2 object is missing; a range request
   returns `503` with `Retry-After` instead, so a partial download cannot be
   completed from a different representation.
+- `/api/updates` — returns the last complete R2 manifest. New manifests include
+  asset SHA-256 digests and up to 30 release notes; older ones can omit them.
+  It returns `503` when unavailable and never asks GitHub during a desktop check.
+- `/download/releases/<tag>/<kind>` — streams the specified mirrored asset
+  with the same range and validator support. Missing assets return `503`;
+  desktop updates never redirect to GitHub. Older versioned objects can be
+  pruned after a new release is mirrored.
 - `www.openfocus.top` — every path returns a `301` to `https://openfocus.top/`
   with the path preserved (for example `/zh/?x=1`).
 - Everything else — `site/dist` with `html_handling: auto-trailing-slash`,

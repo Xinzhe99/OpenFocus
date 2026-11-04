@@ -349,7 +349,7 @@ ZH = {
     "update_up_to_date_title": "已是最新版本",
     "update_up_to_date_text": "您正在使用最新版本的 OpenFocus。",
     "update_check_failed_title": "检查更新失败",
-    "update_check_failed_text": "无法连接 GitHub。请检查网络连接后重试。",
+    "update_check_failed_text": "无法连接更新服务。请检查网络连接后重试。",
     "update_available_oneclick_text": "OpenFocus {version} 已发布。是否现在更新，并在重启后回到当前工作现场？",
     "update_ready_text": "OpenFocus {version} 已下载并校验完成。现在重启并安装吗？若稍后自行退出，重新打开软件会直接提示安装，无需重新下载。",
     "update_bg_downloading": "正在后台下载更新 {version}… {percent}%",

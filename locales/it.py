@@ -352,7 +352,7 @@ PACK = {
     "update_up_to_date_title": "Nessun aggiornamento",
     "update_up_to_date_text": "Stai usando l'ultima versione di OpenFocus.",
     "update_check_failed_title": "Controllo aggiornamenti non riuscito",
-    "update_check_failed_text": "Impossibile raggiungere GitHub. Controlla la connessione a Internet e riprova più tardi.",
+    "update_check_failed_text": "Impossibile raggiungere il servizio di aggiornamento. Controlla la connessione a Internet e riprova più tardi.",
     "update_available_oneclick_text": "OpenFocus {version} è disponibile. Aggiornare ora e riavviare nella sessione corrente?",
     "update_ready_text": "OpenFocus {version} è stato scaricato e verificato. Riavviare ora per installarlo? Se esci prima, alla riapertura l'app proporrà di installarlo subito — senza riscaricarlo.",
     "update_bg_downloading": "Download dell'aggiornamento {version}… {percent}%",

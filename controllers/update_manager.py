@@ -291,7 +291,7 @@ class UpdateManager(QObject):
         return False
 
     def check(self, quiet: bool = False) -> None:
-        """Ask GitHub for the latest release; quiet checks are rate-limited."""
+        """Check the update service; quiet checks are rate-limited."""
         import time
         from constants import APP_VERSION
         from utils import updater

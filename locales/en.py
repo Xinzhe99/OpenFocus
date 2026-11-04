@@ -352,7 +352,7 @@ EN = {
     "update_up_to_date_title": "Up to Date",
     "update_up_to_date_text": "You are running the latest version of OpenFocus.",
     "update_check_failed_title": "Update Check Failed",
-    "update_check_failed_text": "Could not reach GitHub. Please check your internet connection and try again later.",
+    "update_check_failed_text": "Could not reach the update service. Please check your internet connection and try again later.",
     "update_available_oneclick_text": "OpenFocus {version} is available. Update now and restart into your current session?",
     "update_ready_text": "OpenFocus {version} has been downloaded and verified. Restart now to install it? If you quit first, reopening the app will offer to install it immediately — no re-download needed.",
     "update_bg_downloading": "Downloading update {version}… {percent}%",

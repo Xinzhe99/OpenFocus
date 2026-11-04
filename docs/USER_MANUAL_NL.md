@@ -710,7 +710,7 @@ iPhone-foto's laden rechtstreeks. Vereist `pillow-heif`; `pip install openfocus`
 
 ### Updates
 
-**Help → Controleren op updates** vergelijkt je versie met GitHub Releases. Een nieuwere versie wordt op de achtergrond gedownload terwijl de app inactief is; zodra de build klaarstaat, bieden de banner en statusbalk **Bijwerken en herstarten**, dat hem offline toepast. Builds die zichzelf niet kunnen bijwerken, openen in plaats daarvan de releasepagina. De controle loopt hoogstens één keer per dag stil op de achtergrond.
+**Help → Controleren op updates** vergelijkt je versie met de release-informatie op `openfocus.top`. Een nieuwere versie wordt van dezelfde website op de achtergrond gedownload terwijl de app inactief is; zodra de build klaarstaat, bieden de banner en statusbalk **Bijwerken en herstarten**, dat hem offline toepast. Builds die zichzelf niet kunnen bijwerken, openen in plaats daarvan de downloadpagina van de website. De automatische controle loopt hoogstens één keer per dag stil op de achtergrond.
 
 ### Registratiecache
 
@@ -726,7 +726,7 @@ Wissel op elk moment via **Instellingen → Taal**; het menu toont alle beschikb
 
 ### Automatische updatecontrole
 
-Eén keer per dag, enkele seconden na de start, controleert OpenFocus stil op GitHub op een nieuwere versie. Als die bestaat, verschijnt een banner boven de beeldpanelen: de versie, **Nu bijwerken** (past een klaargezette build toe of start de download), **Wat is er nieuw** (release-opmerkingen) en een knop om te sluiten. Sluiten verbergt de banner alleen voor die versie — de volgende release brengt hem terug, en **Help → Controleren op updates** activeert hem onmiddellijk opnieuw.
+Eén keer per dag, enkele seconden na de start, controleert OpenFocus stil op `openfocus.top` op een nieuwere versie. Ook de release-opmerkingen komen van die website. Als er een nieuwere versie is, verschijnt een banner boven de beeldpanelen: de versie, **Nu bijwerken** (past een klaargezette build toe of start de download), **Wat is er nieuw** (release-opmerkingen) en een knop om te sluiten. Sluiten verbergt de banner alleen voor die versie — de volgende release brengt hem terug, en **Help → Controleren op updates** activeert hem onmiddellijk opnieuw.
 
 Terwijl de download op de achtergrond loopt, toont de statusbalk de voortgang. Je kunt ook op elk moment handmatig controleren via **Help → Controleren op updates**.
 
