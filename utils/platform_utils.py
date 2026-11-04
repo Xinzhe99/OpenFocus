@@ -5,7 +5,6 @@
 import os
 import platform
 import struct
-import sys
 
 
 def get_os_type() -> str:
@@ -119,19 +118,9 @@ _DISPLAY_ADAPTER_CLASS = (
 
 
 def _torch_accelerator_present() -> bool:
-    """Use the authoritative backend when torch is already loaded."""
+    """Read the completed backend result without starting a blocking probe."""
     from core import torch_backend
-    kind = torch_backend.cached_kind()
-    if kind is not None:
-        return torch_backend.is_accelerator(kind)
-    module = sys.modules.get("torch")
-    if module is None:
-        return False
-    # A module another thread is still importing may be half populated; it
-    # would report CPU and could make has_compute_gpu cache a false negative.
-    if not hasattr(module, "device") or not hasattr(module, "Tensor"):
-        return False
-    return torch_backend.is_accelerator(torch_backend.detect_kind(module))
+    return torch_backend.is_accelerator(torch_backend.cached_kind())
 
 
 def _windows_display_adapters() -> tuple:
@@ -212,14 +201,16 @@ def has_compute_gpu() -> bool:
     actually use it, so a present adapter may still fall back to CPU.
     """
     global _GPU_PRESENT_CACHE
+    # A background probe can finish after the OS hint was cached. Prefer its
+    # completed result, but never wait for the probe on the UI thread.
+    if _torch_accelerator_present():
+        return True
     if _GPU_PRESENT_CACHE is not None:
         return _GPU_PRESENT_CACHE
 
     found = False
     try:
-        if _torch_accelerator_present():
-            found = True
-        elif is_macos():
+        if is_macos():
             # Every Apple-silicon Mac has a usable MPS device.
             found = platform.machine().lower() in ("arm64", "aarch64")
         elif is_windows():

@@ -706,6 +706,18 @@ def test_dynamic_menu_leaf_is_catalogued_and_triggered(server, control_window):
     menu.deleteLater()
 
 
+def test_closing_window_before_delayed_setup_does_not_raise(qapp, tmp_path, monkeypatch):
+    from main import OpenFocus
+
+    monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async", lambda self: None)
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda kind, value, tb: errors.append(value))
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    _destroy_main_window(qapp, window)
+    QTest.qWait(200)
+    assert not errors
+
+
 def test_device_probe_thread_does_not_touch_a_destroyed_window(
         qapp, tmp_path, monkeypatch):
     from main import OpenFocus

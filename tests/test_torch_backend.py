@@ -8,6 +8,7 @@ and on a machine with a working GPU.
 import builtins
 import subprocess
 import sys
+import threading
 import types
 
 import pytest
@@ -279,15 +280,44 @@ def test_linux_gpu_status_covers_amd_nvidia_and_intel(
         platform_utils.reset_gpu_probe_cache()
 
 
-def test_loaded_xpu_backend_makes_the_gpu_probe_true(monkeypatch):
+def test_completed_xpu_probe_overrides_an_older_hardware_hint(monkeypatch):
     from utils import platform_utils
     monkeypatch.setitem(sys.modules, "torch",
                         _torch(cuda=FakeCuda(available=False), xpu=FakeXpu()))
     backend.reset_cache()
-    platform_utils.reset_gpu_probe_cache()
+    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", False)
     try:
+        backend.ensure_torch()
         assert platform_utils.has_compute_gpu() is True
     finally:
+        platform_utils.reset_gpu_probe_cache()
+        backend.reset_cache()
+
+
+def test_hardware_hint_does_not_wait_for_an_active_device_probe(monkeypatch):
+    from utils import platform_utils
+    fake = _torch(cuda=FakeCuda(available=False), xpu=FakeXpu())
+    fake.version.xpu = "test"
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    for name in ("is_macos", "is_windows", "is_linux"):
+        monkeypatch.setattr(platform_utils, name, lambda: False)
+    backend.reset_cache()
+    platform_utils.reset_gpu_probe_cache()
+    finished = threading.Event()
+    result = []
+
+    def query():
+        result.append(platform_utils.has_compute_gpu())
+        finished.set()
+
+    thread = threading.Thread(target=query)
+    try:
+        with backend._LOCK:
+            thread.start()
+            assert finished.wait(2), "GPU menu waited for the device probe"
+        assert result == [False]
+    finally:
+        thread.join(timeout=5)
         platform_utils.reset_gpu_probe_cache()
         backend.reset_cache()
 

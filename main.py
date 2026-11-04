@@ -629,7 +629,10 @@ class OpenFocus(QMainWindow):
             except IndexError:
                 pass
 
-        QTimer.singleShot(100, set_splitter_properties)
+        splitter_timer = QTimer(self)
+        splitter_timer.setSingleShot(True)
+        splitter_timer.timeout.connect(set_splitter_properties)
+        splitter_timer.start(100)
         
         # 比例设置：左侧图像区域占据大部分空间，右侧控制面板可调整
         self.main_splitter.setStretchFactor(0, 3)  # 左侧图像区域伸展因子为3
