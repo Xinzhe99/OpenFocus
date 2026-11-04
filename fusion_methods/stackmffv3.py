@@ -249,14 +249,16 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
     model, device = _get_model_and_device(model_path, use_gpu)
     hp, wp = h + (-h) % PAD_ALIGN, w + (-w) % PAD_ALIGN
     pixels = hp * wp
-    # Live stage features, Q/K/V, MLP and native workspace. These are
-    # conservative allocation terms, not a calibrated RSS prediction.
+    # Live stage features, Q/K/V, MLP and native workspace. The feature
+    # multiplier is calibrated against measured CPU peak RSS for one tile
+    # (10-60 frames, 512-1024 px): the whole host estimate stays 17-36%
+    # above the measured peak. Thread count did not change the peak.
     channels = model.C1 / 16 + (0 if getattr(model, 'single_scale', False)
                                else model.C2 / 64)
     heads = max((getattr(m, 'heads', 1) for m in model.modules()), default=1)
     expansion = max((m.fc1.out_features / m.fc1.in_features
                      for m in model.modules() if hasattr(m, 'fc1')), default=2)
-    features = int(n * pixels * channels * 4 * (12 + 2 * expansion))
+    features = int(n * pixels * channels * 4 * (7 + 2 * expansion))
     scores = int(pixels / 16 * heads * 4
                  * (n * model.window ** 2 + n * n))
     probabilities = n * pixels * 4 * 6
