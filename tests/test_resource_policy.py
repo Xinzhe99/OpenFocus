@@ -388,6 +388,7 @@ def test_unknown_device_memory_never_becomes_a_zero_budget_approval(monkeypatch)
                            xpu=XpuWithoutMemoryQuery(),
                            version=SimpleNamespace(hip=None))
     monkeypatch.setattr(policy.torch_backend, "loaded_torch", lambda: fake)
+    monkeypatch.setattr(policy.torch_backend, "_XPU_AVAILABLE", True)
     snapshot = policy.probe_resources("XPU")
     assert snapshot.free_vram == 0 and not snapshot.vram_known
     workload = _workload(algorithm='stackmffv3', parallel_layer='native',
