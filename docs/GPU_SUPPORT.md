@@ -126,14 +126,15 @@ backend resolves XPU as follows:
   `fusion_methods/stackmffv3.py` and `core/multi_focus_fusion.py` consume that
   backend instead of testing CUDA/MPS directly.
 
-On Windows, XPU availability is checked in a separate process. A missing or
-crashing driver leaves the desktop running and selects CPU; restart the app
-after installing or changing the driver.
+XPU availability and a model-critical indexing operation are checked in a
+separate process. A missing, crashing or incompatible driver leaves the
+desktop running and selects CPU; restart the app after changing the driver.
 
-The preview build is therefore a real Python 3.10 XPU bundle, but it remains
-**unverified on Intel hardware**. In particular, the model's 3D convolutions
-and SDPA path, the actual `torch.xpu` kernel coverage and the driver/GPU
-combination have not been run. If the shared backend is reverted or stops
+The preview build is a real Python 3.10 XPU bundle, but full model inference
+on a validated Intel GPU remains unverified. An Intel UHD 770 reported XPU
+availability locally but hung on tensor indexing; the isolated check selects
+CPU for that configuration. Conv3d/SDPA coverage and other driver/GPU
+combinations still need testing. If the shared backend is reverted or stops
 resolving XPU, the manifest entry must go back to `channel: blocked`; the
 validator refuses a non-buildable `gpu-preview` entry.
 

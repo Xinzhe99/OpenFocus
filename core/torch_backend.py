@@ -20,6 +20,7 @@ Unknown device memory is deliberately not treated as unlimited: callers must
 refuse the job instead of launching an unbounded GPU allocation.
 """
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -56,6 +57,7 @@ _DEVICE_TYPES = {
 _LOCK = threading.RLock()
 _KIND = None
 _XPU_AVAILABLE = None
+_XPU_PROBE_TIMEOUT = 45
 
 
 def loaded_torch():
@@ -85,10 +87,19 @@ def _available(owner) -> bool:
 
 
 def _run_xpu_probe():
-    """Entry point used only in the disposable device-probe process."""
+    """Verify a model-critical XPU operation in a disposable process.
+
+    Some Intel drivers report XPU availability but hang on tensor indexing,
+    which StackMFF V3 uses for relative position biases. The parent bounds
+    this process and falls back to CPU if the driver cannot complete it.
+    """
     try:
         import torch
-        return 0 if _available(_safe_attr(torch, "xpu")) else 1
+        if not _available(_safe_attr(torch, "xpu")):
+            return 1
+        values = torch.tensor([1.0, 2.0], device="xpu")
+        index = torch.tensor([1], device="xpu")
+        return 0 if values[index].cpu().item() == 2.0 else 2
     except Exception:
         return 2
 
@@ -96,21 +107,19 @@ def _run_xpu_probe():
 def _xpu_probe_command():
     if getattr(sys, "frozen", False):
         return [sys.executable, "--_openfocus-xpu-probe"]
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return [sys.executable, "-c",
-            "import sys\n"
-            "try:\n"
-            " import torch\n"
-            " sys.exit(0 if torch.xpu.is_available() else 1)\n"
-            "except Exception:\n"
-            " sys.exit(2)\n"]
+            f"import sys; sys.path.insert(0, {root!r}); "
+            "from core.torch_backend import _run_xpu_probe; "
+            "sys.exit(_run_xpu_probe())"]
 
 
 def _xpu_available(module):
-    """Keep Windows XPU initialization out of the application process."""
+    """Keep XPU initialization and its capability check out of the app."""
     global _XPU_AVAILABLE
     xpu = _safe_attr(module, "xpu")
     version = _safe_attr(_safe_attr(module, "version"), "xpu")
-    if sys.platform != "win32" or not version:
+    if not version:
         return _available(xpu)
     if xpu is None:
         return False
@@ -120,7 +129,7 @@ def _xpu_available(module):
                 result = subprocess.run(
                     _xpu_probe_command(), stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    timeout=45,
+                    timeout=_XPU_PROBE_TIMEOUT,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 if result.returncode not in (0, 1):

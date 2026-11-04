@@ -19,6 +19,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Isolate Windows Intel GPU detection so a failing driver cannot crash startup.
+- Fall back to CPU when an Intel GPU driver hangs on required model operations.
 - Use a newer Intel XPU runtime to avoid a packaged CPU inference exit crash.
 - Avoid intermittent crashes after picking a source or batch folder while
   retaining typed and pasted directory navigation.

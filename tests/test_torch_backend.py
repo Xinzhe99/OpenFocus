@@ -128,14 +128,30 @@ def test_windows_xpu_probe_survives_native_process_failure(monkeypatch, exit_cod
         backend.reset_cache()
 
 
+def test_hanging_xpu_probe_falls_back_to_cpu(monkeypatch, caplog):
+    module = _torch(cuda=FakeCuda(available=False), xpu=FakeXpu())
+    module.version.xpu = "test"
+    monkeypatch.setattr(backend, "_XPU_PROBE_TIMEOUT", 0.5)
+    monkeypatch.setattr(backend, "_xpu_probe_command", lambda: [
+        sys.executable, "-c", "import time; time.sleep(30)",
+    ])
+    backend.reset_cache()
+    try:
+        assert backend.detect_kind(module) == backend.KIND_CPU
+        assert backend.resolve_device(True, module).type == "cpu"
+        assert "Isolated XPU probe failed" in caplog.text
+    finally:
+        backend.reset_cache()
+
+
 def test_source_xpu_probe_works_outside_the_project(tmp_path):
     (tmp_path / "torch.py").write_text(
-        "class xpu:\n    @staticmethod\n    def is_available(): return True\n",
+        "class xpu:\n    @staticmethod\n    def is_available(): return False\n",
         encoding="utf-8",
     )
     result = subprocess.run(backend._xpu_probe_command(), cwd=tmp_path,
                             capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
 
 
 @pytest.mark.parametrize("fallback,expected", [
