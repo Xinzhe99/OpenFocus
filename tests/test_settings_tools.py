@@ -488,6 +488,9 @@ def test_environment_reports_cuda_build_without_gpu(monkeypatch, cuda_version):
     from dialogs.about import EnvironmentInfoDialog
     from locales import trans
     from core import torch_backend
+    import core.multi_focus_fusion as mff
+    monkeypatch.setattr(mff, "_TORCH_DEVICE_KIND", None)
+    monkeypatch.setattr(mff, "_STACKMFF_AVAILABLE_CACHE", True)
     monkeypatch.setattr(torch_backend, "_KIND", None)
 
     torch = SimpleNamespace(
@@ -499,6 +502,7 @@ def test_environment_reports_cuda_build_without_gpu(monkeypatch, cuda_version):
     monkeypatch.setitem(sys.modules, "torch", torch)
     text = EnvironmentInfoDialog.environment_report()
     assert torch_backend.cached_kind() == torch_backend.KIND_CPU
+    assert mff.torch_device_kind() == "N/A"
     assert trans.t('env_no_gpu') in text
     assert trans.t('env_cpu_mode') in text
     if cuda_version:
@@ -538,6 +542,7 @@ def test_environment_dialog_closes_while_probe_is_running(qapp, monkeypatch):
         assert entered.wait(2)
         dialog.reject()
         assert not dialog.isVisible()
+        assert not dialog._probe_timer.isActive()
         from PyQt6 import sip
         from PyQt6.QtCore import QCoreApplication, QEvent
         dialog.deleteLater()

@@ -87,6 +87,11 @@ class EnvironmentInfoDialog(QDialog):
         QApplication.clipboard().setText(self.text_edit.toPlainText())
         self.copy_button.setText(trans.t("msg_success"))
 
+    def done(self, result):
+        self._probe_timer.stop()
+        super().done(result)
+        self.deleteLater()
+
 
     @staticmethod
     def environment_report():
@@ -144,8 +149,9 @@ class EnvironmentInfoDialog(QDialog):
         try:
             import torch
             from core import torch_backend
+            from core.multi_focus_fusion import ensure_torch_device_kind
             available["torch"] = True
-            kind = torch_backend.probe_kind(import_if_needed=True)
+            kind = ensure_torch_device_kind()
             available["device"] = (torch_backend.display_name(kind)
                                    if torch_backend.is_accelerator(kind)
                                    else "CPU")
