@@ -410,6 +410,9 @@ test("an older mirror never supplies assets for a newer GitHub release", async (
   const data = await latest.json();
   assert.equal(data.tag, "v1.0.1");
   assert.equal(data.assets["windows-zip"], null);
+  const download = await run("https://openfocus.top/download/latest/windows-zip", { env });
+  assert.equal(download.status, 503);
+  assert.equal(download.headers.get("Retry-After"), "60");
 });
 
 
