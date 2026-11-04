@@ -40,7 +40,7 @@ foreach ($property in $data.assets.PSObject.Properties) {
     if ([IO.Path]::GetFileName($target) -ne $asset.name) {
         throw "Unsafe output name: $($asset.name)"
     }
-    $temporary = Join-Path $OutputDirectory (".{0}.{1}.tmp" -f $asset.name, [guid]::NewGuid().ToString('N'))
+    $temporary = Join-Path $OutputDirectory ("{0}.{1}.tmp" -f $asset.name, [guid]::NewGuid().ToString('N'))
     try {
         $output = [IO.File]::Create($temporary)
         try {
