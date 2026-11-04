@@ -47,11 +47,12 @@ def system_facts() -> dict:
         "log": str(session_log_path()),
     }
     from utils import memory
-    from utils.platform_utils import has_compute_gpu
+    from utils.platform_utils import cached_compute_gpu
     facts["ram"] = (
         f"{memory.total_memory_bytes() / 1024 ** 3:.1f} GB total, "
         f"{memory.available_memory_bytes() / 1024 ** 3:.1f} GB free")
-    facts["gpu (cuda/rocm/xpu/mps)"] = has_compute_gpu()
+    gpu = cached_compute_gpu()
+    facts["gpu (cuda/rocm/xpu/mps)"] = gpu if gpu is not None else "not checked"
     distributions = (
         ("numpy", "numpy", "__version__"),
         ("opencv-python", "cv2", "__version__"),

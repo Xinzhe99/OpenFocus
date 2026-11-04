@@ -235,11 +235,12 @@ def gpu_toggle_state(kind, use_gpu, torch_installed):
     """Return the GPU action's enabled and checked states.
 
     Until detection completes, an installed PyTorch keeps the action
-    reachable. Once resolved, only a usable accelerator enables it.
+    reachable and reflects the user's preference. Once resolved, only a
+    usable accelerator enables it.
     """
     present = is_accelerator(kind)
     enabled = present or (kind is None and bool(torch_installed))
-    return enabled, bool(present and use_gpu)
+    return enabled, bool(enabled and use_gpu)
 
 
 def device_type(kind) -> str:

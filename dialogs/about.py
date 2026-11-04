@@ -2,7 +2,8 @@
 """About and contact information dialogs."""
 
 import sys
-from PyQt6.QtCore import Qt, QThread
+import threading
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QDialog,
@@ -16,12 +17,18 @@ from utils import get_monospace_font_family
 from ui.styles import PRIMARY_BLUE
 
 
-class _EnvironmentProbe(QThread):
+class _EnvironmentProbe(threading.Thread):
+    def __init__(self):
+        super().__init__(name="environment-probe", daemon=True)
+        self.finished = threading.Event()
+
     def run(self):
         try:
             self.text = EnvironmentInfoDialog.environment_report()
         except Exception as exc:
             self.text = trans.t("msg_error") + "\n" + str(exc)
+        finally:
+            self.finished.set()
 
 
 class EnvironmentInfoDialog(QDialog):
@@ -59,28 +66,27 @@ class EnvironmentInfoDialog(QDialog):
         layout.addWidget(close_btn)
 
         self._probe = _EnvironmentProbe()
-        self._close_pending = False
         self.text_edit.setPlainText(trans.t("msg_gif_processing_title"))
-        self._probe.finished.connect(self._probe_finished)
+        self._probe_timer = QTimer(self)
+        self._probe_timer.setInterval(100)
+        self._probe_timer.timeout.connect(self._poll_probe)
         self._probe.start()
+        self._probe_timer.start()
+
+    def _poll_probe(self):
+        if self._probe.finished.is_set():
+            self._probe_timer.stop()
+            self._probe_finished()
 
     def _probe_finished(self):
         self.text_edit.setPlainText(self._probe.text)
         self.copy_button.setEnabled(True)
-        if self._close_pending:
-            super().reject()
 
     def _copy(self):
         from PyQt6.QtWidgets import QApplication
         QApplication.clipboard().setText(self.text_edit.toPlainText())
         self.copy_button.setText(trans.t("msg_success"))
 
-    def done(self, result):
-        if self._probe.isRunning():
-            self._close_pending = True
-            self.text_edit.setPlainText(trans.t("depth_cancelling"))
-            return
-        super().done(result)
 
     @staticmethod
     def environment_report():
@@ -139,7 +145,7 @@ class EnvironmentInfoDialog(QDialog):
             import torch
             from core import torch_backend
             available["torch"] = True
-            kind = torch_backend.detect_kind(torch)
+            kind = torch_backend.probe_kind(import_if_needed=True)
             available["device"] = (torch_backend.display_name(kind)
                                    if torch_backend.is_accelerator(kind)
                                    else "CPU")

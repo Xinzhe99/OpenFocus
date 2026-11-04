@@ -254,7 +254,7 @@ def test_ensure_torch_never_probes_a_half_initialized_module(monkeypatch, xpu_pr
 
 @pytest.mark.parametrize("kind,use_gpu,torch_installed,enabled,checked", [
     ("XPU", False, False, True, False),
-    (None, True, True, True, False),
+    (None, True, True, True, True),
     ("N/A", True, True, False, False),
     ("N/A", False, False, False, False),
     ("ROCM", True, False, True, True),

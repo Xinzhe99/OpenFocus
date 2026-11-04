@@ -487,6 +487,8 @@ def test_environment_reports_cuda_build_without_gpu(monkeypatch, cuda_version):
     import sys
     from dialogs.about import EnvironmentInfoDialog
     from locales import trans
+    from core import torch_backend
+    monkeypatch.setattr(torch_backend, "_KIND", None)
 
     torch = SimpleNamespace(
         __version__="2.5.1+cu124" if cuda_version else "2.5.1+cpu",
@@ -496,6 +498,7 @@ def test_environment_reports_cuda_build_without_gpu(monkeypatch, cuda_version):
     )
     monkeypatch.setitem(sys.modules, "torch", torch)
     text = EnvironmentInfoDialog.environment_report()
+    assert torch_backend.cached_kind() == torch_backend.KIND_CPU
     assert trans.t('env_no_gpu') in text
     assert trans.t('env_cpu_mode') in text
     if cuda_version:
@@ -514,6 +517,37 @@ def test_environment_probe_does_not_block_dialog_and_copy_uses_report(qapp, monk
     dialog._copy()
     assert qapp.clipboard().text() == dialog._probe.text
     dialog.deleteLater()
+
+
+def test_environment_dialog_closes_while_probe_is_running(qapp, monkeypatch):
+    import threading
+    from dialogs import about
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_report():
+        entered.set()
+        release.wait(5)
+        finished.set()
+        return "CPU"
+
+    monkeypatch.setattr(about.EnvironmentInfoDialog, "environment_report", staticmethod(slow_report))
+    dialog = about.EnvironmentInfoDialog()
+    dialog.show()
+    try:
+        assert entered.wait(2)
+        dialog.reject()
+        assert not dialog.isVisible()
+        from PyQt6 import sip
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        dialog.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert sip.isdeleted(dialog)
+    finally:
+        release.set()
+        assert finished.wait(5)
+        from PyQt6.QtTest import QTest
+        QTest.qWait(50)
 
 
 def test_welcome_theme_updates_existing_hint(qapp):

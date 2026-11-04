@@ -101,7 +101,8 @@ load, stack decode) return immediately; poll `app.state`/`render.state`/
 
 `app.info.methods` mirrors the registry (id, label, category, neural,
 order_sensitive, depth_map, weights, parameters). `capabilities` reports torch,
-gpu, heic, raw, dtcwt and pyqt without importing the optional packages.
+gpu, heic, raw, dtcwt and pyqt without importing the optional packages. `gpu`
+is `null` until a background device probe or OS hardware query has completed.
 
 ### Stack
 

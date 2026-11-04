@@ -718,6 +718,21 @@ def test_closing_window_before_delayed_setup_does_not_raise(qapp, tmp_path, monk
     assert not errors
 
 
+def test_app_info_reports_unknown_until_gpu_probe_finishes(server, monkeypatch):
+    from core import torch_backend
+    from utils import platform_utils
+
+    monkeypatch.setattr(torch_backend, "cached_kind", lambda: None)
+    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", None)
+    monkeypatch.setattr(platform_utils, "is_macos", lambda: False)
+    monkeypatch.setattr(platform_utils, "is_windows", lambda: True)
+    monkeypatch.setattr(platform_utils, "_nvidia_smi_reports_gpu", lambda: True)
+    assert call(server, "app.info")["result"]["capabilities"]["gpu"] is None
+
+    monkeypatch.setattr(torch_backend, "cached_kind", lambda: "XPU")
+    assert call(server, "app.info")["result"]["capabilities"]["gpu"] is True
+
+
 def test_gpu_action_disables_after_backend_probe_fails(qapp, tmp_path, monkeypatch):
     import core.multi_focus_fusion as mff
     from main import OpenFocus
@@ -738,6 +753,26 @@ def test_gpu_action_disables_after_backend_probe_fails(qapp, tmp_path, monkeypat
         window._apply_device_probe_kind("N/A")
         assert not window.use_gpu
         assert not action.isEnabled()
+    finally:
+        _destroy_main_window(qapp, window)
+
+
+def test_gpu_action_can_turn_off_while_probe_is_pending(qapp, tmp_path, monkeypatch):
+    import core.multi_focus_fusion as mff
+    from main import OpenFocus
+
+    monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async", lambda self: None)
+    monkeypatch.setattr(OpenFocus, "_probe_device_kind_async", lambda self: None)
+    monkeypatch.setattr(mff, "torch_device_kind", lambda: None)
+    monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    try:
+        window.use_gpu = True
+        window._refresh_gpu_action()
+        action = window.ui_objs["action_gpu_accel"]
+        assert action.isEnabled() and action.isChecked()
+        action.trigger()
+        assert not window.use_gpu and not action.isChecked()
     finally:
         _destroy_main_window(qapp, window)
 
