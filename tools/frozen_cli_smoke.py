@@ -172,7 +172,9 @@ def _exercise(executable: Path, environment: dict, root: Path,
         errors="replace", timeout=180,
     )
     if ai.returncode:
-        raise RuntimeError(f"Packaged CPU AI inference failed: {ai.stdout!r} {ai.stderr!r}")
+        raise RuntimeError(
+            f"Packaged CPU AI inference failed ({ai.returncode}): "
+            f"{ai.stdout!r} {ai.stderr!r}")
     ai_image = cv2.imdecode(np.fromfile(str(ai_output), np.uint8), cv2.IMREAD_UNCHANGED)
     if ai_image is None or ai_image.shape != shape or ai_image.dtype != np.uint16:
         raise RuntimeError("Packaged CPU AI inference lost image shape or bit depth")
@@ -244,6 +246,14 @@ def run(executable: Path) -> None:
                         if not failing:
                             raise
                         print(f"Desktop cleanup failed: {error}", file=sys.stderr)
+                    finally:
+                        try:
+                            process.wait(timeout=60)
+                        except subprocess.TimeoutExpired:
+                            process.terminate()
+                            process.wait(timeout=15)
+                            if not failing:
+                                raise
             process.wait(timeout=60)
             if process.returncode:
                 raise RuntimeError(

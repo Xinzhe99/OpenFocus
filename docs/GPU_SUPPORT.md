@@ -1,6 +1,6 @@
 # GPU support and distribution
 
-Updated: 2026-11-04. This document describes what is packaged, what is still
+Updated: 2026-11-05. This document describes what is packaged, what is still
 pending real-hardware verification, and why the accelerator builds are
 separate. Nothing here changes the inference implementation.
 
@@ -10,7 +10,7 @@ separate. Nothing here changes the inference implementation.
 |---|---|---|---|
 | NVIDIA RTX 3090 (sm_86) | Stable Windows build (`windows-x64.zip` / `setup.exe`) | 2.5.1+cu124 / 3.10 | Implemented; **real RTX 3090 run pending** |
 | AMD ROCm on Windows | Independent preview (`windows-x64-rocm.zip`), separate `gpu-v<version>` prerelease | 2.9.1+rocm7.2.1 / 3.12 | Build implemented; **real AMD GPU run pending** |
-| Intel XPU | Independent preview (`windows-x64-xpu.zip`), same `gpu-v<version>` prerelease | 2.6.0+xpu / 3.10 | Build implemented; **real Intel GPU run pending** |
+| Intel XPU | Independent preview (`windows-x64-xpu.zip`), same `gpu-v<version>` prerelease | 2.9.1+xpu / 3.10 | Build implemented; **real Intel GPU run pending** |
 
 The four stable release assets and the in-app updater are unchanged. GPU
 previews are never added to a stable release, never mirrored as stable
@@ -113,9 +113,11 @@ any fallback warning.
 
 ## Intel XPU
 
-The official PyTorch XPU index does provide cp310 Windows wheels, for example
-`torch-2.6.0+xpu-cp310-cp310-win_amd64.whl`. The shared backend now resolves
-them:
+The preview uses the official `torch-2.9.1+xpu-cp310-cp310-win_amd64.whl`
+and its matching `pytorch-triton-xpu` wheel. Both direct downloads have pinned
+SHA-256 digests. PyTorch 2.6.0+xpu crashed during process shutdown in a frozen
+CPU inference smoke test; the 2.9.1 bundle completes the same check. The shared
+backend resolves XPU as follows:
 
 - `core/torch_backend.py` detects `torch.xpu`, maps it to the `xpu` device,
   reads `torch.xpu.mem_get_info` for VRAM admission and synchronizes/empties
@@ -142,7 +144,7 @@ python -c "import torch; print(torch.__version__, torch.version.xpu, torch.xpu.i
 .\OpenFocus.exe -i .\stack -o .\xpu-result.tif --method stackmffv3 --threads 4
 ```
 
-Expected: `2.6.0+xpu`, XPU available, an Intel device name; the AI method
+Expected: `2.9.1+xpu`, XPU available, an Intel device name; the AI method
 completes without `--cpu`. Also record whether the model's Conv3d/SDPA path
 falls back, and compare a small stack with the CPU result.
 

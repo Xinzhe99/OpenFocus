@@ -252,7 +252,7 @@ jobs:
           | Variant | PyTorch | Runtime | Status |
           |---|---|---|---|
           | AMD ROCm | 2.9.1+rocm7.2.1 | Python 3.12 | pending real-hardware validation |
-          | Intel XPU | 2.6.0+xpu | Python 3.10 | pending real-hardware validation |
+          | Intel XPU | 2.9.1+xpu | Python 3.10 | pending real-hardware validation |
 
           Requirements:
           - AMD graphics driver 26.2.2 (ROCm 7.2.1 Windows preview) and an
