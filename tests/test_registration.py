@@ -1,11 +1,32 @@
 """Registration tests: known-shift synthetic stacks must be recovered."""
 import os
+from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import cv2
 import pytest
 
 from core.registration import ImageRegistration, _image_sort_key
+
+def test_frozen_registration_preserves_redirected_stdout():
+    # A windowed build creates its own stream when no console is attached;
+    # unlike sys.__stdout__, this wrapper has no other owner to keep it alive.
+    script = '''
+import os, sys
+sys.stdout = os.fdopen(os.dup(1), "w", encoding="utf-8", buffering=1)
+sys.frozen = True
+import core.registration
+print("输出正常", flush=True)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "输出正常" in result.stdout
 
 
 @pytest.mark.parametrize('method', ['openfocus', 'ecc'])

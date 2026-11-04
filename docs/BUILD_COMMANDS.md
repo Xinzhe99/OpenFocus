@@ -14,6 +14,9 @@ change, or producing an unsupported platform variant.
 > `--windowed` (no `--noupx`).
 > `python -m PyInstaller` is preferred for local runs so the interpreter you
 > intend is the one that runs; CI invokes the `pyinstaller` script directly.
+> Before publishing, CI also installs the Windows setup package and launches
+> it without a console or inherited standard handles, checks the first-run
+> welcome dialog and main window, then closes the application.
 
 ---
 

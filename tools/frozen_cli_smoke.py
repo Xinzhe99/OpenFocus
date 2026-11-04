@@ -225,14 +225,81 @@ def run(executable: Path) -> None:
         marker.unlink()
 
 
+def run_installed_startup(executable: Path) -> None:
+    """Launch an installed Windows build as a first-time desktop user."""
+    executable = executable.resolve()
+    if sys.platform != "win32":
+        raise RuntimeError("Installed startup verification requires Windows")
+    if not executable.is_file():
+        raise FileNotFoundError(executable)
+    if (executable.parent / "OpenFocus.portable").exists():
+        raise RuntimeError("Installer unexpectedly contains the portable marker")
+
+    with tempfile.TemporaryDirectory(prefix="openfocus_installed_smoke_") as td:
+        root = Path(td)
+        data = root / "data"
+        data.mkdir()
+        settings = QSettings(str(data / "settings.ini"), QSettings.Format.IniFormat)
+        settings.setValue("updates/last_check_epoch", 9999999999)
+        settings.sync()
+        environment = os.environ.copy()
+        environment["OPENFOCUS_DATA_DIR"] = str(data)
+        environment["OPENFOCUS_CONTROL_FILE"] = str(root / "control.json")
+        environment["OPENFOCUS_INSTANCE_NAME"] = f"OpenFocus-smoke-{uuid.uuid4().hex}"
+        environment.setdefault("QT_QPA_PLATFORM", "windows")
+
+        # A detached desktop launch has no console and no inherited standard
+        # handles. DEVNULL would supply valid handles and miss that case.
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESTDHANDLES
+        startup.hStdInput = startup.hStdOutput = startup.hStdError = 0
+        process = subprocess.Popen(
+            [str(executable)], env=environment, startupinfo=startup,
+            creationflags=subprocess.DETACHED_PROCESS, close_fds=True,
+        )
+        try:
+            _wait_for_control(process, root / "control.json")
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError(f"Installed desktop exited: {process.returncode}")
+                dialogs = _call(executable, environment, "dialog.list").get("dialogs", [])
+                welcome = next((d for d in dialogs if d.get("class") == "WelcomeDialog"), None)
+                if welcome:
+                    break
+                time.sleep(0.2)
+            else:
+                raise RuntimeError(f"First-run welcome dialog did not appear: {dialogs}")
+            _call(executable, environment, "dialog.accept", "--index", str(welcome["index"]))
+            context = _call(executable, environment, "ui.context")
+            if context.get("level") != "main":
+                raise RuntimeError(f"Installed desktop did not reach its main window: {context}")
+            _call(executable, environment, "app.quit", "--force")
+            process.wait(timeout=60)
+            if process.returncode:
+                raise RuntimeError(f"Installed desktop exited with {process.returncode}")
+            print(f"Installed first-run desktop smoke passed: {APP_VERSION}")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=15)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--executable", required=True, type=Path,
         help="path to the packaged desktop executable",
     )
+    parser.add_argument(
+        "--installed-startup", action="store_true",
+        help="verify first launch of a Windows installer without inherited handles",
+    )
     args = parser.parse_args()
-    run(args.executable)
+    if args.installed_startup:
+        run_installed_startup(args.executable)
+    else:
+        run(args.executable)
 
 
 if __name__ == "__main__":

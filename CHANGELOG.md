@@ -15,6 +15,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Remove unused private helpers and mark historical design specifications as
   snapshots.
 
+## [1.75.1] - 2026-11-04
+
+### Fixed
+- Fix a Windows installed or portable build failing to start with
+  `I/O operation on closed file` when launched without a console.
+- Verify the installed Windows application opens its first-run welcome dialog
+  and main window without inherited console handles before publishing.
+
 ## [1.75.0] - 2026-11-03
 
 ### Added
