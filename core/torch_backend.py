@@ -97,11 +97,12 @@ def _xpu_probe_command():
     if getattr(sys, "frozen", False):
         return [sys.executable, "--_openfocus-xpu-probe"]
     return [sys.executable, "-c",
-            "from core.torch_backend import _run_xpu_probe; raise SystemExit(_run_xpu_probe())"]
+            "from core.torch_backend import _run_xpu_probe; "
+            "raise SystemExit(_run_xpu_probe())"]
 
 
 def _xpu_available(module):
-    """Keep Windows XPU driver initialization out of the application process."""
+    """Keep Windows XPU initialization out of the application process."""
     global _XPU_AVAILABLE
     xpu = _safe_attr(module, "xpu")
     version = _safe_attr(_safe_attr(module, "version"), "xpu")
@@ -115,11 +116,13 @@ def _xpu_available(module):
                 result = subprocess.run(
                     _xpu_probe_command(), stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    timeout=45, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    timeout=45,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 if result.returncode not in (0, 1):
                     logging.getLogger("openfocus.core.torch_backend").warning(
-                        "Isolated XPU probe exited with status %s", result.returncode)
+                        "Isolated XPU probe exited with status %s",
+                        result.returncode)
                 _XPU_AVAILABLE = result.returncode == 0
             except (OSError, subprocess.TimeoutExpired) as error:
                 logging.getLogger("openfocus.core.torch_backend").warning(
