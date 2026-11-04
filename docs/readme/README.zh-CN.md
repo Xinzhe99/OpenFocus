@@ -271,6 +271,10 @@ openfocus -i ./stack_folder -o ./result/fused.png
 - **反馈** — 通过 [issue](https://github.com/Xinzhe99/OpenFocus/issues) 报告缺陷、提出想法或算法改进
 - **致谢** — 各融合/配准算法遵循其原始研究许可；StackMFF V3 位于 [Xinzhe99/StackMFF-V3](https://github.com/Xinzhe99/StackMFF-V3)
 
+**微信群：** 使用微信扫描二维码加入 OpenFocus 交流群。
+
+<img src="../../assets/readme/wechat-group.jpg" alt="OpenFocus 微信交流群二维码" width="260">
+
 <a id="license"></a>
 ## 许可
 
