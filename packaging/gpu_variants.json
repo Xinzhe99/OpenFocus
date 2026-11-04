@@ -70,10 +70,12 @@
       "display": "Intel XPU for Windows (preview)",
       "python": "3.10",
       "wheel_cp": "cp310",
-      "torch": "2.6.0+xpu",
-      "torch_wheel": "https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp310-cp310-win_amd64.whl",
-      "torch_sha256": "6c6fce35e8c3a3ff9b7cc37ec8e03deff266702acc1110e4f4090177256d746c",
-      "support_wheels": [],
+      "torch": "2.9.1+xpu",
+      "torch_wheel": "https://download.pytorch.org/whl/xpu/torch-2.9.1%2Bxpu-cp310-cp310-win_amd64.whl",
+      "torch_sha256": "2f318fb6a4bf1101cc17f35a5371f7c1768b41fceed03628397834e85b3edfdd",
+      "support_wheels": [
+        "https://download.pytorch.org/whl/pytorch_triton_xpu-3.5.0-cp310-cp310-win_amd64.whl#sha256=c83ab007311d9cfb6e809ee5a4587d99a9eef4be720b90da4f1aaa68b45139a0"
+      ],
       "device_api": "torch.xpu",
       "asset_suffix": "windows-x64-xpu.zip",
       "channel": "gpu-preview",
@@ -84,7 +86,7 @@
       ],
       "requires": [
         "Intel graphics driver supported by the XPU wheel",
-        "Intel GPU exposed as torch.xpu by torch 2.6.0+xpu"
+        "Intel GPU exposed as torch.xpu by torch 2.9.1+xpu"
       ],
       "expected": {
         "xpu": true
