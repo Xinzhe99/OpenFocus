@@ -2,7 +2,7 @@
 """Settings and configuration dialogs."""
 
 import os
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import (
     QDialog,
@@ -83,6 +83,20 @@ class DurationDialog(QDialog):
         return self.duration_spinbox.value()
 
 
+class _DownsamplePercentSpinBox(QSpinBox):
+    """Replace the old percentage when typing after entering the field."""
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        # Mouse press places the cursor after focusInEvent; defer selection
+        # until that press has completed, while allowing later cursor edits.
+        QTimer.singleShot(0, self._select_if_focused)
+
+    def _select_if_focused(self):
+        if self.hasFocus():
+            self.selectAll()
+
+
 class DownsampleDialog(QDialog):
     """下采样设置对话框"""
 
@@ -140,7 +154,7 @@ class DownsampleDialog(QDialog):
         self.increase_btn.clicked.connect(lambda: self.slider.setValue(self.slider.value() + 1))
 
         # 旋转框
-        self.spinbox = QSpinBox()
+        self.spinbox = _DownsamplePercentSpinBox()
         self.spinbox.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)  # 隐藏自带按钮
         self.spinbox.setRange(1, self.max_percent)
         self.spinbox.setValue(self.scale_percent)

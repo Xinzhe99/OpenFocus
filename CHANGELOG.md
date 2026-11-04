@@ -14,8 +14,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source frame after rotation.
 - Keep Wipe comparisons tied to each output's source images and preserve image
   proportions when comparing differently sized results.
-- Show downsampling percentages in both themes and match the empty result
-  hint color to the source panel.
+- Show downsampling percentages in both themes and select the current value
+  on focus so it can be replaced by typing; match the empty result hint color
+  to the source panel.
 - Clear old labels and scale bars when clearing a stack, and let users type or
   paste a folder path into the stack picker.
 
