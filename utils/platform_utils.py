@@ -117,10 +117,11 @@ _DISPLAY_ADAPTER_CLASS = (
 )
 
 
-def _torch_accelerator_present() -> bool:
-    """Read the completed backend result without starting a blocking probe."""
+def _torch_accelerator_present():
+    """Return a completed backend result, or None before it is known."""
     from core import torch_backend
-    return torch_backend.is_accelerator(torch_backend.cached_kind())
+    kind = torch_backend.cached_kind()
+    return None if kind is None else torch_backend.is_accelerator(kind)
 
 
 def _windows_display_adapters() -> tuple:
@@ -201,10 +202,14 @@ def has_compute_gpu() -> bool:
     actually use it, so a present adapter may still fall back to CPU.
     """
     global _GPU_PRESENT_CACHE
-    # A background probe can finish after the OS hint was cached. Prefer its
-    # completed result, but never wait for the probe on the UI thread.
-    if _torch_accelerator_present():
-        return True
+    # A completed backend result is authoritative. Reading it must never
+    # wait for an ongoing import or driver probe.
+    try:
+        present = _torch_accelerator_present()
+    except Exception:
+        present = None
+    if present is not None:
+        return present
     if _GPU_PRESENT_CACHE is not None:
         return _GPU_PRESENT_CACHE
 
@@ -244,7 +249,7 @@ def has_compute_gpu() -> bool:
 
 
 def reset_gpu_probe_cache() -> None:
-    """Forget the cached answer (tests, or a driver installed mid-session)."""
+    """Forget the cached operating-system hardware hint."""
     global _GPU_PRESENT_CACHE
     _GPU_PRESENT_CACHE = None
 

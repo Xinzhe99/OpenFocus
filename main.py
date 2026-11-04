@@ -1204,10 +1204,8 @@ class OpenFocus(QMainWindow):
     def _apply_device_probe_kind(self, _kind: str = "N/A") -> None:
         """Apply the background backend result to status and the GPU action."""
         from core import torch_backend
-        from utils.platform_utils import has_compute_gpu
         if (getattr(self, '_gpu_pending_enable', False)
-                and not torch_backend.is_accelerator(_kind)
-                and not has_compute_gpu()):
+                and not torch_backend.is_accelerator(_kind)):
             # The user enabled the switch while the answer was unknown and
             # the probe found nothing. Revert only that speculative request;
             # an explicit off is never touched here.
@@ -1219,10 +1217,9 @@ class OpenFocus(QMainWindow):
     def _refresh_gpu_action(self) -> None:
         """Enable/check the GPU action from the authoritative backend state.
 
-        The action starts from a cheap OS hint, which can miss an Intel XPU
-        that has no xpu-smi/sycl-ls. Once the backend probe resolves, this
-        makes the switch reachable without ever opting a user back in: the
-        checked state always follows ``use_gpu``, including an explicit off.
+        While the backend is unresolved the action stays reachable; once it
+        resolves, only a usable accelerator enables it. The checked state
+        follows the user's preference and never opts them back in.
         """
         action = getattr(self, 'ui_objs', {}).get('action_gpu_accel')
         if action is None:
@@ -1230,14 +1227,9 @@ class OpenFocus(QMainWindow):
         from core import torch_backend
         from core.multi_focus_fusion import (is_ai_fusion_available,
                                              torch_device_kind)
-        from utils.platform_utils import has_compute_gpu
         kind = torch_device_kind()
-        try:
-            hardware = bool(has_compute_gpu())
-        except Exception:
-            hardware = False
         enabled, checked = torch_backend.gpu_toggle_state(
-            hardware, kind, getattr(self, 'use_gpu', True),
+            kind, getattr(self, 'use_gpu', True),
             is_ai_fusion_available() if kind is None else False)
         action.setEnabled(enabled)
         action.setChecked(checked)
@@ -3565,7 +3557,6 @@ class OpenFocus(QMainWindow):
             from core import torch_backend
             from core.multi_focus_fusion import (is_ai_fusion_available,
                                                  torch_device_kind)
-            from utils.platform_utils import has_compute_gpu
             kind = torch_device_kind()
             if kind is None and is_ai_fusion_available():
                 # The authoritative answer is not in yet. Keep the request,
@@ -3573,8 +3564,7 @@ class OpenFocus(QMainWindow):
                 # back to CPU if the probe finds no accelerator.
                 pending = True
                 self._probe_device_kind_async()
-            elif (not torch_backend.is_accelerator(kind)
-                  and not has_compute_gpu()):
+            elif not torch_backend.is_accelerator(kind):
                 enabled = False
         self._gpu_pending_enable = pending
         self.use_gpu = enabled

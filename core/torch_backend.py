@@ -107,9 +107,11 @@ def _run_xpu_probe():
 def _xpu_probe_command():
     if getattr(sys, "frozen", False):
         return [sys.executable, "--_openfocus-xpu-probe"]
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Match the running process, not python -c's extra working-directory entry.
+    # An empty path denotes the parent's current directory at launch time.
+    paths = [os.path.abspath(path) for path in sys.path if isinstance(path, str)]
     return [sys.executable, "-c",
-            f"import sys; sys.path.insert(0, {root!r}); "
+            f"import sys; sys.path[:] = {paths!r}; "
             "from core.torch_backend import _run_xpu_probe; "
             "sys.exit(_run_xpu_probe())"]
 
@@ -118,10 +120,11 @@ def _xpu_available(module):
     """Keep XPU initialization and its capability check out of the app."""
     global _XPU_AVAILABLE
     xpu = _safe_attr(module, "xpu")
-    version = _safe_attr(_safe_attr(module, "version"), "xpu")
-    if not version:
-        return _available(xpu)
     if xpu is None:
+        return False
+    version = _safe_attr(_safe_attr(module, "version"), "xpu")
+    compiled = _safe_attr(_safe_attr(module, "_C"), "_has_xpu")
+    if not version and compiled is False:
         return False
     with _LOCK:
         if _XPU_AVAILABLE is None:
@@ -228,19 +231,15 @@ def has_device_memory(kind) -> bool:
     return str(kind).upper() in DEVICE_MEMORY_KINDS
 
 
-def gpu_toggle_state(hardware_present, kind, use_gpu, torch_installed):
-    """(enabled, checked) for the GPU menu action.
+def gpu_toggle_state(kind, use_gpu, torch_installed):
+    """Return the GPU action's enabled and checked states.
 
-    The authoritative backend kind outranks the cheap OS hardware hint: an
-    XPU running in a container may be invisible to ``has_compute_gpu`` but
-    still usable by PyTorch. While the kind is unresolved, torch availability
-    keeps the switch reachable so the user can request the backend probe.
-    ``checked`` always follows the stored preference, so a user who turned
-    GPU acceleration off is never opted back in by a later probe.
+    Until detection completes, an installed PyTorch keeps the action
+    reachable. Once resolved, only a usable accelerator enables it.
     """
-    present = bool(hardware_present) or is_accelerator(kind)
+    present = is_accelerator(kind)
     enabled = present or (kind is None and bool(torch_installed))
-    return enabled, bool(present and bool(use_gpu))
+    return enabled, bool(present and use_gpu)
 
 
 def device_type(kind) -> str:

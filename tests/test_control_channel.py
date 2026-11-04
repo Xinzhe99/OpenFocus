@@ -718,6 +718,30 @@ def test_closing_window_before_delayed_setup_does_not_raise(qapp, tmp_path, monk
     assert not errors
 
 
+def test_gpu_action_disables_after_backend_probe_fails(qapp, tmp_path, monkeypatch):
+    import core.multi_focus_fusion as mff
+    from main import OpenFocus
+    from utils import platform_utils
+
+    monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async", lambda self: None)
+    monkeypatch.setattr(platform_utils, "has_compute_gpu", lambda: True)
+    monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    try:
+        window.use_gpu = True
+        window._update_dynamic_status()
+        action = window.ui_objs["action_gpu_accel"]
+        assert not action.isEnabled()
+        assert not action.isChecked()
+
+        window._gpu_pending_enable = True
+        window._apply_device_probe_kind("N/A")
+        assert not window.use_gpu
+        assert not action.isEnabled()
+    finally:
+        _destroy_main_window(qapp, window)
+
+
 def test_device_probe_thread_does_not_touch_a_destroyed_window(
         qapp, tmp_path, monkeypatch):
     from main import OpenFocus

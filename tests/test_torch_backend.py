@@ -91,29 +91,39 @@ def _torch(cuda=None, xpu=None, mps=None, hip=None):
     return FakeTorch(cuda=cuda, xpu=xpu, mps=mps, hip=hip)
 
 
+@pytest.fixture
+def xpu_probe_usable(monkeypatch):
+    backend.reset_cache()
+    monkeypatch.setattr(backend, "_xpu_probe_command",
+                        lambda: [sys.executable, "-c", "pass"])
+    yield
+    backend.reset_cache()
+
+
 def test_cuda_and_rocm_are_distinguished():
     assert backend.detect_kind(_torch(cuda=FakeCuda())) == backend.KIND_CUDA
     assert backend.detect_kind(_torch(cuda=FakeCuda(), hip="6.2")) == (
         backend.KIND_ROCM)
 
 
-def test_xpu_is_selected_when_cuda_is_unavailable():
+def test_xpu_is_selected_when_cuda_is_unavailable(xpu_probe_usable):
     module = _torch(cuda=FakeCuda(available=False), xpu=FakeXpu())
     assert backend.detect_kind(module) == backend.KIND_XPU
     assert backend.resolve_device(True, module).type == "xpu"
 
 
+@pytest.mark.parametrize("xpu_version", ["test", None])
 @pytest.mark.parametrize("exit_code,expected", [
     (0, backend.KIND_XPU),
     (7, backend.KIND_CPU),
 ])
-def test_windows_xpu_probe_survives_native_process_failure(monkeypatch, exit_code, expected):
+def test_windows_xpu_probe_survives_native_process_failure(monkeypatch, exit_code, expected, xpu_version):
     class UnsafeXpu(FakeXpu):
         def is_available(self):
             pytest.fail("XPU availability must not run in the desktop process")
 
     module = _torch(cuda=FakeCuda(available=False), xpu=UnsafeXpu())
-    module.version.xpu = "test"
+    module.version.xpu = xpu_version
     monkeypatch.setattr(backend.sys, "platform", "win32")
     monkeypatch.setattr(backend, "_xpu_probe_command", lambda: [
         sys.executable, "-c", f"import os; os._exit({exit_code})",
@@ -145,11 +155,16 @@ def test_hanging_xpu_probe_falls_back_to_cpu(monkeypatch, caplog):
         backend.reset_cache()
 
 
-def test_source_xpu_probe_works_outside_the_project(tmp_path):
-    (tmp_path / "torch.py").write_text(
+def test_source_xpu_probe_uses_parent_import_paths(tmp_path, monkeypatch):
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    (installed / "torch.py").write_text(
         "class xpu:\n    @staticmethod\n    def is_available(): return False\n",
         encoding="utf-8",
     )
+    (tmp_path / "torch.py").write_text(
+        "raise RuntimeError('wrong working-directory torch')\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(installed))
     result = subprocess.run(backend._xpu_probe_command(), cwd=tmp_path,
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 1, result.stderr
@@ -159,7 +174,7 @@ def test_source_xpu_probe_works_outside_the_project(tmp_path):
     ("xpu", backend.KIND_XPU),
     ("mps", backend.KIND_MPS),
 ])
-def test_a_broken_cuda_driver_does_not_mask_another_backend(fallback, expected):
+def test_a_broken_cuda_driver_does_not_mask_another_backend(fallback, expected, xpu_probe_usable):
     kwargs = {"cuda": BrokenCuda()}
     if fallback == "xpu":
         kwargs["xpu"] = FakeXpu()
@@ -173,7 +188,7 @@ def test_explicit_cpu_request_wins_over_an_accelerator():
     assert backend.resolve_device(False, module).type == "cpu"
 
 
-def test_rocm_and_xpu_memory_readings():
+def test_rocm_and_xpu_memory_readings(xpu_probe_usable):
     rocm = _torch(cuda=FakeCuda(memory=(3 * 1024 ** 3, 24 * 1024 ** 3)),
                   hip="6.2")
     assert backend.device_memory(backend.KIND_ROCM, rocm) == (
@@ -183,7 +198,7 @@ def test_rocm_and_xpu_memory_readings():
         2 * 1024 ** 3, 16 * 1024 ** 3)
 
 
-def test_unknown_memory_readings_stay_unknown(monkeypatch):
+def test_unknown_memory_readings_stay_unknown(monkeypatch, xpu_probe_usable):
     assert backend.device_memory(
         backend.KIND_CUDA, _torch(cuda=FakeCuda(error=True))) is None
     assert backend.device_memory(
@@ -216,7 +231,7 @@ def test_kind_of_device_distinguishes_rocm_from_cuda():
     assert backend.kind_of_device(FakeDevice("xpu"), _torch()) == backend.KIND_XPU
 
 
-def test_ensure_torch_never_probes_a_half_initialized_module(monkeypatch):
+def test_ensure_torch_never_probes_a_half_initialized_module(monkeypatch, xpu_probe_usable):
     partial = types.SimpleNamespace(cuda=None, xpu=None, backends=None,
                                     version=None)
     full = _torch(cuda=BrokenCuda(), xpu=FakeXpu())
@@ -237,18 +252,17 @@ def test_ensure_torch_never_probes_a_half_initialized_module(monkeypatch):
         backend.reset_cache()
 
 
-@pytest.mark.parametrize("hardware,kind,use_gpu,torch_installed,enabled,checked", [
-    (False, "XPU", False, False, True, False),    # found XPU, user turned off
-    (False, None, True, True, True, False),       # unresolved, probe pending
-    (False, "N/A", True, True, False, False),     # resolved: no accelerator
-    (True, "N/A", False, False, True, False),     # hardware present, user off
-    (True, "ROCM", True, False, True, True),      # hardware + backend, on
-    (False, None, True, False, False, False),     # no hardware, no torch
+@pytest.mark.parametrize("kind,use_gpu,torch_installed,enabled,checked", [
+    ("XPU", False, False, True, False),
+    (None, True, True, True, False),
+    ("N/A", True, True, False, False),
+    ("N/A", False, False, False, False),
+    ("ROCM", True, False, True, True),
+    (None, True, False, False, False),
 ])
 def test_gpu_toggle_state_preserves_the_users_choice(
-        hardware, kind, use_gpu, torch_installed, enabled, checked):
-    assert backend.gpu_toggle_state(
-        hardware, kind, use_gpu, torch_installed) == (enabled, checked)
+        kind, use_gpu, torch_installed, enabled, checked):
+    assert backend.gpu_toggle_state(kind, use_gpu, torch_installed) == (enabled, checked)
 
 
 @pytest.mark.parametrize("vendors,tools,expected", [
@@ -265,7 +279,7 @@ def test_linux_gpu_status_covers_amd_nvidia_and_intel(
     monkeypatch.setattr(platform_utils, "is_windows", lambda: False)
     monkeypatch.setattr(platform_utils, "is_linux", lambda: True)
     monkeypatch.setattr(platform_utils, "_torch_accelerator_present",
-                        lambda: False)
+                        lambda: None)
     monkeypatch.setattr(platform_utils, "_nvidia_smi_reports_gpu",
                         lambda: False)
     monkeypatch.setattr(platform_utils.os.path, "exists", lambda _path: False)
@@ -280,7 +294,7 @@ def test_linux_gpu_status_covers_amd_nvidia_and_intel(
         platform_utils.reset_gpu_probe_cache()
 
 
-def test_completed_xpu_probe_overrides_an_older_hardware_hint(monkeypatch):
+def test_completed_xpu_probe_overrides_an_older_hardware_hint(monkeypatch, xpu_probe_usable):
     from utils import platform_utils
     monkeypatch.setitem(sys.modules, "torch",
                         _torch(cuda=FakeCuda(available=False), xpu=FakeXpu()))
@@ -292,6 +306,13 @@ def test_completed_xpu_probe_overrides_an_older_hardware_hint(monkeypatch):
     finally:
         platform_utils.reset_gpu_probe_cache()
         backend.reset_cache()
+
+
+def test_completed_cpu_probe_overrides_an_older_hardware_hint(monkeypatch):
+    from utils import platform_utils
+    monkeypatch.setattr(backend, "_KIND", backend.KIND_CPU)
+    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", True)
+    assert platform_utils.has_compute_gpu() is False
 
 
 def test_hardware_hint_does_not_wait_for_an_active_device_probe(monkeypatch):
