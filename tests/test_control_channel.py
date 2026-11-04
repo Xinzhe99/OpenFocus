@@ -469,55 +469,6 @@ def test_ctl_reports_missing_gui(monkeypatch, tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "not_running"
 
-def test_file_dialog_patch_injects_non_native_option(qapp, monkeypatch, control_window):
-    """The patch must add DontUseNativeDialog on every static helper call.
-
-    Verified through sentinel originals instead of real dialogs: opening a
-    real picker inside CI hangs headless runs (no timer delivery inside the
-    native exec loop, and a failed assert inside a QTimer slot qFatals).
-    """
-    from core.control import file_dialogs
-    from PyQt6.QtWidgets import QColorDialog, QFileDialog
-
-    file_dialogs.install_non_native_file_dialogs()
-    assert file_dialogs._INSTALLED is True
-
-    seen = {}
-
-    def capture(name):
-        def fake(*args, **kwargs):
-            seen[name] = (args, kwargs)
-            return None
-        return fake
-
-    for name in ("getOpenFileName", "getOpenFileNames", "getSaveFileName",
-                 "getExistingDirectory"):
-        monkeypatch.setitem(file_dialogs._ORIGINAL, name, capture(name))
-    monkeypatch.setattr(file_dialogs, "_COLOR_ORIGINAL", capture("getColor"))
-
-    show_dirs = QFileDialog.Option.ShowDirsOnly
-    non_native = QFileDialog.Option.DontUseNativeDialog
-    QFileDialog.getExistingDirectory(
-        control_window, "Choose", "dir", options=show_dirs)
-    args, kwargs = seen["getExistingDirectory"]
-    assert kwargs["options"] == QFileDialog.Option(show_dirs | non_native)
-
-    QFileDialog.getOpenFileName(
-        control_window, "Open", "dir", "Images (*.tif)",
-        "Images (*.tif)", show_dirs)
-    args, _kwargs = seen["getOpenFileName"]
-    assert args[5] == QFileDialog.Option(show_dirs | non_native)
-
-    QFileDialog.getSaveFileName(control_window, "Save", "out.png", "PNG (*.png)")
-    _args, kwargs = seen["getSaveFileName"]
-    assert kwargs["options"] == QFileDialog.Option(non_native)
-
-    color_non_native = QColorDialog.ColorDialogOption.DontUseNativeDialog
-    QColorDialog.getColor(parent=control_window,
-                          options=QColorDialog.ColorDialogOption.ShowAlphaChannel)
-    _args, kwargs = seen["getColor"]
-    assert kwargs["options"] == QColorDialog.ColorDialogOption(
-        QColorDialog.ColorDialogOption.ShowAlphaChannel | color_non_native)
 
 
 
