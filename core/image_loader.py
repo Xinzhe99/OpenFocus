@@ -117,9 +117,11 @@ def _read_raw_exif_bytes(path: str) -> bytes:
     it lets Pillow walk the IFDs. CR3/RAF are not TIFF and yield b"".
     """
     with open(path, "rb") as fh:
-        data = bytearray(fh.read())
-    if bytes(data[:4]) not in _RAW_TIFF_MAGICS:
-        return b""
+        magic = fh.read(4)
+        if magic not in _RAW_TIFF_MAGICS:
+            return b""
+        data = bytearray(magic)
+        data.extend(fh.read())
     data[2:4] = b"*\x00" if data[:2] == b"II" else b"\x00*"
     # IFD0 of a RAW is full of sensor-data pointers; keep only the export-safe
     # subset so SOURCE_EXIF stays small and embeddable as-is.

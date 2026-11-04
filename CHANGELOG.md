@@ -10,6 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   outputs and annotations without deleting files on disk.
 
 ### Fixed
+- Avoid reading an entire RAF file merely to check for TIFF-style EXIF metadata.
 - Apply the correct clockwise and 180-degree rotations and retain the selected
   source frame after rotation.
 - Keep Wipe comparisons tied to each output's source images and preserve image
