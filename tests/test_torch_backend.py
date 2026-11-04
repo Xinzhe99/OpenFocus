@@ -6,6 +6,7 @@ Every hardware-dependent test supplies an explicit fake module (or isolates
 and on a machine with a working GPU.
 """
 import builtins
+import subprocess
 import sys
 import types
 
@@ -125,6 +126,16 @@ def test_windows_xpu_probe_survives_native_process_failure(monkeypatch, exit_cod
                           if expected == backend.KIND_XPU else None)
     finally:
         backend.reset_cache()
+
+
+def test_source_xpu_probe_works_outside_the_project(tmp_path):
+    (tmp_path / "torch.py").write_text(
+        "class xpu:\n    @staticmethod\n    def is_available(): return True\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(backend._xpu_probe_command(), cwd=tmp_path,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("fallback,expected", [

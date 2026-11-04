@@ -97,8 +97,12 @@ def _xpu_probe_command():
     if getattr(sys, "frozen", False):
         return [sys.executable, "--_openfocus-xpu-probe"]
     return [sys.executable, "-c",
-            "from core.torch_backend import _run_xpu_probe; "
-            "raise SystemExit(_run_xpu_probe())"]
+            "import sys\n"
+            "try:\n"
+            " import torch\n"
+            " sys.exit(0 if torch.xpu.is_available() else 1)\n"
+            "except Exception:\n"
+            " sys.exit(2)\n"]
 
 
 def _xpu_available(module):
