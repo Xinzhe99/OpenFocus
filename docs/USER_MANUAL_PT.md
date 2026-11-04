@@ -672,7 +672,7 @@ Fotos de iPhone carregam diretamente. Requer `pillow-heif`, que `pip install ope
 
 ### Atualizações
 
-**Ajuda → Verificar atualizações** compara sua versão com o GitHub Releases. Uma versão mais recente é baixada em segundo plano enquanto o aplicativo está ocioso; quando a compilação está preparada, o banner e a área de status oferecem **Reiniciar e atualizar**, que a aplica offline. Compilações que não podem se atualizar sozinhas abrem a página de versões. A verificação roda silenciosamente no máximo uma vez por dia.
+**Ajuda → Verificar atualizações** compara sua versão com as informações de `openfocus.top`. Uma versão mais recente é baixada do mesmo site em segundo plano enquanto o aplicativo está ocioso; quando a compilação está preparada, o banner e a área de status oferecem **Reiniciar e atualizar**, que a aplica offline. Compilações que não podem se atualizar sozinhas abrem a página de downloads do site. A verificação automática roda silenciosamente no máximo uma vez por dia.
 
 ### Cache de registro
 
@@ -688,7 +688,7 @@ Troque a qualquer momento em **Configurações → Idioma**, que lista os doze p
 
 ### Verificação automática de atualizações
 
-Uma vez por dia, alguns segundos após a inicialização, o OpenFocus verifica o GitHub silenciosamente. Se houver uma versão mais recente, um banner aparece acima dos painéis de imagem com a versão, **Atualizar agora** (aplica uma compilação preparada ou inicia o download), **Novidades** (notas da versão) e um botão para dispensar. Dispensá-lo oculta o banner apenas para aquela versão; a próxima versão o traz de volta, e **Ajuda → Verificar atualizações** o reativa imediatamente.
+Uma vez por dia, alguns segundos após a inicialização, o OpenFocus verifica `openfocus.top` silenciosamente. As notas da versão também vêm desse site. Se houver uma versão mais recente, um banner aparece acima dos painéis de imagem com a versão, **Atualizar agora** (aplica uma compilação preparada ou inicia o download), **Novidades** (notas da versão) e um botão para dispensar. Dispensá-lo oculta o banner apenas para aquela versão; a próxima versão o traz de volta, e **Ajuda → Verificar atualizações** o reativa imediatamente.
 
 Enquanto o download roda em segundo plano, a barra de status mostra o progresso. Você também pode verificar manualmente a qualquer momento em **Ajuda → Verificar atualizações**.
 

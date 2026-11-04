@@ -75,7 +75,7 @@ bucket, so it is not a preview path for this configuration.
 | `site/template.html` | Page structure; `{{placeholders}}` resolve from the content |
 | `site/style.css` | Design tokens (light/dark), layout, responsive rules |
 | `site/app.js` | Theme, OS-aware download button, copy button, menus |
-| `site/worker.js` | `/` language negotiation; `www` → apex on every path; `/api/latest` (5-minute per-data-center Worker cache, client `no-store`); `/download/latest/*` (R2 stream with range/ETag, GitHub `302` fallback for full requests, `503` when a range needs a missing object) |
+| `site/worker.js` | `/` language negotiation; `www` → apex; `/api/latest` and `/download/latest/*` for website downloads; mirror-only `/api/updates` and `/download/releases/<tag>/<kind>` for desktop updates |
 | `site/install.sh` | macOS app installer + Linux CLI installer (`curl … | sh`, `--dry-run`) |
 | `site/install.ps1` | Windows installer (`irm … | iex`, `OPENFOCUS_DRY_RUN=1`) |
 | `site/wrangler.jsonc` | Worker name and static-asset routing |
@@ -103,13 +103,30 @@ Installers are mirrored to Cloudflare R2 and served from
 `/download/latest/<kind>`. The Worker streams the R2 object when it exists and
 falls back to the GitHub release asset for a full request when it does not.
 
+Desktop updates use `GET` or `HEAD /api/updates` to read the R2 manifest
+directly. It contains the latest mirrored tag, publication date and four
+assets; newer manifests also include each asset's GitHub SHA-256 `digest` and
+up to 30 public stable releases as `{tag_name, body}`. Older manifests can
+omit both fields. An unavailable or invalid manifest returns `503` without
+contacting GitHub.
+
+`GET` and `HEAD /download/releases/<tag>/<kind>` serve only R2 objects,
+supporting byte ranges and ETag validation. Tags use `v` followed by numeric
+components separated by dots, such as `v1.10` or `v1.2.3`. Kinds are
+`windows-setup`, `windows-zip`, `macos-dmg` and `macos-zip`. Invalid paths
+return `404`, and missing or unavailable objects return `503` without a GitHub
+redirect. Older objects are pruned after the latest release is mirrored, so a
+previously advertised version may become unavailable.
+
 - Bucket: `openfocus-downloads` (binding `DOWNLOADS`)
 - Workflow: `.github/workflows/r2-mirror.yml` runs after a successful
   **Build & Publish Release** run for a `v*` tag (the release event is
   suppressed for `GITHUB_TOKEN` releases), on manually published releases, and
   on manual dispatch (`tag` input). It downloads and verifies the four assets,
-  uploads them under their release filenames, and publishes a manifest under
-  `openfocus-meta/latest-release.json` only for the current latest release.
+  uploads them under their release filenames, and publishes a manifest with
+  GitHub asset digests and stable release notes under
+  `openfocus-meta/latest-release.json` only after all four uploads succeed and
+  only for the current latest release.
   After the five-minute metadata cache expires, it prunes older recognized
   `OpenFocus-v*` keys. Runs are serialized.
 - Secrets: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (an R2

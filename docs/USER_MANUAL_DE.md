@@ -710,7 +710,7 @@ iPhone-Fotos lassen sich direkt laden. Erfordert `pillow-heif`; `pip install ope
 
 ### Updates
 
-**Hilfe → Nach Updates suchen** vergleicht die eigene Version mit den GitHub-Releases. Eine neuere Version wird im Hintergrund heruntergeladen, während die App im Leerlauf ist; sobald der Build bereitsteht, bieten Banner und Statusbereich **Aktualisieren und neu starten**, das ihn offline anwendet. Builds, die sich nicht selbst aktualisieren können, öffnen stattdessen die Release-Seite. Die Prüfung läuft höchstens einmal täglich im Hintergrund.
+**Hilfe → Nach Updates suchen** vergleicht die eigene Version mit den Versionsinformationen auf `openfocus.top`. Eine neuere Version wird von derselben Website im Hintergrund heruntergeladen, während die App im Leerlauf ist; sobald der Build bereitsteht, bieten Banner und Statusbereich **Aktualisieren und neu starten**, das ihn offline anwendet. Builds, die sich nicht selbst aktualisieren können, öffnen stattdessen die Downloadseite der Website. Die automatische Prüfung läuft höchstens einmal täglich still im Hintergrund.
 
 ### Registrierungs-Cache
 
@@ -726,7 +726,7 @@ Jederzeit über **Einstellungen → Sprache** umschaltbar; das Menü listet alle
 
 ### Automatische Update-Prüfung
 
-Einmal täglich, wenige Sekunden nach dem Start, prüft OpenFocus still auf GitHub nach einer neueren Version. Existiert eine, erscheint ein Banner über den Bildbereichen: die Version, **Jetzt aktualisieren** (wendet einen bereitgestellten Build an oder startet den Download), **Neuerungen** (Versionshinweise) und eine Schaltfläche zum Ausblenden. Ausblenden verbirgt das Banner nur für diese Version – die nächste Version bringt es zurück, und **Hilfe → Nach Updates suchen** aktiviert es sofort wieder.
+Einmal täglich, wenige Sekunden nach dem Start, prüft OpenFocus still auf `openfocus.top` nach einer neueren Version. Auch die Versionshinweise stammen von dieser Website. Existiert eine neuere Version, erscheint ein Banner über den Bildbereichen: die Version, **Jetzt aktualisieren** (wendet einen bereitgestellten Build an oder startet den Download), **Neuerungen** (Versionshinweise) und eine Schaltfläche zum Ausblenden. Ausblenden verbirgt das Banner nur für diese Version – die nächste Version bringt es zurück, und **Hilfe → Nach Updates suchen** aktiviert es sofort wieder.
 
 Während der Download im Hintergrund läuft, zeigt die Statusleiste den Fortschritt. Eine manuelle Prüfung ist jederzeit über **Hilfe → Nach Updates suchen** möglich.
 

@@ -1,4 +1,4 @@
-"""Release update checker backed by the GitHub releases API.
+"""Release update checker backed by the OpenFocus download mirror.
 
 Runs network calls on daemon threads and reports back through callbacks so
 the caller (UI) can decide how to present progress and results.
@@ -10,12 +10,15 @@ import threading
 import urllib.request
 from typing import Callable, Optional, Tuple
 
-RELEASES_API_URL = "https://api.github.com/repos/Xinzhe99/OpenFocus/releases/latest"
-# The LIST endpoint (newest first) — "/latest?per_page=N" still returns one
-# release, so the per-version notes need this URL instead.
-RELEASES_LIST_API_URL = ("https://api.github.com/repos/Xinzhe99/OpenFocus"
-                         "/releases")
-RELEASES_PAGE_URL = "https://github.com/Xinzhe99/OpenFocus/releases"
+RELEASES_API_URL = "https://openfocus.top/api/updates"
+RELEASES_PAGE_URL = "https://openfocus.top/#download"
+RELEASE_DOWNLOAD_URL = "https://openfocus.top/download/releases"
+_ASSET_SUFFIXES = {
+    "windows-setup": "setup.exe",
+    "windows-zip": "windows-x64.zip",
+    "macos-dmg": "macos.dmg",
+    "macos-zip": "macos-arm64.zip",
+}
 REQUEST_TIMEOUT_S = 10
 
 
@@ -40,85 +43,68 @@ def is_newer(latest_tag: str, current_version: str) -> bool:
     return latest > current
 
 
-def _asset_fields(a: dict) -> dict:
-    """Normalize one API asset entry (name/url/size plus its digest)."""
-    return {"name": a.get("name", ""), "url": a.get("browser_download_url", ""),
-            "size": int(a.get("size", 0)),
-            "digest": str(a.get("digest", "") or "")}
-
-
-def find_asset_by_keyword(release: dict, keyword: str) -> Optional[dict]:
-    assets = release.get("assets", []) or []
-    for a in assets:
-        name = str(a.get("name", "")).lower()
-        if keyword in name:
-            return _asset_fields(a)
-    return None
-
-
-def _find_zip_asset(release: dict, keywords) -> Optional[dict]:
-    """First zip asset whose name contains one of keywords (best match first)."""
-    zips = [a for a in (release.get("assets") or [])
-            if str(a.get("name", "")).lower().endswith(".zip")]
-    for keyword in keywords:
-        for a in zips:
-            if keyword in str(a.get("name", "")).lower():
-                return _asset_fields(a)
-    return None
+def _mirror_asset(release: dict, kind: str) -> Optional[dict]:
+    """Select a version-pinned mirror asset; never use remote URLs in metadata."""
+    if not isinstance(release, dict):
+        return None
+    tag = release.get("tag")
+    if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+(?:\.[0-9]+)*", tag):
+        return None
+    suffix = _ASSET_SUFFIXES.get(kind)
+    assets = release.get("assets")
+    asset = assets.get(kind) if isinstance(assets, dict) else None
+    if not suffix or not isinstance(asset, dict):
+        return None
+    name = f"OpenFocus-{tag}-{suffix}"
+    size = asset.get("size")
+    if asset.get("name") != name or type(size) is not int or size <= 0:
+        return None
+    digest = str(asset.get("digest") or "")
+    # Never downgrade self-update integrity when an old or incomplete mirror
+    # manifest lacks the SHA-256 supplied by the release workflow.
+    if kind.endswith("-zip") and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+        return None
+    return {"name": name, "url": f"{RELEASE_DOWNLOAD_URL}/{tag}/{kind}",
+            "size": size, "digest": digest}
 
 
 def find_portable_zip_asset(release: dict) -> Optional[dict]:
     """Platform portable zip used by the in-app one-click update flow."""
     if sys.platform == "win32":
-        return _find_zip_asset(release, ("windows-x64.zip",))
+        return _mirror_asset(release, "windows-zip")
     if sys.platform == "darwin":
         import platform
-        # Only arm64 builds are published. Matching the exact arch keeps an
-        # Intel Mac from swapping in a binary it cannot launch.
-        arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x86_64"
-        return _find_zip_asset(release, (f"macos-{arch}.zip",))
+        if platform.machine().lower() in ("arm64", "aarch64"):
+            return _mirror_asset(release, "macos-zip")
     return None
 
 
 def find_installer_asset(release: dict) -> Optional[dict]:
-    """Pick the right installer asset for this platform from a release dict."""
+    """Pick the installer for this platform from mirrored release metadata."""
     if sys.platform == "win32":
-        return find_asset_by_keyword(release, "setup.exe")
+        return _mirror_asset(release, "windows-setup")
     if sys.platform == "darwin":
         import platform
-        arch = platform.machine().lower()
-        if arch in ("arm64", "aarch64"):
-            return (find_asset_by_keyword(release, "macos-arm64.dmg")
-                    or find_asset_by_keyword(release, "macos.dmg"))
-        return find_asset_by_keyword(release, "macos-x86_64.dmg")
+        if platform.machine().lower() in ("arm64", "aarch64"):
+            return _mirror_asset(release, "macos-dmg")
     return None
 
 
 def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict], Optional[dict]]:
-    """Return (ok, tag_name, page_url, installer_asset, portable_zip) where
-    portable_zip is the platform portable-zip asset used by the one-click
-    self-update flow."""
-
-    req = urllib.request.Request(
-        RELEASES_API_URL,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "OpenFocus"},
-    )
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    tag = str(data.get("tag_name", "")).strip()
-    url = str(data.get("html_url", "")) or RELEASES_PAGE_URL
-    if not tag:
-        return False, "", url, None, None
-    return True, tag, url, find_installer_asset(data), find_portable_zip_asset(data)
+    """Return the mirrored release and platform-specific installer and ZIP."""
+    data = _api_get(RELEASES_API_URL)
+    tag = data.get("tag") if isinstance(data, dict) else None
+    if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+(?:\.[0-9]+)*", tag):
+        raise ValueError("Invalid update metadata")
+    return True, tag, RELEASES_PAGE_URL, find_installer_asset(data), find_portable_zip_asset(data)
 
 
 def _md_to_plain(md: str) -> str:
     """Tiny markdown -> plain text for the update dialog's rich label.
 
-    GitHub release bodies are markdown; QLabel(setText) would show the
-    raw source (##/```/| tables) which reads as garbage. This is not a
-    full renderer: headings/lists/inline code/table pipes are neutralized,
-    line breaks and indentation kept.
+    Release notes are markdown; QLabel(setText) would show the raw source.
+    This is not a full renderer: headings/lists/inline code/table pipes are
+    neutralized, line breaks and indentation kept.
     """
     out = []
     in_code = False
@@ -148,7 +134,7 @@ def _md_to_plain(md: str) -> str:
 def _api_get(url: str, timeout: int = REQUEST_TIMEOUT_S) -> Optional[dict]:
     req = urllib.request.Request(
         url,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "OpenFocus"},
+        headers={"Accept": "application/json", "User-Agent": "OpenFocus"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
@@ -158,24 +144,20 @@ def fetch_release_notes(current_version: str, latest_tag: str,
                         max_releases: int = 10, timeout: int = 3) -> str:
     """Release notes for every version newer than the installed one.
 
-    Best-effort and cheap: bounded by ``timeout`` (seconds) per call and at
-    most two requests, so a slow/offline network returns '' quickly and the
-    update notification is never held up by the notes fetch. Lists the
-    GitHub releases (newest first), keeps everything strictly newer than
-    ``current_version`` (cap ``max_releases``), renders each body and joins
-    with ``## tag`` headings. Returns '' when nothing could be fetched.
+    The mirror keeps the most recent release bodies; this request is bounded
+    by ``timeout`` so a slow network never holds up the update notification.
+    Keeps versions newer than ``current_version`` up to ``latest_tag``.
     """
     latest = parse_version(latest_tag) or ()
     if not latest:
         return ""
     current = parse_version(current_version) or ()
     try:
-        data = _api_get(RELEASES_LIST_API_URL + "?per_page=%d"
-                        % max(3, min(30, max_releases + 2)), timeout)
+        data = _api_get(RELEASES_API_URL, timeout)
     except Exception:
         return ""
     blocks = []
-    for item in data or []:
+    for item in (data.get("releases", []) if isinstance(data, dict) else []):
         if not isinstance(item, dict):
             continue
         tag = str(item.get("tag_name", "")).strip()
@@ -256,7 +238,7 @@ def download_to_file(url: str, dest_path: str,
 
 def verify_file_digest(path: str, digest: str,
                        should_cancel: Callable[[], bool] = None) -> Optional[bool]:
-    """Check a downloaded file against a GitHub asset digest ("sha256:<hex>").
+    """Check a downloaded file against its published digest ("sha256:<hex>").
 
     Returns True/False on a definite result, None when no usable digest was
     published (older releases) — callers skip verification then rather than
@@ -318,16 +300,15 @@ def check_async(current_version: str, on_result: Callable[..., None], quiet: boo
     for the automatic startup check, which must stay silent unless there is
     something to install).
 
-    For the "update" state two extra arguments follow the page URL: the
-    portable-zip URL and the SHA-256 digest GitHub publishes for that asset,
-    so the caller can verify the download instead of swapping in whatever a
-    proxy handed it; a seventh argument carries the plain-text release
-    notes of every version between the installed one and the latest.
+    For an update the callback also receives the mirror ZIP and installer
+    URLs, the ZIP's SHA-256 digest, and the notes between installed and latest.
     """
 
     def worker():
         try:
             ok, tag, url, asset, portable_zip = fetch_latest_release()
+            if not ok:
+                raise ValueError("Invalid update metadata")
             setup_url = (asset or {}).get("url", "")
             zip_url = (portable_zip or {}).get("url", "")
             zip_digest = (portable_zip or {}).get("digest", "")

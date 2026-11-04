@@ -672,7 +672,7 @@ Las fotos de iPhone se cargan directamente. Requiere `pillow-heif`, que `pip ins
 
 ### Actualizaciones
 
-**Ayuda → Buscar actualizaciones** compara tu versión con las versiones de GitHub. Una versión más reciente se descarga en segundo plano mientras la aplicación está inactiva; una vez preparada la compilación, el aviso y el área de estado ofrecen **Reiniciar y actualizar**, que la aplica sin conexión. Las compilaciones que no pueden actualizarse solas abren la página de versiones. La comprobación se ejecuta en silencio como máximo una vez al día.
+**Ayuda → Buscar actualizaciones** compara tu versión con la información de `openfocus.top`. Una versión más reciente se descarga desde el mismo sitio en segundo plano mientras la aplicación está inactiva; una vez preparada la compilación, el aviso y el área de estado ofrecen **Reiniciar y actualizar**, que la aplica sin conexión. Las compilaciones que no pueden actualizarse solas abren la página de descargas del sitio web. La comprobación automática se ejecuta en silencio como máximo una vez al día.
 
 ### Caché de registro
 
@@ -688,7 +688,7 @@ Cámbialo en cualquier momento en **Ajustes → Idioma**, que enumera los doce p
 
 ### Comprobación automática de actualizaciones
 
-Una vez al día, unos segundos después de arrancar, OpenFocus consulta GitHub en silencio en busca de una versión más reciente. Si existe, aparece un aviso sobre los paneles de imagen con la versión, **Actualizar ahora** (aplica una compilación preparada o inicia la descarga), **Novedades** (notas de la versión) y un botón para descartarlo. Descartarlo oculta el aviso solo para esa versión: la siguiente versión lo vuelve a mostrar, y **Ayuda → Buscar actualizaciones** lo reactiva de inmediato.
+Una vez al día, unos segundos después de arrancar, OpenFocus consulta `openfocus.top` en silencio en busca de una versión más reciente; las notas de la versión también proceden de ese sitio. Si existe, aparece un aviso sobre los paneles de imagen con la versión, **Actualizar ahora** (aplica una compilación preparada o inicia la descarga), **Novedades** (notas de la versión) y un botón para descartarlo. Descartarlo oculta el aviso solo para esa versión: la siguiente versión lo vuelve a mostrar, y **Ayuda → Buscar actualizaciones** lo reactiva de inmediato.
 
 Mientras la descarga se ejecuta en segundo plano, la barra de estado muestra el progreso. También puedes comprobar manualmente en cualquier momento con **Ayuda → Buscar actualizaciones**.
 

@@ -15,6 +15,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Remove unused private helpers and mark historical design specifications as
   snapshots.
 
+## [1.75.2] - 2026-11-04
+
+### Fixed
+- Keep automatic update checks quiet when the network is unavailable or the
+  installed version is current. Manual checks continue to show their result.
+
+### Changed
+- Check for updates and download verified, version-specific builds through the
+  OpenFocus website mirror instead of requiring a direct GitHub connection.
+
 ## [1.75.1] - 2026-11-04
 
 ### Fixed

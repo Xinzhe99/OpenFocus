@@ -692,7 +692,7 @@ Zdjęcia iPhone'a wczytują się bezpośrednio. Wymagany jest pakiet `pillow-hei
 
 ### Aktualizacje
 
-**Pomoc → Sprawdź aktualizacje** porównuje wersję z GitHub Releases. Nowsze wydanie jest pobierane w tle, gdy aplikacja jest bezczynna; gdy kompilacja jest przygotowana, banner i obszar stanu oferują **Uruchom ponownie i zaktualizuj**, co stosuje ją bez sieci. Kompilacje, które nie potrafią się samodzielnie zaktualizować, otwierają zamiast tego stronę wydań. Sprawdzanie odbywa się po cichu najwyżej raz dziennie.
+**Pomoc → Sprawdź aktualizacje** porównuje wersję z informacjami o wydaniach na `openfocus.top`. Nowsze wydanie jest pobierane z tej samej strony w tle, gdy aplikacja jest bezczynna; gdy kompilacja jest przygotowana, baner i obszar stanu oferują **Uruchom ponownie i zaktualizuj**, co stosuje ją bez sieci. Kompilacje, które nie potrafią się samodzielnie zaktualizować, otwierają stronę pobierania na witrynie. Automatyczne sprawdzanie odbywa się po cichu najwyżej raz dziennie.
 
 ### Pamięć rejestracji
 
@@ -708,7 +708,7 @@ Przełącz w dowolnym momencie: **Ustawienia → Język** — dostępnych jest d
 
 ### Automatyczne sprawdzanie aktualizacji
 
-Raz dziennie, kilka sekund po uruchomieniu, OpenFocus po cichu sprawdza GitHub pod kątem nowszego wydania. Gdy istnieje, nad panelami obrazów pojawia się baner: wersja, **Zaktualizuj teraz** (stosuje przygotowaną kompilację lub rozpoczyna pobieranie), **Co nowego** (informacje o wydaniu) i przycisk zamknięcia. Zamknięcie ukrywa baner tylko dla tej wersji — następne wydanie go przywróci, a **Pomoc → Sprawdź aktualizacje** natychmiast go przywraca.
+Raz dziennie, kilka sekund po uruchomieniu, OpenFocus po cichu sprawdza `openfocus.top` pod kątem nowszego wydania. Informacje o wydaniu także pochodzą z tej strony. Gdy istnieje nowsza wersja, nad panelami obrazów pojawia się baner: wersja, **Zaktualizuj teraz** (stosuje przygotowaną kompilację lub rozpoczyna pobieranie), **Co nowego** (informacje o wydaniu) i przycisk zamknięcia. Zamknięcie ukrywa baner tylko dla tej wersji — następne wydanie go przywróci, a **Pomoc → Sprawdź aktualizacje** natychmiast go przywraca.
 
 Podczas pobierania w tle pasek stanu pokazuje postęp. Możesz też sprawdzić aktualizacje ręcznie w dowolnym momencie przez **Pomoc → Sprawdź aktualizacje**.
 

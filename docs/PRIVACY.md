@@ -5,12 +5,14 @@ not upload user data to any server.
 
 ## Network access
 
-- **Update check** — once per day the desktop app requests release metadata from
-  the GitHub Releases API (`api.github.com/repos/Xinzhe99/OpenFocus`). The
-  request contains no account or user identifier beyond the standard HTTP
-  headers; GitHub's privacy policy applies to that request.
-- **Update download** — only when the user chooses to update, the app downloads
-  the release asset from GitHub or `openfocus.top`.
+- **Update checks and release notes** — the desktop app requests release metadata
+  and notes from `openfocus.top` automatically (at most once per day) or when
+  the user checks manually. Background checks are quiet. Requests include
+  standard HTTP headers and network information such as the IP address.
+- **Update download** — a supported desktop build may automatically download a
+  newer release from `openfocus.top` while idle; installation requires the user
+  to choose to restart and update. Builds without self-update open the website
+  download page instead.
 - **Headless CLI** — makes no network requests.
 
 No other outbound requests are made by the application.

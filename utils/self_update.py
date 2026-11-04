@@ -16,7 +16,7 @@ process, so staging beside it would fail before the swap could even be
 offered. Elevation is handled by the apply script relaunching its robocopy
 step via PowerShell -Verb RunAs (one UAC prompt).
 
-The release tag arrives from the GitHub API, so it is treated as untrusted
+The release tag arrives from the download mirror, so it is treated as untrusted
 input: it is sanitised before reaching any filesystem path or script text.
 """
 import os

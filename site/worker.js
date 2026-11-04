@@ -6,6 +6,7 @@
  * - "/api/latest" returns the latest GitHub release, cached at the edge.
  * - "/download/latest/<kind>" streams the matching R2 object with byte-range
  *   support, or redirects to the GitHub asset when the mirror has no object.
+ * - "/api/updates" and "/download/releases/<tag>/<kind>" use R2 only.
  *
  * With `run_worker_first: true` in wrangler.jsonc every request reaches this
  * worker, so `www` canonicalisation also applies to static paths. Everything
@@ -17,6 +18,13 @@ const RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const CACHE_URL = "https://openfocus.internal/latest-release.json";
 const MIRROR_MANIFEST = "openfocus-meta/latest-release.json";
 const DOWNLOAD_PREFIX = "/download/latest/";
+const VERSIONED_DOWNLOAD_PREFIX = "/download/releases/";
+const DOWNLOAD_SUFFIXES = {
+  "windows-setup": "setup.exe",
+  "windows-zip": "windows-x64.zip",
+  "macos-dmg": "macos.dmg",
+  "macos-zip": "macos-arm64.zip",
+};
 const DOWNLOAD_KINDS = new Set([
   "windows-setup",
   "windows-zip",
@@ -140,7 +148,7 @@ async function mirroredRelease(env) {
   if (!env || !env.DOWNLOADS || typeof env.DOWNLOADS.get !== "function") return null;
   try {
     const object = await env.DOWNLOADS.get(MIRROR_MANIFEST);
-    if (!object || !object.body || object.size > 100000) return null;
+    if (!object || !object.body || object.size > 5000000) return null;
     const data = await new Response(object.body).json();
     if (!data || typeof data.tag !== "string" || !/^v[0-9A-Za-z._+-]+$/.test(data.tag)) return null;
     const suffixes = {
@@ -353,7 +361,7 @@ function objectHeaders(head, name) {
 
 /**
  * Build a response from R2, or return null when the object is absent or the
- * storage call failed. Null tells the caller to use the GitHub fallback.
+ * storage call failed. The caller decides how to handle an unavailable object.
  */
 async function r2Download(request, env, key, name) {
   if (!env || !env.DOWNLOADS || typeof env.DOWNLOADS.head !== "function") {
@@ -494,6 +502,21 @@ async function handleDownload(request, env, ctx) {
   });
 }
 
+async function handleVersionedDownload(request, env) {
+  const method = (request.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" }, method);
+  }
+  const parts = new URL(request.url).pathname.slice(VERSIONED_DOWNLOAD_PREFIX.length).split("/");
+  const [tag, kind] = parts;
+  if (parts.length !== 2 || !/^v[0-9]+(?:\.[0-9]+)*$/.test(tag) || !DOWNLOAD_KINDS.has(kind)) {
+    return textResponse("Unknown release download", 404, {}, method);
+  }
+  const name = `OpenFocus-${tag}-${DOWNLOAD_SUFFIXES[kind]}`;
+  const response = await r2Download(request, env, name, name);
+  return response || textResponse("The download mirror is not ready; retry the download.", 503, { "Retry-After": "60" }, method);
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -511,6 +534,21 @@ export default {
           "Cache-Control": "public, max-age=3600",
         },
       });
+    }
+
+    if (url.pathname === "/api/updates") {
+      if (method !== "GET" && method !== "HEAD") {
+        return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" }, method);
+      }
+      const mirror = await mirroredRelease(env);
+      if (!mirror) return textResponse("Update mirror is unavailable", 503, { "Retry-After": "60" }, method);
+      return new Response(method === "HEAD" ? null : JSON.stringify(mirror), {
+        headers: { ...jsonHeaders(), "X-OpenFocus-Release-Source": "mirror" },
+      });
+    }
+
+    if (url.pathname.startsWith(VERSIONED_DOWNLOAD_PREFIX)) {
+      return handleVersionedDownload(request, env);
     }
 
     if (url.pathname === "/api/latest") {

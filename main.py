@@ -1125,12 +1125,12 @@ class OpenFocus(QMainWindow):
     # --- Update check ---
 
     def check_for_updates(self, quiet: bool = False) -> None:
-        """Ask GitHub for the latest release and report back asynchronously.
+        """Check the update service for the latest release asynchronously.
 
         The state machine lives in UpdateManager: quiet checks are
-        rate-limited to one request per day and never open a dialog; a manual
-        check reports "up to date" / network failures in a message box. A
-        manual check also re-arms the banner for a version that was dismissed.
+        rate-limited to one request per day and show an update banner without
+        opening a dialog; a manual check reports results in a message box and
+        re-arms the banner for a version that was dismissed.
         """
         if not quiet:
             self._show_status_message(trans.t('update_checking'), 3000)
@@ -1614,6 +1614,8 @@ class OpenFocus(QMainWindow):
                 self._download_and_launch_update(setup_url, tag)
             elif clicked is open_btn:
                 QDesktopServices.openUrl(QUrl(page_url))
+        elif not self._update_manager().manual_check:
+            return
         elif state == "latest":
             show_message_box(
                 self,

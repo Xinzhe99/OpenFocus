@@ -1125,11 +1125,12 @@ iPhone photos load directly. Requires `pillow-heif`, which
 
 ### Updates
 
-Help → Check for Updates compares your version against GitHub Releases. A
-newer release is downloaded in the background while the app is idle; once the
-build is staged, the banner and status area offer **Restart and Update**, which
-applies it offline. Builds that cannot self-update open the Releases page
-instead. The check runs silently at most once a day.
+**Help → Check for Updates** compares your version with the release information
+at `openfocus.top`. A newer release is downloaded from the same site in the
+background while the app is idle; once the build is staged, the banner and
+status area offer **Restart and Update**, which applies it offline. Builds that
+cannot self-update open the website download page instead. Automatic checks run
+quietly at most once a day.
 
 ### Registration Cache
 
@@ -1159,10 +1160,10 @@ for future sessions.
 
 ### Automatic Update Check
 
-Once per day, a few seconds after launch, OpenFocus silently checks GitHub
+Once per day, a few seconds after launch, OpenFocus quietly checks `openfocus.top`
 for a newer release. When one exists, a banner appears above the image
 panels: the version, **Update now** (applies a staged build, or starts the
-download), **What's new** (release notes) and a dismiss button. Dismissing
+download), **What's new** (release notes from `openfocus.top`) and a dismiss button. Dismissing
 hides the banner for that version only — the next release brings it back, and
 **Help → Check for Updates** re-arms it immediately.
 
