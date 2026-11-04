@@ -318,24 +318,35 @@ def test_downsample_percentage_is_rendered(qapp, theme, value):
         parent.deleteLater()
 
 
+@pytest.mark.parametrize("theme", ["dark", "light"])
 @pytest.mark.parametrize("max_scale", [0.42, 1.0])
-def test_downsample_controls_stay_in_sync(qapp, max_scale):
+@pytest.mark.parametrize("show_dont_ask", [False, True])
+def test_downsample_controls_stay_in_sync(qapp, max_scale, theme, show_dont_ask):
     from PyQt6.QtTest import QTest
+    from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QWidget
     from dialogs.settings import DownsampleDialog
     from ui.styles import build_stylesheet
 
     parent = QWidget()
-    parent.setStyleSheet(build_stylesheet("dark"))
-    dialog = DownsampleDialog(parent, initial_scale=0.05, max_scale=max_scale)
+    parent.setStyleSheet(build_stylesheet(theme))
+    dialog = DownsampleDialog(parent, initial_scale=max_scale, max_scale=max_scale,
+                              show_dont_ask=show_dont_ask)
     try:
         dialog.show()
         qapp.processEvents()
-        dialog.spinbox.setFocus()
-        dialog.spinbox.selectAll()
+        dialog.decrease_btn.setFocus()
+        QTest.mouseClick(dialog.spinbox.lineEdit(), Qt.MouseButton.LeftButton,
+                         pos=dialog.spinbox.lineEdit().rect().center())
+        qapp.processEvents()
         QTest.keyClicks(dialog.spinbox.lineEdit(), "37")
         assert dialog.spinbox.value() == dialog.slider.value() == 37
         assert dialog.get_scale_factor() == 0.37
+        QTest.keyClick(dialog.spinbox.lineEdit(), Qt.Key.Key_Home)
+        QTest.keyClick(dialog.spinbox.lineEdit(), Qt.Key.Key_Delete)
+        QTest.keyClicks(dialog.spinbox.lineEdit(), "2")
+        assert dialog.spinbox.value() == dialog.slider.value() == 27
+        dialog.slider.setValue(37)
 
         dialog.increase_btn.click()
         assert dialog.spinbox.value() == dialog.slider.value() == 38
