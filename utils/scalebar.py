@@ -1,10 +1,10 @@
 """Publication-grade scale bars for microscopy images.
 
-Calibration (micrometres per pixel) is auto-detected from TIFF metadata —
-ImageJ's ``unit=micron`` convention and OME-TIFF's ``PhysicalSizeX`` XML —
-with a manual fallback. Bars are burned into exported images: a 1-2-5 nice
-length spanning ~12% of the image width, stroked text readable on any
-background, auto inverse color, four corner positions.
+Calibration (micrometres per pixel) is auto-detected from TIFF or
+TIFF-based DNG metadata — ImageJ's ``unit=micron`` convention and OME-TIFF's
+``PhysicalSizeX`` XML — with a manual fallback. Bars are burned into exported
+images: a 1-2-5 nice length spanning ~12% of the image width, stroked text
+readable on any background, auto inverse color, four corner positions.
 
 Pure NumPy/OpenCV/PIL, thread-safe: safe to call from worker threads
 (batch processing, GIF export).
@@ -70,21 +70,8 @@ def _rational(value) -> Optional[float]:
         return None
 
 
-def detect_px_size_um(path: str) -> Optional[float]:
-    """Read µm/px from a TIFF's metadata (ImageJ or OME-TIFF first, then
-    standard resolution tags). None when uncalibrated or implausible."""
-    import os
-    if os.path.splitext(path)[1].lower() not in (".tif", ".tiff"):
-        return None
-    try:
-        from PIL import Image
-        with Image.open(path) as im:
-            tags = getattr(im, "tag_v2", None) or getattr(im, "tag", {})
-            desc = str(tags.get(270, "") or "")
-            xres = _rational(tags.get(282))
-            resunit = tags.get(296, 2)
-    except Exception:
-        return None
+def _calibration_from_tags(desc, xres, resunit) -> Optional[float]:
+    """Shared microscopy-calibration rules for TIFF and TIFF-based DNG tags."""
     # OME-TIFF: PhysicalSizeX="0.65" PhysicalSizeXUnit="µm" — carries its
     # own absolute scale, so no resolution tag is needed.
     if "PhysicalSizeX=" in desc:
@@ -123,6 +110,46 @@ def detect_px_size_um(path: str) -> Optional[float]:
         if 1e-4 <= px_um <= 1e3:
             return px_um
     return None
+
+
+def _read_tiff_calibration_tags(path: str):
+    from PIL import Image
+    with Image.open(path) as im:
+        tags = getattr(im, "tag_v2", None) or getattr(im, "tag", {})
+        return (str(tags.get(270, "") or ""), _rational(tags.get(282)),
+                tags.get(296, 2))
+
+
+def _read_dng_calibration_tags(path: str):
+    """Read TIFF tags from a DNG IFD, including LinearRaw payloads PIL rejects."""
+    import tifffile
+    with tifffile.TiffFile(path) as tif:
+        tags = tif.pages[0].tags
+        desc = tags.get(270).value if 270 in tags else ""
+        xres = _rational(tags.get(282).value) if 282 in tags else None
+        resunit = int(tags.get(296).value) if 296 in tags else 2
+    return str(desc or ""), xres, resunit
+
+
+def detect_px_size_um(path: str) -> Optional[float]:
+    """Read µm/px from a TIFF or TIFF-based DNG's microscopy metadata.
+
+    ImageJ and OME tags are trusted first, then explicit resolution units;
+    None when uncalibrated or implausible.  DNG uses the same rules because
+    camera/print DPI is not a physical sample size either.
+    """
+    import os
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in (".tif", ".tiff", ".dng"):
+        return None
+    try:
+        if ext == ".dng":
+            desc, xres, resunit = _read_dng_calibration_tags(path)
+        else:
+            desc, xres, resunit = _read_tiff_calibration_tags(path)
+    except Exception:
+        return None
+    return _calibration_from_tags(desc, xres, resunit)
 
 
 def _next_shorter_nice(value: float) -> float:
@@ -494,6 +521,34 @@ def effective_px_um(window) -> Optional[float]:
     source = getattr(window, "source_px_um", None)
     if source and math.isfinite(source) and source > 0:
         return source
+    return None
+
+
+def calibration_px_um(window, record=None) -> Optional[float]:
+    """Physical µm per pixel for a record's own pixels, or the working stack.
+
+    A historical output keeps its render-context calibration (or the manual
+    value the user committed for it).  A record without provenance never
+    borrows the current stack: that would attach a plausible but unverified
+    scale to pixels from another acquisition.
+    """
+    if record is None:
+        return effective_px_um(window)
+    cfg = getattr(record, "scale_bar_config", None)
+    context = getattr(record, "context", None)
+    if isinstance(cfg, dict):
+        manual = cfg.get("mode") == "manual" or "manual" in cfg
+        if context is not None or manual:
+            try:
+                px_um = float(cfg.get("px_um"))
+            except (TypeError, ValueError):
+                px_um = None
+            if px_um and math.isfinite(px_um) and px_um > 0:
+                return px_um
+    if context is not None:
+        px_um = getattr(context, "pixel_size_um", None)
+        if px_um and math.isfinite(px_um) and px_um > 0:
+            return float(px_um)
     return None
 
 

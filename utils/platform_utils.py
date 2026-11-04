@@ -112,18 +112,104 @@ __all__ = [
 
 _GPU_PRESENT_CACHE = None
 
+_DISPLAY_ADAPTER_CLASS = (
+    r"SYSTEM\CurrentControlSet\Control\Class"
+    r"\{4d36e968-e325-11ce-bfc1-08002be10318}"
+)
+
+
+def _torch_accelerator_present() -> bool:
+    """Use the authoritative backend when torch is already loaded."""
+    from core import torch_backend
+    kind = torch_backend.cached_kind()
+    if kind is not None:
+        return torch_backend.is_accelerator(kind)
+    module = sys.modules.get("torch")
+    if module is None:
+        return False
+    # A module another thread is still importing may be half populated; it
+    # would report CPU and could make has_compute_gpu cache a false negative.
+    if not hasattr(module, "device") or not hasattr(module, "Tensor"):
+        return False
+    return torch_backend.is_accelerator(torch_backend.detect_kind(module))
+
+
+def _windows_display_adapters() -> tuple:
+    """Driver descriptions from the display-adapter class, without a process."""
+    try:
+        import winreg
+    except ImportError:
+        return ()
+    names = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            _DISPLAY_ADAPTER_CLASS) as root:
+            for index in range(64):
+                try:
+                    subkey = winreg.EnumKey(root, index)
+                except OSError:
+                    break
+                if not subkey.isdigit():
+                    continue
+                try:
+                    with winreg.OpenKey(root, subkey) as adapter:
+                        name = winreg.QueryValueEx(adapter, "DriverDesc")[0]
+                except OSError:
+                    continue
+                if isinstance(name, str):
+                    names.append(name.lower())
+    except OSError:
+        return ()
+    return tuple(names)
+
+
+def _linux_gpu_vendors() -> frozenset:
+    """PCI vendor ids of DRM cards: 0x1002 AMD, 0x8086 Intel, 0x10de NVIDIA."""
+    import glob
+    vendors = set()
+    for path in glob.glob("/sys/class/drm/card[0-9]*/device/vendor"):
+        try:
+            with open(path, encoding="ascii") as handle:
+                vendors.add(handle.read().strip().lower())
+        except OSError:
+            continue
+    return frozenset(vendors)
+
+
+def _vendor_tool_present(*names) -> bool:
+    import shutil
+    return any(shutil.which(name) for name in names)
+
+
+def _nvidia_smi_reports_gpu() -> bool:
+    import shutil
+    import subprocess
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return False
+    try:
+        out = subprocess.run(
+            [exe, "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=2.0,
+            creationflags=(0x08000000 if is_windows() else 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and bool(out.stdout.strip())
+
 
 def has_compute_gpu() -> bool:
-    """True when this machine has a usable GPU for the neural path.
+    """True when this machine exposes a neural-path accelerator.
 
     Asked from the menu, so it must be cheap: importing torch costs ~2.1 s and
-    pins ~193 MB (see core.multi_focus_fusion.is_ai_fusion_available). This
-    probes the operating system instead, taking a few milliseconds, and caches
-    the answer.
+    pins ~193 MB (see core.multi_focus_fusion.is_ai_fusion_available). The
+    probe therefore prefers an already-loaded torch, then the operating
+    system, taking a few milliseconds, and caches the answer.
 
-    A "GPU" here means CUDA or Apple-silicon MPS - the two back-ends the
-    fusion actually uses. Merely having a display adapter is not enough, which
-    is why the check shells out to nvidia-smi rather than enumerating devices.
+    The detected back-ends are NVIDIA CUDA, AMD ROCm (through ``torch.cuda``),
+    Intel XPU and Apple-silicon MPS. OS probes only report hardware/runtime
+    presence; the backend probe remains authoritative for whether PyTorch can
+    actually use it, so a present adapter may still fall back to CPU.
     """
     global _GPU_PRESENT_CACHE
     if _GPU_PRESENT_CACHE is not None:
@@ -131,23 +217,34 @@ def has_compute_gpu() -> bool:
 
     found = False
     try:
-        if is_macos():
+        if _torch_accelerator_present():
+            found = True
+        elif is_macos():
             # Every Apple-silicon Mac has a usable MPS device.
             found = platform.machine().lower() in ("arm64", "aarch64")
-        elif is_windows() or is_linux():
-            import shutil
-            import subprocess
-            exe = shutil.which("nvidia-smi")
-            if exe:
-                try:
-                    out = subprocess.run(
-                        [exe, "--query-gpu=name", "--format=csv,noheader"],
-                        capture_output=True, text=True, timeout=2.0,
-                        creationflags=(0x08000000 if is_windows() else 0),
-                    )
-                    found = out.returncode == 0 and bool(out.stdout.strip())
-                except (OSError, subprocess.SubprocessError):
-                    found = False
+        elif is_windows():
+            found = _nvidia_smi_reports_gpu()
+            if not found:
+                adapters = _windows_display_adapters()
+                found = any(
+                    "nvidia" in name or "amd" in name or "radeon" in name
+                    or ("intel" in name and ("arc" in name
+                                             or "data center gpu" in name))
+                    for name in adapters)
+        elif is_linux():
+            found = _nvidia_smi_reports_gpu()
+            # /dev/kfd exists only with the ROCm-capable amdgpu stack.
+            if not found and os.path.exists("/dev/kfd"):
+                found = True
+            if not found:
+                vendors = _linux_gpu_vendors()
+                # Intel PyTorch wheels do not install xpu-smi/sycl-ls, so a
+                # vendor-id check is the only cheap way to keep an actual
+                # XPU reachable; the backend probe remains authoritative.
+                found = ("0x10de" in vendors or "0x1002" in vendors
+                         or "0x8086" in vendors)
+                if not found:
+                    found = _vendor_tool_present("rocm-smi", "rocminfo")
     except Exception:
         found = False
 

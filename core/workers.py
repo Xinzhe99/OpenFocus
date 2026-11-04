@@ -33,6 +33,23 @@ def _crop_transparent_for_gui(images, should_cancel=None):
         raise ValueError(trans.t('transparent_desktop_unsupported').format(path='') + ' ' + str(exc)) from exc
 
 
+def _prepare_fusion_input(images, fusion):
+    """Keep V3 tiled sources resident at their original depth until cropping."""
+    from core.algorithms import resolve_runner
+    from utils.image_utils import normalize_fuse_input
+
+    frames = list(images)
+    is_16bit = any(frame.dtype == np.uint16 for frame in frames)
+    spec = fusion.descriptor
+    if (frames and fusion.algorithm == 'stackmffv3' and fusion.tile_enabled
+            and resolve_runner(spec.tile_decider)(frames, fusion.tile_threshold)):
+        return frames, is_16bit
+    if is_16bit:
+        require_memory(sum(frame.size * 4 for frame in frames if frame.dtype != np.float32)
+                       + max(frame.size * 4 for frame in frames if frame.dtype == np.uint16))
+    return normalize_fuse_input(frames)
+
+
 def _validate_sensor_sources_for_gui(paths, should_cancel):
     from locales import trans
     from utils.sensor_cleanup import validate_sensor_source_orientation
@@ -75,9 +92,11 @@ class StackLoadWorker(QThread):
     """后台加载图像栈，避免大栈解码时冻结界面"""
 
     finished_load = pyqtSignal(bool, str, object, object)  # ok, message, images, filenames
+    progress = pyqtSignal(int, int)  # completed files, total files
 
     def __init__(self, loader, folder=None, video=None, filepaths=None, scale=1.0,
-                 thread_count: int = 0, resource_preference: str = "balanced", exclude_paths=()):
+                 thread_count: int = 0, resource_preference: str = "balanced", exclude_paths=(),
+                 linear_raw=False, expected_metadata=None):
         super().__init__()
         self.loader = loader
         self.folder = folder
@@ -87,8 +106,12 @@ class StackLoadWorker(QThread):
         self.thread_count = thread_count
         self.resource_preference = resource_preference
         self.exclude_paths = tuple(path for path in exclude_paths if path)
+        self.linear_raw = linear_raw
+        self.expected_metadata = expected_metadata
+        self.linear_dng_metadata = None
         self.source_icc_profiles = {}
         self.is_cancelled = False
+        self._previous_should_cancel = getattr(self.loader, 'should_cancel', None)
         self.loader.should_cancel = lambda: self.is_cancelled
 
     def request_cancel(self):
@@ -99,41 +122,66 @@ class StackLoadWorker(QThread):
                            folder=self.folder, video=self.video, scale=self.scale,
                            thread_count=self.thread_count, resource_preference=self.resource_preference,
                            file_count=len(self.filepaths) if self.filepaths is not None else None) as operation:
-            if self.is_cancelled:
-                operation.cancel()
-                self.finished_load.emit(False, 'CANCELLED', [], [])
-                return
+            previous_progress_callback = getattr(self.loader, 'progress_callback', None)
+            self.loader.progress_callback = self.progress.emit
             try:
-                options = dict(thread_count=self.thread_count,
-                               resource_preference=self.resource_preference)
-                if self.folder:
-                    ok, msg, imgs, names = self.loader.load_from_folder(
-                        self.folder, scale_factor=self.scale, exclude_paths=self.exclude_paths, **options)
-                elif self.video:
-                    ok, msg, imgs, names = self.loader.load_from_video(self.video, scale_factor=self.scale)
-                else:
-                    from utils.path_identity import same_path
-                    paths = [path for path in self.filepaths if not any(
-                        same_path(path, excluded) for excluded in self.exclude_paths)]
-                    ok, msg, imgs, names = self.loader.load_from_filepaths(
-                        paths, scale_factor=self.scale, **options)
-                if ok:
-                    self.source_icc_profiles = dict(getattr(self.loader, 'source_icc_profiles', {}))
-                logger.info("stack decoded %s", frame_details(imgs))
-                # Video decoding does not populate the image failure counter.
-                image_load = bool(self.folder) or not self.video
-                if not ok or (image_load and getattr(self.loader, 'failed_count', 0)):
-                    if self.is_cancelled or msg == 'CANCELLED':
+                with heavy_job(lambda: self.is_cancelled):
+                    if self.is_cancelled:
                         operation.cancel()
+                        self.finished_load.emit(False, 'CANCELLED', [], [])
+                        return
+                    options = dict(thread_count=self.thread_count,
+                                   resource_preference=self.resource_preference)
+                    if self.linear_raw:
+                        from core.image_loader import RAW_FORMATS
+                        from utils.path_identity import same_path
+                        import os
+                        if self.folder:
+                            paths = [os.path.join(self.folder, name) for name in os.listdir(self.folder)
+                                     if os.path.splitext(name)[1].lower() in RAW_FORMATS]
+                            from utils.sorting import natural_sort_key
+                            paths.sort(key=lambda path: natural_sort_key(os.path.basename(path)))
+                        else:
+                            paths = list(self.filepaths or ([self.video] if self.video else []))
+                        paths = [path for path in paths if not any(
+                            same_path(path, excluded) for excluded in self.exclude_paths)]
+                        ok, msg, imgs, names = self.loader.load_linear_raw_stack(
+                            paths, scale_factor=self.scale,
+                            resource_preference=self.resource_preference,
+                            expected_metadata=self.expected_metadata)
+                        if ok:
+                            self.linear_dng_metadata = self.loader.linear_dng_metadata
+                    elif self.folder:
+                        ok, msg, imgs, names = self.loader.load_from_folder(
+                            self.folder, scale_factor=self.scale, exclude_paths=self.exclude_paths, **options)
+                    elif self.video:
+                        ok, msg, imgs, names = self.loader.load_from_video(self.video, scale_factor=self.scale)
                     else:
-                        operation.fail()
-                        logger.error("stack load failed: %s", msg)
+                        from utils.path_identity import same_path
+                        paths = [path for path in self.filepaths if not any(
+                            same_path(path, excluded) for excluded in self.exclude_paths)]
+                        ok, msg, imgs, names = self.loader.load_from_filepaths(
+                            paths, scale_factor=self.scale, **options)
+                    if ok:
+                        self.source_icc_profiles = dict(getattr(self.loader, 'source_icc_profiles', {}))
+                    logger.info("stack decoded %s", frame_details(imgs))
+                    # Video decoding does not populate the image failure counter.
+                    image_load = bool(self.folder) or not self.video
+                    if not ok or (image_load and getattr(self.loader, 'failed_count', 0)):
+                        if self.is_cancelled or msg == 'CANCELLED':
+                            operation.cancel()
+                        else:
+                            operation.fail()
+                            logger.error("stack load failed: %s", msg)
             except RegistrationCancelled as e:
                 operation.cancel()
                 ok, msg, imgs, names = False, str(e), [], []
             except Exception as e:
                 operation.fail()
                 ok, msg, imgs, names = False, str(e), [], []
+            finally:
+                self.loader.progress_callback = previous_progress_callback
+                self.loader.should_cancel = self._previous_should_cancel
             if self.is_cancelled:
                 operation.cancel()
                 ok, msg, imgs, names = False, 'CANCELLED', [], []
@@ -598,11 +646,7 @@ class RenderWorker(QThread):
         """Run the selected descriptor with its complete parameter mapping."""
         from core.transparency import restore_transparent_canvas
         images, transparent = _crop_transparent_for_gui(images, should_cancel)
-        from utils.image_utils import normalize_fuse_input, quantize_fuse_output
-        if any(image.dtype == np.uint16 for image in images):
-            require_memory(sum(image.size * 4 for image in images if image.dtype != np.float32)
-                           + max(image.size * 4 for image in images if image.dtype == np.uint16))
-        images, is_16bit = normalize_fuse_input(list(images))
+        from utils.image_utils import quantize_fuse_output
         fusion = MultiFocusFusion(algorithm=self.algorithm,
             fusion_parameters=self.fusion_parameters, use_gpu=self.use_gpu,
             tile_enabled=self.tile_enabled if self.tile_enabled is not None else True,
@@ -612,6 +656,7 @@ class RenderWorker(QThread):
             ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
             sort_mode=self.sort_mode, exposure_match=self.exposure_match,
             resource_preference=self.resource_preference)
+        images, is_16bit = _prepare_fusion_input(images, fusion)
         result = fusion.fuse(images, thread_count=self.thread_count,
             should_cancel=should_cancel, progress_callback=progress_callback)
         if self.sharpen_output and result is not None:
@@ -685,14 +730,17 @@ class BatchImportWorker(QThread):
                            folder_count=len(self.folder_paths), thread_count=self.thread_count,
                            resource_preference=self.resource_preference) as operation:
             try:
-                if self.mode == 'stack':
-                    ok = self._load_stack()
-                else:
-                    ok = self._load_thumbnails()
+                with heavy_job(lambda: self.is_cancelled):
+                    if self.mode == 'stack':
+                        ok = self._load_stack()
+                    else:
+                        ok = self._load_thumbnails()
                 if self.is_cancelled:
                     operation.cancel()
                 elif ok is False:
                     operation.fail()
+            except RegistrationCancelled:
+                operation.cancel()
             except Exception as exc:  # noqa: BLE001 - surfaced by the dialog
                 operation.fail()
                 if self.mode == 'stack':
@@ -1105,19 +1153,13 @@ class BatchWorker(QThread):
                         if runtime.get(key) is not None:
                             tile_kwargs[key] = runtime[key]
         
-                    from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+                    from utils.image_utils import quantize_fuse_output
                     save_aligned = bool(self.processing_settings.get('save_aligned', False))
                     if not save_aligned:
                         aligned_for_export = None
-                    if any(image.dtype == np.uint16 for image in aligned_images):
-                        require_memory(sum(image.size * 4 for image in aligned_images if image.dtype != np.float32)
-                                       + max(image.size * 4 for image in aligned_images if image.dtype == np.uint16))
                     from core.transparency import restore_transparent_canvas
                     color_frames, transparent = _crop_transparent_for_gui(
                         aligned_images, lambda: self.is_cancelled)
-                    fusion_input, is_16bit = normalize_fuse_input(list(color_frames))
-                    if aligned_for_export is None:
-                        del aligned_images  # fusion does not need the originals
         
                     fusion = MultiFocusFusion(
                         algorithm=fusion_method, fusion_parameters=fusion_params, use_gpu=self.use_gpu,
@@ -1125,6 +1167,9 @@ class BatchWorker(QThread):
                         base_frame=runtime.get('base_frame', 'none'),
                         sort_mode=runtime.get('sort_mode', 'asc'),
                         exposure_match=self.exposure_match, **tile_kwargs)
+                    fusion_input, is_16bit = _prepare_fusion_input(color_frames, fusion)
+                    if aligned_for_export is None:
+                        del aligned_images
                     result = self._fuse_one_stack(fusion, fusion_method, fusion_input, fusion_params)
                     if runtime.get('sharpen_output', False) and result is not None:
                         from utils.output_sharpen import sharpen_output
@@ -1296,10 +1341,7 @@ class BatchWorker(QThread):
                     brightness_reference='last' if self.exposure_match else 'first', use_gpu=False)
                 images = registration.process(images, thread_count=self.thread_count,
                     resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled)
-            if any(image.dtype == np.uint16 for image in images):
-                require_memory(sum(image.size * 4 for image in images if image.dtype != np.float32)
-                               + max(image.size * 4 for image in images if image.dtype == np.uint16))
-            fusion_input, is_16bit = normalize_fuse_input(list(images))
+            fusion_input, is_16bit = _prepare_fusion_input(images, fusion)
             result = self._fuse_one_stack(fusion, method, fusion_input, params)
             return quantize_fuse_output(result, is_16bit)
 
@@ -1346,7 +1388,8 @@ class GifSaverWorker(QThread):
     """后台保存GIF的线程"""
     finished_signal = pyqtSignal(bool, str)  # success, message
 
-    def __init__(self, images, file_path, duration_sec, label_manager, target_type, scale_cfg=None):
+    def __init__(self, images, file_path, duration_sec, label_manager, target_type, scale_cfg=None,
+                 linear_dng_metadata=None):
         super().__init__()
         self.images = tuple(images)
         self.file_path = file_path
@@ -1354,6 +1397,7 @@ class GifSaverWorker(QThread):
         self.label_manager = label_manager
         self.target_type = target_type
         self.scale_cfg = scale_cfg
+        self.linear_dng_metadata = linear_dng_metadata
         self.is_cancelled = False
 
     def cancel(self):
@@ -1373,6 +1417,9 @@ class GifSaverWorker(QThread):
                     if image.ndim == 3 and image.shape[2] == 4:
                         from locales import trans
                         raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
+                    if self.linear_dng_metadata is not None:
+                        from utils.linear_dng import develop_linear
+                        image = develop_linear(image, self.linear_dng_metadata)
                     if self.label_manager is not None:
                         image = self.label_manager.prepare_bgr_image(self.target_type, image, index)
                     if self.scale_cfg:

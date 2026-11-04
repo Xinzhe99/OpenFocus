@@ -1365,9 +1365,18 @@ class ImageRegistration:
             height, width = images[0].shape[:2]
             channels = images[0].shape[2] if images[0].ndim == 3 else 1
             output_bytes = sum(image.nbytes for image in images)
-            # ECC retains its normalized thumbnails until pair estimation ends.
-            # Full-resolution planes are a conservative bound even with resize.
-            gray_bytes = sum(image.shape[0] * image.shape[1] * 4 for image in images)
+            # ECC retains downsampled grayscale planes, not full-resolution
+            # planes. Its large-image path fixes the width at 1024.
+            if self.steps == ['ecc'] or self.steps == ('ecc',):
+                import math
+                downscale = 1024 if max(height, width) >= 2048 else self.downscale_width
+                gray_bytes = 0
+                for image in images:
+                    h, w = image.shape[:2]
+                    scale = min(1.0, downscale / float(w))
+                    gray_bytes += max(1, math.ceil(h * scale)) * max(1, math.ceil(w * scale)) * 4
+            else:
+                gray_bytes = sum(image.shape[0] * image.shape[1] * 4 for image in images)
             plan = plan_execution(Workload(
                 algorithm='registration', frames=len(images), height=height,
                 width=width, channels=channels, itemsize=images[0].dtype.itemsize,

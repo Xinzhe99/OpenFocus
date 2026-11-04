@@ -48,6 +48,32 @@ def test_hard_mode_values_come_from_the_source_frames():
     assert covered.all()
 
 
+def test_tiled_hard_selection_does_not_blend_conflicting_tiles(monkeypatch):
+    """Overlapping tiles may choose different source frames at one pixel."""
+    import core.multi_focus_fusion as mff
+
+    frames = [np.full((16, 24, 3), value, np.uint8) for value in (16, 240)]
+    fusion = MultiFocusFusion('stackmffv3', use_gpu=False, exposure_match=False)
+
+    def render(mode):
+        choices = iter([0, 1] * 20)
+
+        def predict(_fusion, crops, _resize, **_kwargs):
+            return crops[next(choices)]
+
+        monkeypatch.setattr(mff, 'resolve_runner', lambda _name: predict)
+        return fusion._fuse_tiled_neural(
+            frames, None, [], 16, 24, 3, 12, 4,
+            prepare=lambda *args, **kwargs: (None, 'CPU', None),
+            label='test', default_weights=WEIGHTS,
+            mode_normalizer=lambda value: value, mode=mode)
+
+    soft = render('soft')
+    hard = render('hard')
+    assert np.any((soft > 16) & (soft < 240))
+    assert np.isin(hard, (16, 240)).all()
+
+
 def test_unknown_mode_is_rejected():
     with pytest.raises(ValueError, match='mode'):
         _fuse('nonsense')
@@ -284,6 +310,29 @@ def test_cancel_from_final_progress_prevents_fusion_return():
         ai._stackmffv3_impl(frames, None, WEIGHTS, False,
                            progress_callback=progress, should_cancel=lambda: cancelled,
                            thread_count=1)
+
+
+def test_fine_head_rejects_working_set_larger_than_cuda_budget(monkeypatch):
+    from core import resource_policy
+    from core.models.stackmff_v3.network import StackMFFLoop
+    from fusion_methods import stackmffv3 as ai
+
+    ai._ensure_torch()
+
+    model = StackMFFLoop(C1=16, C2=32, heads=(2, 2),
+                         single_scale=True, fine_head=True)
+    device = torch.device('cuda')
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=64 * 1024**3, total_ram=128 * 1024**3,
+        physical_cores=8, logical_cpus=8, device_kind='CUDA',
+        free_vram=int(23.5 * 1024**3), total_vram=24 * 1024**3)
+    monkeypatch.setattr(ai, '_resolve_device', lambda _use_gpu: device)
+    monkeypatch.setattr(ai, '_get_model_and_device', lambda *_args: (model, device))
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda _kind: snapshot)
+    # Broadcasted views represent the image dimensions without allocating the stack.
+    frame = np.broadcast_to(np.zeros(1, dtype=np.uint8), (2432, 2432))
+    with pytest.raises(resource_policy.ResourceLimitError, match='VRAM|memory'):
+        ai._prepare_inference([frame] * 20, WEIGHTS, True)
 
 
 def test_direct_probability_inference_cannot_bypass_memory_budget(monkeypatch):

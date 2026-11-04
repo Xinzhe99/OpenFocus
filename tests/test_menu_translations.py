@@ -37,6 +37,7 @@ def _menu_window(qapp):
     })()
     window.source_manager = type("S", (), {
         "clear_image_stack": staticmethod(stub),
+        "prompt_and_load_linear_raw": staticmethod(stub),
         "reset_current_stack": staticmethod(stub),
     })()
     window.label_manager = type("L", (), {

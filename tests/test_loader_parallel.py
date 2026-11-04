@@ -104,6 +104,38 @@ def test_scale_factor_is_applied_once(tmp_path):
     assert ok and images[0].shape[:2] == (20, 30)
 
 
+def test_file_load_progress_counts_failed_and_missing_sources(tmp_path):
+    paths = [_write(tmp_path, 'a.png', 1), _write(tmp_path, 'b.png', 2)]
+    broken = tmp_path / 'broken.png'
+    broken.write_bytes(b'not a png')
+    missing = str(tmp_path / 'missing.png')
+    loader = ImageStackLoader()
+    progress = []
+    loader.progress_callback = lambda done, total: progress.append((done, total))
+
+    ok, _, images, names = loader.load_from_filepaths(
+        [paths[0], str(broken), missing, paths[1]], thread_count=1)
+
+    assert ok and loader.failed_count == 2
+    assert names == ['a.png', 'b.png']
+    assert [int(image[0, 0, 0]) for image in images] == [1, 2]
+    assert progress == [(1, 4), (2, 4), (3, 4), (4, 4)]
+
+
+def test_folder_load_progress_stops_when_cancelled(tmp_path):
+    for index in range(3):
+        _write(tmp_path, f'{index}.png', index)
+    loader = ImageStackLoader()
+    progress = []
+    loader.progress_callback = lambda done, total: progress.append((done, total))
+    loader.should_cancel = lambda: len(progress) >= 2
+
+    ok, message, images, _ = loader.load_from_folder(str(tmp_path), thread_count=1)
+
+    assert not ok and message == 'CANCELLED' and images == []
+    assert progress == [(0, 3), (1, 3)]
+
+
 def test_cancel_before_start_never_decodes(tmp_path, monkeypatch):
     paths = [_write(tmp_path, f"img{i}.png", i) for i in range(4)]
     calls = []

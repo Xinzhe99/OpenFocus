@@ -1411,3 +1411,60 @@ def test_directory_export_does_not_overwrite_existing_files(tmp_path):
     (tmp_path / "result.png").write_bytes(b"x")
     second = unique_path(str(tmp_path / 'result.png'))
     assert second.endswith("result_2.png"), second
+
+
+def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
+    from PyQt6.QtCore import QObject, pyqtSignal
+    from PyQt6.QtWidgets import QMainWindow
+    from controllers import source_manager
+    from locales import trans
+
+    class Worker(QObject):
+        progress = pyqtSignal(int, int)
+        finished_load = pyqtSignal(bool, str, object, object)
+        finished = pyqtSignal()
+
+        def __init__(self, loader, **kwargs):
+            super().__init__()
+            self.video = kwargs['video']
+            self.is_cancelled = False
+
+        def start(self):
+            pass
+
+        def isRunning(self):
+            return True
+
+        def request_cancel(self):
+            self.is_cancelled = True
+
+    monkeypatch.setattr(source_manager, 'StackLoadWorker', Worker)
+    window = QMainWindow()
+    window.image_loader = object()
+    manager = source_manager.SourceManager(window)
+    manager._start_load_worker(filepaths=['a', 'b', 'c'])
+    worker = manager._load_worker
+    bar = manager._load_progress_bar
+    assert (bar.minimum(), bar.maximum()) == (0, 0)
+    worker.progress.emit(1, 3)
+    assert (bar.maximum(), bar.value()) == (3, 1)
+    assert manager._load_status_label.text() == f"{trans.t('msg_loading_stack')} (1/3)"
+    worker.progress.emit(2, 0)
+    assert (bar.minimum(), bar.maximum()) == (0, 0)
+    assert manager._load_status_label.text().endswith('(2)')
+    manager.cancel_load()
+    worker.progress.emit(3, 3)
+    assert manager._load_status_label.text() == trans.t('depth_cancelling')
+    assert not manager._load_cancel_button.isEnabled()
+    worker.finished.emit()
+    manager._start_load_worker(video='clip.mp4')
+    video_worker = manager._load_worker
+    assert (bar.minimum(), bar.maximum()) == (0, 0)
+    assert manager._load_cancel_button.isEnabled()
+    assert manager._load_status_label.text() == trans.t('msg_loading_stack')
+    video_worker.progress.emit(1, 10)
+    assert (bar.minimum(), bar.maximum()) == (0, 0)
+    assert manager._load_status_label.text() == trans.t('msg_loading_stack')
+    worker.progress.emit(3, 3)
+    assert (bar.minimum(), bar.maximum()) == (0, 0)
+    video_worker.finished.emit()

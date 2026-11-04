@@ -805,6 +805,7 @@ class DepthMapDialog(QDialog):
         self._current_indices = list(indices)
         from core.image_loader import stack_icc_profile
         self._current_icc_profile = stack_icc_profile(win, self._current_indices)
+        self._current_linear_dng_metadata = getattr(win, "linear_dng_metadata", None)
         self._total_frames = len(getattr(win, "raw_images", None) or [])
         self._reverse_order = bool(getattr(win, "stack_reverse_order", False))
         self._use_gpu = bool(getattr(win, "use_gpu", False))
@@ -911,6 +912,11 @@ class DepthMapDialog(QDialog):
                     i=frame_index + 1, n=len(self._map_frames), name=name)
                 self._texture_identity = {"kind": "frame", "source_id": self._map_source_id,
                     "capture_index": self._map_indices[frame_index], "name": name}
+        if choice != "color":
+            metadata = getattr(self, "_map_linear_dng_metadata", None)
+            if metadata is not None:
+                from utils.linear_dng import develop_linear
+                texture = develop_linear(texture, metadata)
         if texture.shape[:2] != index.shape[:2]:
             raise ValueError(trans.t("depth_texture_unavailable"))
         self.lbl_texture_source.setText(self._texture_description)
@@ -1251,6 +1257,13 @@ class DepthMapDialog(QDialog):
         worker.source_indices = self._capture_indices()
         worker.icc_profile = (getattr(context, "icc_profile", b"") if context is not None
                               else self._current_icc_profile)
+        if context is not None:
+            worker.linear_dng_metadata = getattr(context, "linear_dng_metadata", None)
+        elif self._source_mode == "current":
+            worker.linear_dng_metadata = self._current_linear_dng_metadata
+        else:
+            # Historical output with no context: do not borrow the current stack.
+            worker.linear_dng_metadata = None
         names = [frame.name for frame in context.frames] if context else self._current_names
         worker.source_names = [names[i] if i < len(names) else "" for i in range(len(imgs))]
         if worker.reverse_order:
@@ -1319,6 +1332,7 @@ class DepthMapDialog(QDialog):
                 self._map_names = worker.source_names
                 self._map_parameters = {**worker.parameters, "reverse_order": worker.reverse_order}
                 self._map_context = worker.context
+                self._map_linear_dng_metadata = getattr(worker, "linear_dng_metadata", None)
                 self._map_icc_profile = worker.icc_profile
                 self._map_output_texture = worker.output_texture
                 self._map_output_label = worker.output_label
@@ -1353,6 +1367,28 @@ class DepthMapDialog(QDialog):
             getattr(self, name).setEnabled(current)
         self.btn_save_physical.setEnabled(current and self.physical_chk.isChecked())
 
+    def _matching_texture_metadata(self):
+        """Linear metadata for the texture _matching_texture() selected.
+
+        A completed map uses the metadata captured with that map. A historical
+        output source uses its render context, and only the current stack
+        source falls back to the window value. This keeps another stack's
+        calibration from being applied to an older output or baked pixels.
+        """
+        if self._index01 is not None:
+            metadata = getattr(self, "_map_linear_dng_metadata", None)
+            if metadata is None:
+                metadata = getattr(self._map_context, "linear_dng_metadata", None)
+            return metadata
+        context = self._source_context()
+        if context is not None:
+            return getattr(context, "linear_dng_metadata", None)
+        if self._source_mode == "output":
+            # A historical output without its own render context must not
+            # inherit the currently loaded stack's calibration.
+            return None
+        return getattr(self, "_current_linear_dng_metadata", None)
+
     # ------------------------------------------------------------------
     def _colorized_full(self):
         from core.depth_map import smooth_index_map
@@ -1367,6 +1403,14 @@ class DepthMapDialog(QDialog):
             base = self._matching_texture()
             if base is not None and base.shape[:2] == colored.shape[:2]:
                 from utils.image_utils import to_display_uint8
+                metadata = self._matching_texture_metadata()
+                if (metadata is not None and base.dtype == np.uint16
+                        and base.ndim == 3 and base.shape[2] == 3):
+                    # The overlay is a photograph too: develop its camera-linear
+                    # pixels once, after selecting the metadata owned by that
+                    # texture (never the current stack for a historical output).
+                    from utils.linear_dng import develop_linear
+                    base = develop_linear(base, metadata)
                 a = float(self.opacity_spin.value())
                 # 16-bit 结果 (0-65535) 直接当 0-255 混合再 clip，整幅会变白；
                 # 先按显示位深换算

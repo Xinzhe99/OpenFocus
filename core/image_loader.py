@@ -4,6 +4,7 @@
 """
 
 import os
+import math
 import cv2
 import numpy as np
 from dataclasses import dataclass, field
@@ -32,9 +33,43 @@ except ImportError:
 from utils.image_utils import export_exif, to_display_uint8
 from utils.sorting import natural_sort_key
 
-RAW_FORMATS = {'.dng', '.cr2', '.cr3', '.crw', '.nef', '.nrw', '.arw', '.srf',
-               '.sr2', '.raf', '.orf', '.rw2', '.raw', '.pef', '.srw', '.3fr',
-               '.iiq', '.erf', '.kdc', '.mos', '.mrw', '.x3f'}
+# LibRaw recognizes file contents, not extensions. This shared allow-list
+# controls folder, drag-and-drop and CLI discovery; camera and compression
+# support still depends on the installed LibRaw version.
+RAW_FORMATS = {'.3fr', '.arw', '.bay', '.cap', '.cr2', '.cr3', '.crw',
+               '.dc2', '.dcr', '.dng', '.erf', '.fff', '.iiq', '.k25',
+               '.kc2', '.kdc', '.mdc', '.mef', '.mos', '.mrw', '.nef',
+               '.nrw', '.orf', '.pef', '.raf', '.raw', '.rdc', '.rw2',
+               '.rwl', '.srf', '.sr2', '.srw', '.sti', '.x3f'}
+
+
+def linear_raw_metadata_matches(first, second):
+    """Whether two camera-linear sources share the same calibration."""
+    return (first.camera_make == second.camera_make
+            and first.camera_model == second.camera_model
+            and np.allclose(first.color_matrix, second.color_matrix, rtol=1e-5, atol=1e-7)
+            and np.allclose(first.as_shot_neutral, second.as_shot_neutral,
+                            rtol=1e-5, atol=1e-7))
+
+
+def _consistent_px_size_um(values):
+    """One physical pixel size shared by every frame, or None.
+
+    A missing frame or a disagreement means the stack cannot claim a single
+    calibration: propagating the first frame's value would silently mislabel
+    every figure made from the others.
+    """
+    if not values:
+        return None
+    first = values[0]
+    if first is None or not math.isfinite(first) or first <= 0:
+        return None
+    for value in values[1:]:
+        if (value is None or not math.isfinite(value)
+                or not math.isclose(float(value), float(first),
+                                    rel_tol=1e-6, abs_tol=1e-9)):
+            return None
+    return float(first)
 
 
 class UnsupportedTransparency(ValueError):
@@ -47,8 +82,8 @@ def _has_transparency(image: np.ndarray) -> bool:
     return (image.dtype not in (np.uint8, np.uint16)
             or (image.size > 0 and np.min(image[:, :, 3]) != np.iinfo(image.dtype).max))
 
-def _read_raw(path: str) -> Optional[np.ndarray]:
-    """Camera RAW -> 16-bit BGR (sRGB gamma, camera white balance).
+def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
+    """Camera RAW -> 16-bit BGR (sRGB color space, camera white balance).
 
     Auto-brightening is off on purpose: LibRaw's per-image auto exposure
     would brighten each frame of a focus stack differently (the defocused
@@ -61,6 +96,10 @@ def _read_raw(path: str) -> Optional[np.ndarray]:
         with rawpy.imread(path) as raw:
             rgb = raw.postprocess(use_camera_wb=True, output_bps=16,
                                   no_auto_bright=True)
+        # Resize while still RGB to avoid a second full-size channel-swapped
+        # copy. INTER_AREA treats each channel independently, so the result
+        # is identical to resizing BGR after conversion.
+        rgb = _downscale_page(rgb, scale_factor)
         return np.ascontiguousarray(rgb[:, :, ::-1])
     except Exception:
         return None
@@ -397,6 +436,11 @@ def _decode_one_source(path: str, scale_factor: float,
         if pages is not None:
             return DecodedSource(path, [_downscale_page(p, scale_factor)
                                         for p in pages])
+        if os.path.splitext(path)[1].lower() in RAW_FORMATS:
+            image = _read_raw(path, scale_factor)
+            if image is None:
+                return DecodedSource(path, error=ValueError("decode failed"))
+            return DecodedSource(path, [image])
         image = (decode_image(path, allow_transparent_png=True)
                  if allow_transparent_png else decode_image(path))
         if image is not None and _has_transparency(image) and scale_factor != 1.0:
@@ -559,11 +603,13 @@ class ImageStackLoader:
         self.image_paths = []
         self.images = []
         self.thumbnail_size = (600, 400)
-        # µm/px auto-detected from the stack's TIFF metadata (None = unknown)
+        # Native µm/px auto-detected from TIFF/DNG metadata (None = unknown);
+        # source_manager divides it by the load scale for working pixels.
         self.px_size_um = None
         self.source_icc_profile = b""
         self.source_icc_profiles = {}
         self.should_cancel = lambda: False
+        self.progress_callback = None
         self.failed_count = 0
         # `*_registered*` copies found beside their originals and skipped
         self.skipped_derived_count = 0
@@ -588,6 +634,72 @@ class ImageStackLoader:
             kept.append((name, path))
         self.skipped_derived_count = len(image_files) - len(kept)
         return kept
+
+    def load_linear_raw_stack(self, filepaths, scale_factor=1.0, *,
+                              resource_preference="balanced", expected_metadata=None):
+        """Load a complete camera-linear stack, committing state only on success."""
+        from core.resource_policy import require_memory
+        from locales import trans
+        from utils.linear_dng import load_linear_raw
+        from utils.scalebar import detect_px_size_um
+
+        paths = list(filepaths)
+        if not paths:
+            return False, trans.t("linear_raw_invalid"), [], []
+        images = []
+        px_sizes = []
+        metadata = expected_metadata
+        def unknown_camera(profile):
+            return (not profile.camera_make or not profile.camera_model
+                    or (profile.camera_make, profile.camera_model) == ("OpenFocus", "Linear RAW"))
+
+        if expected_metadata is not None and unknown_camera(expected_metadata):
+            return False, trans.t("linear_raw_unknown_camera"), [], []
+        if self.progress_callback is not None:
+            self.progress_callback(0, len(paths))
+        for index, path in enumerate(paths):
+            if self.should_cancel():
+                return False, 'CANCELLED', [], []
+            if os.path.splitext(path)[1].lower() not in RAW_FORMATS:
+                return False, trans.t("linear_raw_invalid"), [], []
+            def admit(width, height):
+                # Already decoded frames are reflected in the live memory
+                # snapshot. Reserve the remaining scaled stack plus the
+                # current full-resolution LibRaw and conversion workspace.
+                full_bytes = width * height * 3 * 2
+                scaled_bytes = max(1, int(width * scale_factor)) * max(1, int(height * scale_factor)) * 6
+                require_memory(full_bytes * 4 + scaled_bytes * (len(paths) - index))
+
+            try:
+                image, profile = load_linear_raw(path, scale_factor=scale_factor,
+                                                 before_decode=admit)
+            except MemoryError:
+                raise
+            except Exception as exc:
+                return False, f"{trans.t('linear_raw_invalid')}\n{path}: {exc}", [], []
+            if self.should_cancel():
+                return False, 'CANCELLED', [], []
+            if (expected_metadata is not None or len(paths) > 1) and unknown_camera(profile):
+                return False, f"{trans.t('linear_raw_unknown_camera')}\n{path}", [], []
+            if metadata is not None and not linear_raw_metadata_matches(metadata, profile):
+                return False, f"{trans.t('linear_raw_mismatch')}\n{path}", [], []
+            metadata = profile if metadata is None else metadata
+            # Native DNG may carry the same microscopy calibration as TIFF.
+            # Keep the file's native unit here; source_manager divides by the
+            # load scale when it publishes source_px_um for working pixels.
+            px_sizes.append(detect_px_size_um(path))
+            images.append(image)
+            if self.progress_callback is not None:
+                self.progress_callback(index + 1, len(paths))
+        self.images = images
+        self.image_paths = paths
+        self.source_exif = _read_exif_bytes(paths[0])
+        self.source_icc_profile = b""
+        self.source_icc_profiles = {}
+        self.px_size_um = _consistent_px_size_um(px_sizes)
+        self.failed_count = 0
+        self.linear_dng_metadata = metadata
+        return True, f"Loaded {len(images)} image(s)", images, [os.path.basename(p) for p in paths]
 
     def load_from_folder(self, folder_path: str, scale_factor: float = 1.0, *,
                          thread_count: int = 0,
@@ -626,13 +738,17 @@ class ImageStackLoader:
 
         sources = [full_path for _filename, full_path in image_files]
         names = {full_path: filename for filename, full_path in image_files}
+        if self.progress_callback is not None:
+            self.progress_callback(0, len(sources))
         try:
             decoded = iter_decoded_sources(
                 sources, scale_factor, thread_count=thread_count,
                 resource_preference=resource_preference,
                 should_cancel=self.should_cancel, allow_transparent_png=True)
             try:
-                for item in decoded:
+                for done, item in enumerate(decoded, start=1):
+                    if self.progress_callback is not None:
+                        self.progress_callback(done, len(sources))
                     if item.error is not None:
                         if isinstance(item.error, UnsupportedTransparency):
                             from locales import trans
@@ -758,16 +874,21 @@ class ImageStackLoader:
         self.source_exif = b""
         self.source_icc_profile = b""
 
+        total = len(sources)
         missing = [path for path in sources if not os.path.exists(path)]
         sources = [path for path in sources if os.path.exists(path)]
         failed_count += len(missing)
+        if self.progress_callback is not None:
+            self.progress_callback(len(missing), total)
         try:
             decoded = iter_decoded_sources(
                 sources, scale_factor, thread_count=thread_count,
                 resource_preference=resource_preference,
                 should_cancel=self.should_cancel, allow_transparent_png=True)
             try:
-                for item in decoded:
+                for done, item in enumerate(decoded, start=len(missing) + 1):
+                    if self.progress_callback is not None:
+                        self.progress_callback(done, total)
                     if item.error is not None:
                         if isinstance(item.error, UnsupportedTransparency):
                             from locales import trans

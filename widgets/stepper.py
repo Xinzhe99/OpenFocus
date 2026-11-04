@@ -4,6 +4,19 @@ from typing import Optional
 from PyQt6.QtWidgets import QDoubleSpinBox, QWidget
 
 
+def hide_spin_buttons(spinbox):
+    """Hide step controls without Qt's NoButtons stylesheet geometry bug."""
+    spinbox.setStyleSheet("""
+        QSpinBox { padding-right: 8px; }
+        QSpinBox::up-button, QSpinBox::down-button {
+            width: 0px; height: 0px; border: none;
+        }
+        QSpinBox::up-arrow, QSpinBox::down-arrow {
+            image: none; width: 0px; height: 0px;
+        }
+    """)
+
+
 class StepperSpinBox(QDoubleSpinBox):
     """A themed spin box for both integer and floating-point parameters."""
 

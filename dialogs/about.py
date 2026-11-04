@@ -137,17 +137,26 @@ class EnvironmentInfoDialog(QDialog):
         info_lines.append("PyTorch / StackMFF-V3")
         try:
             import torch
+            from core import torch_backend
             available["torch"] = True
-            available["device"] = "CPU"
+            kind = torch_backend.detect_kind(torch)
+            available["device"] = (torch_backend.display_name(kind)
+                                   if torch_backend.is_accelerator(kind)
+                                   else "CPU")
 
             info_lines.append(f"  ✓ {trans.t('env_installed').format(torch.__version__)}")
-            if torch.cuda.is_available():
-                available["device"] = "CUDA"
-                info_lines.append(f"  ✓ {trans.t('env_cuda_avail').format(torch.cuda.get_device_name(0))}")
+            if torch.version.cuda:
                 info_lines.append(f"  ✓ {trans.t('env_cuda_ver').format(torch.version.cuda)}")
+            if getattr(torch.version, 'hip', None):
+                info_lines.append(f"  ✓ ROCm {torch.version.hip}")
+            if kind == torch_backend.KIND_CUDA:
+                info_lines.append(f"  ✓ {trans.t('env_cuda_avail').format(torch.cuda.get_device_name(0))}")
                 info_lines.append(f"  ✓ {trans.t('env_gpu_accel')}")
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                available["device"] = "MPS"
+            elif kind in (torch_backend.KIND_ROCM, torch_backend.KIND_XPU):
+                info_lines.append(
+                    f"  ✓ {torch_backend.device_label(torch, kind)} ({torch_backend.display_name(kind)})")
+                info_lines.append(f"  ✓ {trans.t('env_gpu_accel')}")
+            elif kind == torch_backend.KIND_MPS:
                 info_lines.append(f"  ✓ {trans.t('env_mps_avail')}")
                 info_lines.append(f"  ✓ {trans.t('env_gpu_accel')}")
             else:

@@ -71,6 +71,51 @@ def call(server, cmd, token=None, **args):
     return server.handle_line(encode(payload), token=server.token)
 
 
+def _new_main_window(qapp, tmp_path, monkeypatch):
+    """A real OpenFocus window with sandboxed settings, for lifecycle tests."""
+    from main import OpenFocus
+    from utils import recovery, settings_store
+
+    settings = QSettings(str(tmp_path / "settings.ini"),
+                         QSettings.Format.IniFormat)
+    settings.clear()
+    settings.setValue("ui/first_run_done", "1")
+    settings.setValue("updates/last_check_epoch", 9999999999)
+    settings.setValue("rendering/ai_cpu_warning_dismissed", True)
+    monkeypatch.setattr(settings_store, "_settings_singleton", settings)
+    monkeypatch.setattr(recovery, "_base_dir", lambda: str(tmp_path / "recovery"))
+    monkeypatch.setenv("OPENFOCUS_CONTROL_FILE", str(tmp_path / "control.json"))
+    window = OpenFocus()
+    window.use_gpu = False
+    window.restore_last_stack = False
+    window.show()
+    qapp.processEvents()
+    return window
+
+
+def _destroy_main_window(qapp, window):
+    """Close and actually delete the C++ window, as the fixtures do."""
+    from PyQt6 import sip
+    from PyQt6.QtCore import QCoreApplication, QEvent
+
+    window._force_quit = True
+    window.close()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qapp.processEvents()
+    assert sip.isdeleted(window)
+
+
+def wait_until(predicate, timeout=5.0):
+    """Process events until predicate holds, bounded by a deadline."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        QTest.qWait(10)
+    return bool(predicate())
+
+
 @pytest.fixture
 def stack_frames(tmp_path):
     rng = np.random.default_rng(4)
@@ -666,8 +711,7 @@ def test_async_click_returns_before_modal(server, control_window):
     result = call(server, "ui.click", path=path, **{"async": True})["result"]
     assert result["scheduled"] is True
     assert hit == []
-    QTest.qWait(200)
-    assert hit == [True]
+    assert wait_until(lambda: hit == [True]), hit
 
 def test_persistent_session_reuses_one_connection(server, control_window):
     from core.control.client import Session
@@ -707,9 +751,110 @@ def test_dynamic_menu_leaf_is_catalogued_and_triggered(server, control_window):
     entry = next(item for item in catalog if item["text"] == "Dynamic leaf")
     assert entry["source"] == "menu"
     call(server, "ui.trigger", key=entry["key"])
-    QTest.qWait(200)
-    assert hit == [True]
+    assert wait_until(lambda: hit == [True]), hit
     menu.deleteLater()
+
+
+def test_device_probe_thread_does_not_touch_a_destroyed_window(
+        qapp, tmp_path, monkeypatch):
+    from main import OpenFocus
+    import core.multi_focus_fusion as mff
+
+    # Keep the unrelated availability probe out of this lifecycle test.
+    monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async",
+                        lambda self: None)
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+
+    # A cached accelerator must refresh the action immediately while the
+    # user's explicit GPU-off preference stays checked=False.
+    monkeypatch.setattr(mff, "torch_device_kind", lambda: "XPU")
+    window._update_dynamic_status()
+    action = window.ui_objs["action_gpu_accel"]
+    assert action.isEnabled() is True
+    assert action.isChecked() is False
+
+    entered, release = threading.Event(), threading.Event()
+
+    def delayed_probe():
+        entered.set()
+        release.wait(10)
+        return "N/A"
+
+    monkeypatch.setattr(mff, "torch_device_kind", lambda: None)
+    monkeypatch.setattr(mff, "ensure_torch_device_kind", delayed_probe)
+    window._probe_device_kind_async()
+    assert entered.wait(5)
+    thread = window._device_probe_thread
+
+    errors = []
+    old_hook = threading.excepthook
+
+    def hook(args):
+        if args.thread is thread:
+            errors.append(args)
+        else:
+            old_hook(args)
+
+    threading.excepthook = hook
+    try:
+        _destroy_main_window(qapp, window)
+        release.set()
+        thread.join(10)
+        qapp.processEvents()
+    finally:
+        threading.excepthook = old_hook
+        release.set()
+    assert not thread.is_alive()
+    assert errors == []
+
+
+def test_stackmff_probe_thread_does_not_touch_a_destroyed_window(
+        qapp, tmp_path, monkeypatch):
+    from main import OpenFocus
+    import core.multi_focus_fusion as mff
+
+    original = OpenFocus._probe_stackmff_availability_async
+    # The constructor queues the probe; replace it until the explicit start.
+    monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async",
+                        lambda self: None)
+    monkeypatch.setattr(OpenFocus, "_probe_device_kind_async",
+                        lambda self: None)
+    window = _new_main_window(qapp, tmp_path, monkeypatch)
+    monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async",
+                        original)
+
+    entered, release = threading.Event(), threading.Event()
+
+    def delayed_availability():
+        entered.set()
+        release.wait(10)
+        return True
+
+    monkeypatch.setattr(mff, "is_ai_fusion_available", delayed_availability)
+    window._probe_stackmff_availability_async()
+    assert entered.wait(5)
+    thread = window._stackmff_probe_thread
+
+    errors = []
+    old_hook = threading.excepthook
+
+    def hook(args):
+        if args.thread is thread:
+            errors.append(args)
+        else:
+            old_hook(args)
+
+    threading.excepthook = hook
+    try:
+        _destroy_main_window(qapp, window)
+        release.set()
+        thread.join(10)
+        qapp.processEvents()
+    finally:
+        threading.excepthook = old_hook
+        release.set()
+    assert not thread.is_alive()
+    assert errors == []
 
 def test_ui_type_accepts_unicode_without_crashing(server, control_window):
     from PyQt6.QtWidgets import QLineEdit
@@ -1134,6 +1279,131 @@ def test_output_delete_clears_the_result_and_protects_retouch(server, stack_fram
     call(server, "output.delete", token=token, index=0, force=True)
     assert call(server, "output.list", token=token)["result"]["count"] == 0
     assert server.window.fusion_result is None
+
+
+def test_dng_socket_export_waits_for_writer_and_preserves_reply_order(
+        server, control_window, monkeypatch, tmp_path):
+    from PyQt6.QtNetwork import QLocalSocket
+    from controllers.output_manager import OutputRecord
+    from utils import linear_dng
+
+    image = np.arange(8 * 8 * 3, dtype=np.uint16).reshape(8, 8, 3)
+    metadata = linear_dng.LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (1.0, 1.0, 1.0), 'Camera', 'Model')
+    record = OutputRecord.create(image, 'linear')
+    record.linear_dng_metadata = metadata
+    control_window.output_manager._insert_output(image, record.label, record)
+    entered, release = threading.Event(), threading.Event()
+    real_write = linear_dng.write_linear_dng
+
+    def delayed_write(path, pixels, profile, *, should_cancel=None, px_size_um=None):
+        entered.set()
+        if not release.wait(10):
+            raise TimeoutError('test did not release writer')
+        return real_write(path, pixels, profile, should_cancel=should_cancel,
+                          px_size_um=px_size_um)
+
+    monkeypatch.setattr(linear_dng, 'write_linear_dng', delayed_write)
+    socket = QLocalSocket()
+    socket.connectToServer(server.socket_name)
+    assert socket.waitForConnected(5000)
+    target = tmp_path / 'linear.dng'
+    requests = [
+        {'id': 'export', 'cmd': 'output.export', 'token': server.token,
+         'args': {'index': 0, 'path': str(target)}},
+        {'id': 'ping', 'cmd': 'ping', 'token': server.token, 'args': {}},
+    ]
+    socket.write(b''.join(encode(request) for request in requests))
+    socket.flush()
+    try:
+        deadline = time.monotonic() + 10
+        while not entered.is_set() and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert entered.is_set()
+        assert not socket.canReadLine()
+        assert not record.exported
+        # Another request remains serviceable while the writer is blocked.
+        assert call(server, 'ping')['result']['pong']
+        release.set()
+        replies = []
+        deadline = time.monotonic() + 10
+        while len(replies) < 2 and time.monotonic() < deadline:
+            QTest.qWait(10)
+            while socket.canReadLine():
+                replies.append(decode(bytes(socket.readLine())))
+        assert [reply['id'] for reply in replies] == ['export', 'ping']
+        assert replies[0]['ok'] and replies[0]['result']['written']
+        assert replies[1]['ok'] and replies[1]['result']['pong']
+        assert record.exported and record.export_path == str(target)
+        import tifffile
+        np.testing.assert_array_equal(tifffile.imread(target), image[:, :, ::-1])
+    finally:
+        release.set()
+        socket.abort()
+        worker = control_window.output_manager.linear_dng_worker
+        if worker is not None:
+            worker.wait(10000)
+        QTest.qWait(10)
+
+
+def test_dng_socket_disconnect_cancels_without_overwriting_target(
+        server, control_window, monkeypatch, tmp_path):
+    from PyQt6.QtNetwork import QLocalSocket
+    from controllers.output_manager import OutputRecord
+    from utils import linear_dng
+
+    image = np.zeros((8, 8, 3), np.uint16)
+    record = OutputRecord.create(image, 'linear')
+    record.linear_dng_metadata = linear_dng.LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (1.0, 1.0, 1.0), 'Camera', 'Model')
+    control_window.output_manager._insert_output(image, record.label, record)
+    entered, release, cancelled = threading.Event(), threading.Event(), threading.Event()
+
+    def delayed_write(path, pixels, profile, *, should_cancel=None, px_size_um=None):
+        entered.set()
+        if not release.wait(10):
+            raise TimeoutError('test did not release writer')
+        if should_cancel():
+            cancelled.set()
+            raise RuntimeError('cancelled')
+        Path(path).write_bytes(b'replaced')
+
+    monkeypatch.setattr(linear_dng, 'write_linear_dng', delayed_write)
+    target = tmp_path / 'existing.dng'
+    target.write_bytes(b'original')
+    socket = QLocalSocket()
+    socket.connectToServer(server.socket_name)
+    assert socket.waitForConnected(5000)
+    socket.write(encode({'id': 'export', 'cmd': 'output.export', 'token': server.token,
+                         'args': {'index': 0, 'path': str(target)}}))
+    socket.flush()
+    try:
+        deadline = time.monotonic() + 10
+        while not entered.is_set() and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert entered.is_set()
+        worker = control_window.output_manager.linear_dng_worker
+        socket.abort()
+        deadline = time.monotonic() + 10
+        while not worker._cancelled.is_set() and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert worker._cancelled.is_set()
+        release.set()
+        deadline = time.monotonic() + 10
+        while not cancelled.is_set() and time.monotonic() < deadline:
+            QTest.qWait(10)
+        assert cancelled.is_set()
+        assert target.read_bytes() == b'original'
+        assert not record.exported
+    finally:
+        release.set()
+        socket.abort()
+        worker = control_window.output_manager.linear_dng_worker
+        if worker is not None:
+            worker.wait(10000)
+        QTest.qWait(10)
 
 
 def test_output_export_routes_aligned_records(server, control_window, monkeypatch, tmp_path):

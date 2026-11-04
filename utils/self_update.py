@@ -19,6 +19,7 @@ step via PowerShell -Verb RunAs (one UAC prompt).
 The release tag arrives from the download mirror, so it is treated as untrusted
 input: it is sanitised before reaching any filesystem path or script text.
 """
+import json
 import os
 import re
 import subprocess
@@ -28,6 +29,9 @@ import zipfile
 from typing import Callable, Optional
 
 PORTABLE_MARKER = "OpenFocus.portable"
+# Present only in the independent CUDA/ROCm/XPU preview builds. They carry a
+# different torch runtime, so the stable-channel updater must not replace them.
+GPU_VARIANT_MARKER = "OpenFocus.gpu-variant"
 
 _SAFE_TAG_RE = re.compile(r"[^A-Za-z0-9._-]")
 STAGING_PREFIX = "OpenFocus_update_"
@@ -43,6 +47,35 @@ def app_install_dir() -> str:
 
 def is_frozen() -> bool:
     return getattr(sys, "frozen", False)
+
+
+def gpu_variant() -> dict:
+    """Return the build-time accelerator record; {} only for a stable build.
+
+    Fail closed: once the marker path exists, a malformed, oversized or
+    unreadable file still means "not a stable build" so the stable updater can
+    never replace a vendor runtime. Only a confirmed absent marker (or a
+    source run, which cannot self-update) opens the normal stable path.
+    """
+    if not is_frozen():
+        return {}
+    try:
+        path = os.path.join(app_install_dir(), GPU_VARIANT_MARKER)
+        os.lstat(path)
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return {"variant": "unknown", "invalid": True}
+    try:
+        if os.path.getsize(path) > 4096:
+            raise ValueError("marker is too large")
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+        if isinstance(data, dict) and str(data.get("variant") or ""):
+            return data
+    except (OSError, ValueError):
+        pass
+    return {"variant": "unknown", "invalid": True}
 
 
 def sanitize_tag(tag: str) -> str:

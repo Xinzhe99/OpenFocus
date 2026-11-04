@@ -65,8 +65,8 @@ flowchart LR
   W -->|"/download/releases/tag/kind"| V[Version-pinned update]
   V --> R
   D -->|object exists| R[(R2: openfocus-downloads)]
-  D -.->|"full request, object missing"| GH[302 GitHub release asset]
-  D -.->|"range request, object missing"| E[503 retry]
+  D -.->|"object missing, GitHub asset exists"| GH[302 GitHub release asset]
+  D -.->|"range or mirror-only object missing"| E[503 retry]
   RW["Build & Publish Release"] -->|workflow_run| ACT[Action: r2-mirror.yml]
   REL[GitHub Release] -->|release: published| ACT
   ACT -->|gh release download| REL
@@ -84,19 +84,19 @@ Every page and asset request therefore counts as a Worker invocation.
 - `/zh/` — pre-rendered Chinese page.
 - `/api/latest` — GitHub `releases/latest` reduced to
   `{tag, published, assets: {windows-setup, windows-zip, macos-dmg,
-  macos-zip}}`. A successful GitHub response is cached per data center for
-  five minutes, while clients receive `Cache-Control: no-store`. If GitHub is
-  unavailable or rate-limited, the Worker reads the last complete mirror
-  manifest from `openfocus-meta/latest-release.json` in R2 and identifies it
-  with `X-OpenFocus-Release-Source: mirror`. That manifest represents the last
-  successfully mirrored release and can lag GitHub until mirroring succeeds.
+  macos-zip}}`. For a release with split GitHub assets, missing complete files
+  are filled from the validated R2 manifest only when its tag matches GitHub.
+  Complete responses are cached per data center for five minutes; incomplete
+  responses are not cached. Clients receive `Cache-Control: no-store`. If
+  GitHub is unavailable, the Worker serves the last complete mirror manifest
+  and identifies it with `X-OpenFocus-Release-Source: mirror`.
 - `/download/latest/<kind>` — resolves the latest asset, streams the R2 object
   with `ETag`, `Last-Modified`, `If-None-Match`/`304`, and single-range
   `Range`/`206` support. All responses are `Cache-Control: no-store` because
-  the URL always names the latest release. A full request falls back to a
-  `302` GitHub asset URL when the R2 object is missing; a range request
-  returns `503` with `Retry-After` instead, so a partial download cannot be
-  completed from a different representation.
+  the URL always names the latest release. When a complete GitHub asset exists,
+  a full request can fall back to a `302` GitHub URL if R2 is missing. Range
+  requests and assets assembled only on R2 return `503` with `Retry-After`
+  when the object is unavailable; split parts are never offered as a full file.
 - `/api/updates` — returns the last complete R2 manifest. New manifests include
   asset SHA-256 digests and up to 30 release notes; older ones can omit them.
   It returns `503` when unavailable and never asks GitHub during a desktop check.
@@ -259,8 +259,10 @@ Steps:
 1. Resolve the tag from the event (`release.tag_name`, `inputs.tag` or the
    workflow run's head branch), strip `refs/tags/`, require it to match
    `^v[0-9A-Za-z._+-]+$`, and confirm the release exists.
-2. `gh release download <tag>` for the four installer patterns, then verify
-   exactly one file per pattern, exactly four files total, and no empty files.
+2. Download the Windows asset manifest and its named files, verify each part
+   and reassemble any split archives with `tools/release_archives.py`. Download
+   the macOS assets and require four non-empty complete files. Older releases
+   without a manifest are downloaded directly.
 3. `aws s3 cp assets/ s3://openfocus-downloads/ --recursive` against the R2
    S3 endpoint (`https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`), with
    `application/octet-stream` and `public, max-age=86400` metadata. Objects
@@ -279,9 +281,8 @@ remain cached for five minutes per data center. During a GitHub outage the
 uncached mirror manifest is used; it advances only after a successful mirror.
 
 Why R2: egress is free at any volume; the free tier is 10 GB-month storage, 1M
-Class A operations and 10M Class B operations per month. A release is about
-1.36 GB and four uploads; one mirrored release fits comfortably. Older
-releases are pruned because the site only ever serves the latest.
+Class A operations and 10M Class B operations per month. Release sizes vary;
+old releases are pruned because the site only serves the latest.
 
 The workflow must exist on the **default branch** (`main`) for release and
 `workflow_run` events to fire. `workflow_dispatch` also requires it on `main`
@@ -294,17 +295,16 @@ gh workflow run r2-mirror.yml -R Xinzhe99/OpenFocus --ref main -f tag=v1.74.0
 gh run list -R Xinzhe99/OpenFocus --workflow r2-mirror.yml --limit 3
 ```
 
-If the action fails, full downloads still work: `/download/latest/*` falls
-back to a `302` to the GitHub asset. Range/resume requests return `503` until
-the object exists in R2, because the Worker will not mix a partial download
-with a different representation. Fix the action, then re-run it; no website
-redeploy is needed.
+If the action fails, a full download can fall back to GitHub only when that
+asset exists there as a complete file. A split asset and range requests return
+`503` until its complete R2 object is ready. Fix the action, then re-run it;
+no website redeploy is needed.
 
 ### Release checklist
 
 1. `constants.APP_VERSION` equals the release tag.
-2. Push the `v*` tag. **Build & Publish Release** verifies the four non-empty
-   installer assets and creates the GitHub release.
+2. Push the `v*` tag. **Build & Publish Release** verifies the four logical
+   installer assets, splitting oversized Windows files before publishing.
 3. Wait for `r2-mirror` to succeed. It is chained to the release workflow; a
    release published by hand uses the `release: published` trigger. If neither
    path fired, run the manual dispatch below.
@@ -313,7 +313,7 @@ redeploy is needed.
      `Cache-Control: no-store`;
    - `curl -fsS -r 0-0 -D - -o /dev/null https://openfocus.top/download/latest/windows-setup`
      returns `206`, a `Content-Range: bytes 0-0/<size>` total matching the
-     release asset, and `Cache-Control: no-store`. Use GET, not `-I`/HEAD:
+     complete asset size in the mirror manifest, and `Cache-Control: no-store`.
      HEAD does not validate the byte range. A `503` means the R2 object is
      missing or not ready for ranges; a `302` is the full download's GitHub
      fallback and does not occur for a range request;

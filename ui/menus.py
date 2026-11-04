@@ -23,6 +23,11 @@ def setup_menus(window: QMainWindow) -> None:
     file_menu.addAction(open_action)
     window.ui_objs['action_open_folder'] = open_action
 
+    linear_raw_action = QAction(trans.t('linear_raw_open'), window)
+    linear_raw_action.triggered.connect(window.source_manager.prompt_and_load_linear_raw)
+    file_menu.addAction(linear_raw_action)
+    window.ui_objs['linear_raw_open'] = linear_raw_action
+
     open_video_action = QAction(trans.t('action_open_video'), window)
     open_video_action.setShortcut("Ctrl+Shift+O")
     open_video_action.triggered.connect(window.open_video_dialog)
@@ -354,14 +359,28 @@ def setup_menus(window: QMainWindow) -> None:
     gpu_action = QAction(trans.t('action_gpu_accel'), window)
     gpu_action.setCheckable(True)
     from utils.platform_utils import has_compute_gpu
+    from core import torch_backend
+    from core.multi_focus_fusion import is_ai_fusion_available, torch_device_kind
     _gpu_present = has_compute_gpu()
-    gpu_action.setChecked(_gpu_present and getattr(window, 'use_gpu', True))
-    gpu_action.setEnabled(_gpu_present)
-    gpu_action.setToolTip(trans.t('msg_gpu_accel_hint') if _gpu_present
+    _gpu_kind = torch_device_kind()
+    _torch_installed = is_ai_fusion_available() if _gpu_kind is None else False
+    _gpu_enabled, _gpu_checked = torch_backend.gpu_toggle_state(
+        _gpu_present, _gpu_kind, getattr(window, 'use_gpu', True),
+        _torch_installed)
+    gpu_action.setChecked(_gpu_checked)
+    gpu_action.setEnabled(_gpu_enabled)
+    gpu_action.setToolTip(trans.t('msg_gpu_accel_hint') if _gpu_enabled
                           else trans.t('msg_gpu_accel_unavailable'))
     gpu_action.triggered.connect(window.set_use_gpu)
     settings_menu.addAction(gpu_action)
     window.ui_objs['action_gpu_accel'] = gpu_action
+    # Opening Settings is the first moment the switch can be acted on. If
+    # the cheap OS probe found nothing but torch is installed, resolve the
+    # authoritative backend in the background instead of leaving the action
+    # disabled for the rest of the session (Intel XPU without xpu-smi).
+    if _gpu_kind is None and _torch_installed and hasattr(
+            window, '_probe_device_kind_async'):
+        settings_menu.aboutToShow.connect(window._probe_device_kind_async)
 
     settings_menu.addSeparator()
 

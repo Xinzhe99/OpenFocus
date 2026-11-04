@@ -32,6 +32,14 @@ from utils.logging_setup import get_logger
 
 _log = get_logger(__name__)
 
+class _DeferredResponse:
+    def __init__(self, start):
+        self.start = start
+        self.request_id = '0'
+        self.started = 0.0
+
+
+
 
 def _string(args, key, required=True, default=None, choices=None):
     value = args.get(key, default)
@@ -222,6 +230,7 @@ class ControlServer(QObject):
         self.token = token or secrets.token_hex(16)
         self.socket_name = socket_name or f"{SOCKET_PREFIX}-{os.getpid()}"
         self._buffers = {}
+        self._pending_replies = {}
         self._dialogs = {}
         # Generation counters let --wait bind to one request instead of any
         # stack that happens to have frames.
@@ -485,6 +494,9 @@ class ControlServer(QObject):
             return False
 
     def _drop(self, connection):
+        worker = self._pending_replies.pop(connection, None)
+        if worker is not None:
+            worker.cancel()
         self._buffers.pop(connection, None)
         connection.deleteLater()
 
@@ -492,12 +504,15 @@ class ControlServer(QObject):
         buffer = self._buffers.get(connection)
         if buffer is None:
             return
-        while connection.bytesAvailable():
-            # Never copy an unbounded Qt read buffer into Python.
-            chunk = bytes(connection.read(min(65536, MAX_LINE + 1 - len(buffer))))
-            if not chunk:
-                break
-            buffer += chunk
+        if connection in self._pending_replies:
+            return
+        while b'\n' in buffer or connection.bytesAvailable():
+            if b'\n' not in buffer:
+                # Never copy an unbounded Qt read buffer into Python.
+                chunk = bytes(connection.read(min(65536, MAX_LINE + 1 - len(buffer))))
+                if not chunk:
+                    break
+                buffer += chunk
             while b"\n" in buffer:
                 line, buffer = buffer.split(b"\n", 1)
                 if len(line) > MAX_LINE:
@@ -509,17 +524,31 @@ class ControlServer(QObject):
                 response = self.handle_line(line, token=self.token)
                 if connection not in self._buffers:
                     return
-                payload = self._encode_response(response)
-                if payload is None:
-                    connection.abort()
+                if isinstance(response, _DeferredResponse):
+                    def complete(success, message, c=connection, deferred=response):
+                        self._pending_replies.pop(c, None)
+                        if c not in self._buffers:
+                            return
+                        if success:
+                            reply = ok_response(deferred.request_id, deferred.result,
+                                                (time.perf_counter() - deferred.started) * 1000)
+                        else:
+                            reply = error_response(deferred.request_id, ControlError(
+                                'internal', message or 'Export cancelled'))
+                        if self._send_response(c, reply):
+                            QTimer.singleShot(0, lambda: self._read(c))
+                    try:
+                        self._pending_replies[connection] = response.start(complete)
+                    except Exception as error:
+                        reply = error_response(response.request_id, ControlError(
+                            'invalid_argument' if isinstance(error, (ValueError, TypeError)) else 'internal',
+                            str(error) or type(error).__name__))
+                        if not self._send_response(connection, reply):
+                            return
+                    else:
+                        return
+                elif not self._send_response(connection, response):
                     return
-                if connection.bytesToWrite() + len(payload) > MAX_LINE * 2:
-                    connection.abort()
-                    return
-                if connection.write(payload) != len(payload):
-                    connection.abort()
-                    return
-                connection.flush()
                 buffer = self._buffers.get(connection)
                 if buffer is None:
                     return
@@ -527,6 +556,17 @@ class ControlServer(QObject):
                 self._reject_request(connection, "Request line is too large")
                 return
             self._buffers[connection] = buffer
+
+    def _send_response(self, connection, response):
+        payload = self._encode_response(response)
+        if payload is None or connection.bytesToWrite() + len(payload) > MAX_LINE * 2:
+            connection.abort()
+            return False
+        if connection.write(payload) != len(payload):
+            connection.abort()
+            return False
+        connection.flush()
+        return True
 
     def _encode_response(self, response):
         """Encode one reply; a too-large payload becomes a small error.
@@ -601,6 +641,10 @@ class ControlServer(QObject):
                 raise ControlError("not_found", f"Unknown command: {command}",
                                    f"Known commands: {', '.join(_COMMANDS)}")
             result = handler(args)
+            if isinstance(result, _DeferredResponse):
+                result.request_id = request_id
+                result.started = started
+                return result
             return ok_response(request_id, result,
                                (time.perf_counter() - started) * 1000)
         except ControlError as error:
@@ -1031,6 +1075,11 @@ class ControlServer(QObject):
                 manager._annotation_state(record, labels))
             return {"path": written, "written": True, "index": index,
                     "kind": "aligned"}
+        if os.path.splitext(target)[1].lower() == '.dng':
+            deferred = _DeferredResponse(lambda complete: manager.start_linear_dng_export(
+                record, original, target, labels, completion=complete, show_progress=False))
+            deferred.result = {"path": target, "written": True, "index": index}
+            return deferred
         manager._write_record(record, target, labels)
         manager._mark_record_exported(
             original, record.image, target,

@@ -131,6 +131,25 @@ class TestDustMapDialog:
         dlg.deleteLater()
         stub.deleteLater()
 
+    def test_native_raw_preview_uses_developed_colors(self, qapp):
+        from dialogs.dustmap import DustMapDialog
+        from utils.linear_dng import LinearDNGMetadata
+
+        stub = self._stub_window()
+        stub.linear_dng_metadata = LinearDNGMetadata(
+            ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
+             (-0.1013, 0.2415, 0.5509)),
+            (1024 / 1853, 1.0, 1024 / 1667), 'Canon', 'Canon EOS R6')
+        stub.raw_images[1] = np.full((48, 64, 3), [7000, 11000, 14000], np.uint16)
+        dialog = DustMapDialog(stub)
+        dialog.rb_stack.setChecked(True)
+        dialog.combo_target.setCurrentIndex(1)
+        self._complete_preview(dialog, qapp)
+        color = dialog.lbl_before.pixmap().toImage().pixelColor(0, 0)
+        assert (color.red(), color.green(), color.blue()) == pytest.approx((189, 85, 103), abs=1)
+        dialog.deleteLater()
+        stub.deleteLater()
+
     def test_preview_requires_a_white_field_source(self, qapp):
         from dialogs.dustmap import DustMapDialog
         from locales import trans

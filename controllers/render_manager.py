@@ -1,4 +1,5 @@
 from typing import Any, List, Optional
+from copy import deepcopy
 
 
 from PyQt6.QtCore import QTimer
@@ -194,7 +195,7 @@ class RenderManager:
         if not is_ai_fusion_available():
             return False  # torch missing: the render itself will say so
         if torch_device_kind() not in (None, "N/A"):
-            return False  # CUDA or MPS available: nothing to warn about
+            return False  # an accelerator is available: nothing to warn about
         return True
 
     def _confirm_cpu_ai_render(self, force_algorithm: str | None = None) -> bool:
@@ -771,6 +772,8 @@ class RenderManager:
             "disk_alignment_options": disk_alignment_options,
             "full_filenames": list(window.image_filenames),
             "icc_profile": stack_icc_profile(window, included_idx),
+            "linear_dng_metadata": deepcopy(getattr(window, "linear_dng_metadata", None)),
+            "source_paths": tuple(getattr(window, "image_source_paths", ()) or ()),
             "parameters": self._processing_parameters(force_algorithm or fusion_method),
         }
         from utils.scalebar import effective_px_um
@@ -925,7 +928,9 @@ class RenderManager:
                             aligned=bool(registration_performed),
                             source_indices=ctx.get("included"),
                             frame_ids=ctx.get("frame_ids"),
-                            source_revision=ctx.get("source_revision", 0))
+                            source_revision=ctx.get("source_revision", 0),
+                            linear_dng_metadata=ctx.get("linear_dng_metadata"),
+                            source_paths=ctx.get("source_paths"))
                         if preview_context is not None:
                             window._wipe_preview_record = OutputRecord.create(
                                 fusion_result, "", context=preview_context)
@@ -996,6 +1001,8 @@ class RenderManager:
                             source_px_um=ctx.get("source_px_um"),
                             source_scale_factor=ctx.get("source_scale_factor", 1.0),
                             icc_profile=ctx.get("icc_profile", b""),
+                            linear_dng_metadata=ctx.get("linear_dng_metadata"),
+                            source_paths=ctx.get("source_paths"),
                         )
                         window.last_render_context = new_context
                     except Exception:
@@ -1004,7 +1011,9 @@ class RenderManager:
                             "could not record render provenance; "
                             "the output will not be retouchable")
                     window.output_manager.update_output_list_for_fusion(
-                        context=new_context)
+                        context=new_context,
+                        linear_dng_metadata=(context or {}).get("linear_dng_metadata"),
+                        source_paths=(context or {}).get("source_paths", ()))
 
                 # Tag the newest output entry with the method that made it
                 method = getattr(self, '_compare_current', None) if compare else None
@@ -1057,6 +1066,10 @@ class RenderManager:
                         # touching the full-resolution output history
                         first = processed_images[0] if processed_images else None
                         if first is not None:
+                            metadata = (context or {}).get('linear_dng_metadata')
+                            if metadata is not None:
+                                from utils.linear_dng import develop_linear
+                                first = develop_linear(first, metadata)
                             window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(first))
                         window.result_control_bar.setVisible(False)
                         print("Preview registration completed (not added to output history)")
@@ -1226,6 +1239,7 @@ class RenderManager:
             publish_aligned_stack(window, frames,
                                   filenames=(self._render_context or {}).get("filenames"),
                                   icc_profile=(self._render_context or {}).get("icc_profile", b""),
+                                  linear_dng_metadata=(self._render_context or {}).get("linear_dng_metadata"),
                                   source_frames=(self._render_context or {}).get("comparison_source"),
                                   source_indices=(self._render_context or {}).get("included"),
                                   source_revision=(self._render_context or {}).get("source_revision", 0))

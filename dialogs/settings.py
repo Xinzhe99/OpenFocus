@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 )
 from ui.styles import PRIMARY_BLUE, help_button_style
 from locales import trans
-from widgets.stepper import StepperSpinBox
+from widgets.stepper import StepperSpinBox, hide_spin_buttons
 from utils import resource_path
 
 
@@ -155,7 +155,7 @@ class DownsampleDialog(QDialog):
 
         # 旋转框
         self.spinbox = _DownsamplePercentSpinBox()
-        self.spinbox.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)  # 隐藏自带按钮
+        hide_spin_buttons(self.spinbox)
         self.spinbox.setRange(1, self.max_percent)
         self.spinbox.setValue(self.scale_percent)
         self.spinbox.setSuffix("%")

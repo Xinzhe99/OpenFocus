@@ -28,7 +28,10 @@ concurrency:
 
 jobs:
   mirror:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'release' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch || '', 'v')) }}
+    # Prereleases (for example the independent gpu-v<version> previews) are
+    # never stable downloads: ignore them instead of failing on the four-asset
+    # contract and never let them replace the manifest the updater reads.
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && github.event.release.prerelease == false) || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch || '', 'v')) }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -40,6 +43,12 @@ jobs:
       AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
       AWS_EC2_METADATA_DISABLED: "true"
     steps:
+      # Mirror tools are maintained on the default branch, including when
+      # a manually published historical tag is backfilled.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
       - name: Resolve the release tag
         id: release
         env:
@@ -62,28 +71,71 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.release.outputs.tag }}"
-          rm -rf assets
+          rm -rf assets windows
           mkdir -p assets
-          gh release download "$tag" -R "$GITHUB_REPOSITORY" --dir assets \
-            --pattern '*-setup.exe' \
-            --pattern '*-windows-x64.zip' \
-            --pattern '*-macos.dmg' \
-            --pattern '*-macos-arm64.zip'
-          for pattern in '*-setup.exe' '*-windows-x64.zip' '*-macos.dmg' '*-macos-arm64.zip'; do
-            count="$(find assets -maxdepth 1 -type f -name "$pattern" | wc -l | tr -d ' ')"
-            if [ "$count" -ne 1 ]; then
-              echo "::error::Expected exactly one $pattern in $tag, found $count."
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > release.json
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' | sort > assets.txt
+          windows_manifest="OpenFocus-${tag}-windows-assets.json"
+          if grep -Fxq "$windows_manifest" assets.txt; then
+            # New release: strict split manifest + parts/whole Windows assets.
+            mkdir -p windows
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" \
+              --pattern "$windows_manifest" --dir windows
+            cp "windows/$windows_manifest" "$RUNNER_TEMP/windows-assets.json"
+            python tools/release_archives.py check-release \
+              --manifest "$RUNNER_TEMP/windows-assets.json" \
+              --asset-list assets.txt --tag "$tag"
+            python tools/release_archives.py list-downloads \
+              --manifest "$RUNNER_TEMP/windows-assets.json" > downloads.txt
+            while IFS= read -r name; do
+              [ -n "$name" ] || continue
+              gh release download "$tag" -R "$GITHUB_REPOSITORY" \
+                --pattern "$name" --dir windows
+              if [ ! -s "windows/$name" ]; then
+                echo "::error::Missing or empty release asset: $name"
+                exit 1
+              fi
+            done < downloads.txt
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" --dir assets \
+              --pattern "OpenFocus-${tag}-macos.dmg" \
+              --pattern "OpenFocus-${tag}-macos-arm64.zip"
+            python tools/release_archives.py reassemble \
+              --manifest "$RUNNER_TEMP/windows-assets.json" \
+              --source-dir windows --output-dir assets
+            echo "WINDOWS_MANIFEST=$RUNNER_TEMP/windows-assets.json" >> "$GITHUB_ENV"
+          else
+            # Legacy release with four complete assets (including Windows).
+            # Orphan split parts without the manifest are not a legacy layout.
+            if grep -Eq '\.part[0-9]{3,}$' assets.txt; then
+              echo "::error::Split assets exist without $windows_manifest."
+              exit 1
+            fi
+            echo "WINDOWS_MANIFEST=" >> "$GITHUB_ENV"
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" --dir assets \
+              --pattern '*-setup.exe' \
+              --pattern '*-windows-x64.zip' \
+              --pattern '*-macos.dmg' \
+              --pattern '*-macos-arm64.zip'
+          fi
+          for name in \
+            "OpenFocus-${tag}-setup.exe" \
+            "OpenFocus-${tag}-windows-x64.zip" \
+            "OpenFocus-${tag}-macos.dmg" \
+            "OpenFocus-${tag}-macos-arm64.zip"; do
+            if [ ! -s "assets/$name" ]; then
+              echo "::error::Missing or empty mirrored file: $name"
               exit 1
             fi
           done
           total="$(find assets -maxdepth 1 -type f | wc -l | tr -d ' ')"
           if [ "$total" -ne 4 ]; then
-            echo "::error::Expected four release assets, found $total."
+            echo "::error::Expected four complete files after reassembly, found $total."
             find assets -maxdepth 1 -type f -printf '%f\n'
             exit 1
           fi
-          if find assets -maxdepth 1 -type f -empty | grep -q .; then
-            echo "::error::A mirrored release asset is empty."
+          if find assets -maxdepth 1 -type f -name '*.part*' | grep -q .; then
+            echo "::error::A part file leaked into the complete-asset directory."
             exit 1
           fi
           ls -lh assets
@@ -91,6 +143,7 @@ jobs:
       - name: Upload to R2
         run: |
           set -euo pipefail
+          tag="${{ steps.release.outputs.tag }}"
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           aws s3 cp assets/ "s3://openfocus-downloads/" --recursive \
             --endpoint-url "$endpoint" \
@@ -98,6 +151,20 @@ jobs:
             --cache-control "public, max-age=86400" \
             --only-show-errors \
             --no-progress
+          for name in \
+            "OpenFocus-${tag}-setup.exe" \
+            "OpenFocus-${tag}-windows-x64.zip" \
+            "OpenFocus-${tag}-macos.dmg" \
+            "OpenFocus-${tag}-macos-arm64.zip"; do
+            remote="$(aws s3api head-object --bucket openfocus-downloads \
+              --key "$name" --endpoint-url "$endpoint" \
+              --query ContentLength --output text)"
+            local="$(stat -c%s "assets/$name")"
+            if [ "$remote" != "$local" ]; then
+              echo "::error::R2 upload size mismatch for $name: $remote != $local"
+              exit 1
+            fi
+          done
 
       - name: Publish latest mirrored release metadata
         run: |
@@ -112,19 +179,17 @@ jobs:
           releases="$RUNNER_TEMP/openfocus-releases.json"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
             jq '[.[][] | select(.draft == false and .prerelease == false) | {tag_name, body}] | .[:30]' > "$releases"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" |
-            jq -e --arg tag "$tag" --slurpfile releases "$releases" '
-              def asset($name):
-                [.assets[] | select(.name == $name) | {name, size, url: .browser_download_url, digest}]
-                | if length == 1 and .[0].size > 0 and (.[0].digest | type == "string" and test("^sha256:[0-9a-fA-F]{64}$")) then .[0]
-                  else error("missing asset or SHA-256 digest: " + $name) end;
-              if .tag_name != $tag then error("release tag changed") else . end |
-              {tag: .tag_name, published: .published_at, assets: {
-                "windows-setup": asset("OpenFocus-" + $tag + "-setup.exe"),
-                "windows-zip": asset("OpenFocus-" + $tag + "-windows-x64.zip"),
-                "macos-dmg": asset("OpenFocus-" + $tag + "-macos.dmg"),
-                "macos-zip": asset("OpenFocus-" + $tag + "-macos-arm64.zip")
-              }, releases: $releases[0]}' > "$manifest"
+          args=(
+            --tag "$tag"
+            --release-json release.json
+            --r2-dir assets
+            --releases-json "$releases"
+            --output "$manifest"
+          )
+          if [ -n "${WINDOWS_MANIFEST:-}" ]; then
+            args+=(--windows-manifest "$WINDOWS_MANIFEST")
+          fi
+          python tools/release_archives.py write-mirror-manifest "${args[@]}"
           aws s3 cp "$manifest" "s3://openfocus-downloads/openfocus-meta/latest-release.json" \
             --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
             --content-type "application/json" --cache-control "no-store" \

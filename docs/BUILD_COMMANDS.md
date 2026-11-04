@@ -105,6 +105,7 @@ pyinstaller --clean --noconfirm --onedir --noconsole --noupx `
   --hidden-import core.algorithm_adapters `
   --hidden-import core.depth_map `
   --hidden-import core.registration `
+  --hidden-import core.torch_backend `
   --hidden-import PyQt6.QtCore `
   --hidden-import PyQt6.QtGui `
   --hidden-import PyQt6.QtWidgets `
@@ -299,3 +300,26 @@ update-desktop-database ~/.local/share/applications/
 - **Windows**: Drag-to-EXE/shortcut passes files via command-line arguments
 
 ---
+
+## GPU variants and acceptance builds
+
+The four stable release assets remain Windows CUDA, Windows portable, macOS DMG
+and macOS zip. CUDA/ROCm/XPU PyTorch wheels cannot share one environment, so
+extra GPU builds are independent previews, not extra stable assets. See
+[GPU support](GPU_SUPPORT.md) for the wheel pins, Python requirements and
+pending hardware checks.
+
+```bash
+# Validate the accelerator manifest (no build, no network)
+python tools/gpu_variants.py validate
+
+# Build the AMD ROCm and Intel XPU preview artifacts (manual workflow;
+# publish=false). GitHub Actions -> Build GPU previews -> Run workflow.
+
+# Branch acceptance build of the normal Windows/macOS products:
+# GitHub Actions -> Build & Publish Release -> Run workflow on the branch.
+# It produces v<APP_VERSION>-preview.<run> artifacts and never publishes.
+```
+
+`tools/release_metadata.py` enforces the tag equality check for `v*` tags and
+derives the safe preview label for branch dispatches.

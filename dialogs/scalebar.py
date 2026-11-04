@@ -15,7 +15,6 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QAbstractSpinBox,
     QComboBox,
     QDialog,
     QFontComboBox,
@@ -36,7 +35,7 @@ import numpy as np
 
 from locales import trans
 from utils import scalebar
-from widgets.stepper import StepperSpinBox
+from widgets.stepper import StepperSpinBox, hide_spin_buttons
 from utils.image_utils import cv2_to_pixmap, to_display_uint8
 from utils.ui_utils import size_dialog_to_content
 from widgets.magnifier_label import MagnifierLabel
@@ -278,7 +277,7 @@ class ScaleBarDialog(QDialog):
         preview_col.addWidget(self.preview_lbl, 1)
         navigation = QHBoxLayout()
         self.frame_index = QSpinBox()
-        self.frame_index.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        hide_spin_buttons(self.frame_index)
         self.frame_index.setRange(1, 1)
         self.frame_index.setValue(max(1, int(getattr(window, "current_display_index", 0) or 0) + 1))
         self.prev_button = QPushButton("‹")
@@ -462,6 +461,37 @@ class ScaleBarDialog(QDialog):
             return self.output_combo.currentData()
         return None
 
+    def _preview_metadata(self):
+        """Linear calibration for the preview pixels, owned by their source.
+
+        An output record must use its own metadata (or its render context),
+        never the currently loaded stack: historical results may come from a
+        different camera or may already have been developed. Source and
+        registered previews belong to the current stack and use its metadata.
+        """
+        record = self._target_record()
+        if record is not None:
+            if getattr(record, "annotations_baked", False):
+                return None
+            metadata = getattr(record, "linear_dng_metadata", None)
+            if metadata is None:
+                context = getattr(record, "context", None)
+                metadata = getattr(context, "linear_dng_metadata", None)
+            return metadata
+        if self.target_combo.currentData() == "output":
+            return None
+        return getattr(self.parent(), "linear_dng_metadata", None)
+
+    @staticmethod
+    def _develop_preview(image, metadata):
+        """Develop camera-linear uint16 pixels once; ordinary images pass through."""
+        if (metadata is not None and image is not None
+                and image.dtype == np.uint16 and image.ndim == 3
+                and image.shape[2] == 3):
+            from utils.linear_dng import develop_linear
+            return develop_linear(image, metadata)
+        return image
+
     def _target_changed(self, *_args):
         record = self._target_record()
         context = record.context if record is not None else None
@@ -554,6 +584,7 @@ class ScaleBarDialog(QDialog):
             self.preview_lbl.set_display_pixmap(cv2_to_pixmap(image))
             self._error.setText(trans.t('transparent_desktop_unsupported').format(path=''))
             return
+        image = self._develop_preview(image, self._preview_metadata())
         height, width = image.shape[:2]
         name = self._target_record().label if self._target_record() else self.target_combo.currentText()
         self.header.setText(name + " · " + trans.t("scalebar_header").format(

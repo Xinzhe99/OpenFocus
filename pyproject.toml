@@ -43,7 +43,8 @@ dependencies = [
     # HEIC and camera-RAW stacks from "unsupported" into "works" without a
     # second install step.
     "pillow-heif",
-    "rawpy",
+    # 0.25.1 bundles LibRaw 0.21.4 and still provides Intel macOS wheels.
+    "rawpy>=0.25.1",
 ]
 dynamic = ["version"]
 

@@ -56,6 +56,34 @@ class TestDetection:
         cv2.imwrite(p, np.zeros((10, 10, 3), np.uint8))
         assert detect_px_size_um(p) is None
 
+    def test_linear_dng_centimeter_resolution(self, tmp_path):
+        """PIL rejects LinearRaw DNG payloads; tags must still be readable."""
+        import tifffile
+        from utils.scalebar import detect_px_size_um
+        p = str(tmp_path / "calibrated.dng")
+        tifffile.imwrite(p, np.zeros((16, 16, 3), np.uint16), photometric=34892,
+                         planarconfig="contig", resolution=(20000, 20000),
+                         resolutionunit=3)
+        assert detect_px_size_um(p) == pytest.approx(0.5)
+
+    def test_dng_imagej_description(self, tmp_path):
+        import tifffile
+        from utils.scalebar import detect_px_size_um
+        p = str(tmp_path / "imagej.dng")
+        tifffile.imwrite(p, np.zeros((16, 16, 3), np.uint16), photometric=34892,
+                         planarconfig="contig", resolution=(2, 2),
+                         resolutionunit=2,
+                         description="ImageJ=1.53c\nunit=micron\n")
+        assert detect_px_size_um(p) == pytest.approx(0.5)
+
+    def test_dng_print_dpi_is_not_calibration(self, tmp_path):
+        import tifffile
+        from utils.scalebar import detect_px_size_um
+        p = str(tmp_path / "camera.dng")
+        tifffile.imwrite(p, np.zeros((16, 16, 3), np.uint16),
+                         resolution=(300, 300), resolutionunit=2)
+        assert detect_px_size_um(p) is None
+
 
 class TestNiceLength:
     def test_rounding(self):
@@ -250,6 +278,71 @@ def test_preview_uses_native_geometry_and_uint16_display(qapp):
     host.deleteLater()
 
 
+def test_preview_develops_native_raw_source_before_drawing(qapp):
+    from dialogs.scalebar import ScaleBarDialog
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+    from utils.image_utils import pixmap_to_cv2, to_display_uint8
+    from utils.scalebar import draw_scale_bar_ex
+
+    metadata = LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.5, 1.0, 0.7), "Maker", "Camera")
+    image = np.full((797, 1200, 3), 7000, np.uint16)
+    host = _scale_dialog_host(image)
+    host.linear_dng_metadata = metadata
+    dialog = ScaleBarDialog(host)
+    expected, _info = draw_scale_bar_ex(develop_linear(image, metadata),
+                                        **dialog._draw_config())
+    np.testing.assert_array_equal(
+        pixmap_to_cv2(dialog.preview_lbl._base_pixmap),
+        to_display_uint8(expected))
+    dialog.reject()
+    host.deleteLater()
+
+
+def test_output_preview_uses_record_metadata_not_current_stack(qapp):
+    from types import SimpleNamespace
+    from dialogs.scalebar import ScaleBarDialog
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+    from utils.image_utils import pixmap_to_cv2, to_display_uint8
+    from utils.scalebar import draw_scale_bar_ex
+
+    def metadata(model, neutral):
+        return LinearDNGMetadata(
+            ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+            neutral, "Maker", model)
+
+    record_meta = metadata("Historical", (0.5, 1.0, 0.7))
+    stack_meta = metadata("Current", (0.8, 1.0, 0.6))
+    image = np.full((240, 400, 3), 7000, np.uint16)
+    record = SimpleNamespace(kind="fusion", label="historical", image=image,
+                             output_id="o1", context=None,
+                             scale_bar_config=None,
+                             linear_dng_metadata=record_meta,
+                             annotations_baked=False)
+    host = _scale_dialog_host(image)
+    host.scale_bar_target = "output"
+    host.linear_dng_metadata = stack_meta
+    host.output_manager = SimpleNamespace(
+        record_for_row=lambda _row: record,
+        record_for_item=lambda _item: record)
+    host.output_list = SimpleNamespace(count=lambda: 1,
+                                       currentItem=lambda: "item")
+    dialog = ScaleBarDialog(host)
+    expected, _info = draw_scale_bar_ex(develop_linear(image, record_meta),
+                                        **dialog._draw_config())
+    np.testing.assert_array_equal(
+        pixmap_to_cv2(dialog.preview_lbl._base_pixmap),
+        to_display_uint8(expected))
+
+    # A historical record without its own metadata must not inherit the
+    # currently loaded stack's calibration.
+    record.linear_dng_metadata = None
+    assert dialog._preview_metadata() is None
+    dialog.reject()
+    host.deleteLater()
+
+
 @pytest.mark.parametrize("image", [None, np.zeros((8, 8, 3), np.uint8)])
 def test_invalid_scale_target_cannot_commit(qapp, image):
     from dialogs.scalebar import ScaleBarDialog
@@ -293,6 +386,23 @@ def test_historical_output_keeps_its_calibration():
     host.source_px_um = 8.0
     host.scale_um_per_px_manual = 11.0
     assert export_cfg(host, record=record)["px_um"] == 0.65
+
+
+def test_export_calibration_uses_record_context_and_never_guesses():
+    from types import SimpleNamespace
+    from controllers.output_manager import OutputRecord
+    from core.render_context import build_render_context
+    from utils.scalebar import calibration_px_um
+
+    image = np.zeros((240, 400, 3), np.uint8)
+    context = build_render_context([image], image, pixel_size_um=0.65)
+    record = OutputRecord.create(image, "A", context=context)
+    legacy = OutputRecord.create(image, "legacy")
+    host = SimpleNamespace(source_px_um=3.0, scale_um_per_px_manual=0.0,
+                           current_scale_factor=1.0)
+    assert calibration_px_um(host, record) == 0.65
+    assert calibration_px_um(host, legacy) is None  # no provenance, no guess
+    assert calibration_px_um(host) == 3.0
 
 
 def test_unavailable_registered_target_is_disabled_and_not_preselected(qapp):

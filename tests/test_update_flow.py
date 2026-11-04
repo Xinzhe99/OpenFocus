@@ -469,27 +469,45 @@ class TestUpdateManagerState:
         assert started == []
         assert manager._idle_timer.isActive()
 
-    def test_empty_cancel_label_renders_a_blank_button(self, qapp):
-        """Why the dialog must not be built with cancelButtonText="".
+    def test_download_dialog_has_a_working_cancel_button(self, qapp, monkeypatch):
+        import threading
+        import time
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QMainWindow, QPushButton
+        from locales import trans
+        from main import OpenFocus
 
-        Qt isNull()-checks that argument: an explicit empty string creates a
-        QPushButton with no text — the empty grey box users saw in the
-        download dialog — while None creates no button at all.
-        """
-        from PyQt6.QtWidgets import QProgressDialog, QPushButton
-        blank = QProgressDialog("working", "", 0, 100)
-        assert [b.text() for b in blank.findChildren(QPushButton)] == [""]
-        blank.close()
-        none = QProgressDialog("working", None, 0, 100)
-        assert [b.text() for b in none.findChildren(QPushButton)] == []
-        none.close()
+        started = threading.Event()
 
-    def test_update_dialogs_pass_a_labelled_cancel_button(self):
-        from pathlib import Path
-        src = Path("main.py").read_text(encoding="utf-8")
-        assert "QProgressDialog(" in src
-        assert ', "", ' not in src, "empty cancel label => blank grey button"
-        assert "trans.t('btn_cancel_download')" in src
+        def download(_url, _dest, *, on_progress, should_cancel):
+            started.set()
+            on_progress(0, 100)
+            while not should_cancel():
+                time.sleep(0.01)
+            raise RuntimeError("download cancelled")
+
+        monkeypatch.setattr(updater, "download_to_file", download)
+        window = QMainWindow()
+        OpenFocus._download_and_launch_update(window, "https://example.test/setup.exe", "v9.9")
+        worker = window._update_download_worker
+        try:
+            assert started.wait(5)
+            dialog = window._update_progress
+            dialog.show()
+            qapp.processEvents()
+            buttons = dialog.findChildren(QPushButton)
+            assert len(buttons) == 1
+            assert buttons[0].text() == trans.t('btn_cancel_download')
+            QTest.mouseClick(buttons[0], Qt.MouseButton.LeftButton)
+            assert worker.wait(5000)
+            qapp.processEvents()
+        finally:
+            worker.cancel()
+            worker.wait(5000)
+            window.close()
+            window.deleteLater()
+
 
 
 

@@ -265,6 +265,8 @@ Consultez le [manuel de la CLI](../USER_MANUAL_FR.md#14-interface-en-ligne-de-co
 <a id="community"></a>
 ## Communauté et support
 
+Des questions, idées ou commentaires ? Rejoignez notre [communauté Discord](https://discord.gg/afzmwgPt). Nous répondons dès que possible ; nous utilisons l'heure de Pékin (UTC+8), et le décalage horaire peut retarder nos réponses.
+
 - **Documentation** — [Manuel](../USER_MANUAL_FR.md) (douze langues) · [Journal](../../CHANGELOG.md) · [Performances](../PERFORMANCE.md) · [Méthodes de fusion](../FUSION_METHODS.md)
 - **Citation** — [CITATION.cff](../../CITATION.cff) ; chaque version est archivée sur Zenodo ([DOI](https://doi.org/10.5281/zenodo.23050823))
 - **Retours** — ouvrez un [issue](https://github.com/Xinzhe99/OpenFocus/issues) pour les bogues, les idées et le travail sur les algorithmes

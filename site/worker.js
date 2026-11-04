@@ -161,10 +161,13 @@ async function mirroredRelease(env) {
       const asset = data.assets && data.assets[kind];
       const expected = `OpenFocus-${data.tag}-${suffix}`;
       const remote = asset && githubAssetUrl(asset.url);
+      const mirrorOnly = asset && asset.source === "r2" && asset.url === null &&
+        kind.startsWith("windows-") &&
+        /^sha256:[0-9a-fA-F]{64}$/.test(asset.digest || "");
       if (!asset || asset.name !== expected || !safeObjectKey(asset.name) ||
-          !Number.isSafeInteger(asset.size) || asset.size <= 0 || !remote ||
-          decodeURIComponent(new URL(remote).pathname) !==
-            `/${REPO}/releases/download/${data.tag}/${expected}`) return null;
+          !Number.isSafeInteger(asset.size) || asset.size <= 0) return null;
+      if (!mirrorOnly && (!remote || decodeURIComponent(new URL(remote).pathname) !==
+          `/${REPO}/releases/download/${data.tag}/${expected}`)) return null;
     }
     return data;
   } catch {
@@ -227,8 +230,18 @@ async function latestRelease(ctx, env) {
     return latestFailure("GitHub release API returned an incomplete release", env);
   }
 
-  const body = JSON.stringify(releasePayload(release));
-  if (cache) {
+  const payload = releasePayload(release);
+  if (Object.values(payload.assets).some((asset) => !asset)) {
+    const mirror = await mirroredRelease(env);
+    if (mirror && mirror.tag === payload.tag) {
+      for (const kind of DOWNLOAD_KINDS) {
+        if (!payload.assets[kind]) payload.assets[kind] = mirror.assets[kind];
+      }
+    }
+  }
+  const body = JSON.stringify(payload);
+  // Do not cache a release while its split Windows assets are still mirroring.
+  if (cache && Object.values(payload.assets).every(Boolean)) {
     const cacheable = new Response(body, {
       headers: {
         "Content-Type": "application/json; charset=utf-8",
@@ -480,16 +493,17 @@ async function handleDownload(request, env, ctx) {
 
   const name = safeObjectKey(asset.name);
   const remote = githubAssetUrl(asset.url);
-  if (!name || !remote) {
+  if (!name || (!remote && asset.source !== "r2")) {
     return badGateway("The latest release has an invalid asset URL", method);
   }
 
   const mirrored = await r2Download(request, env, name, name);
   if (mirrored) return mirrored;
 
-  if (request.headers.get("Range")) {
+  if (!remote || request.headers.get("Range")) {
     return textResponse(
-      "The download mirror is not ready for this range; retry the download.",
+      remote ? "The download mirror is not ready for this range; retry the download."
+        : "The download mirror is not ready; retry or use the release page for recovery.",
       503,
       { "Retry-After": "60" },
       method,

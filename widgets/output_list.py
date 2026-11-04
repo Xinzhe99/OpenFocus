@@ -96,6 +96,9 @@ class OutputListWidget(QListWidget):
             return None
 
         record = window.output_manager.record_for_row(row)
+        if record is not None and record.linear_dng_metadata is not None:
+            from utils.linear_dng import develop_linear
+            image = develop_linear(image, record.linear_dng_metadata)
         if record is not None and record.annotations_baked:
             return image
         from utils import scalebar

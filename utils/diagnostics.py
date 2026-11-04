@@ -51,7 +51,7 @@ def system_facts() -> dict:
     facts["ram"] = (
         f"{memory.total_memory_bytes() / 1024 ** 3:.1f} GB total, "
         f"{memory.available_memory_bytes() / 1024 ** 3:.1f} GB free")
-    facts["gpu (cuda/mps)"] = has_compute_gpu()
+    facts["gpu (cuda/rocm/xpu/mps)"] = has_compute_gpu()
     distributions = (
         ("numpy", "numpy", "__version__"),
         ("opencv-python", "cv2", "__version__"),

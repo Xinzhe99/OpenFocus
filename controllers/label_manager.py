@@ -50,7 +50,7 @@ from utils.label_model import Label, LabelSet, normalize_target
 from utils.validators import LabelConfig, parse_label_range
 from utils.ui_utils import size_dialog_to_content
 from locales import trans
-from widgets.stepper import StepperSpinBox
+from widgets.stepper import StepperSpinBox, hide_spin_buttons
 
 
 class LabelManager:
@@ -585,7 +585,7 @@ class LabelManager:
         self._preview_next.clicked.connect(lambda: self._step_preview(1))
         self._preview_index = QSpinBox()
         self._preview_index.setRange(1, 9999)
-        self._preview_index.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        hide_spin_buttons(self._preview_index)
         self._preview_index.setKeyboardTracking(False)
         self._preview_index.setAccessibleName(trans.t('label_preview'))
         self._preview_index.setValue(1)
@@ -875,12 +875,16 @@ class LabelManager:
         names = list(getattr(window, "image_filenames", None) or [])
         if target == "input":
             images = list(getattr(window, "raw_images", None) or [])
-            return {"images": images, "names": names}
+            metadata = getattr(window, "linear_dng_metadata", None)
+            return {"images": images, "names": names,
+                    "metadata": [metadata] * len(images)}
         if target == "registered":
             images = list(getattr(window, "registration_results", None) or [])
+            metadata = getattr(window, "linear_dng_metadata", None)
             if images:
-                return {"images": images, "names": names}
-            return {"images": [], "names": names}
+                return {"images": images, "names": names,
+                        "metadata": [metadata] * len(images)}
+            return {"images": [], "names": names, "metadata": []}
         record = self._selected_output()
         wanted = output_id
         if wanted is None:
@@ -896,8 +900,18 @@ class LabelManager:
                         record = candidate
                         break
         if record is not None and record.image is not None:
-            return {"images": [record.image], "names": [record.label]}
-        return {"images": [], "names": []}
+            # The record owns its pixels. Never fall back to the current stack
+            # metadata here: an older output may have different calibration or
+            # may already have been developed when it was baked.
+            metadata = getattr(record, "linear_dng_metadata", None)
+            if metadata is None:
+                context = getattr(record, "context", None)
+                metadata = getattr(context, "linear_dng_metadata", None)
+            if getattr(record, "annotations_baked", False):
+                metadata = None
+            return {"images": [record.image], "names": [record.label],
+                    "metadata": [metadata]}
+        return {"images": [], "names": [], "metadata": []}
 
     def _preview_frame_index(self) -> int:
         value = int(round(float(self._preview_index.value())))
@@ -1038,14 +1052,17 @@ class LabelManager:
         self._save_editor_to_draft()
         config = self._dialog_config()
         images = self._dialog_frames.get("images", [])
+        metadata = self._dialog_frames.get("metadata") or []
         index = self._preview_frame_index()
         frame = images[index] if 0 <= index < len(images) else None
+        frame_metadata = metadata[index] if 0 <= index < len(metadata) else None
         indices = self._applicable_indices(config, len(images))
         preview_config = dict(config)
         preview_config["range"] = "" if index in indices else str(index + 2)
         label = self._draft.get(self._editing_id)
         preview_config["enabled"] = label.enabled
-        self.preview.set_preview(frame, preview_config, index)
+        self.preview.set_preview(frame, preview_config, index,
+                                 linear_dng_metadata=frame_metadata)
         error = self._range_error(config) if label.enabled else ""
         if not error and label.enabled:
             if frame is None:
@@ -1193,6 +1210,12 @@ class LabelManager:
         button.setToolTip(f"RGB ({red}, {green}, {blue})")
 
     def _clear_dialog_state(self) -> None:
+        preview = getattr(self, "preview", None)
+        release = getattr(preview, "release_developed_cache", None)
+        if callable(release):
+            # The dialog is going away; do not keep a full 24+ MP display
+            # frame alive through the controller reference.
+            release()
         self._loading_editor = False
         self._editing_id = ""
         self._range_mode = None

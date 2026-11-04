@@ -35,7 +35,7 @@ def _system_facts() -> str:
     except Exception:
         pass
     try:
-        lines.append(f"- CUDA/MPS GPU: {has_compute_gpu()}")
+        lines.append(f"- CUDA/ROCm/XPU/MPS GPU: {has_compute_gpu()}")
     except Exception:
         pass
     return "\n".join(lines)

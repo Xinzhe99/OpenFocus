@@ -1,15 +1,16 @@
 import os
 import re
 import uuid
+import threading
 from dataclasses import dataclass, replace
 from copy import deepcopy
 from typing import Any, Optional
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QPoint, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QImage
-from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox
+from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox, QProgressDialog
 
 from controllers.export_manager import get_imwrite_params
 from utils import (show_error_box, show_message_box, show_success_box,
@@ -26,6 +27,88 @@ from utils.export_paths import unique_path
 # provenance record of every output (identity, source context, export state).
 ALIGNED_DIR_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 OUTPUT_RECORD_ROLE = int(Qt.ItemDataRole.UserRole) + 2
+
+_ACTIVE_LINEAR_DNG_WORKERS = set()
+
+def _linear_dng_annotated_image(record, labels, state, should_cancel=None):
+    """Render annotations in display space, then map only changed pixels back.
+
+    Annotations outside the camera gamut cannot be represented faithfully in
+    this DNG; fail instead of silently changing their color or clipping RAW.
+    """
+    from core.registration import RegistrationCancelled
+    from core.resource_policy import require_memory
+    from utils.linear_dng import _RGB_TO_XYZ, develop_linear
+
+    def check_cancel():
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+
+    image = record.image
+    metadata = record.linear_dng_metadata
+    check_cancel()
+    require_memory(image.nbytes * 4 + min(128, image.shape[0]) * image.shape[1] * 100)
+    display = develop_linear(image, metadata)
+    check_cancel()
+    annotated = labels.prepare_bgr_image('output', display, 0, output_id=record.output_id)
+    annotated = scalebar.burn(annotated, state['scale'])
+    check_cancel()
+    result = image.copy()
+    matrix = np.asarray(metadata.color_matrix, dtype=np.float64) @ _RGB_TO_XYZ
+    matrix /= matrix.sum(axis=1)[:, None]
+    wb = 1.0 / np.asarray(metadata.as_shot_neutral, dtype=np.float64)
+    wb /= wb.min()
+    for start in range(0, image.shape[0], 128):
+        check_cancel()
+        stop = min(start + 128, image.shape[0])
+        original = develop_linear(image[start:stop], metadata)
+        painted = annotated[start:stop]
+        changed = np.any(painted != original, axis=2)
+        if not np.any(changed):
+            continue
+        rgb = painted[changed, ::-1].astype(np.float64) / 65535.0
+        rgb = np.where(rgb < 0.081, rgb / 4.5, ((rgb + 0.099) / 1.099) ** (1 / 0.45))
+        camera = (rgb @ matrix.T) / wb
+        if np.any(camera < -1e-7) or np.any(camera > 1.0 + 1e-7):
+            raise ValueError(trans.t('linear_dng_gamut_error'))
+        result[start:stop][changed] = np.rint(np.clip(camera[:, ::-1], 0, 1) * 65535).astype(np.uint16)
+    return result
+
+
+class LinearDngExportWorker(QThread):
+    completed = pyqtSignal(bool, str)
+
+    def __init__(self, path, record, labels, annotation_state, *, px_size_um=None):
+        super().__init__()
+        self.path = path
+        self.record = record
+        self.labels = labels
+        self.annotation_state = annotation_state
+        self.px_size_um = px_size_um
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
+
+    def run(self):
+        try:
+            image = self.record.image
+            if self.annotation_state['labels'] or self.annotation_state['scale']:
+                try:
+                    image = _linear_dng_annotated_image(
+                        self.record, self.labels, self.annotation_state, self._cancelled.is_set)
+                except Exception as exc:
+                    raise ValueError(f"{trans.t('linear_dng_annotations')}: {exc}") from exc
+            from utils.linear_dng import write_linear_dng
+            write_linear_dng(self.path, image, self.record.linear_dng_metadata,
+                             should_cancel=self._cancelled.is_set,
+                             px_size_um=self.px_size_um)
+        except Exception as exc:
+            self.completed.emit(False, '' if self._cancelled.is_set() else str(exc))
+        else:
+            self.completed.emit(True, self.path)
+
+
 
 
 @dataclass
@@ -61,13 +144,17 @@ class OutputRecord:
     exported_annotations: Optional[dict] = None
     annotations_changed: bool = False
     icc_profile: bytes = b""
+    linear_dng_metadata: Any = None
+    source_paths: tuple = ()
 
     @classmethod
     def create(cls, image, label: str, *, context=None, kind: str = "fusion",
                parent_id: Optional[str] = None, exported: bool = False):
         return cls(output_id=uuid.uuid4().hex, image=image, label=label,
                    context=context, kind=kind, parent_id=parent_id,
-                   exported=exported)
+                   exported=exported,
+                   linear_dng_metadata=deepcopy(getattr(context, 'linear_dng_metadata', None)),
+                   source_paths=tuple(getattr(context, 'source_paths', ()) or ()))
 
     @property
     def retouchable(self) -> bool:
@@ -129,6 +216,8 @@ class OutputManager:
 
     def __init__(self, window: Any):
         self.window = window
+        self.linear_dng_worker = None
+        self.linear_dng_progress = None
 
     # ------------------------------------------------------------------
     # UI helpers
@@ -262,7 +351,15 @@ class OutputManager:
                 # Thumbnail from a 40 px resample, not from the full frame:
                 # converting 12 MP just to fill a 40x40 icon cost ~35 ms of
                 # copy + colour convert + pixmap upload per render.
-                icon = QIcon(cv2_to_pixmap(_thumbnail_bgr(image, 40)))
+                thumbnail = image
+                if record is not None and record.linear_dng_metadata is not None:
+                    from utils.linear_dng import develop_linear
+                    h, w = image.shape[:2]
+                    factor = min(1.0, 40 / max(h, w))
+                    thumbnail = cv2.resize(image, (max(1, int(w * factor)), max(1, int(h * factor))),
+                                           interpolation=cv2.INTER_AREA) if factor < 1 else image
+                    thumbnail = develop_linear(thumbnail, record.linear_dng_metadata)
+                icon = QIcon(cv2_to_pixmap(_thumbnail_bgr(thumbnail, 40)))
                 item.setIcon(icon)
             except Exception:
                 pass
@@ -308,7 +405,8 @@ class OutputManager:
             if 0 <= row < len(window.fusion_results):
                 window.fusion_results.pop(row)
 
-    def update_output_list_for_fusion(self, context=None) -> None:
+    def update_output_list_for_fusion(self, context=None, linear_dng_metadata=None,
+                                      source_paths=()) -> None:
         window = self.window
 
         fusion_filename = window.export_manager.generate_default_filename()
@@ -319,6 +417,10 @@ class OutputManager:
             image = window.fusion_result
             record = OutputRecord.create(image, fusion_filename,
                                          context=context, kind="fusion")
+            if linear_dng_metadata is not None:
+                record.linear_dng_metadata = deepcopy(linear_dng_metadata)
+            if source_paths:
+                record.source_paths = tuple(source_paths)
         self._insert_output(image, fusion_filename, record)
 
     def add_batch_outputs(self, paths) -> int:
@@ -455,6 +557,8 @@ class OutputManager:
                                    if base_record.scale_bar_config else None)
         record.scale_bar_initialized = True
         record.annotations_baked = base_record.annotations_baked
+        record.linear_dng_metadata = deepcopy(base_record.linear_dng_metadata)
+        record.source_paths = base_record.source_paths
         window = self.window
         previous = getattr(window, "fusion_result", None)
         previous_row = window.output_list.currentRow()
@@ -558,10 +662,34 @@ class OutputManager:
         return not failed
 
     def _write_record(self, record, path, labels):
-        self.window.export_manager._safe_export_path(path)
+        source_paths = record.source_paths
+        if source_paths:
+            self.window.export_manager._safe_export_path(path, source_paths)
+        else:
+            self.window.export_manager._safe_export_path(path)
         image = record.image
         if image is None:
             raise ValueError(trans.t('msg_no_valid_image_text'))
+        metadata = record.linear_dng_metadata
+        if os.path.splitext(path)[1].lower() == '.dng':
+            if metadata is None or record.annotations_baked:
+                raise ValueError(trans.t('linear_dng_export_failed'))
+            state = self._annotation_state(record, labels)
+            if state['labels'] or state['scale']:
+                try:
+                    image = _linear_dng_annotated_image(record, labels, state)
+                except Exception as exc:
+                    raise ValueError(f"{trans.t('linear_dng_annotations')}: {exc}") from exc
+            try:
+                from utils.linear_dng import write_linear_dng
+                write_linear_dng(path, image, metadata,
+                                 px_size_um=scalebar.calibration_px_um(self.window, record))
+            except Exception as exc:
+                raise OSError(f"{trans.t('linear_dng_export_failed')}: {exc}") from exc
+            return
+        if metadata is not None:
+            from utils.linear_dng import develop_linear
+            image = develop_linear(image, metadata)
         if image.ndim == 3 and image.shape[2] == 4 and os.path.splitext(path)[1].lower() != '.png':
             raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
         if not record.annotations_baked:
@@ -745,6 +873,67 @@ class OutputManager:
             return
         self.export_records(records)
 
+    def start_linear_dng_export(self, record, original, path, labels, *,
+                                completion=None, show_progress=True,
+                                px_size_um=None):
+        if self.linear_dng_worker is not None:
+            raise ValueError(trans.t('linear_dng_export_failed'))
+        if record.image is None or record.linear_dng_metadata is None or record.annotations_baked:
+            raise ValueError(trans.t('linear_dng_export_failed'))
+        if record.source_paths:
+            self.window.export_manager._safe_export_path(path, record.source_paths)
+        else:
+            self.window.export_manager._safe_export_path(path)
+        if px_size_um is None:
+            px_size_um = scalebar.calibration_px_um(self.window, record)
+        state = self._annotation_state(record, labels)
+        worker = LinearDngExportWorker(path, record, labels, state,
+                                       px_size_um=px_size_um)
+        progress = None
+        if show_progress:
+            progress = QProgressDialog(trans.t('action_save'), trans.t('btn_cancel'), 0, 0, self.window)
+            progress.setWindowTitle(trans.t('linear_dng_filter'))
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(0)
+        self.linear_dng_worker = worker
+        self.linear_dng_progress = progress
+        _ACTIVE_LINEAR_DNG_WORKERS.add(worker)
+        if progress is not None:
+            progress.canceled.connect(worker.cancel)
+        self.window.destroyed.connect(worker.cancel)
+
+        def completed(success, message):
+            from PyQt6 import sip
+            if sip.isdeleted(self.window):
+                return
+            if success:
+                if original is not None:
+                    self._mark_record_exported(original, record.image, path, state)
+                if show_progress:
+                    self.window.statusBar().showMessage(
+                        trans.t('msg_image_saved_info').format(path=path).replace('\n', ' '), 8000)
+            elif message and show_progress:
+                show_error_box(self.window, trans.t('msg_save_failed_title'),
+                               trans.t('linear_dng_export_failed'), message)
+            if completion is not None:
+                completion(success, message)
+
+        def finished():
+            from PyQt6 import sip
+            _ACTIVE_LINEAR_DNG_WORKERS.discard(worker)
+            if progress is not None and not sip.isdeleted(progress):
+                progress.close()
+            self.linear_dng_worker = None
+            self.linear_dng_progress = None
+            worker.deleteLater()
+
+        worker.completed.connect(completed)
+        worker.finished.connect(finished)
+        if progress is not None:
+            progress.show()
+        worker.start()
+        return worker
+
     def save_output_image_as(self, item: QListWidgetItem | None) -> None:
         window = self.window
         if item is None:
@@ -765,13 +954,18 @@ class OutputManager:
                     item.setData(ALIGNED_DIR_ROLE, path)
                 return
             default_filename = window.export_manager.filename_from_label(record.label)
+            filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;JPG 8-bit (*.jpg);;'
+                       'WebP 8-bit (*.webp);;BMP 8-bit (*.bmp)')
+            if record.linear_dng_metadata is not None and not record.annotations_baked:
+                filters += ';;' + trans.t('linear_dng_filter')
             file_path, selected_filter = QFileDialog.getSaveFileName(
-                window, trans.t('action_save'), default_filename,
-                'PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;JPG 8-bit (*.jpg);;'
-                'WebP 8-bit (*.webp);;BMP 8-bit (*.bmp)')
+                window, trans.t('action_save'), default_filename, filters)
             if not file_path:
                 return
             file_path = window.export_manager.normalize_export_path(file_path, selected_filter=selected_filter)
+            if os.path.splitext(file_path)[1].lower() == '.dng':
+                self.start_linear_dng_export(record, original, file_path, labels)
+                return
             self._write_record(record, file_path, labels)
             self._mark_record_exported(original, record.image, file_path, self._annotation_state(record, labels))
             window.statusBar().showMessage(
@@ -820,7 +1014,7 @@ class OutputManager:
     # ------------------------------------------------------------------
     # Display helpers
     # ------------------------------------------------------------------
-    def display_specific_fusion_result(self, fusion_image) -> bool:
+    def display_specific_fusion_result(self, fusion_image, linear_dng_metadata=None) -> bool:
         if fusion_image is None:
             return False
 
@@ -829,6 +1023,17 @@ class OutputManager:
         try:
             record = self.record_for_image(fusion_image)
             image = fusion_image
+            metadata = record.linear_dng_metadata if record is not None else linear_dng_metadata
+            if metadata is None and record is None:
+                preview_record = getattr(window, '_wipe_preview_record', None)
+                if preview_record is not None and preview_record.image is fusion_image:
+                    metadata = preview_record.linear_dng_metadata
+            if metadata is None and record is None and fusion_image is window.fusion_result:
+                context = getattr(getattr(window, 'render_manager', None), '_render_context', None) or {}
+                metadata = context.get('linear_dng_metadata')
+            if metadata is not None:
+                from utils.linear_dng import develop_linear
+                image = develop_linear(image, metadata)
             if record is None or not record.annotations_baked:
                 image = window.label_manager.display_bgr_image(
                     "output", image, 0,
@@ -912,6 +1117,11 @@ class OutputManager:
         try:
             image = window.registration_results[index]
             record = self.record_for_item(window.output_list.currentItem())
+            metadata = (record.linear_dng_metadata if record is not None and record.kind == 'aligned'
+                        else getattr(window, 'linear_dng_metadata', None))
+            if metadata is not None:
+                from utils.linear_dng import develop_linear
+                image = develop_linear(image, metadata)
             if record is None or not record.annotations_baked:
                 image = window.label_manager.display_bgr_image(
                     "registered", image, index,
@@ -932,7 +1142,8 @@ class OutputManager:
             )
 
 def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
-                          source_frames=None, source_indices=None, source_revision=0) -> None:
+                          source_frames=None, source_indices=None, source_revision=0,
+                          linear_dng_metadata=None) -> None:
     """List an aligned stack once; write its folder only on explicit export."""
     if not frames:
         return
@@ -945,6 +1156,7 @@ def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
     record = OutputRecord.create(None, label, kind='aligned', exported=False)
     record.aligned_frames = tuple(frames)
     record.aligned_names = names
+    record.linear_dng_metadata = deepcopy(linear_dng_metadata)
     if source_frames is not None and len(source_frames) == len(frames):
         record.aligned_source_frames = tuple(source_frames)
         record.aligned_source_indices = tuple(source_indices or range(len(frames)))

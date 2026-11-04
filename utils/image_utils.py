@@ -428,12 +428,25 @@ def _encode_tiff_with_exif(image: np.ndarray, exif, icc_profile: bytes = b"") ->
 
 
 def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
-                 exif: Optional[bytes] = None, icc_profile: bytes = b"") -> bool:
+                 exif: Optional[bytes] = None, icc_profile: bytes = b"",
+                 linear_dng_metadata=None, should_cancel=None,
+                 linear_dng_px_size_um=None) -> bool:
     """Atomically write pixels, optionally embedding their RGB color profile."""
     import tempfile
 
     path = os.fspath(path)
     ext = os.path.splitext(path)[1].lower()
+    if ext == '.dng':
+        if linear_dng_metadata is None:
+            raise ValueError("Linear DNG export requires camera metadata")
+        from utils.linear_dng import _write_linear_dng_atomic
+        try:
+            _write_linear_dng_atomic(path, image, linear_dng_metadata,
+                                     should_cancel=should_cancel,
+                                     px_size_um=linear_dng_px_size_um)
+            return True
+        except OSError:
+            return False
     if ext != '.png' and image.ndim == 3 and image.shape[2] == 4:
         from core.image_loader import _has_transparency
         if _has_transparency(image):

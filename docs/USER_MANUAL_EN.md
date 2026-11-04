@@ -49,13 +49,13 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - Image files: JPG/JPEG, PNG, BMP, TIFF, WebP, and other common formats
 - Video files: MP4, AVI, MOV, MKV, WMV, FLV and WEBM (decoded into image sequences)
 - Folders containing numbered image sequences
-- Camera RAW files (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2 and other common
+- Camera RAW files (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2, RWL, FFF, MEF, DCR and other common
   RAW formats). Decoding uses `rawpy` (LibRaw), which `pip install openfocus`
   installs and the Windows/macOS builds bundle.
-  Camera support depends on the installed LibRaw version. RAW is decoded to
-  a 16-bit image at its original dimensions before the selected loading scale
-  is applied: a smaller scale reduces later memory use but does not eliminate
-  the full-size decode peak. Grouped fusion does not support RAW.
+  Camera models and compression support depend on the installed LibRaw version.
+  RAW is decoded to a 16-bit image at its original dimensions before the
+  selected loading scale is applied: a smaller scale reduces later memory use
+  but does not eliminate the full-size decode peak. Grouped fusion does not support RAW.
 
 Transparent PNG stacks can be fused in the desktop application, desktop batch
 processing, or the command-line interface, without grouped fusion. Every frame
@@ -181,6 +181,10 @@ project and cannot be recovered by resetting.
 3. A loading-scale dialog appears — choose the scale (100% = full resolution)
 4. Click OK to load the images
 
+The status bar shows processed file counts while loading. The count may stay
+unchanged while one RAW file is being decoded; cancellation takes effect after
+the current file finishes decoding.
+
 Tick **Don't ask again** in that dialog to always load at the chosen scale
 without a prompt; **Settings → Advanced Settings → Startup & updates → Ask for
 Loading Scale on Import** turns the prompt back on. A loaded stack can still be
@@ -258,10 +262,12 @@ writes the entire stack back into a single `.tif`, preserving 16-bit depth.
 ### Scale Bar (Publication Figures)
 
 Tools → Scale Bar… configures a scale bar burned into exported images.
-The pixel size (µm/px) is auto-detected from TIFF metadata — ImageJ's
-`unit=micron` convention, OME-TIFF's `PhysicalSizeX`, or an explicit
+The pixel size (µm/px) is auto-detected from TIFF or Linear DNG metadata —
+ImageJ's `unit=micron` convention, OME-TIFF's `PhysicalSizeX`, or an explicit
 centimetre resolution unit — so microscopy stacks (including multi-page
-TIFFs) calibrate themselves. Printer resolution (72/300 dpi and friends)
+TIFFs) calibrate themselves. DNG export writes the result's calibration back
+into the file, so re-importing the Linear DNG keeps the same physical scale.
+Printer resolution (72/300 dpi and friends)
 is deliberately *not* treated as calibration, and a manual value you type
 always wins over detected metadata: a plausible-looking wrong bar in a
 figure is worse than none. Choose the corner
@@ -399,10 +405,26 @@ automatically during import, so portrait shots load upright.
 fusion runs at full depth and results can be saved back as 16-bit PNG/TIFF
 (JPG/BMP exports are converted to 8-bit, as those formats cannot store 16 bits).
 
-Camera RAW files are developed to 16-bit (camera white balance, sRGB gamma)
+Camera RAW files are developed to 16-bit (camera white balance, sRGB color space and LibRaw's default gamma)
 with auto-brightening disabled, so every frame of a stack gets the same
 exposure mapping; per-frame auto exposure would make brightness flicker
 between frames. Save as TIFF or PNG to keep the 16-bit data.
+
+For a camera-linear workflow, choose **File → Open native RAW stack…** and
+select the camera RAW frames. The frames must share camera calibration and
+white balance; unsupported or incompatible files are rejected. OpenFocus keeps
+the 16-bit camera-linear pixels through alignment, fusion and retouching while
+showing developed previews. Save a result as **Linear DNG** to continue editing
+its color and white balance in a compatible RAW editor. TIFF, PNG and other
+ordinary exports use the developed appearance. DNG annotations are burned into
+the exported pixels. If an annotation color cannot be represented in the
+camera color space, DNG export fails; choose a different color or export a
+developed TIFF or PNG. The regular RAW import continues to produce developed sRGB.
+RAW decoding still requires full-resolution working memory even when the stack
+is loaded at a reduced scale.
+If the camera model cannot be identified, only a single RAW can be opened;
+its DNG uses a generic camera identity and does not preserve the manufacturer's
+model or proprietary profile.
 
 ### Color Profiles
 
@@ -410,8 +432,9 @@ Single-image PNG, TIFF, JPEG and WebP exports retain the RGB ICC profile when
 every source frame has the same embedded profile. Mixed or untagged stacks are exported
 without an ICC profile. OpenFocus preserves the profile; it does not convert
 source pixels into a common color space or color-manage the preview. Convert
-mixed-profile images to a common color space before loading them. RAW input is
-developed to sRGB and does not inherit a camera profile.
+mixed-profile images to a common color space before loading them. Regular RAW
+import is developed to sRGB and does not inherit a camera profile. Native RAW
+mode uses camera calibration for its developed preview and Linear DNG export.
 
 For a multi-page TIFF, all pages in the file must have the same valid RGB
 profile; otherwise its frames are treated as untagged. Video frames are also
@@ -673,10 +696,12 @@ various image types.
   - **Soft blend (weighted)** — default; each pixel is a probability-weighted
     mix of the frames. Smooth transitions, no hard seams; matches the paper's
     reported configuration
-  - **Hard pick (single frame)** — each pixel is copied from the most
-    probable frame. Crisper selection with no cross-frame interpolation; a
-    pixel-level seam can appear where two frames tie
-- **Best for**: Highest quality results when GPU is available
+  - **Hard pick (single frame)** — each pixel comes from one source frame.
+    In tile overlaps, the more interior tile wins instead of blending pixels.
+    This can reduce mixed-color halos on fine edges but can also create jagged
+    edges or tile seams; it does not guarantee correct occlusion. Compare a
+    region and use retouching to repair local defects.
+- **Best for**: Per-pixel selection or blending of focus frames
 - **Advantages**: Order-invariant (frame order never changes the result),
   handles any stack length, no per-method tuning, automatic optimization
 - **Requirements**: PyTorch installation, optional CUDA GPU (no torchvision)
@@ -1104,6 +1129,11 @@ unchanged; choosing smaller tiles yourself can change output pixels.
 
 OpenFocus uses the GPU (CUDA/MPS) for the AI neural models (StackMFF V1/V2/V3); classical algorithms and application registration run on CPU. Explicit low-level CuPy registration is a separate numerical backend.
 
+Windows release builds bundle CUDA-enabled PyTorch for NVIDIA GPUs with a
+compatible driver; Apple Silicon uses MPS. The current Windows package does not
+provide an AMD or Intel GPU inference backend. GPU memory does not replace the
+system RAM used by registration and the image stack.
+
 - Toggle via **Settings → GPU Acceleration**
 - Unchecking forces neural methods onto the CPU — useful when GPU drivers misbehave
 - The status panel shows `N/A` when no accelerator is used or available, and
@@ -1417,7 +1447,7 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--tile-threshold` | Minimum image size that triggers tiling (default: automatic) |
 | `--group-size` | Fuse a folder in groups of this many frames; `0` disables grouping (default). Folders only; no `--depth-map`, RAW/alpha/multipage input, or non-default OpenFocus reference frame |
 | `--group-overlap` | Frames shared by consecutive groups; default `0`, at most group size minus 2 |
-| `--scale-bar` | Draw a scale bar (calibration auto-detected from TIFF metadata) |
+| `--scale-bar` | Draw a scale bar (calibration auto-detected from TIFF/DNG microscopy metadata) |
 | `--scale-um` | Pixel size in µm/px, overriding metadata (implies `--scale-bar`) |
 | `--depth-map [path]` | Also save a colorized focus-position map (default `<output>_depth.png`); depth-capable methods only, not grouped or transparent. In batch mode only the default path is allowed |
 | `--depth-colormap` | Colormap for `--depth-map`: turbo, viridis, jet, gray, … (default turbo) |
@@ -1592,6 +1622,8 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 
 - Enable tile processing in **Settings → Advanced Settings → Performance**
 - Reduce tile block size
+- Large stacks retain source and aligned images in system RAM; GPU memory does
+  not replace those allocations
 - Use smaller kernel sizes
 - Resize images to smaller dimensions
 

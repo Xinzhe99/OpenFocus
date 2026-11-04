@@ -16,12 +16,18 @@ from utils.dust_map import (DEFAULT_SIGMA, compute_flat_field, apply_flat_field,
 from utils.ui_utils import size_dialog_to_content
 
 
-def _to_pixmap(img, width=340):
-    """8-bit BGR -> QPixmap, downscaled to width."""
+def _to_pixmap(img, width=340, *, linear_dng_metadata=None):
+    """Display an image at preview size, developing camera-linear data."""
+    from utils.image_utils import to_display_uint8
+    if linear_dng_metadata is None:
+        img = to_display_uint8(img)
     scale = min(width / img.shape[1], 180 / img.shape[0])
     small = cv2.resize(img, (max(1, round(img.shape[1] * scale)),
                              max(1, round(img.shape[0] * scale))),
                        interpolation=cv2.INTER_AREA)
+    if linear_dng_metadata is not None:
+        from utils.linear_dng import develop_linear
+        small = to_display_uint8(develop_linear(small, linear_dng_metadata))
     h, w = small.shape[:2]
     if small.ndim == 2:
         small = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
@@ -397,9 +403,9 @@ class DustMapDialog(QDialog):
         heat = cv2.applyColorMap((norm * 255).astype(np.uint8), cv2.COLORMAP_JET)
         self.lbl_gain.setPixmap(_to_pixmap(heat))
         self.lbl_gain.setToolTip("0.5–2.0")
-        from utils.image_utils import to_display_uint8
-        self.lbl_before.setPixmap(_to_pixmap(to_display_uint8(frame)))
-        self.lbl_after.setPixmap(_to_pixmap(to_display_uint8(fixed)))
+        metadata = getattr(self.window_main, 'linear_dng_metadata', None)
+        self.lbl_before.setPixmap(_to_pixmap(frame, linear_dng_metadata=metadata))
+        self.lbl_after.setPixmap(_to_pixmap(fixed, linear_dng_metadata=metadata))
         self.btn_apply.setEnabled(True)
         self.lbl_status.setText(trans.t("dust_ready"))
 

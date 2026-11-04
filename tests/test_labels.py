@@ -268,6 +268,127 @@ def test_preview_uses_selected_output_and_never_newest_fallback(manager):
     assert manager._collect_frames("output")["images"] == []
 
 
+def test_label_preview_develops_linear_pixels_before_drawing(qapp):
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+    from utils.image_utils import pixmap_to_cv2, to_display_uint8
+    from widgets.label_preview import LabelPreview
+
+    metadata = LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.5, 1.0, 0.7), "Maker", "Camera")
+    frame = np.full((180, 240, 3), 7000, np.uint16)
+    preview = LabelPreview()
+    preview.set_preview(frame, vars(caption().config), 0,
+                        linear_dng_metadata=metadata)
+    rendered = pixmap_to_cv2(preview._rendered)
+    expected = to_display_uint8(develop_linear(frame, metadata))
+    np.testing.assert_array_equal(rendered[170, 200], expected[170, 200])
+
+    # Without metadata the ordinary 16-bit display path is unchanged.
+    preview.set_preview(frame, vars(caption().config), 0)
+    rendered = pixmap_to_cv2(preview._rendered)
+    np.testing.assert_array_equal(rendered[170, 200],
+                                  to_display_uint8(frame)[170, 200])
+    preview.deleteLater()
+
+
+def _visible_preview_rgb(preview):
+    pixmap = preview.pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+    image = pixmap.toImage()
+    colour = image.pixelColor(image.width() // 2, image.height() // 2)
+    return (colour.red(), colour.green(), colour.blue())
+
+
+def _rgb_at(image, y, x):
+    return tuple(int(value) for value in image[y, x][::-1])
+
+
+def test_label_manager_preview_uses_each_sources_linear_metadata(manager, qapp,
+                                                                 monkeypatch):
+    from controllers.output_manager import OutputRecord
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+    from utils.image_utils import to_display_uint8
+
+    stack_meta = LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.5, 1.0, 0.7), "Maker", "Current")
+    record_meta = LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.8, 1.0, 0.6), "Maker", "Historical")
+    stack_image = np.full((240, 320, 3), 7000, np.uint16)
+    record_image = np.full((240, 320, 3), 7000, np.uint16)
+    manager.window.raw_images = [stack_image]
+    manager.window.image_filenames = ["stack.dng"]
+    manager.window.linear_dng_metadata = stack_meta
+    record = OutputRecord.create(
+        record_image, "historical",
+        context=SimpleNamespace(linear_dng_metadata=record_meta,
+                                source_paths=()))
+    item = object()
+    manager.window.output_list = SimpleNamespace(currentItem=lambda: item,
+                                                 count=lambda: 1)
+    manager.window.output_manager = SimpleNamespace(
+        record_for_item=lambda selected: record if selected is item else None,
+        record_for_row=lambda _row: record)
+    colors = {}
+
+    def edit(_dialog):
+        input_index = manager.target_stack_combo.findData("input")
+        manager.target_stack_combo.setCurrentIndex(input_index)
+        qapp.processEvents()
+        colors["stack"] = _visible_preview_rgb(manager.preview)
+        manager.target_stack_combo.setCurrentIndex(
+            manager.target_stack_combo.findData("output"))
+        qapp.processEvents()
+        colors["record"] = _visible_preview_rgb(manager.preview)
+        manager.target_stack_combo.setCurrentIndex(input_index)
+        qapp.processEvents()
+        colors["back"] = _visible_preview_rgb(manager.preview)
+
+    edit_dialog(monkeypatch, manager, edit)
+    expected_stack = _rgb_at(
+        to_display_uint8(develop_linear(stack_image, stack_meta)), 120, 160)
+    expected_record = _rgb_at(
+        to_display_uint8(develop_linear(record_image, record_meta)), 120, 160)
+    assert colors["stack"] == expected_stack
+    assert colors["record"] == expected_record
+    assert colors["back"] == expected_stack
+    assert colors["stack"] != colors["record"]
+
+
+def test_label_manager_preview_does_not_develop_baked_output(manager, qapp,
+                                                              monkeypatch):
+    from controllers.output_manager import OutputRecord
+    from utils.linear_dng import LinearDNGMetadata
+
+    metadata = LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.5, 1.0, 0.7), "Maker", "Historical")
+    display = np.full((240, 320, 3), (10, 120, 240), np.uint8)
+    record = OutputRecord.create(
+        display, "baked",
+        context=SimpleNamespace(linear_dng_metadata=metadata,
+                                source_paths=()))
+    record.annotations_baked = True
+    item = object()
+    manager.window.output_list = SimpleNamespace(currentItem=lambda: item,
+                                                 count=lambda: 1)
+    manager.window.output_manager = SimpleNamespace(
+        record_for_item=lambda selected: record if selected is item else None,
+        record_for_row=lambda _row: record)
+    colors = {}
+
+    def edit(_dialog):
+        manager.target_stack_combo.setCurrentIndex(
+            manager.target_stack_combo.findData("output"))
+        qapp.processEvents()
+        colors["baked"] = _visible_preview_rgb(manager.preview)
+
+    edit_dialog(monkeypatch, manager, edit)
+    assert colors["baked"] == _rgb_at(display, 120, 160)
+
+
 def test_preview_resize_and_zoom_do_not_rerender_or_mutate_frame(qapp, monkeypatch):
     from widgets.label_preview import LabelPreview
     from PyQt6.QtCore import QSize

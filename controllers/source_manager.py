@@ -56,6 +56,7 @@ class SourceManager(QObject):
         self._review_results = []
         self._review_status_key = None
         self._stack_baseline = None
+        window.linear_dng_metadata = None
         self._review_error = ""
 
     def _clear_history(self):
@@ -119,6 +120,7 @@ class SourceManager(QObject):
         window.current_scale_factor = baseline["scale"]
         window.base_scale_factor = baseline["scale"]
         window.source_px_um = baseline["source_px_um"]
+        window.linear_dng_metadata = baseline.get("linear_dng_metadata")
         window.excluded_frames = set()
         window.source_transforms = []
         window.unrecoverable_source_changes = []
@@ -275,7 +277,8 @@ class SourceManager(QObject):
 
     def _start_load_worker(self, folder=None, video=None, filepaths=None,
                            scale=1.0, append=False, on_success=None,
-                           accept_event=None, prepare_options=None, on_error=None) -> None:
+                           accept_event=None, prepare_options=None, on_error=None,
+                           linear_raw=False) -> None:
         """Run the loader on a background thread and apply results on the
         UI thread when it finishes."""
         window = self.window
@@ -285,6 +288,17 @@ class SourceManager(QObject):
             if on_error is not None:
                 on_error(trans.t("msg_load_in_progress"))
             return
+        current_metadata = getattr(window, "linear_dng_metadata", None)
+        if append and getattr(window, "raw_images", None):
+            if current_metadata is not None:
+                linear_raw = True
+            elif linear_raw:
+                message = trans.t("linear_raw_mismatch")
+                if on_error is not None:
+                    on_error(message)
+                else:
+                    show_warning_box(window, trans.t("msg_load_failed"), message)
+                return
         working_scale = scale
         if append and getattr(window, "raw_images", None):
             working_scale = float(getattr(window, "current_scale_factor", 1.0) or 1.0)
@@ -298,6 +312,8 @@ class SourceManager(QObject):
             exclude_paths=([window.defect_mask_path] if prepare_options is None
                            and getattr(window, 'defect_mask_path', '') else []),
             resource_preference=getattr(window, "resource_preference", "balanced"),
+            linear_raw=linear_raw,
+            expected_metadata=current_metadata if append and window.raw_images else None,
         )
         self._load_accept_event = accept_event
         # Remembered so the frames just decoded can be traced back to the files
@@ -355,6 +371,8 @@ class SourceManager(QObject):
                     baseline = self._stack_baseline
                     if baseline and baseline["source_px_um"] != (metadata / scale if metadata else None):
                         self._stack_baseline = {**baseline, "source_px_um": None}
+                if not append or not window.raw_images:
+                    window.linear_dng_metadata = worker.linear_dng_metadata
                 self._apply_load_options(load_options, append=append,
                                          profile_map=getattr(worker, "source_icc_profiles", {}))
                 if on_success is not None:
@@ -382,6 +400,7 @@ class SourceManager(QObject):
                 )
 
         worker = self._load_worker
+        worker.progress.connect(self._on_load_progress)
         worker.finished_load.connect(on_done)
         worker.finished.connect(lambda: self._finish_load_worker(worker))
         self._show_load_status()
@@ -405,6 +424,7 @@ class SourceManager(QObject):
             self._load_status_label = QLabel()
             self._load_progress_bar = QProgressBar()
             self._load_progress_bar.setMaximumWidth(140)
+            self._load_progress_bar.setFormat("%p%")
             self._load_progress_bar.setRange(0, 0)
             window.statusBar().addPermanentWidget(self._load_status_label)
             window.statusBar().addPermanentWidget(self._load_progress_bar)
@@ -412,12 +432,30 @@ class SourceManager(QObject):
             button.clicked.connect(self.cancel_load)
             window.statusBar().addPermanentWidget(button)
             self._load_cancel_button = button
+        self._load_progress_bar.setRange(0, 0)
+        self._load_progress_bar.setValue(0)
         button.setEnabled(True)
         button.show()
         self._load_status_label.setText(trans.t("msg_loading_stack"))
         self._load_status_label.show()
         self._load_progress_bar.show()
         window.statusBar().showMessage(trans.t("msg_loading_stack"))
+
+    def _on_load_progress(self, done: int, total: int) -> None:
+        worker = self.sender()
+        if (worker is None or worker is not getattr(self, "_load_worker", None)
+                or worker.is_cancelled or worker.video):
+            return
+        text = trans.t("msg_loading_stack")
+        if total > 0:
+            self._load_progress_bar.setRange(0, total)
+            self._load_progress_bar.setValue(done)
+            text = f"{text} ({done}/{total})"
+        else:
+            self._load_progress_bar.setRange(0, 0)
+            text = f"{text} ({done})"
+        self._load_status_label.setText(text)
+        self.window.statusBar().showMessage(text)
 
     def cancel_load(self) -> None:
         worker = getattr(self, "_load_worker", None)
@@ -471,8 +509,10 @@ class SourceManager(QObject):
 
         # 同一文件夹再次导入按"重新加载"处理：追加只会得到帧数翻倍的
         # 重复栈（恢复会话后再导入、拖同一文件夹两次都触发过）
-        if append and os.path.normcase(os.path.abspath(folder_path)) == os.path.normcase(
-                os.path.abspath(getattr(window, "current_folder_path", "") or "")):
+        same_folder = (os.path.normcase(os.path.abspath(folder_path)) == os.path.normcase(
+            os.path.abspath(getattr(window, "current_folder_path", "") or "")))
+        linear_reload = same_folder and getattr(window, "linear_dng_metadata", None) is not None
+        if append and same_folder:
             append = False
 
         scale_factor = self._ask_load_scale()
@@ -482,7 +522,7 @@ class SourceManager(QObject):
         # Decode on a background thread so the window stays responsive on
         # large stacks; the continuation runs on the UI thread via the signal.
         self._start_load_worker(
-            folder=folder_path, scale=scale_factor, append=append,
+            folder=folder_path, scale=scale_factor, append=append, linear_raw=linear_reload,
             on_success=lambda: window.add_recent_file(folder_path) if hasattr(window, "add_recent_file") else None,
         )
 
@@ -498,6 +538,21 @@ class SourceManager(QObject):
             video=video_path, scale=scale_factor, append=append,
             on_success=lambda: window.add_recent_file(video_path) if hasattr(window, "add_recent_file") else None,
         )
+
+    def prompt_and_load_linear_raw(self) -> None:
+        from core.image_loader import RAW_FORMATS
+        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+
+        patterns = " ".join(f"*{ext}" for ext in sorted(RAW_FORMATS))
+        paths, _ = QFileDialog.getOpenFileNames(
+            self.window, trans.t("linear_raw_caption"), get_last_dialog_dir(),
+            f"RAW ({patterns});;All Files (*)")
+        if not paths:
+            return
+        set_last_dialog_dir(paths[0])
+        scale = self._ask_load_scale()
+        if scale is not None:
+            self._start_load_worker(filepaths=paths, scale=scale, linear_raw=True)
 
     def prompt_and_load_stack(self) -> None:
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
@@ -604,6 +659,13 @@ class SourceManager(QObject):
 
         # Filter by supported image extensions (use ImageStackLoader.SUPPORTED_FORMATS)
         from core.image_loader import ImageStackLoader
+        if getattr(self.window, "linear_dng_metadata", None) is not None:
+            from core.image_loader import RAW_FORMATS
+            if len(filepaths) != len(paths) or any(
+                    os.path.splitext(path)[1].lower() not in RAW_FORMATS for path in paths):
+                show_warning_box(self.window, trans.t("msg_load_failed"), trans.t("linear_raw_invalid"))
+                event.ignore()
+                return
 
         valid_paths = []
         for p in filepaths:
@@ -742,6 +804,7 @@ class SourceManager(QObject):
                 "folder": window.current_folder_path,
                 "scale": options.scale_factor,
                 "source_px_um": getattr(window, "source_px_um", None),
+                "linear_dng_metadata": getattr(window, "linear_dng_metadata", None),
             }
             initial_index = 0
 
@@ -796,6 +859,7 @@ class SourceManager(QObject):
         window.stack_images = []
         window.image_filenames = []
         window.image_source_paths = []
+        window.linear_dng_metadata = None
         window.image_icc_profiles = []
         window.excluded_frames = set()
         window.source_transforms = []

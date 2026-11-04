@@ -46,8 +46,12 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
     n = len(frames)
     # Five encoder stages at full/2/4/8/16 resolution plus the decoder mirrors.
     common.ensure_torch()
+    from core import torch_backend
     from core.models.stackmff_v1.network import _MACOS_26
-    mps_26 = _MACOS_26 and common.resolve_device(use_gpu).type == 'mps'
+    device = common.resolve_device(use_gpu)
+    mps_26 = (_MACOS_26
+              and torch_backend.kind_of_device(device, common.torch)
+              == torch_backend.KIND_MPS)
     workspace = int((128.0 if mps_26 else 64.0) * n * hp * wp * 4)
     if mps_26:
         from core.resource_policy import ResourceLimitError
@@ -55,18 +59,14 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
         # grows; small stacks measured far below the large-stack allocation.
         workspace += (512 * 1024 ** 2 if n * hp * wp < 32 * 1024
                       else 2 * 1024 ** 3)
-        try:
-            # Cached buffers are reclaimable and otherwise counted twice in
-            # both the driver usage and the new working-set estimate.
-            common.torch.mps.empty_cache()
-            recommended = int(common.torch.mps.recommended_max_memory())
-            allocated = int(common.torch.mps.driver_allocated_memory())
-        except (AttributeError, RuntimeError) as exc:
-            raise ResourceLimitError(
-                "Cannot determine the MPS working-set budget") from exc
-        if recommended <= 0 or allocated < 0:
+        # Cached buffers are reclaimable and otherwise counted twice in
+        # both the driver usage and the new working-set estimate.
+        torch_backend.empty_cache(device, common.torch)
+        shared = torch_backend.mps_memory(common.torch)
+        if shared is None:
             raise ResourceLimitError(
                 "Cannot determine the MPS working-set budget")
+        recommended, allocated = shared[1], shared[1] - shared[0]
         reserve = max(512 * 1024 ** 2, recommended * 15 // 100)
         required = workspace + os.path.getsize(model_path) * 4
         if required > max(0, recommended - allocated - reserve):
@@ -96,10 +96,9 @@ def _fuse_tile(frames, model_path, use_gpu, should_cancel=None,
             output = model(tensor.to(device))
         common.cancel(should_cancel)
     finally:
-        if getattr(device, 'type', '') == 'cuda':
-            common.torch.cuda.synchronize(device)
-        elif getattr(device, 'type', '') == 'mps':
-            common.torch.mps.synchronize()
+        # Device calls enqueue work. Cancellation must not release the heavy
+        # lease while kernels from this invocation still use its resources.
+        common.synchronize(device)
     h, w = normalized[0].shape[:2]
     luma = output.squeeze().float().clamp(0, 1).cpu().numpy()[:h, :w] * 255.0
     del tensor, planes

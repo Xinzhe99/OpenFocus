@@ -17,8 +17,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # One identity for both platforms. A tag must match constants.APP_VERSION
+  # exactly; a branch dispatch produces a clearly labelled preview that is
+  # never uploaded to a GitHub release (the release job below is tag-only).
+  prepare:
+    name: Resolve build identity
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      label: ${{ steps.identity.outputs.label }}
+      channel: ${{ steps.identity.outputs.channel }}
+      tag: ${{ steps.identity.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Resolve version and build label
+        id: identity
+        shell: bash
+        run: python tools/release_metadata.py --github-output "$GITHUB_OUTPUT"
+
   build-windows:
     name: Build Windows (x64)
+    needs: prepare
     runs-on: windows-latest
     outputs:
       signed: ${{ steps.signpath.outputs.enabled }}
@@ -30,22 +54,33 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Verify APP_VERSION matches the tag
-        id: app-version
-        shell: bash
-        run: |
-          V="v$(python -c 'import constants; print(constants.APP_VERSION)')"
-          if [ "$V" != "${{ github.ref_name }}" ]; then
-            echo "::error::constants.py APP_VERSION ($V) != tag (${{ github.ref_name }})."
-            exit 1
-          fi
-          echo "version=$(python -c 'import constants; print(constants.APP_VERSION)')" >> "$GITHUB_OUTPUT"
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
+          # Install the official cp310 Windows CUDA wheel first. The unpinned
+          # torch requirement then remains satisfied without fetching a CPU wheel.
+          python -m pip install "https://download.pytorch.org/whl/cu124/torch-2.5.1%2Bcu124-cp310-cp310-win_amd64.whl#sha256=6f99d8459369cfd6661c2aee14787592fe50156a33faf9ef643ba04e42d6543f"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install pyinstaller
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip check
+
+      - name: Verify CUDA-enabled PyTorch and CPU execution
+        shell: pwsh
+        run: |
+          @'
+          import torch
+          assert torch.__version__ == "2.5.1+cu124", torch.__version__
+          assert torch.version.cuda == "12.4", torch.version.cuda
+          # Unlike get_arch_list(), this works on GPU-less CI runners.
+          arch = torch._C._cuda_getArchFlags().split()
+          assert "sm_86" in arch, arch  # RTX 3090
+          assert (torch.tensor([2]) + 1).item() == 3
+          print(f"torch {torch.__version__}, CUDA {torch.version.cuda}, architectures {arch}; CPU execution OK")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Write Windows version resource
         run: python tools/write_version_file.py
@@ -77,6 +112,7 @@ jobs:
             --hidden-import core.algorithm_adapters `
             --hidden-import core.depth_map `
             --hidden-import core.registration `
+            --hidden-import core.torch_backend `
             --hidden-import PyQt6.QtCore `
             --hidden-import PyQt6.QtGui `
             --hidden-import PyQt6.QtWidgets `
@@ -102,6 +138,32 @@ jobs:
             --exclude-module PyQt6.QtQuick `
             main.py
 
+      - name: Verify bundled PyTorch CUDA libraries
+        shell: pwsh
+        run: |
+          # Compare with the checked wheel, so a CPU-only or incomplete bundle
+          # cannot pass just because CUDA works in the build environment.
+          $torchLib = python -c "import pathlib, torch; print(pathlib.Path(torch.__file__).parent / 'lib')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $runtimeDlls = @(Get-ChildItem -Path $torchLib -Filter '*.dll' -File)
+          if ($runtimeDlls.Count -eq 0) { throw 'PyTorch has no runtime DLLs' }
+          foreach ($source in $runtimeDlls) {
+            $bundled = Join-Path 'dist/OpenFocus/_internal/torch/lib' $source.Name
+            if (-not (Test-Path $bundled)) {
+              throw "Missing PyTorch runtime library: $($source.Name)"
+            }
+            if ($source.Length -ne (Get-Item $bundled).Length) {
+              throw "Bundled PyTorch library has the wrong size: $($source.Name)"
+            }
+          }
+          foreach ($name in @('torch_cpu.dll', 'torch_cuda.dll', 'c10_cuda.dll', 'cudart64_12.dll')) {
+            $source = Join-Path $torchLib $name
+            $bundled = Join-Path 'dist/OpenFocus/_internal/torch/lib' $name
+            if (-not (Test-Path $source) -or (Get-FileHash $source).Hash -ne (Get-FileHash $bundled).Hash) {
+              throw "Bundled PyTorch library differs from checked wheel: $name"
+            }
+          }
+
       - name: Prune build-only files from the bundle
         shell: pwsh
         run: |
@@ -124,6 +186,8 @@ jobs:
 
       - name: Detect SignPath signing configuration
         id: signpath
+        # Never sign a branch acceptance build with the official version.
+        if: needs.prepare.outputs.channel == 'release'
         shell: pwsh
         env:
           API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -177,7 +241,7 @@ jobs:
           github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
           output-artifact-directory: ${{ runner.temp }}/signed-exe
           parameters: |
-            version: "${{ steps.app-version.outputs.version }}"
+            version: "${{ needs.prepare.outputs.version }}"
           wait-for-completion: true
           wait-for-completion-timeout-in-seconds: 3600
 
@@ -205,7 +269,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType File -Path "dist/OpenFocus/OpenFocus.portable" -Force | Out-Null
-          Compress-Archive -Path dist/OpenFocus -DestinationPath "OpenFocus-${{ github.ref_name }}-windows-x64.zip"
+          # Python zipfile allowZip64: Compress-Archive cannot be relied on
+          # once the Windows bundle passes the ZIP64 threshold.
+          python tools/release_archives.py zip-tree --source dist/OpenFocus --output "OpenFocus-${{ needs.prepare.outputs.label }}-windows-x64.zip"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build installer (Inno Setup)
         shell: pwsh
@@ -215,8 +282,8 @@ jobs:
           # user-profile settings location, not a portable data folder.
           Remove-Item -Path "dist/OpenFocus/OpenFocus.portable" -Force -ErrorAction SilentlyContinue
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
-            /DAPP_VERSION=${{ github.ref_name }} `
-            /DAPP_VERSION_NUM=${{ steps.app-version.outputs.version }} `
+            /DAPP_VERSION=${{ needs.prepare.outputs.label }} `
+            /DAPP_VERSION_NUM=${{ needs.prepare.outputs.version }} `
             OpenFocus.iss
           Copy-Item installer/OpenFocus-*-setup.exe .
 
@@ -242,7 +309,7 @@ jobs:
           github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
           output-artifact-directory: ${{ runner.temp }}/signed-setup
           parameters: |
-            version: "${{ steps.app-version.outputs.version }}"
+            version: "${{ needs.prepare.outputs.version }}"
           wait-for-completion: true
           wait-for-completion-timeout-in-seconds: 3600
 
@@ -267,7 +334,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: windows
         run: |
-          $setup = (Resolve-Path "OpenFocus-${{ github.ref_name }}-setup.exe").Path
+          $setup = (Resolve-Path "OpenFocus-${{ needs.prepare.outputs.label }}-setup.exe").Path
           $target = Join-Path $env:RUNNER_TEMP "OpenFocus-installed"
           $install = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
             "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=`"$target`""
@@ -276,16 +343,35 @@ jobs:
           python tools/frozen_cli_smoke.py --executable "$target/OpenFocus.exe" --installed-startup
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Stage Windows assets around GitHub's 2 GiB limit
+        shell: pwsh
+        run: |
+          # SignPath (when enabled) has already signed the full setup above;
+          # splitting raw bytes preserves that signature. Unsigned builds follow
+          # the same split path. Prerequisites: the installed Inno Setup must
+          # support a >2 GiB setup (6.5+) and SignPath/Actions must accept the
+          # full pre-split installer artifact; a failure there blocks the build.
+          python tools/release_archives.py stage-windows `
+            --label "${{ needs.prepare.outputs.label }}" `
+            --zip "OpenFocus-${{ needs.prepare.outputs.label }}-windows-x64.zip" `
+            --setup "OpenFocus-${{ needs.prepare.outputs.label }}-setup.exe" `
+            --out "dist/release-windows" `
+            --recovery "tools/join_openfocus_parts.ps1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/release_archives.py verify-stage `
+            --manifest "dist/release-windows/OpenFocus-${{ needs.prepare.outputs.label }}-windows-assets.json" `
+            --dir "dist/release-windows"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - uses: actions/upload-artifact@v5
         with:
           name: OpenFocus-windows
-          path: |
-            OpenFocus-*-windows-x64.zip
-            OpenFocus-*-setup.exe
+          path: dist/release-windows/*
           retention-days: 7
 
   build-macos:
     name: Build macOS (Apple Silicon)
+    needs: prepare
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
@@ -294,15 +380,6 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-
-      - name: Verify APP_VERSION matches the tag
-        shell: bash
-        run: |
-          V="v$(python -c 'import constants; print(constants.APP_VERSION)')"
-          if [ "$V" != "${{ github.ref_name }}" ]; then
-            echo "::error::constants.py APP_VERSION ($V) != tag (${{ github.ref_name }})."
-            exit 1
-          fi
 
       - name: Install dependencies
         run: |
@@ -347,6 +424,7 @@ jobs:
             --hidden-import core.algorithm_adapters \
             --hidden-import core.depth_map \
             --hidden-import core.registration \
+            --hidden-import core.torch_backend \
             --hidden-import PyQt6.QtCore \
             --hidden-import PyQt6.QtGui \
             --hidden-import PyQt6.QtWidgets \
@@ -392,7 +470,7 @@ jobs:
         run: codesign --force --deep -s - dist/OpenFocus.app
 
       - name: Package zip (portable)
-        run: ditto -c -k --keepParent dist/OpenFocus.app "OpenFocus-${{ github.ref_name }}-macos-arm64.zip"
+        run: ditto -c -k --keepParent dist/OpenFocus.app "OpenFocus-${{ needs.prepare.outputs.label }}-macos-arm64.zip"
 
       - name: Create DMG installer image
         run: |
@@ -406,7 +484,7 @@ jobs:
           ditto dist/OpenFocus.app "$STAGE/OpenFocus.app"
           ln -s /Applications "$STAGE/Applications" || true
           hdiutil detach /Volumes/OpenFocus 2>/dev/null || true
-          DMG="OpenFocus-${{ github.ref_name }}-macos.dmg"
+          DMG="OpenFocus-${{ needs.prepare.outputs.label }}-macos.dmg"
           for attempt in 1 2 3; do
             if hdiutil create -volname "OpenFocus" -srcfolder "$STAGE" \
                  -fs HFS+ -format UDZO -ov "$DMG"; then
@@ -429,8 +507,11 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build-windows, build-macos]
+    needs: [prepare, build-windows, build-macos]
     runs-on: ubuntu-latest
+    # Tags only: a workflow_dispatch run on a branch uploads downloadable
+    # artifacts for acceptance testing and must never create or overwrite a
+    # release (or its four stable assets).
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
@@ -448,10 +529,16 @@ jobs:
           cat > release_notes.md <<'EOF'
           ## Downloads
 
+          Windows downloads are available from **https://openfocus.top**.
+          GitHub release assets for Windows are raw `.partNNN` chunks when the
+          complete file would exceed GitHub's 2 GiB per-asset limit; use
+          `OpenFocus-*-windows-assets.json` and `join-openfocus-parts.ps1` to
+          rebuild the complete file, or download from the site.
+
           | Platform | File | Type |
           |----------|------|------|
-          | Windows 10/11 (64-bit) | `OpenFocus-*-setup.exe` | **Installer** (recommended) |
-          | Windows 10/11 (64-bit) | `OpenFocus-*-windows-x64.zip` | Portable (unzip and run) |
+          | Windows 10/11 (64-bit) | site download, or `OpenFocus-*-setup.exe[.partNNN]` | **Installer** (recommended) |
+          | Windows 10/11 (64-bit) | site download, or `OpenFocus-*-windows-x64.zip[.partNNN]` | Portable (unzip and run) |
           | macOS Apple Silicon (M1/M2/M3/M4) | `OpenFocus-*-macos.dmg` | **Installer image** (recommended) |
           | macOS Apple Silicon (M1/M2/M3/M4) | `OpenFocus-*-macos-arm64.zip` | Portable (unzip) |
 
@@ -464,9 +551,21 @@ jobs:
           2. Follow the wizard: choose the install folder, optionally create a desktop shortcut.
           3. Launch OpenFocus from the Start menu or desktop.
 
+          If GitHub shows `OpenFocus-*-setup.exe.partNNN`, first download all
+          parts, `OpenFocus-*-windows-assets.json` and
+          `join-openfocus-parts.ps1` into one folder, then run:
+          ```powershell
+          powershell -ExecutionPolicy Bypass -File .\join-openfocus-parts.ps1 -Manifest .\OpenFocus-<tag>-windows-assets.json
+          ```
+          Replace `<tag>` with the release tag. The script verifies every
+          part and the joined SHA-256 before writing the complete installer.
+
           ### Windows (portable)
           1. Unzip the downloaded file.
           2. Open the `OpenFocus` folder and double-click `OpenFocus.exe`.
+
+          When the portable zip is split, join it with the same script first;
+          the manifest verifies both the zip and setup files.
 
           ### macOS (DMG)
           1. Open `OpenFocus-*-macos.dmg`.
@@ -510,25 +609,46 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ github.ref_name }}"
-          expected=(
-            "OpenFocus-${tag}-setup.exe"
-            "OpenFocus-${tag}-windows-x64.zip"
-            "OpenFocus-${tag}-macos.dmg"
-            "OpenFocus-${tag}-macos-arm64.zip"
-          )
-          for name in "${expected[@]}"; do
+          manifest="release/OpenFocus-${tag}-windows-assets.json"
+          for name in \
+            "OpenFocus-${tag}-macos.dmg" \
+            "OpenFocus-${tag}-macos-arm64.zip" \
+            "join-openfocus-parts.ps1" \
+            "OpenFocus-${tag}-windows-assets.json"; do
             if [ ! -s "release/$name" ]; then
               echo "::error::Missing or empty intended release asset: $name"
               exit 1
             fi
           done
-          actual="$(find release -maxdepth 1 -type f | wc -l | tr -d ' ')"
-          if [ "$actual" -ne "${#expected[@]}" ]; then
-            echo "::error::Expected ${#expected[@]} release assets, found $actual:"
-            find release -maxdepth 1 -type f -printf '%f\n'
-            exit 1
-          fi
+          python tools/release_archives.py verify-stage \
+            --manifest "$manifest" --dir release
+          echo "Release files (parts and whole assets):"
+          find release -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
           ls -lh release/
+
+      - name: Remove stale release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          if ! gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            exit 0
+          fi
+          mapfile -t wanted < <(find release -maxdepth 1 -type f -printf '%f\n')
+          while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            case "$name" in
+              "OpenFocus-${tag}-"*)
+                if ! printf '%s\n' "${wanted[@]}" | grep -Fxq "$name"; then
+                  echo "Deleting stale asset: $name"
+                  gh release delete-asset "$tag" "$name" \
+                    --repo "${{ github.repository }}" -y
+                fi
+                ;;
+            esac
+          done < <(gh release view "$tag" --repo "${{ github.repository }}" \
+            --json assets --jq '.assets[].name')
 
       - name: Create GitHub Release
         env:

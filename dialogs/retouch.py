@@ -298,6 +298,11 @@ class _ToneDialog(QDialog):
     def _refresh_preview(self, *_args):
         image = self.sample if self.before.isChecked() else adjust_tones(
             self.sample, self.exposure.value() / 100.0, self.contrast.value() / 100.0)
+        metadata = getattr(getattr(self.parent(), "record", None), "context", None)
+        metadata = getattr(metadata, "linear_dng_metadata", None)
+        if metadata is not None:
+            from utils.linear_dng import develop_linear
+            image = develop_linear(image, metadata)
         display = to_display_uint8(image)
         if display.ndim == 3 and display.shape[2] == 4:
             display = display[..., :3]
@@ -977,7 +982,11 @@ class RetouchDialog(QDialog):
         self.frame_list.blockSignals(True)
         self.frame_list.clear()
         for index, frame in enumerate(self.doc.frames):
-            thumb = thumbnail_bgr(frame.image, 64)
+            h, w = frame.image.shape[:2]
+            scale = 64 / max(h, w)
+            small = cv2.resize(frame.image, (max(1, int(w * scale)), max(1, int(h * scale))),
+                               interpolation=cv2.INTER_AREA)
+            thumb = thumbnail_bgr(self._display_image(small), 64)
             item = QListWidgetItem(
                 QIcon(QPixmap.fromImage(_qimage_from_bgr(thumb))),
                 str(index + 1))
@@ -1112,9 +1121,16 @@ class RetouchDialog(QDialog):
         self._select_frame(self.doc.frame_index + 1)
 
     # ------------------------------------------------------------- display
+    def _display_image(self, image):
+        metadata = getattr(self.record.context, "linear_dng_metadata", None)
+        if metadata is not None:
+            from utils.linear_dng import develop_linear
+            image = develop_linear(image, metadata)
+        return to_display_uint8(image)
+
     def _refresh_source_display(self) -> None:
         frame = self.doc.active_frame
-        display = to_display_uint8(frame.image)
+        display = self._display_image(frame.image)
         if display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
         self._pure_source_qimage = _qimage_from_bgr(display)
@@ -1135,13 +1151,13 @@ class RetouchDialog(QDialog):
             self.result_canvas.update()
 
     def _refresh_before_display(self) -> None:
-        display = to_display_uint8(self.doc.base)
+        display = self._display_image(self.doc.base)
         if display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
         self._before_qimage = _qimage_from_bgr(display)
 
     def _refresh_result_display(self) -> None:
-        self._result_display = to_display_uint8(self.doc.working)
+        self._result_display = self._display_image(self.doc.working)
         self._result_qimage = _qimage_from_bgr(self._result_display)
         self.result_canvas.update()
         self._update_status()
@@ -1152,7 +1168,7 @@ class RetouchDialog(QDialog):
             return
         x0, y0, x1, y1 = rect
         patch = self.doc.working[y0:y1, x0:x1]
-        display = to_display_uint8(patch)
+        display = self._display_image(patch)
         if self._result_display.ndim == 3 and display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
         self._result_display[y0:y1, x0:x1] = display

@@ -128,6 +128,7 @@ def _oriented_jpegs(folder):
 def test_gui_render_passes_included_sources_and_reports_orientation(qapp, tmp_path, monkeypatch):
     from core.image_loader import decode_image
     from core.workers import RenderWorker
+    from locales import trans
     from tests.test_gui_units import _render_window, _patched_render_manager
 
     paths = _oriented_jpegs(tmp_path / 'source')
@@ -143,7 +144,7 @@ def test_gui_render_passes_included_sources_and_reports_orientation(qapp, tmp_pa
     errors = []
     worker.error_signal.connect(errors.append)
     worker.run()
-    assert errors and 'orientation' in errors[0].lower()
+    assert errors == [trans.t('sensor_source_orientation').format(path=paths[1])]
 
 
 def test_gui_render_passes_only_included_source_paths(qapp, monkeypatch):
@@ -206,6 +207,7 @@ def test_sensor_source_messages_exist_in_all_locales(qapp):
 def test_batch_rejects_square_oriented_jpeg(qapp, tmp_path, mode):
     from core.image_loader import decode_image
     from core.workers import BatchWorker
+    from locales import trans
 
     paths = _oriented_jpegs(tmp_path / 'source')
     mask, _ = _inputs(tmp_path)
@@ -221,7 +223,7 @@ def test_batch_rejects_square_oriented_jpeg(qapp, tmp_path, mode):
     worker.finished.connect(outcome.update)
     worker.run()
     assert outcome['success'] == 0
-    assert 'orientation' in outcome['failed'][0].lower()
+    assert trans.t('sensor_source_orientation').format(path=paths[1]) in outcome['failed'][0]
 
 
 @pytest.mark.parametrize('denoise', [False, True])

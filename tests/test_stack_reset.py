@@ -224,6 +224,7 @@ class Signal:
 class LoadWorker:
     def __init__(self, _loader, **kwargs):
         self.scale = kwargs["scale"]
+        self.progress = Signal()
         self.finished_load = Signal()
         self.finished = Signal()
         self.source_icc_profiles = {}
