@@ -19,6 +19,8 @@ would be worse than reporting no VRAM; use :func:`probe_kind` /
 Unknown device memory is deliberately not treated as unlimited: callers must
 refuse the job instead of launching an unbounded GPU allocation.
 """
+import logging
+import subprocess
 import sys
 import threading
 
@@ -53,6 +55,7 @@ _DEVICE_TYPES = {
 # Serializes the one expensive import and the one detection result.
 _LOCK = threading.RLock()
 _KIND = None
+_XPU_AVAILABLE = None
 
 
 def loaded_torch():
@@ -81,6 +84,50 @@ def _available(owner) -> bool:
         return False
 
 
+def _run_xpu_probe():
+    """Entry point used only in the disposable device-probe process."""
+    try:
+        import torch
+        return 0 if _available(_safe_attr(torch, "xpu")) else 1
+    except Exception:
+        return 2
+
+
+def _xpu_probe_command():
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--_openfocus-xpu-probe"]
+    return [sys.executable, "-c",
+            "from core.torch_backend import _run_xpu_probe; raise SystemExit(_run_xpu_probe())"]
+
+
+def _xpu_available(module):
+    """Keep Windows XPU driver initialization out of the application process."""
+    global _XPU_AVAILABLE
+    xpu = _safe_attr(module, "xpu")
+    version = _safe_attr(_safe_attr(module, "version"), "xpu")
+    if sys.platform != "win32" or not version:
+        return _available(xpu)
+    if xpu is None:
+        return False
+    with _LOCK:
+        if _XPU_AVAILABLE is None:
+            try:
+                result = subprocess.run(
+                    _xpu_probe_command(), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=45, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if result.returncode not in (0, 1):
+                    logging.getLogger("openfocus.core.torch_backend").warning(
+                        "Isolated XPU probe exited with status %s", result.returncode)
+                _XPU_AVAILABLE = result.returncode == 0
+            except (OSError, subprocess.TimeoutExpired) as error:
+                logging.getLogger("openfocus.core.torch_backend").warning(
+                    "Isolated XPU probe failed: %s", error)
+                _XPU_AVAILABLE = False
+        return _XPU_AVAILABLE
+
+
 def detect_kind(torch_module=None):
     """Classify *torch_module*; never raises.
 
@@ -98,7 +145,7 @@ def detect_kind(torch_module=None):
     if _available(_safe_attr(module, "cuda")):
         hip = _safe_attr(_safe_attr(module, "version"), "hip")
         return KIND_ROCM if hip else KIND_CUDA
-    if _available(_safe_attr(module, "xpu")):
+    if _xpu_available(module):
         return KIND_XPU
     if _available(_safe_attr(_safe_attr(module, "backends"), "mps")):
         return KIND_MPS
@@ -150,9 +197,10 @@ def cached_kind():
 
 def reset_cache():
     """Forget the cached kind (tests, or a driver installed mid-session)."""
-    global _KIND
+    global _KIND, _XPU_AVAILABLE
     with _LOCK:
         _KIND = None
+        _XPU_AVAILABLE = None
 
 
 def is_accelerator(kind) -> bool:
@@ -246,7 +294,7 @@ def device_memory(kind, torch_module=None):
             free, total = module.cuda.mem_get_info()
         elif kind == KIND_XPU:
             xpu = getattr(module, "xpu", None)
-            if xpu is None or not xpu.is_available():
+            if xpu is None or not _xpu_available(module):
                 return None
             mem_get_info = getattr(xpu, "mem_get_info", None)
             if mem_get_info is None:
