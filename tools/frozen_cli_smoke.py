@@ -36,7 +36,8 @@ def _call(executable: Path, environment: dict, *arguments: str) -> dict:
     )
     if result.returncode:
         raise RuntimeError(
-            f"{arguments[0]} failed ({result.returncode}): {result.stderr}"
+            f"{arguments[0]} failed ({result.returncode}): "
+            f"stdout={result.stdout!r}, stderr={result.stderr!r}"
         )
     try:
         payload = json.loads(result.stdout)
@@ -202,6 +203,7 @@ def run(executable: Path) -> None:
             shape = _create_stack(root / "stack")
             environment = os.environ.copy()
             environment["OPENFOCUS_CONTROL_FILE"] = str(root / "control.json")
+            environment["OPENFOCUS_LOG_DIR"] = str(root / "logs")
             environment["OPENFOCUS_INSTANCE_NAME"] = (
                 f"OpenFocus-smoke-{uuid.uuid4().hex}"
             )
@@ -223,9 +225,25 @@ def run(executable: Path) -> None:
             _wait_for_control(process, root / "control.json")
             try:
                 _exercise(executable, environment, root, shape)
+            except BaseException:
+                print(f"Desktop exit status: {process.poll()}", file=sys.stderr)
+                for path in sorted((root / "logs").glob("*")):
+                    if path.is_file():
+                        try:
+                            text = path.read_text(encoding="utf-8", errors="replace")
+                        except OSError as error:
+                            text = f"Could not read log: {error}"
+                        print(f"--- {path.name} ---\n{text[-20000:]}", file=sys.stderr)
+                raise
             finally:
                 if process.poll() is None:
-                    _call(executable, environment, "app.quit", "--force")
+                    failing = sys.exc_info()[0] is not None
+                    try:
+                        _call(executable, environment, "app.quit", "--force")
+                    except Exception as error:
+                        if not failing:
+                            raise
+                        print(f"Desktop cleanup failed: {error}", file=sys.stderr)
             process.wait(timeout=60)
             if process.returncode:
                 raise RuntimeError(
