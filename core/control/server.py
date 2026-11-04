@@ -689,8 +689,8 @@ class ControlServer(QObject):
             "pyqt": True,
         }
         try:
-            from utils.platform_utils import has_compute_gpu
-            capabilities["gpu"] = bool(has_compute_gpu())
+            from utils.platform_utils import cached_compute_gpu
+            capabilities["gpu"] = cached_compute_gpu()
         except Exception:
             capabilities["gpu"] = None
         return {

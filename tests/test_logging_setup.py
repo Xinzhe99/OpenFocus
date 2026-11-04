@@ -204,6 +204,18 @@ def test_feedback_includes_current_crash_and_tolerates_vanished_history(log_fold
         assert "already_removed.log" not in archive.namelist()
 
 
+def test_feedback_export_reports_unchecked_gpu(log_folder, monkeypatch, tmp_path):
+    from core import torch_backend
+    from utils import platform_utils
+
+    monkeypatch.setattr(torch_backend, "cached_kind", lambda: None)
+    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", None)
+    report = logs.export_feedback_package(tmp_path / "report.zip")
+    with zipfile.ZipFile(report) as archive:
+        facts = archive.read("system.txt").decode("utf-8")
+    assert "gpu (cuda/rocm/xpu/mps): not checked" in facts
+
+
 @pytest.mark.parametrize("code,outcome", [(0, "completed"), (2, "failed")])
 def test_system_exit_keeps_code_without_inventing_a_cancellation(log_folder, code, outcome):
     with pytest.raises(SystemExit) as caught:

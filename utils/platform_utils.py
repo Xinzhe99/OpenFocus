@@ -124,6 +124,15 @@ def _torch_accelerator_present():
     return None if kind is None else torch_backend.is_accelerator(kind)
 
 
+def cached_compute_gpu():
+    """Return a known GPU status, or None while no probe has completed."""
+    try:
+        present = _torch_accelerator_present()
+    except Exception:
+        present = None
+    return _GPU_PRESENT_CACHE if present is None else present
+
+
 def _windows_display_adapters() -> tuple:
     """Driver descriptions from the display-adapter class, without a process."""
     try:
@@ -191,10 +200,8 @@ def _nvidia_smi_reports_gpu() -> bool:
 def has_compute_gpu() -> bool:
     """True when this machine exposes a neural-path accelerator.
 
-    Asked from the menu, so it must be cheap: importing torch costs ~2.1 s and
-    pins ~193 MB (see core.multi_focus_fusion.is_ai_fusion_available). The
-    probe therefore prefers an already-loaded torch, then the operating
-    system, taking a few milliseconds, and caches the answer.
+    This does not import torch, but an OS probe may take up to two seconds.
+    UI paths should use cached_compute_gpu() to avoid waiting for the driver.
 
     The detected back-ends are NVIDIA CUDA, AMD ROCm (through ``torch.cuda``),
     Intel XPU and Apple-silicon MPS. OS probes only report hardware/runtime
@@ -202,16 +209,9 @@ def has_compute_gpu() -> bool:
     actually use it, so a present adapter may still fall back to CPU.
     """
     global _GPU_PRESENT_CACHE
-    # A completed backend result is authoritative. Reading it must never
-    # wait for an ongoing import or driver probe.
-    try:
-        present = _torch_accelerator_present()
-    except Exception:
-        present = None
+    present = cached_compute_gpu()
     if present is not None:
         return present
-    if _GPU_PRESENT_CACHE is not None:
-        return _GPU_PRESENT_CACHE
 
     found = False
     try:
