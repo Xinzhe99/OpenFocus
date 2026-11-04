@@ -197,3 +197,72 @@ def test_historical_output_bar_can_be_removed_after_source_bar_is_disabled():
     restore_state(window, window.undo_states[-1])
     assert record.scale_bar_config["px_um"] == 0.5
     assert window.scale_bar_enabled is False
+
+
+def test_clear_stack_removes_annotations_before_loading_another_stack(qapp):
+    from controllers.source_manager import LoadOptions, SourceManager
+    from utils.label_model import Label
+    from utils.scalebar import export_cfg
+    from utils.validators import LabelConfig
+
+    window, labels = _annotated_manager(qapp, 0)
+    window.label_manager = labels
+    for target in ("input", "registered", "output"):
+        label = Label(LabelConfig())
+        label.config.target = target
+        labels.labels.add(label)
+    labels._sync_delete_actions()
+    window.raw_images = [object()]
+    window.base_images = list(window.raw_images)
+    window.stack_images = list(window.raw_images)
+    window.image_filenames = ["old.tif"]
+    window.current_display_index = 0
+    window.scale_bar_enabled = True
+    window.scale_bar_target = "all"
+    window.scale_bar_position = "top-left"
+    window.scale_um_per_px_manual = 0.5
+    window.source_px_um = 0.25
+    window.current_scale_factor = 1.0
+    window.current_folder_path = ""
+    persisted = []
+    invalidations = []
+    cache_invalidations = []
+    reloads = []
+    window.persist_settings = lambda: persisted.append(window.scale_bar_enabled)
+    window.invalidate_annotation_caches = lambda: cache_invalidations.append(True)
+    window.transform_manager = SimpleNamespace(
+        invalidate_processing_results=lambda **kwargs: invalidations.append(kwargs),
+        reload_image_stack=lambda **kwargs: reloads.append(kwargs),
+    )
+    manager = SourceManager(window)
+    manager._load_generation = 7
+    assert export_cfg(window, "source") is not None
+    revision = labels.revision
+
+    manager.clear_image_stack()
+
+    assert not window.scale_bar_enabled
+    assert persisted == [False]
+    assert window.scale_bar_position == "top-left"
+    assert window.scale_um_per_px_manual == 0.5
+    assert window.source_px_um is None
+    assert not list(labels.labels)
+    assert labels.revision == revision + 1
+    assert cache_invalidations
+    assert not window.del_all_labels_action.enabled
+    assert not window.del_input_label_action.enabled
+    assert not window.del_reg_label_action.enabled
+    assert manager._load_generation == 8
+    assert invalidations[0] == {"clear_output_view": True}
+    assert reloads[0] == {"initial_index": None}
+
+    new_image = object()
+    manager._apply_load_options(LoadOptions(1.0, ["new.tif"], [new_image], [new_image]))
+
+    assert window.raw_images == [new_image]
+    assert not list(labels.labels)
+    assert export_cfg(window, "source") is None
+    assert export_cfg(window, "output") is None
+    assert persisted == [False]
+    assert invalidations[1] == {"clear_output_view": True, "preserve_outputs": True}
+    assert reloads[1] == {"initial_index": 0}

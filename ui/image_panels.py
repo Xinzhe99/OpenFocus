@@ -37,6 +37,7 @@ QLabel#panelTitle {{
 }}
 QLabel#panelCanvas, QLabel#panelCanvasHint {{
     background-color: {t['canvas']};
+    color: {t['textFaint']};
 }}
 QWidget#panelTitleBar {{
     background-color: {t['surface']};
@@ -45,10 +46,6 @@ QWidget#panelTitleBar {{
 QWidget#panelControlBar {{
     background-color: {t['surface']};
     border-top: 1px solid {t['border']};
-}}
-QLabel#panelCanvasHint {{
-    background-color: {t['canvas']};
-    color: {t['textFaint']};
 }}
 QPushButton#panelToggle {{
     background-color: transparent;

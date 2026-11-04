@@ -44,6 +44,47 @@ def size_dialog_to_content(dialog, scroll, preferred_width=0):
         height = max(height, content_layout.totalHeightForWidth(content_width))
     dialog.resize(width, min(max_height, height + extra_height))
 
+
+def make_folder_path_editable(dialog) -> None:
+    """Allow typing or pasting a directory into a Qt folder picker's address bar."""
+    from PyQt6.QtCore import QEvent, QObject, Qt
+    from PyQt6.QtWidgets import QComboBox
+    from locales import trans
+
+    combo = dialog.findChild(QComboBox, "lookInCombo")
+    if combo is None:
+        return
+    combo.setEditable(True)
+    combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+    line = combo.lineEdit()
+    if line is None:
+        return
+    line.setPlaceholderText(trans.t("batch_pick_path_hint"))
+    line.setClearButtonEnabled(True)
+
+    def navigate():
+        raw = combo.currentText().strip().strip('"').strip("'")
+        target = os.path.expandvars(os.path.expanduser(raw))
+        if target and os.path.isdir(target):
+            dialog.setDirectory(target)
+        else:
+            combo.setEditText(dialog.directory().absolutePath())
+
+    class _AddressBarKeys(QObject):
+        def eventFilter(self, watched, event):
+            if (event.type() == QEvent.Type.KeyPress
+                    and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)):
+                navigate()
+                return True
+            return super().eventFilter(watched, event)
+
+    # QFileDialog treats Enter as acceptance even when the combo's line edit
+    # handles returnPressed. Consume it here so it only navigates.
+    combo._address_bar_keys = _AddressBarKeys(combo)
+    line.installEventFilter(combo._address_bar_keys)
+    combo.activated.connect(lambda _index: navigate())
+
+
 def resource_path(*relative_parts: str) -> str:
     """Get the absolute path for resources, compatible with PyInstaller.
     

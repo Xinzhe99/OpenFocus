@@ -35,7 +35,7 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     resolve_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from locales import trans
-from utils.ui_utils import size_dialog_to_content
+from utils.ui_utils import make_folder_path_editable, size_dialog_to_content
 from widgets.stepper import StepperSpinBox
 
 
@@ -740,7 +740,8 @@ class BatchProcessingDialog(QDialog):
         # Desktop / Documents) as a QStandardItemModel. Appending to it is the
         # supported way to add "last used"; inserting a second QListWidget into
         # the splitter instead produced an empty column beside the real one.
-        self._make_picker_path_editable(dialog)
+        make_folder_path_editable(dialog)
+        self._fit_picker_sidebar(dialog)
 
         # 执行对话框并获取结果
         if dialog.exec():
@@ -760,42 +761,6 @@ class BatchProcessingDialog(QDialog):
                 get_settings().setValue(BATCH_PICK_DIR_KEY,
                                         os.path.dirname(selected_dirs[-1]))
 
-    def _make_picker_path_editable(self, dialog) -> None:
-        """Let the user type a path into the picker itself.
-
-        Qt's "Look in" combo is a plain dropdown (editable=False), so pasting
-        a folder there does nothing. Making it editable turns it into the
-        address bar Explorer has: type or paste, press Enter, navigate.
-        """
-        from PyQt6.QtWidgets import QComboBox
-
-        for combo in dialog.findChildren(QComboBox):
-            if combo.objectName() != "lookInCombo":
-                continue
-            combo.setEditable(True)
-            combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-            line = combo.lineEdit()
-            if line is None:
-                continue
-            line.setPlaceholderText(trans.t('batch_pick_path_hint'))
-            line.setClearButtonEnabled(True)
-
-            def _navigate(_combo=combo):
-                raw = _combo.currentText().strip().strip('"').strip("'")
-                target = os.path.expandvars(os.path.expanduser(raw))
-                if target and os.path.isdir(target):
-                    dialog.setDirectory(target)
-                else:
-                    _combo.setEditText(dialog.directory().absolutePath())
-
-            line.returnPressed.connect(_navigate)
-            combo.activated.connect(lambda _i, _c=combo: _navigate(_c))
-            break
-
-        # Narrow the place list to what it actually shows. Qt sizes it to a
-        # fixed share of the dialog, which left a ~90 px empty gutter between
-        # the sidebar and the file view.
-        self._fit_picker_sidebar(dialog)
 
     def _fit_picker_sidebar(self, dialog) -> None:
         """Give the place list just enough width for its longest label."""

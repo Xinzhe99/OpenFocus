@@ -136,6 +136,7 @@ class TestWipePixmapCache:
             fusion_results=[],
             output_manager=SimpleNamespace(record_for_image=lambda _image: None),
             _bgr_to_pixmap=cv2_to_pixmap)
+        window._wipe_right_shows_registration = lambda: True
         window.label_manager = LabelManager(window)
         window.caption = Label.from_dict({
             "target": "registered", "format": "A", "enabled": False,
@@ -179,3 +180,24 @@ class TestWipePixmapCache:
         assert tuple(plain[0, 0]) == (80, 80, 80)
 
 
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_empty_source_and_result_hints_have_the_same_color(qapp, theme):
+    from ui.image_panels import _panel_qss, create_result_panel, create_source_panel
+
+    source = create_source_panel()
+    result = create_result_panel()
+    try:
+        for panel in (source, result):
+            panel.widget.setStyleSheet(_panel_qss(theme))
+            panel.widget.show()
+        qapp.processEvents()
+        source_color = source.image_label.palette().color(source.image_label.foregroundRole())
+        result_color = result.image_label.palette().color(result.image_label.foregroundRole())
+        assert source_color == result_color
+    finally:
+        source.widget.close()
+        result.widget.close()
+        source.widget.deleteLater()
+        result.widget.deleteLater()
+        qapp.processEvents()

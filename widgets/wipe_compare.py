@@ -21,6 +21,9 @@ class WipeCompareWidget(QWidget):
         super().__init__(parent)
         self._left_pixmap: Optional[QPixmap] = None
         self._right_pixmap: Optional[QPixmap] = None
+        self._left_offset = (0, 0)
+        self._independent = False
+        self._notice = ""
         self._left_title: str = ""
         self._right_title: str = ""
         self._divider_ratio: float = 0.5  # divider x as a fraction of widget width
@@ -33,11 +36,15 @@ class WipeCompareWidget(QWidget):
     # --- public API ---
 
     def set_images(self, left: Optional[QPixmap], right: Optional[QPixmap],
-                   left_title: str = "", right_title: str = "") -> None:
+                   left_title: str = "", right_title: str = "", *,
+                   left_offset=(0, 0), independent=False, notice="") -> None:
         self._left_pixmap = left
         self._right_pixmap = right
         self._left_title = left_title
         self._right_title = right_title
+        self._left_offset = left_offset
+        self._independent = independent
+        self._notice = notice
         self.update()
 
     def set_titles(self, left_title: str, right_title: str) -> None:
@@ -53,6 +60,8 @@ class WipeCompareWidget(QWidget):
         self._right_pixmap = None
         self._left_title = ""
         self._right_title = ""
+        self._notice = ""
+        self._independent = False
         self.reset_view()
 
     def reset_view(self) -> None:
@@ -64,8 +73,8 @@ class WipeCompareWidget(QWidget):
     # --- geometry ---
 
     def _target_rect(self) -> QRectF:
-        """Fitted, centered, zoomed and panned rect of the (left) base image."""
-        pixmap = self._left_pixmap if self._left_pixmap is not None else self._right_pixmap
+        """Fitted result pixel domain, shared by both images."""
+        pixmap = self._right_pixmap if self._right_pixmap is not None else self._left_pixmap
         if pixmap is None or pixmap.isNull():
             return QRectF()
 
@@ -91,24 +100,36 @@ class WipeCompareWidget(QWidget):
         painter.setBackground(QColor(canvas))
         painter.eraseRect(self.rect())
 
-        if not self.has_images():
+        if self._left_pixmap is None and self._right_pixmap is None:
             painter.setPen(QColor("#666"))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._left_title)
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._notice or self._left_title)
             return
 
         target = self._target_rect()
         divider_x = self._divider_x()
 
-        for pixmap, clip_rect in (
-            (self._left_pixmap, QRect(0, 0, int(divider_x), self.height())),
-            (self._right_pixmap, QRect(int(divider_x), 0, self.width() - int(divider_x), self.height())),
+        for pixmap, offset, clip_rect in (
+            (self._left_pixmap, self._left_offset, QRect(0, 0, int(divider_x), self.height())),
+            (self._right_pixmap, (0, 0), QRect(int(divider_x), 0, self.width() - int(divider_x), self.height())),
         ):
             if pixmap is None or pixmap.isNull() or clip_rect.width() <= 0:
                 continue
+            if self._independent:
+                scale = max(0.0001, min(max(1, clip_rect.width() - 20) / pixmap.width(),
+                                        max(1, clip_rect.height() - 20) / pixmap.height()) * self._zoom)
+                width, height = pixmap.width() * scale, pixmap.height() * scale
+                image_rect = QRectF(clip_rect.x() + (clip_rect.width() - width) / 2 + self._pan.x(),
+                                    (clip_rect.height() - height) / 2 + self._pan.y(), width, height)
+            else:
+                base = self._right_pixmap if self._right_pixmap is not None else self._left_pixmap
+                scale = target.width() / base.width()
+                image_rect = QRectF(target.x() + offset[0] * scale,
+                                    target.y() + offset[1] * scale,
+                                    pixmap.width() * scale, pixmap.height() * scale)
             painter.save()
             painter.setClipRect(clip_rect)
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-            painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
+            painter.drawPixmap(image_rect, pixmap, QRectF(pixmap.rect()))
             painter.restore()
 
         # Divider line and handle
@@ -123,6 +144,16 @@ class WipeCompareWidget(QWidget):
 
         self._draw_title_chip(painter, self._left_title, left=True)
         self._draw_title_chip(painter, self._right_title, left=False)
+        if self._notice:
+            flags = Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap
+            width = max(1, self.width() - 32)
+            measured = painter.fontMetrics().boundingRect(
+                QRect(0, 0, width, 10000), int(flags), self._notice)
+            height = min(self.height(), measured.height() + 12)
+            box = QRect(8, max(0, self.height() - height - 8), max(0, self.width() - 16), height)
+            painter.fillRect(box, QColor(0, 0, 0, 190))
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(box.adjusted(8, 2, -8, -2), flags, self._notice)
 
     def _draw_title_chip(self, painter: QPainter, text: str, left: bool) -> None:
         if not text:

@@ -1,3 +1,5 @@
+import cv2
+
 from PyQt6.QtGui import QAction, QActionGroup
 from PyQt6.QtWidgets import QMainWindow
 from locales import trans
@@ -157,23 +159,29 @@ def setup_menus(window: QMainWindow) -> None:
     edit_menu.addAction(redo_action)
     window.ui_objs['action_redo'] = redo_action
 
+    reset_stack_action = QAction(trans.t('menu_reset_stack'), window)
+    reset_stack_action.setProperty('trans_key', 'menu_reset_stack')
+    reset_stack_action.triggered.connect(window.source_manager.reset_current_stack)
+    edit_menu.addAction(reset_stack_action)
+    window.ui_objs['action_reset_stack'] = reset_stack_action
+
     edit_menu.addSeparator()
 
     rotate_menu = edit_menu.addMenu(trans.t('menu_rotate'))
     window.ui_objs['menu_rotate'] = rotate_menu
 
     rotate_90_cw_action = QAction(trans.t('action_rotate_90_cw'), window)
-    rotate_90_cw_action.triggered.connect(lambda: window.rotate_stack(1))
+    rotate_90_cw_action.triggered.connect(lambda: window.rotate_stack(cv2.ROTATE_90_CLOCKWISE))
     rotate_menu.addAction(rotate_90_cw_action)
     window.ui_objs['action_rotate_90_cw'] = rotate_90_cw_action
 
     rotate_90_ccw_action = QAction(trans.t('action_rotate_90_ccw'), window)
-    rotate_90_ccw_action.triggered.connect(lambda: window.rotate_stack(2))
+    rotate_90_ccw_action.triggered.connect(lambda: window.rotate_stack(cv2.ROTATE_90_COUNTERCLOCKWISE))
     rotate_menu.addAction(rotate_90_ccw_action)
     window.ui_objs['action_rotate_90_ccw'] = rotate_90_ccw_action
 
     rotate_180_action = QAction(trans.t('action_rotate_180'), window)
-    rotate_180_action.triggered.connect(lambda: window.rotate_stack(0))
+    rotate_180_action.triggered.connect(lambda: window.rotate_stack(cv2.ROTATE_180))
     rotate_menu.addAction(rotate_180_action)
     window.ui_objs['action_rotate_180'] = rotate_180_action
 
