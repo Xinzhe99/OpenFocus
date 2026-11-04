@@ -29,3 +29,20 @@ def test_decode_image_keeps_16bit_and_reads_non_ascii_paths(tmp_path):
     assert out.dtype == np.uint16 and (out == img).all()
 
 
+def test_raf_metadata_probe_does_not_read_the_image_payload(monkeypatch):
+    """Metadata probing must not load an entire potentially huge RAF."""
+    from io import BytesIO
+
+    reads = []
+
+    class RawStream(BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    monkeypatch.setattr(il, "open", lambda *_: RawStream(b"FUJIFILMCCD-RAW " + b"x" * 4096),
+                        raising=False)
+    assert il._read_raw_exif_bytes("frame.RAF") == b""
+    assert reads == [4]
+
+

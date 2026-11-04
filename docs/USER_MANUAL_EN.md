@@ -51,7 +51,11 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - Folders containing numbered image sequences
 - Camera RAW files (DNG, CR2/CR3, NEF, ARW, RAF, ORF, RW2 and other common
   RAW formats). Decoding uses `rawpy` (LibRaw), which `pip install openfocus`
-  installs and the Windows/macOS builds bundle
+  installs and the Windows/macOS builds bundle.
+  Camera support depends on the installed LibRaw version. RAW is decoded to
+  a 16-bit image at its original dimensions before the selected loading scale
+  is applied: a smaller scale reduces later memory use but does not eliminate
+  the full-size decode peak. Grouped fusion does not support RAW.
 
 Transparent PNG stacks can be fused in the desktop application, desktop batch
 processing, or the command-line interface, without grouped fusion. Every frame
