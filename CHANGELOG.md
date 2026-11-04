@@ -19,8 +19,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Isolate Windows Intel GPU detection so a failing driver cannot crash startup.
-- Fall back to CPU when an Intel GPU driver hangs on required model operations.
-- Keep GPU menu updates responsive while device detection is running.
+- Fall back to CPU when an Intel GPU driver hangs, including PyTorch builds
+  without XPU version metadata, and probe the same environment as the app.
+- Keep GPU menus responsive and disable acceleration when no backend is usable.
 - Cancel delayed splitter setup when the window closes immediately.
 - Reject release files at GitHub's size limit before upload.
 - Use a newer Intel XPU runtime to avoid a packaged CPU inference exit crash.

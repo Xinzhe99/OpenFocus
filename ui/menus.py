@@ -358,15 +358,12 @@ def setup_menus(window: QMainWindow) -> None:
     # flip often enough to deserve a click instead of two.
     gpu_action = QAction(trans.t('action_gpu_accel'), window)
     gpu_action.setCheckable(True)
-    from utils.platform_utils import has_compute_gpu
     from core import torch_backend
     from core.multi_focus_fusion import is_ai_fusion_available, torch_device_kind
-    _gpu_present = has_compute_gpu()
     _gpu_kind = torch_device_kind()
     _torch_installed = is_ai_fusion_available() if _gpu_kind is None else False
     _gpu_enabled, _gpu_checked = torch_backend.gpu_toggle_state(
-        _gpu_present, _gpu_kind, getattr(window, 'use_gpu', True),
-        _torch_installed)
+        _gpu_kind, getattr(window, 'use_gpu', True), _torch_installed)
     gpu_action.setChecked(_gpu_checked)
     gpu_action.setEnabled(_gpu_enabled)
     gpu_action.setToolTip(trans.t('msg_gpu_accel_hint') if _gpu_enabled
@@ -374,10 +371,8 @@ def setup_menus(window: QMainWindow) -> None:
     gpu_action.triggered.connect(window.set_use_gpu)
     settings_menu.addAction(gpu_action)
     window.ui_objs['action_gpu_accel'] = gpu_action
-    # Opening Settings is the first moment the switch can be acted on. If
-    # the cheap OS probe found nothing but torch is installed, resolve the
-    # authoritative backend in the background instead of leaving the action
-    # disabled for the rest of the session (Intel XPU without xpu-smi).
+    # Resolve the backend in the background when the user opens Settings.
+    # Device probing must never delay menu construction.
     if _gpu_kind is None and _torch_installed and hasattr(
             window, '_probe_device_kind_async'):
         settings_menu.aboutToShow.connect(window._probe_device_kind_async)
