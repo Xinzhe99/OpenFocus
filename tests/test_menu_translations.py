@@ -37,6 +37,7 @@ def _menu_window(qapp):
     })()
     window.source_manager = type("S", (), {
         "clear_image_stack": staticmethod(stub),
+        "reset_current_stack": staticmethod(stub),
     })()
     window.label_manager = type("L", (), {
         "show_add_label_dialog": staticmethod(stub),
@@ -63,6 +64,73 @@ def _menu_window(qapp):
             "show_contact_info"):
         setattr(window, name, stub)
     return window
+
+
+def test_reset_stack_menu_action_calls_source_manager(qapp):
+    from ui.menus import setup_menus
+
+    window = _menu_window(qapp)
+    calls = []
+    window.source_manager.reset_current_stack = lambda: calls.append(True)
+    setup_menus(window)
+    try:
+        action = window.ui_objs["action_reset_stack"]
+        actions = window.ui_objs["menu_edit"].actions()
+        assert actions.index(action) == actions.index(window.ui_objs["action_redo"]) + 1
+        assert action.property("trans_key") == "menu_reset_stack"
+        action.trigger()
+        assert calls == [True]
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_reset_stack_translations_exist_in_every_language():
+    keys = ("menu_reset_stack", "reset_stack_title", "reset_stack_warning",
+            "reset_stack_busy", "reset_stack_empty", "reset_stack_done")
+    assert set(trans.PACK_ORDER) <= set(trans.translations)
+    for code in trans.PACK_ORDER:
+        for key in keys:
+            assert trans.translations[code].get(key), f"{code}: missing {key}"
+
+
+@pytest.mark.parametrize("action_index, expected", [
+    (0, [[4, 1], [5, 2], [6, 3]]),
+    (1, [[3, 6], [2, 5], [1, 4]]),
+    (2, [[6, 5, 4], [3, 2, 1]]),
+])
+def test_rotation_menu_rotates_frames_in_the_named_direction(qapp, action_index, expected):
+    import numpy as np
+    from controllers.transform_manager import TransformManager
+    from ui.menus import setup_menus
+
+    window = _menu_window(qapp)
+    original = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint16)
+    window.raw_images = [original.copy(), original + 1000]
+    window.base_images = [image.copy() for image in window.raw_images]
+    window.source_transforms = []
+    window.current_img_index = 0
+    window.current_display_index = 1
+    window.push_undo = lambda: None
+    manager = TransformManager(window)
+    manager._invalidate_processing_results = lambda **kwargs: None
+    reloaded = []
+    manager.reload_image_stack = lambda **kwargs: reloaded.append(kwargs["initial_index"])
+    window.rotate_stack = manager.rotate_stack
+    setup_menus(window)
+
+    try:
+        window.ui_objs["menu_rotate"].actions()[action_index].trigger()
+        expected = np.array(expected, dtype=np.uint16)
+        for images in (window.raw_images, window.base_images):
+            np.testing.assert_array_equal(images[0], expected)
+            np.testing.assert_array_equal(images[1], expected + 1000)
+        assert reloaded == [1]
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
 
 
 def _label_looks_like_a_key(text: str) -> bool:

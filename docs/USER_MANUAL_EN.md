@@ -150,10 +150,20 @@ The right panel contains all configuration options organized vertically:
 The top menu bar provides access to all functions:
 
 - **File**: import/export operations, projects, processing templates and the recent-files list
-- **Edit**: Image transformations and labels
+- **Edit**: Undo/redo, reset the current stack, image transformations and retouching
 - **Tools**: Batch processing, method comparison, depth map, flat-field correction, scale bar and labels
 - **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
 - **Help**: Environment info, contact information, update check, and the log folder
+
+**Edit → Reset Current Stack…** restores the imported images, their original
+order and import scale, including frames later removed or excluded. It clears
+all outputs (including unsaved work), labels and scale bars on every target,
+ROI and registration state, and the undo/redo history. The confirmation defaults
+to Cancel. Files on disk are not deleted. Wait for active operations to finish
+before resetting; an empty stack cannot be reset.
+After reopening a project, reset uses the frames and loading scale saved in
+that project. Frames deleted before the project was saved are not in the
+project and cannot be recovered by resetting.
 
 ---
 
@@ -162,7 +172,8 @@ The top menu bar provides access to all functions:
 ### Opening an Image Folder
 
 1. Go to **File → Open Folder** or press `Ctrl+O`
-2. Select a folder containing your image sequence
+2. Select a folder containing your image sequence, or type or paste its path
+   in the address bar and press Enter to navigate before choosing it
 3. A loading-scale dialog appears — choose the scale (100% = full resolution)
 4. Click OK to load the images
 
@@ -470,6 +481,14 @@ The bar at the bottom of the compare view has one group per side:
 - **Side B** — check **Latest result** (default) to always show the newest render, or uncheck it to scrub through your output history with its slider
 
 Both sides update live: new renders, source-slider moves, and frame deletions are reflected immediately.
+
+Historical outputs use their own source frames; they cannot follow a current
+source stack that does not match the output.
+
+If the selected output has no available source image, Wipe reports that the
+source is unavailable. When the position of a registration crop is unknown,
+the source and aligned images are fitted separately while preserving their
+proportions, and Wipe reports that the crop position is unknown.
 
 ### Zooming and Panning
 

@@ -305,6 +305,84 @@ def test_batch_picker_text_uses_current_language(qapp, monkeypatch):
         qapp.processEvents()
 
 
+def test_open_stack_folder_accepts_a_typed_directory(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QComboBox, QWidget
+    from controllers.source_manager import SourceManager
+    from utils import settings_store
+
+    target = tmp_path / "stack 文件夹"
+    target.mkdir()
+    saved, loaded, seen, errors = [], [], [], []
+    monkeypatch.setattr(settings_store, "get_last_dialog_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(settings_store, "set_last_dialog_dir", saved.append)
+    window = QWidget()
+    manager = SourceManager(window)
+    monkeypatch.setattr(manager, "load_image_stack", loaded.append)
+
+    def choose():
+        dialog = qapp.activeModalWidget()
+        try:
+            combo = dialog.findChild(QComboBox, "lookInCombo")
+            line = combo.lineEdit()
+            line.setText(str(target))
+            QTest.keyClick(line, Qt.Key.Key_Return)
+            seen.append((dialog.isVisible(), dialog.directory().absolutePath()))
+            dialog.accept()
+        except Exception as exc:
+            errors.append(exc)
+            if dialog is not None:
+                dialog.reject()
+
+    try:
+        QTimer.singleShot(0, choose)
+        manager.prompt_and_load_stack()
+        assert not errors
+        assert seen[0][0], "Enter should navigate without closing the picker"
+        assert os.path.normcase(os.path.normpath(seen[0][1])) == os.path.normcase(str(target))
+        assert [os.path.normcase(os.path.normpath(path)) for path in saved] == [os.path.normcase(str(target))]
+        assert loaded == saved
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_batch_folder_picker_navigates_typed_path_on_enter(qapp, tmp_path):
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QComboBox, QFileDialog
+    from dialogs.batch import BatchProcessingDialog
+
+    target = tmp_path / "stack 文件夹"
+    target.mkdir()
+    batch = BatchProcessingDialog(None)
+    seen, errors = [], []
+
+    def navigate():
+        dialog = qapp.activeModalWidget()
+        try:
+            combo = dialog.findChild(QComboBox, "lookInCombo")
+            combo.lineEdit().setText(str(target))
+            QTest.keyClick(combo.lineEdit(), Qt.Key.Key_Return)
+            seen.append((dialog.isVisible(), dialog.directory().absolutePath()))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            if isinstance(dialog, QFileDialog):
+                dialog.reject()
+
+    try:
+        QTimer.singleShot(0, navigate)
+        batch.add_folders()
+        assert not errors
+        assert seen[0][0], "Enter should navigate without closing the picker"
+        assert os.path.normcase(os.path.normpath(seen[0][1])) == os.path.normcase(str(target))
+    finally:
+        batch.close()
+        batch.deleteLater()
+        qapp.processEvents()
+
+
 def test_batch_fusion_noop_entry_is_no_fusion_not_no_alignment(qapp):
     """The fusion dropdown's no-op entry must not read like registration's."""
     from dialogs.batch import BatchProcessingDialog

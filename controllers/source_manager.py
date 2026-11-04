@@ -55,7 +55,96 @@ class SourceManager(QObject):
         self._review_frames = ()
         self._review_results = []
         self._review_status_key = None
+        self._stack_baseline = None
         self._review_error = ""
+
+    def _clear_history(self):
+        window = self.window
+        for name in ("_undo_stack", "_redo_stack"):
+            history = getattr(window, name, None)
+            if history is not None:
+                history.clear()
+        refresh = getattr(window, "_refresh_undo_actions", None)
+        if callable(refresh):
+            refresh()
+
+    def _reset_busy(self):
+        window = self.window
+        render = getattr(window, "render_manager", None)
+        batch = getattr(window, "batch_manager", None)
+        return (getattr(self, "_load_worker", None) is not None
+                or getattr(render, "worker", None) is not None
+                or bool(getattr(render, "_compare_mode", False))
+                or getattr(window, "roi_alignment_worker", None) is not None
+                or getattr(batch, "_worker", None) is not None
+                or getattr(batch, "_thread", None) is not None)
+
+    def reset_current_stack(self):
+        window = self.window
+        baseline = self._stack_baseline
+        if not baseline or not getattr(window, "raw_images", None):
+            show_warning_box(window, trans.t("reset_stack_title"), trans.t("reset_stack_empty"))
+            return
+        if self._reset_busy():
+            show_warning_box(window, trans.t("reset_stack_title"), trans.t("reset_stack_busy"))
+            return
+        box = QMessageBox(window)
+        from utils.ui_utils import style_message_box
+        style_message_box(box)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(trans.t("reset_stack_title"))
+        box.setText(trans.t("reset_stack_warning"))
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        box.button(QMessageBox.StandardButton.Yes).setText(trans.t("btn_continue"))
+        box.button(QMessageBox.StandardButton.Cancel).setText(trans.t("btn_cancel_generic"))
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        # A nested event loop in the confirmation can start a new operation.
+        if self._reset_busy() or self._stack_baseline is not baseline:
+            show_warning_box(window, trans.t("reset_stack_title"), trans.t("reset_stack_busy"))
+            return
+        self._load_generation = getattr(self, "_load_generation", 0) + 1
+        if self._review_worker is not None:
+            self._review_worker.cancel()
+        self._review_frames = ()
+        self._review_results = []
+        self._review_status_key = None
+        window.raw_images = list(baseline["images"])
+        window.base_images = list(baseline["images"])
+        window.image_filenames = list(baseline["filenames"])
+        window.image_source_paths = list(baseline["paths"])
+        window.image_icc_profiles = list(baseline["profiles"])
+        window.current_folder_path = baseline["folder"]
+        window.current_scale_factor = baseline["scale"]
+        window.base_scale_factor = baseline["scale"]
+        window.source_px_um = baseline["source_px_um"]
+        window.excluded_frames = set()
+        window.source_transforms = []
+        window.unrecoverable_source_changes = []
+        window.scale_bar_enabled = False
+        if getattr(window, "wipe_active", False):
+            window.btn_wipe.setChecked(False)
+        if hasattr(window, "_wipe_source_cache"):
+            window._wipe_source_cache = None
+        if hasattr(window, "_wipe_preview_record"):
+            window._wipe_preview_record = None
+        window.transform_manager.invalidate_processing_results(clear_output_view=True)
+        window.label_manager.reset_labels()
+        self._clear_history()
+        invalidate = getattr(window, "invalidate_annotation_caches", None)
+        if callable(invalidate):
+            invalidate()
+        window.transform_manager.reload_image_stack(initial_index=0)
+        mark = getattr(window, "_mark_project_dirty", None)
+        if callable(mark):
+            mark()
+        persist = getattr(window, "persist_settings", None)
+        if callable(persist):
+            persist()
+        from utils import recovery
+        recovery.write_snapshot(window)
+        window._show_status_message(trans.t("reset_stack_done"), 5000)
 
     def _review_matches_stack(self, frames):
         current = self.window.raw_images
@@ -196,8 +285,11 @@ class SourceManager(QObject):
             if on_error is not None:
                 on_error(trans.t("msg_load_in_progress"))
             return
+        working_scale = scale
         if append and getattr(window, "raw_images", None):
-            scale = float(getattr(window, "current_scale_factor", 1.0) or 1.0)
+            working_scale = float(getattr(window, "current_scale_factor", 1.0) or 1.0)
+            baseline = self._stack_baseline
+            scale = baseline["scale"] if baseline else working_scale
 
         self._load_worker = StackLoadWorker(
             window.image_loader, folder=folder, video=video,
@@ -228,15 +320,25 @@ class SourceManager(QObject):
                         show_warning_box(window, trans.t("msg_load_failed"),
                                          trans.t("msg_load_stack_failed_text"), message)
                     return
-                if not self._confirm_mixed_sizes(images):
-                    if on_error is not None:
-                        on_error("CANCELLED")
-                    return
-                if append and not self._confirm_append_dimensions(images):
-                    if on_error is not None:
-                        on_error("CANCELLED")
-                    return
                 load_options = self._build_load_options(images, filenames, scale)
+                if append and window.raw_images and working_scale != scale:
+                    from core.image_loader import UnsupportedTransparency, _has_transparency
+                    if any(_has_transparency(image) for image in images):
+                        raise UnsupportedTransparency("Transparent images cannot be downsampled during loading")
+                    factor = working_scale / scale
+                    load_options.working_images = [
+                        cv2.resize(image, (max(1, int(image.shape[1] * factor)),
+                                           max(1, int(image.shape[0] * factor))),
+                                   interpolation=cv2.INTER_AREA if factor < 1 else cv2.INTER_LINEAR)
+                        for image in images]
+                if not self._confirm_mixed_sizes(load_options.working_images):
+                    if on_error is not None:
+                        on_error("CANCELLED")
+                    return
+                if append and not self._confirm_append_dimensions(load_options.working_images):
+                    if on_error is not None:
+                        on_error("CANCELLED")
+                    return
                 if prepare_options is not None:
                     load_options = prepare_options(load_options)
                 load_folder = folder or (os.path.dirname(video) if video else
@@ -246,8 +348,13 @@ class SourceManager(QObject):
                 metadata = getattr(window.image_loader, "px_size_um", None) if not video else None
                 if not append or not window.raw_images:
                     window.source_px_um = metadata / scale if metadata else None
-                elif getattr(window, "source_px_um", None) != (metadata / scale if metadata else None):
-                    window.source_px_um = None
+                else:
+                    incoming_px = metadata / working_scale if metadata else None
+                    if getattr(window, "source_px_um", None) != incoming_px:
+                        window.source_px_um = None
+                    baseline = self._stack_baseline
+                    if baseline and baseline["source_px_um"] != (metadata / scale if metadata else None):
+                        self._stack_baseline = {**baseline, "source_px_um": None}
                 self._apply_load_options(load_options, append=append,
                                          profile_map=getattr(worker, "source_icc_profiles", {}))
                 if on_success is not None:
@@ -394,18 +501,19 @@ class SourceManager(QObject):
 
     def prompt_and_load_stack(self) -> None:
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+        from utils.ui_utils import make_folder_path_editable
         window = self.window
 
-        folder_path = QFileDialog.getExistingDirectory(
-            window,
-            trans.t("action_open_folder"),
-            get_last_dialog_dir(),
-            QFileDialog.Option.ShowDirsOnly,
-        )
-
-        if folder_path:
-            set_last_dialog_dir(folder_path)
-            self.load_image_stack(folder_path)
+        dialog = QFileDialog(window, trans.t("action_open_folder"), get_last_dialog_dir())
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        make_folder_path_editable(dialog)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected = dialog.selectedFiles()
+            if selected:
+                set_last_dialog_dir(selected[0])
+                self.load_image_stack(selected[0])
 
     def prompt_and_load_video(self) -> None:
         """Open a file dialog to select a video file and load it as image stack."""
@@ -588,7 +696,7 @@ class SourceManager(QObject):
                 window.unrecoverable_source_changes = list(dict.fromkeys(
                     list(getattr(window, "unrecoverable_source_changes", [])) + [
                         "Frames appended after source transformations"]))
-            window.base_images = list(window.raw_images) + options.base_images
+            window.base_images = list(window.raw_images) + list(options.working_images)
             window.base_scale_factor = window.current_scale_factor
             window.raw_images = (window.raw_images or []) + options.working_images
             window.image_icc_profiles = previous_profiles + profiles
@@ -601,6 +709,17 @@ class SourceManager(QObject):
                 else []
             )
             initial_index = window.current_display_index if window.current_display_index >= 0 else 0
+            baseline = self._stack_baseline
+            if baseline is not None:
+                self._stack_baseline = {
+                    **baseline,
+                    "images": baseline["images"] + list(getattr(options, "reset_images", options.base_images)),
+                    "filenames": baseline["filenames"] + list(options.filenames),
+                    "profiles": baseline["profiles"] + profiles,
+                    "paths": (baseline["paths"] + paths
+                              if len(baseline["paths"]) == len(baseline["images"])
+                              and len(paths) == len(options.filenames) else []),
+                }
         else:
             window.base_images = options.base_images
             window.current_scale_factor = options.scale_factor
@@ -615,6 +734,15 @@ class SourceManager(QObject):
             window.source_transforms = []
             window.unrecoverable_source_changes = []
             window.label_manager.reset_labels()
+            self._stack_baseline = {
+                "images": list(getattr(options, "reset_images", options.working_images)),
+                "filenames": list(options.filenames),
+                "paths": list(getattr(options, "reset_paths", paths)),
+                "profiles": list(profiles),
+                "folder": window.current_folder_path,
+                "scale": options.scale_factor,
+                "source_px_um": getattr(window, "source_px_um", None),
+            }
             initial_index = 0
 
         window.transform_manager.invalidate_processing_results(
@@ -654,6 +782,11 @@ class SourceManager(QObject):
 
     def clear_image_stack(self) -> None:
         window = self.window
+        self._stack_baseline = None
+        if hasattr(window, "_wipe_source_cache"):
+            window._wipe_source_cache = None
+        if hasattr(window, "_wipe_preview_record"):
+            window._wipe_preview_record = None
 
         # Also drops the ROI stack, rect and tool button (see reset_roi_selection)
         window.transform_manager.invalidate_processing_results(clear_output_view=True)
@@ -671,6 +804,10 @@ class SourceManager(QObject):
         self._load_generation = getattr(self, "_load_generation", 0) + 1
         window.base_scale_factor = 1.0
         window.current_display_index = -1
+
+        if getattr(window, "scale_bar_enabled", False):
+            window.scale_bar_enabled = False
+            window.persist_settings()
 
         window.label_manager.reset_labels()
 

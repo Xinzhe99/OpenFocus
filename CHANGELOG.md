@@ -5,6 +5,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Add a confirmed reset for restoring the imported stack and clearing its
+  outputs and annotations without deleting files on disk.
+
+### Fixed
+- Apply the correct clockwise and 180-degree rotations and retain the selected
+  source frame after rotation.
+- Keep Wipe comparisons tied to each output's source images and preserve image
+  proportions when comparing differently sized results.
+- Show downsampling percentages in both themes and match the empty result
+  hint color to the source panel.
+- Clear old labels and scale bars when clearing a stack, and let users type or
+  paste a folder path into the stack picker.
+
 ### Changed
 - Move the code signing policy to a dedicated document and keep links from the
   README, website and release notes.

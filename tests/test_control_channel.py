@@ -1258,3 +1258,60 @@ def test_discovery_file_is_private_before_first_write(tmp_path, monkeypatch):
     assert stat_module.S_IMODE(path.stat().st_mode) == 0o600
     assert protocol.read_discovery()["socket"] == "sock"
     assert stale.read_text(encoding="utf-8") == "untrusted"
+
+
+def test_reset_stack_menu_clears_real_wipe_and_restores_import(qapp, control_window, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QMessageBox
+    from controllers.output_manager import OutputRecord
+    from controllers.source_manager import LoadOptions
+    from core.render_context import build_render_context
+    from utils.label_model import Label
+    from utils.validators import LabelConfig
+
+    window = control_window
+    frames = [np.full((24, 40, 3), 1000 + index * 20000, np.uint16) for index in range(2)]
+    window.image_loader.image_paths = ["frame0.tif", "frame1.tif"]
+    window.source_manager._apply_load_options(
+        LoadOptions(1.0, ["frame0.tif", "frame1.tif"], list(frames), list(frames)))
+    window.stack_slider.setValue(1)
+    window.ui_objs["menu_rotate"].actions()[0].trigger()
+    assert window.current_display_index == 1
+    assert window.raw_images[0].shape == (40, 24, 3)
+
+    result = window.raw_images[0].copy()
+    context = build_render_context(window.raw_images, result, source_indices=[0, 1],
+                                   source_revision=window.source_revision)
+    record = OutputRecord.create(result, "result", context=context)
+    window.output_manager._insert_output(result, "result", record)
+    window.fusion_result = result
+    for target in ("input", "registered", "output"):
+        label = Label(LabelConfig())
+        label.config.target = target
+        window.label_manager.labels.add(label)
+    window.scale_bar_enabled = True
+    window.scale_um_per_px_manual = 0.5
+    window.btn_wipe.setChecked(True)
+    assert window.wipe_active and window.view_stack.currentIndex() == 1
+
+    confirmation = []
+    def confirm():
+        box = qapp.activeModalWidget()
+        if isinstance(box, QMessageBox):
+            yes = box.button(QMessageBox.StandardButton.Yes)
+            cancel = box.button(QMessageBox.StandardButton.Cancel)
+            confirmation.append((box.defaultButton() is cancel, yes.text(), cancel.text()))
+            yes.click()
+
+    QTimer.singleShot(0, confirm)
+    window.ui_objs["action_reset_stack"].trigger()
+
+    from locales import trans
+    assert confirmation == [(True, trans.t("btn_continue"), trans.t("btn_cancel_generic"))]
+    assert all(current is original for current, original in zip(window.raw_images, frames))
+    assert window.current_display_index == 0
+    assert window.output_list.count() == 0 and not window.fusion_results
+    assert not list(window.label_manager.labels) and not window.scale_bar_enabled
+    assert window.scale_um_per_px_manual == 0.5
+    assert not window.wipe_active and window.view_stack.currentIndex() == 0
+    assert not window._undo_stack and not window._redo_stack

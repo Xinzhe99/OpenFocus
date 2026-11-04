@@ -646,6 +646,9 @@ def _prepare_project_load(window, state, options):
         options.filenames = [options.filenames[i] for i in order]
         options.base_images = [options.base_images[i] for i in order]
         paths = [paths[i] for i in order]
+    # Keep the decoded, ordered frames before replaying project transforms.
+    # Stack reset holds these references under the same copy-on-write rule as undo.
+    options.reset_images = list(options.base_images)
     for item in state.get("source_transforms", []):
         if item["operation"] == "flat_field":
             from utils.dust_map import load_flat_field_reference, compute_flat_field, apply_flat_field
@@ -656,6 +659,7 @@ def _prepare_project_load(window, state, options):
             transform = cv2.rotate if item["operation"] == "rotate" else cv2.flip
             options.base_images = [transform(image, item["code"]) for image in options.base_images]
     options.working_images = list(options.base_images)
+    options.reset_paths = list(paths)
     window.image_loader.image_paths = paths
     return options
 

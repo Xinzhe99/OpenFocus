@@ -276,6 +276,84 @@ def test_no_input_widget_is_narrower_than_its_content(qapp):
             dlg.deleteLater()
         parent.deleteLater()
 
+@pytest.mark.parametrize("theme", ["dark", "light"])
+@pytest.mark.parametrize("value", [1, 10, 99, 100])
+def test_downsample_percentage_is_rendered(qapp, theme, value):
+    """The real styled editor must have room to paint every percentage."""
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.settings import DownsampleDialog
+    from ui.styles import build_stylesheet
+
+    parent = QWidget()
+    parent.setStyleSheet(build_stylesheet(theme))
+    dialog = DownsampleDialog(parent, initial_scale=value / 100)
+    try:
+        dialog.show()
+        dialog.decrease_btn.setFocus()
+        qapp.processEvents()
+        spin = dialog.spinbox
+        editor = spin.lineEdit()
+        text = f"{value}%"
+        assert editor.text() == text
+        rect = editor.contentsRect()
+        margins = editor.textMargins()
+        assert rect.width() - margins.left() - margins.right() >= editor.fontMetrics().horizontalAdvance(text)
+        assert rect.height() - margins.top() - margins.bottom() >= editor.fontMetrics().height()
+
+        # Compare the actual painted widget with its empty editor, rather than
+        # relying on text() or size hints, which also pass when no text paints.
+        painted = spin.grab().toImage()
+        editor.setText("")
+        qapp.processEvents()
+        empty = spin.grab().toImage()
+        changed = sum(
+            painted.pixel(x, y) != empty.pixel(x, y)
+            for y in range(painted.height())
+            for x in range(painted.width())
+        )
+        assert changed > 5, f"{text} did not paint in the {theme} theme"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        parent.deleteLater()
+
+
+@pytest.mark.parametrize("max_scale", [0.42, 1.0])
+def test_downsample_controls_stay_in_sync(qapp, max_scale):
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.settings import DownsampleDialog
+    from ui.styles import build_stylesheet
+
+    parent = QWidget()
+    parent.setStyleSheet(build_stylesheet("dark"))
+    dialog = DownsampleDialog(parent, initial_scale=0.05, max_scale=max_scale)
+    try:
+        dialog.show()
+        qapp.processEvents()
+        dialog.spinbox.setFocus()
+        dialog.spinbox.selectAll()
+        QTest.keyClicks(dialog.spinbox.lineEdit(), "37")
+        assert dialog.spinbox.value() == dialog.slider.value() == 37
+        assert dialog.get_scale_factor() == 0.37
+
+        dialog.increase_btn.click()
+        assert dialog.spinbox.value() == dialog.slider.value() == 38
+        dialog.decrease_btn.click()
+        assert dialog.spinbox.value() == dialog.slider.value() == 37
+        dialog.slider.setValue(dialog.slider.maximum())
+        assert dialog.spinbox.value() == round(max_scale * 100)
+        dialog.increase_btn.click()
+        assert dialog.spinbox.value() == dialog.slider.value() == round(max_scale * 100)
+        dialog.slider.setValue(1)
+        dialog.decrease_btn.click()
+        assert dialog.spinbox.value() == dialog.slider.value() == 1
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        parent.deleteLater()
+
+
 
 
 
@@ -756,45 +834,6 @@ def test_folder_picker_has_no_empty_extra_column(qapp, tmp_path):
         dlg.deleteLater()
 
 
-def test_folder_picker_path_field_is_editable(qapp, tmp_path):
-    """Qt's "Look in" combo is a plain dropdown unless made editable."""
-    from PyQt6.QtWidgets import QApplication, QComboBox, QFileDialog
-
-    from dialogs.batch import BatchProcessingDialog
-
-    dlg = BatchProcessingDialog(None)
-    captured = {}
-    target = tmp_path / "stackB"
-    target.mkdir()
-
-    def probe():
-        for wd in QApplication.topLevelWidgets():
-            if isinstance(wd, QFileDialog) and wd.isVisible():
-                try:
-                    for combo in wd.findChildren(QComboBox):
-                        if combo.objectName() == "lookInCombo":
-                            captured["editable"] = combo.isEditable()
-                            line = combo.lineEdit()
-                            captured["line"] = line is not None
-                            if line is not None:
-                                line.setText(str(target))
-                                line.returnPressed.emit()
-                                QApplication.processEvents()
-                                captured["dir"] = wd.directory().absolutePath()
-                finally:
-                    wd.reject()
-                break
-
-    try:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, probe)
-        dlg.add_folders()
-        assert captured.get("editable"), "the path combo must accept typing"
-        assert captured.get("line"), "no line edit to type into"
-        assert captured.get("dir", "").replace("\\", "/").lower() == \
-            str(target).replace("\\", "/").lower(), captured
-    finally:
-        dlg.deleteLater()
 
 
 def test_folder_picker_keeps_only_qt_places(qapp, tmp_path):

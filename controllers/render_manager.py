@@ -745,6 +745,10 @@ class RenderManager:
         from core.image_loader import stack_icc_profile
         self._render_context = {
             "source": source_images,
+            # Preserve the original input frames even when alignment reuse
+            # supplies already-aligned arrays to the worker. Pixels follow the
+            # stack's copy-on-write invariant; only the container is copied.
+            "comparison_source": tuple(stack_images),
             # Live reference of the FULL stack at launch: with exclusions,
             # "source" is a filtered copy, so identity must be checked against
             # this, never against "source".
@@ -908,7 +912,26 @@ class RenderManager:
         )
 
         try:
+            window._wipe_preview_record = None
             if fusion_result is not None:
+                if preview and not (context or {}).get("roi"):
+                    try:
+                        from controllers.output_manager import OutputRecord
+                        ctx = context or {}
+                        preview_context = build_render_context(
+                            processed_images, fusion_result,
+                            filenames=ctx.get("filenames"),
+                            algorithm=ctx.get("algorithm", "unknown"),
+                            aligned=bool(registration_performed),
+                            source_indices=ctx.get("included"),
+                            frame_ids=ctx.get("frame_ids"),
+                            source_revision=ctx.get("source_revision", 0))
+                        if preview_context is not None:
+                            window._wipe_preview_record = OutputRecord.create(
+                                fusion_result, "", context=preview_context)
+                    except Exception:
+                        import logging
+                        logging.getLogger("openfocus").exception("could not record preview provenance")
                 window.fusion_result = fusion_result
                 self.last_result = {
                     "shape": list(fusion_result.shape),
@@ -1202,7 +1225,12 @@ class RenderManager:
 
             publish_aligned_stack(window, frames,
                                   filenames=(self._render_context or {}).get("filenames"),
-                                  icc_profile=(self._render_context or {}).get("icc_profile", b""))
+                                  icc_profile=(self._render_context or {}).get("icc_profile", b""),
+                                  source_frames=(self._render_context or {}).get("comparison_source"),
+                                  source_indices=(self._render_context or {}).get("included"),
+                                  source_revision=(self._render_context or {}).get("source_revision", 0))
+            if getattr(window, "wipe_active", False):
+                window.refresh_wipe_controls()
         except Exception as exc:  # never fail a render over the listing
             import logging
             logging.getLogger("openfocus").warning(

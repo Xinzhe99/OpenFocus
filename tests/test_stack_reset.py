@@ -1,0 +1,293 @@
+"""Behavioral coverage for restoring imported stack baselines."""
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+pytest.importorskip("PyQt6")
+pytest.importorskip("cv2")
+
+from controllers import source_manager as source
+from utils import project_file, recovery
+
+
+class Box:
+    result = None
+    default = None
+
+    def __init__(self, _parent):
+        pass
+
+    def setIcon(self, *_args): pass
+    def setWindowTitle(self, *_args): pass
+    def setText(self, *_args): pass
+    def setStandardButtons(self, *_args): pass
+    def button(self, *_args): return SimpleNamespace(setText=lambda *_: None)
+    def setDefaultButton(self, button): Box.default = button
+    def exec(self): return Box.result
+
+
+def host(monkeypatch):
+    from utils import ui_utils
+    monkeypatch.setattr(source, "QMessageBox", Box)
+    from PyQt6.QtWidgets import QMessageBox
+    Box.Icon = QMessageBox.Icon
+    Box.StandardButton = QMessageBox.StandardButton
+    Box.result = Box.StandardButton.Cancel
+    monkeypatch.setattr(ui_utils, "style_message_box", lambda *_: None)
+    monkeypatch.setattr(source, "show_warning_box", lambda *_: None)
+    snapshots = []
+    monkeypatch.setattr(recovery, "write_snapshot", lambda w: snapshots.append(list(w.raw_images)))
+    w = SimpleNamespace(raw_images=[], image_filenames=[], image_source_paths=[],
+                        image_icc_profiles=[], image_loader=SimpleNamespace(image_paths=[]),
+                        current_folder_path="folder", current_display_index=0,
+                        current_scale_factor=1.0, source_px_um=2.0,
+                        _undo_stack=[1], _redo_stack=[2], scale_bar_enabled=True,
+                        scale_um_per_px_manual=3.0, labels=["input", "output", "registered"],
+                        outputs=["result"], _wipe_source_cache=object(),
+                        _wipe_preview_record=object(), dirty=False)
+    w.label_manager = SimpleNamespace(reset_labels=lambda: w.labels.clear())
+    def invalidate(**_kwargs):
+        w.outputs.clear()
+        w.roi = None
+        w.aligned_images = []
+    w.transform_manager = SimpleNamespace(invalidate_processing_results=invalidate,
+                                           reload_image_stack=lambda **_: None)
+    w._mark_project_dirty = lambda: setattr(w, "dirty", True)
+    w.persist_settings = lambda: None
+    w._show_status_message = lambda *_: None
+    w.source_manager = source.SourceManager(w)
+    return w, snapshots
+
+
+def load(w, frames, names, paths, scale=1.0, append=False):
+    w.image_loader.image_paths = paths
+    options = source.LoadOptions(scale, names, list(frames), list(frames))
+    w.source_manager._apply_load_options(options, append=append,
+                                         profile_map={p: p.encode() for p in paths})
+
+
+def test_cancel_then_confirm_restores_frames_and_clears_session(monkeypatch):
+    w, snapshots = host(monkeypatch)
+    frames = [np.full((4, 5), x, np.uint16) for x in (500, 65000, 42)]
+    load(w, frames, ["a", "b", "c"], ["a", "b", "c"])
+    w.raw_images = [np.rot90(frames[2]).copy(), np.rot90(frames[0]).copy()]
+    w.image_filenames = ["c", "a"]
+    w.excluded_frames = {1}
+    w.source_transforms = [{"operation": "rotate"}]
+    w.current_scale_factor = 0.5
+    w.source_px_um = 4.0
+    w.labels[:] = ["input", "output", "registered"]
+    w.outputs[:] = ["result"]
+    w._undo_stack[:] = [1]
+    w._redo_stack[:] = [2]
+    w.source_manager.reset_current_stack()
+    assert Box.default == Box.StandardButton.Cancel
+    assert w.image_filenames == ["c", "a"] and w.outputs == ["result"]
+    Box.result = Box.StandardButton.Yes
+    w.source_manager.reset_current_stack()
+    assert all(actual is original for actual, original in zip(w.raw_images, frames))
+    assert w.raw_images[1].dtype == np.uint16 and w.raw_images[1][0, 0] == 65000
+    assert w.image_filenames == ["a", "b", "c"]
+    assert w.image_source_paths == ["a", "b", "c"]
+    assert w.image_icc_profiles == [b"a", b"b", b"c"]
+    assert w.current_scale_factor == 1.0 and w.source_px_um == 2.0
+    assert not w.excluded_frames and not w.source_transforms
+    assert not w.labels and not w.outputs and not w.scale_bar_enabled
+    assert w.scale_um_per_px_manual == 3.0
+    assert not w._undo_stack and not w._redo_stack and w._wipe_source_cache is None
+    assert w._wipe_preview_record is None
+    assert w.dirty and snapshots[-1] == frames
+
+
+def test_append_keeps_original_frames_after_edits(monkeypatch):
+    w, _ = host(monkeypatch)
+    a, b, c = [np.full((4, 4), i, np.uint8) for i in range(3)]
+    load(w, [a, b], ["a", "b"], ["a", "b"])
+    w.raw_images = [np.rot90(b).copy()]
+    w.image_filenames = ["b"]
+    w.image_source_paths = ["b"]
+    w.image_icc_profiles = [b"b"]
+    load(w, [c], ["c"], ["c"], append=True)
+    Box.result = Box.StandardButton.Yes
+    w.source_manager.reset_current_stack()
+    assert [id(frame) for frame in w.raw_images] == [id(a), id(b), id(c)]
+    assert w.image_filenames == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize("owner,field", [("source", "_load_worker"), ("render", "worker"),
+                                       ("render", "_compare_mode"), ("window", "roi_alignment_worker"),
+                                       ("batch", "_worker"), ("batch", "_thread")])
+def test_busy_operation_blocks_reset(monkeypatch, owner, field):
+    w, _ = host(monkeypatch)
+    a = np.zeros((3, 3), np.uint8)
+    load(w, [a], ["a"], ["a"])
+    edited = a.copy()
+    w.raw_images = [edited]
+    w.render_manager = SimpleNamespace(worker=None, _compare_mode=False)
+    w.batch_manager = SimpleNamespace(_worker=None, _thread=None)
+    target = {"source": w.source_manager, "render": w.render_manager,
+              "window": w, "batch": w.batch_manager}[owner]
+    setattr(target, field, object())
+    Box.result = Box.StandardButton.Yes
+    w.source_manager.reset_current_stack()
+    assert w.raw_images[0] is edited
+
+
+
+
+def test_project_baseline_precedes_transform(monkeypatch):
+    w, _ = host(monkeypatch)
+    a = np.arange(12, dtype=np.uint16).reshape(3, 4)
+    w.image_loader.image_paths = ["a"]
+    options = source.LoadOptions(1.0, ["a"], [a], [a])
+    state = {"sources": ["a"], "source_transforms": [{"operation": "rotate", "code": 0}]}
+    project_file._prepare_project_load(w, state, options)
+    w.source_manager._apply_load_options(options, profile_map={"a": b"icc"})
+    assert w.raw_images[0].shape == (4, 3)
+    Box.result = Box.StandardButton.Yes
+    w.source_manager.reset_current_stack()
+    assert w.raw_images[0] is a and w.image_icc_profiles == [b"icc"]
+
+
+def test_confirmation_rechecks_busy_state(monkeypatch):
+    w, _ = host(monkeypatch)
+    frame = np.zeros((4, 4), np.uint8)
+    load(w, [frame], ["a"], ["a"])
+    edited = frame.copy()
+    w.raw_images = [edited]
+    def accept_after_render_starts(_box):
+        w.render_manager = SimpleNamespace(worker=object(), _compare_mode=False)
+        return Box.StandardButton.Yes
+    monkeypatch.setattr(Box, "exec", accept_after_render_starts)
+    w.source_manager.reset_current_stack()
+    assert w.raw_images[0] is edited
+
+
+@pytest.mark.parametrize("replacement", ["load", "clear", "append"])
+def test_undo_after_stack_replacement_restores_original_baseline(monkeypatch, replacement):
+    import main
+    w, _ = host(monkeypatch)
+    first, second = (np.full((3, 3), i, np.uint8) for i in (1, 2))
+    w._capture_scalebar_state = lambda: {}
+    w._capture_parameter_state = lambda: {}
+    w._capture_stack_state = main.OpenFocus._capture_stack_state.__get__(w)
+    w._restore_stack_state = main.OpenFocus._restore_stack_state.__get__(w)
+    w._refresh_undo_actions = lambda: None
+    w._show_status_message = lambda *_: None
+    load(w, [first], ["first"], ["first"])
+    w._undo_stack[:] = [w._capture_stack_state()]
+    w.raw_images = [np.rot90(first).copy()]
+    if replacement == "clear":
+        w.source_manager.clear_image_stack()
+    else:
+        load(w, [second], ["second"], ["second"], append=replacement == "append")
+    assert len(w._undo_stack) == 1
+    main.OpenFocus.undo(w)
+    assert w.raw_images[0] is first
+    Box.result = Box.StandardButton.Yes
+    w.source_manager.reset_current_stack()
+    assert w.raw_images[0] is first and w.image_filenames == ["first"]
+
+
+def test_undo_redo_restore_displayed_frame(monkeypatch):
+    import main
+    w, _ = host(monkeypatch)
+    frames = [np.full((3, 3), i, np.uint8) for i in range(3)]
+    load(w, frames, ["a", "b", "c"], ["a", "b", "c"])
+    w._capture_scalebar_state = lambda: {}
+    w._capture_parameter_state = lambda: {}
+    w._capture_stack_state = main.OpenFocus._capture_stack_state.__get__(w)
+    w._restore_stack_state = main.OpenFocus._restore_stack_state.__get__(w)
+    w._refresh_undo_actions = lambda: None
+    w._show_status_message = lambda *_: None
+    w.transform_manager.reload_image_stack = lambda initial_index: setattr(w, "current_display_index", initial_index)
+    w.current_display_index = 2
+    w.current_img_index = 0
+    w._undo_stack[:] = [w._capture_stack_state()]
+    w._redo_stack.clear()
+    w.raw_images = [frame.copy() for frame in frames]
+    w.current_display_index = 1
+    w.current_img_index = 0
+    main.OpenFocus.undo(w)
+    assert w.current_display_index == 2 and w.raw_images[2] is frames[2]
+    main.OpenFocus.redo(w)
+    assert w.current_display_index == 1 and w.raw_images[1] is not frames[1]
+
+
+
+
+class Signal:
+    def connect(self, callback): self.callback = callback
+
+
+class LoadWorker:
+    def __init__(self, _loader, **kwargs):
+        self.scale = kwargs["scale"]
+        self.finished_load = Signal()
+        self.finished = Signal()
+        self.source_icc_profiles = {}
+
+    def start(self): pass
+
+
+def test_old_load_completion_after_clear_is_ignored(monkeypatch):
+    w, _ = host(monkeypatch)
+    monkeypatch.setattr(source, "StackLoadWorker", LoadWorker)
+    manager = w.source_manager
+    monkeypatch.setattr(manager, "_show_load_status", lambda: None)
+    manager._start_load_worker(filepaths=["old"])
+    worker = manager._load_worker
+    manager.clear_image_stack()
+    worker.finished_load.callback(True, "", [np.ones((3, 3), np.uint8)], ["old"])
+    assert not w.raw_images and manager._stack_baseline is None
+
+
+def test_append_decodes_at_baseline_scale_and_displays_at_working_scale(monkeypatch):
+    w, _ = host(monkeypatch)
+    original = np.ones((8, 8), np.uint16)
+    load(w, [original], ["a"], ["a"])
+    w.current_scale_factor = 0.5
+    w.source_px_um = None
+    w.raw_images = [np.ones((4, 4), np.uint16)]
+    w.base_images = [original]
+    from utils import settings_store, image_utils
+    monkeypatch.setattr(settings_store, "get_settings", lambda: SimpleNamespace(setValue=lambda *_: None))
+    monkeypatch.setattr(image_utils, "set_source_exif", lambda *_: None)
+    w.image_loader.px_size_um = None
+    monkeypatch.setattr(source, "StackLoadWorker", LoadWorker)
+    manager = w.source_manager
+    monkeypatch.setattr(manager, "_show_load_status", lambda: None)
+    checked = []
+    monkeypatch.setattr(manager, "_confirm_mixed_sizes", lambda frames: checked.append(frames[0].shape) or True)
+    monkeypatch.setattr(manager, "_confirm_append_dimensions", lambda frames: checked.append(frames[0].shape) or True)
+    manager._start_load_worker(filepaths=["b"], append=True)
+    worker = manager._load_worker
+    assert worker.scale == 1.0
+    w.image_loader.image_paths = ["b"]
+    incoming = np.full((8, 8), 60000, np.uint16)
+    worker.finished_load.callback(True, "", [incoming], ["b"])
+    assert checked == [(4, 4), (4, 4)]
+    assert w.raw_images[1].shape == w.base_images[1].shape == (4, 4)
+    assert w.base_scale_factor == 0.5
+    assert manager._stack_baseline["images"][1] is incoming
+
+
+def test_scaled_append_rejects_transparent_frames(monkeypatch):
+    w, _ = host(monkeypatch)
+    original = np.ones((8, 8, 3), np.uint8)
+    load(w, [original], ["a"], ["a"])
+    w.current_scale_factor = 0.5
+    edited = np.ones((4, 4, 3), np.uint8)
+    w.raw_images = [edited]
+    old_baseline = w.source_manager._stack_baseline
+    monkeypatch.setattr(source, "StackLoadWorker", LoadWorker)
+    manager = w.source_manager
+    monkeypatch.setattr(manager, "_show_load_status", lambda: None)
+    errors = []
+    manager._start_load_worker(filepaths=["b.png"], append=True, on_error=errors.append)
+    transparent = np.full((8, 8, 4), 255, np.uint8)
+    transparent[0, 0, 3] = 0
+    manager._load_worker.finished_load.callback(True, "", [transparent], ["b.png"])
+    assert errors and "Transparent images cannot be downsampled" in errors[0]
+    assert w.raw_images == [edited] and w.source_manager._stack_baseline is old_baseline

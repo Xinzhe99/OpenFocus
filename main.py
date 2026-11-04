@@ -776,12 +776,13 @@ class OpenFocus(QMainWindow):
         """
         return {
             "raw": list(self.raw_images),
+            "stack_baseline": getattr(getattr(self, "source_manager", None), "_stack_baseline", None),
             "filenames": list(self.image_filenames),
             "source_paths": list(getattr(self, "image_source_paths", [])),
             "icc_profiles": list(getattr(self, "image_icc_profiles", [])),
             "base": list(getattr(self, "base_images", [])),
             "excluded": set(getattr(self, "excluded_frames", set())),
-            "current": getattr(self, "current_img_index", 0),
+            "current": getattr(self, "current_display_index", getattr(self, "current_img_index", 0)),
             "scale": float(getattr(self, "current_scale_factor", 1.0) or 1.0),
             "base_scale": float(getattr(self, "base_scale_factor", 1.0) or 1.0),
             "source_px_um": getattr(self, "source_px_um", None),
@@ -926,6 +927,9 @@ class OpenFocus(QMainWindow):
             self.refresh_annotation_views()
             self._mark_project_dirty()
             return
+        manager = getattr(self, "source_manager", None)
+        if manager is not None:
+            manager._stack_baseline = state.get("stack_baseline")
         self.raw_images = list(state["raw"])
         self.image_filenames = list(state["filenames"])
         self.image_source_paths = list(state["source_paths"])
@@ -2444,7 +2448,10 @@ class OpenFocus(QMainWindow):
         if cache is None:
             cache = self._wipe_pix_cache = {}
         record = self.output_manager.record_for_image(image) if kind == "right" else None
-        target = "output" if record is not None or kind == "right" and self.fusion_results else "registered" if kind == "right" else "input"
+        target = ("input" if kind == "left" else
+                  "registered" if self._wipe_right_shows_registration() else "output")
+        if target == "output":
+            index = 0
         baked = record is not None and record.annotations_baked
         labeled = not baked and self.label_manager.is_enabled_for_target(target)
         label_revision = int(getattr(self.label_manager, "revision", 0))
@@ -2480,6 +2487,7 @@ class OpenFocus(QMainWindow):
             self.wipe_bar.setVisible(False)
             self.view_stack.setCurrentIndex(0)
             self.wipe_widget.clear()
+            self._wipe_source_cache = None
             return
 
         if getattr(self, 'roi_mode_active', False):
@@ -2500,12 +2508,7 @@ class OpenFocus(QMainWindow):
     def _setup_wipe_sliders(self) -> None:
         """Size the A/B frame sliders to the current stacks (follow checkboxes
         keep their state across renders)."""
-        self.slider_wipe_left.blockSignals(True)
-        self.slider_wipe_left.setRange(0, max(0, len(self.raw_images) - 1))
-        if self.chk_wipe_follow_left.isChecked() and 0 <= self.current_display_index:
-            self.slider_wipe_left.setValue(self.current_display_index)
-        self.slider_wipe_left.setEnabled(not self.chk_wipe_follow_left.isChecked())
-        self.slider_wipe_left.blockSignals(False)
+        self._setup_wipe_left_slider()
 
         self.slider_wipe_right.blockSignals(True)
         # A registration-only render fills registration_results, not
@@ -2517,6 +2520,17 @@ class OpenFocus(QMainWindow):
             not self.chk_wipe_follow_right.isChecked() and self._wipe_right_count > 0)
         self.slider_wipe_right.blockSignals(False)
 
+    def _setup_wipe_left_slider(self) -> None:
+        record = self._wipe_record()
+        context = record.context if record is not None else None
+        frames = (record.aligned_source_frames if record is not None and record.kind == "aligned"
+                  else context.frames if context is not None else ())
+        self.slider_wipe_left.blockSignals(True)
+        self.slider_wipe_left.setRange(0, max(0, len(frames) - 1))
+        self.slider_wipe_left.setEnabled(
+            bool(frames) and not self.chk_wipe_follow_left.isChecked())
+        self.slider_wipe_left.blockSignals(False)
+
     def refresh_wipe_controls(self) -> None:
         """Re-range the wipe sliders after the stacks changed (new render,
         frames appended/deleted), keeping the user's positions where valid."""
@@ -2524,7 +2538,7 @@ class OpenFocus(QMainWindow):
         self._update_wipe_images()
 
     def _on_wipe_follow_left_toggled(self, checked: bool) -> None:
-        self.slider_wipe_left.setEnabled(not checked)
+        self._setup_wipe_left_slider()
         if checked and 0 <= self.current_display_index:
             self.slider_wipe_left.setValue(self.current_display_index)
         if self.wipe_active:
@@ -2548,26 +2562,60 @@ class OpenFocus(QMainWindow):
         self.lbl_wipe_right_index.setText(trans.t("wipe_result_fmt").format(value + 1))
         self._update_wipe_images()
 
-    def _wipe_left_index(self) -> int:
-        if self.chk_wipe_follow_left.isChecked():
-            return self.current_display_index
-        return self.slider_wipe_left.value()
+    def _wipe_record(self):
+        image = self._wipe_right_image()
+        if image is None:
+            return None
+        preview = getattr(self, "_wipe_preview_record", None)
+        if preview is not None and preview.image is image:
+            return preview
+        row = (self.output_list.currentRow() if self.chk_wipe_follow_right.isChecked()
+               else self.slider_wipe_right.value())
+        record = self.output_manager.record_for_row(row)
+        if (record is not None and record.kind == "aligned"
+                and any(frame is image for frame in record.aligned_frames)):
+            return record
+        return self.output_manager.record_for_image(image)
 
-    def _wipe_left_image(self):
+    def _wipe_left_index(self) -> int:
+        record = self._wipe_record()
+        context = record.context if record is not None else None
+        frames = (record.aligned_source_frames if record is not None and record.kind == "aligned"
+                  else context.frames if context is not None else ())
+        if not frames:
+            return -1
+        if self.chk_wipe_follow_left.isChecked():
+            indices = (record.aligned_source_indices if record.kind == "aligned"
+                       else context.source_indices)
+            if self.current_display_index in indices:
+                return indices.index(self.current_display_index)
+            return 0
+        return min(self.slider_wipe_left.value(), len(frames) - 1)
+
+    def _wipe_left_frame(self):
+        record = self._wipe_record()
+        context = record.context if record is not None else None
         index = self._wipe_left_index()
-        if 0 <= index < len(self.raw_images):
-            return self.raw_images[index]
-        return None
+        if index < 0:
+            return None
+        if record.kind == "aligned":
+            from core.render_context import SourceFrame
+            return SourceFrame(str(index), "", record.aligned_source_frames[index])
+        frame = context.frames[index]
+        image = self._wipe_right_image()
+        if (image is None or image.shape[:2] != (context.height, context.width)
+                or frame.offset_x < 0 or frame.offset_y < 0
+                or frame.offset_x + frame.width > context.width
+                or frame.offset_y + frame.height > context.height):
+            return None
+        return frame
 
     def _wipe_right_index(self) -> int:
         if self.chk_wipe_follow_right.isChecked():
-            # Follow the result actually shown: the latest fused result is a
-            # single image (frame 1), a registration preview carries its own
-            # frame number.
             if self.fusion_result is not None:
-                return 0
+                return max(0, self.output_list.currentRow())
             if self.registration_results:
-                return max(0, self.current_result_index)
+                return max(0, min(self.current_result_index, len(self.registration_results) - 1))
             return 0
         return self.slider_wipe_right.value()
 
@@ -2579,41 +2627,70 @@ class OpenFocus(QMainWindow):
             if self.fusion_result is not None:
                 return self.fusion_result
             if self.registration_results:
-                return self.registration_results[
-                    self.current_result_index if self.current_result_index >= 0 else 0]
+                return self.registration_results[self._wipe_right_index()]
             return None
         index = self.slider_wipe_right.value()
-        if 0 <= index < len(self.fusion_results):
-            return self.fusion_results[index]
-        # registration-only session: B shows the aligned frame instead
+        if self.fusion_results:
+            record = self.output_manager.record_for_row(index)
+            if record is not None and record.kind == "aligned":
+                frames = record.aligned_frames
+                frame_index = max(0, min(self.current_result_index, len(frames) - 1))
+                return frames[frame_index] if frames else None
+            return self.fusion_results[index] if 0 <= index < len(self.fusion_results) else None
         if 0 <= index < len(self.registration_results):
             return self.registration_results[index]
         return None
 
     def _wipe_right_shows_registration(self) -> bool:
-        """True when B falls back to the registration results."""
-        if self.fusion_result is not None or self.fusion_results:
-            return False
-        return bool(self.registration_results)
+        """True when B shows a registration result."""
+        if self.chk_wipe_follow_right.isChecked():
+            return self.fusion_result is None and bool(self.registration_results)
+        record = self.output_manager.record_for_row(self.slider_wipe_right.value())
+        return bool(record is not None and record.kind == "aligned") or (
+            not self.fusion_results and bool(self.registration_results))
 
     def _update_wipe_images(self) -> None:
         if not self.wipe_active:
             return
 
-        left_image = self._wipe_left_image()
+        self._setup_wipe_left_slider()
+        record = self._wipe_record()
+        context = record.context if record is not None else None
+        revision = (record.aligned_source_revision if record is not None and record.kind == "aligned"
+                    else context.source_revision if context is not None else None)
+        stale = revision is not None and revision != getattr(self, "source_revision", 0)
+        if stale and self.chk_wipe_follow_left.isChecked():
+            self.chk_wipe_follow_left.blockSignals(True)
+            self.chk_wipe_follow_left.setChecked(False)
+            self.chk_wipe_follow_left.blockSignals(False)
+            self.slider_wipe_left.setValue(0)
+            self._setup_wipe_left_slider()
         right_image = self._wipe_right_image()
-        left_pix = self._wipe_pixmap("left", self._wipe_left_index(), left_image)
-        right_pix = self._wipe_pixmap("right", self._wipe_right_index(), right_image)
-
-        if self.chk_wipe_follow_left.isChecked():
-            left_idx = self.current_display_index
+        frame = self._wipe_left_frame()
+        left_idx = self._wipe_left_index()
+        # Current annotations are safe only on the identical, uncropped
+        # source array at the same stack revision and source index.
+        source_index = (context.source_indices[left_idx]
+                        if context is not None and 0 <= left_idx < len(context.source_indices)
+                        else -1)
+        annotate_source = (frame is not None and not stale and record.kind != "aligned"
+                           and frame.offset_x == 0 and frame.offset_y == 0
+                           and 0 <= source_index < len(self.raw_images)
+                           and self.raw_images[source_index] is frame.image)
+        cached = getattr(self, "_wipe_source_cache", None)
+        if frame is None:
+            self._wipe_source_cache = None
+            left_pix = None
+        elif annotate_source:
+            self._wipe_source_cache = None
+            left_pix = self._wipe_pixmap("left", source_index, frame.image)
+        elif cached is not None and cached[0] is frame.image:
+            left_pix = cached[1]
         else:
-            left_idx = self.slider_wipe_left.value()
-        left_title = (
-            trans.t("wipe_frame_fmt").format(left_idx + 1)
-            if 0 <= left_idx < len(self.raw_images)
-            else "-"
-        )
+            left_pix = self._bgr_to_pixmap(frame.image)
+            self._wipe_source_cache = (frame.image, left_pix)
+        right_pix = self._wipe_pixmap("right", self._wipe_right_index(), right_image)
+        left_title = trans.t("wipe_output_source").format(n=left_idx + 1) if frame is not None else "-"
         if self.chk_wipe_follow_right.isChecked():
             # B is the latest render; in a registration-only session that is an
             # aligned frame, so do not label it "Fusion Result".
@@ -2622,7 +2699,21 @@ class OpenFocus(QMainWindow):
                            else trans.t("wipe_opt_result"))
         else:
             right_title = trans.t("wipe_result_fmt").format(self.slider_wipe_right.value() + 1)
-        self.wipe_widget.set_images(left_pix, right_pix, f"A: {left_title}", f"B: {right_title}")
+        record = self._wipe_record()
+        independent = bool(frame is not None and record is not None and record.kind == "aligned")
+        notices = []
+        if frame is None:
+            notices.append(trans.t("wipe_source_unavailable"))
+        else:
+            if stale:
+                notices.append(trans.t("wipe_source_historical"))
+            if independent:
+                notices.append(trans.t("wipe_alignment_independent"))
+        notice = "\n".join(notices)
+        self.wipe_widget.set_images(
+            left_pix, right_pix, f"A: {left_title}", f"B: {right_title}",
+            left_offset=(frame.offset_x, frame.offset_y) if frame is not None else (0, 0),
+            independent=independent, notice=notice)
 
         # Keep the index labels in sync with whatever is being shown
         self.lbl_wipe_left_index.setText(left_title)

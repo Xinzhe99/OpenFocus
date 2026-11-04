@@ -30,7 +30,7 @@ class TransformManager:
             {"operation": "rotate", "code": int(rotation_code)}]
 
         self._invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
-        self.reload_image_stack(initial_index=getattr(self.window, "current_img_index", 0))
+        self.reload_image_stack(initial_index=getattr(window, "current_display_index", 0))
 
     def flip_stack(self, flip_code: int) -> None:
         """Flip every image in the current stack."""

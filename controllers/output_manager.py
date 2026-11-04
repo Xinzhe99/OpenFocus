@@ -55,6 +55,9 @@ class OutputRecord:
     annotations_baked: bool = False
     aligned_frames: tuple = ()
     aligned_names: tuple = ()
+    aligned_source_frames: tuple = ()
+    aligned_source_indices: tuple = ()
+    aligned_source_revision: int = 0
     exported_annotations: Optional[dict] = None
     annotations_changed: bool = False
     icc_profile: bytes = b""
@@ -917,6 +920,8 @@ class OutputManager:
 
             window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(image))
             window.lbl_result_info.setText(f"{index + 1} / {len(window.registration_results)}")
+            if getattr(window, "wipe_active", False):
+                window._update_wipe_images()
         except Exception as exc:  # pylint: disable=broad-except
             show_message_box(
                 window,
@@ -926,7 +931,8 @@ class OutputManager:
                 QMessageBox.Icon.Critical,
             )
 
-def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None) -> None:
+def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
+                          source_frames=None, source_indices=None, source_revision=0) -> None:
     """List an aligned stack once; write its folder only on explicit export."""
     if not frames:
         return
@@ -939,6 +945,10 @@ def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None) -
     record = OutputRecord.create(None, label, kind='aligned', exported=False)
     record.aligned_frames = tuple(frames)
     record.aligned_names = names
+    if source_frames is not None and len(source_frames) == len(frames):
+        record.aligned_source_frames = tuple(source_frames)
+        record.aligned_source_indices = tuple(source_indices or range(len(frames)))
+        record.aligned_source_revision = source_revision
     from core.image_loader import stack_icc_profile
     record.icc_profile = stack_icc_profile(window, indices) if icc_profile is None else icc_profile
     item = window.output_manager._insert_output(None, label, record)

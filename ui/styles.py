@@ -367,6 +367,16 @@ QSpinBox[buttonSymbols="NoButtons"],
 QDoubleSpinBox[buttonSymbols="NoButtons"] {{
     padding-right: {s['sm']}px;
 }}
+/* A spin box owns its border and padding. Styling its internal line edit as
+   a standalone input applies a second set of padding and a minimum height,
+   which can leave no room to paint the value. */
+QSpinBox QLineEdit, QDoubleSpinBox QLineEdit {{
+    background: transparent;
+    border: none;
+    padding: 0;
+    min-height: 0;
+}}
+
 
 /* ===================== item views ===================== */
 QListView, QTreeView, QTableView, QListWidget, QTreeWidget, QTableWidget {{
