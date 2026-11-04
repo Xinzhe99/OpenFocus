@@ -1,8 +1,10 @@
 """Small-file boundary and corruption tests for split Windows release assets."""
 import hashlib
 import json
+import os
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -97,14 +99,17 @@ def test_windows_recovery_preserves_existing_file_on_corruption(tmp_path):
     command = [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
                "Bypass", "-File", str(script), "-Manifest", str(manifest),
                "-OutputDirectory", str(target_dir)]
+    environment = os.environ.copy()
+    if sys.platform == "win32":
+        environment["PSModulePath"] = str(tmp_path / "missing-modules")
 
-    failed = subprocess.run(command, capture_output=True, timeout=30)
+    failed = subprocess.run(command, capture_output=True, timeout=30, env=environment)
     assert failed.returncode != 0
     assert target.read_bytes() == b"previous valid file"
     assert sorted(p.name for p in target_dir.iterdir()) == [zip_path.name]
 
     part.write_bytes(original)
-    result = subprocess.run(command, capture_output=True, timeout=30)
+    result = subprocess.run(command, capture_output=True, timeout=30, env=environment)
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     assert target.read_bytes() == zip_path.read_bytes()
 
