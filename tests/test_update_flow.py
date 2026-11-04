@@ -181,10 +181,10 @@ class TestReleaseNotes:
 
         def fake_latest():
             return True, "v1.49", "http://page", None, {
-                "url": "http://zip", "digest": "sha256:ab"}
+                "url": "http://zip", "digest": "sha256:ab"}, []
         monkeypatch.setattr(updater, "fetch_latest_release", fake_latest)
         monkeypatch.setattr(updater, "fetch_release_notes",
-                            lambda cur, latest: "NOTES-TEXT")
+                            lambda cur, latest, **kwargs: "NOTES-TEXT")
         updater.check_async("1.47",
                             lambda *a: seen.__setitem__("r", a))
         for _ in range(200):

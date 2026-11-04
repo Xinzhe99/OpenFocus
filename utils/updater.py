@@ -90,13 +90,17 @@ def find_installer_asset(release: dict) -> Optional[dict]:
     return None
 
 
-def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict], Optional[dict]]:
-    """Return the mirrored release and platform-specific installer and ZIP."""
+def fetch_latest_release() -> Tuple[bool, str, str, Optional[dict], Optional[dict], list]:
+    """Return the release, platform assets, and notes from one mirror request."""
     data = _api_get(RELEASES_API_URL)
     tag = data.get("tag") if isinstance(data, dict) else None
     if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+(?:\.[0-9]+)*", tag):
         raise ValueError("Invalid update metadata")
-    return True, tag, RELEASES_PAGE_URL, find_installer_asset(data), find_portable_zip_asset(data)
+    releases = data.get("releases")
+    if not isinstance(releases, list):
+        releases = []
+    return (True, tag, RELEASES_PAGE_URL, find_installer_asset(data),
+            find_portable_zip_asset(data), releases)
 
 
 def _md_to_plain(md: str) -> str:
@@ -141,23 +145,25 @@ def _api_get(url: str, timeout: int = REQUEST_TIMEOUT_S) -> Optional[dict]:
 
 
 def fetch_release_notes(current_version: str, latest_tag: str,
-                        max_releases: int = 10, timeout: int = 3) -> str:
-    """Release notes for every version newer than the installed one.
+                        max_releases: int = 10, timeout: int = 3,
+                        releases=None) -> str:
+    """Format notes newer than the installed version, through ``latest_tag``.
 
-    The mirror keeps the most recent release bodies; this request is bounded
-    by ``timeout`` so a slow network never holds up the update notification.
-    Keeps versions newer than ``current_version`` up to ``latest_tag``.
+    A caller with the mirror manifest passes its releases to avoid a second
+    network request; standalone callers can fetch them with a bounded timeout.
     """
     latest = parse_version(latest_tag) or ()
     if not latest:
         return ""
     current = parse_version(current_version) or ()
-    try:
-        data = _api_get(RELEASES_API_URL, timeout)
-    except Exception:
-        return ""
+    if releases is None:
+        try:
+            data = _api_get(RELEASES_API_URL, timeout)
+        except Exception:
+            return ""
+        releases = data.get("releases", []) if isinstance(data, dict) else []
     blocks = []
-    for item in (data.get("releases", []) if isinstance(data, dict) else []):
+    for item in releases if isinstance(releases, list) else []:
         if not isinstance(item, dict):
             continue
         tag = str(item.get("tag_name", "")).strip()
@@ -306,7 +312,7 @@ def check_async(current_version: str, on_result: Callable[..., None], quiet: boo
 
     def worker():
         try:
-            ok, tag, url, asset, portable_zip = fetch_latest_release()
+            ok, tag, url, asset, portable_zip, releases = fetch_latest_release()
             if not ok:
                 raise ValueError("Invalid update metadata")
             setup_url = (asset or {}).get("url", "")
@@ -315,7 +321,7 @@ def check_async(current_version: str, on_result: Callable[..., None], quiet: boo
             if ok and is_newer(tag, current_version):
                 notes = ""
                 try:
-                    notes = fetch_release_notes(current_version, tag)
+                    notes = fetch_release_notes(current_version, tag, releases=releases)
                 except Exception:
                     notes = ""
                 on_result("update", tag, url, zip_url, setup_url, zip_digest,

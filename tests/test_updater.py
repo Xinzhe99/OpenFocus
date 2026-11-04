@@ -93,7 +93,7 @@ def test_fetch_latest_release_uses_website_and_ignores_remote_asset_urls(monkeyp
         return io.BytesIO(json.dumps(_release(["windows-setup", "windows-zip"])).encode())
 
     monkeypatch.setattr(updater.urllib.request, "urlopen", respond)
-    ok, tag, page, installer, portable = updater.fetch_latest_release()
+    ok, tag, page, installer, portable, releases = updater.fetch_latest_release()
     assert ok and tag == "v9.9"
     assert seen == ["https://openfocus.top/api/updates"]
     assert page == "https://openfocus.top/#download"
@@ -109,6 +109,28 @@ def test_invalid_mirror_metadata_is_an_error(monkeypatch):
         updater.fetch_latest_release()
 
 
+def test_update_check_uses_notes_from_the_same_manifest(monkeypatch):
+    from utils import updater
+    monkeypatch.setattr(sys, "platform", "win32")
+    payload = _release(["windows-setup", "windows-zip"])
+    payload["releases"] = [{"tag_name": "v9.9", "body": "- **Improved** output"}]
+    calls = []
+
+    def one_request(url, timeout=None):
+        calls.append(url)
+        if len(calls) > 1:
+            raise OSError("second request timed out")
+        return payload
+
+    monkeypatch.setattr(updater, "_api_get", one_request)
+    seen = []
+    check_async("9.0", lambda *args: seen.append(args))
+    _wait_for(seen)
+    assert seen[0][0] == "update"
+    assert "Improved output" in seen[0][6]
+    assert calls == [updater.RELEASES_API_URL]
+
+
 class TestCheckAsyncContract:
     """The UI callback takes (state, tag, page_url, zip_url, setup_url).
 
@@ -120,7 +142,7 @@ class TestCheckAsyncContract:
         monkeypatch.setattr(
             "utils.updater.fetch_latest_release",
             lambda: (True, "v9.9", "https://x/releases/tag/v9.9",
-                     {"url": "https://x/Setup.exe"}, {"url": "https://x/p.zip"}))
+                     {"url": "https://x/Setup.exe"}, {"url": "https://x/p.zip"}, []))
         # the notes fetch must never hit the network from a unit test
         monkeypatch.setattr("utils.updater.fetch_release_notes",
                             lambda *a, **k: "NOTES")
@@ -136,7 +158,7 @@ class TestCheckAsyncContract:
         monkeypatch.setattr(
             "utils.updater.fetch_latest_release",
             lambda: (True, "v1.0", "https://x/releases/tag/v1.0",
-                     {"url": "https://x/Setup.exe"}, None))
+                     {"url": "https://x/Setup.exe"}, None, []))
         seen = []
         check_async("1.0", lambda *args: seen.append(args))
         _wait_for(seen)

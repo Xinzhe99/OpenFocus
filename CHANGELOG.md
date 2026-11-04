@@ -15,6 +15,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Remove unused private helpers and mark historical design specifications as
   snapshots.
 
+## [1.75.3] - 2026-11-04
+
+### Fixed
+- Keep release notes available on slower networks by using the same mirror
+  response as the update check instead of making a second request.
+
 ## [1.75.2] - 2026-11-04
 
 ### Fixed
