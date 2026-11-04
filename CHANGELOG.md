@@ -18,6 +18,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   preview builds; NVIDIA, AMD and Intel GPU runs still require hardware validation.
 
 ### Fixed
+- Isolate Windows Intel GPU detection so a failing driver cannot crash startup.
 - Avoid intermittent crashes after picking a source or batch folder while
   retaining typed and pasted directory navigation.
 - Preserve physical µm/px calibration from native Linear DNG microscopy

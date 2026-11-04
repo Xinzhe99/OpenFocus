@@ -124,6 +124,10 @@ them:
   `fusion_methods/stackmffv3.py` and `core/multi_focus_fusion.py` consume that
   backend instead of testing CUDA/MPS directly.
 
+On Windows, XPU availability is checked in a separate process. A missing or
+crashing driver leaves the desktop running and selects CPU; restart the app
+after installing or changing the driver.
+
 The preview build is therefore a real Python 3.10 XPU bundle, but it remains
 **unverified on Intel hardware**. In particular, the model's 3D convolutions
 and SDPA path, the actual `torch.xpu` kernel coverage and the driver/GPU

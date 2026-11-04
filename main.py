@@ -71,6 +71,10 @@ sys.stdout = _output_stream(sys.stdout, -11)
 sys.stderr = _output_stream(sys.stderr, -12)
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--_openfocus-xpu-probe"]:
+        from core.torch_backend import _run_xpu_probe
+        sys.exit(_run_xpu_probe())
+
     # Bootstrap before GUI imports: CLI and import-time failures share the
     # same diagnostics, including on systems without Qt installed.
     from utils.logging_setup import setup_logging, get_logger, log_session_start, log_action

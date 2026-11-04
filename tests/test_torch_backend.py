@@ -101,6 +101,32 @@ def test_xpu_is_selected_when_cuda_is_unavailable():
     assert backend.resolve_device(True, module).type == "xpu"
 
 
+@pytest.mark.parametrize("exit_code,expected", [
+    (0, backend.KIND_XPU),
+    (7, backend.KIND_CPU),
+])
+def test_windows_xpu_probe_survives_native_process_failure(monkeypatch, exit_code, expected):
+    class UnsafeXpu(FakeXpu):
+        def is_available(self):
+            pytest.fail("XPU availability must not run in the desktop process")
+
+    module = _torch(cuda=FakeCuda(available=False), xpu=UnsafeXpu())
+    module.version.xpu = "test"
+    monkeypatch.setattr(backend.sys, "platform", "win32")
+    monkeypatch.setattr(backend, "_xpu_probe_command", lambda: [
+        sys.executable, "-c", f"import os; os._exit({exit_code})",
+    ])
+    backend.reset_cache()
+    try:
+        assert backend.detect_kind(module) == expected
+        assert backend.resolve_device(True, module).type == expected.lower()
+        memory = backend.device_memory(backend.KIND_XPU, module)
+        assert memory == ((2 * 1024 ** 3, 16 * 1024 ** 3)
+                          if expected == backend.KIND_XPU else None)
+    finally:
+        backend.reset_cache()
+
+
 @pytest.mark.parametrize("fallback,expected", [
     ("xpu", backend.KIND_XPU),
     ("mps", backend.KIND_MPS),
