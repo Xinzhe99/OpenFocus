@@ -284,6 +284,10 @@ See the [CLI manual](./docs/USER_MANUAL_EN.md#14-command-line-interface).
 
 <img src="assets/readme/wechat-group.jpg" alt="QR code for the OpenFocus WeChat group" width="260">
 
+**Support OpenFocus:** If you enjoy the software, you can buy us a coffee via Alipay.
+
+<img src="assets/readme/alipay-coffee.jpg" alt="Alipay QR code to support OpenFocus" width="260">
+
 <a id="license"></a>
 ## License
 
