@@ -249,14 +249,23 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
     model, device = _get_model_and_device(model_path, use_gpu)
     hp, wp = h + (-h) % PAD_ALIGN, w + (-w) % PAD_ALIGN
     pixels = hp * wp
-    # Live stage features, Q/K/V, MLP and native workspace. These are
-    # conservative allocation terms, not a calibrated RSS prediction.
+    # CPU calibration covers the bundled linear-head model; retain the
+    # previous conservative multiplier for unmeasured GPU backends.
     channels = model.C1 / 16 + (0 if getattr(model, 'single_scale', False)
                                else model.C2 / 64)
     heads = max((getattr(m, 'heads', 1) for m in model.modules()), default=1)
     expansion = max((m.fc1.out_features / m.fc1.in_features
                      for m in model.modules() if hasattr(m, 'fc1')), default=2)
-    features = int(n * pixels * channels * 4 * (12 + 2 * expansion))
+    calibrated_cpu = (kind == 'CPU' and getattr(model, 'single_scale', False)
+                      and not getattr(model, 'fine_head', False)
+                      and model.C1 == 48 and model.C2 == 96
+                      and model.window == 8 and heads == 3 and expansion == 2)
+    feature_base = 7 if calibrated_cpu else 12
+    features = int(n * pixels * channels * 4 * (feature_base + 2 * expansion))
+    if getattr(model, 'fine_head', False):
+        # The guidance head retains the input and projected features while
+        # its concatenation and first convolution output are both live.
+        features = max(features, n * pixels * 4 * (1 + 5 * model.head.cf))
     scores = int(pixels / 16 * heads * 4
                  * (n * model.window ** 2 + n * n))
     probabilities = n * pixels * 4 * 6

@@ -5,6 +5,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Allow a single large operation to use available RAM above the desktop reserve,
+  while serializing image imports with rendering and accounting for custom V3
+  guidance heads. CPU workspace calibration applies to the bundled model; GPU
+  workspace estimates retain their previous conservative limits.
+
 ### Changed
 - Move the code signing policy to a dedicated document and keep links from the
   README, website and release notes.

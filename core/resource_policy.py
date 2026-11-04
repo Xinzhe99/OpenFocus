@@ -33,6 +33,10 @@ from core.algorithms import get_fusion
 BUDGET_RATIO = 0.45
 # Never plan to leave the machine with less than this for the desktop.
 RESERVE_BYTES = 1024 ** 3
+# The proportional reserve (15% of total RAM) is capped so large machines do
+# not set aside ~10 GB for the desktop and starve every stage.
+RESERVE_RATIO = 0.15
+RESERVE_CAP_BYTES = 4 * 1024 ** 3
 
 # GPU reserves: the allocator keeps freed blocks, so free VRAM is what matters.
 VRAM_RESERVE_RATIO = 0.15
@@ -166,9 +170,8 @@ def ram_budget(snapshot: ResourceSnapshot) -> int:
     """
     if not snapshot.ram_known:
         return 0
-    reserve = max(RESERVE_BYTES, int(0.15 * snapshot.total_ram))
-    headroom = snapshot.available_ram - reserve
-    return max(0, int(min(BUDGET_RATIO * snapshot.available_ram, headroom)))
+    return max(0, int(min(BUDGET_RATIO * snapshot.available_ram,
+                          ram_ceiling(snapshot))))
 
 
 def vram_budget(snapshot: ResourceSnapshot) -> int:
@@ -197,22 +200,46 @@ class ResourceLimitError(MemoryError):
     """The minimum working set cannot safely be admitted."""
 
 
+def ram_ceiling(snapshot: ResourceSnapshot) -> int:
+    """Most new RAM one stage may take: everything above the desktop reserve.
+
+    ``ram_budget`` is the comfortable share used to size concurrency; this is
+    the hard limit for admitting a single minimum working set that does not
+    fit in that share.
+    """
+    if not snapshot.ram_known:
+        return 0
+    reserve = max(RESERVE_BYTES,
+                  min(int(RESERVE_RATIO * snapshot.total_ram), RESERVE_CAP_BYTES))
+    return max(0, int(snapshot.available_ram - reserve))
+
+
 def require_memory(required_bytes: int, snapshot: Optional[ResourceSnapshot] = None,
                    user_limit: Optional[int] = None) -> int:
-    """Admit a known new allocation; return its capped available RAM budget."""
+    """Admit a known new allocation; return the RAM budget the stage may use.
+
+    Within the comfortable share the whole share is returned, so callers can
+    add workers. A larger minimum working set is still admitted up to the
+    reserve-protected ceiling, but then the budget is exactly that working
+    set, leaving no room for extra concurrency.
+    """
     if required_bytes < 0:
         raise ValueError("required_bytes must be nonnegative")
     snapshot = snapshot or probe_resources()
     budget = ram_budget(snapshot)
+    ceiling = ram_ceiling(snapshot)
     if user_limit is not None:
         budget = min(budget, max(0, int(user_limit)))
+        ceiling = min(ceiling, max(0, int(user_limit)))
     if not snapshot.ram_known:
         raise ResourceLimitError("Available physical memory could not be determined")
-    if budget <= 0 or required_bytes > budget:
-        raise ResourceLimitError(
-            f"Insufficient memory: need {memory.mb(required_bytes):.0f} MB "
-            f"of new allocations; budget is {memory.mb(budget):.0f} MB")
-    return budget
+    if budget > 0 and required_bytes <= budget:
+        return budget
+    if ceiling > 0 and required_bytes <= ceiling:
+        return max(1, int(required_bytes))
+    raise ResourceLimitError(
+        f"Insufficient memory: need {memory.mb(required_bytes):.0f} MB "
+        f"of new allocations; at most {memory.mb(ceiling):.0f} MB is available")
 
 
 def estimate_working_set(workload: Workload) -> tuple:
