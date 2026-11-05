@@ -31,7 +31,7 @@ print("输出正常", flush=True)
 
 @pytest.mark.parametrize('method', ['openfocus', 'ecc'])
 def test_directory_decodes_each_single_page_once(tmp_path, monkeypatch, method):
-    frame = np.arange(120, dtype=np.uint16).reshape(10, 12) * 257
+    frame = np.arange(120, dtype=np.uint16).reshape(10, 12) * 251 + 3
     assert cv2.imwrite(str(tmp_path / 'frame.png'), frame)
     original = cv2.imdecode
     calls = []
@@ -41,10 +41,8 @@ def test_directory_decodes_each_single_page_once(tmp_path, monkeypatch, method):
     monkeypatch.setattr(cv2, 'imdecode', decode)
     result = ImageRegistration(method=method).process(str(tmp_path))
     assert len(calls) == 1
-    if method == 'openfocus':
-        np.testing.assert_array_equal(result[0], frame)
-    else:
-        np.testing.assert_array_equal(result[0], np.repeat((frame >> 8).astype(np.uint8)[..., None], 3, axis=2))
+    assert result[0].dtype == np.uint16
+    np.testing.assert_array_equal(result[0], np.repeat(frame[..., None], 3, axis=2))
 
 
 def _shifted_stack(dx=12, dy=6, size=(140, 180), n=2):
@@ -264,8 +262,8 @@ def test_openfocus_directory_preserves_grayscale_16bit(tmp_path):
         str(folder), thread_count=1)
     for image in aligned:
         assert image.dtype == np.uint16
-        assert image.ndim == 2
-        np.testing.assert_array_equal(image, base[2:-2, 2:-2])
+        assert image.shape == (base.shape[0] - 4, base.shape[1] - 4, 3)
+        np.testing.assert_array_equal(image, np.repeat(base[2:-2, 2:-2, None], 3, axis=2))
 
 
 def test_openfocus_identical_ramps_do_not_invent_motion():

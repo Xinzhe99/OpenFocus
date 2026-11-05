@@ -68,8 +68,8 @@ def test_render_admits_full_cleanup_stack_before_mask_or_copy(qapp, tmp_path, mo
     assert cv2.imwrite(str(source), image)
     frames = [image, image.copy()]
     seen = []
-    def reject(images, mask_path, denoise):
-        seen.append((list(images), mask_path, denoise))
+    def reject(images, mask_path, denoise, *, disk_backed=False):
+        seen.append((list(images), mask_path, denoise, disk_backed))
         raise MemoryError('cleanup budget')
     def unexpected(*args, **kwargs):
         pytest.fail('cleanup allocated before admission')
@@ -82,7 +82,7 @@ def test_render_admits_full_cleanup_stack_before_mask_or_copy(qapp, tmp_path, mo
         worker._run_admitted()
     assert len(seen) == 1
     assert seen[0][0][0] is frames[0] and seen[0][0][1] is frames[1]
-    assert seen[0][1:] == (str(path), True)
+    assert seen[0][1:] == (str(path), True, True)
 
 
 def test_batch_admits_cleanup_before_mask_decode(qapp, tmp_path, monkeypatch):
@@ -94,8 +94,8 @@ def test_batch_admits_cleanup_before_mask_decode(qapp, tmp_path, monkeypatch):
     for index in range(2):
         assert cv2.imwrite(str(source / f'{index}.png'), image)
     admitted = []
-    def reject(images, mask_path, denoise):
-        admitted.append((len(images), mask_path, denoise))
+    def reject(images, mask_path, denoise, *, disk_backed=False):
+        admitted.append((len(images), mask_path, denoise, disk_backed))
         raise MemoryError('cleanup budget')
     def unexpected(*args, **kwargs):
         pytest.fail('mask decoded before admission')
@@ -107,7 +107,7 @@ def test_batch_admits_cleanup_before_mask_decode(qapp, tmp_path, monkeypatch):
     outcome = {}
     worker.finished.connect(outcome.update)
     worker.run()
-    assert admitted == [(2, str(path), True)]
+    assert admitted == [(2, str(path), True, True)]
     assert outcome['success'] == 0
 
 
