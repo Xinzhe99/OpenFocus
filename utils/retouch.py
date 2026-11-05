@@ -450,6 +450,49 @@ class TileHistory:
             self.evicted = True
 
 
+# One cached auto-background result: saving a checkpoint replays every
+# operation to verify it, and recomputing the background there would cost as
+# much as the original run.  The key holds the frame arrays themselves (not
+# their ids), so a hit always means the very same inputs.
+_AUTO_BG_CACHE: dict = {}
+_AUTO_BG_LOCK = threading.Lock()
+
+
+def _auto_background_key(image, frames, preset, clean):
+    import hashlib
+    digest = hashlib.sha256()
+    for row in image:
+        digest.update(memoryview(np.ascontiguousarray(row)).cast("B"))
+    return (digest.hexdigest(), image.shape, image.dtype.str, str(preset), bool(clean)), \
+        tuple(frame.image for frame in frames)
+
+
+def compute_auto_background(image, frames, preset="soft", clean=True,
+                            cancelled=None, progress=None):
+    """Run `core.background_fill.replace_background` on a retouch image.
+
+    Admits the working set with the resource policy and serializes with
+    other heavy jobs.  Returns a `BackgroundFillResult`."""
+    from core.background_fill import replace_background
+    from core.resource_policy import heavy_job, require_memory
+    key, arrays = _auto_background_key(image, frames, preset, clean)
+    with _AUTO_BG_LOCK:
+        hit = _AUTO_BG_CACHE.get("entry")
+        if hit is not None and hit[0] == key and len(hit[1]) == len(arrays) \
+                and all(a is b for a, b in zip(hit[1], arrays)):
+            return hit[2]
+    h, w = image.shape[:2]
+    # Measured peak: ~160 B/px plus a half-resolution float copy per frame.
+    required = int(h * w * (170 + len(arrays)))
+    with heavy_job(cancelled):
+        require_memory(required)
+        result = replace_background([frame.image for frame in frames], image, preset=preset,
+                                    clean=clean, progress=progress, cancelled=cancelled)
+    with _AUTO_BG_LOCK:
+        _AUTO_BG_CACHE["entry"] = (key, arrays, result)
+    return result
+
+
 class RetouchDocument:
     """One retouch session: base image, source frames, brush and history."""
 
@@ -490,6 +533,7 @@ class RetouchDocument:
         self._point_count = 0
         self._record_overflow = False
         self.last_status = ""
+        self.background_fill = None     # last auto-background result (missing-data maps)
 
     @property
     def checkpoint_ready(self):
@@ -581,6 +625,66 @@ class RetouchDocument:
             if status == "committed":
                 self._record_operation({"type": "tones", "exposure": float(exposure),
                                         "contrast": float(contrast)})
+            return status
+        except BaseException:
+            self.history.abort()
+            raise
+
+    def auto_background_supported(self) -> bool:
+        """Every frame must cover the whole result (not an ROI paste)."""
+        return len(self.frames) >= 2 and all(
+            frame.image is not None and frame.offset_x == 0 and frame.offset_y == 0
+            and frame.image.shape[:2] == (self.height, self.width)
+            for frame in self.frames)
+
+    def auto_background(self, preset: str = "soft", clean: bool = True,
+                        cancelled=None, progress=None) -> str:
+        """Replace the background of the current result with one source
+        frame (see core.background_fill) as one history transaction.
+
+        Strokes already painted on the subject survive; the background is
+        rebuilt from the frames.  Returns "committed", "empty" (nothing to
+        replace, e.g. a ground-level scene), "cancelled", "busy",
+        "unsupported", "oversize" or "record_limit".  Input problems raise
+        `core.background_fill.BackgroundFillError`.
+        """
+        from core.background_fill import BackgroundFillCancelled
+        from core.registration import RegistrationCancelled   # heavy_job's cancel
+        if self.stroke_active:
+            return "busy"
+        if self._cursor >= 100000:
+            self.last_status = "record_limit"
+            return "record_limit"
+        if not self.auto_background_supported():
+            return "unsupported"
+        if self.working.nbytes > self.history.max_bytes:
+            return "oversize"
+        try:
+            result = compute_auto_background(self.working, self.frames, preset, clean,
+                                             cancelled=cancelled, progress=progress)
+        except (BackgroundFillCancelled, RegistrationCancelled):
+            return "cancelled"
+        self.background_fill = result
+        image = result.image
+        self.history.begin()
+        try:
+            for key in self.history._tile_keys(0, 0, self.width, self.height):
+                if cancelled is not None and cancelled():
+                    self.history.abort()
+                    return "cancelled"
+                sl = self.history._tile_slice(key)
+                tile = self.working[sl]
+                new = image[sl]
+                if not np.array_equal(tile, new):
+                    self.history.remember_tile(key)
+                    tile[...] = new
+            if cancelled is not None and cancelled():
+                self.history.abort()
+                return "cancelled"
+            status = self.history.end(cancelled=cancelled)
+            if status == "committed":
+                self._record_operation({"type": "auto_background", "preset": str(preset),
+                                        "clean": bool(clean)})
             return status
         except BaseException:
             self.history.abort()
