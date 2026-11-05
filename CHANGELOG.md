@@ -39,6 +39,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate license terms documented in `docs/THIRD_PARTY_NOTICES.md`.
 
 ### Fixed
+- Keep the press-and-hold magnifier centred on the mouse at image edges,
+  across zoom/pan, preview replacement and high-DPI displays. Sample original
+  pixels through the same transform as the displayed frame; load lazy source
+  pixels asynchronously and ignore stale frame completions.
 - Check temporary disk space for mapped frames and known stack operations, and
   release rejected imports without replacing the current stack.
 - Develop ordinary RAW inputs with the sRGB transfer curve and preserve the
