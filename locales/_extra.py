@@ -1470,7 +1470,7 @@ EXTRA_TRANSLATIONS = {
         "retouch_auto_bg_unsupported": "El fondo automático necesita fotogramas de origen de encuadre completo; no está disponible para un resultado de región (ROI).",
         "retouch_auto_bg_oversize": "Esta imagen es demasiado grande para el presupuesto del historial de retoque.",
         "retouch_missing_show": "Mostrar datos faltantes",
-        "retouch_missing_legend": "Magenta: fondo que ningún fotograma vio con nitidez. Cian: sujeto oculto a la cámara. Amarillo: sujeto fuera del rango de enfoque. Pizarra: demasiado liso para juzgar.",
+        "retouch_missing_legend": "Magenta: fondo que ningún fotograma captó limpiamente. Cian: sujeto oculto a la cámara. Amarillo: sujeto fuera del rango de enfoque. Pizarra: demasiado liso para juzgar.",
         "retouch_missing_save": "Guardar mapa de datos faltantes…",
         "retouch_missing_saved": "Mapa de datos faltantes guardado.",
         "retouch_tool_source": "Pincel de origen (B)",

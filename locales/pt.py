@@ -655,7 +655,7 @@ PACK = {
     "retouch_auto_bg_unsupported": "O fundo automático precisa de quadros de origem em tamanho completo; não está disponível para um resultado de região (ROI).",
     "retouch_auto_bg_oversize": "Esta imagem é grande demais para o limite do histórico de retoque.",
     "retouch_missing_show": "Mostrar dados ausentes",
-    "retouch_missing_legend": "Magenta: fundo que nenhum quadro mostrou com nitidez. Ciano: motivo escondido da câmera. Amarelo: motivo fora do intervalo de foco. Ardósia: liso demais para avaliar.",
+    "retouch_missing_legend": "Magenta: fundo que nenhum quadro registrou de forma limpa. Ciano: motivo escondido da câmera. Amarelo: motivo fora do intervalo de foco. Ardósia: liso demais para avaliar.",
     "retouch_missing_save": "Salvar mapa de dados ausentes…",
     "retouch_missing_saved": "Mapa de dados ausentes salvo.",
     "retouch_tool_source": "Pincel de origem (B)",

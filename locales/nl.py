@@ -655,7 +655,7 @@ PACK = {
     "retouch_auto_bg_unsupported": "Automatische achtergrond vereist bronframes van het volledige beeld; niet beschikbaar voor een gebiedsresultaat (ROI).",
     "retouch_auto_bg_oversize": "Deze afbeelding is te groot voor het geheugenbudget van de retouchegeschiedenis.",
     "retouch_missing_show": "Ontbrekende gegevens tonen",
-    "retouch_missing_legend": "Magenta: achtergrond die geen frame scherp zag. Cyaan: onderwerp verborgen voor de camera. Geel: onderwerp buiten het focusbereik. Leisteen: te glad om te beoordelen.",
+    "retouch_missing_legend": "Magenta: achtergrond die geen frame zonder verstoring kon vastleggen. Cyaan: onderwerp verborgen voor de camera. Geel: onderwerp buiten het focusbereik. Leisteen: te glad om te beoordelen.",
     "retouch_missing_save": "Kaart met ontbrekende gegevens opslaan…",
     "retouch_missing_saved": "Kaart met ontbrekende gegevens opgeslagen.",
     "retouch_tool_source": "Bronkwast (B)",

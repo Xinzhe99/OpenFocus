@@ -655,7 +655,7 @@ PACK = {
     "retouch_auto_bg_unsupported": "Lo sfondo automatico richiede fotogrammi sorgente a pieno formato; non è disponibile per un risultato di area (ROI).",
     "retouch_auto_bg_oversize": "Questa immagine supera il budget di memoria della cronologia di ritocco.",
     "retouch_missing_show": "Mostra dati mancanti",
-    "retouch_missing_legend": "Magenta: sfondo che nessun fotogramma ha visto nitidamente. Ciano: soggetto nascosto alla fotocamera. Giallo: soggetto fuori dall'intervallo di fuoco. Ardesia: troppo uniforme per giudicare.",
+    "retouch_missing_legend": "Magenta: sfondo che nessun fotogramma ha ripreso in modo pulito. Ciano: soggetto nascosto alla fotocamera. Giallo: soggetto fuori dall'intervallo di fuoco. Ardesia: troppo uniforme per giudicare.",
     "retouch_missing_save": "Salva mappa dei dati mancanti…",
     "retouch_missing_saved": "Mappa dei dati mancanti salvata.",
     "retouch_tool_source": "Pennello sorgente (B)",

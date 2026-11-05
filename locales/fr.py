@@ -655,7 +655,7 @@ PACK = {
     "retouch_auto_bg_unsupported": "L'arrière-plan automatique nécessite des images sources plein cadre ; il n'est pas disponible pour un résultat de zone (ROI).",
     "retouch_auto_bg_oversize": "Cette image dépasse le budget mémoire de l'historique de retouche.",
     "retouch_missing_show": "Afficher les données manquantes",
-    "retouch_missing_legend": "Magenta : arrière-plan qu'aucune image n'a vu nettement. Cyan : sujet caché à l'appareil. Jaune : sujet hors de la plage de mise au point. Ardoise : trop lisse pour juger.",
+    "retouch_missing_legend": "Magenta : arrière-plan qu'aucune image n'a capté proprement. Cyan : sujet caché à l'appareil. Jaune : sujet hors de la plage de mise au point. Ardoise : trop lisse pour juger.",
     "retouch_missing_save": "Enregistrer la carte des données manquantes…",
     "retouch_missing_saved": "Carte des données manquantes enregistrée.",
     "retouch_tool_source": "Pinceau source (B)",

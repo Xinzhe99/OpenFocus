@@ -168,12 +168,22 @@ def subject_mask(measures, use, thresh=None, min_island=2e-5):
     keep = np.zeros(n, bool)
     keep[1:] = st[1:, cv2.CC_STAT_AREA] >= min_island * h * w
     sub = keep[lab].astype(np.uint8)
-    n, lab, st, _ = cv2.connectedComponentsWithStats(1 - sub, 4)
-    for i in range(1, n):                      # enclosed holes belong to the subject
-        x, y, ww, hh, _ = st[i]
-        if not (x == 0 or y == 0 or x + ww == w or y + hh == h):
-            sub[lab == i] = 1
+    sub = _fill_enclosed(sub)            # enclosed gaps belong to the subject
     return sub.astype(bool), used
+
+
+def _fill_enclosed(sub: np.ndarray) -> np.ndarray:
+    """Set every 4-connected hole of a 0/1 uint8 mask that does not touch
+    the image border; one lookup over the labels, not one scan per hole."""
+    h, w = sub.shape
+    n, lab, st, _ = cv2.connectedComponentsWithStats(1 - sub, 4)
+    x, y = st[:, cv2.CC_STAT_LEFT], st[:, cv2.CC_STAT_TOP]
+    ww, hh = st[:, cv2.CC_STAT_WIDTH], st[:, cv2.CC_STAT_HEIGHT]
+    enclosed = ~((x == 0) | (y == 0) | (x + ww == w) | (y + hh == h))
+    enclosed[0] = False                         # label 0: the mask itself
+    out = sub.copy()
+    out[enclosed[lab]] = 1
+    return out
 
 
 def _box(x, r):
@@ -281,12 +291,7 @@ def fine_outline(sub_half, G, color=None, band=20, sigma=1.5, sliver=3, bg_ring=
     touches[np.unique(lab[outside & (peel > 0)])] = True
     touches[0] = False
     sub = (sub_half & ~touches[lab]).astype(np.uint8)
-    h, w = sub.shape
-    n, lab, st, _ = cv2.connectedComponentsWithStats(1 - sub, 4)
-    for i in range(1, n):                     # enclosed gaps belong to the subject
-        x, y, ww, hh, _ = st[i]
-        if not (x == 0 or y == 0 or x + ww == w or y + hh == h):
-            sub[lab == i] = 1
+    sub = _fill_enclosed(sub)            # enclosed gaps belong to the subject
     return sub.astype(bool)
 
 
@@ -631,12 +636,7 @@ def protect_visible_detail(sub_half, G, k_bg, fused_half=None, factor=4.0, ratio
     bridge = cv2.dilate(far, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4 * ring + 1, 4 * ring + 1))) > 0
     keep = keep & ((far > 0) | bridge)
     sub = (sub_half | keep).astype(np.uint8)
-    h, w = sub.shape
-    n, lab, st, _ = cv2.connectedComponentsWithStats(1 - sub, 4)
-    for i in range(1, n):                     # enclosed gaps belong to the subject
-        x, y, ww, hh, _ = st[i]
-        if not (x == 0 or y == 0 or x + ww == w or y + hh == h):
-            sub[lab == i] = 1
+    sub = _fill_enclosed(sub)            # enclosed gaps belong to the subject
     return sub.astype(bool), float(keep.mean())
 
 
@@ -695,12 +695,7 @@ def protect_focused_objects(sub_half, G, k_bg, fused_half, ratio=6.0, factor=4.0
     far = (ok & attached)[lab].astype(np.uint8)
     bridge = cv2.dilate(far, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4 * ring + 1, 4 * ring + 1))) > 0
     sub = (sub_half | (keep & ((far > 0) | bridge))).astype(np.uint8)
-    h, w = sub.shape
-    n, lab, st, _ = cv2.connectedComponentsWithStats(1 - sub, 4)
-    for i in range(1, n):                     # enclosed gaps belong to the subject
-        x, y, ww, hh, _ = st[i]
-        if not (x == 0 or y == 0 or x + ww == w or y + hh == h):
-            sub[lab == i] = 1
+    sub = _fill_enclosed(sub)            # enclosed gaps belong to the subject
     return sub.astype(bool)
 
 
