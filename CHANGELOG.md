@@ -14,9 +14,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - Run StackMFF V1/V2/V3 using dynamic ONNX checkpoints and ONNX Runtime;
-  production inference no longer bundles PyTorch. The current provider path
-  supports DirectML on Windows and CoreML on macOS with CPU fallback; wider GPU
-  support and target hardware behavior still require validation.
+  production inference no longer bundles PyTorch. DirectML and CoreML are
+  available where supported; CUDA and ROCm providers are recognized when a
+  compatible runtime and readable GPU-memory budget are present. Hardware
+  behavior across vendors still requires validation.
 - Adapt neural spatial tile sizes to available resources while retaining the
   complete focal stack in each inference. V2 spatial tiling approximates
   whole-image inference. Source frames and alignment scratch can be disk-backed;

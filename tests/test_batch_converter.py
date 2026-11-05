@@ -51,6 +51,29 @@ def test_transparency_is_not_discarded(tmp_path):
     assert np.asarray(Image.open(result))[0, 0, 3] == 100
 
 
+def test_opaque_rgba_can_convert_to_jpeg(tmp_path):
+    source = tmp_path / 'opaque.png'
+    Image.new('RGBA', (8, 8), (120, 80, 40, 255)).save(source)
+    output = converter.convert_one(str(source), str(tmp_path), '.jpg')
+    with Image.open(output) as image:
+        assert image.mode == 'RGB' and image.size == (8, 8)
+
+
+def test_high_depth_heif_to_png_retains_16bit(tmp_path):
+    pillow_heif = pytest.importorskip('pillow_heif')
+    source = tmp_path / 'high-depth.heic'
+    pixels = np.full((32, 32, 3), 32000, dtype=np.uint16)
+    try:
+        pillow_heif.from_bytes('RGB;16', (32, 32), pixels.tobytes()).save(
+            str(source), quality=100)
+    except (RuntimeError, OSError) as exc:
+        pytest.skip(f'HEIF encoder unavailable: {exc}')
+    output = converter.convert_one(str(source), str(tmp_path), '.png')
+    decoded = cv2.imdecode(np.fromfile(output, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert decoded.dtype == np.uint16 and decoded.shape == pixels.shape
+    assert np.any(decoded % 257)
+
+
 def test_cancellation_after_encoding_removes_reserved_file(tmp_path):
     source = tmp_path / 'image.png'
     Image.new('RGB', (4, 4)).save(source)

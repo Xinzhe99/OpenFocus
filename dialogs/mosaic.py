@@ -43,7 +43,10 @@ class _Worker(QThread):
         except RegistrationCancelled:
             self.cancelled.emit()
         except Exception as exc:
-            self.error.emit(str(exc))
+            if self._stop.is_set():
+                self.cancelled.emit()
+            else:
+                self.error.emit(str(exc))
         else:
             self.result.emit(value)
 
@@ -211,6 +214,7 @@ class MosaicDialog(QDialog):
         worker.error.connect(self._error)
         worker.cancelled.connect(lambda: self.status.setText(trans.t('compare_cancelled')))
         worker.finished.connect(self._finished)
+        worker.finished.connect(worker.deleteLater)
         worker.start()
         self._refresh_controls()
 
@@ -244,15 +248,42 @@ class MosaicDialog(QDialog):
 
         def load(cancel, progress):
             from core.frame_storage import store_frame
-            from core.image_loader import decode_image
+            from core.image_loader import (count_frames, iter_decoded_sources,
+                                           source_dimensions, _DecodeCancelled,
+                                           _is_dng_tiff)
             result = []
             for index, path in enumerate(paths):
                 if cancel():
                     raise RegistrationCancelled()
-                image = decode_image(path, allow_transparent_png=True)
-                if image is None:
-                    raise ValueError(trans.t('msg_load_images_failed_text').format(message=path))
-                result.append(make_frame(os.path.basename(path), store_frame(image), path))
+                ext = os.path.splitext(path)[1].lower()
+                mapped_tiff = ext in ('.tif', '.tiff') and not _is_dng_tiff(path)
+                encoded_bytes = 0 if mapped_tiff else os.path.getsize(path) * 2
+                require_memory(encoded_bytes)
+                count = count_frames(path)
+                largest = 0
+                for page in range(count):
+                    if cancel():
+                        raise RegistrationCancelled()
+                    width, height = source_dimensions(path, page)
+                    largest = max(largest, width * height)
+                require_memory(largest * 32 + encoded_bytes)
+                decoder = iter_decoded_sources(
+                    [path], 1.0, thread_count=1, should_cancel=cancel,
+                    allow_transparent_png=True, disk_backed=True)
+                try:
+                    item = next(decoder)
+                    if item.error is not None:
+                        raise item.error
+                    for page, image in enumerate(item.pages):
+                        name = os.path.basename(path)
+                        if len(item.pages) > 1:
+                            name += f' [{page + 1}]'
+                        mapped = image if isinstance(image, np.memmap) else store_frame(image)
+                        result.append(make_frame(name, mapped, path))
+                except _DecodeCancelled as exc:
+                    raise RegistrationCancelled() from exc
+                finally:
+                    decoder.close()
                 progress(index + 1, len(paths))
             return result
 

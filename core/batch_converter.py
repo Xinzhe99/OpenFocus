@@ -17,23 +17,10 @@ INPUT_EXTENSIONS = image_loader.RAW_FORMATS | {'.jpg', '.jpeg', '.jpe', '.jfif',
 OUTPUT_EXTENSIONS = {'JPEG': '.jpg', 'PNG': '.png', 'TIFF': '.tif', 'BMP': '.bmp', 'WebP': '.webp'}
 
 
-def _dimensions(path, page):
-    ext = Path(path).suffix.lower()
-    if ext in image_loader.RAW_FORMATS or image_loader._is_dng_tiff(path):
-        if not image_loader.RAWPY_AVAILABLE:
-            raise ValueError('Camera RAW support is unavailable (rawpy/LibRaw).')
-        with open(path, 'rb') as stream, image_loader.rawpy.imread(stream) as raw:
-            return raw.sizes.width, raw.sizes.height
-    if ext in ('.tif', '.tiff'):
-        with tifffile.TiffFile(path) as tif:
-            p = tif.pages[page]
-            return p.imagewidth, p.imagelength
-    with Image.open(path) as image:
-        return image.size
 
 
 def _admit(path, page, output_dir):
-    width, height = _dimensions(path, page)
+    width, height = image_loader.source_dimensions(path, page)
     if width <= 0 or height <= 0:
         raise ValueError('Invalid image dimensions.')
     # Decoding, orientation, color conversion, encoding and metadata can each
@@ -97,6 +84,14 @@ def _decode(path, page):
         with open(path, 'rb') as stream, image_loader.rawpy.imread(stream) as raw:
             rgb = raw.postprocess(use_camera_wb=True, output_bps=16, no_auto_bright=True)
         image = np.ascontiguousarray(rgb[:, :, ::-1])
+    elif ext in ('.heic', '.heif'):
+        import pillow_heif
+        heif = pillow_heif.open_heif(path, convert_hdr_to_8bit=False, bgr_mode=True)
+        if heif.premultiplied_alpha:
+            raise ValueError('Premultiplied HEIF alpha cannot be preserved safely.')
+        width, height = heif.size
+        image = np.ascontiguousarray(np.asarray(heif)[:height, :width])
+        image = image_loader.apply_exif_orientation(path, image)
     else:
         # Decode unchanged to retain alpha, including transparent non-PNG files.
         data = np.fromfile(path, dtype=np.uint8)
@@ -135,7 +130,9 @@ def _reserve(directory, stem, ext):
 
 def _write(path, pixels, source, page, ext):
     if pixels.ndim == 3 and pixels.shape[2] == 4 and ext != '.png':
-        raise ValueError('This output format cannot safely preserve transparency; choose PNG.')
+        if image_loader._has_transparency(pixels):
+            raise ValueError('This output format cannot safely preserve transparency; choose PNG.')
+        pixels = cv2.cvtColor(pixels, cv2.COLOR_BGRA2BGR)
     if pixels.dtype == np.uint16 and ext not in ('.png', '.tif'):
         pixels = to_display_uint8(pixels)
     exif = image_loader._read_exif_bytes(source) if page == 0 else b''

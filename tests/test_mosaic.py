@@ -88,3 +88,34 @@ def test_workspace_placement_and_preview_opacity(qapp):
     assert dialog.save.isEnabled() and dialog.auto.isEnabled()
     dialog.close()
     parent.close()
+
+
+def test_workspace_imports_all_tiff_pages(qapp, tmp_path, monkeypatch):
+    import time
+    import tifffile
+    from PyQt6.QtWidgets import QFileDialog, QMessageBox, QWidget
+    from dialogs.mosaic import MosaicDialog
+
+    source = tmp_path / '多页.tif'
+    with tifffile.TiffWriter(source) as writer:
+        writer.write(np.full((12, 16, 3), 20, np.uint8), photometric='rgb')
+        writer.write(np.full((12, 16, 3), 180, np.uint8), photometric='rgb')
+    monkeypatch.setattr(QFileDialog, 'getOpenFileNames',
+                        lambda *args, **kwargs: ([str(source)], ''))
+    errors = []
+    monkeypatch.setattr(QMessageBox, 'warning',
+                        lambda *args, **kwargs: errors.append(args))
+    parent = QWidget()
+    dialog = MosaicDialog(parent)
+    dialog._add_files()
+    deadline = time.monotonic() + 10
+    while dialog.worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert dialog.worker is None
+    assert not errors
+    assert len(dialog.frames) == 2
+    assert all(isinstance(frame.image, np.memmap) for frame in dialog.frames)
+    assert [int(frame.image[0, 0, 0]) for frame in dialog.frames] == [20, 180]
+    dialog.close()
+    parent.close()

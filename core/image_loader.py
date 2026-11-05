@@ -56,6 +56,25 @@ def _is_dng_tiff(path):
     except (OSError, ValueError, tifffile.TiffFileError):
         return False
 
+def source_dimensions(path, page=0):
+    """Read a still image or TIFF page's dimensions before allocating pixels."""
+    extension = os.path.splitext(os.fspath(path))[1].lower()
+    if extension in RAW_FORMATS or _is_dng_tiff(path):
+        if not RAWPY_AVAILABLE:
+            raise ValueError('Camera RAW support is unavailable (rawpy/LibRaw).')
+        with open(path, 'rb') as stream, rawpy.imread(stream) as raw:
+            return raw.sizes.width, raw.sizes.height
+    if extension in ('.tif', '.tiff'):
+        import tifffile
+        with tifffile.TiffFile(path) as tif:
+            entry = tif.pages[page]
+            return entry.imagewidth, entry.imagelength
+    if not PIL_AVAILABLE:
+        raise ValueError('Image header support is unavailable (Pillow).')
+    with PILImage.open(path) as image:
+        return image.size
+
+
 
 def linear_raw_metadata_matches(first, second):
     """Whether two camera-linear sources share the same calibration."""
