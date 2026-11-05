@@ -89,7 +89,9 @@ def _decode(path, page):
                     a = a[..., [2, 1, 0, 3] if a.shape[-1] == 4 else [2, 1, 0]]
             elif p.samplesperpixel != 1 or a.ndim != 2 or p.photometric.name != 'MINISBLACK':
                 raise ValueError('Unsupported TIFF page layout or color space.')
-            transform = image_loader._EXIF_TRANSFORMS.get(orientation)
+            # OpenCV's TIFF decoder already applies the TIFF orientation,
+            # including when IMREAD_UNCHANGED is requested.
+            transform = None if opencv_page else image_loader._EXIF_TRANSFORMS.get(orientation)
             return np.ascontiguousarray(transform(a) if transform else a)
     if ext in image_loader.RAW_FORMATS or image_loader._is_dng_tiff(path):
         with open(path, 'rb') as stream, image_loader.rawpy.imread(stream) as raw:
