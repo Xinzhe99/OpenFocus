@@ -393,8 +393,7 @@ def test_ui_actions_tree_find_set_click_and_screenshot(server, stack_frames, tmp
                    object_name="combo_fusion")["result"]["matches"]
     assert matches, "combo_fusion must be addressable"
     combo_path = matches[0]["path"]
-    # A classical method: an AI method would raise the "model unavailable"
-    # modal on hosts without torch and block the whole run.
+    # A classical method avoids the unavailable neural-runtime modal.
     written = call(server, "ui.set", token=token, path=combo_path,
                    value="dct")["result"]
     assert written["value"] == "dct"
@@ -719,18 +718,22 @@ def test_closing_window_before_delayed_setup_does_not_raise(qapp, tmp_path, monk
 
 
 def test_app_info_reports_unknown_until_gpu_probe_finishes(server, monkeypatch):
-    from core import torch_backend
+    import core.multi_focus_fusion as mff
     from utils import platform_utils
 
-    monkeypatch.setattr(torch_backend, "cached_kind", lambda: None)
+    monkeypatch.setattr(mff, "neural_device_kind", lambda: None)
     monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", None)
     monkeypatch.setattr(platform_utils, "is_macos", lambda: False)
     monkeypatch.setattr(platform_utils, "is_windows", lambda: True)
     monkeypatch.setattr(platform_utils, "_nvidia_smi_reports_gpu", lambda: True)
     assert call(server, "app.info")["result"]["capabilities"]["gpu"] is None
 
-    monkeypatch.setattr(torch_backend, "cached_kind", lambda: "XPU")
+    monkeypatch.setattr(mff, "neural_device_kind", lambda: "DIRECTML")
     assert call(server, "app.info")["result"]["capabilities"]["gpu"] is True
+    monkeypatch.setattr(mff, "neural_device_kind", lambda: "COREML")
+    assert call(server, "app.info")["result"]["capabilities"]["gpu"] is True
+    monkeypatch.setattr(mff, "neural_device_kind", lambda: "N/A")
+    assert call(server, "app.info")["result"]["capabilities"]["gpu"] is False
 
 
 def test_gpu_action_disables_after_backend_probe_fails(qapp, tmp_path, monkeypatch):
@@ -740,7 +743,7 @@ def test_gpu_action_disables_after_backend_probe_fails(qapp, tmp_path, monkeypat
 
     monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async", lambda self: None)
     monkeypatch.setattr(platform_utils, "has_compute_gpu", lambda: True)
-    monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
+    monkeypatch.setattr(mff, "neural_device_kind", lambda: "N/A")
     window = _new_main_window(qapp, tmp_path, monkeypatch)
     try:
         window.use_gpu = True
@@ -763,7 +766,7 @@ def test_gpu_action_can_turn_off_while_probe_is_pending(qapp, tmp_path, monkeypa
 
     monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async", lambda self: None)
     monkeypatch.setattr(OpenFocus, "_probe_device_kind_async", lambda self: None)
-    monkeypatch.setattr(mff, "torch_device_kind", lambda: None)
+    monkeypatch.setattr(mff, "neural_device_kind", lambda: None)
     monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
     window = _new_main_window(qapp, tmp_path, monkeypatch)
     try:
@@ -785,11 +788,15 @@ def test_device_probe_thread_does_not_touch_a_destroyed_window(
     # Keep the unrelated availability probe out of this lifecycle test.
     monkeypatch.setattr(OpenFocus, "_probe_stackmff_availability_async",
                         lambda self: None)
+    original_probe = OpenFocus._probe_device_kind_async
+    monkeypatch.setattr(OpenFocus, "_probe_device_kind_async", lambda self: None)
     window = _new_main_window(qapp, tmp_path, monkeypatch)
+    monkeypatch.setattr(OpenFocus, "_probe_device_kind_async", original_probe)
+    window.use_gpu = False
 
     # A cached accelerator must refresh the action immediately while the
     # user's explicit GPU-off preference stays checked=False.
-    monkeypatch.setattr(mff, "torch_device_kind", lambda: "XPU")
+    monkeypatch.setattr(mff, "neural_device_kind", lambda: "DIRECTML")
     window._update_dynamic_status()
     action = window.ui_objs["action_gpu_accel"]
     assert action.isEnabled() is True
@@ -802,8 +809,8 @@ def test_device_probe_thread_does_not_touch_a_destroyed_window(
         release.wait(10)
         return "N/A"
 
-    monkeypatch.setattr(mff, "torch_device_kind", lambda: None)
-    monkeypatch.setattr(mff, "ensure_torch_device_kind", delayed_probe)
+    monkeypatch.setattr(mff, "neural_device_kind", lambda: None)
+    monkeypatch.setattr(mff, "ensure_neural_device_kind", delayed_probe)
     window._probe_device_kind_async()
     assert entered.wait(5)
     thread = window._device_probe_thread

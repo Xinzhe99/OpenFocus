@@ -506,42 +506,37 @@ def test_feedback_failed_replace_preserves_previous_archive(monkeypatch, tmp_pat
     assert list(tmp_path.iterdir()) == [dest]
 
 
-def test_environment_missing_torch_keeps_classic_methods_available(monkeypatch):
-    import sys
-    from dialogs.about import EnvironmentInfoDialog
-    monkeypatch.setitem(sys.modules, "torch", None)
-    text = EnvironmentInfoDialog.environment_report()
-    assert "Guided Filter / GFG-FGF / OpenFocus A/B/C: CPU" in text
-    assert "StackMFF-V3: CPU" not in text
-
-
-@pytest.mark.parametrize("cuda_version", [None, "12.4"])
-def test_environment_reports_cuda_build_without_gpu(monkeypatch, cuda_version):
+def test_environment_missing_runtime_keeps_classic_methods_available(monkeypatch):
     import sys
     from dialogs.about import EnvironmentInfoDialog
     from locales import trans
-    from core import torch_backend
-    import core.multi_focus_fusion as mff
-    monkeypatch.setattr(mff, "_TORCH_DEVICE_KIND", None)
-    monkeypatch.setattr(mff, "_STACKMFF_AVAILABLE_CACHE", True)
-    monkeypatch.setattr(torch_backend, "_KIND", None)
 
-    torch = SimpleNamespace(
-        __version__="2.5.1+cu124" if cuda_version else "2.5.1+cpu",
-        version=SimpleNamespace(cuda=cuda_version),
-        cuda=SimpleNamespace(is_available=lambda: False),
-        backends=SimpleNamespace(),
-    )
-    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)
     text = EnvironmentInfoDialog.environment_report()
-    assert torch_backend.cached_kind() == torch_backend.KIND_CPU
-    assert mff.torch_device_kind() == "N/A"
-    assert trans.t('env_no_gpu') in text
-    assert trans.t('env_cpu_mode') in text
-    if cuda_version:
-        assert trans.t('env_cuda_ver').format(cuda_version) in text
+    assert "Guided Filter / GFG-FGF / OpenFocus A/B/C: CPU" in text
+    assert f"StackMFF V1/V2/V3: {trans.t('env_not_installed')}" in text
+    assert trans.t('env_stackmff_unavailable') in text
+
+
+@pytest.mark.parametrize("kind,device", [
+    ("N/A", "CPU"), ("DIRECTML", "DirectML"), ("COREML", "CoreML"),
+])
+def test_environment_reports_neural_provider(monkeypatch, kind, device):
+    import sys
+    from dialogs.about import EnvironmentInfoDialog
+    from locales import trans
+    import core.multi_focus_fusion as mff
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(__version__="1.0"))
+    monkeypatch.setattr(mff, "ensure_neural_device_kind", lambda: kind)
+    text = EnvironmentInfoDialog.environment_report()
+    assert f"StackMFF V1/V2/V3: {device}" in text
+    if kind == "N/A":
+        assert trans.t('env_no_gpu') in text
+        assert trans.t('env_cpu_mode') in text
     else:
-        assert trans.t('env_cuda_ver').format("None") not in text
+        assert trans.t('env_gpu_accel') in text
+        assert trans.t('env_no_gpu') not in text
 
 
 def test_environment_probe_does_not_block_dialog_and_copy_uses_report(qapp, monkeypatch):
