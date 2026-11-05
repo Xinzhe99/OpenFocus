@@ -1,6 +1,7 @@
 """Isolated tests for opt-in reporting; no network requests are made."""
 import json
 import uuid
+import time
 
 import pytest
 from PyQt6.QtCore import QSettings
@@ -25,7 +26,7 @@ class DeferredThread:
 
 
 @pytest.fixture
-def setup(tmp_path, monkeypatch):
+def setup(qapp, tmp_path, monkeypatch):
     DeferredThread.instances = []
     monkeypatch.setattr(usage.threading, "Thread", DeferredThread)
     monkeypatch.setattr(usage, "_platform", lambda: "linux")
@@ -121,6 +122,54 @@ def test_opt_out_ignores_inflight_success(setup):
     assert not settings.contains(usage.ID_KEY)
     assert not settings.contains(usage.LAST_SENT_KEY)
     assert not calls
+
+def _wait_for(qapp, predicate, timeout=2.0):
+    from PyQt6.QtTest import QTest
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        QTest.qWait(5)
+    assert predicate()
+
+
+def test_running_application_reports_again_and_opt_out_stops_it(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtTest import QTest
+    monkeypatch.setattr(usage, 'INTERVAL_SECONDS', 0.08)
+    settings = QSettings(str(tmp_path / 'running.ini'), QSettings.Format.IniFormat)
+    settings.setValue(usage.ENABLED_KEY, True)
+    settings.setValue(usage.ID_KEY, str(uuid.uuid4()))
+    settings.setValue(usage.LAST_SENT_KEY, time.time())
+    calls = []
+    reporter = usage.UsageAnalytics(settings=settings, sender=lambda payload: calls.append(payload) or True)
+    try:
+        reporter.start()
+        assert not calls
+        _wait_for(qapp, lambda: len(calls) >= 2)
+        reporter.set_enabled(False)
+        count = len(calls)
+        QTest.qWait(200)
+        assert len(calls) == count
+        assert not settings.contains(usage.ID_KEY)
+    finally:
+        reporter.shutdown()
+
+
+def test_failed_report_retries_while_application_remains_open(qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(usage, 'RETRY_INTERVAL_SECONDS', 0.05, raising=False)
+    settings = QSettings(str(tmp_path / 'offline.ini'), QSettings.Format.IniFormat)
+    attempts = []
+    def send(payload):
+        attempts.append(payload)
+        if len(attempts) == 1:
+            raise OSError('offline')
+        return True
+    reporter = usage.UsageAnalytics(settings=settings, sender=send)
+    try:
+        reporter.set_enabled(True)
+        _wait_for(qapp, lambda: len(attempts) >= 2)
+        _wait_for(qapp, lambda: settings.contains(usage.LAST_SENT_KEY))
+    finally:
+        reporter.set_enabled(False)
+        reporter.shutdown()
 
 
 def test_http_request_and_204_acceptance(monkeypatch):

@@ -82,7 +82,8 @@ def _decode(path, page):
             return np.ascontiguousarray(transform(a) if transform else a)
     if ext in image_loader.RAW_FORMATS or image_loader._is_dng_tiff(path):
         with open(path, 'rb') as stream, image_loader.rawpy.imread(stream) as raw:
-            rgb = raw.postprocess(use_camera_wb=True, output_bps=16, no_auto_bright=True)
+            rgb = raw.postprocess(use_camera_wb=True, output_bps=16, no_auto_bright=True,
+                                  gamma=(2.4, 12.92))
         image = np.ascontiguousarray(rgb[:, :, ::-1])
     elif ext in ('.heic', '.heif'):
         import pillow_heif
@@ -148,7 +149,8 @@ def _write(path, pixels, source, page, ext):
         # LibRaw develops into sRGB regardless of the camera's JPEG setting.
         safe.get_ifd(0x8769).pop(40961, None)
     exif = safe.tobytes() if safe else b''
-    profile = b'' if is_raw else image_loader._read_icc_profile(source)
+    tiff_page = page if Path(source).suffix.lower() in ('.tif', '.tiff') and not is_raw else None
+    profile = image_loader._read_icc_profile(source, page=tiff_page)
     params = []
     if ext == '.jpg':
         params = [cv2.IMWRITE_JPEG_QUALITY, 95]

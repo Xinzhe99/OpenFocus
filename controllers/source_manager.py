@@ -340,9 +340,18 @@ class SourceManager(QObject):
         self._load_generation = getattr(self, "_load_generation", 0) + 1
         generation = self._load_generation
 
+        def load_is_current():
+            from PyQt6 import sip
+            return (not (isinstance(window, QObject) and sip.isdeleted(window))
+                    and not getattr(window, "_shutting_down", False)
+                    and generation == getattr(self, "_load_generation", -1))
+
         def on_done(ok: bool, message: str, images, filenames) -> None:
+            accepted = False
+            previous_window_state = None
+            previous_baseline = None
             try:
-                if generation != getattr(self, "_load_generation", -1):
+                if not load_is_current():
                     return  # superseded by a newer load request
                 if not ok:
                     if on_error is not None:
@@ -363,16 +372,31 @@ class SourceManager(QObject):
                                            max(1, int(image.shape[0] * factor))),
                                    interpolation=cv2.INTER_AREA if factor < 1 else cv2.INTER_LINEAR))
                         for image in images]
-                if not self._confirm_mixed_sizes(load_options.working_images):
+                mixed_ok = self._confirm_mixed_sizes(load_options.working_images)
+                if not load_is_current():
+                    return
+                if not mixed_ok:
                     if on_error is not None:
                         on_error("CANCELLED")
                     return
-                if append and not self._confirm_append_dimensions(load_options.working_images):
+                append_ok = not append or self._confirm_append_dimensions(load_options.working_images)
+                if not load_is_current():
+                    return
+                if not append_ok:
                     if on_error is not None:
                         on_error("CANCELLED")
                     return
                 if prepare_options is not None:
                     load_options = prepare_options(load_options)
+                if not load_is_current():
+                    return
+                state_fields = ("current_folder_path", "source_px_um", "linear_dng_metadata",
+                                "base_images", "raw_images", "image_filenames", "image_source_paths",
+                                "image_icc_profiles", "current_scale_factor", "base_scale_factor",
+                                "excluded_frames", "source_transforms", "unrecoverable_source_changes")
+                previous_window_state = {name: getattr(window, name) for name in state_fields
+                                         if hasattr(window, name)}
+                previous_baseline = self._stack_baseline
                 load_folder = folder or (os.path.dirname(video) if video else
                                         os.path.dirname(filepaths[0]) if filepaths else "")
                 if not append or not window.raw_images:
@@ -391,6 +415,7 @@ class SourceManager(QObject):
                     window.linear_dng_metadata = worker.linear_dng_metadata
                 self._apply_load_options(load_options, append=append,
                                          profile_map=getattr(worker, "source_icc_profiles", {}))
+                accepted = True
                 if on_success is not None:
                     on_success()
                 # Remember for the optional "restore last stack on startup"
@@ -405,6 +430,10 @@ class SourceManager(QObject):
                 recovery.write_snapshot(window)
                 self._show_linear_profile_notice(getattr(window, "linear_dng_metadata", None))
             except Exception as exc:  # pylint: disable=broad-except
+                if not accepted and previous_window_state is not None:
+                    for name, value in previous_window_state.items():
+                        setattr(window, name, value)
+                    self._stack_baseline = previous_baseline
                 if on_error is not None:
                     on_error(str(exc))
                     return
@@ -415,6 +444,15 @@ class SourceManager(QObject):
                     f"Error: {str(exc)}",
                     QMessageBox.Icon.Critical,
                 )
+            finally:
+                if ok and not accepted:
+                    restore = getattr(worker, "restore_loader_state", None)
+                    if restore is not None:
+                        restore(images)
+                if accepted:
+                    previous_state = getattr(worker, "_previous_loader_state", None)
+                    if previous_state is not None:
+                        previous_state.clear()
 
         worker = self._load_worker
         worker.progress.connect(self._on_load_progress)

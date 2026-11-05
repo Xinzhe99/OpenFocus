@@ -16,7 +16,8 @@ desktop usage reporting is disabled by default and requires your consent.
 - **Usage reporting** — if you enable it in Settings, the desktop app sends a
   randomly generated installation ID, app version and operating system to
   `openfocus.top`, normally no more than once every 24 hours after a successful
-  report. The ID is pseudonymous, not anonymous or derived from hardware.
+  report. Failed sends are retried while the application remains open. The ID is
+  pseudonymous, not anonymous or derived from hardware.
   Turning the setting off deletes the local ID and stops future reports;
   a request already in flight may still complete.
 - **Website downloads** — when download analytics is enabled on the server,

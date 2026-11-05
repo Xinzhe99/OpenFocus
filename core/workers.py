@@ -89,6 +89,76 @@ def _downscale_for_preview(img):
     return cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
 
 
+_LOADER_STATE_FIELDS = ('images', 'image_paths', 'px_size_um', 'source_exif',
+                        'source_icc_profile', 'source_icc_profiles', 'linear_dng_metadata')
+_MISSING_LOADER_FIELD = object()
+
+
+def _check_known_stack_space(paths, scale, should_cancel=None, collapse=True):
+    """Preflight readable headers; unknown formats are checked per frame."""
+    import math
+    from core import image_loader
+    from core.frame_storage import require_disk_space
+
+    sources = image_loader._collapse_repeats(list(paths)) if collapse else paths
+    total = 0
+    for path in sources:
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+        sizes = []
+        if image_loader.is_raw_source(path):
+            if image_loader.RAWPY_AVAILABLE:
+                try:
+                    with open(path, 'rb') as stream, image_loader.rawpy.imread(stream) as raw:
+                        dimensions = raw.sizes
+                        aspect = float(dimensions.pixel_aspect)
+                        if math.isfinite(aspect) and aspect > 0:
+                            width = math.ceil(max(dimensions.raw_width, dimensions.width)
+                                              * max(1, aspect, 1 / aspect))
+                            height = max(dimensions.raw_height, dimensions.height)
+                            if width > 0 and height > 0:
+                                sizes = [(width, height, 3, 2)]
+                except Exception:  # unreadable RAW headers remain a per-frame check
+                    pass
+        elif os.path.splitext(path)[1].lower() in ('.tif', '.tiff'):
+            import tifffile
+            try:
+                with tifffile.TiffFile(path) as tif:
+                    if not tif.is_dng:
+                        sizes = [(page.imagewidth, page.imagelength, 3,
+                                  np.dtype(page.dtype).itemsize) for page in tif.pages]
+            except (OSError, ValueError, TypeError, tifffile.TiffFileError):
+                pass
+        else:
+            size = image_loader._peek_source_size(path)
+            if size is not None:
+                sizes = [size]
+        for width, height, channels, itemsize in sizes:
+            if 0 < scale < 1:
+                width, height = max(1, int(width * scale)), max(1, int(height * scale))
+            total += width * height * channels * itemsize
+    if should_cancel is not None and should_cancel():
+        raise RegistrationCancelled()
+    if total:
+        require_disk_space(total)
+
+def _check_processing_space(images, registration_steps=0):
+    """Estimate new mappings while the input stack remains alive."""
+    from core.frame_storage import require_disk_space
+    if not images or (registration_steps and len(images) < 2):
+        return
+    if registration_steps:
+        height = max(image.shape[0] for image in images)
+        width = max(image.shape[1] for image in images)
+        pixel_bytes = max(image.dtype.itemsize * (image.shape[2] if image.ndim == 3 else 1)
+                          for image in images)
+        size = height * width * pixel_bytes * len(images) * min(2, registration_steps)
+    else:
+        size = sum(image.nbytes for image in images)
+    require_disk_space(size)
+
+
+
 class StackLoadWorker(QThread):
     """后台加载图像栈，避免大栈解码时冻结界面"""
 
@@ -113,11 +183,27 @@ class StackLoadWorker(QThread):
         self.source_icc_profiles = {}
         self.is_cancelled = False
         self._previous_should_cancel = getattr(self.loader, 'should_cancel', None)
-        self._previous_images = getattr(self.loader, 'images', None)
+        self._previous_loader_state = {
+            name: getattr(self.loader, name, _MISSING_LOADER_FIELD)
+            for name in _LOADER_STATE_FIELDS
+        }
         self.loader.should_cancel = lambda: self.is_cancelled
 
     def request_cancel(self):
         self.is_cancelled = True
+
+    def restore_loader_state(self, images):
+        """Discard only a result still owned by this operation."""
+        if getattr(self.loader, 'images', _MISSING_LOADER_FIELD) is not images:
+            self._previous_loader_state.clear()
+            return
+        for name, value in self._previous_loader_state.items():
+            if value is _MISSING_LOADER_FIELD:
+                if hasattr(self.loader, name):
+                    delattr(self.loader, name)
+            else:
+                setattr(self.loader, name, value)
+        self._previous_loader_state.clear()
 
     def run(self):
         with log_operation("stack_load", source="folder" if self.folder else "video" if self.video else "files",
@@ -130,23 +216,46 @@ class StackLoadWorker(QThread):
                 with heavy_job(lambda: self.is_cancelled):
                     if self.is_cancelled:
                         operation.cancel()
+                        self._previous_loader_state.clear()
                         self.finished_load.emit(False, 'CANCELLED', [], [])
                         return
                     options = dict(thread_count=self.thread_count,
                                    resource_preference=self.resource_preference)
+                    if not self.video and not self.linear_raw:
+                        from utils.path_identity import same_path
+                        import os
+                        if self.folder and os.path.isdir(self.folder):
+                            entries = [(name, os.path.join(self.folder, name))
+                                       for name in os.listdir(self.folder)
+                                       if os.path.splitext(name)[1].lower() in self.loader.SUPPORTED_FORMATS
+                                       and not any(same_path(os.path.join(self.folder, name), excluded)
+                                                   for excluded in self.exclude_paths)]
+                            entries = self.loader._drop_derived_aligned_copies(entries)
+                            paths_for_check = [path for _, path in entries]
+                        else:
+                            paths_for_check = [path for path in (self.filepaths or ())
+                                               if not any(same_path(path, excluded)
+                                                          for excluded in self.exclude_paths)]
+                        _check_known_stack_space(paths_for_check, self.scale, lambda: self.is_cancelled)
                     if self.linear_raw:
                         from core.image_loader import is_raw_source
                         from utils.path_identity import same_path
                         import os
                         if self.folder:
-                            paths = [os.path.join(self.folder, name) for name in os.listdir(self.folder)
-                                     if is_raw_source(os.path.join(self.folder, name))]
+                            paths = []
+                            for name in os.listdir(self.folder):
+                                if self.is_cancelled:
+                                    raise RegistrationCancelled()
+                                path = os.path.join(self.folder, name)
+                                if is_raw_source(path):
+                                    paths.append(path)
                             from utils.sorting import natural_sort_key
                             paths.sort(key=lambda path: natural_sort_key(os.path.basename(path)))
                         else:
                             paths = list(self.filepaths or ([self.video] if self.video else []))
                         paths = [path for path in paths if not any(
                             same_path(path, excluded) for excluded in self.exclude_paths)]
+                        _check_known_stack_space(paths, self.scale, lambda: self.is_cancelled, False)
                         ok, msg, imgs, names = self.loader.load_linear_raw_stack(
                             paths, scale_factor=self.scale,
                             resource_preference=self.resource_preference,
@@ -186,9 +295,12 @@ class StackLoadWorker(QThread):
                 self.loader.should_cancel = self._previous_should_cancel
             if self.is_cancelled:
                 operation.cancel()
-                if ok and getattr(self.loader, 'images', None) is imgs:
-                    self.loader.images = self._previous_images
+                self.restore_loader_state(imgs if ok else self._previous_loader_state['images'])
                 ok, msg, imgs, names = False, 'CANCELLED', [], []
+            elif not ok:
+                self.restore_loader_state(self._previous_loader_state['images'])
+            if not ok:
+                self._previous_loader_state.clear()
             self.finished_load.emit(ok, msg, imgs, names)
 
 
@@ -244,6 +356,7 @@ class ROIAlignmentWorker(QThread):
         else:
             registration = ImageRegistration(method="ecc")
     
+        _check_processing_space(self.raw_images, 1)
         aligned_images = registration.process(
             self.raw_images, output_path=None, thread_count=self.thread_count,
             resource_preference=self.resource_preference,
@@ -401,6 +514,7 @@ class RenderWorker(QThread):
                                              self.sensor_denoise, disk_backed=True)
                 mask = (load_sensor_defect_mask(self.defect_mask_path, cancel_callback=lambda: self.is_cancelled)
                         if self.defect_mask_path else None)
+                _check_processing_space(processed_images)
                 processed_images = [store_frame(cleanup_sensor_image(image, defect_mask_path=mask,
                                     sensor_denoise=self.sensor_denoise,
                                     cancel_callback=lambda: self.is_cancelled))
@@ -431,6 +545,7 @@ class RenderWorker(QThread):
                     alignment_time = 0.0
                 else:
                     alignment_start_time = time.time()
+                    _check_processing_space(processed_images, len(self.alignment))
                     self.stage_signal.emit("align")
                     if self.alignment_report is None:
                         processed_images, alignment_time = self._run_registration(
@@ -1092,6 +1207,7 @@ class BatchWorker(QThread):
                     require_sensor_cleanup_stack(aligned_images, mask_path, denoise, disk_backed=True)
                     mask = (load_sensor_defect_mask(mask_path, cancel_callback=lambda: self.is_cancelled)
                             if mask_path else None)
+                    _check_processing_space(aligned_images)
                     aligned_images = [store_frame(cleanup_sensor_image(
                         frame, defect_mask_path=mask, sensor_denoise=denoise,
                         cancel_callback=lambda: self.is_cancelled)) for frame in aligned_images]
@@ -1108,6 +1224,7 @@ class BatchWorker(QThread):
                     require_memory(max(frame.nbytes + frame.size * 12 for frame in aligned_images)
                                    + white.size * 12)
                     gain = compute_flat_field(white)
+                    _check_processing_space(aligned_images)
                     corrected = []
                     for frame in aligned_images:
                         if self.is_cancelled:
@@ -1125,6 +1242,7 @@ class BatchWorker(QThread):
                             or self.processing_settings.get('save_aligned', False)):
                         raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
                 if steps:
+                    _check_processing_space(aligned_images, len(steps))
                     registration = ImageRegistration(method=alignment,
                         parameters=self.registration_parameters,
                         downscale_width=self._registration_width(aligned_images),

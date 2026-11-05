@@ -72,6 +72,34 @@ def test_invalid_rgb_profile_is_not_propagated(tmp_path):
     assert common_icc_profile([str(path)]) == b""
 
 
+def test_conversion_uses_valid_profile_of_each_tiff_page(tmp_path, rgb_profile, monkeypatch):
+    import tifffile
+    from core import batch_converter
+    from core.image_loader import _read_icc_profile
+
+    second_profile = bytearray(rgb_profile)
+    second_profile[48:52] = b'TEST'
+    second_profile = bytes(second_profile)
+    invalid_profile = bytearray(rgb_profile)
+    invalid_profile[36:40] = b'bad!'
+    profiles = (rgb_profile, second_profile, bytes(invalid_profile), None)
+    source = tmp_path / 'pages.tif'
+    with tifffile.TiffWriter(source) as tif:
+        for index, profile in enumerate(profiles):
+            tags = [(34675, 'B', len(profile), profile, False)] if profile else []
+            tif.write(np.full((16, 16, 3), 40 + 40 * index, np.uint8),
+                      photometric='rgb', extratags=tags)
+
+    assert common_icc_profile([str(source)]) == b''
+    monkeypatch.setattr(batch_converter, 'available_memory_bytes', lambda: 8 * 1024**3)
+    for index, expected in enumerate((rgb_profile, second_profile, b'', b'')):
+        assert _read_icc_profile(str(source), page=index) == expected
+        output = batch_converter.convert_one(str(source), str(tmp_path), '.png', index, 4)
+        with Image.open(output) as image:
+            assert image.info.get('icc_profile', b'') == expected
+            assert np.asarray(image).min() == 40 + 40 * index
+
+
 def test_historical_output_uses_its_own_profile(tmp_path, rgb_profile):
     pytest.importorskip("PyQt6")
     from controllers.output_manager import OutputManager, OutputRecord

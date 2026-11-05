@@ -37,6 +37,12 @@ Imported frames and alignment scratch can be disk-backed, reducing resident
 stack storage. Decoding, inference workspaces and full-size outputs still need
 available RAM, while temporary frame and alignment data need free disk space.
 Very large inputs can exceed either limit and fail with a resource error.
+The application checks free space in the system temporary directory before
+creating each mapped frame and estimates whole-stack needs where headers are
+available. Some processing stages also check for their additional mapped
+frames. These are point-in-time checks, not reservations; other processes can
+still consume space afterward.
+
 
 GFG-FGF converts source frames to its float32 working range as each pass
 needs them, instead of retaining a second float32 color copy of every frame.

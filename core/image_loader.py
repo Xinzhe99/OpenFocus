@@ -143,7 +143,7 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
     try:
         with open(path, 'rb') as stream, rawpy.imread(stream) as raw:
             rgb = raw.postprocess(use_camera_wb=True, output_bps=16,
-                                  no_auto_bright=True)
+                                  no_auto_bright=True, gamma=(2.4, 12.92))
         # Resize while still RGB to avoid a second full-size channel-swapped
         # copy. INTER_AREA treats each channel independently, so the result
         # is identical to resizing BGR after conversion.
@@ -270,10 +270,13 @@ def _read_exif_bytes(path: str) -> bytes:
         return b""
 
 
-def _read_icc_profile(path: str) -> bytes:
-    """Read a common RGB profile from every page of an image file."""
-    if not PIL_AVAILABLE or is_raw_source(path):
+def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
+    """Read a page's RGB profile, or the common profile of all pages."""
+    if not PIL_AVAILABLE:
         return b""
+    if is_raw_source(path):
+        from utils.image_utils import srgb_icc_profile
+        return srgb_icc_profile()
     from io import BytesIO
     try:
         from PIL import ImageCms
@@ -282,8 +285,9 @@ def _read_icc_profile(path: str) -> bytes:
     try:
         with PILImage.open(path) as image:
             profiles = []
-            for page in range(getattr(image, "n_frames", 1)):
-                image.seek(page)
+            pages = range(getattr(image, "n_frames", 1)) if page is None else (page,)
+            for page_index in pages:
+                image.seek(page_index)
                 # TIFF tags are page-specific; Pillow's info dictionary may
                 # otherwise retain metadata from a previous page.
                 if image.format == "TIFF":

@@ -142,8 +142,9 @@ these are not unique users or completed downloads.
 
 `POST /api/usage` accepts only JSON with a UUID-v4 `installation_id`, numeric
 dot-separated `version`, and `platform` of `windows`, `macos`, or `linux`.
-The app reports only after the user opts in. Rows are deduplicated per UTC day,
-installation, version and platform and contain no IP, user agent, hardware
+The app reports only after the user opts in, and retries failed sends while it
+remains open. Rows are deduplicated per UTC day, installation, version and
+platform and contain no IP, user agent, hardware
 identifier, filename or image data. The generated installation ID is
 pseudonymous, not anonymous. The Worker deletes activity older than 90 UTC
 calendar days during daily cron execution and on report writes; operational
@@ -164,6 +165,20 @@ For an interactive shell, avoid putting the secret in command history:
 read -rs -p 'Analytics admin secret: ' ANALYTICS_SECRET; echo
 curl -fsS -H "Authorization: Bearer $ANALYTICS_SECRET" https://openfocus.top/api/admin/stats
 unset ANALYTICS_SECRET
+```
+
+On Windows PowerShell, read the secret without placing it in command history:
+
+```powershell
+$secret = Read-Host 'Analytics admin secret' -AsSecureString
+$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+try {
+  $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+  Invoke-RestMethod https://openfocus.top/api/admin/stats -Headers @{Authorization = "Bearer $plain"} | ConvertTo-Json -Depth 5
+} finally {
+  Remove-Variable plain -ErrorAction SilentlyContinue
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+}
 ```
 
 The aggregate download table has no installation identifiers and is retained

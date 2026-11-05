@@ -21,12 +21,6 @@
 16. [Troubleshooting](#16-troubleshooting)
 
 ---
-### Batch image conversion
-
-Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose an existing output folder and a format, then select **Convert**. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
-
-Camera RAW is developed with LibRaw using camera white balance and without automatic brightening. Available RAW support depends on the installed LibRaw version. Multipage TIFF is exported as separately numbered images. JPEG is lossy, and JPEG, BMP and WebP reduce 16-bit pixels to 8-bit; PNG and TIFF retain 16-bit pixels. Transparent images require PNG. LZW TIFF pages with alpha, unsupported TIFF color layouts and sample types are reported as errors. Existing files and inputs are never replaced: name conflicts receive numbered suffixes. Processing one image or TIFF page at a time still requires enough free memory and disk space for that image and its encoder. Safe camera EXIF and compatible RGB profiles are retained where supported; some formats or pages cannot carry all metadata.
-
 
 ## 1. Introduction
 
@@ -164,7 +158,7 @@ The top menu bar provides access to all functions:
 
 - **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
-- **Tools**: Image stitching, batch processing, method comparison, depth map, flat-field correction, scale bar and labels
+- **Tools**: Image stitching, batch processing and conversion, method comparison, depth map, flat-field correction, scale bar and labels
 - **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
 - **Help**: Environment info, contact information, update check, and the log folder
 
@@ -434,7 +428,7 @@ automatically during import, so portrait shots load upright.
 fusion runs at full depth and results can be saved back as 16-bit PNG/TIFF
 (JPG/BMP exports are converted to 8-bit, as those formats cannot store 16 bits).
 
-Camera RAW files are developed to 16-bit (camera white balance, sRGB color space and LibRaw's default gamma)
+Camera RAW files are developed to 16-bit (camera white balance and the sRGB color space and transfer curve)
 with auto-brightening disabled, so every frame of a stack gets the same
 exposure mapping; per-frame auto exposure would make brightness flicker
 between frames. Save as TIFF or PNG to keep the 16-bit data.
@@ -478,8 +472,9 @@ every source frame has the same embedded profile. Mixed or untagged stacks are e
 without an ICC profile. OpenFocus preserves the profile; it does not convert
 source pixels into a common color space or color-manage the preview. Convert
 mixed-profile images to a common color space before loading them. Regular RAW
-import is developed to sRGB and does not inherit a camera profile. Native RAW
-mode uses camera calibration for its developed preview and Linear DNG export.
+import is developed to sRGB and uses a generated sRGB profile rather than a
+camera ICC profile. Native RAW mode uses camera calibration for its developed
+preview and Linear DNG export.
 
 For a multi-page TIFF, all pages in the file must have the same valid RGB
 profile; otherwise its frames are treated as untagged. Video frames are also
@@ -750,6 +745,11 @@ various image types.
   handles stack lengths within available resources, no per-method tuning, automatic optimization
 - **Requirements**: ONNX Runtime and the bundled ONNX model.
 
+
+For large stacks, leave space in the system temporary directory for both the
+source frames and any additional aligned or corrected frames. OpenFocus checks
+available space before creating mapped frames and estimates whole-stack needs
+when possible. This is not a reservation; other programs may use the space later.
 
 Each neural tile uses every frame. Source frames and alignment scratch can be disk-backed, but free disk space and available memory still limit stack size. V2 spatial tiling approximates whole-image inference.
 
@@ -1039,8 +1039,9 @@ delete the local ID and send timestamp; a later opt-in creates a new ID.
 An active installation count for approximately 30 days means distinct IDs
 that reported during that period, optionally grouped by version. It is an
 estimate, not a count of people or all users: offline installations and users
-who do not opt in are missing. Failed sends retry on a future startup. Updates
-retain the ID with your settings. Copying portable settings copies the ID, so
+who do not opt in are missing. Failed sends retry while the application stays
+open or on a future startup. Updates retain the ID with your settings. Copying
+portable settings copies the ID, so
 copies may count as one installation; reinstalling retains it only if the
 existing settings are kept.
 
@@ -1349,6 +1350,16 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 - PNG/TIFF preserve 16-bit data; explicitly choosing JPG/BMP converts to 8-bit.
 - Cancellation waits for the worker to stop. Committed files remain available;
   partial, failed, cancelled and unstarted tasks are counted separately.
+
+### Batch image conversion
+
+Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose an existing output folder and a format, then select **Convert**. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
+
+Camera RAW is developed with LibRaw using camera white balance and without automatic brightening. Available RAW support depends on the installed LibRaw version. Multipage TIFF is exported as separately numbered images. JPEG is lossy, and JPEG, BMP and WebP reduce 16-bit pixels to 8-bit; PNG and TIFF retain 16-bit pixels. Transparent images require PNG. LZW TIFF pages with alpha, unsupported TIFF color layouts and sample types are reported as errors. Existing files and inputs are never replaced: name conflicts receive numbered suffixes. Processing one image or TIFF page at a time still requires enough free memory and disk space for that image and its encoder. Safe camera EXIF and compatible RGB profiles are retained where supported; some formats or pages cannot carry all metadata.
+
+RAW conversions use the sRGB transfer curve and embed an sRGB profile where
+the output format supports it. For a multi-page TIFF, the converter preserves
+each page's own valid RGB profile independently.
 
 ---
 

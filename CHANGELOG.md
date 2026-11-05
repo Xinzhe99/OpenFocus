@@ -33,6 +33,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate license terms documented in `docs/THIRD_PARTY_NOTICES.md`.
 
 ### Fixed
+- Check temporary disk space for mapped frames and known stack operations, and
+  release rejected imports without replacing the current stack.
+- Develop ordinary RAW inputs with the sRGB transfer curve and preserve the
+  correct color profile for RAW conversions and individual TIFF pages.
+- Continue opt-in activity reporting while the application stays open, including
+  a later retry after an unsuccessful request.
 - Correct the usage-reporting privacy disclosure and localize the consent buttons.
 - Prevent a Conda ICU DLL from shadowing Windows ICU in packaged builds, and
   verify layered TIFF through the current Save As workflow during release smoke tests.

@@ -115,24 +115,31 @@ def test_exif_orientation_applied_and_reset(tmp_path):
         assert output.getexif().get(271) == 'Camera'
 
 
-def test_raw_uses_libraw_with_unicode_path(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    source = tmp_path / '相机.nef'
-    source.write_bytes(b'raw fixture')
-    class Raw:
-        sizes = SimpleNamespace(width=2, height=2)
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            pass
-        def postprocess(self, **options):
-            assert options == {'use_camera_wb': True, 'output_bps': 16, 'no_auto_bright': True}
-            return np.full((2, 2, 3), 65535, dtype=np.uint16)
-    monkeypatch.setattr(converter.image_loader, 'rawpy', SimpleNamespace(imread=lambda stream: Raw()), raising=False)
-    monkeypatch.setattr(converter.image_loader, 'RAWPY_AVAILABLE', True)
+def test_raw_development_uses_srgb_and_embeds_profile(tmp_path):
+    rawpy = pytest.importorskip('rawpy')
+    from utils.image_utils import srgb_icc_profile
+    from utils.linear_dng import LinearDNGMetadata, write_linear_dng
+
+    source = tmp_path / '相机.dng'
+    pixels = np.full((128, 128, 3), [7000, 11000, 14000], np.uint16)
+    metadata = LinearDNGMetadata(
+        ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
+         (-0.1013, 0.2415, 0.5509)),
+        (1024 / 1853, 1.0, 1024 / 1667), 'Canon', 'Canon EOS R6')
+    write_linear_dng(source, pixels, metadata)
+    with open(source, 'rb') as stream, rawpy.imread(stream) as raw:
+        expected = raw.postprocess(use_camera_wb=True, output_bps=16,
+                                   no_auto_bright=True, gamma=(2.4, 12.92))
+        bt709 = raw.postprocess(use_camera_wb=True, output_bps=16, no_auto_bright=True)
+    assert np.max(np.abs(expected.astype(np.int32) - bt709.astype(np.int32))) > 50
+    loaded = converter.image_loader._read_raw(str(source))
+    np.testing.assert_array_equal(loaded, expected[..., ::-1])
     result = converter.convert_one(str(source), str(tmp_path), '.png')
     actual = cv2.imdecode(np.fromfile(result, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-    assert actual.dtype == np.uint16 and actual.min() == 65535
+    np.testing.assert_array_equal(actual, expected[..., ::-1])
+    with Image.open(result) as output:
+        assert output.info['icc_profile'] == srgb_icc_profile()
+    assert converter.image_loader.common_icc_profile([str(source)]) == srgb_icc_profile()
 
 
 def test_lzw_tiff_pages_and_per_page_admission(tmp_path, monkeypatch):

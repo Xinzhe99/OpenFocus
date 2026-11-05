@@ -3,13 +3,14 @@
 QSettings is accessed only on the Qt thread; the daemon only performs HTTP.
 """
 import json
+import math
 import sys
 import threading
 import time
 import urllib.request
 import uuid
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from constants import APP_VERSION
 from utils.settings_store import get_settings
@@ -19,6 +20,7 @@ ID_KEY = "usage/installation_id"
 LAST_SENT_KEY = "usage/last_sent_epoch"
 ENDPOINT = "https://openfocus.top/api/usage"
 INTERVAL_SECONDS = 24 * 60 * 60
+RETRY_INTERVAL_SECONDS = 60 * 60
 
 
 def _platform():
@@ -50,6 +52,9 @@ class UsageAnalytics(QObject):
         self.clock = clock if clock is not None else time.time
         self._thread = None
         self._closed = False
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.start)
         self._finished.connect(self._on_finished)
 
     def enabled(self):
@@ -64,6 +69,7 @@ class UsageAnalytics(QObject):
             self.settings.sync()
             self.start()
         else:
+            self._timer.stop()
             if self._cancel is not None:
                 self._cancel.set()
             self.settings.setValue(ENABLED_KEY, False)
@@ -71,9 +77,18 @@ class UsageAnalytics(QObject):
             self.settings.remove(LAST_SENT_KEY)
             self.settings.sync()
 
+    def _schedule(self, delay):
+        if not self._closed and self.enabled():
+            delay = max(0.001, min(delay, INTERVAL_SECONDS))
+            self._timer.start(math.ceil(delay * 1000))
+
     def start(self):
-        if self._closed or not self.enabled() or self._thread is not None:
+        if self._closed or not self.enabled():
+            self._timer.stop()
             return
+        if self._thread is not None:
+            return
+        self._timer.stop()
         installation_id = str(self.settings.value(ID_KEY, "") or "")
         platform = _platform()
         if not installation_id or platform is None:
@@ -82,7 +97,9 @@ class UsageAnalytics(QObject):
             last_sent = float(self.settings.value(LAST_SENT_KEY, 0) or 0)
         except (TypeError, ValueError):
             last_sent = 0
-        if last_sent and self.clock() - last_sent < INTERVAL_SECONDS:
+        remaining = last_sent + INTERVAL_SECONDS - self.clock()
+        if last_sent and remaining > 0:
+            self._schedule(remaining)
             return
         cancel = threading.Event()
         self._cancel = cancel
@@ -105,19 +122,24 @@ class UsageAnalytics(QObject):
         except RuntimeError:
             self._thread = None
             self._cancel = None
+            self._schedule(RETRY_INTERVAL_SECONDS)
 
     def _on_finished(self, installation_id, success):
         self._thread = None
         self._cancel = None
-        if (not self._closed and success and self.enabled()
-                and self.settings.value(ID_KEY, "") == installation_id):
+        if self._closed or not self.enabled():
+            return
+        if self.settings.value(ID_KEY, "") != installation_id:
+            self.start()
+        elif success:
             self.settings.setValue(LAST_SENT_KEY, self.clock())
             self.settings.sync()
-        elif (not self._closed and self.enabled()
-              and self.settings.value(ID_KEY, "") != installation_id):
-            self.start()
+            self._schedule(INTERVAL_SECONDS)
+        else:
+            self._schedule(RETRY_INTERVAL_SECONDS)
 
     def shutdown(self):
         self._closed = True
+        self._timer.stop()
         if self._cancel is not None:
             self._cancel.set()
