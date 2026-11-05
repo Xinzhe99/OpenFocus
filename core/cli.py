@@ -519,11 +519,12 @@ def _fuse_stack_admitted(images, args):
     import cv2
     from core.registration import ImageRegistration
     from core.multi_focus_fusion import MultiFocusFusion
-    from utils.image_utils import quantize_fuse_output
+    from utils.image_utils import prepare_fusion_input, quantize_fuse_output
     from core.frame_storage import store_frame
+    from core.source_frames import materialize_frames
 
     _resolve_algorithm_arguments(args)
-    spec = get_fusion(args.method)
+    images = materialize_frames(images, getattr(args, "_should_cancel", None))
     images, transparent = _transparent_region(images, args)
     if getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False):
         from utils.sensor_cleanup import cleanup_sensor_image, require_sensor_cleanup_stack
@@ -545,28 +546,6 @@ def _fuse_stack_admitted(images, args):
         gain = compute_flat_field(white)
         images = [store_frame(apply_flat_field(image, gain)) for image in images]
         _say(f"Flat-field (dust map) correction applied from {dust_white}")
-
-    # Tiled neural methods normalize only each spatial crop. Other paths keep
-    # the existing pre-registration float domain, one disk-backed frame at a time.
-    is_16bit = any(image.dtype == np.uint16 for image in images)
-    from core.algorithms import resolve_runner
-    from constants import TILE_THRESHOLD
-    threshold = getattr(args, "tile_threshold", None) or TILE_THRESHOLD
-    deferred = (spec.neural and args.align == "none"
-                and getattr(args, "tile_enabled", True) and spec.tile_decider
-                and resolve_runner(spec.tile_decider)(images, threshold))
-    if is_16bit and not deferred:
-        require_memory(max(image.size * 8 for image in images))
-        normalized = []
-        for image in images:
-            if image.dtype == np.float32:
-                normalized.append(image)
-                continue
-            frame = image.astype(np.float32)
-            if image.dtype == np.uint16:
-                frame *= 255.0 / 65535.0
-            normalized.append(store_frame(frame))
-        images = normalized
 
     if args.align != "none":
         t0 = time.time()
@@ -603,6 +582,7 @@ def _fuse_stack_admitted(images, args):
     if getattr(args, "tile_threshold", None) is not None:
         fusion_kwargs["tile_threshold"] = args.tile_threshold
     fusion = MultiFocusFusion(**fusion_kwargs)
+    images, is_16bit = prepare_fusion_input(images, fusion, getattr(args, "_should_cancel", None))
     t0 = time.time()
     fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads)
     model_weights = _method_weights(spec)

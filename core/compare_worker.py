@@ -167,8 +167,7 @@ class PreviewWorker(_CancellableWorker):
 
     def _fuse(self, method):
         from core.multi_focus_fusion import MultiFocusFusion
-        from utils.image_utils import quantize_fuse_output
-        from core.workers import _prepare_fusion_input
+        from utils.image_utils import prepare_fusion_input, quantize_fuse_output
 
         if not self.images:
             raise ValueError("The image stack is empty.")
@@ -187,7 +186,7 @@ class PreviewWorker(_CancellableWorker):
             inputs = [frame[y0:y0 + ch, x0:x0 + cw] for frame in frames]
         # Normalize each context frame onto disk without retaining a float stack.
         fusion = MultiFocusFusion(**constructor)
-        inputs, is_16bit = _prepare_fusion_input(inputs, fusion, self._should_cancel)
+        inputs, is_16bit = prepare_fusion_input(inputs, fusion, self._should_cancel)
         if self._should_cancel():
             return None
         result = fusion.fuse(input_source=inputs, img_resize=None,
@@ -239,6 +238,10 @@ class PreviewWorker(_CancellableWorker):
                         return failed
                     if rendered is not None:
                         result, bounds = rendered
+                        from utils.logging_setup import image_result_details, get_logger
+                        get_logger(__name__).info(
+                            'comparison final result method=%s bounds=%s pixels=%s',
+                            method, bounds, image_result_details(result))
                         self.result_ready.emit(method, result, bounds)
                 except Exception as exc:
                     if self._should_cancel():

@@ -654,6 +654,36 @@ def normalize_fuse_input(images):
     return out, True
 
 
+def prepare_fusion_input(images, fusion, should_cancel=None):
+    """Normalize one frame at a time on disk, or defer to spatial tile crops."""
+    from core.algorithms import resolve_runner
+    from core.frame_storage import store_frame
+    from core.registration import RegistrationCancelled
+    from core.resource_policy import require_memory
+
+    frames = list(images)
+    is_16bit = any(frame.dtype == np.uint16 for frame in frames)
+    spec = fusion.descriptor
+    if frames and fusion.tile_enabled:
+        needs_tiles = (resolve_runner(spec.tile_decider)(frames, fusion.tile_threshold)
+                       if spec.tile_decider else
+                       max(frames[0].shape[:2]) > fusion.tile_threshold)
+        if needs_tiles:
+            return frames, is_16bit
+    if not is_16bit:
+        return frames, False
+    normalized = []
+    for frame in frames:
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+        require_memory(frame.size * 8)
+        converted = normalize_fuse_input([frame])[0][0]
+        if converted is frame and frame.dtype != np.float32:
+            converted = frame.astype(np.float32)
+        normalized.append(frame if converted is frame else store_frame(converted))
+    return normalized, True
+
+
 def fuse_output_dtype(images) -> type:
     """Return dtype a back-end should produce for this stack.
 

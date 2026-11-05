@@ -41,6 +41,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   other preview decoders before pixel allocation and show an unavailable-preview
   canvas when a native decode would exceed the bounded preview budget; rendering
   and export continue to use original pixels.
+- Keep native RAW CLI inputs and quick renders in their correct pixel domain:
+  camera-linear previews come from real linear samples, while unavailable-preview
+  canvases are display-only. Share bounded fusion preparation across CLI and GUI.
+- Preserve the bundled OpenCV path for small LZW TIFF previews without adding an
+  imagecodecs dependency; apply TIFF Orientation once. Include original-size DCT
+  coefficients when admitting progressive JPEG previews.
+- Generate missing comparison previews asynchronously with frame identity checks,
+  and restore project reset baselines with matching pixel scale and calibration.
+- Record one local shape/dtype/SHA-256 fingerprint for the final quantized fusion
+  pixels from ordinary and comparison renders without copying the full image;
+  alignment-only stacks are not traversed for result fingerprints.
 - Apply tiled Guided Filter exposure matching per tile after whole-stack gain
   estimation, avoiding an additional full-size matched copy of the stack.
 - Reduce GFG-FGF working memory by converting frames per pass instead of

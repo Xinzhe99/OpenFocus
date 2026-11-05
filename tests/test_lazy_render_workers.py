@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt
 
 from core import workers
 from core.source_frames import SourceFrame, scan_source
+from utils.image_utils import prepare_fusion_input
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +62,63 @@ def test_preview_uses_display_pixels_and_skips_original_alignment_cache(tmp_path
     assert errors == [] and len(results) == 1
     assert all(isinstance(image, np.memmap) for image in results[0][0])
     np.testing.assert_array_equal(results[0][0][0], frame.preview)
+
+
+def test_linear_preview_fuses_camera_pixels_and_retains_uint16(tmp_path, monkeypatch):
+    from utils.linear_dng import LinearDNGMetadata
+    metadata = LinearDNGMetadata(((1., 0., 0.), (0., 1., 0.), (0., 0., 1.)),
+                                 (1., 1., 1.), 'Example', 'Camera')
+    frame, original = _source(tmp_path, value=12345, dtype=np.uint16)
+    embedded_jpeg = np.full((10, 14, 3), 219, np.uint8)
+    frame = replace(frame, linear_metadata=metadata, preview=embedded_jpeg,
+                    preview_is_display=True)
+    decoded = []
+    def resolve(self):
+        decoded.append(self)
+        return original
+    monkeypatch.setattr(SourceFrame, 'full_resolution', resolve)
+    worker = workers.RenderWorker([frame, frame], algorithm='guided_filter', preview=True,
+                                  use_gpu=False, tile_enabled=False, thread_count=1)
+    results, errors = _capture(worker)
+    worker.run()
+    assert errors == [] and len(results) == 1
+    assert decoded and all(source is frame for source in decoded)
+    processed, fused = results[0][:2]
+    assert all(image.dtype == np.uint16 for image in processed)
+    assert fused.dtype == np.uint16
+    np.testing.assert_allclose(fused, original, rtol=0, atol=1)
+    assert all(source.linear_metadata is metadata for source in worker.raw_images)
+
+
+def test_unavailable_preview_fuses_original_pixels_instead_of_canvas(tmp_path, monkeypatch):
+    from core import source_frames
+    original = np.full((40, 56, 3), 73, np.uint8)
+    path = tmp_path / 'unavailable.png'
+    assert cv2.imwrite(str(path), original)
+    monkeypatch.setattr(source_frames, 'PREVIEW_DECODE_BUDGET', 1)
+    frame = scan_source(str(path))[0]
+    worker = workers.RenderWorker([frame, frame], algorithm='guided_filter', preview=True,
+                                  use_gpu=False, tile_enabled=False, thread_count=1)
+    results, errors = _capture(worker)
+    worker.run()
+    assert errors == [] and len(results) == 1
+    np.testing.assert_array_equal(results[0][1], original)
+
+
+def test_unavailable_preview_decode_failure_does_not_publish_canvas(tmp_path, monkeypatch):
+    from core import source_frames
+    path = tmp_path / 'unavailable.png'
+    assert cv2.imwrite(str(path), np.full((40, 56, 3), 73, np.uint8))
+    monkeypatch.setattr(source_frames, 'PREVIEW_DECODE_BUDGET', 1)
+    frame = scan_source(str(path))[0]
+    def fail(self):
+        raise OSError('original pixels unavailable')
+    monkeypatch.setattr(SourceFrame, 'full_resolution', fail)
+    worker = workers.RenderWorker([frame, frame], algorithm='guided_filter', preview=True,
+                                  use_gpu=False, tile_enabled=False, thread_count=1)
+    results, errors = _capture(worker)
+    worker.run()
+    assert results == [] and errors == ['original pixels unavailable']
 
 
 def test_roi_alignment_receives_original_mappings(tmp_path, monkeypatch):
@@ -176,7 +234,7 @@ def test_uint16_preparation_normalizes_one_frame_at_a_time(monkeypatch):
         return normalize(images)
     monkeypatch.setattr(image_utils, 'normalize_fuse_input', one_frame)
     fusion = SimpleNamespace(descriptor=get_fusion('guided_filter'), tile_enabled=False)
-    actual, is_16bit = workers._prepare_fusion_input(frames, fusion)
+    actual, is_16bit = prepare_fusion_input(frames, fusion)
     expected = normalize(frames)[0]
     assert is_16bit and seen == [np.dtype(np.uint16), np.dtype(np.uint8)]
     assert all(isinstance(image, np.memmap) for image in actual)
@@ -275,7 +333,7 @@ def test_guided_uint16_normalizes_only_spatial_crops(monkeypatch):
     fusion = multi_focus_fusion.MultiFocusFusion(algorithm='guided_filter', use_gpu=False,
         tile_enabled=True, tile_block_size=16, tile_overlap=4, tile_threshold=16,
         exposure_match=True, base_frame='none')
-    prepared, is_16bit = workers._prepare_fusion_input(frames, fusion)
+    prepared, is_16bit = prepare_fusion_input(frames, fusion)
     assert is_16bit and all(a is b for a, b in zip(prepared, frames))
     normalize = multi_focus_fusion.normalize_fuse_input
     calls = []
@@ -343,3 +401,41 @@ def test_ram_memmap_subclass_is_copied_to_real_disk_output(monkeypatch):
     result = fusion.fuse([original, original], thread_count=1)
     assert isinstance(result, np.memmap) and result.filename is not None
     np.testing.assert_array_equal(result, ram_copy)
+
+
+def test_render_fingerprints_final_uint16_once_and_skips_alignment_only(tmp_path, monkeypatch):
+    from utils import logging_setup
+    frame, _ = _source(tmp_path, value=23456, dtype=np.uint16)
+    fingerprints = []
+    def fingerprint(image):
+        fingerprints.append(image)
+        return {'shape': image.shape, 'dtype': str(image.dtype), 'sha256': 'fixture'}
+    monkeypatch.setattr(logging_setup, 'image_result_details', fingerprint, raising=False)
+    worker = workers.RenderWorker([frame, frame], algorithm='guided_filter', use_gpu=False,
+                                  tile_enabled=False, thread_count=1)
+    results, errors = _capture(worker)
+    worker.run()
+    assert errors == [] and len(results) == 1
+    assert len(fingerprints) == 1 and fingerprints[0] is results[0][1]
+    assert fingerprints[0].dtype == np.uint16
+    fingerprints.clear()
+    alignment = workers.RenderWorker([frame, frame], algorithm=None, need_fusion=False)
+    aligned, errors = _capture(alignment)
+    alignment.run()
+    assert errors == [] and len(aligned) == 1 and fingerprints == []
+
+
+def test_comparison_fingerprints_published_quantized_pixels_once(monkeypatch):
+    from core.compare_worker import PreviewWorker
+    from utils import logging_setup
+    result = np.full((12, 16, 3), 54321, np.uint16)
+    fingerprints = []
+    monkeypatch.setattr(logging_setup, 'image_result_details',
+                        lambda image: fingerprints.append(image) or {'dtype': str(image.dtype)}, raising=False)
+    worker = PreviewWorker([result, result], ['guided_filter'], {}, {}, None, roi_only=False)
+    monkeypatch.setattr(worker, '_fuse', lambda _method: (result, (0, 0, 16, 12)))
+    published = []
+    worker.result_ready.connect(lambda *args: published.append(args), Qt.ConnectionType.DirectConnection)
+    assert not worker._run_admitted()
+    assert len(published) == 1 and fingerprints == [result]
+    assert fingerprints[0].dtype == np.uint16 and published[0][1] is result

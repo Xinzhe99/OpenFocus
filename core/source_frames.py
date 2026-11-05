@@ -24,6 +24,10 @@ PREVIEW_EDGE = 768
 PREVIEW_DECODE_BUDGET = 32 * 1024 * 1024
 
 
+class _UnavailablePreview(np.ndarray):
+    """Diagnostic display pixels that must never enter an image algorithm."""
+
+
 class FrameCache:
     """Strong references to decoded pixels, bounded by actual array bytes."""
     def __init__(self, max_bytes=256 * 1024 * 1024):
@@ -115,6 +119,7 @@ def ensure_preview(frame):
             loaded = transform_frame(loaded, operation['operation'],
                                      **{key: value for key, value in operation.items() if key != 'operation'})
         object.__setattr__(frame, 'preview', loaded.preview)
+        object.__setattr__(frame, 'preview_is_available', loaded.preview_is_available)
     return frame.preview.get() if isinstance(frame.preview, PreviewPixels) else frame.preview
 
 
@@ -135,7 +140,8 @@ def _small(image, edge=PREVIEW_EDGE):
 def _orient(image, orientation):
     from core.image_loader import _EXIF_TRANSFORMS
     transform = _EXIF_TRANSFORMS.get(orientation)
-    return np.ascontiguousarray(transform(image)) if transform else image
+    result = np.ascontiguousarray(transform(image)) if transform else image
+    return result.view(_UnavailablePreview) if isinstance(image, _UnavailablePreview) else result
 
 
 def _unavailable_preview(width, height, text='Preview unavailable'):
@@ -143,7 +149,7 @@ def _unavailable_preview(width, height, text='Preview unavailable'):
     preview = np.full((max(1, round(height * factor)), max(1, round(width * factor)), 3), 32, np.uint8)
     cv2.putText(preview, text, (8, min(28, preview.shape[0] - 1)),
                 cv2.FONT_HERSHEY_SIMPLEX, .5, (210, 210, 210), 1, cv2.LINE_AA)
-    return preview
+    return preview.view(_UnavailablePreview)
 
 
 def _pil_preview(image, *, itemsize=1, alpha=False):
@@ -151,10 +157,17 @@ def _pil_preview(image, *, itemsize=1, alpha=False):
     width, height = image.size
     factor = min(1, PREVIEW_EDGE / max(width, height))
     target = (max(1, round(width * factor)), max(1, round(height * factor)))
+    bands = max(3, len(image.getbands()))
+    info = getattr(image, 'info', {})
+    # Progressive libjpeg retains original-size DCT coefficients even when
+    # draft decoding reduces its output pixels. Coefficients coexist with output.
+    coefficients = (math.ceil(width / 8) * math.ceil(height / 8) * 64 * bands * 2
+                    if info.get('progressive') or info.get('progression') else 0)
+    row_scratch = width * max(4, bands) * 32
     # Aspect-correct draft targets let libjpeg choose its largest useful DCT
     # reduction. Other formats retain native geometry and are checked below.
     image.draft('RGB', target)
-    working = image.width * image.height * max(4, len(image.getbands())) * itemsize * 4
+    working = image.width * image.height * max(4, len(image.getbands())) * itemsize * 4 + coefficients + row_scratch
     if working > PREVIEW_DECODE_BUDGET:
         logger.warning('Preview decoder exceeds budget size=%sx%s need=%d budget=%d',
                        width, height, working, PREVIEW_DECODE_BUDGET)
@@ -221,6 +234,7 @@ class SourceFrame:
     linear_metadata: object = None
     preview_is_display: bool = False
     native_shape: tuple = ()
+    preview_is_available: bool = True
 
     @property
     def ndim(self):
@@ -266,7 +280,9 @@ class SourceFrame:
                                                  range=(self.page, self.page + 1))
                     if not ok or len(pages) != 1:
                         raise ValueError(f'Could not decode TIFF page {self.page + 1}: {self.path}')
-                    image = _orient(pages[0], self.orientation)
+                    # OpenCV/libtiff already applies Orientation, including
+                    # IMREAD_UNCHANGED; a second EXIF pass rotates it twice.
+                    image = pages[0]
                     if _has_transparency(image):
                         raise UnsupportedTransparency(f'Transparent TIFF is unsupported: {self.path}')
                     if image.ndim == 2:
@@ -304,6 +320,16 @@ class SourceFrame:
 
 def display_image(frame):
     return ensure_preview(frame)
+
+
+def processing_preview(frame):
+    """Return actual small processing pixels, preserving camera-linear domain."""
+    if not isinstance(frame, SourceFrame):
+        return frame
+    if frame.linear_metadata is not None:
+        return _small(resolve_frame(frame))
+    preview = display_image(frame)
+    return preview if frame.preview_is_available else _small(resolve_frame(frame))
 
 
 def resolve_frame(frame):
@@ -346,6 +372,39 @@ def transform_frame(frame, operation, **params):
     return replace(frame, shape=shape, preview=preview, transforms=frame.transforms + (op,))
 
 
+def _tiff_orientation(page):
+    tag = getattr(page, 'tags', {}).get('Orientation')
+    return int(tag.value) if tag is not None else 1
+
+
+def _opencv_tiff_preview(page):
+    """Use bundled libtiff for codecs absent from optional tifffile decoders."""
+    width, height = page.imagewidth, page.imagelength
+    working = width * height * max(3, page.samplesperpixel) * np.dtype(page.dtype).itemsize * 4
+    if working <= PREVIEW_DECODE_BUDGET:
+        working += page.parent.filehandle.size * 2
+    if working > PREVIEW_DECODE_BUDGET:
+        logger.warning('TIFF native preview exceeds budget need=%d budget=%d', working, PREVIEW_DECODE_BUDGET)
+        return _orient(_unavailable_preview(width, height), _tiff_orientation(page))
+    from core.resource_policy import require_memory
+    require_memory(working)
+    data = np.memmap(page.parent.filehandle.path, dtype=np.uint8, mode='r')
+    ok, pages = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
+                                 range=(page.index, page.index + 1))
+    if not ok or len(pages) != 1:
+        raise ValueError(f'Could not decode TIFF preview page {page.index + 1}')
+    # libtiff has already applied Orientation; do not rotate this path again.
+    image = pages[0]
+    from core.image_loader import _has_transparency, UnsupportedTransparency
+    if _has_transparency(image):
+        raise UnsupportedTransparency('Transparent TIFF pages are unsupported')
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    elif image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    return _small(image)
+
+
 def _tiff_preview(page):
     """Sample mapped TIFFs or admitted strips; oversized strips stay undecoded."""
     h, w = page.imagelength, page.imagewidth
@@ -353,6 +412,11 @@ def _tiff_preview(page):
     channels = page.samplesperpixel
     if channels not in (1, 3, 4) or page.planarconfig != 1:
         raise ValueError('Unsupported TIFF sample/planar layout')
+    orientation = _tiff_orientation(page)
+    if int(getattr(page, 'compression', 1)) == 5:
+        # LZW is supported by OpenCV's bundled libtiff; tifffile requires
+        # optional imagecodecs, which is deliberately not a dependency.
+        return _opencv_tiff_preview(page)
     from core.resource_policy import require_memory
     small_bytes = math.ceil(h / step) * math.ceil(w / step) * channels * np.dtype(page.dtype).itemsize
     if page.is_memmappable:
@@ -370,31 +434,34 @@ def _tiff_preview(page):
                    + max(page.databytecounts, default=0) * 2 + small_bytes)
         if working > PREVIEW_DECODE_BUDGET:
             logger.warning('TIFF preview segment exceeds budget need=%d budget=%d', working, PREVIEW_DECODE_BUDGET)
-            return _unavailable_preview(w, h)
+            return _orient(_unavailable_preview(w, h), orientation)
         require_memory(working)
         small = np.zeros((math.ceil(h / step), math.ceil(w / step), channels), dtype=page.dtype)
-        for segment, position, _shape in page.segments(maxworkers=1):
-            if segment is None:
-                continue
-            _, _, y, x, _ = position
-            tile = segment[0]
-            y0, x0 = (-y) % step, (-x) % step
-            sampled = tile[y0::step, x0::step]
-            sy, sx = (y + y0) // step, (x + x0) // step
-            hh = min(sampled.shape[0], small.shape[0] - sy)
-            ww = min(sampled.shape[1], small.shape[1] - sx)
-            if hh > 0 and ww > 0:
-                small[sy:sy + hh, sx:sx + ww] = sampled[:hh, :ww]
+        try:
+            for segment, position, _shape in page.segments(maxworkers=1):
+                if segment is None:
+                    continue
+                _, _, y, x, _ = position
+                tile = segment[0]
+                y0, x0 = (-y) % step, (-x) % step
+                sampled = tile[y0::step, x0::step]
+                sy, sx = (y + y0) // step, (x + x0) // step
+                hh = min(sampled.shape[0], small.shape[0] - sy)
+                ww = min(sampled.shape[1], small.shape[1] - sx)
+                if hh > 0 and ww > 0:
+                    small[sy:sy + hh, sx:sx + ww] = sampled[:hh, :ww]
+        except (ImportError, ValueError):
+            return _opencv_tiff_preview(page)
     if int(page.photometric) == 0:
         small = np.iinfo(small.dtype).max - small
     if channels == 1:
-        return cv2.cvtColor(small[:, :, 0], cv2.COLOR_GRAY2BGR)
+        return _orient(cv2.cvtColor(small[:, :, 0], cv2.COLOR_GRAY2BGR), orientation)
     if channels == 4:
         if np.any(small[:, :, 3] != np.iinfo(small.dtype).max):
             from core.image_loader import UnsupportedTransparency
             raise UnsupportedTransparency('Transparent TIFF pages are unsupported')
-        return cv2.cvtColor(small, cv2.COLOR_RGBA2BGR)
-    return cv2.cvtColor(small, cv2.COLOR_RGB2BGR)
+        return _orient(cv2.cvtColor(small, cv2.COLOR_RGBA2BGR), orientation)
+    return _orient(cv2.cvtColor(small, cv2.COLOR_RGB2BGR), orientation)
 
 
 def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=None):
@@ -453,7 +520,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                 h, w = page.imagelength, page.imagewidth
                 if orientation in (5, 6, 7, 8):
                     h, w = w, h
-                preview = None if header_only else _orient(_tiff_preview(page), orientation)
+                preview = None if header_only else _tiff_preview(page)
                 frames.append(SourceFrame(path, index, (max(1, int(h * scale)), max(1, int(w * scale)), 3),
                                           np.dtype(page.dtype), preview, stamp, scale, orientation,
                                           native_shape=(h, w, 3)))
@@ -480,7 +547,8 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                                   native_shape=(height, width, 4 if alpha else 3)))
     if _fingerprint(path) != stamp:
         raise OSError(f'Source changed while reading its preview: {path}')
-    frames = [with_preview(frame, frame.preview) for frame in frames]
+    frames = [with_preview(replace(frame, preview_is_available=not isinstance(frame.preview, _UnavailablePreview)),
+                           frame.preview) for frame in frames]
     logger.debug('source manifest path=%s frames=%d preview_bytes=%d header_only=%s', path, len(frames),
                  sum(frame.preview.nbytes for frame in frames if frame.preview is not None), header_only)
     return frames

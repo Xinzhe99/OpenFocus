@@ -356,14 +356,15 @@ def test_report_context_restored_after_registration_error(monkeypatch):
 
 def test_tiled_v3_worker_keeps_source_depth_until_tiles(monkeypatch):
     from types import SimpleNamespace
-    import core.workers as workers
+    import core.resource_policy as resource_policy
+    from utils.image_utils import prepare_fusion_input
     from core.algorithms import get_fusion
 
     frames = _frames(np.uint16)
     fusion = SimpleNamespace(algorithm='stackmffv3', descriptor=get_fusion('stackmffv3'),
                              tile_enabled=True, tile_threshold=1)
-    monkeypatch.setattr(workers, 'require_memory',
+    monkeypatch.setattr(resource_policy, 'require_memory',
                         lambda *args, **kwargs: pytest.fail('unexpected whole-stack allocation'))
-    prepared, is_16bit = workers._prepare_fusion_input(frames, fusion)
+    prepared, is_16bit = prepare_fusion_input(frames, fusion)
     assert is_16bit
     assert all(actual is original for actual, original in zip(prepared, frames))

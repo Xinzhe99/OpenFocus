@@ -261,6 +261,13 @@ def _collect_state(window) -> Dict[str, Any]:
     source_indices = {}
     sources = []
     frame_order = []
+    baseline = getattr(getattr(window, "source_manager", None), "_stack_baseline", None)
+    snapshot_scales = {}
+    if baseline:
+        for image in baseline["images"]:
+            if getattr(image, "path", None) and image.scale != baseline["scale"]:
+                key = (os.path.normcase(os.path.abspath(image.path)), image.page)
+                snapshot_scales[key] = baseline["scale"] / image.scale
     for index, (path, name) in enumerate(zip(abs_paths, names)):
         key = os.path.normcase(os.path.abspath(path))
         if key not in source_indices:
@@ -272,6 +279,9 @@ def _collect_state(window) -> Dict[str, Any]:
             frame["page"] = getattr(image, "page", None)
             frame["scale"] = float(image.scale)
             frame["transforms"] = list(image.transforms)
+            snapshot_scale = snapshot_scales.get((key, image.page))
+            if snapshot_scale is not None:
+                frame.update(snapshot=True, snapshot_scale=snapshot_scale)
         frame_order.append(frame)
     abs_paths = sources
     return {
@@ -284,6 +294,7 @@ def _collect_state(window) -> Dict[str, Any]:
         "source_folders": [os.path.dirname(p) if os.path.dirname(p) else ""
                            for p in abs_paths],
         "scale_factor": getattr(window, "current_scale_factor", 1.0),
+        "source_px_um": getattr(window, "source_px_um", None),
         "linear_raw": getattr(window, "linear_dng_metadata", None) is not None,
         "settings": settings,
         "labels": labels,
@@ -338,7 +349,7 @@ def _persist_pathless_sources(window, state, project_path):
         source = paths.get(index, state["sources"][frame["source"]])
         updated = dict(frame, source=len(sources))
         if index in paths:
-            updated.update(page=0, snapshot=True)
+            updated.update(page=0, snapshot=True, snapshot_scale=state["scale_factor"])
         sources.append(source)
         folders.append(os.path.dirname(source))
         order.append(updated)
@@ -430,6 +441,11 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
         return False, "invalid project settings or labels", {}
     if type(state.get("linear_raw", False)) is not bool:
         return False, "invalid linear RAW setting", {}
+    source_px_um = state.get("source_px_um")
+    if source_px_um is not None and (isinstance(source_px_um, bool)
+            or not isinstance(source_px_um, (int, float))
+            or not math.isfinite(source_px_um) or source_px_um <= 0):
+        return False, "invalid source pixel calibration", {}
     if "sharpen_output" in state.get("settings", {}) and not isinstance(
             state["settings"]["sharpen_output"], bool):
         return False, "invalid output sharpening setting", {}
@@ -463,10 +479,11 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
         for frame in frames or ():
             if type(frame.get("snapshot", False)) is not bool:
                 raise ValueError("invalid source snapshot")
-            if "scale" in frame:
-                scale = frame["scale"]
-                if isinstance(scale, bool) or not isinstance(scale, (float, int)) or not math.isfinite(scale) or scale <= 0:
-                    raise ValueError("invalid frame scale")
+            for key in ("scale", "snapshot_scale"):
+                if key in frame:
+                    scale = frame[key]
+                    if isinstance(scale, bool) or not isinstance(scale, (float, int)) or not math.isfinite(scale) or scale <= 0:
+                        raise ValueError("invalid frame scale")
             if "transforms" in frame:
                 if not isinstance(frame["transforms"], list):
                     raise ValueError("invalid frame transformations")
@@ -719,7 +736,7 @@ def _prepare_project_load(window, state, options):
 
 def _prepare_project_frames(window, state, options):
     """Order lazy frames and replay descriptors before publishing the stack."""
-    from core.source_frames import transform_frame, materialize_frames
+    from core.source_frames import transform_frame, materialize_frames, scan_source
     sources = state.get("resolved_sources") or state["sources"]
     paths = list(getattr(window.image_loader, "image_paths", []))
     frames = state.get("frame_order")
@@ -746,20 +763,36 @@ def _prepare_project_frames(window, state, options):
         paths = [paths[i] for i in order]
         if any(frame.get("snapshot") or ("scale" in frame and frame["scale"] != getattr(image, "scale", None))
                for frame, image in zip(frames, options.base_images)):
-            from core.source_frames import scan_source
             from utils.frame_pixels import run_pixel_worker
             def restore_frame_scales():
                 restored = []
                 for index, (frame, image) in enumerate(zip(frames, options.base_images)):
-                    scale = 1.0 if frame.get("snapshot") else frame.get("scale", getattr(image, "scale", 1.0))
+                    scale = frame.get("scale", 1.0 if frame.get("snapshot") else getattr(image, "scale", 1.0))
                     if frame.get("snapshot") or scale != getattr(image, "scale", None):
-                        image = scan_source(paths[index], scale=scale, linear=state.get("linear_raw", False))[frame.get("page", 0)]
+                        image = scan_source(paths[index], scale=scale, linear=state.get("linear_raw", False),
+                                            header_only=True, page_index=frame.get("page", 0))[0]
                     restored.append(image)
                 return restored
             options.base_images = run_pixel_worker(window, "OpenFocus project", restore_frame_scales)
-    # Keep the decoded, ordered frames before replaying project transforms.
-    # Stack reset holds these references under the same copy-on-write rule as undo.
-    options.reset_images = list(options.base_images)
+    # A descriptor's scale precedes its replayed resize operations. Snapshot
+    # files already contain working pixels, even though their file scale is 1.
+    working_scale = getattr(options, "scale_factor", state.get("scale_factor", 1.0))
+    reset_scales = [(frames[index].get("snapshot_scale", working_scale) * image.scale)
+                    if frames and frames[index].get("snapshot") else
+                    getattr(image, "scale", working_scale)
+                    for index, image in enumerate(options.base_images)]
+    reset_scale = (reset_scales[0] if reset_scales and
+                   all(scale == reset_scales[0] for scale in reset_scales) else working_scale)
+    options.reset_scale_factor = reset_scale
+    if "source_px_um" in state:
+        options.source_px_um = state["source_px_um"]
+    # Mixed origins must still reset to one common pixel scale. Read headers
+    # only; reset retains lazy, untransformed sources rather than their pixels.
+    options.reset_images = [
+        image if scale == reset_scale else scan_source(
+            paths[index], scale=image.scale * reset_scale / scale, linear=state.get("linear_raw", False),
+            header_only=True, page_index=getattr(image, "page", 0))[0]
+        for index, (image, scale) in enumerate(zip(options.base_images, reset_scales))]
     if frames:
         for index, frame in enumerate(frames):
             for operation in frame.get("transforms", []):

@@ -10,10 +10,10 @@ import imageio.v2 as imageio
 from core.registration import ImageRegistration, RegistrationCancelled
 from core.multi_focus_fusion import MultiFocusFusion
 from core.frame_storage import store_frame
-from core.source_frames import display_image, materialize_frames, resolve_frame
+from core.source_frames import materialize_frames, processing_preview, resolve_frame
 from core.resource_policy import heavy_job, require_memory
 from utils import resource_path
-from utils.image_utils import to_display_uint8
+from utils.image_utils import prepare_fusion_input, to_display_uint8
 from copy import deepcopy
 from utils.export_paths import create_stack_directory, frame_export_name, unique_path
 from utils.logging_setup import frame_details, get_logger, log_operation
@@ -35,34 +35,6 @@ def _crop_transparent_for_gui(images, should_cancel=None):
     except ValueError as exc:
         from locales import trans
         raise ValueError(trans.t('transparent_desktop_unsupported').format(path='') + ' ' + str(exc)) from exc
-
-
-def _prepare_fusion_input(images, fusion, should_cancel=None):
-    """Normalize sequentially, retaining full-resolution inputs on disk."""
-    from core.algorithms import resolve_runner
-    from utils.image_utils import normalize_fuse_input
-
-    frames = list(images)
-    is_16bit = any(frame.dtype == np.uint16 for frame in frames)
-    spec = fusion.descriptor
-    if frames and fusion.tile_enabled:
-        needs_tiles = (resolve_runner(spec.tile_decider)(frames, fusion.tile_threshold)
-                       if spec.tile_decider else
-                       max(frames[0].shape[:2]) > fusion.tile_threshold)
-        if needs_tiles:
-            return frames, is_16bit
-    if not is_16bit:
-        return frames, False
-    normalized = []
-    for frame in frames:
-        if should_cancel is not None and should_cancel():
-            raise RegistrationCancelled()
-        require_memory(frame.size * 8)
-        converted = normalize_fuse_input([frame])[0][0]
-        if converted is frame and frame.dtype != np.float32:
-            converted = frame.astype(np.float32)
-        normalized.append(frame if converted is frame else store_frame(converted))
-    return normalized, True
 
 
 def _validate_sensor_sources_for_gui(paths, should_cancel):
@@ -506,7 +478,7 @@ class RenderWorker(QThread):
                 for frame in self.raw_images:
                     if self.is_cancelled:
                         raise RegistrationCancelled()
-                    processed_images.append(store_frame(_downscale_for_preview(display_image(frame))))
+                    processed_images.append(store_frame(_downscale_for_preview(processing_preview(frame))))
             else:
                 processed_images = materialize_frames(self.raw_images, lambda: self.is_cancelled)
             if cleanup:
@@ -609,10 +581,13 @@ class RenderWorker(QThread):
         if self.is_cancelled:
             raise RegistrationCancelled()
     
-        logger.info("render result device=%s alignment_reused=%s alignment_seconds=%.6f "
-                    "fusion_seconds=%.6f shape=%s dtype=%s", device_name,
-                    self.alignment_reused, alignment_time, fusion_time,
-                    getattr(fusion_result, 'shape', None), getattr(fusion_result, 'dtype', None))
+        result_details = None
+        if fusion_result is not None:
+            from utils.logging_setup import image_result_details
+            result_details = image_result_details(fusion_result)
+        logger.info("render final result device=%s alignment_reused=%s alignment_seconds=%.6f "
+                    "fusion_seconds=%.6f pixels=%s", device_name,
+                    self.alignment_reused, alignment_time, fusion_time, result_details)
         self.finished_signal.emit(
             processed_images,
             fusion_result,
@@ -784,7 +759,7 @@ class RenderWorker(QThread):
             ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
             sort_mode=self.sort_mode, exposure_match=self.exposure_match,
             resource_preference=self.resource_preference)
-        images, is_16bit = _prepare_fusion_input(images, fusion, should_cancel)
+        images, is_16bit = prepare_fusion_input(images, fusion, should_cancel)
         result = fusion.fuse(images, thread_count=self.thread_count,
             should_cancel=should_cancel, progress_callback=progress_callback)
         if self.sharpen_output and result is not None:
@@ -1303,7 +1278,7 @@ class BatchWorker(QThread):
                         base_frame=runtime.get('base_frame', 'none'),
                         sort_mode=runtime.get('sort_mode', 'asc'),
                         exposure_match=self.exposure_match, **tile_kwargs)
-                    fusion_input, is_16bit = _prepare_fusion_input(color_frames, fusion, lambda: self.is_cancelled)
+                    fusion_input, is_16bit = prepare_fusion_input(color_frames, fusion, lambda: self.is_cancelled)
                     if aligned_for_export is None:
                         del aligned_images
                     result = self._fuse_one_stack(fusion, fusion_method, fusion_input, fusion_params)
@@ -1477,7 +1452,7 @@ class BatchWorker(QThread):
                     brightness_reference='last' if self.exposure_match else 'first', use_gpu=False)
                 images = registration.process(images, thread_count=self.thread_count,
                     resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled)
-            fusion_input, is_16bit = _prepare_fusion_input(images, fusion)
+            fusion_input, is_16bit = prepare_fusion_input(images, fusion)
             result = self._fuse_one_stack(fusion, method, fusion_input, params)
             return quantize_fuse_output(result, is_16bit)
 

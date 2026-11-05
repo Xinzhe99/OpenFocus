@@ -44,6 +44,7 @@ class LoadOptions:
     filenames: list[str]
     base_images: list[Any]
     working_images: list[Any]
+    reset_scale_factor: float | None = None
 
 
 class SourceManager(QObject):
@@ -804,6 +805,12 @@ class SourceManager(QObject):
         previous_profiles = list(getattr(window, "image_icc_profiles", ()) or ())
         if len(previous_profiles) != len(window.raw_images or []):
             previous_profiles = [b""] * len(window.raw_images or [])
+        if (not append or not window.raw_images) and hasattr(options, "source_px_um"):
+            window.source_px_um = options.source_px_um
+        reset_scale = getattr(options, "reset_scale_factor", None) or options.scale_factor
+        source_px_um = getattr(window, "source_px_um", None)
+        reset_px_um = (source_px_um * options.scale_factor / reset_scale
+                       if source_px_um is not None else None)
 
         if append and window.raw_images:
             if getattr(window, "source_transforms", None):
@@ -854,8 +861,8 @@ class SourceManager(QObject):
                 "paths": list(getattr(options, "reset_paths", paths)),
                 "profiles": list(profiles),
                 "folder": window.current_folder_path,
-                "scale": options.scale_factor,
-                "source_px_um": getattr(window, "source_px_um", None),
+                "scale": reset_scale,
+                "source_px_um": reset_px_um,
                 "linear_dng_metadata": getattr(window, "linear_dng_metadata", None),
             }
             initial_index = 0

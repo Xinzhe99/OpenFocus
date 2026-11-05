@@ -228,3 +228,62 @@ def test_mappable_tiff_preview_samples_without_segment_decoder():
     assert max(preview.shape[:2]) <= sources.PREVIEW_EDGE
     assert preview.dtype == np.uint16
     np.testing.assert_array_equal(preview[0, 0], [3000, 2000, 1000])
+
+
+def test_progressive_jpeg_admits_original_coefficient_scratch():
+    class ProgressiveHeader:
+        size = (6000, 4000)
+        width, height = size
+        info = {'progressive': True}
+        def getbands(self): return ('R', 'G', 'B')
+        def draft(self, _mode, target):
+            self.width, self.height = target
+        def thumbnail(self, *_args): raise AssertionError('progressive coefficient allocation')
+        def convert(self, *_args): raise AssertionError('progressive pixels decoded')
+    preview = sources._pil_preview(ProgressiveHeader())
+    assert isinstance(preview, sources._UnavailablePreview)
+    assert max(preview.shape[:2]) <= sources.PREVIEW_EDGE
+
+
+def test_small_lzw_preview_uses_bundled_opencv_codec(tmp_path, monkeypatch):
+    import tifffile
+    path = str(tmp_path / '压缩预览.tif')
+    expected = np.full((24, 32, 3), (1000, 22000, 57000), np.uint16)
+    ok, data = cv2.imencode('.tiff', expected, [cv2.IMWRITE_TIFF_COMPRESSION, 5])
+    assert ok
+    data.tofile(path)
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('LZW preview required imagecodecs')
+    monkeypatch.setattr(tifffile.TiffPage, 'segments', forbidden)
+    frame = sources.scan_source(path)[0]
+    assert frame.preview_is_available
+    np.testing.assert_array_equal(sources.display_image(frame), expected)
+
+
+def test_oversized_lzw_preview_never_calls_full_decoder(monkeypatch):
+    from types import SimpleNamespace
+    def forbidden(*_args, **_kwargs): raise AssertionError('oversized LZW decode')
+    monkeypatch.setattr(cv2, 'imdecodemulti', forbidden)
+    page = SimpleNamespace(imagelength=12000, imagewidth=20000, samplesperpixel=3,
+                           planarconfig=1, dtype=np.dtype(np.uint16), compression=5, tags={})
+    preview = sources._tiff_preview(page)
+    assert isinstance(preview, sources._UnavailablePreview)
+
+
+@pytest.mark.parametrize('orientation,code', [(3, cv2.ROTATE_180),
+                                            (6, cv2.ROTATE_90_CLOCKWISE),
+                                            (8, cv2.ROTATE_90_COUNTERCLOCKWISE)])
+def test_tiff_orientation_is_applied_once_for_previews_and_originals(tmp_path, orientation, code):
+    import tifffile
+    path = str(tmp_path / f'orientation-{orientation}.tif')
+    rgb = np.arange(12 * 20 * 3, dtype=np.uint16).reshape(12, 20, 3)
+    with tifffile.TiffWriter(path) as writer:
+        for offset in (0, 1000):
+            writer.write(rgb + offset, photometric='rgb',
+                         extratags=[(274, 'H', 1, orientation, False)])
+    frames = sources.scan_source(path)
+    for frame, offset in zip(frames, (0, 1000)):
+        expected = cv2.rotate(np.ascontiguousarray((rgb + offset)[:, :, ::-1]), code)
+        assert frame.shape == expected.shape
+        np.testing.assert_array_equal(sources.display_image(frame), expected)
+        np.testing.assert_array_equal(sources.resolve_frame(frame), expected)
