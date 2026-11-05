@@ -74,7 +74,8 @@ def test_cfa_sensor_samples_bit_depth_and_phase(tmp_path, monkeypatch, bits, pat
         assert page.bitspersample == 16
         assert page.tags[50717].value == sensor.white_level
         assert page.tags[50829].value == (0, 0, sensor.sizes.height, sensor.sizes.width)
-        values = np.asarray(page.tags[33422].value).reshape(sensor.raw_pattern.shape)
+        # TIFF BYTE values are bytes; np.asarray(bytes) would produce one scalar.
+        values = np.frombuffer(page.tags[33422].value, dtype=np.uint8).reshape(sensor.raw_pattern.shape)
         for y in range(values.shape[0]):
             for x in range(values.shape[1]):
                 color = sensor.raw_color(y + 3, x + 5)

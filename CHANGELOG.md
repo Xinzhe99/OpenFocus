@@ -91,6 +91,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fixing strict DNG SDK readers rejecting otherwise LibRaw-readable LinearRaw.
 - Admit progressive JPEG thumbnail scratch using original image dimensions,
   and make TIFF admission a single cancellable page-header traversal.
+- Translate converter item progress and unavailable-preview messages in all
+  twelve interface languages, with consistent progress placeholders.
 - Check temporary disk space for mapped frames and known stack operations, and
   release rejected imports without replacing the current stack.
 - Develop ordinary RAW inputs with the sRGB transfer curve and preserve the

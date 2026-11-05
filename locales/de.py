@@ -1090,4 +1090,6 @@ PACK = {
     "converter_required": "Bilder hinzufügen und einen vorhandenen Ausgabeordner wählen.",
     "converter_warning": "JPEG ist verlustbehaftet; JPEG, BMP und WebP wandeln 16 Bit in 8 Bit um. PNG und TIFF erhalten 16 Bit. Transparente Bilder benötigen PNG. Mehrseitige TIFFs werden nummerierte Einzeldateien. Vorhandene Dateien bleiben erhalten.",
     "converter_summary": "Erfolgreich: {success} · Fehlgeschlagen: {failed} {cancelled}",
+    "converter_no_preview": "Es ist keine eingebettete Vorschau verfügbar, die innerhalb des Speicherlimits gelesen werden kann. Die Datei kann weiterhin konvertiert werden.",
+    "converter_item_state": "Abgeschlossen: {completed}/{pages} · Fehlgeschlagen: {failed}",
 }

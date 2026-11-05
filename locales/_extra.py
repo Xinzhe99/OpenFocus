@@ -1104,6 +1104,8 @@ EXTRA_TRANSLATIONS = {
         "converter_required": "画像を追加し、既存の出力フォルダーを選択してください。",
         "converter_warning": "JPEG は非可逆です。JPEG、BMP、WebP は 16 ビットを 8 ビットに変換します。PNG と TIFF は 16 ビットを維持します。透明画像には PNG を使用してください。複数ページ TIFF は番号付きの別ファイルになります。既存ファイルは上書きされません。",
         "converter_summary": "成功: {success} · 失敗: {failed} {cancelled}",
+        "converter_no_preview": "メモリ制限内で読み込める埋め込みプレビューがありません。ファイルの変換は可能です。",
+        "converter_item_state": "完了: {completed}/{pages} · 失敗: {failed}",
     },
     "es": {
         "usage_enabled": "Compartir estadísticas de uso",
@@ -2198,5 +2200,7 @@ EXTRA_TRANSLATIONS = {
         "converter_required": "Añada imágenes y elija una carpeta de salida existente.",
         "converter_warning": "JPEG tiene pérdida; JPEG, BMP y WebP convierten imágenes de 16 a 8 bits. PNG y TIFF conservan 16 bits. Use PNG para transparencia. Los TIFF de varias páginas se separan en archivos numerados. No se sobrescriben archivos existentes.",
         "converter_summary": "Correctos: {success} · Fallidos: {failed} {cancelled}",
+        "converter_no_preview": "No hay una vista previa incrustada que pueda leerse dentro del límite de memoria. El archivo se puede convertir.",
+        "converter_item_state": "Completados: {completed}/{pages} · Fallidos: {failed}",
     },
 }

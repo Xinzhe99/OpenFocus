@@ -1090,4 +1090,6 @@ PACK = {
     "converter_required": "Dodaj obrazy i wybierz istniejący folder docelowy.",
     "converter_warning": "JPEG jest stratny; JPEG, BMP i WebP zmieniają 16 bitów na 8 bitów. PNG i TIFF zachowują 16 bitów. Do przezroczystości użyj PNG. Strony TIFF są zapisywane jako osobne numerowane pliki. Istniejące pliki nie są nadpisywane.",
     "converter_summary": "Udało się: {success} · Błędy: {failed} {cancelled}",
+    "converter_no_preview": "Brak osadzonego podglądu, który można odczytać w limicie pamięci. Plik nadal można przekonwertować.",
+    "converter_item_state": "Ukończono: {completed}/{pages} · Błędy: {failed}",
 }

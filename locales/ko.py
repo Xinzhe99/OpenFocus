@@ -1090,4 +1090,6 @@ PACK = {
     "converter_required": "이미지를 추가하고 기존 출력 폴더를 선택하세요.",
     "converter_warning": "JPEG는 손실 압축이며 JPEG, BMP, WebP는 16비트를 8비트로 변환합니다. PNG와 TIFF는 16비트를 유지합니다. 투명 이미지에는 PNG를 사용하세요. 여러 페이지 TIFF는 번호가 붙은 파일로 분리됩니다. 기존 파일은 덮어쓰지 않습니다.",
     "converter_summary": "성공: {success} · 실패: {failed} {cancelled}",
+    "converter_no_preview": "메모리 제한 내에서 읽을 수 있는 내장 미리보기가 없습니다. 파일 변환은 계속 가능합니다.",
+    "converter_item_state": "완료: {completed}/{pages} · 실패: {failed}",
 }

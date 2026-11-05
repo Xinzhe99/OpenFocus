@@ -1090,4 +1090,6 @@ PACK = {
     "converter_required": "Voeg afbeeldingen toe en kies een bestaande uitvoermap.",
     "converter_warning": "JPEG is verlieslatend; JPEG, BMP en WebP zetten 16 bit om naar 8 bit. PNG en TIFF behouden 16 bit. Gebruik PNG voor transparantie. TIFF-pagina’s worden afzonderlijke genummerde bestanden. Bestaande bestanden blijven behouden.",
     "converter_summary": "Geslaagd: {success} · Mislukt: {failed} {cancelled}",
+    "converter_no_preview": "Er is geen ingesloten voorbeeld dat binnen de geheugenlimiet kan worden gelezen. Het bestand kan wel worden geconverteerd.",
+    "converter_item_state": "Voltooid: {completed}/{pages} · Mislukt: {failed}",
 }

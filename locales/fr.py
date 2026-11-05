@@ -1090,4 +1090,6 @@ PACK = {
     "converter_required": "Ajoutez des images et choisissez un dossier de sortie existant.",
     "converter_warning": "JPEG est avec perte ; JPEG, BMP et WebP convertissent les images 16 bits en 8 bits. PNG et TIFF conservent les 16 bits. Utilisez PNG pour la transparence. Les TIFF multipages deviennent des fichiers numérotés. Les fichiers existants sont préservés.",
     "converter_summary": "Réussis : {success} · Échecs : {failed} {cancelled}",
+    "converter_no_preview": "Aucun aperçu intégré compatible avec la limite de mémoire n’est disponible. La conversion reste possible.",
+    "converter_item_state": "Terminés : {completed}/{pages} · Échecs : {failed}",
 }
