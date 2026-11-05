@@ -582,7 +582,11 @@ def test_sensor_cleanup_precedes_registration(tmp_path, monkeypatch, enabled):
 
     class Fusion:
         def __init__(self, **kwargs):
-            pass
+            from constants import TILE_THRESHOLD
+            from core.algorithms import get_fusion
+            self.descriptor = get_fusion(kwargs['algorithm'])
+            self.tile_enabled = kwargs.get('tile_enabled', True)
+            self.tile_threshold = kwargs.get('tile_threshold', TILE_THRESHOLD)
 
         def get_info(self):
             return {'device': 'CPU'}
@@ -592,8 +596,11 @@ def test_sensor_cleanup_precedes_registration(tmp_path, monkeypatch, enabled):
 
     monkeypatch.setattr(registration, 'ImageRegistration', Registration)
     monkeypatch.setattr(multi_focus_fusion, 'MultiFocusFusion', Fusion)
-    cli._fuse_stack([image, image.copy()], args)
+    fused = cli._fuse_stack([image, image.copy()], args)
     assert registered[0] == pytest.approx((1000 if enabled else 50000) / 257, abs=0.01)
+    assert fused.dtype == np.uint16
+    assert fused[8, 8, 0] == (1000 if enabled else 50000)
+    assert image[8, 8, 0] == 50000
 
 
 def test_grouped_sensor_cleanup_only_processes_original_frames(tmp_path, monkeypatch):

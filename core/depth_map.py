@@ -353,7 +353,7 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
                     preference=resource_preference, user_threads=thread_count)
             _tick(None, 0, n, should_cancel)
             # Neural runners normalize one spatial tile at a time. B/C prepare
-            # each source themselves and retain their input quantization rule.
+            # one frame at a time, using fusion's stack-wide bit-depth rule.
             if method not in ('openfocus_b', 'openfocus_c', 'stackmffv2', 'stackmffv3'):
                 if any(image.dtype == np.uint16 for image in images):
                     normalized = []

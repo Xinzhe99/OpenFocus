@@ -6,7 +6,6 @@ import time
 import os
 import cv2
 import numpy as np
-import imageio.v2 as imageio
 from core.registration import ImageRegistration, RegistrationCancelled
 from core.multi_focus_fusion import MultiFocusFusion
 from core.frame_storage import store_frame
@@ -1516,18 +1515,22 @@ class GifSaverWorker(QThread):
 
     def run(self):
         import tempfile
+        from PIL import Image, GifImagePlugin
         temporary = None
         with log_operation("gif_save", file_path=self.file_path, duration_sec=self.duration_sec,
                            target_type=self.target_type, scale_cfg=self.scale_cfg,
                            **frame_details(self.images)) as operation:
             try:
+                if not self.images:
+                    raise ValueError('Cannot save a GIF without frames')
+                duration_ms = round(self.duration_sec * 1000)
                 handle, temporary = tempfile.mkstemp(suffix='.gif', prefix='.openfocus-',
                                                      dir=os.path.dirname(os.path.abspath(self.file_path)))
                 os.close(handle)
-                # The legacy Pillow writer encodes each page as it arrives;
-                # mimsave's Pillow path first assembles an in-memory stack.
-                with imageio.get_writer(temporary, format='GIF-PIL', mode='I',
-                                        duration=self.duration_sec, loop=0) as writer:
+                # Keep Pillow's header and frame blocks intact: imageio's legacy
+                # writer assumes a 256-color table even when Pillow emits fewer.
+                # getdata encodes only the current frame, unlike save_all.
+                with open(temporary, 'wb') as writer:
                     for index, frame in enumerate(self.images):
                         if self.is_cancelled:
                             raise RegistrationCancelled()
@@ -1552,7 +1555,16 @@ class GifSaverWorker(QThread):
                             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                         if self.is_cancelled:
                             raise RegistrationCancelled()
-                        writer.append_data(image)
+                        with Image.fromarray(image) as rgb, rgb.quantize(colors=256) as paletted:
+                            if index == 0:
+                                for block in GifImagePlugin.getheader(paletted, info={'loop': 0})[0]:
+                                    writer.write(block)
+                            for block in GifImagePlugin.getdata(
+                                    paletted, duration=duration_ms, disposal=2,
+                                    include_color_table=index > 0):
+                                writer.write(block)
+                        del image
+                    writer.write(b';')
                 if self.is_cancelled:
                     raise RegistrationCancelled()
                 os.replace(temporary, self.file_path)

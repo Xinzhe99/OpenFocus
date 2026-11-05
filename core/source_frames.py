@@ -405,6 +405,47 @@ def _opencv_tiff_preview(page):
     return _small(image)
 
 
+def _validate_tiff_alpha(page):
+    """Prove every alpha-bearing page is opaque before accepting its container."""
+    if page.samplesperpixel != 4:
+        return
+    from core.image_loader import UnsupportedTransparency
+    dtype = np.dtype(page.dtype)
+    if dtype not in (np.dtype(np.uint8), np.dtype(np.uint16)):
+        raise UnsupportedTransparency('Unsupported TIFF alpha sample type')
+    opaque = np.iinfo(dtype).max
+    if page.is_memmappable:
+        mapped = page.asarray(out='memmap')
+        for y in range(0, page.imagelength, 128):
+            if np.min(mapped[y:y + 128, :, 3]) != opaque:
+                raise UnsupportedTransparency('Transparent TIFF pages are unsupported')
+        return
+    # Missing optional codecs and oversized strips must use the same admitted
+    # native decoder as previews. An unavailable preview cannot prove opacity.
+    if int(page.compression) == 5:
+        preview = _opencv_tiff_preview(page)
+        if isinstance(preview, _UnavailablePreview):
+            raise UnsupportedTransparency('TIFF alpha cannot be safely validated within the preview budget')
+        return
+    segment_h = page.tilelength if page.is_tiled else min(page.imagelength, page.rowsperstrip)
+    segment_w = page.tilewidth if page.is_tiled else page.imagewidth
+    working = segment_h * segment_w * 4 * dtype.itemsize * 4 + max(page.databytecounts, default=0) * 2
+    if working > PREVIEW_DECODE_BUDGET:
+        raise UnsupportedTransparency('TIFF alpha cannot be safely validated within the preview budget')
+    from core.resource_policy import require_memory
+    require_memory(working)
+    try:
+        for segment, _position, _shape in page.segments(maxworkers=1):
+            if segment is not None and np.min(segment[..., 3]) != opaque:
+                raise UnsupportedTransparency('Transparent TIFF pages are unsupported')
+    except UnsupportedTransparency:
+        raise
+    except (ImportError, ValueError):
+        preview = _opencv_tiff_preview(page)
+        if isinstance(preview, _UnavailablePreview):
+            raise UnsupportedTransparency('TIFF alpha cannot be safely validated within the preview budget')
+
+
 def _tiff_preview(page):
     """Sample mapped TIFFs or admitted strips; oversized strips stay undecoded."""
     h, w = page.imagelength, page.imagewidth
@@ -516,6 +557,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
             for index, page in enumerate(tif.pages):
                 if page_index is not None and index != page_index:
                     continue
+                _validate_tiff_alpha(page)
                 orientation = int(page.tags['Orientation'].value) if 'Orientation' in page.tags else 1
                 h, w = page.imagelength, page.imagewidth
                 if orientation in (5, 6, 7, 8):

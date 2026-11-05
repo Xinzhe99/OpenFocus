@@ -54,6 +54,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Record one local shape/dtype/SHA-256 fingerprint for the final quantized fusion
   pixels from ordinary and comparison renders without copying the full image;
   alignment-only stacks are not traversed for result fingerprints.
+- Preserve complete Pillow GIF palette/header blocks during streamed export,
+  including repeated frames, timing and atomic cancellation behavior.
+- Use one stack-wide bit-depth promotion rule for B/C depth estimation in both
+  displayed depth maps and tiled fusion, retaining streamed disk-backed processing.
+- Validate every alpha-bearing TIFF page before publishing its container and keep
+  rejected or cancelled imports from replacing the existing workspace. TIFF alpha
+  that cannot be checked within the safe decoder budget is rejected explicitly.
 - Apply tiled Guided Filter exposure matching per tile after whole-stack gain
   estimation, avoiding an additional full-size matched copy of the stack.
 - Reduce GFG-FGF working memory by converting frames per pass instead of

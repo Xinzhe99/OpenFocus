@@ -298,20 +298,18 @@ def test_export_all_keeps_folder_artifact_and_baked_pixels(qapp, tmp_path, monke
 
 
 def test_gif_cancel_does_not_replace_previous_file(qapp, tmp_path, monkeypatch):
-    import core.workers as workers
+    from PIL import GifImagePlugin
     destination = tmp_path / 'existing.gif'
     destination.write_bytes(b'previous')
     worker = GifSaverWorker([np.zeros((8, 8, 3), np.uint8)], str(destination), .1, Labels(), 'registered')
 
-    class InterruptedWriter:
-        def __enter__(self):
-            return self
-        def append_data(self, image):
-            worker.cancel()
-        def __exit__(self, *args):
-            pass
+    encode = GifImagePlugin.getdata
+    def cancel_after_encoding(*args, **kwargs):
+        data = encode(*args, **kwargs)
+        worker.cancel()
+        return data
 
-    monkeypatch.setattr(workers.imageio, 'get_writer', lambda *args, **kwargs: InterruptedWriter())
+    monkeypatch.setattr(GifImagePlugin, 'getdata', cancel_after_encoding)
     outcomes = []
     worker.finished_signal.connect(lambda ok, message: outcomes.append((ok, message)))
     worker.run()

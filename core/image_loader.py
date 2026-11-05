@@ -762,6 +762,8 @@ class ImageStackLoader:
             if self.progress_callback is not None:
                 self.progress_callback(index + 1, len(paths))
         ensure_preview(images[0])
+        if self.should_cancel():
+            return False, 'CANCELLED', [], []
         self.images = images
         self.image_paths = paths
         self.source_exif = _read_exif_bytes(paths[0])
@@ -922,7 +924,15 @@ class ImageStackLoader:
             return False, 'Could not load any image files', [], []
         if self.should_cancel():
             return False, 'CANCELLED', [], []
-        ensure_preview(images[0])
+        try:
+            ensure_preview(images[0])
+        except UnsupportedTransparency:
+            from locales import trans
+            return False, trans.t('transparent_desktop_unsupported').format(path=images[0].path), [], []
+        except (OSError, ValueError) as exc:
+            return False, f'Could not load source preview: {exc}', [], []
+        if self.should_cancel():
+            return False, 'CANCELLED', [], []
         self.images, self.image_paths = images, paths
         self.source_exif = exif
         self.px_size_um = _consistent_px_size_um(px_sizes)

@@ -60,7 +60,7 @@ def test_batch_excludes_and_applies_mask_before_processing(qapp, tmp_path, monke
         np.testing.assert_allclose(frame, 10001.0 / 257.0, rtol=1e-6)
 
 
-def test_render_admits_full_cleanup_stack_before_mask_or_copy(qapp, tmp_path, monkeypatch):
+def test_render_admits_full_cleanup_stack_before_mask_or_processing(qapp, tmp_path, monkeypatch):
     from core.workers import RenderWorker
     import utils.sensor_cleanup as sensor
     path, image = _inputs(tmp_path)
@@ -81,7 +81,10 @@ def test_render_admits_full_cleanup_stack_before_mask_or_copy(qapp, tmp_path, mo
     with pytest.raises(MemoryError, match='cleanup budget'):
         worker._run_admitted()
     assert len(seen) == 1
-    assert seen[0][0][0] is frames[0] and seen[0][0][1] is frames[1]
+    assert len(seen[0][0]) == len(frames)
+    for admitted, original in zip(seen[0][0], frames):
+        assert admitted.shape == original.shape and admitted.dtype == original.dtype
+        np.testing.assert_array_equal(admitted, original)
     assert seen[0][1:] == (str(path), True, True)
 
 

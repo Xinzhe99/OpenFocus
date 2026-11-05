@@ -289,20 +289,135 @@ def test_gfg_depth_streams_decisions_without_retaining_activity_stack(monkeypatc
     np.testing.assert_array_equal(result, np.full(shape, 2, np.int32))
 
 
-def test_gif_exports_original_dimensions_and_duration(tmp_path):
-    from PIL import Image
-    frames = [_source(tmp_path, f'{index}.png', value=40 + index * 30)[0] for index in range(3)]
+@pytest.mark.parametrize('duration', [.12, .25])
+def test_gif_exports_original_dimensions_and_duration(tmp_path, monkeypatch, duration):
+    from PIL import Image, GifImagePlugin
+    colors = [(20, 40, 60), (70, 90, 110), (70, 90, 110), (20, 40, 60)]
+    frames = [_source(tmp_path, f'{index}.png', value=color)[0]
+              for index, color in enumerate(colors)]
     target = tmp_path / 'originals.gif'
+    target.write_bytes(b'previous')
+    encode = GifImagePlugin.getdata
+    def encode_before_publish(*args, **kwargs):
+        assert target.read_bytes() == b'previous'
+        return encode(*args, **kwargs)
+    monkeypatch.setattr(GifImagePlugin, 'getdata', encode_before_publish)
+    outcomes = []
+    worker = workers.GifSaverWorker(frames, str(target), duration, None, 'raw')
+    worker.finished_signal.connect(lambda *args: outcomes.append(args))
+    worker.run()
+    assert outcomes == [(True, str(target))]
+    with Image.open(target) as gif:
+        assert gif.size == (56, 40) and gif.n_frames == len(frames)
+        assert gif.info['loop'] == 0
+        for index, color in enumerate(colors):
+            gif.seek(index)
+            assert gif.info['duration'] == round(duration * 1000)
+            np.testing.assert_array_equal(np.asarray(gif.convert('RGB')),
+                                          np.full((40, 56, 3), color[::-1], np.uint8))
+    assert not list(tmp_path.glob('.openfocus-*.gif'))
+
+
+def test_gif_encodes_before_resolving_next_original(tmp_path, monkeypatch):
+    import weakref
+    from PIL import GifImagePlugin
+    frames = [_source(tmp_path, f'{index}.png')[0] for index in range(5)]
+    decoded, encoded, rgb_buffers = [], [], []
+    def resolve(frame):
+        assert len(encoded) == len(decoded)
+        assert all(reference() is None for reference in rgb_buffers)
+        assert frame is frames[len(decoded)]
+        decoded.append(frame)
+        return np.full((40, 56, 3), len(decoded) * 20, np.uint8)
+    convert = cv2.cvtColor
+    def capture_buffer(*args, **kwargs):
+        image = convert(*args, **kwargs)
+        rgb_buffers.append(weakref.ref(image))
+        return image
+    encode = GifImagePlugin.getdata
+    def encode_frame(*args, **kwargs):
+        data = encode(*args, **kwargs)
+        encoded.append(len(decoded))
+        return data
+    monkeypatch.setattr(workers, 'resolve_frame', resolve)
+    monkeypatch.setattr(cv2, 'cvtColor', capture_buffer)
+    monkeypatch.setattr(GifImagePlugin, 'getdata', encode_frame)
+    target = tmp_path / 'streamed.gif'
     outcomes = []
     worker = workers.GifSaverWorker(frames, str(target), .25, None, 'raw')
     worker.finished_signal.connect(lambda *args: outcomes.append(args))
     worker.run()
     assert outcomes == [(True, str(target))]
-    with Image.open(target) as gif:
-        assert gif.size == (56, 40) and gif.n_frames == 3
-        assert gif.info['duration'] == 250
-        gif.seek(2)
-        np.testing.assert_array_equal(np.asarray(gif.convert('RGB')), np.full((40, 56, 3), 100, np.uint8))
+    assert len(decoded) == len(frames) and encoded == [1, 2, 3, 4, 5]
+    assert all(reference() is None for reference in rgb_buffers)
+
+
+@pytest.mark.parametrize('cancel_at', ['resolve', 'encode'])
+def test_gif_cancellation_preserves_destination(tmp_path, monkeypatch, cancel_at):
+    from PIL import GifImagePlugin
+    frames = [_source(tmp_path, f'{index}.png')[0] for index in range(2)]
+    target = tmp_path / 'existing.gif'
+    target.write_bytes(b'previous')
+    worker = workers.GifSaverWorker(frames, str(target), .25, None, 'raw')
+    resolve, encode = workers.resolve_frame, GifImagePlugin.getdata
+    calls = []
+    def cancel_after_resolve(frame):
+        image = resolve(frame)
+        calls.append('resolve')
+        if cancel_at == 'resolve':
+            worker.cancel()
+        return image
+    def cancel_after_encode(*args, **kwargs):
+        data = encode(*args, **kwargs)
+        calls.append('encode')
+        worker.cancel()
+        return data
+    monkeypatch.setattr(workers, 'resolve_frame', cancel_after_resolve)
+    monkeypatch.setattr(GifImagePlugin, 'getdata', cancel_after_encode)
+    outcomes = []
+    worker.finished_signal.connect(lambda *args: outcomes.append(args))
+    worker.run()
+    assert calls == (['resolve'] if cancel_at == 'resolve' else ['resolve', 'encode'])
+    assert outcomes == [(False, 'CANCELLED')]
+    assert target.read_bytes() == b'previous'
+    assert not list(tmp_path.glob('.openfocus-*.gif'))
+
+
+@pytest.mark.parametrize('fail_at', [0, 1])
+def test_gif_encoder_failure_preserves_destination(tmp_path, monkeypatch, fail_at):
+    from PIL import GifImagePlugin
+    frames = [_source(tmp_path, f'{index}.png')[0] for index in range(2)]
+    target = tmp_path / 'existing.gif'
+    target.write_bytes(b'previous')
+    encode = GifImagePlugin.getdata
+    calls = []
+    def fail_encoding(*args, **kwargs):
+        data = encode(*args, **kwargs)
+        calls.append(len(calls))
+        if calls[-1] == fail_at:
+            raise OSError('GIF encoding failed')
+        return data
+    monkeypatch.setattr(GifImagePlugin, 'getdata', fail_encoding)
+    outcomes = []
+    worker = workers.GifSaverWorker(frames, str(target), .25, None, 'raw')
+    worker.finished_signal.connect(lambda *args: outcomes.append(args))
+    worker.run()
+    assert len(calls) == fail_at + 1
+    assert outcomes == [(False, 'GIF encoding failed')]
+    assert target.read_bytes() == b'previous'
+    assert not list(tmp_path.glob('.openfocus-*.gif'))
+
+
+def test_gif_without_frames_reports_failure(tmp_path):
+    target = tmp_path / 'existing.gif'
+    target.write_bytes(b'previous')
+    outcomes = []
+    worker = workers.GifSaverWorker([], str(target), .25, None, 'raw')
+    worker.finished_signal.connect(lambda *args: outcomes.append(args))
+    worker.run()
+    assert len(outcomes) == 1 and outcomes[0][0] is False and outcomes[0][1]
+    assert target.read_bytes() == b'previous'
+    assert not list(tmp_path.glob('.openfocus-*.gif'))
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])

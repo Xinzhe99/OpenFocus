@@ -86,6 +86,11 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     def cancel():
         _check_cancel(should_cancel)
 
+    # Fusion promotes every frame to float32 when any source is uint16.
+    # Apply that same stack-wide rule before the integer activity conversion:
+    # a uint8 member of a mixed stack must retain its fractional channel mean
+    # and use 65535/255, just like its already-normalized tiled counterpart.
+    normalize_16bit = any(source.dtype == np.uint16 for source in frames)
     best = winner = None
     for index, source in enumerate(frames):
         if progress_callback is not None:
@@ -99,7 +104,7 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
             gray = frame[:, :, :min(frame.shape[2], 3)].mean(axis=2)
         else:
             gray = frame
-        if source.dtype == np.uint8:
+        if source.dtype == np.uint8 and not normalize_16bit:
             gray = np.floor(gray) * 256.0
         else:
             gray = gray * (65535.0 / 255.0)

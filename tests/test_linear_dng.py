@@ -373,9 +373,11 @@ def test_unicode_tiff_wrapped_dng_loads_and_round_trips(tmp_path, camera_metadat
     loader = ImageStackLoader()
     ok, message, images, _ = loader.load_linear_raw_stack([source])
     assert ok, message
-    np.testing.assert_allclose(images[0][4:-4, 4:-4], pixels[4:-4, 4:-4], atol=4)
+    from core.source_frames import resolve_frame
+    loaded = resolve_frame(images[0])
+    np.testing.assert_allclose(loaded[4:-4, 4:-4], pixels[4:-4, 4:-4], atol=4)
     out = tmp_path / 'out.dng'
-    linear_dng.write_linear_dng(out, images[0], loader.linear_dng_metadata)
+    linear_dng.write_linear_dng(out, loaded, loader.linear_dng_metadata)
     reloaded, profile = linear_dng.load_linear_raw(out)
     np.testing.assert_allclose(reloaded[4:-4, 4:-4], pixels[4:-4, 4:-4], atol=8)
     from core.image_loader import linear_raw_metadata_matches

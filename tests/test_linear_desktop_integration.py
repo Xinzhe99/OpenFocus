@@ -14,51 +14,56 @@ def _metadata(model="Camera", neutral=(0.5, 1.0, 0.7)):
 
 
 def test_linear_stack_load_is_atomic_and_checks_calibration(monkeypatch):
+    from core import source_frames
     import utils.linear_dng as linear
-    from core import resource_policy
 
-    frames = [np.full((4, 5, 3), value, np.uint16) for value in (120, 950)]
-    calls, reservations = [], []
-    def decode(path, scale_factor, before_decode):
+    calls = []
+    def inspect(path, scale, *, linear, header_only):
+        assert linear and header_only
         calls.append(path)
-        before_decode(100, 80)
-        index = len(calls) - 1
-        return frames[index], _metadata(neutral=(0.5 + index * .1, 1.0, 0.7))
-    monkeypatch.setattr(linear, "load_linear_raw", decode)
-    monkeypatch.setattr(resource_policy, "require_memory", reservations.append)
+        return [SimpleNamespace(linear_metadata=_metadata(neutral=(0.5 + (len(calls) - 1) * .1, 1.0, 0.7)))]
+    monkeypatch.setattr(source_frames, 'scan_source', inspect)
+    monkeypatch.setattr(linear, 'load_linear_raw',
+                        lambda *_args, **_kwargs: pytest.fail('manifest load decoded original RAW'))
     loader = ImageStackLoader()
     old = np.zeros((1, 1, 3), np.uint16)
+    previous_profile = _metadata(model='Previous')
     loader.images = [old]
-    ok, _, images, _ = loader.load_linear_raw_stack(["a.cr3", "b.cr3"], .25)
+    loader.image_paths = ['previous.dng']
+    loader.linear_dng_metadata = previous_profile
+    ok, _, images, _ = loader.load_linear_raw_stack(['a.cr3', 'b.cr3'], .25)
     assert not ok and images == []
     assert loader.images[0] is old
-    assert calls == ["a.cr3", "b.cr3"]
-    assert reservations[0] >= 100 * 80 * 6 * 4
+    assert loader.image_paths == ['previous.dng']
+    assert loader.linear_dng_metadata is previous_profile
+    assert calls == ['a.cr3', 'b.cr3']
 
 
 def test_linear_stack_cancel_does_not_replace_previous_stack(monkeypatch):
-    import utils.linear_dng as linear
+    from core import source_frames
     loader = ImageStackLoader()
     old = np.zeros((1, 1, 3), np.uint16)
     loader.images = [old]
-    cancelled = [False]
+    cancelled, calls = [False], []
     loader.should_cancel = lambda: cancelled[0]
-    def decode(path, scale_factor, before_decode):
+    def inspect(path, scale, *, linear, header_only):
+        assert linear and header_only
+        calls.append(path)
         cancelled[0] = True
-        return np.ones((2, 2, 3), np.uint16), _metadata()
-    monkeypatch.setattr(linear, "load_linear_raw", decode)
-    ok, message, frames, _ = loader.load_linear_raw_stack(["a.cr3", "b.cr3"])
-    assert not ok and message == "CANCELLED" and frames == []
-    assert loader.images[0] is old
+        return [SimpleNamespace(linear_metadata=_metadata())]
+    monkeypatch.setattr(source_frames, 'scan_source', inspect)
+    ok, message, frames, _ = loader.load_linear_raw_stack(['a.cr3', 'b.cr3'])
+    assert not ok and message == 'CANCELLED' and frames == []
+    assert loader.images[0] is old and calls == ['a.cr3']
 
 
 
 def test_unknown_camera_does_not_establish_stack_identity(monkeypatch):
-    import utils.linear_dng as linear
+    from core import source_frames
     generic = LinearDNGMetadata(((1., 0., 0.), (0., 1., 0.), (0., 0., 1.)),
                                 (0.5, 1., 0.7))
-    monkeypatch.setattr(linear, "load_linear_raw", lambda *args, **kw:
-                        (np.ones((2, 2, 3), np.uint16), generic))
+    monkeypatch.setattr(source_frames, 'scan_source', lambda *args, **kw:
+                        [SimpleNamespace(linear_metadata=generic)])
     loader = ImageStackLoader()
     ok, _, _, _ = loader.load_linear_raw_stack(["one.cr3", "two.cr3"])
     assert not ok

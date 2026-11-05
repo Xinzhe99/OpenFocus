@@ -83,12 +83,19 @@ def test_transforms_remain_lazy_then_materialize_exact_pixels(tmp_path, monkeypa
 def test_tiff_pages_keep_original_depth_and_page_identity(tmp_path, monkeypatch):
     path = str(tmp_path / '多页.tif')
     original = [np.full((48, 64, 3), value, np.uint16) for value in (1024, 50000)]
-    assert cv2.imwritemulti(path, original)
+    import tifffile
+    # OpenCV filename-based writers are not Unicode-safe on Windows; create
+    # the actual requested container through Python's Unicode filesystem API.
+    with tifffile.TiffWriter(path) as writer:
+        for page in original:
+            writer.write(page[:, :, ::-1], photometric='rgb')
+    assert (tmp_path / '多页.tif').is_file()
     frames = sources.scan_source(path)
     assert [frame.page for frame in frames] == [0, 1]
     assert all(frame.dtype == np.uint16 for frame in frames)
     for frame, expected in zip(frames, original):
         np.testing.assert_array_equal(sources.resolve_frame(frame), expected)
+    assert (tmp_path / '多页.tif').is_file()
 
 
 def test_png_header_retains_rgb16_samples(tmp_path):
