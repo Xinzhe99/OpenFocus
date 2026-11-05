@@ -30,7 +30,7 @@ try:
 except ImportError:
     RAWPY_AVAILABLE = False
 
-from utils.image_utils import _sanitize_exif, export_exif, to_display_uint8
+from utils.image_utils import _sanitize_exif, export_exif, read_image_exif, to_display_uint8
 from utils.sorting import natural_sort_key
 
 # LibRaw recognizes file contents, not extensions. This shared allow-list
@@ -67,7 +67,8 @@ def source_dimensions(path, page=0):
     if is_raw_source(path):
         if not RAWPY_AVAILABLE:
             raise ValueError('Camera RAW support is unavailable (rawpy/LibRaw).')
-        with open(path, 'rb') as stream, rawpy.imread(stream) as raw:
+        with rawpy.RawPy() as raw:
+            raw.open_file(os.fspath(path))
             return raw.sizes.width, raw.sizes.height
     if extension in ('.tif', '.tiff'):
         import tifffile
@@ -265,7 +266,7 @@ def _read_exif_bytes(path: str) -> bytes:
             # a 16-bit export of those frames came out without metadata. Keep
             # the same export-safe subset the RAW path returns: IFD0 carries
             # source strip/size pointers that must not reach an export.
-            exif = pil_img.getexif()
+            exif = read_image_exif(pil_img)
             if not len(exif):
                 return b""
             safe = export_exif(exif.tobytes())
@@ -275,7 +276,7 @@ def _read_exif_bytes(path: str) -> bytes:
 
 
 def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
-    """Read a page's RGB profile, or the common profile of all pages."""
+    """Read one frame's RGB profile, requiring common profiles for TIFF stacks."""
     if not PIL_AVAILABLE:
         return b""
     if is_raw_source(path):
@@ -289,7 +290,9 @@ def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
     try:
         with PILImage.open(path) as image:
             profiles = []
-            pages = range(getattr(image, "n_frames", 1)) if page is None else (page,)
+            pages = range(getattr(image, "n_frames", 1)) if image.format == "TIFF" else (0,)
+            if page is not None:
+                pages = (page,)
             for page_index in pages:
                 image.seek(page_index)
                 # TIFF tags are page-specific; Pillow's info dictionary may
@@ -366,7 +369,7 @@ def apply_exif_orientation(path: str, img: np.ndarray) -> np.ndarray:
         if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif', '.tif', '.tiff', '.png', '.webp'):
             return img
         with PILImage.open(path) as pil_img:
-            orientation = pil_img.getexif().get(274, 1)
+            orientation = read_image_exif(pil_img).get(274, 1)
         transform = _EXIF_TRANSFORMS.get(int(orientation))
         if transform is not None:
             return np.ascontiguousarray(transform(img))

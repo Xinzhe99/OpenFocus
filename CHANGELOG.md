@@ -5,7 +5,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.76.0] - 2026-11-05
+## [1.76.0] - 2026-11-06
 
 ### Added
 - Add a scannable, clickable PayPal support QR code to the English and Chinese READMEs.
@@ -129,6 +129,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   buffers by output row size and a target strip size.
 - Read TIFF-based RAW EXIF through a bounded metadata stream instead of copying
   the entire camera file into memory.
+- Read PNG orientation and EXIF through bounded chunk seeks, including metadata
+  after IDAT, without decoding image pixels during manifest or grouped preflight.
+  Keep ICC inspection on the imported frame and RAW size admission header-only.
+- Inspect sensor-mask orientation without decoding PNG pixels, and admit
+  standalone retouch inputs before either native decoder allocates pixels.
 - Accept TIFF-named DNG files in native RAW selection and append, while rejecting
   ordinary TIFF in camera-linear stacks.
 - Develop camera-linear RAW pixels before exporting a depth-rendered TIFF, and

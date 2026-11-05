@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 
 from core.registration import RegistrationCancelled
+from utils.image_utils import read_image_exif
 
 
 class SensorCleanupCancelled(RegistrationCancelled):
@@ -60,9 +61,11 @@ def validate_sensor_source_orientation(paths, cancel_callback=None):
                             image.seek(page)
                         except EOFError:
                             break
-                        orientation = image.getexif().get(274, 1)
+                        orientation = read_image_exif(image).get(274, 1)
                         if type(orientation) is not int or orientation != 1:
                             raise ValueError(f"EXIF orientation {orientation!r} on page {page + 1}")
+                        if image.format != 'TIFF':
+                            break
                         page += 1
         except SensorCleanupCancelled:
             raise

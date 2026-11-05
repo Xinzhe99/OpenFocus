@@ -259,11 +259,58 @@ def imwrite_float_tiff(path: str, image: np.ndarray, metadata: dict) -> bool:
 # Raw EXIF of the loaded source stack; set by the loaders, embedded into
 # lossless exports automatically. Empty bytes = no metadata to embed.
 SOURCE_EXIF = b""
+_PNG_EXIF_LIMIT = 16 * 1024 * 1024
 
 
 def set_source_exif(exif: bytes) -> None:
     global SOURCE_EXIF
     SOURCE_EXIF = exif or b""
+
+
+def read_image_exif(image):
+    """Read EXIF without PNG's getexif() forcing a full pixel decode."""
+    if getattr(image, "format", None) != "PNG":
+        return image.getexif()
+    from PIL import Image
+
+    exif = Image.Exif()
+    data = image.info.get("exif")
+    if not data:
+        import zlib
+
+        stream = getattr(image, "fp", None)
+        if stream is None:
+            return exif
+        position = stream.tell()
+        try:
+            stream.seek(0)
+            if stream.read(8) != b"\x89PNG\r\n\x1a\n":
+                raise OSError("Invalid PNG signature")
+            while True:
+                header = stream.read(8)
+                if len(header) != 8:
+                    raise OSError("Truncated PNG metadata")
+                length = int.from_bytes(header[:4], "big")
+                kind = header[4:]
+                if kind == b"IEND":
+                    return exif
+                if kind == b"eXIf":
+                    if length > _PNG_EXIF_LIMIT:
+                        raise OSError("PNG EXIF exceeds the read limit")
+                    data = stream.read(length)
+                    crc = stream.read(4)
+                    if (len(data) != length or len(crc) != 4
+                            or zlib.crc32(data, zlib.crc32(kind))
+                            != int.from_bytes(crc, "big")):
+                        raise OSError("Invalid PNG EXIF chunk")
+                    break
+                stream.seek(length + 4, 1)
+        finally:
+            stream.seek(position)
+    if len(data) > _PNG_EXIF_LIMIT:
+        raise OSError("PNG EXIF metadata exceeds the read limit")
+    exif.load(data)
+    return exif
 
 
 # IFD0 tags worth carrying into an export. Everything else in a source IFD0

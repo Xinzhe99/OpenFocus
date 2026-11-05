@@ -165,3 +165,46 @@ def test_no_source_exif_writes_plain_file(monkeypatch, tmp_path):
     assert image_utils.imwrite_auto(p, img)
     assert np.array_equal(cv2.imread(p, cv2.IMREAD_UNCHANGED), img)
     assert not _read_back(p)
+
+
+def test_png_exif_rejects_oversized_chunk_without_reading_payload(tmp_path):
+    import struct
+
+    path = tmp_path / 'oversized-metadata.png'
+    Image.new('RGB', (2, 2), 'red').save(path)
+    encoded = path.read_bytes()
+    path.write_bytes(encoded[:-12] + struct.pack('>I4s', 0x7fffffff, b'eXIf') + encoded[-12:])
+
+    class HeaderReadsOnly:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def read(self, size=-1):
+            assert 0 <= size <= 8, 'EXIF lookup attempted an unbounded payload read'
+            return self.stream.read(size)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+    with Image.open(path) as image:
+        position = image.fp.tell()
+        image.fp = HeaderReadsOnly(image.fp)
+        with pytest.raises(OSError):
+            image_utils.read_image_exif(image)
+        assert image.fp.tell() == position
+
+
+def test_png_exif_rejects_bad_crc_and_restores_pixel_stream(tmp_path):
+    import struct
+
+    path = tmp_path / 'invalid-metadata-crc.png'
+    Image.new('RGB', (2, 2), 'red').save(path)
+    encoded = path.read_bytes()
+    payload = _camera_exif().tobytes()[6:]
+    chunk = struct.pack('>I4s', len(payload), b'eXIf') + payload + b'\0\0\0\0'
+    path.write_bytes(encoded[:-12] + chunk + encoded[-12:])
+    with Image.open(path) as image:
+        position = image.fp.tell()
+        with pytest.raises(OSError):
+            image_utils.read_image_exif(image)
+        assert image.fp.tell() == position

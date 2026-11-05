@@ -253,3 +253,18 @@ def test_project_frame_order_uses_cached_source_profiles(qapp, tmp_path, rgb_pro
     manager._apply_load_options(options)
     assert window.image_source_paths == [str(paths[1]), str(paths[0])]
     assert stack_icc_profile(window) == rgb_profile
+
+
+def test_apng_first_frame_profile_never_decodes_animation(tmp_path, rgb_profile, monkeypatch):
+    from PIL import PngImagePlugin
+
+    path = tmp_path / 'animation.png'
+    Image.new('RGB', (8, 6), 'red').save(
+        path, save_all=True, append_images=[Image.new('RGB', (8, 6), 'blue')],
+        duration=100, icc_profile=rgb_profile)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail('Reading the imported frame profile decoded animation pixels')
+
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', forbidden)
+    assert common_icc_profile([str(path)]) == rgb_profile

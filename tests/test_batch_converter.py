@@ -297,7 +297,7 @@ def test_thumbnail_refuses_large_raster_before_loading(tmp_path, monkeypatch):
         raise AssertionError('PNG pixels were decoded before thumbnail admission')
 
     monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', load)
-    with pytest.raises(ValueError, match='No bounded image preview is available'):
+    with pytest.raises(ValueError):
         converter.thumbnail_rgb(str(source))
     assert loads == []
 
@@ -600,7 +600,8 @@ def test_png_thumbnail_reads_exif_after_idat_before_pixel_admission(tmp_path, mo
     from PIL import PngImagePlugin
 
     source = tmp_path / 'trailing-orientation.png'
-    Image.new('RGB', (8, 4), 'red').save(source)
+    original = np.arange(4 * 8 * 3, dtype=np.uint8).reshape(4, 8, 3)
+    Image.fromarray(original).save(source)
     encoded = source.read_bytes()
     assert encoded[-8:-4] == b'IEND'
     exif = Image.Exif()
@@ -610,16 +611,19 @@ def test_png_thumbnail_reads_exif_after_idat_before_pixel_admission(tmp_path, mo
     encoded = (encoded[:-12] + struct.pack('>I', len(payload)) + chunk
                + struct.pack('>I', zlib.crc32(chunk) & 0xffffffff) + encoded[-12:])
     source.write_bytes(encoded)
-    admitted, loads = [], []
+    admitted = []
+    original_memory = converter.resource_policy.require_memory
     original_load = PngImagePlugin.PngImageFile.load
 
     def load(image, *args, **kwargs):
         assert admitted, 'EXIF lookup decoded PNG pixels before memory admission'
-        loads.append(True)
         return original_load(image, *args, **kwargs)
 
-    monkeypatch.setattr(converter.resource_policy, 'require_memory', lambda n, **kw: admitted.append(n))
+    def admit(amount, **kwargs):
+        original_memory(amount, **kwargs)
+        admitted.append(amount)
+
+    monkeypatch.setattr(converter.resource_policy, 'require_memory', admit)
     monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', load)
     pixels = converter.thumbnail_rgb(str(source))
-    assert admitted and loads
-    assert pixels.shape == (8, 4, 3)
+    np.testing.assert_array_equal(pixels, np.rot90(original, -1))

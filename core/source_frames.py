@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image
 
 from core.frame_storage import store_frame
+from utils.image_utils import read_image_exif
 
 logger = logging.getLogger(__name__)
 PREVIEW_EDGE = 768
@@ -573,7 +574,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
     else:
         with Image.open(path) as image:
             width, height = image.size
-            orientation = int(image.getexif().get(274, 1))
+            orientation = int(read_image_exif(image).get(274, 1))
             alpha = 'A' in image.getbands() or 'transparency' in image.info
             dtype = np.dtype(np.uint16 if image.mode in ('I', 'I;16', 'I;16B') else np.uint8)
             if extension == '.png':
