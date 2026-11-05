@@ -430,6 +430,7 @@ class LabelManager:
         def _group(title_key):
             box = QGroupBox(trans.t(title_key))
             lay = QFormLayout(box)
+            lay.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             lay.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
             lay.setHorizontalSpacing(12)
             lay.setVerticalSpacing(8)

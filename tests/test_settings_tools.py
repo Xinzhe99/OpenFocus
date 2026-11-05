@@ -34,6 +34,55 @@ def settings_window(qapp):
     window.deleteLater()
     qapp.processEvents()
 
+def test_advanced_form_resists_centered_style_and_wraps_long_rows(qapp):
+    from PyQt6.QtCore import QRect, Qt
+    from PyQt6.QtWidgets import (
+        QLabel, QLineEdit, QProxyStyle, QStyle, QStyleFactory, QVBoxLayout,
+    )
+    from dialogs.advanced_settings import _section
+
+    class CenteredFormStyle(QProxyStyle):
+        def styleHint(self, hint, option=None, widget=None, returnData=None):
+            if hint == QStyle.StyleHint.SH_FormLayoutFormAlignment:
+                return (Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop).value
+            return super().styleHint(hint, option, widget, returnData)
+
+    host = QWidget()
+    style = CenteredFormStyle(QStyleFactory.create("Fusion"))
+    style.setParent(host)
+    host.setStyle(style)
+    form = _section(QVBoxLayout(host), "Settings")
+    label = QLabel("A long translated setting")
+    label.setFixedWidth(180)
+    field = QLineEdit()
+    field.setFixedWidth(110)
+    form.addRow(label, field)
+    try:
+        form.setGeometry(QRect(0, 0, 600, 100))
+        assert label.geometry().left() < 20
+        assert label.geometry().top() <= field.geometry().bottom()
+        assert field.geometry().top() <= label.geometry().bottom()
+        form.setGeometry(QRect(0, 0, 240, 100))
+        assert field.geometry().top() > label.geometry().top()
+    finally:
+        host.deleteLater()
+
+
+def test_advanced_settings_sections_are_left_aligned(settings_window):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QFormLayout
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+
+    dialog = AdvancedSettingsDialog(settings_window)
+    try:
+        forms = dialog.findChildren(QFormLayout)
+        assert forms
+        for form in forms:
+            assert form.formAlignment() == (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            assert form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.WrapLongRows
+    finally:
+        dialog.deleteLater()
+
 
 def test_settings_overlap_is_visible_and_cancel_is_a_draft(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog

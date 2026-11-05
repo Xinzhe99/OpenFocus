@@ -90,6 +90,8 @@ class ScaleBarDialog(QDialog):
 
         form_col.addWidget(self._section(trans.t("scalebar_section_calibration")))
         form = QFormLayout()
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form_col.addLayout(form)
 
         self.mode_combo = QComboBox()
@@ -127,6 +129,8 @@ class ScaleBarDialog(QDialog):
         # ---- placement ---------------------------------------------------
         form_col.addWidget(self._section(trans.t("scalebar_section_place")))
         place_form = QFormLayout()
+        place_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        place_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form_col.addLayout(place_form)
         self.pos_combo = QComboBox()
         for code, label in (("bottom-right", trans.t("scalebar_pos_br")),
@@ -156,6 +160,8 @@ class ScaleBarDialog(QDialog):
         # ---- appearance --------------------------------------------------
         form_col.addWidget(self._section(trans.t("scalebar_section_text")))
         text_form = QFormLayout()
+        text_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        text_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form_col.addLayout(text_form)
         self.font_combo = QFontComboBox()
         family = getattr(window, "scale_bar_font_family", "") or ""

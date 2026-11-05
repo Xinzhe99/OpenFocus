@@ -34,6 +34,8 @@ def _section(parent_layout, title: str) -> QFormLayout:
     head.setFont(f)
     parent_layout.addWidget(head)
     form = QFormLayout()
+    form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
     form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
     form.setHorizontalSpacing(16)
     form.setVerticalSpacing(6)

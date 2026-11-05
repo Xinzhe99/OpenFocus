@@ -392,6 +392,8 @@ class _CustomSchemeDialog(QDialog):
         d = QDialog(self)
         d.setWindowTitle(trans.t("depth_edit_stop"))
         lay = QFormLayout(d)
+        lay.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        lay.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         spin = QDoubleSpinBox(d)
         spin.setRange(0.0, 1.0)
         spin.setSingleStep(0.05)
@@ -565,6 +567,7 @@ class DepthMapDialog(QDialog):
         side = QWidget()
         self._side_controls = side
         form = QFormLayout(side)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         form.setContentsMargins(8, 0, 0, 0)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
@@ -638,6 +641,7 @@ class DepthMapDialog(QDialog):
         # and checkbox is left untouched, so toggling back restores the setup.
         self.physical_panel = QWidget()
         phys_form = QFormLayout(self.physical_panel)
+        phys_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         phys_form.setContentsMargins(18, 0, 0, 0)
         phys_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         phys_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
