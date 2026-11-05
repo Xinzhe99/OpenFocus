@@ -15,15 +15,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as knobs just past the depth of field. A missing-data map shows, and can save,
   where no frame saw the scene cleanly. Scenes that are nearly all subject are
   left as stacked.
+- Add a Retouch button beside Review frames in the right panel.
 
 ### Changed
 - Pressing Render while frames are still loading now starts the render when
   loading finishes; pressing it again cancels.
 - The status bar reads "RAM used" so it is clear which number is in use.
 - Reword the retouch brush-size hint.
+- Render All Methods skips a method that cannot run (for example, when the
+  memory check refuses it), renders the rest and lists the skipped methods
+  at the end. Cancelling still stops the whole run.
 
 ### Fixed
 - Message-box buttons such as "Discard changes" are no longer cut off.
+- Replaying a checkpoint from a grayscale standalone retouch session keeps
+  the grayscale layout, so its fingerprints match.
+- When PYTHONFAULTHANDLER or -X faulthandler is set, the GUI and CLI send
+  native crash dumps to the session crash file instead of stderr.
 
 ## [1.76.0] - 2026-11-06
 
