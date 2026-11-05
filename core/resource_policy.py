@@ -18,6 +18,7 @@ policy classes. Ratios here are conservative starting points to be calibrated
 by the soak harness, not measured constants.
 """
 import math
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -115,6 +116,64 @@ class ExecutionPlan:
                 f"device={self.device_kind}")
 
 
+def _directml_memory() -> tuple:
+    """Free and total LOCAL budget for ORT DirectML's EnumAdapters(0).
+
+    DXGI's budget and usage are process-specific and change over time. LOCAL
+    also describes the GPU-accessible pool on unified-memory adapters; host
+    admission remains necessary in both cases. Failure is an unknown budget.
+    """
+    if sys.platform != 'win32':
+        return 0, 0
+    import ctypes
+    import uuid
+
+    class VideoMemoryInfo(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in
+                    ('budget', 'usage', 'available_reservation', 'reservation')]
+
+    def guid(value):
+        return (ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID(value).bytes_le)
+
+    def method(obj, index, restype, *argtypes):
+        table = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(table[index])
+
+    factory = ctypes.c_void_p()
+    adapter = ctypes.c_void_p()
+    adapter3 = ctypes.c_void_p()
+    try:
+        dxgi = ctypes.WinDLL('dxgi')
+        create = dxgi.CreateDXGIFactory1
+        create.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+        create.restype = ctypes.c_int32
+        factory_id = guid('770aae78-f26f-4dba-a829-253c83d1b387')
+        if create(ctypes.byref(factory_id), ctypes.byref(factory)) < 0 or not factory.value:
+            return 0, 0
+        enumerate_adapter = method(factory, 7, ctypes.c_int32, ctypes.c_uint32,
+                                   ctypes.POINTER(ctypes.c_void_p))
+        if enumerate_adapter(factory, 0, ctypes.byref(adapter)) < 0 or not adapter.value:
+            return 0, 0
+        query_interface = method(adapter, 0, ctypes.c_int32, ctypes.c_void_p,
+                                 ctypes.POINTER(ctypes.c_void_p))
+        adapter3_id = guid('645967a4-1392-4310-a798-8053ce3e93fd')
+        if query_interface(adapter, ctypes.byref(adapter3_id), ctypes.byref(adapter3)) < 0 or not adapter3.value:
+            return 0, 0
+        query_memory = method(adapter3, 14, ctypes.c_int32, ctypes.c_uint32,
+                              ctypes.c_int32, ctypes.POINTER(VideoMemoryInfo))
+        info = VideoMemoryInfo()
+        # Node 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL.
+        if query_memory(adapter3, 0, 0, ctypes.byref(info)) < 0 or not info.budget:
+            return 0, 0
+        return max(0, int(info.budget) - int(info.usage)), int(info.budget)
+    except (OSError, AttributeError, ValueError):
+        return 0, 0
+    finally:
+        for obj in (adapter3, adapter, factory):
+            if obj.value:
+                method(obj, 2, ctypes.c_uint32)(obj)
+
+
 def _gpu_memory(kind: str) -> tuple:
     """(free, total) VRAM bytes for *kind*, else (0, 0).
 
@@ -140,7 +199,9 @@ def probe_resources(device_kind: Optional[str] = None) -> ResourceSnapshot:
     rss = memory.process_rss_bytes()
     kind = str(device_kind or "CPU").upper()
     free_vram = total_vram = 0
-    if torch_backend.has_device_memory(kind):
+    if kind == 'DIRECTML':
+        free_vram, total_vram = _directml_memory()
+    elif torch_backend.has_device_memory(kind):
         free_vram, total_vram = _gpu_memory(kind)
     return ResourceSnapshot(
         available_ram=int(available or 0),
