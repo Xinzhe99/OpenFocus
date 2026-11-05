@@ -86,7 +86,11 @@ def test_loupe_centre_matches_drawn_pixel_at_edges(view, qapp, dpr, zoom, pan):
             before = view.grab()
             view._magnifier_active = True
             after = view.grab()
-            assert_color(pixel(after, pos), pixel(before, pos), tolerance=12)
+            # Red/green encode position. The blue checkerboard is averaged
+            # by the reduced base image and resolved differently by the loupe.
+            actual, expected = pixel(after, pos), pixel(before, pos)
+            for channel in ("red", "green"):
+                assert abs(getattr(actual, channel)() - getattr(expected, channel)()) <= 12
     view._magnifier_active = False
 
 

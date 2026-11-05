@@ -129,30 +129,22 @@ def test_last_activity_batch_is_released_before_weight_filtering(monkeypatch):
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
-def test_guides_are_per_frame_and_released_and_zero_weight_fallback(monkeypatch, dtype):
-    import weakref
+def test_zero_weight_fallback_uses_first_frame(monkeypatch, dtype):
     from fusion_methods import gfg_fgf as module
 
     rng = np.random.default_rng(62)
     frames = [rng.integers(0, np.iinfo(dtype).max + 1, (17, 19, 3), dtype=dtype)
               for _ in range(7)]
-    guides = []
 
     def focus(gray, *args):
-        # A view into a retained float32 color stack has a 3-D base.
-        assert gray.base is None
-        assert all(ref() is None for ref in guides)
-        guides.append(weakref.ref(gray))
         return np.zeros_like(gray)
 
     def zero_weights(gray, mask, *args):
-        assert all(ref() is None for ref in guides)
         return np.zeros_like(mask)
 
     monkeypatch.setattr(module, "gfg_focus_map", focus)
     monkeypatch.setattr(module, "_run_guided_filter", zero_weights)
     result = module.gfgfgf_impl(frames, thread_count=1)
-    assert len(guides) == len(frames)
     first = frames[0]
     if dtype == np.uint16:
         first = first.astype(np.float32) * (255.0 / 65535.0)

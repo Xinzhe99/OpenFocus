@@ -78,11 +78,11 @@ def main(argv=None):
         session = ort.InferenceSession(str(path), providers=['CPUExecutionProvider'])
         outputs[method] = session.run(['logits'], {'input': stack})[0]
         details = {'onnx_sha256': _sha256(path),
-                   'checkpoint_sha256': _sha256(path.with_suffix('.pth')),
                    'inputs': [(item.name, item.shape) for item in session.get_inputs()],
                    'outputs': [(item.name, item.shape) for item in session.get_outputs()],
                    'metadata': session.get_modelmeta().custom_metadata_map}
         if args.torch:
+            details['checkpoint_sha256'] = _sha256(path.with_suffix('.pth'))
             checkpoint = torch.load(path.with_suffix('.pth'), map_location='cpu', weights_only=True)
             states[method] = {key.removeprefix('backbone.'): value
                               for key, value in checkpoint['model'].items()}

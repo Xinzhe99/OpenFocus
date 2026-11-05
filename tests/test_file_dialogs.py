@@ -16,6 +16,7 @@ def same_path(actual, expected):
 
 def navigate(dialog, text):
     edit = dialog.findChild(QLineEdit, "folderPathEdit")
+    edit.setFocus()
     edit.setText(text)
     QTest.keyClick(edit, Qt.Key.Key_Return)
     assert dialog.isVisible(), "Address Enter must never accept a picker"
@@ -183,6 +184,8 @@ def test_folder_double_click_navigates_then_accepts_child_not_parent(qapp, tmp_p
         view = dialog.findChild(QTreeView, "treeView")
         index = wait_for_row(qapp, view, child)
         view.setCurrentIndex(index)
+        QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton,
+                        pos=view.visualRect(index).center())
         QTest.mouseDClick(view.viewport(), Qt.MouseButton.LeftButton,
                          pos=view.visualRect(index).center())
         qapp.processEvents()

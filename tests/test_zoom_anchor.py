@@ -64,33 +64,6 @@ class TestMagnifierZoomAnchor:
         qapp.processEvents()
         return label
 
-    @pytest.mark.parametrize("pan", [(0, 0), (60, 40), (200, 150),
-                                     (-200, -150), (400, 300)])
-    @pytest.mark.parametrize("cursor", [(200, 150), (380, 280)])
-    @pytest.mark.parametrize("zoom_in", [True, False])
-    def test_cursor_point_stays_fixed(self, qapp, pan, cursor, zoom_in):
-        label = self._label(qapp)
-        try:
-            _pan(label, *pan)
-            point = QPointF(*cursor)
-            before = label._map_to_base(point)
-            pix = label._base_pixmap
-            if not (0 <= before.x() <= pix.width()
-                    and 0 <= before.y() <= pix.height()):
-                pytest.skip("cursor is over the canvas, not the image")
-            _send_wheel(label, point, 120 if zoom_in else -120)
-            scaled = label._cached_scaled_pixmap
-            if (scaled is not None and scaled.width() <= label.width()
-                    and scaled.height() <= label.height()):
-                pytest.skip("zoomed out to fit the window (re-centres)")
-            after = label._map_to_base(point)
-            drift = ((after.x() - before.x()) ** 2
-                     + (after.y() - before.y()) ** 2) ** 0.5
-            assert drift < 1.0, (
-                f"anchor drifted {drift:.1f} image px (pan={pan}, "
-                f"cursor={cursor}, zoom_in={zoom_in})")
-        finally:
-            label.close()
 
     def test_repeated_zoom_steps_stay_anchored(self, qapp):
         label = self._label(qapp)

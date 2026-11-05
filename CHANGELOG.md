@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.76.0] - 2026-11-05
+
 ### Added
 - Add a scannable, clickable PayPal support QR code to the English and Chinese READMEs.
 - Allow selecting a temporary data directory for new frames and processing scratch.
