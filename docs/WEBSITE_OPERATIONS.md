@@ -113,8 +113,10 @@ Every page and asset request therefore counts as a Worker invocation.
 
 The Worker can count download starts and receive opt-in desktop activity
 reports using a D1 binding named `ANALYTICS`. Without the
-binding downloads continue normally and the usage API returns `503`. The
-database and bearer secret must be provisioned before deploying analytics:
+binding downloads continue normally and the usage API returns `503`. Before
+enabling analytics, deploy the site with the binding absent and verify the
+privacy sections at `/#privacy` and `/zh/#privacy`. Then provision the database
+and bearer secret:
 
 ```bash
 npx wrangler d1 create openfocus-analytics

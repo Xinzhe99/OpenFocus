@@ -75,6 +75,8 @@ is absent or unavailable. The admin statistics API requires a server-only
 bearer secret. See [analytics operations](../docs/WEBSITE_OPERATIONS.md#optional-private-analytics)
 for database creation, binding, migrations, secret setup, privacy, retention and
 the limits of these counts. No analytics database ID or secret is in this repo.
+The English and Chinese home pages include a privacy section linked from the
+footer; publish it before enabling the analytics binding.
 
 ## Editing
 

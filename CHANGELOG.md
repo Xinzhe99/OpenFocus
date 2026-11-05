@@ -7,6 +7,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Add optional, default-off usage statistics with pseudonymous per-installation daily reporting and a Settings consent control.
+- Explain download and opt-in activity statistics in the website's English and Chinese privacy sections.
 - Add Tools → Batch Image Converter for sequential RAW and still-image conversion,
   with numbered TIFF pages, collision-safe output names and cooperative cancellation.
 - Add a separate microscope mosaic workspace with feature-based alignment,
