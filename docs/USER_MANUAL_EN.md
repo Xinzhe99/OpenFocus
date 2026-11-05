@@ -162,6 +162,9 @@ The top menu bar provides access to all functions:
 - **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
 - **Help**: Environment info, contact information, update check, and the log folder
 
+Image stitching is experimental and unfinished. Inspect its placement and
+seams before using an exported result.
+
 **Tools → Stitch Images…** opens a separate workspace for already-fused
 microscope regions. Add image files or select existing output results, choose
 **Auto-align**, then inspect each overlap. Drag an image or enter X/Y in pixels

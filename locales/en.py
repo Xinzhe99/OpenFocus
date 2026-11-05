@@ -8,7 +8,7 @@ EN = {
     "usage_opt_in": "Share usage statistics",
     "usage_disclosure": "Allow OpenFocus to send a random installation ID, application version and operating system to openfocus.top? This helps estimate active installations. No image data or filenames are sent. You can turn this off in Settings; the local ID is then deleted.",
     "magnifier_hint": "Hold the left mouse button to magnify; use the wheel to change magnification or Ctrl+wheel to resize the magnifier.",
-    "mosaic_title": "Stitch Images…",
+    "mosaic_title": "Stitch Images (experimental, unfinished)…",
     "mosaic_intro": "Add fused images, auto-align or drag them, then inspect overlaps before saving. X/Y are pixels; use the wheel to zoom. Opacity affects the preview only.",
     "mosaic_add_files": "Add files…",
     "mosaic_add_outputs": "Add results…",

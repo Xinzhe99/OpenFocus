@@ -281,6 +281,8 @@ openfocus -i ./stack_folder -o ./result/fused.png
 
 <img src="../../assets/readme/alipay-coffee.jpg" alt="通过支付宝支持 OpenFocus 的二维码" width="260">
 
+<a href="https://paypal.me/XinZEN0602"><img src="../../assets/readme/paypal-coffee.png" alt="扫码或点击，通过 PayPal 支持 OpenFocus" width="260"></a>
+
 <a id="license"></a>
 ## 许可
 

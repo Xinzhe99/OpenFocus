@@ -4,7 +4,7 @@ PACK = {
     "usage_opt_in": "Compartilhar estatísticas de uso",
     "usage_disclosure": "Permitir que o OpenFocus envie ao openfocus.top um identificador aleatório de instalação, a versão do aplicativo e o sistema operacional? Isso ajuda a estimar instalações ativas. Dados de imagem e nomes de arquivos não são enviados. Ao desativar em Configurações, o identificador local é apagado.",
     "magnifier_hint": "Segure o botão esquerdo para usar a lupa; a roda altera a ampliação e Ctrl+roda altera o tamanho da lupa.",
-    "mosaic_title": "Unir imagens…",
+    "mosaic_title": "Unir imagens (experimental, incompleto)…",
     "mosaic_intro": "Adicione imagens fundidas, alinhe ou arraste e confira as sobreposições. X/Y em pixels; a roda amplia. A opacidade afeta apenas a prévia.",
     "mosaic_add_files": "Adicionar arquivos…",
     "mosaic_add_outputs": "Adicionar resultados…",

@@ -4,7 +4,7 @@ PACK = {
     "usage_opt_in": "Gebruiksstatistieken delen",
     "usage_disclosure": "Mag OpenFocus een willekeurige installatie-ID, appversie en besturingssysteem naar openfocus.top sturen? Dit helpt actieve installaties te schatten. Er worden geen afbeeldingsgegevens of bestandsnamen verstuurd. U kunt dit uitschakelen in Instellingen; de lokale ID wordt dan verwijderd.",
     "magnifier_hint": "Houd de linkermuisknop ingedrukt voor de loep; het wiel verandert de vergroting, Ctrl+wiel de grootte van de loep.",
-    "mosaic_title": "Afbeeldingen samenvoegen…",
+    "mosaic_title": "Afbeeldingen samenvoegen (experimenteel, onvoltooid)…",
     "mosaic_intro": "Voeg gefuseerde beelden toe, lijn ze automatisch uit of versleep ze en controleer de overlap. X/Y zijn pixels; het wiel zoomt. Dekking geldt alleen voor het voorbeeld.",
     "mosaic_add_files": "Bestanden toevoegen…",
     "mosaic_add_outputs": "Resultaten toevoegen…",

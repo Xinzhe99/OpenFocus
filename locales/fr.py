@@ -4,7 +4,7 @@ PACK = {
     "usage_opt_in": "Partager des statistiques d’utilisation",
     "usage_disclosure": "Autoriser OpenFocus à envoyer à openfocus.top un identifiant d’installation aléatoire, la version de l’application et le système d’exploitation ? Cela permet d’estimer les installations actives. Aucune image ni aucun nom de fichier n’est envoyé. Désactivez cette option dans Paramètres pour supprimer l’identifiant local.",
     "magnifier_hint": "Maintenez le bouton gauche pour la loupe ; la molette change le grossissement, Ctrl+molette la taille de la loupe.",
-    "mosaic_title": "Assembler des images…",
+    "mosaic_title": "Assembler des images (expérimental, inachevé)…",
     "mosaic_intro": "Ajoutez des images fusionnées, alignez-les ou déplacez-les, puis vérifiez les recouvrements. X/Y en pixels ; molette pour zoomer. L’opacité ne concerne que l’aperçu.",
     "mosaic_add_files": "Ajouter des fichiers…",
     "mosaic_add_outputs": "Ajouter des résultats…",

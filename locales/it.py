@@ -4,7 +4,7 @@ PACK = {
     "usage_opt_in": "Condividi statistiche di utilizzo",
     "usage_disclosure": "Consentire a OpenFocus di inviare a openfocus.top un identificativo casuale di installazione, la versione e il sistema operativo? Serve a stimare le installazioni attive. Non vengono inviati dati delle immagini o nomi dei file. Disattivando nelle Impostazioni si elimina l’identificativo locale.",
     "magnifier_hint": "Tieni premuto il tasto sinistro per la lente; la rotella cambia l'ingrandimento, Ctrl+rotella la dimensione della lente.",
-    "mosaic_title": "Unisci immagini…",
+    "mosaic_title": "Unisci immagini (sperimentale, incompleto)…",
     "mosaic_intro": "Aggiungi immagini fuse, allineale o trascinale e controlla le sovrapposizioni. X/Y sono pixel; la rotella ingrandisce. L’opacità vale solo per l’anteprima.",
     "mosaic_add_files": "Aggiungi file…",
     "mosaic_add_outputs": "Aggiungi risultati…",

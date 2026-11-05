@@ -304,6 +304,8 @@ Questions, ideas or feedback? Join our [Discord community](https://discord.gg/af
 
 <img src="assets/readme/alipay-coffee.jpg" alt="Alipay QR code to support OpenFocus" width="260">
 
+<a href="https://paypal.me/XinZEN0602"><img src="assets/readme/paypal-coffee.png" alt="Scan or click to support OpenFocus via PayPal" width="260"></a>
+
 <a id="license"></a>
 ## License
 
