@@ -60,6 +60,9 @@ def infer(frames, model_path, use_gpu, should_cancel=None,
           execution_plan=None, thread_count=None,
           resource_preference='balanced'):
     """Return (fused pixels, depth 0-1, index 0..N-1) for one whole tile."""
+    if execution_plan is None:
+        from fusion_methods.neural_runtime import start_inference_job
+        start_inference_job()
     common.cancel(should_cancel)
     out_dtype = fuse_output_dtype(frames)
     model, device, plan = _prepare_inference(

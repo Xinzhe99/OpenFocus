@@ -156,6 +156,9 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
 
     lease = heavy_job(should_cancel) if execution_plan is None else nullcontext()
     with lease:
+        if execution_plan is None:
+            from fusion_methods.neural_runtime import start_inference_job
+            start_inference_job()
         _cancel(should_cancel)
         if not tiles_list:
             return []
@@ -268,6 +271,9 @@ def model_probabilities(frames, model_path, use_gpu, sigma=0.0,
 
     lease = heavy_job(should_cancel) if execution_plan is None else nullcontext()
     with lease:
+        if execution_plan is None:
+            from fusion_methods.neural_runtime import start_inference_job
+            start_inference_job()
         _cancel(should_cancel)
         _validate_tiles([frames])
         model, device, plan = _prepare_inference(

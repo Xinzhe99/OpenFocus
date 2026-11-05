@@ -33,6 +33,9 @@ def _fuse_tile(frames, model_path, use_gpu, should_cancel=None,
                execution_plan=None, thread_count=None,
                resource_preference='balanced', **_kwargs):
     """Fuse one tile; returns 0-255 pixels in the caller's dtype."""
+    if execution_plan is None:
+        from fusion_methods.neural_runtime import start_inference_job
+        start_inference_job()
     common.cancel(should_cancel)
     out_dtype = fuse_output_dtype(frames)
     model, device, plan = _prepare_inference(
