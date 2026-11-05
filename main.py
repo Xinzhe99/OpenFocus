@@ -2322,10 +2322,12 @@ class OpenFocus(QMainWindow):
         # stack half-corrected with no way back.
         try:
             if prepared is None:
-                corrected_raw = apply_flat_field_stack(self.raw_images, gain)
-                corrected_base = (
-                    apply_flat_field_stack(self.base_images, gain)
-                    if getattr(self, "base_images", None) else None)
+                from utils.frame_pixels import run_pixel_worker
+                raw, base = tuple(self.raw_images), tuple(getattr(self, 'base_images', ()) or ())
+                corrected_raw, corrected_base = run_pixel_worker(
+                    self, trans.t('dust_title'),
+                    lambda: (apply_flat_field_stack(raw, gain),
+                             apply_flat_field_stack(base, gain) if base else None))
             else:
                 corrected_raw, corrected_base = prepared
             if len(corrected_raw) != len(self.raw_images):
@@ -2392,19 +2394,16 @@ class OpenFocus(QMainWindow):
 
 
     def get_or_create_source_pixmap(self, index: int):
-        """Return the display pixmap for a frame, rendering it on first use.
-
-        Full-resolution pixmaps are generated lazily: pre-rendering every
-        frame costs seconds and hundreds of MB on large stacks while only
-        one frame is visible at a time.
-        """
+        """Return a bounded display pixmap without resolving original pixels."""
         if 0 <= index < len(self.stack_images):
             if self.stack_images[index] is None and index < len(self.raw_images):
-                image = self.raw_images[index]
-                if self.linear_dng_metadata is not None:
+                from core.source_frames import display_image
+                frame = self.raw_images[index]
+                image = display_image(frame)
+                if self.linear_dng_metadata is not None and not getattr(frame, 'preview_is_display', False):
                     from utils.linear_dng import develop_linear
                     image = develop_linear(image, self.linear_dng_metadata)
-                made = self.image_loader.create_pixmaps([image], max_size=None)
+                made = self.image_loader.create_pixmaps([image], max_size=(1024, 1024))
                 self.stack_images[index] = made[0]
                 # 惰性生成但不设上限等于无界缓存：只保留当前帧±1，
                 # 跳回远处帧时按需重建（这正是惰性机制的本意）
@@ -2413,12 +2412,101 @@ class OpenFocus(QMainWindow):
                         self.stack_images[j] = None
         return self.stack_images[index] if 0 <= index < len(self.stack_images) else None
 
+    def _start_source_previews(self, selected_index=None):
+        """Populate small list icons after the manifest has entered the workspace."""
+        from core.source_frames import preview_ready
+        from core.source_previews import SourcePreviewWorker
+        from PyQt6.QtGui import QIcon
+        revision = getattr(self, 'source_revision', 0)
+        workers = self.__dict__.setdefault('_source_preview_workers', {})
+        request = (revision, id(self.raw_images), selected_index)
+        if request in workers:
+            return
+        if selected_index is None and any(key[2] is not None and not value.cancelled
+                                          for key, value in workers.items()):
+            return
+        for old_request, old_worker in tuple(workers.items()):
+            if old_request != request:
+                old_worker.request_cancel()
+        indices = ([selected_index] if selected_index is not None else
+                   [index for index, frame in enumerate(self.raw_images) if not preview_ready(frame)])
+        if not indices:
+            return
+        worker = SourcePreviewWorker(self.raw_images, request, indices)
+        workers[request] = worker
+        def accept(key, index, identity, thumb):
+            if (getattr(self, '_shutting_down', False) or key[0] != getattr(self, 'source_revision', 0)
+                    or key[1] != id(self.raw_images) or not 0 <= index < len(self.raw_images)
+                    or identity != id(self.raw_images[index])):
+                return
+            item = self.file_list.item(index)
+            if item is not None:
+                item.setIcon(QIcon(cv2_to_pixmap(thumb)))
+            if index == getattr(self, 'current_display_index', -1):
+                self.update_source_view(index)
+        def failed(key, message):
+            if key[0] == getattr(self, 'source_revision', 0):
+                self.statusBar().showMessage(message)
+        def finished():
+            workers.pop(request, None)
+            worker.deleteLater()
+            if (selected_index is not None and not worker.cancelled
+                    and not getattr(self, '_shutting_down', False)
+                    and request[:2] == (getattr(self, 'source_revision', 0), id(self.raw_images))):
+                self._start_source_previews()
+        worker.ready.connect(accept)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        worker.start()
+
+    def _request_source_pixels(self, key):
+        """Decode only the selected frame on a worker, guarded by its identity."""
+        if key != getattr(self, '_source_display_key', None):
+            return
+        workers = self.__dict__.setdefault('_source_decode_workers', {})
+        if key in workers:
+            return
+        index = key[2]
+        if not 0 <= index < len(self.raw_images) or id(self.raw_images[index]) != key[1]:
+            return
+        from core.workers import SourceDecodeWorker
+        frame = self.raw_images[index]
+        worker = SourceDecodeWorker(frame, key, display=True)
+        workers[key] = worker
+        def accept(decoded_key, image):
+            if (decoded_key != getattr(self, '_source_display_key', None)
+                    or getattr(self, '_shutting_down', False)):
+                return
+            pixmap = cv2_to_pixmap(image)
+            from utils import scalebar
+            pixmap = self.label_manager.apply_labels_to_source_pixmap(
+                pixmap, index, scale_cfg=scalebar.export_cfg(self, target='source'))
+            self.lbl_source_img.set_source_pixmap(pixmap, source_key=decoded_key)
+        def failed(decoded_key, message):
+            if decoded_key == getattr(self, '_source_display_key', None):
+                self.statusBar().showMessage(message)
+        def finished():
+            workers.pop(key, None)
+            worker.deleteLater()
+        worker.decoded.connect(accept)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        worker.start()
+
     def update_source_view(self, index):
         if not self.stack_images:
             return
             
         if 0 <= index < len(self.stack_images):
             self.current_display_index = index
+            from core.source_frames import preview_ready
+            if not preview_ready(self.raw_images[index]):
+                self._source_display_key = (getattr(self, 'source_revision', 0), id(self.raw_images[index]), index)
+                self.lbl_source_img.clear()
+                self.lbl_source_img.setText(trans.t('msg_loading_stack'))
+                self.lbl_stack_info.setText(f'{index + 1} / {len(self.stack_images)}')
+                self._start_source_previews(selected_index=index)
+                return
             
             try:
                 # 获取原始图片并根据需要叠加标签
@@ -2428,8 +2516,21 @@ class OpenFocus(QMainWindow):
                     original_pixmap, index,
                     scale_cfg=scalebar.export_cfg(self, target="source"))
 
-                # 使用自定义label处理缩放和缩放重置
-                self.lbl_source_img.set_display_pixmap(display_pixmap)
+                from core.source_frames import SourceFrame
+                frame = self.raw_images[index]
+                key = (getattr(self, 'source_revision', 0), id(frame), index)
+                self._source_display_key = key
+                if not getattr(self, '_source_pixels_connected', False):
+                    self.lbl_source_img.sourcePixelsRequested.connect(self._request_source_pixels)
+                    self._source_pixels_connected = True
+                for pending_key, worker in getattr(self, '_source_decode_workers', {}).items():
+                    if pending_key != key:
+                        worker.request_cancel()
+                if isinstance(frame, SourceFrame):
+                    self.lbl_source_img.set_display_pixmap(
+                        display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
+                else:
+                    self.lbl_source_img.set_display_pixmap(display_pixmap)
                 
                 # 更新文字
                 self.lbl_stack_info.setText(f"{index + 1} / {len(self.stack_images)}")
@@ -2585,7 +2686,8 @@ class OpenFocus(QMainWindow):
     # --- Wipe A/B compare ---
 
     def _bgr_to_pixmap(self, image) -> QPixmap:
-        return cv2_to_pixmap(image)
+        from core.source_frames import display_image
+        return cv2_to_pixmap(display_image(image))
 
     def _wipe_pixmap(self, kind: str, index: int, image):
         """Pixmap for one side of the wipe, cached across slider steps.
@@ -2625,7 +2727,8 @@ class OpenFocus(QMainWindow):
                 and entry[2] == labeled and entry[3] == scale_key
                 and entry[4] == label_revision):
             return entry[5]
-        display = image
+        from core.source_frames import display_image
+        display = display_image(image)
         if target == "registered":
             selected = self.output_manager.record_for_item(self.output_list.currentItem())
             metadata = (selected.linear_dng_metadata if selected is not None and selected.kind == "aligned"
@@ -2638,9 +2741,9 @@ class OpenFocus(QMainWindow):
                     metadata = preview_record.linear_dng_metadata
         else:
             metadata = getattr(self, "linear_dng_metadata", None)
-        if metadata is not None:
+        if metadata is not None and not getattr(image, 'preview_is_display', False):
             from utils.linear_dng import develop_linear
-            display = develop_linear(image, metadata)
+            display = develop_linear(display, metadata)
         if labeled or scale_cfg:
             display = self.label_manager.display_bgr_image(
                 target, display, index, scale_cfg=scale_cfg,
@@ -2859,9 +2962,10 @@ class OpenFocus(QMainWindow):
         elif cached is not None and cached[0] is frame.image:
             left_pix = cached[1]
         else:
-            image = frame.image
+            from core.source_frames import display_image
+            image = display_image(frame.image)
             metadata = getattr(record, "linear_dng_metadata", None)
-            if metadata is not None:
+            if metadata is not None and not getattr(frame.image, 'preview_is_display', False):
                 from utils.linear_dng import develop_linear
                 image = develop_linear(image, metadata)
             left_pix = self._bgr_to_pixmap(image)
@@ -3467,6 +3571,11 @@ class OpenFocus(QMainWindow):
         log_action("shutdown.started", restart=bool(getattr(self, '_restart_for_update', False)))
         self.usage_analytics.shutdown()
 
+        self._source_display_key = None
+        for worker in tuple(getattr(self, '_source_decode_workers', {}).values()):
+            _shutdown_worker(worker)
+        for worker in tuple(getattr(self, '_source_preview_workers', {}).values()):
+            _shutdown_worker(worker)
         # Persist user preferences, layout and recent files for next time
         try:
             self.persist_settings()

@@ -303,11 +303,15 @@ def test_gif_cancel_does_not_replace_previous_file(qapp, tmp_path, monkeypatch):
     destination.write_bytes(b'previous')
     worker = GifSaverWorker([np.zeros((8, 8, 3), np.uint8)], str(destination), .1, Labels(), 'registered')
 
-    def interrupted_save(path, *args, **kwargs):
-        Path(path).write_bytes(b'incomplete')
-        worker.cancel()
+    class InterruptedWriter:
+        def __enter__(self):
+            return self
+        def append_data(self, image):
+            worker.cancel()
+        def __exit__(self, *args):
+            pass
 
-    monkeypatch.setattr(workers.imageio, 'mimsave', interrupted_save)
+    monkeypatch.setattr(workers.imageio, 'get_writer', lambda *args, **kwargs: InterruptedWriter())
     outcomes = []
     worker.finished_signal.connect(lambda ok, message: outcomes.append((ok, message)))
     worker.run()

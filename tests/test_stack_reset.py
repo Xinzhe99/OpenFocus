@@ -115,6 +115,31 @@ def test_append_keeps_original_frames_after_edits(monkeypatch):
     assert w.image_filenames == ["a", "b", "c"]
 
 
+def test_lazy_append_and_reset_never_decode_originals(tmp_path, monkeypatch):
+    import cv2
+    from core import image_loader
+    from core.source_frames import scan_source, transform_frame, SourceFrame
+    paths = []
+    for index in range(3):
+        path = str(tmp_path / f'{index}.png')
+        assert cv2.imwrite(path, np.full((24, 32, 3), index * 30, np.uint8))
+        paths.append(path)
+    frames = [scan_source(path, header_only=True)[0] for path in paths]
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('append/reset decoded original pixels')
+    monkeypatch.setattr(image_loader, 'decode_image', forbidden)
+    w, _ = host(monkeypatch)
+    load(w, frames[:2], ['a', 'b'], paths[:2])
+    w.raw_images = [transform_frame(frames[1], 'rotate', code=cv2.ROTATE_90_CLOCKWISE)]
+    w.image_filenames, w.image_source_paths, w.image_icc_profiles = ['b'], paths[1:2], [b'']
+    load(w, frames[2:], ['c'], paths[2:], append=True)
+    Box.result = Box.StandardButton.Yes
+    w.source_manager.reset_current_stack()
+    assert all(isinstance(frame, SourceFrame) for frame in w.raw_images)
+    assert [id(frame) for frame in w.raw_images] == [id(frame) for frame in frames]
+    assert all(frame.preview is None for frame in w.raw_images)
+
+
 @pytest.mark.parametrize("owner,field", [("source", "_load_worker"), ("render", "worker"),
                                        ("render", "_compare_mode"), ("window", "roi_alignment_worker"),
                                        ("batch", "_worker"), ("batch", "_thread")])

@@ -6,6 +6,7 @@ residuals using a separately reduced depth map at each scale.
 import numpy as np
 
 from fusion_methods.openfocus_depth import depth_map
+from core.frame_storage import create_frame, store_frame
 
 
 def _weight(depth, index):
@@ -32,7 +33,7 @@ def _expand_axis(image, axis):
     n = image.shape[axis]
     shape = list(image.shape)
     shape[axis] = 2 * n
-    out = np.empty(shape, np.int32)
+    out = create_frame(tuple(shape), np.int32)
     positions = np.arange(n)
     for phase, offsets, weights in (
             (0, (-2, -1, 0, 1), (2, 37, 64, 12)),
@@ -60,10 +61,12 @@ def _inputs(input_source, img_resize, should_cancel):
 
 
 def _output(image, frames):
-    image = np.clip(image, 0, 255)
-    if all(frame.dtype == np.uint8 for frame in frames):
-        return image.astype(np.uint8)
-    return image.astype(np.float32, copy=False)
+    dtype = np.uint8 if all(frame.dtype == np.uint8 for frame in frames) else np.float32
+    output = create_frame(image.shape, dtype)
+    for start in range(0, image.shape[0], 128):
+        rows = slice(start, min(image.shape[0], start + 128))
+        output[rows] = np.clip(image[rows], 0, 255)
+    return output
 
 def _depth(frames, shape, img_resize, kernel_size, smoothing, should_cancel,
            depth_override):
@@ -84,7 +87,8 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 11,
     smoothing = 1.2 if depth_smoothing is None else float(depth_smoothing)
     depth = _depth(frames, shape, img_resize, kernel_size,
                    smoothing * (5.0 / 1.2), should_cancel, depth_override)
-    result = np.zeros(shape, np.float32)
+    result = create_frame(shape, np.float32)
+    result[...] = 0
     for index, source in enumerate(frames):
         _check_cancel(should_cancel)
         weight = _weight(depth, index)
@@ -105,15 +109,17 @@ def openfocus_c_impl(input_source, img_resize=None, kernel_size: int = 7,
     # Method C exposes smoothing only; use the default radius internally.
     depth = _depth(frames, shape, img_resize, 11,
                    smoothing * (5.0 / 3.0), should_cancel, depth_override)
-    depth_levels = [np.rint(depth * 1024).astype(np.int32)]
+    depth_levels = [store_frame(np.rint(depth * 1024).astype(np.int32))]
     for _ in range(max(1, int(levels)) - 1):
         _check_cancel(should_cancel)
         if max(depth_levels[-1].shape) <= 1:
             break
-        depth_levels.append(_reduce(depth_levels[-1]))
-    blends = [np.zeros(shape, np.int32)]
+        depth_levels.append(store_frame(_reduce(depth_levels[-1])))
+    blends = [create_frame(shape, np.int32)]
     for code in depth_levels[1:]:
-        blends.append(np.zeros(code.shape + shape[2:], np.int32))
+        blends.append(create_frame(code.shape + shape[2:], np.int32))
+    for blend in blends:
+        blend[...] = 0
     is_8bit = all(source.dtype == np.uint8 for source in frames)
     scale = 256.0 if is_8bit else 65535.0 / 255.0
     for index, source in enumerate(frames):
@@ -136,12 +142,16 @@ def openfocus_c_impl(input_source, img_resize=None, kernel_size: int = 7,
             blends[level] += band * weight
             if level + 1 < len(depth_levels):
                 current = reduced
-    result = np.clip((blends[-1] + 512) >> 10, 0, 65535)
+    result = store_frame(np.clip((blends[-1] + 512) >> 10, 0, 65535))
     for level in range(len(blends) - 2, -1, -1):
         _check_cancel(should_cancel)
         detail = (blends[level] + 512) >> 10
-        result = np.clip(_expand(result, blends[level].shape) + detail, 0, 65535)
+        result = store_frame(np.clip(_expand(result, blends[level].shape) + detail, 0, 65535))
     _check_cancel(should_cancel)
-    if is_8bit:
-        return (result >> 8).astype(np.uint8)
-    return result.astype(np.float32) * np.float32(255.0 / 65535.0)
+    output = create_frame(result.shape, np.uint8 if is_8bit else np.float32)
+    for start in range(0, result.shape[0], 128):
+        _check_cancel(should_cancel)
+        rows = slice(start, min(result.shape[0], start + 128))
+        output[rows] = ((result[rows] >> 8) if is_8bit else
+                        result[rows].astype(np.float32) * np.float32(255.0 / 65535.0))
+    return output

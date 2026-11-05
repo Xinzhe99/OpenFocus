@@ -52,6 +52,7 @@ class SourceCanvas(_Canvas):
     def __init__(self, title: str, parent=None):
         super().__init__(title, parent)
         self._pixmap = None
+        self._source_size = (0, 0)
         self._region = None
         self._region_centre = None
         self._magnification = 1.0
@@ -84,18 +85,20 @@ class SourceCanvas(_Canvas):
     def region_enabled(self) -> bool:
         return self._region_enabled
 
-    def set_pixmap(self, pixmap, reset=False):
-        old_size = self._pixmap.size() if self.has_image() else None
+    def set_pixmap(self, pixmap, reset=False, *, source_size=None):
+        old_size = self._source_size if self.has_image() else None
         self._pixmap = pixmap
+        self._source_size = (tuple(source_size) if source_size is not None else
+                             (pixmap.width(), pixmap.height()) if pixmap is not None else (0, 0))
         if not self.has_image():
             self._fit_pending = False
             self._drag_region = False
             self._pan_from = None
             self._set_region(None)
-        elif reset or old_size != pixmap.size():
+        elif reset or old_size != self._source_size:
             self._fit_pending = True
-            self.set_region_centre(QPointF(pixmap.width() / 2,
-                                          pixmap.height() / 2))
+            self.set_region_centre(QPointF(self._source_size[0] / 2,
+                                          self._source_size[1] / 2))
             if self.isVisible():
                 self.fit()
         self.update()
@@ -115,7 +118,7 @@ class SourceCanvas(_Canvas):
     def set_region_centre(self, point: QPointF):
         if not self.has_image():
             return
-        width, height = self._pixmap.width(), self._pixmap.height()
+        width, height = self._source_size
         side = min(width, height,
                    max(1, round(self._detail_size / self._magnification)))
         half = side / 2
@@ -144,8 +147,8 @@ class SourceCanvas(_Canvas):
     def fit(self):
         if not self.has_image():
             return
-        self._zoom = min(max(1, self.width() - 8) / self._pixmap.width(),
-                         max(1, self.height() - 8) / self._pixmap.height(), 1.0)
+        self._zoom = min(max(1, self.width() - 8) / self._source_size[0],
+                         max(1, self.height() - 8) / self._source_size[1], 1.0)
         self._pan = QPointF()
         self._fit_pending = not self.isVisible()
         self.update()
@@ -158,8 +161,8 @@ class SourceCanvas(_Canvas):
     def _image_transform(self):
         if not self.has_image():
             return QTransform()
-        x = (self.width() - self._pixmap.width() * self._zoom) / 2
-        y = (self.height() - self._pixmap.height() * self._zoom) / 2
+        x = (self.width() - self._source_size[0] * self._zoom) / 2
+        y = (self.height() - self._source_size[1] * self._zoom) / 2
         return QTransform(self._zoom, 0, 0, self._zoom,
                           x + self._pan.x(), y + self._pan.y())
 
@@ -244,7 +247,8 @@ class SourceCanvas(_Canvas):
                                   self._zoom < 1.0)
             transform = self._image_transform()
             source = QRectF(0, 0, self._pixmap.width(), self._pixmap.height())
-            painter.drawPixmap(transform.mapRect(source), self._pixmap, source)
+            target = QRectF(0, 0, *self._source_size)
+            painter.drawPixmap(transform.mapRect(target), self._pixmap, source)
             if self._region is not None and self._region_enabled:
                 painter.setPen(QPen(QColor(255, 255, 255), 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)

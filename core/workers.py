@@ -1,4 +1,5 @@
 from typing import Optional
+from threading import BoundedSemaphore
 
 from PyQt6.QtCore import QThread, pyqtSignal
 import time
@@ -9,6 +10,7 @@ import imageio.v2 as imageio
 from core.registration import ImageRegistration, RegistrationCancelled
 from core.multi_focus_fusion import MultiFocusFusion
 from core.frame_storage import store_frame
+from core.source_frames import display_image, materialize_frames, resolve_frame
 from core.resource_policy import heavy_job, require_memory
 from utils import resource_path
 from utils.image_utils import to_display_uint8
@@ -23,6 +25,7 @@ from core.algorithms import (get_fusion, alignment_steps, resolve_fusion_paramet
                              resolve_registration_parameters)
 
 logger = get_logger(__name__)
+_source_decode_slot = BoundedSemaphore(1)
 
 
 def _crop_transparent_for_gui(images, should_cancel=None):
@@ -34,21 +37,32 @@ def _crop_transparent_for_gui(images, should_cancel=None):
         raise ValueError(trans.t('transparent_desktop_unsupported').format(path='') + ' ' + str(exc)) from exc
 
 
-def _prepare_fusion_input(images, fusion):
-    """Keep tiled neural sources at their original depth until cropping."""
+def _prepare_fusion_input(images, fusion, should_cancel=None):
+    """Normalize sequentially, retaining full-resolution inputs on disk."""
     from core.algorithms import resolve_runner
     from utils.image_utils import normalize_fuse_input
 
     frames = list(images)
     is_16bit = any(frame.dtype == np.uint16 for frame in frames)
     spec = fusion.descriptor
-    if (frames and spec.neural and spec.tile_decider and fusion.tile_enabled
-            and resolve_runner(spec.tile_decider)(frames, fusion.tile_threshold)):
-        return frames, is_16bit
-    if is_16bit:
-        require_memory(sum(frame.size * 4 for frame in frames if frame.dtype != np.float32)
-                       + max(frame.size * 4 for frame in frames if frame.dtype == np.uint16))
-    return normalize_fuse_input(frames)
+    if frames and fusion.tile_enabled:
+        needs_tiles = (resolve_runner(spec.tile_decider)(frames, fusion.tile_threshold)
+                       if spec.tile_decider else
+                       max(frames[0].shape[:2]) > fusion.tile_threshold)
+        if needs_tiles:
+            return frames, is_16bit
+    if not is_16bit:
+        return frames, False
+    normalized = []
+    for frame in frames:
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+        require_memory(frame.size * 8)
+        converted = normalize_fuse_input([frame])[0][0]
+        if converted is frame and frame.dtype != np.float32:
+            converted = frame.astype(np.float32)
+        normalized.append(frame if converted is frame else store_frame(converted))
+    return normalized, True
 
 
 def _validate_sensor_sources_for_gui(paths, should_cancel):
@@ -94,53 +108,6 @@ _LOADER_STATE_FIELDS = ('images', 'image_paths', 'px_size_um', 'source_exif',
 _MISSING_LOADER_FIELD = object()
 
 
-def _check_known_stack_space(paths, scale, should_cancel=None, collapse=True):
-    """Preflight readable headers; unknown formats are checked per frame."""
-    import math
-    from core import image_loader
-    from core.frame_storage import require_disk_space
-
-    sources = image_loader._collapse_repeats(list(paths)) if collapse else paths
-    total = 0
-    for path in sources:
-        if should_cancel is not None and should_cancel():
-            raise RegistrationCancelled()
-        sizes = []
-        if image_loader.is_raw_source(path):
-            if image_loader.RAWPY_AVAILABLE:
-                try:
-                    with open(path, 'rb') as stream, image_loader.rawpy.imread(stream) as raw:
-                        dimensions = raw.sizes
-                        aspect = float(dimensions.pixel_aspect)
-                        if math.isfinite(aspect) and aspect > 0:
-                            width = math.ceil(max(dimensions.raw_width, dimensions.width)
-                                              * max(1, aspect, 1 / aspect))
-                            height = max(dimensions.raw_height, dimensions.height)
-                            if width > 0 and height > 0:
-                                sizes = [(width, height, 3, 2)]
-                except Exception:  # unreadable RAW headers remain a per-frame check
-                    pass
-        elif os.path.splitext(path)[1].lower() in ('.tif', '.tiff'):
-            import tifffile
-            try:
-                with tifffile.TiffFile(path) as tif:
-                    if not tif.is_dng:
-                        sizes = [(page.imagewidth, page.imagelength, 3,
-                                  np.dtype(page.dtype).itemsize) for page in tif.pages]
-            except (OSError, ValueError, TypeError, tifffile.TiffFileError):
-                pass
-        else:
-            size = image_loader._peek_source_size(path)
-            if size is not None:
-                sizes = [size]
-        for width, height, channels, itemsize in sizes:
-            if 0 < scale < 1:
-                width, height = max(1, int(width * scale)), max(1, int(height * scale))
-            total += width * height * channels * itemsize
-    if should_cancel is not None and should_cancel():
-        raise RegistrationCancelled()
-    if total:
-        require_disk_space(total)
 
 def _check_processing_space(images, registration_steps=0):
     """Estimate new mappings while the input stack remains alive."""
@@ -221,22 +188,6 @@ class StackLoadWorker(QThread):
                         return
                     options = dict(thread_count=self.thread_count,
                                    resource_preference=self.resource_preference)
-                    if not self.video and not self.linear_raw:
-                        from utils.path_identity import same_path
-                        import os
-                        if self.folder and os.path.isdir(self.folder):
-                            entries = [(name, os.path.join(self.folder, name))
-                                       for name in os.listdir(self.folder)
-                                       if os.path.splitext(name)[1].lower() in self.loader.SUPPORTED_FORMATS
-                                       and not any(same_path(os.path.join(self.folder, name), excluded)
-                                                   for excluded in self.exclude_paths)]
-                            entries = self.loader._drop_derived_aligned_copies(entries)
-                            paths_for_check = [path for _, path in entries]
-                        else:
-                            paths_for_check = [path for path in (self.filepaths or ())
-                                               if not any(same_path(path, excluded)
-                                                          for excluded in self.exclude_paths)]
-                        _check_known_stack_space(paths_for_check, self.scale, lambda: self.is_cancelled)
                     if self.linear_raw:
                         from core.image_loader import is_raw_source
                         from utils.path_identity import same_path
@@ -255,7 +206,6 @@ class StackLoadWorker(QThread):
                             paths = list(self.filepaths or ([self.video] if self.video else []))
                         paths = [path for path in paths if not any(
                             same_path(path, excluded) for excluded in self.exclude_paths)]
-                        _check_known_stack_space(paths, self.scale, lambda: self.is_cancelled, False)
                         ok, msg, imgs, names = self.loader.load_linear_raw_stack(
                             paths, scale_factor=self.scale,
                             resource_preference=self.resource_preference,
@@ -302,6 +252,50 @@ class StackLoadWorker(QThread):
             if not ok:
                 self._previous_loader_state.clear()
             self.finished_load.emit(ok, msg, imgs, names)
+
+
+class SourceDecodeWorker(QThread):
+    """Resolve one original off the GUI thread; cancelled requests emit nothing."""
+
+    decoded = pyqtSignal(object, object)
+    failed = pyqtSignal(object, str)
+
+    def __init__(self, frame, key, parent=None, *, display=False):
+        super().__init__(parent)
+        self.frame = frame
+        self.key = key
+        self.is_cancelled = False
+        self.display = bool(display)
+
+    def cancel(self):
+        self.is_cancelled = True
+        self.requestInterruption()
+
+    def request_cancel(self):
+        self.cancel()
+
+    def run(self):
+        while not _source_decode_slot.acquire(timeout=0.05):
+            if self.is_cancelled or self.isInterruptionRequested():
+                return
+        try:
+            if self.is_cancelled or self.isInterruptionRequested():
+                return
+            image = resolve_frame(self.frame)
+            if self.is_cancelled or self.isInterruptionRequested():
+                return
+            metadata = getattr(self.frame, 'linear_metadata', None)
+            if self.display and metadata is not None:
+                from utils.linear_dng import develop_linear
+                image = develop_linear(image, metadata)
+        except Exception as exc:
+            if not self.is_cancelled and not self.isInterruptionRequested():
+                self.failed.emit(self.key, str(exc))
+            return
+        finally:
+            _source_decode_slot.release()
+        if not self.is_cancelled and not self.isInterruptionRequested():
+            self.decoded.emit(self.key, image)
 
 
 class ROIAlignmentWorker(QThread):
@@ -356,9 +350,10 @@ class ROIAlignmentWorker(QThread):
         else:
             registration = ImageRegistration(method="ecc")
     
-        _check_processing_space(self.raw_images, 1)
+        images = materialize_frames(self.raw_images, lambda: self._cancelled)
+        _check_processing_space(images, 1)
         aligned_images = registration.process(
-            self.raw_images, output_path=None, thread_count=self.thread_count,
+            images, output_path=None, thread_count=self.thread_count,
             resource_preference=self.resource_preference,
             should_cancel=lambda: self._cancelled)
         alignment_time = time.time() - alignment_start_time
@@ -497,16 +492,23 @@ class RenderWorker(QThread):
             and self.is_images_aligned
             and bool(self.aligned_images)
             and self.last_alignment_options == current_alignment_options
-            and not cleanup
+            and not cleanup and not self.preview
         )
     
         # 1. 配准阶段
         if need_registration and can_reuse_aligned_images:
-            processed_images = self.aligned_images
+            processed_images = materialize_frames(self.aligned_images, lambda: self.is_cancelled)
             registration_performed = True
             self.alignment_reused = True
         else:
-            processed_images = self.raw_images.copy()
+            if self.preview:
+                processed_images = []
+                for frame in self.raw_images:
+                    if self.is_cancelled:
+                        raise RegistrationCancelled()
+                    processed_images.append(store_frame(_downscale_for_preview(display_image(frame))))
+            else:
+                processed_images = materialize_frames(self.raw_images, lambda: self.is_cancelled)
             if cleanup:
                 from utils.sensor_cleanup import (load_sensor_defect_mask, cleanup_sensor_image,
                                                   require_sensor_cleanup_stack)
@@ -515,19 +517,25 @@ class RenderWorker(QThread):
                 mask = (load_sensor_defect_mask(self.defect_mask_path, cancel_callback=lambda: self.is_cancelled)
                         if self.defect_mask_path else None)
                 _check_processing_space(processed_images)
-                processed_images = [store_frame(cleanup_sensor_image(image, defect_mask_path=mask,
-                                    sensor_denoise=self.sensor_denoise,
-                                    cancel_callback=lambda: self.is_cancelled))
-                                    for image in processed_images]
-            self._cache_source_images = processed_images
-            if self.preview:
-                preview_images = []
+                if self.preview and mask is not None and any(
+                        frame.shape[:2] != (mask.height, mask.width) for frame in self.raw_images):
+                    raise ValueError('Sensor defect mask dimensions do not match the image')
+                cleaned = []
                 for image in processed_images:
                     if self.is_cancelled:
                         raise RegistrationCancelled()
-                    preview = _downscale_for_preview(image)
-                    preview_images.append(image if preview is image else store_frame(preview))
-                processed_images = preview_images
+                    image_mask = mask
+                    if self.preview and mask is not None and image.shape[:2] != (mask.height, mask.width):
+                        from utils.sensor_cleanup import SensorDefectMask
+                        height, width = image.shape[:2]
+                        pixels = (cv2.resize(mask._pixels.astype(np.float32), (width, height),
+                                             interpolation=cv2.INTER_AREA) > 0).astype(np.uint8)
+                        image_mask = SensorDefectMask(width, height, float(pixels.mean()), pixels)
+                    cleaned.append(store_frame(cleanup_sensor_image(image, defect_mask_path=image_mask,
+                                   sensor_denoise=self.sensor_denoise,
+                                   cancel_callback=lambda: self.is_cancelled)))
+                processed_images = cleaned
+            self._cache_source_images = processed_images
             registration_performed = False
     
             if need_registration:
@@ -537,7 +545,7 @@ class RenderWorker(QThread):
                 # the GUI used to decode every cached PNG synchronously
                 # before starting a render.
                 cached = (self._load_cached_alignment()
-                          if self.alignment_report is None else None)
+                          if self.alignment_report is None and not self.preview else None)
                 if cached is not None:
                     processed_images = cached
                     registration_performed = True
@@ -582,7 +590,7 @@ class RenderWorker(QThread):
                 progress_callback=lambda done, total: self.progress_signal.emit(done, total))
             if full_frame_roi:
                 x, y, width, height = roi_rect_int
-                fusion_result = fusion_result[y:y + height, x:x + width].copy()
+                fusion_result = store_frame(fusion_result[y:y + height, x:x + width])
     
             # ROI粘贴阶段
             if self.roi_mode == "paste" and base_full_image is not None and fusion_result is not None and roi_rect_int is not None:
@@ -733,7 +741,7 @@ class RenderWorker(QThread):
 
             if self.roi_mode == "paste":
                 idx = max(0, min(self.roi_base_index, len(images) - 1))
-                base_full_image = images[idx].copy()
+                base_full_image = store_frame(images[idx])
 
             cropped_stack = []
             for img in images:
@@ -776,7 +784,7 @@ class RenderWorker(QThread):
             ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
             sort_mode=self.sort_mode, exposure_match=self.exposure_match,
             resource_preference=self.resource_preference)
-        images, is_16bit = _prepare_fusion_input(images, fusion)
+        images, is_16bit = _prepare_fusion_input(images, fusion, should_cancel)
         result = fusion.fuse(images, thread_count=self.thread_count,
             should_cancel=should_cancel, progress_callback=progress_callback)
         if self.sharpen_output and result is not None:
@@ -784,7 +792,7 @@ class RenderWorker(QThread):
             result = sharpen_output(result, should_cancel)
         device = fusion.get_info()['device'] if get_fusion(self.algorithm).neural else 'CPU'
         result = quantize_fuse_output(result, is_16bit)
-        return restore_transparent_canvas(result, transparent), device
+        return store_frame(restore_transparent_canvas(result, transparent)), device
 
     def _apply_roi_pasting(self, fusion_result, base_image, roi_rect_int):
         """将融合结果粘贴回基准图像"""
@@ -1031,11 +1039,17 @@ class BatchWorker(QThread):
                            parameters=params, shape=image.shape, dtype=str(image.dtype)) as operation:
             try:
                 from utils.image_utils import imwrite_auto
+                image = resolve_frame(image)
+                if self.is_cancelled:
+                    raise RegistrationCancelled()
                 if scale_cfg:
                     from utils import scalebar
                     image = scalebar.burn(image, scale_cfg)
                 ok = imwrite_auto(path, image, params, exif=self._source_exif,
                                   icc_profile=self._source_icc_profile)
+            except RegistrationCancelled:
+                operation.cancel()
+                raise
             except Exception as exc:
                 operation.fail()
                 self._task_failures.append({'path': path, 'error': str(exc)})
@@ -1194,7 +1208,7 @@ class BatchWorker(QThread):
                 if method and method != 'none' and len(images) < 2:
                     raise ValueError('Fusion requires at least two frames')
         
-                aligned_images = images.copy()
+                aligned_images = materialize_frames(images, lambda: self.is_cancelled)
                 mask_path = self.processing_settings.get('defect_mask_path', '')
                 denoise = bool(self.processing_settings.get('sensor_denoise', False))
                 if mask_path and float(self.processing_settings.get('load_scale_factor', 1.0)) != 1.0:
@@ -1289,7 +1303,7 @@ class BatchWorker(QThread):
                         base_frame=runtime.get('base_frame', 'none'),
                         sort_mode=runtime.get('sort_mode', 'asc'),
                         exposure_match=self.exposure_match, **tile_kwargs)
-                    fusion_input, is_16bit = _prepare_fusion_input(color_frames, fusion)
+                    fusion_input, is_16bit = _prepare_fusion_input(color_frames, fusion, lambda: self.is_cancelled)
                     if aligned_for_export is None:
                         del aligned_images
                     result = self._fuse_one_stack(fusion, fusion_method, fusion_input, fusion_params)
@@ -1532,32 +1546,38 @@ class GifSaverWorker(QThread):
                            target_type=self.target_type, scale_cfg=self.scale_cfg,
                            **frame_details(self.images)) as operation:
             try:
-                normalized_images = []
-                for index, image in enumerate(self.images):
-                    if self.is_cancelled:
-                        raise RegistrationCancelled()
-                    if image.ndim == 3 and image.shape[2] == 4:
-                        from locales import trans
-                        raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
-                    if self.linear_dng_metadata is not None:
-                        from utils.linear_dng import develop_linear
-                        image = develop_linear(image, self.linear_dng_metadata)
-                    if self.label_manager is not None:
-                        image = self.label_manager.prepare_bgr_image(self.target_type, image, index)
-                    if self.scale_cfg:
-                        from utils import scalebar
-                        image = scalebar.burn(image, self.scale_cfg)
-                    image = to_display_uint8(image)
-                    if image.ndim == 2:
-                        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-                    elif image.shape[2] == 3:
-                        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                    normalized_images.append(image)
                 handle, temporary = tempfile.mkstemp(suffix='.gif', prefix='.openfocus-',
                                                      dir=os.path.dirname(os.path.abspath(self.file_path)))
                 os.close(handle)
-                imageio.mimsave(temporary, normalized_images,
-                                duration=self.duration_sec * 1000.0, loop=0)
+                # The legacy Pillow writer encodes each page as it arrives;
+                # mimsave's Pillow path first assembles an in-memory stack.
+                with imageio.get_writer(temporary, format='GIF-PIL', mode='I',
+                                        duration=self.duration_sec, loop=0) as writer:
+                    for index, frame in enumerate(self.images):
+                        if self.is_cancelled:
+                            raise RegistrationCancelled()
+                        image = resolve_frame(frame)
+                        if self.is_cancelled:
+                            raise RegistrationCancelled()
+                        if image.ndim == 3 and image.shape[2] == 4:
+                            from locales import trans
+                            raise ValueError(trans.t('transparent_desktop_unsupported').format(path=''))
+                        if self.linear_dng_metadata is not None:
+                            from utils.linear_dng import develop_linear
+                            image = develop_linear(image, self.linear_dng_metadata)
+                        if self.label_manager is not None:
+                            image = self.label_manager.prepare_bgr_image(self.target_type, image, index)
+                        if self.scale_cfg:
+                            from utils import scalebar
+                            image = scalebar.burn(image, self.scale_cfg)
+                        image = to_display_uint8(image)
+                        if image.ndim == 2:
+                            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+                        elif image.shape[2] == 3:
+                            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                        if self.is_cancelled:
+                            raise RegistrationCancelled()
+                        writer.append_data(image)
                 if self.is_cancelled:
                     raise RegistrationCancelled()
                 os.replace(temporary, self.file_path)

@@ -7,6 +7,7 @@ import concurrent.futures
 
 from fusion_methods.dct import _ensure_color_image
 from utils.image_utils import fuse_output_dtype
+from core.frame_storage import create_frame, store_frame
 
 # Reference:
 # https://github.com/RCharradi/Image-fusion-with-guided-filtering
@@ -75,7 +76,7 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
             image = decode_image(img_path, preserve_grayscale=True)
             if image is None:
                 raise ValueError(f"Failed to read image: {img_path}")
-            stack_ori.append(image)
+            stack_ori.append(store_frame(image))
     else:
         stack_ori = input_source
     
@@ -123,7 +124,8 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
         # 3. 初始决策图 (Decision Map)：逐帧在线求 argmax。
         # 严格 `>` 更新保持 np.argmax 的首帧平局行为，且不再物化整栈
         # (N, H, W) 显著性堆栈——那是一个只用于一次 argmax 的全栈 float32。
-        max_indices = np.zeros((rows, cols), dtype=np.int32)
+        max_indices = create_frame((rows, cols), np.int32)
+        max_indices[...] = 0
         best_saliency = None
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             for start in range(0, num_images, max_workers):
@@ -132,7 +134,7 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
                 for k, sal in zip(range(start, stop), executor.map(process_saliency, range(start, stop))):
                     check_cancel()
                     if best_saliency is None:
-                        best_saliency = sal
+                        best_saliency = store_frame(sal)
                     else:
                         win = sal > best_saliency
                         best_saliency[win] = sal[win]
@@ -143,11 +145,13 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
 
         # 4. 权重图细化与融合 (Weight Refinement & Fusion)
         # 初始化累加器
-        fused_base_numerator = np.zeros((rows, cols, channels), dtype=np.float32)
-        fused_base_denominator = np.zeros((rows, cols), dtype=np.float32) # 优化为单通道
-        
-        fused_detail_numerator = np.zeros((rows, cols, channels), dtype=np.float32)
-        fused_detail_denominator = np.zeros((rows, cols), dtype=np.float32) # 优化为单通道
+        fused_base_numerator = create_frame((rows, cols, channels), np.float32)
+        fused_base_denominator = create_frame((rows, cols), np.float32)
+        fused_detail_numerator = create_frame((rows, cols, channels), np.float32)
+        fused_detail_denominator = create_frame((rows, cols), np.float32)
+        for buffer in (fused_base_numerator, fused_base_denominator,
+                       fused_detail_numerator, fused_detail_denominator):
+            buffer[...] = 0
 
         def process_weight_fusion(k):
             check_cancel()
@@ -237,18 +241,17 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
             
         # 5. 重建图像
         check_cancel()
-        # 避免除以零
-        fused_base_denominator[fused_base_denominator < 1e-6] = 1e-6
-        fused_detail_denominator[fused_detail_denominator < 1e-6] = 1e-6
-        
-        # 广播除法 (H, W, 3) / (H, W, 1)
-        fused_base = fused_base_numerator / fused_base_denominator[:, :, np.newaxis]
-        fused_detail = fused_detail_numerator / fused_detail_denominator[:, :, np.newaxis]
-        
-        fused_img = fused_base + fused_detail
-        
-        # 裁剪并转换回源位深
-        fused_img = np.clip(fused_img * 255, 0, 255).astype(out_dtype)
+        fused_img = create_frame((rows, cols, channels), out_dtype)
+        for start in range(0, rows, 128):
+            check_cancel()
+            block = slice(start, min(rows, start + 128))
+            bd = fused_base_denominator[block]
+            dd = fused_detail_denominator[block]
+            bd[bd < 1e-6] = 1e-6
+            dd[dd < 1e-6] = 1e-6
+            base = fused_base_numerator[block] / bd[:, :, None]
+            detail = fused_detail_numerator[block] / dd[:, :, None]
+            fused_img[block] = np.clip((base + detail) * 255, 0, 255)
         check_cancel()
         
         return fused_img

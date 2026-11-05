@@ -125,6 +125,10 @@ class UnsupportedTransparency(ValueError):
 
 
 def _has_transparency(image: np.ndarray) -> bool:
+    from core.source_frames import SourceFrame
+    if isinstance(image, SourceFrame):
+        # Metadata checks must never decode alpha pixels on the GUI thread.
+        return image.ndim == 3 and image.shape[2] == 4
     if image.ndim != 3 or image.shape[2] != 4:
         return False
     return (image.dtype not in (np.uint8, np.uint16)
@@ -711,9 +715,9 @@ class ImageStackLoader:
     def load_linear_raw_stack(self, filepaths, scale_factor=1.0, *,
                               resource_preference="balanced", expected_metadata=None):
         """Load a complete camera-linear stack, committing state only on success."""
-        from core.resource_policy import require_memory
+        from core.source_frames import scan_source, ensure_preview
         from locales import trans
-        from utils.linear_dng import load_linear_raw
+        # Camera calibration is inspected while building the source manifest.
         from utils.scalebar import detect_px_size_um
 
         paths = list(filepaths)
@@ -735,17 +739,10 @@ class ImageStackLoader:
                 return False, 'CANCELLED', [], []
             if not is_raw_source(path):
                 return False, trans.t("linear_raw_invalid"), [], []
-            def admit(width, height):
-                # Already decoded frames are reflected in the live memory
-                # snapshot. Reserve the remaining scaled stack plus the
-                # current full-resolution LibRaw and conversion workspace.
-                full_bytes = width * height * 3 * 2
-                scaled_bytes = max(1, int(width * scale_factor)) * max(1, int(height * scale_factor)) * 6
-                require_memory(full_bytes * 4 + scaled_bytes)
 
             try:
-                image, profile = load_linear_raw(path, scale_factor=scale_factor,
-                                                 before_decode=admit)
+                image = scan_source(path, scale_factor, linear=True, header_only=True)[0]
+                profile = image.linear_metadata
             except MemoryError:
                 raise
             except Exception as exc:
@@ -761,9 +758,10 @@ class ImageStackLoader:
             # Keep the file's native unit here; source_manager divides by the
             # load scale when it publishes source_px_um for working pixels.
             px_sizes.append(detect_px_size_um(path))
-            images.append(store_frame(image))
+            images.append(image)
             if self.progress_callback is not None:
                 self.progress_callback(index + 1, len(paths))
+        ensure_preview(images[0])
         self.images = images
         self.image_paths = paths
         self.source_exif = _read_exif_bytes(paths[0])
@@ -798,78 +796,13 @@ class ImageStackLoader:
 
         image_files.sort(key=lambda x: natural_sort_key(x[0]))
 
-        loaded_images = []
-        filenames = []
-        loaded_paths = []
-        failed_count = 0
-        self.source_exif = b""
-        self.source_icc_profile = b""
-        # Reset per load: one loader instance serves the whole session, so a
-        # calibration detected for a previous stack must not leak into this
-        # one (every later export would carry the wrong scale bar).
-        self.px_size_um = None
-
-        sources = [full_path for _filename, full_path in image_files]
-        names = {full_path: filename for filename, full_path in image_files}
-        if self.progress_callback is not None:
-            self.progress_callback(0, len(sources))
-        try:
-            decoded = iter_decoded_sources(
-                sources, scale_factor, thread_count=thread_count,
-                resource_preference=resource_preference,
-                should_cancel=self.should_cancel, allow_transparent_png=True,
-                disk_backed=True)
-            try:
-                for done, item in enumerate(decoded, start=1):
-                    if self.progress_callback is not None:
-                        self.progress_callback(done, len(sources))
-                    if item.error is not None:
-                        if isinstance(item.error, UnsupportedTransparency):
-                            from locales import trans
-                            return False, trans.t("transparent_desktop_unsupported").format(path=item.path), [], []
-                        failed_count += 1
-                        print(f"Failed to load image {names[item.path]}: {item.error}")
-                        continue
-                    # Metadata follows input order, so it cannot depend on
-                    # which decode finished first.
-                    if not self.source_exif:
-                        self.source_exif = _read_exif_bytes(item.path)
-                    if self.px_size_um is None:
-                        from utils.scalebar import detect_px_size_um
-                        self.px_size_um = detect_px_size_um(item.path)
-                    stem = os.path.splitext(names[item.path])[0]
-                    multipage = len(item.pages) > 1
-                    for page_no, page in enumerate(item.pages, start=1):
-                        loaded_images.append(page if isinstance(page, np.memmap) else store_frame(page))
-                        loaded_paths.append(item.path)
-                        filenames.append(f"{stem}_page_{page_no:03d}.tif"
-                                         if multipage else names[item.path])
-                    del item
-            finally:
-                decoded.close()
-        except _DecodeCancelled:
-            return False, 'CANCELLED', [], []
-        self.failed_count = failed_count
-
-        if not loaded_images:
-            return False, "Could not load any image files", [], []
-
-        self.images = loaded_images
-        # One path per *frame*: a multi-page TIFF contributes the same
-        # container path for each of its pages, and a failed file must not
-        # shift the remaining paths (get_image_info used to report the wrong
-        # file for every frame after either case).
-        self.image_paths = loaded_paths
-        self.source_icc_profiles = {path: _read_icc_profile(path) for path in dict.fromkeys(loaded_paths)}
-        self.source_icc_profile = common_profile_values(self.source_icc_profiles.values())
-
-        message = f"Loaded {len(loaded_images)} image(s)"
-        if failed_count > 0:
-            message += f" (failed: {failed_count})"
-        if getattr(self, 'skipped_derived_count', 0):
-            message += f" (skipped {self.skipped_derived_count} aligned copies)"
-
-        return True, message, loaded_images, filenames
+        result = self.load_from_filepaths(
+            [path for _, path in image_files], scale_factor,
+            thread_count=thread_count, resource_preference=resource_preference)
+        if result[0] and self.skipped_derived_count:
+            return (True, result[1] + f" (skipped {self.skipped_derived_count} aligned copies)",
+                    result[2], result[3])
+        return result
 
     def load_from_video(self, video_path: str, scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
         self.source_exif = b""
@@ -932,78 +865,73 @@ class ImageStackLoader:
 
     def load_from_filepaths(self, filepaths: list[str], scale_factor: float = 1.0, *,
                             thread_count: int = 0,
-                            resource_preference: str = "balanced",
-                            ) -> Tuple[bool, str, List[np.ndarray], List[str]]:
-        self.failed_count = 0
-        if not filepaths:
-            return False, "No file paths provided", [], []
+                            resource_preference: str = "balanced"):
+        """Open paths and bounded previews; original pixels remain on disk."""
+        from concurrent.futures import ThreadPoolExecutor
+        from core.source_frames import scan_source, ensure_preview
+        from utils.logging_setup import log_operation
+        from utils.scalebar import detect_px_size_um
 
-        loaded_images = []
-        filenames = []
-        loaded_paths = []
-        failed_count = 0
         sources = _collapse_repeats(list(filepaths))
-        # see load_from_folder: calibration must not stick across stacks
-        self.px_size_um = None
-        self.source_exif = b""
-        self.source_icc_profile = b""
-
-        total = len(sources)
-        missing = [path for path in sources if not os.path.exists(path)]
-        sources = [path for path in sources if os.path.exists(path)]
-        failed_count += len(missing)
-        if self.progress_callback is not None:
-            self.progress_callback(len(missing), total)
-        try:
-            decoded = iter_decoded_sources(
-                sources, scale_factor, thread_count=thread_count,
-                resource_preference=resource_preference,
-                should_cancel=self.should_cancel, allow_transparent_png=True,
-                disk_backed=True)
+        if not sources:
+            return False, "No file paths provided", [], []
+        images, names, paths, px_sizes = [], [], [], []
+        failed = 0
+        exif = b""
+        workers = min(4, max(1, int(thread_count or 4)))
+        def inspect(path):
+            if self.should_cancel():
+                raise _DecodeCancelled()
             try:
-                for done, item in enumerate(decoded, start=len(missing) + 1):
-                    if self.progress_callback is not None:
-                        self.progress_callback(done, total)
-                    if item.error is not None:
-                        if isinstance(item.error, UnsupportedTransparency):
-                            from locales import trans
-                            return False, trans.t("transparent_desktop_unsupported").format(path=item.path), [], []
-                        failed_count += 1
-                        print(f"Failed to load image {item.path}: {item.error}")
-                        continue
-                    if not self.source_exif:
-                        self.source_exif = _read_exif_bytes(item.path)
-                    if self.px_size_um is None:
-                        from utils.scalebar import detect_px_size_um
-                        self.px_size_um = detect_px_size_um(item.path)
-                    stem = os.path.splitext(os.path.basename(item.path))[0]
-                    multipage = len(item.pages) > 1
-                    for page_no, page in enumerate(item.pages, start=1):
-                        loaded_images.append(page if isinstance(page, np.memmap) else store_frame(page))
-                        loaded_paths.append(item.path)
-                        filenames.append(f"{stem}_page_{page_no:03d}.tif"
-                                         if multipage
-                                         else os.path.basename(item.path))
-                    del item
-            finally:
-                decoded.close()
-        except _DecodeCancelled:
+                return scan_source(path, scale_factor, header_only=True), None
+            except Exception as exc:
+                return [], exc
+        if self.progress_callback is not None:
+            self.progress_callback(0, len(sources))
+        with log_operation('source_manifest', count=len(sources), preview_threads=workers):
+            # Only descriptors are queued. The first preview is prepared here;
+            # remaining thumbnails are generated after the workspace is usable.
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                try:
+                    for done, (path, result) in enumerate(zip(sources, pool.map(inspect, sources)), 1):
+                        if self.should_cancel():
+                            raise _DecodeCancelled()
+                        frames, error = result
+                        if error is not None:
+                            if isinstance(error, UnsupportedTransparency):
+                                from locales import trans
+                                return False, trans.t('transparent_desktop_unsupported').format(path=path), [], []
+                            failed += 1
+                            import logging
+                            logging.getLogger(__name__).warning('Source preview failed path=%s: %s', path, error)
+                        else:
+                            if not exif:
+                                exif = _read_exif_bytes(path)
+                            px_sizes.append(detect_px_size_um(path))
+                            stem = os.path.splitext(os.path.basename(path))[0]
+                            images.extend(frames)
+                            paths.extend([path] * len(frames))
+                            names.extend(f'{stem}_page_{frame.page + 1:03d}.tif' if len(frames) > 1
+                                         else os.path.basename(path) for frame in frames)
+                        if self.progress_callback is not None:
+                            self.progress_callback(done, len(sources))
+                except _DecodeCancelled:
+                    return False, 'CANCELLED', [], []
+        self.failed_count = failed
+        if not images:
+            return False, 'Could not load any image files', [], []
+        if self.should_cancel():
             return False, 'CANCELLED', [], []
-        self.failed_count = failed_count
-
-        if not loaded_images:
-            return False, "Could not load any image files", [], []
-
-        self.images = loaded_images
-        self.image_paths = loaded_paths
-        self.source_icc_profiles = {path: _read_icc_profile(path) for path in dict.fromkeys(loaded_paths)}
+        ensure_preview(images[0])
+        self.images, self.image_paths = images, paths
+        self.source_exif = exif
+        self.px_size_um = _consistent_px_size_um(px_sizes)
+        self.source_icc_profiles = {path: _read_icc_profile(path) for path in dict.fromkeys(paths)}
         self.source_icc_profile = common_profile_values(self.source_icc_profiles.values())
-
-        message = f"Loaded {len(loaded_images)} image(s)"
-        if failed_count > 0:
-            message += f" (failed: {failed_count})"
-
-        return True, message, loaded_images, filenames
+        message = f'Loaded {len(images)} image(s)'
+        if failed:
+            message += f' (failed: {failed})'
+        return True, message, images, names
 
     def create_pixmaps(self, images: List[np.ndarray], max_size: Tuple[int, int] = (800, 600)) -> list:
         pixmaps = []
@@ -1015,6 +943,12 @@ class ImageStackLoader:
     def create_thumbnails(self, images: List[np.ndarray], thumb_size: int = 40) -> list:
         thumbnails = []
         for img in images:
+            from core.source_frames import display_image, preview_ready
+            if not preview_ready(img):
+                from PyQt6.QtGui import QPixmap
+                thumbnails.append(QPixmap())
+                continue
+            img = display_image(img)
             if img.ndim == 3 and img.shape[2] == 4:
                 from utils.image_utils import composite_transparent_for_display
                 img = composite_transparent_for_display(img)
@@ -1034,6 +968,8 @@ class ImageStackLoader:
         # Imported lazily: the headless PyPI package uses this module for
         # decoding without PyQt6 installed.
         from utils.image_utils import cv2_to_pixmap
+        from core.source_frames import display_image
+        cv_img = display_image(cv_img)
 
         if max_size is not None:
             if cv_img.ndim == 3 and cv_img.shape[2] == 4:

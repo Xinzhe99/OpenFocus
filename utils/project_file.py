@@ -2,6 +2,10 @@
 
 Output pixels and retouch history are not stored. File-backed flat-field
 corrections are restored only while their reference remains unchanged.
+
+Lazy frames record container path, zero-based page, working scale and ordered
+transforms. Legacy pathless arrays are persisted as TIFF files in the adjacent
+``<project>.sources`` directory and reopened lazily without a second resize.
 """
 import json
 import os
@@ -230,8 +234,16 @@ def _collect_state(window) -> Dict[str, Any]:
     folder = getattr(window, "current_folder_path", "") or ""
     recorded = list(getattr(window, "image_source_paths", None) or [])
     names = list(getattr(window, "image_filenames", []))
+    images = list(getattr(window, "raw_images", ()) or ())
+    if not names:
+        names = [f"frame_{index + 1:04d}.tif" for index in range(len(images))]
     abs_paths = []
     for i, name in enumerate(names):
+        image = images[i] if i < len(images) else None
+        descriptor_path = getattr(image, "path", None)
+        if descriptor_path:
+            abs_paths.append(os.path.abspath(descriptor_path))
+            continue
         if i < len(recorded) and recorded[i] and os.path.isfile(recorded[i]):
             abs_paths.append(recorded[i])
             continue
@@ -249,12 +261,18 @@ def _collect_state(window) -> Dict[str, Any]:
     source_indices = {}
     sources = []
     frame_order = []
-    for path, name in zip(abs_paths, names):
+    for index, (path, name) in enumerate(zip(abs_paths, names)):
         key = os.path.normcase(os.path.abspath(path))
         if key not in source_indices:
             source_indices[key] = len(sources)
             sources.append(path)
-        frame_order.append({"source": source_indices[key], "name": name})
+        frame = {"source": source_indices[key], "name": name}
+        image = images[index] if index < len(images) else None
+        if getattr(image, "path", None):
+            frame["page"] = getattr(image, "page", None)
+            frame["scale"] = float(image.scale)
+            frame["transforms"] = list(image.transforms)
+        frame_order.append(frame)
     abs_paths = sources
     return {
         "openfocus_project": FORMAT_VERSION,
@@ -288,6 +306,45 @@ def _multipage_container_for(name: str, folder: str) -> str:
     return ""
 
 
+def _persist_pathless_sources(window, state, project_path):
+    """Persist legacy in-memory inputs without decoding path-backed sources."""
+    import numpy as np
+    pending = []
+    recorded = list(getattr(window, "image_source_paths", ()) or ())
+    for index, frame in enumerate(state["frame_order"]):
+        source = state["sources"][frame["source"]]
+        image = window.raw_images[index]
+        if (not os.path.isfile(source) and isinstance(image, np.ndarray)
+                and not (index < len(recorded) and recorded[index])):
+            pending.append((index, image))
+    if not pending:
+        return
+    from utils.frame_pixels import run_pixel_worker
+    from utils.image_utils import imwrite_auto
+    directory = os.path.abspath(project_path) + ".sources"
+    def persist():
+        os.makedirs(directory, exist_ok=True)
+        result = {}
+        for index, image in pending:
+            fd, destination = tempfile.mkstemp(suffix=".tif", dir=directory)
+            os.close(fd)
+            if not imwrite_auto(destination, image):
+                raise OSError("Cannot preserve project source: " + destination)
+            result[index] = destination
+        return result
+    paths = run_pixel_worker(window, "OpenFocus project", persist)
+    sources, folders, order = [], [], []
+    for index, frame in enumerate(state["frame_order"]):
+        source = paths.get(index, state["sources"][frame["source"]])
+        updated = dict(frame, source=len(sources))
+        if index in paths:
+            updated.update(page=0, snapshot=True)
+        sources.append(source)
+        folders.append(os.path.dirname(source))
+        order.append(updated)
+    state.update(sources=sources, source_folders=folders, frame_order=order)
+
+
 def save_project(window, path: str) -> Tuple[bool, str]:
     """Write the current session state to an .ofproj file."""
     if not getattr(window, "raw_images", []):
@@ -297,6 +354,7 @@ def save_project(window, path: str) -> Tuple[bool, str]:
         return False, "Export the processed source stack before saving a project: " + "; ".join(limitations)
     try:
         state = _collect_state(window)
+        _persist_pathless_sources(window, state, path)
         _validate_source_transforms(state.get("source_transforms", []), state["scale_factor"])
         missing = [source for source in state["sources"] if not os.path.isfile(source)]
         if missing:
@@ -397,8 +455,33 @@ def validate_project(path: str, source_root: Optional[str] = None, *, require_so
             not isinstance(frame, dict)
             or not isinstance(frame.get("source"), int)
             or not 0 <= frame["source"] < len(sources)
-            or not isinstance(frame.get("name"), str) for frame in frames)):
+            or not isinstance(frame.get("name"), str)
+            or (frame.get("page") is not None and
+                (type(frame["page"]) is not int or frame["page"] < 0)) for frame in frames)):
         return False, "invalid project frame order", {}
+    try:
+        for frame in frames or ():
+            if type(frame.get("snapshot", False)) is not bool:
+                raise ValueError("invalid source snapshot")
+            if "scale" in frame:
+                scale = frame["scale"]
+                if isinstance(scale, bool) or not isinstance(scale, (float, int)) or not math.isfinite(scale) or scale <= 0:
+                    raise ValueError("invalid frame scale")
+            if "transforms" in frame:
+                if not isinstance(frame["transforms"], list):
+                    raise ValueError("invalid frame transformations")
+                for operation in frame["transforms"]:
+                    if not isinstance(operation, dict):
+                        raise ValueError("invalid frame transformations")
+                    if operation.get("operation") == "resize":
+                        if any(type(operation.get(key)) is not int or operation[key] <= 0 for key in ("width", "height")):
+                            raise ValueError("invalid frame dimensions")
+                    elif operation.get("operation") in ("rotate", "flip"):
+                        _validate_source_transforms([operation], frame.get("scale", 1.0), require_sources=False)
+                    else:
+                        raise ValueError("invalid frame transformations")
+    except (ValueError, TypeError) as exc:
+        return False, str(exc), {}
     project_dir = os.path.dirname(os.path.abspath(path))
     if require_sources:
         resolved = (_relocated_sources(state, source_root, project_dir) if source_root is not None
@@ -607,9 +690,8 @@ def apply_project(window, state: Dict[str, Any],
                   on_loaded=None, on_error=None) -> None:
     """Load the project's sources and restore settings/labels/index.
 
-    `on_loaded` runs only after the frames were actually decoded and the
-    settings applied — an update-restore must not report success when the
-    asynchronous load then fails.
+    `on_loaded` runs only after lazy frames and their settings are installed;
+    asynchronous failures reach `on_error` before replacing the current stack.
     """
     sources: List[str] = state.get("resolved_sources") or state["sources"]
 
@@ -630,8 +712,14 @@ def apply_project(window, state: Dict[str, Any],
 
 
 def _prepare_project_load(window, state, options):
-    """Resolve every saved frame before replacing the currently usable stack."""
-    import cv2
+    from utils.frame_pixels import run_pixel_worker
+    return run_pixel_worker(window, "OpenFocus project",
+                            lambda: _prepare_project_frames(window, state, options))
+
+
+def _prepare_project_frames(window, state, options):
+    """Order lazy frames and replay descriptors before publishing the stack."""
+    from core.source_frames import transform_frame, materialize_frames
     sources = state.get("resolved_sources") or state["sources"]
     paths = list(getattr(window.image_loader, "image_paths", []))
     frames = state.get("frame_order")
@@ -643,26 +731,57 @@ def _prepare_project_load(window, state, options):
         lookup = {(os.path.normcase(os.path.abspath(path)), name): i
                   for i, (path, name) in enumerate(zip(paths, options.filenames))}
         order = []
+        page_lookup = {(os.path.normcase(os.path.abspath(path)), getattr(image, "page", None)): i
+                       for i, (path, image) in enumerate(zip(paths, options.base_images))}
         for frame in frames:
-            key = (os.path.normcase(os.path.abspath(sources[frame["source"]])), frame["name"])
-            if key not in lookup:
+            source = os.path.normcase(os.path.abspath(sources[frame["source"]]))
+            key = (source, frame["name"])
+            match = (page_lookup.get((source, frame.get("page")))
+                     if "page" in frame else lookup.get(key))
+            if match is None:
                 raise ValueError("Project frame could not be decoded: " + frame["name"])
-            order.append(lookup[key])
-        options.filenames = [options.filenames[i] for i in order]
+            order.append(match)
+        options.filenames = [frame["name"] for frame in frames]
         options.base_images = [options.base_images[i] for i in order]
         paths = [paths[i] for i in order]
+        if any(frame.get("snapshot") or ("scale" in frame and frame["scale"] != getattr(image, "scale", None))
+               for frame, image in zip(frames, options.base_images)):
+            from core.source_frames import scan_source
+            from utils.frame_pixels import run_pixel_worker
+            def restore_frame_scales():
+                restored = []
+                for index, (frame, image) in enumerate(zip(frames, options.base_images)):
+                    scale = 1.0 if frame.get("snapshot") else frame.get("scale", getattr(image, "scale", 1.0))
+                    if frame.get("snapshot") or scale != getattr(image, "scale", None):
+                        image = scan_source(paths[index], scale=scale, linear=state.get("linear_raw", False))[frame.get("page", 0)]
+                    restored.append(image)
+                return restored
+            options.base_images = run_pixel_worker(window, "OpenFocus project", restore_frame_scales)
     # Keep the decoded, ordered frames before replaying project transforms.
     # Stack reset holds these references under the same copy-on-write rule as undo.
     options.reset_images = list(options.base_images)
+    if frames:
+        for index, frame in enumerate(frames):
+            for operation in frame.get("transforms", []):
+                options.base_images[index] = transform_frame(
+                    options.base_images[index], operation["operation"],
+                    **{key: value for key, value in operation.items() if key != "operation"})
     for item in state.get("source_transforms", []):
         if item["operation"] == "flat_field":
-            from utils.dust_map import load_flat_field_reference, compute_flat_field, apply_flat_field
-            white, _ = load_flat_field_reference(item["path"], expected_hash=item["sha256"])
-            gain = compute_flat_field(white, sigma=item["sigma"])
-            options.base_images = [apply_flat_field(image, gain) for image in options.base_images]
+            from utils.frame_pixels import run_pixel_worker
+            def apply_reference():
+                from utils.dust_map import load_flat_field_reference, compute_flat_field, apply_flat_field
+                white, _ = load_flat_field_reference(item["path"], expected_hash=item["sha256"])
+                gain = compute_flat_field(white, sigma=item["sigma"])
+                originals = materialize_frames(options.base_images)
+                return materialize_frames(
+                    image if frames and frames[index].get("snapshot") else apply_flat_field(image, gain)
+                    for index, image in enumerate(originals))
+            options.base_images = run_pixel_worker(window, "OpenFocus project", apply_reference)
         else:
-            transform = cv2.rotate if item["operation"] == "rotate" else cv2.flip
-            options.base_images = [transform(image, item["code"]) for image in options.base_images]
+            options.base_images = [image if frames and (frames[index].get("snapshot") or "transforms" in frames[index]) else
+                                   transform_frame(image, item["operation"], code=item["code"])
+                                   for index, image in enumerate(options.base_images)]
     options.working_images = list(options.base_images)
     options.reset_paths = list(paths)
     window.image_loader.image_paths = paths

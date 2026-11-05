@@ -6,20 +6,22 @@ import cv2
 import numpy as np
 
 from utils.sorting import natural_sort_key
+from core.frame_storage import store_frame
 
 
 def _collect_images(input_source, *, normalize=True, should_cancel=None) -> List[np.ndarray]:
     """Load frames; public callers retain the historical 0–255 normalization."""
     _check_cancel(should_cancel)
     if isinstance(input_source, (list, tuple)):
-        frames = [f for f in input_source if f is not None]
+        from core.source_frames import materialize_frames
+        frames = materialize_frames([f for f in input_source if f is not None], should_cancel)
         if len(frames) < 2:
             raise ValueError("OpenFocus A/B fusion needs at least 2 frames")
         # Same 0-255 domain as the directory loader: a uint16 list used to
         # stay in 0-65535 and saturate on the final np.clip(..., 0, 255).
         if not normalize:
             return frames
-        return [_prepare_frame(f, None, should_cancel) if f.dtype == np.uint16
+        return [store_frame(_prepare_frame(f, None, should_cancel)) if f.dtype == np.uint16
                 else f for f in frames]
 
     if isinstance(input_source, str) and os.path.isdir(input_source):
@@ -42,7 +44,7 @@ def _collect_images(input_source, *, normalize=True, should_cancel=None) -> List
                 raise RuntimeError(f"Unable to read image: {name}")
             if normalize and img.dtype == np.uint16:
                 img = (img.astype(np.float32) * (255.0 / 65535.0))
-            frames.append(img)
+            frames.append(store_frame(img))
         return frames
 
     raise ValueError("input_source must be a list of frames or a directory")

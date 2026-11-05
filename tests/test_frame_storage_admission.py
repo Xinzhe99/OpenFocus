@@ -107,7 +107,7 @@ def test_mapping_checks_disk_before_creating_file(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize('multipage', [False, True])
-def test_known_stack_rejected_before_loading(qapp, monkeypatch, tmp_path, multipage):
+def test_known_stack_open_does_not_admit_full_stack(qapp, monkeypatch, tmp_path, multipage):
     import cv2
     import tifffile
     paths = []
@@ -123,13 +123,14 @@ def test_known_stack_rejected_before_loading(qapp, monkeypatch, tmp_path, multip
             paths.append(str(path))
         available = 10 * 8 * 3
     _limit_temp_space(monkeypatch, tmp_path, available)
-    loader = SimpleNamespace(images=[], should_cancel=None, progress_callback=None)
-    loader.load_from_filepaths = lambda *args, **kwargs: pytest.fail('decode started')
+    loaded = [np.zeros((2, 3, 3), np.uint8)]
+    loader = SimpleNamespace(images=loaded, should_cancel=None, progress_callback=None)
+    loader.load_from_filepaths = lambda *args, **kwargs: (True, '', loaded, ['source'])
     worker = workers.StackLoadWorker(loader, filepaths=paths)
     results = []
     worker.finished_load.connect(lambda *args: results.append(args))
     worker.run()
-    assert not results[0][0] and 'Insufficient temporary disk space' in results[0][1]
+    assert results[0] == (True, '', loaded, ['source'])
     assert not list(tmp_path.glob('openfocus-frame-*.bin'))
 
 
@@ -153,61 +154,43 @@ def test_large_disk_reserve_is_capped(monkeypatch, tmp_path):
 @pytest.mark.parametrize('extension', ['.tiff', '.nef'])
 @pytest.mark.parametrize('linear', [False, True])
 @pytest.mark.parametrize('folder', [False, True])
-def test_raw_headers_admit_full_stack_before_decode(qapp, monkeypatch, tmp_path,
-                                                    extension, linear, folder):
-    import tifffile
+def test_image_open_reaches_loader_without_full_stack_disk_admission(
+        qapp, monkeypatch, tmp_path, extension, linear, folder):
     from core import image_loader
     paths = []
     for index in range(2):
         path = tmp_path / f'{index}{extension}'
-        if extension == '.tiff':
-            tifffile.imwrite(path, np.zeros((2, 3, 3), np.uint8), photometric='rgb')
-        else:
-            path.write_bytes(b'raw header')
+        path.write_bytes(b'header read belongs to the lazy loader')
         paths.append(str(path))
-    _limit_temp_space(monkeypatch, tmp_path, 100 * 80 * 3 * 2)
-    monkeypatch.setattr(image_loader, 'is_raw_source', lambda path: str(path).endswith(extension))
-    monkeypatch.setattr(image_loader, 'RAWPY_AVAILABLE', True)
-    dimensions = SimpleNamespace(width=100, height=80, raw_width=100, raw_height=80, pixel_aspect=1)
-    class Header:
-        sizes = dimensions
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            pass
-    monkeypatch.setattr(image_loader, 'rawpy', SimpleNamespace(imread=lambda stream: Header()), raising=False)
-    loader = image_loader.ImageStackLoader()
-    monkeypatch.setattr(loader, 'load_from_filepaths', lambda *args, **kwargs: pytest.fail('decode started'))
-    monkeypatch.setattr(loader, 'load_from_folder', lambda *args, **kwargs: pytest.fail('decode started'))
-    monkeypatch.setattr(loader, 'load_linear_raw_stack', lambda *args, **kwargs: pytest.fail('decode started'))
-    if extension == '.nef':
-        monkeypatch.setattr(loader, 'SUPPORTED_FORMATS', loader.SUPPORTED_FORMATS | {'.nef'})
+    _limit_temp_space(monkeypatch, tmp_path, 0)
+    monkeypatch.setattr(image_loader, 'is_raw_source', lambda path: True)
+    frames = [np.zeros((2, 3, 3), np.uint16)]
+    calls = []
+    def load(*args, **kwargs):
+        calls.append(args)
+        return True, '', frames, ['source']
+    loader = SimpleNamespace(images=frames, should_cancel=None, progress_callback=None,
+                             load_from_filepaths=load, load_from_folder=load,
+                             load_linear_raw_stack=load, linear_dng_metadata=None)
     worker = workers.StackLoadWorker(loader, folder=str(tmp_path) if folder else None,
-                                     filepaths=None if folder else paths, linear_raw=linear)
+                                    filepaths=None if folder else paths, linear_raw=linear)
     results = []
     worker.finished_load.connect(lambda *args: results.append(args))
     worker.run()
-    assert not results[0][0] and 'Insufficient temporary disk space' in results[0][1]
+    assert len(calls) == 1
+    assert results[0] == (True, '', frames, ['source'])
     assert not list(tmp_path.glob('openfocus-frame-*.bin'))
 
 
-def test_stack_preflight_observes_cancellation(monkeypatch, tmp_path):
-    from core import image_loader
-    path = tmp_path / 'frame.nef'
-    path.write_bytes(b'raw')
-    monkeypatch.setattr(image_loader, 'is_raw_source', lambda path: True)
-    monkeypatch.setattr(image_loader, 'RAWPY_AVAILABLE', True)
-    cancelled = [False]
-    class Header:
-        sizes = SimpleNamespace(width=10, height=10, raw_width=10, raw_height=10, pixel_aspect=1)
-        def __enter__(self):
-            cancelled[0] = True
-            return self
-        def __exit__(self, *args):
-            pass
-    monkeypatch.setattr(image_loader, 'rawpy', SimpleNamespace(imread=lambda stream: Header()), raising=False)
-    with pytest.raises(workers.RegistrationCancelled):
-        workers._check_known_stack_space([str(path)], 1, lambda: cancelled[0])
+def test_cancelled_open_does_not_enter_loader(qapp, monkeypatch):
+    loader = SimpleNamespace(images=[], should_cancel=None, progress_callback=None,
+        load_from_filepaths=lambda *args, **kwargs: pytest.fail('cancelled open entered loader'))
+    worker = workers.StackLoadWorker(loader, filepaths=['source.png'])
+    worker.request_cancel()
+    results = []
+    worker.finished_load.connect(lambda *args: results.append(args))
+    worker.run()
+    assert results == [(False, 'CANCELLED', [], [])]
 
 
 @pytest.mark.parametrize('outcome', ['mixed', 'append', 'superseded', 'prepare_error', 'shutdown', 'apply_error'])
@@ -236,7 +219,6 @@ def test_rejected_load_restores_loader_and_releases_frames(qapp, monkeypatch, ou
     manager = source_manager.SourceManager(window)
     monkeypatch.setattr(manager, '_show_load_status', lambda: None)
     monkeypatch.setattr(manager, '_finish_load_worker', lambda worker: None)
-    monkeypatch.setattr(workers, '_check_known_stack_space', lambda *args: None)
 
     def mixed(images):
         if outcome == 'superseded':
@@ -285,7 +267,6 @@ def test_failed_load_restores_loader_metadata(qapp, monkeypatch):
         loader.px_size_um = None
         raise ValueError('decode failed')
     loader.load_from_filepaths = fail
-    monkeypatch.setattr(workers, '_check_known_stack_space', lambda *args: None)
     worker = workers.StackLoadWorker(loader, filepaths=['new'])
     results = []
     worker.finished_load.connect(lambda *args: results.append(args))
@@ -309,7 +290,6 @@ def test_failed_load_does_not_restore_over_newer_stack(qapp, monkeypatch, cancel
             worker.request_cancel()
         raise ValueError('decode failed')
     loader.load_from_filepaths = fail
-    monkeypatch.setattr(workers, '_check_known_stack_space', lambda *args: None)
     worker = workers.StackLoadWorker(loader, filepaths=['new'])
     worker.run()
     assert loader.images is replacement

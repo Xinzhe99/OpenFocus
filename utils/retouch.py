@@ -19,6 +19,26 @@ import numpy as np
 
 from core.render_context import RenderContext, SourceFrame
 
+
+def prepare_retouch_document(base_image, context):
+    """Resolve captured sources sequentially on a worker into disk storage."""
+    from dataclasses import replace
+    from core.source_frames import materialize_frames, resolve_frame
+    from core.frame_storage import store_frame
+    originals = materialize_frames(frame.image for frame in context.frames)
+    context = replace(context, frames=tuple(
+        replace(frame, image=image) for frame, image in zip(context.frames, originals)))
+    document = RetouchDocument(resolve_frame(base_image), context)
+    document.source_previews = []
+    for frame in document.frames:
+        image = frame.image
+        h, w = image.shape[:2]
+        scale = min(1.0, 1024 / max(h, w))
+        document.source_previews.append(store_frame(cv2.resize(
+            image, (max(1, round(w * scale)), max(1, round(h * scale))),
+            interpolation=cv2.INTER_AREA)))
+    return document
+
 TILE = 128  # undo granularity (pixels)
 DEFAULT_MAX_STROKES = 100
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024

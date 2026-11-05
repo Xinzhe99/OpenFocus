@@ -20,6 +20,10 @@ from utils.ui_utils import size_dialog_to_content
 def _to_pixmap(img, width=340, *, linear_dng_metadata=None):
     """Display an image at preview size, developing camera-linear data."""
     from utils.image_utils import to_display_uint8
+    from core.source_frames import display_image
+    if getattr(img, 'preview_is_display', False):
+        linear_dng_metadata = None
+    img = display_image(img)
     if linear_dng_metadata is None:
         img = to_display_uint8(img)
     scale = min(width / img.shape[1], 180 / img.shape[0])
@@ -57,7 +61,8 @@ class _FlatFieldWorker(QThread):
         try:
             self._check_cancel()
             if self.operation == "preview":
-                white = self.white
+                from core.source_frames import resolve_frame
+                white = resolve_frame(self.white) if self.white is not None else None
                 if self.path:
                     self.error_key = "dust_err_decode"
                     white, self.reference_hash = load_flat_field_reference(self.path)
@@ -71,7 +76,7 @@ class _FlatFieldWorker(QThread):
                 gain = compute_flat_field(white, sigma=self.sigma)
                 self._check_cancel()
                 self.error_key = "msg_proc_error"
-                frame = self.raw[self.target]
+                frame = resolve_frame(self.raw[self.target])
                 fixed = apply_flat_field(frame, gain)
                 self.result = (white, gain, frame, fixed)
             else:
@@ -80,7 +85,9 @@ class _FlatFieldWorker(QThread):
                     group = []
                     for frame in frames:
                         self._check_cancel()
-                        group.append(apply_flat_field(frame, self.gain))
+                        from core.source_frames import resolve_frame
+                        from core.frame_storage import store_frame
+                        group.append(store_frame(apply_flat_field(resolve_frame(frame), self.gain)))
                     corrected.append(group)
                 self.result = tuple(corrected)
             self._check_cancel()

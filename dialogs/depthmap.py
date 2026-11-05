@@ -123,6 +123,8 @@ class DepthWorker(QThread):
 
     def _run_admitted(self):
         from core.depth_map import DepthMapCancelled, compute_focus_index
+        from core.source_frames import materialize_frames
+        self._images = materialize_frames(self._images, should_cancel=lambda: self._cancelled)
         if self.alignment != "none":
             from core.compare_worker import align_frames
             self._images = align_frames(self._images, self.alignment,

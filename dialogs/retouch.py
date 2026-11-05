@@ -30,7 +30,9 @@ from PyQt6.QtWidgets import (
 from locales import trans
 from utils.image_utils import thumbnail_bgr, to_display_uint8
 from utils.path_identity import same_path
-from utils.retouch import RetouchDocument, adjust_tones
+from utils.retouch import adjust_tones, prepare_retouch_document
+from core.source_frames import display_image
+from utils.frame_pixels import run_pixel_worker
 from widgets.flow_layout import FlowPanel
 
 _SHARPNESS_WORKERS = set()
@@ -146,7 +148,7 @@ class _SharpnessWorker(QThread):
             for index, frame in enumerate(self.frames):
                 if self.isInterruptionRequested():
                     return
-                image = frame.image
+                image = display_image(frame.image)
                 if image is None or image.size == 0:
                     continue
                 h, w = image.shape[:2]
@@ -557,7 +559,9 @@ class RetouchDialog(QDialog):
         self.record = record
         self.apply_callback = apply_callback
         self.input_paths = tuple(input_paths)
-        self.doc = RetouchDocument(record.image, record.context)
+        self.doc = run_pixel_worker(
+            self, trans.t("retouch_title"),
+            lambda: prepare_retouch_document(record.image, record.context))
         self.view = _ViewState()
         self.view.center = QPointF(self.doc.width / 2.0, self.doc.height / 2.0)
 
@@ -983,9 +987,10 @@ class RetouchDialog(QDialog):
         self.frame_list.blockSignals(True)
         self.frame_list.clear()
         for index, frame in enumerate(self.doc.frames):
-            h, w = frame.image.shape[:2]
-            scale = 64 / max(h, w)
-            small = cv2.resize(frame.image, (max(1, int(w * scale)), max(1, int(h * scale))),
+            image = self.doc.source_previews[index]
+            h, w = image.shape[:2]
+            scale = min(1.0, 64 / max(h, w))
+            small = cv2.resize(image, (max(1, int(w * scale)), max(1, int(h * scale))),
                                interpolation=cv2.INTER_AREA)
             thumb = thumbnail_bgr(self._display_image(small), 64)
             item = QListWidgetItem(
@@ -1131,7 +1136,10 @@ class RetouchDialog(QDialog):
 
     def _refresh_source_display(self) -> None:
         frame = self.doc.active_frame
-        display = self._display_image(frame.image)
+        index = self.doc.frame_index
+        display, valid = run_pixel_worker(
+            self, trans.t("retouch_title"),
+            lambda: (self._display_image(frame.image), self.doc.mask_for(index)))
         if display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
         self._pure_source_qimage = _qimage_from_bgr(display)
@@ -1141,7 +1149,6 @@ class RetouchDialog(QDialog):
                 heat = cv2.resize(heat, (display.shape[1], display.shape[0]),
                                   interpolation=cv2.INTER_LINEAR)
                 display = cv2.addWeighted(display, 0.45, heat, 0.55, 0)
-        valid = self.doc.mask_for(self.doc.frame_index)
         if valid is not None:
             display = display.copy()
             display[~valid] = (80, 80, 160)

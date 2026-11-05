@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
+from core.frame_storage import create_frame, store_frame
 
 
 class DepthMapCancelled(Exception):
@@ -35,9 +36,14 @@ def _check(images: Sequence[np.ndarray], allow_grayscale=False) -> None:
 
 
 def _norm_index(argmax_map: np.ndarray, n: int) -> np.ndarray:
+    result = create_frame(argmax_map.shape, np.float32)
     if n <= 1:
-        return np.zeros(argmax_map.shape, np.float32)
-    return (argmax_map.astype(np.float32) / (n - 1)).clip(0.0, 1.0)
+        result[...] = 0
+        return result
+    for start in range(0, result.shape[0], 128):
+        rows = slice(start, min(result.shape[0], start + 128))
+        result[rows] = (argmax_map[rows].astype(np.float32) / (n - 1)).clip(0.0, 1.0)
+    return result
 
 
 def _tick(progress: Optional[Callable], i: int, n: int,
@@ -96,22 +102,19 @@ def _measure_dct(images, progress, should_cancel, kernel_size=7, block_size=8):
 # --------------------------------------------------------------------------
 def _measure_gfgfgf(images, progress, should_cancel, kernel_size=7,
                     thread_count=None):
-    from fusion_methods.gfg_fgf import gfg_focus_map, gfg_decision_index
+    from fusion_methods.gfg_fgf import gfg_focus_map, GfgDecision
 
     if kernel_size % 2 == 0:
         kernel_size += 1
     n = len(images)
     # 与融合同一聚焦图与并列决策（Sobel 小区域度量），深度图才与融合一致
-    afms = None
+    decision = GfgDecision()
     for idx, bgr in enumerate(images):
         _tick(progress, idx, n, should_cancel)
         g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-        afm = gfg_focus_map(g, kernel_size)
-        if afms is None:
-            afms = np.empty((n,) + afm.shape, np.float32)
-        afms[idx] = afm
-    best_idx = gfg_decision_index(afms)
-    return best_idx
+        decision.update(idx, gfg_focus_map(g, kernel_size))
+    _tick(None, n, n, should_cancel)
+    return decision.idx
 
 
 # --------------------------------------------------------------------------
@@ -138,7 +141,8 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=4):
         _tick(progress, idx, n, should_cancel)
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
         coeffs = transform.forward(gray, nlevels=nlevels)
-        acc = np.zeros((h, w), np.float32)
+        acc = create_frame((h, w), np.float32)
+        acc[...] = 0
         for level_yh in coeffs.highpasses:
             _tick(None, idx, n, should_cancel)
             # (H', W', 6) -> 每方向幅值平方求和，上采样回全分辨率累加
@@ -146,7 +150,9 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=4):
             lvl = cv2.resize(mag2, (w, h), interpolation=cv2.INTER_LINEAR)
             acc += lvl
         if best_val is None:
-            best_val, best_idx = acc, np.zeros(acc.shape, np.int32)
+            best_val = acc
+            best_idx = create_frame(acc.shape, np.int32)
+            best_idx[...] = 0
         else:
             hit = acc > best_val
             best_val[hit] = acc[hit]
@@ -308,7 +314,6 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
     from core.registration import RegistrationCancelled
     from utils.image_utils import normalize_fuse_input
 
-    _check(images, allow_grayscale=method in ('openfocus_b', 'openfocus_c'))
     spec = get_fusion(method)
     values = resolve_fusion_parameters(method, parameters, depth=True)
     declared_keys = {parameter.key for parameter in spec.depth.parameters}
@@ -326,6 +331,9 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
     depth_block = legacy_parameters.get('block_size')
     try:
         with heavy_job(should_cancel):
+            from core.source_frames import materialize_frames
+            images = materialize_frames(images, should_cancel)
+            _check(images, allow_grayscale=method in ('openfocus_b', 'openfocus_c'))
             if spec.neural:
                 from fusion_methods.neural_runtime import start_inference_job
                 start_inference_job()
@@ -347,7 +355,15 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
             # Neural runners normalize one spatial tile at a time. B/C prepare
             # each source themselves and retain their input quantization rule.
             if method not in ('openfocus_b', 'openfocus_c', 'stackmffv2', 'stackmffv3'):
-                images, _is_16bit = normalize_fuse_input(images)
+                if any(image.dtype == np.uint16 for image in images):
+                    normalized = []
+                    for image in images:
+                        _tick(None, 0, n, should_cancel)
+                        converted = normalize_fuse_input([image])[0][0]
+                        if converted.dtype != np.float32:
+                            converted = converted.astype(np.float32)
+                        normalized.append(image if converted is image else store_frame(converted))
+                    images = normalized
             runtime = {'progress_callback': progress_callback, 'should_cancel': should_cancel,
                        'thread_count': plan.native_threads, 'use_gpu': use_gpu,
                        'model_path': model_path, 'execution_plan': plan}

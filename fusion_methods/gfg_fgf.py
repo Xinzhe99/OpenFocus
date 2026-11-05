@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fusion_methods.dct import _ensure_color_image
 from utils.image_utils import fuse_output_dtype
+from core.frame_storage import create_frame, store_frame
 
 # -----------------------------------------------------------------------------
 # 全局辅助与核心算法实现
@@ -140,9 +141,10 @@ class GfgDecision:
     def update(self, i, afm):
         sob = _sobel_energy(afm)
         if self.val is None:
-            self.val = afm.astype(np.float32, copy=True)
-            self.idx = np.full(afm.shape, i, np.int32)
-            self.sob = sob
+            self.val = store_frame(afm.astype(np.float32, copy=False))
+            self.idx = create_frame(afm.shape, np.int32)
+            self.idx[...] = i
+            self.sob = store_frame(sob)
             return
         diff = afm - self.val
         win = diff > self.tie_eps
@@ -205,7 +207,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
             image = decode_image(path, preserve_grayscale=True)
             if image is None:
                 raise ValueError(f"Failed to read image: {path}")
-            stack_ori.append(image)
+            stack_ori.append(store_frame(image))
     else:
         # 列表输入
         stack_ori = input_source
@@ -219,10 +221,10 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
               and (stack_ori[0].shape[1], stack_ori[0].shape[0]) != img_resize)
     for img in stack_ori:
         check_cancel()
-        img = _ensure_color_image(np.ascontiguousarray(img))
+        img = _ensure_color_image(img)
         if resize:
             img = cv2.resize(img, img_resize)
-        prepared.append(img)
+        prepared.append(img if isinstance(img, np.memmap) else store_frame(img))
     stack_ori = prepared
     del prepared
 
@@ -331,8 +333,10 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     del decision
 
     # 累加器
-    sum_fdms = np.zeros((h, w), dtype=np.float32)
-    imfu_result = np.zeros((h, w, 3), dtype=np.float32)
+    sum_fdms = create_frame((h, w), np.float32)
+    imfu_result = create_frame((h, w, 3), np.float32)
+    sum_fdms[...] = 0
+    imfu_result[...] = 0
 
     # 锁用于累加（虽然 Python GIL 存在，但 += numpy array 不是原子的，需注意线程安全）
     # 但为了性能，我们让每个线程返回结果，主线程累加，或者分配独立的 buffer
@@ -372,20 +376,22 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # -------------------------------------------------------------------------
     # 避免除以零
     # 创建掩码，只处理权重不为0的区域
-    nonzero_mask = sum_fdms > 1e-6
+    nonzero_mask = create_frame((h, w), np.bool_)
+    for start in range(0, h, 128):
+        check_cancel()
+        rows = slice(start, min(h, start + 128))
+        nonzero_mask[rows] = sum_fdms[rows] > 1e-6
     
     # 原地归一化
     # 只需对 nonzero 区域处理，其他区域保持 0
     # 由于 imfu_result 已经是 float32，直接操作
     
-    # 将 sum_fdms 扩展维度以便广播
-    sum_fdms_expanded = sum_fdms[:, :, None]
     
     # 利用 np.divide 的 where 参数或者 boolean indexing
     # Boolean indexing 在大数组下可能会产生临时拷贝，但比迭代快
     # 考虑到内存效率，逐通道处理
     
-    out = np.zeros((h, w, 3), dtype=out_dtype)
+    out = create_frame((h, w, 3), out_dtype)
     
     for c in range(3):
         check_cancel()
@@ -401,8 +407,12 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
                 sel = (~nonzero_mask) & (idm_map == i)
                 ch_data[sel] = normalized_frame(i, c)[sel]
         # Clip 并写回源位深
-        np.clip(ch_data * 255.0, 0, 255, out=ch_data)
-        out[:, :, c] = ch_data
+        for start in range(0, h, 128):
+            check_cancel()
+            rows = slice(start, min(h, start + 128))
+            np.multiply(ch_data[rows], 255.0, out=ch_data[rows])
+            np.clip(ch_data[rows], 0, 255, out=ch_data[rows])
+            out[rows, :, c] = ch_data[rows]
 
     check_cancel()
     return out

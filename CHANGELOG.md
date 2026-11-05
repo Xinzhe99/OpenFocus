@@ -28,6 +28,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   address bar and Ctrl+L (also Cmd+L on macOS). Pasted quoted paths, environment
   variables and Unicode names navigate on Enter without accepting or overwriting;
   invalid addresses remain available for correction.
+- Open still-image stacks as source manifests with original dimensions, page identity,
+  orientation and bounded previews. The first frame is available before the remaining
+  list thumbnails; full pixels decode only when a worker needs them. Preview and
+  original-pixel caches have separate byte limits, and large previews live on disk.
+- Preserve lazy source transforms, append/reset baselines, project reopening and
+  legacy pathless result data. Export and retouch resolve original-size pixels on
+  workers; full render and registration intermediates use disk-backed frames.
+- Bound classical 16-bit preparation, guided exposure matching, ECC grayscale,
+  depth and output scratch; stream GIF and multipage TIFF exports frame by frame.
 - Apply tiled Guided Filter exposure matching per tile after whole-stack gain
   estimation, avoiding an additional full-size matched copy of the stack.
 - Reduce GFG-FGF working memory by converting frames per pass instead of

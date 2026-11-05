@@ -12,6 +12,7 @@ from utils.image_utils import (apply_exposure_gain, exposure_gains,
                                normalize_fuse_input)
 from utils.sorting import natural_sort_key
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
+from core.frame_storage import create_frame, store_frame
 
 
 # Tile 参数已改为 MultiFocusFusion 实例属性，见类构造函数中的默认值和访问器方法。
@@ -431,28 +432,6 @@ class MultiFocusFusion:
             return [1.0 if m <= 1e-6 else target / m for m in means]
         return None
 
-    def _materialize_exposure(self, input_source, gains, should_cancel=None):
-        """Load a directory stack with the per-frame gains already applied."""
-        if not isinstance(input_source, str) or not os.path.isdir(input_source):
-            return input_source
-        from core.image_loader import admit_image_decode, decode_image
-        exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
-                '.tif', '.tiff', '.bmp')
-        names = [f for f in sorted(os.listdir(input_source),
-                                   key=natural_sort_key)
-                 if f.lower().endswith(exts)]
-        frames = []
-        for name, gain in zip(names, gains):
-            if should_cancel is not None and should_cancel():
-                from core.registration import RegistrationCancelled
-                raise RegistrationCancelled()
-            path = os.path.join(input_source, name)
-            admit_image_decode(path, user_limit=memory_budget_bytes())
-            img = decode_image(path)
-            if img is None:
-                raise RuntimeError(f"Unable to read image: {name}")
-            frames.append(apply_exposure_gain(img, gain))
-        return frames
 
     def _apply_base_correction(self, fused, input_source, exposure_gains=None,
                                deferred_exposure=False):
@@ -597,6 +576,7 @@ class MultiFocusFusion:
             from core.image_loader import admit_image_decode, decode_image
             frame_specs = []
             first = None
+            frames = []
             for name in names:
                 check_cancel()
                 path = os.path.join(input_source, name)
@@ -605,18 +585,17 @@ class MultiFocusFusion:
                 if frame is None:
                     raise RuntimeError(f"Unable to read image: {name}")
                 frame_specs.append((frame.size, frame.dtype))
+                frames.append(store_frame(frame))
                 if first is None:
-                    first = frame
+                    first = frames[-1]
             del frame
-            count = len(names)
-            # Sorting may normalize 16-bit directory frames to float32.
-            source_allocation = sum(size * max(dtype.itemsize, 4)
-                                    for size, dtype in frame_specs)
+            input_source = frames
+            count = len(frames)
         elif isinstance(input_source, (list, tuple)) and len(input_source):
-            input_source = list(input_source)
+            from core.source_frames import materialize_frames
+            input_source = materialize_frames(input_source, should_cancel)
             first = input_source[0]
             count = len(input_source)
-            source_allocation = 0
             frame_specs = [(frame.size, frame.dtype) for frame in input_source]
             from core.image_loader import _has_transparency, UnsupportedTransparency
             for frame in input_source:
@@ -630,27 +609,27 @@ class MultiFocusFusion:
         spec = self.descriptor
         needs_tiles = (resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
                        if spec.tile_decider else max(h, w) > self.tile_threshold)
-        deferred_exposure = (self.tile_enabled and needs_tiles and isinstance(input_source, list)
-                             and (spec.neural or (self.algorithm == 'guided_filter'
-                                  and not any(dtype == np.uint16 for _, dtype in frame_specs))))
-
-        streamed_directory = (isinstance(input_source, str)
-                              and (spec.tile_runner or self.algorithm == 'stackmffv2')
-                              and self.tile_enabled and needs_tiles)
-        preparation = (0 if streamed_directory else source_allocation) + max(size for size, _ in frame_specs) * 8
-        if self.exposure_match and not deferred_exposure and not streamed_directory:
-            sorted_directory = (isinstance(input_source, str) and self.sort_mode != "off"
-                                and self.descriptor.sort_frames)
-            for size, dtype in frame_specs:
-                # Sorted directory uint16 frames are normalized before matching.
-                matched_itemsize = (dtype.itemsize if dtype in (np.uint8, np.uint16)
-                                    and not (sorted_directory and dtype == np.uint16)
-                                    else 4)
-                preparation += size * matched_itemsize
+        deferred_exposure = (self.tile_enabled and needs_tiles
+                             and isinstance(input_source, list)
+                             and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
+        # Preparation converts only one frame at a time; the retained stack
+        # and exposure-matched frames live in temporary mappings.
+        preparation = max(size for size, _ in frame_specs) * 8
         policy.require_memory(preparation, user_limit=memory_budget_bytes())
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.
         input_source = self._maybe_sort_input(input_source, should_cancel)
+        if (not spec.neural and not deferred_exposure
+                and any(frame.dtype == np.uint16 for frame in input_source)):
+            normalized_frames = []
+            for frame in input_source:
+                check_cancel()
+                normalized = normalize_fuse_input([frame])[0][0]
+                if normalized.dtype != np.float32:
+                    normalized = normalized.astype(np.float32)
+                normalized_frames.append(frame if normalized is frame else store_frame(normalized))
+            input_source = normalized_frames
+            del normalized
         exposure_gains_ = None
         if self.exposure_match:
             if deferred_exposure and any(frame.dtype == np.uint16 for frame in input_source):
@@ -678,8 +657,10 @@ class MultiFocusFusion:
                 matched = []
                 for frame, gain in zip(input_source, exposure_gains_):
                     check_cancel()
-                    matched.append(apply_exposure_gain(frame, gain))
+                    adjusted = apply_exposure_gain(frame, gain)
+                    matched.append(frame if adjusted is frame else store_frame(adjusted))
                 input_source = matched
+                del adjusted
 
 
         check_cancel()
@@ -703,8 +684,6 @@ class MultiFocusFusion:
                 exposure_gains=exposure_gains_, deferred_exposure=deferred_exposure,
                 source_all_uint8=all(dtype == np.uint8 for _, dtype in frame_specs), **kws)
         else:
-            if exposure_gains_ is not None and isinstance(input_source, str):
-                input_source = self._materialize_exposure(input_source, exposure_gains_, should_cancel)
             check_cancel()
             if not spec.neural:
                 height = max(h, img_resize[1]) if img_resize else h
@@ -731,7 +710,7 @@ class MultiFocusFusion:
         check_cancel()
         result = self._apply_base_correction(result, input_source, exposure_gains_, deferred_exposure)
         check_cancel()
-        return result
+        return result if isinstance(result, np.memmap) and result.filename is not None else store_frame(result)
     
     def _fuse_guided_filter(self, 
                             input_source: Union[str, List[np.ndarray]], 
@@ -790,8 +769,8 @@ class MultiFocusFusion:
             h, w = input_source[0].shape[:2]
             if h < 8 or w < 8:
                 original_shape = (h, w)
-                input_source = [np.pad(frame, ((0, max(0, 8 - h)), (0, max(0, 8 - w)))
-                    + ((0, 0),) * (frame.ndim - 2), mode='edge') for frame in input_source]
+                input_source = [store_frame(np.pad(frame, ((0, max(0, 8 - h)), (0, max(0, 8 - w)))
+                    + ((0, 0),) * (frame.ndim - 2), mode='edge')) for frame in input_source]
 
         result = dct_focus_stack_fusion(
             input_source,
@@ -1144,29 +1123,46 @@ class MultiFocusFusion:
                 exposure_gains=exposure_gains,
             )
 
+        normalize_16bit = (any(frame.dtype == np.uint16 for frame in imgs)
+                           if imgs is not None else src_dtype == np.uint16)
+
+        def prepare_tile_frame(frame, gain=None):
+            if should_cancel is not None and should_cancel():
+                from core.registration import RegistrationCancelled
+                raise RegistrationCancelled()
+            prepared = frame
+            if normalize_16bit:
+                prepared = normalize_fuse_input([frame])[0][0]
+                if prepared.dtype != np.float32:
+                    prepared = prepared.astype(np.float32)
+            if gain is not None:
+                prepared = apply_exposure_gain(prepared, gain)
+            return frame if prepared is frame else store_frame(prepared)
+
         global_depth = None
         if algorithm in ('openfocus_b', 'openfocus_c'):
             from core import resource_policy as policy
             from fusion_methods.openfocus_depth import depth_map
             from fusion_methods.openfocus_ab import _collect_images
-            # Admit both the depth scratch and directory stack before loading it.
-            source_bytes = (2 * num_images * h * w * channels * max(4, np.dtype(src_dtype).itemsize)
-                            if imgs is None else 0)
+            # Retained source/depth planes use disk mappings.
+            source_bytes = 0
             fixed, per_worker = policy.estimate_working_set(policy.Workload(
                 algorithm=algorithm, frames=num_images, height=h, width=w,
                 channels=channels, itemsize=np.dtype(src_dtype).itemsize))
             policy.require_memory(source_bytes + fixed + per_worker,
                                   user_limit=memory_budget_bytes())
-            if imgs is None:
+            directory_depth = imgs is None
+            if directory_depth:
                 imgs = _collect_images(img_dir, normalize=False, should_cancel=should_cancel)
-                if exposure_gains is not None:
-                    matched = []
-                    for frame, gain in zip(imgs, exposure_gains):
-                        from fusion_methods.openfocus_ab import _check_cancel
-                        _check_cancel(should_cancel)
-                        matched.append(apply_exposure_gain(frame, gain))
-                    imgs = matched
-                    del matched, frame
+                normalize_16bit = any(frame.dtype == np.uint16 for frame in imgs)
+            depth_images = imgs
+            match_depth = exposure_gains is not None and (deferred_exposure or directory_depth)
+            if normalize_16bit or match_depth:
+                # The depth decision is global. Prepare frames sequentially on
+                # disk, then pass its one map into every spatial tile.
+                depth_images = [prepare_tile_frame(frame,
+                                    exposure_gains[index] if match_depth else None)
+                                for index, frame in enumerate(imgs)]
             if algorithm == 'openfocus_b':
                 kernel = kwargs.get('kernel_size', 11)
                 smoothing = kwargs.get('depth_smoothing')
@@ -1175,7 +1171,8 @@ class MultiFocusFusion:
                 kernel = 11
                 smoothing = kwargs.get('blend_smoothing')
                 smoothing = (3.0 if smoothing is None else smoothing) * (5.0 / 3.0)
-            global_depth = depth_map(imgs, None, kernel, smoothing, should_cancel)
+            global_depth = depth_map(depth_images, None, kernel, smoothing, should_cancel)
+            del depth_images
 
         if get_fusion(algorithm).resource_estimator:
             # Each tile is fused with a serial inner plan, so the parent's
@@ -1185,7 +1182,7 @@ class MultiFocusFusion:
             from core import resource_policy as policy
             fixed, per_worker = resolve_runner(get_fusion(algorithm).resource_estimator)(
                 block_size, block_size, kwargs, num_images)
-            acc_bytes = int(h) * int(w) * (channels + 1) * 4
+            acc_bytes = 0  # Full output accumulators are disk-backed.
             plan = policy.plan_execution(
                 policy.Workload(
                     algorithm=algorithm, frames=num_images, height=h, width=w,
@@ -1208,8 +1205,10 @@ class MultiFocusFusion:
             # Directory tiles decode full source frames. Serializing them keeps
             # simultaneous full-frame decodes out of the tile-only budget.
             optimal_threads = 1
-        acc = np.zeros((h, w, channels), dtype=np.float32)
-        weight = np.zeros((h, w, 1), dtype=np.float32)
+        acc = create_frame((h, w, channels), np.float32)
+        weight = create_frame((h, w, 1), np.float32)
+        acc[...] = 0
+        weight[...] = 0
 
         print(f"Tiled fusion: {optimal_threads} parallel workers (memory-optimized)")
 
@@ -1240,10 +1239,9 @@ class MultiFocusFusion:
             from core.image_loader import admit_image_decode, decode_image
             x0, y0, x1, y1 = coords
             if imgs is not None:
-                crops = [img[y0:y1, x0:x1] for img in imgs]
-                if deferred_exposure and exposure_gains is not None:
-                    crops = [apply_exposure_gain(crop, gain)
-                             for crop, gain in zip(crops, exposure_gains)]
+                crops = [prepare_tile_frame(img[y0:y1, x0:x1],
+                             exposure_gains[index] if deferred_exposure and exposure_gains is not None else None)
+                         for index, img in enumerate(imgs)]
             else:
                 crops = []
                 for idx, fname in enumerate(files):
@@ -1253,14 +1251,10 @@ class MultiFocusFusion:
                     full = decode_image(fp)
                     if full is None:
                         raise RuntimeError(f"Unable to read image: {fp}")
-                    crop = full[y0:y1, x0:x1].copy()
-                    if exposure_gains is not None:
-                        crop = apply_exposure_gain(
-                            crop, exposure_gains[idx])
-                    crops.append(crop)
-                # 目录里的 16-bit 文件同样要落到 0-255 float，否则各算法的
-                # /255 预处理会得到 0-257 的错值。
-                crops = normalize_fuse_input(crops)[0]
+                    crop = store_frame(full[y0:y1, x0:x1])
+                    crops.append(prepare_tile_frame(crop,
+                                 exposure_gains[idx] if exposure_gains is not None else None))
+                    del full
             # The back-ends normalise BGRA to BGR themselves, so the accumulator
             # (sized from the source channel count) would reject their output.
             if crops and crops[0].ndim == 3 and crops[0].shape[2] == 4:
@@ -1347,10 +1341,15 @@ class MultiFocusFusion:
                 _check_cancel()
 
         _check_cancel()
-        weight[weight == 0] = 1.0
-        np.divide(acc, weight, out=acc)
-        np.clip(acc, 0, 255, out=acc)
-        fused = acc.astype(out_dtype, copy=False)
+        fused = create_frame(acc.shape, out_dtype)
+        for start in range(0, h, 128):
+            _check_cancel()
+            rows = slice(start, min(h, start + 128))
+            row_weight = weight[rows]
+            row_weight[row_weight == 0] = 1.0
+            np.divide(acc[rows], row_weight, out=acc[rows])
+            np.clip(acc[rows], 0, 255, out=acc[rows])
+            fused[rows] = acc[rows]
         _check_cancel()
 
         if channels == 1:
@@ -1434,10 +1433,12 @@ class MultiFocusFusion:
         _, device, plan = prepare(
             crops, model_path, tile_plan.device_kind != 'CPU', thread_count=thread_count,
             resource_preference=self.resource_preference, execution_plan=tile_plan,
-            fixed_bytes=h * w * ((channels + 1) * 4 + channels * np.dtype(out_dtype).itemsize))
+            fixed_bytes=min(h, 128) * w * ((channels + 1) * 4))
         check_cancel()
-        acc = np.zeros((h, w, channels), dtype=np.float32)
-        weight = np.full((h, w, 1), -1 if hard_pick else 0, dtype=np.float32)
+        acc = create_frame((h, w, channels), np.float32)
+        weight = create_frame((h, w, 1), np.float32)
+        acc[...] = 0
+        weight[...] = -1 if hard_pick else 0
         total = len(tile_coords)
         print(f"{label} tiled fusion: {total} tiles, one per call ({device})")
         if progress_callback is not None:
@@ -1476,11 +1477,16 @@ class MultiFocusFusion:
                 progress_callback(index + 1, total)
             check_cancel()
 
-        if not hard_pick:
-            weight[weight == 0] = 1.0
-            np.divide(acc, weight, out=acc)
-        np.clip(acc, 0, 255, out=acc)
-        fused = acc.astype(out_dtype, copy=False)
+        fused = create_frame(acc.shape, out_dtype)
+        for start in range(0, h, 128):
+            check_cancel()
+            rows = slice(start, min(h, start + 128))
+            if not hard_pick:
+                row_weight = weight[rows]
+                row_weight[row_weight == 0] = 1.0
+                np.divide(acc[rows], row_weight, out=acc[rows])
+            np.clip(acc[rows], 0, 255, out=acc[rows])
+            fused[rows] = acc[rows]
         check_cancel()
         return fused[:, :, 0] if channels == 1 else fused
 

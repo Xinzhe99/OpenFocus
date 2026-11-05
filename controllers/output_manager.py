@@ -23,6 +23,8 @@ from utils.image_utils import to_display_uint8, cv2_to_pixmap
 from utils.image_utils import imwrite_auto
 from locales import trans
 from utils.export_paths import unique_path
+from core.source_frames import resolve_frame
+from utils.frame_pixels import preview_pixels as source_display_image, run_pixel_worker
 
 # Item-data roles: the folder of an align-only result, and the stable
 # provenance record of every output (identity, source context, export state).
@@ -45,7 +47,7 @@ def _linear_dng_annotated_image(record, labels, state, should_cancel=None):
         if should_cancel is not None and should_cancel():
             raise RegistrationCancelled()
 
-    image = record.image
+    image = resolve_frame(record.image)
     metadata = record.linear_dng_metadata
     if getattr(metadata, 'profile_tags', None):
         raise ValueError(trans.t('linear_dng_complex_annotations'))
@@ -95,7 +97,7 @@ class LinearDngExportWorker(QThread):
 
     def run(self):
         try:
-            image = self.record.image
+            image = resolve_frame(self.record.image)
             if self.annotation_state['labels'] or self.annotation_state['scale']:
                 try:
                     image = _linear_dng_annotated_image(
@@ -195,7 +197,7 @@ def _thumbnail_bgr(image, size: int):
     Resampling first keeps the colour conversion and the pixmap upload
     proportional to the icon instead of to the full-resolution frame.
     """
-    display = to_display_uint8(image)
+    display = to_display_uint8(source_display_image(image))
     if display.ndim == 3 and display.shape[2] == 4:
         from utils.image_utils import composite_transparent_for_display
         display = composite_transparent_for_display(display)
@@ -354,13 +356,14 @@ class OutputManager:
                 # Thumbnail from a 40 px resample, not from the full frame:
                 # converting 12 MP just to fill a 40x40 icon cost ~35 ms of
                 # copy + colour convert + pixmap upload per render.
-                thumbnail = image
-                if record is not None and record.linear_dng_metadata is not None:
+                thumbnail = source_display_image(image)
+                if (record is not None and record.linear_dng_metadata is not None
+                        and not getattr(image, "preview_is_display", False)):
                     from utils.linear_dng import develop_linear
-                    h, w = image.shape[:2]
+                    h, w = thumbnail.shape[:2]
                     factor = min(1.0, 40 / max(h, w))
-                    thumbnail = cv2.resize(image, (max(1, int(w * factor)), max(1, int(h * factor))),
-                                           interpolation=cv2.INTER_AREA) if factor < 1 else image
+                    thumbnail = cv2.resize(thumbnail, (max(1, int(w * factor)), max(1, int(h * factor))),
+                                           interpolation=cv2.INTER_AREA) if factor < 1 else thumbnail
                     thumbnail = develop_linear(thumbnail, record.linear_dng_metadata)
                 icon = QIcon(cv2_to_pixmap(_thumbnail_bgr(thumbnail, 40)))
                 item.setIcon(icon)
@@ -439,7 +442,6 @@ class OutputManager:
         """
         import os
 
-        import cv2
 
         window = self.window
         added = 0
@@ -447,10 +449,9 @@ class OutputManager:
             try:
                 if not os.path.isfile(path):
                     continue
-                image = cv2.imdecode(np.fromfile(path, np.uint8),
-                                     cv2.IMREAD_UNCHANGED)
-                if image is None:
-                    continue
+                from core.source_frames import scan_source
+                image = run_pixel_worker(window, trans.t('action_save'),
+                                         lambda path=path: scan_source(path)[0])
                 label = os.path.basename(path)
                 # Batch files are already on disk and have no in-memory
                 # provenance; mark them as such instead of guessing frames.
@@ -670,14 +671,20 @@ class OutputManager:
             self.window.export_manager._safe_export_path(path, source_paths)
         else:
             self.window.export_manager._safe_export_path(path)
-        image = record.image
+        cfg = scalebar.export_cfg(self.window, record=record)
+        calibration = scalebar.calibration_px_um(self.window, record)
+        state = self._annotation_state(record, labels)
+        return run_pixel_worker(self.window, trans.t('action_save'),
+                                lambda: self._write_record_pixels(record, path, labels, cfg, calibration, state))
+
+    def _write_record_pixels(self, record, path, labels, cfg, calibration, state):
+        image = resolve_frame(record.image)
         if image is None:
             raise ValueError(trans.t('msg_no_valid_image_text'))
         metadata = record.linear_dng_metadata
         if os.path.splitext(path)[1].lower() == '.dng':
             if metadata is None or record.annotations_baked:
                 raise ValueError(trans.t('linear_dng_export_failed'))
-            state = self._annotation_state(record, labels)
             if state['labels'] or state['scale']:
                 try:
                     image = _linear_dng_annotated_image(record, labels, state)
@@ -686,7 +693,7 @@ class OutputManager:
             try:
                 from utils.linear_dng import write_linear_dng
                 write_linear_dng(path, image, metadata,
-                                 px_size_um=scalebar.calibration_px_um(self.window, record))
+                                 px_size_um=calibration)
             except Exception as exc:
                 raise OSError(f"{trans.t('linear_dng_export_failed')}: {exc}") from exc
             return
@@ -697,7 +704,7 @@ class OutputManager:
             raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
         if not record.annotations_baked:
             image = labels.prepare_bgr_image('output', image, 0, output_id=record.output_id)
-            image = scalebar.burn(image, scalebar.export_cfg(self.window, record=record))
+            image = scalebar.burn(image, cfg)
         from core.image_loader import _read_exif_bytes, _read_icc_profile
         baked_path = record.export_path if record.annotations_baked else ""
         exif = _read_exif_bytes(baked_path) if baked_path else b''
@@ -1030,7 +1037,8 @@ class OutputManager:
 
         try:
             record = self.record_for_image(fusion_image)
-            image = fusion_image
+            source_shape = fusion_image.shape
+            image = source_display_image(fusion_image)
             metadata = record.linear_dng_metadata if record is not None else linear_dng_metadata
             if metadata is None and record is None:
                 preview_record = getattr(window, '_wipe_preview_record', None)
@@ -1039,14 +1047,14 @@ class OutputManager:
             if metadata is None and record is None and fusion_image is window.fusion_result:
                 context = getattr(getattr(window, 'render_manager', None), '_render_context', None) or {}
                 metadata = context.get('linear_dng_metadata')
-            if metadata is not None:
+            if metadata is not None and not getattr(fusion_image, "preview_is_display", False):
                 from utils.linear_dng import develop_linear
                 image = develop_linear(image, metadata)
             if record is None or not record.annotations_baked:
                 image = window.label_manager.display_bgr_image(
                     "output", image, 0,
                     output_id=record.output_id if record else None,
-                    scale_cfg=scalebar.export_cfg(window, record=record))
+                    scale_cfg=scalebar.export_cfg(window, record=record), source_shape=source_shape)
             display_image = to_display_uint8(image)
             window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(display_image))
             window.result_control_bar.setVisible(False)
@@ -1080,14 +1088,11 @@ class OutputManager:
                 if record.aligned_frames:
                     images = record.aligned_frames
                 else:
-                    from controllers.export_manager import _read_image_any
-                    images = []
-                    for name in record.aligned_names:
-                        path = os.path.join(record.export_path, name)
-                        image = _read_image_any(path)
-                        if image is None:
-                            raise OSError(path)
-                        images.append(image)
+                    from core.source_frames import scan_source
+                    def read_stack():
+                        return [scan_source(os.path.join(record.export_path, name))[0]
+                                for name in record.aligned_names]
+                    images = run_pixel_worker(window, trans.t('retouch_title'), read_stack)
                 window.registration_results = list(images)
                 window.registration_filenames = list(record.aligned_names)
                 window.result_slider.setRange(0, max(0, len(images) - 1))
@@ -1123,17 +1128,20 @@ class OutputManager:
         window.current_result_index = index
 
         try:
-            image = window.registration_results[index]
+            frame = window.registration_results[index]
+            source_shape = frame.shape
+            image = source_display_image(frame)
             record = self.record_for_item(window.output_list.currentItem())
             metadata = (record.linear_dng_metadata if record is not None and record.kind == 'aligned'
                         else getattr(window, 'linear_dng_metadata', None))
-            if metadata is not None:
+            if metadata is not None and not getattr(frame, "preview_is_display", False):
                 from utils.linear_dng import develop_linear
                 image = develop_linear(image, metadata)
             if record is None or not record.annotations_baked:
                 image = window.label_manager.display_bgr_image(
                     "registered", image, index,
-                    scale_cfg=scalebar.export_cfg(window, target='registered', record=record))
+                    scale_cfg=scalebar.export_cfg(window, target='registered', record=record),
+                    source_shape=source_shape)
             image = to_display_uint8(image)
 
             window.lbl_result_img.set_display_pixmap(cv2_to_pixmap(image))

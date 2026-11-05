@@ -367,11 +367,10 @@ class SourceManager(QObject):
                     if any(_has_transparency(image) for image in images):
                         raise UnsupportedTransparency("Transparent images cannot be downsampled during loading")
                     factor = working_scale / scale
-                    from core.frame_storage import store_frame
+                    from core.source_frames import transform_frame
                     load_options.working_images = [
-                        store_frame(cv2.resize(image, (max(1, int(image.shape[1] * factor)),
-                                           max(1, int(image.shape[0] * factor))),
-                                   interpolation=cv2.INTER_AREA if factor < 1 else cv2.INTER_LINEAR))
+                        transform_frame(image, 'resize', width=max(1, int(image.shape[1] * factor)),
+                                        height=max(1, int(image.shape[0] * factor)))
                         for image in images]
                 mixed_ok = self._confirm_mixed_sizes(load_options.working_images)
                 if not load_is_current():
@@ -761,11 +760,9 @@ class SourceManager(QObject):
         filenames: list[str],
         scale_factor: float,
     ) -> LoadOptions:
-        # The loader decodes every frame at `scale_factor` already, so the
-        # frames must be *shared* between the two stacks (a copy would double
-        # the memory of a large stack) but the lists must not: deleting a
-        # frame pops it from each list, and an aliased list dropped two frames
-        # while only one name went away, desyncing names from images.
+        # Sources retain paths and bounded previews rather than original pixel
+        # arrays. Share those immutable frames across base/working stacks, while
+        # keeping separate lists so delete/reorder cannot mutate both at once.
         return LoadOptions(
             scale_factor=scale_factor,
             filenames=list(filenames),

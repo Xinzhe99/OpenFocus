@@ -571,12 +571,14 @@ class CompareDialog(QDialog):
             return
         self._ref_index = max(0, min(index, len(self._frames) - 1))
         with QSignalBlocker(self.ref_canvas):
-            image = self._frames[self._ref_index]
+            from core.source_frames import display_image
+            frame = self._frames[self._ref_index]
+            image = display_image(frame)
             metadata = self._calibration["linear_dng_metadata"]
-            if metadata is not None:
+            if metadata is not None and not getattr(frame, 'preview_is_display', False):
                 from utils.linear_dng import develop_linear
                 image = develop_linear(image, metadata)
-            self.ref_canvas.set_pixmap(cv2_to_pixmap(image))
+            self.ref_canvas.set_pixmap(cv2_to_pixmap(image), source_size=(frame.shape[1], frame.shape[0]))
         names = self._source_names
         name = (os.path.basename(str(names[self._ref_index]))
                 if self._ref_index < len(names) else "")

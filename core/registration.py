@@ -879,7 +879,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     with _bounded_registration_map(preprocess, images, max_workers,
                                    should_cancel) as results:
-        preprocessed_data = list(results)
+        preprocessed_data = [(store_frame(gray), scale) for gray, scale in results]
 
     # 所有帧同尺寸，缩放比例一致
     scale_factor = preprocessed_data[0][1]
@@ -1314,6 +1314,9 @@ class ImageRegistration:
                         raise ValueError(f"Could not decode registration frame: {path}")
                     images.append(store_frame(image))
                 filenames = [os.path.basename(path) for path in paths]
+            else:
+                from core.source_frames import materialize_frames
+                images = materialize_frames(input_source, should_cancel) if input_source is not None else []
             if images is not None and len(images) and 'openfocus' in self.steps and self.parameters['reference_frame'] > len(images):
                 raise ValueError(f"OpenFocus reference frame {self.parameters['reference_frame']} is outside the stack of {len(images)} frames")
 
@@ -1334,18 +1337,9 @@ class ImageRegistration:
                 return images
             height, width = images[0].shape[:2]
             channels = images[0].shape[2] if images[0].ndim == 3 else 1
-            # ECC retains downsampled grayscale planes, not full-resolution
-            # planes. Its large-image path fixes the width at 1024.
+            # Grayscale caches and aligned frames are disk-backed. Charge only
+            # the active frame scratch; worker slots account for concurrent ECC.
             gray_bytes = height * width * 4
-            if 'ecc' in self.steps:
-                import math
-                downscale = 1024 if max(height, width) >= 2048 else self.downscale_width
-                ecc_bytes = 0
-                for image in images:
-                    h, w = image.shape[:2]
-                    scale = min(1.0, downscale / float(w))
-                    ecc_bytes += max(1, math.ceil(h * scale)) * max(1, math.ceil(w * scale)) * 4
-                gray_bytes = max(gray_bytes, ecc_bytes) if len(self.steps) > 1 else ecc_bytes
             plan = plan_execution(Workload(
                 algorithm='registration', frames=len(images), height=height,
                 width=width, channels=channels, itemsize=images[0].dtype.itemsize,
