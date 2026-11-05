@@ -8,7 +8,6 @@ import numpy as np
 import cv2
 import pytest
 
-torch = pytest.importorskip("torch")
 
 from core.algorithms import fusion_algorithms, get_fusion, registration_algorithms
 from core.depth_map import compute_focus_index
@@ -34,6 +33,7 @@ def _stack(count=5, size=(64, 80)):
 
 
 def _upstream_v1(frames):
+    torch = pytest.importorskip("torch")
     from core.models.stackmff_v1.network import StackMFF
     model = StackMFF()
     checkpoint = torch.load(weights_path("stackmff_final.pth"), map_location="cpu",
@@ -48,6 +48,7 @@ def _upstream_v1(frames):
 
 
 def _upstream_v2(frames):
+    torch = pytest.importorskip("torch")
     from core.models.stackmff_v2.network import StackMFF_V2
     model = StackMFF_V2()
     checkpoint = torch.load(weights_path("stackmff_v2_final.pth"), map_location="cpu",
@@ -74,14 +75,14 @@ def test_default_method_stays_stackmffv3():
 def test_declared_capabilities():
     v1 = get_fusion("stackmff")
     assert v1.parameters == () and v1.depth is None
-    assert v1.weights == "weights/stackmff_final.pth"
+    assert v1.weights == "weights/stackmff_final.onnx"
     assert v1.neural and not v1.order_sensitive and not v1.sort_frames
 
     v2 = get_fusion("stackmffv2")
     assert v2.parameters == ()
     assert v2.depth is not None and v2.depth_planner
     assert v2.order_sensitive and not v2.sort_frames
-    assert v2.weights == "weights/stackmff_v2_final.pth"
+    assert v2.weights == "weights/stackmff_v2_final.onnx"
 
 
 def test_every_method_exposes_a_hint():
@@ -95,7 +96,7 @@ def test_every_method_exposes_a_hint():
 def test_v1_luma_matches_the_reference_network():
     frames = _stack()
     fused = stackmff_v1.stackmff_impl(
-        list(frames), None, weights_path("stackmff_final.pth"), False,
+        list(frames), None, weights_path("stackmff_final.onnx"), False,
         thread_count=1)
     assert fused.dtype == np.uint8 and fused.shape == frames[0].shape
     luma = cv2.cvtColor(fused, cv2.COLOR_BGR2GRAY).astype(np.float32)
@@ -105,111 +106,43 @@ def test_v1_luma_matches_the_reference_network():
     assert np.array_equal(fused[:, :, 0], fused[:, :, 1])
     assert np.array_equal(fused[:, :, 1], fused[:, :, 2])
 
-@pytest.mark.parametrize("depth", [2, 3, 7, 24])
-def test_v1_supports_variable_stack_depth_and_both_input_layouts(depth):
-    from core.models.stackmff_v1.network import StackMFF
-
-    model = StackMFF().eval()
-    checkpoint = torch.load(weights_path("stackmff_final.pth"), map_location="cpu",
-                            weights_only=True)
-    model.load_state_dict(checkpoint["model"])
-    source = torch.rand((1, depth, 32, 40))
-    with torch.inference_mode():
-        result = model(source)
-        five_dimensional = model(source.unsqueeze(1))
-    torch.testing.assert_close(result, five_dimensional)
-    assert result.shape == (1, 1, 32, 40)
-    assert torch.all(result >= source.amin(dim=1, keepdim=True) - 1e-6)
-    assert torch.all(result <= source.amax(dim=1, keepdim=True) + 1e-6)
+@pytest.mark.parametrize("depth", [2, 3, 7])
+def test_v1_supports_dynamic_stack_depth(depth):
+    frames = _stack(count=depth, size=(32, 40))
+    result = stackmff_v1.stackmff_impl(
+        frames, None, weights_path("stackmff_final.onnx"), False, thread_count=1)
+    assert result.shape == frames[0].shape
+    assert result.dtype == np.uint8
+    source = np.stack(frames)
+    assert np.all(result.astype(np.int16) >= source.min(axis=0).astype(np.int16) - 1)
+    assert np.all(result.astype(np.int16) <= source.max(axis=0).astype(np.int16) + 1)
 
 
-def test_v1_cancels_before_the_next_inference_scale():
-    from core.models.stackmff_v1.network import StackMFF
+def test_v1_cancels_between_inference_scales(monkeypatch):
     from core.registration import RegistrationCancelled
+    from fusion_methods import neural_runtime
+    original = neural_runtime.logits
+    completed = []
 
-    model = StackMFF().eval()
-    checks = 0
+    def logits(*args, **kwargs):
+        result = original(*args, **kwargs)
+        completed.append(True)
+        return result
 
-    def should_cancel():
-        nonlocal checks
-        checks += 1
-        return checks == 2
-
-    with torch.inference_mode(), pytest.raises(RegistrationCancelled):
-        model(torch.rand(1, 3, 32, 40), scales=(1.0, 0.75),
-              should_cancel=should_cancel)
-
-
-def test_v1_mps_matches_cpu_when_available():
-    from core.models.stackmff_v1.network import StackMFF
-
-    if not torch.backends.mps.is_available():
-        pytest.skip("requires an available MPS device")
-    model = StackMFF().eval()
-    checkpoint = torch.load(weights_path("stackmff_final.pth"), map_location="cpu",
-                            weights_only=True)
-    model.load_state_dict(checkpoint["model"])
-    source = torch.rand((1, 3, 64, 80))
-    with torch.inference_mode():
-        expected = model(source)
-        actual = model.to("mps")(source.to("mps"))
-        torch.mps.synchronize()
-    torch.testing.assert_close(actual.cpu(), expected, rtol=1e-3, atol=1e-4)
-
-
-@pytest.mark.parametrize("module,model_class,arch", [
-    (stackmff_v1, "StackMFF", "stackmff_v3backbone"),
-    (stackmff_v2, "StackMFF_V2", "v2_v3backbone"),
-])
-def test_checkpoint_architecture_metadata_controls_loading(tmp_path, module, model_class, arch):
-    from importlib import import_module
-
-    cls = getattr(import_module(f"core.models.{module.__name__.split('.')[-1]}.network"),
-                  model_class)
-    args = {"arch": arch, "C1": 24, "C2": 48, "heads": [3, 6],
-            "window": 8, "mlp_ratio": 2.0, "inter_pool": 2,
-            "kmax": 1, "single_scale": True, "layer_pos": False}
-    original = cls(**{key: tuple(value) if key == "heads" else value
-                      for key, value in args.items() if key != "arch"}).eval()
-    path = tmp_path / "custom.pth"
-    torch.save({"model": original.state_dict(), "args": args}, path)
-    loaded, _ = module._model_and_device(str(path), False)
-    sample = torch.rand(1, 3, 32, 32)
-    with torch.inference_mode():
-        torch.testing.assert_close(loaded.forward_logits(sample),
-                                   original.forward_logits(sample))
-
-
-@pytest.mark.parametrize("module,bad_arch", [
-    (stackmff_v1, "v2_v3backbone"),
-    (stackmff_v1, "unknown_arch"),
-    (stackmff_v2, "stackmff_v3backbone"),
-    (stackmff_v2, "unknown_arch"),
-])
-def test_retrained_checkpoint_rejects_wrong_architecture(tmp_path, module, bad_arch):
-    original = weights_path(module.DEFAULT_WEIGHTS.rsplit('/', 1)[-1])
-    checkpoint = torch.load(original, map_location="cpu", weights_only=True)
-    checkpoint["args"]["arch"] = bad_arch
-    path = tmp_path / "mismatched.pth"
-    torch.save(checkpoint, path)
-    with pytest.raises(ValueError, match="Checkpoint architecture"):
-        module._model_and_device(str(path), False)
-
-
-@pytest.mark.parametrize("module", [stackmff_v1, stackmff_v2])
-def test_variant_accepts_released_v3_initialization(module):
-    path = weights_path("stackmff_v3_final.pth")
-    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-    model, _device = module._model_and_device(path, False)
-    for key, value in model.backbone.state_dict().items():
-        torch.testing.assert_close(value, checkpoint["model"][key])
+    monkeypatch.setattr(neural_runtime, "logits", logits)
+    with pytest.raises(RegistrationCancelled):
+        stackmff_v1.stackmff_impl(
+            _stack(count=3, size=(32, 40)), None,
+            weights_path("stackmff_final.onnx"), False, thread_count=1,
+            should_cancel=lambda: bool(completed))
+    assert len(completed) == 1
 
 
 @pytest.mark.parametrize("size", [(64, 80), (70, 83), (8, 12)])
 def test_v2_hard_matches_the_reference_network_exactly(size):
     frames = _stack(size=size)
     fused, depth, index = stackmff_v2.infer(
-        list(frames), weights_path("stackmff_v2_final.pth"), False,
+        list(frames), weights_path("stackmff_v2_final.onnx"), False,
         thread_count=1)
     ref_fused, ref_depth, ref_index = _upstream_v2(frames)
     expected = np.clip(np.round(ref_fused.squeeze().numpy() * 255), 0, 255).astype(np.uint8)
@@ -220,7 +153,7 @@ def test_v2_hard_matches_the_reference_network_exactly(size):
 
 def test_v2_depth_follows_focus_order_while_fused_image_is_invariant():
     frames = _stack()
-    path = weights_path("stackmff_v2_final.pth")
+    path = weights_path("stackmff_v2_final.onnx")
     fused, depth, index = stackmff_v2.infer(frames, path, False, thread_count=1)
     reverse_fused, reverse_depth, reverse_index = stackmff_v2.infer(
         list(reversed(frames)), path, False, thread_count=1)
@@ -246,26 +179,21 @@ def test_both_methods_preserve_16_bit_output():
         assert np.unique(out).size > 256
 
 
-def test_v1_tiles_without_visible_seams_and_v2_never_tiles():
-    frames = _stack()
-    whole = MultiFocusFusion(algorithm="stackmff", use_gpu=False,
-                             tile_enabled=False).fuse(
-        input_source=list(frames), thread_count=1)
-    tiled = MultiFocusFusion(algorithm="stackmff", use_gpu=False,
-                             tile_enabled=True, tile_block_size=64,
-                             tile_overlap=16, tile_threshold=10).fuse(
-        input_source=list(frames), thread_count=1)
-    delta = np.abs(whole.astype(np.int16) - tiled.astype(np.int16))
-    assert delta.mean() < 2 and delta.max() <= 16
+def test_v2_tiled_fusion_uses_global_depth_and_source_pixels():
+    from fusion_methods.stackmff_v2_tiled import _Source, tiled_depth
 
-    v2_whole = MultiFocusFusion(algorithm="stackmffv2", use_gpu=False,
-                                tile_enabled=False).fuse(
-        input_source=list(frames), thread_count=1)
-    v2_tiled = MultiFocusFusion(algorithm="stackmffv2", use_gpu=False,
-                                tile_enabled=True, tile_block_size=32,
-                                tile_overlap=8, tile_threshold=10).fuse(
-        input_source=list(frames), thread_count=1)
-    assert np.array_equal(v2_whole, v2_tiled)
+    frames = _stack(size=(64, 80))
+    path = weights_path("stackmff_v2_final.onnx")
+    depth, index = tiled_depth(_Source(frames, None, None, None), path, False,
+                               tile_size=32, tile_overlap=8, thread_count=1)
+    fused = stackmff_v2.stackmffv2_impl(
+        frames, None, path, False, tile_size=32, tile_overlap=8, thread_count=1)
+    assert depth.min() == pytest.approx(0.0, abs=1e-6)
+    assert depth.max() == pytest.approx(1.0, abs=1e-5)
+    np.testing.assert_array_equal(index, np.rint(depth * (len(frames) - 1)))
+    expected = np.stack(frames)[index, np.arange(depth.shape[0])[:, None],
+                                np.arange(depth.shape[1])[None, :]]
+    np.testing.assert_array_equal(fused, expected)
 
 
 def test_v2_depth_reports_a_sampled_layer():

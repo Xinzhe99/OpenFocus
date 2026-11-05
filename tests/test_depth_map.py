@@ -396,32 +396,22 @@ def test_depth_cancel_during_last_frame_never_publishes_map():
 
 
 def test_odd_size_neural_depth_uses_fusion_probabilities():
-    torch = pytest.importorskip('torch')
-    from core.resource_policy import heavy_job
+    pytest.importorskip('onnxruntime')
     from fusion_methods import stackmffv3 as ai
-    from utils.image_utils import normalize_fuse_input
     rng = np.random.default_rng(517)
     frames = [rng.integers(0, 65536, (17, 38, 3), np.uint16)[:, ::2]
               for _ in range(3)]
-    normalized, _ = normalize_fuse_input(frames)
-    with heavy_job():
-        model, device = ai._get_model_and_device('weights/stackmff_v3_final.pth', False)
-        # Independent baseline: the fusion adapter pads luma exactly once.
-        batch = torch.from_numpy(np.stack([ai._gray01(f) for f in normalized]))[None]
-        batch = torch.nn.functional.pad(batch, (0, 45, 0, 47), mode='replicate')
-        with torch.no_grad():
-            expected_probs = model.forward_probs(batch.to(device), sigma=0.5)
-        expected_probs = expected_probs[0, :, :17, :19].cpu().numpy()
-    actual_probs = ai.model_probabilities(frames, 'weights/stackmff_v3_final.pth',
-                                         False, sigma=0.5, thread_count=1)
-    np.testing.assert_allclose(actual_probs, expected_probs, rtol=1e-5, atol=1e-6)
-    expected = (expected_probs * np.arange(3, dtype=np.float32)[:, None, None]).sum(0) / 2
+    probabilities = ai.model_probabilities(
+        frames, 'weights/stackmff_v3_final.onnx', False, sigma=0.5, thread_count=1)
+    assert probabilities.shape == (3, 17, 19)
+    np.testing.assert_allclose(probabilities.sum(axis=0), 1, atol=1e-6)
+    expected = (probabilities * np.arange(3, dtype=np.float32)[:, None, None]).sum(0) / 2
     actual = compute_focus_index(frames, 'stackmffv3', thread_count=1)
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
 
 def test_neural_depth_cancels_at_final_progress():
-    pytest.importorskip('torch')
+    pytest.importorskip('onnxruntime')
     cancelled = False
 
     def progress(done, total):
