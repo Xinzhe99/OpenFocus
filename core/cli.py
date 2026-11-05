@@ -1763,5 +1763,5 @@ def main() -> None:
     from utils.diagnostics import install_exception_hooks
     setup_logging()
     log_session_start()
-    install_exception_hooks()
+    install_exception_hooks(claim_inherited_faulthandler=True)
     sys.exit(run_cli(sys.argv[1:]))

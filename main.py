@@ -79,7 +79,7 @@ if __name__ == "__main__":
     from utils.diagnostics import install_exception_hooks
     setup_logging()
     log_session_start()
-    install_exception_hooks()
+    install_exception_hooks(claim_inherited_faulthandler=True)
     log_action("startup", args=sys.argv[1:])
     _log = get_logger(__name__)
     # The updater's restore flag belongs to the GUI, never to argparse.

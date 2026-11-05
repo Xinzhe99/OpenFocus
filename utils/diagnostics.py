@@ -24,6 +24,9 @@ _hooks = None
 _crash_stream = None
 _crash_path = None
 _owns_faulthandler = False
+# True when we redirected a faulthandler that PYTHONFAULTHANDLER / -X
+# faulthandler had already enabled on stderr; shutdown hands it back.
+_restore_stderr_faulthandler = False
 _atexit_registered = False
 
 
@@ -128,14 +131,20 @@ class _ExceptionHooks:
         self.previous[2](args)
 
 
-def install_exception_hooks():
+def install_exception_hooks(claim_inherited_faulthandler: bool = False):
     """Capture full tracebacks and native faults once; preserve console hooks.
 
-    A pre-existing faulthandler belongs to the host and is left intact. If the
-    log folder is unwritable, the crash report uses a unique temp filename.
+    A pre-existing faulthandler belongs to the host and is left intact. Only
+    an executable entry point that owns the process passes
+    ``claim_inherited_faulthandler=True``: a handler enabled by
+    PYTHONFAULTHANDLER / ``-X faulthandler`` (often inherited from a parent
+    launcher) only points at stderr, which may be discarded, so it is
+    redirected to the crash file and handed back to stderr on shutdown.
+    If the log folder is unwritable, the crash report uses a unique temp
+    filename.
     """
     global _hooks, _crash_stream, _crash_path
-    global _owns_faulthandler, _atexit_registered
+    global _owns_faulthandler, _restore_stderr_faulthandler, _atexit_registered
     with _lock:
         if _hooks is not None:
             return _crash_path
@@ -149,10 +158,15 @@ def install_exception_hooks():
                 break
             except OSError:
                 continue
-        if _crash_stream is not None and not faulthandler.is_enabled():
+        was_enabled = faulthandler.is_enabled()
+        inherited = was_enabled and claim_inherited_faulthandler and bool(
+            os.environ.get("PYTHONFAULTHANDLER")
+            or "faulthandler" in getattr(sys, "_xoptions", {}))
+        if _crash_stream is not None and (inherited or not was_enabled):
             try:
                 faulthandler.enable(_crash_stream, all_threads=True)
                 _owns_faulthandler = True
+                _restore_stderr_faulthandler = inherited
             except (OSError, RuntimeError):
                 _logger.warning("native crash capture unavailable", exc_info=True)
         _hooks = _ExceptionHooks()
@@ -166,14 +180,22 @@ def install_exception_hooks():
 
 def shutdown_exception_hooks() -> None:
     """Restore only hooks still owned by us and close the native fault file."""
-    global _hooks, _crash_stream, _owns_faulthandler
+    global _hooks, _crash_stream, _owns_faulthandler, _restore_stderr_faulthandler
     with _lock:
         if _hooks is not None:
             _hooks.restore()
             _hooks = None
         if _owns_faulthandler:
             faulthandler.disable()
+            if _restore_stderr_faulthandler:
+                # Return the pre-install state the env flag configured.
+                try:
+                    if sys.__stderr__ is not None:
+                        faulthandler.enable(sys.__stderr__, all_threads=True)
+                except (OSError, RuntimeError, ValueError):
+                    pass
             _owns_faulthandler = False
+            _restore_stderr_faulthandler = False
         if _crash_stream is not None:
             _crash_stream.close()
             _crash_stream = None
