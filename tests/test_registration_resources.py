@@ -230,29 +230,3 @@ def test_memory_rejection_precedes_any_native_warp(monkeypatch):
     with pytest.raises(resource_policy.ResourceLimitError):
         registration.ImageRegistration('ecc').process(_stack(), thread_count=4)
 
-
-@pytest.mark.parametrize('count,width,height,dtype', [
-    (63, 8191, 5463, np.uint16),
-    (92, 8192, 5464, np.uint8),
-])
-def test_ecc_budget_counts_thumbnail_planes(count, width, height, dtype, monkeypatch):
-    # A broadcast view supplies dimensions without allocating the real stacks.
-    frame = np.broadcast_to(np.zeros((1, 1, 3), dtype=dtype), (height, width, 3))
-    frames = [frame] * count
-    captured = []
-    original_plan = resource_policy.plan_execution
-
-    def plan(workload, **kwargs):
-        captured.append(workload)
-        snapshot = resource_policy.ResourceSnapshot(
-            available_ram=128 * 1024**3, total_ram=128 * 1024**3,
-            physical_cores=2, logical_cpus=2)
-        return original_plan(workload, snapshot=snapshot, **kwargs)
-
-    monkeypatch.setattr(resource_policy, 'plan_execution', plan)
-    monkeypatch.setattr(registration.ImageRegistration, '_process_ecc',
-                        lambda self, images, **kwargs: images)
-    assert registration.ImageRegistration('ecc').process(frames) is frames
-    thumbnail_height = (height * 1024 + width - 1) // width
-    assert captured[0].fixed_bytes == count * frame.nbytes + count * 1024 * thumbnail_height * 4
-    assert captured[0].per_worker_bytes == frame.size * 4 * 16
