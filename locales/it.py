@@ -1,6 +1,8 @@
 """Italian language pack for OpenFocus."""
 
 PACK = {
+    "usage_opt_in": "Condividi statistiche anonime di utilizzo",
+    "usage_disclosure": "Consentire a OpenFocus di inviare a openfocus.top al massimo una volta al giorno un identificativo casuale di installazione, la versione e il sistema operativo? Serve a stimare le installazioni attive. Non vengono inviati dati delle immagini o nomi dei file. Disattivando nelle Impostazioni si elimina l’identificativo locale.",
     "magnifier_hint": "Tieni premuto il tasto sinistro per la lente; la rotella cambia l'ingrandimento, Ctrl+rotella la dimensione della lente.",
     "mosaic_title": "Unisci immagini…",
     "mosaic_intro": "Aggiungi immagini fuse, allineale o trascinale e controlla le sovrapposizioni. X/Y sono pixel; la rotella ingrandisce. L’opacità vale solo per l’anteprima.",

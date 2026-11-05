@@ -5,6 +5,8 @@ fall back to this table.
 """
 
 ZH = {
+    "usage_opt_in": "分享匿名使用统计",
+    "usage_disclosure": "允许 OpenFocus 每天最多一次向 openfocus.top 发送随机安装标识、应用版本和操作系统，以估计活跃安装量？不会发送图像数据或文件名。可在设置中关闭，关闭后本地标识将被删除。",
     "magnifier_hint": "按住鼠标左键使用放大镜；滚轮调整倍率，Ctrl+滚轮调整放大镜大小。",
     "mosaic_title": "图像拼接…",
     "mosaic_intro": "添加融合好的图像，自动对齐或拖动摆放，检查重叠区后保存。X/Y 单位为像素，滚轮缩放；透明度仅影响预览。",

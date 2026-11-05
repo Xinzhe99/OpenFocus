@@ -28,6 +28,10 @@ def _menu_window(qapp):
     window.ui_objs = {}
     # Exactly the collaborators and slots setup_menus() touches.
     stub = lambda *a, **k: None  # noqa: E731
+    window.usage_analytics = type("Usage", (), {
+        "enabled": staticmethod(lambda: False),
+        "set_enabled": staticmethod(stub),
+    })()
     window.export_manager = type("E", (), {
         "save_result": staticmethod(stub),
         "save_result_stack": staticmethod(stub),
@@ -56,7 +60,7 @@ def _menu_window(qapp):
             "rebuild_recent_menu", "undo", "redo",
             "rotate_stack", "flip_stack", "resize_all_images",
             "show_retouch_dialog", "show_standalone_retouch", "show_batch_processing_dialog",
-            "show_compare_dialog", "show_depth_map_dialog",
+            "show_compare_dialog", "show_mosaic_dialog", "show_depth_map_dialog",
             "show_dust_map_dialog", "show_scale_bar_dialog",
             "remove_scale_bar", "show_advanced_settings_dialog",
             "set_use_gpu", "apply_theme", "set_language",
@@ -65,6 +69,26 @@ def _menu_window(qapp):
             "show_contact_info"):
         setattr(window, name, stub)
     return window
+
+
+def test_usage_consent_requires_confirmation(qapp, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+    from ui.menus import setup_menus
+
+    window = _menu_window(qapp)
+    changes = []
+    window.usage_analytics.set_enabled = changes.append
+    setup_menus(window)
+    action = window.ui_objs['usage_opt_in']
+    assert not action.isChecked()
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    action.trigger()
+    assert not action.isChecked() and changes == []
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    action.trigger()
+    assert action.isChecked() and changes == [True]
+    action.trigger()
+    assert not action.isChecked() and changes == [True, False]
 
 
 def test_reset_stack_menu_action_calls_source_manager(qapp):

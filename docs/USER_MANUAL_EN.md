@@ -1029,6 +1029,21 @@ section's saved batch limit is retained, but inference currently submits one
 tile per call; registration width can change alignment accuracy.
 Alignment-diagnostic collection is a checkbox in the Registration section.
 
+**Settings → Share anonymous usage statistics** is off by default. If you
+consent, OpenFocus sends a random installation ID, application version and
+operating system to openfocus.top, at most once per day after a successful
+send. No image data or filenames are sent. The ID is pseudonymous: reports
+with the same ID can be linked. Turn the setting off to stop reporting and
+delete the local ID and send timestamp; a later opt-in creates a new ID.
+
+An active installation count for approximately 30 days means distinct IDs
+that reported during that period, optionally grouped by version. It is an
+estimate, not a count of people or all users: offline installations and users
+who do not opt in are missing. Failed sends retry on a future startup. Updates
+retain the ID with your settings. Copying portable settings copies the ID, so
+copies may count as one installation; reinstalling retains it only if the
+existing settings are kept.
+
 Automatic update downloads run while idle and never install automatically. A completed download remains ready until you explicitly choose **Restart and Update**. Restart protects active edits and unsaved work, then writes recovery data before launching replacement. Cancelling a download or preparation waits for the current safe boundary. An existing complete, newer staged build can be installed offline.
 
 Flat-field correction changes session working pixels without overwriting source files. Select the white reference and a preview frame, then generate the preview again after changing source or scale. Reference and working/base images must share a coordinate domain and size. Applying prepares both stacks before committing; optional reference-frame removal belongs to the same undo step. Export corrected source images when you need to preserve these pixels outside the session.

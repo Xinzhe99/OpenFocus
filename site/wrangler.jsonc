@@ -10,6 +10,7 @@
   "r2_buckets": [
     { "binding": "DOWNLOADS", "bucket_name": "openfocus-downloads" }
   ],
+  "triggers": { "crons": ["0 0 * * *"] },
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",

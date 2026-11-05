@@ -375,6 +375,10 @@ class OpenFocus(QMainWindow):
         self.transform_manager = TransformManager(self)
         self.batch_manager = BatchManager(self)
         self.update_manager = UpdateManager(self)
+        from utils.usage_analytics import UsageAnalytics
+        from PyQt6.QtCore import QTimer as _QTimer
+        self.usage_analytics = UsageAnalytics(self)
+        _QTimer.singleShot(0, self.usage_analytics.start)
 
         # 初始化图像加载器
         self.image_loader = ImageStackLoader()
@@ -3499,6 +3503,7 @@ class OpenFocus(QMainWindow):
         # Remove temp JPGs written for drag-out export
         if hasattr(self, 'output_list') and hasattr(self.output_list, 'cleanup_temp_files'):
             self.output_list.cleanup_temp_files()
+        self.usage_analytics.shutdown()
 
         super().closeEvent(event)
 
@@ -3849,6 +3854,8 @@ class OpenFocus(QMainWindow):
             self.chk_wipe_follow_right.setText(trans.t('wipe_follow_latest'))
         if 'action_gpu_accel' in getattr(self, 'ui_objs', {}):
             self.ui_objs['action_gpu_accel'].setToolTip(trans.t('msg_gpu_accel_hint'))
+        if 'usage_opt_in' in getattr(self, 'ui_objs', {}):
+            self.ui_objs['usage_opt_in'].setToolTip(trans.t('usage_disclosure'))
         # The tuning knobs live in the Advanced settings page now, so there are
         # no menu actions to retranslate here.
         if getattr(self, 'lbl_depth_smooth', None) is not None:

@@ -1,6 +1,8 @@
 """Korean language pack for OpenFocus."""
 
 PACK = {
+    "usage_opt_in": "익명 사용 통계 공유",
+    "usage_disclosure": "활성 설치 수를 추정하도록 OpenFocus가 무작위 설치 ID, 앱 버전 및 운영체제를 하루에 최대 한 번 openfocus.top으로 보내도록 허용할까요? 이미지 데이터와 파일 이름은 보내지 않습니다. 설정에서 끄면 로컬 ID가 삭제됩니다.",
     "magnifier_hint": "왼쪽 버튼을 누르고 있으면 돋보기가 나타납니다. 휠로 배율을, Ctrl+휠로 돋보기 크기를 조절합니다.",
     "mosaic_title": "이미지 이어 붙이기…",
     "mosaic_intro": "합성 이미지를 추가하고 자동 정렬하거나 드래그한 뒤 겹친 부분을 확인하세요. X/Y는 픽셀, 휠은 확대입니다. 불투명도는 미리보기에만 적용됩니다.",

@@ -109,6 +109,68 @@ Every page and asset request therefore counts as a Worker invocation.
 - Everything else — `site/dist` with `html_handling: auto-trailing-slash`,
   `not_found_handling: 404-page`, and the headers in `dist/_headers`.
 
+### Optional private analytics
+
+The Worker can count download starts and receive anonymous-by-default, opt-in
+desktop activity reports using a D1 binding named `ANALYTICS`. Without the
+binding downloads continue normally and the usage API returns `503`. The
+database and bearer secret must be provisioned before deploying analytics:
+
+```bash
+npx wrangler d1 create openfocus-analytics
+```
+
+Add the `d1_databases` binding printed by this command to `site/wrangler.jsonc`,
+set its `binding` to `ANALYTICS` and its `migrations_dir` to `migrations`.
+Use the actual database ID from the command; the repository intentionally has
+no account-specific ID. Then apply the migration and set a strong, randomly
+generated administrator secret interactively:
+
+```bash
+npx wrangler d1 migrations apply ANALYTICS --remote -c site/wrangler.jsonc
+npx wrangler secret put ANALYTICS_ADMIN_SECRET -c site/wrangler.jsonc
+```
+
+Deploy the Worker only after these steps. The existing daily cron runs retention
+cleanup; usage writes also delete old rows. D1 failures do not interrupt file
+downloads. The Worker stores daily aggregate counts by resolved release tag,
+asset kind, route (`website` or `in-app`), and source (`r2` or `github`). A
+full GET, initial byte-zero partial GET, or GitHub fallback redirect counts as
+a start. HEAD, conditional 304, invalid ranges, continuation ranges and failed
+responses do not. Retries, scanners and incomplete downloads can still count;
+these are not unique users or completed downloads.
+
+`POST /api/usage` accepts only JSON with a UUID-v4 `installation_id`, numeric
+dot-separated `version`, and `platform` of `windows`, `macos`, or `linux`.
+The app reports only after the user opts in. Rows are deduplicated per UTC day,
+installation, version and platform and contain no IP, user agent, hardware
+identifier, filename or image data. The generated installation ID is
+pseudonymous, not anonymous. The Worker deletes activity older than 90 UTC
+calendar days during daily cron execution and on report writes; operational
+failures can delay deletion. Opting out stops future reports and resets the
+local ID; previously received rows expire under this retention policy. The
+endpoint is public and reports can be forged; no application secret is used.
+Cloudflare's own request logging and retention are separate from these D1 rows.
+
+`GET /api/admin/stats` requires `Authorization: Bearer <secret>` and returns
+daily download aggregates plus distinct installations active during the last
+30 UTC calendar days grouped by version and platform. A single installation
+can appear in multiple groups after upgrading or changing platforms. The secret
+is server-only and must never be embedded in the app, committed, or logged.
+Missing secret or database returns `503`; an incorrect bearer returns `401`.
+For an interactive shell, avoid putting the secret in command history:
+
+```bash
+read -rs -p 'Analytics admin secret: ' ANALYTICS_SECRET; echo
+curl -fsS -H "Authorization: Bearer $ANALYTICS_SECRET" https://openfocus.top/api/admin/stats
+unset ANALYTICS_SECRET
+```
+
+The aggregate download table has no installation identifiers and is retained
+until an operator deletes it. Protect the D1 database and admin secret as
+private resources; neither the API nor the database establishes report
+authenticity.
+
 ### Page behavior
 
 - Theme defaults to **light** on a first visit; the header toggle cycles
