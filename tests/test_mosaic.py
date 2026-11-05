@@ -52,6 +52,54 @@ def test_mixed_depth_alpha_and_streamed_tiff(tmp_path):
     np.testing.assert_array_equal(actual, output)
 
 
+def test_fractional_edges_and_feather_are_tile_independent():
+    first = np.full((80, 96, 3), 10000, np.uint16)
+    second = np.full((80, 96, 3), 40000, np.uint16)
+    frames = [make_frame('first', first), make_frame('second', second)]
+    transforms = [np.array([[1, 0, -0.75], [0, 1, -0.75], [0, 0, 1]]),
+                  np.array([[1, 0, 47.25], [0, 1, -0.75], [0, 0, 1]])]
+    small, origin = render_mosaic(frames, transforms, tile_size=32)
+    large, other_origin = render_mosaic(frames, transforms, tile_size=128)
+    assert origin == other_origin == (-1, -1)
+    np.testing.assert_array_equal(small, large)
+    assert small.dtype == np.uint16
+    # The final row and column sample within the fractional source footprint.
+    assert small[-1, -1, 0] == 40000
+    assert small[-1, 10, 0] == 10000
+    # Feathering must transition through intermediate values in the overlap.
+    overlap = small[40, 50:95, 0]
+    assert np.all(np.diff(overlap.astype(np.int32)) >= 0)
+    assert np.any((overlap > 10000) & (overlap < 40000))
+
+
+def test_render_cancels_between_tiles():
+    frame = make_frame('frame', np.full((96, 96, 3), 125, np.uint8))
+    steps = []
+    with pytest.raises(RegistrationCancelled):
+        render_mosaic([frame], [np.eye(3)], tile_size=32,
+                      should_cancel=lambda: len(steps) > 1,
+                      progress=lambda done, total: steps.append((done, total)))
+    assert steps == [(0, 9), (1, 9)]
+
+
+def test_streamed_tiff_limits_strip_memory(tmp_path, monkeypatch):
+    import tifffile
+    from core import resource_policy
+    from utils import image_utils
+
+    image = np.arange(9 * 20 * 4, dtype=np.uint16).reshape(9, 20, 4)
+    requested = []
+    monkeypatch.setattr(image_utils, '_TIFF_STRIP_TARGET_BYTES', 256)
+    monkeypatch.setattr(resource_policy, 'require_memory', requested.append)
+    path = tmp_path / 'strips.tif'
+    assert imwrite_auto(path, image, exif=b'', stream_tiff=True)
+    assert requested == [20 * 4 * 2 * 3]
+    with tifffile.TiffFile(path) as tif:
+        assert tif.pages[0].rowsperstrip == 1
+    actual = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(actual, image)
+
+
 def test_cancelled_export_preserves_existing_file(tmp_path):
     path = tmp_path / 'existing.tif'
     path.write_bytes(b'previous')

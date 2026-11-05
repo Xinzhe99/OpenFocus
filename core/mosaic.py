@@ -257,7 +257,9 @@ def render_mosaic(frames, transforms, *, feather=64, tile_size=512,
                 alpha *= valid
                 distance = np.minimum(np.minimum(mx + 0.5, sw - 0.5 - mx),
                                       np.minimum(my + 0.5, sh - 0.5 - my))
-                weight = np.clip(distance / max(1, feather), 0, 1) * alpha
+                # A valid remap can extend half a pixel beyond the final
+                # pixel centre; it must still contribute at the image edge.
+                weight = np.clip(np.maximum(distance, 0.5) / max(1, feather), 0, 1) * alpha
                 colors = sample[:, :, :3].astype(np.float32)
                 if dtype == np.uint16 and source.dtype == np.uint8:
                     colors *= 257.0

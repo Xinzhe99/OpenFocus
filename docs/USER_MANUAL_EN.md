@@ -180,10 +180,13 @@ verify repeated patterns and specimen motion before saving.
 
 Save as TIFF or PNG. TIFF uses disk-backed tiled composition and strip-based
 writing, including BigTIFF for large files; allow enough temporary and output
-disk space. PNG encoding needs additional memory. Eight-bit inputs remain
-8-bit, while 16-bit or mixed-depth inputs produce 16-bit output. Preview
-opacity is not baked into the image. The mosaic does not infer physical scale
-or carry individual image EXIF/ICC metadata into a combined image.
+disk space. TIFF strip buffers target 4 MiB per strip, but one full output row
+is the minimum. PNG encoding needs additional memory. Overlaps use edge
+feathering, so differences in exposure or specimen content can remain visible.
+Eight-bit inputs remain 8-bit, while 16-bit or mixed-depth inputs produce
+16-bit output. Preview opacity is not baked into the image. The mosaic does
+not infer physical scale or carry individual image EXIF/ICC metadata into a
+combined image.
 
 **Edit → Reset Current Stack…** restores the imported images, their original
 order and import scale, including frames later removed or excluded. It clears

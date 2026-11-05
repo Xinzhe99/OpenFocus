@@ -437,6 +437,9 @@ def _encode_tiff_with_exif(image: np.ndarray, exif, icc_profile: bytes = b"") ->
     return head + ifd.tobytes(8) + pixels.tobytes()
 
 
+_TIFF_STRIP_TARGET_BYTES = 4 * 1024 ** 2
+
+
 def _write_streamed_tiff(path, image, should_cancel=None):
     """Atomically write BGR/BGRA pixels in bounded strips, using BigTIFF as needed."""
     import tempfile
@@ -445,7 +448,12 @@ def _write_streamed_tiff(path, image, should_cancel=None):
     if (image.ndim != 3 or image.shape[2] not in (3, 4)
             or image.dtype not in (np.uint8, np.uint16)):
         raise ValueError('Streaming TIFF requires an 8- or 16-bit BGR/BGRA image')
-    rows_per_strip = min(128, image.shape[0])
+    from core.resource_policy import require_memory
+
+    row_bytes = image.shape[1] * image.shape[2] * image.dtype.itemsize
+    rows_per_strip = min(128, image.shape[0], max(1, _TIFF_STRIP_TARGET_BYTES // row_bytes))
+    # The RGB conversion and yielded bytes coexist; allow for writer buffering.
+    require_memory(row_bytes * rows_per_strip * 3)
 
     def strips():
         for start in range(0, image.shape[0], rows_per_strip):
