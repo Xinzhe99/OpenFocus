@@ -138,6 +138,39 @@ def test_sixteen_bit_and_float_inputs(scene):
     assert np.allclose(resf.image[inner], fused[inner], atol=0.5)
 
 
+def test_u16_integer_fast_paths_match_generic_conversion():
+    from core.background_fill import _to16f, _u16
+    rng = np.random.default_rng(11)
+    for dtype, high in ((np.uint8, 256), (np.uint16, 65536)):
+        image = rng.integers(0, high, (41, 53, 3), dtype=dtype)
+        expected = np.clip(_to16f(image), 0, 65535).astype(np.uint16)
+        actual = _u16(image)
+        assert np.array_equal(actual, expected)
+        assert actual.flags.c_contiguous
+    image16 = rng.integers(0, 65536, (41, 53, 3), dtype=np.uint16)
+    assert _u16(image16) is image16
+    cropped = image16[:, :-1]
+    assert not cropped.flags.c_contiguous
+    assert np.array_equal(_u16(cropped), cropped)
+    assert _u16(cropped).flags.c_contiguous
+
+
+def test_shared_spill_analysis_matches_independent_calls():
+    from core.background_fill import _spill_radius_results, spill_radius_map
+    rng = np.random.default_rng(13)
+    h, w, n = 360, 480, 5
+    yy, xx = np.mgrid[:h, :w]
+    subject = (xx - w // 2) ** 2 + (yy - h // 2) ** 2 < 45 ** 2
+    G = rng.random((n, h, w), dtype=np.float32)
+    k_edge = np.minimum(xx * n // w, n - 1).astype(np.uint8)
+    targets = (0, n - 1)
+    combined = _spill_radius_results(G, subject, k_edge, targets)
+    for target in targets:
+        rmap, table = spill_radius_map(G, subject, k_edge, target)
+        assert np.array_equal(combined[target][0], rmap)
+        assert combined[target][1] == table
+
+
 def test_ground_level_scene_is_left_as_stacked():
     frames, fused, _ = _scene(subject_radius=350)       # ~95% of the frame is subject
     res = replace_background(frames, fused)

@@ -476,7 +476,8 @@ def missing_data_map(sub, dist, k_edge_full, peak_half, peak_t, N, k_far, c_raw,
     for ke in range(N):
         w = np.maximum(c_raw * np.abs(ks - ke), c_raw * np.abs(ks - k_B) / 2.0)
         W_by_ke[ke] = float(w.min())
-    W = np.vectorize(lambda k: W_by_ke[int(k)])(k_edge_full).astype(np.float32)
+    width_lookup = np.fromiter((W_by_ke[ke] for ke in range(N)), np.float32, count=N)
+    W = width_lookup[k_edge_full]
     if size_cap is not None:
         W = np.minimum(W, size_cap)
     within = np.clip(1.0 - dist / np.maximum(W, 1.0), 0, 1)
@@ -567,7 +568,8 @@ def normconv(img, mask, sigmas, eps=0.03):
     return num / np.maximum(den, 1e-12)[..., None]
 
 
-def protect_visible_detail(sub_half, G, k_bg, fused_half=None, factor=4.0, ratio=3.0, spread=6, keep_share=0.25):
+def protect_visible_detail(sub_half, G, k_bg, fused_half=None, factor=4.0, ratio=3.0, spread=6,
+                           keep_share=0.25, frame_medians=None):
     """Never replace what the stacked image clearly shows.
 
     Fine detail well above the noise floor in the stacked image that the
@@ -581,12 +583,15 @@ def protect_visible_detail(sub_half, G, k_bg, fused_half=None, factor=4.0, ratio
     # Measured on the frames, not the stacked result: fusion seams (OpenFocus
     # A's patchwork) are detail that exists in no frame, and counting them
     # protected 84% of the Dendrocollybia A image.
+    medians = frame_medians
+    if medians is None:
+        medians = [np.median(g) for g in G]
     eb = energy(G[k_bg])
     ef = None
     for k in range(len(G)):
         if k == k_bg:
             continue
-        g = G[k] * (np.median(G[k_bg]) / max(float(np.median(G[k])), 1e-6))
+        g = G[k] * (medians[k_bg] / max(float(medians[k]), 1e-6))
         e = energy(g)
         ef = e if ef is None else np.maximum(ef, e)
     if ef is None:
@@ -629,7 +634,7 @@ def protect_visible_detail(sub_half, G, k_bg, fused_half=None, factor=4.0, ratio
 
 
 def protect_focused_objects(sub_half, G, k_bg, fused_half, ratio=6.0, factor=4.0, keep_share=0.25,
-                            ring=22, min_area=2e-4):
+                            ring=22, min_area=2e-4, frame_medians=None):
     """Keep soft objects that some frame focused on and the stack kept.
 
     A peg's knob, a leaf or a twig just outside the depth of field is never
@@ -647,17 +652,21 @@ def protect_focused_objects(sub_half, G, k_bg, fused_half, ratio=6.0, factor=4.0
     Whether an attached piece is subject or background nearly in focus is a
     matter of taste (kept moss behind debris looked worse on one stack,
     blurred peg knobs looked wrong on another), so callers make it an option."""
+    medians = frame_medians
+    if medians is None:
+        medians = [np.median(g) for g in G]
+
     def focused(s1, s2, smooth):
         def band(g):
             d = cv2.GaussianBlur(g, (0, 0), s1) - cv2.GaussianBlur(g, (0, 0), s2)
             return cv2.GaussianBlur(d * d, (0, 0), smooth)
-        ref = float(np.median(G[k_bg]))
+        ref = float(medians[k_bg])
         mb = band(G[k_bg])
         mx = None
         for k in range(len(G)):
             if k == k_bg:
                 continue
-            m = band(G[k] * (ref / max(float(np.median(G[k])), 1e-6)))
+            m = band(G[k] * (ref / max(float(medians[k]), 1e-6)))
             mx = m if mx is None else np.maximum(mx, m)
         if mx is None:
             return np.zeros(sub_half.shape, bool)
@@ -997,6 +1006,92 @@ def soft_object_mask(fz, est, dist, sub, width):
     return cv2.GaussianBlur(obj, (0, 0), 1.5)
 
 
+def _spill_radius_results(G, sub_half, k_edge, k_fars, floor=16.0, map_targets=None):
+    """Measure spill radii for one or more background frames in one pass.
+
+    The subject geometry, edge selections and low-pass image for each source
+    frame are independent of the requested far frame.  Sharing them avoids
+    repeating that work when replacement and missing-data mapping use
+    different frames.  Only maps in ``map_targets`` are materialised; every
+    requested frame still receives its per-step table.
+    """
+    targets = tuple(dict.fromkeys(int(k) for k in k_fars))
+    wanted_maps = set(targets if map_targets is None else map(int, map_targets))
+    background = ~sub_half
+    d = cv2.distanceTransform(background.astype(np.uint8), cv2.DIST_L2, 5) * 2
+    farzone = background & (d > 256)
+    has_farzone = bool(farzone.any())
+
+    def normalised(k):
+        g = G[k]
+        if not has_farzone:
+            return g
+        return g / max(float(np.median(g[farzone])), 1e-6)
+
+    def lowpass(k):
+        return cv2.GaussianBlur(normalised(k), (0, 0), 3)
+
+    far_images = {k: lowpass(k) for k in targets}
+    edges = [0, 16, 32, 48, 64, 96, 128, 192, 256, 384]
+    ratios = {k: [] for k in targets}
+    weights = {k: [] for k in targets}
+    for frame in np.unique(k_edge[background]):
+        frame = int(frame)
+        sel = background & (k_edge == frame)
+        weight = int(sel.sum())
+        active = [k for k in targets if abs(k - frame) >= 2 and weight >= 2000]
+        if not active:
+            continue
+        near = far_images.get(frame)
+        if near is None:
+            near = lowpass(frame)
+        tail = sel & (d > 256)
+        tail_count = int(tail.sum())
+        for k_far in active:
+            dk = abs(k_far - frame)
+            diff = np.abs(far_images[k_far] - near)
+            prof = []
+            for lo, hi in zip(edges[:-1], edges[1:]):
+                m = sel & (d > lo) & (d <= hi)
+                prof.append(float(diff[m].mean()) if m.sum() > 200 else np.nan)
+            prof = np.array(prof)
+            if not np.isfinite(prof[0]):
+                continue
+            base = min(float(np.median(diff[tail])) if tail_count > 500 else np.inf,
+                       np.nanmin(prof))
+            far_mean = np.nanmean(prof[6:]) if np.isfinite(prof[6:]).any() else base
+            if prof[0] < 1.5 * far_mean:      # no decline: scene detail, not glow
+                continue
+            limit = base + 0.15 * (prof[0] - base)
+            radius = edges[1]
+            for hi, value in zip(edges[1:], prof):
+                if not np.isfinite(value) or value <= limit:
+                    break
+                radius = hi
+            ratios[k_far].append(radius / dk)
+            weights[k_far].append(weight)
+
+    results = {}
+    for k_far in targets:
+        target_ratios = ratios[k_far]
+        if target_ratios:
+            order = np.argsort(target_ratios)
+            cw = np.cumsum(np.array(weights[k_far])[order])
+            per_step = 1.5 * float(
+                np.array(target_ratios)[order][np.searchsorted(cw, cw[-1] / 2)])
+        else:
+            per_step = 48.0 / max(len(G) // 2, 1)
+        table = {dk: float(np.clip(per_step * dk, floor, 384)) for dk in range(len(G))}
+        table["per_step_raw"] = per_step / 1.5
+        rmap = None
+        if k_far in wanted_maps:
+            radius_lookup = np.fromiter(
+                (table[abs(k_far - k)] for k in range(len(G))), np.float32, count=len(G))
+            rmap = cv2.GaussianBlur(radius_lookup[k_edge], (0, 0), 8)
+        results[k_far] = rmap, table
+    return results
+
+
 def spill_radius_map(G, sub_half, k_edge, k_far, floor=16.0):
     """Per-pixel distance (full-res px) over which the far frame still shows
     the subject's own defocus glow.
@@ -1007,49 +1102,7 @@ def spill_radius_map(G, sub_half, k_edge, k_far, floor=16.0):
     difference falls back to its far-away baseline.  More defocus steps means
     a wider glow, so the radius is made non-decreasing in |k_far - k|.
     Returns the half-res radius map and the per-step table."""
-    d = cv2.distanceTransform((~sub_half).astype(np.uint8), cv2.DIST_L2, 5) * 2
-    lp = lambda g: cv2.GaussianBlur(g, (0, 0), 3)
-    farzone = (~sub_half) & (d > 256)
-    norm = lambda g: g / max(float(np.median(g[farzone])), 1e-6) if farzone.any() else g
-    far = lp(norm(G[k_far]))
-    edges = [0, 16, 32, 48, 64, 96, 128, 192, 256, 384]
-    ratios, weights = [], []
-    for k in np.unique(k_edge[~sub_half]):
-        dk = abs(int(k_far) - int(k))
-        sel = (~sub_half) & (k_edge == k)
-        if dk < 2 or sel.sum() < 2000:
-            continue
-        diff = np.abs(far - lp(norm(G[k])))
-        prof = []
-        for lo, hi in zip(edges[:-1], edges[1:]):
-            m = sel & (d > lo) & (d <= hi)
-            prof.append(float(diff[m].mean()) if m.sum() > 200 else np.nan)
-        prof = np.array(prof)
-        if not np.isfinite(prof[0]):
-            continue
-        tail = sel & (d > 256)
-        base = min(float(np.median(diff[tail])) if tail.sum() > 500 else np.inf, np.nanmin(prof))
-        far_mean = np.nanmean(prof[6:]) if np.isfinite(prof[6:]).any() else base
-        if prof[0] < 1.5 * far_mean:          # no decline: scene detail, not glow
-            continue
-        limit = base + 0.15 * (prof[0] - base)
-        r = edges[1]
-        for hi, v in zip(edges[1:], prof):
-            if not np.isfinite(v) or v <= limit:
-                break
-            r = hi
-        ratios.append(r / dk)
-        weights.append(int(sel.sum()))
-    if ratios:
-        order = np.argsort(ratios)
-        cw = np.cumsum(np.array(weights)[order])
-        per_step = 1.5 * float(np.array(ratios)[order][np.searchsorted(cw, cw[-1] / 2)])
-    else:
-        per_step = 48.0 / max(len(G) // 2, 1)
-    table = {dk: float(np.clip(per_step * dk, floor, 384)) for dk in range(len(G))}
-    table["per_step_raw"] = per_step / 1.5
-    rmap = np.vectorize(lambda k: table[abs(int(k_far) - int(k))])(k_edge).astype(np.float32)
-    return cv2.GaussianBlur(rmap, (0, 0), 8), table
+    return _spill_radius_results(G, sub_half, k_edge, (k_far,), floor)[int(k_far)]
 
 
 def background_curve(G, bgmask):
@@ -1067,6 +1120,13 @@ def background_curve(G, bgmask):
 
 def _u16(img: np.ndarray) -> np.ndarray:
     """Any project image -> uint16 BGR (8-bit x257, float 0-255 scaled)."""
+    if img.ndim == 3 and img.shape[2] == 3:
+        if img.dtype == np.uint16:
+            # Callers treat this as read-only.  Preserve the old contiguous
+            # result for cropped/non-contiguous render-context views.
+            return np.ascontiguousarray(img)
+        if img.dtype == np.uint8:
+            return np.ascontiguousarray(img, dtype=np.uint16) * np.uint16(257)
     return np.clip(_to16f(img), 0, 65535).astype(np.uint16)
 
 
@@ -1126,6 +1186,7 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
             raise BackgroundFillCancelled()
     G = np.stack(grays)
     del grays
+    frame_medians = [np.median(g) for g in G]
     measures, idx = focus_measures(G)
     sub_half, thresh = subject_mask(measures, ["ratio", "peak"], None, min_island)
     fused16 = _u16(fused)
@@ -1159,12 +1220,14 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     step("protecting smooth subject")
     sub_half, _t, _n, _pct = protect_missed_subject(sub_half, G, far_end, min_island * sub_half.size)
     gray_fused = cv2.cvtColor(color_half, cv2.COLOR_BGR2GRAY)
+    gray_fused_median = np.median(gray_fused)
 
-    def protect(k):
-        fused_half = gray_fused * (np.median(G[k]) / max(float(np.median(gray_fused)), 1e-6))
-        return protect_visible_detail(sub_half, G, k, fused_half)[0]
+    def protect(k, gray, gray_median):
+        fused_half = gray * (frame_medians[k] / max(float(gray_median), 1e-6))
+        return protect_visible_detail(
+            sub_half, G, k, fused_half, frame_medians=frame_medians)[0]
 
-    protected = protect(k_bg)
+    protected = protect(k_bg, gray_fused, gray_fused_median)
     # Share of the background that is detail some frame recorded in focus
     # and the stack kept: scene rather than bokeh.  Blurring that away with
     # the soft frame looks worse than the stack; the far frame keeps it.
@@ -1173,10 +1236,11 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     if preset == "auto" and background_frame is None and recorded_share > AUTO_SHARP_SHARE \
             and far_end != k_soft:
         k_bg, used = far_end, "sharp"
-        protected = protect(k_bg)
-    fused_bg = gray_fused * (np.median(G[k_bg]) / max(float(np.median(gray_fused)), 1e-6))
+        protected = protect(k_bg, gray_fused, gray_fused_median)
+    fused_bg = gray_fused * (frame_medians[k_bg] / max(float(gray_fused_median), 1e-6))
     if keep_soft_parts:
-        protected = protect_focused_objects(protected, G, k_bg, fused_bg)
+        protected = protect_focused_objects(
+            protected, G, k_bg, fused_bg, frame_medians=frame_medians)
     sub_half = protected
     del protected, gray_fused, fused_bg
     log.info("background frame %d (preset %s -> %s, far end %d, recorded detail %.1f%% of background)",
@@ -1204,10 +1268,11 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     del lum_f
     if band.sum() < 10000:
         band = dist > margin + feather
+    match_target = [np.median(fz[..., c][band]) for c in range(3)]
 
     def load_matched(k):
         f = _u16(frames[k]).astype(np.float32)
-        g = np.array([np.median(fz[..., c][band]) / max(np.median(f[..., c][band]), 1e-3)
+        g = np.array([match_target[c] / max(np.median(f[..., c][band]), 1e-3)
                       for c in range(3)], np.float32)
         return f * g, g
 
@@ -1218,7 +1283,11 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     # where an edge is sharp is darkened by partial occlusion, the background
     # frame carries the subject's glow out to the measured radius.  Rebuild
     # from the background frame beyond max(halo_fill, 1.25 x glow radius).
-    rmap, _table = spill_radius_map(G, sub_half, k_edge, k_bg)
+    spill_results = _spill_radius_results(
+        G, sub_half, k_edge, (k_bg, far_end), map_targets=(k_bg,))
+    rmap, _table = spill_results[k_bg]
+    _, table_far = spill_results[far_end]
+    del spill_results
     size_cap = object_size_cap(sub_half, (H, W))
     fill_width = np.maximum(np.float32(halo_fill),
                             np.minimum(1.25 * cv2.resize(rmap, (W, H), interpolation=cv2.INTER_LINEAR), size_cap))
@@ -1226,7 +1295,7 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     # along straight lines (a concave corner's diagonal); smooth it so the
     # zone boundary cannot jump there and draw a wedge.
     fill_width = blur(fill_width.astype(np.float32), 48.0)
-    del rmap, size_cap
+    del rmap
     bgf, _ratio = match_noise(bgf, fz, dist)
 
     step("rebuilding the background beside the subject")
@@ -1255,7 +1324,6 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     del keep_obj
 
     step("mapping missing data")
-    _, table_far = spill_radius_map(G, sub_half, k_edge, far_end)
     c_raw = table_far["per_step_raw"]
     w_occ, _occ = occlusion_width(G, sub_half, k_edge)
     ks_sub = idx[sub_half]
@@ -1264,8 +1332,8 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     peak_t = thresh.get("peak", otsu_threshold(measures["peak"]))
     bg_miss, _soft, _w_by_ke, _k_B, Wmap = missing_data_map(sub, dist, k_edge_full, measures["peak"], peak_t,
                                                          N, far_end, c_raw, w_occ, k_occ,
-                                                         object_size_cap(sub_half, (H, W)))
-    del k_edge_full
+                                                         size_cap)
+    del k_edge_full, size_cap
     step("classifying unseen subject")
     hidden, out_range, featureless = classify_never_sharp(sub, measures["peak"], peak_t, idx, N, fused16, dist)
     to8 = lambda m: (np.clip(m, 0, 1) * 255).astype(np.uint8)
@@ -1298,7 +1366,10 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
         # recorded, and the few percent left are far-range objects the
         # background frame would only blur.
         log.info("subject covers %.1f%% of the frame: background left as stacked", subject_fraction * 100)
-        out16 = fused16
+        # ``_u16`` may return an already-uint16 input without copying.  Keep
+        # result ownership independent from the caller as it was before the
+        # integer fast path.
+        out16 = fused16.copy()
     image = _from16f(out16.astype(np.float32), fused) if fused.dtype != np.uint16 or fused.ndim != 3 \
         or fused.shape[2] != 3 else out16
     step("done")
