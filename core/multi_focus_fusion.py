@@ -347,9 +347,8 @@ class MultiFocusFusion:
             else:
                 name = files[0]
                 gain = exposure_gains[0] if exposure_gains else None
-            import cv2
-            data = np.fromfile(os.path.join(input_source, name), dtype=np.uint8)
-            frame = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+            from core.image_loader import decode_image
+            frame = decode_image(os.path.join(input_source, name))
             if frame is None:
                 return None
         if frame is None:
@@ -400,7 +399,7 @@ class MultiFocusFusion:
             frames = [f for f in input_source if f is not None]
             return exposure_gains(frames)
         if isinstance(input_source, str) and os.path.isdir(input_source):
-            import cv2
+            from core.image_loader import decode_image
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
                     '.tif', '.tiff', '.bmp')
             names = [f for f in sorted(os.listdir(input_source),
@@ -411,10 +410,7 @@ class MultiFocusFusion:
                 if should_cancel is not None and should_cancel():
                     from core.registration import RegistrationCancelled
                     raise RegistrationCancelled()
-                data = np.fromfile(os.path.join(input_source, name),
-                                   dtype=np.uint8)
-                img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH |
-                                   cv2.IMREAD_COLOR)
+                img = decode_image(os.path.join(input_source, name))
                 if img is None:
                     raise RuntimeError(f"Unable to read image: {name}")
                 color = (img[:, :, :3] if img.ndim == 3 and img.shape[2] > 3
@@ -432,7 +428,7 @@ class MultiFocusFusion:
         """Load a directory stack with the per-frame gains already applied."""
         if not isinstance(input_source, str) or not os.path.isdir(input_source):
             return input_source
-        import cv2
+        from core.image_loader import decode_image
         exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
                 '.tif', '.tiff', '.bmp')
         names = [f for f in sorted(os.listdir(input_source),
@@ -443,9 +439,7 @@ class MultiFocusFusion:
             if should_cancel is not None and should_cancel():
                 from core.registration import RegistrationCancelled
                 raise RegistrationCancelled()
-            data = np.fromfile(os.path.join(input_source, name),
-                               dtype=np.uint8)
-            img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+            img = decode_image(os.path.join(input_source, name))
             if img is None:
                 raise RuntimeError(f"Unable to read image: {name}")
             frames.append(apply_exposure_gain(img, gain))
@@ -569,7 +563,6 @@ class MultiFocusFusion:
         kwargs.update(resolve_fusion_parameters(self.algorithm, values))
         # Inspect one frame before directory materialisation or exposure copies.
         if isinstance(input_source, str) and os.path.isdir(input_source):
-            import cv2
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
                     '.tif', '.tiff', '.bmp')
             names = [f for f in sorted(os.listdir(input_source), key=natural_sort_key)
@@ -578,6 +571,7 @@ class MultiFocusFusion:
                 raise ValueError(f"No image files found in directory: {input_source}")
             from core.image_loader import decode_image
             frame_specs = []
+            first = None
             for name in names:
                 check_cancel()
                 path = os.path.join(input_source, name)
@@ -585,12 +579,9 @@ class MultiFocusFusion:
                 if frame is None:
                     raise RuntimeError(f"Unable to read image: {name}")
                 frame_specs.append((frame.size, frame.dtype))
+                if first is None:
+                    first = frame
             del frame
-            first = cv2.imdecode(
-                np.fromfile(os.path.join(input_source, names[0]), dtype=np.uint8),
-                cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
-            if first is None:
-                raise RuntimeError(f"Unable to read image: {names[0]}")
             count = len(names)
             # Sorting may normalize 16-bit directory frames to float32.
             source_allocation = sum(size * max(dtype.itemsize, 4)
@@ -1048,18 +1039,13 @@ class MultiFocusFusion:
             channels = min(channels, 3)
         elif isinstance(input_source, str):
             img_dir = input_source
-            try:
-                import cv2
-            except Exception as exc:
-                raise RuntimeError("OpenCV is required to read image files for tiled fusion. Install with: pip install opencv-python-headless") from exc
+            from core.image_loader import decode_image
 
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp', '.tif', '.tiff', '.bmp')
             files = [f for f in sorted(os.listdir(img_dir), key=natural_sort_key) if f.lower().endswith(exts)]
             if len(files) == 0:
                 raise ValueError(f"No image files found in directory: {img_dir}")
-            mode = (cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
-                    if algorithm in ('openfocus_b', 'openfocus_c') else cv2.IMREAD_UNCHANGED)
-            first_img = cv2.imdecode(np.fromfile(os.path.join(img_dir, files[0]), dtype=np.uint8), mode)
+            first_img = decode_image(os.path.join(img_dir, files[0]))
             if first_img is None:
                 raise RuntimeError(f"Unable to read image: {os.path.join(img_dir, files[0])}")
             h, w = first_img.shape[:2]
@@ -1205,7 +1191,7 @@ class MultiFocusFusion:
             return resolve_runner(get_fusion(algorithm).runner)(self, crops, img_resize, **algo_kwargs)
 
         def _crop_frames(coords):
-            import cv2
+            from core.image_loader import decode_image
             x0, y0, x1, y1 = coords
             if imgs is not None:
                 crops = [img[y0:y1, x0:x1] for img in imgs]
@@ -1214,7 +1200,7 @@ class MultiFocusFusion:
                 for idx, fname in enumerate(files):
                     _check_cancel()
                     fp = os.path.join(img_dir, fname)
-                    full = cv2.imread(fp, cv2.IMREAD_UNCHANGED)
+                    full = decode_image(fp)
                     if full is None:
                         raise RuntimeError(f"Unable to read image: {fp}")
                     crop = full[y0:y1, x0:x1].copy()
@@ -1333,7 +1319,7 @@ class MultiFocusFusion:
         the fusion itself is dispatched through the descriptor's runner, so a
         new model needs no copy of this accumulator.
         """
-        import cv2
+        from core.image_loader import decode_image
         from core.registration import RegistrationCancelled
         from utils.weights import weights_path
 
@@ -1382,9 +1368,7 @@ class MultiFocusFusion:
             crops = []
             for index, name in enumerate(files):
                 check_cancel()
-                full = cv2.imdecode(
-                    np.fromfile(os.path.join(img_dir, name), dtype=np.uint8),
-                    cv2.IMREAD_UNCHANGED)
+                full = decode_image(os.path.join(img_dir, name))
                 if full is None:
                     raise RuntimeError(f"Unable to read image: {name}")
                 crop = full[y0:y1, x0:x1].copy()
