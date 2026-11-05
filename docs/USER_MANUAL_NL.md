@@ -30,6 +30,7 @@ OpenFocus is een professionele desktoptoepassing voor multifocus-beeldfusie, bed
 - **Multifocus-beeldfusie**: meerdere afbeeldingen met verschillende scherpstelpunten combineren tot één volledig scherp beeld
 - **Tien fusiemethoden**: Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF, StackMFF V2, StackMFF V3 en OpenFocus A, B en C; daarnaast een modus met alleen uitlijning
 - **Beeldregistratie**: verschoven beeldreeksen uitlijnen met ECC, homografie, homografie met daaropvolgende ECC-verfijning of de snelle OpenFocus-uitlijning
+- **Automatische achtergrond**: een onrustige gestapelde achtergrond vervangen door één echt frame, en zien waar geen frame de scène scherp zag
 - **Bronvaste retouche**: pixels schilderen vanuit de frames die het resultaat echt hebben gemaakt, met bron- en herstelpenseel, belichtingspenseel en ongedaan maken per streek
 - **Veegvergelijking**: de uitlijning controleren en resultaten vergelijken met een A/B-scheiding
 - **Projectbestanden**: reproduceerbare instellingen en bronverwijzingen opslaan in `.ofproj`-bestanden; resultaat- en retouchepixels worden apart geëxporteerd
@@ -589,6 +590,56 @@ Voor een lokale toonaanpassing kies je **Belichtingspenseel**, stel je het bedra
 Herkomst wordt met de uitvoer opgeslagen: de uitgelijnde frames, ROI-bijsnijdings-/plakoffsets, DCT-randtrimming en bitdiepte worden vastgelegd wanneer het resultaat wordt gerenderd. Batchbestanden, oudere resultaten en items uit alleen-uitlijnen hebben geen vastgelegde bron en worden daarom als niet beschikbaar vermeld in plaats van uit de huidige stapel te worden geraden. Niet-toegepaste streken en de ongedaan-maakgeschiedenis gelden alleen voor de sessie; een project opslaan bewaart ze niet.
 
 Voor een bestaand afbeeldingsbestand kies je **Bewerken → Afbeeldingsbestanden retoucheren…** en selecteer je het resultaat en een of meer bronafbeeldingen. De bronnen moeten al op hetzelfde pixelraster als het resultaat zijn uitgelijnd; gelijke afmetingen alleen bewijzen geen uitlijning. Enkelbladige PNG-, TIFF-, JPEG- en BMP-afbeeldingen met overeenkomende rechtopstaande afmetingen, kanalen en 8- of 16-bitdiepte worden geaccepteerd; EXIF-oriëntatie wordt bij het laden toegepast. Alpha- en meerbladige afbeeldingen worden niet ondersteund. De geselecteerde frames zijn door de gebruiker aangeleverd, geen vastgelegde renderherkomst. **Toepassen** maakt een aparte, niet-geëxporteerde uitvoer; sla die op vanuit de uitvoerlijst. De gekozen bestanden zijn tijdens deze sessie beschermd tegen overschrijven, inclusief export van dieptekaarten en 3D-meshes. Zoals bij andere resultaten bewaren projectbestanden deze pixels of penseelgeschiedenis niet.
+
+### De achtergrond vervangen (Automatische achtergrond)
+
+Bij stapelen wordt de achtergrond samen met het onderwerp scherp gemaakt. De
+achtergrond van een gestapeld beeld is dan vaak een lappendeken van
+verschillende onscherptes, met een halo rond het onderwerp.
+**Automatische achtergrond…** in de retoucheerwerkruimte vervangt die door één
+echt frame uit dezelfde stapel. Het onderwerp blijft precies zoals gestapeld en
+er wordt niets verzonnen: elke achtergrondpixel komt uit een frame of uit het
+gestapelde resultaat.
+
+1. Open het resultaat in de retoucheerwerkruimte en klik op
+   **Automatische achtergrond…**.
+2. Kies de achtergrond:
+   - **Automatisch** (aanbevolen) gebruikt de zachte achtergrond, tenzij de
+     stapel een groot deel van de achtergrond scherp heeft vastgelegd. Dan
+     gebruikt het de scherpe.
+   - **Zachte achtergrond** gebruikt het frame met de onscherpste achtergrond.
+   - **Scherpe achtergrond** gebruikt het frame met de verste focus.
+3. Laat **Randhalo's opschonen** aan om halo's langs de randen van het onderwerp
+   weg te halen. Het gaat nooit verder dan wat de frames vastlegden. Zet het uit
+   om de randen van de stapel te behouden.
+4. Vink **Zachte delen die aan het onderwerp vastzitten behouden** aan wanneer
+   delen van het onderwerp net buiten de scherptediepte vallen, zoals het
+   knopje aan het eind van een stekel. Ook achtergrondobjecten naast het
+   onderwerp kunnen dan zoals gestapeld blijven, dus controleer het resultaat.
+5. Klik op **Achtergrond vervangen**. Een stapel van 15 frames van 20 megapixel
+   duurt ongeveer een minuut en vraagt ongeveer 3,5 GB vrij geheugen.
+   **Annuleren** stopt het.
+
+De wijziging is één stap die u ongedaan kunt maken, en penseelstreken die u al
+op het onderwerp hebt gezet blijven staan. Met de **Herstelkwast** haalt u
+gestapelde pixels terug waar u die liever hebt, bijvoorbeeld een onscherp
+grassprietje vóór het onderwerp. Vult het onderwerp bijna het hele beeld, zoals
+bij een bosbodemscène, dan blijft het beeld zoals gestapeld en ziet u een
+melding.
+
+Na een run kleurt **Ontbrekende gegevens tonen** de plekken die geen frame scherp
+zag. Dit zijn de plekken om te controleren of met de hand te retoucheren:
+
+- magenta: achtergrond die geen frame zonder het onderwerp ervoor vastlegde
+- cyaan: onderwerp dat voor de camera verborgen was
+- geel: onderwerp buiten het focusbereik van de stapel
+- leisteen: te glad om te beoordelen
+
+**Kaart met ontbrekende gegevens opslaan…** schrijft de gekleurde voorvertoning
+en per kleur één zwart-witmasker. De automatische achtergrond heeft de frames
+nodig waaruit het resultaat ontstond en is niet beschikbaar voor
+gebiedsresultaten (ROI). Retoucheercheckpoints bewaren de keuze en berekenen die
+opnieuw bij het laden.
 
 ### Labels beheren
 

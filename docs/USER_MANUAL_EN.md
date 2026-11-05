@@ -31,6 +31,7 @@ OpenFocus is a professional multi-focus image fusion desktop application designe
 - **Multi-Focus Image Fusion**: Combine multiple images with different focus points into one fully focused image
 - **Multiple Fusion Algorithms**: Ten methods — Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3 and OpenFocus A/B/C — plus alignment-only mode
 - **Image Registration**: Align misaligned frames with ECC, homography, homography followed by ECC, or the fast OpenFocus aligner
+- **Auto background**: replace a messy stacked background with one real frame, and see where no frame saw the scene clearly
 - **Wipe Compare View**: Inspect alignment and compare results with an A/B divider view
 - **Project Files**: restore input references and reproducible settings; export result pixels separately
 - **Processing Templates**: save and reapply fusion, registration and resource settings to any loaded stack
@@ -1004,6 +1005,49 @@ creates a separate unexported output; save it from the output list. The chosen
 files are protected against overwriting during this session, including depth-map
 and 3D mesh exports.
 As with other results, project files do not store these pixels or brush history.
+
+### Replacing the Background (Auto background)
+
+Stacking sharpens the background along with the subject. The background of a
+stacked image is often a patchwork of different blurs, with a halo around the
+subject. **Auto background…** in the retouch workspace replaces it with one real
+frame from the same stack. The subject stays exactly as stacked, and nothing is
+invented: every background pixel comes from a frame or from the stacked result.
+
+1. Open the result in the retouch workspace and click **Auto background…**.
+2. Choose the background:
+   - **Automatic** (recommended) uses the soft background, unless the stack
+     recorded much of the background in focus. Then it uses the sharp one.
+   - **Soft background** uses the frame where the background is blurriest.
+   - **Sharp background** uses the frame focused farthest away.
+3. Leave **Clean edge halos** on to remove halos along the subject's edges. It
+   never goes beyond what the frames recorded. Turn it off to keep the stack's
+   own edge look.
+4. Tick **Keep soft parts attached to the subject** when parts of the subject
+   sit just outside the depth of field, such as the knob at the end of a spine.
+   It can also keep background objects next to the subject as stacked, so check
+   the result.
+5. Click **Replace background**. A 20-megapixel stack of 15 frames takes about
+   a minute and needs about 3.5 GB of free memory. **Cancel** stops it.
+
+The change is one undoable step, and strokes you painted on the subject before
+are kept. Use the **Restore Brush** to bring back stacked pixels wherever you
+prefer them, for example an out-of-focus grass blade in front of the subject.
+When the subject fills nearly the whole frame, as in a ground-level forest
+scene, the image is left as stacked and a note says so.
+
+After a run, **Show missing data** tints the places no frame saw cleanly. These
+are the places to check or retouch by hand:
+
+- magenta: background no frame recorded without the subject in the way
+- cyan: subject hidden from the camera
+- yellow: subject beyond the focus range of the stack
+- slate: areas too smooth to judge
+
+**Save missing-data map…** writes the tinted preview and one black-and-white
+mask per colour. Auto background needs the frames that made the result and is
+not available for region (ROI) results. Retouch checkpoints record the choice
+and recompute it when loaded.
 
 ### Managing Labels
 

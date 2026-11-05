@@ -134,7 +134,7 @@ Crie um mapa de profundidade e exporte uma superfície 3D texturizada.
 
 ### Retoque vinculado à fonte
 
-Retoque o resultado pintando a partir dos quadros de origem e exporte-o com eles em um TIFF em camadas.
+Retoque o resultado pintando a partir dos quadros de origem e exporte-o com eles em um TIFF em camadas. O fundo automático substitui um fundo empilhado irregular por um fotograma real.
 
 </td>
 <td width="54%">

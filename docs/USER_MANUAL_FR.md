@@ -30,6 +30,7 @@ OpenFocus est une application de bureau professionnelle de fusion d'images multi
 - **Fusion d'images multifocus** : combine plusieurs images mises au point à des distances différentes en une seule image entièrement nette
 - **Dix algorithmes de fusion** : filtre guidé, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3, OpenFocus A/B/C, plus le mode alignement seul
 - **Recalage d'images** : aligne les séquences désalignées avec OpenFocus (rapide), ECC, l'homographie ou l'enchaînement homographie → ECC
+- **Arrière-plan automatique** : remplacer un arrière-plan empilé irrégulier par une vraie image et voir où aucune image n'a vu la scène nettement
 - **Vue de comparaison par balayage** : vérifie l'alignement et compare les résultats avec un séparateur A/B
 - **Fichiers de projet** : restaurent les références d'entrée et les réglages reproductibles ; les pixels du résultat s'exportent séparément
 - **Modèles de traitement** : enregistrent et réappliquent les réglages de fusion, de recalage et de ressources sur toute pile chargée
@@ -552,6 +553,56 @@ Pour une correction tonale locale, sélectionnez **Pinceau d'exposition**, régl
 La provenance voyage avec la sortie : les images alignées, les décalages de recadrage/collage ROI, le rognage des bords DCT et la profondeur de bits sont enregistrés au moment du rendu. Les fichiers de lot, les résultats hérités et les entrées de dossier d'alignement seul n'ont pas de source enregistrée : ils sont donc listés comme indisponibles au lieu d'être devinés depuis la pile actuelle. Les traits non appliqués et l'historique d'annulation ne durent que le temps de la session ; enregistrer un projet ne les stocke pas.
 
 Pour un fichier image existant, choisissez **Édition → Retoucher des fichiers image…**, puis sélectionnez le résultat et une ou plusieurs images sources. Les sources doivent déjà être alignées sur le résultat dans la même grille de pixels ; des dimensions identiques ne prouvent pas l'alignement. Les images PNG, TIFF, JPEG et BMP d'une seule page, de dimensions verticales, canaux et profondeur 8 ou 16 bits identiques, sont acceptées ; l'orientation EXIF est appliquée au chargement. Les images avec alpha et multipage ne sont pas prises en charge. Les images sélectionnées sont fournies par l'utilisateur, pas issues d'une provenance de rendu enregistrée. Appliquer crée une sortie séparée non exportée ; enregistrez-la depuis la liste des sorties. Les fichiers choisis sont protégés contre l'écrasement pendant cette session, y compris les exports de cartes de profondeur et de maillages 3D. Comme pour les autres résultats, les fichiers de projet ne stockent ni ces pixels ni l'historique du pinceau.
+
+### Remplacer l'arrière-plan (Arrière-plan automatique)
+
+L'empilement rend l'arrière-plan net en même temps que le sujet. L'arrière-plan
+d'une image empilée devient alors souvent un patchwork de flous différents, avec
+un halo autour du sujet. **Arrière-plan automatique…** dans l'espace de retouche
+le remplace par une vraie image de la même pile. Le sujet reste tel qu'empilé,
+et rien n'est inventé : chaque pixel d'arrière-plan vient d'une image ou du
+résultat empilé.
+
+1. Ouvrez le résultat dans l'espace de retouche et cliquez sur
+   **Arrière-plan automatique…**.
+2. Choisissez l'arrière-plan :
+   - **Automatique** (recommandé) utilise l'arrière-plan doux, sauf si la pile
+     a enregistré une grande partie de l'arrière-plan nette. Il utilise alors
+     l'arrière-plan net.
+   - **Arrière-plan doux** utilise l'image où l'arrière-plan est le plus flou.
+   - **Arrière-plan net** utilise l'image dont la mise au point est la plus
+     lointaine.
+3. Laissez **Nettoyer les halos des bords** activé pour retirer les halos le
+   long des bords du sujet. Il ne dépasse jamais ce que les images ont
+   enregistré. Désactivez-le pour garder le rendu des bords de la pile.
+4. Cochez **Conserver les parties floues rattachées au sujet** quand des parties
+   du sujet sont juste hors de la profondeur de champ, comme le bout arrondi
+   d'une épine. Des objets d'arrière-plan voisins du sujet peuvent aussi rester
+   tels qu'empilés, vérifiez donc le résultat.
+5. Cliquez sur **Remplacer l'arrière-plan**. Une pile de 15 images de
+   20 mégapixels prend environ une minute et demande environ 3,5 Go de mémoire
+   libre. **Annuler** l'arrête.
+
+La modification est une seule étape annulable, et les traits déjà peints sur le
+sujet sont conservés. Utilisez le **Pinceau de restauration** pour retrouver les
+pixels empilés là où vous les préférez, par exemple un brin d'herbe flou devant
+le sujet. Si le sujet remplit presque toute l'image, comme une scène de sol
+forestier, l'image reste telle qu'empilée et une note l'indique.
+
+Après un passage, **Afficher les données manquantes** colore les endroits
+qu'aucune image n'a vus nettement. Ce sont les endroits à vérifier ou à
+retoucher à la main :
+
+- magenta : arrière-plan qu'aucune image n'a enregistré sans le sujet devant
+- cyan : sujet caché à l'appareil
+- jaune : sujet hors de la plage de mise au point de la pile
+- ardoise : zones trop lisses pour juger
+
+**Enregistrer la carte des données manquantes…** écrit l'aperçu coloré et un
+masque noir et blanc par couleur. L'arrière-plan automatique a besoin des images
+qui ont produit le résultat et n'est pas disponible pour les résultats de zone
+(ROI). Les points de contrôle de retouche enregistrent le choix et le
+recalculent au chargement.
 
 ### Gestion des libellés
 

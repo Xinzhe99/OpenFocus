@@ -30,6 +30,7 @@ O OpenFocus é um aplicativo desktop profissional de fusão de imagens multifoco
 - **Fusão de imagens multifoco**: combina várias imagens com pontos de foco diferentes em uma única imagem totalmente focada
 - **Dez algoritmos de fusão**: filtro guiado, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3, OpenFocus A/B/C, além do modo somente alinhamento
 - **Registro de imagens**: alinha sequências desalinhadas com OpenFocus (rápido), ECC, homografia ou a cadeia homografia → ECC
+- **Fundo automático**: substituir um fundo empilhado irregular por um fotograma real e ver onde nenhum fotograma captou a cena com nitidez
 - **Visualização de comparação cortina**: verifica o alinhamento e compara resultados com um divisor A/B
 - **Arquivos de projeto**: restauram referências de entrada e configurações reproduzíveis; os pixels do resultado são exportados separadamente
 - **Modelos de processamento**: salvam e reaplicam configurações de fusão, registro e recursos a qualquer pilha carregada
@@ -552,6 +553,51 @@ Para uma correção tonal local, selecione **Pincel de exposição**, ajuste sua
 A proveniência viaja com a saída: os quadros alinhados, os deslocamentos de corte/colagem da ROI, o corte de bordas DCT e a profundidade de bits são registrados quando o resultado é renderizado. Arquivos de lote, resultados legados e entradas de pasta de somente alinhamento não têm origem registrada, então são listados como indisponíveis em vez de serem deduzidos da pilha atual. Traços não aplicados e histórico de desfazer são apenas da sessão; salvar um projeto não os armazena.
 
 Para um arquivo de imagem existente, escolha **Editar → Retocar arquivos de imagem…**, depois selecione o resultado e uma ou mais imagens de origem. As origens já devem estar alinhadas ao resultado na mesma grade de pixels; dimensões iguais não provam alinhamento. São aceitas imagens PNG, TIFF, JPEG e BMP de página única com dimensões verticais, canais e profundidade de 8 ou 16 bits correspondentes; a orientação EXIF é aplicada ao carregar. Imagens com alfa e multipágina não são suportadas. Os quadros selecionados são fornecidos pelo usuário, não são proveniência registrada de renderização. Aplicar cria uma saída separada não exportada; salve-a na lista de saídas. Os arquivos escolhidos são protegidos contra sobrescrita durante esta sessão, incluindo exportações de mapas de profundidade e malhas 3D. Como em outros resultados, arquivos de projeto não armazenam esses pixels nem o histórico do pincel.
+
+### Substituir o fundo (Fundo automático)
+
+Ao empilhar, o fundo fica nítido juntamente com o motivo. O fundo de uma imagem
+empilhada costuma ficar um mosaico de desfoques diferentes, com um halo à volta
+do motivo. **Fundo automático…** na área de retoque substitui-o por um fotograma
+real da mesma pilha. O motivo fica tal como foi empilhado e nada é inventado:
+cada pixel do fundo vem de um fotograma ou do resultado empilhado.
+
+1. Abra o resultado na área de retoque e clique em **Fundo automático…**.
+2. Escolha o fundo:
+   - **Automático** (recomendado) usa o fundo suave, salvo se a pilha registou
+     focada grande parte do fundo. Nesse caso usa o nítido.
+   - **Fundo suave** usa o fotograma com o fundo mais desfocado.
+   - **Fundo nítido** usa o fotograma focado mais longe.
+3. Deixe **Limpar halos nas bordas** ligado para remover halos ao longo das
+   bordas do motivo. Nunca vai além do que os fotogramas registaram. Desligue
+   para manter o aspeto das bordas da pilha.
+4. Marque **Manter as partes suaves ligadas ao motivo** quando partes do motivo
+   ficam logo fora da profundidade de campo, como a ponta arredondada de um
+   espinho. Também pode manter objetos de fundo junto ao motivo tal como foram
+   empilhados, por isso verifique o resultado.
+5. Clique em **Substituir fundo**. Uma pilha de 15 fotogramas de 20 megapíxeis
+   demora cerca de um minuto e precisa de cerca de 3,5 GB de memória livre.
+   **Cancelar** interrompe.
+
+A alteração é um único passo que pode ser anulado, e os traços já pintados no
+motivo mantêm-se. Use o **Pincel de restauração** para recuperar os píxeis
+empilhados onde os preferir, por exemplo uma folha de erva desfocada à frente do
+motivo. Quando o motivo ocupa quase todo o enquadramento, como numa cena do chão
+da floresta, a imagem fica tal como foi empilhada e aparece um aviso.
+
+Depois de uma execução, **Mostrar dados em falta** colore os sítios que nenhum
+fotograma viu com nitidez. São os sítios a verificar ou retocar à mão:
+
+- magenta: fundo que nenhum fotograma registou sem o motivo à frente
+- ciano: motivo escondido da câmara
+- amarelo: motivo fora do intervalo de foco da pilha
+- ardósia: zonas demasiado lisas para avaliar
+
+**Guardar mapa de dados em falta…** grava a pré-visualização colorida e uma
+máscara a preto e branco por cor. O fundo automático precisa dos fotogramas que
+produziram o resultado e não está disponível para resultados de região (ROI).
+Os pontos de controlo de retoque guardam a escolha e voltam a calculá-la ao
+carregar.
 
 ### Gerenciamento de rótulos
 

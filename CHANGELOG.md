@@ -7,10 +7,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Add Auto background to Retouch: replace the stacked background with one real
-  frame (Soft: the blurriest background; Sharp: the far-focus frame) while the
-  subject stays as stacked. Edge halos are cleaned by default, never beyond what
-  the frames recorded; turn that off to keep the stack's own edges. A
-  missing-data map shows, and can save, where no frame saw the scene cleanly.
+  frame while the subject stays as stacked. Automatic (the default) picks the
+  blurriest background unless the stack recorded much of it in focus, then the
+  far-focus frame; Soft and Sharp choose directly. Edge halos are cleaned by
+  default, never beyond what the frames recorded; turn that off to keep the
+  stack's own edges. An option keeps soft parts attached to the subject, such
+  as knobs just past the depth of field. A missing-data map shows, and can save,
+  where no frame saw the scene cleanly. Scenes that are nearly all subject are
+  left as stacked.
+
+### Changed
+- Pressing Render while frames are still loading now starts the render when
+  loading finishes; pressing it again cancels.
+- The status bar reads "RAM used" so it is clear which number is in use.
+- Reword the retouch brush-size hint.
+
+### Fixed
+- Message-box buttons such as "Discard changes" are no longer cut off.
 
 ## [1.76.0] - 2026-11-06
 

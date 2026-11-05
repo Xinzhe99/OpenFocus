@@ -134,7 +134,7 @@ Crea una mappa di profondità ed esporta una superficie 3D texturizzata.
 
 ### Ritocco legato alla sorgente
 
-Ritocca il risultato dipingendo dai fotogrammi sorgente ed esportalo insieme a questi in un TIFF a livelli.
+Ritocca il risultato dipingendo dai fotogrammi sorgente ed esportalo insieme a questi in un TIFF a livelli. Lo sfondo automatico sostituisce uno sfondo impilato irregolare con un fotogramma reale.
 
 </td>
 <td width="54%">

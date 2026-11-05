@@ -30,6 +30,7 @@ OpenFocus ist eine professionelle Desktop-Anwendung zur Multifokus-Bildfusion f�
 - **Multifokus-Bildfusion**: Mehrere Bilder mit unterschiedlichen Fokuspunkten zu einem einzigen vollständig scharfen Bild kombinieren
 - **Zehn Fusionsverfahren**: Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF, StackMFF V2, StackMFF V3 sowie OpenFocus A, B und C; zusätzlich ein reiner Ausrichtungsmodus
 - **Bildregistrierung**: Fehlausgerichtete Bildsequenzen mit ECC, Homographie, Homographie mit anschließender ECC-Verfeinerung oder der schnellen OpenFocus-Ausrichtung ausrichten
+- **Automatischer Hintergrund**: einen unruhigen gestackten Hintergrund durch ein echtes Einzelbild ersetzen und sehen, wo kein Bild die Szene klar erfasst hat
 - **Quellengebundene Retusche**: Pixel aus den Bildern malen, die das Ergebnis tatsächlich erzeugt haben, mit Quell- und Wiederherstellungspinsel, Belichtungspinsel und Rückgängig pro Strich
 - **Wischvergleich**: Ausrichtung prüfen und Ergebnisse mit einem A/B-Trenner vergleichen
 - **Projektdateien**: reproduzierbare Einstellungen und Quellverweise in `.ofproj`-Dateien speichern; Ergebnis- und Retuschepixel werden getrennt exportiert
@@ -589,6 +590,55 @@ Für eine lokale Tonwertkorrektur **Belichtungspinsel** wählen, den Betrag in H
 Die Herkunft wird mit der Ausgabe gespeichert: ausgerichtete Bilder, ROI-Zuschnitt-/Einfügeversätze, DCT-Kantenbeschneidung und Bittiefe werden beim Rendern des Ergebnisses aufgezeichnet. Stapeldateien, ältere Ergebnisse und reine Ausrichtungsordner haben keine aufgezeichnete Quelle und werden daher als nicht verfügbar aufgeführt, statt aus dem aktuellen Stapel geraten zu werden. Nicht angewendete Striche und der Rückgängig-Verlauf gelten nur für die Sitzung; das Speichern eines Projekts legt sie nicht ab.
 
 Für eine vorhandene Bilddatei **Bearbeiten → Bilddateien retuschieren…** wählen und dann das Ergebnis sowie ein oder mehrere Quellbilder auswählen. Die Quellen müssen bereits auf dasselbe Pixelraster ausgerichtet sein; gleiche Abmessungen allein belegen keine Ausrichtung. Einseitige PNG-, TIFF-, JPEG- und BMP-Bilder mit übereinstimmenden aufrechten Abmessungen, Kanälen und 8- oder 16-Bit-Tiefe werden akzeptiert; die EXIF-Ausrichtung wird beim Laden angewendet. Alpha- und mehrseitige Bilder werden nicht unterstützt. Die ausgewählten Bilder sind vom Benutzer bereitgestellt und keine aufgezeichnete Rendering-Herkunft. **Übernehmen** erzeugt eine separate, nicht exportierte Ausgabe; speichern Sie sie aus der Ausgabeliste. Die gewählten Dateien sind während dieser Sitzung vor Überschreiben geschützt, einschließlich Tiefenkarten- und 3D-Modell-Exporten. Wie bei anderen Ergebnissen speichern Projektdateien diese Pixel oder den Pinselverlauf nicht.
+
+### Hintergrund ersetzen (Automatischer Hintergrund)
+
+Beim Stacken wird der Hintergrund zusammen mit dem Motiv geschärft. Der
+Hintergrund eines gestackten Bildes ist dann oft ein Flickwerk verschiedener
+Unschärfen, mit einem Halo um das Motiv. **Automatischer Hintergrund…** im
+Retusche-Arbeitsbereich ersetzt ihn durch ein echtes Einzelbild aus demselben
+Stack. Das Motiv bleibt genau wie gestackt, und nichts wird erfunden: Jedes
+Hintergrundpixel stammt aus einem Einzelbild oder aus dem gestackten Ergebnis.
+
+1. Öffnen Sie das Ergebnis im Retusche-Arbeitsbereich und klicken Sie auf
+   **Automatischer Hintergrund…**.
+2. Wählen Sie den Hintergrund:
+   - **Automatisch** (empfohlen) nimmt den weichen Hintergrund, außer der Stack
+     hat einen Großteil des Hintergrunds scharf aufgenommen. Dann nimmt es den
+     scharfen.
+   - **Weicher Hintergrund** nimmt das Bild mit dem unschärfsten Hintergrund.
+   - **Scharfer Hintergrund** nimmt das Bild mit dem fernsten Fokus.
+3. Lassen Sie **Kantenhalos entfernen** eingeschaltet, um Halos entlang der
+   Motivkanten zu entfernen. Es geht nie über das hinaus, was die Einzelbilder
+   aufgenommen haben. Ausschalten behält den Kantenlook des Stacks.
+4. Aktivieren Sie **Weiche, mit dem Motiv verbundene Teile behalten**, wenn
+   Teile des Motivs knapp außerhalb der Schärfentiefe liegen, etwa das Köpfchen
+   am Ende eines Stachels. Dabei können auch Hintergrundobjekte neben dem Motiv
+   wie gestackt bleiben, prüfen Sie also das Ergebnis.
+5. Klicken Sie auf **Hintergrund ersetzen**. Ein Stack aus 15 Bildern mit
+   20 Megapixeln braucht etwa eine Minute und etwa 3,5 GB freien Speicher.
+   **Abbrechen** stoppt den Vorgang.
+
+Die Änderung ist ein rückgängig machbarer Schritt, und bereits gemalte Striche
+auf dem Motiv bleiben erhalten. Mit dem **Wiederherstellungspinsel** holen Sie
+gestackte Pixel überall dort zurück, wo Sie sie bevorzugen, zum Beispiel einen
+unscharfen Grashalm vor dem Motiv. Füllt das Motiv fast das ganze Bild, wie bei
+einer Waldbodenszene, bleibt das Bild wie gestackt und ein Hinweis erscheint.
+
+Nach einem Durchlauf färbt **Fehlende Daten anzeigen** die Stellen ein, die kein
+Bild sauber erfasst hat. Diese Stellen sollten Sie prüfen oder von Hand
+retuschieren:
+
+- Magenta: Hintergrund, den kein Bild ohne das Motiv davor aufgenommen hat
+- Cyan: für die Kamera verdecktes Motiv
+- Gelb: Motiv außerhalb des Fokusbereichs des Stacks
+- Schiefer: zu glatt zum Beurteilen
+
+**Karte fehlender Daten speichern…** schreibt die eingefärbte Vorschau und je
+Farbe eine Schwarz-Weiß-Maske. Der automatische Hintergrund braucht die Bilder,
+aus denen das Ergebnis entstand, und ist für Bereichsergebnisse (ROI) nicht
+verfügbar. Retusche-Checkpoints speichern die Wahl und berechnen sie beim Laden
+neu.
 
 ### Beschriftungen verwalten
 

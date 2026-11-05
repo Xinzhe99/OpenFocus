@@ -30,6 +30,7 @@ OpenFocus es una aplicación de escritorio profesional de fusión de imágenes m
 - **Fusión de imágenes multifoco**: combina varias imágenes con puntos de enfoque distintos en una sola imagen totalmente enfocada
 - **Diez algoritmos de fusión**: filtro guiado, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3, OpenFocus A/B/C, además del modo de solo alineación
 - **Registro de imágenes**: alinea secuencias desalineadas con OpenFocus (rápido), ECC, homografía o la cadena homografía → ECC
+- **Fondo automático**: sustituir un fondo apilado irregular por un fotograma real y ver dónde ningún fotograma captó la escena con claridad
 - **Vista de comparación Wipe (cortina)**: comprueba la alineación y compara resultados con un divisor A/B
 - **Archivos de proyecto**: restauran las referencias de entrada y los ajustes reproducibles; los píxeles del resultado se exportan por separado
 - **Plantillas de procesamiento**: guardan y reaplican ajustes de fusión, registro y recursos a cualquier pila cargada
@@ -552,6 +553,54 @@ Para una corrección tonal local, selecciona **Pincel de exposición**, ajusta s
 La procedencia viaja con la salida: los fotogramas alineados, los desplazamientos de recorte y pegado del ROI, el recorte de bordes de DCT y la profundidad de bits se registran cuando se renderiza el resultado. Los archivos de lote, los resultados heredados y las entradas de carpeta de solo alineación no tienen origen registrado, así que se listan como no disponibles en lugar de suponerlos a partir de la pila actual. Los trazos no aplicados y el historial de deshacer son solo de sesión; guardar un proyecto no los almacena.
 
 Para un archivo de imagen existente, elige **Editar → Retocar archivos de imagen…** y después selecciona el resultado y una o varias imágenes de origen. Las fuentes ya deben estar alineadas con el resultado en la misma cuadrícula de píxeles; que las dimensiones coincidan no demuestra la alineación. Se aceptan imágenes PNG, TIFF, JPEG y BMP de una sola página con dimensiones verticales, canales y profundidad de 8 o 16 bits coincidentes; la orientación EXIF se aplica al cargar. No se admiten imágenes con alfa ni multipágina. Los fotogramas seleccionados los aporta el usuario, no son procedencia registrada del renderizado. Aplicar crea una salida separada sin exportar; guárdala desde la lista de salida. Los archivos elegidos se protegen contra sobrescritura durante esta sesión, incluidas las exportaciones de mapas de profundidad y mallas 3D. Como en otros resultados, los archivos de proyecto no almacenan estos píxeles ni el historial de pincel.
+
+### Sustituir el fondo (Fondo automático)
+
+Al apilar, el fondo se enfoca junto con el sujeto. El fondo de una imagen
+apilada suele quedar como un mosaico de desenfoques distintos, con un halo
+alrededor del sujeto. **Fondo automático…** en el espacio de retoque lo
+sustituye por un fotograma real de la misma pila. El sujeto queda tal como se
+apiló y no se inventa nada: cada píxel del fondo procede de un fotograma o del
+resultado apilado.
+
+1. Abre el resultado en el espacio de retoque y pulsa **Fondo automático…**.
+2. Elige el fondo:
+   - **Automático** (recomendado) usa el fondo suave, salvo que la pila haya
+     registrado enfocada gran parte del fondo. Entonces usa el nítido.
+   - **Fondo suave** usa el fotograma con el fondo más desenfocado.
+   - **Fondo nítido** usa el fotograma enfocado más lejos.
+3. Deja activado **Limpiar halos en los bordes** para quitar los halos de los
+   bordes del sujeto. Nunca va más allá de lo que registraron los fotogramas.
+   Desactívalo para conservar el borde propio de la pila.
+4. Marca **Conservar las partes suaves unidas al sujeto** cuando partes del
+   sujeto quedan justo fuera de la profundidad de campo, como el extremo
+   redondeado de una espina. También puede conservar objetos del fondo junto al
+   sujeto tal como se apilaron, así que revisa el resultado.
+5. Pulsa **Sustituir fondo**. Una pila de 15 fotogramas de 20 megapíxeles tarda
+   alrededor de un minuto y necesita unos 3,5 GB de memoria libre. **Cancelar**
+   la detiene.
+
+El cambio es un solo paso que se puede deshacer, y los trazos pintados antes
+sobre el sujeto se conservan. Usa el **Pincel de restauración** para recuperar
+los píxeles apilados donde los prefieras, por ejemplo una brizna de hierba
+desenfocada delante del sujeto. Si el sujeto ocupa casi todo el encuadre, como
+en una escena del suelo del bosque, la imagen queda tal como se apiló y aparece
+un aviso.
+
+Tras una pasada, **Mostrar datos faltantes** colorea los lugares que ningún
+fotograma vio con claridad. Son los lugares que conviene revisar o retocar a
+mano:
+
+- magenta: fondo que ningún fotograma registró sin el sujeto delante
+- cian: sujeto oculto a la cámara
+- amarillo: sujeto fuera del rango de enfoque de la pila
+- pizarra: zonas demasiado lisas para juzgar
+
+**Guardar mapa de datos faltantes…** guarda la vista coloreada y una máscara en
+blanco y negro por color. El fondo automático necesita los fotogramas que
+produjeron el resultado y no está disponible para resultados de región (ROI).
+Los puntos de control de retoque guardan la elección y la vuelven a calcular al
+cargarlos.
 
 ### Gestión de etiquetas
 

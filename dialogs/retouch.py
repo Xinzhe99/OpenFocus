@@ -377,11 +377,12 @@ class _ToneDialog(QDialog):
 class _AutoBackgroundWorker(QThread):
     progressed = pyqtSignal(float)
 
-    def __init__(self, doc, preset, clean):
+    def __init__(self, doc, preset, clean, keep_soft_parts=False):
         super().__init__()
         self.doc = doc
         self.preset = preset
         self.clean = clean
+        self.keep_soft_parts = keep_soft_parts
         self.status = ""
         self.error = ""
 
@@ -389,7 +390,8 @@ class _AutoBackgroundWorker(QThread):
         try:
             self.status = self.doc.auto_background(
                 self.preset, self.clean, self.isInterruptionRequested,
-                lambda fraction, _message: self.progressed.emit(float(fraction)))
+                lambda fraction, _message: self.progressed.emit(float(fraction)),
+                keep_soft_parts=self.keep_soft_parts)
         except MemoryError as exc:
             self.error = str(exc) or trans.t("retouch_auto_bg_failed")
         except Exception as exc:
@@ -412,15 +414,15 @@ class _AutoBackgroundDialog(QDialog):
         note.setWordWrap(True)
         layout.addWidget(note)
         settings = get_settings()
+        self.rb_auto = QRadioButton(trans.t("retouch_auto_bg_auto"))
         self.rb_soft = QRadioButton(trans.t("retouch_auto_bg_soft"))
         self.rb_sharp = QRadioButton(trans.t("retouch_auto_bg_sharp"))
         group = QButtonGroup(self)
-        group.addButton(self.rb_soft)
-        group.addButton(self.rb_sharp)
-        sharp = str(settings.value("retouch/auto_bg_preset", "soft")) == "sharp"
-        (self.rb_sharp if sharp else self.rb_soft).setChecked(True)
-        layout.addWidget(self.rb_soft)
-        layout.addWidget(self.rb_sharp)
+        for button in (self.rb_auto, self.rb_soft, self.rb_sharp):
+            group.addButton(button)
+            layout.addWidget(button)
+        mode = str(settings.value("retouch/auto_bg_mode", "auto"))
+        {"soft": self.rb_soft, "sharp": self.rb_sharp}.get(mode, self.rb_auto).setChecked(True)
         self.chk_clean = QCheckBox(trans.t("retouch_auto_bg_clean"))
         self.chk_clean.setToolTip(trans.t("retouch_auto_bg_clean_hint"))
         self.chk_clean.setChecked(str(settings.value("retouch/auto_bg_clean", "true")).lower()
@@ -430,10 +432,33 @@ class _AutoBackgroundDialog(QDialog):
         clean_note.setWordWrap(True)
         clean_note.setObjectName("mutedLabel")
         layout.addWidget(clean_note)
+        self._notes = [note, clean_note]
+        self.chk_soft_parts = QCheckBox(trans.t("retouch_auto_bg_soft_parts"))
+        self.chk_soft_parts.setToolTip(trans.t("retouch_auto_bg_soft_parts_hint"))
+        self.chk_soft_parts.setChecked(str(settings.value("retouch/auto_bg_soft_parts", "false")).lower()
+                                       in ("true", "1"))
+        layout.addWidget(self.chk_soft_parts)
+        soft_note = QLabel(trans.t("retouch_auto_bg_soft_parts_hint"))
+        soft_note.setWordWrap(True)
+        soft_note.setObjectName("mutedLabel")
+        layout.addWidget(soft_note)
+        self._notes.append(soft_note)
+        # The theme draws a thin bar; text inside it was clipped, so the
+        # percentage sits beside it instead.
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
-        self.progress.setVisible(False)
-        layout.addWidget(self.progress)
+        self.progress.setTextVisible(False)
+        self.lbl_progress = QLabel("")
+        self.lbl_progress.setMinimumWidth(self.lbl_progress.fontMetrics().horizontalAdvance("100%") + 4)
+        self.lbl_progress.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        progress_row = QHBoxLayout()
+        progress_row.addWidget(self.progress, 1)
+        progress_row.addWidget(self.lbl_progress)
+        self.progress_box = QWidget()
+        self.progress_box.setLayout(progress_row)
+        progress_row.setContentsMargins(0, 0, 0, 0)
+        self.progress_box.setVisible(False)
+        layout.addWidget(self.progress_box)
         buttons = QHBoxLayout()
         self.run_button = QPushButton(trans.t("retouch_auto_bg_run"))
         self.run_button.setObjectName("primaryButton")
@@ -445,25 +470,47 @@ class _AutoBackgroundDialog(QDialog):
         buttons.addWidget(self.cancel_button)
         layout.addLayout(buttons)
         self.status = ""
-        self.resize(460, self.sizeHint().height())
+        self.preset = ""
+        # Size from the contents: a fixed height computed before the wrapped
+        # hints knew their width cut their last line off.
+        self.setMinimumWidth(480)
+        layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
 
     def _run(self):
         if self.worker is not None:
             return
         from utils.settings_store import get_settings
-        preset = "sharp" if self.rb_sharp.isChecked() else "soft"
+        preset = ("sharp" if self.rb_sharp.isChecked()
+                  else "soft" if self.rb_soft.isChecked() else "auto")
         clean = self.chk_clean.isChecked()
         settings = get_settings()
-        settings.setValue("retouch/auto_bg_preset", preset)
+        settings.setValue("retouch/auto_bg_mode", preset)
         settings.setValue("retouch/auto_bg_clean", "true" if clean else "false")
-        for widget in (self.rb_soft, self.rb_sharp, self.chk_clean, self.run_button):
+        soft_parts = self.chk_soft_parts.isChecked()
+        settings.setValue("retouch/auto_bg_soft_parts", "true" if soft_parts else "false")
+        for widget in (self.rb_auto, self.rb_soft, self.rb_sharp, self.chk_clean,
+                       self.chk_soft_parts, self.run_button):
             widget.setEnabled(False)
-        self.progress.setValue(0)
-        self.progress.setVisible(True)
-        self.worker = _AutoBackgroundWorker(self.doc, preset, clean)
-        self.worker.progressed.connect(lambda f: self.progress.setValue(int(f * 1000)))
+        self._show_progress(0.0)
+        self.progress_box.setVisible(True)
+        self.preset = preset
+        self.worker = _AutoBackgroundWorker(self.doc, preset, clean, soft_parts)
+        self.worker.progressed.connect(self._show_progress)
         self.worker.finished.connect(self._finished)
         self.worker.start()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Wrapped hints render taller than the layout's estimate (their
+        # last line was cut off); reserve what they need at this width.
+        for label in getattr(self, "_notes", ()):
+            need = label.heightForWidth(max(label.width(), 1))
+            if need > 0 and label.minimumHeight() != need:
+                label.setMinimumHeight(need)
+
+    def _show_progress(self, fraction):
+        self.progress.setValue(int(fraction * 1000))
+        self.lbl_progress.setText(f"{int(round(fraction * 100))}%")
 
     def _finished(self):
         worker = self.worker
@@ -472,9 +519,10 @@ class _AutoBackgroundDialog(QDialog):
         if worker.error:
             QMessageBox.critical(self, trans.t("msg_error"),
                                  trans.t("retouch_auto_bg_failed") + "\n\n" + worker.error)
-            for widget in (self.rb_soft, self.rb_sharp, self.chk_clean, self.run_button):
+            for widget in (self.rb_auto, self.rb_soft, self.rb_sharp, self.chk_clean,
+                           self.chk_soft_parts, self.run_button):
                 widget.setEnabled(True)
-            self.progress.setVisible(False)
+            self.progress_box.setVisible(False)
             self.cancel_button.setEnabled(True)
             self.cancel_button.setText(trans.t("btn_cancel"))
         elif worker.status in ("committed", "empty"):
@@ -1673,8 +1721,12 @@ class RetouchDialog(QDialog):
         dialog = _AutoBackgroundDialog(self.doc, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._refresh_result_display()
-            if dialog.status == "empty":
+            fill = self.doc.background_fill
+            if dialog.status == "empty" or (fill is not None and not fill.changed):
                 self._set_notice(trans.t("retouch_auto_bg_unchanged"))
+            elif fill is not None and dialog.preset == "auto":
+                self._set_notice(trans.t("retouch_auto_bg_used_sharp" if fill.preset_used == "sharp"
+                                         else "retouch_auto_bg_used_soft"))
             if self.doc.history.evicted and not self._eviction_announced:
                 self._eviction_announced = True
                 self._set_notice(trans.t("retouch_history_evicted"))

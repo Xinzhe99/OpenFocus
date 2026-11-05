@@ -3940,6 +3940,9 @@ class OpenFocus(QMainWindow):
         # Panel titles are QLabels built once at startup; without this they
         # kept the language the app was launched in ("Source Stack"/"Output"
         # stayed English after switching to Polish).
+        if getattr(c, 'btn_retouch', None) is not None:
+            c.btn_retouch.setText(trans.t('action_retouch'))
+            c.btn_retouch.setToolTip(trans.t('action_retouch_hint'))
         if hasattr(self, 'lbl_source_title'):
             self.lbl_source_title.setText(' ' + trans.t('panel_source_stack'))
         if hasattr(self, 'lbl_result_title'):

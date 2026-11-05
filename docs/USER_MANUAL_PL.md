@@ -30,6 +30,7 @@ OpenFocus to profesjonalna aplikacja desktopowa do wieloogniskowej fuzji obrazó
 - **Wieloogniskowa fuzja obrazów**: wiele zdjęć o różnych punktach ostrości łączy się w jeden w pełni ostry obraz
 - **Dziesięć algorytmów fuzji**: StackMFF V3 (domyślnie), StackMFF V2, StackMFF, Guided Filter, DCT, DTCWT, GFG-FGF oraz OpenFocus A/B/C, a także tryb tylko wyrównania
 - **Rejestracja obrazów**: ECC, homografia, homografia → ECC i szybkie wyrównanie OpenFocus
+- **Automatyczne tło**: zastąpienie niespokojnego tła ze stacku jedną prawdziwą klatką oraz pokazanie, gdzie żadna klatka nie uchwyciła sceny wyraźnie
 - **Porównanie suwakiem**: kontrola wyrównania i wyniku za pomocą przeciąganego dzielnika A/B
 - **Porównanie metod**: kilka algorytmów renderowanych obok siebie na jednym fragmencie; zwycięzcę można przyjąć jako nowy wynik
 - **Retusz powiązany ze źródłami**: pędzel kopiuje piksele z klatek, które naprawdę utworzyły wynik; eksport TIFF z warstwami zapisuje wynik razem ze źródłami
@@ -571,6 +572,48 @@ Do lokalnej korekty tonalnej wybierz **Pędzel ekspozycji**, ustaw wartość w s
 Pochodzenie podróżuje z wynikiem: wyrównane klatki, przesunięcia przycięcia/wklejenia ROI, przycięcie krawędzi DCT i głębia są zapisywane przy renderowaniu. Pliki wsadowe, starsze wyniki i pozycje folderów tylko wyrównania nie mają zapisanego źródła, więc są oznaczone jako niedostępne, a nie zgadywane z bieżącego stosu. Niezastosowane pociągnięcia i historia cofania istnieją tylko w sesji; zapis projektu ich nie przechowuje.
 
 Dla istniejącego pliku obrazu wybierz **Edycja → Retuszuj pliki obrazów…**, a następnie wskaż wynik i jedną lub więcej klatek źródłowych. Źródła muszą być już wyrównane do wyniku na tej samej siatce pikseli; same pasujące wymiary nie dowodzą wyrównania. Akceptowane są jednostronicowe PNG, TIFF, JPEG i BMP o pasujących wymiarach pionowych, kanałach i głębi 8 lub 16 bitów; orientacja EXIF jest stosowana przy wczytywaniu. Kanały alfa i obrazy wielostronicowe nie są obsługiwane. Wybrane klatki są dostarczone przez użytkownika, a nie zapisanym pochodzeniem renderu. Zastosowanie tworzy osobny niewyeksportowany wynik; zapisz go z listy wyników. Wybrane pliki są chronione przed nadpisaniem w tej sesji, w tym podczas eksportu mapy głębi i siatki 3D. Jak przy innych wynikach, pliki projektów nie przechowują tych pikseli ani historii pędzla.
+
+### Zastępowanie tła (Automatyczne tło)
+
+Podczas stackowania tło wyostrza się razem z obiektem. Tło obrazu ze stacku
+bywa więc mozaiką różnych rozmyć, z aureolą wokół obiektu.
+**Automatyczne tło…** w obszarze retuszu zastępuje je jedną prawdziwą klatką z
+tego samego stacku. Obiekt pozostaje dokładnie taki jak po stackowaniu i nic nie
+jest zmyślane: każdy piksel tła pochodzi z klatki albo z wyniku stacku.
+
+1. Otwórz wynik w obszarze retuszu i kliknij **Automatyczne tło…**.
+2. Wybierz tło:
+   - **Automatycznie** (zalecane) używa miękkiego tła, chyba że stack
+     zarejestrował ostro dużą część tła. Wtedy używa ostrego.
+   - **Miękkie tło** używa klatki z najbardziej rozmytym tłem.
+   - **Ostre tło** używa klatki z najdalszym ogniskowaniem.
+3. Zostaw włączone **Usuń aureole na krawędziach**, aby usunąć aureole wzdłuż
+   krawędzi obiektu. Nigdy nie wychodzi poza to, co zarejestrowały klatki.
+   Wyłącz, aby zachować krawędzie ze stacku.
+4. Zaznacz **Zachowaj miękkie części połączone z obiektem**, gdy części obiektu
+   leżą tuż poza głębią ostrości, na przykład główka na końcu kolca. Obiekty tła
+   obok obiektu też mogą wtedy zostać jak po stackowaniu, więc sprawdź wynik.
+5. Kliknij **Zastąp tło**. Stack 15 klatek po 20 megapikseli trwa około minuty i
+   potrzebuje około 3,5 GB wolnej pamięci. **Anuluj** przerywa.
+
+Zmiana to jeden krok, który można cofnąć, a pociągnięcia namalowane wcześniej na
+obiekcie zostają. **Pędzlem przywracania** przywrócisz piksele ze stacku tam,
+gdzie wolisz, na przykład nieostre źdźbło trawy przed obiektem. Gdy obiekt
+wypełnia prawie cały kadr, jak w scenie z dna lasu, obraz zostaje jak po
+stackowaniu i pojawia się komunikat.
+
+Po przebiegu **Pokaż brakujące dane** zabarwia miejsca, których żadna klatka nie
+uchwyciła wyraźnie. To miejsca do sprawdzenia lub ręcznego retuszu:
+
+- magenta: tło, którego żadna klatka nie zarejestrowała bez obiektu z przodu
+- cyjan: obiekt zasłonięty przed aparatem
+- żółty: obiekt poza zakresem ostrości stacku
+- łupkowy: miejsca zbyt gładkie, by ocenić
+
+**Zapisz mapę brakujących danych…** zapisuje zabarwiony podgląd i jedną
+czarno-białą maskę na kolor. Automatyczne tło potrzebuje klatek, z których
+powstał wynik, i nie jest dostępne dla wyników obszaru (ROI). Punkty kontrolne
+retuszu zapisują wybór i obliczają go ponownie przy wczytaniu.
 
 ### Zarządzanie etykietami
 

@@ -134,7 +134,7 @@ Maak dieptekaarten en exporteer getextureerde 3D-oppervlakken.
 
 ### Bronvaste retouche
 
-Retoucheer het resultaat met pixels uit de bronframes.
+Retoucheer het resultaat met pixels uit de bronframes. De automatische achtergrond vervangt een onrustige gestapelde achtergrond door één echt frame.
 
 </td>
 <td width="54%">

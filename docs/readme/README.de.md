@@ -134,7 +134,7 @@ Erstellen Sie Tiefenkarten und exportieren Sie texturierte 3D-Oberflächen.
 
 ### Quellengebundene Retusche
 
-Retuschieren Sie das Ergebnis mit Pixeln aus den Quellbildern.
+Retuschieren Sie das Ergebnis mit Pixeln aus den Quellbildern. Der automatische Hintergrund ersetzt einen unruhigen gestackten Hintergrund durch ein echtes Einzelbild.
 
 </td>
 <td width="54%">
