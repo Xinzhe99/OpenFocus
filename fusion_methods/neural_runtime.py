@@ -13,8 +13,11 @@ import numpy as np
 _LOG = logging.getLogger(__name__)
 _SESSIONS = OrderedDict()
 _PROVIDER = {'CPU': 'CPUExecutionProvider', 'DIRECTML': 'DmlExecutionProvider',
-             'COREML': 'CoreMLExecutionProvider'}
+             'CUDA': 'CUDAExecutionProvider', 'ROCM': 'ROCMExecutionProvider',
+             'OPENVINO': 'OpenVINOExecutionProvider', 'COREML': 'CoreMLExecutionProvider'}
 _DEVICE = None
+_DIRECTML_ADAPTER_INDEX = 0
+_DIRECTML_ADAPTER_NAME = ''
 _LOCK = threading.RLock()
 _ACTUAL_DEVICE = None
 _FALLBACK_CPU = False
@@ -38,11 +41,14 @@ def cached_device():
 
 
 def is_accelerator(kind):
-    return kind in ('DIRECTML', 'COREML')
+    return kind in ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO', 'COREML')
 
 
 def display_name(kind):
-    return {'DIRECTML': 'DirectML', 'COREML': 'CoreML', 'CPU': 'CPU',
+    if kind == 'DIRECTML' and _DIRECTML_ADAPTER_NAME:
+        return f'DirectML ({_DIRECTML_ADAPTER_NAME})'
+    return {'DIRECTML': 'DirectML', 'CUDA': 'CUDA', 'ROCM': 'ROCm',
+            'OPENVINO': 'OpenVINO GPU', 'COREML': 'CoreML', 'CPU': 'CPU',
             'N/A': 'N/A'}.get(kind, str(kind))
 
 
@@ -54,45 +60,73 @@ def gpu_toggle_state(kind, use_gpu, available):
 def resolve_device(use_gpu):
     if not use_gpu:
         return 'CPU'
-    global _DEVICE
+    global _DEVICE, _DIRECTML_ADAPTER_INDEX, _DIRECTML_ADAPTER_NAME
     with _LOCK:
         if _DEVICE is None:
             import onnxruntime as ort
             from utils.weights import weights_path
             available = ort.get_available_providers()
             _DEVICE = 'CPU'
-            for kind in ('DIRECTML', 'COREML'):
+            for kind in ('CUDA', 'ROCM', 'DIRECTML', 'OPENVINO', 'COREML'):
                 if _PROVIDER[kind] not in available:
                     continue
-                try:
-                    options = ort.SessionOptions()
-                    options.profile_file_prefix = os.path.join(tempfile.gettempdir(), 'openfocus-ort-' + uuid.uuid4().hex)
-                    options.enable_profiling = True
-                    options.intra_op_num_threads = 1
-                    for name, value in zip(('layers', 'height', 'width'), (2, 64, 64)):
-                        options.add_free_dimension_override_by_name(name, value)
-                    if kind == 'DIRECTML':
-                        options.enable_mem_pattern = False
-                        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-                    provider = (_PROVIDER[kind], {'device_id': 0}) if kind == 'DIRECTML' else _PROVIDER[kind]
-                    session = ort.InferenceSession(weights_path('stackmff_v3_final.onnx'),
-                        sess_options=options, providers=[provider, 'CPUExecutionProvider'])
-                    session.disable_fallback()
-                    session.run(['logits'], {'input': np.zeros((1, 2, 64, 64), dtype=np.float32)})
-                    profile = session.end_profiling()
+                if kind == 'DIRECTML':
+                    from core.resource_policy import directml_adapters
+                    candidates = directml_adapters()
+                else:
+                    candidates = [(0, '', 0, 0)]
+                for adapter_index, adapter_name, _vendor, _memory in candidates:
                     try:
-                        with open(profile, encoding='utf-8') as stream:
-                            events = json.load(stream)
-                        if not any(event.get('args', {}).get('provider') == _PROVIDER[kind]
-                                   for event in events):
-                            raise RuntimeError(f'{kind} did not execute any model nodes')
-                    finally:
-                        os.remove(profile)
-                    _DEVICE = kind
+                        options = ort.SessionOptions()
+                        options.profile_file_prefix = os.path.join(tempfile.gettempdir(), 'openfocus-ort-' + uuid.uuid4().hex)
+                        options.enable_profiling = True
+                        options.intra_op_num_threads = 1
+                        for name, value in zip(('layers', 'height', 'width'), (2, 64, 64)):
+                            options.add_free_dimension_override_by_name(name, value)
+                        if kind == 'DIRECTML':
+                            options.enable_mem_pattern = False
+                            options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                        provider = _provider(kind, adapter_index)
+                        session = ort.InferenceSession(weights_path('stackmff_v3_final.onnx'),
+                            sess_options=options, providers=[provider, 'CPUExecutionProvider'])
+                        session.disable_fallback()
+                        session.run(['logits'], {'input': np.zeros((1, 2, 64, 64), dtype=np.float32)})
+                        profile = session.end_profiling()
+                        try:
+                            with open(profile, encoding='utf-8') as stream:
+                                events = json.load(stream)
+                            if not any(event.get('args', {}).get('provider') == _PROVIDER[kind]
+                                       for event in events):
+                                raise RuntimeError(f'{kind} did not execute any model nodes')
+                        finally:
+                            os.remove(profile)
+                        if kind == 'DIRECTML':
+                            from core.resource_policy import set_directml_adapter
+                            set_directml_adapter(adapter_index)
+                        if kind in ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO'):
+                            from core.resource_policy import probe_resources
+                            if not probe_resources(kind).vram_known:
+                                _LOG.warning('%s adapter %s has no reliable free-VRAM reading',
+                                             kind, adapter_index)
+                                continue
+                        if kind == 'DIRECTML':
+                            _DIRECTML_ADAPTER_INDEX, _DIRECTML_ADAPTER_NAME = adapter_index, adapter_name
+                        _DEVICE = kind
+                        break
+                    except Exception:
+                        _LOG.warning('%s provider probe failed for adapter %s', kind,
+                                     adapter_index, exc_info=True)
+                if _DEVICE != 'CPU':
                     break
-                except Exception:
-                    _LOG.warning('%s provider probe failed', kind, exc_info=True)
         return _DEVICE
+
+
+def _provider(kind, index=0):
+    if kind in ('DIRECTML', 'CUDA', 'ROCM'):
+        return _PROVIDER[kind], {'device_id': index}
+    if kind == 'OPENVINO':
+        return _PROVIDER[kind], {'device_type': 'GPU'}
+    return _PROVIDER[kind]
 
 def estimate_inference_bytes(n, h, w, kind):
     hp, wp = h + (-h) % 64, w + (-w) % 64
@@ -126,7 +160,7 @@ def _session(path, shape, device, threads):
         if device == 'DIRECTML':
             options.enable_mem_pattern = False
             options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        provider = (_PROVIDER[device], {'device_id': 0}) if device == 'DIRECTML' else _PROVIDER[device]
+        provider = _provider(device, _DIRECTML_ADAPTER_INDEX if device == 'DIRECTML' else 0)
         session = ort.InferenceSession(path, sess_options=options,
                                        providers=[provider, 'CPUExecutionProvider']
                                        if device != 'CPU' else ['CPUExecutionProvider'])
@@ -151,13 +185,13 @@ def logits(planes, path, device, threads, should_cancel=None):
     global _ACTUAL_DEVICE, _FALLBACK_CPU
     if _FALLBACK_CPU:
         device = 'CPU'
-    if device == 'DIRECTML':
+    if device in ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO'):
         from core.resource_policy import probe_resources, vram_budget
-        snapshot = probe_resources('DIRECTML')
+        snapshot = probe_resources(device)
         n, hp, wp = shape
         required = estimate_inference_bytes(n, hp, wp, device) + n * hp * wp * 4 * 6
         if not snapshot.vram_known or required > vram_budget(snapshot):
-            _LOG.warning('DirectML memory budget is insufficient; using CPU for this job')
+            _LOG.warning('%s memory budget is unknown or insufficient; using CPU for this job', device)
             _FALLBACK_CPU = True
             _SESSIONS.clear()
             device = 'CPU'

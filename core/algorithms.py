@@ -186,8 +186,8 @@ def register_fusion(spec):
         if (not isinstance(spec.weights, str)
                 or not spec.weights.startswith('weights/')
                 or spec.weights.count('/') != 1
-                or not spec.weights.split('/', 1)[1].endswith('.pth')):
-            raise ValueError('weights must be weights/<file>.pth')
+                or not spec.weights.split('/', 1)[1].endswith('.onnx')):
+            raise ValueError('weights must be weights/<file>.onnx')
     _path(spec.runner)
     for hook in (spec.environment, spec.resource_estimator, spec.roi, spec.tile_decider,
                  spec.tile_runner, spec.depth_planner):

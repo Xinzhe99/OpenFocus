@@ -184,7 +184,7 @@ _NEURAL_WHOLE_FRAME_PIXELS = 80 * 1024 * 1024
 
 def _neural_depth_tiles(images, tile_size):
     h, w = images[0].shape[:2]
-    if tile_size >= max(h, w):
+    if ((max(h, w) + 63) // 64) * 64 <= ((tile_size + 63) // 64) * 64:
         return 0, [(0, 0, w, h)]
     from core.multi_focus_fusion import _ai_effective_tiling
     block, _batch, coords = _ai_effective_tiling(len(images), tile_size, h, w, 256, 1)

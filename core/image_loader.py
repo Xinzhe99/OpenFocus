@@ -355,7 +355,7 @@ def _read_tiff_pages(path: str, scale_factor=1.0, should_cancel=None) -> Optiona
     count = count_frames(path)
     if count < 2:
         return None
-    data = np.fromfile(path, dtype=np.uint8)
+    data = np.memmap(path, dtype=np.uint8, mode='r')
     pages = []
     for index in range(count):
         if should_cancel is not None and should_cancel():

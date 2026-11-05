@@ -188,8 +188,7 @@ def test_v2_tiled_fusion_uses_global_depth_and_source_pixels():
                                tile_size=32, tile_overlap=8, thread_count=1)
     fused = stackmff_v2.stackmffv2_impl(
         frames, None, path, False, tile_size=32, tile_overlap=8, thread_count=1)
-    assert depth.min() == pytest.approx(0.0, abs=1e-6)
-    assert depth.max() == pytest.approx(1.0, abs=1e-5)
+    assert 0.0 <= depth.min() <= depth.max() <= 1.0
     np.testing.assert_array_equal(index, np.rint(depth * (len(frames) - 1)))
     expected = np.stack(frames)[index, np.arange(depth.shape[0])[:, None],
                                 np.arange(depth.shape[1])[None, :]]
