@@ -96,7 +96,10 @@ def test_wipe_uses_selected_output_sources_after_stack_and_rotation_changes(qapp
     assert host.wipe_widget._right_pixmap.width() == 80
 
 
-def test_wipe_cropped_source_uses_result_coordinates(qapp):
+@pytest.mark.parametrize('theme', ['light', 'dark'])
+def test_wipe_cropped_source_uses_result_coordinates(qapp, monkeypatch, theme):
+    from ui import styles
+    monkeypatch.setattr(styles, 'CURRENT_THEME', theme)
     source = np.full((100, 100, 3), (0, 0, 220), np.uint8)
     result = np.full((100, 100, 3), (0, 200, 0), np.uint8)
     record = _record([source], result, roi_rect=(10, 20, 40, 20), roi_mode="paste")
@@ -108,7 +111,7 @@ def test_wipe_cropped_source_uses_result_coordinates(qapp):
     assert (widget._left_pixmap.width(), widget._left_pixmap.height()) == (40, 20)
     grab = widget.grab()
     assert _canvas_color(grab, 40, 60).red() > 200
-    assert _canvas_color(grab, 40, 100).red() < 200
+    assert _canvas_color(grab, 40, 100) == _canvas_color(grab, 5, 5)
     assert _canvas_color(grab, 160, 100).green() > 180
 
 
@@ -130,7 +133,10 @@ def test_wipe_missing_provenance_and_changed_result_size_do_not_guess(qapp):
     assert host.wipe_widget._left_pixmap is None
 
 
-def test_wipe_does_not_stretch_different_image_dimensions(qapp):
+@pytest.mark.parametrize('theme', ['light', 'dark'])
+def test_wipe_does_not_stretch_different_image_dimensions(qapp, monkeypatch, theme):
+    from ui import styles
+    monkeypatch.setattr(styles, 'CURRENT_THEME', theme)
     from PyQt6.QtGui import QColor, QPixmap
     left, right = QPixmap(40, 80), QPixmap(80, 40)
     left.fill(QColor("red"))
@@ -142,7 +148,7 @@ def test_wipe_does_not_stretch_different_image_dimensions(qapp):
     # Right domain is 200x100 at y=60; the left remains 100x200,
     # extending below the shorter right image rather than being squashed.
     assert _canvas_color(grab, 40, 180).red() > 200
-    assert _canvas_color(grab, 160, 180).green() < 100
+    assert _canvas_color(grab, 160, 180) == _canvas_color(grab, 5, 5)
 
 
 def test_wipe_uses_aligned_trimmed_frames_and_source_indices(qapp):
