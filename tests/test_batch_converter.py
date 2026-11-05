@@ -441,3 +441,148 @@ def test_converter_close_waits_for_worker_and_keeps_controls_disabled(qapp, tmp_
     finally:
         dialog.worker = None
         dialog.close()
+
+
+def test_progressive_thumbnail_admits_original_dct_scratch_before_decode(tmp_path, monkeypatch):
+    required = []
+
+    class ProgressiveHeader:
+        format = 'JPEG'
+        width = height = 10000
+        info = {'progressive': 1}
+
+        def getexif(self):
+            return {}
+
+        def getbands(self):
+            return ('R', 'G', 'B')
+
+        def draft(self, *args):
+            self.width = self.height = 1250
+
+        def thumbnail(self, *args):
+            pytest.fail('Decoded progressive JPEG before admitting its original DCT scratch')
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    def deny(required_bytes, *args, **kwargs):
+        required.append(required_bytes)
+        raise MemoryError('Thumbnail exceeds the available resource budget')
+
+    monkeypatch.setattr(converter.Image, 'open', lambda *a: ProgressiveHeader())
+    monkeypatch.setattr(converter.resource_policy, 'require_memory', deny)
+    # Header-only simulation: no large image is created or decoded.
+    with pytest.raises(MemoryError, match='resource budget'):
+        converter.thumbnail_rgb(str(tmp_path / 'progressive.jpg'))
+    assert len(required) == 1
+    assert required[0] >= 10000 * 10000 * 3 * 2 + 1250 * 1250 * 16
+
+
+def test_small_progressive_preview_preserves_geometry_for_admission(tmp_path, monkeypatch):
+    source = tmp_path / 'small-progressive.jpg'
+    Image.new('RGB', (320, 240), 'red').save(source, progressive=True, subsampling=0)
+    required = []
+    monkeypatch.setattr(converter.resource_policy, 'require_memory', lambda n, **kw: required.append(n))
+    pixels = converter.thumbnail_rgb(str(source))
+    assert pixels.shape == (72, 96, 3)
+    assert len(required) == 1 and required[0] >= 320 * 240 * 3 * 2
+
+
+def test_tiff_preflight_visits_headers_once_and_stops_before_next_page(tmp_path, monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+    cancelled = Event()
+    opened, headers = [], []
+
+    class HeaderFile:
+        is_dng = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        @property
+        def pages(self):
+            for index in range(10000):
+                headers.append(index)
+                yield SimpleNamespace(imagewidth=8, imagelength=8, databytecounts=(20,))
+
+    def open_tiff(path):
+        opened.append(path)
+        return HeaderFile()
+
+    real_estimate = converter._image_requirements
+
+    def estimate(*args):
+        result = real_estimate(*args)
+        cancelled.set()
+        return result
+
+    monkeypatch.setattr(converter.tifffile, 'TiffFile', open_tiff)
+    monkeypatch.setattr(converter, '_image_requirements', estimate)
+    monkeypatch.setattr(converter, 'estimate_job', lambda *a: pytest.fail('Reopened a TIFF page'))
+    with pytest.raises(InterruptedError, match='source admission'):
+        converter._estimate_source(str(tmp_path / 'many-pages.tif'), cancelled.is_set)
+    assert len(opened) == 1 and headers == [0]
+
+
+def test_tiff_preflight_uses_one_open_for_all_page_budgets(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    entries = [SimpleNamespace(imagewidth=8, imagelength=9, databytecounts=(20,)),
+               SimpleNamespace(imagewidth=80, imagelength=90, databytecounts=(200,))]
+    opened = []
+
+    class HeaderFile:
+        is_dng = False
+        pages = entries
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    def open_tiff(path):
+        opened.append(path)
+        return HeaderFile()
+
+    monkeypatch.setattr(converter.tifffile, 'TiffFile', open_tiff)
+    monkeypatch.setattr(converter, 'estimate_job', lambda *a: pytest.fail('Reopened a TIFF page'))
+    assert converter._estimate_source(str(tmp_path / 'two-pages.tif'), lambda: False) == (
+        2, *converter._image_requirements(80, 90, 200))
+    assert len(opened) == 1
+
+
+def test_cancelled_preflight_drains_active_job_without_reporting_failure(tmp_path, monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+    cancelled, estimated, statuses = Event(), [], {}
+    monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=2, max_in_flight=2, ram_budget=150, describe=lambda: 'test'))
+    monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 150)
+
+    def estimate(source, should_cancel):
+        estimated.append(source)
+        if source == 'second':
+            cancelled.set()
+            raise InterruptedError('Cancelled while inspecting TIFF pages')
+        return 1, 10, 1
+
+    def complete_active(*args):
+        assert cancelled.wait(5)
+        return True, False
+
+    monkeypatch.setattr(converter, '_estimate_source', estimate)
+    monkeypatch.setattr(converter, '_convert_source', complete_active)
+    result = converter.convert_batch(['first', 'second', 'third'], str(tmp_path), '.png',
+                                     cancelled.is_set, lambda i, status: statuses.update({i: status}),
+                                     lambda *a: None)
+    assert result == (1, 0, True)
+    assert estimated == ['first', 'second']
+    assert statuses == {1: 'Cancelled', 2: 'Cancelled'}

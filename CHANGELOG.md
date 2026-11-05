@@ -76,6 +76,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   diagnostic and consumer regressions for independent V1/V3 models and caches.
 - Write the required main-image NewSubFileType=0 and orientation tags for DNG,
   fixing strict DNG SDK readers rejecting otherwise LibRaw-readable LinearRaw.
+- Admit progressive JPEG thumbnail scratch using original image dimensions,
+  and make TIFF admission a single cancellable page-header traversal.
 - Check temporary disk space for mapped frames and known stack operations, and
   release rejected imports without replacing the current stack.
 - Develop ordinary RAW inputs with the sRGB transfer curve and preserve the

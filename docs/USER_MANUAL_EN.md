@@ -1372,6 +1372,10 @@ use JPEG decoder scaling or small raster pages. Large RAW files use bounded
 embedded JPEG ranges from TIFF-based RAW or RAF containers; a format without a
 safe preview, including some CR3 files, shows a placeholder instead of unpacking
 the sensor. Missing thumbnails do not prevent conversion.
+Thumbnail memory admission includes the original JPEG geometry: progressive
+JPEG still needs full-image DCT coefficient storage even when decoder scaling
+reduces the displayed pixels. A preview exceeding the resource budget shows
+the same placeholder before pixel decoding.
 
 Choose **DNG** for RAW-to-DNG conversion without installing Adobe DNG Converter.
 Supported three-color Bayer and X-Trans sensors retain the exact active CFA
@@ -1405,6 +1409,8 @@ synthetic files, not certification of every camera or Adobe product.
 
 Parallel conversion shares the application's resource budget, reserves memory
 for each job's largest TIFF page, and bounds pending jobs to the worker count.
+TIFF admission walks page headers once with one open file and checks cancellation
+before reading or estimating each page; cancellation also interrupts this preflight.
 Each job runs native codecs with one thread. Cancellation stops new admissions
 and checks between pages, decode/write stages and DNG strips; native codec calls
 finish cooperatively. Completed files remain available and incomplete temporary

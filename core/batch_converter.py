@@ -42,9 +42,46 @@ def estimate_job(path, page=0):
     else:
         width, height = image_loader.source_dimensions(path, page)
         compressed = os.path.getsize(path)
+    return _image_requirements(width, height, compressed)
+
+
+def _image_requirements(width, height, compressed):
     if width <= 0 or height <= 0:
         raise ValueError('Invalid image dimensions.')
     return width * height * 64 + compressed * 2, width * height * 16 + 64 * 1024 * 1024
+
+
+def _estimate_source(path, cancelled):
+    """Walk TIFF headers once, checking cancellation before each page estimate."""
+    def check_cancel():
+        if cancelled():
+            raise InterruptedError('Conversion cancelled during source admission')
+
+    check_cancel()
+    if Path(path).suffix.lower() in ('.tif', '.tiff'):
+        with tifffile.TiffFile(path) as tif:
+            if not tif.is_dng:
+                count = need_ram = need_disk = 0
+                entries = iter(tif.pages)
+                while True:
+                    check_cancel()
+                    try:
+                        entry = next(entries)
+                    except StopIteration:
+                        break
+                    check_cancel()
+                    ram, disk = _image_requirements(entry.imagewidth, entry.imagelength,
+                                                     sum(entry.databytecounts))
+                    need_ram, need_disk = max(need_ram, ram), max(need_disk, disk)
+                    count += 1
+                check_cancel()
+                if not count:
+                    raise ValueError('TIFF contains no pages.')
+                return count, need_ram, need_disk
+    check_cancel()
+    ram, disk = estimate_job(path)
+    check_cancel()
+    return 1, ram, disk
 
 
 def _admit(path, page, output_dir):
@@ -306,12 +343,15 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
                                         exhausted = True
                                         break
                                     try:
-                                        count = page_count(source)
-                                        need_ram = need_disk = 0
-                                        for page in range(count):
-                                            ram, disk = estimate_job(source, page)
-                                            need_ram, need_disk = max(need_ram, ram), max(need_disk, disk)
+                                        count, need_ram, need_disk = _estimate_source(source, cancelled)
                                         pending = index, source, count, need_ram, need_disk
+                                    except (InterruptedError, RegistrationCancelled):
+                                        item(index, 'Cancelled')
+                                        for remaining_index, _ in sources_iter:
+                                            item(remaining_index, 'Cancelled')
+                                        exhausted = True
+                                        operation.cancel()
+                                        break
                                     except Exception as exc:
                                         item(index, str(exc))
                                         log_action('converter.admission_failed', source=source, reason=str(exc))
@@ -427,10 +467,21 @@ def thumbnail_rgb(path, size=(96, 72)):
     def render(image, orientation=None):
         if orientation is None:
             orientation = int(image.getexif().get(274, 1))
+        original_width, original_height = image.width, image.height
+        scratch = 0
         if image.format == 'JPEG':
+            components = len(image.getbands())
+            progressive = bool(image.info.get('progressive') or image.info.get('progression'))
+            # draft scales output pixels, but progressive libjpeg still retains
+            # every original 8x8 block's signed 16-bit DCT coefficients.
+            if progressive:
+                blocks = ((original_width + 7) // 8) * ((original_height + 7) // 8)
+                scratch = blocks * 64 * components * 2
+            scratch += ((original_width + 15) // 16) * 16 * components * 64 + 1024 * 1024
             image.draft('RGB', size)
         if image.width * image.height > 4_000_000:
             raise ValueError('No bounded image preview is available')
+        resource_policy.require_memory(scratch + image.width * image.height * 16)
         image.thumbnail(size, Image.Resampling.LANCZOS)
         pixels = np.asarray(image.convert('RGB'))
         transform = image_loader._EXIF_TRANSFORMS.get(orientation)
