@@ -73,25 +73,28 @@ def _plane(frame):
     else:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     scale = 65535.0 if gray.dtype == np.uint16 else 255.0
-    return gray.astype(np.float32) / scale
+    return gray.astype(np.float32, copy=False) / scale
 
 
 def stage_planes(frames, align, should_cancel=None):
-    """Stage luma at 0-1, reflecting edges when the requested grid permits.
+    """Stage a padded image grid as float32 luma at 0-1.
 
-    Small inputs use replicated edges, as in the released model inference.
+    Pad before native colour conversion so whole and tiled inference use the
+    same conversion grid, including scalar/SIMD rounding at image edges.
     """
     h, w = frames[0].shape[:2]
     hp, wp = h + (-h) % align, w + (-w) % align
+    ph, pw = hp - h, wp - w
+    mode = 'reflect' if ph < h and pw < w else 'edge'
     batch = np.empty((1, len(frames), hp, wp), dtype=np.float32)
     normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     for index, frame in enumerate(frames):
         cancel(should_cancel)
-        batch[0, index, :h, :w] = _plane(working_frame(frame, normalize_stack))
-    ph, pw = hp - h, wp - w
-    if ph or pw:
-        mode = 'reflect' if ph < h and pw < w else 'edge'
-        batch = np.pad(batch[:, :, :h, :w], ((0, 0), (0, 0), (0, ph), (0, pw)), mode=mode)
+        frame = working_frame(frame, normalize_stack)
+        if ph or pw:
+            padding = ((0, ph), (0, pw)) + ((0, 0),) * (frame.ndim - 2)
+            frame = np.pad(frame, padding, mode=mode)
+        batch[0, index] = _plane(frame)
     cancel(should_cancel)
     return batch
 

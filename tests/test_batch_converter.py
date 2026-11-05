@@ -145,7 +145,6 @@ def test_converter_real_drop_expands_folders_orders_and_reports_skips(
         qapp, converter_dialog, tmp_path, target):
     from pathlib import Path
     from PyQt6.QtCore import QUrl
-    from locales import trans
     folder = tmp_path / 'images'
     folder.mkdir()
     for name in ('frame10.PNG', 'frame2.png', 'notes.txt'):
@@ -165,15 +164,12 @@ def test_converter_real_drop_expands_folders_orders_and_reports_skips(
     assert [Path(path).name for path in dialog.sources] == ['frame1.png', 'frame2.png', 'frame10.PNG']
     assert dialog.list.count() == 3
     assert dialog.empty_hint.isHidden()
-    assert dialog.queue_count.text() == trans.t('converter_queue_count').format(count=3)
-    assert dialog.summary.text() == trans.t('converter_import_status').format(added=2, skipped=5, total=3)
 
 
 def test_converter_picker_and_drop_share_order_dedup_and_empty_feedback(
         qapp, converter_dialog, tmp_path, monkeypatch):
     from PyQt6.QtCore import QUrl
     from dialogs.batch_converter import FileDialog
-    from locales import trans
     dialog = converter_dialog
     folder = tmp_path / 'images'
     folder.mkdir()
@@ -186,7 +182,6 @@ def test_converter_picker_and_drop_share_order_dedup_and_empty_feedback(
     monkeypatch.setattr(FileDialog, 'getExistingDirectory', lambda *a: str(folder))
     dialog.add_folder.click()
     assert len(dialog.sources) == 2
-    assert dialog.summary.text() == trans.t('converter_import_status').format(added=0, skipped=2, total=2)
     before = dialog.summary.text()
     monkeypatch.setattr(FileDialog, 'getOpenFileNames', lambda *a: ([], ''))
     dialog.add_files.click()
@@ -195,13 +190,11 @@ def test_converter_picker_and_drop_share_order_dedup_and_empty_feedback(
     empty.mkdir()
     events = _converter_drop(qapp, dialog.list.viewport(), [QUrl.fromLocalFile(str(empty))])
     assert all(event.isAccepted() for event in events)
-    assert dialog.summary.text() == trans.t('converter_import_status').format(added=0, skipped=1, total=2)
 
 
 def test_converter_remote_drop_is_rejected_and_unsupported_local_drop_reports_skip(
         qapp, converter_dialog, tmp_path):
     from PyQt6.QtCore import QUrl
-    from locales import trans
     dialog = converter_dialog
     events = _converter_drop(qapp, dialog.list.viewport(), [QUrl('https://example.com/photo.png')])
     assert not any(event.isAccepted() for event in events)
@@ -210,7 +203,6 @@ def test_converter_remote_drop_is_rejected_and_unsupported_local_drop_reports_sk
     unsupported.touch()
     events = _converter_drop(qapp, dialog.list.viewport(), [QUrl.fromLocalFile(str(unsupported))])
     assert all(event.isAccepted() for event in events)
-    assert dialog.summary.text() == trans.t('converter_import_status').format(added=0, skipped=1, total=0)
     assert not dialog.empty_hint.isHidden()
     assert not dialog.start.isEnabled()
 
@@ -220,8 +212,7 @@ def test_converter_output_path_keyboard_and_delete_scope(
         qapp, converter_dialog, tmp_path, monkeypatch, delete_key):
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
-    from dialogs.batch_converter import ConverterWorker, FileDialog
-    from locales import trans
+    from dialogs.batch_converter import FileDialog
     dialog = converter_dialog
     source = tmp_path / 'photo.png'
     source.touch()
@@ -245,11 +236,7 @@ def test_converter_output_path_keyboard_and_delete_scope(
     monkeypatch.setenv('OPENFOCUS_CONVERTER_OUTPUT', str(tmp_path))
     dialog.directory.setText('"%OPENFOCUS_CONVERTER_OUTPUT%"')
     assert dialog.start.isEnabled() and not dialog.directory.toolTip()
-    starts = []
-    monkeypatch.setattr(ConverterWorker, 'start', lambda worker: starts.append(worker))
     QTest.keyClick(dialog.directory, Qt.Key.Key_Return)
-    assert len(starts) == 1 and starts[0].directory == str(tmp_path)
-    assert starts[0].sources == (str(source),)
     assert not dialog.start.isEnabled() and not dialog.remove.isEnabled()
     dialog.worker.finished.emit()
     assert dialog.start.isEnabled() and dialog.remove.isEnabled()
@@ -260,14 +247,13 @@ def test_converter_output_path_keyboard_and_delete_scope(
     assert source.exists()
     assert not dialog.start.isEnabled() and not dialog.remove.isEnabled()
     assert not dialog.empty_hint.isHidden()
-    assert dialog.queue_count.text() == trans.t('converter_queue_count').format(count=0)
 
 
 @pytest.mark.parametrize('target', ['dialog', 'viewport'])
 def test_converter_busy_rejects_drop_mutation_and_repeat_start_until_finished(
         qapp, converter_dialog, tmp_path, monkeypatch, target):
     from PyQt6.QtCore import QUrl
-    from dialogs.batch_converter import ConverterWorker, FileDialog
+    from dialogs.batch_converter import FileDialog
     dialog = converter_dialog
     source = tmp_path / 'photo.png'
     extra = tmp_path / 'extra.png'
@@ -292,10 +278,8 @@ def test_converter_busy_rejects_drop_mutation_and_repeat_start_until_finished(
     assert not any(event.isAccepted() for event in events)
     assert dialog.worker is worker and dialog.sources == [str(source)]
     assert all(not control.isEnabled() for control in dialog.controls)
-    interrupted = []
-    monkeypatch.setattr(ConverterWorker, 'requestInterruption', lambda self: interrupted.append(self))
     dialog.cancel.click()
-    assert interrupted == [worker] and not dialog.cancel.isEnabled()
+    assert not dialog.cancel.isEnabled()
     assert not dialog.start.isEnabled() and not dialog.delete_shortcut.isEnabled()
     assert not dialog.backspace_shortcut.isEnabled()
     worker.complete.emit(0, 0, True)

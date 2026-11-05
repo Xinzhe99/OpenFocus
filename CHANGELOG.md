@@ -23,9 +23,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add a separate microscope mosaic workspace with feature-based alignment,
   manual pixel coordinates, overlap preview and 8/16-bit TIFF/PNG export.
   Large TIFF mosaics use disk-backed tiled composition and streamed writing.
+- Accept local image/folder drops in the converter and experimental mosaic
+  list/canvas, with natural order, duplicate handling and visible import counts.
+- Add applied mosaic grid placement for row/column capture, zigzag direction,
+  start corner and overlap; preserve manual positions until Apply is chosen.
 
 ### Changed
 - Label the microscope stitching workspace as experimental and unfinished.
+- Keep Delete/Backspace scoped to converter, batch and mosaic queues; validate
+  converter readiness before enabling Convert and retain busy state until finish.
+- Preserve mosaic preview opacity through imports/layout changes, synchronize
+  canvas/list selection and keep import error messages tied to their operation.
 - Use a shared portable picker for every open/save/folder flow, with an editable
   address bar and Ctrl+L (also Cmd+L on macOS). Pasted quoted paths, environment
   variables and Unicode names navigate on Enter without accepting or overwriting;
@@ -134,6 +142,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Keep ICC inspection on the imported frame and RAW size admission header-only.
 - Inspect sensor-mask orientation without decoding PNG pixels, and admit
   standalone retouch inputs before either native decoder allocates pixels.
+- Pad the neural image grid before luma conversion so whole-frame and one-tile
+  V2 inference share native conversion boundaries on every CPU backend.
 - Accept TIFF-named DNG files in native RAW selection and append, while rejecting
   ordinary TIFF in camera-linear stacks.
 - Develop camera-linear RAW pixels before exporting a depth-rendered TIFF, and

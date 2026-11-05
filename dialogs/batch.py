@@ -3,7 +3,7 @@
 
 import os
 from PyQt6.QtCore import Qt, QSize, QSignalBlocker
-from PyQt6.QtGui import QFont, QIcon, QTextOption
+from PyQt6.QtGui import QFont, QIcon, QTextOption, QShortcut, QKeySequence
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QDialog,
@@ -206,6 +206,12 @@ class BatchProcessingDialog(QDialog):
         self.remove_folder_btn = QPushButton(trans.t('batch_btn_remove'))
         self.remove_folder_btn.clicked.connect(self.remove_selected_folders)
         self.remove_folder_btn.setEnabled(False)
+        self._remove_shortcuts = []
+        for key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            shortcut = QShortcut(QKeySequence(key), self.folder_list)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self.remove_folder_btn.click)
+            self._remove_shortcuts.append(shortcut)
         self.folder_list.itemSelectionChanged.connect(
             lambda: self.remove_folder_btn.setEnabled(
                 bool(self.folder_list.selectedItems())))

@@ -303,16 +303,14 @@ class MosaicDialog(QDialog):
             self.close()
 
     def _error(self, error):
+        detail = f"{self.status.text()}\n{error}"
         self.status.setText(trans.t('alignment_report_failed'))
-        QMessageBox.warning(self, trans.t('mosaic_title'),
-                            trans.t('msg_save_failed_info_unexpected').format(error=error))
+        QMessageBox.warning(self, trans.t('mosaic_title'), detail)
 
     @staticmethod
     def _drop_paths(event):
-        urls = event.mimeData().urls()
-        if not urls or any(not url.isLocalFile() or not url.toLocalFile() for url in urls):
-            return []
-        return [url.toLocalFile() for url in urls]
+        return [path for url in event.mimeData().urls()
+                if url.isLocalFile() and (path := url.toLocalFile())]
 
     def dragEnterEvent(self, event):
         if self.worker is None and self._drop_paths(event):
@@ -330,7 +328,7 @@ class MosaicDialog(QDialog):
             return
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
-        self._import_paths(paths)
+        self._import_paths(paths, skipped=len(event.mimeData().urls()) - len(paths))
 
     def eventFilter(self, watched, event):
         if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
@@ -339,7 +337,8 @@ class MosaicDialog(QDialog):
         if event.type() == QEvent.Type.Drop:
             self.dropEvent(event)
             return True
-        if (event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Delete
+        if (event.type() == QEvent.Type.KeyPress
+                and event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace)
                 and event.modifiers() == Qt.KeyboardModifier.NoModifier):
             self._remove_selected()
             return True
@@ -365,10 +364,11 @@ class MosaicDialog(QDialog):
         set_last_dialog_dir(paths[0])
         self._import_paths(paths)
 
-    def _import_paths(self, sources):
+    def _import_paths(self, sources, skipped=0):
         if self.worker is not None or not sources:
             return
         sources = tuple(sources)
+        skipped_count = skipped
         existing = tuple(frame.source_path for frame in self.frames if frame.source_path)
 
         def load(cancel, progress):
@@ -377,7 +377,7 @@ class MosaicDialog(QDialog):
                                            source_dimensions, _DecodeCancelled,
                                            _is_dng_tiff)
             from utils.sorting import natural_sort_key
-            paths, seen, skipped = [], list(existing), 0
+            paths, seen, skipped = [], list(existing), skipped_count
 
             def include(path):
                 nonlocal skipped
@@ -390,19 +390,19 @@ class MosaicDialog(QDialog):
                     paths.append(path)
                     seen.append(path)
 
-            def scan_error(error):
-                raise error
-
             for source in sources:
                 if cancel():
                     raise RegistrationCancelled()
                 if os.path.isdir(source):
-                    for root, directories, files in os.walk(source, onerror=scan_error):
-                        if cancel():
-                            raise RegistrationCancelled()
-                        directories.sort(key=natural_sort_key)
-                        for name in files:
-                            include(os.path.join(root, name))
+                    names = sorted(os.listdir(source), key=natural_sort_key)
+                    if not names:
+                        skipped += 1
+                    for name in names:
+                        path = os.path.join(source, name)
+                        if os.path.isfile(path):
+                            include(path)
+                        else:
+                            skipped += 1
                 elif os.path.isfile(source):
                     include(source)
                 else:

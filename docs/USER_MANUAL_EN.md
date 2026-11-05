@@ -175,6 +175,18 @@ image-only method can infer the position of a featureless, non-overlapping
 region. Automatic matching estimates planar rotation, scale and translation;
 verify repeated patterns and specimen motion before saving.
 
+Drop image files or folders onto the list or canvas to import them. Folder
+imports include supported files directly inside the folder; subfolders are not
+scanned. Imports use natural filename order and ignore duplicates. Select an
+image in the list or canvas and press Delete or Backspace to remove that item.
+
+For a declared stage grid, set rows, columns, capture order, direction, start
+corner and estimated overlap, then choose **Apply grid positions**. The cell
+count must match the image count. Changing controls preserves manual placement
+until Apply is pressed; applying replaces the positions. Inspect overlaps and
+adjust X/Y afterward. Preview opacity survives imports and layout changes and
+does not alter the exported blend.
+
 Save as TIFF or PNG. TIFF uses disk-backed tiled composition and strip-based
 writing, including BigTIFF for large files; allow enough temporary and output
 disk space. TIFF strip buffers target 4 MiB per strip, but one full output row
@@ -1365,9 +1377,17 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose an existing output folder and a format, then select **Convert**. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
 
+Drag local image files or folders onto the queue or dialog to add them. Folder
+imports include direct children only. Files are naturally sorted and deduplicated;
+the import summary reports added and skipped entries. Convert becomes available
+when the queue contains images and the output field resolves to an existing
+folder. Quoted paths and environment variables are supported.
+
 The fixed 96×72 thumbnail sits to the left of each row. Select multiple rows and
-press **Delete** or **Remove** to remove them. Adding/removing files and Delete
-are disabled during conversion. Thumbnails run in a separate, bounded queue and
+press **Delete** or **Backspace**, or choose **Remove**. These keys edit text
+normally when the output field has focus. Import and removal remain disabled
+until conversion or cancellation actually finishes. Thumbnails run in a separate,
+bounded queue and
 use JPEG decoder scaling or small raster pages. Large RAW files use bounded
 embedded JPEG ranges from TIFF-based RAW or RAF containers; a format without a
 safe preview, including some CR3 files, shows a placeholder instead of unpacking

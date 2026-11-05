@@ -217,8 +217,8 @@ class BatchConverterDialog(QDialog):
         mime = event.mimeData()
         if mime is None or not mime.hasUrls():
             return []
-        return [url.toLocalFile() for url in mime.urls()
-                if url.isLocalFile() and not url.host()]
+        return [path for url in mime.urls()
+                if url.isLocalFile() and (path := url.toLocalFile())]
 
     def dragEnterEvent(self, event):
         if not self._busy and not self._close_pending and self._drop_paths(event):
