@@ -10,7 +10,8 @@ import cv2
 import numpy as np
 from PyQt6.QtCore import QPoint, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QImage
-from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox, QProgressDialog
+from utils.file_dialogs import FileDialog
+from PyQt6.QtWidgets import QListWidgetItem, QMenu, QMessageBox, QProgressDialog
 
 from controllers.export_manager import get_imwrite_params
 from utils import (show_error_box, show_message_box, show_success_box,
@@ -640,8 +641,8 @@ class OutputManager:
         window = self.window
         snapshots = [(record, replace(record, scale_bar_config=deepcopy(record.scale_bar_config))) for record in records]
         labels = window.label_manager.snapshot()
-        folder = QFileDialog.getExistingDirectory(
-            window, trans.t('action_save'), get_last_dialog_dir(), QFileDialog.Option.ShowDirsOnly)
+        folder = FileDialog.getExistingDirectory(
+            window, trans.t('action_save'), get_last_dialog_dir(), FileDialog.Option.ShowDirsOnly)
         if not folder:
             return False
         set_last_dialog_dir(folder)
@@ -958,7 +959,7 @@ class OutputManager:
             filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;JPG 8-bit (*.jpg);;'
                        'WebP 8-bit (*.webp);;BMP 8-bit (*.bmp);;'
                        + trans.t('linear_dng_filter') + ';;' + layered_filter)
-            file_path, selected_filter = QFileDialog.getSaveFileName(
+            file_path, selected_filter = FileDialog.getSaveFileName(
                 window, trans.t('action_save'), default_filename, filters)
             if not file_path:
                 return

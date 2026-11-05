@@ -198,7 +198,8 @@ def test_raw_depth_export_requires_tiff(qapp, monkeypatch, tmp_path):
     """The raw 16-bit exit must not silently become an 8-bit JPEG."""
     import os as _os
     _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtWidgets import QWidget, QFileDialog
+    from PyQt6.QtWidgets import QWidget
+    from utils.file_dialogs import FileDialog
     import dialogs.depthmap as dm
     from core import depth_map
     from tests.test_depth_dialog import _ramp, _wait
@@ -217,7 +218,7 @@ def test_raw_depth_export_requires_tiff(qapp, monkeypatch, tmp_path):
         _wait(qapp, lambda: dlg._worker is None)
         assert dlg._has_current_map()
         target = tmp_path / "raw.jpg"
-        monkeypatch.setattr(QFileDialog, "getSaveFileName",
+        monkeypatch.setattr(FileDialog, "getSaveFileName",
                             staticmethod(lambda *a, **k: (str(target), "")))
         written = []
         monkeypatch.setattr(dm, "imwrite_auto",
@@ -328,7 +329,8 @@ def test_depth_registration_precedes_reverse_and_never_writes_files(monkeypatch)
 
 
 def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
-    from PyQt6.QtWidgets import QWidget, QListWidget, QListWidgetItem, QFileDialog
+    from PyQt6.QtWidgets import QWidget, QListWidget, QListWidgetItem
+    from utils.file_dialogs import FileDialog
     from controllers.output_manager import OutputManager, OutputRecord, OUTPUT_RECORD_ROLE
     from core.render_context import build_render_context
     from dialogs.depthmap import DepthMapDialog
@@ -351,7 +353,7 @@ def test_physical_roi_export_keeps_outside_as_nan(qapp, monkeypatch, tmp_path):
     item.setSelected(True)
     dialog = DepthMapDialog(window)
     target = tmp_path / "物理.tif"
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
     try:
         dialog.compute_btn.click()
         _wait(qapp, lambda: dialog._worker is None)

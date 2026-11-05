@@ -268,7 +268,7 @@ def test_save_as_freezes_output_identity_before_dialog(qapp, tmp_path, monkeypat
         window.output_list.setCurrentRow(0)
         return str(tmp_path / 'chosen'), 'TIFF Files (*.tif *.tiff)'
 
-    monkeypatch.setattr(module.QFileDialog, 'getSaveFileName', pick)
+    monkeypatch.setattr(module.FileDialog, 'getSaveFileName', pick)
     window.output_manager.save_output_image_as(item_a)
     image = _read_image_any(str(tmp_path / 'chosen.tif'))
     assert image.dtype == np.uint16 and int(image[0, 0, 0]) == 1200
@@ -288,7 +288,7 @@ def test_export_all_keeps_folder_artifact_and_baked_pixels(qapp, tmp_path, monke
     destination = tmp_path / 'export'
     destination.mkdir()
     (destination / 'historical_name.png').write_bytes(b'keep')
-    monkeypatch.setattr(module.QFileDialog, 'getExistingDirectory', lambda *args, **kwargs: str(destination))
+    monkeypatch.setattr(module.FileDialog, 'getExistingDirectory', lambda *args, **kwargs: str(destination))
     window.label_manager.prepare_bgr_image = lambda *args, **kwargs: pytest.fail('Baked output annotated twice')
     window.output_manager.export_all_results()
     assert (destination / 'historical_name.png').read_bytes() == b'keep'
@@ -391,7 +391,7 @@ def test_export_annotation_edits_and_undo_restore_saved_state(qapp, tmp_path, mo
                              'format': 'A', 'font_size': 12, 'x_location': 5,
                              'y_location': 24, 'enabled': True})
     window.label_manager.labels.add(label)
-    monkeypatch.setattr(module.QFileDialog, 'getSaveFileName',
+    monkeypatch.setattr(module.FileDialog, 'getSaveFileName',
                         lambda *args, **kwargs: (str(tmp_path / 'result.png'), 'PNG Files (*.png)'))
     window.output_manager.save_output_image_as(item)
     assert (tmp_path / 'result.png').exists()
@@ -428,7 +428,7 @@ def test_baked_output_stays_saved_when_workspace_annotations_change(qapp, tmp_pa
     record = OutputRecord.create(np.full((16, 16, 3), 80, np.uint8), 'batch', kind='batch', exported=True)
     record.annotations_baked = True
     item = window.output_manager._insert_output(record.image, record.label, record)
-    monkeypatch.setattr(module.QFileDialog, 'getSaveFileName',
+    monkeypatch.setattr(module.FileDialog, 'getSaveFileName',
                         lambda *args, **kwargs: (str(tmp_path / 'batch.png'), 'PNG Files (*.png)'))
     window.output_manager.save_output_image_as(item)
     window.label_manager.labels.add(Label.from_dict({'target': 'output', 'format': 'New'}))

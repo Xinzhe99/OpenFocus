@@ -164,14 +164,15 @@ def test_workspace_placement_and_preview_opacity(qapp):
 def test_workspace_imports_all_tiff_pages(qapp, tmp_path, monkeypatch):
     import time
     import tifffile
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox, QWidget
+    from PyQt6.QtWidgets import QMessageBox, QWidget
+    from utils.file_dialogs import FileDialog
     from dialogs.mosaic import MosaicDialog
 
     source = tmp_path / '多页.tif'
     with tifffile.TiffWriter(source) as writer:
         writer.write(np.full((12, 16, 3), 20, np.uint8), photometric='rgb')
         writer.write(np.full((12, 16, 3), 180, np.uint8), photometric='rgb')
-    monkeypatch.setattr(QFileDialog, 'getOpenFileNames',
+    monkeypatch.setattr(FileDialog, 'getOpenFileNames',
                         lambda *args, **kwargs: ([str(source)], ''))
     errors = []
     monkeypatch.setattr(QMessageBox, 'warning',

@@ -11,12 +11,12 @@ def _ready_dialog(qapp):
 
 
 def test_checkpoint_buttons_round_trip_and_refresh(qapp, monkeypatch, tmp_path):
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
 
     dlg, _ = _ready_dialog(qapp)
     checkpoint = tmp_path / "edits.ofretouch"
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (str(checkpoint), ""))
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (str(checkpoint), ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a: (str(checkpoint), ""))
+    monkeypatch.setattr(FileDialog, "getOpenFileName", lambda *a: (str(checkpoint), ""))
     try:
         assert dlg.begin_stroke(40, 40)
         dlg.end_stroke()
@@ -37,13 +37,14 @@ def test_checkpoint_buttons_round_trip_and_refresh(qapp, monkeypatch, tmp_path):
 
 
 def test_checkpoint_errors_and_replace_confirmation_preserve_edits(qapp, monkeypatch, tmp_path):
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
 
     dlg, _ = _ready_dialog(qapp)
     bad = tmp_path / "invalid.ofretouch"
     bad.write_text("not a checkpoint")
     errors = []
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (str(bad), ""))
+    monkeypatch.setattr(FileDialog, "getOpenFileName", lambda *a: (str(bad), ""))
     monkeypatch.setattr(QMessageBox, "critical", lambda *a: errors.append(a[-1]))
     monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Cancel)
     try:
@@ -58,7 +59,7 @@ def test_checkpoint_errors_and_replace_confirmation_preserve_edits(qapp, monkeyp
         assert errors
         np.testing.assert_array_equal(dlg.doc.working, edited)
         assert dlg.doc.can_undo and dlg.btn_apply.isEnabled()
-        monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (str(tmp_path / "missing" / "edit.ofretouch"), ""))
+        monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a: (str(tmp_path / "missing" / "edit.ofretouch"), ""))
         dlg.btn_save_checkpoint.click()
         assert len(errors) == 2
     finally:
@@ -67,7 +68,8 @@ def test_checkpoint_errors_and_replace_confirmation_preserve_edits(qapp, monkeyp
 
 
 def test_checkpoint_refuses_input_and_hardlink(qapp, monkeypatch, tmp_path):
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
 
     source = tmp_path / "input.png"
     source.write_bytes(b"original")
@@ -77,7 +79,7 @@ def test_checkpoint_refuses_input_and_hardlink(qapp, monkeypatch, tmp_path):
     dlg.input_paths = (str(source),)
     target = [source]
     errors = []
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (str(target[0]), ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a: (str(target[0]), ""))
     monkeypatch.setattr(QMessageBox, "critical", lambda *a: errors.append(a[-1]))
     try:
         dlg.btn_save_checkpoint.click()
@@ -125,12 +127,13 @@ def test_checkpoint_translations_exist_for_each_locale():
 def test_checkpoint_replay_runs_off_gui_thread_and_cancels(qapp, monkeypatch, tmp_path):
     import threading
     from PyQt6.QtCore import QTimer
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
 
     dlg, _ = _ready_dialog(qapp)
     checkpoint = tmp_path / "edit.ofretouch"
     checkpoint.write_text("checkpoint")
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (str(checkpoint), ""))
+    monkeypatch.setattr(FileDialog, "getOpenFileName", lambda *a: (str(checkpoint), ""))
     errors = []
     monkeypatch.setattr(QMessageBox, "critical", lambda *a: errors.append(a[-1]))
     gui_thread = threading.get_ident()
@@ -168,7 +171,8 @@ def test_checkpoint_replay_runs_off_gui_thread_and_cancels(qapp, monkeypatch, tm
 
 def test_open_and_edits_do_not_scan_sources_and_changed_source_fails_save(qapp, monkeypatch, tmp_path):
     import threading
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
     from utils import retouch_checkpoint
 
     original = retouch_checkpoint.provenance
@@ -178,7 +182,7 @@ def test_open_and_edits_do_not_scan_sources_and_changed_source_fails_save(qapp, 
         return original(*args, **kwargs)
     monkeypatch.setattr(retouch_checkpoint, "provenance", recording_provenance)
     path = tmp_path / "history.ofretouch"
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (str(path), ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a: (str(path), ""))
     errors = []
     monkeypatch.setattr(QMessageBox, "critical", lambda *args: errors.append(args[-1]))
     dlg, _ = _dialog(qapp)
@@ -202,7 +206,8 @@ def test_open_and_edits_do_not_scan_sources_and_changed_source_fails_save(qapp, 
 def test_first_save_can_cancel_source_verification(qapp, monkeypatch, tmp_path):
     import threading
     from PyQt6.QtCore import QTimer
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
     from utils import retouch_checkpoint
 
     entered = threading.Event()
@@ -214,7 +219,7 @@ def test_first_save_can_cancel_source_verification(qapp, monkeypatch, tmp_path):
         raise ValueError('Retouch replay cancelled')
     monkeypatch.setattr(retouch_checkpoint, 'provenance', slow_provenance)
     path = tmp_path / 'history.ofretouch'
-    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
+    monkeypatch.setattr(FileDialog, 'getSaveFileName', lambda *args: (str(path), ''))
     errors = []
     monkeypatch.setattr(QMessageBox, 'critical', lambda *args: errors.append(args[-1]))
     dlg, _ = _dialog(qapp)
@@ -240,12 +245,13 @@ def test_first_save_can_cancel_source_verification(qapp, monkeypatch, tmp_path):
 def test_checkpoint_save_runs_off_gui_thread_and_cancels(qapp, monkeypatch, tmp_path):
     import threading
     from PyQt6.QtCore import QTimer
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
 
     dlg, _ = _ready_dialog(qapp)
     checkpoint = tmp_path / "edit.ofretouch"
     checkpoint.write_bytes(b"previous checkpoint")
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a: (str(checkpoint), ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a: (str(checkpoint), ""))
     errors, threads = [], []
     entered = threading.Event()
     pause = threading.Event()

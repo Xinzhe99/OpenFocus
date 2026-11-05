@@ -3,7 +3,8 @@ import os
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtWidgets import (QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel,
+from utils.file_dialogs import FileDialog
+from PyQt6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel,
                              QLineEdit, QListWidget, QMessageBox, QProgressBar,
                              QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
@@ -125,11 +126,11 @@ class BatchConverterDialog(QDialog):
                 self.list.addItem(path)
 
     def _add_files(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, trans.t('converter_add_files'))
+        paths, _ = FileDialog.getOpenFileNames(self, trans.t('converter_add_files'))
         self._append(paths)
 
     def _add_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, trans.t('batch_btn_add'))
+        folder = FileDialog.getExistingDirectory(self, trans.t('batch_btn_add'))
         if folder:
             self._append([str(p) for p in sorted(Path(folder).iterdir()) if p.is_file()])
 
@@ -140,7 +141,7 @@ class BatchConverterDialog(QDialog):
             self.sources.pop(row)
 
     def _browse(self):
-        path = QFileDialog.getExistingDirectory(self, trans.t('batch_output_location'))
+        path = FileDialog.getExistingDirectory(self, trans.t('batch_output_location'))
         if path:
             self.directory.setText(path)
 

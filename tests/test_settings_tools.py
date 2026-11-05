@@ -93,7 +93,7 @@ def test_storage_directory_browse_cancel_and_save(settings_window, tmp_path, mon
     monkeypatch.setattr(frame_storage, '_storage_directory', None)
     store = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
     monkeypatch.setattr(settings_store, 'get_settings', lambda: store)
-    monkeypatch.setattr(advanced_settings.QFileDialog, 'getExistingDirectory',
+    monkeypatch.setattr(advanced_settings.FileDialog, 'getExistingDirectory',
                         lambda *args: str(tmp_path))
     settings_window.persist_settings = lambda: settings_store.save_window_settings(settings_window)
 
@@ -558,7 +558,7 @@ def test_feedback_copy_matches_visible_log_and_export_failure_is_inline(qapp, mo
     dialog = feedback.FeedbackDialog(None)
     dialog._copy_log()
     assert qapp.clipboard().text() == dialog.log_view.toPlainText() == "session only"
-    monkeypatch.setattr(feedback.QFileDialog, "getSaveFileName", lambda *a: (str(tmp_path / "report.zip"), ""))
+    monkeypatch.setattr(feedback.FileDialog, "getSaveFileName", lambda *a: (str(tmp_path / "report.zip"), ""))
 
     def fail(_dest):
         raise OSError("disk full")
@@ -575,7 +575,7 @@ def test_feedback_cancel_does_not_write(qapp, monkeypatch, tmp_path):
     from dialogs import feedback
     monkeypatch.setattr(feedback.logging_setup, "session_log_excerpt", lambda *_a: "log")
     monkeypatch.setattr(feedback.logging_setup, "logs_dir", lambda: tmp_path)
-    monkeypatch.setattr(feedback.QFileDialog, "getSaveFileName", lambda *a: ("", ""))
+    monkeypatch.setattr(feedback.FileDialog, "getSaveFileName", lambda *a: ("", ""))
     calls = []
     monkeypatch.setattr(feedback.logging_setup, "export_feedback_package", lambda *a: calls.append(a))
     dialog = feedback.FeedbackDialog(None)

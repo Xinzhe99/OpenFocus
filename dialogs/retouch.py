@@ -19,9 +19,10 @@ import numpy as np
 from PyQt6.QtCore import (QEvent, QPointF, QRect, QRectF, QSize, Qt, QThread,
                           QTimer, pyqtSignal)
 from PyQt6.QtGui import (QBrush, QColor, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap)
+from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog,
-    QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
     QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget,
 )
@@ -1548,7 +1549,7 @@ class RetouchDialog(QDialog):
     def _save_checkpoint(self) -> None:
         if self.doc.stroke_active or self.preview_mode is not None:
             return
-        path, _ = QFileDialog.getSaveFileName(
+        path, _ = FileDialog.getSaveFileName(
             self, trans.t("retouch_checkpoint_save"), "",
             trans.t("retouch_checkpoint_filter"))
         if not path:
@@ -1575,7 +1576,7 @@ class RetouchDialog(QDialog):
     def _load_checkpoint(self) -> None:
         if self.doc.stroke_active or self.preview_mode is not None:
             return
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = FileDialog.getOpenFileName(
             self, trans.t("retouch_checkpoint_load"), "",
             trans.t("retouch_checkpoint_filter"))
         if not path:

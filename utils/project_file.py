@@ -564,10 +564,11 @@ def validate_project_for_open(window, path):
     ok, error, state = validate_project(path)
     if ok or "source file(s) missing:" not in error:
         return ok, error, state
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
     from locales import trans
     from utils.ui_utils import style_message_box
-    root = QFileDialog.getExistingDirectory(window, trans.t("project_relocate_title"),
+    root = FileDialog.getExistingDirectory(window, trans.t("project_relocate_title"),
                                              os.path.dirname(os.path.abspath(path)))
     if not root:
         return False, "", {}

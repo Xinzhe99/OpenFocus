@@ -5,8 +5,9 @@ startup), not a tab book: the whole point is to see everything at once instead
 of hunting through four dialogs and a menu.
 """
 from PyQt6.QtCore import Qt
+from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -242,7 +243,7 @@ class AdvancedSettingsDialog(QDialog):
         root.addWidget(buttons)
 
     def _browse_storage_directory(self):
-        path = QFileDialog.getExistingDirectory(
+        path = FileDialog.getExistingDirectory(
             self, trans.t("advanced_storage_browse"), self.storage_directory.text())
         if path:
             self.storage_directory.setText(path)

@@ -5,7 +5,8 @@ import cv2
 import os
 from PyQt6.QtCore import QObject, QPoint, QThread, Qt
 from PyQt6.QtGui import QAction, QIcon, QDragEnterEvent, QDropEvent
-from PyQt6.QtWidgets import QFileDialog, QListWidgetItem, QMenu, QMessageBox, QDialog
+from utils.file_dialogs import FileDialog
+from PyQt6.QtWidgets import QListWidgetItem, QMenu, QMessageBox, QDialog
 
 from core.workers import StackLoadWorker
 from dialogs import DownsampleDialog
@@ -599,7 +600,7 @@ class SourceManager(QObject):
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
 
         patterns = " ".join(f"*{ext}" for ext in sorted(RAW_FORMATS | {".tif", ".tiff"}))
-        paths, _ = QFileDialog.getOpenFileNames(
+        paths, _ = FileDialog.getOpenFileNames(
             self.window, trans.t("linear_raw_caption"), get_last_dialog_dir(),
             f"RAW ({patterns});;All Files (*)")
         if not paths:
@@ -614,14 +615,10 @@ class SourceManager(QObject):
 
     def prompt_and_load_stack(self) -> None:
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-        from utils.ui_utils import make_folder_path_editable
         window = self.window
 
-        dialog = QFileDialog(window, trans.t("action_open_folder"), get_last_dialog_dir())
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        dialog.setFileMode(QFileDialog.FileMode.Directory)
-        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
-        make_folder_path_editable(dialog)
+        dialog = FileDialog.for_directories(
+            window, trans.t("action_open_folder"), get_last_dialog_dir())
         if dialog.exec() == QDialog.DialogCode.Accepted:
             selected = dialog.selectedFiles()
             if selected:
@@ -637,7 +634,7 @@ class SourceManager(QObject):
         # Build video filter string
         video_exts = " ".join([f"*{ext}" for ext in ImageStackLoader.SUPPORTED_VIDEO_FORMATS])
 
-        video_path, _ = QFileDialog.getOpenFileName(
+        video_path, _ = FileDialog.getOpenFileName(
             window,
             trans.t("action_open_video"),
             get_last_dialog_dir(),

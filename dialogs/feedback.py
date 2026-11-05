@@ -8,8 +8,9 @@ import webbrowser
 
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices, QFont
+from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
-    QDialog, QFileDialog, QHBoxLayout, QLabel,
+    QDialog, QHBoxLayout, QLabel,
     QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
@@ -134,7 +135,7 @@ class FeedbackDialog(QDialog):
         webbrowser.open(ISSUES_URL)
 
     def _export_package(self):
-        dest, _ = QFileDialog.getSaveFileName(
+        dest, _ = FileDialog.getSaveFileName(
             self, trans.t("feedback_export"),
             os.path.join(os.path.expanduser("~"),
                          f"OpenFocus_feedback_"

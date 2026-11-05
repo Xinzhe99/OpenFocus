@@ -34,7 +34,7 @@ def test_native_raw_dialog_accepts_tiff_named_dng_and_rejects_tiff(qapp, monkeyp
         filters.append(args[3])
         return selected, ''
 
-    monkeypatch.setattr(source_manager.QFileDialog, 'getOpenFileNames', choose)
+    monkeypatch.setattr(source_manager.FileDialog, 'getOpenFileNames', choose)
     monkeypatch.setattr(settings_store, 'get_last_dialog_dir', lambda: '')
     monkeypatch.setattr(settings_store, 'set_last_dialog_dir', lambda path: None)
     monkeypatch.setattr(source_manager, 'show_warning_box', lambda *args: warnings.append(args))

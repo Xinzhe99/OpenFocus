@@ -17,8 +17,8 @@ from PyQt6.QtWidgets import (QApplication, QColorDialog, QFileDialog,
                              QLineEdit, QMenu)
 
 from constants import APP_VERSION
-from core.control.file_dialogs import (install_non_native_file_dialogs,
-                                       uninstall_non_native_file_dialogs)
+from core.control.color_dialogs import (install_non_native_color_dialogs,
+                                        uninstall_non_native_color_dialogs)
 from core.control.protocol import (
     COMMANDS as _COMMANDS, ControlError, MAX_LINE, SCHEMA, SOCKET_PREFIX,
     clear_discovery, decode, encode, error_response, ok_response,
@@ -265,7 +265,7 @@ class ControlServer(QObject):
             self.discovery = write_discovery(
                 self.socket_name, self.token, os.getpid(), APP_VERSION)
             self._install_tracking()
-            self._dialogs_patched = install_non_native_file_dialogs()
+            self._dialogs_patched = install_non_native_color_dialogs()
             if os.environ.get("OPENFOCUS_CONTROL_WATCHDOG"):
                 self._start_watchdog()
         except Exception:
@@ -618,7 +618,7 @@ class ControlServer(QObject):
         self._server.close()
         clear_discovery(os.getpid())
         if self._dialogs_patched:
-            uninstall_non_native_file_dialogs()
+            uninstall_non_native_color_dialogs()
             self._dialogs_patched = False
 
     # ------------------------------------------------------------ dispatch
@@ -1199,7 +1199,8 @@ class ControlServer(QObject):
                  "title": (dialog.windowTitle()
                            or dialog.objectName()
                            or type(dialog).__name__),
-                 "class": type(dialog).__name__,
+                 "class": ("QFileDialog" if isinstance(dialog, QFileDialog)
+                           else type(dialog).__name__),
                  "visible": True,
                  "modal": bool(dialog.isModal()),
                  "popup": name.startswith("popup["),

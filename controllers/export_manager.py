@@ -6,7 +6,8 @@ from typing import Any, Optional
 
 import cv2
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog, QInputDialog
+from utils.file_dialogs import FileDialog
+from PyQt6.QtWidgets import QMessageBox, QProgressDialog, QInputDialog
 
 from dialogs import DurationDialog
 from ui import styles as ui_styles
@@ -372,7 +373,7 @@ class ExportManager:
         filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;'
                    'JPG 8-bit (*.jpg);;BMP 8-bit (*.bmp);;WebP 8-bit (*.webp);;'
                    + trans.t('linear_dng_filter'))
-        file_path, selected_filter = QFileDialog.getSaveFileName(
+        file_path, selected_filter = FileDialog.getSaveFileName(
             window, title, default_filename, filters)
 
         if not file_path:
@@ -465,9 +466,9 @@ class ExportManager:
         cfg = scalebar.export_cfg(window, target=target, record=record) if annotate else None
         base = destination
         if base is None:
-            base = QFileDialog.getExistingDirectory(
+            base = FileDialog.getExistingDirectory(
                 window, trans.t('output_save_aligned_title'),
-                getattr(window, 'current_folder_path', '') or '', QFileDialog.Option.ShowDirsOnly)
+                getattr(window, 'current_folder_path', '') or '', FileDialog.Option.ShowDirsOnly)
             if not base:
                 return None
             extension, accepted = QInputDialog.getItem(
@@ -576,7 +577,7 @@ class ExportManager:
 
         duration_ms = duration_dialog.get_duration()
         default_filename = self.generate_default_filename() + ".gif"
-        file_path, _ = QFileDialog.getSaveFileName(
+        file_path, _ = FileDialog.getSaveFileName(
             window,
             trans.t('action_save') + ' GIF · 8-bit',
             default_filename,
@@ -685,7 +686,7 @@ class ExportManager:
             window, target='source' if label_target == 'input' else 'registered', record=record)
 
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-        file_path, _ = QFileDialog.getSaveFileName(
+        file_path, _ = FileDialog.getSaveFileName(
             window, trans.t("action_save_multipage_tiff"),
             os.path.join(get_last_dialog_dir() or os.path.expanduser("~"), default_name),
             "Multi-page TIFF (*.tif *.tiff)")

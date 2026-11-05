@@ -18,6 +18,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - Label the microscope stitching workspace as experimental and unfinished.
+- Use a shared portable picker for every open/save/folder flow, with an editable
+  address bar and Ctrl+L (also Cmd+L on macOS). Pasted quoted paths, environment
+  variables and Unicode names navigate on Enter without accepting or overwriting;
+  invalid addresses remain available for correction.
 - Apply tiled Guided Filter exposure matching per tile after whole-stack gain
   estimation, avoiding an additional full-size matched copy of the stack.
 - Reduce GFG-FGF working memory by converting frames per pass instead of

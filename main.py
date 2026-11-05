@@ -1781,13 +1781,13 @@ class OpenFocus(QMainWindow):
     # --- Project files (.ofproj) ---
 
     def open_project_dialog(self) -> None:
-        from PyQt6.QtWidgets import QFileDialog
+        from utils.file_dialogs import FileDialog
         from utils.project_file import validate_project_for_open, apply_project, PROJECT_SUFFIX
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
         if not self._confirm_discard_project_changes(
                 "msg_discard_unsaved_project"):
             return
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = FileDialog.getOpenFileName(
             self, trans.t('menu_open_project'),
             get_last_dialog_dir(), f"OpenFocus Project (*{PROJECT_SUFFIX})")
         if not path:
@@ -1807,7 +1807,7 @@ class OpenFocus(QMainWindow):
         apply_project(self, state, on_loaded=loaded)
 
     def save_project_dialog(self, save_as: bool = False) -> None:
-        from PyQt6.QtWidgets import QFileDialog
+        from utils.file_dialogs import FileDialog
         from utils.project_file import save_project, suggest_project_path, PROJECT_SUFFIX
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
         import os as _os
@@ -1816,7 +1816,7 @@ class OpenFocus(QMainWindow):
             suggested = suggest_project_path(self) or _os.path.join(
                 get_last_dialog_dir() or _os.path.expanduser("~"),
                 "OpenFocus" + PROJECT_SUFFIX)
-            path, _ = QFileDialog.getSaveFileName(
+            path, _ = FileDialog.getSaveFileName(
                 self, trans.t('menu_save_project'), suggested,
                 f"OpenFocus Project (*{PROJECT_SUFFIX})")
             if not path:
@@ -1846,10 +1846,10 @@ class OpenFocus(QMainWindow):
                              trans.t('msg_project_save_failed').format(err=err))
 
     def save_template_dialog(self) -> None:
-        from PyQt6.QtWidgets import QFileDialog
+        from utils.file_dialogs import FileDialog
         from utils.project_file import save_template, TEMPLATE_SUFFIX
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-        path, _ = QFileDialog.getSaveFileName(
+        path, _ = FileDialog.getSaveFileName(
             self, trans.t('menu_save_template'), get_last_dialog_dir(),
             f"OpenFocus Template (*{TEMPLATE_SUFFIX})")
         if not path:
@@ -1864,10 +1864,10 @@ class OpenFocus(QMainWindow):
             show_warning_box(self, trans.t('msg_error'), str(exc))
 
     def open_template_dialog(self) -> None:
-        from PyQt6.QtWidgets import QFileDialog
+        from utils.file_dialogs import FileDialog
         from utils.project_file import load_template, apply_template, TEMPLATE_SUFFIX
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = FileDialog.getOpenFileName(
             self, trans.t('menu_open_template'), get_last_dialog_dir(),
             f"OpenFocus Template, Recipe or Project (*{TEMPLATE_SUFFIX} *.json *.ofproj)")
         if not path:
@@ -2128,7 +2128,7 @@ class OpenFocus(QMainWindow):
 
     def show_standalone_retouch(self) -> None:
         """Retouch a file with frames explicitly selected by the user."""
-        from PyQt6.QtWidgets import QFileDialog
+        from utils.file_dialogs import FileDialog
         from controllers.output_manager import OutputRecord
         from dialogs.retouch import RetouchDialog
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
@@ -2138,11 +2138,11 @@ class OpenFocus(QMainWindow):
                          trans.t('standalone_retouch_intro'), '',
                          QMessageBox.Icon.Information)
         image_filter = 'PNG / TIFF / JPEG / BMP (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)'
-        result_path, _ = QFileDialog.getOpenFileName(
+        result_path, _ = FileDialog.getOpenFileName(
             self, trans.t('standalone_retouch_result'), get_last_dialog_dir(), image_filter)
         if not result_path:
             return
-        source_paths, _ = QFileDialog.getOpenFileNames(
+        source_paths, _ = FileDialog.getOpenFileNames(
             self, trans.t('standalone_retouch_sources'), os.path.dirname(result_path), image_filter)
         if not source_paths:
             return

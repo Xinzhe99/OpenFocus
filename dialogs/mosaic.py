@@ -5,9 +5,10 @@ import threading
 import numpy as np
 from PyQt6.QtCore import QPointF, QSignalBlocker, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QTransform
+from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QApplication, QAbstractItemView, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene,
+    QFormLayout, QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene,
     QGraphicsView, QHBoxLayout, QLabel, QListWidget, QMessageBox, QProgressBar,
     QPushButton, QSlider, QSplitter, QVBoxLayout, QWidget,
 )
@@ -234,7 +235,7 @@ class MosaicDialog(QDialog):
                             trans.t('msg_save_failed_info_unexpected').format(error=error))
 
     def _add_files(self):
-        paths, _ = QFileDialog.getOpenFileNames(
+        paths, _ = FileDialog.getOpenFileNames(
             self, trans.t('mosaic_add_files'), get_last_dialog_dir(),
             trans.t('batch_image_filter'))
         if not paths:
@@ -480,7 +481,7 @@ class MosaicDialog(QDialog):
         self._run(align, trans.t('render_stage_align'), complete)
 
     def _save(self):
-        path, _ = QFileDialog.getSaveFileName(self, trans.t('mosaic_save'),
+        path, _ = FileDialog.getSaveFileName(self, trans.t('mosaic_save'),
                                               get_last_dialog_dir(), trans.t('mosaic_save_filter'))
         if not path:
             return

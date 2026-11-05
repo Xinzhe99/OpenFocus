@@ -187,7 +187,7 @@ def test_save_as_explains_unavailable_dng_without_overwriting(qapp, monkeypatch,
         offered.extend(filters.split(';;'))
         return str(target), trans.t('linear_dng_filter')
 
-    monkeypatch.setattr('controllers.output_manager.QFileDialog.getSaveFileName', select_dng)
+    monkeypatch.setattr('controllers.output_manager.FileDialog.getSaveFileName', select_dng)
     monkeypatch.setattr('controllers.output_manager.show_warning_box', lambda *args: warnings.append(args))
     window.output_manager.save_output_image_as(item)
     assert trans.t('linear_dng_filter') in offered
@@ -210,7 +210,7 @@ def test_save_as_linear_dng_writes_original_camera_pixels(qapp, monkeypatch, tmp
     item = window.output_manager._insert_output(image, record.label, record)
     target = tmp_path / 'linear.dng'
     errors = []
-    monkeypatch.setattr('controllers.output_manager.QFileDialog.getSaveFileName',
+    monkeypatch.setattr('controllers.output_manager.FileDialog.getSaveFileName',
                         lambda *args: (str(target), trans.t('linear_dng_filter')))
     monkeypatch.setattr('controllers.output_manager.show_error_box', lambda *args: errors.append(args))
     window.output_manager.save_output_image_as(item)
@@ -234,7 +234,7 @@ def test_save_as_layered_tiff_keeps_source_layers(qapp, monkeypatch, tmp_path):
     item = window.output_manager._insert_output(record.image, record.label, record)
     target = tmp_path / 'layered.tif'
     errors = []
-    monkeypatch.setattr('controllers.output_manager.QFileDialog.getSaveFileName',
+    monkeypatch.setattr('controllers.output_manager.FileDialog.getSaveFileName',
                         lambda *args: (str(target), trans.t('layered_tiff_filter')))
     monkeypatch.setattr('controllers.export_manager.show_error_box', lambda *args: errors.append(args))
     window.output_manager.save_output_image_as(item)
@@ -256,7 +256,7 @@ def test_save_as_layered_tiff_without_source_reports_error(qapp, monkeypatch, tm
     item = window.output_manager._insert_output(image, record.label, record)
     target = tmp_path / 'layered.tif'
     warnings = []
-    monkeypatch.setattr('controllers.output_manager.QFileDialog.getSaveFileName',
+    monkeypatch.setattr('controllers.output_manager.FileDialog.getSaveFileName',
                         lambda *args: (str(target), trans.t('layered_tiff_filter')))
     monkeypatch.setattr('controllers.export_manager.show_warning_box', lambda *args: warnings.append(args))
     window.output_manager.save_output_image_as(item)

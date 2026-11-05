@@ -28,10 +28,12 @@ an agent drive the running GUI. Keep it working when you add UI:
   `window.ui_objs[key]`. Paths and action keys must not depend on language.
   `_child_segments` appends an occurrence suffix when two siblings share an
   identifier; keep paths unique rather than relying on tree order.
-- While control is active, static `QFileDialog`/`QColorDialog` helpers are
-  patched to portable Qt dialogs so agents can fill them. Do not assume a
-  native OS picker; add a typed command or `dialog.file`/`dialog.color`
-  support for new modal file/color flows.
+- Use `utils.file_dialogs.FileDialog` for every file/folder picker, including
+  its open/save helpers and `for_directories(..., multiple=True)` for batch folders.
+  The shared portable picker always exposes `folderPathEdit`; Ctrl+L focuses it,
+  and Enter navigates without accepting. Keep Qt's internal lookIn combo unchanged.
+  Only `QColorDialog` is patched while control is active. Use `dialog.file` or
+  `dialog.color` for modal file/color flows.
 - A button whose slot calls `QDialog.exec()` blocks a synchronous
   `ui.click`; test and document `ui.click --async` for these controls, then
   poll `dialog.list`/`ui.context`. Prefer `ui.trigger` for menu actions.

@@ -4,8 +4,9 @@ import os
 import numpy as np
 from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtGui import QImage, QPixmap
+from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFrame, QHBoxLayout,
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFrame, QHBoxLayout,
     QLabel, QPushButton, QRadioButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -304,7 +305,7 @@ class DustMapDialog(QDialog):
         self._invalidate_gain()
 
     def _browse(self):
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = FileDialog.getOpenFileName(
             self, trans.t("dust_browse"), "",
             "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp)")
         if path:

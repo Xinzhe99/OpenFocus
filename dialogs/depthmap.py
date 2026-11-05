@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from PyQt6.QtCore import QSignalBlocker, QThread, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
+from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,7 +20,6 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -950,7 +950,7 @@ class DepthMapDialog(QDialog):
                 full[frame.offset_y:frame.offset_y + depth.shape[0],
                      frame.offset_x:frame.offset_x + depth.shape[1]] = depth
                 depth = full
-            path, _ = QFileDialog.getSaveFileName(self, trans.t("depth_save_physical"),
+            path, _ = FileDialog.getSaveFileName(self, trans.t("depth_save_physical"),
                 self._default_path(get_last_dialog_dir(), raw=True), "TIFF (*.tif *.tiff)")
             if not path:
                 return
@@ -1563,7 +1563,7 @@ class DepthMapDialog(QDialog):
         title = trans.t("depth_save_render" if render else "depth_save_indices")
         start_dir = get_last_dialog_dir()
         default = os.path.join(start_dir, "depth_render.tif" if render else "depth_indices.tif")
-        path, _ = QFileDialog.getSaveFileName(self, title, default, "TIFF (*.tif *.tiff)")
+        path, _ = FileDialog.getSaveFileName(self, title, default, "TIFF (*.tif *.tiff)")
         if not path or not self._require_current_map():
             return
         if os.path.splitext(path)[1].lower() not in (".tif", ".tiff"):
@@ -1605,11 +1605,11 @@ class DepthMapDialog(QDialog):
             return
         start_dir = get_last_dialog_dir()
         if colorized:
-            path, _ = QFileDialog.getSaveFileName(
+            path, _ = FileDialog.getSaveFileName(
                 self, trans.t("depth_save_color"),
                 self._default_path(start_dir), "PNG (*.png);;JPEG (*.jpg);;TIFF (*.tif *.tiff);;BMP (*.bmp)")
         else:
-            path, _ = QFileDialog.getSaveFileName(
+            path, _ = FileDialog.getSaveFileName(
                 self, trans.t("depth_save_raw"),
                 self._default_path(start_dir, raw=True), "TIFF 16-bit (*.tif *.tiff)")
         if not path:
@@ -1651,7 +1651,7 @@ class DepthMapDialog(QDialog):
         from utils.mesh_export import obj_paths
         start_dir = get_last_dialog_dir()
         default = os.path.join(start_dir, "depth_model.obj") if start_dir else "depth_model.obj"
-        path, _ = QFileDialog.getSaveFileName(
+        path, _ = FileDialog.getSaveFileName(
             self, trans.t("depth_export_3d"), default, "Wavefront OBJ (*.obj)")
         if not path:
             return

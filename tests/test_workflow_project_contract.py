@@ -302,7 +302,8 @@ def test_recovery_marker_retains_only_nonempty_document_association(tmp_path, mo
 def test_relocation_preserves_relative_folders_and_requires_confirmation(qapp, tmp_path, monkeypatch):
     import json
     import os
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
     old = tmp_path / "old"
     new = tmp_path / "new"
     paths = [str(old / "a" / "same.png"), str(old / "b" / "same.png")]
@@ -314,7 +315,7 @@ def test_relocation_preserves_relative_folders_and_requires_confirmation(qapp, t
             "labels": {"version": 2, "labels_v2": [{"target": "input", "frame_ids": [identity]}]}}
     project = tmp_path / "moved.ofproj"
     project.write_text(json.dumps(data), encoding="utf-8")
-    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: str(new))
+    monkeypatch.setattr(FileDialog, "getExistingDirectory", lambda *args: str(new))
     monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
     monkeypatch.setattr(QMessageBox, "clickedButton", lambda self: next(
         button for button in self.buttons() if self.buttonRole(button) == QMessageBox.ButtonRole.RejectRole))
