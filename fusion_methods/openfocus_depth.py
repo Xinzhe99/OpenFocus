@@ -1,5 +1,6 @@
 """Streaming depth estimation returning a continuous frame index."""
 import numpy as np
+from core.frame_storage import create_frame, store_frame
 
 
 def _weight(radius, allow_zero=False):
@@ -16,8 +17,8 @@ def _axis(src, guide, main, low, count, axis, cancel):
             guide = guide.T
     h, w = src.shape
     count = max(1, min(int(count), h))
-    first = np.empty((h, w), np.uint32)
-    out = np.empty_like(first)
+    first = create_frame((h, w), np.uint32)
+    out = create_frame((h, w), np.uint32)
     if guide is None:
         q = _weight(main)
         t = (4096 - q) >> 1
@@ -72,7 +73,9 @@ def _filter(src, radius, cancel, guide=None, low=None):
     guide = None if guide is None else np.asarray(guide, dtype=np.uint32)
     for axis in (0, 1):
         result = _axis(result, guide, radius, low, radius, axis, cancel)
-    return result.astype(np.int64)
+    converted = create_frame(result.shape, np.int64)
+    converted[...] = result
+    return converted
 
 
 def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
@@ -83,6 +86,11 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     def cancel():
         _check_cancel(should_cancel)
 
+    # Fusion promotes every frame to float32 when any source is uint16.
+    # Apply that same stack-wide rule before the integer activity conversion:
+    # a uint8 member of a mixed stack must retain its fractional channel mean
+    # and use 65535/255, just like its already-normalized tiled counterpart.
+    normalize_16bit = any(source.dtype == np.uint16 for source in frames)
     best = winner = None
     for index, source in enumerate(frames):
         if progress_callback is not None:
@@ -96,7 +104,7 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
             gray = frame[:, :, :min(frame.shape[2], 3)].mean(axis=2)
         else:
             gray = frame
-        if source.dtype == np.uint8:
+        if source.dtype == np.uint8 and not normalize_16bit:
             gray = np.floor(gray) * 256.0
         else:
             gray = gray * (65535.0 / 255.0)
@@ -111,7 +119,8 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
         activity = _filter(diff, extent * radius * 0.15 / 100.0, cancel)
         if best is None:
             best = activity
-            winner = np.zeros(gray.shape, np.int32)
+            winner = create_frame(gray.shape, np.int32)
+            winner[...] = 0
         else:
             selected = activity > best
             best[selected] = activity[selected]
@@ -119,7 +128,9 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     cancel()
     sigma = max(0.0, float(smoothing))
     if sigma == 0:
-        return winner.astype(np.float32)
+        result = create_frame(winner.shape, np.float32)
+        result[...] = winner
+        return result
     if len(frames) > 65536:
         raise ValueError("Smoothed depth maps support at most 65536 source frames")
     # Match the percentile guide's LUT interpolation and 16-bit truncation.
@@ -136,11 +147,11 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
     lut_pos = best.astype(np.float32) * (np.float32(65534.0) / np.float32(65535.0))
     lut_index = np.clip(lut_pos.astype(np.int32), 0, 65533)
     fraction = lut_pos - lut_index
-    guide = (guide_lut[lut_index] * (np.float32(1) - fraction)
-             + guide_lut[lut_index + 1] * fraction).astype(np.int64) & 65535
+    guide = store_frame((guide_lut[lut_index] * (np.float32(1) - fraction)
+                        + guide_lut[lut_index + 1] * fraction).astype(np.int64) & 65535)
     # Spread all indices across the full 16-bit range, including the last one.
     count = len(frames) - 1
-    depth = (winner.astype(np.int64) * 65535 + count // 2) // count
+    depth = store_frame((winner.astype(np.int64) * 65535 + count // 2) // count)
     scale = max(best.shape) * sigma * 0.0234375 / 100.0
     for _ in range(2):
         depth = _filter(depth, scale, cancel, guide, scale * 64)
@@ -155,4 +166,9 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
         lut = (np.power(values, np.float32(13.0 / 3.0)) * 1024).astype(np.int64)
         correction = half * lut[indices] * np.where(distance > 0, 1, -1)
         depth = np.clip(snapped + ((correction + (correction & 1023)) >> 10), 0, 65535)
-    return depth.astype(np.float32) * (count / 65535.0)
+    result = create_frame(depth.shape, np.float32)
+    for start in range(0, depth.shape[0], 128):
+        cancel()
+        rows = slice(start, min(depth.shape[0], start + 128))
+        result[rows] = depth[rows].astype(np.float32) * (count / 65535.0)
+    return result

@@ -110,8 +110,8 @@ def _exercise(executable: Path, environment: dict, root: Path,
     if not np.any(result % 257):
         raise RuntimeError("Packaged desktop export lost 16-bit precision")
 
-    # Exercise the actual output-list action so packaged lazy imports and
-    # the 16-bit Photoshop layer tag are checked on both release platforms.
+    # Exercise Save As and its layered TIFF filter so the actual output-list
+    # path and the 16-bit Photoshop layer tag are checked on both platforms.
     from locales import trans
     from psdtags import PsdKey, TiffImageSourceData
 
@@ -129,11 +129,12 @@ def _exercise(executable: Path, environment: dict, root: Path,
     else:
         raise RuntimeError("Packaged output menu did not open")
     actions = _call(executable, environment, "ui.menu").get("actions", [])
-    labels = {table.get("action_export_layered_tiff")
-              for table in trans.translations.values()}
-    action = next((entry for entry in actions if entry.get("text") in labels), None)
+    layered_filters = {table.get("action_save_as"): table.get("layered_tiff_filter")
+                       for table in trans.translations.values()
+                       if table.get("action_save_as") and table.get("layered_tiff_filter")}
+    action = next((entry for entry in actions if entry.get("text") in layered_filters), None)
     if action is None or not action.get("enabled"):
-        raise RuntimeError("Packaged layered TIFF action is unavailable")
+        raise RuntimeError("Packaged Save As action is unavailable")
     _call(executable, environment, "ui.menu", "--index", str(action["index"]))
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -143,6 +144,11 @@ def _exercise(executable: Path, environment: dict, root: Path,
         time.sleep(0.1)
     else:
         raise RuntimeError("Packaged layered TIFF file dialog did not open")
+    filters = _call(executable, environment, "ui.find", "--object-name", "fileTypeCombo").get("matches", [])
+    if len(filters) != 1:
+        raise RuntimeError(f"Packaged Save As file-type selector was not found: {filters}")
+    _call(executable, environment, "ui.set", "--path", filters[0]["path"],
+          "--value", layered_filters[action["text"]])
     layered = root / "layered.tif"
     _call(executable, environment, "dialog.file", "--path", str(layered))
     deadline = time.monotonic() + 90
@@ -161,23 +167,33 @@ def _exercise(executable: Path, environment: dict, root: Path,
             or len(layers.layers) != 3):
         raise RuntimeError("Packaged layered TIFF lost its composite or source layers")
 
-    # A CUDA-enabled torch build must still execute the actual neural model
-    # on machines without an NVIDIA device, including from the frozen bundle.
-    ai_output = root / "ai-result.tif"
-    ai = subprocess.run(
-        [str(executable), "-i", str(root / "stack"), "-o", str(ai_output),
-         "--method", "stackmffv3", "--cpu", "--threads", "1",
-         "--no-exposure-match"],
-        env=environment, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=180,
-    )
-    if ai.returncode:
-        raise RuntimeError(
-            f"Packaged CPU AI inference failed ({ai.returncode}): "
-            f"{ai.stdout!r} {ai.stderr!r}")
-    ai_image = cv2.imdecode(np.fromfile(str(ai_output), np.uint8), cv2.IMREAD_UNCHANGED)
-    if ai_image is None or ai_image.shape != shape or ai_image.dtype != np.uint16:
-        raise RuntimeError("Packaged CPU AI inference lost image shape or bit depth")
+    # Exercise each bundled checkpoint on CPU even when the torch build also
+    # supports an accelerator; V2 must additionally export its depth map.
+    for method in ("stackmff", "stackmffv2", "stackmffv3"):
+        ai_output = root / f"{method}.tif"
+        command = [str(executable), "-i", str(root / "stack"), "-o", str(ai_output),
+                   "--method", method, "--cpu", "--threads", "1",
+                   "--no-exposure-match"]
+        if method == "stackmffv2":
+            command.append("--depth-map")
+        ai = subprocess.run(
+            command, env=environment, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=180,
+        )
+        if ai.returncode:
+            raise RuntimeError(
+                f"Packaged {method} inference failed ({ai.returncode}): "
+                f"{ai.stdout!r} {ai.stderr!r}")
+        ai_image = cv2.imdecode(np.fromfile(str(ai_output), np.uint8), cv2.IMREAD_UNCHANGED)
+        if ai_image is None or ai_image.shape != shape or ai_image.dtype != np.uint16:
+            raise RuntimeError(f"Packaged {method} lost image shape or bit depth")
+        if method == "stackmffv2":
+            depth_path = root / f"{method}_depth.png"
+            if not depth_path.is_file():
+                raise RuntimeError("Packaged StackMFF V2 depth map is missing")
+            depth = cv2.imdecode(np.fromfile(str(depth_path), np.uint8), cv2.IMREAD_UNCHANGED)
+            if depth is None or depth.shape[:2] != shape[:2]:
+                raise RuntimeError("Packaged StackMFF V2 depth map has the wrong dimensions")
 
 
 def run(executable: Path) -> None:
@@ -198,6 +214,7 @@ def run(executable: Path) -> None:
         )
         settings.setValue("ui/first_run_done", "1")
         settings.setValue("updates/last_check_epoch", 9999999999)
+        settings.setValue("usage/enabled", False)
         settings.setValue("rendering/ai_cpu_warning_dismissed", True)
         settings.sync()
         with tempfile.TemporaryDirectory(prefix="openfocus_packaged_smoke_") as td:
@@ -224,8 +241,8 @@ def run(executable: Path) -> None:
                 [str(executable)], env=environment,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            _wait_for_control(process, root / "control.json")
             try:
+                _wait_for_control(process, root / "control.json")
                 _exercise(executable, environment, root, shape)
             except BaseException:
                 print(f"Desktop exit status: {process.poll()}", file=sys.stderr)
@@ -241,11 +258,16 @@ def run(executable: Path) -> None:
                 if process.poll() is None:
                     failing = sys.exc_info()[0] is not None
                     try:
-                        _call(executable, environment, "app.quit", "--force")
+                        if (root / "control.json").is_file():
+                            _call(executable, environment, "app.quit", "--force")
+                        else:
+                            process.terminate()
                     except Exception as error:
                         if not failing:
                             raise
                         print(f"Desktop cleanup failed: {error}", file=sys.stderr)
+                        if process.poll() is None:
+                            process.terminate()
                     finally:
                         try:
                             process.wait(timeout=60)
@@ -285,6 +307,7 @@ def run_installed_startup(executable: Path) -> None:
         data.mkdir()
         settings = QSettings(str(data / "settings.ini"), QSettings.Format.IniFormat)
         settings.setValue("updates/last_check_epoch", 9999999999)
+        settings.setValue("usage/enabled", False)
         settings.sync()
         environment = os.environ.copy()
         environment["OPENFOCUS_DATA_DIR"] = str(data)
@@ -314,6 +337,11 @@ def run_installed_startup(executable: Path) -> None:
                 time.sleep(0.2)
             else:
                 raise RuntimeError(f"First-run welcome dialog did not appear: {dialogs}")
+            for control_class in ("QCheckBox", "QRadioButton"):
+                choices = _call(executable, environment, "ui.find", "--window",
+                                welcome["root"], "--class", control_class).get("matches", [])
+                if choices:
+                    raise RuntimeError(f"Unexpected first-run consent choice: {choices}")
             _call(executable, environment, "dialog.accept", "--index", str(welcome["index"]))
             context = _call(executable, environment, "ui.context")
             if context.get("level") != "main":

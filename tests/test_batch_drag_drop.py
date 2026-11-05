@@ -280,7 +280,7 @@ def test_single_folder_switch_preserves_imported_split_stack(qapp):
 
 
 def test_batch_picker_text_uses_current_language(qapp, monkeypatch):
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
     from dialogs.batch import BatchProcessingDialog
     from locales import trans
 
@@ -289,7 +289,7 @@ def test_batch_picker_text_uses_current_language(qapp, monkeypatch):
     dialog = BatchProcessingDialog(None)
     titles = []
     try:
-        monkeypatch.setattr(QFileDialog, 'getExistingDirectory',
+        monkeypatch.setattr(FileDialog, 'getExistingDirectory',
                             lambda parent, title, path: titles.append(title) or '')
         dialog.add_single_folder()
         dialog.browse_output_folder()
@@ -341,7 +341,7 @@ def test_open_stack_folder_accepts_a_typed_directory(qapp, tmp_path, monkeypatch
         manager.prompt_and_load_stack()
         assert not errors
         assert invalid[0][0]
-        assert os.path.normcase(os.path.normpath(invalid[0][1])) == os.path.normcase(str(tmp_path))
+        assert invalid[0][1] == str(tmp_path / "missing")
         assert seen[0][0], "Enter should navigate without closing the picker"
         assert os.path.normcase(os.path.normpath(seen[0][1])) == os.path.normcase(str(target))
         assert [os.path.normcase(os.path.normpath(path)) for path in saved] == [os.path.normcase(str(target))]
@@ -354,7 +354,8 @@ def test_open_stack_folder_accepts_a_typed_directory(qapp, tmp_path, monkeypatch
 
 def test_batch_folder_picker_navigates_typed_path_on_enter(qapp, tmp_path):
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QFileDialog, QLineEdit
+    from PyQt6.QtWidgets import QLineEdit
+    from utils.file_dialogs import FileDialog
     from dialogs.batch import BatchProcessingDialog
 
     target = tmp_path / "stack 文件夹"
@@ -372,7 +373,7 @@ def test_batch_folder_picker_navigates_typed_path_on_enter(qapp, tmp_path):
         except Exception as exc:
             errors.append(exc)
         finally:
-            if isinstance(dialog, QFileDialog):
+            if isinstance(dialog, FileDialog):
                 dialog.reject()
 
     try:

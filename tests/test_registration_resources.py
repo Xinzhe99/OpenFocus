@@ -231,28 +231,67 @@ def test_memory_rejection_precedes_any_native_warp(monkeypatch):
         registration.ImageRegistration('ecc').process(_stack(), thread_count=4)
 
 
-@pytest.mark.parametrize('count,width,height,dtype', [
-    (63, 8191, 5463, np.uint16),
-    (92, 8192, 5464, np.uint8),
-])
-def test_ecc_budget_counts_thumbnail_planes(count, width, height, dtype, monkeypatch):
-    # A broadcast view supplies dimensions without allocating the real stacks.
-    frame = np.broadcast_to(np.zeros((1, 1, 3), dtype=dtype), (height, width, 3))
-    frames = [frame] * count
-    captured = []
-    original_plan = resource_policy.plan_execution
+def test_directory_registration_checks_memory_before_decode(tmp_path, monkeypatch):
+    from core import image_loader
+
+    assert cv2.imwrite(str(tmp_path / 'frame.png'), np.zeros((8, 8, 3), np.uint8))
+    snapshot = resource_policy.probe_resources()
+    monkeypatch.setattr(resource_policy, 'probe_resources',
+                        lambda *args, **kwargs: replace(snapshot, available_ram=1,
+                                                       total_ram=16 * 1024 ** 3))
+    decoded = []
+    monkeypatch.setattr(image_loader, 'decode_image', lambda path: decoded.append(path))
+    with pytest.raises(resource_policy.ResourceLimitError):
+        registration.ImageRegistration('ecc').process(str(tmp_path))
+    assert not decoded
+
+
+@pytest.mark.parametrize('frame_count', [2, 100])
+@pytest.mark.parametrize('headroom_mib,admitted', [(300, True), (200, False)])
+def test_combined_alignment_admits_disk_backed_stack_by_active_working_set(
+        monkeypatch, frame_count, headroom_mib, admitted):
+    from core import source_frames
+
+    # Isolate admission from disk materialization and native alignment. The
+    # broadcast frame describes real geometry without allocating the stack.
+    frame = np.broadcast_to(np.zeros((1, 1, 3), np.uint8), (2048, 2048, 3))
+    frames = [frame] * frame_count
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=1024 ** 3 + headroom_mib * 1024 ** 2,
+        total_ram=4 * 1024 ** 3, physical_cores=8, logical_cpus=8)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *args, **kwargs: snapshot)
+    monkeypatch.setattr(source_frames, 'materialize_frames',
+                        lambda images, should_cancel: images)
+    plans = []
+    plan_execution = resource_policy.plan_execution
 
     def plan(workload, **kwargs):
-        captured.append(workload)
-        snapshot = resource_policy.ResourceSnapshot(
-            available_ram=128 * 1024**3, total_ram=128 * 1024**3,
-            physical_cores=2, logical_cpus=2)
-        return original_plan(workload, snapshot=snapshot, **kwargs)
+        execution = plan_execution(workload, **kwargs)
+        plans.append((workload, execution))
+        return execution
 
     monkeypatch.setattr(resource_policy, 'plan_execution', plan)
-    monkeypatch.setattr(registration.ImageRegistration, '_process_ecc',
-                        lambda self, images, **kwargs: images)
-    assert registration.ImageRegistration('ecc').process(frames) is frames
-    thumbnail_height = (height * 1024 + width - 1) // width
-    assert captured[0].fixed_bytes == count * frame.nbytes + count * 1024 * thumbnail_height * 4
-    assert captured[0].per_worker_bytes == frame.size * 4 * 16
+    dispatched = []
+
+    def align(self, images, **kwargs):
+        dispatched.append(kwargs['thread_count'])
+        return images
+
+    monkeypatch.setattr(registration.ImageRegistration, '_process_homography', align)
+    monkeypatch.setattr(registration.ImageRegistration, '_process_ecc', align)
+    engine = registration.ImageRegistration('both')
+    if not admitted:
+        with pytest.raises(resource_policy.ResourceLimitError):
+            engine.process(frames, thread_count=8, resource_preference='maximum')
+        assert dispatched == []
+        return
+
+    result = engine.process(frames, thread_count=8, resource_preference='maximum')
+    assert len(result) == frame_count
+    assert len(plans) == 1
+    workload, execution = plans[0]
+    fixed, per_worker = resource_policy.estimate_working_set(workload)
+    assert fixed + per_worker * execution.workers <= execution.ram_budget
+    assert fixed + per_worker * (execution.workers + 1) > execution.ram_budget
+    assert dispatched == [1, 1]
+

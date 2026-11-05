@@ -16,6 +16,7 @@ from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 from utils.validators import LabelAdder, build_label_text
+from utils.frame_pixels import preview_pixels as display_image, preview_label_config
 
 # One display-depth copy of the current frame is enough for form edits. The
 # source stack already lives in the window; this cache must never grow with it.
@@ -53,11 +54,13 @@ class LabelPreview(QLabel):
 
     def set_preview(self, frame, config, index, *, linear_dng_metadata=None):
         """Update all dependent state before drawing once."""
-        source = None if frame is None else np.asarray(frame)
+        source = None if frame is None else display_image(frame)
+        self._source_shape = None if frame is None else frame.shape
         if source is not self._frame:
             self.release_developed_cache()
         self._frame = source
-        self._linear_dng_metadata = linear_dng_metadata
+        self._linear_dng_metadata = (None if getattr(frame, "preview_is_display", False)
+                                     else linear_dng_metadata)
         self._adder.config.update_config(config)
         self._index = max(0, int(index))
         self.refresh()
@@ -148,7 +151,8 @@ class LabelPreview(QLabel):
     def set_frame(self, frame) -> None:
         """Use a real frame as the preview canvas (falls back to a placeholder)."""
         self.release_developed_cache()
-        self._frame = None if frame is None else np.asarray(frame)
+        self._frame = None if frame is None else display_image(frame)
+        self._source_shape = None if frame is None else frame.shape
         self._linear_dng_metadata = None
         self.refresh()
 
@@ -217,7 +221,13 @@ class LabelPreview(QLabel):
         # Draw first: the status must describe *this* attempt, not the
         # previous one (out-of-range and draw failures are per-frame).
         try:
-            drawn = self._adder.add_label_to_image(canvas, self._index)
+            original = self._adder.config
+            if self._frame is not None:
+                self._adder.config = preview_label_config(original, self._source_shape, canvas.shape)
+            try:
+                drawn = self._adder.add_label_to_image(canvas, self._index)
+            finally:
+                self._adder.config = original
             self.substituted_font = self._adder.last_substituted_font
             error = self._adder.last_error
             out_of_range = self._adder.last_out_of_range

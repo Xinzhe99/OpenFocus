@@ -130,8 +130,8 @@ function makeEnv(objects = {}) {
   return { DOWNLOADS: bucket(objects), ASSETS: assets() };
 }
 
-async function run(url, { method = "GET", headers = {}, env } = {}) {
-  const request = new Request(url, { method, headers });
+async function run(url, { method = "GET", headers = {}, body, env } = {}) {
+  const request = new Request(url, { method, headers, body });
   const pending = [];
   const response = await worker.fetch(request, env, {
     waitUntil(promise) {
@@ -602,4 +602,101 @@ test("wrangler sends every route through the worker so www can canonicalise", as
     await readFile(new URL("site/wrangler.jsonc", root), "utf8"),
   );
   assert.equal(config.assets.run_worker_first, true);
+});
+
+function analyticsDb() {
+  const writes = [];
+  const batches = [];
+  return {
+    writes, batches,
+    prepare(sql) {
+      return {
+        sql, values: [],
+        bind(...values) { this.values = values; return this; },
+        async run() { writes.push({ sql: this.sql, values: this.values }); return { success: true }; },
+      };
+    },
+    async batch(statements) {
+      batches.push(statements.map(({ sql, values }) => ({ sql, values })));
+      return statements.map(() => ({ success: true, results: [] }));
+    },
+  };
+}
+
+test("download analytics counts only successful starts with resolved version, route and source", async () => {
+  installCache();
+  installReleaseFetch();
+  const db = analyticsDb();
+  const env = { ...makeEnv({ [NAMES["windows-zip"]]: PAYLOAD }), ANALYTICS: db };
+  const latest = "https://openfocus.top/download/latest/windows-zip";
+  const pinned = `https://openfocus.top/download/releases/${TAG}/windows-zip`;
+  assert.equal((await run(latest, { env })).status, 200);
+  assert.equal((await run(latest, { env, headers: { Range: "bytes=0-2" } })).status, 206);
+  assert.equal((await run(latest, { env, headers: { Range: "bytes=2-" } })).status, 206);
+  assert.equal((await run(latest, { env, headers: { Range: "bytes=20-" } })).status, 416);
+  assert.equal((await run(latest, { env, headers: { "If-None-Match": ETAG } })).status, 304);
+  assert.equal((await run(latest, { env, method: "HEAD" })).status, 200);
+  assert.equal((await run(pinned, { env })).status, 200);
+  assert.equal((await run("https://openfocus.top/download/latest/macos-dmg", { env })).status, 302);
+  assert.equal((await run("https://openfocus.top/download/latest/macos-dmg", { env, method: "HEAD" })).status, 302);
+  assert.deepEqual(db.writes.map((write) => write.values), [
+    [TAG, "windows-zip", "website", "r2"],
+    [TAG, "windows-zip", "website", "r2"],
+    [TAG, "windows-zip", "in-app", "r2"],
+    [TAG, "macos-dmg", "website", "github"],
+  ]);
+  assert.match(db.writes[0].sql, /ON CONFLICT.*count = count \+ 1/);
+  env.ANALYTICS = { prepare() { throw new Error("database down"); } };
+  assert.equal((await run(latest, { env })).status, 200);
+  delete env.ANALYTICS;
+  assert.equal((await run(latest, { env })).status, 200);
+});
+
+test("usage accepts only bounded reports and stores no request metadata", async () => {
+  const db = analyticsDb();
+  const env = { ANALYTICS: db };
+  const url = "https://openfocus.top/api/usage";
+  const payload = { installation_id: "8d5d5ea6-9e3c-4a5e-9e7d-444444444444", version: "1.2.3", platform: "windows" };
+  const post = (value, headers = {}) => run(url, { method: "POST", env, headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(value) });
+  assert.equal((await run(url, { env })).status, 405);
+  assert.equal((await post(payload, { "User-Agent": "private-agent", "CF-Connecting-IP": "192.0.2.1" })).status, 204);
+  assert.equal((await post(payload)).status, 204);
+  assert.deepEqual(db.batches[0][1].values, Object.values(payload));
+  assert.match(db.batches[0][1].sql, /ON CONFLICT.*DO NOTHING/);
+  assert.match(db.batches[0][0].sql, /-89 days/);
+  assert.equal((await post({ ...payload, filename: "private" })).status, 400);
+  assert.equal((await post({ ...payload, installation_id: "8d5d5ea6-9e3c-1a5e-9e7d-444444444444" })).status, 400);
+  assert.equal((await post({ ...payload, version: "1.2.3/extra" })).status, 400);
+  assert.equal((await post({ ...payload, platform: "other" })).status, 400);
+  assert.equal((await post({ ...payload, version: "1".repeat(1100) })).status, 413);
+  assert.equal((await run(url, { method: "POST", env, body: "{}" })).status, 415);
+  assert.equal((await run(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 503);
+  assert.equal((await post(payload, { "Content-Length": "9999" })).status, 413);
+  const failing = { ANALYTICS: { prepare: db.prepare, async batch() { throw new Error("offline"); } } };
+  assert.equal((await run(url, { method: "POST", env: failing, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })).status, 503);
+});
+
+test("private statistics require a configured bearer secret and are read-only", async () => {
+  const db = analyticsDb();
+  const url = "https://openfocus.top/api/admin/stats";
+  const env = { ANALYTICS: db, ANALYTICS_ADMIN_SECRET: "secret-for-test" };
+  assert.equal((await run(url, { env: { ANALYTICS: db } })).status, 503);
+  assert.equal((await run(url, { env })).status, 401);
+  assert.equal((await run(url, { env, headers: { Authorization: "Bearer incorrect" } })).status, 401);
+  assert.equal((await run(url, { env, method: "POST" })).status, 405);
+  const response = await run(url, { env, headers: { Authorization: "Bearer secret-for-test" } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await response.json(), { downloads: [], active_30_days: [] });
+  assert.ok(db.batches[0].every(({ sql }) => /^SELECT /.test(sql)));
+  assert.match(db.batches[0][1].sql, /COUNT\(DISTINCT installation_id\)/);
+});
+
+test("scheduled cleanup removes expired pseudonymous activity", async () => {
+  const db = analyticsDb();
+  const pending = [];
+  await worker.scheduled({}, { ANALYTICS: db }, { waitUntil(promise) { pending.push(promise); } });
+  await Promise.all(pending);
+  assert.equal(db.writes.length, 1);
+  assert.match(db.writes[0].sql, /^DELETE FROM active_installations WHERE day < date\('now', '-89 days'\)$/);
 });

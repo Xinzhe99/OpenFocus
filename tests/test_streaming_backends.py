@@ -105,12 +105,28 @@ def _dct_reference(frames):
     return result[:h, :w].copy()
 
 
-def _gfg_reference(frames):
-    images = [_color(f).astype(np.float32) / 255.0 for f in frames]
+def _gfg_reference(frames, min_frame_focus=0.0):
+    images = [(f.astype(np.float32) * (255.0 / 65535.0)
+               if f.dtype == np.uint16 else f).astype(np.float32) / 255.0
+              for f in map(_color, frames)]
     channel = int(np.argmax(images[0].sum(axis=(0, 1))))
     guides = [f[:, :, channel] for f in images]
-    activities = [gfg_fgf.gfg_focus_map(g, 7, 5, 0.3) for g in guides]
-    index = gfg_fgf.gfg_decision_index(activities)
+    scores = []
+    for guide in guides:
+        kx = np.array([[-3, -10, -3], [0, 0, 0], [3, 10, 3]], np.float32)
+        ky = kx.T.copy()
+        gx = cv2.filter2D(guide, cv2.CV_32F, kx, borderType=cv2.BORDER_REFLECT)
+        gy = cv2.filter2D(guide, cv2.CV_32F, ky, borderType=cv2.BORDER_REFLECT)
+        scores.append(np.mean(gx[1:-1, 1:-1] ** 2 + gy[1:-1, 1:-1] ** 2))
+    maximum = max(scores) or 1.0
+    activities = [gfg_fgf.gfg_focus_map(g, 7, 5, 0.3)
+                  if not min_frame_focus or score >= min_frame_focus * maximum else None
+                  for g, score in zip(guides, scores)]
+    decision = gfg_fgf.GfgDecision()
+    for i, activity in enumerate(activities):
+        if activity is not None:
+            decision.update(i, activity)
+    index = decision.idx
     weights = [gfg_fgf._run_guided_filter(g, (index == i).astype(np.float32), 5, 0.3)
                if (index == i).any() else None for i, g in enumerate(guides)]
     total = np.zeros(index.shape, np.float32)
@@ -167,6 +183,20 @@ def test_baseline_pixels_and_input_ownership(kind, method, smoothing):
         assert any(np.any(f % 257) for f in raw)
         assert actual.dtype == np.float32
 
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+@pytest.mark.parametrize("workers", [1, 3])
+def test_gfg_threshold_and_resize_match_retained_stack_reference(dtype, workers):
+    rng = np.random.default_rng(293)
+    high = np.iinfo(dtype).max + 1
+    frames = [rng.integers(0, high, (23, 27, 3), dtype=dtype) for _ in range(4)]
+    frames[0][:] = frames[0][0, 0]
+    resized = [cv2.resize(frame, (19, 17)) for frame in frames]
+    expected = _gfg_reference(resized, min_frame_focus=0.25)
+    actual = gfg_fgf.gfgfgf_impl(frames, img_resize=(19, 17), thread_count=workers,
+                                  min_frame_focus=0.25)
+    np.testing.assert_array_equal(actual, expected)
 
 @pytest.mark.parametrize("method", ["gff", "dct", "gfg"])
 def test_distinguishable_flat_ties_and_last_frame_prior(method):

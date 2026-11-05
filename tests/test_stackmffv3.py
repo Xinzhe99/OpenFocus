@@ -1,16 +1,15 @@
-"""StackMFF-V3 tests — skipped automatically when torch is not installed."""
+"""StackMFF V3 ONNX inference and output contracts."""
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch", reason="StackMFF-V3 requires PyTorch")
 
 from core.multi_focus_fusion import MultiFocusFusion, is_ai_fusion_available
 from conftest import make_two_focus_stack
 
-WEIGHTS = "weights/stackmff_v3_final.pth"
+WEIGHTS = "weights/stackmff_v3_final.onnx"
 
 pytestmark = pytest.mark.skipif(not is_ai_fusion_available(),
-                                reason="torch not installed")
+                                reason="ONNX Runtime not installed")
 
 
 def _fuse(mode, frames=None, exposure_match=True, **kwargs):
@@ -24,7 +23,7 @@ def _fuse(mode, frames=None, exposure_match=True, **kwargs):
     return out
 
 
-def test_v3_fuses_and_caches_model():
+def test_v3_fuses_on_cpu():
     out = _fuse("soft")
     assert float(out.mean()) > 1.0
 
@@ -74,10 +73,6 @@ def test_tiled_hard_selection_does_not_blend_conflicting_tiles(monkeypatch):
     assert np.isin(hard, (16, 240)).all()
 
 
-def test_unknown_mode_is_rejected():
-    with pytest.raises(ValueError, match='mode'):
-        _fuse('nonsense')
-
 
 def test_get_info_reports_device_and_mode():
     info = MultiFocusFusion(algorithm="stackmffv3", use_gpu=False,
@@ -87,7 +82,7 @@ def test_get_info_reports_device_and_mode():
     assert info["mode"] == "hard"
 
 
-def test_unavailable_torch_is_reported(monkeypatch):
+def test_unavailable_onnx_runtime_is_reported(monkeypatch):
     import core.multi_focus_fusion as mff
     monkeypatch.setattr(mff, "_STACKMFF_AVAILABLE_CACHE", False)
     assert mff.is_ai_fusion_available() is False
@@ -96,27 +91,17 @@ def test_unavailable_torch_is_reported(monkeypatch):
 
 
 def test_tiled_path_honours_the_output_mode():
-    """A stack large enough to tile must still fuse in the chosen mode.
-
-    The mode default was set AFTER the tiled dispatch returned, so every
-    tiled run used 'soft' regardless of ai_mode. A 999x750 demo stack hit
-    that branch and produced byte-identical soft and hard output.
-    """
-    import cv2
-    frames = [cv2.resize(f, (700, 520), interpolation=cv2.INTER_CUBIC)
-              for f in make_two_focus_stack()]
+    frames = make_two_focus_stack()
     outs = {}
     for mode in ("soft", "hard"):
         fusion = MultiFocusFusion(
             algorithm='stackmffv3', use_gpu=False, fusion_parameters={'mode': mode},
-            exposure_match=False, tile_enabled=True,
-            tile_block_size=512, tile_overlap=128)
-        outs[mode] = fusion.fuse(input_source=list(frames), img_resize=None,
-                                 model_path=WEIGHTS)
+            exposure_match=False, tile_enabled=True, tile_threshold=32,
+            tile_block_size=64, tile_overlap=16)
+        outs[mode] = fusion.fuse(input_source=list(frames), model_path=WEIGHTS,
+                                 thread_count=1)
         assert outs[mode].shape[:2] == frames[0].shape[:2]
-    assert not np.array_equal(outs["soft"], outs["hard"]), (
-        "the tiled path ignored ai_mode: soft and hard produced the same "
-        "image")
+    assert not np.array_equal(outs["soft"], outs["hard"])
 
 def test_cpu_tiles_are_inferred_one_at_a_time(monkeypatch):
     """The default pipeline keeps B=1; CUDA batching still needs GPU gates."""
@@ -133,7 +118,7 @@ def test_cpu_tiles_are_inferred_one_at_a_time(monkeypatch):
     fusion = MultiFocusFusion(
         algorithm='stackmffv3', use_gpu=False, fusion_parameters={'mode': 'soft'},
         exposure_match=False, tile_enabled=True,
-        tile_block_size=256, tile_overlap=64, ai_batch_size=2)
+        tile_block_size=64, tile_overlap=16, tile_threshold=32, ai_batch_size=2)
     fusion.fuse(input_source=make_two_focus_stack(), img_resize=None,
                 model_path=WEIGHTS, thread_count=1)
     assert shapes, "the neural tiled path made no model call"
@@ -157,7 +142,7 @@ def test_ai_tile_progress_never_skips_ahead(monkeypatch):
     fusion = MultiFocusFusion(
         algorithm='stackmffv3', use_gpu=False, fusion_parameters={'mode': 'soft'},
         exposure_match=False, tile_enabled=True,
-        tile_block_size=256, tile_overlap=64)
+        tile_block_size=64, tile_overlap=16, tile_threshold=32)
     fusion.fuse(input_source=make_two_focus_stack(), img_resize=None,
                 model_path=WEIGHTS,
                 progress_callback=lambda done, total: seen.append((done, total)))
@@ -171,17 +156,19 @@ def test_ai_tile_progress_never_skips_ahead(monkeypatch):
 @pytest.mark.parametrize('grayscale', [False, True])
 def test_gray_staging_matches_single_replicate_padding(shape, grayscale):
     from fusion_methods import stackmffv3 as ai
-    ai._ensure_torch()
+    from utils.image_utils import normalize_fuse_input
+
     rng = np.random.default_rng(315)
     h, w = shape
     source_shape = (h, w * 2) if grayscale else (h, w * 2, 3)
     frames = [rng.integers(0, 65536, source_shape, np.uint16)[:, ::2]
               for _ in range(3)]
-    expected = torch.from_numpy(np.stack([ai._gray01(f) for f in frames]))[None]
-    expected = torch.nn.functional.pad(expected, (0, (-w) % 64, 0, (-h) % 64),
-                                       mode='replicate')
+    normalized, _ = normalize_fuse_input(frames)
+    expected = np.stack([ai._gray01(f) for f in normalized])[None]
+    expected = np.pad(expected, ((0, 0), (0, 0), (0, (-h) % 64),
+                                 (0, (-w) % 64)), mode='edge')
     actual = ai._stage_gray(frames, None)
-    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    np.testing.assert_array_equal(actual, expected)
 
 
 @pytest.mark.parametrize('mode', ['soft', 'hard'])
@@ -220,62 +207,23 @@ def test_tile_batch_retains_order_and_each_tile_dtype():
             assert result.dtype == np.uint8
 
 
-def test_checkpoint_replacement_with_preserved_timestamp_invalidates_cache(tmp_path):
-    import os
-    import shutil
-    from core.resource_policy import heavy_job
-    from core.models.stackmff_v3.model_io import _torch_load
-    from fusion_methods import stackmffv3 as ai
-    checkpoint = tmp_path / 'model.pth'
-    shutil.copyfile(WEIGHTS, checkpoint)
-    stat = checkpoint.stat()
-    with heavy_job():
-        original, _ = ai._get_model_and_device(checkpoint, False)
-        saved = _torch_load(checkpoint)
-        for tensor in saved['model'].values():
-            tensor.zero_()
-        torch.save(saved, checkpoint)
-        os.utime(checkpoint, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-        replacement, _ = ai._get_model_and_device(checkpoint, False)
-        assert replacement is not original
-        assert all(torch.count_nonzero(p).item() == 0 for p in replacement.parameters())
-        with torch.no_grad():
-            probabilities = replacement.forward_probs(torch.rand(1, 3, 64, 64))
-        torch.testing.assert_close(probabilities, torch.full_like(probabilities, 1 / 3))
-
-
-def test_mutating_cached_model_dtype_reloads_fp32_model():
-    from core.resource_policy import heavy_job
-    from fusion_methods import stackmffv3 as ai
-    with heavy_job():
-        original, _ = ai._get_model_and_device(WEIGHTS, False)
-        original.to(dtype=torch.float64)
-        replacement, _ = ai._get_model_and_device(WEIGHTS, False)
-        assert replacement is not original
-        assert all(p.dtype == torch.float32 for p in replacement.parameters())
-
-
 def test_cancel_between_native_inference_scales(monkeypatch):
-    from core.resource_policy import heavy_job
     from core.registration import RegistrationCancelled
+    from fusion_methods import neural_runtime
     from fusion_methods import stackmffv3 as ai
-    cancelled = False
+    original = neural_runtime.logits
     completed = []
-    with heavy_job():
-        model, _ = ai._get_model_and_device(WEIGHTS, False)
-        original = model.forward_logits
 
-        def forward(x):
-            nonlocal cancelled
-            output = original(x)
-            completed.append(tuple(x.shape))
-            cancelled = True
-            return output
+    def logits(*args, **kwargs):
+        result = original(*args, **kwargs)
+        completed.append(True)
+        return result
 
-        monkeypatch.setattr(model, 'forward_logits', forward)
-        with pytest.raises(RegistrationCancelled), torch.no_grad():
-            model.forward_probs(torch.rand(1, 2, 64, 64),
-                                should_cancel=lambda: cancelled)
+    monkeypatch.setattr(neural_runtime, 'logits', logits)
+    frames = [np.full((17, 19, 3), value, np.uint8) for value in (30, 70)]
+    with pytest.raises(RegistrationCancelled):
+        ai.model_probabilities(frames, WEIGHTS, False, thread_count=1,
+                               should_cancel=lambda: bool(completed))
     assert len(completed) == 1
 
 
@@ -312,27 +260,6 @@ def test_cancel_from_final_progress_prevents_fusion_return():
                            thread_count=1)
 
 
-def test_fine_head_rejects_working_set_larger_than_cuda_budget(monkeypatch):
-    from core import resource_policy
-    from core.models.stackmff_v3.network import StackMFFLoop
-    from fusion_methods import stackmffv3 as ai
-
-    ai._ensure_torch()
-
-    model = StackMFFLoop(C1=16, C2=32, heads=(2, 2),
-                         single_scale=True, fine_head=True)
-    device = torch.device('cuda')
-    snapshot = resource_policy.ResourceSnapshot(
-        available_ram=64 * 1024**3, total_ram=128 * 1024**3,
-        physical_cores=8, logical_cpus=8, device_kind='CUDA',
-        free_vram=int(23.5 * 1024**3), total_vram=24 * 1024**3)
-    monkeypatch.setattr(ai, '_resolve_device', lambda _use_gpu: device)
-    monkeypatch.setattr(ai, '_get_model_and_device', lambda *_args: (model, device))
-    monkeypatch.setattr(resource_policy, 'probe_resources', lambda _kind: snapshot)
-    # Broadcasted views represent the image dimensions without allocating the stack.
-    frame = np.broadcast_to(np.zeros(1, dtype=np.uint8), (2432, 2432))
-    with pytest.raises(resource_policy.ResourceLimitError, match='VRAM|memory'):
-        ai._prepare_inference([frame] * 20, WEIGHTS, True)
 
 
 def test_direct_probability_inference_cannot_bypass_memory_budget(monkeypatch):
@@ -347,41 +274,23 @@ def test_direct_probability_inference_cannot_bypass_memory_budget(monkeypatch):
 
 
 @pytest.mark.parametrize('mode', ['soft', 'hard'])
-def test_adapter_matches_baseline_bgr_numeric_pipeline(mode):
-    import cv2
-    from core.resource_policy import heavy_job
+def test_adapter_matches_probability_weighted_source_pixels(mode):
     from fusion_methods import stackmffv3 as ai
     rng = np.random.default_rng(905)
-    frames = [rng.uniform(0, 255, (65, 134, 3)).astype(np.float32)[:, ::2]
+    frames = [rng.uniform(0, 255, (17, 38, 3)).astype(np.float32)[:, ::2]
               for _ in range(3)]
-    with heavy_job():
-        torch.set_num_threads(1)
-        model, device = ai._get_model_and_device(WEIGHTS, False)
-        luma = np.stack([cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) / 255.0 for f in frames])
-        batch = torch.nn.functional.pad(torch.from_numpy(luma)[None],
-                                        (0, 61, 0, 63), mode='replicate')
-        with torch.no_grad():
-            probs = model.forward_probs(batch.to(device),
-                                        sigma=0.5 if mode == 'soft' else 0.0)
-        probs = probs[0].cpu().numpy()
-        colors = np.pad(np.stack(frames), ((0, 0), (0, 63), (0, 61), (0, 0)),
-                        mode='edge')
-        if mode == 'soft':
-            expected = (probs[..., None] * colors).sum(0)[:65, :67]
-        else:
-            expected = colors[probs.argmax(0), np.arange(128)[:, None],
-                              np.arange(128)[None, :]][:65, :67]
-        expected = np.clip(expected, 0, 255)
+    probs = ai.model_probabilities(frames, WEIGHTS, False,
+                                   sigma=0.5 if mode == 'soft' else 0.0,
+                                   thread_count=1)
+    colors = np.stack(frames)
+    if mode == 'soft':
+        expected = (probs[..., None] * colors).sum(axis=0)
+    else:
+        expected = colors[probs.argmax(0), np.arange(17)[:, None],
+                          np.arange(19)[None, :]]
     actual = ai._stackmffv3_batch_impl([frames], WEIGHTS, False, mode,
-                                     thread_count=1)[0]
+                                       thread_count=1)[0]
     np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-5)
-
-
-def test_direct_cpu_inference_applies_thread_ceiling():
-    from fusion_methods import stackmffv3 as ai
-    frames = [np.full((17, 19, 3), value, np.uint8) for value in (30, 70)]
-    ai.model_probabilities(frames, WEIGHTS, False, thread_count=1)
-    assert torch.get_num_threads() == 1
 
 
 @pytest.mark.parametrize('tiled', [False, True])

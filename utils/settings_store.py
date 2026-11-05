@@ -59,6 +59,7 @@ BRIGHTNESS_OPTIONS = ("exposure_match", "base_correct")
 _PERSISTED_FIELDS = {
     "thread_count": ("rendering/thread_count", 0, int),
     "resource_preference": ("rendering/resource_preference", "balanced", "str"),
+    "storage_directory": ("rendering/storage_directory", "", "str"),
     "tile_enabled": ("rendering/tile_enabled", True, "bool"),
     "tile_block_size": ("rendering/tile_block_size", 1024, int),
     "tile_overlap": ("rendering/tile_overlap", 256, int),

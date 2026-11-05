@@ -16,12 +16,42 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Iterable, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 from core.algorithms import alignment_steps
+from core.source_frames import SourceFrame as LazySourceFrame, resolve_frame, store_preview
+from utils.frame_pixels import preview_pixels as display_image
+
+
+@dataclass(frozen=True, eq=False)
+class _SourceRegion(LazySourceFrame):
+    source: object = None
+    region: tuple = ()
+
+    def full_resolution(self):
+        x, y, width, height = self.region
+        return resolve_frame(self.source)[y:y + height, x:x + width]
+
+
+def _source_region(image, x, y, width, height):
+    if not isinstance(image, LazySourceFrame):
+        return image[y:y + height, x:x + width]
+    width = min(width, image.shape[1] - x)
+    height = min(height, image.shape[0] - y)
+    if width <= 0 or height <= 0:
+        return np.empty((0, 0) + image.shape[2:], dtype=image.dtype)
+    preview = display_image(image)
+    sx, sy = preview.shape[1] / image.shape[1], preview.shape[0] / image.shape[0]
+    x0, y0 = int(x * sx), int(y * sy)
+    x1 = max(x0 + 1, int(np.ceil((x + width) * sx)))
+    y1 = max(y0 + 1, int(np.ceil((y + height) * sy)))
+    values = {item.name: getattr(image, item.name) for item in fields(LazySourceFrame)}
+    values.update(shape=(height, width) + image.shape[2:],
+                  preview=store_preview(preview[y0:y1, x0:x1]), source=image, region=(x, y, width, height))
+    return _SourceRegion(**values)
 
 
 def new_context_id() -> str:
@@ -202,7 +232,7 @@ def build_render_context(
     if result is None or not processed_images:
         return None
     frames_in = list(processed_images)
-    if not frames_in or not isinstance(frames_in[0], np.ndarray):
+    if not frames_in or not isinstance(frames_in[0], (np.ndarray, LazySourceFrame)):
         return None
 
     names = list(filenames or [])
@@ -212,13 +242,13 @@ def build_render_context(
 
     frames = []
     for index, image in enumerate(frames_in):
-        if image is None or not isinstance(image, np.ndarray):
+        if image is None or not isinstance(image, (np.ndarray, LazySourceFrame)):
             return None
         ox = oy = 0
         source = image
         if roi is not None:
             rx, ry, rw, rh = roi
-            source = image[ry:ry + rh, rx:rx + rw]
+            source = _source_region(image, rx, ry, rw, rh)
             if paste:
                 ox, oy = rx, ry
         # Every source frame must cover at least the result grid it claims.
@@ -229,12 +259,12 @@ def build_render_context(
             if sw < result_w or sh < result_h:
                 return None
             if (sw, sh) != (result_w, result_h):
-                source = source[:result_h, :result_w]
+                source = _source_region(source, 0, 0, result_w, result_h)
         else:
             if ox + sw > result_w:
-                source = source[:, :max(1, result_w - ox)]
+                source = _source_region(source, 0, 0, max(1, result_w - ox), source.shape[0])
             if oy + sh > result_h:
-                source = source[:max(1, result_h - oy), :]
+                source = _source_region(source, 0, 0, source.shape[1], max(1, result_h - oy))
         if source.size == 0:
             return None
         frames.append(SourceFrame(

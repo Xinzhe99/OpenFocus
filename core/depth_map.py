@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
+from core.frame_storage import create_frame, store_frame
 
 
 class DepthMapCancelled(Exception):
@@ -35,9 +36,14 @@ def _check(images: Sequence[np.ndarray], allow_grayscale=False) -> None:
 
 
 def _norm_index(argmax_map: np.ndarray, n: int) -> np.ndarray:
+    result = create_frame(argmax_map.shape, np.float32)
     if n <= 1:
-        return np.zeros(argmax_map.shape, np.float32)
-    return (argmax_map.astype(np.float32) / (n - 1)).clip(0.0, 1.0)
+        result[...] = 0
+        return result
+    for start in range(0, result.shape[0], 128):
+        rows = slice(start, min(result.shape[0], start + 128))
+        result[rows] = (argmax_map[rows].astype(np.float32) / (n - 1)).clip(0.0, 1.0)
+    return result
 
 
 def _tick(progress: Optional[Callable], i: int, n: int,
@@ -96,22 +102,19 @@ def _measure_dct(images, progress, should_cancel, kernel_size=7, block_size=8):
 # --------------------------------------------------------------------------
 def _measure_gfgfgf(images, progress, should_cancel, kernel_size=7,
                     thread_count=None):
-    from fusion_methods.gfg_fgf import gfg_focus_map, gfg_decision_index
+    from fusion_methods.gfg_fgf import gfg_focus_map, GfgDecision
 
     if kernel_size % 2 == 0:
         kernel_size += 1
     n = len(images)
     # 与融合同一聚焦图与并列决策（Sobel 小区域度量），深度图才与融合一致
-    afms = None
+    decision = GfgDecision()
     for idx, bgr in enumerate(images):
         _tick(progress, idx, n, should_cancel)
         g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-        afm = gfg_focus_map(g, kernel_size)
-        if afms is None:
-            afms = np.empty((n,) + afm.shape, np.float32)
-        afms[idx] = afm
-    best_idx = gfg_decision_index(afms)
-    return best_idx
+        decision.update(idx, gfg_focus_map(g, kernel_size))
+    _tick(None, n, n, should_cancel)
+    return decision.idx
 
 
 # --------------------------------------------------------------------------
@@ -138,7 +141,8 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=4):
         _tick(progress, idx, n, should_cancel)
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
         coeffs = transform.forward(gray, nlevels=nlevels)
-        acc = np.zeros((h, w), np.float32)
+        acc = create_frame((h, w), np.float32)
+        acc[...] = 0
         for level_yh in coeffs.highpasses:
             _tick(None, idx, n, should_cancel)
             # (H', W', 6) -> 每方向幅值平方求和，上采样回全分辨率累加
@@ -146,7 +150,9 @@ def _measure_dtcwt(images, progress, should_cancel, nlevels=4):
             lvl = cv2.resize(mag2, (w, h), interpolation=cv2.INTER_LINEAR)
             acc += lvl
         if best_val is None:
-            best_val, best_idx = acc, np.zeros(acc.shape, np.int32)
+            best_val = acc
+            best_idx = create_frame(acc.shape, np.int32)
+            best_idx[...] = 0
         else:
             hit = acc > best_val
             best_val[hit] = acc[hit]
@@ -179,38 +185,39 @@ def _tile_weight(x0, y0, x1, y1, fw, fh, W, H, overlap):
     return wgt
 
 
-# This is the historical whole-frame/tile decision, a result parameter.
-# Available RAM must never move this boundary or shrink its spatial tiles.
 _NEURAL_WHOLE_FRAME_PIXELS = 80 * 1024 * 1024
 
 
-def _neural_depth_tiles(images):
+def _neural_depth_tiles(images, tile_size):
     h, w = images[0].shape[:2]
-    if len(images) * h * w <= _NEURAL_WHOLE_FRAME_PIXELS:
+    if ((max(h, w) + 63) // 64) * 64 <= ((tile_size + 63) // 64) * 64:
         return 0, [(0, 0, w, h)]
     from core.multi_focus_fusion import _ai_effective_tiling
-    block, _batch, coords = _ai_effective_tiling(len(images), 1024, h, w, 256, 1)
-    return max(0, min(256, block // 2)), coords
+    block, _batch, coords = _ai_effective_tiling(len(images), tile_size, h, w, 256, 1)
+    return min(256, block // 2), coords
+
+
+def _plan_depth_tiles(images, use_gpu, thread_count, resource_preference):
+    from dataclasses import replace
+    from core.resource_policy import plan_neural_tiles
+    from fusion_methods.neural_runtime import resolve_device, estimate_inference_bytes
+
+    h, w = images[0].shape[:2]
+    channels = images[0].shape[2] if images[0].ndim == 3 else 1
+    requested = max(h, w) if len(images) * h * w <= _NEURAL_WHOLE_FRAME_PIXELS else 1024
+    tile_size, plan = plan_neural_tiles(
+        len(images), h, w, channels, requested, resolve_device(use_gpu),
+        estimate_inference_bytes, itemsize=max(image.dtype.itemsize for image in images),
+        preference=resource_preference, user_threads=thread_count)
+    return replace(plan, tile_size=tile_size)
 
 
 def _plan_neural_depth(images, model_path, use_gpu, thread_count,
                        resource_preference):
-    from fusion_methods.stackmffv3 import _prepare_inference
     if model_path is None:
         from utils import resource_path
-        model_path = resource_path("weights", "stackmff_v3_final.pth")
-    h, w = images[0].shape[:2]
-    _overlap, coords = _neural_depth_tiles(images)
-    x0, y0, x1, y1 = max(coords, key=lambda xy: (xy[2] - xy[0]) * (xy[3] - xy[1]))
-    crops = [image[y0:y1, x0:x1] for image in images]
-    normalization = sum(image.size * 4 for image in images) if any(
-        image.dtype == np.uint16 for image in images) else 0
-    # Map accumulator, weight, normalization result and clipped publication.
-    fixed = normalization + h * w * 4 * 4
-    _model, _device, plan = _prepare_inference(
-        crops, model_path, use_gpu, thread_count=thread_count,
-        resource_preference=resource_preference, fixed_bytes=fixed)
-    return plan, model_path
+        model_path = resource_path("weights", "stackmff_v3_final.onnx")
+    return _plan_depth_tiles(images, use_gpu, thread_count, resource_preference), model_path
 
 
 def _measure_stackmffv2(images, progress, should_cancel,
@@ -223,31 +230,26 @@ def _measure_stackmffv2(images, progress, should_cancel,
     if model_path is None:
         model_path = weights_path(os.path.basename(DEFAULT_WEIGHTS))
     n = len(images)
-    _tick(progress, 0, 1, should_cancel)
+    tile_size = getattr(execution_plan, 'tile_size', None)
+    overlap = min(256, tile_size // 2) if tile_size is not None else 0
     result = depth_positions(
         images, model_path, use_gpu,
         should_cancel=should_cancel, execution_plan=execution_plan,
-        thread_count=thread_count, resource_preference=resource_preference)
-    _tick(progress, 1, 1, should_cancel)
+        thread_count=thread_count, resource_preference=resource_preference,
+        tile_size=tile_size, tile_overlap=overlap,
+        progress_callback=lambda done, total: _tick(progress, done, total, should_cancel))
     return np.clip(result, 0, n - 1).astype(np.float32)
 
 
 def _plan_stackmffv2_depth(images, model_path, use_gpu, thread_count,
                            resource_preference):
     """Admit the V2 network for one depth-map pass."""
-    from fusion_methods.stackmff_v2 import DEFAULT_WEIGHTS, _prepare_inference
+    from fusion_methods.stackmff_v2 import DEFAULT_WEIGHTS
     from utils.weights import weights_path
 
     if model_path is None:
         model_path = weights_path(os.path.basename(DEFAULT_WEIGHTS))
-    h, w = images[0].shape[:2]
-    normalization = sum(image.size * 4 for image in images) if any(
-        image.dtype == np.uint16 for image in images) else 0
-    _model, _device, plan = _prepare_inference(
-        images, model_path, use_gpu, thread_count=thread_count,
-        resource_preference=resource_preference,
-        fixed_bytes=normalization + h * w * 4 * 4)
-    return plan, model_path
+    return _plan_depth_tiles(images, use_gpu, thread_count, resource_preference), model_path
 
 
 def _measure_stackmffv3(images, progress, should_cancel,
@@ -259,7 +261,8 @@ def _measure_stackmffv3(images, progress, should_cancel,
     mode = normalize_mode(mode)
     h, w = images[0].shape[:2]
     n = len(images)
-    overlap, coords = _neural_depth_tiles(images)
+    tile_size = getattr(execution_plan, 'tile_size', None) or max(h, w)
+    overlap, coords = _neural_depth_tiles(images, tile_size)
     indices = np.arange(n, dtype=np.float32)[:, None, None]
 
     def measure(crops):
@@ -311,7 +314,6 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
     from core.registration import RegistrationCancelled
     from utils.image_utils import normalize_fuse_input
 
-    _check(images, allow_grayscale=method in ('openfocus_b', 'openfocus_c'))
     spec = get_fusion(method)
     values = resolve_fusion_parameters(method, parameters, depth=True)
     declared_keys = {parameter.key for parameter in spec.depth.parameters}
@@ -329,6 +331,12 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
     depth_block = legacy_parameters.get('block_size')
     try:
         with heavy_job(should_cancel):
+            from core.source_frames import materialize_frames
+            images = materialize_frames(images, should_cancel)
+            _check(images, allow_grayscale=method in ('openfocus_b', 'openfocus_c'))
+            if spec.neural:
+                from fusion_methods.neural_runtime import start_inference_job
+                start_inference_job()
             n = len(images)
             h, w = images[0].shape[:2]
             if spec.depth_planner:
@@ -344,10 +352,18 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
                              parallel_layer='native'),
                     preference=resource_preference, user_threads=thread_count)
             _tick(None, 0, n, should_cancel)
-            # B/C prepare each source themselves; retaining its dtype also
-            # preserves their 8-bit quantization rule in mixed-depth stacks.
-            if method not in ('openfocus_b', 'openfocus_c'):
-                images, _is_16bit = normalize_fuse_input(images)
+            # Neural runners normalize one spatial tile at a time. B/C prepare
+            # one frame at a time, using fusion's stack-wide bit-depth rule.
+            if method not in ('openfocus_b', 'openfocus_c', 'stackmffv2', 'stackmffv3'):
+                if any(image.dtype == np.uint16 for image in images):
+                    normalized = []
+                    for image in images:
+                        _tick(None, 0, n, should_cancel)
+                        converted = normalize_fuse_input([image])[0][0]
+                        if converted.dtype != np.float32:
+                            converted = converted.astype(np.float32)
+                        normalized.append(image if converted is image else store_frame(converted))
+                    images = normalized
             runtime = {'progress_callback': progress_callback, 'should_cancel': should_cancel,
                        'thread_count': plan.native_threads, 'use_gpu': use_gpu,
                        'model_path': model_path, 'execution_plan': plan}

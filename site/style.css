@@ -213,9 +213,9 @@ figure { margin: 0; }
 .bullets span { font-size: 15px; color: var(--ink2); }
 
 .wide { margin-bottom: 14px; }
-.small { font-size: 13.5px; color: var(--ink3); margin: 10px 0 0; }
-.small a { color: var(--ink2); text-decoration: none; }
-.small a:hover { color: var(--ink); text-decoration: underline; }
+p.small { font-size: 13.5px; color: var(--ink3); margin: 10px 0 0; }
+p.small a { color: var(--ink2); text-decoration: none; }
+p.small a:hover { color: var(--ink); text-decoration: underline; }
 
 /* cli */
 .cli { display: grid; grid-template-columns: minmax(0, 1.02fr) minmax(0, .98fr); gap: 44px; align-items: start; }

@@ -97,7 +97,8 @@ def test_roi_base_preview_uses_included_snapshot_and_actual_dimensions(qapp):
 def test_roi_base_preview_develops_native_raw(qapp):
     from PyQt6.QtWidgets import QWidget
     from dialogs.roi import ROIRenderOptionsDialog
-    from utils.linear_dng import LinearDNGMetadata
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+    from utils.image_utils import to_display_uint8
 
     parent = QWidget()
     parent.linear_dng_metadata = LinearDNGMetadata(
@@ -108,12 +109,14 @@ def test_roi_base_preview_develops_native_raw(qapp):
     dialog = ROIRenderOptionsDialog(1, parent, frames=[frame])
     dialog.rb_paste.setChecked(True)
     color = dialog.lbl_preview.pixmap().toImage().pixelColor(0, 0)
-    assert (color.red(), color.green(), color.blue()) == pytest.approx((189, 85, 103), abs=1)
+    expected = to_display_uint8(develop_linear(frame, parent.linear_dng_metadata))[0, 0, ::-1]
+    assert (color.red(), color.green(), color.blue()) == tuple(expected)
 
 
 def test_registration_preview_develops_native_raw(qapp, monkeypatch):
     from tests.test_gui_units import _render_window, _patched_render_manager
-    from utils.linear_dng import LinearDNGMetadata
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+    from utils.image_utils import to_display_uint8
 
     frame = np.full((64, 80, 3), [7000, 11000, 14000], np.uint16)
     window = _render_window([frame, frame.copy()])
@@ -128,7 +131,8 @@ def test_registration_preview_develops_native_raw(qapp, monkeypatch):
     assert manager.start_render(interactive=False) == 'started'
     manager.on_render_finished([frame, frame.copy()], None, True, 0.1, 0, 'CPU')
     color = window.lbl_result_img.pixmaps[-1].toImage().pixelColor(0, 0)
-    assert (color.red(), color.green(), color.blue()) == pytest.approx((189, 85, 103), abs=1)
+    expected = to_display_uint8(develop_linear(frame, window.linear_dng_metadata))[0, 0, ::-1]
+    assert (color.red(), color.green(), color.blue()) == tuple(expected)
 
 
 def test_project_preserves_reordered_and_removed_tiff_pages(tmp_path):
@@ -298,7 +302,8 @@ def test_recovery_marker_retains_only_nonempty_document_association(tmp_path, mo
 def test_relocation_preserves_relative_folders_and_requires_confirmation(qapp, tmp_path, monkeypatch):
     import json
     import os
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
     old = tmp_path / "old"
     new = tmp_path / "new"
     paths = [str(old / "a" / "same.png"), str(old / "b" / "same.png")]
@@ -310,7 +315,7 @@ def test_relocation_preserves_relative_folders_and_requires_confirmation(qapp, t
             "labels": {"version": 2, "labels_v2": [{"target": "input", "frame_ids": [identity]}]}}
     project = tmp_path / "moved.ofproj"
     project.write_text(json.dumps(data), encoding="utf-8")
-    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: str(new))
+    monkeypatch.setattr(FileDialog, "getExistingDirectory", lambda *args: str(new))
     monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
     monkeypatch.setattr(QMessageBox, "clickedButton", lambda self: next(
         button for button in self.buttons() if self.buttonRole(button) == QMessageBox.ButtonRole.RejectRole))

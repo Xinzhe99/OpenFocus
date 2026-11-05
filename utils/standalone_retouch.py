@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 
 from core.render_context import RenderContext, SourceFrame, new_context_id
+from utils.image_utils import read_image_exif
 
 
 def _neutralize_tiff_orientation(data):
@@ -50,7 +51,7 @@ def _read_single_image(path, expected_size=None):
     with Image.open(path) as image:
         if getattr(image, "n_frames", 1) != 1:
             raise ValueError(f"{path}: multiple pages")
-        orientation = image.getexif().get(274, 1)
+        orientation = read_image_exif(image).get(274, 1)
         is_tiff = image.format == 'TIFF'
         # Pillow may expose TIFF's oriented size after examining the IFD.
         # The TIFF tags always describe the encoded pixel grid.
@@ -59,6 +60,8 @@ def _read_single_image(path, expected_size=None):
         size = raw_size[::-1] if orientation in (5, 6, 7, 8) else raw_size
         if expected_size is not None and size != expected_size:
             raise ValueError(f"{path}: dimensions do not match the result")
+    from core.image_loader import admit_image_decode
+    admit_image_decode(path)
     data = np.fromfile(path, dtype=np.uint8)
     if is_tiff:
         _neutralize_tiff_orientation(data)

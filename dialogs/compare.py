@@ -1,7 +1,7 @@
 """Interactive comparison using one aligned stack and one inspection region."""
 import os
 
-from PyQt6.QtCore import QEvent, QSignalBlocker, Qt, QTimer
+from PyQt6.QtCore import QEvent, QPointF, QSignalBlocker, Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout,
@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.compare_worker import AlignmentWorker, PreviewWorker
+from core.source_previews import SourcePreviewWorker
 from locales import trans
 from utils.image_utils import cv2_to_pixmap
 from utils.settings_store import get_settings
@@ -69,6 +70,10 @@ class CompareDialog(QDialog):
         self._epoch = 0
         self._revision = 0
         self._worker = None
+        self._source_preview_workers = {}
+        self._source_preview_generation = 0
+        self._reference_source_size = None
+        self._reference_region = None
         self._worker_kind = None
         self._active_revision = -1
         self._active_keys = {}
@@ -567,16 +572,28 @@ class CompareDialog(QDialog):
         self._request_changed()
 
     def _show_frame(self, index):
-        if not self._frames:
+        self._cancel_source_previews()
+        if self._closing or not self._frames:
             return
+        region = self.ref_canvas.region()
+        if region is not None:
+            self._reference_region = (self._reference_source_size, region)
         self._ref_index = max(0, min(index, len(self._frames) - 1))
-        with QSignalBlocker(self.ref_canvas):
-            image = self._frames[self._ref_index]
-            metadata = self._calibration["linear_dng_metadata"]
-            if metadata is not None:
-                from utils.linear_dng import develop_linear
-                image = develop_linear(image, metadata)
-            self.ref_canvas.set_pixmap(cv2_to_pixmap(image))
+        frame = self._frames[self._ref_index]
+        self.ref_canvas.setToolTip("")
+        from core.source_frames import preview_ready
+        if preview_ready(frame):
+            self._set_reference_image(frame)
+        else:
+            with QSignalBlocker(self.ref_canvas):
+                self.ref_canvas.set_pixmap(None)
+            request = self._source_preview_generation
+            worker = SourcePreviewWorker(self._frames, request, [self._ref_index])
+            self._source_preview_workers[worker] = request
+            worker.ready.connect(self._source_preview_ready)
+            worker.failed.connect(self._source_preview_failed)
+            worker.finished.connect(self._source_preview_finished)
+            worker.start()
         names = self._source_names
         name = (os.path.basename(str(names[self._ref_index]))
                 if self._ref_index < len(names) else "")
@@ -586,6 +603,51 @@ class CompareDialog(QDialog):
         self.btn_next_frame.setEnabled(self._ref_index < len(self._frames) - 1)
         # Switching the reference frame changes no fusion inputs or coordinates.
         self._refresh_panes()
+
+    def _cancel_source_previews(self):
+        self._source_preview_generation += 1
+        for worker in self._source_preview_workers:
+            worker.request_cancel()
+
+    def _set_reference_image(self, frame):
+        from core.source_frames import display_image
+        image = display_image(frame)  # Called only after the bounded preview exists.
+        metadata = self._calibration["linear_dng_metadata"]
+        if metadata is not None and not getattr(frame, 'preview_is_display', False):
+            from utils.linear_dng import develop_linear
+            image = develop_linear(image, metadata)
+        size = (frame.shape[1], frame.shape[0])
+        with QSignalBlocker(self.ref_canvas):
+            self.ref_canvas.set_pixmap(cv2_to_pixmap(image), source_size=size)
+            if self._reference_region is not None and self._reference_region[0] == size:
+                x, y, width, height = self._reference_region[1]
+                self.ref_canvas.set_region_centre(QPointF(x + width / 2, y + height / 2))
+        self._reference_source_size = size
+
+    def _source_preview_ready(self, request, index, identity, _thumbnail):
+        if (self._closing or request != self._source_preview_generation
+                or index != self._ref_index or not 0 <= index < len(self._frames)
+                or identity != id(self._frames[index])):
+            return
+        from core.source_frames import preview_ready
+        frame = self._frames[index]
+        if not preview_ready(frame):
+            return
+        self._set_reference_image(frame)
+        self._refresh_panes()
+        if self._auto_enabled and self._worker is None:
+            self._preview_timer.start(0)
+
+    def _source_preview_failed(self, request, message):
+        if not self._closing and request == self._source_preview_generation:
+            self.ref_canvas.setToolTip(message)
+
+    def _source_preview_finished(self):
+        worker = self.sender()
+        self._source_preview_workers.pop(worker, None)
+        worker.deleteLater()
+        if self._closing and self._worker is None and not self._source_preview_workers:
+            super().done(self._close_code)
 
     def _preview_size_changed(self, value):
         size = int(value)
@@ -962,7 +1024,8 @@ class CompareDialog(QDialog):
         self._worker_kind = None
         worker.deleteLater()
         if self._closing:
-            super().done(self._close_code)
+            if not self._source_preview_workers:
+                super().done(self._close_code)
             return
         if self._cancel_requested:
             self._cancelled_methods.update(m for m in self._selected_methods()
@@ -1087,15 +1150,17 @@ class CompareDialog(QDialog):
         self._revision += 1
         self._preview_timer.stop()
         self._layout_timer.stop()
+        self._cancel_source_previews()
         if self._worker is not None:
             self._worker.cancel()
+        if self._worker is not None or self._source_preview_workers:
             self.status_label.setText(trans.t("compare_stopping"))
             self.setEnabled(False)
-            return  # finished closes the dialog; the native call still owns its data.
+            return  # Close after every worker releases its source references.
         super().done(result)
 
     def closeEvent(self, event):  # noqa: N802
-        if self._worker is not None:
+        if self._worker is not None or self._source_preview_workers:
             event.ignore()
             self.done(QDialog.DialogCode.Rejected)
         else:

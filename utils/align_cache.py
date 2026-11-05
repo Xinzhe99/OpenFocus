@@ -109,7 +109,7 @@ def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ..
             if not sizes or min(sizes) <= 0:
                 return None
             from core.resource_policy import require_memory
-            require_memory(sum(sizes) + 2 * max(sizes))
+            require_memory(3 * max(sizes))
             frames = []
             for index, description in enumerate(descriptions):
                 _check_cancel(should_cancel)
@@ -120,7 +120,8 @@ def load_aligned(folder: str, filenames: List[str], align_options: Tuple[str, ..
                         or image.dtype.str != description["dtype"]
                         or image.nbytes != sizes[index]):
                     return None
-                frames.append(image)
+                from core.frame_storage import store_frame
+                frames.append(store_frame(image))
             if sig != _signature(folder, filenames, align_options, downscale_width,
                                   scale_factor, frame_shape, identity=identity):
                 return None

@@ -414,11 +414,7 @@ class TestBatchWorkerBitDepth:
 
 class TestGifDuration:
     def test_gif_worker_writes_millisecond_durations(self, tmp_path, qapp):
-        """imageio hands `duration` straight to Pillow, which counts milliseconds.
-
-        The worker is given seconds, so every frame landed at 0 ms and the GIF
-        played as fast as the viewer allows.
-        """
+        """Every encoded frame keeps the requested duration in milliseconds."""
         pytest.importorskip("PyQt6")
         from PIL import Image
         from core.workers import GifSaverWorker
@@ -430,14 +426,21 @@ class TestGifDuration:
 
         path = str(tmp_path / "anim.gif")
         frames = [np.full((24, 30, 3), i * 40, np.uint8) for i in range(4)]
-        GifSaverWorker(frames, path, 0.25, NoLabels(), "result").run()
+        outcomes = []
+        worker = GifSaverWorker(frames, path, 0.25, NoLabels(), "result")
+        worker.finished_signal.connect(lambda *args: outcomes.append(args))
+        worker.run()
 
         assert os.path.isfile(path)
+        assert outcomes == [(True, path)]
         with Image.open(path) as gif:
+            assert gif.size == (30, 24) and gif.n_frames == len(frames)
+            assert gif.info['loop'] == 0
             durations = []
             for i in range(gif.n_frames):
                 gif.seek(i)
                 durations.append(gif.info.get("duration"))
+                np.testing.assert_array_equal(np.asarray(gif.convert('RGB')), frames[i])
         assert durations == [250, 250, 250, 250]
 
 
@@ -456,7 +459,8 @@ class TestPILFallback:
 
         assert ok, msg
         assert [i.shape for i in images] == [(10, 12, 3)]
-        assert abs(float(images[0].mean()) - 200) < 2
+        from core.source_frames import resolve_frame
+        assert abs(float(resolve_frame(images[0]).mean()) - 200) < 2
 
     def test_undecodable_file_is_reported_not_raised(self, tmp_path):
         from core.image_loader import ImageStackLoader

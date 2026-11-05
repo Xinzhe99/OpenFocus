@@ -10,7 +10,7 @@ readme = "README.md"
 # advertising 3.9 produced an install that failed at import time.
 requires-python = ">=3.10"
 authors = [{ name = "Xinzhe Xie", email = "xiexinzheyyy@163.com" }]
-license = "MIT"
+license = "MIT AND LicenseRef-StackMFF-V3-1.0"
 license-files = ["LICENSE", "docs/THIRD_PARTY_NOTICES.md"]
 keywords = ["image-fusion", "focus-stacking", "multifocus", "microscopy", "photography", "depth-map"]
 classifiers = [
@@ -35,16 +35,15 @@ dependencies = [
     "Pillow",
     "psdtags==2024.5.24",
     "tifffile==2024.8.30",
-    # torch ships by default so `pip install openfocus` enables all three
-    # neural methods. It used to hide behind [ai], and the very first run of a
-    # plain install reported "StackMFF-V3 unavailable" for the default method.
-    "torch",
+    "onnxruntime-directml==1.23.0; sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "onnxruntime>=1.23,<1.24; sys_platform != 'win32' or platform_machine != 'AMD64'",
     # Optional in practice, harmless to require: a few KB each, and they turn
     # HEIC and camera-RAW stacks from "unsupported" into "works" without a
     # second install step.
     "pillow-heif",
     # 0.25.1 bundles LibRaw 0.21.4 and still provides Intel macOS wheels.
     "rawpy>=0.25.1",
+    "threadpoolctl>=3.5",
 ]
 dynamic = ["version"]
 
@@ -75,5 +74,5 @@ py-modules = ["constants"]
 version = { attr = "constants.APP_VERSION" }
 
 [tool.setuptools.package-data]
-weights = ["*.pth"]
+weights = ["*.onnx"]
 core = ["py.typed"]

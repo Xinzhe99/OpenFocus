@@ -191,21 +191,19 @@ class RenderManager:
         if settings.value(AI_CPU_WARNING_DISMISSED_KEY, False, type=bool):
             return False
 
-        from core.multi_focus_fusion import is_ai_fusion_available, torch_device_kind
+        from core.multi_focus_fusion import is_ai_fusion_available, neural_device_kind
         if not is_ai_fusion_available():
-            return False  # torch missing: the render itself will say so
-        if torch_device_kind() not in (None, "N/A"):
+            return False  # The render itself reports a missing runtime.
+        if neural_device_kind() not in (None, "N/A"):
             return False  # an accelerator is available: nothing to warn about
         return True
 
     def _confirm_cpu_ai_render(self, force_algorithm: str | None = None) -> bool:
         """Warn before starting a CPU-only AI render; True means go ahead.
 
-        StackMFF V3 is roughly 30-90x slower on a CPU than the classical
-        methods, and on a low-spec machine a large stack can leave the whole
-        computer unresponsive for a long time. Users with no accelerator get
-        told that once, with a "don't show this again" opt-out, instead of
-        waiting minutes with no explanation.
+        StackMFF can take a long time on CPU with a high-resolution or deep
+        stack. Users with no accelerator are told once, with a
+        "don't show this again" opt-out, before they start a long render.
 
         Compare-all drives methods programmatically and must not stop for a
         modal box mid-run, so it is skipped.

@@ -140,4 +140,6 @@ def apply_flat_field(frame: np.ndarray, gain: np.ndarray) -> np.ndarray:
 def apply_flat_field_stack(frames: Sequence[np.ndarray], gain: np.ndarray
                            ) -> List[np.ndarray]:
     """Apply to every frame (dust is static — one gain field for the stack)."""
-    return [apply_flat_field(f, gain) for f in frames]
+    from core.source_frames import resolve_frame
+    from core.frame_storage import store_frame
+    return [store_frame(apply_flat_field(resolve_frame(frame), gain)) for frame in frames]

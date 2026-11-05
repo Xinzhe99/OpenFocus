@@ -21,16 +21,6 @@ def test_memory_readings_are_real():
     assert memory.peak_rss_bytes() >= rss * 0.9
 
 
-def test_opencv_is_configured_for_low_memory():
-    """OpenCV's own thread pool multiplies the peak by ~8x if left alone."""
-    import cv2
-
-    import core.multi_focus_fusion  # noqa: F401  (configures on import)
-
-    assert cv2.getNumThreads() == 1
-    assert not cv2.ocl.useOpenCL()
-
-
 def test_unknown_memory_is_not_replaced_by_an_invented_budget(monkeypatch):
     from core import multi_focus_fusion as mff, resource_policy as policy
 

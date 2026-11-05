@@ -589,7 +589,9 @@ def test_tiled_directory_matches_whole_with_exposure(method, tmp_path):
 
 
 @pytest.mark.parametrize('method', ['openfocus_b', 'openfocus_c'])
-def test_tiled_render_uses_displayed_depth(monkeypatch, method):
+@pytest.mark.parametrize('source_format', ['mixed', 'uint8', 'uint16'])
+@pytest.mark.parametrize('frame_count', [2, 3])
+def test_tiled_render_uses_displayed_depth(monkeypatch, method, source_format, frame_count):
     from core.depth_map import compute_focus_index
     from core.multi_focus_fusion import MultiFocusFusion
     from fusion_methods import openfocus_depth
@@ -598,7 +600,14 @@ def test_tiled_render_uses_displayed_depth(monkeypatch, method):
     texture = rng.integers(0, 256, (64, 96, 3), dtype=np.uint8)
     blurred = cv2.GaussianBlur(texture, (0, 0), 3)
     frames = [np.concatenate((texture[:, :48], blurred[:, 48:]), axis=1),
-              np.concatenate((blurred[:, :48], texture[:, 48:]), axis=1).astype(np.uint16) * 257]
+              np.concatenate((blurred[:, :48], texture[:, 48:]), axis=1)]
+    if frame_count == 3:
+        frames.append(np.concatenate((blurred[:, :32], texture[:, 32:64],
+                                      blurred[:, 64:]), axis=1))
+    if source_format == 'mixed':
+        frames[1] = frames[1].astype(np.uint16) * 257
+    elif source_format == 'uint16':
+        frames = [frame.astype(np.uint16) * 257 for frame in frames]
     original = openfocus_depth.depth_map
     computed = []
     def record(*args, **kwargs):
@@ -611,4 +620,7 @@ def test_tiled_render_uses_displayed_depth(monkeypatch, method):
     fusion.fuse(frames, thread_count=1)
     assert len(computed) == 1
     displayed = compute_focus_index(frames, method)
-    np.testing.assert_allclose(displayed, computed[0], atol=1e-6)
+    np.testing.assert_array_equal(displayed, computed[0] / np.float32(frame_count - 1))
+    from utils.image_utils import normalize_fuse_input
+    normalized, _ = normalize_fuse_input(frames)
+    np.testing.assert_array_equal(displayed, compute_focus_index(normalized, method))

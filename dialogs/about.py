@@ -143,39 +143,35 @@ class EnvironmentInfoDialog(QDialog):
             info_lines.append(f"  {trans.t('env_not_installed')}: {exc}")
         info_lines.append("")
 
-        # 检测 PyTorch (StackMFF-V3)
+        # StackMFF runtime and the provider actually selected by its probe.
         info_lines.append("-" * 60)
-        info_lines.append("PyTorch / StackMFF-V3")
+        info_lines.append("ONNX Runtime / StackMFF")
         try:
-            import torch
-            from core import torch_backend
-            from core.multi_focus_fusion import ensure_torch_device_kind
-            available["torch"] = True
-            kind = ensure_torch_device_kind()
-            available["device"] = (torch_backend.display_name(kind)
-                                   if torch_backend.is_accelerator(kind)
+            import onnxruntime
+            from fusion_methods import neural_runtime
+            from core.multi_focus_fusion import ensure_neural_device_kind
+            available["onnxruntime"] = True
+            kind = ensure_neural_device_kind()
+            available["device"] = (neural_runtime.display_name(kind)
+                                   if neural_runtime.is_accelerator(kind)
                                    else "CPU")
-
-            info_lines.append(f"  ✓ {trans.t('env_installed').format(torch.__version__)}")
-            if torch.version.cuda:
-                info_lines.append(f"  ✓ {trans.t('env_cuda_ver').format(torch.version.cuda)}")
-            if getattr(torch.version, 'hip', None):
-                info_lines.append(f"  ✓ ROCm {torch.version.hip}")
-            if kind == torch_backend.KIND_CUDA:
-                info_lines.append(f"  ✓ {trans.t('env_cuda_avail').format(torch.cuda.get_device_name(0))}")
-                info_lines.append(f"  ✓ {trans.t('env_gpu_accel')}")
-            elif kind in (torch_backend.KIND_ROCM, torch_backend.KIND_XPU):
-                info_lines.append(
-                    f"  ✓ {torch_backend.device_label(torch, kind)} ({torch_backend.display_name(kind)})")
-                info_lines.append(f"  ✓ {trans.t('env_gpu_accel')}")
-            elif kind == torch_backend.KIND_MPS:
-                info_lines.append(f"  ✓ {trans.t('env_mps_avail')}")
-                info_lines.append(f"  ✓ {trans.t('env_gpu_accel')}")
+            info_lines.append(f"  ✓ {trans.t('env_installed').format(onnxruntime.__version__)}")
+            diagnostics = neural_runtime.device_diagnostics()
+            info_lines.append('  Runtime providers: ' + ', '.join(diagnostics['providers']))
+            for index, name, _vendor, _memory in diagnostics['hardware']:
+                info_lines.append(f'  Hardware DXGI {index}: {name}')
+            if diagnostics['actual'] is not None:
+                info_lines.append(f"  Last neural task: {neural_runtime.display_name(diagnostics['actual'])} "
+                                  f"({diagnostics['checkpoint']})")
+            for error in diagnostics['probe_errors']:
+                info_lines.append('  Provider probe: ' + error)
+            if neural_runtime.is_accelerator(kind):
+                info_lines.append(f"  ✓ {trans.t('env_gpu_accel')} ({available['device']})")
             else:
                 info_lines.append(f"  ⚠ {trans.t('env_no_gpu')}")
                 info_lines.append(f"  ✓ {trans.t('env_cpu_mode')}")
         except Exception as exc:
-            available["torch"] = False
+            available["onnxruntime"] = False
             info_lines.append(f"  {trans.t('env_not_installed')}: {exc}")
             info_lines.append(f"  ✗ {trans.t('env_stackmff_unavailable')}")
         info_lines.append("")
@@ -223,7 +219,7 @@ class EnvironmentInfoDialog(QDialog):
             ("Guided Filter / GFG-FGF / OpenFocus A/B/C", core, "CPU"),
             ("DCT", core and available.get("scipy", False), "CPU"),
             ("DTCWT", core and available.get("dtcwt", False), "CPU"),
-            ("StackMFF-V3", core and available.get("torch", False), available.get("device", "CPU")),
+            ("StackMFF V1/V2/V3", core and available.get("onnxruntime", False), available.get("device", "CPU")),
         ]
         summary = [trans.t("env_fusion_alg")]
         for name, ready, device in methods:

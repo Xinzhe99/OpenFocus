@@ -16,8 +16,12 @@ def test_native_raw_folder_reload_ignores_rendered_companions(qapp, monkeypatch,
         ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
          (-0.1013, 0.2415, 0.5509)),
         (1024 / 1853, 1., 1024 / 1667), 'Canon', 'Canon EOS R6')
-    for name, value in [('frame10.dng', 10000), ('frame2.dng', 2000), ('frame3.dng', 3000)]:
-        write_linear_dng(tmp_path / name, np.full((128, 128, 3), value, np.uint16), metadata)
+    for name, value in [('frame10.dng', 10000), ('frame2.tiff', 2000), ('frame3.dng', 3000)]:
+        destination = tmp_path / name
+        dng = destination.with_suffix('.dng')
+        write_linear_dng(dng, np.full((128, 128, 3), value, np.uint16), metadata)
+        if destination != dng:
+            dng.rename(destination)
     for name in ('frame2.jpg', 'frame10.png', 'render.tiff'):
         (tmp_path / name).write_bytes(b'not a RAW image')
 
@@ -50,7 +54,7 @@ def test_native_raw_folder_reload_ignores_rendered_companions(qapp, monkeypatch,
     monkeypatch.setattr(source_manager, 'StackLoadWorker', SynchronousWorker)
     manager.load_image_stack(str(tmp_path), append=True)
     assert not errors
-    assert window.image_filenames == ['frame2.dng', 'frame10.dng']
+    assert window.image_filenames == ['frame2.tiff', 'frame10.dng']
     assert len(window.raw_images) == 2
     np.testing.assert_allclose([image[64, 64, 0] for image in window.raw_images], [2000, 10000], atol=4)
     assert window.linear_dng_metadata.camera_model == 'Canon EOS R6'

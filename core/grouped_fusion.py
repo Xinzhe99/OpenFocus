@@ -15,9 +15,10 @@ import numpy as np
 from PIL import Image
 
 from core import resource_policy
+from core.frame_storage import storage_directory
 from core.image_loader import RAW_FORMATS, _downscale_page, decode_image
 from core.registration import RegistrationCancelled
-from utils.image_utils import get_imwrite_params, imwrite_auto
+from utils.image_utils import get_imwrite_params, imwrite_auto, read_image_exif
 
 
 def _check_cancel(should_cancel):
@@ -36,7 +37,7 @@ def _header(path):
             if 'A' in image.getbands() or 'transparency' in image.info:
                 raise ValueError(f"Grouped fusion does not support alpha-channel inputs: {path}. Remove alpha or disable grouping")
             width, height = image.size
-            if image.getexif().get(274, 1) in (5, 6, 7, 8):
+            if read_image_exif(image).get(274, 1) in (5, 6, 7, 8):
                 width, height = height, width
     except ValueError:
         raise
@@ -109,7 +110,7 @@ def grouped_fuse(paths, group_size, overlap, fuse_group, *, scale_factor=1.0,
     if width < 1 or height < 1:
         raise ValueError('Grouped fusion scale produces an empty image')
 
-    with tempfile.TemporaryDirectory(prefix="openfocus-grouped-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="openfocus-grouped-", dir=storage_directory()) as scratch:
         current = [(path, False, (0, 0, width, height)) for path in paths]
         stage = 1
         while True:
@@ -191,9 +192,12 @@ def grouped_fuse(paths, group_size, overlap, fuse_group, *, scale_factor=1.0,
                         _check_cancel(should_cancel)
                         return result
                     # Uncompressed TIFF has a small directory in addition to pixels.
-                    if shutil.disk_usage(scratch).free < result.nbytes + 65536:
+                    required = result.nbytes + 65536
+                    available = shutil.disk_usage(scratch).free
+                    if available < required:
                         raise resource_policy.ResourceLimitError(
-                            "Insufficient scratch disk space for grouped fusion")
+                            f"Insufficient scratch disk space in {scratch}: need {required} bytes, "
+                            f"with 0 bytes reserved (free: {available} bytes)")
                     output = os.path.join(scratch, f'{stage}-{completed}.tif')
                     if not imwrite_auto(output, result, get_imwrite_params('.tif'), exif=b''):
                         raise OSError("Could not write grouped fusion scratch TIFF")

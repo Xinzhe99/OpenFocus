@@ -2,6 +2,7 @@
 
 import cv2
 import numpy as np
+from core.frame_storage import create_frame, store_frame
 
 
 def _down2(image):
@@ -23,7 +24,8 @@ def _response(frame, levels, sigma, should_cancel, check_cancel):
         gray = np.mean(frame[:, :, :3], axis=2, dtype=np.float32)
 
     height, width = gray.shape
-    response = np.zeros((height, width), dtype=np.float32)
+    response = create_frame((height, width), np.float32)
+    response[...] = 0
     current = gray
     for level in range(levels):
         check_cancel(should_cancel)
@@ -44,8 +46,8 @@ def _response(frame, levels, sigma, should_cancel, check_cancel):
     # Clip the response to the fixed-point range in the 0-255 input domain.
     np.minimum(response, np.float32(65535.0 / 256.0), out=response)
     if sigma > 1e-3:
-        response = cv2.GaussianBlur(response, (0, 0), sigmaX=sigma,
-                                    borderType=cv2.BORDER_REPLICATE)
+        response = store_frame(cv2.GaussianBlur(response, (0, 0), sigmaX=sigma,
+                                               borderType=cv2.BORDER_REPLICATE))
     return response
 
 
@@ -69,7 +71,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
     radius = max(1, int(kernel_size) // 2) if kernel_size else 3
     levels = int(np.floor(np.log2(radius))) + 3
     sigma = max(0.0, float(2.0 if blend_smoothing is None else blend_smoothing))
-    output = _prepare_frame(frames[0], img_resize, should_cancel).copy()
+    output = store_frame(_prepare_frame(frames[0], img_resize, should_cancel))
     best = _response(output, levels, sigma, should_cancel, _check_cancel)
 
     for source in frames[1:]:
@@ -85,5 +87,7 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
     _check_cancel(should_cancel)
     np.clip(output, 0, 255, out=output)
     if all(frame.dtype == np.uint8 for frame in frames):
-        return output.astype(np.uint8)
+        result = create_frame(output.shape, np.uint8)
+        result[...] = output
+        return result
     return output

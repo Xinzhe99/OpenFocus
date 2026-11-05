@@ -234,11 +234,11 @@ def test_pyramid_envelope_covers_installed_backend():
             assert pyramid.lowpass.shape[1] <= low_w
 
 
-def test_estimator_scales_with_frames_and_workers():
+def test_estimator_keeps_retained_disk_weights_out_of_ram_budget():
     fixed, per_worker = module.estimate_working_set(512, 512, 4, 8)
     assert fixed > 0 and per_worker > 0
     fixed_more, _ = module.estimate_working_set(512, 512, 4, 16)
-    assert fixed_more > fixed
+    assert fixed_more == fixed
     fixed_new, _ = module.estimate_working_set(
         512, 512, 4, 8, new_source_bytes=1024 * 1024)
     assert fixed_new == fixed + 1024 * 1024

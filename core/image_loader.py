@@ -30,7 +30,7 @@ try:
 except ImportError:
     RAWPY_AVAILABLE = False
 
-from utils.image_utils import export_exif, to_display_uint8
+from utils.image_utils import _sanitize_exif, export_exif, read_image_exif, to_display_uint8
 from utils.sorting import natural_sort_key
 
 # LibRaw recognizes file contents, not extensions. This shared allow-list
@@ -42,11 +42,60 @@ RAW_FORMATS = {'.3fr', '.arw', '.bay', '.cap', '.cr2', '.cr3', '.crw',
                '.nrw', '.orf', '.pef', '.raf', '.raw', '.rdc', '.rw2',
                '.rwl', '.srf', '.sr2', '.srw', '.sti', '.x3f'}
 
+from core.frame_storage import store_frame
+
+
+def _is_dng_tiff(path):
+    """DNG may have a TIFF extension and a thumbnail as its first IFD."""
+    if os.path.splitext(path)[1].lower() not in ('.tif', '.tiff'):
+        return False
+    try:
+        import tifffile
+        with tifffile.TiffFile(path) as tif:
+            return bool(tif.is_dng)
+    except (OSError, ValueError, tifffile.TiffFileError):
+        return False
+
+def is_raw_source(path):
+    """Recognize camera RAW extensions and TIFF containers marked as DNG."""
+    return (os.path.splitext(os.fspath(path))[1].lower() in RAW_FORMATS
+            or _is_dng_tiff(path))
+
+def source_dimensions(path, page=0):
+    """Read a still image or TIFF page's dimensions before allocating pixels."""
+    extension = os.path.splitext(os.fspath(path))[1].lower()
+    if is_raw_source(path):
+        if not RAWPY_AVAILABLE:
+            raise ValueError('Camera RAW support is unavailable (rawpy/LibRaw).')
+        with rawpy.RawPy() as raw:
+            raw.open_file(os.fspath(path))
+            return raw.sizes.width, raw.sizes.height
+    if extension in ('.tif', '.tiff'):
+        import tifffile
+        with tifffile.TiffFile(path) as tif:
+            entry = tif.pages[page]
+            return entry.imagewidth, entry.imagelength
+    if not PIL_AVAILABLE:
+        raise ValueError('Image header support is unavailable (Pillow).')
+    with PILImage.open(path) as image:
+        return image.size
+
+def admit_image_decode(path, *, user_limit=None):
+    """Reserve encoded and decoded working space before reading image pixels."""
+    from core.resource_policy import require_memory
+
+    encoded_bytes = os.path.getsize(path) * 2
+    require_memory(encoded_bytes, user_limit=user_limit)
+    width, height = source_dimensions(path)
+    require_memory(width * height * 32 + encoded_bytes, user_limit=user_limit)
+
+
 
 def linear_raw_metadata_matches(first, second):
     """Whether two camera-linear sources share the same calibration."""
     return (first.camera_make == second.camera_make
             and first.camera_model == second.camera_model
+            and first.profile_tags == second.profile_tags
             and np.allclose(first.color_matrix, second.color_matrix, rtol=1e-5, atol=1e-7)
             and np.allclose(first.as_shot_neutral, second.as_shot_neutral,
                             rtol=1e-5, atol=1e-7))
@@ -77,6 +126,10 @@ class UnsupportedTransparency(ValueError):
 
 
 def _has_transparency(image: np.ndarray) -> bool:
+    from core.source_frames import SourceFrame
+    if isinstance(image, SourceFrame):
+        # Metadata checks must never decode alpha pixels on the GUI thread.
+        return image.ndim == 3 and image.shape[2] == 4
     if image.ndim != 3 or image.shape[2] != 4:
         return False
     return (image.dtype not in (np.uint8, np.uint16)
@@ -93,9 +146,9 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
     if not RAWPY_AVAILABLE:
         return None
     try:
-        with rawpy.imread(path) as raw:
+        with open(path, 'rb') as stream, rawpy.imread(stream) as raw:
             rgb = raw.postprocess(use_camera_wb=True, output_bps=16,
-                                  no_auto_bright=True)
+                                  no_auto_bright=True, gamma=(2.4, 12.92))
         # Resize while still RGB to avoid a second full-size channel-swapped
         # copy. INTER_AREA treats each channel independently, so the result
         # is identical to resizing BGR after conversion.
@@ -105,10 +158,11 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
         return None
 
 
-def decode_image(path: str, *, allow_transparent_png: bool = False) -> Optional[np.ndarray]:
+def decode_image(path: str, *, allow_transparent_png: bool = False,
+                 preserve_grayscale: bool = False) -> Optional[np.ndarray]:
     """Decode an oriented still image, rejecting unsupported transparency."""
     ext = os.path.splitext(path)[1].lower()
-    if ext in RAW_FORMATS:
+    if is_raw_source(path):
         return _read_raw(path)
     # IMREAD_IGNORE_ORIENTATION is required: modern OpenCV already rotates by
     # the EXIF Orientation tag itself, so letting apply_exif_orientation run
@@ -129,7 +183,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False) -> Optional[
     if (unchanged is not None and unchanged.dtype in (np.uint8, np.uint16)
             and ext in ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.bmp', '.webp', '.tif', '.tiff')):
         if unchanged.ndim == 2:
-            img = cv2.cvtColor(unchanged, cv2.COLOR_GRAY2BGR)
+            img = unchanged if preserve_grayscale else cv2.cvtColor(unchanged, cv2.COLOR_GRAY2BGR)
         elif unchanged.ndim == 3 and unchanged.shape[2] == 3:
             img = unchanged
         elif unchanged.ndim == 3 and unchanged.shape[2] == 4:
@@ -149,23 +203,48 @@ def decode_image(path: str, *, allow_transparent_png: bool = False) -> Optional[
 _RAW_TIFF_MAGICS = {b"II*\x00", b"MM\x00*", b"IIRO", b"IIRS", b"MMOR", b"IIU\x00"}
 
 
-def _read_raw_exif_bytes(path: str) -> bytes:
-    """EXIF of a TIFF-based camera RAW (ORF, NEF, CR2, ARW, DNG, RW2, ...).
+class _RawExifReader:
+    """Seek within a RAW while bounding the total metadata read by Pillow."""
 
-    Olympus/Panasonic use a private magic number in place of 42; patching
-    it lets Pillow walk the IFDs. CR3/RAF are not TIFF and yield b"".
-    """
+    def __init__(self, stream):
+        self.stream = stream
+        self.remaining = 16 * 1024 * 1024
+
+    def read(self, size=-1):
+        if size < 0 or size > self.remaining:
+            raise OSError("RAW EXIF metadata exceeds the read limit")
+        data = self.stream.read(size)
+        self.remaining -= len(data)
+        return data
+
+    def seek(self, *args):
+        return self.stream.seek(*args)
+
+    def tell(self):
+        return self.stream.tell()
+
+
+def _read_raw_exif_bytes(path: str) -> bytes:
+    """Read export-safe EXIF from a TIFF-based RAW without reading its pixels."""
     with open(path, "rb") as fh:
         magic = fh.read(4)
         if magic not in _RAW_TIFF_MAGICS:
             return b""
-        data = bytearray(magic)
-        data.extend(fh.read())
-    data[2:4] = b"*\x00" if data[:2] == b"II" else b"\x00*"
-    # IFD0 of a RAW is full of sensor-data pointers; keep only the export-safe
-    # subset so SOURCE_EXIF stays small and embeddable as-is.
-    exif = export_exif(bytes(data))
-    return exif.tobytes() if exif is not None else b""
+        offset = fh.read(4)
+        if len(offset) != 4:
+            return b""
+        try:
+            # Olympus and Panasonic replace the TIFF magic but retain the
+            # standard byte order and IFD offsets. Supplying the offset lets
+            # Pillow use a standard header without copying or changing the file.
+            src = PILImage.Exif()
+            src.endian = "<" if magic[:2] == b"II" else ">"
+            src.load_from_fp(_RawExifReader(fh), int.from_bytes(
+                offset, "little" if src.endian == "<" else "big"))
+            exif = _sanitize_exif(src)
+            return exif.tobytes() if exif is not None else b""
+        except Exception:
+            return b""
 
 
 def _read_exif_bytes(path: str) -> bytes:
@@ -174,7 +253,7 @@ def _read_exif_bytes(path: str) -> bytes:
         return b""
     try:
         ext = os.path.splitext(path)[1].lower()
-        if ext in RAW_FORMATS:
+        if is_raw_source(path):
             return _read_raw_exif_bytes(path)
         if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif', '.tif', '.tiff', '.png', '.webp'):
             return b""
@@ -187,7 +266,7 @@ def _read_exif_bytes(path: str) -> bytes:
             # a 16-bit export of those frames came out without metadata. Keep
             # the same export-safe subset the RAW path returns: IFD0 carries
             # source strip/size pointers that must not reach an export.
-            exif = pil_img.getexif()
+            exif = read_image_exif(pil_img)
             if not len(exif):
                 return b""
             safe = export_exif(exif.tobytes())
@@ -196,10 +275,13 @@ def _read_exif_bytes(path: str) -> bytes:
         return b""
 
 
-def _read_icc_profile(path: str) -> bytes:
-    """Read a common RGB profile from every page of an image file."""
-    if not PIL_AVAILABLE or os.path.splitext(path)[1].lower() in RAW_FORMATS:
+def _read_icc_profile(path: str, page: Optional[int] = None) -> bytes:
+    """Read one frame's RGB profile, requiring common profiles for TIFF stacks."""
+    if not PIL_AVAILABLE:
         return b""
+    if is_raw_source(path):
+        from utils.image_utils import srgb_icc_profile
+        return srgb_icc_profile()
     from io import BytesIO
     try:
         from PIL import ImageCms
@@ -208,8 +290,11 @@ def _read_icc_profile(path: str) -> bytes:
     try:
         with PILImage.open(path) as image:
             profiles = []
-            for page in range(getattr(image, "n_frames", 1)):
-                image.seek(page)
+            pages = range(getattr(image, "n_frames", 1)) if image.format == "TIFF" else (0,)
+            if page is not None:
+                pages = (page,)
+            for page_index in pages:
+                image.seek(page_index)
                 # TIFF tags are page-specific; Pillow's info dictionary may
                 # otherwise retain metadata from a previous page.
                 if image.format == "TIFF":
@@ -284,7 +369,7 @@ def apply_exif_orientation(path: str, img: np.ndarray) -> np.ndarray:
         if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif', '.tif', '.tiff', '.png', '.webp'):
             return img
         with PILImage.open(path) as pil_img:
-            orientation = pil_img.getexif().get(274, 1)
+            orientation = read_image_exif(pil_img).get(274, 1)
         transform = _EXIF_TRANSFORMS.get(int(orientation))
         if transform is not None:
             return np.ascontiguousarray(transform(img))
@@ -334,38 +419,31 @@ def _read_via_pil(path: str) -> Optional[np.ndarray]:
         return None
 
 
-def _read_tiff_pages(path: str) -> Optional[List[np.ndarray]]:
-    """Read every page of a multi-page TIFF as a list of BGR arrays.
-
-    Microscopy software (ZEN, NIS-Elements, ImageJ) exports whole Z-stacks
-    as single multi-page TIFFs; cv2.imdecode reads only page 0 and silently
-    drops the rest. Returns None for single-page files (and non-TIFFs) so
-    callers keep their normal single-image path.
-    """
-    if os.path.splitext(path)[1].lower() not in ('.tif', '.tiff'):
+def _read_tiff_pages(path: str, scale_factor=1.0, should_cancel=None) -> Optional[List[np.ndarray]]:
+    """Decode multi-page TIFF one page at a time into disk-backed frames."""
+    if os.path.splitext(path)[1].lower() not in ('.tif', '.tiff') or _is_dng_tiff(path):
         return None
-    try:
-        data = np.fromfile(path, dtype=np.uint8)
-        success, unchanged = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED)
-        if not success or len(unchanged) < 2:
-            return None
-        if any(_has_transparency(p) for p in unchanged):
+    count = count_frames(path)
+    if count < 2:
+        return None
+    data = np.memmap(path, dtype=np.uint8, mode='r')
+    pages = []
+    for index in range(count):
+        if should_cancel is not None and should_cancel():
+            raise _DecodeCancelled()
+        success, decoded = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
+                                            range=(index, index + 1))
+        if not success or len(decoded) != 1:
+            raise ValueError(f"Could not decode TIFF page {index + 1}: {path}")
+        page = decoded[0]
+        if _has_transparency(page):
             raise UnsupportedTransparency(f"Transparent TIFF pages are unsupported: {path}")
-        if all(p.dtype in (np.uint8, np.uint16) and
-               (p.ndim == 2 or (p.ndim == 3 and p.shape[2] in (3, 4))) for p in unchanged):
-            return [cv2.cvtColor(p, cv2.COLOR_GRAY2BGR) if p.ndim == 2 else
-                    cv2.cvtColor(p, cv2.COLOR_BGRA2BGR) if p.shape[2] == 4 else p
-                    for p in unchanged]
-        del unchanged
-        flags = cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
-        success, pages = cv2.imdecodemulti(data, flags=flags)
-        if not success or len(pages) < 2:
-            return None
-        return list(pages)
-    except UnsupportedTransparency:
-        raise
-    except Exception:
-        return None
+        if page.ndim == 2:
+            page = cv2.cvtColor(page, cv2.COLOR_GRAY2BGR)
+        elif page.ndim == 3 and page.shape[2] == 4:
+            page = cv2.cvtColor(page, cv2.COLOR_BGRA2BGR)
+        pages.append(store_frame(_downscale_page(page, scale_factor)))
+    return pages
 
 
 def count_frames(path: str) -> int:
@@ -376,6 +454,8 @@ def count_frames(path: str) -> int:
     instead of a full decode); anything else counts as one.
     """
     if os.path.splitext(path)[1].lower() in (".tif", ".tiff"):
+        if _is_dng_tiff(path):
+            return 1
         try:
             from PIL import Image
             with Image.open(path) as im:
@@ -432,11 +512,10 @@ def _decode_one_source(path: str, scale_factor: float,
     try:
         if should_cancel is not None and should_cancel():
             raise _DecodeCancelled()
-        pages = _read_tiff_pages(path)
+        pages = _read_tiff_pages(path, scale_factor, should_cancel)
         if pages is not None:
-            return DecodedSource(path, [_downscale_page(p, scale_factor)
-                                        for p in pages])
-        if os.path.splitext(path)[1].lower() in RAW_FORMATS:
+            return DecodedSource(path, pages)
+        if is_raw_source(path):
             image = _read_raw(path, scale_factor)
             if image is None:
                 return DecodedSource(path, error=ValueError("decode failed"))
@@ -488,7 +567,8 @@ def _peek_source_size(path: str) -> Optional[Tuple[int, int, int, int]]:
 def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
                          thread_count: int = 0,
                          resource_preference: str = "balanced",
-                         should_cancel=None, allow_transparent_png=False):
+                         should_cancel=None, allow_transparent_png=False,
+                         disk_backed=False):
     """Yield DecodedSource objects in input order, with bounded parallelism.
 
     Plain single-frame formats decode in a window of at most the admitted
@@ -526,7 +606,7 @@ def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
             height = max(s[1] for s in peeked)
             channels = max(s[2] for s in peeked)
             itemsize = max(s[3] for s in peeked)
-            fixed = sum(w * h * c * i for w, h, c, i in peeked)
+            fixed = 0 if disk_backed else sum(w * h * c * i for w, h, c, i in peeked)
             per_worker = width * height * channels * itemsize * 3
             plan = policy.plan_execution(
                 policy.Workload(
@@ -638,9 +718,9 @@ class ImageStackLoader:
     def load_linear_raw_stack(self, filepaths, scale_factor=1.0, *,
                               resource_preference="balanced", expected_metadata=None):
         """Load a complete camera-linear stack, committing state only on success."""
-        from core.resource_policy import require_memory
+        from core.source_frames import scan_source, ensure_preview
         from locales import trans
-        from utils.linear_dng import load_linear_raw
+        # Camera calibration is inspected while building the source manifest.
         from utils.scalebar import detect_px_size_um
 
         paths = list(filepaths)
@@ -660,19 +740,12 @@ class ImageStackLoader:
         for index, path in enumerate(paths):
             if self.should_cancel():
                 return False, 'CANCELLED', [], []
-            if os.path.splitext(path)[1].lower() not in RAW_FORMATS:
+            if not is_raw_source(path):
                 return False, trans.t("linear_raw_invalid"), [], []
-            def admit(width, height):
-                # Already decoded frames are reflected in the live memory
-                # snapshot. Reserve the remaining scaled stack plus the
-                # current full-resolution LibRaw and conversion workspace.
-                full_bytes = width * height * 3 * 2
-                scaled_bytes = max(1, int(width * scale_factor)) * max(1, int(height * scale_factor)) * 6
-                require_memory(full_bytes * 4 + scaled_bytes * (len(paths) - index))
 
             try:
-                image, profile = load_linear_raw(path, scale_factor=scale_factor,
-                                                 before_decode=admit)
+                image = scan_source(path, scale_factor, linear=True, header_only=True)[0]
+                profile = image.linear_metadata
             except MemoryError:
                 raise
             except Exception as exc:
@@ -691,6 +764,9 @@ class ImageStackLoader:
             images.append(image)
             if self.progress_callback is not None:
                 self.progress_callback(index + 1, len(paths))
+        ensure_preview(images[0])
+        if self.should_cancel():
+            return False, 'CANCELLED', [], []
         self.images = images
         self.image_paths = paths
         self.source_exif = _read_exif_bytes(paths[0])
@@ -725,77 +801,13 @@ class ImageStackLoader:
 
         image_files.sort(key=lambda x: natural_sort_key(x[0]))
 
-        loaded_images = []
-        filenames = []
-        loaded_paths = []
-        failed_count = 0
-        self.source_exif = b""
-        self.source_icc_profile = b""
-        # Reset per load: one loader instance serves the whole session, so a
-        # calibration detected for a previous stack must not leak into this
-        # one (every later export would carry the wrong scale bar).
-        self.px_size_um = None
-
-        sources = [full_path for _filename, full_path in image_files]
-        names = {full_path: filename for filename, full_path in image_files}
-        if self.progress_callback is not None:
-            self.progress_callback(0, len(sources))
-        try:
-            decoded = iter_decoded_sources(
-                sources, scale_factor, thread_count=thread_count,
-                resource_preference=resource_preference,
-                should_cancel=self.should_cancel, allow_transparent_png=True)
-            try:
-                for done, item in enumerate(decoded, start=1):
-                    if self.progress_callback is not None:
-                        self.progress_callback(done, len(sources))
-                    if item.error is not None:
-                        if isinstance(item.error, UnsupportedTransparency):
-                            from locales import trans
-                            return False, trans.t("transparent_desktop_unsupported").format(path=item.path), [], []
-                        failed_count += 1
-                        print(f"Failed to load image {names[item.path]}: {item.error}")
-                        continue
-                    # Metadata follows input order, so it cannot depend on
-                    # which decode finished first.
-                    if not self.source_exif:
-                        self.source_exif = _read_exif_bytes(item.path)
-                    if self.px_size_um is None:
-                        from utils.scalebar import detect_px_size_um
-                        self.px_size_um = detect_px_size_um(item.path)
-                    stem = os.path.splitext(names[item.path])[0]
-                    multipage = len(item.pages) > 1
-                    for page_no, page in enumerate(item.pages, start=1):
-                        loaded_images.append(page)
-                        loaded_paths.append(item.path)
-                        filenames.append(f"{stem}_page_{page_no:03d}.tif"
-                                         if multipage else names[item.path])
-                    del item
-            finally:
-                decoded.close()
-        except _DecodeCancelled:
-            return False, 'CANCELLED', [], []
-        self.failed_count = failed_count
-
-        if not loaded_images:
-            return False, "Could not load any image files", [], []
-
-        self.images = loaded_images
-        # One path per *frame*: a multi-page TIFF contributes the same
-        # container path for each of its pages, and a failed file must not
-        # shift the remaining paths (get_image_info used to report the wrong
-        # file for every frame after either case).
-        self.image_paths = loaded_paths
-        self.source_icc_profiles = {path: _read_icc_profile(path) for path in dict.fromkeys(loaded_paths)}
-        self.source_icc_profile = common_profile_values(self.source_icc_profiles.values())
-
-        message = f"Loaded {len(loaded_images)} image(s)"
-        if failed_count > 0:
-            message += f" (failed: {failed_count})"
-        if getattr(self, 'skipped_derived_count', 0):
-            message += f" (skipped {self.skipped_derived_count} aligned copies)"
-
-        return True, message, loaded_images, filenames
+        result = self.load_from_filepaths(
+            [path for _, path in image_files], scale_factor,
+            thread_count=thread_count, resource_preference=resource_preference)
+        if result[0] and self.skipped_derived_count:
+            return (True, result[1] + f" (skipped {self.skipped_derived_count} aligned copies)",
+                    result[2], result[3])
+        return result
 
     def load_from_video(self, video_path: str, scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
         self.source_exif = b""
@@ -834,7 +846,7 @@ class ImageStackLoader:
                     height = int(frame.shape[0] * scale_factor)
                     frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
-                loaded_images.append(frame)
+                loaded_images.append(store_frame(frame))
                 filenames.append(f"{video_name}_frame_{frame_index:04d}.png")
                 frame_index += 1
         finally:
@@ -858,77 +870,81 @@ class ImageStackLoader:
 
     def load_from_filepaths(self, filepaths: list[str], scale_factor: float = 1.0, *,
                             thread_count: int = 0,
-                            resource_preference: str = "balanced",
-                            ) -> Tuple[bool, str, List[np.ndarray], List[str]]:
-        self.failed_count = 0
-        if not filepaths:
-            return False, "No file paths provided", [], []
+                            resource_preference: str = "balanced"):
+        """Open paths and bounded previews; original pixels remain on disk."""
+        from concurrent.futures import ThreadPoolExecutor
+        from core.source_frames import scan_source, ensure_preview
+        from utils.logging_setup import log_operation
+        from utils.scalebar import detect_px_size_um
 
-        loaded_images = []
-        filenames = []
-        loaded_paths = []
-        failed_count = 0
         sources = _collapse_repeats(list(filepaths))
-        # see load_from_folder: calibration must not stick across stacks
-        self.px_size_um = None
-        self.source_exif = b""
-        self.source_icc_profile = b""
-
-        total = len(sources)
-        missing = [path for path in sources if not os.path.exists(path)]
-        sources = [path for path in sources if os.path.exists(path)]
-        failed_count += len(missing)
-        if self.progress_callback is not None:
-            self.progress_callback(len(missing), total)
-        try:
-            decoded = iter_decoded_sources(
-                sources, scale_factor, thread_count=thread_count,
-                resource_preference=resource_preference,
-                should_cancel=self.should_cancel, allow_transparent_png=True)
+        if not sources:
+            return False, "No file paths provided", [], []
+        images, names, paths, px_sizes = [], [], [], []
+        failed = 0
+        exif = b""
+        workers = min(4, max(1, int(thread_count or 4)))
+        def inspect(path):
+            if self.should_cancel():
+                raise _DecodeCancelled()
             try:
-                for done, item in enumerate(decoded, start=len(missing) + 1):
-                    if self.progress_callback is not None:
-                        self.progress_callback(done, total)
-                    if item.error is not None:
-                        if isinstance(item.error, UnsupportedTransparency):
-                            from locales import trans
-                            return False, trans.t("transparent_desktop_unsupported").format(path=item.path), [], []
-                        failed_count += 1
-                        print(f"Failed to load image {item.path}: {item.error}")
-                        continue
-                    if not self.source_exif:
-                        self.source_exif = _read_exif_bytes(item.path)
-                    if self.px_size_um is None:
-                        from utils.scalebar import detect_px_size_um
-                        self.px_size_um = detect_px_size_um(item.path)
-                    stem = os.path.splitext(os.path.basename(item.path))[0]
-                    multipage = len(item.pages) > 1
-                    for page_no, page in enumerate(item.pages, start=1):
-                        loaded_images.append(page)
-                        loaded_paths.append(item.path)
-                        filenames.append(f"{stem}_page_{page_no:03d}.tif"
-                                         if multipage
-                                         else os.path.basename(item.path))
-                    del item
-            finally:
-                decoded.close()
-        except _DecodeCancelled:
+                return scan_source(path, scale_factor, header_only=True), None
+            except Exception as exc:
+                return [], exc
+        if self.progress_callback is not None:
+            self.progress_callback(0, len(sources))
+        with log_operation('source_manifest', count=len(sources), preview_threads=workers):
+            # Only descriptors are queued. The first preview is prepared here;
+            # remaining thumbnails are generated after the workspace is usable.
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                try:
+                    for done, (path, result) in enumerate(zip(sources, pool.map(inspect, sources)), 1):
+                        if self.should_cancel():
+                            raise _DecodeCancelled()
+                        frames, error = result
+                        if error is not None:
+                            if isinstance(error, UnsupportedTransparency):
+                                from locales import trans
+                                return False, trans.t('transparent_desktop_unsupported').format(path=path), [], []
+                            failed += 1
+                            import logging
+                            logging.getLogger(__name__).warning('Source preview failed path=%s: %s', path, error)
+                        else:
+                            if not exif:
+                                exif = _read_exif_bytes(path)
+                            px_sizes.append(detect_px_size_um(path))
+                            stem = os.path.splitext(os.path.basename(path))[0]
+                            images.extend(frames)
+                            paths.extend([path] * len(frames))
+                            names.extend(f'{stem}_page_{frame.page + 1:03d}.tif' if len(frames) > 1
+                                         else os.path.basename(path) for frame in frames)
+                        if self.progress_callback is not None:
+                            self.progress_callback(done, len(sources))
+                except _DecodeCancelled:
+                    return False, 'CANCELLED', [], []
+        self.failed_count = failed
+        if not images:
+            return False, 'Could not load any image files', [], []
+        if self.should_cancel():
             return False, 'CANCELLED', [], []
-        self.failed_count = failed_count
-
-        if not loaded_images:
-            return False, "Could not load any image files", [], []
-
-        self.images = loaded_images
-        self.image_paths = loaded_paths
-        self.source_icc_profiles = {path: _read_icc_profile(path) for path in dict.fromkeys(loaded_paths)}
+        try:
+            ensure_preview(images[0])
+        except UnsupportedTransparency:
+            from locales import trans
+            return False, trans.t('transparent_desktop_unsupported').format(path=images[0].path), [], []
+        except (OSError, ValueError) as exc:
+            return False, f'Could not load source preview: {exc}', [], []
+        if self.should_cancel():
+            return False, 'CANCELLED', [], []
+        self.images, self.image_paths = images, paths
+        self.source_exif = exif
+        self.px_size_um = _consistent_px_size_um(px_sizes)
+        self.source_icc_profiles = {path: _read_icc_profile(path) for path in dict.fromkeys(paths)}
         self.source_icc_profile = common_profile_values(self.source_icc_profiles.values())
-
-        message = f"Loaded {len(loaded_images)} image(s)"
-        if failed_count > 0:
-            message += f" (failed: {failed_count})"
-
-        return True, message, loaded_images, filenames
+        message = f'Loaded {len(images)} image(s)'
+        if failed:
+            message += f' (failed: {failed})'
+        return True, message, images, names
 
     def create_pixmaps(self, images: List[np.ndarray], max_size: Tuple[int, int] = (800, 600)) -> list:
         pixmaps = []
@@ -940,6 +956,12 @@ class ImageStackLoader:
     def create_thumbnails(self, images: List[np.ndarray], thumb_size: int = 40) -> list:
         thumbnails = []
         for img in images:
+            from core.source_frames import display_image, preview_ready
+            if not preview_ready(img):
+                from PyQt6.QtGui import QPixmap
+                thumbnails.append(QPixmap())
+                continue
+            img = display_image(img)
             if img.ndim == 3 and img.shape[2] == 4:
                 from utils.image_utils import composite_transparent_for_display
                 img = composite_transparent_for_display(img)
@@ -959,6 +981,8 @@ class ImageStackLoader:
         # Imported lazily: the headless PyPI package uses this module for
         # decoding without PyQt6 installed.
         from utils.image_utils import cv2_to_pixmap
+        from core.source_frames import display_image
+        cv_img = display_image(cv_img)
 
         if max_size is not None:
             if cv_img.ndim == 3 and cv_img.shape[2] == 4:

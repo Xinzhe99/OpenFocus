@@ -57,6 +57,55 @@ def test_orf_exif_is_read_and_cleaned(tmp_path):
     assert sub[0xA434] == "OM 90mm F3.5"
     assert 0x927C not in sub
 
+@pytest.mark.parametrize("endian,magic", [
+    ("<", b"II*\x00"), ("<", b"IIRO"),
+    ("<", b"IIU\x00"), (">", b"MMOR"),
+])
+def test_raw_exif_preserves_metadata_without_reading_image_payload(
+        tmp_path, monkeypatch, endian, magic):
+    import builtins
+    from core import image_loader
+
+    source = _camera_exif()
+    source.endian = endian
+    data = bytearray(source.tobytes()[6:])
+    data[:4] = magic
+    path = tmp_path / "camera.raw"
+    with builtins.open(path, "wb") as stream:
+        stream.write(data)
+        stream.seek(8 * 1024 * 1024)
+        stream.write(b"\0")
+
+    bytes_read = []
+
+    class ObservedFile:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+        def read(self, size=-1):
+            data = self.stream.read(size)
+            bytes_read.append(len(data))
+            return data
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+    monkeypatch.setattr(image_loader, "open",
+                        lambda *args, **kwargs: ObservedFile(builtins.open(*args, **kwargs)),
+                        raising=False)
+    result = Image.Exif()
+    result.load(image_loader._read_exif_bytes(str(path)))
+    assert result[272] == "OM-1"
+    assert result.get_ifd(0x8769)[0xA434] == "OM 90mm F3.5"
+    assert result.get_ifd(0x8825)[3] == "W"
+    assert sum(bytes_read) < 1024 * 1024
+
 
 def test_common_formats_supply_their_exif_to_the_stack(tmp_path):
     """A TIFF/PNG frame must contribute metadata, not only camera RAWs.
@@ -116,3 +165,46 @@ def test_no_source_exif_writes_plain_file(monkeypatch, tmp_path):
     assert image_utils.imwrite_auto(p, img)
     assert np.array_equal(cv2.imread(p, cv2.IMREAD_UNCHANGED), img)
     assert not _read_back(p)
+
+
+def test_png_exif_rejects_oversized_chunk_without_reading_payload(tmp_path):
+    import struct
+
+    path = tmp_path / 'oversized-metadata.png'
+    Image.new('RGB', (2, 2), 'red').save(path)
+    encoded = path.read_bytes()
+    path.write_bytes(encoded[:-12] + struct.pack('>I4s', 0x7fffffff, b'eXIf') + encoded[-12:])
+
+    class HeaderReadsOnly:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def read(self, size=-1):
+            assert 0 <= size <= 8, 'EXIF lookup attempted an unbounded payload read'
+            return self.stream.read(size)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+    with Image.open(path) as image:
+        position = image.fp.tell()
+        image.fp = HeaderReadsOnly(image.fp)
+        with pytest.raises(OSError):
+            image_utils.read_image_exif(image)
+        assert image.fp.tell() == position
+
+
+def test_png_exif_rejects_bad_crc_and_restores_pixel_stream(tmp_path):
+    import struct
+
+    path = tmp_path / 'invalid-metadata-crc.png'
+    Image.new('RGB', (2, 2), 'red').save(path)
+    encoded = path.read_bytes()
+    payload = _camera_exif().tobytes()[6:]
+    chunk = struct.pack('>I4s', len(payload), b'eXIf') + payload + b'\0\0\0\0'
+    path.write_bytes(encoded[:-12] + chunk + encoded[-12:])
+    with Image.open(path) as image:
+        position = image.fp.tell()
+        with pytest.raises(OSError):
+            image_utils.read_image_exif(image)
+        assert image.fp.tell() == position

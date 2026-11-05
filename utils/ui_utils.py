@@ -46,32 +46,74 @@ def size_dialog_to_content(dialog, scroll, preferred_width=0):
 
 
 def make_folder_path_editable(dialog) -> None:
-    """Add a path field without changing QFileDialog's internal controls."""
+    """Add a portable address bar; Enter navigates and never accepts a pick.
+
+    Keep Qt's private lookIn combo untouched: making it editable can crash
+    native Windows dialogs. The shared picker creates Qt widgets first.
+    """
     from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QLineEdit, QSplitter, QVBoxLayout
+    from PyQt6.QtGui import QKeySequence, QShortcut
+    from PyQt6.QtWidgets import QFileDialog, QLineEdit, QSplitter, QVBoxLayout
     from locales import trans
+
+    if getattr(dialog, "_folder_path_edit", None) is not None:
+        return
 
     class _DirectoryPathEdit(QLineEdit):
         def keyPressEvent(self, event):
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                picker = self.window()
-                raw = self.text().strip().strip('"').strip("'")
-                target = os.path.expandvars(os.path.expanduser(raw))
-                if target and os.path.isdir(target):
-                    picker.setDirectory(target)
-                self.setText(picker.directory().absolutePath())
+                self.navigate()
                 event.accept()
                 return
             super().keyPressEvent(event)
+
+        def navigate(self):
+            from utils.file_dialogs import expand_dialog_path
+
+            target = expand_dialog_path(self.text(), dialog.directory().absolutePath())
+            if target and os.path.isdir(target):
+                dialog.setDirectory(target)
+                self.setText(dialog.directory().absolutePath())
+                self.setToolTip("")
+            elif (target and dialog.fileMode() != QFileDialog.FileMode.Directory
+                  and os.path.isdir(os.path.dirname(target))
+                  and (os.path.isfile(target)
+                       or dialog.acceptMode() == QFileDialog.AcceptMode.AcceptSave)):
+                dialog.setDirectory(os.path.dirname(target))
+                dialog.selectFile(os.path.basename(target))
+                self.setText(target)
+                self.setToolTip("")
+            else:
+                # Keep failed input intact so it can be corrected or copied.
+                self.setToolTip(trans.t("batch_path_invalid"))
 
     path_edit = _DirectoryPathEdit(dialog)
     # Qt owns the C++ widget; retain its Python subclass for keyPressEvent.
     dialog._folder_path_edit = path_edit
     path_edit.setObjectName("folderPathEdit")
-    path_edit.setPlaceholderText(trans.t("batch_pick_path_hint"))
+    path_edit.setAccessibleName(trans.t("batch_pick_path_hint"))
+    path_edit.setPlaceholderText(trans.t("batch_pick_path_hint") + " · Ctrl+L")
     path_edit.setClearButtonEnabled(True)
     path_edit.setText(dialog.directory().absolutePath())
-    dialog.directoryEntered.connect(path_edit.setText)
+
+    def entered(directory):
+        path_edit.setText(directory)
+        path_edit.setToolTip("")
+        if dialog.fileMode() == QFileDialog.FileMode.Directory:
+            filename = dialog.findChild(QLineEdit, "fileNameEdit")
+            if filename is not None:
+                filename.clear()
+
+    dialog.directoryEntered.connect(entered)
+
+    def focus_address():
+        path_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        path_edit.selectAll()
+
+    for sequence in ("Ctrl+L", "Meta+L") if sys.platform == "darwin" else ("Ctrl+L",):
+        shortcut = QShortcut(QKeySequence(sequence), dialog)
+        shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        shortcut.activated.connect(focus_address)
 
     layout = dialog.layout()
     splitter = dialog.findChild(QSplitter, "splitter")

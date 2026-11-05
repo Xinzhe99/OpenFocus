@@ -652,3 +652,106 @@ def test_registered_parameters_cross_dialogs_and_adoption(qapp, extra_algorithms
         _until(qapp, lambda: compare._worker is None)
         _until(qapp, lambda: not depthmap._ORPHAN_WORKERS)
         window.close()
+
+
+def test_source_preview_reframe_rejects_old_generation_and_identity(dialog, tmp_path, monkeypatch):
+    import cv2
+    import numpy as np
+    from PyQt6.QtCore import QObject, pyqtSignal
+    from core.source_frames import scan_source
+    from dialogs import compare
+
+    class ControlledPreview(QObject):
+        ready = pyqtSignal(object, int, object, object)
+        failed = pyqtSignal(object, str)
+        finished = pyqtSignal()
+
+        def __init__(self, frames, request, indices):
+            super().__init__()
+            self.frames, self.request, self.indices = tuple(frames), request, indices
+            self.cancelled = False
+
+        def start(self): pass
+        def request_cancel(self): self.cancelled = True
+
+    path = str(tmp_path / "reference.png")
+    assert cv2.imwrite(path, np.full((60, 80, 3), 120, np.uint8))
+    first, second = (scan_source(path, header_only=True)[0] for _ in range(2))
+    monkeypatch.setattr(compare, "SourcePreviewWorker", ControlledPreview)
+    dialog._auto_enabled = False
+    dialog._frames = [first, second]
+    try:
+        dialog._show_frame(0)
+        old = next(reversed(dialog._source_preview_workers))
+        assert not dialog.ref_canvas.has_image()
+        dialog._show_frame(1)
+        middle = next(reversed(dialog._source_preview_workers))
+        assert old.cancelled
+        dialog._show_frame(0)
+        current = next(reversed(dialog._source_preview_workers))
+        assert middle.cancelled
+        # The old request has the same frame identity and index as the new one.
+        pixels = np.full((6, 8, 3), 120, np.uint8)
+        object.__setattr__(first, "preview", pixels)
+        old.ready.emit(old.request, 0, id(first), pixels)
+        old.failed.emit(old.request, "obsolete failure")
+        assert not dialog.ref_canvas.has_image()
+        assert not dialog.ref_canvas.toolTip()
+        current.ready.emit(current.request, 0, id(second), pixels)
+        assert not dialog.ref_canvas.has_image()
+        current.ready.emit(current.request, 0, id(first), pixels)
+        assert dialog.ref_canvas.has_image()
+        assert dialog.ref_canvas._pixmap.size().width() == 8
+        assert dialog.ref_canvas._source_size == (80, 60)
+        assert dialog.ref_canvas.region() == (10, 0, 60, 60)
+        dialog._show_frame(1)
+        closing = next(reversed(dialog._source_preview_workers))
+        dialog.reject()
+        assert closing.cancelled
+        assert dialog.isVisible() and not dialog.isEnabled()
+        object.__setattr__(second, "preview", pixels)
+        closing.ready.emit(closing.request, 1, id(second), pixels)
+        assert not dialog.ref_canvas.has_image()
+    finally:
+        for worker in tuple(dialog._source_preview_workers):
+            worker.finished.emit()
+    assert not dialog.isVisible()
+
+
+def test_missing_source_preview_decodes_off_gui_and_close_cancels(dialog, qapp, tmp_path, monkeypatch):
+    import cv2
+    import numpy as np
+    from PyQt6.QtCore import QThread
+    from core import source_previews
+    from core.source_frames import scan_source
+
+    path = str(tmp_path / "reference.png")
+    assert cv2.imwrite(path, np.full((60, 80, 3), 120, np.uint8))
+    frame = scan_source(path, header_only=True)[0]
+    entered, release = Event(), Event()
+    original = source_previews.ensure_preview
+    threads = []
+
+    def held_preview(source):
+        threads.append(QThread.currentThread() is qapp.thread())
+        entered.set()
+        assert release.wait(5), "test did not release preview decode"
+        return original(source)
+
+    monkeypatch.setattr(source_previews, "ensure_preview", held_preview)
+    dialog._frames = [frame]
+    dialog._auto_enabled = False
+    dialog._show_frame(0)
+    try:
+        assert entered.wait(5)
+        assert threads == [False]
+        assert not dialog.ref_canvas.has_image()
+        worker = next(iter(dialog._source_preview_workers))
+        dialog.reject()
+        assert worker.cancelled
+        assert dialog.isVisible() and not dialog.isEnabled()
+    finally:
+        release.set()
+    _until(qapp, lambda: not dialog._source_preview_workers)
+    assert not dialog.isVisible()
+    assert not dialog.ref_canvas.has_image()

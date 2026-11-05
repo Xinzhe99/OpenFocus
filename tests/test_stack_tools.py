@@ -133,7 +133,8 @@ class TestDustMapDialog:
 
     def test_native_raw_preview_uses_developed_colors(self, qapp):
         from dialogs.dustmap import DustMapDialog
-        from utils.linear_dng import LinearDNGMetadata
+        from utils.linear_dng import LinearDNGMetadata, develop_linear
+        from utils.image_utils import to_display_uint8
 
         stub = self._stub_window()
         stub.linear_dng_metadata = LinearDNGMetadata(
@@ -146,7 +147,8 @@ class TestDustMapDialog:
         dialog.combo_target.setCurrentIndex(1)
         self._complete_preview(dialog, qapp)
         color = dialog.lbl_before.pixmap().toImage().pixelColor(0, 0)
-        assert (color.red(), color.green(), color.blue()) == pytest.approx((189, 85, 103), abs=1)
+        expected = to_display_uint8(develop_linear(stub.raw_images[1], stub.linear_dng_metadata))[0, 0, ::-1]
+        assert (color.red(), color.green(), color.blue()) == tuple(expected)
         dialog.deleteLater()
         stub.deleteLater()
 

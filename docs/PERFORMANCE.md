@@ -1,14 +1,16 @@
 # OpenFocus Performance & Large-Stack Reference
 
-The historical soak measurements below come from `tools/soak_test.py` on
-Windows 11, i7-12700 (12C/20T), 32 GB RAM, CPU-only, four worker threads and
-Python 3.10. They describe the older tiling policy, including its 80-unit
-neural heuristic and 128-pixel tile alignment; they are not measurements of
-the current resource planner. Current neural staging pads to 64 pixels.
+The measurements and implementation notes below describe earlier PyTorch-based
+revisions and are historical, not measurements or a specification of the current
+ONNX Runtime implementation. They must not be used as evidence of current GPU
+support, throughput, memory use or image quality.
 
-The reviewed policy preserves the selected spatial grid and rejects work
-that cannot fit its minimum working set. It does not shrink tiles in response
-to memory pressure: changing tile geometry can change the fused image.
+Current neural inference chooses a spatial tile size using available resources
+and keeps all focal frames in each tile. V2 tiled results approximate whole-image
+inference. Imported frames and alignment scratch can be disk-backed, but decoding,
+model workspaces and full-size outputs still require available RAM and temporary
+data requires free disk space. A stack can be rejected if its working set cannot
+fit. See [GPU support](GPU_SUPPORT.md) for provider and validation limitations.
 
 ## Measured throughput (CPU-only)
 

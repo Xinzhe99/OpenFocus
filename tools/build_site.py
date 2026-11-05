@@ -10,7 +10,7 @@ canonical URLs, sitemap, Open Graph tags and installer commands.
 
 The output is plain static files: one HTML page per language, inlined CSS
 and JavaScript, optimised images, robots.txt, sitemap.xml, _headers and a
-404 page.  Deploy with `npx wrangler deploy -c site/wrangler.jsonc`.
+404 page. See site/README.md for the production deployment configuration.
 """
 
 from __future__ import annotations

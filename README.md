@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
   <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <a href="./docs/THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/license-MIT%20%2B%20model%20terms-3fb950" alt="License: MIT and model terms"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
 </p>
 
@@ -217,6 +217,20 @@ Control the desktop app through a token-protected local channel.
 - **Languages** — twelve UI languages with automatic locale detection.
 - **Memory** — neural models load only when selected.
 
+StackMFF V1/V2/V3 use dynamic ONNX checkpoints and ONNX Runtime; production
+inference does not bundle PyTorch. The current runtime can use DirectML on
+Windows or CoreML on macOS and falls back to CPU when needed. A provider being
+available does not prove GPU execution; support across GPU hardware still needs
+validation. See [GPU support](docs/GPU_SUPPORT.md).
+
+Neural inference adapts spatial tile size to available resources while keeping
+all focal frames in each inference. Imported frames and alignment scratch can
+use disk-backed storage. Large stacks still require enough free temporary disk
+space and available memory for decoding, model workspaces and full-size output;
+they may be rejected when those resources are insufficient. StackMFF V2's
+spatial tiling is an approximation of whole-image inference and can change the
+result. See [fusion methods](docs/FUSION_METHODS.md).
+
 <a id="install"></a>
 ## ⬇️ Install
 
@@ -286,22 +300,21 @@ Questions, ideas or feedback? Join our [Discord community](https://discord.gg/af
 
 <img src="assets/readme/wechat-group.jpg" alt="QR code for the OpenFocus WeChat group" width="260">
 
-**Support OpenFocus:** If you enjoy the software, you can buy us a coffee via Alipay.
+**Support OpenFocus:** If you enjoy the software, you can buy us a coffee via Alipay in China or [PayPal](https://paypal.me/XinZEN0602) internationally. Include your username in the payment note and we will permanently acknowledge it in the project as a thank-you.
 
 <img src="assets/readme/alipay-coffee.jpg" alt="Alipay QR code to support OpenFocus" width="260">
+
+<a href="https://paypal.me/XinZEN0602"><img src="assets/readme/paypal-coffee.png" alt="Scan or click to support OpenFocus via PayPal" width="260"></a>
 
 <a id="license"></a>
 ## License
 
 The OpenFocus application is released under the [MIT License](./LICENSE).
-See also the [third-party notices](./docs/THIRD_PARTY_NOTICES.md).
-
-**StackMFF series exception.** The StackMFF fusion algorithms — currently
-StackMFF V3 and any future state-of-the-art editions — remain the property of
-the OpenFocus project, which retains all rights to the StackMFF series. You may
-use them as part of OpenFocus for your own images and internal work. Copying,
-porting or migrating these algorithms into another open-source project requires
-prior written permission.
+The retrained StackMFF V1/V2 wrappers and weights have separate StackMFF V3
+License 1.0 terms, which restrict redistribution, inclusion in other projects
+and commercial use without the licensor's prior written permission. The
+bundled StackMFF V3 v2.0 snapshot remains MIT licensed. See the full
+[third-party notices](./docs/THIRD_PARTY_NOTICES.md) for provenance and terms.
 
 <a id="developing"></a>
 ## Developing

@@ -1,7 +1,7 @@
 """Editors for the numeric and choice parameters declared by algorithms."""
 from core.algorithms import validate_parameter
 
-from PyQt6.QtCore import QSignalBlocker, pyqtSignal
+from PyQt6.QtCore import QSignalBlocker, Qt, pyqtSignal
 from PyQt6.QtWidgets import QComboBox, QFormLayout, QLabel, QWidget
 
 from locales import trans
@@ -20,6 +20,7 @@ class AlgorithmParameterPanel(QWidget):
         self._hidden_parameters = frozenset(hidden_parameters)
         self._hidden_values = {}
         self._form = QFormLayout(self)
+        self._form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._form.setContentsMargins(0, 0, 0, 0)
         self._form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
 

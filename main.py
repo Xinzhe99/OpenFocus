@@ -71,9 +71,7 @@ sys.stdout = _output_stream(sys.stdout, -11)
 sys.stderr = _output_stream(sys.stderr, -12)
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--_openfocus-xpu-probe"]:
-        from core.torch_backend import _run_xpu_probe
-        sys.exit(_run_xpu_probe())
+
 
     # Bootstrap before GUI imports: CLI and import-time failures share the
     # same diagnostics, including on systems without Qt installed.
@@ -161,6 +159,7 @@ from utils.settings_store import (
     restore_window_layout,
     get_settings,
 )
+from core.frame_storage import configure_storage_directory
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
 from ui.right_panel import bind_right_panel, create_right_panel, set_panel_label
@@ -287,6 +286,17 @@ def update_manager_for(window) -> UpdateManager:
     return manager
 
 
+def _restore_storage_directory(window):
+    try:
+        configure_storage_directory(window.storage_directory)
+    except OSError as exc:
+        path = window.storage_directory
+        configure_storage_directory("")
+        window.storage_directory = ""
+        return trans.t("advanced_storage_fallback").format(path=path, error=str(exc))
+    return None
+
+
 class OpenFocus(QMainWindow):
 
     def __init__(self):
@@ -362,6 +372,7 @@ class OpenFocus(QMainWindow):
         saved_lang = get_saved_language()
         if saved_lang:
             trans.set_language(saved_lang)
+        storage_warning = _restore_storage_directory(self)
         self.recent_files = getattr(self, 'recent_files', [])
         self.recent_projects = getattr(self, 'recent_projects', [])
         self._undo_stack = []
@@ -377,6 +388,10 @@ class OpenFocus(QMainWindow):
         self.transform_manager = TransformManager(self)
         self.batch_manager = BatchManager(self)
         self.update_manager = UpdateManager(self)
+        from utils.usage_analytics import UsageAnalytics
+        from PyQt6.QtCore import QTimer as _QTimer
+        self.usage_analytics = UsageAnalytics(self)
+        _QTimer.singleShot(0, self.usage_analytics.start)
 
         # 初始化图像加载器
         self.image_loader = ImageStackLoader()
@@ -393,6 +408,12 @@ class OpenFocus(QMainWindow):
         # 应用级亮色 QSS（白底白字，整个右侧面板不可读）
         self.init_ui()
         self.apply_dark_theme()
+        if storage_warning is not None:
+            self._storage_warning_timer = _QTimer(self)
+            self._storage_warning_timer.setSingleShot(True)
+            self._storage_warning_timer.timeout.connect(
+                lambda: QMessageBox.warning(self, trans.t("msg_warning"), storage_warning))
+            self._storage_warning_timer.start(0)
 
         # Install global event filter to handle Space key for panning
         QApplication.instance().installEventFilter(self)
@@ -730,33 +751,33 @@ class OpenFocus(QMainWindow):
         else:
             self.lbl_status_memory.setText(trans.t('status_ram').format('N/A'))
 
-        # GPU. Rule the user asked for: when this machine has no usable
-        # accelerator, say N/A — never "CPU", which sounds like the render
-        # fell back mid-run. "CPU*" (classical methods are CPU-only by
-        # design) is only meaningful when an accelerator actually exists.
-        from core.multi_focus_fusion import (torch_device_kind,
+        from core.multi_focus_fusion import (neural_device_kind,
                                              is_ai_fusion_available)
-        from core import torch_backend
+        from fusion_methods import neural_runtime
         try:
-            if not getattr(self, 'use_gpu', True):
-                kind = 'N/A'                      # user disabled it
-            elif not is_ai_fusion_available():
-                kind = 'N/A'                      # torch not installed
+            capability = neural_device_kind()
+            if capability is None and is_ai_fusion_available():
+                self._probe_device_kind_async()
+            if not self._ai_method_selected():
+                kind = 'CPU*'
+            elif not getattr(self, 'use_gpu', True):
+                kind = 'CPU'
             else:
-                kind = torch_device_kind()
-                if kind is None:
-                    # Resolve once in the background; until then assume none.
-                    self._probe_device_kind_async()
-                    kind = 'N/A'
-                else:
-                    kind = torch_backend.display_name(kind)
-                if not torch_backend.is_accelerator(kind):
-                    kind = 'N/A'
-                elif not self._ai_method_selected():
-                    # Accelerator present but the selected method is one of
-                    # the CPU-only classical ones.
-                    kind = 'CPU*'
+                diagnostics = neural_runtime.device_diagnostics()
+                checkpoint = os.path.basename(get_fusion(self.combo_fusion.currentData()).weights or '')
+                actual = (diagnostics['actual'] if diagnostics['checkpoint'] == checkpoint else None)
+                kind = (neural_runtime.display_name(actual or capability)
+                        if actual is not None or neural_runtime.is_accelerator(capability)
+                        else '…' if capability is None else 'N/A')
             self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind))
+            diagnostics = neural_runtime.device_diagnostics()
+            hardware = '\n'.join(f'{name} (DXGI {index})' for index, name, *_ in diagnostics['hardware'])
+            self.lbl_status_gpu.setToolTip('\n'.join(filter(None, (
+                f'Hardware: {hardware}' if hardware else '',
+                'Runtime providers: ' + ', '.join(diagnostics['providers']),
+                'Available accelerator: ' + neural_runtime.display_name(capability) if capability else '',
+                f'Task: {kind}',
+                '\n'.join(diagnostics['probe_errors'])))))
         except Exception:
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('Err'))
         self._refresh_gpu_action()
@@ -1072,19 +1093,16 @@ class OpenFocus(QMainWindow):
         self.refresh_method_availability()
 
     def _probe_device_kind_async(self) -> None:
-        """Resolve the PyTorch backend off the UI thread, then poll for it.
+        """Resolve the neural backend off the UI thread, then poll for it.
 
-        Importing torch costs ~2.1 s and ~193 MB, so it must not run on the
-        UI thread. The worker deliberately touches no QObject: it only calls
-        the pure backend probe. A QTimer owned by this window polls the
-        backend cache, so destroying the window cannot leave a thread
-        emitting a signal on a deleted C++ object.
+        The worker touches no QObject; a window-owned QTimer polls the cache,
+        so closing the window cannot leave a signal aimed at a deleted object.
         """
         import threading
         if getattr(self, "_device_probe_started", False):
             return
-        from core.multi_focus_fusion import torch_device_kind
-        cached = torch_device_kind()
+        from core.multi_focus_fusion import neural_device_kind
+        cached = neural_device_kind()
         if cached is not None:
             # A previous window/probe already resolved the backend.
             self._device_probe_started = True
@@ -1093,14 +1111,14 @@ class OpenFocus(QMainWindow):
         self._device_probe_started = True
 
         def worker():
-            from core.multi_focus_fusion import ensure_torch_device_kind
+            from core.multi_focus_fusion import ensure_neural_device_kind
             try:
-                ensure_torch_device_kind()
+                ensure_neural_device_kind()
             except Exception:
                 pass
 
         thread = threading.Thread(target=worker, daemon=True,
-                                  name="torch-device-probe")
+                                  name="neural-device-probe")
         self._device_probe_thread = thread
         thread.start()
 
@@ -1116,8 +1134,8 @@ class OpenFocus(QMainWindow):
 
     def _poll_device_probe(self) -> None:
         """UI-thread poll for the worker's cached backend decision."""
-        from core.multi_focus_fusion import torch_device_kind
-        kind = torch_device_kind()
+        from core.multi_focus_fusion import neural_device_kind
+        kind = neural_device_kind()
         if kind is None:
             return
         timer = getattr(self, "_device_probe_timer", None)
@@ -1128,7 +1146,7 @@ class OpenFocus(QMainWindow):
         self._apply_device_probe_kind(kind)
 
     def _probe_stackmff_availability_async(self) -> None:
-        """Warm the torch-availability cache without touching this window.
+        """Warm the neural-runtime availability cache without touching this window.
 
         The worker only calls the cached availability probe; a QTimer owned
         by the window polls a plain threading.Event, so a window destroyed
@@ -1203,9 +1221,9 @@ class OpenFocus(QMainWindow):
 
     def _apply_device_probe_kind(self, _kind: str = "N/A") -> None:
         """Apply the background backend result to status and the GPU action."""
-        from core import torch_backend
+        from fusion_methods import neural_runtime
         if (getattr(self, '_gpu_pending_enable', False)
-                and not torch_backend.is_accelerator(_kind)):
+                and not neural_runtime.is_accelerator(_kind)):
             # The user enabled the switch while the answer was unknown and
             # the probe found nothing. Revert only that speculative request;
             # an explicit off is never touched here.
@@ -1224,11 +1242,11 @@ class OpenFocus(QMainWindow):
         action = getattr(self, 'ui_objs', {}).get('action_gpu_accel')
         if action is None:
             return
-        from core import torch_backend
+        from fusion_methods import neural_runtime
         from core.multi_focus_fusion import (is_ai_fusion_available,
-                                             torch_device_kind)
-        kind = torch_device_kind()
-        enabled, checked = torch_backend.gpu_toggle_state(
+                                             neural_device_kind)
+        kind = neural_device_kind()
+        enabled, checked = neural_runtime.gpu_toggle_state(
             kind, getattr(self, 'use_gpu', True),
             is_ai_fusion_available() if kind is None else False)
         action.setEnabled(enabled)
@@ -1769,13 +1787,13 @@ class OpenFocus(QMainWindow):
     # --- Project files (.ofproj) ---
 
     def open_project_dialog(self) -> None:
-        from PyQt6.QtWidgets import QFileDialog
+        from utils.file_dialogs import FileDialog
         from utils.project_file import validate_project_for_open, apply_project, PROJECT_SUFFIX
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
         if not self._confirm_discard_project_changes(
                 "msg_discard_unsaved_project"):
             return
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = FileDialog.getOpenFileName(
             self, trans.t('menu_open_project'),
             get_last_dialog_dir(), f"OpenFocus Project (*{PROJECT_SUFFIX})")
         if not path:
@@ -1795,7 +1813,7 @@ class OpenFocus(QMainWindow):
         apply_project(self, state, on_loaded=loaded)
 
     def save_project_dialog(self, save_as: bool = False) -> None:
-        from PyQt6.QtWidgets import QFileDialog
+        from utils.file_dialogs import FileDialog
         from utils.project_file import save_project, suggest_project_path, PROJECT_SUFFIX
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
         import os as _os
@@ -1804,7 +1822,7 @@ class OpenFocus(QMainWindow):
             suggested = suggest_project_path(self) or _os.path.join(
                 get_last_dialog_dir() or _os.path.expanduser("~"),
                 "OpenFocus" + PROJECT_SUFFIX)
-            path, _ = QFileDialog.getSaveFileName(
+            path, _ = FileDialog.getSaveFileName(
                 self, trans.t('menu_save_project'), suggested,
                 f"OpenFocus Project (*{PROJECT_SUFFIX})")
             if not path:
@@ -1834,10 +1852,10 @@ class OpenFocus(QMainWindow):
                              trans.t('msg_project_save_failed').format(err=err))
 
     def save_template_dialog(self) -> None:
-        from PyQt6.QtWidgets import QFileDialog
+        from utils.file_dialogs import FileDialog
         from utils.project_file import save_template, TEMPLATE_SUFFIX
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-        path, _ = QFileDialog.getSaveFileName(
+        path, _ = FileDialog.getSaveFileName(
             self, trans.t('menu_save_template'), get_last_dialog_dir(),
             f"OpenFocus Template (*{TEMPLATE_SUFFIX})")
         if not path:
@@ -1852,10 +1870,10 @@ class OpenFocus(QMainWindow):
             show_warning_box(self, trans.t('msg_error'), str(exc))
 
     def open_template_dialog(self) -> None:
-        from PyQt6.QtWidgets import QFileDialog
+        from utils.file_dialogs import FileDialog
         from utils.project_file import load_template, apply_template, TEMPLATE_SUFFIX
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = FileDialog.getOpenFileName(
             self, trans.t('menu_open_template'), get_last_dialog_dir(),
             f"OpenFocus Template, Recipe or Project (*{TEMPLATE_SUFFIX} *.json *.ofproj)")
         if not path:
@@ -2095,6 +2113,11 @@ class OpenFocus(QMainWindow):
         if getattr(self, "wipe_active", False):
             self._update_wipe_images()
 
+    def show_mosaic_dialog(self) -> None:
+        """Open the independent planar microscope mosaic workspace."""
+        from dialogs.mosaic import MosaicDialog
+        MosaicDialog(self).exec()
+
     def show_scale_bar_dialog(self) -> None:
         """Configure the exported-image scale bar with a live preview."""
         from dialogs.scalebar import ScaleBarDialog
@@ -2111,7 +2134,7 @@ class OpenFocus(QMainWindow):
 
     def show_standalone_retouch(self) -> None:
         """Retouch a file with frames explicitly selected by the user."""
-        from PyQt6.QtWidgets import QFileDialog
+        from utils.file_dialogs import FileDialog
         from controllers.output_manager import OutputRecord
         from dialogs.retouch import RetouchDialog
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
@@ -2121,11 +2144,11 @@ class OpenFocus(QMainWindow):
                          trans.t('standalone_retouch_intro'), '',
                          QMessageBox.Icon.Information)
         image_filter = 'PNG / TIFF / JPEG / BMP (*.png *.tif *.tiff *.jpg *.jpeg *.bmp)'
-        result_path, _ = QFileDialog.getOpenFileName(
+        result_path, _ = FileDialog.getOpenFileName(
             self, trans.t('standalone_retouch_result'), get_last_dialog_dir(), image_filter)
         if not result_path:
             return
-        source_paths, _ = QFileDialog.getOpenFileNames(
+        source_paths, _ = FileDialog.getOpenFileNames(
             self, trans.t('standalone_retouch_sources'), os.path.dirname(result_path), image_filter)
         if not source_paths:
             return
@@ -2299,10 +2322,12 @@ class OpenFocus(QMainWindow):
         # stack half-corrected with no way back.
         try:
             if prepared is None:
-                corrected_raw = apply_flat_field_stack(self.raw_images, gain)
-                corrected_base = (
-                    apply_flat_field_stack(self.base_images, gain)
-                    if getattr(self, "base_images", None) else None)
+                from utils.frame_pixels import run_pixel_worker
+                raw, base = tuple(self.raw_images), tuple(getattr(self, 'base_images', ()) or ())
+                corrected_raw, corrected_base = run_pixel_worker(
+                    self, trans.t('dust_title'),
+                    lambda: (apply_flat_field_stack(raw, gain),
+                             apply_flat_field_stack(base, gain) if base else None))
             else:
                 corrected_raw, corrected_base = prepared
             if len(corrected_raw) != len(self.raw_images):
@@ -2369,19 +2394,16 @@ class OpenFocus(QMainWindow):
 
 
     def get_or_create_source_pixmap(self, index: int):
-        """Return the display pixmap for a frame, rendering it on first use.
-
-        Full-resolution pixmaps are generated lazily: pre-rendering every
-        frame costs seconds and hundreds of MB on large stacks while only
-        one frame is visible at a time.
-        """
+        """Return a bounded display pixmap without resolving original pixels."""
         if 0 <= index < len(self.stack_images):
             if self.stack_images[index] is None and index < len(self.raw_images):
-                image = self.raw_images[index]
-                if self.linear_dng_metadata is not None:
+                from core.source_frames import display_image
+                frame = self.raw_images[index]
+                image = display_image(frame)
+                if self.linear_dng_metadata is not None and not getattr(frame, 'preview_is_display', False):
                     from utils.linear_dng import develop_linear
                     image = develop_linear(image, self.linear_dng_metadata)
-                made = self.image_loader.create_pixmaps([image], max_size=None)
+                made = self.image_loader.create_pixmaps([image], max_size=(1024, 1024))
                 self.stack_images[index] = made[0]
                 # 惰性生成但不设上限等于无界缓存：只保留当前帧±1，
                 # 跳回远处帧时按需重建（这正是惰性机制的本意）
@@ -2390,12 +2412,101 @@ class OpenFocus(QMainWindow):
                         self.stack_images[j] = None
         return self.stack_images[index] if 0 <= index < len(self.stack_images) else None
 
+    def _start_source_previews(self, selected_index=None):
+        """Populate small list icons after the manifest has entered the workspace."""
+        from core.source_frames import preview_ready
+        from core.source_previews import SourcePreviewWorker
+        from PyQt6.QtGui import QIcon
+        revision = getattr(self, 'source_revision', 0)
+        workers = self.__dict__.setdefault('_source_preview_workers', {})
+        request = (revision, id(self.raw_images), selected_index)
+        if request in workers:
+            return
+        if selected_index is None and any(key[2] is not None and not value.cancelled
+                                          for key, value in workers.items()):
+            return
+        for old_request, old_worker in tuple(workers.items()):
+            if old_request != request:
+                old_worker.request_cancel()
+        indices = ([selected_index] if selected_index is not None else
+                   [index for index, frame in enumerate(self.raw_images) if not preview_ready(frame)])
+        if not indices:
+            return
+        worker = SourcePreviewWorker(self.raw_images, request, indices)
+        workers[request] = worker
+        def accept(key, index, identity, thumb):
+            if (getattr(self, '_shutting_down', False) or key[0] != getattr(self, 'source_revision', 0)
+                    or key[1] != id(self.raw_images) or not 0 <= index < len(self.raw_images)
+                    or identity != id(self.raw_images[index])):
+                return
+            item = self.file_list.item(index)
+            if item is not None:
+                item.setIcon(QIcon(cv2_to_pixmap(thumb)))
+            if index == getattr(self, 'current_display_index', -1):
+                self.update_source_view(index)
+        def failed(key, message):
+            if key[0] == getattr(self, 'source_revision', 0):
+                self.statusBar().showMessage(message)
+        def finished():
+            workers.pop(request, None)
+            worker.deleteLater()
+            if (selected_index is not None and not worker.cancelled
+                    and not getattr(self, '_shutting_down', False)
+                    and request[:2] == (getattr(self, 'source_revision', 0), id(self.raw_images))):
+                self._start_source_previews()
+        worker.ready.connect(accept)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        worker.start()
+
+    def _request_source_pixels(self, key):
+        """Decode only the selected frame on a worker, guarded by its identity."""
+        if key != getattr(self, '_source_display_key', None):
+            return
+        workers = self.__dict__.setdefault('_source_decode_workers', {})
+        if key in workers:
+            return
+        index = key[2]
+        if not 0 <= index < len(self.raw_images) or id(self.raw_images[index]) != key[1]:
+            return
+        from core.workers import SourceDecodeWorker
+        frame = self.raw_images[index]
+        worker = SourceDecodeWorker(frame, key, display=True)
+        workers[key] = worker
+        def accept(decoded_key, image):
+            if (decoded_key != getattr(self, '_source_display_key', None)
+                    or getattr(self, '_shutting_down', False)):
+                return
+            pixmap = cv2_to_pixmap(image)
+            from utils import scalebar
+            pixmap = self.label_manager.apply_labels_to_source_pixmap(
+                pixmap, index, scale_cfg=scalebar.export_cfg(self, target='source'))
+            self.lbl_source_img.set_source_pixmap(pixmap, source_key=decoded_key)
+        def failed(decoded_key, message):
+            if decoded_key == getattr(self, '_source_display_key', None):
+                self.statusBar().showMessage(message)
+        def finished():
+            workers.pop(key, None)
+            worker.deleteLater()
+        worker.decoded.connect(accept)
+        worker.failed.connect(failed)
+        worker.finished.connect(finished)
+        worker.start()
+
     def update_source_view(self, index):
         if not self.stack_images:
             return
             
         if 0 <= index < len(self.stack_images):
             self.current_display_index = index
+            from core.source_frames import preview_ready
+            if not preview_ready(self.raw_images[index]):
+                self._source_display_key = (getattr(self, 'source_revision', 0), id(self.raw_images[index]), index)
+                self.lbl_source_img.clear()
+                self.lbl_source_img.setText(trans.t('msg_loading_stack'))
+                self.lbl_stack_info.setText(f'{index + 1} / {len(self.stack_images)}')
+                self._start_source_previews(selected_index=index)
+                return
             
             try:
                 # 获取原始图片并根据需要叠加标签
@@ -2405,8 +2516,21 @@ class OpenFocus(QMainWindow):
                     original_pixmap, index,
                     scale_cfg=scalebar.export_cfg(self, target="source"))
 
-                # 使用自定义label处理缩放和缩放重置
-                self.lbl_source_img.set_display_pixmap(display_pixmap)
+                from core.source_frames import SourceFrame
+                frame = self.raw_images[index]
+                key = (getattr(self, 'source_revision', 0), id(frame), index)
+                self._source_display_key = key
+                if not getattr(self, '_source_pixels_connected', False):
+                    self.lbl_source_img.sourcePixelsRequested.connect(self._request_source_pixels)
+                    self._source_pixels_connected = True
+                for pending_key, worker in getattr(self, '_source_decode_workers', {}).items():
+                    if pending_key != key:
+                        worker.request_cancel()
+                if isinstance(frame, SourceFrame):
+                    self.lbl_source_img.set_display_pixmap(
+                        display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
+                else:
+                    self.lbl_source_img.set_display_pixmap(display_pixmap)
                 
                 # 更新文字
                 self.lbl_stack_info.setText(f"{index + 1} / {len(self.stack_images)}")
@@ -2562,7 +2686,8 @@ class OpenFocus(QMainWindow):
     # --- Wipe A/B compare ---
 
     def _bgr_to_pixmap(self, image) -> QPixmap:
-        return cv2_to_pixmap(image)
+        from core.source_frames import display_image
+        return cv2_to_pixmap(display_image(image))
 
     def _wipe_pixmap(self, kind: str, index: int, image):
         """Pixmap for one side of the wipe, cached across slider steps.
@@ -2602,7 +2727,8 @@ class OpenFocus(QMainWindow):
                 and entry[2] == labeled and entry[3] == scale_key
                 and entry[4] == label_revision):
             return entry[5]
-        display = image
+        from core.source_frames import display_image
+        display = display_image(image)
         if target == "registered":
             selected = self.output_manager.record_for_item(self.output_list.currentItem())
             metadata = (selected.linear_dng_metadata if selected is not None and selected.kind == "aligned"
@@ -2615,9 +2741,9 @@ class OpenFocus(QMainWindow):
                     metadata = preview_record.linear_dng_metadata
         else:
             metadata = getattr(self, "linear_dng_metadata", None)
-        if metadata is not None:
+        if metadata is not None and not getattr(image, 'preview_is_display', False):
             from utils.linear_dng import develop_linear
-            display = develop_linear(image, metadata)
+            display = develop_linear(display, metadata)
         if labeled or scale_cfg:
             display = self.label_manager.display_bgr_image(
                 target, display, index, scale_cfg=scale_cfg,
@@ -2836,9 +2962,10 @@ class OpenFocus(QMainWindow):
         elif cached is not None and cached[0] is frame.image:
             left_pix = cached[1]
         else:
-            image = frame.image
+            from core.source_frames import display_image
+            image = display_image(frame.image)
             metadata = getattr(record, "linear_dng_metadata", None)
-            if metadata is not None:
+            if metadata is not None and not getattr(frame.image, 'preview_is_display', False):
                 from utils.linear_dng import develop_linear
                 image = develop_linear(image, metadata)
             left_pix = self._bgr_to_pixmap(image)
@@ -3438,12 +3565,23 @@ class OpenFocus(QMainWindow):
                 event.ignore()
                 return
 
+        from time import perf_counter
+        from utils.logging_setup import log_action, get_logger
+        shutdown_started = perf_counter()
+        log_action("shutdown.started", restart=bool(getattr(self, '_restart_for_update', False)))
+        self.usage_analytics.shutdown()
+
+        self._source_display_key = None
+        for worker in tuple(getattr(self, '_source_decode_workers', {}).values()):
+            _shutdown_worker(worker)
+        for worker in tuple(getattr(self, '_source_preview_workers', {}).values()):
+            _shutdown_worker(worker)
         # Persist user preferences, layout and recent files for next time
         try:
             self.persist_settings()
             save_window_layout(self)
         except Exception:
-            pass
+            get_logger(__name__).exception("Unable to persist settings during shutdown")
 
         # Crash auto-recovery: keep the last snapshot, clear the live lock
         from utils import recovery
@@ -3506,6 +3644,8 @@ class OpenFocus(QMainWindow):
         if hasattr(self, 'output_list') and hasattr(self.output_list, 'cleanup_temp_files'):
             self.output_list.cleanup_temp_files()
 
+        log_action("shutdown.completed", elapsed_ms=round(
+            (perf_counter() - shutdown_started) * 1000, 3))
         super().closeEvent(event)
 
     # --- Language ---
@@ -3554,17 +3694,17 @@ class OpenFocus(QMainWindow):
         enabled = bool(enabled)
         pending = False
         if enabled:
-            from core import torch_backend
+            from fusion_methods import neural_runtime
             from core.multi_focus_fusion import (is_ai_fusion_available,
-                                                 torch_device_kind)
-            kind = torch_device_kind()
+                                                 neural_device_kind)
+            kind = neural_device_kind()
             if kind is None and is_ai_fusion_available():
                 # The authoritative answer is not in yet. Keep the request,
                 # resolve it in the background, and let the fusion path fall
                 # back to CPU if the probe finds no accelerator.
                 pending = True
                 self._probe_device_kind_async()
-            elif not torch_backend.is_accelerator(kind):
+            elif not neural_runtime.is_accelerator(kind):
                 enabled = False
         self._gpu_pending_enable = pending
         self.use_gpu = enabled
@@ -3855,6 +3995,8 @@ class OpenFocus(QMainWindow):
             self.chk_wipe_follow_right.setText(trans.t('wipe_follow_latest'))
         if 'action_gpu_accel' in getattr(self, 'ui_objs', {}):
             self.ui_objs['action_gpu_accel'].setToolTip(trans.t('msg_gpu_accel_hint'))
+        if 'usage_opt_in' in getattr(self, 'ui_objs', {}):
+            self.ui_objs['usage_opt_in'].setToolTip(trans.t('usage_disclosure'))
         # The tuning knobs live in the Advanced settings page now, so there are
         # no menu actions to retranslate here.
         if getattr(self, 'lbl_depth_smooth', None) is not None:

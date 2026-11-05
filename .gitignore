@@ -105,3 +105,12 @@ shot_tmp.py
 
 # Local test-run transcripts
 /.pytest_*.txt
+
+# Promo video production workspace (local only)
+/promo-video/
+
+# Discord operations folder (local only: bot token, cursors, inbox)
+/discord-ops/
+
+# Local WeChat bot workspace (local only: QR session, .env, message cache)
+/wechat-bot/

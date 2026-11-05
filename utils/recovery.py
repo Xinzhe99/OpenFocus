@@ -70,6 +70,10 @@ def write_snapshot(window) -> bool:
     An empty workspace is a real state: it removes any older snapshot so a
     restart cannot resurrect a session the user had already cleared, and
     reports success because there is nothing to save.
+
+    Path-backed stacks store page, scale and transform metadata through the
+    project serializer. Legacy pathless arrays use project sidecars written
+    by a pixel worker; recovery never converts descriptors into a RAM stack.
     """
     if not getattr(window, "raw_images", None):
         try:

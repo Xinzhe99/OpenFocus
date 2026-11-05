@@ -8,8 +8,9 @@ import webbrowser
 
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices, QFont
+from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
-    QDialog, QFileDialog, QHBoxLayout, QLabel,
+    QDialog, QHBoxLayout, QLabel,
     QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
@@ -34,10 +35,11 @@ def _system_facts() -> str:
     except Exception:
         pass
     try:
-        from core import torch_backend
-        kind = torch_backend.cached_kind()
-        status = "not checked" if kind is None else torch_backend.display_name(kind)
-        lines.append(f"- CUDA/ROCm/XPU/MPS GPU: {status}")
+        from core.multi_focus_fusion import neural_device_kind
+        from fusion_methods import neural_runtime
+        kind = neural_device_kind()
+        status = "not checked" if kind is None else neural_runtime.display_name(kind)
+        lines.append(f"- GPU: {status}")
     except Exception:
         pass
     return "\n".join(lines)
@@ -133,7 +135,7 @@ class FeedbackDialog(QDialog):
         webbrowser.open(ISSUES_URL)
 
     def _export_package(self):
-        dest, _ = QFileDialog.getSaveFileName(
+        dest, _ = FileDialog.getSaveFileName(
             self, trans.t("feedback_export"),
             os.path.join(os.path.expanduser("~"),
                          f"OpenFocus_feedback_"

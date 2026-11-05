@@ -56,7 +56,7 @@ def _menu_window(qapp):
             "rebuild_recent_menu", "undo", "redo",
             "rotate_stack", "flip_stack", "resize_all_images",
             "show_retouch_dialog", "show_standalone_retouch", "show_batch_processing_dialog",
-            "show_compare_dialog", "show_depth_map_dialog",
+            "show_compare_dialog", "show_mosaic_dialog", "show_depth_map_dialog",
             "show_dust_map_dialog", "show_scale_bar_dialog",
             "remove_scale_bar", "show_advanced_settings_dialog",
             "set_use_gpu", "apply_theme", "set_language",
@@ -65,6 +65,28 @@ def _menu_window(qapp):
             "show_contact_info"):
         setattr(window, name, stub)
     return window
+
+
+def test_usage_switch_is_only_in_advanced_settings(qapp):
+    from ui.menus import setup_menus
+
+    window = _menu_window(qapp)
+    setup_menus(window)
+    try:
+        assert 'usage_opt_in' not in window.ui_objs
+        assert window.ui_objs['action_advanced_settings'] in window.ui_objs['menu_settings'].actions()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_usage_disclosure_and_switch_exist_in_every_language():
+    for code in trans.PACK_ORDER:
+        table = trans.translations[code]
+        assert table.get('usage_enabled'), code
+        assert table.get('usage_disclosure'), code
+        assert 'usage_opt_in' not in table, code
 
 
 def test_reset_stack_menu_action_calls_source_manager(qapp):

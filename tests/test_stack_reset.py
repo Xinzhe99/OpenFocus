@@ -115,6 +115,31 @@ def test_append_keeps_original_frames_after_edits(monkeypatch):
     assert w.image_filenames == ["a", "b", "c"]
 
 
+def test_lazy_append_and_reset_never_decode_originals(tmp_path, monkeypatch):
+    import cv2
+    from core import image_loader
+    from core.source_frames import scan_source, transform_frame, SourceFrame
+    paths = []
+    for index in range(3):
+        path = str(tmp_path / f'{index}.png')
+        assert cv2.imwrite(path, np.full((24, 32, 3), index * 30, np.uint8))
+        paths.append(path)
+    frames = [scan_source(path, header_only=True)[0] for path in paths]
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('append/reset decoded original pixels')
+    monkeypatch.setattr(image_loader, 'decode_image', forbidden)
+    w, _ = host(monkeypatch)
+    load(w, frames[:2], ['a', 'b'], paths[:2])
+    w.raw_images = [transform_frame(frames[1], 'rotate', code=cv2.ROTATE_90_CLOCKWISE)]
+    w.image_filenames, w.image_source_paths, w.image_icc_profiles = ['b'], paths[1:2], [b'']
+    load(w, frames[2:], ['c'], paths[2:], append=True)
+    Box.result = Box.StandardButton.Yes
+    w.source_manager.reset_current_stack()
+    assert all(isinstance(frame, SourceFrame) for frame in w.raw_images)
+    assert [id(frame) for frame in w.raw_images] == [id(frame) for frame in frames]
+    assert all(frame.preview is None for frame in w.raw_images)
+
+
 @pytest.mark.parametrize("owner,field", [("source", "_load_worker"), ("render", "worker"),
                                        ("render", "_compare_mode"), ("window", "roi_alignment_worker"),
                                        ("batch", "_worker"), ("batch", "_thread")])
@@ -292,3 +317,86 @@ def test_scaled_append_rejects_transparent_frames(monkeypatch):
     manager._load_worker.finished_load.callback(True, "", [transparent], ["b.png"])
     assert errors and "Transparent images cannot be downsampled" in errors[0]
     assert w.raw_images == [edited] and w.source_manager._stack_baseline is old_baseline
+
+
+@pytest.mark.parametrize("pathless", [False, True])
+def test_project_resize_reopen_reset_preserves_geometry_scale_and_calibration(
+        tmp_path, monkeypatch, pathless):
+    import cv2
+    from core.source_frames import resolve_frame, scan_source, transform_frame
+    from tests.test_project_file import _window
+    from utils import frame_pixels
+    from utils.scalebar import effective_px_um
+
+    monkeypatch.setattr(frame_pixels, "run_pixel_worker", lambda parent, title, operation: operation())
+    pixels = np.arange(24 * 32 * 3, dtype=np.uint16).reshape(24, 32, 3)
+    original_path = str(tmp_path / "original.tif")
+    assert cv2.imwrite(original_path, pixels)
+    original = scan_source(original_path, header_only=True)[0]
+    working = transform_frame(original, "resize", width=16, height=12)
+    saved = _window([] if pathless else [original_path], str(tmp_path), scale=0.5)
+    saved.raw_images = [cv2.resize(pixels, (16, 12), interpolation=cv2.INTER_AREA)
+                        if pathless else working]
+    saved.image_filenames = ["memory" if pathless else "original.tif"]
+    saved.source_px_um = 4.0
+    expected_reset_scale = 0.5 if pathless else 1.0
+    expected_shape = (12, 16, 3) if pathless else pixels.shape
+    expected_reset_pixels = saved.raw_images[0] if pathless else pixels
+
+    # Save at 50%, then save the reopened project again at 25%. A snapshot's
+    # file scale remains 1 even though its pixels represent the original 50%.
+    for round_index, scale in enumerate((0.5, 0.25)):
+        path = str(tmp_path / f"session-{round_index}.ofproj")
+        ok, error = project_file.save_project(saved, path)
+        assert ok, error
+        ok, error, state = project_file.validate_project(path)
+        assert ok, error
+        assert state["source_px_um"] == 2.0 / scale
+        if pathless:
+            assert state["frame_order"][0]["snapshot"]
+            assert state["frame_order"][0]["snapshot_scale"] == 0.5
+        w, _ = host(monkeypatch)
+        w.scale_um_per_px_manual = 0.0
+        w.source_px_um = None  # Snapshot files have no automatic calibration.
+        paths = state["resolved_sources"]
+        frames = scan_source(paths[0], scale=scale, header_only=True)
+        w.image_loader.image_paths = paths
+        options = source.LoadOptions(scale, ["decoded"], frames, list(frames))
+        project_file._prepare_project_load(w, state, options)
+        w.source_manager._apply_load_options(options)
+        assert w.raw_images[0].shape == (round(24 * scale), round(32 * scale), 3)
+        assert w.current_scale_factor == scale
+        assert effective_px_um(w) == 2.0 / scale
+        assert w.source_manager._stack_baseline["scale"] == expected_reset_scale
+        if round_index == 0:
+            saved.raw_images = [transform_frame(w.raw_images[0], "resize", width=8, height=6)]
+            saved.current_scale_factor = 0.25
+            saved.source_px_um = 8.0
+            saved.source_manager = w.source_manager
+
+    # Appending must retain the reopened reset baseline's actual pixel scale.
+    appended_path = str(tmp_path / "appended.tif")
+    assert cv2.imwrite(appended_path, pixels)
+    appended = scan_source(appended_path, scale=expected_reset_scale, header_only=True)[0]
+    displayed = transform_frame(appended, "resize", width=8, height=6)
+    w.image_loader.image_paths = [appended_path]
+    w.source_manager._apply_load_options(source.LoadOptions(
+        expected_reset_scale, ["appended.tif"], [appended], [displayed]), append=True)
+    Box.result = Box.StandardButton.Yes
+    w.source_manager.reset_current_stack()
+    assert [frame.shape for frame in w.raw_images] == [expected_shape, expected_shape]
+    assert w.current_scale_factor == w.base_scale_factor == expected_reset_scale
+    assert effective_px_um(w) == 2.0 / expected_reset_scale
+    np.testing.assert_array_equal(resolve_frame(w.raw_images[0]), expected_reset_pixels)
+
+
+def test_legacy_project_retains_detected_working_calibration(monkeypatch):
+    w, _ = host(monkeypatch)
+    w.source_px_um = 4.0
+    w.image_loader.image_paths = ["source"]
+    pixels = np.zeros((12, 16), np.uint8)
+    options = source.LoadOptions(0.5, ["source"], [pixels], [pixels])
+    project_file._prepare_project_load(w, {"sources": ["source"]}, options)
+    w.source_manager._apply_load_options(options)
+    assert w.source_px_um == 4.0
+    assert w.source_manager._stack_baseline["source_px_um"] == 4.0

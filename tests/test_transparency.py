@@ -140,6 +140,39 @@ def test_transparent_later_tiff_page_rejects_entire_container(tmp_path):
     assert "PNG" in message
 
 
+def test_later_tiff_alpha_failure_preserves_existing_workspace(tmp_path):
+    import tifffile
+    previous = np.full((8, 9, 3), 73, np.uint16)
+    loader = ImageStackLoader()
+    loader.images, loader.image_paths = [previous], ['previous.tif']
+    loader.source_exif = b'previous metadata'
+    path = tmp_path / 'alpha-pages.tif'
+    opaque = np.full((900, 1100, 4), 65535, np.uint16)
+    transparent = opaque.copy()
+    transparent[601, 643, 3] = 0  # A single pixel a reduced preview can miss.
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(opaque, photometric='rgb', extrasamples='unassalpha')
+        writer.write(transparent, photometric='rgb', extrasamples='unassalpha')
+    ok, message, frames, _ = loader.load_from_filepaths([str(path)])
+    assert not ok and not frames and 'PNG' in message
+    assert loader.images == [previous] and loader.images[0] is previous
+    assert loader.image_paths == ['previous.tif']
+    assert loader.source_exif == b'previous metadata' and path.is_file()
+
+
+def test_fully_opaque_rgba_tiff_still_loads_original_color(tmp_path):
+    import tifffile
+    from core.source_frames import resolve_frame
+    path = tmp_path / 'opaque.tif'
+    rgba = np.full((32, 48, 4), 65535, np.uint16)
+    rgba[:, :, :3] = (1000, 20000, 60000)
+    tifffile.imwrite(path, rgba, photometric='rgb', extrasamples='unassalpha')
+    ok, message, frames, _ = ImageStackLoader().load_from_filepaths([str(path)])
+    assert ok, message
+    assert frames[0].shape == (32, 48, 3)
+    np.testing.assert_array_equal(resolve_frame(frames[0]), rgba[:, :, 2::-1])
+
+
 def test_hidden_pixels_cannot_enter_tiled_fusion(tmp_path):
     from types import SimpleNamespace
     from core.cli import _transparent_region

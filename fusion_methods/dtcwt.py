@@ -13,6 +13,7 @@ import cv2
 from utils.image_utils import fuse_output_dtype
 from fusion_methods.dct import _ensure_color_image
 from utils.sorting import natural_sort_key
+from core.frame_storage import create_frame, store_frame
 
 # NumPy 2.0 compatibility shims
 if not hasattr(np, "asfarray"):
@@ -76,27 +77,23 @@ def estimate_working_set(height: int, width: int, nlevels: int,
                          new_source_bytes: int = 0) -> tuple:
     """(fixed_bytes, per_worker_bytes) for one DTCWT stage.
 
-    Counts the new allocations this module actually makes: activity/winner
-    maps, the low-pass weight block built once per call, one pyramid per live
-    worker, and the inverse/output overlap. Resident input arrays are the
-    caller's business and are not charged twice.
+    Counts active transform and reconstruction scratch. Retained source,
+    decision and low-pass weight planes are disk-backed, so adding source
+    frames changes disk use rather than the admitted RAM working set.
     """
     height = max(1, int(height))
     width = max(1, int(width))
-    frames = max(1, int(n_frames))
     channels = max(1, int(channels))
     shapes, (low_h, low_w) = pyramid_shape_envelope(height, width, nlevels)
     float32 = np.dtype(np.float32).itemsize
     complex64 = np.dtype(np.complex64).itemsize
     plane = height * width * float32
     activity = sum(rh * rw * float32 for rh, rw in shapes)
-    winner = sum(rh * rw * np.dtype(np.int32).itemsize for rh, rw in shapes)
     pyramid = (sum(rh * rw * 6 * complex64 for rh, rw in shapes)
                + low_h * low_w * float32)
-    weights = frames * low_h * low_w * float32
-    # The first channel keeps several copies of the weight block alive while
-    # it stacks and normalises them, plus a blur/resize temporary per frame.
-    fixed = (int(new_source_bytes) + 2 * winner + 2 * activity
+    weights = low_h * low_w * float32
+    # Weight generation and normalization stream one mapped plane at a time.
+    fixed = (int(new_source_bytes) + 2 * activity
              + 3 * weights + 2 * pyramid + 12 * plane * channels)
     # A live worker holds the prepared RGB plane (a channel view keeps the
     # whole frame), its pyramid, native workspace and the selected
@@ -235,7 +232,7 @@ def _peek_source(input_source, img_resize, should_cancel=None):
     """(height, width, frames, new bytes this call will allocate) up front."""
     import os
     if isinstance(input_source, str) and os.path.isdir(input_source):
-        from core.image_loader import decode_image
+        from core.image_loader import admit_image_decode, decode_image
         names = sorted(
             (f for f in os.listdir(input_source)
              if os.path.splitext(f)[1].lower() in
@@ -244,15 +241,16 @@ def _peek_source(input_source, img_resize, should_cancel=None):
             key=natural_sort_key)
         if not names:
             raise ValueError(f"No image files found in directory: {input_source}")
-        first = decode_image(os.path.join(input_source, names[0]))
+        path = os.path.join(input_source, names[0])
+        admit_image_decode(path)
+        first = decode_image(path)
         if first is None:
             raise RuntimeError(f"Unable to read image: {names[0]}")
         height, width = first.shape[:2]
         frames = len(names)
-        # Every frame is decoded into a new array inside the stage.
-        new_bytes = frames * height * width * np.dtype(first.dtype).itemsize
-        if first.ndim == 2:
-            new_bytes *= 3
+        # Directory decode and resize retain one RAM source at a time.
+        channels = first.shape[2] if first.ndim == 3 else 3
+        new_bytes = height * width * channels * np.dtype(first.dtype).itemsize
     else:
         frames = len(input_source)
         if not frames:
@@ -333,8 +331,9 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
                     np.abs(pyr.highpasses[level]).sum(axis=2).astype(np.float32),
                     size=3, mode='reflect')
                 if best_activity[level] is None:
-                    best_activity[level] = activity
-                    frame_indices[level] = np.zeros(activity.shape, np.int32)
+                    best_activity[level] = store_frame(activity)
+                    frame_indices[level] = create_frame(activity.shape, np.int32)
+                    frame_indices[level][...] = 0
                 else:
                     win = activity > best_activity[level]
                     best_activity[level][win] = activity[win]
@@ -367,8 +366,9 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
             votes = convolve((idx == i).astype(np.float32), kernel,
                              mode='nearest')
             if best_count is None:
-                best_count = votes
-                best_label = np.full(idx.shape, i, np.int32)
+                best_count = store_frame(votes)
+                best_label = create_frame(idx.shape, np.int32)
+                best_label[...] = i
                 continue
             win = votes > best_count
             if win.any():
@@ -400,7 +400,7 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
     # bounded pool; one channel finishes and is inverted before the next
     # channel starts, which keeps the inverse workspace out of the forward
     # working set.
-    fused_channels = []
+    fused_img = create_frame((h, w, 3), out_dtype)
     for c in range(3):
         fused_high = None
         lp = None
@@ -422,16 +422,22 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
                     lp = np.zeros_like(pyr.lowpass)
                     if lp_weights is None:
                         lp_shape = pyr.lowpass.shape
-                        ws = []
+                        lp_weights = []
+                        total_weight = create_frame(lp_shape, np.float32)
+                        total_weight[...] = 0
                         for k in range(n_frames):
                             _check_cancel()
                             m = cv2.resize((coarse_idx == k).astype(np.float32),
                                            (lp_shape[1], lp_shape[0]),
                                            interpolation=cv2.INTER_LINEAR)
-                            ws.append(cv2.GaussianBlur(m, (0, 0), 1.5))
-                        ws = np.stack(ws)
-                        lp_weights = ws / np.maximum(ws.sum(axis=0, keepdims=True), 1e-6)
-                        del ws
+                            weight = store_frame(cv2.GaussianBlur(m, (0, 0), 1.5))
+                            lp_weights.append(weight)
+                            total_weight += weight
+                        np.maximum(total_weight, 1e-6, out=total_weight)
+                        for weight in lp_weights:
+                            _check_cancel()
+                            np.divide(weight, total_weight, out=weight)
+                        del m, weight, total_weight
                 for level in range(N):
                     _check_cancel()
                     sel = decisions[level] == i
@@ -444,17 +450,13 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
         _check_cancel()
         rec = transform.inverse(dtcwt.Pyramid(lp, tuple(fused_high)))
         # dtcwt pads odd sizes by duplicating the last row/column
-        fused_channels.append(rec[:h, :w])
+        for start in range(0, h, 128):
+            _check_cancel()
+            rows = slice(start, min(h, start + 128))
+            fused_img[rows, :, 2 - c] = np.clip(rec[rows, :w] * 255.0, 0, 255)
         del fused_high, lp, rec
 
-
-    # 5. Reconstruct Final Image
     _check_cancel()
-    fused_img = np.stack(fused_channels, axis=-1)
-
-    # Clip and Convert
-    fused_img = np.clip(fused_img * 255.0, 0, 255).astype(out_dtype)
-    fused_img = cv2.cvtColor(fused_img, cv2.COLOR_RGB2BGR)
     
     return fused_img
 
@@ -464,6 +466,8 @@ def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optiona
     """Helper to load images from a path or list."""
     images = []
     if isinstance(input_source, str):
+        from core.image_loader import admit_image_decode, decode_image
+
         if not os.path.exists(input_source):
              raise ValueError(f"Input path does not exist: {input_source}")
              
@@ -489,11 +493,12 @@ def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optiona
             if should_cancel is not None and should_cancel():
                 from core.registration import RegistrationCancelled
                 raise RegistrationCancelled()
-            img = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+            admit_image_decode(p)
+            img = decode_image(p, preserve_grayscale=True)
             if img is not None:
                 if img_resize:
                     img = cv2.resize(img, img_resize)
-                images.append(img)
+                images.append(store_frame(img))
     else:
         for img in input_source:
             if should_cancel is not None and should_cancel():
@@ -501,6 +506,6 @@ def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optiona
                 raise RegistrationCancelled()
             if img_resize:
                 img = cv2.resize(img, img_resize)
-            images.append(img)
+            images.append(img if isinstance(img, np.memmap) else store_frame(img))
             
     return images

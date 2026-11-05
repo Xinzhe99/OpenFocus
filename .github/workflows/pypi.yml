@@ -39,9 +39,9 @@ jobs:
 
       - name: Verify neural model checkpoints
         run: |
-          test "$(wc -c < weights/stackmff_final.pth)" -gt 20000000
-          test "$(wc -c < weights/stackmff_v2_final.pth)" -gt 200000
-          test "$(wc -c < weights/stackmff_v3_final.pth)" -gt 600000
+          test "$(wc -c < weights/stackmff_final.onnx)" -gt 600000
+          test "$(wc -c < weights/stackmff_v2_final.onnx)" -gt 600000
+          test "$(wc -c < weights/stackmff_v3_final.onnx)" -gt 600000
 
       - name: Build
         run: |
@@ -62,9 +62,9 @@ jobs:
               'fusion_methods/stackmffv3.py',
               *[f'locales/{p.name}' for p in pathlib.Path('locales').glob('*.py')],
           ]
-          weights = {'weights/stackmff_final.pth': 20000000,
-                     'weights/stackmff_v2_final.pth': 200000,
-                     'weights/stackmff_v3_final.pth': 600000}
+          weights = {'weights/stackmff_final.onnx': 600000,
+                     'weights/stackmff_v2_final.onnx': 600000,
+                     'weights/stackmff_v3_final.onnx': 600000}
           with zipfile.ZipFile(wheel) as archive:
               files = {info.filename: info.file_size for info in archive.infolist()}
           with tarfile.open(sdist, 'r:gz') as archive:

@@ -513,7 +513,7 @@ def test_depth_actions_recover_after_cancel_and_failure(depth_dialog, monkeypatc
 def test_depth_stale_map_blocks_every_export(depth_dialog, monkeypatch, qapp, change):
     """DM-A08: handler guards agree with buttons, including revision mismatch."""
     from core import depth_map
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
     frames = _synthetic_thirds(48, 64)
     image = frames[0].copy()
@@ -539,7 +539,7 @@ def test_depth_stale_map_blocks_every_export(depth_dialog, monkeypatch, qapp, ch
     for button in (dialog.btn_save_color, dialog.btn_save_raw, dialog.btn_save_3d, dialog.btn_save_physical):
         assert not button.isEnabled()
     asked = []
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: asked.append(1) or ("", ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a, **k: asked.append(1) or ("", ""))
     dialog._save(True)
     dialog._save(False)
     dialog._save_physical()
@@ -749,7 +749,8 @@ def test_depth_texture_handles_domain_and_bit_depth(depth_dialog, monkeypatch, q
 @pytest.mark.parametrize('source_mode', ['current', 'output'])
 def test_depth_texture_develops_native_raw(depth_dialog, monkeypatch, qapp, source_mode):
     from core import depth_map
-    from utils.linear_dng import LinearDNGMetadata
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+    from utils.image_utils import to_display_uint8
 
     monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
     frame = np.full((48, 64, 3), [7000, 11000, 14000], np.uint16)
@@ -765,14 +766,15 @@ def test_depth_texture_develops_native_raw(depth_dialog, monkeypatch, qapp, sour
     else:
         dialog, _ = depth_dialog('dct', frames, linear_dng_metadata=metadata)
     _click_and_finish(qapp, dialog)
-    assert tuple(map(int, dialog._mesh_texture[0, 0])) == pytest.approx([103, 85, 189], abs=1)
+    expected = to_display_uint8(develop_linear(frame, metadata))
+    np.testing.assert_array_equal(dialog._mesh_texture, expected)
 
 
 @pytest.mark.parametrize("texture_kind", ["auto", "frame", "output"])
 def test_depth_obj_uses_the_resolved_preview_texture(depth_dialog, monkeypatch, qapp, tmp_path, texture_kind):
     """DM-A13: actual dialog QThread/exporter and Unicode OBJ→MTL→PNG readback."""
     from core import depth_map
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
     from utils.mesh_export import obj_paths
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
     if texture_kind == "output":
@@ -793,7 +795,7 @@ def test_depth_obj_uses_the_resolved_preview_texture(depth_dialog, monkeypatch, 
     assert max(dialog._mesh_texture.shape[:2]) > 12
     expected = dialog._mesh_texture.copy()
     target = tmp_path / "模型-é_日本.obj"
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
     dialog.btn_save_3d.click()
     _wait(qapp, lambda: dialog._export_worker is None)
     files = [Path(path) for path in obj_paths(target)]
@@ -825,7 +827,8 @@ def test_depth_obj_uses_the_resolved_preview_texture(depth_dialog, monkeypatch, 
 def test_depth_export_cancel_restores_actions(depth_dialog, monkeypatch, qapp, tmp_path):
     """DM-A14: real exporter cancellation preserves an existing file group."""
     from core import depth_map
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
     from utils import mesh_export
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
     dialog, _ = depth_dialog()
@@ -844,7 +847,7 @@ def test_depth_export_cancel_restores_actions(depth_dialog, monkeypatch, qapp, t
         return export(*args, **kwargs)
 
     monkeypatch.setattr(mesh_export, "export_obj", blocked_export)
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
     dialog.btn_save_3d.click()
     _wait(qapp, entered.is_set)
@@ -877,7 +880,7 @@ def test_depth_close_detaches_without_publishing(depth_dialog, monkeypatch, qapp
     """DM-A15: close keeps actual threads alive through native/lease boundaries."""
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
     from core import depth_map, resource_policy
     import dialogs.depthmap as dm
     entered, release = Event(), Event()
@@ -898,7 +901,7 @@ def test_depth_close_detaches_without_publishing(depth_dialog, monkeypatch, qapp
             return original(*args, **kwargs)
 
         monkeypatch.setattr(mesh_export, "export_obj", blocked)
-        monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "关闭.obj"), ""))
+        monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "关闭.obj"), ""))
         dialog.btn_save_3d.click()
         _wait(qapp, entered.is_set)
         worker = dialog._export_worker
@@ -1027,6 +1030,7 @@ def test_depth_preview_detail_preserves_model_data(depth_dialog, monkeypatch, qa
 
 
 def test_depth_ai_mode_defaults_soft_and_uses_selected_mode(depth_dialog, monkeypatch, qapp):
+    from types import SimpleNamespace
     from core import depth_map
     seen = []
 
@@ -1035,6 +1039,11 @@ def test_depth_ai_mode_defaults_soft_and_uses_selected_mode(depth_dialog, monkey
         return _ramp(images, "stackmffv3")
 
     monkeypatch.setattr(depth_map, "_measure_stackmffv3", measure)
+    # This test replaces the measurement itself; do not cold-load an AI model
+    # merely to admit that replacement within the GUI's short wait deadline.
+    monkeypatch.setattr(depth_map, "_plan_neural_depth",
+                        lambda images, path, use_gpu, threads, preference:
+                        (SimpleNamespace(native_threads=1), path))
     from core.algorithms import resolve_fusion_parameters
     def parameters_for(method, depth=False):
         values = {'mode': 'hard'} if method == 'stackmffv3' else None
@@ -1086,7 +1095,7 @@ def test_depth_dtcwt_levels_seed_from_main_and_preserve_local_draft(depth_dialog
 @pytest.mark.parametrize("kind", ["color", "raw", "physical"])
 def test_depth_image_exports_protect_standalone_sources(depth_dialog, monkeypatch, qapp, tmp_path, kind):
     from core import depth_map
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
 
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
     source = tmp_path / ("source.png" if kind == "color" else "source.tif")
@@ -1095,7 +1104,7 @@ def test_depth_image_exports_protect_standalone_sources(depth_dialog, monkeypatc
     _click_and_finish(qapp, dialog)
     monkeypatch.setattr(dialog, "_physical_values", lambda index: (index, [0.0, 1.0]))
     target = [source]
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target[0]), ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a, **k: (str(target[0]), ""))
 
     def save():
         if kind == "physical":
@@ -1115,7 +1124,8 @@ def test_depth_image_exports_protect_standalone_sources(depth_dialog, monkeypatc
 @pytest.mark.parametrize("companion", range(4))
 def test_depth_mesh_protects_every_standalone_companion(depth_dialog, monkeypatch, qapp, tmp_path, companion):
     from core import depth_map
-    from PyQt6.QtWidgets import QFileDialog, QMessageBox
+    from PyQt6.QtWidgets import QMessageBox
+    from utils.file_dialogs import FileDialog
     from utils.mesh_export import obj_paths
 
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
@@ -1125,7 +1135,7 @@ def test_depth_mesh_protects_every_standalone_companion(depth_dialog, monkeypatc
     source.write_bytes(b"original standalone source")
     dialog, _ = depth_dialog(_standalone_retouch_paths={str(source)})
     _click_and_finish(qapp, dialog)
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
     prompts = []
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: prompts.append(1))
 
@@ -1139,7 +1149,7 @@ def test_depth_mesh_protects_every_standalone_companion(depth_dialog, monkeypatc
 
 def test_depth_export_protects_hardlinked_standalone_source(depth_dialog, monkeypatch, qapp, tmp_path):
     from core import depth_map
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
 
     monkeypatch.setattr(depth_map, "compute_focus_index", _ramp)
     source = tmp_path / "source.png"
@@ -1151,28 +1161,38 @@ def test_depth_export_protects_hardlinked_standalone_source(depth_dialog, monkey
         pytest.skip(f"hard links unavailable: {exc}")
     dialog, _ = depth_dialog(_standalone_retouch_paths={str(source)})
     _click_and_finish(qapp, dialog)
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(alias), ""))
+    monkeypatch.setattr(FileDialog, "getSaveFileName", lambda *a, **k: (str(alias), ""))
     dialog._save()
     assert source.read_bytes() == b"original standalone source"
     assert alias.read_bytes() == b"original standalone source"
     assert str(source) in dialog.status_lbl.text()
 
 
-def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qapp, tmp_path):
+@pytest.mark.parametrize('raw', [False, True])
+def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qapp, tmp_path, raw):
     from core import depth_map
     from PIL import Image
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
 
     monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
     frames = [np.full((20, 30, 3), (1000, 2000, 3000), np.uint16),
               np.full((20, 30, 3), (40000, 50000, 60000), np.uint16)]
     output = frames[0].copy()
+    record_meta = LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.5, 1.0, 0.7), 'Maker', 'Historical') if raw else None
+    current_meta = LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.8, 1.0, 0.6), 'Maker', 'Current')
     context = _output_context(frames, output, roi_rect=(4, 3, 16, 10), roi_mode='paste',
-                              icc_profile=b'captured profile')
-    dialog, _ = depth_dialog('dct', frames, output, context)
+                              icc_profile=b'captured profile', linear_dng_metadata=record_meta)
+    dialog, window = depth_dialog('dct', frames, output, context)
     _click_and_finish(qapp, dialog)
+    window.linear_dng_metadata = current_meta
+    dialog._current_linear_dng_metadata = current_meta
     target = tmp_path / 'indices-é.tif'
-    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
+    monkeypatch.setattr(FileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
     dialog.btn_save_indices.click()
     _wait(qapp, lambda: dialog._export_worker is None)
     with Image.open(target) as image:
@@ -1180,8 +1200,9 @@ def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qa
         indices = np.asarray(image)
     assert metadata['source_indices'] == [2, 5]
     assert metadata['source_names'] == ['historical-0.tif', 'historical-1.tif']
-    assert indices.shape == (20, 30)
-    assert indices[0, 0] == 0 and indices[3, 4] == 1 and indices[3, 19] == 2
+    expected_indices = np.zeros((20, 30), np.uint16)
+    expected_indices[3:13, 4:20] = np.where(np.arange(16) < 8, 1, 2)
+    np.testing.assert_array_equal(indices, expected_indices)
     target = tmp_path / 'render-é.tif'
     dialog.btn_save_render.click()
     _wait(qapp, lambda: dialog._export_worker is None)
@@ -1189,14 +1210,19 @@ def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qa
         assert image.info['icc_profile'] == b'captured profile'
     rendered = cv2.imdecode(np.fromfile(target, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     assert rendered.dtype == np.uint16 and rendered.shape == output.shape
-    np.testing.assert_array_equal(rendered[0, 0], [0, 0, 0])
-    np.testing.assert_array_equal(rendered[3, 4], frames[0][3, 4])
-    np.testing.assert_array_equal(rendered[3, 19], frames[1][3, 19])
+    linear = np.empty((10, 16, 3), np.uint16)
+    linear[:, :8] = frames[0][3:13, 4:12]
+    linear[:, 8:] = frames[1][3:13, 12:20]
+    expected = np.zeros_like(output)
+    expected[3:13, 4:20] = develop_linear(linear, record_meta) if raw else linear
+    if raw:
+        assert not np.array_equal(expected[3:13, 4:20], linear)
+    np.testing.assert_array_equal(rendered, expected)
 
 
 def test_depth_products_refuse_stale_map(depth_dialog, monkeypatch, qapp):
     from core import depth_map
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
 
     monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
     dialog, _ = depth_dialog()
@@ -1205,7 +1231,7 @@ def test_depth_products_refuse_stale_map(depth_dialog, monkeypatch, qapp):
     assert not dialog.btn_save_indices.isEnabled()
     assert not dialog.btn_save_render.isEnabled()
     asked = []
-    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: asked.append(True) or ('', ''))
+    monkeypatch.setattr(FileDialog, 'getSaveFileName', lambda *a, **k: asked.append(True) or ('', ''))
     dialog._export_product(False)
     dialog._export_product(True)
     assert not asked
@@ -1213,7 +1239,7 @@ def test_depth_products_refuse_stale_map(depth_dialog, monkeypatch, qapp):
 
 def test_depth_product_cancellation_preserves_existing_file(depth_dialog, monkeypatch, qapp, tmp_path):
     from core import depth_map, depth_products
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
 
     monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
     dialog, _ = depth_dialog()
@@ -1230,7 +1256,7 @@ def test_depth_product_cancellation_preserves_existing_file(depth_dialog, monkey
         return estimate(*args, **kwargs)
 
     monkeypatch.setattr(depth_products, 'estimate_indices', blocked)
-    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
+    monkeypatch.setattr(FileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
     dialog.btn_save_indices.click()
     _wait(qapp, entered.is_set)
     dialog.cancel_btn.click()
@@ -1240,17 +1266,52 @@ def test_depth_product_cancellation_preserves_existing_file(depth_dialog, monkey
     assert dialog.btn_save_indices.isEnabled()
 
 
+def test_depth_raw_render_cancellation_during_development(depth_dialog, monkeypatch, qapp, tmp_path):
+    from core import depth_map
+    from utils.file_dialogs import FileDialog
+    from utils import linear_dng
+
+    monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
+    frames = [np.full((20, 30, 3), value, np.uint16) for value in (1000, 40000)]
+    metadata = linear_dng.LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.5, 1.0, 0.7), 'Maker', 'Historical')
+    context = _output_context(frames, frames[0], linear_dng_metadata=metadata)
+    dialog, _ = depth_dialog('dct', frames, frames[0], context)
+    _click_and_finish(qapp, dialog)
+    target = tmp_path / 'existing-render.tif'
+    target.write_bytes(b'original file')
+    entered, release = Event(), Event()
+    depth_dialog.releases.append(release)
+    develop = linear_dng.develop_linear
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return develop(*args, **kwargs)
+
+    monkeypatch.setattr(linear_dng, 'develop_linear', blocked)
+    monkeypatch.setattr(FileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
+    dialog.btn_save_render.click()
+    _wait(qapp, entered.is_set)
+    dialog.cancel_btn.click()
+    release.set()
+    _wait(qapp, lambda: dialog._export_worker is None)
+    assert target.read_bytes() == b'original file'
+    assert dialog.btn_save_render.isEnabled()
+
+
 def test_depth_index_metadata_tracks_reversed_inputs(depth_dialog, monkeypatch, qapp, tmp_path):
     from core import depth_map
     from PIL import Image
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
 
     monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
     frames = _synthetic_thirds(48, 64)
     dialog, _ = depth_dialog('openfocus_b', frames, stack_reverse_order=True)
     _click_and_finish(qapp, dialog)
     target = tmp_path / 'order.tif'
-    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
+    monkeypatch.setattr(FileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
     dialog.btn_save_indices.click()
     _wait(qapp, lambda: dialog._export_worker is None)
     with Image.open(target) as image:
@@ -1262,7 +1323,7 @@ def test_depth_index_metadata_tracks_reversed_inputs(depth_dialog, monkeypatch, 
 
 def test_depth_product_memory_refusal_preserves_file(depth_dialog, monkeypatch, qapp, tmp_path):
     from core import depth_map, resource_policy
-    from PyQt6.QtWidgets import QFileDialog
+    from utils.file_dialogs import FileDialog
 
     monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
     dialog, _ = depth_dialog()
@@ -1276,7 +1337,7 @@ def test_depth_product_memory_refusal_preserves_file(depth_dialog, monkeypatch, 
         raise resource_policy.ResourceLimitError('insufficient memory')
 
     monkeypatch.setattr(resource_policy, 'require_memory', reject)
-    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
+    monkeypatch.setattr(FileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
     dialog.btn_save_render.click()
     _wait(qapp, lambda: dialog._export_worker is None)
     assert requests and requests[0] > dialog._map_frames[0].nbytes

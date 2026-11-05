@@ -1,5 +1,6 @@
 import cv2
 from typing import Any
+from core.source_frames import display_image, transform_frame
 
 from PyQt6.QtGui import QFont
 
@@ -22,10 +23,10 @@ class TransformManager:
             return
 
         window.push_undo()
-        window.raw_images = [cv2.rotate(img, rotation_code) for img in window.raw_images]
+        window.raw_images = [transform_frame(img, 'rotate', code=rotation_code) for img in window.raw_images]
 
         if getattr(window, "base_images", None):
-            window.base_images = [cv2.rotate(img, rotation_code) for img in window.base_images]
+            window.base_images = [transform_frame(img, 'rotate', code=rotation_code) for img in window.base_images]
         window.source_transforms = list(getattr(window, "source_transforms", [])) + [
             {"operation": "rotate", "code": int(rotation_code)}]
 
@@ -40,10 +41,10 @@ class TransformManager:
             return
 
         window.push_undo()
-        window.raw_images = [cv2.flip(img, flip_code) for img in window.raw_images]
+        window.raw_images = [transform_frame(img, 'flip', code=flip_code) for img in window.raw_images]
 
         if getattr(window, "base_images", None):
-            window.base_images = [cv2.flip(img, flip_code) for img in window.base_images]
+            window.base_images = [transform_frame(img, 'flip', code=flip_code) for img in window.base_images]
         window.source_transforms = list(getattr(window, "source_transforms", [])) + [
             {"operation": "flip", "code": int(flip_code)}]
 
@@ -86,7 +87,7 @@ class TransformManager:
                 new_width = max(1, int(window.base_images[0].shape[1] * factor))
                 new_height = max(1, int(window.base_images[0].shape[0] * factor))
                 window.raw_images = [
-                    cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                    transform_frame(img, 'resize', width=new_width, height=new_height)
                     for img in window.base_images
                 ]
 
@@ -150,6 +151,15 @@ class TransformManager:
                 from utils.linear_dng import develop_linear
                 thumbnails = []
                 for image in window.raw_images:
+                    from core.source_frames import preview_ready
+                    if not preview_ready(image):
+                        from PyQt6.QtGui import QPixmap
+                        thumbnails.append(QPixmap())
+                        continue
+                    if getattr(image, 'preview_is_display', False):
+                        thumbnails.extend(window.image_loader.create_thumbnails([image], thumb_size=40))
+                        continue
+                    image = display_image(image)
                     h, w = image.shape[:2]
                     scale = 40 / max(h, w)
                     small = cv2.resize(image, (max(1, int(w * scale)), max(1, int(h * scale))),
@@ -175,6 +185,8 @@ class TransformManager:
                 window.stack_slider.setValue(target_index)
                 window.stack_slider.blockSignals(False)
                 window.file_list.setCurrentRow(target_index)
+            if hasattr(window, '_start_source_previews'):
+                window._start_source_previews()
                 
             if hasattr(window, "update_loaded_status"):
                 window.update_loaded_status()
@@ -200,12 +212,17 @@ class TransformManager:
         curve = getattr(window, "sharpness_curve", None)
         if curve is None:
             return
+        from core.source_frames import preview_ready
+        if any(not preview_ready(frame) for frame in window.raw_images):
+            curve.set_data([])
+            return
         if any(img.ndim == 3 and img.shape[2] == 4 for img in window.raw_images):
             curve.set_data([])
             return
         try:
             values = []
             for img in window.raw_images:
+                img = display_image(img)
                 h, w = img.shape[:2]
                 scale = 320.0 / max(h, w)
                 small = cv2.resize(img, (int(w * scale), int(h * scale)),
@@ -256,6 +273,13 @@ class TransformManager:
         window = self.window
 
         window.source_revision = getattr(window, "source_revision", 0) + 1
+        window._source_display_key = None
+        for field in ('_source_decode_workers', '_source_preview_workers'):
+            for worker in tuple(getattr(window, field, {}).values()):
+                worker.request_cancel()
+        from core.source_frames import SOURCE_CACHE, PREVIEW_CACHE
+        SOURCE_CACHE.clear()
+        PREVIEW_CACHE.clear()
         window.alignment_request_key = None
 
         window.aligned_images = []
