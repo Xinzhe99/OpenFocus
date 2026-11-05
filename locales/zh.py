@@ -5,8 +5,8 @@ fall back to this table.
 """
 
 ZH = {
-    "usage_opt_in": "分享使用统计",
-    "usage_disclosure": "允许 OpenFocus 向 openfocus.top 发送随机安装标识、应用版本和操作系统，以估计活跃安装量？不会发送图像数据或文件名。可在设置中关闭，关闭后本地标识将被删除。",
+    "usage_enabled": "分享使用统计",
+    "usage_disclosure": "默认开启。OpenFocus 仅向 openfocus.top 发送随机安装标识、应用版本和操作系统，以估计活跃安装量，不发送图像、路径或硬件信息。可在“设置 → 高级设置”关闭，停止后续报告并删除本地标识；此前明确关闭的偏好会保留。",
     "magnifier_hint": "按住鼠标左键使用放大镜；滚轮调整倍率，Ctrl+滚轮调整放大镜大小。",
     "mosaic_title": "图像拼接（实验性功能开发未完成）…",
     "mosaic_intro": "添加融合好的图像，自动对齐或拖动摆放，检查重叠区后保存。X/Y 单位为像素，滚轮缩放；透明度仅影响预览。",
@@ -115,7 +115,7 @@ ZH = {
     "batch_missing_times": "{n} 帧没有拍摄时间。请使用固定张数分组以包含这些帧。",
     "batch_import_in_progress": "文件夹仍在导入中。请等待完成或先取消。",
     "export_depth_hint": "PNG/TIFF 保留 16 位数据；JPG/BMP/GIF 会转换为 8 位。",
-    "feedback_package_scope": "ZIP 包含本次会话和完整应用日志、应用/系统/Python 版本、内存和 GPU 信息。分享前请检查内容；不会自动发送任何数据。",
+    "feedback_package_scope": "ZIP 包含会话摘录、近期日志末尾（最多20 MB）、问题追踪索引、应用/系统/Python 版本、内存和 GPU 信息。日志可能包含文件路径。分享前请检查；反馈不会自动发送。",
     "env_copy": "复制诊断信息",
     "label_font_failed": "可用字体无法绘制此文字。请选择其他字体，或安装包含所需字符的字体。",
     "compare_state_current": "当前结果",

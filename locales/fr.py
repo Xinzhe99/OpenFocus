@@ -1,8 +1,8 @@
 """French language pack for OpenFocus."""
 
 PACK = {
-    "usage_opt_in": "Partager des statistiques d’utilisation",
-    "usage_disclosure": "Autoriser OpenFocus à envoyer à openfocus.top un identifiant d’installation aléatoire, la version de l’application et le système d’exploitation ? Cela permet d’estimer les installations actives. Aucune image ni aucun nom de fichier n’est envoyé. Désactivez cette option dans Paramètres pour supprimer l’identifiant local.",
+    "usage_enabled": "Partager des statistiques d’utilisation",
+    "usage_disclosure": "Activé par défaut. OpenFocus envoie uniquement un identifiant d’installation aléatoire, la version et le système d’exploitation à openfocus.top pour estimer les installations actives. Aucune image, aucun chemin ni détail matériel. Désactivez dans Paramètres → Paramètres avancés pour arrêter les futurs rapports et supprimer l’identifiant local. Un choix précédent de désactivation est conservé.",
     "magnifier_hint": "Maintenez le bouton gauche pour la loupe ; la molette change le grossissement, Ctrl+molette la taille de la loupe.",
     "mosaic_title": "Assembler des images (expérimental, inachevé)…",
     "mosaic_intro": "Ajoutez des images fusionnées, alignez-les ou déplacez-les, puis vérifiez les recouvrements. X/Y en pixels ; molette pour zoomer. L’opacité ne concerne que l’aperçu.",
@@ -111,7 +111,7 @@ PACK = {
     "batch_missing_times": "{n} images n’ont pas d’heure de prise de vue. Utilisez des groupes de taille fixe pour les inclure.",
     "batch_import_in_progress": "L’importation du dossier est encore en cours. Attendez la fin ou annulez-la.",
     "export_depth_hint": "PNG/TIFF conservent les données 16 bits. JPG/BMP/GIF les convertissent en 8 bits.",
-    "feedback_package_scope": "Le ZIP contient les journaux de session et de l’application, les versions de l’application, du système et de Python, ainsi que les informations sur la mémoire et le GPU. Vérifiez son contenu avant de le partager ; rien n’est envoyé automatiquement.",
+    "feedback_package_scope": "Le ZIP contient un extrait de session, les fins des journaux récents (20 Mo maximum), un index de diagnostic, les versions app/OS/Python et les informations mémoire et GPU. Les journaux peuvent contenir des chemins. Vérifiez avant de partager ; aucun retour n’est envoyé automatiquement.",
     "env_copy": "Copier le diagnostic",
     'label_font_failed': 'Aucune police disponible ne peut afficher ce texte. Choisissez-en une autre ou installez une police contenant les caractères nécessaires.',
     'compare_state_current': 'Résultat actuel',

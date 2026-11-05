@@ -1035,17 +1035,21 @@ section's saved batch limit is retained, but inference currently submits one
 tile per call; registration width can change alignment accuracy.
 Alignment-diagnostic collection is a checkbox in the Registration section.
 
-**Settings → Share usage statistics** is off by default. If you
-consent, OpenFocus sends a random installation ID, application version and
-operating system to openfocus.top, at most once per day after a successful
-send. No image data or filenames are sent. The ID is pseudonymous: reports
-with the same ID can be linked. Turn the setting off to stop reporting and
-delete the local ID and send timestamp; a later opt-in creates a new ID.
+**Settings → Advanced Settings → Share usage statistics** is enabled by
+default when no preference exists; an explicit previous opt-out is preserved.
+OpenFocus sends only a random installation ID, application version and operating
+system to openfocus.top, at most once per day after a successful send. No images,
+paths, hardware details or logs are sent. The ID is pseudonymous: reports with
+the same ID can be linked. Turn the switch off and choose **OK** to stop future
+reports and delete the local ID and send timestamp; enabling it again creates
+a new ID. Cancel, Esc and closing discard the draft without changing reporting.
+There is no onboarding choice or extra consent dialog. Closing the application
+cancels future reports; an already dispatched request may still complete.
 
 An active installation count for approximately 30 days means distinct IDs
 that reported during that period, optionally grouped by version. It is an
 estimate, not a count of people or all users: offline installations and users
-who do not opt in are missing. Failed sends retry while the application stays
+who disable reporting are missing. Failed sends retry while the application stays
 open or on a future startup. Updates retain the ID with your settings. Copying
 portable settings copies the ID, so
 copies may count as one installation; reinstalling retains it only if the

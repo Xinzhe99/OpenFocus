@@ -1,8 +1,8 @@
 """Polish language pack for OpenFocus."""
 
 PACK = {
-    "usage_opt_in": "Udostępniaj statystyki użycia",
-    "usage_disclosure": "Czy zezwolić OpenFocus na wysyłanie do openfocus.top losowego identyfikatora instalacji, wersji aplikacji i systemu operacyjnego? Pomaga to oszacować liczbę aktywnych instalacji. Dane obrazów ani nazwy plików nie są wysyłane. Wyłączenie w ustawieniach usuwa lokalny identyfikator.",
+    "usage_enabled": "Udostępniaj statystyki użycia",
+    "usage_disclosure": "Domyślnie włączone. OpenFocus wysyła do openfocus.top tylko losowy identyfikator instalacji, wersję aplikacji i system operacyjny, aby oszacować aktywne instalacje. Bez obrazów, ścieżek i danych sprzętu. Wyłącz w Ustawienia → Ustawienia zaawansowane, aby zatrzymać przyszłe raporty i usunąć lokalny identyfikator. Wcześniejsze wyłączenie pozostaje zachowane.",
     "magnifier_hint": "Przytrzymaj lewy przycisk myszy, aby użyć lupy; kółko zmienia powiększenie, a Ctrl+kółko rozmiar lupy.",
     "mosaic_title": "Połącz obrazy (eksperymentalne, niedokończone)…",
     "mosaic_intro": "Dodaj obrazy po fuzji, wyrównaj je lub przeciągnij i sprawdź nakładanie. X/Y są w pikselach; kółko zmienia skalę. Krycie dotyczy tylko podglądu.",
@@ -111,7 +111,7 @@ PACK = {
     "batch_missing_times": "{n} klatek nie ma czasu wykonania. Użyj grupowania według stałej liczby, aby je uwzględnić.",
     "batch_import_in_progress": "Importowanie folderu nadal trwa. Poczekaj na zakończenie lub anuluj je.",
     "export_depth_hint": "PNG/TIFF zachowują dane 16-bitowe. JPG/BMP/GIF konwertują je na 8 bitów.",
-    "feedback_package_scope": "ZIP zawiera dziennik sesji i pełne dzienniki aplikacji, wersje aplikacji, systemu i Pythona oraz informacje o pamięci i GPU. Sprawdź zawartość przed udostępnieniem; nic nie jest wysyłane automatycznie.",
+    "feedback_package_scope": "ZIP zawiera fragment sesji, końcówki ostatnich dzienników (do 20 MB), indeks diagnostyczny, wersje aplikacji/OS/Pythona oraz informacje o pamięci i GPU. Dzienniki mogą zawierać ścieżki plików. Sprawdź przed udostępnieniem; opinie nigdy nie są wysyłane automatycznie.",
     "env_copy": "Kopiuj diagnostykę",
     'label_font_failed': 'Żadna dostępna czcionka nie może wyświetlić tego tekstu. Wybierz inną lub zainstaluj czcionkę z wymaganymi znakami.',
     'compare_state_current': 'Aktualny wynik',

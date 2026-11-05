@@ -28,10 +28,6 @@ def _menu_window(qapp):
     window.ui_objs = {}
     # Exactly the collaborators and slots setup_menus() touches.
     stub = lambda *a, **k: None  # noqa: E731
-    window.usage_analytics = type("Usage", (), {
-        "enabled": staticmethod(lambda: False),
-        "set_enabled": staticmethod(stub),
-    })()
     window.export_manager = type("E", (), {
         "save_result": staticmethod(stub),
         "save_result_stack": staticmethod(stub),
@@ -71,30 +67,26 @@ def _menu_window(qapp):
     return window
 
 
-def test_usage_consent_requires_confirmation(qapp, monkeypatch):
-    from PyQt6.QtWidgets import QMessageBox
+def test_usage_switch_is_only_in_advanced_settings(qapp):
     from ui.menus import setup_menus
 
     window = _menu_window(qapp)
-    changes = []
-    window.usage_analytics.set_enabled = changes.append
     setup_menus(window)
-    action = window.ui_objs['usage_opt_in']
-    assert not action.isChecked()
-    def reject(box):
-        assert box.defaultButton() == box.button(QMessageBox.StandardButton.No)
-        assert box.button(QMessageBox.StandardButton.Yes).text() == trans.t('btn_continue')
-        assert box.button(QMessageBox.StandardButton.No).text() == trans.t('btn_cancel_generic')
-        return QMessageBox.StandardButton.No
+    try:
+        assert 'usage_opt_in' not in window.ui_objs
+        assert window.ui_objs['action_advanced_settings'] in window.ui_objs['menu_settings'].actions()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
 
-    monkeypatch.setattr(QMessageBox, 'exec', reject)
-    action.trigger()
-    assert not action.isChecked() and changes == []
-    monkeypatch.setattr(QMessageBox, 'exec', lambda box: QMessageBox.StandardButton.Yes)
-    action.trigger()
-    assert action.isChecked() and changes == [True]
-    action.trigger()
-    assert not action.isChecked() and changes == [True, False]
+
+def test_usage_disclosure_and_switch_exist_in_every_language():
+    for code in trans.PACK_ORDER:
+        table = trans.translations[code]
+        assert table.get('usage_enabled'), code
+        assert table.get('usage_disclosure'), code
+        assert 'usage_opt_in' not in table, code
 
 
 def test_reset_stack_menu_action_calls_source_manager(qapp):

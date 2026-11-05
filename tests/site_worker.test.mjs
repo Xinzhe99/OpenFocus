@@ -652,7 +652,7 @@ test("download analytics counts only successful starts with resolved version, ro
   assert.equal((await run(latest, { env })).status, 200);
 });
 
-test("usage accepts only bounded opt-in reports and stores no request metadata", async () => {
+test("usage accepts only bounded reports and stores no request metadata", async () => {
   const db = analyticsDb();
   const env = { ANALYTICS: db };
   const url = "https://openfocus.top/api/usage";

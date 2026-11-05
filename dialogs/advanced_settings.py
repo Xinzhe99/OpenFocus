@@ -223,6 +223,15 @@ class AdvancedSettingsDialog(QDialog):
         auto_hint.setObjectName("mutedLabel")
         auto_hint.setWordWrap(True)
         other.addRow("", auto_hint)
+        self.chk_usage = QCheckBox()
+        self.chk_usage.setProperty("controlId", "chk_usage")
+        analytics = getattr(w, "usage_analytics", None)
+        self.chk_usage.setChecked(analytics.enabled() if analytics is not None else True)
+        other.addRow(trans.t("usage_enabled"), self.chk_usage)
+        usage_hint = QLabel(trans.t("usage_disclosure"))
+        usage_hint.setObjectName("mutedLabel")
+        usage_hint.setWordWrap(True)
+        other.addRow("", usage_hint)
 
         page_lay.addStretch()
         self.status = QLabel()
@@ -359,6 +368,13 @@ class AdvancedSettingsDialog(QDialog):
                 pass
             self.status.setText(str(exc))
             return
+        analytics = getattr(w, "usage_analytics", None)
+        if analytics is not None and analytics.enabled() != self.chk_usage.isChecked():
+            analytics.set_enabled(self.chk_usage.isChecked())
+        from utils.logging_setup import log_action
+        log_action("settings.applied", changed=sorted(
+            key for key in draft if previous[key] != draft[key]),
+            usage_enabled=self.chk_usage.isChecked())
         processing = set(draft) - {"restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report", "storage_directory"}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)

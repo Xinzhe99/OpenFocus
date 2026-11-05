@@ -1,4 +1,4 @@
-"""Optional, best-effort reporting of active installations.
+"""Default-on, best-effort reporting of active installations.
 
 QSettings is accessed only on the Qt thread; the daemon only performs HTTP.
 """
@@ -59,7 +59,7 @@ class UsageAnalytics(QObject):
         self._finished.connect(self._on_finished)
 
     def enabled(self):
-        return str(self.settings.value(ENABLED_KEY, False)).lower() in ("true", "1", "yes", "on")
+        return str(self.settings.value(ENABLED_KEY, True)).lower() in ("true", "1", "yes", "on")
 
     def set_enabled(self, enabled):
         if enabled:
@@ -90,10 +90,15 @@ class UsageAnalytics(QObject):
         if self._thread is not None:
             return
         self._timer.stop()
-        installation_id = str(self.settings.value(ID_KEY, "") or "")
         platform = _platform()
-        if not installation_id or platform is None:
+        if platform is None:
             return
+        installation_id = str(self.settings.value(ID_KEY, "") or "")
+        if not installation_id:
+            installation_id = str(uuid.uuid4())
+            self.settings.setValue(ID_KEY, installation_id)
+            self.settings.remove(LAST_SENT_KEY)
+            self.settings.sync()
         try:
             last_sent = float(self.settings.value(LAST_SENT_KEY, 0) or 0)
         except (TypeError, ValueError):

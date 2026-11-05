@@ -287,7 +287,7 @@ def _en() -> dict:
         "privacy": {
             "title": "Privacy",
             "downloads": "When download statistics are enabled, the website records aggregate download starts by date, version, asset type, route and source. Retries, scanners and incomplete downloads can be counted; these are not unique users or completed downloads.",
-            "usage": "Desktop usage reporting is off by default. If you opt in, OpenFocus sends a random installation ID, application version and operating system to estimate active installations. It does not send images or filenames. Turning it off stops future reports and deletes the local ID; a request already in flight may still complete.",
+            "usage": "Desktop usage reporting is enabled by default when no preference exists; a previous explicit opt-out is preserved. OpenFocus sends only a random installation ID, application version and operating system to estimate active installations. It does not send images, paths, hardware details or logs. Turn it off in Settings → Advanced Settings → Share usage statistics, then choose OK, to stop future reports and delete the local ID. Cancel discards changes. A request already in flight may still complete.",
             "retention": "Usage records are kept for up to 90 UTC calendar days; operational failures can delay deletion. Download totals remain until an operator deletes them. The statistics database does not store IP addresses, user agents or hardware identifiers. Cloudflare may keep separate request logs, including network information.",
         },
         "footer": {
@@ -525,7 +525,7 @@ def _zh() -> dict:
         "privacy": {
             "title": "隐私",
             "downloads": "启用下载统计后，网站按日期、版本、文件类型、下载路径和来源汇总下载开始次数。重试、扫描或未完成的下载也可能计入；这个数字不代表独立用户或完成下载的次数。",
-            "usage": "桌面使用统计默认关闭。只有你同意后，OpenFocus 才会发送随机安装标识、应用版本和操作系统，用于估计活跃安装量；不会发送图像或文件名。关闭后不再发起新的报告并删除本地标识；已经发出的请求仍可能完成。",
+            "usage": "未保存偏好时，桌面使用统计默认开启；此前明确关闭的偏好会保留。OpenFocus 仅发送随机安装标识、应用版本和操作系统，用于估计活跃安装量，不发送图像、路径、硬件信息或日志。可在“设置 → 高级设置 → 分享使用统计”关闭并确定，停止后续报告并删除本地标识；取消则放弃修改。已经发出的请求仍可能完成。",
             "retention": "使用记录最多保留 90 个 UTC 日历日；系统故障可能延迟删除。下载汇总保留到管理员删除为止。统计数据库不保存 IP 地址、用户代理或硬件标识。Cloudflare 可能另行保存包含网络信息的请求日志。",
         },
         "footer": {

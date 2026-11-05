@@ -12,8 +12,8 @@ This file is generated wholesale; edit values in place, not by patching.
 
 EXTRA_TRANSLATIONS = {
     "ja": {
-        "usage_opt_in": "利用統計を共有",
-        "usage_disclosure": "アクティブなインストール数を推定するため、OpenFocus がランダムなインストール ID、アプリのバージョン、OS を openfocus.top に送信することを許可しますか？画像データやファイル名は送信しません。設定でオフにするとローカル ID は削除されます。",
+        "usage_enabled": "利用統計を共有",
+        "usage_disclosure": "既定で有効です。OpenFocus は稼働中のインストール数を推定するため、ランダムなインストール ID、アプリのバージョン、OS のみを openfocus.top に送信します。画像、パス、ハードウェア情報は送信しません。設定 → 詳細設定で無効にすると、今後の報告を停止しローカル ID を削除します。以前の無効設定は保持されます。",
         "magnifier_hint": "左ボタンを押したまま拡大鏡を表示します。ホイールで倍率、Ctrl+ホイールで拡大鏡の大きさを調整します。",
         "mosaic_title": "画像をつなぐ（実験的機能・開発未完了）…",
         "mosaic_intro": "合成画像を追加し、自動整列またはドラッグで配置して重なりを確認します。X/Y はピクセル、ホイールで拡大します。不透明度はプレビューのみです。",
@@ -122,7 +122,7 @@ EXTRA_TRANSLATIONS = {
         "batch_missing_times": "{n} フレームに撮影時刻がありません。含めるには固定枚数でグループ化してください。",
         "batch_import_in_progress": "フォルダーの読み込み中です。完了するかキャンセルしてください。",
         "export_depth_hint": "PNG/TIFF は16ビットを保持します。JPG/BMP/GIF は8ビットに変換します。",
-        "feedback_package_scope": "ZIP にはセッションとアプリの全ログ、アプリ・OS・Python のバージョン、メモリと GPU の情報が含まれます。共有前に内容を確認してください。自動送信は行いません。",
+        "feedback_package_scope": "ZIP にはセッションの抜粋、最近のログ末尾（最大20 MB）、診断索引、アプリ・OS・Python のバージョン、メモリと GPU の情報が含まれます。ログにファイルパスが含まれる場合があります。共有前に確認してください。フィードバックは自動送信されません。",
         "env_copy": "診断情報をコピー",
         'label_font_failed': '使用可能なフォントではこの文字を描画できません。別のフォントを選ぶか、必要な文字を含むフォントをインストールしてください。',
         'compare_state_current': '現在の結果',
@@ -1106,8 +1106,8 @@ EXTRA_TRANSLATIONS = {
         "converter_summary": "成功: {success} · 失敗: {failed} {cancelled}",
     },
     "es": {
-        "usage_opt_in": "Compartir estadísticas de uso",
-        "usage_disclosure": "¿Permitir que OpenFocus envíe a openfocus.top un identificador aleatorio de instalación, la versión de la aplicación y el sistema operativo? Esto ayuda a estimar las instalaciones activas. No se envían imágenes ni nombres de archivos. Al desactivarlo en Ajustes se elimina el identificador local.",
+        "usage_enabled": "Compartir estadísticas de uso",
+        "usage_disclosure": "Activado por defecto. OpenFocus solo envía un ID de instalación aleatorio, la versión y el sistema operativo a openfocus.top para estimar las instalaciones activas. No envía imágenes, rutas ni datos de hardware. Desactívalo en Ajustes → Ajustes avanzados para detener futuros informes y eliminar el ID local. Se conserva cualquier desactivación anterior.",
         "magnifier_hint": "Mantén pulsado el botón izquierdo para usar la lupa; la rueda cambia el aumento y Ctrl+rueda cambia el tamaño de la lupa.",
         "mosaic_title": "Unir imágenes (experimental, sin terminar)…",
         "mosaic_intro": "Añade imágenes fusionadas, alinea o arrástralas y revisa los solapes. X/Y son píxeles; la rueda amplía. La opacidad solo afecta a la vista previa.",
@@ -1216,7 +1216,7 @@ EXTRA_TRANSLATIONS = {
         "batch_missing_times": "{n} fotogramas no tienen hora de captura. Use grupos de tamaño fijo para incluirlos.",
         "batch_import_in_progress": "La importación de carpetas sigue en curso. Espere a que termine o cancélela.",
         "export_depth_hint": "PNG/TIFF conservan los datos de 16 bits. JPG/BMP/GIF los convierten a 8 bits.",
-        "feedback_package_scope": "El ZIP contiene los registros de la sesión y de la aplicación, las versiones de la aplicación, del sistema y de Python, e información de memoria y GPU. Revíselo antes de compartirlo; no se envía nada automáticamente.",
+        "feedback_package_scope": "El ZIP contiene un extracto de sesión, las partes finales de registros recientes (hasta 20 MB), un índice diagnóstico, versiones de app/OS/Python e información de memoria y GPU. Puede incluir rutas de archivos. Revísalo antes de compartir; los comentarios nunca se envían automáticamente.",
         "env_copy": "Copiar diagnóstico",
         'label_font_failed': 'Ninguna fuente disponible puede dibujar este texto. Elija otra o instale una con los caracteres necesarios.',
         'compare_state_current': 'Resultado actual',

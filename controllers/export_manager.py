@@ -381,7 +381,7 @@ class ExportManager:
 
         try:
             file_path = self.normalize_export_path(file_path, selected_filter=selected_filter)
-            from utils.logging_setup import log_action
+            from utils.logging_setup import log_action, log_operation
             log_action('export_image', path=file_path)
             if os.path.splitext(file_path)[1].lower() == '.dng':
                 if metadata is None:
@@ -407,7 +407,13 @@ class ExportManager:
             if metadata is not None:
                 from utils.image_utils import srgb_icc_profile
                 profile = srgb_icc_profile()
-            if imwrite_auto(file_path, scalebar.burn(image_to_save, cfg), params, exif=b'', icc_profile=profile):
+            with log_operation("export_image_write", path=file_path, extension=ext,
+                               shape=image_to_save.shape, dtype=str(image_to_save.dtype)) as operation:
+                written = imwrite_auto(file_path, scalebar.burn(image_to_save, cfg),
+                                       params, exif=b'', icc_profile=profile)
+                if not written:
+                    operation.fail()
+            if written:
                 # Non-blocking confirmation (errors still get a dialog)
                 window.statusBar().showMessage(
                     trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
@@ -421,6 +427,8 @@ class ExportManager:
                     QMessageBox.Icon.Critical,
                 )
         except cv2.error as exc:
+            from utils.logging_setup import get_logger
+            get_logger(__name__).exception("Image export failed: %s", file_path)
             show_message_box(
                 window,
                 trans.t("msg_save_failed_title"),
@@ -429,6 +437,8 @@ class ExportManager:
                 QMessageBox.Icon.Critical,
             )
         except Exception as exc:  # pylint: disable=broad-except
+            from utils.logging_setup import get_logger
+            get_logger(__name__).exception("Image export failed: %s", file_path)
             show_message_box(
                 window,
                 trans.t("msg_save_failed_title"),

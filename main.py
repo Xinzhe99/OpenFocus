@@ -3455,12 +3455,18 @@ class OpenFocus(QMainWindow):
                 event.ignore()
                 return
 
+        from time import perf_counter
+        from utils.logging_setup import log_action, get_logger
+        shutdown_started = perf_counter()
+        log_action("shutdown.started", restart=bool(getattr(self, '_restart_for_update', False)))
+        self.usage_analytics.shutdown()
+
         # Persist user preferences, layout and recent files for next time
         try:
             self.persist_settings()
             save_window_layout(self)
         except Exception:
-            pass
+            get_logger(__name__).exception("Unable to persist settings during shutdown")
 
         # Crash auto-recovery: keep the last snapshot, clear the live lock
         from utils import recovery
@@ -3522,8 +3528,9 @@ class OpenFocus(QMainWindow):
         # Remove temp JPGs written for drag-out export
         if hasattr(self, 'output_list') and hasattr(self.output_list, 'cleanup_temp_files'):
             self.output_list.cleanup_temp_files()
-        self.usage_analytics.shutdown()
 
+        log_action("shutdown.completed", elapsed_ms=round(
+            (perf_counter() - shutdown_started) * 1000, 3))
         super().closeEvent(event)
 
     # --- Language ---

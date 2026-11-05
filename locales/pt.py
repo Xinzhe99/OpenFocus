@@ -1,8 +1,8 @@
 """Portuguese (Brazil) language pack for OpenFocus."""
 
 PACK = {
-    "usage_opt_in": "Compartilhar estatísticas de uso",
-    "usage_disclosure": "Permitir que o OpenFocus envie ao openfocus.top um identificador aleatório de instalação, a versão do aplicativo e o sistema operacional? Isso ajuda a estimar instalações ativas. Dados de imagem e nomes de arquivos não são enviados. Ao desativar em Configurações, o identificador local é apagado.",
+    "usage_enabled": "Compartilhar estatísticas de uso",
+    "usage_disclosure": "Ativado por padrão. O OpenFocus envia somente um ID de instalação aleatório, a versão e o sistema operacional ao openfocus.top para estimar instalações ativas. Nenhuma imagem, caminho ou informação de hardware. Desative em Configurações → Configurações avançadas para interromper relatórios futuros e excluir o ID local. Uma desativação anterior é preservada.",
     "magnifier_hint": "Segure o botão esquerdo para usar a lupa; a roda altera a ampliação e Ctrl+roda altera o tamanho da lupa.",
     "mosaic_title": "Unir imagens (experimental, incompleto)…",
     "mosaic_intro": "Adicione imagens fundidas, alinhe ou arraste e confira as sobreposições. X/Y em pixels; a roda amplia. A opacidade afeta apenas a prévia.",
@@ -111,7 +111,7 @@ PACK = {
     "batch_missing_times": "{n} imagens não têm hora de captura. Use grupos com quantidade fixa para incluí-las.",
     "batch_import_in_progress": "A importação da pasta ainda está em andamento. Aguarde ou cancele.",
     "export_depth_hint": "PNG/TIFF preservam dados de 16 bits. JPG/BMP/GIF convertem para 8 bits.",
-    "feedback_package_scope": "O ZIP contém os registos da sessão e da aplicação, as versões da aplicação, do sistema e do Python, e informações de memória e GPU. Reveja o conteúdo antes de partilhar; nada é enviado automaticamente.",
+    "feedback_package_scope": "O ZIP contém um excerto da sessão, os trechos finais dos registos recentes (até 20 MB), um índice de diagnóstico, versões da aplicação/OS/Python e informações de memória e GPU. Os registos podem conter caminhos. Reveja antes de partilhar; o feedback nunca é enviado automaticamente.",
     "env_copy": "Copiar diagnóstico",
     'label_font_failed': 'Nenhuma fonte disponível pode desenhar este texto. Escolha outra ou instale uma com os caracteres necessários.',
     'compare_state_current': 'Resultado atual',

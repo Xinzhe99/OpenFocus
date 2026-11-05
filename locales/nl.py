@@ -1,8 +1,8 @@
 """Dutch language pack for OpenFocus."""
 
 PACK = {
-    "usage_opt_in": "Gebruiksstatistieken delen",
-    "usage_disclosure": "Mag OpenFocus een willekeurige installatie-ID, appversie en besturingssysteem naar openfocus.top sturen? Dit helpt actieve installaties te schatten. Er worden geen afbeeldingsgegevens of bestandsnamen verstuurd. U kunt dit uitschakelen in Instellingen; de lokale ID wordt dan verwijderd.",
+    "usage_enabled": "Gebruiksstatistieken delen",
+    "usage_disclosure": "Standaard ingeschakeld. OpenFocus stuurt alleen een willekeurige installatie-ID, appversie en besturingssysteem naar openfocus.top om actieve installaties te schatten. Geen afbeeldingen, paden of hardwaregegevens. Schakel uit via Instellingen → Geavanceerde instellingen om toekomstige rapporten te stoppen en de lokale ID te verwijderen. Een eerdere uitschakeling blijft behouden.",
     "magnifier_hint": "Houd de linkermuisknop ingedrukt voor de loep; het wiel verandert de vergroting, Ctrl+wiel de grootte van de loep.",
     "mosaic_title": "Afbeeldingen samenvoegen (experimenteel, onvoltooid)…",
     "mosaic_intro": "Voeg gefuseerde beelden toe, lijn ze automatisch uit of versleep ze en controleer de overlap. X/Y zijn pixels; het wiel zoomt. Dekking geldt alleen voor het voorbeeld.",
@@ -111,7 +111,7 @@ PACK = {
     "batch_missing_times": "{n} beelden hebben geen opnametijd. Gebruik groepen met een vast aantal om ze op te nemen.",
     "batch_import_in_progress": "Het importeren van mappen is nog bezig. Wacht tot het klaar is of annuleer het.",
     "export_depth_hint": "PNG/TIFF behouden 16-bits gegevens. JPG/BMP/GIF zetten deze om naar 8 bits.",
-    "feedback_package_scope": "Het ZIP-bestand bevat sessie- en volledige toepassingslogboeken, app-, OS- en Python-versies en informatie over geheugen en GPU. Controleer de inhoud voordat u deze deelt; er wordt niets automatisch verzonden.",
+    "feedback_package_scope": "De ZIP bevat een sessie-uittreksel, het einde van recente logs (maximaal 20 MB), een diagnose-index, app-/OS-/Python-versies en geheugen- en GPU-informatie. Logs kunnen bestandspaden bevatten. Controleer voor het delen; feedback wordt nooit automatisch verzonden.",
     "env_copy": "Diagnostiek kopiëren",
     'label_font_failed': 'Geen beschikbaar lettertype kan deze tekst weergeven. Kies een ander lettertype of installeer er een met de vereiste tekens.',
     'compare_state_current': 'Huidig resultaat',

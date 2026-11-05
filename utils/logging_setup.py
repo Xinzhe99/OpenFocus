@@ -341,7 +341,7 @@ def session_log_excerpt(max_bytes: int = 60_000) -> str:
             continue
     if not parts:
         return "(log unavailable)"
-    prefix = "...(older lines trimmed; export full logs for the complete record)...\n" if trimmed else ""
+    prefix = "...(older lines trimmed; export recent log tails for more context)...\n" if trimmed else ""
     return prefix + b"".join(reversed(parts)).decode("utf-8", errors="replace")
 
 

@@ -1,8 +1,8 @@
 """German language pack for OpenFocus."""
 
 PACK = {
-    "usage_opt_in": "Nutzungsstatistik teilen",
-    "usage_disclosure": "Darf OpenFocus eine zufällige Installationskennung, die Programmversion und das Betriebssystem an openfocus.top senden? Dies dient zur Schätzung aktiver Installationen. Bilddaten und Dateinamen werden nicht gesendet. In den Einstellungen abschaltbar; dabei wird die lokale Kennung gelöscht.",
+    "usage_enabled": "Nutzungsstatistik teilen",
+    "usage_disclosure": "Standardmäßig aktiviert. OpenFocus sendet nur eine zufällige Installationskennung, App-Version und Betriebssystem an openfocus.top, um aktive Installationen zu schätzen. Keine Bilder, Pfade oder Hardwaredaten. Unter Einstellungen → Erweiterte Einstellungen abschalten, um künftige Berichte zu stoppen und die lokale Kennung zu löschen. Eine zuvor deaktivierte Einstellung bleibt erhalten.",
     "magnifier_hint": "Linke Maustaste für die Lupe halten; Mausrad ändert die Vergrößerung, Strg+Mausrad die Lupengröße.",
     "mosaic_title": "Bilder zusammensetzen (experimentell, unvollständig)…",
     "mosaic_intro": "Fertige Bilder hinzufügen, automatisch ausrichten oder verschieben und Überlappungen prüfen. X/Y in Pixeln; Mausrad zoomt. Deckkraft gilt nur für die Vorschau.",
@@ -111,7 +111,7 @@ PACK = {
     "batch_missing_times": "{n} Bilder haben keine Aufnahmezeit. Verwenden Sie eine feste Bildanzahl pro Gruppe, um sie einzubeziehen.",
     "batch_import_in_progress": "Der Ordnerimport läuft noch. Warten Sie auf das Ende oder brechen Sie ihn ab.",
     "export_depth_hint": "PNG/TIFF erhalten 16-Bit-Daten. JPG/BMP/GIF wandeln sie in 8 Bit um.",
-    "feedback_package_scope": "Die ZIP-Datei enthält Sitzungs- und vollständige Anwendungsprotokolle, App-, Betriebssystem- und Python-Versionen sowie Speicher- und GPU-Informationen. Prüfen Sie den Inhalt vor dem Teilen. Es wird nichts automatisch gesendet.",
+    "feedback_package_scope": "Die ZIP-Datei enthält einen Sitzungsauszug, aktuelle Protokollenden (bis 20 MB), einen Diagnoseindex, App-/OS-/Python-Versionen sowie Speicher- und GPU-Informationen. Protokolle können Dateipfade enthalten. Vor dem Teilen prüfen; Feedback wird nie automatisch gesendet.",
     "env_copy": "Diagnose kopieren",
     'label_font_failed': 'Keine verfügbare Schrift kann diesen Text darstellen. Eine andere Schrift wählen oder eine mit den benötigten Zeichen installieren.',
     'compare_state_current': 'Aktuelles Ergebnis',

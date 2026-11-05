@@ -1,8 +1,8 @@
 """Korean language pack for OpenFocus."""
 
 PACK = {
-    "usage_opt_in": "사용 통계 공유",
-    "usage_disclosure": "활성 설치 수를 추정하도록 OpenFocus가 무작위 설치 ID, 앱 버전 및 운영체제를 openfocus.top으로 보내도록 허용할까요? 이미지 데이터와 파일 이름은 보내지 않습니다. 설정에서 끄면 로컬 ID가 삭제됩니다.",
+    "usage_enabled": "사용 통계 공유",
+    "usage_disclosure": "기본적으로 켜져 있습니다. OpenFocus는 활성 설치 수를 추정하기 위해 무작위 설치 ID, 앱 버전 및 운영체제만 openfocus.top으로 보냅니다. 이미지, 경로 또는 하드웨어 정보는 보내지 않습니다. 설정 → 고급 설정에서 끄면 이후 보고를 중단하고 로컬 ID를 삭제합니다. 이전에 끈 설정은 유지됩니다.",
     "magnifier_hint": "왼쪽 버튼을 누르고 있으면 돋보기가 나타납니다. 휠로 배율을, Ctrl+휠로 돋보기 크기를 조절합니다.",
     "mosaic_title": "이미지 이어 붙이기 (실험적 기능, 개발 미완료)…",
     "mosaic_intro": "합성 이미지를 추가하고 자동 정렬하거나 드래그한 뒤 겹친 부분을 확인하세요. X/Y는 픽셀, 휠은 확대입니다. 불투명도는 미리보기에만 적용됩니다.",
@@ -111,7 +111,7 @@ PACK = {
     "batch_missing_times": "프레임 {n}개에 촬영 시간이 없습니다. 포함하려면 고정 개수로 그룹화하세요.",
     "batch_import_in_progress": "폴더 가져오기가 아직 진행 중입니다. 완료될 때까지 기다리거나 취소하세요.",
     "export_depth_hint": "PNG/TIFF는 16비트 데이터를 유지합니다. JPG/BMP/GIF는 8비트로 변환합니다.",
-    "feedback_package_scope": "ZIP에는 세션 및 전체 앱 로그, 앱/OS/Python 버전, 메모리 및 GPU 정보가 포함됩니다. 공유하기 전에 내용을 확인하세요. 어떤 데이터도 자동으로 전송되지 않습니다.",
+    "feedback_package_scope": "ZIP에는 세션 발췌, 최근 로그 끝부분(최대 20 MB), 진단 색인, 앱/OS/Python 버전, 메모리 및 GPU 정보가 포함됩니다. 로그에 파일 경로가 포함될 수 있습니다. 공유 전에 확인하세요. 피드백은 자동 전송되지 않습니다.",
     "env_copy": "진단 정보 복사",
     'label_font_failed': '사용 가능한 글꼴로 이 텍스트를 그릴 수 없습니다. 다른 글꼴을 선택하거나 필요한 문자가 있는 글꼴을 설치하세요.',
     'compare_state_current': '현재 결과',

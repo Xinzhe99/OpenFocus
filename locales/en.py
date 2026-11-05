@@ -5,8 +5,8 @@ fall back to this table.
 """
 
 EN = {
-    "usage_opt_in": "Share usage statistics",
-    "usage_disclosure": "Allow OpenFocus to send a random installation ID, application version and operating system to openfocus.top? This helps estimate active installations. No image data or filenames are sent. You can turn this off in Settings; the local ID is then deleted.",
+    "usage_enabled": "Share usage statistics",
+    "usage_disclosure": "Enabled by default. OpenFocus sends only a random installation ID, app version and operating system to openfocus.top to estimate active installations. No images, paths or hardware details are sent. Turn this off in Settings → Advanced Settings to stop future reports and delete the local ID. Previously disabled preferences are preserved.",
     "magnifier_hint": "Hold the left mouse button to magnify; use the wheel to change magnification or Ctrl+wheel to resize the magnifier.",
     "mosaic_title": "Stitch Images (experimental, unfinished)…",
     "mosaic_intro": "Add fused images, auto-align or drag them, then inspect overlaps before saving. X/Y are pixels; use the wheel to zoom. Opacity affects the preview only.",
@@ -117,7 +117,7 @@ EN = {
     "batch_missing_times": "{n} frames have no capture time. Use fixed-count grouping to include them.",
     "batch_import_in_progress": "Folder import is still running. Wait for it to finish or cancel it.",
     "export_depth_hint": "PNG/TIFF preserve 16-bit data. JPG/BMP/GIF convert it to 8-bit.",
-    "feedback_package_scope": "The ZIP contains session and full application logs, app/OS/Python versions, memory and GPU information. Review it before sharing; nothing is sent automatically.",
+    "feedback_package_scope": "The ZIP contains a session excerpt, recent log tails (up to 20 MB), a diagnostic index, app/OS/Python versions, memory and GPU information. Logs may contain file paths. Review before sharing; feedback is never sent automatically.",
     "env_copy": "Copy diagnostics",
     "label_font_failed": "No available font can draw this text. Choose another font or install one with the required characters.",
     "compare_state_current": "Current result",

@@ -1,8 +1,8 @@
 """Italian language pack for OpenFocus."""
 
 PACK = {
-    "usage_opt_in": "Condividi statistiche di utilizzo",
-    "usage_disclosure": "Consentire a OpenFocus di inviare a openfocus.top un identificativo casuale di installazione, la versione e il sistema operativo? Serve a stimare le installazioni attive. Non vengono inviati dati delle immagini o nomi dei file. Disattivando nelle Impostazioni si elimina l’identificativo locale.",
+    "usage_enabled": "Condividi statistiche di utilizzo",
+    "usage_disclosure": "Attivo per impostazione predefinita. OpenFocus invia solo un ID di installazione casuale, la versione e il sistema operativo a openfocus.top per stimare le installazioni attive. Nessuna immagine, percorso o informazione hardware. Disattiva in Impostazioni → Impostazioni avanzate per interrompere i rapporti futuri ed eliminare l’ID locale. Le precedenti scelte di disattivazione vengono mantenute.",
     "magnifier_hint": "Tieni premuto il tasto sinistro per la lente; la rotella cambia l'ingrandimento, Ctrl+rotella la dimensione della lente.",
     "mosaic_title": "Unisci immagini (sperimentale, incompleto)…",
     "mosaic_intro": "Aggiungi immagini fuse, allineale o trascinale e controlla le sovrapposizioni. X/Y sono pixel; la rotella ingrandisce. L’opacità vale solo per l’anteprima.",
@@ -111,7 +111,7 @@ PACK = {
     "batch_missing_times": "{n} fotogrammi non hanno un orario di scatto. Usa gruppi di dimensione fissa per includerli.",
     "batch_import_in_progress": "L’importazione della cartella è ancora in corso. Attendi o annullala.",
     "export_depth_hint": "PNG/TIFF mantengono i dati a 16 bit. JPG/BMP/GIF li convertono a 8 bit.",
-    "feedback_package_scope": "Lo ZIP contiene i registri della sessione e dell’applicazione, le versioni dell’app, del sistema e di Python, e le informazioni su memoria e GPU. Controllalo prima di condividerlo: nulla viene inviato automaticamente.",
+    "feedback_package_scope": "Lo ZIP contiene un estratto della sessione, le parti finali dei log recenti (fino a 20 MB), un indice diagnostico, le versioni app/OS/Python e informazioni su memoria e GPU. I log possono contenere percorsi. Controlla prima di condividere: il feedback non viene mai inviato automaticamente.",
     "env_copy": "Copia diagnostica",
     'label_font_failed': 'Nessun carattere disponibile può visualizzare questo testo. Scegline un altro o installane uno con i simboli necessari.',
     'compare_state_current': 'Risultato attuale',

@@ -8,8 +8,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - Add a scannable, clickable PayPal support QR code to the English and Chinese READMEs.
 - Allow selecting a temporary data directory for new frames and processing scratch.
-- Add optional, default-off usage statistics with pseudonymous per-installation daily reporting and a Settings consent control.
-- Explain download and opt-in activity statistics in the website's English and Chinese privacy sections.
+- Add default-on usage statistics with pseudonymous per-installation daily reporting
+  in Settings → Advanced Settings; preserve explicit opt-outs and apply/cancel drafts
+  without onboarding choices or consent popups. Reports contain only random ID,
+  app version and OS. Update all 12 UI languages and local/website privacy guidance.
+- Bound feedback archives to recent log tails and include a readable diagnostic
+  index for tracing stages, failures and cancellation through operation IDs.
 - Add Tools → Batch Image Converter for sequential RAW and still-image conversion,
   with numbered TIFF pages, collision-safe output names and cooperative cancellation.
 - Add a separate microscope mosaic workspace with feature-based alignment,
@@ -51,9 +55,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   release rejected imports without replacing the current stack.
 - Develop ordinary RAW inputs with the sRGB transfer curve and preserve the
   correct color profile for RAW conversions and individual TIFF pages.
-- Continue opt-in activity reporting while the application stays open, retry
+- Continue activity reporting while the application stays open, retry
   unsuccessful requests, and identify the client so Cloudflare accepts reports.
-- Correct the usage-reporting privacy disclosure and localize the consent buttons.
+- Stop future usage reports as soon as application shutdown is accepted.
 - Prevent a Conda ICU DLL from shadowing Windows ICU in packaged builds, and
   verify layered TIFF through the current Save As workflow during release smoke tests.
 - Admit each directory fusion input before decoding, including StackMFF's

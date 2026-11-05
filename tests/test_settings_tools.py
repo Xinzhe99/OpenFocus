@@ -686,3 +686,91 @@ def test_welcome_theme_updates_existing_hint(qapp):
     dialog._choose_theme("light")
     assert palette("light")["textMuted"] in dialog._demo_hint.styleSheet()
     dialog.deleteLater()
+
+
+@pytest.mark.parametrize("initial", [True, False])
+@pytest.mark.parametrize("dismiss", ["reject", "close", "escape"])
+def test_usage_settings_are_drafts_until_ok(settings_window, tmp_path, initial, dismiss):
+    from PyQt6.QtCore import QSettings, Qt
+    from PyQt6.QtTest import QTest
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils.usage_analytics import UsageAnalytics, ENABLED_KEY, ID_KEY
+
+    store = QSettings(str(tmp_path / 'usage.ini'), QSettings.Format.IniFormat)
+    if not initial:
+        store.setValue(ENABLED_KEY, False)
+    calls = []
+    reporter = UsageAnalytics(settings=store, sender=lambda payload: calls.append(payload) or True)
+    settings_window.usage_analytics = reporter
+    dialog = AdvancedSettingsDialog(settings_window)
+    try:
+        assert dialog.chk_usage.isChecked() is initial
+        dialog.chk_usage.setChecked(not initial)
+        if dismiss == 'escape':
+            dialog.show()
+            QTest.keyClick(dialog, Qt.Key.Key_Escape)
+        else:
+            getattr(dialog, dismiss)()
+        assert reporter.enabled() is initial
+        assert not store.contains(ID_KEY)
+        assert not calls
+    finally:
+        reporter.shutdown()
+        dialog.deleteLater()
+
+
+@pytest.mark.parametrize("initial", [True, False])
+def test_usage_ok_persists_without_consent_popup(settings_window, tmp_path, monkeypatch, initial):
+    from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import QMessageBox
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils.usage_analytics import UsageAnalytics, ENABLED_KEY, ID_KEY
+
+    store = QSettings(str(tmp_path / 'usage.ini'), QSettings.Format.IniFormat)
+    store.setValue(ENABLED_KEY, initial)
+    reporter = UsageAnalytics(settings=store, sender=lambda payload: True)
+    settings_window.usage_analytics = reporter
+    def unexpected_popup(*args):
+        pytest.fail('Advanced Settings must not request additional usage consent')
+    monkeypatch.setattr(QMessageBox, 'exec', unexpected_popup)
+    dialog = AdvancedSettingsDialog(settings_window)
+    try:
+        dialog.chk_usage.setChecked(not initial)
+        dialog._apply()
+        assert dialog.result() == QDialog.DialogCode.Accepted
+        assert reporter.enabled() is (not initial)
+        reopened = QSettings(str(tmp_path / 'usage.ini'), QSettings.Format.IniFormat)
+        assert reopened.value(ENABLED_KEY, type=bool) is (not initial)
+        assert reopened.contains(ID_KEY) is (not initial)
+        next_dialog = AdvancedSettingsDialog(settings_window)
+        assert next_dialog.chk_usage.isChecked() is (not initial)
+        next_dialog.reject()
+        next_dialog.deleteLater()
+    finally:
+        reporter.shutdown()
+        dialog.deleteLater()
+
+
+def test_failed_settings_apply_does_not_enable_reporting(settings_window, tmp_path):
+    from PyQt6.QtCore import QSettings
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils.usage_analytics import UsageAnalytics, ENABLED_KEY, ID_KEY
+
+    store = QSettings(str(tmp_path / 'usage.ini'), QSettings.Format.IniFormat)
+    store.setValue(ENABLED_KEY, False)
+    calls = []
+    reporter = UsageAnalytics(settings=store, sender=lambda payload: calls.append(payload) or True)
+    settings_window.usage_analytics = reporter
+    def fail_save():
+        raise OSError('settings unavailable')
+    settings_window.persist_settings = fail_save
+    dialog = AdvancedSettingsDialog(settings_window)
+    try:
+        dialog.chk_usage.setChecked(True)
+        dialog._apply()
+        assert dialog.result() != QDialog.DialogCode.Accepted
+        assert not reporter.enabled()
+        assert not store.contains(ID_KEY) and not calls
+    finally:
+        reporter.shutdown()
+        dialog.deleteLater()

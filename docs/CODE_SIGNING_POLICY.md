@@ -9,5 +9,5 @@ signing status of each build.
   [GitHub repository](https://github.com/Xinzhe99/OpenFocus).
 - **Approvers**: repository owner [@Xinzhe99](https://github.com/Xinzhe99).
 - **Privacy**: Desktop update checks, release notes and update downloads use
-  `openfocus.top`. Optional usage reporting is disabled by default; see the
+  `openfocus.top`. Usage reporting defaults on and can be disabled in Advanced Settings; see the
   [Privacy Policy](PRIVACY.md) for details.

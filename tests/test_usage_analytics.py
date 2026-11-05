@@ -1,4 +1,4 @@
-"""Isolated tests for opt-in reporting; no external requests are made."""
+"""Isolated tests for default-on reporting; no external requests are made."""
 import uuid
 import time
 
@@ -37,22 +37,28 @@ def setup(qapp, tmp_path, monkeypatch):
     return reporter, settings, calls, now
 
 
-def test_window_startup_keeps_reporting_off(qapp, tmp_path, monkeypatch):
+@pytest.mark.parametrize("previous", [None, False])
+def test_window_startup_respects_saved_reporting_preference(qapp, tmp_path, monkeypatch, previous):
     from main import OpenFocus
     from utils import settings_store
 
     settings = QSettings(str(tmp_path / "window-settings.ini"), QSettings.Format.IniFormat)
     monkeypatch.setattr(settings_store, "_settings_singleton", settings)
+    monkeypatch.setattr(usage, "_platform", lambda: "linux")
+    if previous is not None:
+        settings.setValue(usage.ENABLED_KEY, previous)
     calls = []
     monkeypatch.setattr(usage, "_send", lambda payload: calls.append(payload) or True)
     window = OpenFocus()
     try:
         qapp.processEvents()
-        assert not window.usage_analytics.enabled()
-        assert not window.ui_objs['usage_opt_in'].isChecked()
-        assert not settings.contains(usage.ID_KEY)
-        assert not settings.contains(usage.LAST_SENT_KEY)
-        assert not calls
+        assert window.usage_analytics.enabled() is (previous is None)
+        assert 'usage_opt_in' not in window.ui_objs
+        assert settings.contains(usage.ID_KEY) is (previous is None)
+        if previous is None:
+            _wait_for(qapp, lambda: len(calls) == 1)
+        else:
+            assert not calls
     finally:
         window._force_quit = True
         window.close()
@@ -60,12 +66,10 @@ def test_window_startup_keeps_reporting_off(qapp, tmp_path, monkeypatch):
         qapp.processEvents()
 
 
-def test_default_off_opt_in_persists_and_payload_is_minimal(setup):
+def test_default_on_persists_identity_and_payload_is_minimal(setup):
     reporter, settings, calls, now = setup
+    assert reporter.enabled()
     reporter.start()
-    assert not calls and not DeferredThread.instances
-    assert not settings.contains(usage.ID_KEY)
-    reporter.set_enabled(True)
     identifier = settings.value(usage.ID_KEY)
     assert str(uuid.UUID(identifier, version=4)) == identifier
     assert len(DeferredThread.instances) == 1
@@ -121,6 +125,41 @@ def test_opt_out_ignores_inflight_success(setup):
     assert not settings.contains(usage.ID_KEY)
     assert not settings.contains(usage.LAST_SENT_KEY)
     assert not calls
+
+
+@pytest.mark.parametrize("stored", [False, "false", "0"])
+def test_existing_explicit_opt_out_remains_disabled(setup, stored):
+    reporter, settings, calls, _ = setup
+    settings.setValue(usage.ENABLED_KEY, stored)
+    reporter.start()
+    assert not reporter.enabled()
+    assert not DeferredThread.instances and not calls
+    assert not settings.contains(usage.ID_KEY)
+
+
+def test_shutdown_cancels_queued_and_future_reports(setup):
+    reporter, settings, calls, _ = setup
+    reporter.start()
+    identifier = settings.value(usage.ID_KEY)
+    reporter.shutdown()
+    DeferredThread.instances[-1].run()
+    reporter.start()
+    assert not calls
+    assert not reporter._timer.isActive()
+    assert not settings.contains(usage.LAST_SENT_KEY)
+    assert settings.value(usage.ID_KEY) == identifier
+
+
+def test_startup_preserves_existing_identity_and_daily_schedule(setup):
+    reporter, settings, calls, now = setup
+    identifier = str(uuid.uuid4())
+    settings.setValue(usage.ID_KEY, identifier)
+    settings.setValue(usage.LAST_SENT_KEY, now[0])
+    reporter.start()
+    assert not DeferredThread.instances and not calls
+    assert reporter._timer.isActive()
+    assert settings.value(usage.ID_KEY) == identifier
+    reporter.shutdown()
 
 def _wait_for(qapp, predicate, timeout=2.0):
     from PyQt6.QtTest import QTest

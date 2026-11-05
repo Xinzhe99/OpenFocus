@@ -379,33 +379,6 @@ def setup_menus(window: QMainWindow) -> None:
     advanced_action.setProperty("trans_key", 'advanced_settings_title')
     window.ui_objs['action_advanced_settings'] = advanced_action
 
-    usage_action = QAction(trans.t('usage_opt_in'), window)
-    usage_action.setCheckable(True)
-    usage_action.setChecked(window.usage_analytics.enabled())
-    usage_action.setToolTip(trans.t('usage_disclosure'))
-    usage_action.setProperty('trans_key', 'usage_opt_in')
-
-    def set_usage_enabled(enabled):
-        if enabled:
-            from PyQt6.QtWidgets import QMessageBox
-            from utils.ui_utils import style_message_box
-            box = style_message_box(QMessageBox(window))
-            box.setWindowTitle(trans.t('usage_opt_in'))
-            box.setText(trans.t('usage_disclosure'))
-            box.setIcon(QMessageBox.Icon.Question)
-            box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            box.button(QMessageBox.StandardButton.Yes).setText(trans.t('btn_continue'))
-            box.button(QMessageBox.StandardButton.No).setText(trans.t('btn_cancel_generic'))
-            box.setDefaultButton(QMessageBox.StandardButton.No)
-            if box.exec() != QMessageBox.StandardButton.Yes:
-                usage_action.setChecked(False)
-                return
-        window.usage_analytics.set_enabled(enabled)
-
-    usage_action.triggered.connect(set_usage_enabled)
-    settings_menu.addAction(usage_action)
-    window.ui_objs['usage_opt_in'] = usage_action
-
     # GPU stays reachable here as a quick toggle; it is the one switch users
     # flip often enough to deserve a click instead of two.
     gpu_action = QAction(trans.t('action_gpu_accel'), window)

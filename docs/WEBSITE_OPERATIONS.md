@@ -111,7 +111,7 @@ Every page and asset request therefore counts as a Worker invocation.
 
 ### Optional private analytics
 
-The Worker can count download starts and receive opt-in desktop activity
+The Worker can count download starts and receive desktop activity
 reports using a D1 binding named `ANALYTICS`. Without the
 binding downloads continue normally and the usage API returns `503`. Before
 enabling analytics, deploy the site with the binding absent and verify the
@@ -147,8 +147,9 @@ these are not unique users or completed downloads.
 
 `POST /api/usage` accepts only JSON with a UUID-v4 `installation_id`, numeric
 dot-separated `version`, and `platform` of `windows`, `macos`, or `linux`.
-The app reports only after the user opts in, and retries failed sends while it
-remains open. Rows are deduplicated per UTC day, installation, version and
+The app reports by default when no preference exists, preserves an explicit
+opt-out, and exposes the switch in Settings → Advanced Settings. Failed sends
+retry while it remains open. Rows are deduplicated per UTC day, installation, version and
 platform and contain no IP, user agent, hardware
 identifier, filename or image data. The generated installation ID is
 pseudonymous, not anonymous. The Worker deletes activity older than 90 UTC

@@ -72,7 +72,8 @@ bucket, so it is not a preview path for this configuration.
 ## Optional analytics
 
 Download starts can be aggregated in D1, and the desktop app can send daily
-activity reports only after opt-in. The Worker keeps downloads working if D1
+activity reports by default (disable in Settings → Advanced Settings). Existing
+explicit opt-outs are preserved. The Worker keeps downloads working if D1
 is absent or unavailable. The admin statistics API requires a server-only
 bearer secret. See [analytics operations](../docs/WEBSITE_OPERATIONS.md#optional-private-analytics)
 for database creation, binding, migrations, secret setup, privacy, retention and

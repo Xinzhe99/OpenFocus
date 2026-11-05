@@ -214,6 +214,7 @@ def run(executable: Path) -> None:
         )
         settings.setValue("ui/first_run_done", "1")
         settings.setValue("updates/last_check_epoch", 9999999999)
+        settings.setValue("usage/enabled", False)
         settings.setValue("rendering/ai_cpu_warning_dismissed", True)
         settings.sync()
         with tempfile.TemporaryDirectory(prefix="openfocus_packaged_smoke_") as td:
@@ -306,6 +307,7 @@ def run_installed_startup(executable: Path) -> None:
         data.mkdir()
         settings = QSettings(str(data / "settings.ini"), QSettings.Format.IniFormat)
         settings.setValue("updates/last_check_epoch", 9999999999)
+        settings.setValue("usage/enabled", False)
         settings.sync()
         environment = os.environ.copy()
         environment["OPENFOCUS_DATA_DIR"] = str(data)
@@ -335,6 +337,11 @@ def run_installed_startup(executable: Path) -> None:
                 time.sleep(0.2)
             else:
                 raise RuntimeError(f"First-run welcome dialog did not appear: {dialogs}")
+            for control_class in ("QCheckBox", "QRadioButton"):
+                choices = _call(executable, environment, "ui.find", "--window",
+                                welcome["root"], "--class", control_class).get("matches", [])
+                if choices:
+                    raise RuntimeError(f"Unexpected first-run consent choice: {choices}")
             _call(executable, environment, "dialog.accept", "--index", str(welcome["index"]))
             context = _call(executable, environment, "ui.context")
             if context.get("level") != "main":
