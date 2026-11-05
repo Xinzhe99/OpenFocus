@@ -15,7 +15,7 @@ from PIL import Image
 import tifffile
 
 from core import image_loader
-from utils.image_utils import imwrite_auto, to_display_uint8, export_exif
+from utils.image_utils import imwrite_auto, to_display_uint8, export_exif, read_image_exif
 from utils.memory import available_memory_bytes
 from core import resource_policy
 from utils.logging_setup import log_operation, log_action
@@ -152,7 +152,7 @@ def _decode(path, page):
         image = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
         if image is None:
             with Image.open(path) as source:
-                orientation = int(source.getexif().get(274, 1))
+                orientation = int(read_image_exif(source).get(274, 1))
                 if source.mode not in ('RGB', 'RGBA', 'L'):
                     source = source.convert('RGBA' if 'A' in source.getbands() or 'transparency' in source.info else 'RGB')
                 a = np.asarray(source)
@@ -466,7 +466,7 @@ def thumbnail_rgb(path, size=(96, 72)):
     """
     def render(image, orientation=None):
         if orientation is None:
-            orientation = int(image.getexif().get(274, 1))
+            orientation = int(read_image_exif(image).get(274, 1))
         original_width, original_height = image.width, image.height
         scratch = 0
         if image.format == 'JPEG':

@@ -277,23 +277,29 @@ def test_job_memory_reservation_bounds_parallel_admission(tmp_path, monkeypatch)
 
 
 def test_thumbnail_refuses_large_raster_before_loading(tmp_path, monkeypatch):
-    from types import SimpleNamespace
+    import struct
+    import zlib
+    from PIL import PngImagePlugin
 
-    class LargeHeader:
-        format = 'PNG'
-        width = height = 100000
-        def getexif(self):
-            return {}
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            pass
-        def thumbnail(self, *args):
-            pytest.fail('Attempted to decode a giant raster')
+    source = tmp_path / 'large-header-small-idat.png'
+    Image.new('RGB', (1, 1), 'red').save(source)
+    encoded = bytearray(source.read_bytes())
+    assert encoded[12:16] == b'IHDR'
+    # Keep the tiny IDAT: only the real PNG header advertises 2500x2500.
+    # Its valid IHDR CRC allows Pillow's native header reader to accept it.
+    struct.pack_into('>II', encoded, 16, 2500, 2500)
+    struct.pack_into('>I', encoded, 29, zlib.crc32(encoded[12:29]) & 0xffffffff)
+    source.write_bytes(encoded)
+    loads = []
 
-    monkeypatch.setattr(converter.Image, 'open', lambda *a: LargeHeader())
-    with pytest.raises(ValueError, match='bounded'):
-        converter.thumbnail_rgb(str(tmp_path / 'giant.png'))
+    def load(*args, **kwargs):
+        loads.append(True)
+        raise AssertionError('PNG pixels were decoded before thumbnail admission')
+
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', load)
+    with pytest.raises(ValueError, match='No bounded image preview is available'):
+        converter.thumbnail_rgb(str(source))
+    assert loads == []
 
 
 def test_large_raw_without_preview_never_unpacks_sensor(tmp_path, monkeypatch):
@@ -586,3 +592,34 @@ def test_cancelled_preflight_drains_active_job_without_reporting_failure(tmp_pat
     assert result == (1, 0, True)
     assert estimated == ['first', 'second']
     assert statuses == {1: 'Cancelled', 2: 'Cancelled'}
+
+
+def test_png_thumbnail_reads_exif_after_idat_before_pixel_admission(tmp_path, monkeypatch):
+    import struct
+    import zlib
+    from PIL import PngImagePlugin
+
+    source = tmp_path / 'trailing-orientation.png'
+    Image.new('RGB', (8, 4), 'red').save(source)
+    encoded = source.read_bytes()
+    assert encoded[-8:-4] == b'IEND'
+    exif = Image.Exif()
+    exif[274] = 6
+    payload = exif.tobytes()[6:]  # PNG eXIf contains TIFF bytes without Exif\0\0.
+    chunk = b'eXIf' + payload
+    encoded = (encoded[:-12] + struct.pack('>I', len(payload)) + chunk
+               + struct.pack('>I', zlib.crc32(chunk) & 0xffffffff) + encoded[-12:])
+    source.write_bytes(encoded)
+    admitted, loads = [], []
+    original_load = PngImagePlugin.PngImageFile.load
+
+    def load(image, *args, **kwargs):
+        assert admitted, 'EXIF lookup decoded PNG pixels before memory admission'
+        loads.append(True)
+        return original_load(image, *args, **kwargs)
+
+    monkeypatch.setattr(converter.resource_policy, 'require_memory', lambda n, **kw: admitted.append(n))
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', load)
+    pixels = converter.thumbnail_rgb(str(source))
+    assert admitted and loads
+    assert pixels.shape == (8, 4, 3)
