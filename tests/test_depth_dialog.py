@@ -749,7 +749,8 @@ def test_depth_texture_handles_domain_and_bit_depth(depth_dialog, monkeypatch, q
 @pytest.mark.parametrize('source_mode', ['current', 'output'])
 def test_depth_texture_develops_native_raw(depth_dialog, monkeypatch, qapp, source_mode):
     from core import depth_map
-    from utils.linear_dng import LinearDNGMetadata
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+    from utils.image_utils import to_display_uint8
 
     monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
     frame = np.full((48, 64, 3), [7000, 11000, 14000], np.uint16)
@@ -765,7 +766,8 @@ def test_depth_texture_develops_native_raw(depth_dialog, monkeypatch, qapp, sour
     else:
         dialog, _ = depth_dialog('dct', frames, linear_dng_metadata=metadata)
     _click_and_finish(qapp, dialog)
-    assert tuple(map(int, dialog._mesh_texture[0, 0])) == pytest.approx([103, 85, 189], abs=1)
+    expected = to_display_uint8(develop_linear(frame, metadata))
+    np.testing.assert_array_equal(dialog._mesh_texture, expected)
 
 
 @pytest.mark.parametrize("texture_kind", ["auto", "frame", "output"])

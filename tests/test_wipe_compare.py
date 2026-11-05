@@ -62,6 +62,12 @@ def _color(pixmap):
     return pixmap.toImage().pixelColor(0, 0)
 
 
+def _canvas_color(grab, x, y):
+    """Sample a widget grab at logical, rather than device-pixel, coordinates."""
+    ratio = grab.devicePixelRatioF()
+    return grab.toImage().pixelColor(int(x * ratio), int(y * ratio))
+
+
 def test_wipe_uses_selected_output_sources_after_stack_and_rotation_changes(qapp):
     original = np.full((80, 40, 3), (0, 0, 200), np.uint8)
     rotated = np.full((40, 80, 3), (0, 180, 0), np.uint8)
@@ -100,10 +106,10 @@ def test_wipe_cropped_source_uses_result_coordinates(qapp):
     widget = host.wipe_widget
     assert widget._left_offset == (10, 20)
     assert (widget._left_pixmap.width(), widget._left_pixmap.height()) == (40, 20)
-    image = widget.grab().toImage()
-    assert image.pixelColor(40, 60).red() > 200
-    assert image.pixelColor(40, 100).red() < 200
-    assert image.pixelColor(160, 100).green() > 180
+    grab = widget.grab()
+    assert _canvas_color(grab, 40, 60).red() > 200
+    assert _canvas_color(grab, 40, 100).red() < 200
+    assert _canvas_color(grab, 160, 100).green() > 180
 
 
 def test_wipe_missing_provenance_and_changed_result_size_do_not_guess(qapp):
@@ -132,11 +138,11 @@ def test_wipe_does_not_stretch_different_image_dimensions(qapp):
     widget = WipeCompareWidget()
     widget.resize(220, 220)
     widget.set_images(left, right)
-    image = widget.grab().toImage()
+    grab = widget.grab()
     # Right domain is 200x100 at y=60; the left remains 100x200,
     # extending below the shorter right image rather than being squashed.
-    assert image.pixelColor(40, 180).red() > 200
-    assert image.pixelColor(160, 180).green() < 100
+    assert _canvas_color(grab, 40, 180).red() > 200
+    assert _canvas_color(grab, 160, 180).green() < 100
 
 
 def test_wipe_uses_aligned_trimmed_frames_and_source_indices(qapp):
@@ -326,12 +332,13 @@ def _linear_profile():
         (1024 / 1853, 1.0, 1024 / 1667), 'Canon', 'Canon EOS R6')
 
 
-def _assert_developed_color(pixmap):
-    # Independently decoded by LibRaw from a DNG with this camera profile.
+def _assert_developed_color(pixmap, frame):
+    from utils.image_utils import to_display_uint8
+    from utils.linear_dng import develop_linear
+
+    expected = to_display_uint8(develop_linear(frame, _linear_profile()))[0, 0, ::-1]
     color = _color(pixmap)
-    assert color.red() == pytest.approx(189, abs=1)
-    assert color.green() == pytest.approx(85, abs=1)
-    assert color.blue() == pytest.approx(103, abs=1)
+    assert (color.red(), color.green(), color.blue()) == tuple(expected)
 
 
 def test_wipe_develops_historical_aligned_raw_source(qapp):
@@ -340,7 +347,7 @@ def test_wipe_develops_historical_aligned_raw_source(qapp):
                      linear_dng_metadata=_linear_profile())
     host = _host([record])
     host._update_wipe_images()
-    _assert_developed_color(host.wipe_widget._left_pixmap)
+    _assert_developed_color(host.wipe_widget._left_pixmap, frame)
 
 
 def test_wipe_develops_quick_preview_result(qapp, monkeypatch):
@@ -355,4 +362,4 @@ def test_wipe_develops_quick_preview_result(qapp, monkeypatch):
     host._wipe_pixmap = MethodType(OpenFocus._wipe_pixmap, host)
     monkeypatch.setattr(scalebar, 'export_cfg', lambda *args, **kwargs: None)
     host._update_wipe_images()
-    _assert_developed_color(host.wipe_widget._right_pixmap)
+    _assert_developed_color(host.wipe_widget._right_pixmap, frame)
