@@ -179,38 +179,39 @@ def _tile_weight(x0, y0, x1, y1, fw, fh, W, H, overlap):
     return wgt
 
 
-# This is the historical whole-frame/tile decision, a result parameter.
-# Available RAM must never move this boundary or shrink its spatial tiles.
 _NEURAL_WHOLE_FRAME_PIXELS = 80 * 1024 * 1024
 
 
-def _neural_depth_tiles(images):
+def _neural_depth_tiles(images, tile_size):
     h, w = images[0].shape[:2]
-    if len(images) * h * w <= _NEURAL_WHOLE_FRAME_PIXELS:
+    if tile_size >= max(h, w):
         return 0, [(0, 0, w, h)]
     from core.multi_focus_fusion import _ai_effective_tiling
-    block, _batch, coords = _ai_effective_tiling(len(images), 1024, h, w, 256, 1)
-    return max(0, min(256, block // 2)), coords
+    block, _batch, coords = _ai_effective_tiling(len(images), tile_size, h, w, 256, 1)
+    return min(256, block // 2), coords
+
+
+def _plan_depth_tiles(images, use_gpu, thread_count, resource_preference):
+    from dataclasses import replace
+    from core.resource_policy import plan_neural_tiles
+    from fusion_methods.neural_runtime import resolve_device, estimate_inference_bytes
+
+    h, w = images[0].shape[:2]
+    channels = images[0].shape[2] if images[0].ndim == 3 else 1
+    requested = max(h, w) if len(images) * h * w <= _NEURAL_WHOLE_FRAME_PIXELS else 1024
+    tile_size, plan = plan_neural_tiles(
+        len(images), h, w, channels, requested, resolve_device(use_gpu),
+        estimate_inference_bytes, itemsize=max(image.dtype.itemsize for image in images),
+        preference=resource_preference, user_threads=thread_count)
+    return replace(plan, tile_size=tile_size)
 
 
 def _plan_neural_depth(images, model_path, use_gpu, thread_count,
                        resource_preference):
-    from fusion_methods.stackmffv3 import _prepare_inference
     if model_path is None:
         from utils import resource_path
         model_path = resource_path("weights", "stackmff_v3_final.onnx")
-    h, w = images[0].shape[:2]
-    _overlap, coords = _neural_depth_tiles(images)
-    x0, y0, x1, y1 = max(coords, key=lambda xy: (xy[2] - xy[0]) * (xy[3] - xy[1]))
-    crops = [image[y0:y1, x0:x1] for image in images]
-    normalization = sum(image.size * 4 for image in images) if any(
-        image.dtype == np.uint16 for image in images) else 0
-    # Map accumulator, weight, normalization result and clipped publication.
-    fixed = normalization + h * w * 4 * 4
-    _model, _device, plan = _prepare_inference(
-        crops, model_path, use_gpu, thread_count=thread_count,
-        resource_preference=resource_preference, fixed_bytes=fixed)
-    return plan, model_path
+    return _plan_depth_tiles(images, use_gpu, thread_count, resource_preference), model_path
 
 
 def _measure_stackmffv2(images, progress, should_cancel,
@@ -223,31 +224,26 @@ def _measure_stackmffv2(images, progress, should_cancel,
     if model_path is None:
         model_path = weights_path(os.path.basename(DEFAULT_WEIGHTS))
     n = len(images)
-    _tick(progress, 0, 1, should_cancel)
+    tile_size = getattr(execution_plan, 'tile_size', None)
+    overlap = min(256, tile_size // 2) if tile_size is not None else 0
     result = depth_positions(
         images, model_path, use_gpu,
         should_cancel=should_cancel, execution_plan=execution_plan,
-        thread_count=thread_count, resource_preference=resource_preference)
-    _tick(progress, 1, 1, should_cancel)
+        thread_count=thread_count, resource_preference=resource_preference,
+        tile_size=tile_size, tile_overlap=overlap,
+        progress_callback=lambda done, total: _tick(progress, done, total, should_cancel))
     return np.clip(result, 0, n - 1).astype(np.float32)
 
 
 def _plan_stackmffv2_depth(images, model_path, use_gpu, thread_count,
                            resource_preference):
     """Admit the V2 network for one depth-map pass."""
-    from fusion_methods.stackmff_v2 import DEFAULT_WEIGHTS, _prepare_inference
+    from fusion_methods.stackmff_v2 import DEFAULT_WEIGHTS
     from utils.weights import weights_path
 
     if model_path is None:
         model_path = weights_path(os.path.basename(DEFAULT_WEIGHTS))
-    h, w = images[0].shape[:2]
-    normalization = sum(image.size * 4 for image in images) if any(
-        image.dtype == np.uint16 for image in images) else 0
-    _model, _device, plan = _prepare_inference(
-        images, model_path, use_gpu, thread_count=thread_count,
-        resource_preference=resource_preference,
-        fixed_bytes=normalization + h * w * 4 * 4)
-    return plan, model_path
+    return _plan_depth_tiles(images, use_gpu, thread_count, resource_preference), model_path
 
 
 def _measure_stackmffv3(images, progress, should_cancel,
@@ -259,7 +255,8 @@ def _measure_stackmffv3(images, progress, should_cancel,
     mode = normalize_mode(mode)
     h, w = images[0].shape[:2]
     n = len(images)
-    overlap, coords = _neural_depth_tiles(images)
+    tile_size = getattr(execution_plan, 'tile_size', None) or max(h, w)
+    overlap, coords = _neural_depth_tiles(images, tile_size)
     indices = np.arange(n, dtype=np.float32)[:, None, None]
 
     def measure(crops):
@@ -347,9 +344,9 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
                              parallel_layer='native'),
                     preference=resource_preference, user_threads=thread_count)
             _tick(None, 0, n, should_cancel)
-            # B/C prepare each source themselves; retaining its dtype also
-            # preserves their 8-bit quantization rule in mixed-depth stacks.
-            if method not in ('openfocus_b', 'openfocus_c'):
+            # Neural runners normalize one spatial tile at a time. B/C prepare
+            # each source themselves and retain their input quantization rule.
+            if method not in ('openfocus_b', 'openfocus_c', 'stackmffv2', 'stackmffv3'):
                 images, _is_16bit = normalize_fuse_input(images)
             runtime = {'progress_callback': progress_callback, 'should_cancel': should_cancel,
                        'thread_count': plan.native_threads, 'use_gpu': use_gpu,

@@ -107,6 +107,7 @@ class ExecutionPlan:
     vram_budget: int = 0
     device_kind: str = "CPU"
     reasons: tuple = field(default_factory=tuple)
+    tile_size: Optional[int] = None
 
     def describe(self) -> str:
         return (f"workers={self.workers}, threads={self.native_threads}, "
