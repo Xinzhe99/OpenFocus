@@ -1,6 +1,7 @@
 """French language pack for OpenFocus."""
 
 PACK = {
+    "magnifier_hint": "Maintenez le bouton gauche pour la loupe ; la molette change le grossissement, Ctrl+molette la taille de la loupe.",
     "mosaic_title": "Assembler des images…",
     "mosaic_intro": "Ajoutez des images fusionnées, alignez-les ou déplacez-les, puis vérifiez les recouvrements. X/Y en pixels ; molette pour zoomer. L’opacité ne concerne que l’aperçu.",
     "mosaic_add_files": "Ajouter des fichiers…",

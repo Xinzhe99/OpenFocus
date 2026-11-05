@@ -7,6 +7,10 @@ from PyQt6.QtWidgets import QLabel
 from locales import trans
 
 
+MAGNIFIER_MIN_SIZE = 64.0
+MAGNIFIER_MAX_SIZE = 1024.0
+
+
 class MagnifierLabel(QLabel):
     """Image label that supports zooming, a press-and-hold magnifier, and ROI selection."""
 
@@ -27,6 +31,8 @@ class MagnifierLabel(QLabel):
         self._is_panning = False
         self._pan_offset = QPointF(0, 0)
         self._last_mouse_pos = QPointF()
+        self.setToolTip(trans.t("magnifier_hint"))
+        trans.languageChanged.connect(self._update_magnifier_hint)
         self.setMouseTracking(True)
         self._base_pixmap: Optional[QPixmap] = None
         self._zoom_factor = 1.0
@@ -139,9 +145,12 @@ class MagnifierLabel(QLabel):
 
     zoom_indicator_opacity = pyqtProperty(float, fget=_get_zoom_indicator_opacity, fset=_set_zoom_indicator_opacity)
 
+    def _update_magnifier_hint(self):
+        self.setToolTip(trans.t("magnifier_hint"))
+
     def set_magnifier_settings(self, size=None, zoom=None, min_zoom=None, max_zoom=None):
         if size is not None and size > 0:
-            self._magnifier_size = size
+            self._magnifier_size = max(MAGNIFIER_MIN_SIZE, min(size, MAGNIFIER_MAX_SIZE))
         if zoom is not None and zoom > 0:
             self._magnifier_zoom = zoom
         if min_zoom is not None and min_zoom > 0:
@@ -194,11 +203,18 @@ class MagnifierLabel(QLabel):
             if delta == 0:
                 event.ignore()
                 return
-            step = 1.2
-            if delta > 0:
-                self._magnifier_zoom = min(self._magnifier_zoom * step, self._magnifier_max_zoom)
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                # Scale by wheel distance, including high-resolution partial steps.
+                # Clamp the exponent before exponentiation for extreme deltas.
+                steps = max(-100, min(delta / 120.0, 100))
+                size = self._magnifier_size * (1.1 ** steps)
+                self._magnifier_size = max(MAGNIFIER_MIN_SIZE, min(size, MAGNIFIER_MAX_SIZE))
             else:
-                self._magnifier_zoom = max(self._magnifier_zoom / step, self._magnifier_min_zoom)
+                step = 1.2
+                if delta > 0:
+                    self._magnifier_zoom = min(self._magnifier_zoom * step, self._magnifier_max_zoom)
+                else:
+                    self._magnifier_zoom = max(self._magnifier_zoom / step, self._magnifier_min_zoom)
             self.update()
             event.accept()
             return

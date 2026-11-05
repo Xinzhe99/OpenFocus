@@ -1,6 +1,7 @@
 """Portuguese (Brazil) language pack for OpenFocus."""
 
 PACK = {
+    "magnifier_hint": "Segure o botão esquerdo para usar a lupa; a roda altera a ampliação e Ctrl+roda altera o tamanho da lupa.",
     "mosaic_title": "Unir imagens…",
     "mosaic_intro": "Adicione imagens fundidas, alinhe ou arraste e confira as sobreposições. X/Y em pixels; a roda amplia. A opacidade afeta apenas a prévia.",
     "mosaic_add_files": "Adicionar arquivos…",

@@ -1,6 +1,7 @@
 """Italian language pack for OpenFocus."""
 
 PACK = {
+    "magnifier_hint": "Tieni premuto il tasto sinistro per la lente; la rotella cambia l'ingrandimento, Ctrl+rotella la dimensione della lente.",
     "mosaic_title": "Unisci immagini…",
     "mosaic_intro": "Aggiungi immagini fuse, allineale o trascinale e controlla le sovrapposizioni. X/Y sono pixel; la rotella ingrandisce. L’opacità vale solo per l’anteprima.",
     "mosaic_add_files": "Aggiungi file…",

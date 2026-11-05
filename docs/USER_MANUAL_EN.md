@@ -498,10 +498,12 @@ are included; changing a checkbox updates the displayed suggestions.
 
 ### Zooming and Panning
 
-- **Zoom In/Out**: Mouse wheel over the image
-- **Fine Zoom**: Hold `Ctrl` + mouse wheel for smaller increments
-- **Fit to Window**: Double-click the image to toggle between fit and 100% view
-- **Pan**: Click and drag to move the image within the panel
+- **Zoom In/Out**: Mouse wheel over the source or result image, including with `Ctrl` held
+- **Magnifier**: Hold the left mouse button over either image. While holding it,
+  use the wheel to change magnification or `Ctrl` + wheel to resize the square.
+  The size is retained between presses, independently for each panel.
+- **Fit to Window**: Middle-click the image
+- **Pan**: Right-drag or hold Space and left-drag
 
 ### Synchronized Navigation
 
@@ -1603,9 +1605,9 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 | Shortcut | Action |
 |----------|--------|
 | `Up` / `Down` (source list focused) | Previous / next frame |
-| `Mouse Wheel` | Zoom in/out |
-| `Ctrl + Wheel` | Fine zoom |
-| `Double-click` | Toggle fit/100% view |
+| `Mouse Wheel` | Zoom the view; while holding the left button, change magnifier zoom |
+| `Ctrl + Wheel` while holding the left button | Resize the magnifier |
+| `Middle-click` | Fit the image to the window |
 
 ### General
 

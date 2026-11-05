@@ -1,6 +1,7 @@
 """Dutch language pack for OpenFocus."""
 
 PACK = {
+    "magnifier_hint": "Houd de linkermuisknop ingedrukt voor de loep; het wiel verandert de vergroting, Ctrl+wiel de grootte van de loep.",
     "mosaic_title": "Afbeeldingen samenvoegen…",
     "mosaic_intro": "Voeg gefuseerde beelden toe, lijn ze automatisch uit of versleep ze en controleer de overlap. X/Y zijn pixels; het wiel zoomt. Dekking geldt alleen voor het voorbeeld.",
     "mosaic_add_files": "Bestanden toevoegen…",

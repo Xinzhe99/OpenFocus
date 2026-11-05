@@ -1,6 +1,7 @@
 """Polish language pack for OpenFocus."""
 
 PACK = {
+    "magnifier_hint": "Przytrzymaj lewy przycisk myszy, aby użyć lupy; kółko zmienia powiększenie, a Ctrl+kółko rozmiar lupy.",
     "mosaic_title": "Połącz obrazy…",
     "mosaic_intro": "Dodaj obrazy po fuzji, wyrównaj je lub przeciągnij i sprawdź nakładanie. X/Y są w pikselach; kółko zmienia skalę. Krycie dotyczy tylko podglądu.",
     "mosaic_add_files": "Dodaj pliki…",

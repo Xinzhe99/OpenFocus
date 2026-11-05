@@ -5,6 +5,7 @@ fall back to this table.
 """
 
 EN = {
+    "magnifier_hint": "Hold the left mouse button to magnify; use the wheel to change magnification or Ctrl+wheel to resize the magnifier.",
     "mosaic_title": "Stitch Images…",
     "mosaic_intro": "Add fused images, auto-align or drag them, then inspect overlaps before saving. X/Y are pixels; use the wheel to zoom. Opacity affects the preview only.",
     "mosaic_add_files": "Add files…",

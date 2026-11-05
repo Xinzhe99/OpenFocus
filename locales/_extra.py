@@ -12,6 +12,7 @@ This file is generated wholesale; edit values in place, not by patching.
 
 EXTRA_TRANSLATIONS = {
     "ja": {
+        "magnifier_hint": "左ボタンを押したまま拡大鏡を表示します。ホイールで倍率、Ctrl+ホイールで拡大鏡の大きさを調整します。",
         "mosaic_title": "画像をつなぐ…",
         "mosaic_intro": "合成画像を追加し、自動整列またはドラッグで配置して重なりを確認します。X/Y はピクセル、ホイールで拡大します。不透明度はプレビューのみです。",
         "mosaic_add_files": "ファイルを追加…",
@@ -1096,6 +1097,7 @@ EXTRA_TRANSLATIONS = {
         "converter_summary": "成功: {success} · 失敗: {failed} {cancelled}",
     },
     "es": {
+        "magnifier_hint": "Mantén pulsado el botón izquierdo para usar la lupa; la rueda cambia el aumento y Ctrl+rueda cambia el tamaño de la lupa.",
         "mosaic_title": "Unir imágenes…",
         "mosaic_intro": "Añade imágenes fusionadas, alinea o arrástralas y revisa los solapes. X/Y son píxeles; la rueda amplía. La opacidad solo afecta a la vista previa.",
         "mosaic_add_files": "Añadir archivos…",

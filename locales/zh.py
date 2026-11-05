@@ -5,6 +5,7 @@ fall back to this table.
 """
 
 ZH = {
+    "magnifier_hint": "按住鼠标左键使用放大镜；滚轮调整倍率，Ctrl+滚轮调整放大镜大小。",
     "mosaic_title": "图像拼接…",
     "mosaic_intro": "添加融合好的图像，自动对齐或拖动摆放，检查重叠区后保存。X/Y 单位为像素，滚轮缩放；透明度仅影响预览。",
     "mosaic_add_files": "添加文件…",

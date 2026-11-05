@@ -13,6 +13,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Large TIFF mosaics use disk-backed tiled composition and streamed writing.
 
 ### Changed
+- Resize the source and output magnifiers with Ctrl+wheel while holding the
+  left mouse button; the wheel alone still changes magnification.
 - Run StackMFF V1/V2/V3 using dynamic ONNX checkpoints and ONNX Runtime;
   production inference no longer bundles PyTorch. DirectML and CoreML are
   available where supported; CUDA and ROCm providers are recognized when a

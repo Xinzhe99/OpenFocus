@@ -1,6 +1,7 @@
 """German language pack for OpenFocus."""
 
 PACK = {
+    "magnifier_hint": "Linke Maustaste für die Lupe halten; Mausrad ändert die Vergrößerung, Strg+Mausrad die Lupengröße.",
     "mosaic_title": "Bilder zusammensetzen…",
     "mosaic_intro": "Fertige Bilder hinzufügen, automatisch ausrichten oder verschieben und Überlappungen prüfen. X/Y in Pixeln; Mausrad zoomt. Deckkraft gilt nur für die Vorschau.",
     "mosaic_add_files": "Dateien hinzufügen…",
