@@ -57,6 +57,55 @@ def test_orf_exif_is_read_and_cleaned(tmp_path):
     assert sub[0xA434] == "OM 90mm F3.5"
     assert 0x927C not in sub
 
+@pytest.mark.parametrize("endian,magic", [
+    ("<", b"II*\x00"), ("<", b"IIRO"),
+    ("<", b"IIU\x00"), (">", b"MMOR"),
+])
+def test_raw_exif_preserves_metadata_without_reading_image_payload(
+        tmp_path, monkeypatch, endian, magic):
+    import builtins
+    from core import image_loader
+
+    source = _camera_exif()
+    source.endian = endian
+    data = bytearray(source.tobytes()[6:])
+    data[:4] = magic
+    path = tmp_path / "camera.raw"
+    with builtins.open(path, "wb") as stream:
+        stream.write(data)
+        stream.seek(8 * 1024 * 1024)
+        stream.write(b"\0")
+
+    bytes_read = []
+
+    class ObservedFile:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+        def read(self, size=-1):
+            data = self.stream.read(size)
+            bytes_read.append(len(data))
+            return data
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+    monkeypatch.setattr(image_loader, "open",
+                        lambda *args, **kwargs: ObservedFile(builtins.open(*args, **kwargs)),
+                        raising=False)
+    result = Image.Exif()
+    result.load(image_loader._read_exif_bytes(str(path)))
+    assert result[272] == "OM-1"
+    assert result.get_ifd(0x8769)[0xA434] == "OM 90mm F3.5"
+    assert result.get_ifd(0x8825)[3] == "W"
+    assert sum(bytes_read) < 1024 * 1024
+
 
 def test_common_formats_supply_their_exif_to_the_stack(tmp_path):
     """A TIFF/PNG frame must contribute metadata, not only camera RAWs.

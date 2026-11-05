@@ -30,7 +30,7 @@ try:
 except ImportError:
     RAWPY_AVAILABLE = False
 
-from utils.image_utils import export_exif, to_display_uint8
+from utils.image_utils import _sanitize_exif, export_exif, to_display_uint8
 from utils.sorting import natural_sort_key
 
 # LibRaw recognizes file contents, not extensions. This shared allow-list
@@ -188,23 +188,48 @@ def decode_image(path: str, *, allow_transparent_png: bool = False) -> Optional[
 _RAW_TIFF_MAGICS = {b"II*\x00", b"MM\x00*", b"IIRO", b"IIRS", b"MMOR", b"IIU\x00"}
 
 
-def _read_raw_exif_bytes(path: str) -> bytes:
-    """EXIF of a TIFF-based camera RAW (ORF, NEF, CR2, ARW, DNG, RW2, ...).
+class _RawExifReader:
+    """Seek within a RAW while bounding the total metadata read by Pillow."""
 
-    Olympus/Panasonic use a private magic number in place of 42; patching
-    it lets Pillow walk the IFDs. CR3/RAF are not TIFF and yield b"".
-    """
+    def __init__(self, stream):
+        self.stream = stream
+        self.remaining = 16 * 1024 * 1024
+
+    def read(self, size=-1):
+        if size < 0 or size > self.remaining:
+            raise OSError("RAW EXIF metadata exceeds the read limit")
+        data = self.stream.read(size)
+        self.remaining -= len(data)
+        return data
+
+    def seek(self, *args):
+        return self.stream.seek(*args)
+
+    def tell(self):
+        return self.stream.tell()
+
+
+def _read_raw_exif_bytes(path: str) -> bytes:
+    """Read export-safe EXIF from a TIFF-based RAW without reading its pixels."""
     with open(path, "rb") as fh:
         magic = fh.read(4)
         if magic not in _RAW_TIFF_MAGICS:
             return b""
-        data = bytearray(magic)
-        data.extend(fh.read())
-    data[2:4] = b"*\x00" if data[:2] == b"II" else b"\x00*"
-    # IFD0 of a RAW is full of sensor-data pointers; keep only the export-safe
-    # subset so SOURCE_EXIF stays small and embeddable as-is.
-    exif = export_exif(bytes(data))
-    return exif.tobytes() if exif is not None else b""
+        offset = fh.read(4)
+        if len(offset) != 4:
+            return b""
+        try:
+            # Olympus and Panasonic replace the TIFF magic but retain the
+            # standard byte order and IFD offsets. Supplying the offset lets
+            # Pillow use a standard header without copying or changing the file.
+            src = PILImage.Exif()
+            src.endian = "<" if magic[:2] == b"II" else ">"
+            src.load_from_fp(_RawExifReader(fh), int.from_bytes(
+                offset, "little" if src.endian == "<" else "big"))
+            exif = _sanitize_exif(src)
+            return exif.tobytes() if exif is not None else b""
+        except Exception:
+            return b""
 
 
 def _read_exif_bytes(path: str) -> bytes:

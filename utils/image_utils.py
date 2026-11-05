@@ -322,6 +322,28 @@ def _blank(value) -> bool:
     return False
 
 
+def _sanitize_exif(src):
+    """Copy export-safe tags from an already parsed Pillow Exif object."""
+    from PIL import Image
+    _register_exif_tag_types()
+    out = Image.Exif()
+    out.endian = "<"
+    for tag in _EXPORT_IFD0_TAGS:
+        if tag in src and not _blank(src[tag]):
+            out[tag] = src[tag]
+    out[274] = 1  # Orientation
+    exif_ifd = {k: v for k, v in src.get_ifd(_EXIF_IFD).items()
+                if k not in _EXPORT_EXIF_DROP and k != 0xA005
+                and not _blank(v)}
+    if exif_ifd:
+        out[_EXIF_IFD] = exif_ifd
+    gps_ifd = {k: v for k, v in src.get_ifd(_GPS_IFD).items()
+               if not _blank(v)}
+    if 2 in gps_ifd and 4 in gps_ifd:  # cameras without a fix write stubs
+        out[_GPS_IFD] = gps_ifd
+    return out if len(out) > 1 else None  # nothing beyond Orientation
+
+
 def export_exif(exif_bytes: bytes):
     """Parse source EXIF into a PIL Exif that is safe to embed in an export.
 
@@ -333,25 +355,9 @@ def export_exif(exif_bytes: bytes):
         return None
     try:
         from PIL import Image
-        _register_exif_tag_types()
         src = Image.Exif()
         src.load(exif_bytes)
-        out = Image.Exif()
-        out.endian = "<"
-        for tag in _EXPORT_IFD0_TAGS:
-            if tag in src and not _blank(src[tag]):
-                out[tag] = src[tag]
-        out[274] = 1  # Orientation
-        exif_ifd = {k: v for k, v in src.get_ifd(_EXIF_IFD).items()
-                    if k not in _EXPORT_EXIF_DROP and k != 0xA005
-                    and not _blank(v)}
-        if exif_ifd:
-            out[_EXIF_IFD] = exif_ifd
-        gps_ifd = {k: v for k, v in src.get_ifd(_GPS_IFD).items()
-                   if not _blank(v)}
-        if 2 in gps_ifd and 4 in gps_ifd:  # cameras without a fix write stubs
-            out[_GPS_IFD] = gps_ifd
-        return out if len(out) > 1 else None  # nothing beyond Orientation
+        return _sanitize_exif(src)
     except Exception:
         return None
 

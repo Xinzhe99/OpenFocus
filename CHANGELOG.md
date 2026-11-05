@@ -37,6 +37,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   retained ECC thumbnails when planning combined alignment.
 - Preserve coverage at fractional mosaic edges and bound streamed TIFF strip
   buffers by output row size and a target strip size.
+- Read TIFF-based RAW EXIF through a bounded metadata stream instead of copying
+  the entire camera file into memory.
 - Accept TIFF-named DNG files in native RAW selection and append, while rejecting
   ordinary TIFF in camera-linear stacks.
 - Develop camera-linear RAW pixels before exporting a depth-rendered TIFF, and
