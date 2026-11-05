@@ -1,12 +1,35 @@
 """Microscope mosaic placement, rendering and export contracts."""
 
+from collections import namedtuple
+from pathlib import Path
 import cv2
 import numpy as np
 import pytest
 
+from core import frame_storage
 from core.mosaic import auto_align, make_frame, render_mosaic
 from core.registration import RegistrationCancelled
 from utils.image_utils import imwrite_auto
+
+
+def test_mosaic_uses_captured_storage_directory(monkeypatch, tmp_path):
+    first = tmp_path / 'first'
+    second = tmp_path / 'second'
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    frame_storage.configure_storage_directory(first)
+    checked = []
+    usage = namedtuple('usage', 'total used free')
+    def disk_usage(path):
+        checked.append(path)
+        frame_storage.configure_storage_directory(second)
+        return usage(20 * 1024**3, 0, 2 * 1024**3)
+    monkeypatch.setattr(frame_storage.shutil, 'disk_usage', disk_usage)
+    frame = make_frame('one', np.zeros((4, 4, 3), np.uint8))
+    output, _ = render_mosaic([frame], [np.eye(3)])
+    assert checked == [str(first), str(first)]
+    assert Path(output.filename).parent == first
 
 
 def test_overlapping_microscope_tiles_align_and_reconstruct():

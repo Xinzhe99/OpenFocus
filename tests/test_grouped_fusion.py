@@ -1,6 +1,5 @@
 """Focused coverage for the disk-backed grouped fusion engine."""
 
-import tempfile
 from collections import namedtuple
 
 import cv2
@@ -8,6 +7,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from core import frame_storage
 from core import grouped_fusion as grouped
 from core import resource_policy
 from core.registration import RegistrationCancelled
@@ -32,9 +32,7 @@ def admitted(monkeypatch):
 def scratch_root(tmp_path, monkeypatch):
     root = tmp_path / 'scratch'
     root.mkdir()
-    original = tempfile.TemporaryDirectory
-    monkeypatch.setattr(grouped.tempfile, 'TemporaryDirectory',
-                        lambda **kw: original(dir=root, **kw))
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(root))
     return root
 
 

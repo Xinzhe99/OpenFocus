@@ -159,6 +159,7 @@ from utils.settings_store import (
     restore_window_layout,
     get_settings,
 )
+from core.frame_storage import configure_storage_directory
 from ui.image_panels import create_source_panel, create_result_panel
 from ui.menus import setup_menus
 from ui.right_panel import bind_right_panel, create_right_panel, set_panel_label
@@ -285,6 +286,17 @@ def update_manager_for(window) -> UpdateManager:
     return manager
 
 
+def _restore_storage_directory(window):
+    try:
+        configure_storage_directory(window.storage_directory)
+    except OSError as exc:
+        path = window.storage_directory
+        configure_storage_directory("")
+        window.storage_directory = ""
+        return trans.t("advanced_storage_fallback").format(path=path, error=str(exc))
+    return None
+
+
 class OpenFocus(QMainWindow):
 
     def __init__(self):
@@ -360,6 +372,7 @@ class OpenFocus(QMainWindow):
         saved_lang = get_saved_language()
         if saved_lang:
             trans.set_language(saved_lang)
+        storage_warning = _restore_storage_directory(self)
         self.recent_files = getattr(self, 'recent_files', [])
         self.recent_projects = getattr(self, 'recent_projects', [])
         self._undo_stack = []
@@ -395,6 +408,12 @@ class OpenFocus(QMainWindow):
         # 应用级亮色 QSS（白底白字，整个右侧面板不可读）
         self.init_ui()
         self.apply_dark_theme()
+        if storage_warning is not None:
+            self._storage_warning_timer = _QTimer(self)
+            self._storage_warning_timer.setSingleShot(True)
+            self._storage_warning_timer.timeout.connect(
+                lambda: QMessageBox.warning(self, trans.t("msg_warning"), storage_warning))
+            self._storage_warning_timer.start(0)
 
         # Install global event filter to handle Space key for panning
         QApplication.instance().installEventFilter(self)

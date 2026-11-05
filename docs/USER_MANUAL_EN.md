@@ -746,10 +746,13 @@ various image types.
 - **Requirements**: ONNX Runtime and the bundled ONNX model.
 
 
-For large stacks, leave space in the system temporary directory for both the
-source frames and any additional aligned or corrected frames. OpenFocus checks
-available space before creating mapped frames and estimates whole-stack needs
-when possible. This is not a reservation; other programs may use the space later.
+For large stacks, leave space in the temporary directory for source frames and
+any additional aligned or corrected frames. Choose an existing folder under
+**Settings → Advanced Settings → Performance → Temporary directory**; leave it
+empty for the system default. Changes apply immediately to newly created data;
+already loaded frames stay in their original directory until released. OpenFocus
+checks free space before creating mappings and estimates whole-stack needs when
+possible. This is not a reservation; other programs may use the space later.
 
 Each neural tile uses every frame. Source frames and alignment scratch can be disk-backed, but free disk space and available memory still limit stack size. V2 spatial tiling approximates whole-image inference.
 

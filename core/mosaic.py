@@ -1,13 +1,11 @@
 """Planar microscope mosaics with explicit placement and bounded rendering."""
 from dataclasses import dataclass
 import math
-import shutil
-import tempfile
 
 import cv2
 import numpy as np
 
-from core.frame_storage import create_frame
+from core.frame_storage import create_frame, require_disk_space, storage_directory
 from core.resource_policy import require_memory
 from utils.image_utils import thumbnail_bgr
 
@@ -208,14 +206,13 @@ def render_mosaic(frames, transforms, *, feather=64, tile_size=512,
     has_alpha = any(frame.image.ndim == 3 and frame.image.shape[2] == 4 for frame in frames)
     channels = 4 if has_alpha else 3
     required_disk = width * height * channels * np.dtype(dtype).itemsize
-    free_disk = shutil.disk_usage(tempfile.gettempdir()).free
-    if required_disk + 64 * 1024 ** 2 > free_disk:
-        raise OSError('Not enough temporary disk space for the mosaic canvas')
+    directory = storage_directory()
+    require_disk_space(required_disk + 64 * 1024 ** 2, directory)
     tile_size = max(32, min(1024, int(tile_size)))
     require_memory(tile_size * tile_size * 160)
     boxes = [_bounds(frame, matrix) for frame, matrix in zip(frames, matrices)]
     inverses = [np.linalg.inv(matrix) for matrix in matrices]
-    result = create_frame((height, width, channels), dtype)
+    result = create_frame((height, width, channels), dtype, directory=directory)
     xs, ys = range(0, width, tile_size), range(0, height, tile_size)
     total = len(xs) * len(ys)
     done = 0

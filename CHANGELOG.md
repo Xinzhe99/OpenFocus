@@ -6,6 +6,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Allow selecting a temporary data directory for new frames and processing scratch.
 - Add optional, default-off usage statistics with pseudonymous per-installation daily reporting and a Settings consent control.
 - Explain download and opt-in activity statistics in the website's English and Chinese privacy sections.
 - Add Tools → Batch Image Converter for sequential RAW and still-image conversion,
@@ -15,6 +16,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Large TIFF mosaics use disk-backed tiled composition and streamed writing.
 
 ### Changed
+- Apply tiled Guided Filter exposure matching per tile after whole-stack gain
+  estimation, avoiding an additional full-size matched copy of the stack.
 - Reduce GFG-FGF working memory by converting frames per pass instead of
   retaining a second float32 color stack; this can increase conversion time.
 - Resize the source and output magnifiers with Ctrl+wheel while holding the

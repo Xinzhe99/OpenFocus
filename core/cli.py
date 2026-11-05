@@ -1352,9 +1352,10 @@ def _run_cli_admitted(argv: List[str]) -> int:
             return _run_batch(args, _emit_json)
 
         from core.multi_focus_fusion import MultiFocusFusion
+        from core.frame_storage import storage_directory
 
         # Video inputs are unpacked to a temp dir that is always cleaned up
-        with tempfile.TemporaryDirectory(prefix="openfocus_video_") as video_temp:
+        with tempfile.TemporaryDirectory(prefix="openfocus_video_", dir=storage_directory()) as video_temp:
             _src, paths = _resolve_stack(args, video_temp)
             if args.alignment_report:
                 _validate_alignment_report_path(args, paths)

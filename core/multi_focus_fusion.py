@@ -611,8 +611,9 @@ class MultiFocusFusion:
         spec = self.descriptor
         needs_tiles = (resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
                        if spec.tile_decider else max(h, w) > self.tile_threshold)
-        deferred_exposure = (spec.neural and self.tile_enabled and needs_tiles
-                             and isinstance(input_source, list))
+        deferred_exposure = (self.tile_enabled and needs_tiles and isinstance(input_source, list)
+                             and (spec.neural or (self.algorithm == 'guided_filter'
+                                  and not any(dtype == np.uint16 for _, dtype in frame_specs))))
 
         streamed_directory = (isinstance(input_source, str)
                               and (spec.tile_runner or self.algorithm == 'stackmffv2')
@@ -680,7 +681,7 @@ class MultiFocusFusion:
                 input_source, algorithm=self.algorithm, img_resize=img_resize,
                 block_size=self.tile_block_size, overlap=self.tile_overlap,
                 should_cancel=should_cancel, progress_callback=progress_callback,
-                exposure_gains=exposure_gains_,
+                exposure_gains=exposure_gains_, deferred_exposure=deferred_exposure,
                 source_all_uint8=all(dtype == np.uint8 for _, dtype in frame_specs), **kws)
         else:
             if exposure_gains_ is not None and isinstance(input_source, str):
@@ -1031,6 +1032,7 @@ class MultiFocusFusion:
                     should_cancel=None,
                     progress_callback=None,
                     exposure_gains=None,
+                    deferred_exposure=False,
                     source_all_uint8=None,
                     **kwargs) -> np.ndarray:
         """
@@ -1219,6 +1221,9 @@ class MultiFocusFusion:
             x0, y0, x1, y1 = coords
             if imgs is not None:
                 crops = [img[y0:y1, x0:x1] for img in imgs]
+                if deferred_exposure and exposure_gains is not None:
+                    crops = [apply_exposure_gain(crop, gain)
+                             for crop, gain in zip(crops, exposure_gains)]
             else:
                 crops = []
                 for idx, fname in enumerate(files):

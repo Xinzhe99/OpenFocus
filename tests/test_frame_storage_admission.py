@@ -1,5 +1,6 @@
 """Regression coverage for temporary frame admission and rejected imports."""
 import gc
+import os
 import weakref
 from collections import namedtuple
 from types import SimpleNamespace
@@ -9,6 +10,85 @@ import pytest
 
 from controllers import source_manager
 from core import frame_storage, workers
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage_directory(monkeypatch):
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+
+
+def test_switching_directories_preserves_existing_mapping(tmp_path):
+    first = tmp_path / 'first'
+    second = tmp_path / 'second'
+    first.mkdir()
+    second.mkdir()
+    frame_storage.configure_storage_directory(first)
+    old = frame_storage.create_frame((2, 2), np.uint8)
+    old_path = first / os.path.basename(old.filename)
+    view = old[:]
+    old[:] = 37
+    frame_storage.configure_storage_directory(second)
+    new = frame_storage.create_frame((2, 2), np.uint8)
+    new_path = second / os.path.basename(new.filename)
+    assert old_path.exists() and new_path.exists()
+    assert np.all(old == 37)
+    del old
+    gc.collect()
+    assert old_path.exists()
+    del view
+    gc.collect()
+    assert not old_path.exists()
+    del new
+    gc.collect()
+    assert not new_path.exists()
+    frame_storage.configure_storage_directory('')
+    assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
+
+
+def test_invalid_directory_keeps_previous_configuration(monkeypatch, tmp_path):
+    frame_storage.configure_storage_directory(tmp_path)
+    with pytest.raises(OSError):
+        frame_storage.configure_storage_directory(tmp_path / 'missing')
+    assert frame_storage.storage_directory() == str(tmp_path)
+    def denied(*args, **kwargs):
+        raise PermissionError('denied')
+    monkeypatch.setattr(frame_storage.tempfile, 'mkstemp', denied)
+    with pytest.raises(OSError):
+        frame_storage.configure_storage_directory(tmp_path)
+    assert frame_storage.storage_directory() == str(tmp_path)
+
+
+def test_mapping_checks_and_creates_in_same_captured_directory(monkeypatch, tmp_path):
+    first = tmp_path / 'first'
+    second = tmp_path / 'second'
+    first.mkdir()
+    second.mkdir()
+    frame_storage.configure_storage_directory(first)
+    usage = namedtuple('usage', 'total used free')
+    checked = []
+    def disk_usage(path):
+        checked.append(path)
+        frame_storage.configure_storage_directory(second)
+        return usage(20 * 1024**3, 0, 2 * 1024**3)
+    monkeypatch.setattr(frame_storage.shutil, 'disk_usage', disk_usage)
+    image = frame_storage.create_frame((2, 2), np.uint8)
+    assert checked == [str(first)]
+    assert os.path.dirname(image.filename) == str(first)
+    del image
+    gc.collect()
+
+
+def test_disk_error_reports_directory_and_space(monkeypatch, tmp_path):
+    frame_storage.configure_storage_directory(tmp_path)
+    usage = namedtuple('usage', 'total used free')
+    monkeypatch.setattr(frame_storage.shutil, 'disk_usage',
+                        lambda path: usage(20 * 1024**3, 0, 100))
+    with pytest.raises(OSError) as error:
+        frame_storage.require_disk_space(200)
+    message = str(error.value)
+    assert str(tmp_path) in message
+    assert '200 bytes' in message and f'{1024**3} bytes reserved' in message
+    assert 'free: 100 bytes' in message
 
 
 def _limit_temp_space(monkeypatch, tmp_path, available):
@@ -132,7 +212,7 @@ def test_stack_preflight_observes_cancellation(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize('outcome', ['mixed', 'append', 'superseded', 'prepare_error', 'shutdown', 'apply_error'])
 def test_rejected_load_restores_loader_and_releases_frames(qapp, monkeypatch, outcome):
-    monkeypatch.setattr(frame_storage, 'require_disk_space', lambda size: None)
+    monkeypatch.setattr(frame_storage, 'require_disk_space', lambda *args, **kwargs: None)
     previous = [np.zeros((2, 2, 3), np.uint8)]
     loader = SimpleNamespace(images=previous, image_paths=['old'], px_size_um=2,
                              source_exif=b'old', source_icc_profiles={'old': b'icc'},

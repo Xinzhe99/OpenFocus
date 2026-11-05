@@ -1,5 +1,6 @@
 """Behavioral boundaries for settings drafts, flat fields, and feedback."""
 from types import SimpleNamespace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -81,6 +82,99 @@ def test_settings_overlap_is_visible_and_cancel_is_a_draft(settings_window):
     assert settings_window.update_manager.auto_download
     assert not settings_window.saved
     dialog.deleteLater()
+
+
+def test_storage_directory_browse_cancel_and_save(settings_window, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from core import frame_storage
+    from dialogs import advanced_settings
+    from utils import settings_store
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    store = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_store, 'get_settings', lambda: store)
+    monkeypatch.setattr(advanced_settings.QFileDialog, 'getExistingDirectory',
+                        lambda *args: str(tmp_path))
+    settings_window.persist_settings = lambda: settings_store.save_window_settings(settings_window)
+
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog._browse_storage_directory()
+    dialog.reject()
+    assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
+    assert not store.contains('rendering/storage_directory')
+
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog.storage_directory.setText(str(tmp_path))
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    image = frame_storage.create_frame((2, 2), np.uint8)
+    assert Path(image.filename).parent == tmp_path
+    restored = SimpleNamespace()
+    settings_store.load_window_settings(restored)
+    assert restored.storage_directory == str(tmp_path)
+    del image
+
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog.storage_directory.clear()
+    dialog._apply()
+    assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
+    assert store.value('rendering/storage_directory') == ''
+
+
+def test_invalid_storage_directory_keeps_previous_settings(settings_window, tmp_path, monkeypatch):
+    from core import frame_storage
+    from dialogs import advanced_settings
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    previous = tmp_path / 'previous'
+    previous.mkdir()
+    frame_storage.configure_storage_directory(previous)
+    settings_window.storage_directory = str(previous)
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog.storage_directory.setText(str(tmp_path / 'missing'))
+    dialog.spin_block.setValue(512)
+    dialog._apply()
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert frame_storage.storage_directory() == settings_window.storage_directory == str(previous)
+    assert settings_window.tile_block_size == 1024
+    assert dialog.status.text()
+    assert not settings_window.saved
+
+
+def test_storage_directory_rolls_back_when_save_fails(settings_window, tmp_path, monkeypatch):
+    from core import frame_storage
+    from dialogs import advanced_settings
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    previous, requested = tmp_path / 'previous', tmp_path / 'requested'
+    previous.mkdir()
+    requested.mkdir()
+    frame_storage.configure_storage_directory(previous)
+    settings_window.storage_directory = str(previous)
+    def fail():
+        raise OSError('disk full')
+    settings_window.persist_settings = fail
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog.storage_directory.setText(str(requested))
+    dialog._apply()
+    assert frame_storage.storage_directory() == settings_window.storage_directory == str(previous)
+    assert dialog.result() != QDialog.DialogCode.Accepted
+
+
+def test_saved_storage_directory_restores_or_reports_fallback(tmp_path, monkeypatch):
+    import main
+    from core import frame_storage
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    window = SimpleNamespace(storage_directory=str(tmp_path))
+    assert main._restore_storage_directory(window) is None
+    assert frame_storage.storage_directory() == str(tmp_path)
+    missing = str(tmp_path / 'missing')
+    window.storage_directory = missing
+    warning = main._restore_storage_directory(window)
+    assert window.storage_directory == ''
+    assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
+    assert missing in warning
 
 
 def test_settings_preserve_supported_tile_and_registration_ranges(settings_window):

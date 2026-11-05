@@ -422,6 +422,26 @@ def test_dtcwt_is_not_tiled_only_because_of_size(monkeypatch, two_focus_stack):
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('base_frame', ['none', 'first'])
+def test_guided_tiled_exposure_matches_whole_frame_preprocessing(dtype, base_frame):
+    from utils.image_utils import apply_exposure_gain, exposure_gains
+
+    rng = np.random.default_rng(712)
+    frames = [rng.integers(5, high, (24, 28, 3), dtype=np.uint8)
+              for high in (90, 150, 220)]
+    if dtype == np.uint16:
+        frames = [frame.astype(np.uint16) * 251 + 19 for frame in frames]
+    normalized, _ = normalize_fuse_input(frames)
+    matched = [apply_exposure_gain(frame, gain)
+               for frame, gain in zip(normalized, exposure_gains(normalized))]
+    options = dict(algorithm='guided_filter', tile_enabled=True, tile_block_size=16,
+                   tile_overlap=4, tile_threshold=1, base_frame=base_frame)
+    expected = MultiFocusFusion(exposure_match=False, **options).fuse(matched, thread_count=1)
+    actual = MultiFocusFusion(exposure_match=True, **options).fuse(normalized, thread_count=1)
+    np.testing.assert_allclose(actual, expected, atol=1e-4)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
 def test_v3_tiled_exposure_matches_whole_stack_preprocessing(dtype, monkeypatch):
     import core.multi_focus_fusion as fusion_module
     import fusion_methods.stackmffv3 as v3
