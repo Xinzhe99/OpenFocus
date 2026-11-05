@@ -1,6 +1,5 @@
 import concurrent.futures
 import importlib
-import threading
 import os
 import numpy as np
 from typing import Union, List, Tuple, Optional
@@ -13,7 +12,6 @@ from utils.image_utils import (apply_exposure_gain, exposure_gains,
                                normalize_fuse_input)
 from utils.sorting import natural_sort_key
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
-from core import torch_backend
 
 
 # Tile 参数已改为 MultiFocusFusion 实例属性，见类构造函数中的默认值和访问器方法。
@@ -64,8 +62,7 @@ def get_tile_params() -> dict:
 _STACKMFF_AVAILABLE_CACHE = None
 
 
-_TORCH_PROBE_LOCK = threading.Lock()
-_TORCH_DEVICE_KIND = None  # 'CUDA' | 'ROCM' | 'XPU' | 'MPS' | 'N/A'，探测后缓存
+_NEURAL_DEVICE_KIND = None
 
 
 def is_ai_fusion_available() -> bool:
@@ -81,21 +78,21 @@ def is_ai_fusion_available() -> bool:
 
 def ensure_neural_device_kind():
     """Return the available ONNX Runtime accelerator, or N/A for CPU."""
-    global _TORCH_DEVICE_KIND
+    global _NEURAL_DEVICE_KIND
     try:
         from fusion_methods.neural_runtime import resolve_device
         kind = resolve_device(True)
-        _TORCH_DEVICE_KIND = kind if kind != 'CPU' else 'N/A'
+        _NEURAL_DEVICE_KIND = kind if kind != 'CPU' else 'N/A'
     except Exception:
-        _TORCH_DEVICE_KIND = 'N/A'
-    return _TORCH_DEVICE_KIND
+        _NEURAL_DEVICE_KIND = 'N/A'
+    return _NEURAL_DEVICE_KIND
 
 
 def neural_device_kind():
     """Cached accelerator provider, or None while probing."""
     from fusion_methods.neural_runtime import cached_device
     kind = cached_device()
-    return ('N/A' if kind == 'CPU' else kind) if kind is not None else _TORCH_DEVICE_KIND
+    return ('N/A' if kind == 'CPU' else kind) if kind is not None else _NEURAL_DEVICE_KIND
 
 def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
                         workers: int = 1) -> int:
@@ -521,14 +518,14 @@ class MultiFocusFusion:
         name = self.descriptor.display_name
         if not is_ai_fusion_available():
             raise RuntimeError(
-                f"{name} fusion requires PyTorch. Install it with: pip install torch"
+                f"{name} fusion requires ONNX Runtime. Install it with: pip install onnxruntime"
             )
 
         if self.use_gpu:
-            kind = torch_backend.probe_kind(import_if_needed=True)
-            if not torch_backend.is_accelerator(kind):
-                print(f"Warning: No GPU acceleration available (CUDA/ROCm/XPU/MPS). "
-                      f"Running {name} on CPU (slower).")
+            from fusion_methods import neural_runtime
+            kind = neural_runtime.resolve_device(True)
+            if not neural_runtime.is_accelerator(kind):
+                print(f"Warning: No GPU acceleration available. Running {name} on CPU (slower).")
                 self.use_gpu = False
     
     def fuse(self,
@@ -540,6 +537,9 @@ class MultiFocusFusion:
         """Fuse under one cancellable lease, including preparation and publication."""
         from core.resource_policy import heavy_job
         with heavy_job(should_cancel):
+            if self.descriptor.neural:
+                from fusion_methods.neural_runtime import start_inference_job
+                start_inference_job()
             return self._fuse_under_lease(
                 input_source, img_resize, should_cancel, progress_callback, **kwargs)
 
@@ -806,7 +806,7 @@ class MultiFocusFusion:
     def _fuse_stackmffv3(self,
                          input_source: Union[str, List[np.ndarray]],
                          img_resize: Optional[Tuple[int, int]] = None,
-                         model_path: Optional[str] = 'weights/stackmff_v3_final.pth',
+                         model_path: Optional[str] = 'weights/stackmff_v3_final.onnx',
                          mode: str = 'soft',
                          should_cancel=None,
                          progress_callback=None,
@@ -824,7 +824,7 @@ class MultiFocusFusion:
             融合后的图像
         """
         if not model_path:
-            model_path = 'weights/stackmff_v3_final.pth'
+            model_path = 'weights/stackmff_v3_final.onnx'
         if not os.path.isabs(model_path):
             model_path = resource_path(model_path)
 
@@ -1456,7 +1456,7 @@ class MultiFocusFusion:
         return self._fuse_tiled_neural(
             imgs, img_dir, tile_coords, h, w, channels, block_size, overlap,
             prepare=_prepare_inference, label="StackMFF V3",
-            default_weights=self.descriptor.weights or 'weights/stackmff_v3_final.pth',
+            default_weights=self.descriptor.weights or 'weights/stackmff_v3_final.onnx',
             mode_normalizer=normalize_mode, **kwargs)
 
     def _fuse_tiled_stackmff(self, imgs, img_dir, tile_coords, h, w,
@@ -1467,7 +1467,7 @@ class MultiFocusFusion:
         return self._fuse_tiled_neural(
             imgs, img_dir, tile_coords, h, w, channels, block_size, overlap,
             prepare=_prepare_inference, label="StackMFF",
-            default_weights=self.descriptor.weights or 'weights/stackmff_final.pth',
+            default_weights=self.descriptor.weights or 'weights/stackmff_final.onnx',
             **kwargs)
 
     def set_device(self, use_gpu: bool):
@@ -1487,12 +1487,12 @@ class MultiFocusFusion:
         Returns:
             dict: 包含算法名称、设备类型等信息
         """
-        if self.use_gpu:
-            kind = torch_backend.probe_kind(import_if_needed=True)
-            if torch_backend.is_accelerator(kind):
-                device_name = torch_backend.display_name(kind)
-            else:
-                device_name = 'CPU (GPU unavailable)'
+        if self.descriptor.neural:
+            from fusion_methods import neural_runtime
+            kind = neural_runtime.actual_device()
+            if kind is None:
+                kind = neural_runtime.resolve_device(self.use_gpu)
+            device_name = neural_runtime.display_name(kind)
         else:
             device_name = 'CPU'
         info = {
@@ -1546,7 +1546,7 @@ def fuse_images(input_source: Union[str, List[np.ndarray]],
         
         # 使用StackMFF-V3算法（mode='hard' 逐像素取最可能帧）
         result = fuse_images(image_list, algorithm='stackmffv3', use_gpu=False,
-                           model_path='./weights/stackmff_v3_final.pth',
+                           model_path='./weights/stackmff_v3_final.onnx',
                            mode='soft')
     """
     # Resolve tile parameters: explicit args take precedence, then module defaults

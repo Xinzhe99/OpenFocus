@@ -198,7 +198,7 @@ def _plan_neural_depth(images, model_path, use_gpu, thread_count,
     from fusion_methods.stackmffv3 import _prepare_inference
     if model_path is None:
         from utils import resource_path
-        model_path = resource_path("weights", "stackmff_v3_final.pth")
+        model_path = resource_path("weights", "stackmff_v3_final.onnx")
     h, w = images[0].shape[:2]
     _overlap, coords = _neural_depth_tiles(images)
     x0, y0, x1, y1 = max(coords, key=lambda xy: (xy[2] - xy[0]) * (xy[3] - xy[1]))
@@ -329,6 +329,9 @@ def compute_focus_index(images: Sequence[np.ndarray], method: str, parameters=No
     depth_block = legacy_parameters.get('block_size')
     try:
         with heavy_job(should_cancel):
+            if spec.neural:
+                from fusion_methods.neural_runtime import start_inference_job
+                start_inference_job()
             n = len(images)
             h, w = images[0].shape[:2]
             if spec.depth_planner:
