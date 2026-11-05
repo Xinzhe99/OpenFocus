@@ -43,12 +43,14 @@ does not implement the Worker download/API routes or the custom 404 page.
 ## Deploy
 
 A production deploy needs an authenticated Cloudflare account that can reach
-the `openfocus.top` zone, the `openfocus-site` Worker and the
-`openfocus-downloads` R2 bucket:
+the `openfocus.top` zone, the `openfocus-site` Worker, the
+`openfocus-downloads` R2 bucket and, if enabled, the analytics D1 database.
+Use your account-specific config when analytics is enabled: deploying the
+unbound repository template would turn statistics off.
 
 ```bash
 npx wrangler login
-npx wrangler deploy -c site/wrangler.jsonc
+npx wrangler deploy -c path/to/wrangler.analytics.jsonc
 ```
 
 `site/wrangler.jsonc` binds the production custom domains and the R2 bucket,

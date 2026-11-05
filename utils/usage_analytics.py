@@ -36,7 +36,8 @@ def _platform():
 def _send(payload):
     request = urllib.request.Request(
         ENDPOINT, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers={"Content-Type": "application/json", "User-Agent": f"OpenFocus/{APP_VERSION}"},
+        method="POST")
     with urllib.request.urlopen(request, timeout=5) as response:
         return response.status == 204
 

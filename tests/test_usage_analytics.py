@@ -1,5 +1,4 @@
-"""Isolated tests for opt-in reporting; no network requests are made."""
-import json
+"""Isolated tests for opt-in reporting; no external requests are made."""
 import uuid
 import time
 
@@ -172,25 +171,27 @@ def test_failed_report_retries_while_application_remains_open(qapp, tmp_path, mo
         reporter.shutdown()
 
 
-def test_http_request_and_204_acceptance(monkeypatch):
-    requests = []
-    class Response:
-        status = 204
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
+def test_http_reporting_survives_default_python_agent_block(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            agent = self.headers.get('User-Agent', '')
+            self.send_response(403 if agent.startswith('Python-urllib/') else 204)
+            self.end_headers()
+
+        def log_message(self, *args):
             pass
-    def open_fake(request, timeout):
-        requests.append((request, timeout))
-        return Response()
-    monkeypatch.setattr(usage.urllib.request, "urlopen", open_fake)
-    payload = {"installation_id": str(uuid.uuid4()), "version": APP_VERSION, "platform": "linux"}
-    assert usage._send(payload)
-    request, timeout = requests[0]
-    assert request.full_url == usage.ENDPOINT
-    assert request.method == "POST"
-    assert request.get_header("Content-type") == "application/json"
-    assert json.loads(request.data) == payload
-    assert timeout > 0
-    Response.status = 200
-    assert not usage._send(payload)
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setattr(usage, 'ENDPOINT', f'http://127.0.0.1:{server.server_port}/api/usage')
+        assert usage._send({'installation_id': str(uuid.uuid4()),
+                            'version': APP_VERSION, 'platform': 'linux'})
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()

@@ -122,15 +122,18 @@ and bearer secret:
 npx wrangler d1 create openfocus-analytics
 ```
 
-Add the `d1_databases` binding printed by this command to `site/wrangler.jsonc`,
-set its `binding` to `ANALYTICS` and its `migrations_dir` to `migrations`.
-Use the actual database ID from the command; the repository intentionally has
-no account-specific ID. Then apply the migration and set a strong, randomly
-generated administrator secret interactively:
+Add the `d1_databases` binding printed by this command to an account-specific
+copy of `site/wrangler.jsonc`, set its `binding` to `ANALYTICS` and point its
+`migrations_dir` to `site/migrations`. Resolve the copy's Worker and asset paths
+relative to the copied config. Keep that config for every later deployment:
+deploying the unbound repository template removes the binding and stops
+statistics. The repository intentionally has no account-specific database ID.
+Then apply the migration and set a strong, randomly generated administrator
+secret interactively:
 
 ```bash
-npx wrangler d1 migrations apply ANALYTICS --remote -c site/wrangler.jsonc
-npx wrangler secret put ANALYTICS_ADMIN_SECRET -c site/wrangler.jsonc
+npx wrangler d1 migrations apply ANALYTICS --remote -c path/to/wrangler.analytics.jsonc
+npx wrangler secret put ANALYTICS_ADMIN_SECRET -c path/to/wrangler.analytics.jsonc
 ```
 
 Deploy the Worker only after these steps. The existing daily cron runs retention
@@ -214,8 +217,8 @@ SITE_ORIGIN=https://openfocus.top python tools/build_site.py
 # Local preview (static only: no Worker language redirect or /api)
 python -m http.server 8788 --directory site/dist
 
-# Deploy Worker + assets (from the repo root)
-npx wrangler deploy -c site/wrangler.jsonc
+# Deploy Worker + assets with the account-specific analytics binding
+npx wrangler deploy -c path/to/wrangler.analytics.jsonc
 ```
 
 `SITE_ORIGIN` defaults to `https://openfocus.top`, which is correct for
