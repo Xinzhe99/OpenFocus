@@ -230,3 +230,33 @@ def test_memory_rejection_precedes_any_native_warp(monkeypatch):
     with pytest.raises(resource_policy.ResourceLimitError):
         registration.ImageRegistration('ecc').process(_stack(), thread_count=4)
 
+
+def test_directory_registration_checks_memory_before_decode(tmp_path, monkeypatch):
+    from core import image_loader
+
+    assert cv2.imwrite(str(tmp_path / 'frame.png'), np.zeros((8, 8, 3), np.uint8))
+    snapshot = resource_policy.probe_resources()
+    monkeypatch.setattr(resource_policy, 'probe_resources',
+                        lambda *args, **kwargs: replace(snapshot, available_ram=1,
+                                                       total_ram=16 * 1024 ** 3))
+    decoded = []
+    monkeypatch.setattr(image_loader, 'decode_image', lambda path: decoded.append(path))
+    with pytest.raises(resource_policy.ResourceLimitError):
+        registration.ImageRegistration('ecc').process(str(tmp_path))
+    assert not decoded
+
+
+def test_combined_alignment_rejects_when_ecc_planes_exceed_memory(monkeypatch):
+    # Broadcast views encode the large geometry without allocating image pixels.
+    frame = np.broadcast_to(np.zeros((1, 1, 3), np.uint8), (2048, 2048, 3))
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=1024 ** 3 + 300 * 1024 ** 2,
+        total_ram=4 * 1024 ** 3, physical_cores=2, logical_cpus=2)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *args, **kwargs: snapshot)
+    monkeypatch.setattr(registration.ImageRegistration, '_process_homography',
+                        lambda self, images, **kwargs: images)
+    monkeypatch.setattr(registration.ImageRegistration, '_process_ecc',
+                        lambda self, images, **kwargs: images)
+    with pytest.raises(resource_policy.ResourceLimitError):
+        registration.ImageRegistration('both').process([frame] * 100)
+

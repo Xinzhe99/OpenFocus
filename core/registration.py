@@ -1298,10 +1298,14 @@ class ImageRegistration:
                                 for name in os.listdir(input_source)
                                 if os.path.splitext(name)[1].lower() in extensions),
                                key=_image_sort_key)
-                from core.image_loader import decode_image
+                from core.image_loader import decode_image, source_dimensions
                 images = []
                 for path in paths:
                     _check_cancel(should_cancel)
+                    encoded_bytes = os.path.getsize(path) * 2
+                    require_memory(encoded_bytes)
+                    width, height = source_dimensions(path)
+                    require_memory(width * height * 32 + encoded_bytes)
                     image = decode_image(path)
                     if image is None:
                         raise ValueError(f"Could not decode registration frame: {path}")
@@ -1329,16 +1333,16 @@ class ImageRegistration:
             channels = images[0].shape[2] if images[0].ndim == 3 else 1
             # ECC retains downsampled grayscale planes, not full-resolution
             # planes. Its large-image path fixes the width at 1024.
-            if self.steps == ['ecc'] or self.steps == ('ecc',):
+            gray_bytes = height * width * 4
+            if 'ecc' in self.steps:
                 import math
                 downscale = 1024 if max(height, width) >= 2048 else self.downscale_width
-                gray_bytes = 0
+                ecc_bytes = 0
                 for image in images:
                     h, w = image.shape[:2]
                     scale = min(1.0, downscale / float(w))
-                    gray_bytes += max(1, math.ceil(h * scale)) * max(1, math.ceil(w * scale)) * 4
-            else:
-                gray_bytes = height * width * 4
+                    ecc_bytes += max(1, math.ceil(h * scale)) * max(1, math.ceil(w * scale)) * 4
+                gray_bytes = max(gray_bytes, ecc_bytes) if len(self.steps) > 1 else ecc_bytes
             plan = plan_execution(Workload(
                 algorithm='registration', frames=len(images), height=height,
                 width=width, channels=channels, itemsize=images[0].dtype.itemsize,
