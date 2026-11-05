@@ -62,7 +62,7 @@ def infer(frames, model_path, use_gpu, should_cancel=None,
         from fusion_methods.neural_runtime import start_inference_job
         start_inference_job()
     common.cancel(should_cancel)
-    out_dtype = fuse_output_dtype(frames)
+    out_dtype = np.float32 if any(f.dtype == np.uint16 for f in frames) else fuse_output_dtype(frames)
     model, device, plan = _prepare_inference(
         frames, model_path, use_gpu, thread_count=thread_count,
         resource_preference=resource_preference, execution_plan=execution_plan)

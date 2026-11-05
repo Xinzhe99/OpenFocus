@@ -42,7 +42,7 @@ def _prepare_fusion_input(images, fusion):
     frames = list(images)
     is_16bit = any(frame.dtype == np.uint16 for frame in frames)
     spec = fusion.descriptor
-    if (frames and fusion.algorithm in ('stackmff', 'stackmffv3') and fusion.tile_enabled
+    if (frames and spec.neural and spec.tile_decider and fusion.tile_enabled
             and resolve_runner(spec.tile_decider)(frames, fusion.tile_threshold)):
         return frames, is_16bit
     if is_16bit:
@@ -398,7 +398,7 @@ class RenderWorker(QThread):
                 from utils.sensor_cleanup import (load_sensor_defect_mask, cleanup_sensor_image,
                                                   require_sensor_cleanup_stack)
                 require_sensor_cleanup_stack(processed_images, self.defect_mask_path,
-                                             self.sensor_denoise)
+                                             self.sensor_denoise, disk_backed=True)
                 mask = (load_sensor_defect_mask(self.defect_mask_path, cancel_callback=lambda: self.is_cancelled)
                         if self.defect_mask_path else None)
                 processed_images = [store_frame(cleanup_sensor_image(image, defect_mask_path=mask,
@@ -1089,12 +1089,12 @@ class BatchWorker(QThread):
                 if mask_path or denoise:
                     from utils.sensor_cleanup import (load_sensor_defect_mask, cleanup_sensor_image,
                                                       require_sensor_cleanup_stack)
-                    require_sensor_cleanup_stack(aligned_images, mask_path, denoise)
+                    require_sensor_cleanup_stack(aligned_images, mask_path, denoise, disk_backed=True)
                     mask = (load_sensor_defect_mask(mask_path, cancel_callback=lambda: self.is_cancelled)
                             if mask_path else None)
-                    aligned_images = [cleanup_sensor_image(frame, defect_mask_path=mask,
-                                      sensor_denoise=denoise, cancel_callback=lambda: self.is_cancelled)
-                                      for frame in aligned_images]
+                    aligned_images = [store_frame(cleanup_sensor_image(
+                        frame, defect_mask_path=mask, sensor_denoise=denoise,
+                        cancel_callback=lambda: self.is_cancelled)) for frame in aligned_images]
                 reference = self.processing_settings.get('flat_field_path', '')
                 if reference and any(image.ndim == 3 and image.shape[2] == 4 for image in images):
                     raise ValueError('Flat-field correction is not supported for transparent input')
@@ -1105,15 +1105,14 @@ class BatchWorker(QThread):
                     white, _ = load_flat_field_reference(reference, scale=scale)
                     if self.is_cancelled:
                         raise RegistrationCancelled()
-                    require_memory(sum(frame.nbytes for frame in aligned_images)
-                                   + max(frame.size * 12 for frame in aligned_images)
+                    require_memory(max(frame.nbytes + frame.size * 12 for frame in aligned_images)
                                    + white.size * 12)
                     gain = compute_flat_field(white)
                     corrected = []
                     for frame in aligned_images:
                         if self.is_cancelled:
                             raise RegistrationCancelled()
-                        corrected.append(apply_flat_field(frame, gain))
+                        corrected.append(store_frame(apply_flat_field(frame, gain)))
                     aligned_images = corrected
                 alignment = self.processing_settings.get('alignment', self.processing_settings.get('reg_methods', ()))
                 steps = alignment_steps(alignment)

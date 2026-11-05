@@ -1,4 +1,5 @@
 """ONNX Runtime inference for the bundled dynamic StackMFF graphs."""
+from collections import OrderedDict
 import json
 import logging
 import os
@@ -10,8 +11,7 @@ import cv2
 import numpy as np
 
 _LOG = logging.getLogger(__name__)
-_SESSION = None
-_SESSION_KEY = None
+_SESSIONS = OrderedDict()
 _PROVIDER = {'CPU': 'CPUExecutionProvider', 'DIRECTML': 'DmlExecutionProvider',
              'COREML': 'CoreMLExecutionProvider'}
 _DEVICE = None
@@ -105,15 +105,21 @@ def estimate_inference_bytes(n, h, w, kind):
 
 def _session(path, shape, device, threads):
     import onnxruntime as ort
-    global _SESSION, _SESSION_KEY
+    global _SESSIONS
     path = os.path.abspath(os.path.splitext(path)[0] + '.onnx')
     if not os.path.isfile(path):
         raise FileNotFoundError(f'ONNX model not found: {path}')
-    key = (path, os.stat(path).st_mtime_ns, shape, device, threads)
-    if _SESSION_KEY != key:
-        _SESSION = _SESSION_KEY = None
+    stat = os.stat(path)
+    key = (path, stat.st_mtime_ns, stat.st_size, shape, device, int(threads or 1))
+    if key not in _SESSIONS:
+        # Accelerators retain one session so another graph cannot keep VRAM
+        # alive across scales. CPU retains both scales without ORT's arena.
+        limit = 2 if device == 'CPU' else 1
+        while len(_SESSIONS) >= limit:
+            _SESSIONS.popitem(last=False)
         options = ort.SessionOptions()
         options.intra_op_num_threads = max(1, int(threads or 1))
+        options.enable_cpu_mem_arena = False
         # DirectML needs concrete dimensions for attention MatMul.
         for name, value in zip(('layers', 'height', 'width'), shape):
             options.add_free_dimension_override_by_name(name, int(value))
@@ -121,14 +127,15 @@ def _session(path, shape, device, threads):
             options.enable_mem_pattern = False
             options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         provider = (_PROVIDER[device], {'device_id': 0}) if device == 'DIRECTML' else _PROVIDER[device]
-        _SESSION = ort.InferenceSession(path, sess_options=options,
-                                        providers=[provider, 'CPUExecutionProvider']
-                                        if device != 'CPU' else ['CPUExecutionProvider'])
-        _SESSION.disable_fallback()
-        if device != 'CPU' and _PROVIDER[device] not in _SESSION.get_providers():
+        session = ort.InferenceSession(path, sess_options=options,
+                                       providers=[provider, 'CPUExecutionProvider']
+                                       if device != 'CPU' else ['CPUExecutionProvider'])
+        session.disable_fallback()
+        if device != 'CPU' and _PROVIDER[device] not in session.get_providers():
             raise RuntimeError(f'{device} provider did not initialize')
-        _SESSION_KEY = key
-    return _SESSION
+        _SESSIONS[key] = session
+    _SESSIONS.move_to_end(key)
+    return _SESSIONS[key]
 
 
 def logits(planes, path, device, threads, should_cancel=None):
@@ -141,7 +148,7 @@ def logits(planes, path, device, threads, should_cancel=None):
         planes = np.pad(planes, ((0, 0), (0, 0), (0, ph), (0, pw)), mode=mode)
     planes = np.ascontiguousarray(planes, dtype=np.float32)
     shape = planes.shape[1:]
-    global _DEVICE, _ACTUAL_DEVICE, _FALLBACK_CPU, _SESSION, _SESSION_KEY
+    global _ACTUAL_DEVICE, _FALLBACK_CPU
     if _FALLBACK_CPU:
         device = 'CPU'
     if device == 'DIRECTML':
@@ -152,10 +159,10 @@ def logits(planes, path, device, threads, should_cancel=None):
         if not snapshot.vram_known or required > vram_budget(snapshot):
             _LOG.warning('DirectML memory budget is insufficient; using CPU for this job')
             _FALLBACK_CPU = True
+            _SESSIONS.clear()
             device = 'CPU'
     if _FALLBACK_CPU:
         from core.resource_policy import require_memory
-        _SESSION = _SESSION_KEY = None
         require_memory(estimate_inference_bytes(*shape, 'CPU'))
     session = None
     try:
@@ -165,11 +172,10 @@ def logits(planes, path, device, threads, should_cancel=None):
         if device == 'CPU':
             raise
         with _LOCK:
-            _DEVICE = 'CPU'
             _FALLBACK_CPU = True
         _LOG.warning('%s inference failed; falling back to CPU for this job', device, exc_info=True)
         session = None
-        _SESSION = _SESSION_KEY = None
+        _SESSIONS.clear()
         from core.resource_policy import require_memory
         require_memory(estimate_inference_bytes(*shape, 'CPU'))
         session = _session(path, shape, 'CPU', threads)

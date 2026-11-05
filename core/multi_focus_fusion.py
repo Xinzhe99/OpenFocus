@@ -604,8 +604,8 @@ class MultiFocusFusion:
         spec = self.descriptor
         needs_tiles = (resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
                        if spec.tile_decider else max(h, w) > self.tile_threshold)
-        deferred_exposure = (self.algorithm in ('stackmffv3', 'stackmffv2') and self.tile_enabled
-                             and needs_tiles and isinstance(input_source, list))
+        deferred_exposure = (spec.neural and self.tile_enabled and needs_tiles
+                             and isinstance(input_source, list))
 
         streamed_directory = (isinstance(input_source, str)
                               and (spec.tile_runner or self.algorithm == 'stackmffv2')
@@ -1371,7 +1371,7 @@ class MultiFocusFusion:
             x0, y0, x1, y1 = coords
             if imgs is not None:
                 crops = [frame[y0:y1, x0:x1] for frame in imgs]
-                if self.algorithm == 'stackmffv3' and exposure_gains is not None:
+                if exposure_gains is not None:
                     crops = normalize_fuse_input(crops)[0]
                     crops = [apply_exposure_gain(crop, gain)
                              for crop, gain in zip(crops, exposure_gains)]

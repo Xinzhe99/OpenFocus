@@ -37,21 +37,20 @@ def _fuse_tile(frames, model_path, use_gpu, should_cancel=None,
         from fusion_methods.neural_runtime import start_inference_job
         start_inference_job()
     common.cancel(should_cancel)
-    out_dtype = fuse_output_dtype(frames)
+    out_dtype = np.float32 if any(f.dtype == np.uint16 for f in frames) else fuse_output_dtype(frames)
     model, device, plan = _prepare_inference(
         frames, model_path, use_gpu, thread_count=thread_count,
         resource_preference=resource_preference, execution_plan=execution_plan)
-    normalized = common.normalized_frames(frames)
     # The backbone pads internally. Keep the original dimensions here so the
     # second inference scale matches the released benchmark preprocessing.
-    planes = common.stage_planes(normalized, 1, should_cancel)
+    planes = common.stage_planes(frames, 1, should_cancel)
     from fusion_methods import neural_runtime
     probs = neural_runtime.probabilities(planes, model, device, plan.native_threads,
                                          INFER_SIGMA, should_cancel)
-    h, w = normalized[0].shape[:2]
+    h, w = frames[0].shape[:2]
     luma = np.clip((probs * planes).sum(axis=1)[0], 0, 1)[:h, :w] * 255.0
     del probs, planes
-    fused = common.tensor_to_bgr(luma, normalized, should_cancel)
+    fused = common.tensor_to_bgr(luma, frames, should_cancel)
     if out_dtype is np.uint8:
         np.clip(np.round(fused), 0, 255, out=fused)
         return fused.astype(np.uint8)

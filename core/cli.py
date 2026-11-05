@@ -323,19 +323,22 @@ def _load_images(paths: List[str], thread_count: int = 0,
                  resource_preference: str = "balanced",
                  should_cancel=None):
     from core.image_loader import iter_decoded_sources, _DecodeCancelled
+    from core.frame_storage import store_frame
     images = []
     try:
         decoded = iter_decoded_sources(
             paths, 1.0, thread_count=thread_count,
             resource_preference=resource_preference,
-            should_cancel=should_cancel, allow_transparent_png=True)
+            should_cancel=should_cancel, allow_transparent_png=True,
+            disk_backed=True)
         try:
             for item in decoded:
                 if item.error is not None:
                     # The CLI is strict: one unreadable frame is an error,
                     # never a silently shorter stack.
                     raise RuntimeError(f"Failed to decode image: {item.path}: {item.error}")
-                images.extend(item.pages)
+                images.extend(page if isinstance(page, np.memmap) else store_frame(page)
+                              for page in item.pages)
                 del item
         finally:
             decoded.close()
@@ -461,35 +464,54 @@ def _fuse_stack_admitted(images, args):
     import cv2
     from core.registration import ImageRegistration
     from core.multi_focus_fusion import MultiFocusFusion
-    from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+    from utils.image_utils import quantize_fuse_output
+    from core.frame_storage import store_frame
 
     _resolve_algorithm_arguments(args)
+    spec = get_fusion(args.method)
     images, transparent = _transparent_region(images, args)
     if getattr(args, "defect_mask_path", None) or getattr(args, "sensor_denoise", False):
         from utils.sensor_cleanup import cleanup_sensor_image, require_sensor_cleanup_stack
         require_sensor_cleanup_stack(images, getattr(args, "defect_mask_path", None),
-                                     getattr(args, "sensor_denoise", False))
+                                     getattr(args, "sensor_denoise", False), disk_backed=True)
         mask = _sensor_mask(args)
-        images = [cleanup_sensor_image(image, mask, getattr(args, "sensor_denoise", False),
-                                       cancel_callback=getattr(args, "_should_cancel", None))
-                  for image in images]
+        images = [store_frame(cleanup_sensor_image(
+            image, mask, getattr(args, "sensor_denoise", False),
+            cancel_callback=getattr(args, "_should_cancel", None)))
+            for image in images]
     # Flat-field correction also runs in the raw pixel domain before registration.
     dust_white = getattr(args, "dust_map", None)
     if dust_white:
-        from utils.dust_map import compute_flat_field, apply_flat_field_stack
+        from utils.dust_map import compute_flat_field, apply_flat_field
         data = np.fromfile(dust_white, dtype=np.uint8)
         white = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
         if white is None:
             raise RuntimeError(f"Failed to decode white-field image: {dust_white}")
         gain = compute_flat_field(white)
-        images = apply_flat_field_stack(images, gain)
+        images = [store_frame(apply_flat_field(image, gain)) for image in images]
         _say(f"Flat-field (dust map) correction applied from {dust_white}")
 
-    # Normalize uint16 to the float32 0–255 working domain before registration.
-    if any(image.dtype == np.uint16 for image in images):
-        require_memory(sum(image.size * 4 for image in images if image.dtype != np.float32)
-                       + max(image.size * 4 for image in images if image.dtype == np.uint16))
-    images, is_16bit = normalize_fuse_input(images)
+    # Tiled neural methods normalize only each spatial crop. Other paths keep
+    # the existing pre-registration float domain, one disk-backed frame at a time.
+    is_16bit = any(image.dtype == np.uint16 for image in images)
+    from core.algorithms import resolve_runner
+    from constants import TILE_THRESHOLD
+    threshold = getattr(args, "tile_threshold", None) or TILE_THRESHOLD
+    deferred = (spec.neural and args.align == "none"
+                and getattr(args, "tile_enabled", True) and spec.tile_decider
+                and resolve_runner(spec.tile_decider)(images, threshold))
+    if is_16bit and not deferred:
+        require_memory(max(image.size * 8 for image in images))
+        normalized = []
+        for image in images:
+            if image.dtype == np.float32:
+                normalized.append(image)
+                continue
+            frame = image.astype(np.float32)
+            if image.dtype == np.uint16:
+                frame *= 255.0 / 65535.0
+            normalized.append(store_frame(frame))
+        images = normalized
 
     if args.align != "none":
         t0 = time.time()
@@ -526,13 +548,13 @@ def _fuse_stack_admitted(images, args):
     if getattr(args, "tile_threshold", None) is not None:
         fusion_kwargs["tile_threshold"] = args.tile_threshold
     fusion = MultiFocusFusion(**fusion_kwargs)
-    info = fusion.get_info()
     t0 = time.time()
     fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads)
     model_weights = _method_weights(spec)
     if model_weights:
         fuse_kwargs["model_path"] = model_weights
     fused = fusion.fuse(**fuse_kwargs)
+    info = fusion.get_info()
     if fused is None:
         raise RuntimeError("Fusion returned no result")
     if getattr(args, "sharpen_output", False):

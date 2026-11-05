@@ -76,29 +76,29 @@ def _probabilities(batch_input, model, device, mode, should_cancel=None, threads
                                   should_cancel, threads)
 
 
-def _blend_tile(probs, tile_stack, mode, should_cancel=None):
-    """Fuse one padded tile.
-
-    ``tile_stack`` is float32 [N, Hp, Wp, C] in 0-255 units (the project's
-    working representation); ``probs`` is [N, Hp, Wp] float32 on the CPU.
-    """
+def _blend_tile(probs, frames, mode, should_cancel=None):
+    """Combine probabilities with one source frame at a time in 0-255."""
     _cancel(should_cancel)
-    if mode == 'hard':
-        idx = probs.argmax(0)
-        rows = np.arange(tile_stack.shape[1])[:, None]
-        cols = np.arange(tile_stack.shape[2])[None, :]
-        result = tile_stack[idx, rows, cols]
+    height, width = frames[0].shape[:2]
+    channels = frames[0].shape[2] if frames[0].ndim == 3 else 1
+    result = np.zeros((height, width, channels), dtype=np.float32)
+    normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
+    for row in range(0, height, 256):
         _cancel(should_cancel)
-        return result
-    acc = np.empty(tile_stack.shape[1:], np.float32)
-    # Row blocks bound the temporary: N x rows x W x C float32 at once.
-    step = 256
-    for r in range(0, tile_stack.shape[1], step):
-        _cancel(should_cancel)
-        acc[r:r + step] = (probs[:, r:r + step, :, None]
-                           * tile_stack[:, r:r + step]).sum(0)
+        stop = min(row + 256, height)
+        selected = probs[:, row:stop].argmax(0) if mode == 'hard' else None
+        output = result[row:stop]
+        for index, frame in enumerate(frames):
+            _cancel(should_cancel)
+            source = common.working_frame(frame[row:stop], normalize_stack)
+            if source.ndim == 2:
+                source = source[:, :, None]
+            if selected is None:
+                output += probs[index, row:stop, :, None] * source
+            else:
+                np.copyto(output, source, where=(selected == index)[:, :, None])
     _cancel(should_cancel)
-    return acc
+    return result
 
 
 def _validate_tiles(tiles_list):
@@ -121,9 +121,10 @@ def _stage_gray(frames, should_cancel):
     h, w = frames[0].shape[:2]
     hp, wp = h + (-h) % PAD_ALIGN, w + (-w) % PAD_ALIGN
     batch = np.empty((1, len(frames), hp, wp), dtype=np.float32)
+    normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     for f, frame in enumerate(frames):
         _cancel(should_cancel)
-        batch[0, f, :h, :w] = _gray01(frame)
+        batch[0, f, :h, :w] = _gray01(common.working_frame(frame, normalize_stack))
     if wp != w:
         batch[:, :, :h, w:] = batch[:, :, :h, w - 1:w]
     if hp != h:
@@ -152,7 +153,6 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
     dispatching to a child thread. Actual inference allocations are rechecked.
     """
     from core.resource_policy import heavy_job
-    from utils.image_utils import normalize_fuse_input
 
     lease = heavy_job(should_cancel) if execution_plan is None else nullcontext()
     with lease:
@@ -170,21 +170,17 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
         results = []
         for tile in tiles_list:
             _cancel(should_cancel)
-            frames, _is_16bit = normalize_fuse_input(tile)
+            frames = tile
+            is_16bit = any(frame.dtype == np.uint16 for frame in frames)
             batch_input = _stage_gray(frames, should_cancel)
             probs = _probabilities(batch_input, model, device, mode, should_cancel, plan.native_threads)
             del batch_input
             h, w = frames[0].shape[:2]
-            # Only the probability calculation needs padding. Color mixing
-            # is pointwise, so avoid a second padded color-stack allocation.
-            stack = np.stack(frames).astype(np.float32, copy=False)
-            grayscale = stack.ndim == 3
-            if grayscale:
-                stack = stack[..., None]
-            fused = _blend_tile(probs[0, :, :h, :w], stack,
-                                mode, should_cancel)
-            del stack, probs
-            if fuse_output_dtype(frames) is np.uint8:
+            # Color mixing does not need an N-frame color stack.
+            grayscale = frames[0].ndim == 2
+            fused = _blend_tile(probs[0, :, :h, :w], frames, mode, should_cancel)
+            del probs
+            if not is_16bit and fuse_output_dtype(frames) is np.uint8:
                 fused = np.clip(np.round(fused), 0, 255).astype(np.uint8)
             else:
                 np.clip(fused, 0.0, 255.0, out=fused)
@@ -267,7 +263,6 @@ def model_probabilities(frames, model_path, use_gpu, sigma=0.0,
                         resource_preference='balanced', execution_plan=None):
     """Per-pixel [N,H,W] probabilities, using fusion's single replicated pad."""
     from core.resource_policy import heavy_job
-    from utils.image_utils import normalize_fuse_input
 
     lease = heavy_job(should_cancel) if execution_plan is None else nullcontext()
     with lease:
@@ -279,7 +274,6 @@ def model_probabilities(frames, model_path, use_gpu, sigma=0.0,
         model, device, plan = _prepare_inference(
             frames, model_path, use_gpu, thread_count,
             resource_preference, execution_plan)
-        frames, _is_16bit = normalize_fuse_input(frames)
         batch = _stage_gray(frames, should_cancel)
         probabilities = _forward_probabilities(batch, model, device, sigma,
                                                should_cancel, plan.native_threads)

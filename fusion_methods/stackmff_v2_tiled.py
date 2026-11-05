@@ -48,8 +48,7 @@ class _Source:
                 and frame.shape[:2] != self.shape[:2]):
             raise ValueError('All frames must have the same dimensions')
         if region is not None and not self.resize:
-            x, y, width, height = region
-            frame = frame[y:y+height, x:x+width]
+            frame = self._crop(frame, region)
         if self.gains is not None:
             if self.mixed_16:
                 if frame.dtype == np.uint16:
@@ -60,9 +59,20 @@ class _Source:
         if self.resize:
             frame = cv2.resize(frame, self.resize)
             if region is not None:
-                x, y, width, height = region
-                frame = frame[y:y+height, x:x+width]
+                frame = self._crop(frame, region)
         return frame
+
+    @staticmethod
+    def _crop(frame, region):
+        x, y, width, height = region
+        h, w = frame.shape[:2]
+        if x + width <= w and y + height <= h:
+            return frame[y:y + height, x:x + width]
+        ph, pw = (-h) % common.ATTENTION_PAD_ALIGN, (-w) % common.ATTENTION_PAD_ALIGN
+        mode = 'reflect' if ph < h and pw < w else 'edge'
+        rows = np.pad(np.arange(h), (0, ph), mode=mode)[y:y + height]
+        cols = np.pad(np.arange(w), (0, pw), mode=mode)[x:x + width]
+        return frame[rows[:, None], cols[None, :]]
 
 
 def _normalized(frame):
@@ -90,7 +100,9 @@ def _plan(source, model_path, use_gpu, tile_size, execution_plan,
         outer = replace(outer, ram_budget=min(outer.ram_budget, execution_plan.ram_budget),
                         native_threads=min(outer.native_threads, execution_plan.native_threads))
     first = source.get(0)
-    fixed = h * w * (32 + channels * 8 * result_count)
+    padded_h = h + (-h) % common.ATTENTION_PAD_ALIGN
+    padded_w = w + (-w) % common.ATTENTION_PAD_ALIGN
+    fixed = padded_h * padded_w * (32 + channels * 8 * result_count)
     if source.directory:
         fixed += first.nbytes * 2
     while True:
@@ -119,11 +131,14 @@ def tiled_depth(source, model_path, use_gpu, should_cancel=None,
                 progress_callback=None, result_count=0):
     """Return globally normalized depth and sampled indices for a source."""
     from fusion_methods import neural_runtime
-    h, w = source.shape[:2]
+    source_h, source_w = source.shape[:2]
+    h = source_h + (-source_h) % common.ATTENTION_PAD_ALIGN
+    w = source_w + (-source_w) % common.ATTENTION_PAD_ALIGN
     count = len(source.items)
     block, model, device, plan = _plan(source, model_path, use_gpu, tile_size,
                                       execution_plan, thread_count,
                                       resource_preference, result_count)
+    block = max(block, min(common.ATTENTION_PAD_ALIGN, h, w))
     overlap = max(0, min(int(tile_overlap), block // 2))
     step = block - overlap
     ys = sorted({min(y, h - block) for y in range(0, h, step)})
@@ -142,7 +157,8 @@ def tiled_depth(source, model_path, use_gpu, should_cancel=None,
                 frame = source.get(i, (x, y, block, block))
                 if frame.shape[:2] != (block, block):
                     raise ValueError('All frames must have the same dimensions')
-                crops.append(_normalized(frame).copy())
+                crops.append(common.working_frame(
+                    frame, source.mixed_16 or frame.dtype == np.uint16).copy())
             planes = common.stage_planes(crops, common.ATTENTION_PAD_ALIGN, should_cancel)
             del crops
             probs = neural_runtime.softmax(neural_runtime.logits(
@@ -164,7 +180,7 @@ def tiled_depth(source, model_path, use_gpu, should_cancel=None,
     expected -= lo
     expected /= hi - lo + 1e-8
     index = np.clip(np.rint(expected * (count - 1)), 0, count - 1).astype(np.int64)
-    return expected, index
+    return expected[:source_h, :source_w], index[:source_h, :source_w]
 
 
 def tiled_fusion(input_source, img_resize, model_path, use_gpu,

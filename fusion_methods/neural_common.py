@@ -52,6 +52,16 @@ def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None
     return frames
 
 
+def working_frame(frame, normalize_stack):
+    """Convert a single frame exactly as 16-bit stack normalization does."""
+    if not normalize_stack or frame.dtype == np.float32:
+        return frame
+    result = frame.astype(np.float32)
+    if frame.dtype == np.uint16:
+        result *= 255.0 / 65535.0
+    return result
+
+
 def _plane(frame):
     """One 0-255 luma plane as float32, independent of source bit depth."""
     if frame.ndim == 2:
@@ -72,9 +82,10 @@ def stage_planes(frames, align, should_cancel=None):
     h, w = frames[0].shape[:2]
     hp, wp = h + (-h) % align, w + (-w) % align
     batch = np.empty((1, len(frames), hp, wp), dtype=np.float32)
+    normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     for index, frame in enumerate(frames):
         cancel(should_cancel)
-        batch[0, index, :h, :w] = _plane(frame)
+        batch[0, index, :h, :w] = _plane(working_frame(frame, normalize_stack))
     ph, pw = hp - h, wp - w
     if ph or pw:
         mode = 'reflect' if ph < h and pw < w else 'edge'
@@ -148,17 +159,19 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None):
     0-1 inputs, while every buffer here is in the project's 0-255 range.
     """
     cancel(should_cancel)
-    stack = normalized_frames(frames)
-    planes = [_ycbcr(frame) for frame in stack]
-    lumas = np.stack([plane[0] for plane in planes]).astype(np.float32, copy=False)
-    cbs = np.stack([plane[1] for plane in planes]).astype(np.float32, copy=False)
-    crs = np.stack([plane[2] for plane in planes]).astype(np.float32, copy=False)
+    normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     target = np.clip(fused_luma, 0.0, 255.0)
-    nearest = np.abs(lumas - target[None]).argmin(axis=0)
-    rows = np.arange(target.shape[0])[:, None]
-    cols = np.arange(target.shape[1])[None, :]
-    cb = cbs[nearest, rows, cols]
-    cr = crs[nearest, rows, cols]
-    del planes, lumas, cbs, crs
+    best = cb = cr = None
+    for frame in frames:
+        cancel(should_cancel)
+        luma, frame_cb, frame_cr = _ycbcr(working_frame(frame, normalize_stack))
+        distance = np.abs(luma - target)
+        if best is None:
+            best, cb, cr = distance, frame_cb, frame_cr
+            continue
+        better = (distance < best) | (np.isnan(distance) & ~np.isnan(best))
+        np.copyto(best, distance, where=better)
+        np.copyto(cb, frame_cb, where=better)
+        np.copyto(cr, frame_cr, where=better)
     cancel(should_cancel)
     return np.clip(_ycbcr_to_bgr(target, cb, cr), 0.0, 255.0)

@@ -100,13 +100,15 @@ def _cleanup_temporary_bytes(image, sensor_denoise):
     return temporary
 
 
-def require_sensor_cleanup_stack(images, defect_mask_path=None, sensor_denoise=False):
-    """Admit cleaned stack copies, mask decode and peak per-image buffers."""
+def require_sensor_cleanup_stack(images, defect_mask_path=None, sensor_denoise=False,
+                                 *, disk_backed=False):
+    """Admit cleaned copies, mask decode and peak per-image buffers."""
     if not defect_mask_path and not sensor_denoise:
         return
     from core.resource_policy import require_memory
 
-    copies = sum(image.nbytes for image in images)
+    copies = (2 * max((image.nbytes for image in images), default=0) if disk_backed
+              else sum(image.nbytes for image in images))
     temporary = max((_cleanup_temporary_bytes(image, sensor_denoise)
                      + (image.nbytes if sensor_denoise else 0)
                      for image in images), default=0)
