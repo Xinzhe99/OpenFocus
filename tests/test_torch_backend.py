@@ -347,7 +347,7 @@ def test_linux_gpu_status_covers_amd_nvidia_and_intel(
     monkeypatch.setattr(platform_utils, "is_macos", lambda: False)
     monkeypatch.setattr(platform_utils, "is_windows", lambda: False)
     monkeypatch.setattr(platform_utils, "is_linux", lambda: True)
-    monkeypatch.setattr(platform_utils, "_torch_accelerator_present",
+    monkeypatch.setattr(platform_utils, "_neural_accelerator_present",
                         lambda: None)
     monkeypatch.setattr(platform_utils, "_nvidia_smi_reports_gpu",
                         lambda: False)
@@ -363,62 +363,74 @@ def test_linux_gpu_status_covers_amd_nvidia_and_intel(
         platform_utils.reset_gpu_probe_cache()
 
 
-def test_completed_xpu_probe_overrides_an_older_hardware_hint(monkeypatch, xpu_probe_usable):
+@pytest.mark.parametrize("kind,expected", [
+    ("DIRECTML", True), ("CUDA", True), ("ROCM", True),
+    ("OPENVINO", True), ("COREML", True), ("CPU", False),
+])
+def test_completed_neural_probe_overrides_an_older_hardware_hint(monkeypatch, kind, expected):
+    from fusion_methods import neural_runtime
     from utils import platform_utils
-    monkeypatch.setitem(sys.modules, "torch",
-                        _torch(cuda=FakeCuda(available=False), xpu=FakeXpu()))
-    backend.reset_cache()
-    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", False)
-    try:
-        backend.ensure_torch()
-        assert platform_utils.has_compute_gpu() is True
-    finally:
-        platform_utils.reset_gpu_probe_cache()
-        backend.reset_cache()
 
-
-def test_completed_cpu_probe_overrides_an_older_hardware_hint(monkeypatch):
-    from utils import platform_utils
-    monkeypatch.setattr(backend, "_KIND", backend.KIND_CPU)
-    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", True)
-    assert platform_utils.has_compute_gpu() is False
+    monkeypatch.setattr(neural_runtime, "_DEVICE", kind)
+    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", not expected)
+    assert platform_utils.has_compute_gpu() is expected
 
 
 def test_hardware_hint_does_not_wait_for_an_active_device_probe(monkeypatch):
+    from core import multi_focus_fusion
+    from fusion_methods import neural_runtime
     from utils import platform_utils
-    fake = _torch(cuda=FakeCuda(available=False), xpu=FakeXpu())
-    fake.version.xpu = "test"
-    monkeypatch.setitem(sys.modules, "torch", fake)
-    for name in ("is_macos", "is_windows", "is_linux"):
-        monkeypatch.setattr(platform_utils, name, lambda: False)
-    backend.reset_cache()
-    platform_utils.reset_gpu_probe_cache()
-    finished = threading.Event()
+
+    entered = threading.Event()
+    release = threading.Event()
     result = []
+    status = []
+    status_ready = threading.Event()
 
-    def query():
-        result.append(platform_utils.has_compute_gpu())
-        finished.set()
+    def blocked_options():
+        entered.set()
+        if not release.wait(5):
+            raise RuntimeError("probe was not released")
+        raise RuntimeError("provider unavailable")
 
-    thread = threading.Thread(target=query)
+    ort = types.SimpleNamespace(
+        get_available_providers=lambda: ["CUDAExecutionProvider"],
+        SessionOptions=blocked_options,
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", ort)
+    monkeypatch.setattr(neural_runtime, "_DEVICE", None)
+    monkeypatch.setattr(multi_focus_fusion, "_NEURAL_DEVICE_KIND", None)
+    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", True)
+    thread = threading.Thread(target=lambda: result.append(neural_runtime.resolve_device(True)))
+    query = threading.Thread(target=lambda: (status.append(platform_utils.cached_compute_gpu()),
+                                             status_ready.set()))
+    thread.start()
     try:
-        with backend._LOCK:
-            thread.start()
-            assert finished.wait(2), "GPU menu waited for the device probe"
-        assert result == [False]
+        assert entered.wait(5), "device probe did not start"
+        query.start()
+        assert status_ready.wait(2), "GPU status waited for the device probe"
+        assert status == [True]
     finally:
+        release.set()
         thread.join(timeout=5)
-        platform_utils.reset_gpu_probe_cache()
-        backend.reset_cache()
+        if query.ident is not None:
+            query.join(timeout=5)
+    assert not thread.is_alive()
+    assert result == ["CPU"]
+    assert platform_utils.cached_compute_gpu() is False
 
 
 @pytest.mark.parametrize("kind,label", [
-    ("ROCM", "ROCm"), ("XPU", "XPU"), ("MPS", "MPS"), ("CUDA", "CUDA"),
+    ("DIRECTML", "DirectML"), ("CUDA", "CUDA"), ("ROCM", "ROCm"),
+    ("OPENVINO", "OpenVINO GPU"), ("COREML", "CoreML"), ("CPU", "CPU"),
 ])
 def test_fusion_info_reports_the_backend_label(monkeypatch, kind, label):
     import core.multi_focus_fusion as mff
+    from fusion_methods import neural_runtime
+
     monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
-    monkeypatch.setattr(mff.torch_backend, "probe_kind",
-                        lambda import_if_needed=False: kind)
+    monkeypatch.setattr(neural_runtime, "_DIRECTML_ADAPTER_NAME", "")
+    monkeypatch.setattr(neural_runtime, "actual_device", lambda: None)
+    monkeypatch.setattr(neural_runtime, "resolve_device", lambda use_gpu: kind)
     fusion = mff.MultiFocusFusion("stackmffv3", use_gpu=True)
     assert fusion.get_info()["device"] == label

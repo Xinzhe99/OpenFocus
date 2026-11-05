@@ -33,6 +33,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate license terms documented in `docs/THIRD_PARTY_NOTICES.md`.
 
 ### Fixed
+- Keep the existing GPU hardware hint while an ONNX accelerator probe is running;
+  report the verified result after the probe finishes and identify neural GPU
+  acceleration accurately in feedback diagnostics.
 - Check memory before decoding directory-based registration inputs and include
   retained ECC thumbnails when planning combined alignment.
 - Preserve coverage at fractional mosaic edges and bound streamed TIFF strip

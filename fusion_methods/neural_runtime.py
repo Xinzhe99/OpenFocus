@@ -66,7 +66,7 @@ def resolve_device(use_gpu):
             import onnxruntime as ort
             from utils.weights import weights_path
             available = ort.get_available_providers()
-            _DEVICE = 'CPU'
+            device = 'CPU'
             for kind in ('CUDA', 'ROCM', 'DIRECTML', 'OPENVINO', 'COREML'):
                 if _PROVIDER[kind] not in available:
                     continue
@@ -111,13 +111,14 @@ def resolve_device(use_gpu):
                                 continue
                         if kind == 'DIRECTML':
                             _DIRECTML_ADAPTER_INDEX, _DIRECTML_ADAPTER_NAME = adapter_index, adapter_name
-                        _DEVICE = kind
+                        device = kind
                         break
                     except Exception:
                         _LOG.warning('%s provider probe failed for adapter %s', kind,
                                      adapter_index, exc_info=True)
-                if _DEVICE != 'CPU':
+                if device != 'CPU':
                     break
+            _DEVICE = device
         return _DEVICE
 
 
