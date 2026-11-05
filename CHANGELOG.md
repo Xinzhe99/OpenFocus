@@ -8,6 +8,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - Add Tools → Batch Image Converter for sequential RAW and still-image conversion,
   with numbered TIFF pages, collision-safe output names and cooperative cancellation.
+- Add a separate microscope mosaic workspace with feature-based alignment,
+  manual pixel coordinates, overlap preview and 8/16-bit TIFF/PNG export.
+  Large TIFF mosaics use disk-backed tiled composition and streamed writing.
 
 ### Changed
 - Run StackMFF V1/V2/V3 using dynamic ONNX checkpoints and ONNX Runtime;

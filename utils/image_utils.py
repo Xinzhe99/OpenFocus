@@ -437,15 +437,61 @@ def _encode_tiff_with_exif(image: np.ndarray, exif, icc_profile: bytes = b"") ->
     return head + ifd.tobytes(8) + pixels.tobytes()
 
 
+def _write_streamed_tiff(path, image, should_cancel=None):
+    """Atomically write BGR/BGRA pixels in bounded strips, using BigTIFF as needed."""
+    import tempfile
+    import tifffile
+
+    if (image.ndim != 3 or image.shape[2] not in (3, 4)
+            or image.dtype not in (np.uint8, np.uint16)):
+        raise ValueError('Streaming TIFF requires an 8- or 16-bit BGR/BGRA image')
+    rows_per_strip = min(128, image.shape[0])
+
+    def strips():
+        for start in range(0, image.shape[0], rows_per_strip):
+            if should_cancel is not None and should_cancel():
+                from core.registration import RegistrationCancelled
+                raise RegistrationCancelled()
+            strip = image[start:start + rows_per_strip]
+            if image.shape[2] == 4:
+                rgb = np.concatenate((strip[:, :, 2::-1], strip[:, :, 3:4]), axis=2)
+            else:
+                rgb = np.ascontiguousarray(strip[:, :, ::-1])
+            yield rgb.tobytes()
+
+    fd, temporary = tempfile.mkstemp(suffix='.tif', dir=os.path.dirname(os.path.abspath(path)))
+    os.close(fd)
+    try:
+        tifffile.imwrite(temporary, strips(), shape=image.shape, dtype=image.dtype,
+                         photometric='rgb', planarconfig='contig',
+                         extrasamples=('unassalpha',) if image.shape[2] == 4 else None,
+                         rowsperstrip=rows_per_strip, metadata=None,
+                         bigtiff=image.nbytes >= (2 ** 32 - 2 ** 25))
+        if should_cancel is not None and should_cancel():
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
+        os.replace(temporary, path)
+        return True
+    except OSError:
+        return False
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
                  exif: Optional[bytes] = None, icc_profile: bytes = b"",
                  linear_dng_metadata=None, should_cancel=None,
-                 linear_dng_px_size_um=None) -> bool:
+                 linear_dng_px_size_um=None, *, stream_tiff=False) -> bool:
     """Atomically write pixels, optionally embedding their RGB color profile."""
     import tempfile
 
     path = os.fspath(path)
     ext = os.path.splitext(path)[1].lower()
+    if stream_tiff:
+        if ext not in ('.tif', '.tiff') or exif not in (None, b'') or icc_profile:
+            raise ValueError('Streaming export supports TIFF without EXIF or ICC metadata')
+        return _write_streamed_tiff(path, image, should_cancel)
     if ext == '.dng':
         if linear_dng_metadata is None:
             raise ValueError("Linear DNG export requires camera metadata")

@@ -164,9 +164,26 @@ The top menu bar provides access to all functions:
 
 - **File**: import/export operations, projects, processing templates and the recent-files list
 - **Edit**: Undo/redo, reset the current stack, image transformations and retouching
-- **Tools**: Batch processing, method comparison, depth map, flat-field correction, scale bar and labels
+- **Tools**: Image stitching, batch processing, method comparison, depth map, flat-field correction, scale bar and labels
 - **Settings**: Advanced Settings (performance, registration and alignment diagnostics, sensor cleanup, output naming, AI, startup), GPU acceleration, theme and language
 - **Help**: Environment info, contact information, update check, and the log folder
+
+**Tools → Stitch Images…** opens a separate workspace for already-fused
+microscope regions. Add image files or select existing output results, choose
+**Auto-align**, then inspect each overlap. Drag an image or enter X/Y in pixels
+to correct its placement; the opacity slider changes only the preview. Images
+without reliable shared features stay marked unmatched and can be positioned
+manually, including with known stage coordinates expressed in pixels. No
+image-only method can infer the position of a featureless, non-overlapping
+region. Automatic matching estimates planar rotation, scale and translation;
+verify repeated patterns and specimen motion before saving.
+
+Save as TIFF or PNG. TIFF uses disk-backed tiled composition and strip-based
+writing, including BigTIFF for large files; allow enough temporary and output
+disk space. PNG encoding needs additional memory. Eight-bit inputs remain
+8-bit, while 16-bit or mixed-depth inputs produce 16-bit output. Preview
+opacity is not baked into the image. The mosaic does not infer physical scale
+or carry individual image EXIF/ICC metadata into a combined image.
 
 **Edit → Reset Current Stack…** restores the imported images, their original
 order and import scale, including frames later removed or excluded. It clears

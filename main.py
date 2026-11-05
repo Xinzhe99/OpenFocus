@@ -2084,6 +2084,11 @@ class OpenFocus(QMainWindow):
         if getattr(self, "wipe_active", False):
             self._update_wipe_images()
 
+    def show_mosaic_dialog(self) -> None:
+        """Open the independent planar microscope mosaic workspace."""
+        from dialogs.mosaic import MosaicDialog
+        MosaicDialog(self).exec()
+
     def show_scale_bar_dialog(self) -> None:
         """Configure the exported-image scale bar with a live preview."""
         from dialogs.scalebar import ScaleBarDialog

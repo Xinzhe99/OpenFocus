@@ -243,6 +243,12 @@ def setup_menus(window: QMainWindow) -> None:
     batch_menu.addAction(compare_action)
     window.ui_objs['action_method_compare'] = compare_action
 
+    mosaic_action = QAction(trans.t('mosaic_title'), window)
+    mosaic_action.setProperty('trans_key', 'mosaic_title')
+    mosaic_action.triggered.connect(window.show_mosaic_dialog)
+    batch_menu.addAction(mosaic_action)
+    window.ui_objs['mosaic_title'] = mosaic_action
+
     # Rendering group | analysis group | annotation group
     batch_menu.addSeparator()
 
