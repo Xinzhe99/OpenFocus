@@ -453,19 +453,21 @@ OpenFocus bietet zehn Fusionsalgorithmen plus einen reinen Ausrichtungsmodus. Ei
 - **Algorithmus**: Ein einschaliges Attention-Netz normalisiert die erwartete Fokustiefe und tastet das nächste Quellbild ab. Tiefenindizes hängen von der Stapelreihenfolge ab. **Die Bilder müssen in ihrer ursprünglichen Fokusreihenfolge bleiben** – Umkehren ist deaktiviert
 - **Tiefenkarten**: unterstützt; meldet die abgetastete Fokusebene
 - **Am besten für**: kontinuierliche Fokusserien mit sehr kleinem, schnellem Modell
-- **Voraussetzungen**: PyTorch; etwa 156.172 Parameter; keine Einstellungen
+- **Voraussetzungen**: ONNX Runtime und das mitgelieferte ONNX-Modell.
 
 ### StackMFF V3 (Deep Learning)
 
-- **Algorithmus**: pixelweise Quellklassifikation (erfordert PyTorch). Das Netzwerk sagt für jedes Pixel voraus, aus welchem Eingabebild es stammt, und mischt dann die Bilder entsprechend diesen Wahrscheinlichkeiten oder wählt ein Bild aus
+- **Algorithmus**: pixelweise Quellklassifikation (ONNX Runtime). Das Netzwerk sagt für jedes Pixel voraus, aus welchem Eingabebild es stammt, und mischt dann die Bilder entsprechend diesen Wahrscheinlichkeiten oder wählt ein Bild aus
 - **KI-Ausgabe** (rechter Bereich, nur für diese Methode):
   - **Weiche Mischung (gewichtet)** – Standard; jedes Pixel ist eine wahrscheinlichkeitsgewichtete Mischung der Bilder. Weiche Übergänge, keine harten Nähte; entspricht der im Paper beschriebenen Konfiguration
   - **Harte Auswahl (einzelnes Bild)** – jedes Pixel wird aus dem wahrscheinlichsten Bild kopiert. Schärfere Auswahl ohne Interpolation zwischen den Bildern; wo zwei Bilder gleichauf liegen, kann eine Naht auf Pixelebene entstehen
 - **Am besten für**: höchste Qualität, wenn eine GPU verfügbar ist
-- **Vorteile**: reihenfolgeunabhängig (die Bildreihenfolge ändert das Ergebnis nie), beliebige Stapellänge, keine methodenspezifische Abstimmung, automatische Optimierung
-- **Voraussetzungen**: PyTorch-Installation, optional CUDA-GPU (kein torchvision)
-- **Hinweis**: Möglicherweise nicht verfügbar, wenn PyTorch nicht installiert ist
-- **Standard**: Ohne gespeicherte Auswahl startet eine neue Sitzung mit StackMFF V3. Ist PyTorch nicht verfügbar, meldet OpenFocus das und bietet eine andere Methode an.
+- **Vorteile**: reihenfolgeunabhängig (die Bildreihenfolge ändert das Ergebnis nie), Stapellängen innerhalb der verfügbaren Ressourcen, keine methodenspezifische Abstimmung, automatische Optimierung
+- **Voraussetzungen**: ONNX Runtime und das mitgelieferte ONNX-Modell.
+
+Jede neuronale Kachel verwendet alle Bilder. Quelldaten und Ausrichtungsdaten können auf der Festplatte liegen; freier Speicherplatz und Arbeitsspeicher begrenzen die Stapelgröße. Räumliche V2-Kachelung nähert die Berechnung des Gesamtbilds an.
+
+- **Standard**: StackMFF V3.
 
 ### OpenFocus A / B / C
 
@@ -680,7 +682,7 @@ Der Planer berücksichtigt physische Kerne, CPU-Affinität und Kontingente und f
 
 ### GPU-Beschleunigung
 
-OpenFocus nutzt die GPU (CUDA/MPS) nur für die neuronalen KI-Modelle (StackMFF V1/V2/V3); klassische Algorithmen und die Registrierung der Anwendung laufen auf der CPU. Die ausdrückliche CuPy-Registrierung auf niedriger Ebene ist ein separates numerisches Backend.
+StackMFF V1/V2/V3 nutzen ONNX Runtime. DirectML unter Windows und CoreML unter macOS können die Inferenz beschleunigen; andernfalls wird die CPU verwendet. Die Verfügbarkeit eines Providers belegt keine GPU-Ausführung. Weitere GPU-Unterstützung muss validiert werden.
 
 - Umschalten über **Einstellungen → GPU-Beschleunigung**
 - Deaktivieren zwingt die neuronalen Methoden auf die CPU – nützlich, wenn GPU-Treiber Probleme bereiten
@@ -1011,8 +1013,7 @@ Exit-Codes: `0` Erfolg, `1` Verarbeitungsfehler, `2` Nutzungsfehler. Der Aufruf 
 
 #### KI nicht verfügbar
 
-- PyTorch installieren: `pip install torch` (torchvision wird nicht benötigt)
-- Für GPU-Unterstützung eine CUDA-fähige PyTorch-Version installieren
+- Prüfen Sie ONNX Runtime und das mitgelieferte Modell.
 - Über **Hilfe → Umgebungsinformationen** prüfen
 
 #### Fehler wegen zu wenig Arbeitsspeicher

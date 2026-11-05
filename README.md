@@ -217,6 +217,20 @@ Control the desktop app through a token-protected local channel.
 - **Languages** — twelve UI languages with automatic locale detection.
 - **Memory** — neural models load only when selected.
 
+StackMFF V1/V2/V3 use dynamic ONNX checkpoints and ONNX Runtime; production
+inference does not bundle PyTorch. The current runtime can use DirectML on
+Windows or CoreML on macOS and falls back to CPU when needed. A provider being
+available does not prove GPU execution; support across GPU hardware still needs
+validation. See [GPU support](docs/GPU_SUPPORT.md).
+
+Neural inference adapts spatial tile size to available resources while keeping
+all focal frames in each inference. Imported frames and alignment scratch can
+use disk-backed storage. Large stacks still require enough free temporary disk
+space and available memory for decoding, model workspaces and full-size output;
+they may be rejected when those resources are insufficient. StackMFF V2's
+spatial tiling is an approximation of whole-image inference and can change the
+result. See [fusion methods](docs/FUSION_METHODS.md).
+
 <a id="install"></a>
 ## ⬇️ Install
 

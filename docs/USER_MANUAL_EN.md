@@ -684,11 +684,11 @@ various image types.
 - **Algorithm**: a single-scale attention network normalizes the expected focus depth and samples the nearest source frame. Depth indices depend on stack order. **The frames must stay in their original focus order** — reversing is disabled for this method
 - **Depth maps**: supported; reports the sampled focal layer
 - **Best for**: continuous focus sweeps where a very small, fast model matters
-- **Requirements**: PyTorch; about 156,172 parameters; no settings
+- **Requirements**: ONNX Runtime and the bundled ONNX model.
 
 ### StackMFF V3 (Deep Learning)
 
-- **Algorithm**: Pixel-wise source classification (requires PyTorch). The
+- **Algorithm**: Pixel-wise source classification (ONNX Runtime). The
   network predicts, for every pixel, which input frame it comes from, then
   either blends the frames by those probabilities or picks one frame
 - **AI output mode** (right panel, only for this method):
@@ -702,9 +702,11 @@ various image types.
     region and use retouching to repair local defects.
 - **Best for**: Per-pixel selection or blending of focus frames
 - **Advantages**: Order-invariant (frame order never changes the result),
-  handles any stack length, no per-method tuning, automatic optimization
-- **Requirements**: PyTorch installation, optional CUDA GPU (no torchvision)
-- **Note**: May be unavailable if PyTorch is not installed
+  handles stack lengths within available resources, no per-method tuning, automatic optimization
+- **Requirements**: ONNX Runtime and the bundled ONNX model.
+
+
+Each neural tile uses every frame. Source frames and alignment scratch can be disk-backed, but free disk space and available memory still limit stack size. V2 spatial tiling approximates whole-image inference.
 
 ### OpenFocus A / B / C
 
@@ -1125,12 +1127,8 @@ unchanged; choosing smaller tiles yourself can change output pixels.
 
 ### GPU Acceleration Toggle
 
-OpenFocus uses the GPU (CUDA/MPS) for the AI neural models (StackMFF V1/V2/V3); classical algorithms and application registration run on CPU. Explicit low-level CuPy registration is a separate numerical backend.
+StackMFF V1/V2/V3 use ONNX Runtime. DirectML on Windows and CoreML on macOS may accelerate inference; otherwise it runs on CPU. Provider availability alone does not prove GPU execution. Wider GPU support requires validation.
 
-Windows release builds bundle CUDA-enabled PyTorch for NVIDIA GPUs with a
-compatible driver; Apple Silicon uses MPS. The current Windows package does not
-provide an AMD or Intel GPU inference backend. GPU memory does not replace the
-system RAM used by registration and the image stack.
 
 - Toggle via **Settings → GPU Acceleration**
 - Unchecking forces neural methods onto the CPU — useful when GPU drivers misbehave
@@ -1612,8 +1610,7 @@ Exit codes: `0` success, `1` processing error, `2` usage error. Running
 
 #### AI Unavailable
 
-- Install PyTorch: `pip install torch` (torchvision is not used)
-- For GPU support, install a CUDA-enabled PyTorch build
+- Check that ONNX Runtime and the bundled model are installed.
 - Check via **Help → Environment Info**
 
 #### Out of Memory Errors

@@ -395,21 +395,23 @@ OpenFocus oferuje dziesięć algorytmów fuzji plus tryb tylko wyrównania. W no
 
 ### StackMFF V3 (domyślnie, uczenie głębokie)
 
-- **Algorytm**: klasyfikacja źródła dla każdego piksela (wymaga PyTorch). Sieć przewiduje dla każdego piksela, z której klatki wejściowej pochodzi, a następnie albo miesza klatki według tych prawdopodobieństw, albo wybiera jedną klatkę
+- **Algorytm**: ONNX Runtime i dołączony model ONNX.
 - **Tryb wyjścia AI** (prawy panel, tylko dla tej metody):
   - **Miękkie mieszanie (ważone)** — domyślnie; każdy piksel to ważona prawdopodobieństwami mieszanka klatek. Płynne przejścia, bez twardych szwów; odpowiada konfiguracji z artykułu
   - **Twardy wybór (jedna klatka)** — każdy piksel jest kopiowany z najbardziej prawdopodobnej klatki. Ostrzejszy wybór bez interpolacji między klatkami; na granicy dwóch równie prawdopodobnych klatek może pojawić się szew
 - **Najlepsza do**: najwyższej jakości, gdy dostępny jest GPU
-- **Zalety**: niezależna od kolejności klatek, obsługuje stos o dowolnej długości, nie wymaga strojenia parametrów, optymalizuje się automatycznie
-- **Wymagania**: zainstalowany PyTorch, opcjonalny GPU CUDA (torchvision nie jest potrzebny)
-- **Uwaga**: może być niedostępna, jeśli PyTorch nie jest zainstalowany
+- **Zalety**: niezależna od kolejności klatek, obsługuje stos w granicach dostępnych zasobów, nie wymaga strojenia parametrów, optymalizuje się automatycznie
+- **Wymagania**: ONNX Runtime i dołączony model ONNX.
+
+Każdy kafelek sieci używa wszystkich klatek. Klatki źródłowe i dane tymczasowe wyrównania mogą być przechowywane na dysku; wolne miejsce i dostępna pamięć ograniczają wielkość stosu. Kafelkowanie przestrzenne V2 przybliża wnioskowanie dla całego obrazu.
+
 
 ### StackMFF V2 (uczenie głębokie)
 
 - **Algorytm**: jednoskalowa sieć uwagi normalizuje oczekiwaną głębię ostrości i próbkuje najbliższą klatkę źródłową. Indeksy głębi zależą od kolejności stosu. **Klatki muszą zachować oryginalną kolejność ogniskowania** — odwrócenie jest dla tej metody wyłączone
 - **Mapy głębi**: obsługiwane; podają próbkowaną warstwę ogniskową
 - **Najlepsza do**: ciągłych serii ogniskowania, gdzie liczy się bardzo mały, szybki model
-- **Wymagania**: PyTorch; około 156 172 parametrów; bez parametrów użytkownika
+- **Wymagania**: ONNX Runtime i dołączony model ONNX.
 
 ### StackMFF (V1, uczenie głębokie)
 
@@ -662,7 +664,7 @@ Planista uwzględnia fizyczne rdzenie, powinowactwo CPU i limity oraz uruchamia 
 
 ### Akceleracja GPU
 
-OpenFocus używa GPU (CUDA/MPS) dla modeli neuronowych AI (StackMFF V1/V2/V3); algorytmy klasyczne i rejestracja aplikacji działają na CPU. Jawne niskopoziomowe wyrównanie CuPy jest osobnym backendem numerycznym.
+StackMFF V1/V2/V3 używają ONNX Runtime. DirectML w Windows i CoreML w macOS mogą przyspieszać wnioskowanie; w przeciwnym razie używany jest CPU. Dostępność dostawcy nie dowodzi wykonania na GPU. Obsługa innych GPU wymaga weryfikacji.
 
 - Przełącznik znajduje się w **Ustawienia → Akceleracja GPU**
 - Odznaczenie wymusza metody neuronowe na CPU — przydatne, gdy sterowniki GPU działają niepoprawnie
@@ -1017,8 +1019,7 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 
 #### AI niedostępne
 
-- Zainstaluj PyTorch: `pip install torch`
-- Dla pracy na GPU zainstaluj kompilację PyTorch z CUDA
+- Sprawdź ONNX Runtime i dołączony model.
 - Sprawdź przez **Pomoc → Informacje o środowisku**
 - StackMFF V3 nie wymaga torchvision
 

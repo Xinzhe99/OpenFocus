@@ -415,20 +415,22 @@ O OpenFocus oferece dez algoritmos de fusão (além de um modo somente alinhamen
 - **Algoritmo**: uma rede de atenção de escala única normaliza a profundidade de foco esperada e amostra o quadro de origem mais próximo. Os índices de profundidade dependem da ordem da pilha. **Os quadros devem manter sua ordem original de foco** — a inversão é desativada para este método
 - **Mapas de profundidade**: suportados; informa a camada focal amostrada
 - **Ideal para**: varreduras de foco contínuas em que um modelo muito pequeno e rápido importa
-- **Requisitos**: PyTorch; cerca de 156.172 parâmetros; sem configurações
+- **Requisitos**: ONNX Runtime e o modelo ONNX incluído.
 
 ### StackMFF V3 (aprendizado profundo)
 
 É o método pré-selecionado em uma nova instalação.
 
-- **Algoritmo**: classificação de origem pixel a pixel (requer PyTorch). A rede prediz, para cada pixel, de qual imagem de entrada ele vem, e então mistura as imagens por essas probabilidades ou escolhe uma imagem
+- **Algoritmo**: classificação de origem pixel a pixel (ONNX Runtime). A rede prediz, para cada pixel, de qual imagem de entrada ele vem, e então mistura as imagens por essas probabilidades ou escolhe uma imagem
 - **Modo de saída de IA** (painel direito, apenas para este método):
   - **Mistura suave (ponderada)** — padrão; cada pixel é uma mistura das imagens ponderada por probabilidade. Transições suaves, sem emendas duras; corresponde à configuração relatada no artigo
   - **Escolha rígida (quadro único)** — cada pixel é copiado do quadro mais provável. Seleção mais nítida, sem interpolação entre quadros; uma emenda no nível do pixel pode aparecer onde dois quadros empatam
 - **Ideal para**: qualidade máxima quando há GPU disponível
-- **Vantagens**: invariante à ordem (a ordem dos quadros nunca muda o resultado), lida com qualquer comprimento de pilha, sem ajuste por método, otimização automática
-- **Requisitos**: PyTorch instalado, GPU CUDA opcional (sem torchvision)
-- **Nota**: pode ficar indisponível se o PyTorch não estiver instalado
+- **Vantagens**: invariante à ordem (a ordem dos quadros nunca muda o resultado), aceita pilhas dentro dos recursos disponíveis, sem ajuste por método, otimização automática
+- **Requisitos**: ONNX Runtime e o modelo ONNX incluído.
+
+Cada bloco neural usa todos os quadros. Quadros de origem e dados temporários de alinhamento podem usar o disco; espaço livre e memória disponível limitam o tamanho da pilha. Os blocos espaciais de V2 aproximam a inferência da imagem inteira.
+
 
 ### OpenFocus A / B / C
 
@@ -642,7 +644,7 @@ O planejador considera núcleos físicos, afinidade e cotas de CPU, e executa um
 
 ### Aceleração por GPU
 
-O OpenFocus usa a GPU (CUDA/MPS) para os modelos neurais de IA (StackMFF V1/V2/V3); algoritmos clássicos e o registro do aplicativo rodam na CPU. O registro de baixo nível opcional com CuPy é um backend numérico separado.
+StackMFF V1/V2/V3 usam ONNX Runtime. DirectML no Windows e CoreML no macOS podem acelerar a inferência; caso contrário, usa-se a CPU. A disponibilidade do provedor não comprova execução na GPU. O suporte a outras GPUs requer validação.
 
 - Alterne em **Configurações → Aceleração por GPU**
 - Desmarcar força os métodos neurais na CPU — útil quando drivers de GPU dão problema
@@ -967,8 +969,7 @@ Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Exe
 
 #### IA indisponível
 
-- Instale o PyTorch: `pip install torch` (torchvision não é usado)
-- Para suporte a GPU, instale o PyTorch com CUDA
+- Verifique o ONNX Runtime e o modelo incluído.
 - Verifique em **Ajuda → Informações do ambiente**
 
 #### Erros de falta de memória

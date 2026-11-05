@@ -6,19 +6,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- Run StackMFF V1/V2/V3 using dynamic ONNX checkpoints and ONNX Runtime;
+  production inference no longer bundles PyTorch. The current provider path
+  supports DirectML on Windows and CoreML on macOS with CPU fallback; wider GPU
+  support and target hardware behavior still require validation.
+- Adapt neural spatial tile sizes to available resources while retaining the
+  complete focal stack in each inference. V2 spatial tiling approximates
+  whole-image inference. Source frames and alignment scratch can be disk-backed;
+  available memory and temporary disk space still limit feasible stack sizes.
 - Replace StackMFF V1 and V2 with retrained attention-backbone models. V1
   blends source luma using the released two-scale inference settings; V2 keeps
-  sampled-layer depth output and preserves focus order. Both use approximately
-  659 KB checkpoints and share V3 resource planning. The retrained models have
+  sampled-layer depth output and preserves focus order. The retrained models have
   separate license terms documented in `docs/THIRD_PARTY_NOTICES.md`.
 
 ### Fixed
 - Develop camera-linear RAW pixels before exporting a depth-rendered TIFF, and
   use each aligned history entry's own calibration in the label preview.
-- Isolate ROCm availability checks so a failing native driver probe cannot
-  terminate the desktop process; actual AMD hardware validation is pending.
-- Include and check the ROCm development resources needed by runtime kernel
-  compilation in AMD preview bundles.
 - Preserve the original startup failure when the packaged desktop smoke check
   must terminate a process holding diagnostic files open.
 - Align the website navigation download button and show Windows and macOS

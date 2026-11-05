@@ -26,6 +26,18 @@ the expected focus depth and samples the nearest source frame; its depth indices
 depend on stack order.
 Both methods have no user-adjustable settings.
 
+StackMFF V1/V2/V3 use dynamic ONNX models. Neural spatial tiling adapts to
+available resources and passes every focal frame to each tile; it does not
+reduce the stack to fit memory. V2 combines tiled expected layer positions
+before global normalization and source selection. Because model predictions
+can change at spatial tile boundaries, this is an approximation of whole-image
+inference, not a guarantee of identical results.
+
+Imported frames and alignment scratch can be disk-backed, reducing resident
+stack storage. Decoding, inference workspaces and full-size outputs still need
+available RAM, while temporary frame and alignment data need free disk space.
+Very large inputs can exceed either limit and fail with a resource error.
+
 ## Depth maps
 
 Focus-position maps are available for DCT, DTCWT, GFG-FGF, OpenFocus B,

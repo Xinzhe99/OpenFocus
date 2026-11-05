@@ -453,19 +453,21 @@ OpenFocus biedt tien fusiealgorithmen plus een modus met alleen uitlijning. Een 
 - **Algoritme**: een aandacht netwerk op één schaal normaliseert de verwachte focusediepte en bemonstert het dichtstbijzijnde bronframe. Diepte-indices hangen af van de stapelvolgorde. **De frames moeten in hun oorspronkelijke focusvolgorde blijven** — omkeren is voor deze methode uitgeschakeld
 - **Dieptekaarten**: ondersteund; meldt de bemonsterde focuslaag
 - **Het beste voor**: continue focusreeksen waarbij een zeer klein, snel model belangrijk is
-- **Vereisten**: PyTorch; ongeveer 156.172 parameters; geen instellingen
+- **Vereisten**: ONNX Runtime en het meegeleverde ONNX-model.
 
 ### StackMFF V3 (deep learning)
 
-- **Algoritme**: pixelgewijze bronclassificatie (vereist PyTorch). Het netwerk voorspelt voor elke pixel uit welk invoerframe die komt en mengt de frames vervolgens op basis van die waarschijnlijkheden of kiest één frame
+- **Algoritme**: pixelgewijze bronclassificatie (ONNX Runtime). Het netwerk voorspelt voor elke pixel uit welk invoerframe die komt en mengt de frames vervolgens op basis van die waarschijnlijkheden of kiest één frame
 - **AI-uitvoer** (rechterpaneel, alleen voor deze methode):
   - **Zachte menging (gewogen)** — standaard; elke pixel is een waarschijnlijkheidsgewogen mix van de frames. Vloeiende overgangen, geen harde naden; komt overeen met de in het paper gerapporteerde configuratie
   - **Harde keuze (één frame)** — elke pixel wordt gekopieerd uit het waarschijnlijkste frame. Scherpere selectie zonder interpolatie tussen frames; waar twee frames gelijk staan, kan een naad op pixelniveau verschijnen
 - **Het beste voor**: hoogste kwaliteit wanneer een GPU beschikbaar is
-- **Voordelen**: volgordeonafhankelijk (de framevolgorde verandert het resultaat nooit), elke stapellengte, geen methode-specifieke afstelling, automatische optimalisatie
-- **Vereisten**: PyTorch-installatie, optionele CUDA-GPU (geen torchvision)
-- **Opmerking**: mogelijk niet beschikbaar als PyTorch niet is geïnstalleerd
-- **Standaard**: Zonder opgeslagen keuze start een nieuwe sessie met StackMFF V3. Als PyTorch niet beschikbaar is, meldt OpenFocus dat en biedt het een andere methode aan.
+- **Voordelen**: volgordeonafhankelijk (de framevolgorde verandert het resultaat nooit), stapellengtes binnen de beschikbare middelen, geen methode-specifieke afstelling, automatische optimalisatie
+- **Vereisten**: ONNX Runtime en het meegeleverde ONNX-model.
+
+Elke neurale tegel gebruikt alle frames. Bronframes en tijdelijke uitlijngegevens kunnen op schijf staan; vrije schijfruimte en beschikbaar geheugen begrenzen de stapelgrootte. Ruimtelijke V2-tegels benaderen inferentie op de volledige afbeelding.
+
+- **Standaard**: StackMFF V3.
 
 ### OpenFocus A / B / C
 
@@ -680,7 +682,7 @@ De planner houdt rekening met fysieke cores, CPU-affiniteit en quota en voert é
 
 ### GPU-versnelling
 
-OpenFocus gebruikt de GPU (CUDA/MPS) alleen voor de neurale AI-modellen (StackMFF V1/V2/V3); klassieke algoritmen en de registratie van de toepassing draaien op de CPU. De uitdrukkelijke CuPy-registratie op laag niveau is een aparte numerieke backend.
+StackMFF V1/V2/V3 gebruiken ONNX Runtime. DirectML op Windows en CoreML op macOS kunnen inferentie versnellen; anders wordt de CPU gebruikt. Beschikbaarheid van een provider bewijst geen GPU-uitvoering. Ondersteuning voor andere GPU’s vereist validatie.
 
 - Schakel via **Instellingen → GPU-versnelling**
 - Uitschakelen dwingt de neurale methoden naar de CPU — nuttig wanneer GPU-stuurprogramma's problemen geven
@@ -1011,8 +1013,7 @@ Exitcodes: `0` succes, `1` verwerkingsfout, `2` gebruiksfout. `python main.py --
 
 #### AI niet beschikbaar
 
-- Installeer PyTorch: `pip install torch` (torchvision is niet nodig)
-- Installeer voor GPU-ondersteuning een CUDA-versie van PyTorch
+- Controleer ONNX Runtime en het meegeleverde model.
 - Controleer via **Help → Omgevingsinfo**
 
 #### Fouten door te weinig geheugen

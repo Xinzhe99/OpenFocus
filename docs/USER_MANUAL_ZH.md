@@ -569,11 +569,11 @@ OpenFocus 提供十种融合算法（外加"仅对齐"的配准模式），各�
   **必须保持原始对焦顺序**——该方法已禁用反序
 - **深度图**：支持；给出取样的对焦层
 - **适用**：连续对焦扫描，且需要极小、快速模型的场景
-- **要求**：PyTorch；约 156,172 个参数；无需参数
+- **要求**：ONNX Runtime 和随附的 ONNX 模型。
 
 ### StackMFF V3（深度学习）
 
-- **算法**：逐像素来源分类（需要 PyTorch）。网络为每个像素预测它最可能
+- **算法**：逐像素来源分类(ONNX Runtime)。网络为每个像素预测它最可能
   来自输入栈中的哪一帧，再按概率混合，或直接取该帧
 - **AI 输出方式**（右侧面板，仅选中本方法时出现）：
   - **软融合（概率加权）**——默认；每个像素由各帧按概率加权混合，过渡
@@ -582,9 +582,11 @@ OpenFocus 提供十种融合算法（外加"仅对齐"的配准模式），各�
     分块重叠处选择距瓦片内部更近的结果。它可能减少细毛边缘的混色，也可能出现
     锯齿或瓦片接缝，并不保证前后遮挡正确；可在 ROI 对比并用修饰工具局部修复
 - **适用**：需要逐像素选择或混合焦点帧的场景
-- **优点**：与帧序无关（打乱顺序结果不变）、支持任意栈长、无需逐方法调参
-- **要求**：安装 PyTorch，可选 CUDA GPU（不需要 torchvision）
-- **注意**：未安装 PyTorch 时该选项不可用
+- **优点**：与帧序无关（打乱顺序结果不变）、支持资源允许范围内的栈长、无需逐方法调参
+- **要求**：ONNX Runtime 和随附的 ONNX 模型。
+
+每个神经网络图块都使用全部帧。源帧和配准临时数据可以存放在磁盘上，但空闲磁盘空间和可用内存仍会限制栈大小。V2 空间分块是整图推理的近似。
+
 
 ### OpenFocus A / B / C
 
@@ -908,11 +910,8 @@ GUI 图像栈做过旋转、翻转、平场校正或其他源修改后，不能�
 
 ### GPU 加速开关
 
-OpenFocus 的 AI 神经网络模型（StackMFF V1/V2/V3）可使用 GPU（CUDA/MPS）；经典算法和应用内配准使用 CPU。底层 API 显式选择的 CuPy 配准属于独立数值后端。
+StackMFF V1/V2/V3 使用 ONNX Runtime。Windows 的 DirectML 和 macOS 的 CoreML 可能加速推理，否则使用 CPU。仅凭提供程序可用不能证明实际使用了 GPU。其他 GPU 的支持仍需验证。
 
-Windows 发布包包含 CUDA 版 PyTorch，支持具备兼容驱动的 NVIDIA CUDA 显卡；
-Apple Silicon 使用 MPS。当前安装包未提供 Windows AMD/Intel 的 GPU 推理后端。
-显存不能代替配准和图像栈使用的系统内存，GPU 不会消除所有内存限制。
 
 - 通过 **设置 → GPU 加速** 开关切换
 - 取消勾选后 AI 方法强制使用 CPU——GPU 驱动异常时非常有用
@@ -1309,8 +1308,7 @@ openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2
 
 #### StackMFF V3 不可用
 
-- 安装 PyTorch：`pip install torch`（不需要 torchvision）
-- GPU 加速请安装 CUDA 版 PyTorch
+- 检查 ONNX Runtime 和随附模型。
 - 通过 **帮助 → 环境信息** 检查安装状态
 
 #### 内存不足（OOM）
