@@ -541,6 +541,7 @@ PACK = {
     "btn_compare_stop": "Остановить",
     "msg_compare_progress": "Сравнение методов {i}/{n}: {method}",
     "msg_compare_done": "Сравнение завершено: результатов в списке — {count}. Откройте «Шторку» и двигайте сторону B для сравнения.",
+    "msg_compare_skipped": "Отрендерено методов: {done} из {total}. Эти методы не удалось запустить, они пропущены:",
     "welcome_title": "Добро пожаловать в OpenFocus",
     "welcome_choose_theme": "Тема:",
     "msg_demo_missing": "Встроенный демонстрационный стек не найден (нет папки demo_stack)",

@@ -541,6 +541,7 @@ PACK = {
     "btn_compare_stop": "Stopp",
     "msg_compare_progress": "Vergleiche Methoden {i}/{n}: {method}",
     "msg_compare_done": "Vergleich abgeschlossen: {count} Ergebnisse in der Ausgabeliste. Wischen öffnen und Seite B verschieben, um sie zu vergleichen.",
+    "msg_compare_skipped": "{done} von {total} Methoden gerendert. Diese konnten nicht laufen und wurden übersprungen:",
     "welcome_title": "Willkommen bei OpenFocus",
     "welcome_choose_theme": "Design:",
     "msg_demo_missing": "Mitgelieferter Demo-Stack nicht gefunden (Ordner demo_stack fehlt)",

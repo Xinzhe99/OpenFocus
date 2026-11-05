@@ -540,6 +540,7 @@ EN = {
     "btn_compare_stop": "Stop",
     "msg_compare_progress": "Comparing methods {i}/{n}: {method}",
     "msg_compare_done": "Comparison finished: {count} results in the output list. Open Wipe and scrub side B to compare them.",
+    "msg_compare_skipped": "Rendered {done} of {total} methods. These could not run and were skipped:",
     "welcome_title": "Welcome to OpenFocus",
     "welcome_choose_theme": "Theme:",
     "msg_demo_missing": "Bundled demo stack not found (demo_stack folder missing)",

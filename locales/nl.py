@@ -541,6 +541,7 @@ PACK = {
     "btn_compare_stop": "Stoppen",
     "msg_compare_progress": "Methoden vergelijken {i}/{n}: {method}",
     "msg_compare_done": "Vergelijking klaar: {count} resultaten in de uitvoerlijst. Open Vegen en schuif kant B om ze te vergelijken.",
+    "msg_compare_skipped": "{done} van {total} methoden gerenderd. Deze konden niet draaien en zijn overgeslagen:",
     "welcome_title": "Welkom bij OpenFocus",
     "welcome_choose_theme": "Thema:",
     "msg_demo_missing": "Meegeleverde demostapel niet gevonden (map demo_stack ontbreekt)",

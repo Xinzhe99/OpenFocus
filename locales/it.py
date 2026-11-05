@@ -541,6 +541,7 @@ PACK = {
     "btn_compare_stop": "Interrompi",
     "msg_compare_progress": "Confronto dei metodi {i}/{n}: {method}",
     "msg_compare_done": "Confronto completato: {count} risultati nell'elenco output. Apri Wipe e scorri il lato B per confrontarli.",
+    "msg_compare_skipped": "Renderizzati {done} metodi su {total}. Questi non sono stati eseguiti e sono stati saltati:",
     "welcome_title": "Benvenuto in OpenFocus",
     "welcome_choose_theme": "Tema:",
     "msg_demo_missing": "Stack demo incluso non trovato (cartella demo_stack mancante)",

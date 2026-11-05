@@ -541,6 +541,7 @@ PACK = {
     "btn_compare_stop": "Arrêter",
     "msg_compare_progress": "Comparaison des méthodes {i}/{n} : {method}",
     "msg_compare_done": "Comparaison terminée : {count} résultats dans la liste de sortie. Ouvrez Balayage et faites glisser le côté B pour les comparer.",
+    "msg_compare_skipped": "{done} méthodes sur {total} rendues. Celles-ci n'ont pas pu s'exécuter et ont été ignorées :",
     "welcome_title": "Bienvenue dans OpenFocus",
     "welcome_choose_theme": "Thème :",
     "msg_demo_missing": "Pile de démonstration introuvable (dossier demo_stack manquant)",
