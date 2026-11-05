@@ -1,6 +1,5 @@
 """Offscreen GUI tests: settings persistence round-trip and the wipe widget."""
 import os
-import shutil
 import tempfile
 
 import cv2
@@ -23,21 +22,12 @@ def qapp():
 
 
 @pytest.fixture()
-def clean_settings():
-    # The cached QSettings keeps serving the previous values after a bare
-    # directory wipe (and then writes them back), so reset it around the wipe.
+def clean_settings(tmp_path, monkeypatch):
     from utils.settings_store import reset_settings_singleton
     reset_settings_singleton()
-    shutil.rmtree(TEMP_SETTINGS, ignore_errors=True)
-    os_makedirs(TEMP_SETTINGS)
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(tmp_path))
     yield
     reset_settings_singleton()
-    shutil.rmtree(TEMP_SETTINGS, ignore_errors=True)
-
-
-def os_makedirs(path):
-    import os
-    os.makedirs(path, exist_ok=True)
 
 
 def test_settings_round_trip(qapp, clean_settings):

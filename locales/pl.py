@@ -1,8 +1,8 @@
 """Polish language pack for OpenFocus."""
 
 PACK = {
-    "usage_opt_in": "Udostępniaj anonimowe statystyki użycia",
-    "usage_disclosure": "Czy zezwolić OpenFocus na wysyłanie do openfocus.top najwyżej raz dziennie losowego identyfikatora instalacji, wersji aplikacji i systemu operacyjnego? Pomaga to oszacować liczbę aktywnych instalacji. Dane obrazów ani nazwy plików nie są wysyłane. Wyłączenie w ustawieniach usuwa lokalny identyfikator.",
+    "usage_opt_in": "Udostępniaj statystyki użycia",
+    "usage_disclosure": "Czy zezwolić OpenFocus na wysyłanie do openfocus.top losowego identyfikatora instalacji, wersji aplikacji i systemu operacyjnego? Pomaga to oszacować liczbę aktywnych instalacji. Dane obrazów ani nazwy plików nie są wysyłane. Wyłączenie w ustawieniach usuwa lokalny identyfikator.",
     "magnifier_hint": "Przytrzymaj lewy przycisk myszy, aby użyć lupy; kółko zmienia powiększenie, a Ctrl+kółko rozmiar lupy.",
     "mosaic_title": "Połącz obrazy…",
     "mosaic_intro": "Dodaj obrazy po fuzji, wyrównaj je lub przeciągnij i sprawdź nakładanie. X/Y są w pikselach; kółko zmienia skalę. Krycie dotyczy tylko podglądu.",

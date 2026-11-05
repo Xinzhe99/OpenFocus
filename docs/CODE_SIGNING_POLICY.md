@@ -8,6 +8,6 @@ signing status of each build.
 - **Committers and reviewers**: the project maintainers with write access to the
   [GitHub repository](https://github.com/Xinzhe99/OpenFocus).
 - **Approvers**: repository owner [@Xinzhe99](https://github.com/Xinzhe99).
-- **Privacy**: OpenFocus collects no telemetry and uploads no user data. Desktop
-  update checks, release notes and update downloads use `openfocus.top`; see the
-  [Privacy Policy](PRIVACY.md).
+- **Privacy**: Desktop update checks, release notes and update downloads use
+  `openfocus.top`. Optional usage reporting is disabled by default; see the
+  [Privacy Policy](PRIVACY.md) for details.

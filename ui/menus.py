@@ -388,11 +388,16 @@ def setup_menus(window: QMainWindow) -> None:
     def set_usage_enabled(enabled):
         if enabled:
             from PyQt6.QtWidgets import QMessageBox
-            answer = QMessageBox.question(window, trans.t('usage_opt_in'),
-                                          trans.t('usage_disclosure'),
-                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                          QMessageBox.StandardButton.No)
-            if answer != QMessageBox.StandardButton.Yes:
+            from utils.ui_utils import style_message_box
+            box = style_message_box(QMessageBox(window))
+            box.setWindowTitle(trans.t('usage_opt_in'))
+            box.setText(trans.t('usage_disclosure'))
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            box.button(QMessageBox.StandardButton.Yes).setText(trans.t('btn_continue'))
+            box.button(QMessageBox.StandardButton.No).setText(trans.t('btn_cancel_generic'))
+            box.setDefaultButton(QMessageBox.StandardButton.No)
+            if box.exec() != QMessageBox.StandardButton.Yes:
                 usage_action.setChecked(False)
                 return
         window.usage_analytics.set_enabled(enabled)

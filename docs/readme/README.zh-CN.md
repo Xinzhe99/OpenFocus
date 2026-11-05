@@ -277,7 +277,7 @@ openfocus -i ./stack_folder -o ./result/fused.png
 
 <img src="../../assets/readme/wechat-group.jpg" alt="OpenFocus 微信交流群二维码" width="260">
 
-**支持项目：** 如果你觉得 OpenFocus 不错，欢迎通过支付宝请我们喝杯咖啡。
+**支持项目：** 如果你觉得 OpenFocus 不错，欢迎在国内通过支付宝或在海外通过 [PayPal](https://paypal.me/XinZEN0602) 请我们喝杯咖啡。如果在付款备注中留下用户名，我们会将其永久记录在项目中，表达感谢。
 
 <img src="../../assets/readme/alipay-coffee.jpg" alt="通过支付宝支持 OpenFocus 的二维码" width="260">
 

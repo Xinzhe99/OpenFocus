@@ -1029,7 +1029,7 @@ section's saved batch limit is retained, but inference currently submits one
 tile per call; registration width can change alignment accuracy.
 Alignment-diagnostic collection is a checkbox in the Registration section.
 
-**Settings → Share anonymous usage statistics** is off by default. If you
+**Settings → Share usage statistics** is off by default. If you
 consent, OpenFocus sends a random installation ID, application version and
 operating system to openfocus.top, at most once per day after a successful
 send. No image data or filenames are sent. The ID is pseudonymous: reports

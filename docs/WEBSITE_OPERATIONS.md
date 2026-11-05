@@ -111,8 +111,8 @@ Every page and asset request therefore counts as a Worker invocation.
 
 ### Optional private analytics
 
-The Worker can count download starts and receive anonymous-by-default, opt-in
-desktop activity reports using a D1 binding named `ANALYTICS`. Without the
+The Worker can count download starts and receive opt-in desktop activity
+reports using a D1 binding named `ANALYTICS`. Without the
 binding downloads continue normally and the usage API returns `503`. The
 database and bearer secret must be provisioned before deploying analytics:
 

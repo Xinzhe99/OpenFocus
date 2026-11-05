@@ -1,8 +1,8 @@
 """German language pack for OpenFocus."""
 
 PACK = {
-    "usage_opt_in": "Anonyme Nutzungsstatistik teilen",
-    "usage_disclosure": "Darf OpenFocus höchstens einmal täglich eine zufällige Installationskennung, die Programmversion und das Betriebssystem an openfocus.top senden? Dies dient zur Schätzung aktiver Installationen. Bilddaten und Dateinamen werden nicht gesendet. In den Einstellungen abschaltbar; dabei wird die lokale Kennung gelöscht.",
+    "usage_opt_in": "Nutzungsstatistik teilen",
+    "usage_disclosure": "Darf OpenFocus eine zufällige Installationskennung, die Programmversion und das Betriebssystem an openfocus.top senden? Dies dient zur Schätzung aktiver Installationen. Bilddaten und Dateinamen werden nicht gesendet. In den Einstellungen abschaltbar; dabei wird die lokale Kennung gelöscht.",
     "magnifier_hint": "Linke Maustaste für die Lupe halten; Mausrad ändert die Vergrößerung, Strg+Mausrad die Lupengröße.",
     "mosaic_title": "Bilder zusammensetzen…",
     "mosaic_intro": "Fertige Bilder hinzufügen, automatisch ausrichten oder verschieben und Überlappungen prüfen. X/Y in Pixeln; Mausrad zoomt. Deckkraft gilt nur für die Vorschau.",

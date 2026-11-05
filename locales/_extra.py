@@ -12,8 +12,8 @@ This file is generated wholesale; edit values in place, not by patching.
 
 EXTRA_TRANSLATIONS = {
     "ja": {
-        "usage_opt_in": "匿名の利用統計を共有",
-        "usage_disclosure": "アクティブなインストール数を推定するため、OpenFocus がランダムなインストール ID、アプリのバージョン、OS を最大1日1回 openfocus.top に送信することを許可しますか？画像データやファイル名は送信しません。設定でオフにするとローカル ID は削除されます。",
+        "usage_opt_in": "利用統計を共有",
+        "usage_disclosure": "アクティブなインストール数を推定するため、OpenFocus がランダムなインストール ID、アプリのバージョン、OS を openfocus.top に送信することを許可しますか？画像データやファイル名は送信しません。設定でオフにするとローカル ID は削除されます。",
         "magnifier_hint": "左ボタンを押したまま拡大鏡を表示します。ホイールで倍率、Ctrl+ホイールで拡大鏡の大きさを調整します。",
         "mosaic_title": "画像をつなぐ…",
         "mosaic_intro": "合成画像を追加し、自動整列またはドラッグで配置して重なりを確認します。X/Y はピクセル、ホイールで拡大します。不透明度はプレビューのみです。",
@@ -1101,8 +1101,8 @@ EXTRA_TRANSLATIONS = {
         "converter_summary": "成功: {success} · 失敗: {failed} {cancelled}",
     },
     "es": {
-        "usage_opt_in": "Compartir estadísticas de uso anónimas",
-        "usage_disclosure": "¿Permitir que OpenFocus envíe a openfocus.top, como máximo una vez al día, un identificador aleatorio de instalación, la versión de la aplicación y el sistema operativo? Esto ayuda a estimar las instalaciones activas. No se envían imágenes ni nombres de archivos. Al desactivarlo en Ajustes se elimina el identificador local.",
+        "usage_opt_in": "Compartir estadísticas de uso",
+        "usage_disclosure": "¿Permitir que OpenFocus envíe a openfocus.top un identificador aleatorio de instalación, la versión de la aplicación y el sistema operativo? Esto ayuda a estimar las instalaciones activas. No se envían imágenes ni nombres de archivos. Al desactivarlo en Ajustes se elimina el identificador local.",
         "magnifier_hint": "Mantén pulsado el botón izquierdo para usar la lupa; la rueda cambia el aumento y Ctrl+rueda cambia el tamaño de la lupa.",
         "mosaic_title": "Unir imágenes…",
         "mosaic_intro": "Añade imágenes fusionadas, alinea o arrástralas y revisa los solapes. X/Y son píxeles; la rueda amplía. La opacidad solo afecta a la vista previa.",

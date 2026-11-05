@@ -6,7 +6,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- Add optional, default-off anonymous usage statistics with per-installation daily reporting and a Settings consent control.
+- Add optional, default-off usage statistics with pseudonymous per-installation daily reporting and a Settings consent control.
 - Add Tools → Batch Image Converter for sequential RAW and still-image conversion,
   with numbered TIFF pages, collision-safe output names and cooperative cancellation.
 - Add a separate microscope mosaic workspace with feature-based alignment,
@@ -33,6 +33,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate license terms documented in `docs/THIRD_PARTY_NOTICES.md`.
 
 ### Fixed
+- Correct the usage-reporting privacy disclosure and localize the consent buttons.
 - Prevent a Conda ICU DLL from shadowing Windows ICU in packaged builds, and
   verify layered TIFF through the current Save As workflow during release smoke tests.
 - Admit each directory fusion input before decoding, including StackMFF's

@@ -81,10 +81,16 @@ def test_usage_consent_requires_confirmation(qapp, monkeypatch):
     setup_menus(window)
     action = window.ui_objs['usage_opt_in']
     assert not action.isChecked()
-    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.No)
+    def reject(box):
+        assert box.defaultButton() == box.button(QMessageBox.StandardButton.No)
+        assert box.button(QMessageBox.StandardButton.Yes).text() == trans.t('btn_continue')
+        assert box.button(QMessageBox.StandardButton.No).text() == trans.t('btn_cancel_generic')
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, 'exec', reject)
     action.trigger()
     assert not action.isChecked() and changes == []
-    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, 'exec', lambda box: QMessageBox.StandardButton.Yes)
     action.trigger()
     assert action.isChecked() and changes == [True]
     action.trigger()
