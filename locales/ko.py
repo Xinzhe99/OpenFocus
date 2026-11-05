@@ -655,7 +655,7 @@ PACK = {
     "retouch_auto_bg_unsupported": "자동 배경에는 전체 프레임 원본이 필요합니다. 영역(ROI) 결과에서는 사용할 수 없습니다.",
     "retouch_auto_bg_oversize": "이 이미지는 리터치 기록의 메모리 예산보다 큽니다.",
     "retouch_missing_show": "누락 데이터 표시",
-    "retouch_missing_legend": "마젠타: 어떤 프레임도 선명하게 보지 못한 배경. 시안: 카메라에서 가려진 피사체. 노랑: 초점 범위를 벗어난 피사체. 슬레이트: 너무 매끄러워 판단 불가.",
+    "retouch_missing_legend": "마젠타: 어떤 프레임도 깨끗하게 담지 못한 배경. 시안: 카메라에서 가려진 피사체. 노랑: 초점 범위를 벗어난 피사체. 슬레이트: 너무 매끄러워 판단 불가.",
     "retouch_missing_save": "누락 데이터 맵 저장…",
     "retouch_missing_saved": "누락 데이터 맵을 저장했습니다.",
     "retouch_tool_source": "원본 브러시(B)",

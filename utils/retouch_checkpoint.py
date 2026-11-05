@@ -284,4 +284,7 @@ def load_checkpoint(doc, path, cancelled=None):
     doc.history = replay.history
     doc._operations = replay._operations
     doc._cursor = replay._cursor
+    # The replayed Auto background steps carry their missing-data maps; maps
+    # from this session's earlier runs no longer describe the loaded image.
+    doc._background_fills = replay._background_fills
     doc._point_count = replay._point_count

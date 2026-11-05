@@ -11,6 +11,7 @@ owns the pixel math, the per-stroke coverage map and tile-based history.
 from __future__ import annotations
 
 from collections import OrderedDict
+import dataclasses
 import threading
 import weakref
 from typing import Optional, Tuple
@@ -451,18 +452,28 @@ class TileHistory:
             self.evicted = True
 
 
-# One cached auto-background result: saving a checkpoint replays every
-# operation to verify it, and recomputing the background there would cost as
-# much as the original run.  Weak frame references preserve the identity
-# check without making this cache the owner of an otherwise released stack.
+# Cached auto-background results, newest last.  Saving a checkpoint replays
+# every operation to verify it; recomputing a background there would cost as
+# much as the original run, and a recomputation is not guaranteed to round
+# every pixel the same way (OpenCV threading), which would fail the exact
+# replay check.  One entry per run in the session, bounded by count and bytes
+# (the newest entry is always kept).  Weak frame references preserve the
+# identity check without making this cache the owner of a released stack.
 _AUTO_BG_CACHE: dict = {}
 _AUTO_BG_LOCK = threading.Lock()
+_AUTO_BG_CACHE_ENTRIES = 4
+_AUTO_BG_CACHE_BYTES = 2 << 30
 
 
 def clear_auto_background_cache():
-    """Release the cached result and masks at the end of a retouch session."""
+    """Release the cached results and masks at the end of a retouch session."""
     with _AUTO_BG_LOCK:
         _AUTO_BG_CACHE.clear()
+
+
+def _auto_background_bytes(result) -> int:
+    total = result.image.nbytes if result.image is not None else 0
+    return total + sum(layer.nbytes for _name, layer, _colour in result.missing.layers())
 
 
 def _auto_background_key(image, frames, preset, clean, keep_soft_parts=False):
@@ -485,10 +496,12 @@ def compute_auto_background(image, frames, preset="auto", clean=True,
     from core.resource_policy import heavy_job, require_memory
     key, arrays = _auto_background_key(image, frames, preset, clean, keep_soft_parts)
     with _AUTO_BG_LOCK:
-        hit = _AUTO_BG_CACHE.get("entry")
-        if hit is not None and hit[0] == key and len(hit[1]) == len(arrays) \
-                and all(reference() is array for reference, array in zip(hit[1], arrays)):
-            return hit[2]
+        entries = _AUTO_BG_CACHE.setdefault("entries", [])
+        for index, (cached_key, references, result) in enumerate(entries):
+            if cached_key == key and len(references) == len(arrays) and all(
+                    reference() is array for reference, array in zip(references, arrays)):
+                entries.append(entries.pop(index))          # most recently used last
+                return result
     h, w = image.shape[:2]
     valid_masks = [frame.valid_mask() for frame in frames]
     # Measured peak: ~160 B/px plus a half-resolution float copy per frame.
@@ -501,8 +514,12 @@ def compute_auto_background(image, frames, preset="auto", clean=True,
                                     clean=clean, keep_soft_parts=keep_soft_parts,
                                     progress=progress, cancelled=cancelled)
     with _AUTO_BG_LOCK:
-        _AUTO_BG_CACHE["entry"] = (
-            key, tuple(weakref.ref(array) for array in arrays), result)
+        entries = _AUTO_BG_CACHE.setdefault("entries", [])
+        entries.append((key, tuple(weakref.ref(array) for array in arrays), result))
+        total = sum(_auto_background_bytes(entry[2]) for entry in entries)
+        while len(entries) > 1 and (len(entries) > _AUTO_BG_CACHE_ENTRIES
+                                    or total > _AUTO_BG_CACHE_BYTES):
+            total -= _auto_background_bytes(entries.pop(0)[2])
     return result
 
 
@@ -546,7 +563,8 @@ class RetouchDocument:
         self._point_count = 0
         self._record_overflow = False
         self.last_status = ""
-        self.background_fill = None     # last auto-background result (missing-data maps)
+        # Missing-data maps per committed auto_background operation index.
+        self._background_fills = {}
 
     @property
     def checkpoint_ready(self):
@@ -678,7 +696,6 @@ class RetouchDocument:
                                              keep_soft_parts=keep_soft_parts)
         except (BackgroundFillCancelled, RegistrationCancelled):
             return "cancelled"
-        self.background_fill = result
         image = result.image
         self.history.begin()
         try:
@@ -702,6 +719,9 @@ class RetouchDocument:
                 if keep_soft_parts:
                     operation["keep_soft_parts"] = True
                 self._record_operation(operation)
+                # The maps describe this step's result; the image itself is
+                # in the history, so it is not kept a second time here.
+                self._background_fills[self._cursor - 1] = dataclasses.replace(result, image=None)
             return status
         except BaseException:
             self.history.abort()
@@ -891,14 +911,31 @@ class RetouchDocument:
             self._record_operation({"type": "restore_all"})
         return changed
 
+    @property
+    def background_fill(self):
+        """The auto-background result behind the current image, or None.
+
+        Follows undo/redo: the latest auto_background step at or before the
+        history cursor, unless a later Restore all returned to the base."""
+        earlier = [index for index in self._background_fills if index < self._cursor]
+        if not earlier:
+            return None
+        index = max(earlier)
+        if any(op.get("type") == "restore_all" for op in self._operations[index + 1:self._cursor]):
+            return None
+        return self._background_fills[index]
+
+    def _drop_operations_from(self, start):
+        self._point_count -= sum(len(op.get("points", ())) for op in self._operations[start:])
+        del self._operations[start:]
+        for index in [index for index in self._background_fills if index >= start]:
+            del self._background_fills[index]
+
     def _trim_redo(self):
-        end = self._cursor + len(self.history._redo)
-        self._point_count -= sum(len(op.get("points", ())) for op in self._operations[end:])
-        del self._operations[end:]
+        self._drop_operations_from(self._cursor + len(self.history._redo))
 
     def _record_operation(self, operation):
-        self._point_count -= sum(len(op.get("points", ())) for op in self._operations[self._cursor:])
-        del self._operations[self._cursor:]
+        self._drop_operations_from(self._cursor)
         self._operations.append(operation)
         self._cursor += 1
         self._point_count += len(operation.get("points", ()))

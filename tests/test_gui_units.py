@@ -1467,6 +1467,26 @@ def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
     video_worker.finished.emit()
 
 
+def test_compare_failure_after_a_stack_change_stops_the_run(qapp, monkeypatch):
+    """A failing method must not chain the next one onto a different stack."""
+    from PyQt6.QtCore import QTimer
+    frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(2)]
+    w = _render_window(frames)
+    rm, _saved = _patched_render_manager(monkeypatch, w)
+    rm._compare_mode = True
+    rm._compare_total = 3
+    rm._compare_queue = ["dct"]
+    rm._compare_failures = []
+    rm._compare_current = "stackmffv2"
+    rm._render_context = {"source_ref": object(), "included": [0, 1], "filenames": []}
+    chained = []
+    monkeypatch.setattr(QTimer, "start", lambda self, ms=0: chained.append(ms))
+    rm.on_render_error("Insufficient memory")
+    assert not chained
+    assert rm._compare_mode is False and rm._compare_queue == []
+    assert rm.last_state == "discarded"
+
+
 def test_compare_run_skips_a_failing_method_and_reports_it(qapp, monkeypatch):
     """One method that cannot run (e.g. not enough memory for a whole-frame
     network) is skipped; the run goes on and lists it once at the end."""

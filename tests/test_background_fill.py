@@ -438,8 +438,80 @@ def test_auto_background_cache_uses_weak_frame_references(scene, monkeypatch):
     monkeypatch.setattr(rt, "_AUTO_BG_CACHE", {})
     doc = _document(scene)
     assert doc.auto_background("soft", True) == "committed"
-    _key, references, _result = rt._AUTO_BG_CACHE["entry"]
+    _key, references, _result = rt._AUTO_BG_CACHE["entries"][-1]
     assert all(reference() is frame.image
                for reference, frame in zip(references, doc.frames))
     rt.clear_auto_background_cache()
     assert rt._AUTO_BG_CACHE == {}
+
+
+def test_missing_data_maps_follow_the_history(scene, tmp_path, monkeypatch):
+    """The maps describe the image of the Auto background step they came
+    from: undo, Restore all and a cancelled run hide them, redo and a loaded
+    checkpoint bring them back."""
+    import utils.retouch as rt
+    _, _, disc = scene
+    monkeypatch.setattr(rt, "_AUTO_BG_CACHE", {})
+    doc = _document(scene)
+    doc.initialize_checkpoint()
+    assert doc.background_fill is None
+    assert doc.auto_background("soft", True) == "committed"
+    fill = doc.background_fill
+    assert fill is not None and fill.image is None          # pixels live in the history only
+    assert doc.undo() and doc.background_fill is None
+    # A run cancelled while its tiles are applied leaves no maps behind.
+    assert doc.auto_background("soft", True, cancelled=lambda: True) == "cancelled"
+    assert doc.background_fill is None
+    assert doc.redo() and doc.background_fill is fill
+    doc.set_tool("exposure")
+    doc.set_brush(31, 1.0, 1.0)
+    cy, cx = np.argwhere(disc).mean(axis=0)
+    assert doc.begin_stroke(cx, cy) and doc.end_stroke() == "committed"
+    assert doc.background_fill is fill                      # a stroke keeps them
+    assert doc.restore_all() and doc.background_fill is None
+    assert doc.undo() and doc.background_fill is fill
+    path = tmp_path / "history.json"
+    doc.save_checkpoint(str(path))
+    fresh = _document(scene)
+    fresh.initialize_checkpoint()
+    assert fresh.background_fill is None
+    fresh.load_checkpoint(str(path))
+    assert fresh.background_fill is not None
+    assert np.array_equal(fresh.background_fill.missing.background, fill.missing.background)
+
+
+def test_checkpoint_with_two_auto_background_runs_reuses_both(scene, tmp_path, monkeypatch):
+    """Saving replays every step; each run must come from the cache, since a
+    recomputation can round a pixel differently and fail the exact check."""
+    import core.background_fill as bf
+    import utils.retouch as rt
+    calls = []
+    real = bf.replace_background
+    monkeypatch.setattr(bf, "replace_background",
+                        lambda *a, **k: calls.append(1) or real(*a, **k))
+    monkeypatch.setattr(rt, "_AUTO_BG_CACHE", {})
+    doc = _document(scene)
+    doc.initialize_checkpoint()
+    assert doc.auto_background("soft", True) == "committed"
+    assert doc.auto_background("sharp", False) == "committed"
+    assert len(calls) == 2
+    doc.save_checkpoint(str(tmp_path / "history.json"))
+    assert len(calls) == 2
+
+
+def test_fill_enclosed_matches_per_hole_filling():
+    from core.background_fill import _fill_enclosed
+    rng = np.random.default_rng(7)
+    sub = (cv2.GaussianBlur(rng.random((90, 120)).astype(np.float32), (0, 0), 3) > 0.5).astype(np.uint8)
+    sub[30:60, 40:80] = 1
+    sub[40:50, 50:60] = 0                                   # a hole that must be filled
+    expected = sub.copy()
+    h, w = sub.shape
+    n, lab, st, _ = cv2.connectedComponentsWithStats(1 - sub, 4)
+    for i in range(1, n):
+        x, y, ww, hh, _ = st[i]
+        if not (x == 0 or y == 0 or x + ww == w or y + hh == h):
+            expected[lab == i] = 1
+    out = _fill_enclosed(sub)
+    assert np.array_equal(out, expected) and out[45, 55] == 1
+    assert sub[45, 55] == 0                                 # the input is not modified

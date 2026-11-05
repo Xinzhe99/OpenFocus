@@ -636,7 +636,7 @@ ZH = {
     "retouch_auto_bg_unsupported": "自动背景需要完整画幅的源帧；区域（ROI）结果不可用。",
     "retouch_auto_bg_oversize": "此图像超出修饰历史的内存预算。",
     "retouch_missing_show": "显示缺失数据",
-    "retouch_missing_legend": "品红：没有任何帧清晰拍到的背景。青色：被遮挡、相机看不到的主体。黄色：超出对焦范围的主体。灰蓝：过于平滑，无法判断。",
+    "retouch_missing_legend": "品红：没有任何帧无干扰地拍到的背景。青色：被遮挡、相机看不到的主体。黄色：超出对焦范围的主体。灰蓝：过于平滑，无法判断。",
     "retouch_missing_save": "保存缺失数据图…",
     "retouch_missing_saved": "缺失数据图已保存。",
     "retouch_keys": "左键拖动：涂抹 · 滚轮：缩放 · 右键/中键拖动：平移 · [ ]：画笔大小 · , .：上一/下一帧 · Ctrl+Z / Ctrl+Y：撤销/重做",

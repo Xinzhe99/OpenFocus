@@ -578,8 +578,9 @@ Dla istniejącego pliku obrazu wybierz **Edycja → Retuszuj pliki obrazów…**
 Podczas stackowania tło wyostrza się razem z obiektem. Tło obrazu ze stacku
 bywa więc mozaiką różnych rozmyć, z aureolą wokół obiektu.
 **Automatyczne tło…** w obszarze retuszu zastępuje je jedną prawdziwą klatką z
-tego samego stacku. Obiekt pozostaje dokładnie taki jak po stackowaniu i nic nie
-jest zmyślane: każdy piksel tła pochodzi z klatki albo z wyniku stacku.
+tego samego stacku. Obiekt pozostaje dokładnie taki jak po stackowaniu. Tło
+powstaje z klatki i wyniku stacku; przetwarzanie może rekonstruować, korygować
+i mieszać jego piksele.
 
 1. Otwórz wynik w obszarze retuszu i kliknij **Automatyczne tło…**.
 2. Wybierz tło:

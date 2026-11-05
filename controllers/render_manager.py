@@ -315,6 +315,7 @@ class RenderManager:
         if getattr(self, '_compare_mode', False):
             self._compare_mode = False
             self._compare_queue = []
+            self._compare_current = None
             self._restore_ui_controls()
 
     def _restore_ui_controls(self) -> None:
@@ -478,7 +479,12 @@ class RenderManager:
             self._start_status = "loading"
             if interactive:
                 if self._render_after_load is not None:
+                    queued = self._render_after_load
                     self._render_after_load = None
+                    if queued.get("compare", False):
+                        # The queued request was the comparison's next method:
+                        # without it nothing would ever advance the run.
+                        self._abort_compare_run()
                     window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
                 else:
                     self._render_after_load = {
@@ -872,6 +878,22 @@ class RenderManager:
         self._show_progress_bar(trans.t('render_progress'))
         self.worker.start()
 
+    def _stack_changed_since(self, context) -> bool:
+        """True when the stack (or the settings it was rendered with) is no
+        longer the one a render context was started for."""
+        window = self.window
+        return (
+            context is not None
+            and (window.raw_images is not context.get("source_ref")
+                 or window.included_indices() != context.get("included")
+                 or getattr(window, "source_revision", 0) != context.get("source_revision", 0)
+                 or list(window.image_filenames or []) != context.get("full_filenames", context["filenames"])
+                 or ("alignment_key" in context and self._alignment_key(
+                     context["included"], context["algorithm"]) != context["alignment_key"])
+                 or ("parameters" in context and self._processing_parameters(
+                     context["algorithm"]) != context["parameters"]))
+        )
+
     def on_render_finished(
         self,
         processed_images: List[Any],
@@ -900,17 +922,7 @@ class RenderManager:
         # — and export — frames of the previous stack under the new stack's
         # filenames, so drop it instead. The alignment cache has its own,
         # stricter guard below.
-        stack_changed = (
-            context is not None
-            and (window.raw_images is not context.get("source_ref")
-                 or window.included_indices() != context.get("included")
-                 or getattr(window, "source_revision", 0) != context.get("source_revision", 0)
-                 or list(window.image_filenames or []) != context.get("full_filenames", context["filenames"])
-                 or ("alignment_key" in context and self._alignment_key(
-                     context["included"], context["algorithm"]) != context["alignment_key"])
-                 or ("parameters" in context and self._processing_parameters(
-                     context["algorithm"]) != context["parameters"]))
-        )
+        stack_changed = self._stack_changed_since(context)
         if stack_changed:
             import logging as _logging
             message = trans.t('msg_render_stack_changed')
@@ -1401,6 +1413,10 @@ class RenderManager:
 
     def on_render_error(self, error_message: str) -> None:
         window = self.window
+        try:
+            stack_changed = self._stack_changed_since(self._render_context)
+        except Exception:      # a partial window (tests, early startup): cannot tell
+            stack_changed = False
         context = self._render_context or {}
         self.alignment_diagnostics = (
             list(getattr(self.worker, 'alignment_report', None) or [])
@@ -1414,6 +1430,20 @@ class RenderManager:
         self._dispose_worker()
         self._hide_progress_bar()
 
+        if (getattr(self, '_compare_mode', False)
+                and not error_message.startswith("CANCELLED") and stack_changed):
+            # The stack changed under the run: the remaining methods would
+            # render a different stack than the results already published.
+            self._compare_mode = False
+            self._compare_queue = []
+            self._compare_current = None
+            self.last_state = "discarded"
+            self.last_error = trans.t('msg_render_stack_changed')
+            self.last_result = None
+            self._control_progress = None
+            self._restore_ui_controls()
+            window.statusBar().showMessage(self.last_error, 8000)
+            return
         if (getattr(self, '_compare_mode', False)
                 and not error_message.startswith("CANCELLED")):
             # One method that cannot run (not enough memory for a whole-frame

@@ -655,7 +655,7 @@ PACK = {
     "retouch_auto_bg_unsupported": "Automatyczne tło wymaga pełnoklatkowych klatek źródłowych; nie jest dostępne dla wyniku obszaru (ROI).",
     "retouch_auto_bg_oversize": "Ten obraz jest za duży dla budżetu pamięci historii retuszu.",
     "retouch_missing_show": "Pokaż brakujące dane",
-    "retouch_missing_legend": "Magenta: tło, którego żadna klatka nie uchwyciła wyraźnie. Cyjan: obiekt zasłonięty przed aparatem. Żółty: obiekt poza zakresem ostrości. Łupkowy: zbyt gładkie, by ocenić.",
+    "retouch_missing_legend": "Magenta: tło, którego żadna klatka nie uchwyciła czysto. Cyjan: obiekt zasłonięty przed aparatem. Żółty: obiekt poza zakresem ostrości. Łupkowy: zbyt gładkie, by ocenić.",
     "retouch_missing_save": "Zapisz mapę brakujących danych…",
     "retouch_missing_saved": "Zapisano mapę brakujących danych.",
     "retouch_tool_source": "Pędzel źródłowy (B)",

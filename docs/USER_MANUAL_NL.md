@@ -597,9 +597,9 @@ Bij stapelen wordt de achtergrond samen met het onderwerp scherp gemaakt. De
 achtergrond van een gestapeld beeld is dan vaak een lappendeken van
 verschillende onscherptes, met een halo rond het onderwerp.
 **Automatische achtergrond…** in de retoucheerwerkruimte vervangt die door één
-echt frame uit dezelfde stapel. Het onderwerp blijft precies zoals gestapeld en
-er wordt niets verzonnen: elke achtergrondpixel komt uit een frame of uit het
-gestapelde resultaat.
+echt frame uit dezelfde stapel. Het onderwerp blijft precies zoals gestapeld.
+De achtergrond wordt afgeleid van een frame en het gestapelde resultaat; de
+verwerking kan de pixels reconstrueren, aanpassen en mengen.
 
 1. Open het resultaat in de retoucheerwerkruimte en klik op
    **Automatische achtergrond…**.

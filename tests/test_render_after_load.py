@@ -122,3 +122,31 @@ def test_compare_request_keeps_method_and_is_cancelled_with_run(qapp, monkeypatc
     render._compare_queue = ["dct"]
     render.start_compare_all()
     assert render._render_after_load is None
+
+
+def test_render_click_cancelling_a_queued_compare_request_ends_the_run(qapp):
+    _window, render, _source = _setup(qapp, frames=3)
+    render._compare_mode = True
+    render._compare_queue = ["openfocus_a"]
+    render._compare_total = 2
+    render.start_render(force_algorithm="dct")
+    assert render._render_after_load == {"force_algorithm": "dct", "compare": True}
+    render.start_render()                                   # the Render button cancels it
+    assert render._render_after_load is None
+    assert not render._compare_mode and render._compare_queue == []
+
+
+def test_deferred_compare_render_does_not_run_after_the_compare_is_cancelled(qapp, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    _window, render, source = _setup(qapp, frames=3)
+    render._compare_mode = True
+    render.start_render(force_algorithm="dct")
+    source._load_worker._load_applied = True
+    started = []
+    monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: started.append(fn))
+    source._start_queued_render(source._load_worker)
+    render._compare_mode = False                            # cancelled before the timer fired
+    called = []
+    render.start_render = lambda force_algorithm=None: called.append(force_algorithm)
+    started[0]()
+    assert called == []

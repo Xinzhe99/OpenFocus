@@ -493,7 +493,16 @@ class SourceManager(QObject):
         if ready:
             from PyQt6.QtCore import QTimer
             method = request.get("force_algorithm")
-            QTimer.singleShot(0, lambda: render.start_render(force_algorithm=method))
+            compare = bool(request.get("compare", False))
+
+            def start():
+                # Compare-all can be cancelled before this deferred call runs;
+                # its method must not then start as a standalone render.
+                if compare and not getattr(render, "_compare_mode", False):
+                    return
+                render.start_render(force_algorithm=method)
+
+            QTimer.singleShot(0, start)
         else:
             if request.get("compare", False):
                 render._abort_compare_run()
