@@ -1039,8 +1039,20 @@ def _run_retouch_command(argv: List[str]) -> int:
         if not isinstance(records, list) or len(records) != len(args.sources):
             raise ValueError("checkpoint frame count does not match --sources")
 
+        def _recorded_ndim(fingerprint):
+            shape = fingerprint.get("shape") if isinstance(fingerprint, dict) else None
+            return len(shape) if isinstance(shape, list) else None
+
+        recorded = [checkpoint.get("base"),
+                    *(r.get("image") if isinstance(r, dict) else None for r in records)]
         images = []
-        for path in [args.base, *args.sources]:
+        for path, fingerprint in zip([args.base, *args.sources], recorded):
+            if _recorded_ndim(fingerprint) == 2:
+                # Standalone retouch keeps grayscale as one channel; decode
+                # the same way so shapes and hashes match the checkpoint.
+                from utils.standalone_retouch import _read_single_image
+                images.append(_read_single_image(path))
+                continue
             decoded = _load_images([path])
             if len(decoded) != 1:
                 raise ValueError(f"expected one image in {path}")
