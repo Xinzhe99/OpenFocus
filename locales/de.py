@@ -1065,6 +1065,8 @@ PACK = {
     "ds_label": "Ladeskalierung der Bilder festlegen (Downsampling):",
     "ds_hint": "Für große Bilder niedrigere Werte verwenden, um Speicher zu sparen und die Verarbeitung zu beschleunigen.",
     "linear_raw_open": "Nativen RAW-Stapel öffnen…",
+    "linear_raw_profile_hint": "Unterstützte DNG-Farbprofilmetadaten bleiben im linearen DNG erhalten. Vorschau und TIFF/PNG wenden Profiltransformationen und Basisbelichtung nicht an und können daher von einem DNG-fähigen RAW-Editor abweichen.",
+    "linear_dng_complex_annotations": "Bei einem komplexen Kameraprofil können Anmerkungen und Maßstabsleisten nicht in lineares DNG eingebrannt werden, da ihre Farben falsch sein können. Entfernen Sie diese und speichern Sie das DNG, oder exportieren Sie stattdessen TIFF/PNG.",
     "linear_raw_caption": "Nativen RAW-Stapel öffnen",
     "linear_raw_invalid": "Nur unterstützte Kamera-RAW-Dateien auswählen.",
     "linear_raw_mismatch": "Kamerakalibrierung oder Weißabgleich unterscheiden sich zwischen den Bildern.",

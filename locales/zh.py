@@ -1065,6 +1065,8 @@ ZH = {
     "dialog_reg_help_title": "配准设置帮助",
     "dialog_reg_help_text": "<h3>下采样宽度</h3>\n        <p>downscale_width 控制在提取配准特征时的预处理（下采样）宽度。较小的值可以加快特征检测速度并减少内存使用，但可能会牺牲一些几何精度。</p>\n\n        <p>推荐值：对于大图像（>=2048px）使用 <code>1024</code>，对于中等图像使用 <code>1600</code>。仅在需要最大配准精度且有足够的CPU/GPU资源时才将其设置得更高。</p>\n\n        <p>降低此值可加速配准并减少内存使用；增加此值可以提高非常精细图像的准确性，但会增加运行时间。</p>",
     "linear_raw_open": "打开原生 RAW 图像栈…",
+    "linear_raw_profile_hint": "线性 DNG 会保留受支持的 DNG 色彩配置文件元数据。预览和 TIFF/PNG 不应用配置文件变换及基准曝光，因此可能与支持 DNG 的 RAW 编辑器不同。",
+    "linear_dng_complex_annotations": "具有复杂相机配置文件的线性 DNG 无法烘焙标注或比例尺，因为颜色可能不正确。请移除标注和比例尺后保存 DNG，或改为导出 TIFF/PNG。",
     "linear_raw_caption": "打开原生 RAW 图像栈",
     "linear_raw_invalid": "请选择受支持的相机 RAW 文件。",
     "linear_raw_mismatch": "图像之间的相机校准或白平衡不一致。",

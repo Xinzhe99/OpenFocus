@@ -46,6 +46,8 @@ def _linear_dng_annotated_image(record, labels, state, should_cancel=None):
 
     image = record.image
     metadata = record.linear_dng_metadata
+    if getattr(metadata, 'profile_tags', None):
+        raise ValueError(trans.t('linear_dng_complex_annotations'))
     check_cancel()
     require_memory(image.nbytes * 4 + min(128, image.shape[0]) * image.shape[1] * 100)
     display = develop_linear(image, metadata)
@@ -67,7 +69,7 @@ def _linear_dng_annotated_image(record, labels, state, should_cancel=None):
         if not np.any(changed):
             continue
         rgb = painted[changed, ::-1].astype(np.float64) / 65535.0
-        rgb = np.where(rgb < 0.081, rgb / 4.5, ((rgb + 0.099) / 1.099) ** (1 / 0.45))
+        rgb = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
         camera = (rgb @ matrix.T) / wb
         if np.any(camera < -1e-7) or np.any(camera > 1.0 + 1e-7):
             raise ValueError(trans.t('linear_dng_gamut_error'))
@@ -700,6 +702,9 @@ class OutputManager:
         exif = _read_exif_bytes(baked_path) if baked_path else b''
         profile = (_read_icc_profile(baked_path) if baked_path else
                    getattr(record.context, 'icc_profile', record.icc_profile))
+        if metadata is not None:
+            from utils.image_utils import srgb_icc_profile
+            profile = srgb_icc_profile()
         if not imwrite_auto(path, image, get_imwrite_params(os.path.splitext(path)[1]),
                             exif=exif, icc_profile=profile):
             raise OSError(trans.t('msg_save_failed_info_write'))

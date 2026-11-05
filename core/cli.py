@@ -90,6 +90,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Output file for a single stack (required without --output-dir)")
     parser.add_argument("--output-dir", "-d", default=None,
                         help="Batch mode: fuse every input folder, writing <folder>.png here")
+    parser.add_argument("--native-raw", action="store_true",
+                        help="Fuse compatible RAW files in camera-linear space; export DNG, 16-bit TIFF or PNG")
+    parser.add_argument("--native-batch-format", choices=["dng", "tiff", "png"], default=None,
+                        help="Native RAW batch output format (default: dng; requires --native-raw and --output-dir)")
     parser.add_argument("--group-size", type=int, default=0, metavar="FRAMES",
                         help="Fuse a folder in overlapping groups of at most FRAMES (0 disables; minimum 2). "
                              "Approximate; each round uses group-local registration and exposure references, "
@@ -290,6 +294,8 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
         if os.path.isdir(entry):
             paths.extend(_list_folder_images(entry, loader))
         elif loader.is_video_file(entry):
+            if getattr(args, "native_raw", False):
+                raise ValueError("Native RAW fusion does not accept video input")
             if getattr(args, "defect_mask_path", None):
                 raise ValueError("Cannot use a sensor defect mask with video frames: "
                                  "their sensor orientation is unknown. Use sensor-oriented "
@@ -313,7 +319,7 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
 
     # A single multi-page TIFF is a whole stack: count its pages, not files
     from core.image_loader import count_frames
-    total_frames = sum(count_frames(p) for p in paths)
+    total_frames = len(paths) if getattr(args, "native_raw", False) else sum(count_frames(p) for p in paths)
     if total_frames < 2:
         raise RuntimeError("Need at least 2 images in the stack for fusion")
     return ", ".join(args.input), paths
@@ -345,6 +351,55 @@ def _load_images(paths: List[str], thread_count: int = 0,
     except _DecodeCancelled:
         raise RuntimeError("Loading cancelled")
     return images
+
+def _validate_native_paths(paths, destinations=()):
+    from core.image_loader import is_raw_source
+    from utils.path_identity import same_path
+
+    if len(paths) < 2:
+        raise ValueError("Native RAW fusion requires at least two RAW files")
+    for path in paths:
+        if not is_raw_source(path):
+            raise ValueError(f"Native RAW fusion requires RAW or DNG inputs: {path}")
+    for destination in destinations:
+        if destination and any(same_path(destination, path) for path in paths):
+            raise ValueError(f"Output would overwrite an input image: {destination}")
+
+
+def _load_native_stack(paths, args):
+    from core.image_loader import ImageStackLoader
+
+    loader = ImageStackLoader()
+    if getattr(args, "_should_cancel", None) is not None:
+        loader.should_cancel = args._should_cancel
+    ok, message, images, _names = loader.load_linear_raw_stack(paths)
+    if not ok:
+        raise ValueError(message)
+    metadata = loader.linear_dng_metadata
+    if metadata is None:
+        raise ValueError("Native RAW loader did not provide camera calibration")
+    if getattr(metadata, "profile_tags", None):
+        print("warning: this RAW stack contains a complex DNG color profile; "
+              "the editable DNG retains it, but display rendering uses an "
+              "approximate D65 matrix and white balance", file=sys.stderr)
+    return images, metadata
+
+
+def _save_native(path, fused, metadata, scale_cfg=None):
+    from utils.linear_dng import develop_linear, write_linear_dng
+
+    if os.path.splitext(path)[1].lower() == ".dng":
+        if scale_cfg:
+            raise ValueError("Scale bars are not supported in native DNG output")
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        write_linear_dng(path, fused, metadata)
+    else:
+        if getattr(metadata, "profile_tags", None):
+            print("warning: developed TIFF/PNG color is approximate; profile "
+                  "transforms and baseline exposure are not applied", file=sys.stderr)
+        from utils.image_utils import srgb_icc_profile
+        _save(path, develop_linear(fused, metadata), scale_cfg,
+              icc_profile=srgb_icc_profile())
 
 
 def _suggest_duplicates(args):
@@ -831,7 +886,7 @@ def _run_batch(args, _emit_json=None) -> int:
                 paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
                 _validate_sensor_sources(paths, folder_args)
                 from core.image_loader import count_frames
-                frames = sum(count_frames(p) for p in paths)
+                frames = len(paths) if args.native_raw else sum(count_frames(p) for p in paths)
                 if frames < 2:
                     raise ValueError(f"need at least 2 frames, found {frames}")
                 if folder_args.group_size:
@@ -855,20 +910,26 @@ def _run_batch(args, _emit_json=None) -> int:
             # Count frames, not files: a folder holding one multi-page TIFF
             # Z-stack is a complete stack (same rule as single-stack mode).
             from core.image_loader import count_frames
-            frame_count = sum(count_frames(p) for p in paths)
+            frame_count = len(paths) if args.native_raw else sum(count_frames(p) for p in paths)
             if frame_count < 2:
                 raise RuntimeError(
                     f"need at least 2 frames, found {frame_count}")
-            if folder_args.group_size:
+            if args.native_raw:
+                images, metadata = _load_native_stack(paths, folder_args)
+                fused = _fuse_stack(images, folder_args)
+            elif folder_args.group_size:
                 fused = _fuse_grouped(paths, folder_args)
             else:
                 images = _load_images(
                     paths, thread_count=getattr(args, "threads", 0) or 0,
                     resource_preference=getattr(args, "resource_preference", "balanced"))
                 fused = _fuse_stack(images, folder_args)
-            from core.image_loader import common_icc_profile
-            _save(out_path, fused, _resolve_scale_cfg(folder_args, paths),
-                  common_icc_profile(paths))
+            if args.native_raw:
+                _save_native(out_path, fused, metadata, _resolve_scale_cfg(folder_args, paths))
+            else:
+                from core.image_loader import common_icc_profile
+                _save(out_path, fused, _resolve_scale_cfg(folder_args, paths),
+                      common_icc_profile(paths))
             _say(f"Saved: {out_path}")
             if args.depth_map:
                 _save_depth(folder_args, out_path)
@@ -1082,6 +1143,19 @@ def _run_with_logging(argv: List[str]) -> int:
 
 def _run_cli_admitted(argv: List[str]) -> int:
     args = build_parser().parse_args(argv)
+    if args.native_batch_format and (not args.native_raw or not args.output_dir):
+        print("error: --native-batch-format requires --native-raw and --output-dir", file=sys.stderr)
+        return EXIT_USAGE
+    if args.native_raw:
+        if (args.suggest_duplicates or args.group_size or args.dust_map or
+                args.defect_mask_path or args.sensor_denoise or args.depth_map):
+            print("error: --native-raw cannot be combined with duplicate review, grouped fusion, dust correction, sensor cleanup or depth maps", file=sys.stderr)
+            return EXIT_USAGE
+        if (args.scale_bar or args.scale_um is not None) and (
+                (args.output_dir and (args.native_batch_format or "dng") == "dng") or
+                (args.output and os.path.splitext(args.output)[1].lower() == ".dng")):
+            print("error: scale bars are not supported in native DNG output", file=sys.stderr)
+            return EXIT_USAGE
     if args.alignment_report:
         if args.suggest_duplicates or args.output_dir or args.group_size or args.dry_run:
             print("error: --alignment-report requires a single, non-grouped fusion run", file=sys.stderr)
@@ -1207,7 +1281,7 @@ def _run_cli_admitted(argv: List[str]) -> int:
                   mode="batch" if batch_mode else "single",
                   method=args.method, align=args.align)
     if batch_mode:
-        args._batch_ext = ".png"
+        args._batch_ext = ("." + (args.native_batch_format or "dng")) if args.native_raw else ".png"
     else:
         if args.resume:
             print("error: --resume requires batch mode (--output-dir)", file=sys.stderr)
@@ -1225,9 +1299,42 @@ def _run_cli_admitted(argv: List[str]) -> int:
                   file=sys.stderr)
             return EXIT_USAGE
         ext = os.path.splitext(args.output)[1].lower()
-        if not ext or ext not in VALID_FORMATS:
+        formats = [".dng", ".tif", ".tiff", ".png"] if args.native_raw else VALID_FORMATS
+        if not ext or ext not in formats:
             print(f"error: unsupported output extension '{ext or '(none)'}'; "
-                  f"expected one of {', '.join(VALID_FORMATS)}", file=sys.stderr)
+                  f"expected one of {', '.join(formats)}", file=sys.stderr)
+            return EXIT_USAGE
+
+    if args.native_raw:
+        # Check all batch destinations against all inputs before writing any result.
+        from core.image_loader import ImageStackLoader
+        from utils.path_identity import same_path
+        loader = ImageStackLoader()
+        try:
+            all_paths = []
+            for entry in args.input:
+                if os.path.isdir(entry):
+                    paths = _list_folder_images(entry, loader)
+                elif os.path.isfile(entry):
+                    paths = [entry]
+                else:
+                    raise FileNotFoundError(f"Input not found: {entry}")
+                all_paths.extend(paths)
+                if batch_mode:
+                    _validate_native_paths(paths)
+            _validate_native_paths(all_paths)
+            destinations = [args.json, args.alignment_report]
+            if batch_mode:
+                destinations.extend(os.path.join(args.output_dir,
+                    (os.path.basename(os.path.abspath(folder)) or "stack") + args._batch_ext)
+                    for folder in args.input if os.path.isdir(folder))
+            else:
+                destinations.append(args.output)
+            for destination in destinations:
+                if destination and any(same_path(destination, path) for path in all_paths):
+                    raise ValueError(f"Output would overwrite an input image: {destination}")
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
     if args.defect_mask_path:
@@ -1267,7 +1374,9 @@ def _run_cli_admitted(argv: List[str]) -> int:
                 return EXIT_OK
 
             _progress(event="load", done=1, total=1, frames=len(paths))
-            if not args.group_size:
+            if args.native_raw:
+                images, native_metadata = _load_native_stack(paths, args)
+            elif not args.group_size:
                 images = _load_images(
                     paths, thread_count=getattr(args, "threads", 0) or 0,
                     resource_preference=getattr(args, "resource_preference", "balanced"))
@@ -1291,10 +1400,15 @@ def _run_cli_admitted(argv: List[str]) -> int:
             if args.alignment_report and not entries:
                 raise RuntimeError("The selected alignment method did not provide diagnostics")
             scale_cfg = _resolve_scale_cfg(args, paths)
-            from core.image_loader import common_icc_profile
-            source_icc_profile = common_icc_profile(paths)
+            source_icc_profile = b""
+            if not args.native_raw:
+                from core.image_loader import common_icc_profile
+                source_icc_profile = common_icc_profile(paths)
 
-        _save(args.output, fused, scale_cfg, source_icc_profile)
+        if args.native_raw:
+            _save_native(args.output, fused, native_metadata, scale_cfg)
+        else:
+            _save(args.output, fused, scale_cfg, source_icc_profile)
         _say(f"Saved: {args.output}")
         _progress(event="save", output=args.output)
         outputs = [args.output]

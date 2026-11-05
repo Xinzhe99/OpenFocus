@@ -56,10 +56,15 @@ def _is_dng_tiff(path):
     except (OSError, ValueError, tifffile.TiffFileError):
         return False
 
+def is_raw_source(path):
+    """Recognize camera RAW extensions and TIFF containers marked as DNG."""
+    return (os.path.splitext(os.fspath(path))[1].lower() in RAW_FORMATS
+            or _is_dng_tiff(path))
+
 def source_dimensions(path, page=0):
     """Read a still image or TIFF page's dimensions before allocating pixels."""
     extension = os.path.splitext(os.fspath(path))[1].lower()
-    if extension in RAW_FORMATS or _is_dng_tiff(path):
+    if is_raw_source(path):
         if not RAWPY_AVAILABLE:
             raise ValueError('Camera RAW support is unavailable (rawpy/LibRaw).')
         with open(path, 'rb') as stream, rawpy.imread(stream) as raw:
@@ -80,6 +85,7 @@ def linear_raw_metadata_matches(first, second):
     """Whether two camera-linear sources share the same calibration."""
     return (first.camera_make == second.camera_make
             and first.camera_model == second.camera_model
+            and first.profile_tags == second.profile_tags
             and np.allclose(first.color_matrix, second.color_matrix, rtol=1e-5, atol=1e-7)
             and np.allclose(first.as_shot_neutral, second.as_shot_neutral,
                             rtol=1e-5, atol=1e-7))
@@ -126,7 +132,7 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
     if not RAWPY_AVAILABLE:
         return None
     try:
-        with rawpy.imread(path) as raw:
+        with open(path, 'rb') as stream, rawpy.imread(stream) as raw:
             rgb = raw.postprocess(use_camera_wb=True, output_bps=16,
                                   no_auto_bright=True)
         # Resize while still RGB to avoid a second full-size channel-swapped
@@ -141,7 +147,7 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
 def decode_image(path: str, *, allow_transparent_png: bool = False) -> Optional[np.ndarray]:
     """Decode an oriented still image, rejecting unsupported transparency."""
     ext = os.path.splitext(path)[1].lower()
-    if ext in RAW_FORMATS or _is_dng_tiff(path):
+    if is_raw_source(path):
         return _read_raw(path)
     # IMREAD_IGNORE_ORIENTATION is required: modern OpenCV already rotates by
     # the EXIF Orientation tag itself, so letting apply_exif_orientation run
@@ -207,7 +213,7 @@ def _read_exif_bytes(path: str) -> bytes:
         return b""
     try:
         ext = os.path.splitext(path)[1].lower()
-        if ext in RAW_FORMATS:
+        if is_raw_source(path):
             return _read_raw_exif_bytes(path)
         if ext not in ('.jpg', '.jpeg', '.jpe', '.jfif', '.tif', '.tiff', '.png', '.webp'):
             return b""
@@ -231,7 +237,7 @@ def _read_exif_bytes(path: str) -> bytes:
 
 def _read_icc_profile(path: str) -> bytes:
     """Read a common RGB profile from every page of an image file."""
-    if not PIL_AVAILABLE or os.path.splitext(path)[1].lower() in RAW_FORMATS:
+    if not PIL_AVAILABLE or is_raw_source(path):
         return b""
     from io import BytesIO
     try:
@@ -463,7 +469,7 @@ def _decode_one_source(path: str, scale_factor: float,
         pages = _read_tiff_pages(path, scale_factor, should_cancel)
         if pages is not None:
             return DecodedSource(path, pages)
-        if os.path.splitext(path)[1].lower() in RAW_FORMATS or _is_dng_tiff(path):
+        if is_raw_source(path):
             image = _read_raw(path, scale_factor)
             if image is None:
                 return DecodedSource(path, error=ValueError("decode failed"))
@@ -688,7 +694,7 @@ class ImageStackLoader:
         for index, path in enumerate(paths):
             if self.should_cancel():
                 return False, 'CANCELLED', [], []
-            if os.path.splitext(path)[1].lower() not in RAW_FORMATS:
+            if not is_raw_source(path):
                 return False, trans.t("linear_raw_invalid"), [], []
             def admit(width, height):
                 # Already decoded frames are reflected in the live memory

@@ -135,12 +135,12 @@ class StackLoadWorker(QThread):
                     options = dict(thread_count=self.thread_count,
                                    resource_preference=self.resource_preference)
                     if self.linear_raw:
-                        from core.image_loader import RAW_FORMATS
+                        from core.image_loader import is_raw_source
                         from utils.path_identity import same_path
                         import os
                         if self.folder:
                             paths = [os.path.join(self.folder, name) for name in os.listdir(self.folder)
-                                     if os.path.splitext(name)[1].lower() in RAW_FORMATS]
+                                     if is_raw_source(os.path.join(self.folder, name))]
                             from utils.sorting import natural_sort_key
                             paths.sort(key=lambda path: natural_sort_key(os.path.basename(path)))
                         else:

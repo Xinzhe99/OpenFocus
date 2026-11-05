@@ -90,6 +90,44 @@ def test_historical_output_uses_its_own_profile(tmp_path, rgb_profile):
         assert saved.info.get("icc_profile") == rgb_profile
 
 
+def test_linear_raw_tiff_embeds_srgb_profile(qapp, tmp_path):
+    from controllers.output_manager import OutputManager, OutputRecord
+    from core.render_context import build_render_context
+    from utils.image_utils import srgb_icc_profile
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+
+    image = np.full((12, 15, 3), (6000, 12000, 24000), np.uint16)
+    metadata = LinearDNGMetadata(((1., 0., 0.), (0., 1., 0.), (0., 0., 1.)),
+                                 (1., 1., 1.), 'Camera', 'Model')
+    context = build_render_context([image], image, linear_dng_metadata=metadata)
+    record = OutputRecord.create(image, 'linear', context=context)
+    window = SimpleNamespace(scale_bar_enabled=False,
+        export_manager=SimpleNamespace(_safe_export_path=lambda path: path))
+    labels = SimpleNamespace(prepare_bgr_image=lambda _target, pixels, _index, **_kw: pixels)
+    path = tmp_path / 'developed.tif'
+    OutputManager(window)._write_record(record, str(path), labels)
+    with Image.open(path) as saved:
+        assert saved.info.get('icc_profile') == srgb_icc_profile()
+    actual = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert actual.dtype == np.uint16
+    np.testing.assert_array_equal(actual, develop_linear(image, metadata))
+
+
+def test_multipage_16bit_tiff_embeds_profile_on_every_page(tmp_path, rgb_profile):
+    import tifffile
+    from utils.image_utils import imwrite_multi_tiff
+
+    pages = [np.full((8, 12, 3), (1000, 5000, 30000), np.uint16),
+             np.full((8, 12, 3), (1500, 9000, 40000), np.uint16)]
+    path = tmp_path / 'pages-色彩.tif'
+    assert imwrite_multi_tiff(str(path), pages, icc_profile=rgb_profile)
+    with tifffile.TiffFile(path) as tif:
+        assert len(tif.pages) == 2
+        for page, expected in zip(tif.pages, pages):
+            assert page.tags[34675].value == rgb_profile
+            np.testing.assert_array_equal(page.asarray(), expected[..., ::-1])
+
+
 @pytest.mark.parametrize("second", ["same", "different", "missing"])
 def test_multipage_tiff_requires_matching_profile_on_every_page(tmp_path, rgb_profile, second):
     from PIL import TiffImagePlugin

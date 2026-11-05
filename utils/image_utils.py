@@ -1,5 +1,6 @@
 import numbers
 import os
+from functools import lru_cache
 
 import cv2
 import numpy as np
@@ -9,6 +10,13 @@ try:  # GUI stack; the headless CLI package runs without PyQt6
     from PyQt6.QtGui import QPixmap, QImage
 except ImportError:  # pragma: no cover - headless openfocus package
     QPixmap = QImage = None
+
+
+@lru_cache(maxsize=1)
+def srgb_icc_profile() -> bytes:
+    """Return an ICC profile for pixels developed into sRGB."""
+    from PIL import ImageCms
+    return ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
 
 
 def pixmap_to_cv2(pixmap) -> Optional[np.ndarray]:
@@ -154,7 +162,7 @@ def to_display_uint8(img: np.ndarray) -> np.ndarray:
     return img.astype(np.uint8)
 
 
-def imwrite_multi_tiff(path: str, images) -> bool:
+def imwrite_multi_tiff(path: str, images, *, icc_profile: bytes = b"") -> bool:
     """Write a whole stack as ONE multi-page TIFF (uint8/uint16 preserved).
 
     cv2.imwritemulti needs an encodable filename, so non-ASCII targets are
@@ -176,6 +184,21 @@ def imwrite_multi_tiff(path: str, images) -> bool:
     except OSError:
         return False
     try:
+        if icc_profile:
+            import tifffile
+            total = sum(np.asarray(image).nbytes for image in images)
+            with tifffile.TiffWriter(part, bigtiff=total >= (2**32 - 2**25)) as writer:
+                for image in images:
+                    pixels = np.asarray(image)
+                    if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
+                        raise ValueError('RGB profile requires RGB images')
+                    code = (cv2.COLOR_BGRA2RGBA if pixels.shape[2] == 4
+                            else cv2.COLOR_BGR2RGB)
+                    writer.write(cv2.cvtColor(pixels, code), photometric='rgb',
+                                 metadata=None,
+                                 extratags=[(34675, 'B', len(icc_profile), icc_profile, False)])
+            os.replace(part, path)
+            return True
         try:
             ok = cv2.imwritemulti(part, [np.asarray(i) for i in images])
         except cv2.error:
@@ -194,7 +217,7 @@ def imwrite_multi_tiff(path: str, images) -> bool:
             return False
         os.replace(part, path)
         return True
-    except (OSError, cv2.error):
+    except (OSError, ValueError, cv2.error):
         return False
     finally:
         try:

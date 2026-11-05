@@ -1065,6 +1065,8 @@ PACK = {
     "ds_label": "Ustaw skalę wczytywania obrazów (zmniejszanie):",
     "ds_hint": "Użyj niższych wartości dla dużych obrazów, aby oszczędzić pamięć i przyspieszyć przetwarzanie.",
     "linear_raw_open": "Otwórz natywny stos RAW…",
+    "linear_raw_profile_hint": "Obsługiwane metadane profili kolorów DNG są zachowywane w liniowym DNG. Podgląd i TIFF/PNG pomijają transformacje profilu oraz ekspozycję bazową, więc mogą różnić się od edytora RAW obsługującego DNG.",
+    "linear_dng_complex_annotations": "Przy złożonym profilu aparatu nie można wtopić adnotacji ani podziałek w liniowy DNG, ponieważ ich kolory mogłyby być nieprawidłowe. Usuń je i zapisz DNG albo wyeksportuj TIFF/PNG.",
     "linear_raw_caption": "Otwórz natywny stos RAW",
     "linear_raw_invalid": "Wybierz tylko obsługiwane pliki RAW aparatu.",
     "linear_raw_mismatch": "Kalibracja aparatu lub balans bieli różni się między klatkami.",

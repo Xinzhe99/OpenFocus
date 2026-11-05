@@ -440,15 +440,31 @@ exposure mapping; per-frame auto exposure would make brightness flicker
 between frames. Save as TIFF or PNG to keep the 16-bit data.
 
 For a camera-linear workflow, choose **File → Open native RAW stack…** and
-select the camera RAW frames. The frames must share camera calibration and
-white balance; unsupported or incompatible files are rejected. OpenFocus keeps
-the 16-bit camera-linear pixels through alignment, fusion and retouching while
-showing developed previews. Save a result as **Linear DNG** to continue editing
-its color and white balance in a compatible RAW editor. TIFF, PNG and other
-ordinary exports use the developed appearance. DNG annotations are burned into
-the exported pixels. If an annotation color cannot be represented in the
-camera color space, DNG export fails; choose a different color or export a
-developed TIFF or PNG. The regular RAW import continues to produce developed sRGB.
+select the original camera RAW frames. DNG files are also accepted, including
+DNG files named `.tif` or `.tiff`; ordinary TIFF images are not camera RAW.
+Support for a particular camera depends on the installed LibRaw decoder. All
+frames must share camera calibration and white balance; unsupported or
+incompatible files are rejected. There is no need to convert vendor RAW files
+to DNG before importing them.
+
+Align and fuse the stack as usual, then select the result and choose **Save As →
+Linear DNG** to continue editing its color and white balance in a compatible RAW
+editor. The fused Linear DNG contains demosaiced camera-linear RGB pixels, not
+the original sensor mosaic. OpenFocus retains 16-bit camera-linear pixels during
+alignment, fusion and retouching and displays developed previews. To save the
+developed appearance at 16 bits, choose ordinary **TIFF** in Save As. PNG and
+other ordinary exports also use the developed appearance. When the camera profile
+allows it, DNG annotations are burned into the exported pixels. If an annotation color cannot be represented
+in the camera color space, DNG export fails; choose a different color or export
+a developed TIFF or PNG. Regular RAW import continues to produce developed sRGB.
+For DNG inputs with complex camera profiles, the saved Linear DNG retains the
+supported color profile metadata for a DNG-aware editor. OpenFocus uses a simplified D65 matrix
+for its preview and developed TIFF/PNG; it does not apply DNG profile transforms
+or baseline exposure. Their appearance may therefore differ from that editor.
+For a complex profile, annotations and scale bars cannot be baked into Linear
+DNG because their colors could be incorrect in a RAW editor. Remove them to
+save the image as DNG, or export TIFF/PNG with the annotations instead.
+
 RAW decoding still requires full-resolution working memory even when the stack
 is loaded at a reduced scale.
 If the camera model cannot be identified, only a single RAW can be opened;

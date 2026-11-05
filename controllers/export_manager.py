@@ -80,6 +80,7 @@ class LayeredTiffWorker(QThread):
             from utils.layered_tiff import export_layered_tiff, _preflight
             image, context = self.image, self.context
             metadata = getattr(context, 'linear_dng_metadata', None)
+            profile = self.icc_profile
             if metadata is not None:
                 _preflight(image, context, self.icc_profile, self._cancelled.is_set)
                 from core.resource_policy import require_memory
@@ -97,12 +98,14 @@ class LayeredTiffWorker(QThread):
                                + len(self.icc_profile) * 2 + 16 * 1024 * 1024,
                                user_limit=MAX_WORKING_BYTES)
                 from utils.linear_dng import develop_linear
+                from utils.image_utils import srgb_icc_profile
+                profile = srgb_icc_profile()
                 image = develop_linear(image, metadata)
                 context = replace(context, frames=tuple(
                     replace(frame, image=develop_linear(frame.image, metadata))
                     for frame in context.frames), linear_dng_metadata=None)
             export_layered_tiff(self.path, image, context,
-                                icc_profile=self.icc_profile,
+                                icc_profile=profile,
                                 cancelled=self._cancelled.is_set)
         except Exception as exc:  # Errors must reach the GUI thread.
             if self._cancelled.is_set() and str(exc) == 'Layered export cancelled':
@@ -400,6 +403,9 @@ class ExportManager:
             ext = os.path.splitext(file_path)[1].lower()
             params = get_imwrite_params(ext)
             profile = getattr(getattr(window, 'last_render_context', None), 'icc_profile', b'')
+            if metadata is not None:
+                from utils.image_utils import srgb_icc_profile
+                profile = srgb_icc_profile()
             if imwrite_auto(file_path, scalebar.burn(image_to_save, cfg), params, exif=b'', icc_profile=profile):
                 # Non-blocking confirmation (errors still get a dialog)
                 window.statusBar().showMessage(
@@ -485,6 +491,9 @@ class ExportManager:
                    stack_icc_profile(window))
         metadata = (getattr(record, 'linear_dng_metadata', None) if record is not None
                     else getattr(window, 'linear_dng_metadata', None))
+        if metadata is not None and not baked:
+            from utils.image_utils import srgb_icc_profile
+            profile = srgb_icc_profile()
         for index, frame in enumerate(frames):
             name = frame_export_name(filenames[index] if index < len(filenames) else '', index, extension)
             path = unique_path(os.path.join(directory, name))
@@ -698,8 +707,9 @@ class ExportManager:
                 if not baked:
                     img = scalebar.burn(labels.prepare_bgr_image(label_target, img, i), cfg)
                 labeled.append(img)
-            from utils.image_utils import imwrite_multi_tiff
-            if imwrite_multi_tiff(file_path, labeled):
+            from utils.image_utils import imwrite_multi_tiff, srgb_icc_profile
+            profile = srgb_icc_profile() if metadata is not None else b''
+            if imwrite_multi_tiff(file_path, labeled, icc_profile=profile):
                 show_success_box(
                     window, trans.t("msg_success"),
                     trans.t("msg_multipage_saved_text"),

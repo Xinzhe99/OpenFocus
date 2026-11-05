@@ -25,6 +25,9 @@ class LinearDNGMetadata:
     as_shot_neutral: tuple
     camera_make: str = "OpenFocus"
     camera_model: str = "Linear RAW"
+    # Exact TIFF tag values are immutable and can be written without changing
+    # the profile's rational values or floating-point lookup tables.
+    profile_tags: tuple = ()
 
 
 _RGB_TO_XYZ = np.array([
@@ -121,8 +124,8 @@ def _canon_cr3_identity(path):
     return None
 
 
-def _raf_preview_identity(path, raw):
-    """Extract only a bounded, JPEG RAF preview from this LibRaw handle."""
+def _raf_preview_identity(path):
+    """Read only a bounded embedded JPEG and inspect its EXIF metadata."""
     max_preview = 16 * 1024 * 1024
     with open(path, 'rb') as stream:
         header = stream.read(92)
@@ -133,19 +136,34 @@ def _raf_preview_identity(path, raw):
         size = os.fstat(stream.fileno()).st_size
         if offset < 92 or length < 4 or length > max_preview or offset + length > size:
             return None
+        require_memory(length * 3)
         stream.seek(offset)
-        if stream.read(2) != b'\xff\xd8':
+        jpeg = stream.read(length)
+        if len(jpeg) != length or not jpeg.startswith(b'\xff\xd8'):
             return None
-    require_memory(length * 3)
-    try:
-        thumb = raw.extract_thumb()
-    except rawpy.LibRawNonFatalError:
-        return None
-    if thumb.format != rawpy.ThumbFormat.JPEG or len(thumb.data) != length:
-        return None
-    with Image.open(BytesIO(thumb.data)) as preview:
+    with Image.open(BytesIO(jpeg)) as preview:
+        if preview.format != 'JPEG':
+            return None
         exif = preview.getexif()
         return exif.get(271), exif.get(272)
+
+
+def _raf_header_identity(path):
+    """Read the bounded model field from a Fujifilm RAF fixed header."""
+    with open(path, 'rb') as stream:
+        header = stream.read(92)
+    if len(header) != 92 or header[:16] != b'FUJIFILMCCD-RAW ':
+        return None
+    field = header[28:60]
+    model, separator, padding = field.partition(b'\x00')
+    if separator and padding.strip(b'\x00 '):
+        return None
+    model = model.strip(b' ')
+    if (not model or any(byte < 32 or byte > 126 for byte in model)
+            or not any(48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122
+                       for byte in model)):
+        return None
+    return 'FUJIFILM', model.decode('ascii')
 
 
 def _tiff_camera_identity(path):
@@ -209,50 +227,157 @@ def _camera_identity(path, raw=None):
             return tuple(v.strip() for v in identity)
     except (OSError, ValueError, SyntaxError, TypeError):
         pass
-    if raw is not None:
-        try:
-            identity = _raf_preview_identity(path, raw)
-            if identity and all(isinstance(v, str) and v.strip() and v.isascii()
-                                and '\x00' not in v for v in identity):
-                return tuple(v.strip() for v in identity)
-        except (OSError, ValueError, SyntaxError, TypeError):
-            pass
+    try:
+        identity = _raf_preview_identity(path)
+        if identity and all(isinstance(v, str) and v.strip() and v.isascii()
+                            and '\x00' not in v for v in identity):
+            return tuple(v.strip() for v in identity)
+    except (OSError, ValueError, SyntaxError, TypeError, struct.error,
+            Image.DecompressionBombError):
+        pass
+    try:
+        identity = _raf_header_identity(path)
+        if identity:
+            return identity
+    except OSError:
+        pass
     return "OpenFocus", "Linear RAW"
 
+_DNG_PROFILE_TYPES = {
+    50707: 'B', 50708: 's', 50721: '2i', 50722: '2i', 50723: '2i', 50724: '2i',
+    50725: '2i', 50726: '2i', 50727: '2I', 50728: '2I', 50730: '2i',
+    50778: 'H', 50779: 'H', 50931: 's', 50932: 's', 50934: 's', 50936: 's',
+    50937: 'I', 50938: 'f', 50939: 'f', 50940: 'f', 50941: 'I',
+    50942: 's', 50964: '2i', 50965: '2i', 50981: 'I', 50982: 'f',
+    51107: 'I', 51108: 'I',
+}
+_DNG_TYPE_NUMBERS = {'B': 1, 's': 2, '2i': 10, '2I': 5, 'H': 3, 'I': 4, 'f': 11}
+
+
 def _linear_dng_calibration(path):
-    """Read a single-IFD, single-D65-matrix LinearRaw DNG calibration."""
+    """Read the root DNG color profile and locate its sole LinearRaw IFD."""
     with tifffile.TiffFile(path) as tif:
         if len(tif.pages) != 1:
             raise ValueError("Unsupported DNG with multiple image directories")
         page = tif.pages[0]
         tags = page.tags
-        if (page.photometric.value != 34892 or page.samplesperpixel != 3
-                or 50706 not in tags or 330 in tags
-                or any(tag in tags for tag in (50722, 50723, 50724, 50725,
-                                                50726, 50727, 50729, 50964, 50965))
-                or 50778 not in tags or tags[50778].value != 21):
-            raise ValueError("Unsupported LinearRaw DNG calibration")
+        pages = [page] + (list(page.pages) if page.pages else [])
+        if any(child.pages for child in pages[1:]):
+            raise ValueError("Unsupported DNG with nested SubIFDs")
+        if any(code in child.tags for child in pages[1:] for code in _DNG_PROFILE_TYPES):
+            raise ValueError("Unsupported DNG: color profile tags in SubIFDs")
+        raw_pages = [p for p in pages if (p.photometric.value == 34892 and p.samplesperpixel == 3)
+                     or (p.photometric.value == 32803 and p.samplesperpixel == 1)]
+        if len(raw_pages) != 1 or 50706 not in tags:
+            raise ValueError("Unsupported DNG: expected one LinearRaw or Bayer CFA image")
+        raw_page = raw_pages[0]
+        if raw_page.photometric.value == 32803:
+            raw_tags = raw_page.tags
+            dimensions = raw_tags.get(33421)
+            pattern = raw_tags.get(33422)
+            planes = tags.get(50710) or raw_tags.get(50710)
+            layout = tags.get(50711) or raw_tags.get(50711)
+            if (dimensions is None or tuple(dimensions.value) != (2, 2)
+                    or pattern is None or tuple(pattern.value) not in (
+                        (0, 1, 1, 2), (1, 0, 2, 1), (1, 2, 0, 1), (2, 1, 1, 0))
+                    or (planes is not None and tuple(planes.value) != (0, 1, 2))
+                    or (layout is not None and layout.value != 1)):
+                raise ValueError("Unsupported DNG CFA: only 2x2 RGB Bayer mosaics are supported")
+        version = tuple(tags[50706].value)
+        if version > (1, 4, 0, 0):
+            raise ValueError("Unsupported DNG version: profiles newer than 1.4 cannot be preserved")
+        unsupported = {
+            50729: 'as-shot white XY', 50831: 'as-shot ICC profile',
+            50832: 'as-shot pre-profile matrix', 50833: 'current ICC profile',
+            50834: 'current pre-profile matrix', 50879: 'colorimetric reference',
+            50933: 'additional profile IFD', 51008: 'raw processing opcode list',
+            51009: 'raw processing opcode list', 51022: 'raw processing opcode list',
+            51109: 'profile baseline exposure offset', 51110: 'default black rendering',
+            52525: 'profile gain table', 52529: 'third calibration illuminant',
+            52530: 'third camera calibration matrix', 52531: 'third color matrix',
+            52532: 'third forward matrix', 52533: 'illuminant data',
+            52534: 'second illuminant data', 52537: 'third profile hue/saturation map',
+            52538: 'third reduction matrix', 52543: 'profile RGB tables',
+            52544: 'second profile gain table',
+        }
+        for directory in pages:
+            for code, description in unsupported.items():
+                if code in directory.tags:
+                    raise ValueError(f"Unsupported DNG: {description} (tag {code})")
+        if tags.get(50941) is not None and tags[50941].value not in (0, 1):
+            raise ValueError("DNG profile embedding policy does not permit profile copying")
+        profile = []
+        for code, dtype in _DNG_PROFILE_TYPES.items():
+            tag = tags.get(code)
+            if tag is None:
+                continue
+            if int(tag.dtype) != _DNG_TYPE_NUMBERS[dtype]:
+                raise ValueError(f"Unsupported DNG profile tag {code} datatype")
+            value = tag.value
+            if isinstance(value, np.ndarray):
+                value = tuple(value.reshape(-1).tolist())
+            elif isinstance(value, (list, tuple)):
+                value = tuple(value)
+            if dtype == 'f' and not np.isfinite(np.asarray(value)).all():
+                raise ValueError(f"Invalid DNG profile tag {code}")
+            profile.append((code, dtype, tag.count, value))
+        for code, dtype, count, value in profile:
+            if dtype in ('2i', '2I'):
+                values = np.asarray(value).reshape(-1)
+                if values.size != count * 2 or np.any(values[1::2] <= 0):
+                    raise ValueError(f"Invalid DNG profile rational tag {code}")
+            if code in (50721, 50722, 50723, 50724, 50725, 50726, 50964, 50965) and count != 9:
+                raise ValueError(f"Invalid DNG profile matrix tag {code}")
+            if code in (50727, 50728) and count != 3:
+                raise ValueError(f"Invalid DNG profile color tag {code}")
+        if (50722 in tags) != (50779 in tags):
+            raise ValueError("Incomplete DNG second illuminant profile")
+        for dims_code, data_codes in ((50937, (50938, 50939)), (50981, (50982,))):
+            if dims_code in tags:
+                dims = tuple(tags[dims_code].value)
+                if len(dims) != 3 or any(d <= 0 for d in dims):
+                    raise ValueError(f"Invalid DNG profile table dimensions (tag {dims_code})")
+                expected = math.prod(dims) * 3
+                if data_codes[0] not in tags or any(
+                    code in tags and tags[code].count != expected for code in data_codes
+                ):
+                    raise ValueError(f"Incomplete DNG profile table (tag {dims_code})")
+            elif any(code in tags for code in data_codes):
+                raise ValueError(f"Missing DNG profile table dimensions (tag {dims_code})")
 
         def rational_values(tag_number, count, dtype):
             tag = tags.get(tag_number)
             if tag is None or int(tag.dtype) != dtype:
-                raise ValueError("Missing or invalid DNG calibration tag")
+                raise ValueError(f"Missing or invalid DNG calibration tag {tag_number}")
             values = np.asarray(tag.value).reshape(-1)
             if values.size != count * 2:
-                raise ValueError("Invalid DNG calibration rational count")
+                raise ValueError(f"Invalid DNG calibration rational count in tag {tag_number}")
             numerator = values[::2].astype(np.float64)
             denominator = values[1::2].astype(np.float64)
             if np.any(denominator <= 0):
-                raise ValueError("Invalid DNG calibration denominator")
+                raise ValueError(f"Invalid DNG calibration denominator in tag {tag_number}")
             return numerator / denominator
 
-        matrix = rational_values(50721, 9, 10).reshape(3, 3)
+        illuminant = tags.get(50778)
+        second = tags.get(50779)
+        if illuminant is not None and illuminant.value == 21:
+            matrix_tag = 50721
+        elif second is not None and second.value == 21:
+            matrix_tag = 50722
+        else:
+            raise ValueError("Unsupported DNG profile: a D65 matrix is required for preview")
+        matrix = rational_values(matrix_tag, 9, 10).reshape(3, 3)
         neutral = rational_values(50728, 3, 5)
         make_tag, model_tag = tags.get(271), tags.get(272)
         if make_tag is None or model_tag is None:
             raise ValueError("LinearRaw DNG is missing camera identity")
+        if 50708 not in tags or not tags[50708].value:
+            raise ValueError("LinearRaw DNG is missing UniqueCameraModel (tag 50708)")
+        simple = (set(code for code, _, _, _ in profile) <= {50707, 50708, 50721, 50728, 50778}
+                  and (50707 not in tags or tuple(tags[50707].value) == (1, 1, 0, 0))
+                  and tags[50708].value == model_tag.value)
         metadata = LinearDNGMetadata(tuple(map(tuple, matrix)), tuple(neutral),
-                                     make_tag.value, model_tag.value)
+                                     make_tag.value, model_tag.value, () if simple else tuple(profile))
         _validate_metadata(metadata)
         return metadata
 
@@ -261,7 +386,17 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
     """Decode an oriented RAW into black-corrected, camera-linear BGR."""
     if not math.isfinite(scale_factor) or not 0 < scale_factor <= 1:
         raise ValueError("scale_factor must be in (0, 1]")
-    with rawpy.imread(os.fspath(path)) as raw:
+    # Inspect TIFF headers before LibRaw unpacks pixels. DNG color profiles
+    # must never fall through to LibRaw's simplified camera matrix.
+    try:
+        with tifffile.TiffFile(path) as tif:
+            is_dng = bool(tif.is_dng)
+    except (OSError, ValueError, tifffile.TiffFileError):
+        is_dng = False
+    if os.path.splitext(os.fspath(path))[1].lower() == '.dng' and not is_dng:
+        raise ValueError("Invalid DNG: DNGVersion tag is missing or unreadable")
+    dng_metadata = _linear_dng_calibration(path) if is_dng else None
+    with open(path, 'rb') as stream, rawpy.imread(stream) as raw:
         sizes = raw.sizes
         aspect = float(sizes.pixel_aspect)
         if not math.isfinite(aspect) or aspect <= 0:
@@ -276,9 +411,10 @@ def load_linear_raw(path, scale_factor=1.0, *, before_decode=None):
         require_memory(width * height * 64)
         if raw.num_colors != 3:
             raise ValueError("Only three-color RAW files are supported")
-        if (os.path.splitext(os.fspath(path))[1].lower() == '.dng'
-                and raw.raw_type == rawpy.RawType.Stack):
-            metadata = _linear_dng_calibration(path)
+        if dng_metadata is not None:
+            if raw.raw_type not in (rawpy.RawType.Stack, rawpy.RawType.Flat):
+                raise ValueError("Unsupported DNG: expected LinearRaw or Bayer CFA pixels")
+            metadata = dng_metadata
         else:
             matrix = np.asarray(raw.rgb_xyz_matrix, dtype=np.float64)[:3, :3]
             wb = np.asarray(raw.camera_whitebalance, dtype=np.float64)[:3]
@@ -331,8 +467,8 @@ def develop_linear(linear_bgr, metadata):
         rgb *= (wb / 65535.0).astype(np.float32)
         rgb = cv2.transform(rgb, conversion.astype(np.float32))
         np.maximum(rgb, 0, out=rgb)
-        rgb = np.where(rgb < 0.018, 4.5 * rgb,
-                       1.099 * np.power(rgb, 0.45) - 0.099)
+        rgb = np.where(rgb <= 0.0031308, 12.92 * rgb,
+                       1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
         result[start:stop] = np.rint(np.clip(rgb[:, :, ::-1], 0, 1) * 65535).astype(np.uint16)
     return result
 
@@ -388,6 +524,10 @@ def _write_linear_dng_atomic(path, linear_bgr, metadata, *, should_cancel=None,
         (50728, '2I', 3, neutral_values, False),
         (50778, 'H', 1, 21, False),
     ]
+    if metadata.profile_tags:
+        tags = [tag for tag in tags if tag[0] not in _DNG_PROFILE_TYPES]
+        tags.extend((code, dtype, count, value, False)
+                    for code, dtype, count, value in metadata.profile_tags)
     rows_per_strip = min(128, linear_bgr.shape[0])
     require_memory(rows_per_strip * linear_bgr.shape[1] * 12)
     def check_cancel():

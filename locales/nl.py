@@ -1065,6 +1065,8 @@ PACK = {
     "ds_label": "Laadschaal voor afbeeldingen instellen (downsampling):",
     "ds_hint": "Gebruik lagere waarden voor grote afbeeldingen om geheugen te sparen en de verwerking te versnellen.",
     "linear_raw_open": "Oorspronkelijke RAW-stapel openen…",
+    "linear_raw_profile_hint": "Ondersteunde DNG-kleurprofielmetadata blijven behouden in lineaire DNG. De voorvertoning en TIFF/PNG passen profieltransformaties en basisbelichting niet toe en kunnen afwijken van een RAW-editor met DNG-ondersteuning.",
+    "linear_dng_complex_annotations": "Bij een complex cameraprofiel kunnen annotaties en schaalbalken niet in lineaire DNG worden ingebakken omdat hun kleuren onjuist kunnen zijn. Verwijder ze en sla de DNG op, of exporteer naar TIFF/PNG.",
     "linear_raw_caption": "Oorspronkelijke RAW-stapel openen",
     "linear_raw_invalid": "Selecteer alleen ondersteunde RAW-camerabestanden.",
     "linear_raw_mismatch": "Camerakalibratie of witbalans verschilt tussen beelden.",

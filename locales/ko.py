@@ -1065,6 +1065,8 @@ PACK = {
     "ds_label": "이미지 로딩 배율 설정 (다운샘플링):",
     "ds_hint": "큰 이미지에는 낮은 값을 사용하면 메모리를 아끼고 처리가 빨라집니다.",
     "linear_raw_open": "원본 RAW 스택 열기…",
+    "linear_raw_profile_hint": "지원되는 DNG 색상 프로필 메타데이터는 선형 DNG에 보존됩니다. 미리보기와 TIFF/PNG에는 프로필 변환과 기준 노출이 적용되지 않으므로 DNG 지원 RAW 편집기와 다를 수 있습니다.",
+    "linear_dng_complex_annotations": "복잡한 카메라 프로필의 선형 DNG에는 색상이 부정확할 수 있으므로 주석과 축척 막대를 구워 넣을 수 없습니다. 이를 제거하고 DNG를 저장하거나 TIFF/PNG로 내보내세요.",
     "linear_raw_caption": "원본 RAW 스택 열기",
     "linear_raw_invalid": "지원되는 카메라 RAW 파일만 선택하세요.",
     "linear_raw_mismatch": "프레임 간 카메라 보정 또는 화이트 밸런스가 다릅니다.",

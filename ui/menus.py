@@ -24,6 +24,14 @@ def setup_menus(window: QMainWindow) -> None:
     window.ui_objs['action_open_folder'] = open_action
 
     linear_raw_action = QAction(trans.t('linear_raw_open'), window)
+    def update_linear_raw_hint():
+        hint = trans.t('linear_raw_profile_hint')
+        linear_raw_action.setToolTip(hint)
+        linear_raw_action.setStatusTip(hint)
+
+    update_linear_raw_hint()
+    file_menu.setToolTipsVisible(True)
+    file_menu.aboutToShow.connect(update_linear_raw_hint)
     linear_raw_action.triggered.connect(window.source_manager.prompt_and_load_linear_raw)
     file_menu.addAction(linear_raw_action)
     window.ui_objs['linear_raw_open'] = linear_raw_action

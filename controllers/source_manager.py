@@ -275,6 +275,12 @@ class SourceManager(QObject):
         msg.setStyleSheet(ui_styles.MESSAGE_BOX_STYLE)
         return msg.exec() == QMessageBox.StandardButton.Yes
 
+    def _show_linear_profile_notice(self, metadata) -> None:
+        if getattr(metadata, "profile_tags", None):
+            show_message_box(self.window, trans.t("linear_raw_caption"),
+                             trans.t("linear_raw_profile_hint"), "",
+                             QMessageBox.Icon.Information)
+
     def _start_load_worker(self, folder=None, video=None, filepaths=None,
                            scale=1.0, append=False, on_success=None,
                            accept_event=None, prepare_options=None, on_error=None,
@@ -294,6 +300,15 @@ class SourceManager(QObject):
                 linear_raw = True
             elif linear_raw:
                 message = trans.t("linear_raw_mismatch")
+                if on_error is not None:
+                    on_error(message)
+                else:
+                    show_warning_box(window, trans.t("msg_load_failed"), message)
+                return
+        if linear_raw and filepaths:
+            from core.image_loader import is_raw_source
+            if not all(is_raw_source(path) for path in filepaths):
+                message = trans.t("linear_raw_invalid")
                 if on_error is not None:
                     on_error(message)
                 else:
@@ -388,6 +403,7 @@ class SourceManager(QObject):
                 # Crash auto-recovery: refresh the session snapshot
                 from utils import recovery
                 recovery.write_snapshot(window)
+                self._show_linear_profile_notice(getattr(window, "linear_dng_metadata", None))
             except Exception as exc:  # pylint: disable=broad-except
                 if on_error is not None:
                     on_error(str(exc))
@@ -541,14 +557,17 @@ class SourceManager(QObject):
         )
 
     def prompt_and_load_linear_raw(self) -> None:
-        from core.image_loader import RAW_FORMATS
+        from core.image_loader import RAW_FORMATS, is_raw_source
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
 
-        patterns = " ".join(f"*{ext}" for ext in sorted(RAW_FORMATS))
+        patterns = " ".join(f"*{ext}" for ext in sorted(RAW_FORMATS | {".tif", ".tiff"}))
         paths, _ = QFileDialog.getOpenFileNames(
             self.window, trans.t("linear_raw_caption"), get_last_dialog_dir(),
             f"RAW ({patterns});;All Files (*)")
         if not paths:
+            return
+        if not all(is_raw_source(path) for path in paths):
+            show_warning_box(self.window, trans.t("msg_load_failed"), trans.t("linear_raw_invalid"))
             return
         set_last_dialog_dir(paths[0])
         scale = self._ask_load_scale()
@@ -646,7 +665,8 @@ class SourceManager(QObject):
         from core.image_loader import ImageStackLoader
         if len(paths) == 1 and os.path.isfile(paths[0]):
             ext = os.path.splitext(paths[0])[1].lower()
-            if ext in ImageStackLoader.SUPPORTED_VIDEO_FORMATS:
+            if (ext in ImageStackLoader.SUPPORTED_VIDEO_FORMATS
+                    and getattr(self.window, "linear_dng_metadata", None) is None):
                 self.load_video_stack(paths[0], append=True)
                 event.acceptProposedAction()
                 return
@@ -661,9 +681,8 @@ class SourceManager(QObject):
         # Filter by supported image extensions (use ImageStackLoader.SUPPORTED_FORMATS)
         from core.image_loader import ImageStackLoader
         if getattr(self.window, "linear_dng_metadata", None) is not None:
-            from core.image_loader import RAW_FORMATS
-            if len(filepaths) != len(paths) or any(
-                    os.path.splitext(path)[1].lower() not in RAW_FORMATS for path in paths):
+            from core.image_loader import is_raw_source
+            if len(filepaths) != len(paths) or any(not is_raw_source(path) for path in paths):
                 show_warning_box(self.window, trans.t("msg_load_failed"), trans.t("linear_raw_invalid"))
                 event.ignore()
                 return

@@ -1065,6 +1065,8 @@ PACK = {
     "ds_label": "Imposta la scala di caricamento delle immagini (downsampling):",
     "ds_hint": "Usa valori più bassi per le immagini grandi, per risparmiare memoria e velocizzare l'elaborazione.",
     "linear_raw_open": "Apri serie RAW nativa…",
+    "linear_raw_profile_hint": "I metadati dei profili colore DNG supportati sono conservati nel DNG lineare. Anteprima e TIFF/PNG non applicano le trasformazioni del profilo né l’esposizione di base e possono differire da un editor RAW compatibile con DNG.",
+    "linear_dng_complex_annotations": "Con un profilo fotocamera complesso, annotazioni e barre di scala non possono essere incorporate nel DNG lineare perché i colori potrebbero essere errati. Rimuovile e salva il DNG, oppure esporta in TIFF/PNG.",
     "linear_raw_caption": "Apri serie RAW nativa",
     "linear_raw_invalid": "Seleziona solo file RAW della fotocamera supportati.",
     "linear_raw_mismatch": "La calibrazione della fotocamera o il bilanciamento del bianco differisce tra i fotogrammi.",

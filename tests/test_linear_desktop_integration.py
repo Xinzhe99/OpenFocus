@@ -119,8 +119,29 @@ def test_annotated_dng_develops_to_display_color(monkeypatch, tmp_path):
     untouched[32:64, 32:64] = False
     np.testing.assert_array_equal(raw[untouched], image[untouched])
     with rawpy.imread(str(path)) as consumer:
-        decoded = consumer.postprocess(use_camera_wb=True, no_auto_bright=True, output_bps=16)
+        decoded = consumer.postprocess(use_camera_wb=True, no_auto_bright=True,
+                                       output_bps=16, gamma=(2.4, 12.92))
     np.testing.assert_allclose(decoded[40, 40], (26000, 20000, 12000), atol=512)
+
+
+def test_complex_dng_rejects_annotations_without_modifying_output(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from locales import trans
+
+    image = np.full((8, 8, 3), 5000, np.uint16)
+    metadata = replace(_metadata(), profile_tags=((50936, 's', 7, 'profile'),))
+    record = OutputRecord.create(image, 'result', context=SimpleNamespace(
+        linear_dng_metadata=metadata, source_paths=()))
+    manager = OutputManager(SimpleNamespace(export_manager=SimpleNamespace(
+        _safe_export_path=lambda *args: None)))
+    monkeypatch.setattr(manager, '_annotation_state',
+                        lambda *args: {'labels': True, 'scale': None})
+    target = tmp_path / 'existing.dng'
+    target.write_bytes(b'previous')
+    with pytest.raises(ValueError, match=trans.t('linear_dng_complex_annotations')):
+        manager._write_record(record, str(target), SimpleNamespace())
+    assert target.read_bytes() == b'previous'
+    np.testing.assert_array_equal(record.image, image)
 
 
 def test_annotated_dng_rejects_unrepresentable_color(monkeypatch, tmp_path):

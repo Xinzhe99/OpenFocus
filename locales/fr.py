@@ -1065,6 +1065,8 @@ PACK = {
     "ds_label": "Échelle de chargement des images (réduction) :",
     "ds_hint": "Utilisez des valeurs plus faibles pour les grandes images afin d'économiser la mémoire et d'accélérer le traitement.",
     "linear_raw_open": "Ouvrir une pile RAW native…",
+    "linear_raw_profile_hint": "Les métadonnées de profil couleur DNG prises en charge sont conservées dans le DNG linéaire. L’aperçu et les TIFF/PNG n’appliquent ni les transformations du profil ni l’exposition de base et peuvent différer d’un éditeur RAW compatible DNG.",
+    "linear_dng_complex_annotations": "Avec un profil d’appareil complexe, les annotations et les barres d’échelle ne peuvent pas être incrustées dans le DNG linéaire, car leurs couleurs pourraient être incorrectes. Retirez-les puis enregistrez le DNG, ou exportez en TIFF/PNG.",
     "linear_raw_caption": "Ouvrir une pile RAW native",
     "linear_raw_invalid": "Sélectionnez uniquement des fichiers RAW pris en charge.",
     "linear_raw_mismatch": "Le calibrage ou la balance des blancs diffère entre les images.",

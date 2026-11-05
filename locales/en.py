@@ -1067,6 +1067,8 @@ EN = {
     "ds_label": "Set image loading scale (Downsampling):",
     "ds_hint": "Use lower values for large images to save memory and speed up processing.",
     "linear_raw_open": "Open native RAW stack…",
+    "linear_raw_profile_hint": "Supported DNG color profile metadata is preserved in Linear DNG. The preview and TIFF/PNG omit profile transforms and baseline exposure, so they may differ from a DNG-aware RAW editor.",
+    "linear_dng_complex_annotations": "Annotations and scale bars cannot be baked into Linear DNG with a complex camera profile because their colors may be incorrect. Remove them and save the DNG, or export TIFF/PNG instead.",
     "linear_raw_caption": "Open native RAW stack",
     "linear_raw_invalid": "Select only supported camera RAW files.",
     "linear_raw_mismatch": "Camera calibration or white balance differs between frames.",
