@@ -59,6 +59,8 @@ Ad esempio, l'equivalente CLI è `python main.py --input ./png-stack --output ./
 
 ### Formati di output supportati
 
+In **Salva con nome**, il TIFF normale salva il risultato come immagine singola; il TIFF a livelli include i fotogrammi sorgente come livelli. Linear DNG è sempre elencato, ma per salvarlo serve un risultato lineare della fotocamera senza modifiche incorporate, ottenuto con **Apri RAW nativo** e dotato della calibrazione della fotocamera.
+
 - Immagini singole: JPG, PNG, BMP, TIFF, WebP
 - Sequenze di immagini: salvate come cartelle
 - Animazioni: formato GIF
@@ -403,17 +405,17 @@ OpenFocus offre dieci algoritmi di fusione (più una modalità solo allineamento
 
 ### StackMFF (V1, apprendimento profondo)
 
-- **Algoritmo**: una U-Net 3D che predice la luminanza fusa dell'intero stack in una passata; Cb/Cr provengono dal fotogramma sorgente più vicino a quella luminanza
+- **Algoritmo**: una rete di attenzione a singola scala miscela la luminanza delle sorgenti con pesi softmax; Cb/Cr provengono dal fotogramma sorgente con luminanza più vicina a quella fusa
 - **Ideale per**: fusione neurale di un intero stack di messa a fuoco
-- **Vantaggi**: nessun parametro e colori entro la gamma; l'ordine dei fotogrammi può influire sul risultato
-- **Nota**: 6 M di parametri; gli stack grandi traggono vantaggio dalla GPU
+- **Vantaggi**: nessun parametro e colori entro la gamma; la luminanza fusa è indipendente dall'ordine dei fotogrammi, ma la crominanza può variare in caso di parità delle distanze di luminanza
+- **Nota**: circa 156.172 parametri; gli stack grandi traggono vantaggio dalla GPU
 
 ### StackMFF V2 (apprendimento profondo)
 
-- **Algoritmo**: stima del fuoco per livello affinata da uno strato ricorrente bidirezionale; la rete regredisce l'indice del piano focale e campiona lo stack. **I fotogrammi devono mantenere il loro ordine di fuoco originale** — l'inversione è disattivata per questo metodo
+- **Algoritmo**: una rete di attenzione a singola scala normalizza la profondità di fuoco attesa e campiona il fotogramma sorgente più vicino. Gli indici di profondità dipendono dall'ordine dello stack. **I fotogrammi devono mantenere il loro ordine di fuoco originale** — l'inversione è disattivata per questo metodo
 - **Mappe di profondità**: supportate; riporta lo strato focale campionato
 - **Ideale per**: scansioni di fuoco continue in cui conta un modello molto piccolo e veloce
-- **Requisiti**: PyTorch; circa 0,05 M di parametri; nessuna impostazione
+- **Requisiti**: PyTorch; circa 156.172 parametri; nessuna impostazione
 
 ### StackMFF V3 (apprendimento profondo)
 
@@ -472,7 +474,7 @@ Seleziona **Solo allineamento (nessuna fusione)** per registrare lo stack e aggi
 | DCT | Media | Buona | Texture |
 | DTCWT | Media | Molto buona | Scene complesse |
 | GFG-FGF | Veloce | Buona | Regioni a fuoco |
-| StackMFF (V1) | Lenta (GPU) | Non valutata qui | Fusione neurale dello stack; l'ordine può influire sul risultato |
+| StackMFF (V1) | Lenta (GPU) | Non valutata qui | Luminanza indipendente dall'ordine; crominanza variabile in caso di parità delle distanze di luminanza |
 | StackMFF V2 | Veloce (GPU) | Non valutata qui | Scansioni continue con un modello minuscolo |
 | StackMFF V3 | Lenta (GPU) | Eccellente | Massima qualità |
 | OpenFocus A | Dipende dallo stack | Dipende dallo stack | Selezione multi-scala dei pixel a fuoco |
@@ -539,7 +541,7 @@ La fusione può ancora lasciare un difetto locale — un alone attorno a un bord
 5. Tieni premuto `Tab` per vedere il risultato prima di questa sessione e `Alt` per sbirciare il fotogramma sorgente. Il riferimento di nitidezza è facoltativo, copre solo la tela sorgente e usa una scala condivisa per tutti i fotogrammi.
 6. `Ctrl+Z` / `Ctrl+Y` annullano e ripristinano interi tratti. **Ripristina tutto…** è un'unica operazione annullabile. **Applica come nuovo output** aggiunge una voce chiamata `<nome> · Ritoccato N` e la seleziona; l'originale resta intatto. La nuova voce è contrassegnata come *Non esportata* finché non la esporti dalla finestra principale, e OpenFocus la protegge dall'eliminazione automatica dalla cronologia e dalla chiusura senza decisione.
 
-Applica il ritocco come nuovo output, poi fai clic destro su quell'output nella finestra principale e scegli **Esporta TIFF a livelli** per salvarlo con i fotogrammi sorgente. Etichette e barre di scala attive non sono incluse; le modifiche alle annotazioni non salvate restano protette. Geometria sorgente e maschere di validità vengono conservate. Risultato e sorgenti devono essere immagini RGB o in scala di grigi opache con la stessa profondità a 8 o 16 bit, e ogni rettangolo sorgente deve rientrare nel risultato. L'esportazione supporta fino a 128 sorgenti; i nomi delle sorgenti sono limitati a 255 caratteri e non possono contenere NUL né caratteri fuori dal piano multilingue di base, come molte emoji. Rifiuta contesti non sicuri e lavori stimati oltre 512 MiB di memoria di lavoro o oltre il budget di RAM disponibile, segnalando l'errore invece di scrivere un'esportazione incompleta. GIMP 3.2.6 su Windows importa i livelli a 8 e 16 bit, inclusi i loro offset e il riempimento trasparente di registrazione. Il risultato è visibile e i livelli sorgente nascosti; GIMP aggiunge anche un livello Sfondo visibile. Altri editor non sono stati testati.
+Applica il ritocco come nuovo output, selezionalo e apri **Salva con nome**. Scegli TIFF a livelli nella lista dei formati per salvare il risultato con i fotogrammi sorgente. Etichette e barre di scala attive non sono incluse; le modifiche alle annotazioni non salvate restano protette. Geometria sorgente e maschere di validità vengono conservate. Risultato e sorgenti devono essere immagini RGB o in scala di grigi opache con la stessa profondità a 8 o 16 bit, e ogni rettangolo sorgente deve rientrare nel risultato. L'esportazione supporta fino a 128 sorgenti; i nomi delle sorgenti sono limitati a 255 caratteri e non possono contenere NUL né caratteri fuori dal piano multilingue di base, come molte emoji. Rifiuta contesti non sicuri e lavori stimati oltre 512 MiB di memoria di lavoro o oltre il budget di RAM disponibile, segnalando l'errore invece di scrivere un'esportazione incompleta. GIMP 3.2.6 su Windows importa i livelli a 8 e 16 bit, inclusi i loro offset e il riempimento trasparente di registrazione. Il risultato è visibile e i livelli sorgente nascosti; GIMP aggiunge anche un livello Sfondo visibile. Altri editor non sono stati testati.
 
 Per una correzione tonale locale, seleziona **Pennello esposizione**, imposta la quantità in centesimi di stop (100 raddoppia i valori dei pixel, -100 li dimezza) e dipingi sul risultato. L'anteprima si aggiorna mentre dipingi. Ogni tratto regola il risultato corrente una volta, anche dove le pennellate si sovrappongono; un altro tratto si accumula. Usa opacità e durezza del pennello per controllare la miscelazione. Le alte luci possono bruciarsi schiarendo. Tieni premuto **Prima** per confrontare con il risultato all'apertura, premi Esc durante un tratto per annullarlo, oppure usa annulla/ripristina dopo il tratto. Sono modifiche ai pixel, non livelli regolabili. Applica come nuovo output ed esporta la nuova voce per salvare i pixel modificati; un progetto non memorizza quei pixel.
 

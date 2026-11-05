@@ -5,6 +5,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Replace StackMFF V1 and V2 with retrained attention-backbone models. V1
+  blends source luma using the released two-scale inference settings; V2 keeps
+  sampled-layer depth output and preserves focus order. Both use approximately
+  659 KB checkpoints and share V3 resource planning. The retrained models have
+  separate license terms documented in `docs/THIRD_PARTY_NOTICES.md`.
+
+### Fixed
+- Develop camera-linear RAW pixels before exporting a depth-rendered TIFF, and
+  use each aligned history entry's own calibration in the label preview.
+- Isolate ROCm availability checks so a failing native driver probe cannot
+  terminate the desktop process; actual AMD hardware validation is pending.
+- Include and check the ROCm development resources needed by runtime kernel
+  compilation in AMD preview bundles.
+- Preserve the original startup failure when the packaged desktop smoke check
+  must terminate a process holding diagnostic files open.
+- Align the website navigation download button and show Windows and macOS
+  installers together on the homepage.
+- Show Linear DNG in Save As with a clear RAW requirement, and place layered
+  TIFF alongside ordinary TIFF in the same format list.
+
 ## [1.75.4] - 2026-11-05
 
 ### Added

@@ -18,6 +18,13 @@ change, or producing an unsupported platform variant.
 > it without a console or inherited standard handles, checks the first-run
 > welcome dialog and main window, then closes the application.
 
+For Windows builds, use a virtual environment created from python.org CPython;
+the release workflow also uses standalone CPython. A Conda-based environment can
+pull Conda's `icuuc.dll` into the bundle; its versioned exports do not satisfy
+Qt's Windows ICU imports, so the frozen app fails while loading `QtWidgets`.
+Build in a clean CPython environment instead of removing the DLL blindly, since
+other binaries collected from a Conda environment may depend on it.
+
 ---
 
 ## 1) Build without `torch` (exclude torch)
@@ -164,8 +171,12 @@ Notes:
 
 Missing `assets`/`weights` only breaks the features that read them (icon,
 demo stack, AI methods) at the moment of use; it does not fail application
-startup. CI verifies `weights/stackmff_v3_final.pth` exists and is nonempty
-before building.
+startup. Desktop and PyPI CI verify all three model checkpoints before building.
+
+The retrained StackMFF V1 and V2 checkpoints are each approximately 659 KB;
+the V3 checkpoint is approximately 659 KB. PyPI CI checks all three are over
+600 KB. The V1/V2 retrained wrappers and weights carry separate license terms;
+see [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ---
 

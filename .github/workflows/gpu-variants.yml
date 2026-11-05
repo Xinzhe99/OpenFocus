@@ -92,14 +92,15 @@ jobs:
       - name: Write Windows version resource
         run: python tools/write_version_file.py
 
-      - name: Verify the shipped AI model is present
+      - name: Verify the shipped AI models are present
         shell: pwsh
         run: |
-          $w = "weights/stackmff_v3_final.pth"
-          if (-not (Test-Path $w)) { throw "Missing $w - the release would ship without the AI model." }
-          $len = (Get-Item $w).Length
-          if ($len -lt 600000) { throw "$w is only $len bytes (expected ~658587)." }
-          Write-Output ("AI model present: {0:N0} bytes" -f $len)
+          foreach ($w in @("weights/stackmff_final.pth", "weights/stackmff_v2_final.pth", "weights/stackmff_v3_final.pth")) {
+            if (-not (Test-Path $w)) { throw "Missing $w - the release would ship without an AI model." }
+            $len = (Get-Item $w).Length
+            if ($len -lt 600000) { throw "$w is only $len bytes (expected at least 600000)." }
+            Write-Output ("AI model {0}: {1:N0} bytes" -f $w, $len)
+          }
 
       - name: Build with PyInstaller
         run: python tools/gpu_variants.py build ${{ matrix.name }}

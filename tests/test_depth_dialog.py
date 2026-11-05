@@ -1027,6 +1027,7 @@ def test_depth_preview_detail_preserves_model_data(depth_dialog, monkeypatch, qa
 
 
 def test_depth_ai_mode_defaults_soft_and_uses_selected_mode(depth_dialog, monkeypatch, qapp):
+    from types import SimpleNamespace
     from core import depth_map
     seen = []
 
@@ -1035,6 +1036,11 @@ def test_depth_ai_mode_defaults_soft_and_uses_selected_mode(depth_dialog, monkey
         return _ramp(images, "stackmffv3")
 
     monkeypatch.setattr(depth_map, "_measure_stackmffv3", measure)
+    # This test replaces the measurement itself; do not cold-load an AI model
+    # merely to admit that replacement within the GUI's short wait deadline.
+    monkeypatch.setattr(depth_map, "_plan_neural_depth",
+                        lambda images, path, use_gpu, threads, preference:
+                        (SimpleNamespace(native_threads=1), path))
     from core.algorithms import resolve_fusion_parameters
     def parameters_for(method, depth=False):
         values = {'mode': 'hard'} if method == 'stackmffv3' else None
@@ -1158,19 +1164,29 @@ def test_depth_export_protects_hardlinked_standalone_source(depth_dialog, monkey
     assert str(source) in dialog.status_lbl.text()
 
 
-def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qapp, tmp_path):
+@pytest.mark.parametrize('raw', [False, True])
+def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qapp, tmp_path, raw):
     from core import depth_map
     from PIL import Image
     from PyQt6.QtWidgets import QFileDialog
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
 
     monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
     frames = [np.full((20, 30, 3), (1000, 2000, 3000), np.uint16),
               np.full((20, 30, 3), (40000, 50000, 60000), np.uint16)]
     output = frames[0].copy()
+    record_meta = LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.5, 1.0, 0.7), 'Maker', 'Historical') if raw else None
+    current_meta = LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.8, 1.0, 0.6), 'Maker', 'Current')
     context = _output_context(frames, output, roi_rect=(4, 3, 16, 10), roi_mode='paste',
-                              icc_profile=b'captured profile')
-    dialog, _ = depth_dialog('dct', frames, output, context)
+                              icc_profile=b'captured profile', linear_dng_metadata=record_meta)
+    dialog, window = depth_dialog('dct', frames, output, context)
     _click_and_finish(qapp, dialog)
+    window.linear_dng_metadata = current_meta
+    dialog._current_linear_dng_metadata = current_meta
     target = tmp_path / 'indices-é.tif'
     monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
     dialog.btn_save_indices.click()
@@ -1180,8 +1196,9 @@ def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qa
         indices = np.asarray(image)
     assert metadata['source_indices'] == [2, 5]
     assert metadata['source_names'] == ['historical-0.tif', 'historical-1.tif']
-    assert indices.shape == (20, 30)
-    assert indices[0, 0] == 0 and indices[3, 4] == 1 and indices[3, 19] == 2
+    expected_indices = np.zeros((20, 30), np.uint16)
+    expected_indices[3:13, 4:20] = np.where(np.arange(16) < 8, 1, 2)
+    np.testing.assert_array_equal(indices, expected_indices)
     target = tmp_path / 'render-é.tif'
     dialog.btn_save_render.click()
     _wait(qapp, lambda: dialog._export_worker is None)
@@ -1189,9 +1206,14 @@ def test_depth_products_export_roi_order_and_16bit(depth_dialog, monkeypatch, qa
         assert image.info['icc_profile'] == b'captured profile'
     rendered = cv2.imdecode(np.fromfile(target, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     assert rendered.dtype == np.uint16 and rendered.shape == output.shape
-    np.testing.assert_array_equal(rendered[0, 0], [0, 0, 0])
-    np.testing.assert_array_equal(rendered[3, 4], frames[0][3, 4])
-    np.testing.assert_array_equal(rendered[3, 19], frames[1][3, 19])
+    linear = np.empty((10, 16, 3), np.uint16)
+    linear[:, :8] = frames[0][3:13, 4:12]
+    linear[:, 8:] = frames[1][3:13, 12:20]
+    expected = np.zeros_like(output)
+    expected[3:13, 4:20] = develop_linear(linear, record_meta) if raw else linear
+    if raw:
+        assert not np.array_equal(expected[3:13, 4:20], linear)
+    np.testing.assert_array_equal(rendered, expected)
 
 
 def test_depth_products_refuse_stale_map(depth_dialog, monkeypatch, qapp):
@@ -1238,6 +1260,41 @@ def test_depth_product_cancellation_preserves_existing_file(depth_dialog, monkey
     _wait(qapp, lambda: dialog._export_worker is None)
     assert target.read_bytes() == b'original file'
     assert dialog.btn_save_indices.isEnabled()
+
+
+def test_depth_raw_render_cancellation_during_development(depth_dialog, monkeypatch, qapp, tmp_path):
+    from core import depth_map
+    from PyQt6.QtWidgets import QFileDialog
+    from utils import linear_dng
+
+    monkeypatch.setattr(depth_map, 'compute_focus_index', _ramp)
+    frames = [np.full((20, 30, 3), value, np.uint16) for value in (1000, 40000)]
+    metadata = linear_dng.LinearDNGMetadata(
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.5, 1.0, 0.7), 'Maker', 'Historical')
+    context = _output_context(frames, frames[0], linear_dng_metadata=metadata)
+    dialog, _ = depth_dialog('dct', frames, frames[0], context)
+    _click_and_finish(qapp, dialog)
+    target = tmp_path / 'existing-render.tif'
+    target.write_bytes(b'original file')
+    entered, release = Event(), Event()
+    depth_dialog.releases.append(release)
+    develop = linear_dng.develop_linear
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return develop(*args, **kwargs)
+
+    monkeypatch.setattr(linear_dng, 'develop_linear', blocked)
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(target), ''))
+    dialog.btn_save_render.click()
+    _wait(qapp, entered.is_set)
+    dialog.cancel_btn.click()
+    release.set()
+    _wait(qapp, lambda: dialog._export_worker is None)
+    assert target.read_bytes() == b'original file'
+    assert dialog.btn_save_render.isEnabled()
 
 
 def test_depth_index_metadata_tracks_reversed_inputs(depth_dialog, monkeypatch, qapp, tmp_path):

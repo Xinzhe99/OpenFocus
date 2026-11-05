@@ -161,23 +161,33 @@ def _exercise(executable: Path, environment: dict, root: Path,
             or len(layers.layers) != 3):
         raise RuntimeError("Packaged layered TIFF lost its composite or source layers")
 
-    # A CUDA-enabled torch build must still execute the actual neural model
-    # on machines without an NVIDIA device, including from the frozen bundle.
-    ai_output = root / "ai-result.tif"
-    ai = subprocess.run(
-        [str(executable), "-i", str(root / "stack"), "-o", str(ai_output),
-         "--method", "stackmffv3", "--cpu", "--threads", "1",
-         "--no-exposure-match"],
-        env=environment, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=180,
-    )
-    if ai.returncode:
-        raise RuntimeError(
-            f"Packaged CPU AI inference failed ({ai.returncode}): "
-            f"{ai.stdout!r} {ai.stderr!r}")
-    ai_image = cv2.imdecode(np.fromfile(str(ai_output), np.uint8), cv2.IMREAD_UNCHANGED)
-    if ai_image is None or ai_image.shape != shape or ai_image.dtype != np.uint16:
-        raise RuntimeError("Packaged CPU AI inference lost image shape or bit depth")
+    # Exercise each bundled checkpoint on CPU even when the torch build also
+    # supports an accelerator; V2 must additionally export its depth map.
+    for method in ("stackmff", "stackmffv2", "stackmffv3"):
+        ai_output = root / f"{method}.tif"
+        command = [str(executable), "-i", str(root / "stack"), "-o", str(ai_output),
+                   "--method", method, "--cpu", "--threads", "1",
+                   "--no-exposure-match"]
+        if method == "stackmffv2":
+            command.append("--depth-map")
+        ai = subprocess.run(
+            command, env=environment, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=180,
+        )
+        if ai.returncode:
+            raise RuntimeError(
+                f"Packaged {method} inference failed ({ai.returncode}): "
+                f"{ai.stdout!r} {ai.stderr!r}")
+        ai_image = cv2.imdecode(np.fromfile(str(ai_output), np.uint8), cv2.IMREAD_UNCHANGED)
+        if ai_image is None or ai_image.shape != shape or ai_image.dtype != np.uint16:
+            raise RuntimeError(f"Packaged {method} lost image shape or bit depth")
+        if method == "stackmffv2":
+            depth_path = root / f"{method}_depth.png"
+            if not depth_path.is_file():
+                raise RuntimeError("Packaged StackMFF V2 depth map is missing")
+            depth = cv2.imdecode(np.fromfile(str(depth_path), np.uint8), cv2.IMREAD_UNCHANGED)
+            if depth is None or depth.shape[:2] != shape[:2]:
+                raise RuntimeError("Packaged StackMFF V2 depth map has the wrong dimensions")
 
 
 def run(executable: Path) -> None:
@@ -224,8 +234,8 @@ def run(executable: Path) -> None:
                 [str(executable)], env=environment,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            _wait_for_control(process, root / "control.json")
             try:
+                _wait_for_control(process, root / "control.json")
                 _exercise(executable, environment, root, shape)
             except BaseException:
                 print(f"Desktop exit status: {process.poll()}", file=sys.stderr)
@@ -241,11 +251,16 @@ def run(executable: Path) -> None:
                 if process.poll() is None:
                     failing = sys.exc_info()[0] is not None
                     try:
-                        _call(executable, environment, "app.quit", "--force")
+                        if (root / "control.json").is_file():
+                            _call(executable, environment, "app.quit", "--force")
+                        else:
+                            process.terminate()
                     except Exception as error:
                         if not failing:
                             raise
                         print(f"Desktop cleanup failed: {error}", file=sys.stderr)
+                        if process.poll() is None:
+                            process.terminate()
                     finally:
                         try:
                             process.wait(timeout=60)

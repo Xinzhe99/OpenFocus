@@ -69,47 +69,34 @@ POSSIBILITY OF SUCH DAMAGE.
   depth and output-mode conventions.
 - **Citation**: see the upstream README for the StackMFF V3 paper reference.
 
-## StackMFF (V1) — neural stack fusion
+## Retrained StackMFF V1 and V2 — neural stack fusion
 
-- **Upstream**: https://github.com/Xinzhe99/StackMFF
-- **License**: MIT, as declared in the upstream README
-- **Vendored code**: `core/models/stackmff_v1/network.py` — the 3D U-Net
-  (`StackMFF`, `Conv3D_Block`, `Deconv3D_Block`, `CoordAtt_3d`). The upstream
-  training and prediction scripts are not included; OpenFocus fuses at
-  inference only.
-- **Changes**: the `__main__` smoke block and its prints were removed, and the
-  module docstring was rewritten. Depth pooling uses an equivalent maximum
-  reduction supported by more PyTorch devices; the network math is unchanged.
-- **Weights**: `weights/stackmff_final.pth` is the upstream released
-  `weights/checkpoint.pth` (24,405,662 bytes, SHA-256
-  `5445a79657c87d05a6b4cafd79d6a893b3f0c2713222a9ef8e1daf6e2e35ff80`).
-- **Integration**: `fusion_methods/stackmff_v1.py` is OpenFocus code; it pads
-  to a multiple of 16, reconstructs colour from the closest source frame and
-  restores the source bit depth.
-- **Citation**: Xie et al., *Applied Intelligence* 55:503 (2025),
-  https://doi.org/10.1007/s10489-025-06383-8
+- **Original methods**: [StackMFF](https://github.com/Xinzhe99/StackMFF) and
+  [StackMFF V2](https://github.com/Xinzhe99/StackMFF-V2), originally MIT licensed.
+- **Retrained variants**: `core/models/stackmff_v1/network.py` and
+  `core/models/stackmff_v2/network.py` adapt the V3-backbone retraining releases.
+  They reuse the MIT-licensed V3 snapshot described above, but the retrained
+  wrappers and checkpoints are derivatives distributed under the StackMFF V3
+  License 1.0 below (Copyright (c) 2026 Xinzhe Xie), unless the licensor grants
+  separate written terms. This license restricts distribution, incorporation
+  into other projects and commercial use.
+- **V1 weights**: `weights/stackmff_final.pth` (658,906 bytes, SHA-256
+  `8a530228077a4dc0476258f55dd6e00d0b00d04861b1177bdbe4767eb449fb7d`).
+- **V2 weights**: `weights/stackmff_v2_final.pth` (659,194 bytes, SHA-256
+  `f7f2ee36453d6073d62b89289133012b95116c07b208e76f5ba6d00a1f3f2cda`).
+- **Integration**: both backbones pad to a multiple of 64 and OpenFocus preserves
+  source bit depth. V1 runs its published two-scale, smoothed inference at the
+  original input size, blends luma, and reconstructs chroma from the closest
+  source. V2 pads by reflection (or edge replication for very small inputs)
+  before normalizing expected depth and sampling the source; its depth indices
+  depend on frame order.
+- **Citations**: Xie et al., *Applied Intelligence* 55:503 (2025),
+  https://doi.org/10.1007/s10489-025-06383-8; Xie et al., *Engineering
+  Applications of Artificial Intelligence* 162 (2025) 112667,
+  https://doi.org/10.1016/j.engappai.2025.112667.
 
-## StackMFF V2 — neural stack fusion with focal-depth regression
-
-- **Upstream**: https://github.com/Xinzhe99/StackMFF-V2
-- **License**: MIT, as declared in the upstream README
-- **Vendored code**: `core/models/stackmff_v2/network.py` — `StackMFF_V2`,
-  `FeatureExtraction`, `LayerInteraction`, `DepthMapCreation` and their
-  building blocks. Training, evaluation and CLI scripts are not included.
-- **Changes**: the `__main__` block and the debug print in the bridge
-  constructor were removed, and the module docstring was rewritten.
-- **Weights**: `weights/stackmff_v2_final.pth` is the upstream released
-  `model.pth` (254,009 bytes, SHA-256
-  `cb923ed0265765e8471c7fcb15a08d1cee296809254e03e97418c664d655d179`).
-- **Integration**: `fusion_methods/stackmff_v2.py` is OpenFocus code; it pads
-  to a multiple of 32 and exposes the reference hard sampling plus an optional
-  probability-weighted (soft) blend. The model is order-sensitive by design:
-  the recurrent layer reads the stack in focus order.
-- **Citation**: Xie et al., *Engineering Applications of Artificial
-  Intelligence* 162 (2025) 112667,
-  https://doi.org/10.1016/j.engappai.2025.112667
-
-The MIT text below covers both the vendored code and the released weights.
+The MIT text below covers the vendored V3 snapshot and its released V3 weights;
+the retrained V1/V2 derivatives have the separate terms that follow it.
 
 ```
 MIT License
@@ -133,4 +120,67 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+## StackMFF V3 License 1.0 (retrained V1/V2 derivatives)
+
+In the original text below, “this repository” refers to the StackMFF V3
+research/retraining release, not to all files in the OpenFocus repository.
+The terms apply here to the retrained V1/V2 derivatives identified above.
+
+```text
+# StackMFF V3 License 1.0
+
+SPDX-License-Identifier: LicenseRef-StackMFF-V3-1.0
+
+Copyright (c) 2026 Xinzhe Xie. All rights reserved.
+
+This is a source-available license for research and personal use. It is **not** an open-source license: it does not allow the software to be included in other software projects, or redistributed, without written permission. By using, copying or modifying the Software you accept these terms.
+
+## 1. Definitions
+
+**Software** means the source code, scripts, documentation and model checkpoint distributed in this repository, and any part of them.
+
+**Derivative** means a modified version of the Software, or any work that includes the Software or a modified version of it.
+
+**Distribute** means to make the Software or a Derivative available to anyone other than yourself, by any means, including a public repository, package index, container image, installer, plugin, application bundle, or hosted service.
+
+**Project** means any software program, library, application, tool, pipeline, product or service.
+
+**You** means the individual or legal entity agreeing to these terms.
+
+## 2. Permission
+
+Subject to sections 3 to 6, you may use, copy and modify the Software, and run the released checkpoint, for research, teaching, evaluation, and personal use. Modifications are permitted only for your own use and must not be Distributed.
+
+## 3. Conditions
+
+Without the licensor's prior written permission, you must not:
+
+1. use the Software, a Derivative, or the checkpoint as part of, as a dependency of, or in combination with any Project that is Distributed or otherwise made available to anyone outside your organisation — whether that Project is open source, noncommercial, commercial or otherwise, including a public repository, a released application, a plugin or a service;
+2. Distribute the Software, the checkpoint, or a Derivative;
+3. use the Software, the checkpoint, or a Derivative for any commercial purpose, including in a product or service offered for a fee, or in the business operations of a for-profit organisation;
+4. remove or alter any copyright, license or attribution notice in the Software or a Derivative.
+
+Nothing in this license limits rights you have under applicable law, such as fair use.
+
+## 4. Written permission
+
+Send requests in writing to the licensor at guobuyuwork@163.com. Permission is effective only if given in writing by the licensor and only on the terms it states. The licensor may grant permission for use in an open-source project, integration into another application, commercial use, or redistribution, under separate terms.
+
+## 5. Attribution and citation
+
+Any publication that reports results obtained with the Software must cite the accompanying paper. You may not use the names "StackMFF", "StackMFF V3", or the authors' names to endorse or promote a Project without written permission.
+
+## 6. Termination
+
+Your rights under this license end automatically if you breach these terms. Section 7 survives termination.
+
+## 7. Disclaimer
+
+As far as the law allows, the Software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the Software, under any kind of legal claim.
+
+## 8. Third-party material
+
+This license covers the Software only. Datasets, third-party implementations and image-derived outputs retain the terms of their sources; see `THIRD_PARTY_NOTICES.md`.
 ```

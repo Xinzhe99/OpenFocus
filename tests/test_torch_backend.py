@@ -100,10 +100,79 @@ def xpu_probe_usable(monkeypatch):
     backend.reset_cache()
 
 
-def test_cuda_and_rocm_are_distinguished():
+@pytest.fixture
+def rocm_probe_usable(monkeypatch):
+    backend.reset_cache()
+    monkeypatch.setattr(backend, "_rocm_probe_command",
+                        lambda: [sys.executable, "-c", "pass"])
+    yield
+    backend.reset_cache()
+
+
+def test_cuda_and_rocm_are_distinguished(rocm_probe_usable):
     assert backend.detect_kind(_torch(cuda=FakeCuda())) == backend.KIND_CUDA
     assert backend.detect_kind(_torch(cuda=FakeCuda(), hip="6.2")) == (
         backend.KIND_ROCM)
+
+
+@pytest.mark.parametrize("exit_code,expected", [
+    (0, backend.KIND_ROCM),
+    (7, backend.KIND_CPU),
+])
+def test_rocm_probe_survives_child_exit_and_is_cached(monkeypatch, exit_code, expected):
+    class UnsafeCuda(FakeCuda):
+        def is_available(self):
+            pytest.fail("ROCm availability must not run in the desktop process")
+
+    module = _torch(cuda=UnsafeCuda(), hip="6.2")
+    monkeypatch.setattr(backend, "_rocm_probe_command", lambda: [
+        sys.executable, "-c", f"import os; os._exit({exit_code})",
+    ])
+    backend.reset_cache()
+    try:
+        assert backend.detect_kind(module) == expected
+        monkeypatch.setattr(backend, "_rocm_probe_command",
+                            lambda: pytest.fail("probe should be cached"))
+        assert backend.resolve_device(True, module).type == (
+            "cuda" if expected == backend.KIND_ROCM else "cpu")
+        assert backend.device_memory(backend.KIND_ROCM, module) == (
+            module.cuda.memory if expected == backend.KIND_ROCM else None)
+    finally:
+        backend.reset_cache()
+
+
+def test_hanging_rocm_probe_falls_back_to_cpu(monkeypatch, caplog):
+    class UnsafeCuda(FakeCuda):
+        def is_available(self):
+            pytest.fail("ROCm availability must not run in the desktop process")
+
+    module = _torch(cuda=UnsafeCuda(), hip="6.2")
+    monkeypatch.setattr(backend, "_ROCM_PROBE_TIMEOUT", 0.5)
+    monkeypatch.setattr(backend, "_rocm_probe_command", lambda: [
+        sys.executable, "-c", "import time; time.sleep(30)",
+    ])
+    backend.reset_cache()
+    try:
+        assert backend.detect_kind(module) == backend.KIND_CPU
+        assert backend.resolve_device(True, module).type == "cpu"
+        assert "Isolated ROCm probe failed" in caplog.text
+    finally:
+        backend.reset_cache()
+
+
+def test_failed_rocm_probe_preserves_xpu_fallback(monkeypatch, xpu_probe_usable):
+    monkeypatch.setattr(backend, "_rocm_probe_command", lambda: [
+        sys.executable, "-c", "import os; os._exit(7)",
+    ])
+    module = _torch(cuda=BrokenCuda(), hip="6.2", xpu=FakeXpu())
+    assert backend.detect_kind(module) == backend.KIND_XPU
+
+
+def test_nvidia_cuda_does_not_spawn_rocm_probe(monkeypatch):
+    monkeypatch.setattr(backend, "_rocm_probe_command",
+                        lambda: pytest.fail("NVIDIA must not spawn a ROCm probe"))
+    assert backend.detect_kind(_torch(cuda=FakeCuda())) == backend.KIND_CUDA
+    assert backend.detect_kind(_torch(cuda=FakeCuda(available=False))) == backend.KIND_CPU
 
 
 def test_xpu_is_selected_when_cuda_is_unavailable(xpu_probe_usable):
@@ -188,7 +257,7 @@ def test_explicit_cpu_request_wins_over_an_accelerator():
     assert backend.resolve_device(False, module).type == "cpu"
 
 
-def test_rocm_and_xpu_memory_readings(xpu_probe_usable):
+def test_rocm_and_xpu_memory_readings(xpu_probe_usable, rocm_probe_usable):
     rocm = _torch(cuda=FakeCuda(memory=(3 * 1024 ** 3, 24 * 1024 ** 3)),
                   hip="6.2")
     assert backend.device_memory(backend.KIND_ROCM, rocm) == (

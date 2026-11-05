@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/Xinzhe99/OpenFocus/releases"><img src="https://img.shields.io/github/v/release/Xinzhe99/OpenFocus?label=release&color=2f81f7" alt="Release"></a>
   <a href="https://github.com/Xinzhe99/OpenFocus/stargazers"><img src="https://img.shields.io/github/stars/Xinzhe99/OpenFocus?color=e3b341" alt="Stars"></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <a href="./docs/THIRD_PARTY_NOTICES.md"><img src="https://img.shields.io/badge/license-MIT%20%2B%20model%20terms-3fb950" alt="License: MIT and model terms"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
 </p>
 
@@ -294,14 +294,11 @@ Questions, ideas or feedback? Join our [Discord community](https://discord.gg/af
 ## License
 
 The OpenFocus application is released under the [MIT License](./LICENSE).
-See also the [third-party notices](./docs/THIRD_PARTY_NOTICES.md).
-
-**StackMFF series exception.** The StackMFF fusion algorithms — currently
-StackMFF V3 and any future state-of-the-art editions — remain the property of
-the OpenFocus project, which retains all rights to the StackMFF series. You may
-use them as part of OpenFocus for your own images and internal work. Copying,
-porting or migrating these algorithms into another open-source project requires
-prior written permission.
+The retrained StackMFF V1/V2 wrappers and weights have separate StackMFF V3
+License 1.0 terms, which restrict redistribution, inclusion in other projects
+and commercial use without the licensor's prior written permission. The
+bundled StackMFF V3 v2.0 snapshot remains MIT licensed. See the full
+[third-party notices](./docs/THIRD_PARTY_NOTICES.md) for provenance and terms.
 
 <a id="developing"></a>
 ## Developing

@@ -1,10 +1,7 @@
-"""StackMFF V2 back-end: per-layer focus estimation plus cross-layer regression.
+"""StackMFF V2 back-end using its retrained attention backbone.
 
-The stack's focus order is meaningful: a bidirectional recurrent layer reads
-it, so the frames must stay in acquisition order. Fusion follows the reference
-rule exactly: the expected layer is min-max normalised over the padded
-inference, scaled to the stack length and the nearest source frame is sampled.
-The same sampled layer feeds the depth-map measure.
+Frame order defines depth positions. The expected layer is min-max normalised
+over the padded inference, then the nearest source frame is sampled.
 """
 import os
 from contextlib import nullcontext
@@ -14,7 +11,7 @@ import numpy as np
 from fusion_methods import neural_common as common
 from utils.image_utils import fuse_output_dtype
 
-PAD_ALIGN = 32
+PAD_ALIGN = common.ATTENTION_PAD_ALIGN
 DEFAULT_WEIGHTS = 'weights/stackmff_v2_final.pth'
 _ALGORITHM = 'stackmffv2'
 _CACHE = None
@@ -28,12 +25,9 @@ def _model_and_device(model_path, use_gpu):
     global _CACHE
     if _CACHE is None or _CACHE[0] != key:
         from core.models.stackmff_v2.network import StackMFF_V2
-        state = common.torch.load(path, map_location='cpu')
-        state = {name.replace('module.', ''): value
-                 for name, value in state.items()}
-        model = StackMFF_V2()
-        model.load_state_dict(state)
-        model.to(device).eval()
+        from core.models.stackmff_v3.model_io import load_variant_checkpoint
+        model = load_variant_checkpoint(path, StackMFF_V2, 'v2_v3backbone',
+                                        device=device)
         _CACHE = (key, model, device)
     return _CACHE[1], _CACHE[2]
 
@@ -41,50 +35,31 @@ def _model_and_device(model_path, use_gpu):
 def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
                        resource_preference='balanced', execution_plan=None,
                        result_count=1, fixed_bytes=0):
-    """Admit the checkpoint plus the encoder/GRU workspace for this tile."""
-    h, w = frames[0].shape[:2]
-    hp, wp = h + (-h) % PAD_ALIGN, w + (-w) % PAD_ALIGN
-    n = len(frames)
-    # 64-channel half-resolution encoder path and the 16-channel GRU are the
-    # dominant terms; feature maps stay per layer, so they scale with N.
-    workspace = int(96.0 * n * hp * wp * 4)
-    host = int(n * hp * wp * 4 * 4 + result_count * h * w * 3 * 4 + fixed_bytes)
-    device, plan = common.plan_inference(
-        _ALGORITHM, frames, model_path, use_gpu, thread_count,
-        resource_preference, execution_plan,
-        workspace_bytes=workspace, host_bytes=host)
-    model, device = _model_and_device(model_path, use_gpu)
-    return model, device, plan
+    """Admit the retrained model and its attention workspace."""
+    common.ensure_torch()
+    device = common.resolve_device(use_gpu)
+    return common.plan_attention_inference(
+        _ALGORITHM, frames, model_path, device, common.torch,
+        lambda: _model_and_device(model_path, use_gpu),
+        thread_count=thread_count, resource_preference=resource_preference,
+        execution_plan=execution_plan, result_count=result_count,
+        fixed_bytes=fixed_bytes)
 
 
-def _probabilities(planes, model, device, should_cancel=None):
-    """[N, Hp, Wp] focus probabilities; sums to one along the stack."""
+def _inference_depth(planes, model, device, should_cancel=None):
+    """Return the reference model's padded depth and source indices."""
     common.cancel(should_cancel)
     tensor = planes.to(device)
     try:
         with common.torch.no_grad():
-            features = model.feature_extraction(tensor)
-            focus = model.layer_interaction(features)
-            probs = common.torch.softmax(focus, dim=1)
+            _luma, depth, index = model(tensor)
         common.cancel(should_cancel)
     finally:
-        # Device calls enqueue work. Cancellation must not release the heavy
-        # lease while kernels from this invocation still use its resources.
+        # Wait for queued kernels before releasing the heavy-job lease.
         common.synchronize(device)
-    return probs[0].cpu().numpy()
+    return depth[0, 0].cpu().numpy(), index[0].cpu().numpy()
 
 
-def _depth_from(probs, n):
-    """Reference depth: expected layer 1..N, min-max normalised to 0..1."""
-    indices = np.arange(1, n + 1, dtype=np.float32)[:, None, None]
-    expected = (probs * indices).sum(axis=0)
-    low, high = float(expected.min()), float(expected.max())
-    span = high - low
-    if span <= 1e-12:
-        # A flat tile has no focus variation; a constant map keeps every
-        # caller deterministic instead of dividing by zero.
-        return np.zeros(expected.shape, np.float32)
-    return ((expected - low) / span).astype(np.float32)
 
 
 def _sample(frames, index, should_cancel=None):
@@ -107,24 +82,19 @@ def infer(frames, model_path, use_gpu, should_cancel=None,
     """Return (fused pixels, depth 0-1, index 0..N-1) for one whole tile."""
     common.cancel(should_cancel)
     out_dtype = fuse_output_dtype(frames)
-    normalized = common.normalized_frames(frames)
-    n = len(normalized)
-    planes = common.stage_planes(normalized, PAD_ALIGN, should_cancel)
     model, device, _plan = _prepare_inference(
-        normalized, model_path, use_gpu, thread_count=thread_count,
+        frames, model_path, use_gpu, thread_count=thread_count,
         resource_preference=resource_preference, execution_plan=execution_plan)
-    probs = _probabilities(planes, model, device, should_cancel)
+    normalized = common.normalized_frames(frames)
+    planes = common.stage_planes(normalized, PAD_ALIGN, should_cancel)
+    depth_full, index_full = _inference_depth(planes, model, device, should_cancel)
     del planes
     h, w = normalized[0].shape[:2]
-    # The reference normalises the depth map over the *padded* inference and
-    # crops afterwards. Normalising the crop instead shifts every index when
-    # the edge padding changes the extrema, so keep the reference order.
-    depth_full = _depth_from(probs, n)
-    index_full = np.clip(np.round(depth_full * (n - 1)).astype(np.int64), 0, n - 1)
+    # The model normalises across the padded map before we crop.
     depth = depth_full[:h, :w]
     index = index_full[:h, :w]
     fused = _sample(normalized, index, should_cancel)
-    del probs, depth_full, index_full
+    del depth_full, index_full
     if out_dtype is np.uint8:
         fused = np.clip(np.round(fused), 0, 255).astype(np.uint8)
     else:

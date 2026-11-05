@@ -179,11 +179,13 @@ class DepthProductExportWorker(QThread):
     ok = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, path, index, frames, valid_mask, context, metadata, profile, render, parent=None):
+    def __init__(self, path, index, frames, valid_mask, context, metadata, profile, render,
+                 linear_dng_metadata=None, parent=None):
         super().__init__(parent)
         self.path, self.index, self.frames = path, index, frames
         self.valid_mask, self.context, self.metadata = valid_mask, context, metadata
         self.profile, self.render = profile, render
+        self.linear_dng_metadata = linear_dng_metadata
 
     def cancel(self):
         self.requestInterruption()
@@ -206,12 +208,22 @@ class DepthProductExportWorker(QThread):
                 full_bytes = full_height * full_width * channels * itemsize
                 # Include the index, ROI output, full canvas and the writer's
                 # contiguous pixels, encoded TIFF and intermediate byte strings.
+                development_bytes = (min(height, 128) * width * 86
+                                     if self.render and self.linear_dng_metadata is not None else 0)
                 require_memory(height * width * (2 + channels * itemsize)
-                               + 6 * full_bytes + min(height, 128) * width * (24 + 4 * channels))
+                               + 6 * full_bytes + min(height, 128) * width * (24 + 4 * channels)
+                               + development_bytes)
                 indices = estimate_indices(self.index, len(self.frames), self.valid_mask,
                                            self.isInterruptionRequested)
                 pixels = (render_indices(indices, self.frames, self.isInterruptionRequested)
                           if self.render else indices)
+                if self.render and self.linear_dng_metadata is not None:
+                    from utils.linear_dng import develop_linear
+                    for y in range(0, height, 128):
+                        if self.isInterruptionRequested():
+                            self.failed.emit("cancelled")
+                            return
+                        pixels[y:y + 128] = develop_linear(pixels[y:y + 128], self.linear_dng_metadata)
                 context = self.context
                 if context is not None and context.roi_mode == "paste":
                     frame = context.frames[0]
@@ -1564,7 +1576,8 @@ class DepthMapDialog(QDialog):
                     "method": self._map_method, "domain": self._domain_metadata(),
                     "roi_mode": context.roi_mode if context is not None else "full"}
         worker = DepthProductExportWorker(path, self._index01, tuple(self._map_frames),
-            self._map_valid_mask, context, metadata, self._map_icc_profile, render, self)
+            self._map_valid_mask, context, metadata, self._map_icc_profile, render,
+            linear_dng_metadata=self._map_linear_dng_metadata, parent=self)
         self._export_worker = worker
         self._export_outcome = None
         self._cancelling = False

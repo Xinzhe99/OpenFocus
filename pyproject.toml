@@ -10,7 +10,7 @@ readme = "README.md"
 # advertising 3.9 produced an install that failed at import time.
 requires-python = ">=3.10"
 authors = [{ name = "Xinzhe Xie", email = "xiexinzheyyy@163.com" }]
-license = "MIT"
+license = "MIT AND LicenseRef-StackMFF-V3-1.0"
 license-files = ["LICENSE", "docs/THIRD_PARTY_NOTICES.md"]
 keywords = ["image-fusion", "focus-stacking", "multifocus", "microscopy", "photography", "depth-map"]
 classifiers = [

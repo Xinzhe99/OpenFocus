@@ -11,8 +11,8 @@
     });
   }
 
-  // Every download button follows the visitor's OS, and /api/latest can
-  // re-point them at the current release.
+  // The navigation download follows the visitor's OS; the hero shows both
+  // desktop installers explicitly.
   const dlButtons = Array.from(document.querySelectorAll('[data-url-win]'));
   const applyDownload = () => {
     if (!dlButtons.length) return;
@@ -23,9 +23,6 @@
     dlButtons.forEach((el) => {
       const url = el.dataset['url' + key];
       if (url) el.href = url;
-      const label = el.dataset['label' + key];
-      const text = $('span', el);
-      if (label && text) text.textContent = label;
     });
   };
   applyDownload();

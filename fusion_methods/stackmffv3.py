@@ -29,6 +29,7 @@ import numpy as np
 from utils.image_utils import fuse_output_dtype
 from utils.sorting import natural_sort_key
 from core import torch_backend
+from fusion_methods import neural_common as common
 
 # ================= 全局缓存变量 =================
 _GLOBAL_MODEL = None
@@ -42,7 +43,7 @@ MT = None
 
 # 网络以 4x4 卷积下采样 4 倍，模型内部把输入 pad 到 64 的倍数；这里用同一
 # 对齐量预处理批内瓦片，让同批张量形状一致。
-PAD_ALIGN = 64
+PAD_ALIGN = common.ATTENTION_PAD_ALIGN
 
 # 推理尺度（论文配置）：soft 在全分辨率与 0.75 倍上平均概率；hard 用同一
 # 组尺度、不做平滑，然后取 argmax。
@@ -208,82 +209,14 @@ def _stage_gray(frames, should_cancel):
 def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
                        resource_preference='balanced', execution_plan=None,
                        result_count=1, fixed_bytes=0):
-    """Admit model loading, then its actual architecture's padded workspace."""
-    from core.resource_policy import Workload, plan_execution, probe_resources
-
+    """Admit model loading and the attention workspace for this stack."""
     device = _resolve_device(use_gpu)
-    kind = torch_backend.kind_of_device(device, torch)
-    snapshot = probe_resources(kind)
-    cap = execution_plan.ram_budget if execution_plan is not None else None
-    if kind == torch_backend.KIND_MPS:
-        # MPS shares physical memory; budget the reported headroom and refuse
-        # when it cannot be read rather than running without a ceiling.
-        from core.resource_policy import ResourceLimitError
-        torch_backend.empty_cache(device, torch)
-        shared = torch_backend.mps_memory(torch)
-        if shared is None:
-            raise ResourceLimitError(
-                "Cannot determine the MPS working-set budget")
-        cap = min(cap if cap is not None else snapshot.available_ram,
-                  max(0, int(shared[0])))
-    vram_kind = torch_backend.has_device_memory(kind)
-    if execution_plan is not None:
-        thread_count = min(thread_count or execution_plan.native_threads,
-                           execution_plan.native_threads)
-    h, w = frames[0].shape[:2]
-    n = len(frames)
-    c = frames[0].shape[2] if frames[0].ndim == 3 else 1
-    # Loading can hold serialized tensors plus the instantiated model. Count
-    # it before loading, even when a cache hit would avoid this allocation.
-    model_bytes = os.path.getsize(model_path) * 4
-    base = dict(algorithm='stackmffv3', frames=n, height=h, width=w,
-                channels=c, itemsize=max(f.dtype.itemsize for f in frames),
-                parallel_layer='native')
-    load_plan = plan_execution(
-        Workload(**base, fixed_bytes=model_bytes + fixed_bytes,
-                 per_worker_bytes=0,
-                 fixed_vram_bytes=model_bytes if vram_kind else 0),
-        snapshot, preference=resource_preference,
-        user_threads=thread_count, ram_budget_override=cap)
-    torch.set_num_threads(load_plan.native_threads)
-    model, device = _get_model_and_device(model_path, use_gpu)
-    hp, wp = h + (-h) % PAD_ALIGN, w + (-w) % PAD_ALIGN
-    pixels = hp * wp
-    # CPU calibration covers the bundled linear-head model; retain the
-    # previous conservative multiplier for unmeasured GPU backends.
-    channels = model.C1 / 16 + (0 if getattr(model, 'single_scale', False)
-                               else model.C2 / 64)
-    heads = max((getattr(m, 'heads', 1) for m in model.modules()), default=1)
-    expansion = max((m.fc1.out_features / m.fc1.in_features
-                     for m in model.modules() if hasattr(m, 'fc1')), default=2)
-    calibrated_cpu = (kind == torch_backend.KIND_CPU
-                      and getattr(model, 'single_scale', False)
-                      and not getattr(model, 'fine_head', False)
-                      and model.C1 == 48 and model.C2 == 96
-                      and model.window == 8 and heads == 3 and expansion == 2)
-    feature_base = 7 if calibrated_cpu else 12
-    features = int(n * pixels * channels * 4 * (feature_base + 2 * expansion))
-    if getattr(model, 'fine_head', False):
-        # The guidance head retains the input and projected features while
-        # its concatenation and first convolution output are both live.
-        features = max(features, n * pixels * 4 * (1 + 5 * model.head.cf))
-    scores = int(pixels / 16 * heads * 4
-                 * (n * model.window ** 2 + n * n))
-    probabilities = n * pixels * 4 * 6
-    inference = features + scores + probabilities + model_bytes
-    # Includes normalization, luma staging, colors, row mixing, output and
-    # all returned tiles. Resident source arrays are not charged again.
-    host = (fixed_bytes + n * pixels * 4 * (2 * c + 3)
-            + result_count * h * w * c * 4)
-    if kind in (torch_backend.KIND_CPU, torch_backend.KIND_MPS):
-        host += inference
-    plan = plan_execution(
-        Workload(**base, fixed_bytes=host, per_worker_bytes=0,
-                 fixed_vram_bytes=inference if vram_kind else 0),
-        snapshot, preference=resource_preference, user_threads=thread_count,
-        ram_budget_override=cap)
-    torch.set_num_threads(plan.native_threads)
-    return model, device, plan
+    return common.plan_attention_inference(
+        'stackmffv3', frames, model_path, device, torch,
+        lambda: _get_model_and_device(model_path, use_gpu),
+        thread_count=thread_count, resource_preference=resource_preference,
+        execution_plan=execution_plan, result_count=result_count,
+        fixed_bytes=fixed_bytes)
 
 
 def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',

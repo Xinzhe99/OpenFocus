@@ -357,6 +357,71 @@ def test_label_manager_preview_uses_each_sources_linear_metadata(manager, qapp,
     assert colors["stack"] != colors["record"]
 
 
+@pytest.mark.parametrize("mode", ["record", "context", "normal", "baked"])
+def test_registered_preview_tracks_selected_history(manager, qapp, monkeypatch, mode):
+    from controllers.output_manager import OutputRecord
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+    from utils.image_utils import to_display_uint8
+
+    matrix = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    stack_meta = LinearDNGMetadata(matrix, (0.5, 1.0, 0.7), "Maker", "Current")
+    record_meta = LinearDNGMetadata(matrix, (0.8, 1.0, 0.6), "Maker", "Historical")
+    stack_image = np.full((240, 320, 3), 7000, np.uint16)
+    historical = np.full((240, 320, 3), 7000, np.uint16)
+    manager.window.raw_images = [stack_image]
+    manager.window.image_filenames = ["current-input.dng"]
+    manager.window.linear_dng_metadata = stack_meta
+    manager.window.registration_results = [stack_image]
+    manager.window.registration_filenames = ["current-aligned.dng"]
+    context = SimpleNamespace(linear_dng_metadata=(None if mode == "normal" else record_meta),
+                              source_paths=())
+    record = OutputRecord.create(historical, "historical", context=context, kind="aligned")
+    if mode == "context":
+        record.linear_dng_metadata = None
+    record.annotations_baked = mode == "baked"
+    item = object()
+    selected = [None]
+    manager.window.output_list = SimpleNamespace(currentItem=lambda: selected[0], count=lambda: 1)
+    manager.window.output_manager = SimpleNamespace(
+        record_for_item=lambda value: record if value is item else None,
+        record_for_row=lambda _row: record)
+    colors = {}
+
+    def edit(_dialog):
+        registered = manager.target_stack_combo.findData("registered")
+        input_index = manager.target_stack_combo.findData("input")
+        manager.target_stack_combo.setCurrentIndex(registered)
+        qapp.processEvents()
+        colors["current"] = _visible_preview_rgb(manager.preview)
+        assert manager._collect_frames("registered")["names"] == ["current-aligned.dng"]
+
+        selected[0] = item
+        manager.window.registration_results = [historical]
+        manager.window.registration_filenames = ["historical-aligned.tif"]
+        manager.target_stack_combo.setCurrentIndex(input_index)
+        manager.target_stack_combo.setCurrentIndex(registered)
+        qapp.processEvents()
+        colors["historical"] = _visible_preview_rgb(manager.preview)
+        assert manager._collect_frames("registered")["names"] == ["historical-aligned.tif"]
+
+        selected[0] = None
+        manager.window.registration_results = [stack_image]
+        manager.window.registration_filenames = ["current-aligned.dng"]
+        manager.target_stack_combo.setCurrentIndex(input_index)
+        manager.target_stack_combo.setCurrentIndex(registered)
+        qapp.processEvents()
+        colors["back"] = _visible_preview_rgb(manager.preview)
+
+    edit_dialog(monkeypatch, manager, edit)
+    expected_current = _rgb_at(to_display_uint8(develop_linear(stack_image, stack_meta)), 120, 160)
+    expected_historical = (develop_linear(historical, record_meta)
+                           if mode in ("record", "context") else historical)
+    assert colors["current"] == expected_current
+    assert colors["historical"] == _rgb_at(to_display_uint8(expected_historical), 120, 160)
+    assert colors["historical"] != expected_current
+    assert colors["back"] == expected_current
+
+
 def test_label_manager_preview_does_not_develop_baked_output(manager, qapp,
                                                               monkeypatch):
     from controllers.output_manager import OutputRecord

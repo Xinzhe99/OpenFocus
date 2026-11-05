@@ -247,22 +247,13 @@ class ExportManager:
         folder = item.data(ALIGNED_DIR_ROLE)
         return folder if folder and os.path.isdir(folder) else None
 
-    def export_layered_tiff(self, item=None) -> None:
+    def export_layered_tiff(self, record, original, path) -> None:
         window = self.window
         if self.layered_worker is not None:
             return
-        if item is None:
-            item = window.output_list.currentItem()
-        record = window.output_manager.record_for_item(item)
         if record is None or not record.retouchable:
             show_warning_box(window, trans.t('action_export_layered_tiff'),
                              trans.t('layered_tiff_no_source'))
-            return
-        default = self.filename_from_label(record.label) + '.tif'
-        path, _ = QFileDialog.getSaveFileName(
-            window, trans.t('action_export_layered_tiff'), default,
-            'TIFF (*.tif *.tiff)')
-        if not path:
             return
         root, ext = os.path.splitext(path)
         if not ext:
@@ -289,7 +280,7 @@ class ExportManager:
         worker = LayeredTiffWorker(path, record.image, record.context,
                                    record.icc_profile or record.context.icc_profile)
         self.layered_worker = worker
-        self._layered_record = record
+        self._layered_record = original
         progress.canceled.connect(self._cancel_layered_tiff)
         worker.completed.connect(self._layered_tiff_completed)
         worker.finished.connect(self._layered_tiff_finished)
@@ -376,9 +367,8 @@ class ExportManager:
         if not default_filename:
             default_filename = self.generate_default_filename()
         filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;'
-                   'JPG 8-bit (*.jpg);;BMP 8-bit (*.bmp);;WebP 8-bit (*.webp)')
-        if metadata is not None:
-            filters += ';;' + trans.t('linear_dng_filter')
+                   'JPG 8-bit (*.jpg);;BMP 8-bit (*.bmp);;WebP 8-bit (*.webp);;'
+                   + trans.t('linear_dng_filter'))
         file_path, selected_filter = QFileDialog.getSaveFileName(
             window, title, default_filename, filters)
 
@@ -391,7 +381,9 @@ class ExportManager:
             log_action('export_image', path=file_path)
             if os.path.splitext(file_path)[1].lower() == '.dng':
                 if metadata is None:
-                    raise ValueError(trans.t('linear_dng_export_failed'))
+                    show_warning_box(window, trans.t('linear_dng_filter'),
+                                     trans.t('linear_dng_requires_raw'))
+                    return
                 from controllers.output_manager import OutputRecord
                 record = OutputRecord.create(result_to_save, default_filename)
                 record.linear_dng_metadata = metadata

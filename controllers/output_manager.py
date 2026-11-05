@@ -820,11 +820,6 @@ class OutputManager:
         retouch_action.setEnabled(record is not None and record.retouchable)
         menu.addAction(retouch_action)
 
-        layered_action = QAction(trans.t("action_export_layered_tiff"), window)
-        layered_action.triggered.connect(
-            lambda: window.export_manager.export_layered_tiff(target_item))
-        layered_action.setEnabled(target_item is not None)
-        menu.addAction(layered_action)
 
         # Drag-out export format submenu (persisted per user)
         drag_menu = menu.addMenu(trans.t("menu_drag_format"))
@@ -954,16 +949,23 @@ class OutputManager:
                     item.setData(ALIGNED_DIR_ROLE, path)
                 return
             default_filename = window.export_manager.filename_from_label(record.label)
+            layered_filter = trans.t('layered_tiff_filter')
             filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;JPG 8-bit (*.jpg);;'
-                       'WebP 8-bit (*.webp);;BMP 8-bit (*.bmp)')
-            if record.linear_dng_metadata is not None and not record.annotations_baked:
-                filters += ';;' + trans.t('linear_dng_filter')
+                       'WebP 8-bit (*.webp);;BMP 8-bit (*.bmp);;'
+                       + trans.t('linear_dng_filter') + ';;' + layered_filter)
             file_path, selected_filter = QFileDialog.getSaveFileName(
                 window, trans.t('action_save'), default_filename, filters)
             if not file_path:
                 return
+            if selected_filter == layered_filter:
+                window.export_manager.export_layered_tiff(record, original, file_path)
+                return
             file_path = window.export_manager.normalize_export_path(file_path, selected_filter=selected_filter)
             if os.path.splitext(file_path)[1].lower() == '.dng':
+                if record.linear_dng_metadata is None or record.annotations_baked:
+                    show_warning_box(window, trans.t('linear_dng_filter'),
+                                     trans.t('linear_dng_requires_raw'))
+                    return
                 self.start_linear_dng_export(record, original, file_path, labels)
                 return
             self._write_record(record, file_path, labels)

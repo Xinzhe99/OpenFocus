@@ -74,6 +74,10 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--_openfocus-xpu-probe"]:
         from core.torch_backend import _run_xpu_probe
         sys.exit(_run_xpu_probe())
+    if sys.argv[1:] == ["--_openfocus-rocm-probe"]:
+        from core.torch_backend import _run_rocm_probe
+        sys.exit(_run_rocm_probe())
+
 
     # Bootstrap before GUI imports: CLI and import-time failures share the
     # same diagnostics, including on systems without Qt installed.

@@ -880,7 +880,17 @@ class LabelManager:
                     "metadata": [metadata] * len(images)}
         if target == "registered":
             images = list(getattr(window, "registration_results", None) or [])
-            metadata = getattr(window, "linear_dng_metadata", None)
+            names = list(getattr(window, "registration_filenames", None) or names)
+            record = self._selected_output()
+            if record is not None and getattr(record, "kind", None) == "aligned":
+                metadata = getattr(record, "linear_dng_metadata", None)
+                if metadata is None:
+                    metadata = getattr(getattr(record, "context", None),
+                                       "linear_dng_metadata", None)
+                if getattr(record, "annotations_baked", False):
+                    metadata = None
+            else:
+                metadata = getattr(window, "linear_dng_metadata", None)
             if images:
                 return {"images": images, "names": names,
                         "metadata": [metadata] * len(images)}

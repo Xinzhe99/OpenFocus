@@ -74,7 +74,7 @@ bucket, so it is not a preview path for this configuration.
 | `site/site_content.py` | Copy, links and download cards; static version comes from `constants.APP_VERSION` |
 | `site/template.html` | Page structure; `{{placeholders}}` resolve from the content |
 | `site/style.css` | Design tokens (light/dark), layout, responsive rules |
-| `site/app.js` | Theme, OS-aware download button, copy button, menus |
+| `site/app.js` | Theme, OS-aware navigation download, copy button, menus; the hero shows both desktop downloads |
 | `site/worker.js` | `/` language negotiation; `www` → apex; `/api/latest` and `/download/latest/*` for website downloads; mirror-only `/api/updates` and `/download/releases/<tag>/<kind>` for desktop updates |
 | `site/install.sh` | macOS app installer + Linux CLI installer (`curl … | sh`, `--dry-run`) |
 | `site/install.ps1` | Windows installer (`irm … | iex`, `OPENFOCUS_DRY_RUN=1`) |

@@ -11,6 +11,7 @@ import pytest
 
 from core import resource_policy, torch_backend
 from fusion_methods import neural_common
+from fusion_methods import stackmff_v1 as v1, stackmff_v2 as v2
 from fusion_methods import stackmffv3 as v3
 
 GiB = 1024 ** 3
@@ -81,54 +82,58 @@ def _snapshot(kind, free_vram=0, total_vram=0):
         device_kind=kind, free_vram=free_vram, total_vram=total_vram)
 
 
-@pytest.mark.parametrize("algorithm,kind", [
-    ("stackmff", "ROCM"),
-    ("stackmffv2", "XPU"),
-])
+@pytest.mark.parametrize("adapter,kind", [(v1, "ROCM"), (v2, "XPU")])
 def test_shared_plan_accounts_for_rocm_and_xpu_device_memory(
-        monkeypatch, tmp_path, algorithm, kind):
+        monkeypatch, tmp_path, adapter, kind):
     fake = FakeTorch(kind=kind, hip="6.2" if kind == "ROCM" else None)
-    monkeypatch.setattr(torch_backend, "_XPU_AVAILABLE", kind == "XPU")
+    device = FakeDevice("cuda" if kind == "ROCM" else "xpu")
     monkeypatch.setattr(neural_common, "torch", fake)
+    monkeypatch.setattr(neural_common, "ensure_torch", lambda: None)
+    monkeypatch.setattr(neural_common, "resolve_device", lambda _use_gpu: device)
+    monkeypatch.setattr(adapter, "_model_and_device",
+                        lambda *_args: (FakeModel(), device))
     monkeypatch.setattr(resource_policy, "probe_resources",
                         lambda _kind: _snapshot(kind, 6 * GiB, 8 * GiB))
-    device, plan = neural_common.plan_inference(
-        algorithm, _frames(), _model_file(tmp_path), True, 2, "balanced",
-        None, workspace_bytes=GiB, host_bytes=1024)
-    assert device.type == ("cuda" if kind == "ROCM" else "xpu")
+    _model, got_device, plan = adapter._prepare_inference(
+        _frames(), _model_file(tmp_path), True, thread_count=2)
+    assert got_device.type == device.type
     assert plan.device_kind == kind
     assert plan.vram_budget > 0
     assert plan.native_threads == 2
 
 
-@pytest.mark.parametrize("algorithm", ["stackmff", "stackmffv2"])
+@pytest.mark.parametrize("adapter", [v1, v2])
 def test_unknown_device_memory_refuses_instead_of_running_unbounded(
-        monkeypatch, tmp_path, algorithm):
+        monkeypatch, tmp_path, adapter):
     fake = FakeTorch(kind="XPU")
-    monkeypatch.setattr(torch_backend, "_XPU_AVAILABLE", True)
     monkeypatch.setattr(neural_common, "torch", fake)
+    monkeypatch.setattr(neural_common, "ensure_torch", lambda: None)
+    monkeypatch.setattr(neural_common, "resolve_device", lambda _use_gpu: FakeDevice("xpu"))
+    monkeypatch.setattr(adapter, "_model_and_device",
+                        lambda *_args: pytest.fail("model loaded without a budget"))
     monkeypatch.setattr(resource_policy, "probe_resources",
                         lambda _kind: _snapshot("XPU"))
     with pytest.raises(resource_policy.ResourceLimitError,
                        match="Insufficient or unknown"):
-        neural_common.plan_inference(
-            algorithm, _frames(), _model_file(tmp_path), True, 2, "balanced",
-            None, workspace_bytes=GiB, host_bytes=1024)
+        adapter._prepare_inference(_frames(), _model_file(tmp_path), True,
+                                   thread_count=2)
 
 
 def test_mps_budget_uses_shared_memory_and_refuses_when_unknown(
         monkeypatch, tmp_path):
     fake = FakeTorch(kind="MPS")
-    monkeypatch.setattr(torch_backend, "_XPU_AVAILABLE", False)
     monkeypatch.setattr(neural_common, "torch", fake)
+    monkeypatch.setattr(neural_common, "ensure_torch", lambda: None)
+    monkeypatch.setattr(neural_common, "resolve_device", lambda _use_gpu: FakeDevice("mps"))
+    monkeypatch.setattr(v2, "_model_and_device",
+                        lambda *_args: pytest.fail("model loaded without a budget"))
     monkeypatch.setattr(resource_policy, "probe_resources",
                         lambda _kind: _snapshot("MPS"))
     monkeypatch.setattr(torch_backend, "mps_memory", lambda _module: None)
     with pytest.raises(resource_policy.ResourceLimitError,
                        match="Cannot determine the MPS"):
-        neural_common.plan_inference(
-            "stackmffv2", _frames(), _model_file(tmp_path), True, 25,
-            "balanced", None, workspace_bytes=GiB, host_bytes=1024)
+        v2._prepare_inference(_frames(), _model_file(tmp_path), True,
+                              thread_count=25)
 
 
 class FakeModel:

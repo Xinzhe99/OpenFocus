@@ -1497,7 +1497,7 @@ class MultiFocusFusion:
 
     def _fuse_tiled_stackmff(self, imgs, img_dir, tile_coords, h, w,
                              channels, block_size, overlap, **kwargs):
-        """StackMFF (V1) tiles: whole-stack 3D inference per semantic tile."""
+        """StackMFF (V1) tiles: whole-stack attention per semantic tile."""
         from fusion_methods.stackmff_v1 import _prepare_inference
 
         return self._fuse_tiled_neural(

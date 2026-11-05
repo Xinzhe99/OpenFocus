@@ -82,6 +82,8 @@ For example, the CLI equivalent is `python main.py --input ./png-stack
 
 ### Supported Output Formats
 
+In **Save As**, ordinary TIFF saves the result as a single image; layered TIFF includes the source frames as layers. Linear DNG is always listed, but saving it requires an unbaked camera-linear result from **Open native RAW** with camera calibration.
+
 - Individual images: JPG, PNG, BMP, TIFF, WebP
 - Image sequences: Saved as folders
 - Animations: GIF format
@@ -672,21 +674,18 @@ various image types.
 
 ### StackMFF (V1, deep learning)
 
-- **Algorithm**: a 3D U-Net that predicts the fused luma for the whole stack
-  in one pass; Cb/Cr are taken from the source frame closest to that luma
+- **Algorithm**: a single-scale attention network blends source luma with softmax weights; Cb/Cr come from the source frame closest to the fused luma
 - **Best for**: neural fusion of a complete focus stack
-- **Advantages**: no parameters; colour stays in gamut. Frame order can affect the result.
-- **Note**: 6M parameters; larger stacks benefit from GPU acceleration
+- **Advantages**: no parameters; colour stays in gamut. Fused luma is invariant to frame order; chroma may differ when source luma distances tie.
+- **Note**: about 156,172 parameters; larger stacks benefit from GPU acceleration
 
 ### StackMFF V2 (deep learning)
 
-- **Algorithm**: per-layer focus estimation refined by a bidirectional
-  recurrent layer; the network regresses the focal-plane index and samples the
-  stack. **The frames must stay in their original focus order** — reversing is
-  disabled for this method
+- **Algorithm**: a single-scale attention network normalizes the expected focus depth and samples the nearest source frame. Depth indices depend on stack order. **The frames must stay in their original focus order** — reversing is disabled for this method
 - **Depth maps**: supported; reports the sampled focal layer
 - **Best for**: continuous focus sweeps where a very small, fast model matters
-- **Requirements**: PyTorch; about 0.05M parameters; no settings
+- **Requirements**: PyTorch; about 156,172 parameters; no settings
+
 ### StackMFF V3 (Deep Learning)
 
 - **Algorithm**: Pixel-wise source classification (requires PyTorch). The
@@ -772,7 +771,7 @@ filename stems are retained, with the extension of the format you select.
 | DCT | Medium | Good | Textures |
 | DTCWT | Medium | Very Good | Complex scenes |
 | GFG-FGF | Fast | Good | Focus regions |
-| StackMFF (V1) | Slow (GPU) | Not benchmarked here | Whole-stack neural fusion; order can affect results |
+| StackMFF (V1) | Slow (GPU) | Not benchmarked here | Luma is order-invariant; chroma may differ on luma-distance ties |
 | StackMFF V2 | Fast (GPU) | Not benchmarked here | Continuous sweeps with a tiny model |
 | StackMFF V3 | Slow (GPU) | Excellent | Best quality |
 | OpenFocus A | Depends on stack | Depends on stack | Multiscale focused-pixel selection |
@@ -887,8 +886,7 @@ copies pixels from the exact frames that produced the selected result:
    window, and OpenFocus protects it from automatic history eviction and
    from quitting without a decision.
 
-Apply the retouch as a new output, then right-click that output in the main
-window and choose **Export layered TIFF** to save it with its source frames.
+Apply the retouch as a new output, then select it and choose **Save As**. Select layered TIFF in the format list to save the result with its source frames.
 Live labels and scale bars are not included; unsaved annotation changes remain
 protected. Source geometry and validity masks are retained. The result and
 sources must be opaque RGB or grayscale images with matching 8-bit or 16-bit

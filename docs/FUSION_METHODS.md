@@ -17,11 +17,14 @@ estimation and smoothing as fusion. Tiled B/C renders share a full-image depth
 map; when resizing is requested, they use whole-frame rendering so the depth
 map and output have the same dimensions.
 
-StackMFF V1 uses depth-sliced spatial operations on macOS 26 MPS to avoid a
-PyTorch 3D convolution compiler error. GPU inference checks an estimated
-working set against the available memory budget; the actual MPS workspace
-depends on the device and input shape. If MPS is unavailable or still fails,
-disable **Settings → GPU Acceleration** or pass `--cpu` to the CLI.
+StackMFF V1 and V2 use retrained single-scale attention networks, each with
+about 156,172 parameters. V1 combines luminance with softmax weights and takes
+chroma from the source frame closest to the resulting luminance. Its fused
+luminance is independent of stack order. If source frames tie for closest
+luminance, the first is chosen, so their order can affect chroma. V2 normalizes
+the expected focus depth and samples the nearest source frame; its depth indices
+depend on stack order.
+Both methods have no user-adjustable settings.
 
 ## Depth maps
 

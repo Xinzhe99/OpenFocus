@@ -81,9 +81,30 @@ Consequences:
   in `_rocm_sdk_core` / `_rocm_sdk_libraries_custom`; the preview build must
   collect `rocm_sdk`, `_rocm_sdk_core` and `_rocm_sdk_libraries_custom`, or the
   frozen app fails at `import torch` when `rocm_sdk.initialize_process()` runs.
+- The pinned `rocm_sdk_devel` wheel contains a 1,240,125,440-byte tar that
+  AMD expands on demand. Its HIP headers and LLVM device bitcode/compiler
+  headers include links to the core package; it also contains development
+  libraries and tools. The build asks AMD's SDK to expand the archive, then
+  bundles the `include`, `lib/llvm/amdgcn` and `lib/llvm/lib/clang` trees
+  under `_internal/_rocm_sdk_devel`. The frozen bundle also includes the
+  `rocm_sdk_devel` Python package files and `_rocm_sdk_devel/__init__.py`:
+  AMD's `get_devel_root()` uses the former package's `__file__` to find the
+  latter as a sibling. The original development tar is excluded. These trees
+  preserve resources that HIPRTC or MIOpen JIT paths may need. Verification
+  checks the discovery files and compares every file in the trees with the
+  expanded source, including hashes. The selected files total about 73 MB
+  uncompressed for this wheel, including copies of linked core files. Archive
+  expansion requires substantial build disk space; selecting these trees avoids
+  shipping the entire SDK and its roughly 1.05 GB of LLVM libraries. Actual
+  archive size depends on compression. These file checks do not establish that
+  every JIT path finds its resources: a frozen inference run on supported AMD
+  hardware is still required.
 - HIP exposes the `torch.cuda` API, so the existing inference device contract
   can use an AMD GPU without changing inference code. This is a source-level
   expectation, not a hardware result.
+- ROCm availability and a small device operation run in a bounded subprocess.
+  A crashed or hung probe leaves the desktop running and falls back to CPU;
+  restart the app after changing the driver.
 - The wheel is compiled for a subset of AMD GPUs. Check AMD's ROCm on Windows
   compatibility matrix before installing.
 

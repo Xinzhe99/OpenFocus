@@ -36,32 +36,30 @@ def _stack(count=5, size=(64, 80)):
 def _upstream_v1(frames):
     from core.models.stackmff_v1.network import StackMFF
     model = StackMFF()
-    model.load_state_dict({name[7:] if name.startswith("module.") else name: value
-                           for name, value in torch.load(
-                               weights_path("stackmff_final.pth"),
-                               map_location="cpu").items()})
+    checkpoint = torch.load(weights_path("stackmff_final.pth"), map_location="cpu",
+                            weights_only=True)
+    model.load_state_dict(checkpoint["model"])
     model.eval()
     gray = np.stack([cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                      for frame in frames]).astype(np.float32) / 255.0
     with torch.no_grad():
-        return model(torch.from_numpy(gray)[None, None]).squeeze().numpy() * 255.0
+        return model(torch.from_numpy(gray)[None, None], sigma=0.5,
+                     scales=(1.0, 0.75)).squeeze().numpy() * 255.0
 
 
 def _upstream_v2(frames):
     from core.models.stackmff_v2.network import StackMFF_V2
     model = StackMFF_V2()
-    model.load_state_dict({name.replace("module.", ""): value
-                           for name, value in torch.load(
-                               weights_path("stackmff_v2_final.pth"),
-                               map_location="cpu").items()})
+    checkpoint = torch.load(weights_path("stackmff_v2_final.pth"), map_location="cpu",
+                            weights_only=True)
+    model.load_state_dict(checkpoint["model"])
     model.eval()
     gray = np.stack([cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                      for frame in frames]).astype(np.float32) / 255.0
     h, w = gray.shape[1:]
-    # The reference resizes to a multiple of 32; OpenFocus pads instead, so
-    # the comparison uses the same edge padding and crops the result.
-    hp, wp = h + (-h) % 32, w + (-w) % 32
-    padded = np.pad(gray, ((0, 0), (0, hp - h), (0, wp - w)), mode="edge")
+    hp, wp = h + (-h) % 64, w + (-w) % 64
+    mode = "reflect" if hp - h < h and wp - w < w else "edge"
+    padded = np.pad(gray, ((0, 0), (0, hp - h), (0, wp - w)), mode=mode)
     with torch.no_grad():
         fused, depth, index = model(torch.from_numpy(padded.copy())[None])
     return (fused[..., :h, :w], depth[..., :h, :w], index[..., :h, :w])
@@ -107,91 +105,109 @@ def test_v1_luma_matches_the_reference_network():
     assert np.array_equal(fused[:, :, 0], fused[:, :, 1])
     assert np.array_equal(fused[:, :, 1], fused[:, :, 2])
 
-@pytest.mark.parametrize("depth,height,width", [(2, 32, 48), (3, 64, 80), (5, 64, 96)])
-def test_v1_depth_sliced_inference_matches_native_cpu(monkeypatch, depth, height, width):
-    """The macOS GPU path must preserve the trained model's output."""
-    from core.models.stackmff_v1 import network
+@pytest.mark.parametrize("depth", [2, 3, 7, 24])
+def test_v1_supports_variable_stack_depth_and_both_input_layouts(depth):
+    from core.models.stackmff_v1.network import StackMFF
 
-    torch.manual_seed(153)
-    model = network.StackMFF().eval()
-    checkpoint = torch.load(weights_path("stackmff_final.pth"), map_location="cpu")
-    model.load_state_dict({key[7:] if key.startswith("module.") else key: value
-                           for key, value in checkpoint.items()})
-    source = torch.rand((1, 1, depth, height, width))
+    model = StackMFF().eval()
+    checkpoint = torch.load(weights_path("stackmff_final.pth"), map_location="cpu",
+                            weights_only=True)
+    model.load_state_dict(checkpoint["model"])
+    source = torch.rand((1, depth, 32, 40))
     with torch.inference_mode():
-        monkeypatch.setattr(network, "_mps_26", lambda _x: False)
-        expected = model(source)
-        monkeypatch.setattr(network, "_mps_26", lambda _x: True)
-        actual = model(source)
-    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+        result = model(source)
+        five_dimensional = model(source.unsqueeze(1))
+    torch.testing.assert_close(result, five_dimensional)
+    assert result.shape == (1, 1, 32, 40)
+    assert torch.all(result >= source.amin(dim=1, keepdim=True) - 1e-6)
+    assert torch.all(result <= source.amax(dim=1, keepdim=True) + 1e-6)
 
 
-def test_v1_macos26_mps_matches_cpu_when_available():
-    """Exercise the real GPU backend on an affected Mac when available."""
-    from core.models.stackmff_v1 import network
+def test_v1_cancels_before_the_next_inference_scale():
+    from core.models.stackmff_v1.network import StackMFF
+    from core.registration import RegistrationCancelled
 
-    if not network._MACOS_26 or not torch.backends.mps.is_available():
-        pytest.skip("requires macOS 26 with an available MPS device")
-    torch.manual_seed(291)
-    model = network.StackMFF().eval()
-    checkpoint = torch.load(weights_path("stackmff_final.pth"), map_location="cpu")
-    model.load_state_dict({key[7:] if key.startswith("module.") else key: value
-                           for key, value in checkpoint.items()})
-    source = torch.rand((1, 1, 3, 64, 80))
+    model = StackMFF().eval()
+    checks = 0
+
+    def should_cancel():
+        nonlocal checks
+        checks += 1
+        return checks == 2
+
+    with torch.inference_mode(), pytest.raises(RegistrationCancelled):
+        model(torch.rand(1, 3, 32, 40), scales=(1.0, 0.75),
+              should_cancel=should_cancel)
+
+
+def test_v1_mps_matches_cpu_when_available():
+    from core.models.stackmff_v1.network import StackMFF
+
+    if not torch.backends.mps.is_available():
+        pytest.skip("requires an available MPS device")
+    model = StackMFF().eval()
+    checkpoint = torch.load(weights_path("stackmff_final.pth"), map_location="cpu",
+                            weights_only=True)
+    model.load_state_dict(checkpoint["model"])
+    source = torch.rand((1, 3, 64, 80))
     with torch.inference_mode():
         expected = model(source)
         actual = model.to("mps")(source.to("mps"))
         torch.mps.synchronize()
-    assert actual.device.type == "mps"
     torch.testing.assert_close(actual.cpu(), expected, rtol=1e-3, atol=1e-4)
 
 
-def test_v1_macos26_rejects_insufficient_mps_memory_before_loading(monkeypatch):
-    from core.models.stackmff_v1 import network
-    from core.resource_policy import ResourceLimitError
+@pytest.mark.parametrize("module,model_class,arch", [
+    (stackmff_v1, "StackMFF", "stackmff_v3backbone"),
+    (stackmff_v2, "StackMFF_V2", "v2_v3backbone"),
+])
+def test_checkpoint_architecture_metadata_controls_loading(tmp_path, module, model_class, arch):
+    from importlib import import_module
 
-    stackmff_v1.common.ensure_torch()
-    monkeypatch.setattr(network, '_MACOS_26', True)
-    monkeypatch.setattr(stackmff_v1.common, 'resolve_device',
-                        lambda _use_gpu: torch.device('mps'))
-    monkeypatch.setattr(torch.mps, 'empty_cache', lambda: None, raising=False)
-    monkeypatch.setattr(torch.mps, 'recommended_max_memory',
-                        lambda: 3 * 1024 ** 3, raising=False)
-    monkeypatch.setattr(torch.mps, 'driver_allocated_memory',
-                        lambda: 1024 ** 3, raising=False)
-    monkeypatch.setattr(stackmff_v1, '_model_and_device',
-                        lambda *_args: pytest.fail('model loaded over GPU budget'))
-    with pytest.raises(ResourceLimitError, match='GPU memory'):
-        stackmff_v1._prepare_inference(
-            _stack(count=6, size=(128, 128)), weights_path('stackmff_final.pth'), True)
-
-
-def test_v1_macos26_admits_small_stack_with_limited_memory(monkeypatch):
-    from core.models.stackmff_v1 import network
-    from core import resource_policy
-
-    stackmff_v1.common.ensure_torch()
-    monkeypatch.setattr(network, '_MACOS_26', True)
-    monkeypatch.setattr(stackmff_v1.common, 'resolve_device',
-                        lambda _use_gpu: torch.device('mps'))
-    monkeypatch.setattr(torch.mps, 'empty_cache', lambda: None, raising=False)
-    monkeypatch.setattr(torch.mps, 'recommended_max_memory',
-                        lambda: 3 * 1024 ** 3, raising=False)
-    monkeypatch.setattr(torch.mps, 'driver_allocated_memory',
-                        lambda: 1024 ** 3, raising=False)
-    snapshot = resource_policy.ResourceSnapshot(
-        available_ram=3 * 1024 ** 3, total_ram=8 * 1024 ** 3,
-        physical_cores=4, logical_cpus=4, device_kind='MPS')
-    monkeypatch.setattr(resource_policy, 'probe_resources', lambda _kind: snapshot)
-    monkeypatch.setattr(stackmff_v1, '_model_and_device',
-                        lambda *_args: (object(), torch.device('mps')))
-    _, _, plan = stackmff_v1._prepare_inference(
-        _stack(count=3, size=(64, 80)), weights_path('stackmff_final.pth'), True)
-    assert plan.device_kind == 'MPS'
+    cls = getattr(import_module(f"core.models.{module.__name__.split('.')[-1]}.network"),
+                  model_class)
+    args = {"arch": arch, "C1": 24, "C2": 48, "heads": [3, 6],
+            "window": 8, "mlp_ratio": 2.0, "inter_pool": 2,
+            "kmax": 1, "single_scale": True, "layer_pos": False}
+    original = cls(**{key: tuple(value) if key == "heads" else value
+                      for key, value in args.items() if key != "arch"}).eval()
+    path = tmp_path / "custom.pth"
+    torch.save({"model": original.state_dict(), "args": args}, path)
+    loaded, _ = module._model_and_device(str(path), False)
+    sample = torch.rand(1, 3, 32, 32)
+    with torch.inference_mode():
+        torch.testing.assert_close(loaded.forward_logits(sample),
+                                   original.forward_logits(sample))
 
 
-def test_v2_hard_matches_the_reference_network_exactly():
-    frames = _stack()
+@pytest.mark.parametrize("module,bad_arch", [
+    (stackmff_v1, "v2_v3backbone"),
+    (stackmff_v1, "unknown_arch"),
+    (stackmff_v2, "stackmff_v3backbone"),
+    (stackmff_v2, "unknown_arch"),
+])
+def test_retrained_checkpoint_rejects_wrong_architecture(tmp_path, module, bad_arch):
+    original = weights_path(module.DEFAULT_WEIGHTS.rsplit('/', 1)[-1])
+    checkpoint = torch.load(original, map_location="cpu", weights_only=True)
+    checkpoint["args"]["arch"] = bad_arch
+    path = tmp_path / "mismatched.pth"
+    torch.save(checkpoint, path)
+    with pytest.raises(ValueError, match="Checkpoint architecture"):
+        module._model_and_device(str(path), False)
+
+
+@pytest.mark.parametrize("module", [stackmff_v1, stackmff_v2])
+def test_variant_accepts_released_v3_initialization(module):
+    path = weights_path("stackmff_v3_final.pth")
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    model, _device = module._model_and_device(path, False)
+    for key, value in model.backbone.state_dict().items():
+        torch.testing.assert_close(value, checkpoint["model"][key])
+
+
+@pytest.mark.parametrize("size", [(64, 80), (70, 83), (8, 12)])
+def test_v2_hard_matches_the_reference_network_exactly(size):
+    frames = _stack(size=size)
     fused, depth, index = stackmff_v2.infer(
         list(frames), weights_path("stackmff_v2_final.pth"), False,
         thread_count=1)
@@ -202,25 +218,20 @@ def test_v2_hard_matches_the_reference_network_exactly():
     assert np.abs(depth - ref_depth.squeeze().numpy()).max() < 1e-4
 
 
-def test_v2_keeps_the_focus_order_while_v1_is_insensitive():
+def test_v2_depth_follows_focus_order_while_fused_image_is_invariant():
     frames = _stack()
-    reversed_frames = list(reversed(frames))
-
-    def run(name):
-        out = MultiFocusFusion(algorithm=name, use_gpu=False).fuse(
-            input_source=list(frames), thread_count=1)
-        back = MultiFocusFusion(algorithm=name, use_gpu=False).fuse(
-            input_source=list(reversed_frames), thread_count=1)
-        return float(np.abs(out.astype(np.int16) - back.astype(np.int16)).mean())
-
-    v1_delta = run("stackmff")
-    v2_delta = run("stackmffv2")
-    # Reversal changes V2's recurrent path materially; V1's per-frame 3D pass
-    # is far less affected (the paper's order-insensitivity). Pixel equality
-    # is not claimed for either model — only the declared capability and the
-    # observed direction of the difference.
-    assert v2_delta > 4.0
-    assert v2_delta > v1_delta
+    path = weights_path("stackmff_v2_final.pth")
+    fused, depth, index = stackmff_v2.infer(frames, path, False, thread_count=1)
+    reverse_fused, reverse_depth, reverse_index = stackmff_v2.infer(
+        list(reversed(frames)), path, False, thread_count=1)
+    np.testing.assert_allclose(depth + reverse_depth, 1.0, atol=2e-4)
+    # Exact half-layer values can round to the same even index in both orders.
+    position = depth * (len(frames) - 1)
+    untied = np.abs(position - np.floor(position) - 0.5) > 1e-3
+    assert untied.any()
+    assert np.array_equal(index[untied] + reverse_index[untied],
+                          np.full(untied.sum(), len(frames) - 1))
+    np.testing.assert_array_equal(fused[untied], reverse_fused[untied])
 
 
 def test_both_methods_preserve_16_bit_output():

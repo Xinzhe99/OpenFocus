@@ -56,7 +56,7 @@ class FusionAlgorithm:
     # Repo-relative checkpoint a neural back-end loads when the caller does not
     # pass model_path. Keeps V3 and the older StackMFF models independent.
     weights: str | None = None
-    # The stack's own focus order carries meaning (a recurrent model reads it);
+    # The stack's focus order determines positional depth semantics;
     # reverse/dir-order controls must not reorder the frames.
     order_sensitive: bool = False
     # UI grouping: 'ai', 'spatial' or 'transform'. Contributing methods declare
