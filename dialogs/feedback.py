@@ -34,10 +34,11 @@ def _system_facts() -> str:
     except Exception:
         pass
     try:
-        from core import torch_backend
-        kind = torch_backend.cached_kind()
-        status = "not checked" if kind is None else torch_backend.display_name(kind)
-        lines.append(f"- CUDA/ROCm/XPU/MPS GPU: {status}")
+        from core.multi_focus_fusion import neural_device_kind
+        from fusion_methods import neural_runtime
+        kind = neural_device_kind()
+        status = "not checked" if kind is None else neural_runtime.display_name(kind)
+        lines.append(f"- GPU: {status}")
     except Exception:
         pass
     return "\n".join(lines)

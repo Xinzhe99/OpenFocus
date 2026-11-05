@@ -71,12 +71,6 @@ sys.stdout = _output_stream(sys.stdout, -11)
 sys.stderr = _output_stream(sys.stderr, -12)
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--_openfocus-xpu-probe"]:
-        from core.torch_backend import _run_xpu_probe
-        sys.exit(_run_xpu_probe())
-    if sys.argv[1:] == ["--_openfocus-rocm-probe"]:
-        from core.torch_backend import _run_rocm_probe
-        sys.exit(_run_rocm_probe())
 
 
     # Bootstrap before GUI imports: CLI and import-time failures share the
@@ -738,28 +732,22 @@ class OpenFocus(QMainWindow):
         # accelerator, say N/A — never "CPU", which sounds like the render
         # fell back mid-run. "CPU*" (classical methods are CPU-only by
         # design) is only meaningful when an accelerator actually exists.
-        from core.multi_focus_fusion import (torch_device_kind,
+        from core.multi_focus_fusion import (neural_device_kind,
                                              is_ai_fusion_available)
-        from core import torch_backend
+        from fusion_methods import neural_runtime
         try:
-            if not getattr(self, 'use_gpu', True):
-                kind = 'N/A'                      # user disabled it
-            elif not is_ai_fusion_available():
-                kind = 'N/A'                      # torch not installed
+            if not getattr(self, 'use_gpu', True) or not is_ai_fusion_available():
+                kind = 'N/A'
             else:
-                kind = torch_device_kind()
+                kind = neural_device_kind()
                 if kind is None:
-                    # Resolve once in the background; until then assume none.
                     self._probe_device_kind_async()
-                    kind = 'N/A'
-                else:
-                    kind = torch_backend.display_name(kind)
-                if not torch_backend.is_accelerator(kind):
+                if not neural_runtime.is_accelerator(kind):
                     kind = 'N/A'
                 elif not self._ai_method_selected():
-                    # Accelerator present but the selected method is one of
-                    # the CPU-only classical ones.
                     kind = 'CPU*'
+                else:
+                    kind = neural_runtime.display_name(kind)
             self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind))
         except Exception:
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('Err'))
@@ -1076,19 +1064,16 @@ class OpenFocus(QMainWindow):
         self.refresh_method_availability()
 
     def _probe_device_kind_async(self) -> None:
-        """Resolve the PyTorch backend off the UI thread, then poll for it.
+        """Resolve the neural backend off the UI thread, then poll for it.
 
-        Importing torch costs ~2.1 s and ~193 MB, so it must not run on the
-        UI thread. The worker deliberately touches no QObject: it only calls
-        the pure backend probe. A QTimer owned by this window polls the
-        backend cache, so destroying the window cannot leave a thread
-        emitting a signal on a deleted C++ object.
+        The worker touches no QObject; a window-owned QTimer polls the cache,
+        so closing the window cannot leave a signal aimed at a deleted object.
         """
         import threading
         if getattr(self, "_device_probe_started", False):
             return
-        from core.multi_focus_fusion import torch_device_kind
-        cached = torch_device_kind()
+        from core.multi_focus_fusion import neural_device_kind
+        cached = neural_device_kind()
         if cached is not None:
             # A previous window/probe already resolved the backend.
             self._device_probe_started = True
@@ -1097,14 +1082,14 @@ class OpenFocus(QMainWindow):
         self._device_probe_started = True
 
         def worker():
-            from core.multi_focus_fusion import ensure_torch_device_kind
+            from core.multi_focus_fusion import ensure_neural_device_kind
             try:
-                ensure_torch_device_kind()
+                ensure_neural_device_kind()
             except Exception:
                 pass
 
         thread = threading.Thread(target=worker, daemon=True,
-                                  name="torch-device-probe")
+                                  name="neural-device-probe")
         self._device_probe_thread = thread
         thread.start()
 
@@ -1120,8 +1105,8 @@ class OpenFocus(QMainWindow):
 
     def _poll_device_probe(self) -> None:
         """UI-thread poll for the worker's cached backend decision."""
-        from core.multi_focus_fusion import torch_device_kind
-        kind = torch_device_kind()
+        from core.multi_focus_fusion import neural_device_kind
+        kind = neural_device_kind()
         if kind is None:
             return
         timer = getattr(self, "_device_probe_timer", None)
@@ -1132,7 +1117,7 @@ class OpenFocus(QMainWindow):
         self._apply_device_probe_kind(kind)
 
     def _probe_stackmff_availability_async(self) -> None:
-        """Warm the torch-availability cache without touching this window.
+        """Warm the neural-runtime availability cache without touching this window.
 
         The worker only calls the cached availability probe; a QTimer owned
         by the window polls a plain threading.Event, so a window destroyed
@@ -1207,9 +1192,9 @@ class OpenFocus(QMainWindow):
 
     def _apply_device_probe_kind(self, _kind: str = "N/A") -> None:
         """Apply the background backend result to status and the GPU action."""
-        from core import torch_backend
+        from fusion_methods import neural_runtime
         if (getattr(self, '_gpu_pending_enable', False)
-                and not torch_backend.is_accelerator(_kind)):
+                and not neural_runtime.is_accelerator(_kind)):
             # The user enabled the switch while the answer was unknown and
             # the probe found nothing. Revert only that speculative request;
             # an explicit off is never touched here.
@@ -1228,11 +1213,11 @@ class OpenFocus(QMainWindow):
         action = getattr(self, 'ui_objs', {}).get('action_gpu_accel')
         if action is None:
             return
-        from core import torch_backend
+        from fusion_methods import neural_runtime
         from core.multi_focus_fusion import (is_ai_fusion_available,
-                                             torch_device_kind)
-        kind = torch_device_kind()
-        enabled, checked = torch_backend.gpu_toggle_state(
+                                             neural_device_kind)
+        kind = neural_device_kind()
+        enabled, checked = neural_runtime.gpu_toggle_state(
             kind, getattr(self, 'use_gpu', True),
             is_ai_fusion_available() if kind is None else False)
         action.setEnabled(enabled)
@@ -3558,17 +3543,17 @@ class OpenFocus(QMainWindow):
         enabled = bool(enabled)
         pending = False
         if enabled:
-            from core import torch_backend
+            from fusion_methods import neural_runtime
             from core.multi_focus_fusion import (is_ai_fusion_available,
-                                                 torch_device_kind)
-            kind = torch_device_kind()
+                                                 neural_device_kind)
+            kind = neural_device_kind()
             if kind is None and is_ai_fusion_available():
                 # The authoritative answer is not in yet. Keep the request,
                 # resolve it in the background, and let the fusion path fall
                 # back to CPU if the probe finds no accelerator.
                 pending = True
                 self._probe_device_kind_async()
-            elif not torch_backend.is_accelerator(kind):
+            elif not neural_runtime.is_accelerator(kind):
                 enabled = False
         self._gpu_pending_enable = pending
         self.use_gpu = enabled
