@@ -332,6 +332,7 @@ class SourceManager(QObject):
             linear_raw=linear_raw,
             expected_metadata=current_metadata if append and window.raw_images else None,
         )
+        self._load_worker._load_applied = False
         self._load_accept_event = accept_event
         # Remembered so the frames just decoded can be traced back to the files
         # they came from (project files need that to round-trip).
@@ -417,6 +418,7 @@ class SourceManager(QObject):
                 self._apply_load_options(load_options, append=append,
                                          profile_map=getattr(worker, "source_icc_profiles", {}))
                 accepted = True
+                worker._load_applied = True
                 if on_success is not None:
                     on_success()
                 # Remember for the optional "restore last stack on startup"
@@ -476,18 +478,25 @@ class SourceManager(QObject):
     def _start_queued_render(self, worker) -> None:
         """Start the render the user asked for while this load was running."""
         render = getattr(self.window, "render_manager", None)
-        if render is None or not getattr(render, "_render_after_load", False):
+        request = getattr(render, "_render_after_load", None) if render is not None else None
+        if request is None:
             return
-        render._render_after_load = False
+        render._render_after_load = None
         try:
-            ready = (not getattr(worker, "is_cancelled", False)
+            ready = (bool(getattr(worker, "_load_applied", False))
+                     and not getattr(worker, "is_cancelled", False)
                      and len(self.window.effective_stack()[0]) >= 2)
         except Exception:
             ready = False
+        if request.get("compare", False) and not getattr(render, "_compare_mode", False):
+            ready = False
         if ready:
             from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, render.start_render)
+            method = request.get("force_algorithm")
+            QTimer.singleShot(0, lambda: render.start_render(force_algorithm=method))
         else:
+            if request.get("compare", False):
+                render._abort_compare_run()
             self.window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
 
     def _show_load_status(self) -> None:

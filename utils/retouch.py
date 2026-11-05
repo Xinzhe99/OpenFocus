@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import threading
+import weakref
 from typing import Optional, Tuple
 
 import cv2
@@ -452,10 +453,16 @@ class TileHistory:
 
 # One cached auto-background result: saving a checkpoint replays every
 # operation to verify it, and recomputing the background there would cost as
-# much as the original run.  The key holds the frame arrays themselves (not
-# their ids), so a hit always means the very same inputs.
+# much as the original run.  Weak frame references preserve the identity
+# check without making this cache the owner of an otherwise released stack.
 _AUTO_BG_CACHE: dict = {}
 _AUTO_BG_LOCK = threading.Lock()
+
+
+def clear_auto_background_cache():
+    """Release the cached result and masks at the end of a retouch session."""
+    with _AUTO_BG_LOCK:
+        _AUTO_BG_CACHE.clear()
 
 
 def _auto_background_key(image, frames, preset, clean, keep_soft_parts=False):
@@ -480,18 +487,22 @@ def compute_auto_background(image, frames, preset="auto", clean=True,
     with _AUTO_BG_LOCK:
         hit = _AUTO_BG_CACHE.get("entry")
         if hit is not None and hit[0] == key and len(hit[1]) == len(arrays) \
-                and all(a is b for a, b in zip(hit[1], arrays)):
+                and all(reference() is array for reference, array in zip(hit[1], arrays)):
             return hit[2]
     h, w = image.shape[:2]
+    valid_masks = [frame.valid_mask() for frame in frames]
     # Measured peak: ~160 B/px plus a half-resolution float copy per frame.
-    required = int(h * w * (170 + len(arrays)))
+    required = int(h * w * (170 + len(arrays))) + sum(
+        mask.nbytes for mask in valid_masks if mask is not None)
     with heavy_job(cancelled):
         require_memory(required)
         result = replace_background([frame.image for frame in frames], image, preset=preset,
+                                    valid_masks=valid_masks,
                                     clean=clean, keep_soft_parts=keep_soft_parts,
                                     progress=progress, cancelled=cancelled)
     with _AUTO_BG_LOCK:
-        _AUTO_BG_CACHE["entry"] = (key, arrays, result)
+        _AUTO_BG_CACHE["entry"] = (
+            key, tuple(weakref.ref(array) for array in arrays), result)
     return result
 
 

@@ -138,6 +138,46 @@ def test_sixteen_bit_and_float_inputs(scene):
     assert np.allclose(resf.image[inner], fused[inner], atol=0.5)
 
 
+def test_focus_indices_preserve_frame_256():
+    from core.background_fill import focus_measures
+    stack = np.zeros((257, 9, 9), np.float32)
+    stack[256, 4, 4] = 1.0
+    _measures, indices = focus_measures(stack, sigma=0.5)
+    assert indices.dtype == np.uint16
+    assert indices[4, 4] == 256
+
+
+def test_edge_frame_map_handles_thin_and_empty_subjects():
+    from core.background_fill import edge_frame_map
+    subject = np.zeros((21, 21), bool)
+    subject[10, 10] = True
+    indices = np.full((21, 21), 300, np.uint16)
+    assert edge_frame_map(subject, indices).shape == subject.shape
+    with pytest.raises(BackgroundFillError, match="no subject"):
+        edge_frame_map(np.zeros_like(subject), indices)
+
+
+def test_recorded_range_ignores_registration_fill():
+    from core.background_fill import recorded_range
+    frames = [np.zeros((64, 64, 3), np.float32),
+              np.full((64, 64, 3), 100.0, np.float32)]
+    masks = [np.zeros((64, 64), bool), None]
+    lo, hi = recorded_range(2, lambda k: (frames[k], None), (64, 64),
+                            valid_masks=masks)
+    assert np.allclose(lo, 100.0)
+    assert np.allclose(hi, 100.0)
+
+
+def test_invalid_background_frame_pixels_leave_fused_result_unchanged(scene):
+    frames, fused, _disc = scene
+    masks = [None] * len(frames)
+    masks[0] = np.ones(fused.shape[:2], bool)
+    masks[0][:, :12] = False
+    result = replace_background(frames, fused, background_frame=0,
+                                valid_masks=masks)
+    assert np.array_equal(result.image[:, :12], fused[:, :12])
+
+
 def test_u16_integer_fast_paths_match_generic_conversion():
     from core.background_fill import _to16f, _u16
     rng = np.random.default_rng(11)
@@ -279,7 +319,7 @@ def test_retouch_refuses_roi_frames(scene):
 
 
 def test_retouch_workspace_auto_background(qapp, scene, soft_result, monkeypatch, tmp_path):
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QMessageBox
     from utils.file_dialogs import FileDialog
     from controllers.output_manager import OutputRecord
     from core.render_context import build_render_context
@@ -324,6 +364,14 @@ def test_retouch_workspace_auto_background(qapp, scene, soft_result, monkeypatch
         assert saved.is_file()
         for name in ("background", "hidden", "out_of_range", "featureless"):
             assert (tmp_path / f"map-{name}.png").is_file()
+        sibling = tmp_path / "map-background.png"
+        sibling.write_bytes(b"keep me")
+        questions = []
+        monkeypatch.setattr(QMessageBox, "question",
+                            lambda *args, **kwargs: questions.append(args)
+                            or QMessageBox.StandardButton.Cancel)
+        dlg.btn_save_missing.click()
+        assert questions and sibling.read_bytes() == b"keep me"
         dlg._undo()
         assert np.array_equal(dlg.doc.working, fused)
     finally:
@@ -383,3 +431,15 @@ def test_retouch_keep_soft_parts_option_is_passed_recorded_and_replayed(scene, t
     fresh.initialize_checkpoint()
     fresh.load_checkpoint(str(path))
     assert np.array_equal(fresh.working, doc.working)
+
+
+def test_auto_background_cache_uses_weak_frame_references(scene, monkeypatch):
+    import utils.retouch as rt
+    monkeypatch.setattr(rt, "_AUTO_BG_CACHE", {})
+    doc = _document(scene)
+    assert doc.auto_background("soft", True) == "committed"
+    _key, references, _result = rt._AUTO_BG_CACHE["entry"]
+    assert all(reference() is frame.image
+               for reference, frame in zip(references, doc.frames))
+    rt.clear_auto_background_cache()
+    assert rt._AUTO_BG_CACHE == {}

@@ -614,6 +614,8 @@ PACK = {
     "retouch_checkpoint_load_failed": "체크포인트를 확인하거나 불러올 수 없습니다. 현재 편집 내용이 유지되었습니다.",
     "retouch_checkpoint_filter": "보정 체크포인트 (*.ofretouch)",
     "retouch_checkpoint_input": "체크포인트로 입력 이미지를 덮어쓸 수 없습니다.",
+    "retouch_missing_input": "누락 데이터 맵은 입력 이미지를 덮어쓸 수 없습니다.",
+    "retouch_missing_replace": "기존 누락 데이터 파일을 바꾸시겠습니까?\n{files}",
     "retouch_checkpoint_replace": "현재 보정 내용을 이 체크포인트로 바꾸시겠습니까?",
     "retouch_redo": "다시 실행",
     "retouch_fit": "창에 맞추기 (F)",

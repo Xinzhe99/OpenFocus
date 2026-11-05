@@ -559,9 +559,9 @@ Per un file immagine esistente, scegli **Modifica → Ritocca file immagine…**
 Con l'impilamento lo sfondo diventa nitido insieme al soggetto. Lo sfondo di
 un'immagine impilata è spesso un mosaico di sfocature diverse, con un alone
 intorno al soggetto. **Sfondo automatico…** nell'area di ritocco lo sostituisce
-con un fotogramma reale della stessa pila. Il soggetto resta come impilato e
-nulla viene inventato: ogni pixel dello sfondo viene da un fotogramma o dal
-risultato impilato.
+con un fotogramma reale della stessa pila. Il soggetto resta come impilato. Lo
+sfondo deriva da un fotogramma e dal risultato impilato; l'elaborazione può
+ricostruire, correggere e fondere i suoi pixel.
 
 1. Apri il risultato nell'area di ritocco e fai clic su **Sfondo automatico…**.
 2. Scegli lo sfondo:

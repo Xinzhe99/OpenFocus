@@ -612,6 +612,8 @@ EN = {
     "retouch_checkpoint_load_failed": "The checkpoint could not be validated or loaded. Current edits were kept.",
     "retouch_checkpoint_filter": "Retouch checkpoints (*.ofretouch)",
     "retouch_checkpoint_input": "A checkpoint cannot overwrite an input image.",
+    "retouch_missing_input": "Missing-data maps cannot overwrite an input image.",
+    "retouch_missing_replace": "Replace these existing missing-data files?\n{files}",
     "retouch_checkpoint_replace": "Replace the current retouch edits with this checkpoint?",
     "retouch_redo": "Redo",
     "retouch_fit": "Fit to Window (F)",

@@ -614,6 +614,8 @@ PACK = {
     "retouch_checkpoint_load_failed": "Het controlepunt kon niet worden gecontroleerd of geladen. De huidige bewerkingen zijn behouden.",
     "retouch_checkpoint_filter": "Retoucheercontrolepunten (*.ofretouch)",
     "retouch_checkpoint_input": "Een controlepunt kan geen invoerafbeelding overschrijven.",
+    "retouch_missing_input": "Kaarten met ontbrekende gegevens kunnen geen invoerafbeelding overschrijven.",
+    "retouch_missing_replace": "Deze bestaande bestanden met ontbrekende gegevens vervangen?\n{files}",
     "retouch_checkpoint_replace": "De huidige retouches vervangen door dit controlepunt?",
     "retouch_redo": "Opnieuw uitvoeren",
     "retouch_fit": "Passend maken (F)",

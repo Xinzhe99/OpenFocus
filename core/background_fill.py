@@ -136,7 +136,10 @@ def focus_measures(G, sigma=6.0):
     eps = 1e-10
     peak = E.max(0)
     ratio = np.log10((peak + eps) / (np.median(E, 0) + eps))
-    return {"ratio": ratio, "peak": np.log10(peak + eps)}, E.argmax(0).astype(np.uint8)
+    # uint8 is enough for ordinary stacks, while uint16 preserves frame 256+
+    # instead of wrapping it back to zero.
+    index_dtype = np.uint8 if len(G) <= 256 else np.uint16
+    return {"ratio": ratio, "peak": np.log10(peak + eps)}, E.argmax(0).astype(index_dtype)
 
 
 def otsu_threshold(m):
@@ -345,6 +348,10 @@ def edge_frame_map(sub_half, idx_half, inner=(3, 20)):
     median filter, then propagates it outward to the nearest such pixel."""
     d_in = cv2.distanceTransform(sub_half.astype(np.uint8), cv2.DIST_L2, 5)
     ring = sub_half & (d_in >= inner[0]) & (d_in <= inner[1])
+    if not ring.any():
+        ring = sub_half
+    if not ring.any():
+        raise BackgroundFillError("no subject found to replace the background around")
     idx = cv2.medianBlur(idx_half, 5)
     src = np.where(ring, 0, 1).astype(np.uint8)
     _, labels = cv2.distanceTransformWithLabels(src, cv2.DIST_L2, 5,
@@ -734,20 +741,43 @@ def lp_background(img, bgmask, sigma, scale=4):
     return out
 
 
-def recorded_range(count, load_matched, shape, sigma=6.0, scale=4):
+def recorded_range(count, load_matched, shape, sigma=6.0, scale=4,
+                   valid_masks=None):
     """Per-pixel min and max (quarter res, low-passed, exposure-matched) over
     every frame: the span of what the camera actually recorded at each spot.
     Near an edge the frame where it is sharp records the darkened view and
     the defocused frames record the glow; the clean background lies between."""
     H, W = shape
     lo = hi = None
+    seen = None
     for k in range(count):
         f = load_matched(k)[0]
-        q = cv2.GaussianBlur(cv2.resize(f, (W // scale, H // scale), interpolation=cv2.INTER_AREA),
-                             (0, 0), sigma / scale)
-        lo = q if lo is None else np.minimum(lo, q)
-        hi = q if hi is None else np.maximum(hi, q)
+        mask = None if valid_masks is None else valid_masks[k]
+        if mask is None:
+            q = cv2.GaussianBlur(
+                cv2.resize(f, (W // scale, H // scale), interpolation=cv2.INTER_AREA),
+                (0, 0), sigma / scale)
+            usable = np.ones(q.shape[:2], bool)
+        else:
+            m = cv2.resize(mask.astype(np.float32), (W // scale, H // scale),
+                           interpolation=cv2.INTER_AREA)
+            numerator = cv2.GaussianBlur(
+                cv2.resize(f * mask[..., None], (W // scale, H // scale),
+                           interpolation=cv2.INTER_AREA),
+                (0, 0), sigma / scale)
+            denominator = cv2.GaussianBlur(m, (0, 0), sigma / scale)
+            usable = denominator > 1e-3
+            q = numerator / np.maximum(denominator, 1e-12)[..., None]
+        if lo is None:
+            lo = np.full_like(q, np.inf)
+            hi = np.full_like(q, -np.inf)
+            seen = np.zeros(q.shape[:2], bool)
+        lo = np.where(usable[..., None], np.minimum(lo, q), lo)
+        hi = np.where(usable[..., None], np.maximum(hi, q), hi)
+        seen |= usable
         del f
+    lo[~seen] = -np.inf
+    hi[~seen] = np.inf
     return lo, hi
 
 
@@ -1135,6 +1165,7 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
                        background_frame: Optional[int] = None,
                        max_subject: float = MAX_SUBJECT_DEFAULT,
                        keep_soft_parts: bool = False,
+                       valid_masks: Optional[Sequence[Optional[np.ndarray]]] = None,
                        progress: Optional[Callable[[float, str], None]] = None,
                        cancelled: Optional[Callable[[], bool]] = None) -> BackgroundFillResult:
     """Replace the background of `fused` with one of `frames`.
@@ -1150,7 +1181,9 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     knobs just past the depth of field), which can keep background objects
     near the subject in the stack's own rendering too.  When the subject covers more
     than `max_subject` of the frame (a ground-level scene) the image is left
-    as stacked and only the missing-data maps are computed.
+    as stacked and only the missing-data maps are computed.  `valid_masks`
+    optionally marks registration-valid pixels for each frame; invalid warp
+    fill is excluded from matching and never composited into the result.
     """
     if preset not in PRESETS:
         raise BackgroundFillError(f"unknown preset {preset!r}")
@@ -1163,6 +1196,21 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     for f in frames:
         if f.shape[:2] != (H, W):
             raise BackgroundFillError("every frame must match the result's size")
+    if valid_masks is None:
+        valid_masks = (None,) * N
+    else:
+        if len(valid_masks) != N:
+            raise BackgroundFillError("valid_masks must match the frame count")
+        normalized_masks = []
+        for mask in valid_masks:
+            if mask is None:
+                normalized_masks.append(None)
+                continue
+            mask = np.asarray(mask, dtype=bool)
+            if mask.shape != (H, W):
+                raise BackgroundFillError("every validity mask must match the result's size")
+            normalized_masks.append(mask)
+        valid_masks = tuple(normalized_masks)
 
     steps = [0]
     total = 14
@@ -1272,7 +1320,14 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
 
     def load_matched(k):
         f = _u16(frames[k]).astype(np.float32)
-        g = np.array([match_target[c] / max(np.median(f[..., c][band]), 1e-3)
+        sample = band if valid_masks[k] is None else band & valid_masks[k]
+        if sample.sum() < 64 and valid_masks[k] is not None:
+            sample = (~sub) & valid_masks[k]
+        if not sample.any():
+            raise BackgroundFillError(f"frame {k + 1} has no valid background pixels")
+        target = match_target if valid_masks[k] is None else [
+            np.median(fz[..., c][sample]) for c in range(3)]
+        g = np.array([target[c] / max(np.median(f[..., c][sample]), 1e-3)
                       for c in range(3)], np.float32)
         return f * g, g
 
@@ -1328,7 +1383,7 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     w_occ, _occ = occlusion_width(G, sub_half, k_edge)
     ks_sub = idx[sub_half]
     k_occ = int(np.median(ks_sub)) if ks_sub.size else N // 2
-    k_edge_full = cv2.resize(k_edge.astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST)
+    k_edge_full = cv2.resize(k_edge, (W, H), interpolation=cv2.INTER_NEAREST)
     peak_t = thresh.get("peak", otsu_threshold(measures["peak"]))
     bg_miss, _soft, _w_by_ke, _k_B, Wmap = missing_data_map(sub, dist, k_edge_full, measures["peak"], peak_t,
                                                          N, far_end, c_raw, w_occ, k_occ,
@@ -1343,7 +1398,7 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     shift = None
     if clean:
         step("cleaning edge flaws")
-        lo_q, hi_q = recorded_range(N, load_matched, (H, W))
+        lo_q, hi_q = recorded_range(N, load_matched, (H, W), valid_masks=valid_masks)
         if cancelled is not None and cancelled():
             raise BackgroundFillCancelled()
         bgf, shift = clean_edges(fz, bgf, est, sub, dist, Wmap, lo_q, hi_q, 1.0)
@@ -1351,6 +1406,9 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     del est, Wmap
 
     step("compositing")
+    valid_bg = valid_masks[k_bg]
+    if valid_bg is not None:
+        alpha = np.where(valid_bg, alpha, 0.0).astype(np.float32)
     subject_fraction = float(sub.mean())
     changed = subject_fraction <= max_subject
     if changed:
@@ -1358,7 +1416,8 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
         if shift is not None:
             # The blend strip at the edge keeps stacked pixels; correct their
             # background side too, or a thin line is left along the edge.
-            comp += shift * ((1 - alpha) * (~sub))[..., None]
+            shift_region = (~sub) if valid_bg is None else ((~sub) & valid_bg)
+            comp += shift * ((1 - alpha) * shift_region)[..., None]
         out16 = np.clip(comp, 0, 65535).astype(np.uint16)
         del comp
     else:

@@ -609,6 +609,8 @@ ZH = {
     "retouch_checkpoint_load_failed": "无法验证或加载检查点。当前编辑已保留。",
     "retouch_checkpoint_filter": "修饰检查点 (*.ofretouch)",
     "retouch_checkpoint_input": "检查点不能覆盖输入图像。",
+    "retouch_missing_input": "缺失数据图不能覆盖输入图像。",
+    "retouch_missing_replace": "替换这些现有的缺失数据文件？\n{files}",
     "retouch_checkpoint_replace": "用此检查点替换当前修饰编辑？",
     "retouch_redo": "重做",
     "retouch_fit": "适应窗口（F）",

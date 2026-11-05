@@ -12,10 +12,19 @@ class _StatusBar:
         pass
 
 
+class _Button:
+    def setEnabled(self, _enabled):
+        pass
+
+    def setText(self, _text):
+        pass
+
+
 class _Window:
     def __init__(self, frames=0):
         self._bar = _StatusBar()
         self.frames = frames
+        self.btn_render = _Button()
 
     def statusBar(self):
         return self._bar
@@ -25,8 +34,9 @@ class _Window:
 
 
 class _Worker:
-    def __init__(self, cancelled=False):
+    def __init__(self, cancelled=False, applied=False):
         self.is_cancelled = cancelled
+        self._load_applied = applied
 
     def deleteLater(self):
         pass
@@ -50,20 +60,25 @@ def test_render_during_load_is_queued_and_cancellable(qapp):
     assert render.start_render() == "loading"
     assert render._render_after_load
     assert render.start_render() == "loading"          # second click cancels
-    assert not render._render_after_load
+    assert render._render_after_load is None
     # The control channel never queues; it just reports the state.
     assert render.start_render(interactive=False) == "loading"
-    assert not render._render_after_load
+    assert render._render_after_load is None
 
 
 def test_queued_render_starts_when_frames_arrive(qapp, monkeypatch):
     from PyQt6.QtCore import QTimer
     window, render, source = _setup(qapp, frames=3)
     render.start_render()
+    source._load_worker._load_applied = True
     started = []
     monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: started.append(fn))
     source._start_queued_render(source._load_worker)
-    assert started == [render.start_render] and not render._render_after_load
+    assert len(started) == 1 and render._render_after_load is None
+    called = []
+    render.start_render = lambda force_algorithm=None: called.append(force_algorithm)
+    started[0]()
+    assert called == [None]
 
 
 def test_queued_render_is_dropped_when_the_load_fails(qapp, monkeypatch):
@@ -72,5 +87,38 @@ def test_queued_render_is_dropped_when_the_load_fails(qapp, monkeypatch):
     render.start_render()
     started = []
     monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: started.append(fn))
-    source._start_queued_render(_Worker(cancelled=True))
-    assert not started and not render._render_after_load
+    source._start_queued_render(_Worker(cancelled=True, applied=False))
+    assert not started and render._render_after_load is None
+
+
+def test_queued_render_is_dropped_when_failed_load_leaves_old_stack(qapp, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    _window, render, source = _setup(qapp, frames=3)
+    render.start_render()
+    started = []
+    monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: started.append(fn))
+    source._start_queued_render(_Worker(cancelled=False, applied=False))
+    assert not started and render._render_after_load is None
+
+
+def test_compare_request_keeps_method_and_is_cancelled_with_run(qapp, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    _window, render, source = _setup(qapp, frames=3)
+    render._compare_mode = True
+    render.start_render(force_algorithm="dct")
+    assert render._render_after_load == {"force_algorithm": "dct", "compare": True}
+
+    source._load_worker._load_applied = True
+    started = []
+    monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: started.append(fn))
+    source._start_queued_render(source._load_worker)
+    called = []
+    render.start_render = lambda force_algorithm=None: called.append(force_algorithm)
+    started[0]()
+    assert called == ["dct"]
+
+    render._render_after_load = {"force_algorithm": "openfocus_a", "compare": True}
+    render._compare_mode = True
+    render._compare_queue = ["dct"]
+    render.start_compare_all()
+    assert render._render_after_load is None

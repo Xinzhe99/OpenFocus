@@ -1492,4 +1492,5 @@ def test_compare_run_skips_a_failing_method_and_reports_it(qapp, monkeypatch):
     rm._compare_current = "dct"
     rm.on_render_error("model file missing")
     assert rm._compare_mode is False
+    assert rm.last_state == "error" and rm.last_result is None
     assert len(shown) == 1 and "StackMFF" in shown[0][3] and "model file missing" in shown[0][3]

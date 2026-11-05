@@ -559,9 +559,9 @@ Pour un fichier image existant, choisissez **Édition → Retoucher des fichiers
 L'empilement rend l'arrière-plan net en même temps que le sujet. L'arrière-plan
 d'une image empilée devient alors souvent un patchwork de flous différents, avec
 un halo autour du sujet. **Arrière-plan automatique…** dans l'espace de retouche
-le remplace par une vraie image de la même pile. Le sujet reste tel qu'empilé,
-et rien n'est inventé : chaque pixel d'arrière-plan vient d'une image ou du
-résultat empilé.
+le remplace par une vraie image de la même pile. Le sujet reste tel qu'empilé.
+L'arrière-plan est dérivé d'une image et du résultat empilé ; le traitement peut
+reconstruire, ajuster et mélanger ses pixels.
 
 1. Ouvrez le résultat dans l'espace de retouche et cliquez sur
    **Arrière-plan automatique…**.
