@@ -76,3 +76,38 @@ def test_two_hundred_large_frames_get_a_bounded_full_stack_plan():
     assert 64 <= block <= 1024
     assert plan.workers == plan.max_in_flight == 1
     assert plan.ram_budget <= snapshot.available_ram
+
+
+@pytest.mark.parametrize('entry', ['fusion', 'stackmff', 'stackmffv2', 'stackmffv3'])
+def test_directory_rejects_oversized_frame_before_decode(tmp_path, monkeypatch, entry):
+    import cv2
+    from core import image_loader, resource_policy
+    from core.multi_focus_fusion import MultiFocusFusion
+    from fusion_methods.stackmff_v2_tiled import _Source
+
+    frame = np.zeros((8, 8, 3), np.uint8)
+    for name in ('first.png', 'second.png'):
+        assert cv2.imwrite(str(tmp_path / name), frame)
+    snapshot = resource_policy.ResourceSnapshot(
+        available_ram=2 * 1024 ** 3, total_ram=4 * 1024 ** 3,
+        physical_cores=2, logical_cpus=2)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *a, **k: snapshot)
+    monkeypatch.setattr(image_loader, 'source_dimensions',
+                        lambda path: (8, 8) if path.endswith('first.png') else (500000, 500000))
+    decoded = []
+    def decode(path, **kwargs):
+        decoded.append(path)
+        return frame.copy()
+    monkeypatch.setattr(image_loader, 'decode_image', decode)
+
+    with pytest.raises(resource_policy.ResourceLimitError):
+        if entry == 'fusion':
+            MultiFocusFusion(algorithm='guided_filter', use_gpu=False).fuse(str(tmp_path))
+        elif entry == 'stackmff':
+            neural_common.read_stack(str(tmp_path), None)
+        elif entry == 'stackmffv2':
+            source = _Source(str(tmp_path), None, None, None)
+            source.get(1)
+        else:
+            stackmffv3._read_stack(str(tmp_path), None)
+    assert decoded == [str(tmp_path / 'first.png')]

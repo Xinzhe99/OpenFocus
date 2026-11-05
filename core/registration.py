@@ -1285,7 +1285,7 @@ class ImageRegistration:
         Returns:
             list: 配准后的图像列表（始终返回，无论是否保存到磁盘）
         """
-        from core.resource_policy import Workload, heavy_job, plan_execution, require_memory
+        from core.resource_policy import Workload, heavy_job, plan_execution
 
         with heavy_job(should_cancel):
             _check_cancel(should_cancel)
@@ -1298,14 +1298,11 @@ class ImageRegistration:
                                 for name in os.listdir(input_source)
                                 if os.path.splitext(name)[1].lower() in extensions),
                                key=_image_sort_key)
-                from core.image_loader import decode_image, source_dimensions
+                from core.image_loader import admit_image_decode, decode_image
                 images = []
                 for path in paths:
                     _check_cancel(should_cancel)
-                    encoded_bytes = os.path.getsize(path) * 2
-                    require_memory(encoded_bytes)
-                    width, height = source_dimensions(path)
-                    require_memory(width * height * 32 + encoded_bytes)
+                    admit_image_decode(path)
                     image = (decode_image(path, preserve_grayscale=True)
                              if self.steps == ('openfocus',) else decode_image(path))
                     if image is None:

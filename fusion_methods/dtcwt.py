@@ -235,7 +235,7 @@ def _peek_source(input_source, img_resize, should_cancel=None):
     """(height, width, frames, new bytes this call will allocate) up front."""
     import os
     if isinstance(input_source, str) and os.path.isdir(input_source):
-        from core.image_loader import decode_image
+        from core.image_loader import admit_image_decode, decode_image
         names = sorted(
             (f for f in os.listdir(input_source)
              if os.path.splitext(f)[1].lower() in
@@ -244,15 +244,16 @@ def _peek_source(input_source, img_resize, should_cancel=None):
             key=natural_sort_key)
         if not names:
             raise ValueError(f"No image files found in directory: {input_source}")
-        first = decode_image(os.path.join(input_source, names[0]))
+        path = os.path.join(input_source, names[0])
+        admit_image_decode(path)
+        first = decode_image(path)
         if first is None:
             raise RuntimeError(f"Unable to read image: {names[0]}")
         height, width = first.shape[:2]
         frames = len(names)
         # Every frame is decoded into a new array inside the stage.
-        new_bytes = frames * height * width * np.dtype(first.dtype).itemsize
-        if first.ndim == 2:
-            new_bytes *= 3
+        channels = first.shape[2] if first.ndim == 3 else 3
+        new_bytes = frames * height * width * channels * np.dtype(first.dtype).itemsize
     else:
         frames = len(input_source)
         if not frames:
@@ -464,6 +465,8 @@ def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optiona
     """Helper to load images from a path or list."""
     images = []
     if isinstance(input_source, str):
+        from core.image_loader import admit_image_decode, decode_image
+
         if not os.path.exists(input_source):
              raise ValueError(f"Input path does not exist: {input_source}")
              
@@ -489,7 +492,8 @@ def _load_images(input_source: Union[str, List[np.ndarray]], img_resize: Optiona
             if should_cancel is not None and should_cancel():
                 from core.registration import RegistrationCancelled
                 raise RegistrationCancelled()
-            img = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+            admit_image_decode(p)
+            img = decode_image(p, preserve_grayscale=True)
             if img is not None:
                 if img_resize:
                     img = cv2.resize(img, img_resize)

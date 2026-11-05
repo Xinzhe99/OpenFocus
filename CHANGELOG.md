@@ -33,6 +33,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate license terms documented in `docs/THIRD_PARTY_NOTICES.md`.
 
 ### Fixed
+- Admit each directory fusion input before decoding, including StackMFF's
+  direct and tiled paths, so oversized frames are rejected safely.
+- Preserve non-ASCII paths when classical methods read a source directory, and
+  include all color channels in DTCWT's directory memory estimate.
 - Keep the existing GPU hardware hint while an ONNX accelerator probe is running;
   report the verified result after the probe finishes and identify neural GPU
   acceleration accurately in feedback diagnostics.

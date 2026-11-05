@@ -175,6 +175,8 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # 1. 图像加载与预处理
     # -------------------------------------------------------------------------
     if isinstance(input_source, str):
+        from core.image_loader import admit_image_decode, decode_image
+
         # 文件夹读取逻辑
         if not os.path.exists(input_source):
              raise ValueError(f"Path not found: {input_source}")
@@ -199,7 +201,11 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         stack_ori = []
         for path in img_paths:
             check_cancel()
-            stack_ori.append(cv2.imread(path, cv2.IMREAD_UNCHANGED))
+            admit_image_decode(path)
+            image = decode_image(path, preserve_grayscale=True)
+            if image is None:
+                raise ValueError(f"Failed to read image: {path}")
+            stack_ori.append(image)
     else:
         # 列表输入
         stack_ori = input_source

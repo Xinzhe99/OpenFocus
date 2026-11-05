@@ -79,6 +79,15 @@ def source_dimensions(path, page=0):
     with PILImage.open(path) as image:
         return image.size
 
+def admit_image_decode(path, *, user_limit=None):
+    """Reserve encoded and decoded working space before reading image pixels."""
+    from core.resource_policy import require_memory
+
+    encoded_bytes = os.path.getsize(path) * 2
+    require_memory(encoded_bytes, user_limit=user_limit)
+    width, height = source_dimensions(path)
+    require_memory(width * height * 32 + encoded_bytes, user_limit=user_limit)
+
 
 
 def linear_raw_metadata_matches(first, second):

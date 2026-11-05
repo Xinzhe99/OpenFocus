@@ -196,6 +196,7 @@ def _read_stack(input_source, img_resize, should_cancel=None, execution_plan=Non
     from core.resource_policy import probe_resources, require_memory
     cap = execution_plan.ram_budget if execution_plan is not None else None
     if isinstance(input_source, str):
+        from core.image_loader import admit_image_decode, decode_image
         snapshot = probe_resources()
         require_memory(1, snapshot, user_limit=cap)
         exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
@@ -210,7 +211,8 @@ def _read_stack(input_source, img_resize, should_cancel=None, execution_plan=Non
             if frames:
                 require_memory(frames[0].nbytes, user_limit=cap)
             path = os.path.join(input_source, name)
-            img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            admit_image_decode(path, user_limit=cap)
+            img = decode_image(path, preserve_grayscale=True)
             if img is None:
                 raise ValueError(f"Failed to read image: {path}")
             if not frames:

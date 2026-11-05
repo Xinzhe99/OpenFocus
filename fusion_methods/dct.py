@@ -26,6 +26,8 @@ def _ensure_color_image(image: np.ndarray) -> np.ndarray:
     raise ValueError(f"Unsupported image shape: {image.shape}")
 
 def _collect_images_from_folder(source_folder: str, check_cancel=None) -> Tuple[List[np.ndarray], List[str]]:
+    from core.image_loader import admit_image_decode, decode_image
+
     extensions = ['*.jpg', '*.jpeg', '*.png', '*.tif', '*.tiff', '*.bmp']
     img_paths = []
     for ext in extensions:
@@ -36,7 +38,8 @@ def _collect_images_from_folder(source_folder: str, check_cancel=None) -> Tuple[
     for path in img_paths:
         if check_cancel is not None:
             check_cancel()
-        img = cv2.imread(path, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+        admit_image_decode(path)
+        img = decode_image(path)
         if img is not None:
             images.append(img)
     return images, img_paths

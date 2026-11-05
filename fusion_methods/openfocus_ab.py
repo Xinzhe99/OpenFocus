@@ -23,6 +23,8 @@ def _collect_images(input_source, *, normalize=True, should_cancel=None) -> List
                 else f for f in frames]
 
     if isinstance(input_source, str) and os.path.isdir(input_source):
+        from core.image_loader import admit_image_decode, decode_image
+
         exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp', '.tif', '.tiff', '.bmp')
         files = [f for f in sorted(os.listdir(input_source),
                                     key=natural_sort_key)
@@ -33,8 +35,9 @@ def _collect_images(input_source, *, normalize=True, should_cancel=None) -> List
         frames = []
         for name in files:
             _check_cancel(should_cancel)
-            data = np.fromfile(os.path.join(input_source, name), dtype=np.uint8)
-            img = cv2.imdecode(data, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+            path = os.path.join(input_source, name)
+            admit_image_decode(path)
+            img = decode_image(path)
             if img is None:
                 raise RuntimeError(f"Unable to read image: {name}")
             if normalize and img.dtype == np.uint16:

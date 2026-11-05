@@ -47,6 +47,8 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
 
     # ========== 数据加载 ==========
     if isinstance(input_source, str):
+        from core.image_loader import admit_image_decode, decode_image
+
         def get_image_suffix(input_stack_path):
             filenames = os.listdir(input_stack_path)
             if len(filenames) == 0:
@@ -69,7 +71,11 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
         stack_ori = []
         for img_path in img_stack_path_list:
             check_cancel()
-            stack_ori.append(cv2.imread(img_path, cv2.IMREAD_UNCHANGED))
+            admit_image_decode(img_path)
+            image = decode_image(img_path, preserve_grayscale=True)
+            if image is None:
+                raise ValueError(f"Failed to read image: {img_path}")
+            stack_ori.append(image)
     else:
         stack_ori = input_source
     

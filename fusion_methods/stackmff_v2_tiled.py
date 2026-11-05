@@ -38,7 +38,8 @@ class _Source:
     def get(self, index, region=None):
         common.cancel(self.should_cancel)
         if self.directory:
-            from core.image_loader import decode_image
+            from core.image_loader import admit_image_decode, decode_image
+            admit_image_decode(self.items[index])
             frame = decode_image(self.items[index])
             if frame is None:
                 raise ValueError(f'Failed to read image: {self.items[index]}')

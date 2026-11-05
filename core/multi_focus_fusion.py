@@ -347,8 +347,10 @@ class MultiFocusFusion:
             else:
                 name = files[0]
                 gain = exposure_gains[0] if exposure_gains else None
-            from core.image_loader import decode_image
-            frame = decode_image(os.path.join(input_source, name))
+            from core.image_loader import admit_image_decode, decode_image
+            path = os.path.join(input_source, name)
+            admit_image_decode(path, user_limit=memory_budget_bytes())
+            frame = decode_image(path)
             if frame is None:
                 return None
         if frame is None:
@@ -399,7 +401,7 @@ class MultiFocusFusion:
             frames = [f for f in input_source if f is not None]
             return exposure_gains(frames)
         if isinstance(input_source, str) and os.path.isdir(input_source):
-            from core.image_loader import decode_image
+            from core.image_loader import admit_image_decode, decode_image
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
                     '.tif', '.tiff', '.bmp')
             names = [f for f in sorted(os.listdir(input_source),
@@ -410,7 +412,9 @@ class MultiFocusFusion:
                 if should_cancel is not None and should_cancel():
                     from core.registration import RegistrationCancelled
                     raise RegistrationCancelled()
-                img = decode_image(os.path.join(input_source, name))
+                path = os.path.join(input_source, name)
+                admit_image_decode(path, user_limit=memory_budget_bytes())
+                img = decode_image(path)
                 if img is None:
                     raise RuntimeError(f"Unable to read image: {name}")
                 color = (img[:, :, :3] if img.ndim == 3 and img.shape[2] > 3
@@ -428,7 +432,7 @@ class MultiFocusFusion:
         """Load a directory stack with the per-frame gains already applied."""
         if not isinstance(input_source, str) or not os.path.isdir(input_source):
             return input_source
-        from core.image_loader import decode_image
+        from core.image_loader import admit_image_decode, decode_image
         exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
                 '.tif', '.tiff', '.bmp')
         names = [f for f in sorted(os.listdir(input_source),
@@ -439,7 +443,9 @@ class MultiFocusFusion:
             if should_cancel is not None and should_cancel():
                 from core.registration import RegistrationCancelled
                 raise RegistrationCancelled()
-            img = decode_image(os.path.join(input_source, name))
+            path = os.path.join(input_source, name)
+            admit_image_decode(path, user_limit=memory_budget_bytes())
+            img = decode_image(path)
             if img is None:
                 raise RuntimeError(f"Unable to read image: {name}")
             frames.append(apply_exposure_gain(img, gain))
@@ -561,7 +567,7 @@ class MultiFocusFusion:
         if unknown:
             raise ValueError(f'Unknown fusion parameters: {sorted(unknown)}')
         kwargs.update(resolve_fusion_parameters(self.algorithm, values))
-        # Inspect one frame before directory materialisation or exposure copies.
+        # Inspect each frame under an admission check before directory materialisation.
         if isinstance(input_source, str) and os.path.isdir(input_source):
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
                     '.tif', '.tiff', '.bmp')
@@ -569,12 +575,13 @@ class MultiFocusFusion:
                      if f.lower().endswith(exts)]
             if not names:
                 raise ValueError(f"No image files found in directory: {input_source}")
-            from core.image_loader import decode_image
+            from core.image_loader import admit_image_decode, decode_image
             frame_specs = []
             first = None
             for name in names:
                 check_cancel()
                 path = os.path.join(input_source, name)
+                admit_image_decode(path, user_limit=memory_budget_bytes())
                 frame = decode_image(path)
                 if frame is None:
                     raise RuntimeError(f"Unable to read image: {name}")
@@ -1050,13 +1057,15 @@ class MultiFocusFusion:
             channels = min(channels, 3)
         elif isinstance(input_source, str):
             img_dir = input_source
-            from core.image_loader import decode_image
+            from core.image_loader import admit_image_decode, decode_image
 
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp', '.tif', '.tiff', '.bmp')
             files = [f for f in sorted(os.listdir(img_dir), key=natural_sort_key) if f.lower().endswith(exts)]
             if len(files) == 0:
                 raise ValueError(f"No image files found in directory: {img_dir}")
-            first_img = decode_image(os.path.join(img_dir, files[0]))
+            first_path = os.path.join(img_dir, files[0])
+            admit_image_decode(first_path, user_limit=memory_budget_bytes())
+            first_img = decode_image(first_path)
             if first_img is None:
                 raise RuntimeError(f"Unable to read image: {os.path.join(img_dir, files[0])}")
             h, w = first_img.shape[:2]
@@ -1173,6 +1182,10 @@ class MultiFocusFusion:
                 itemsize=np.dtype(src_dtype).itemsize,
             )
             optimal_threads = min(optimal_threads, len(tile_coords))
+        if imgs is None:
+            # Directory tiles decode full source frames. Serializing them keeps
+            # simultaneous full-frame decodes out of the tile-only budget.
+            optimal_threads = 1
         acc = np.zeros((h, w, channels), dtype=np.float32)
         weight = np.zeros((h, w, 1), dtype=np.float32)
 
@@ -1202,7 +1215,7 @@ class MultiFocusFusion:
             return resolve_runner(get_fusion(algorithm).runner)(self, crops, img_resize, **algo_kwargs)
 
         def _crop_frames(coords):
-            from core.image_loader import decode_image
+            from core.image_loader import admit_image_decode, decode_image
             x0, y0, x1, y1 = coords
             if imgs is not None:
                 crops = [img[y0:y1, x0:x1] for img in imgs]
@@ -1211,6 +1224,7 @@ class MultiFocusFusion:
                 for idx, fname in enumerate(files):
                     _check_cancel()
                     fp = os.path.join(img_dir, fname)
+                    admit_image_decode(fp, user_limit=memory_budget_bytes())
                     full = decode_image(fp)
                     if full is None:
                         raise RuntimeError(f"Unable to read image: {fp}")
@@ -1330,7 +1344,7 @@ class MultiFocusFusion:
         the fusion itself is dispatched through the descriptor's runner, so a
         new model needs no copy of this accumulator.
         """
-        from core.image_loader import decode_image
+        from core.image_loader import admit_image_decode, decode_image
         from core.registration import RegistrationCancelled
         from utils.weights import weights_path
 
@@ -1379,7 +1393,9 @@ class MultiFocusFusion:
             crops = []
             for index, name in enumerate(files):
                 check_cancel()
-                full = decode_image(os.path.join(img_dir, name))
+                path = os.path.join(img_dir, name)
+                admit_image_decode(path, user_limit=tile_plan.ram_budget)
+                full = decode_image(path)
                 if full is None:
                     raise RuntimeError(f"Unable to read image: {name}")
                 crop = full[y0:y1, x0:x1].copy()
