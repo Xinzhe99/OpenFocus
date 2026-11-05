@@ -38,6 +38,12 @@ stack storage. Decoding, inference workspaces and full-size outputs still need
 available RAM, while temporary frame and alignment data need free disk space.
 Very large inputs can exceed either limit and fail with a resource error.
 
+GFG-FGF converts source frames to its float32 working range as each pass
+needs them, instead of retaining a second float32 color copy of every frame.
+This trades repeated conversion work for lower working memory. The source
+stack, output, decision maps and a bounded number of worker buffers still occupy
+memory, so this does not make the complete workflow constant-memory.
+
 ## Depth maps
 
 Focus-position maps are available for DCT, DTCWT, GFG-FGF, OpenFocus B,

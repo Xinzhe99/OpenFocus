@@ -220,37 +220,24 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     stack_ori = prepared
     del prepared
 
-    # -------------------------------------------------------------------------
-    # 2. 数据准备：统一转为 Float32 (0.0 - 1.0)
-    #    这能显著减少后续多次除法运算，并利用 SIMD 优化
-    # -------------------------------------------------------------------------
+    # Retain source frames in their existing representation and convert per pass,
+    # rather than retaining a second full float32 color stack.
     num_imgs = len(stack_ori)
     h, w = stack_ori[0].shape[:2]
-
-    # imgs_f32: (N, H, W, 3) range [0, 1]
-    # 使用列表存储，避免一次性分配巨大的 numpy 数组导致内存溢出
-    # Every back-end takes 0-255 scaled input regardless of bit depth, so a
-    # plain /255 is correct for uint8 and for the float32 16-bit stacks.
     out_dtype = fuse_output_dtype(stack_ori)
-    imgs_f32 = []
-    for img in stack_ori:
-        check_cancel()
+
+    def normalized_frame(index, channel=None):
+        img = stack_ori[index]
+        if channel is not None:
+            img = img[:, :, channel]
         if img.dtype == np.uint16:
             img = img.astype(np.float32) * (255.0 / 65535.0)
-        imgs_f32.append(img.astype(np.float32) / 255.0)
-    
-    # 原始 uint8 数据不再需要，释放引用（如果外部未持有）
-    del stack_ori, img
+        return img.astype(np.float32) / 255.0
 
-    # 确定用于计算焦点的通道 (Channel Selection)
-    # 计算第一张图各通道和，取最大的通道索引
-    # 利用 sum(axis=(0,1)) 快速求和
-    ch_sum = imgs_f32[0].sum(axis=(0, 1))
-    channel_idx = int(np.argmax(ch_sum))
-
-    # 提取所有图的灰度/单通道用于引导 (N, H, W)
-    # 直接引用切片，不拷贝数据 (View)
-    grays = [img[:, :, channel_idx] for img in imgs_f32]
+    first = normalized_frame(0)
+    channel_idx = int(np.argmax(first.sum(axis=(0, 1))))
+    del first
+    del img
 
     # -------------------------------------------------------------------------
     # 3. 计算焦点值 (Focus Measure) - 阶段 1
@@ -263,7 +250,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
 
     def compute_focus_score(idx):
         check_cancel()
-        gray_img = grays[idx]
+        gray_img = normalized_frame(idx, channel_idx)
         # filter2D 内部并行优化较好，但在大量小图时 ThreadPool 仍有优势
         gx = cv2.filter2D(gray_img, cv2.CV_32F, kx, borderType=cv2.BORDER_REFLECT)
         gy = cv2.filter2D(gray_img, cv2.CV_32F, ky, borderType=cv2.BORDER_REFLECT)
@@ -314,7 +301,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
             return i, None
         # 论文完整聚焦检测：均值差分粗图 + 类高斯四邻域梯度高频 + FGF
         # （issue #5：旧实现只有均值差分，缺 GFG 算子）
-        return i, gfg_focus_map(grays[i], g_msz, g_gsz, g_eps)
+        return i, gfg_focus_map(normalized_frame(i, channel_idx), g_msz, g_gsz, g_eps)
 
     # 按帧序流式决策（并列判定依赖顺序，且不物化 N×H×W 聚焦图栈）；
     # 每批 max_workers 帧并行计算聚焦图
@@ -355,7 +342,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         
         # 再次导向滤波平滑权重
         # 这里的 maxfm_binary 也是 0-1，guided filter 输出也是 0-1
-        fdm = _run_guided_filter(grays[i], maxfm_binary, g_gsz, g_eps)
+        fdm = _run_guided_filter(normalized_frame(i, channel_idx), maxfm_binary, g_gsz, g_eps)
         
         return i, fdm
 
@@ -371,7 +358,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
                     continue
                 i, fdm_weight = res
                 sum_fdms += fdm_weight
-                imfu_result += imgs_f32[i] * fdm_weight[:, :, None]
+                imfu_result += normalized_frame(i) * fdm_weight[:, :, None]
                 del res, fdm_weight
 
     # -------------------------------------------------------------------------
@@ -406,7 +393,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         if not nonzero_mask.all():
             for i in np.unique(idm_map[~nonzero_mask]):
                 sel = (~nonzero_mask) & (idm_map == i)
-                ch_data[sel] = imgs_f32[i][:, :, c][sel]
+                ch_data[sel] = normalized_frame(i, c)[sel]
         # Clip 并写回源位深
         np.clip(ch_data * 255.0, 0, 255, out=ch_data)
         out[:, :, c] = ch_data
