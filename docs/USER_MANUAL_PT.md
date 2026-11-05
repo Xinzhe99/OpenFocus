@@ -557,46 +557,47 @@ Para um arquivo de imagem existente, escolha **Editar → Retocar arquivos de im
 ### Substituir o fundo (Fundo automático)
 
 Ao empilhar, o fundo fica nítido juntamente com o motivo. O fundo de uma imagem
-empilhada costuma ficar um mosaico de desfoques diferentes, com um halo à volta
-do motivo. **Fundo automático…** na área de retoque substitui-o por um fotograma
-real da mesma pilha. O motivo fica tal como foi empilhado e nada é inventado:
-cada pixel do fundo vem de um fotograma ou do resultado empilhado.
+empilhada costuma ficar um mosaico de desfoques diferentes, com um halo ao redor
+do motivo. **Fundo automático…** na área de retoque o substitui por um quadro
+real da mesma pilha. O motivo permanece como foi empilhado. O fundo é derivado
+de um quadro e do resultado empilhado; o processamento pode reconstruir, ajustar
+e mesclar seus pixels.
 
 1. Abra o resultado na área de retoque e clique em **Fundo automático…**.
 2. Escolha o fundo:
-   - **Automático** (recomendado) usa o fundo suave, salvo se a pilha registou
+   - **Automático** (recomendado) usa o fundo suave, salvo se a pilha registrou
      focada grande parte do fundo. Nesse caso usa o nítido.
-   - **Fundo suave** usa o fotograma com o fundo mais desfocado.
-   - **Fundo nítido** usa o fotograma focado mais longe.
+   - **Fundo suave** usa o quadro com o fundo mais desfocado.
+   - **Fundo nítido** usa o quadro focado mais longe.
 3. Deixe **Limpar halos nas bordas** ligado para remover halos ao longo das
-   bordas do motivo. Nunca vai além do que os fotogramas registaram. Desligue
-   para manter o aspeto das bordas da pilha.
+   bordas do motivo. Nunca vai além do que os quadros registraram. Desligue
+   para manter o aspecto das bordas da pilha.
 4. Marque **Manter as partes suaves ligadas ao motivo** quando partes do motivo
    ficam logo fora da profundidade de campo, como a ponta arredondada de um
    espinho. Também pode manter objetos de fundo junto ao motivo tal como foram
    empilhados, por isso verifique o resultado.
-5. Clique em **Substituir fundo**. Uma pilha de 15 fotogramas de 20 megapíxeis
+5. Clique em **Substituir fundo**. Uma pilha de 15 quadros de 20 megapixels
    demora cerca de um minuto e precisa de cerca de 3,5 GB de memória livre.
    **Cancelar** interrompe.
 
 A alteração é um único passo que pode ser anulado, e os traços já pintados no
-motivo mantêm-se. Use o **Pincel de restauração** para recuperar os píxeis
+motivo são mantidos. Use o **Pincel de restauração** para recuperar os pixels
 empilhados onde os preferir, por exemplo uma folha de erva desfocada à frente do
 motivo. Quando o motivo ocupa quase todo o enquadramento, como numa cena do chão
 da floresta, a imagem fica tal como foi empilhada e aparece um aviso.
 
-Depois de uma execução, **Mostrar dados em falta** colore os sítios que nenhum
-fotograma viu com nitidez. São os sítios a verificar ou retocar à mão:
+Após uma execução, **Mostrar dados ausentes** colore os locais que nenhum
+quadro mostrou com nitidez. São os locais que devem ser verificados ou retocados à mão:
 
-- magenta: fundo que nenhum fotograma registou sem o motivo à frente
-- ciano: motivo escondido da câmara
+- magenta: fundo que nenhum quadro registrou sem o motivo à frente
+- ciano: motivo escondido da câmera
 - amarelo: motivo fora do intervalo de foco da pilha
-- ardósia: zonas demasiado lisas para avaliar
+- ardósia: áreas lisas demais para avaliar
 
-**Guardar mapa de dados em falta…** grava a pré-visualização colorida e uma
-máscara a preto e branco por cor. O fundo automático precisa dos fotogramas que
+**Salvar mapa de dados ausentes…** grava a prévia colorida e uma
+máscara em preto e branco por cor. O fundo automático precisa dos quadros que
 produziram o resultado e não está disponível para resultados de região (ROI).
-Os pontos de controlo de retoque guardam a escolha e voltam a calculá-la ao
+Os pontos de controle de retoque salvam a escolha e voltam a calculá-la ao
 carregar.
 
 ### Gerenciamento de rótulos

@@ -614,6 +614,8 @@ PACK = {
     "retouch_checkpoint_load_failed": "Le point de reprise n'a pas pu être validé ou chargé. Les retouches actuelles ont été conservées.",
     "retouch_checkpoint_filter": "Points de reprise de retouche (*.ofretouch)",
     "retouch_checkpoint_input": "Un point de reprise ne peut pas écraser une image source.",
+    "retouch_missing_input": "Les cartes de données manquantes ne peuvent pas écraser une image source.",
+    "retouch_missing_replace": "Remplacer ces fichiers de données manquantes existants ?\n{files}",
     "retouch_checkpoint_replace": "Remplacer les retouches actuelles par ce point de reprise ?",
     "retouch_redo": "Rétablir",
     "retouch_fit": "Ajuster à la fenêtre (F)",

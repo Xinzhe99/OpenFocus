@@ -560,8 +560,8 @@ Al apilar, el fondo se enfoca junto con el sujeto. El fondo de una imagen
 apilada suele quedar como un mosaico de desenfoques distintos, con un halo
 alrededor del sujeto. **Fondo automático…** en el espacio de retoque lo
 sustituye por un fotograma real de la misma pila. El sujeto queda tal como se
-apiló y no se inventa nada: cada píxel del fondo procede de un fotograma o del
-resultado apilado.
+apiló y el fondo se obtiene a partir de un fotograma y del resultado apilado. El
+procesamiento puede reconstruir, ajustar y mezclar los píxeles del fondo.
 
 1. Abre el resultado en el espacio de retoque y pulsa **Fondo automático…**.
 2. Elige el fondo:

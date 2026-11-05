@@ -614,6 +614,8 @@ PACK = {
     "retouch_checkpoint_load_failed": "Der Kontrollpunkt konnte nicht geprüft oder geladen werden. Die aktuellen Bearbeitungen bleiben erhalten.",
     "retouch_checkpoint_filter": "Retusche-Kontrollpunkte (*.ofretouch)",
     "retouch_checkpoint_input": "Ein Kontrollpunkt darf kein Eingabebild überschreiben.",
+    "retouch_missing_input": "Fehlendatenkarten dürfen kein Eingabebild überschreiben.",
+    "retouch_missing_replace": "Diese vorhandenen Fehlendatendateien ersetzen?\n{files}",
     "retouch_checkpoint_replace": "Aktuelle Retuschen durch diesen Kontrollpunkt ersetzen?",
     "retouch_redo": "Wiederholen",
     "retouch_fit": "An Fenster anpassen (F)",

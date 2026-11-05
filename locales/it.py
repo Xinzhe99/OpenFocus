@@ -614,6 +614,8 @@ PACK = {
     "retouch_checkpoint_load_failed": "Impossibile verificare o caricare il punto di controllo. Le modifiche correnti sono state conservate.",
     "retouch_checkpoint_filter": "Punti di controllo del ritocco (*.ofretouch)",
     "retouch_checkpoint_input": "Un punto di controllo non può sovrascrivere un'immagine di input.",
+    "retouch_missing_input": "Le mappe dei dati mancanti non possono sovrascrivere un'immagine di input.",
+    "retouch_missing_replace": "Sostituire questi file di dati mancanti esistenti?\n{files}",
     "retouch_checkpoint_replace": "Sostituire le modifiche correnti con questo punto di controllo?",
     "retouch_redo": "Ripeti",
     "retouch_fit": "Adatta alla finestra (F)",

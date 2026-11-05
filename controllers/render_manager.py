@@ -46,6 +46,10 @@ class RenderManager:
         self._render_interactive = True
         self._control_progress: Optional[tuple] = None
         self.alignment_diagnostics = None
+        # An interactive request made while source frames are loading.  Keep
+        # the forced algorithm and comparison ownership, not just a Boolean,
+        # so the deferred render cannot be mislabeled or outlive cancellation.
+        self._render_after_load: Optional[dict] = None
 
     def show_alignment_report(self, *, parent=None) -> None:
         dialog = QDialog(parent or self.window)
@@ -365,6 +369,9 @@ class RenderManager:
             self._compare_mode = False
             self._compare_queue = []
             self._compare_current = None
+            queued = self._render_after_load
+            if queued is not None and queued.get("compare", False):
+                self._render_after_load = None
             running = self.worker is not None and self.worker.isRunning()
             if running:
                 # Keep the truth visible until the worker acknowledges the
@@ -470,11 +477,14 @@ class RenderManager:
         if getattr(source, "_load_worker", None) is not None:
             self._start_status = "loading"
             if interactive:
-                if getattr(self, "_render_after_load", False):
-                    self._render_after_load = False
+                if self._render_after_load is not None:
+                    self._render_after_load = None
                     window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
                 else:
-                    self._render_after_load = True
+                    self._render_after_load = {
+                        "force_algorithm": force_algorithm,
+                        "compare": bool(self._compare_mode),
+                    }
                     window.statusBar().showMessage(trans.t("msg_render_queued_after_load"))
             return
         # A previous render may have aborted without clearing this; it decides
@@ -1423,6 +1433,8 @@ class RenderManager:
                 self._compare_chain_timer.timeout.connect(self._start_next_compare)
                 self._compare_chain_timer.start(400)
             else:
+                self.last_state = "error"
+                self.last_result = None
                 self._finish_compare_run()
             return
         if getattr(self, '_compare_mode', False):

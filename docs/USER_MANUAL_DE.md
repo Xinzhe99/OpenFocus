@@ -597,8 +597,9 @@ Beim Stacken wird der Hintergrund zusammen mit dem Motiv geschärft. Der
 Hintergrund eines gestackten Bildes ist dann oft ein Flickwerk verschiedener
 Unschärfen, mit einem Halo um das Motiv. **Automatischer Hintergrund…** im
 Retusche-Arbeitsbereich ersetzt ihn durch ein echtes Einzelbild aus demselben
-Stack. Das Motiv bleibt genau wie gestackt, und nichts wird erfunden: Jedes
-Hintergrundpixel stammt aus einem Einzelbild oder aus dem gestackten Ergebnis.
+Stack. Das Motiv bleibt genau wie gestackt. Der Hintergrund wird aus einem
+Einzelbild und dem gestackten Ergebnis abgeleitet; bei der Verarbeitung können
+seine Pixel rekonstruiert, angepasst und überblendet werden.
 
 1. Öffnen Sie das Ergebnis im Retusche-Arbeitsbereich und klicken Sie auf
    **Automatischer Hintergrund…**.

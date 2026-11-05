@@ -1011,8 +1011,9 @@ As with other results, project files do not store these pixels or brush history.
 Stacking sharpens the background along with the subject. The background of a
 stacked image is often a patchwork of different blurs, with a halo around the
 subject. **Auto background…** in the retouch workspace replaces it with one real
-frame from the same stack. The subject stays exactly as stacked, and nothing is
-invented: every background pixel comes from a frame or from the stacked result.
+frame from the same stack. The subject stays exactly as stacked. The background
+is derived from a frame and the stacked result; processing may reconstruct,
+adjust, and blend its pixels.
 
 1. Open the result in the retouch workspace and click **Auto background…**.
 2. Choose the background:

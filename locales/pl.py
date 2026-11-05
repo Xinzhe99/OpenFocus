@@ -614,6 +614,8 @@ PACK = {
     "retouch_checkpoint_load_failed": "Nie udało się sprawdzić lub wczytać punktu kontrolnego. Bieżące poprawki zostały zachowane.",
     "retouch_checkpoint_filter": "Punkty kontrolne retuszu (*.ofretouch)",
     "retouch_checkpoint_input": "Punkt kontrolny nie może nadpisać obrazu wejściowego.",
+    "retouch_missing_input": "Mapy brakujących danych nie mogą nadpisywać obrazu wejściowego.",
+    "retouch_missing_replace": "Zastąpić te istniejące pliki brakujących danych?\n{files}",
     "retouch_checkpoint_replace": "Zastąpić bieżące poprawki tym punktem kontrolnym?",
     "retouch_redo": "Ponów",
     "retouch_fit": "Dopasuj do okna (F)",

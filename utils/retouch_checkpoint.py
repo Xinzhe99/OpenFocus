@@ -249,8 +249,11 @@ def _replay_checkpoint(doc, path, cancelled=None):
                 if (preset not in ('auto', 'soft', 'sharp') or type(clean) is not bool
                         or type(soft_parts) is not bool):
                     raise ValueError('Invalid auto background operation')
-                if replay.auto_background(preset, clean, cancelled,
-                                          keep_soft_parts=soft_parts) != 'committed':
+                status = replay.auto_background(preset, clean, cancelled,
+                                                keep_soft_parts=soft_parts)
+                if status == 'cancelled':
+                    raise ValueError('Retouch replay cancelled')
+                if status != 'committed':
                     raise ValueError('Auto background could not be replayed')
             elif kind == 'restore_all':
                 if not replay.restore_all():
