@@ -21,6 +21,7 @@ from core.frame_storage import store_frame
 
 logger = logging.getLogger(__name__)
 PREVIEW_EDGE = 768
+PREVIEW_DECODE_BUDGET = 32 * 1024 * 1024
 
 
 class FrameCache:
@@ -137,6 +138,37 @@ def _orient(image, orientation):
     return np.ascontiguousarray(transform(image)) if transform else image
 
 
+def _unavailable_preview(width, height, text='Preview unavailable'):
+    factor = min(1, PREVIEW_EDGE / max(width, height))
+    preview = np.full((max(1, round(height * factor)), max(1, round(width * factor)), 3), 32, np.uint8)
+    cv2.putText(preview, text, (8, min(28, preview.shape[0] - 1)),
+                cv2.FONT_HERSHEY_SIMPLEX, .5, (210, 210, 210), 1, cv2.LINE_AA)
+    return preview
+
+
+def _pil_preview(image, *, itemsize=1, alpha=False):
+    """Admit the decoder's actual geometry before Pillow can allocate pixels."""
+    width, height = image.size
+    factor = min(1, PREVIEW_EDGE / max(width, height))
+    target = (max(1, round(width * factor)), max(1, round(height * factor)))
+    # Aspect-correct draft targets let libjpeg choose its largest useful DCT
+    # reduction. Other formats retain native geometry and are checked below.
+    image.draft('RGB', target)
+    working = image.width * image.height * max(4, len(image.getbands())) * itemsize * 4
+    if working > PREVIEW_DECODE_BUDGET:
+        logger.warning('Preview decoder exceeds budget size=%sx%s need=%d budget=%d',
+                       width, height, working, PREVIEW_DECODE_BUDGET)
+        return _unavailable_preview(width, height)
+    from core.resource_policy import require_memory
+    require_memory(working)
+    image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
+    if image.mode in ('I', 'I;16', 'I;16B'):
+        return cv2.cvtColor(np.asarray(image).astype(np.uint16), cv2.COLOR_GRAY2BGR)
+    if alpha:
+        return cv2.cvtColor(np.asarray(image.convert('RGBA')), cv2.COLOR_RGBA2BGRA)
+    return cv2.cvtColor(np.asarray(image.convert('RGB')), cv2.COLOR_RGB2BGR)
+
+
 def _raw_preview(raw, orientation, path):
     """Read bounded embedded JPEGs; never unpack the sensor for a preview."""
     import rawpy
@@ -144,18 +176,14 @@ def _raw_preview(raw, orientation, path):
     encoded = _embedded_raw_jpeg(path)
     if encoded is not None:
         with Image.open(BytesIO(encoded)) as image:
-            image.draft('RGB', (PREVIEW_EDGE, PREVIEW_EDGE))
-            image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE))
-            preview = cv2.cvtColor(np.asarray(image.convert('RGB')), cv2.COLOR_RGB2BGR)
+            preview = _pil_preview(image)
         return _orient(preview, orientation)
     if raw.sizes.width * raw.sizes.height <= 4_000_000:
         try:
             thumb = raw.extract_thumb()
             if thumb.format == rawpy.ThumbFormat.JPEG and len(thumb.data) <= 32 * 1024 * 1024:
                 with Image.open(BytesIO(thumb.data)) as image:
-                    image.draft('RGB', (PREVIEW_EDGE, PREVIEW_EDGE))
-                    image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE))
-                    preview = cv2.cvtColor(np.asarray(image.convert('RGB')), cv2.COLOR_RGB2BGR)
+                    preview = _pil_preview(image)
                 return _orient(preview, orientation)
             if thumb.format == rawpy.ThumbFormat.BITMAP and thumb.data.shape[0] * thumb.data.shape[1] <= 4_000_000:
                 return _orient(_small(cv2.cvtColor(thumb.data, cv2.COLOR_RGB2BGR)), orientation)
@@ -163,11 +191,7 @@ def _raw_preview(raw, orientation, path):
             pass
     # A visibly unavailable preview is preferable to hidden full-sensor work.
     # This canvas is never used by resolve_frame, rendering or export.
-    width, height = raw.sizes.width, raw.sizes.height
-    factor = min(1, PREVIEW_EDGE / max(width, height))
-    preview = np.full((max(1, round(height * factor)), max(1, round(width * factor)), 3), 32, np.uint8)
-    cv2.putText(preview, 'RAW: no embedded preview', (8, min(28, preview.shape[0] - 1)),
-                cv2.FONT_HERSHEY_SIMPLEX, .5, (210, 210, 210), 1, cv2.LINE_AA)
+    preview = _unavailable_preview(raw.sizes.width, raw.sizes.height, 'RAW: no embedded preview')
     logger.warning('RAW preview unavailable without sensor decode path=%s', path)
     return _orient(preview, orientation)
 
@@ -323,30 +347,44 @@ def transform_frame(frame, operation, **params):
 
 
 def _tiff_preview(page):
-    """Sample decoded strips/tiles without assembling the full page."""
+    """Sample mapped TIFFs or admitted strips; oversized strips stay undecoded."""
     h, w = page.imagelength, page.imagewidth
     step = max(1, math.ceil(max(h, w) / PREVIEW_EDGE))
     channels = page.samplesperpixel
     if channels not in (1, 3, 4) or page.planarconfig != 1:
         raise ValueError('Unsupported TIFF sample/planar layout')
     from core.resource_policy import require_memory
-    segment_h = page.tilelength if page.is_tiled else min(h, page.rowsperstrip)
-    segment_w = page.tilewidth if page.is_tiled else w
-    require_memory(segment_h * segment_w * channels * np.dtype(page.dtype).itemsize * 4
-                   + math.ceil(h / step) * math.ceil(w / step) * channels * np.dtype(page.dtype).itemsize)
-    small = np.zeros((math.ceil(h / step), math.ceil(w / step), channels), dtype=page.dtype)
-    for segment, position, _shape in page.segments(maxworkers=1):
-        if segment is None:
-            continue
-        _, _, y, x, _ = position
-        tile = segment[0]
-        y0, x0 = (-y) % step, (-x) % step
-        sampled = tile[y0::step, x0::step]
-        sy, sx = (y + y0) // step, (x + x0) // step
-        hh = min(sampled.shape[0], small.shape[0] - sy)
-        ww = min(sampled.shape[1], small.shape[1] - sx)
-        if hh > 0 and ww > 0:
-            small[sy:sy + hh, sx:sx + ww] = sampled[:hh, :ww]
+    small_bytes = math.ceil(h / step) * math.ceil(w / step) * channels * np.dtype(page.dtype).itemsize
+    if page.is_memmappable:
+        require_memory(small_bytes * 4)
+        # is_memmappable guarantees asarray maps the existing source rather
+        # than decoding it to a temporary full-page allocation.
+        mapped = page.asarray(out='memmap')
+        sampled = mapped[::step, ::step]
+        small = np.array(sampled if sampled.ndim == 3 else sampled[:, :, None], copy=True)
+        del sampled, mapped
+    else:
+        segment_h = page.tilelength if page.is_tiled else min(h, page.rowsperstrip)
+        segment_w = page.tilewidth if page.is_tiled else w
+        working = (segment_h * segment_w * channels * np.dtype(page.dtype).itemsize * 4
+                   + max(page.databytecounts, default=0) * 2 + small_bytes)
+        if working > PREVIEW_DECODE_BUDGET:
+            logger.warning('TIFF preview segment exceeds budget need=%d budget=%d', working, PREVIEW_DECODE_BUDGET)
+            return _unavailable_preview(w, h)
+        require_memory(working)
+        small = np.zeros((math.ceil(h / step), math.ceil(w / step), channels), dtype=page.dtype)
+        for segment, position, _shape in page.segments(maxworkers=1):
+            if segment is None:
+                continue
+            _, _, y, x, _ = position
+            tile = segment[0]
+            y0, x0 = (-y) % step, (-x) % step
+            sampled = tile[y0::step, x0::step]
+            sy, sx = (y + y0) // step, (x + x0) // step
+            hh = min(sampled.shape[0], small.shape[0] - sy)
+            ww = min(sampled.shape[1], small.shape[1] - sx)
+            if hh > 0 and ww > 0:
+                small[sy:sy + hh, sx:sx + ww] = sampled[:hh, :ww]
     if int(page.photometric) == 0:
         small = np.iinfo(small.dtype).max - small
     if channels == 1:
@@ -436,18 +474,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                 width, height = height, width
             preview = None
             if not header_only:
-                # JPEG draft decodes reduced DCT blocks directly.
-                image.draft('RGB', (PREVIEW_EDGE, PREVIEW_EDGE))
-                from core.resource_policy import require_memory
-                require_memory(image.width * image.height * 16)
-                image.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), Image.Resampling.LANCZOS)
-                if image.mode in ('I', 'I;16', 'I;16B'):
-                    preview = cv2.cvtColor(np.asarray(image).astype(np.uint16), cv2.COLOR_GRAY2BGR)
-                elif alpha:
-                    preview = cv2.cvtColor(np.asarray(image.convert('RGBA')), cv2.COLOR_RGBA2BGRA)
-                else:
-                    preview = cv2.cvtColor(np.asarray(image.convert('RGB')), cv2.COLOR_RGB2BGR)
-                preview = _orient(preview, orientation)
+                preview = _orient(_pil_preview(image, itemsize=dtype.itemsize, alpha=alpha), orientation)
         frames.append(SourceFrame(path, 0, (max(1, int(height * scale)), max(1, int(width * scale)),
                                             4 if alpha else 3), dtype, preview, stamp, scale, orientation,
                                   native_shape=(height, width, 4 if alpha else 3)))

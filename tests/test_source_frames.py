@@ -185,3 +185,46 @@ def test_large_raw_missing_preview_never_unpacks_sensor(monkeypatch):
     preview = sources._raw_preview(LargeRaw(), 1, 'missing-preview.raf')
     assert max(preview.shape[:2]) <= sources.PREVIEW_EDGE
     assert preview.dtype == np.uint8
+
+
+def test_large_nondraft_preview_never_calls_pillow_decoder():
+    class HeaderImage:
+        size = (20000, 12000)
+        width, height = size
+        def getbands(self): return ('R', 'G', 'B')
+        def draft(self, *_args): return None
+        def thumbnail(self, *_args): raise AssertionError('oversized PNG/BMP decode')
+        def convert(self, *_args): raise AssertionError('oversized PNG/BMP pixel conversion')
+    preview = sources._pil_preview(HeaderImage(), itemsize=2)
+    assert max(preview.shape[:2]) <= sources.PREVIEW_EDGE
+    assert preview.dtype == np.uint8
+
+
+def test_large_single_strip_tiff_preview_refuses_before_decode():
+    from types import SimpleNamespace
+    def forbidden(**_kwargs):
+        raise AssertionError('oversized TIFF strip decoded')
+    page = SimpleNamespace(imagelength=12000, imagewidth=20000, samplesperpixel=3,
+                           planarconfig=1, dtype=np.dtype(np.uint16), is_memmappable=False,
+                           is_tiled=False, rowsperstrip=12000, databytecounts=(1000,),
+                           segments=forbidden)
+    preview = sources._tiff_preview(page)
+    assert max(preview.shape[:2]) <= sources.PREVIEW_EDGE
+
+
+def test_mappable_tiff_preview_samples_without_segment_decoder():
+    from types import SimpleNamespace
+    sample = np.array([[[1000, 2000, 3000]]], np.uint16)
+    # Header/mock only: broadcast_to does not allocate this virtual sensor grid.
+    mapped = np.broadcast_to(sample, (4000, 5000, 3))
+    def asarray(*, out):
+        assert out == 'memmap'
+        return mapped
+    def forbidden(**_kwargs): raise AssertionError('mapped TIFF invoked strip decoder')
+    page = SimpleNamespace(imagelength=4000, imagewidth=5000, samplesperpixel=3,
+                           planarconfig=1, dtype=np.dtype(np.uint16), is_memmappable=True,
+                           asarray=asarray, segments=forbidden, photometric=2)
+    preview = sources._tiff_preview(page)
+    assert max(preview.shape[:2]) <= sources.PREVIEW_EDGE
+    assert preview.dtype == np.uint16
+    np.testing.assert_array_equal(preview[0, 0], [3000, 2000, 1000])

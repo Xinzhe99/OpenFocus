@@ -37,6 +37,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   workers; full render and registration intermediates use disk-backed frames.
 - Bound classical 16-bit preparation, guided exposure matching, ECC grayscale,
   depth and output scratch; stream GIF and multipage TIFF exports frame by frame.
+- Sample directly mappable TIFF previews without decoding their full pages. Admit
+  other preview decoders before pixel allocation and show an unavailable-preview
+  canvas when a native decode would exceed the bounded preview budget; rendering
+  and export continue to use original pixels.
 - Apply tiled Guided Filter exposure matching per tile after whole-stack gain
   estimation, avoiding an additional full-size matched copy of the stack.
 - Reduce GFG-FGF working memory by converting frames per pass instead of
