@@ -38,7 +38,14 @@ def _admit(path, page, output_dir):
         raise ValueError('Invalid image dimensions.')
     # Decoding, orientation, color conversion, encoding and metadata can each
     # temporarily hold a full image. Reserve room for LibRaw scratch as well.
-    estimate = width * height * 64 + os.path.getsize(path) * 2
+    ext = Path(path).suffix.lower()
+    if ext in ('.tif', '.tiff') and not image_loader._is_dng_tiff(path):
+        with tifffile.TiffFile(path) as tif:
+            # Account for this page's compressed strips, not the entire stack.
+            compressed = sum(tif.pages[page].databytecounts)
+    else:
+        compressed = os.path.getsize(path)
+    estimate = width * height * 64 + compressed * 2
     available = available_memory_bytes()
     if not available or estimate > available // 2:
         raise MemoryError('Insufficient available memory for this image.')
@@ -51,17 +58,36 @@ def _decode(path, page):
     if ext in ('.tif', '.tiff') and not image_loader._is_dng_tiff(path):
         with tifffile.TiffFile(path) as tif:
             p = tif.pages[page]
-            a = p.asarray()
+            # OpenCV's bundled libtiff decodes LZW without the optional
+            # imagecodecs package. Mapping avoids copying the whole TIFF stack.
+            opencv_page = p.compression.name == 'LZW'
+            if opencv_page:
+                # libtiff's RGBA reader can premultiply straight alpha.
+                # Reject it rather than silently changing transparent pixels.
+                if p.samplesperpixel == 4:
+                    raise ValueError('LZW TIFF alpha cannot be preserved safely.')
+                encoded = np.memmap(path, dtype=np.uint8, mode='r')
+                try:
+                    ok, decoded = cv2.imdecodemulti(encoded, cv2.IMREAD_UNCHANGED,
+                                                     range=(page, page + 1))
+                finally:
+                    del encoded
+                if not ok or len(decoded) != 1:
+                    raise ValueError(f'Could not decode TIFF page {page + 1}.')
+                a = decoded[0]
+            else:
+                a = p.asarray()
             orientation = int(p.tags['Orientation'].value) if 'Orientation' in p.tags else 1
             if a.dtype not in (np.uint8, np.uint16):
                 raise ValueError('Only 8-bit and 16-bit integer TIFF pages are supported.')
-            if a.ndim == 3 and a.shape[-1] in (3, 4):
-                if p.photometric.name != 'RGB':
-                    raise ValueError('Unsupported TIFF color space.')
-                if a.shape[-1] == 4 and (not p.extrasamples or p.extrasamples[0].name != 'UNASSALPHA'):
+            if p.samplesperpixel in (3, 4):
+                if p.photometric.name != 'RGB' or a.ndim != 3 or a.shape[-1] != p.samplesperpixel:
+                    raise ValueError('Unsupported TIFF color space or layout.')
+                if p.samplesperpixel == 4 and (not p.extrasamples or p.extrasamples[0].name != 'UNASSALPHA'):
                     raise ValueError('Unsupported TIFF alpha representation.')
-                a = a[..., [2, 1, 0, 3] if a.shape[-1] == 4 else [2, 1, 0]]
-            elif a.ndim != 2 or p.photometric.name != 'MINISBLACK':
+                if not opencv_page:
+                    a = a[..., [2, 1, 0, 3] if a.shape[-1] == 4 else [2, 1, 0]]
+            elif p.samplesperpixel != 1 or a.ndim != 2 or p.photometric.name != 'MINISBLACK':
                 raise ValueError('Unsupported TIFF page layout or color space.')
             transform = image_loader._EXIF_TRANSFORMS.get(orientation)
             return np.ascontiguousarray(transform(a) if transform else a)
@@ -124,17 +150,12 @@ def _write(path, pixels, source, page, ext):
         safe.get_ifd(0x8769).pop(40961, None)
     exif = safe.tobytes() if safe else b''
     profile = b'' if is_raw else image_loader._read_icc_profile(source)
+    params = []
     if ext == '.jpg':
-        rgb = cv2.cvtColor(pixels, cv2.COLOR_BGR2RGB) if pixels.ndim == 3 else pixels
-        safe_exif = export_exif(exif) if exif else None
-        options = {'quality': 95, 'subsampling': 0}
-        if safe_exif:
-            safe_exif[274] = 1
-            options['exif'] = safe_exif.tobytes()
-        if profile and pixels.ndim == 3:
-            options['icc_profile'] = profile
-        Image.fromarray(rgb).save(path, format='JPEG', **options)
-    elif not imwrite_auto(path, pixels, exif=exif, icc_profile=profile):
+        params = [cv2.IMWRITE_JPEG_QUALITY, 95]
+        if hasattr(cv2, 'IMWRITE_JPEG_SAMPLING_FACTOR_444'):
+            params += [cv2.IMWRITE_JPEG_SAMPLING_FACTOR, cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444]
+    if not imwrite_auto(path, pixels, params=params, exif=exif, icc_profile=profile):
         raise OSError('Image encoding or writing failed.')
 
 

@@ -358,6 +358,16 @@ def _png_insert_icc(png: bytes, profile: bytes) -> bytes:
     return png[:ihdr_end] + chunk + png[ihdr_end:]
 
 
+def _jpeg_insert_exif(jpeg: bytes, exif: bytes) -> bytes:
+    """Insert a sanitized EXIF APP1 segment into an encoded JPEG."""
+    import struct
+    if jpeg[:2] != b"\xff\xd8" or not exif.startswith(b"Exif\x00\x00"):
+        raise ValueError("invalid JPEG or EXIF")
+    if len(exif) + 2 > 65535:
+        raise ValueError("EXIF is too large for JPEG")
+    return jpeg[:2] + b"\xff\xe1" + struct.pack(">H", len(exif) + 2) + exif + jpeg[2:]
+
+
 def _jpeg_insert_icc(jpeg: bytes, profile: bytes) -> bytes:
     """Add the standard APP2 ICC segments without recompressing JPEG pixels."""
     import struct
@@ -454,15 +464,15 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
     if image.dtype == np.uint16 and ext not in (".png", ".tif", ".tiff"):
         image = to_display_uint8(image)
     embed = SOURCE_EXIF if exif is None else exif
-    # PNG/TIFF get EXIF spliced in at the byte level, so 16-bit exports keep
-    # their depth (a Pillow round-trip would cut them to 8-bit).
-    meta = export_exif(embed) if ext in (".png", ".tif", ".tiff") else None
+    # Splice sanitized metadata into encoded bytes without recompressing pixels.
+    jpeg_exts = (".jpg", ".jpeg", ".jpe", ".jfif")
+    meta = export_exif(embed) if ext in (".png", ".tif", ".tiff") + jpeg_exts else None
     profile = icc_profile if (icc_profile and image.ndim == 3
                               and image.shape[2] in (3, 4)) else b""
     part = None
     try:
         encoded = None
-        if meta is not None or (profile and ext in (".tif", ".tiff")):
+        if (meta is not None and ext in (".png", ".tif", ".tiff")) or (profile and ext in (".tif", ".tiff")):
             try:
                 if ext == ".png":
                     ok, buf = cv2.imencode(ext, image, params or [])
@@ -478,6 +488,8 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
             ok, encoded = cv2.imencode(ext, image, params or [])
             if not ok:
                 return False
+        if meta is not None and ext in jpeg_exts:
+            encoded = _jpeg_insert_exif(bytes(encoded), meta.tobytes())
         if profile and ext == ".png":
             encoded = _png_insert_icc(bytes(encoded), profile)
         elif profile and ext in (".jpg", ".jpeg", ".jpe", ".jfif"):

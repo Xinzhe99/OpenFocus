@@ -110,3 +110,52 @@ def test_raw_uses_libraw_with_unicode_path(tmp_path, monkeypatch):
     result = converter.convert_one(str(source), str(tmp_path), '.png')
     actual = cv2.imdecode(np.fromfile(result, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     assert actual.dtype == np.uint16 and actual.min() == 65535
+
+
+def test_lzw_tiff_pages_and_per_page_admission(tmp_path, monkeypatch):
+    source = tmp_path / '压缩.tif'
+    first = np.arange(64, dtype=np.uint16).reshape(8, 8) * 1000
+    second = np.full((8, 8), 40000, dtype=np.uint16)
+    Image.fromarray(first).save(source, compression='tiff_lzw', save_all=True,
+                                append_images=[Image.fromarray(second)])
+    # Whole-file size must not be charged for each TIFF page.
+    monkeypatch.setattr(converter.os.path, 'getsize', lambda path: 100 * 1024**3)
+    assert converter.page_count(str(source)) == 2
+    for page, expected in enumerate((first, second)):
+        result = converter.convert_one(str(source), str(tmp_path), '.png', page, 2)
+        actual = cv2.imdecode(np.fromfile(result, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_jpeg_writer_preserves_safe_exif_and_icc(tmp_path):
+    from PIL import ImageCms
+    from utils.image_utils import imwrite_auto
+    exif = Image.Exif()
+    exif[271] = 'Camera'
+    exif[274] = 6
+    profile = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
+    destination = tmp_path / 'out.jpg'
+    pixels = np.zeros((8, 8, 3), dtype=np.uint8)
+    assert imwrite_auto(str(destination), pixels, exif=exif.tobytes(), icc_profile=profile)
+    with Image.open(destination) as result:
+        assert result.getexif()[271] == 'Camera'
+        assert result.getexif()[274] == 1
+        assert result.info['icc_profile'] == profile
+
+
+def test_lzw_tiff_alpha_is_rejected(tmp_path):
+    source = tmp_path / 'alpha.tif'
+    Image.new('RGBA', (4, 4), (100, 50, 25, 128)).save(source, compression='tiff_lzw')
+    with pytest.raises(ValueError, match='alpha'):
+        converter.convert_one(str(source), str(tmp_path), '.png')
+
+
+def test_lzw_tiff_orientation(tmp_path):
+    source = tmp_path / 'rotated.tif'
+    pixels = np.arange(24, dtype=np.uint8).reshape(4, 6)
+    exif = Image.Exif()
+    exif[274] = 6
+    Image.fromarray(pixels).save(source, compression='tiff_lzw', exif=exif)
+    result = converter.convert_one(str(source), str(tmp_path), '.png')
+    actual = cv2.imdecode(np.fromfile(result, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    np.testing.assert_array_equal(actual, np.rot90(pixels, -1))
