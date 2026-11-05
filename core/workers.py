@@ -1,5 +1,4 @@
 from typing import Optional
-from threading import BoundedSemaphore
 
 from PyQt6.QtCore import QThread, pyqtSignal
 import time
@@ -24,7 +23,6 @@ from core.algorithms import (get_fusion, alignment_steps, resolve_fusion_paramet
                              resolve_registration_parameters)
 
 logger = get_logger(__name__)
-_source_decode_slot = BoundedSemaphore(1)
 
 
 def _crop_transparent_for_gui(images, should_cancel=None):
@@ -246,25 +244,21 @@ class SourceDecodeWorker(QThread):
         self.cancel()
 
     def run(self):
-        while not _source_decode_slot.acquire(timeout=0.05):
-            if self.is_cancelled or self.isInterruptionRequested():
-                return
         try:
-            if self.is_cancelled or self.isInterruptionRequested():
-                return
-            image = resolve_frame(self.frame)
-            if self.is_cancelled or self.isInterruptionRequested():
-                return
-            metadata = getattr(self.frame, 'linear_metadata', None)
-            if self.display and metadata is not None:
-                from utils.linear_dng import develop_linear
-                image = develop_linear(image, metadata)
+            with heavy_job(lambda: self.is_cancelled or self.isInterruptionRequested()):
+                if self.is_cancelled or self.isInterruptionRequested():
+                    return
+                image = resolve_frame(self.frame)
+                if self.is_cancelled or self.isInterruptionRequested():
+                    return
+                metadata = getattr(self.frame, 'linear_metadata', None)
+                if self.display and metadata is not None:
+                    from utils.linear_dng import develop_linear
+                    image = develop_linear(image, metadata)
         except Exception as exc:
             if not self.is_cancelled and not self.isInterruptionRequested():
                 self.failed.emit(self.key, str(exc))
             return
-        finally:
-            _source_decode_slot.release()
         if not self.is_cancelled and not self.isInterruptionRequested():
             self.decoded.emit(self.key, image)
 

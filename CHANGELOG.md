@@ -80,8 +80,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   blends source luma using the released two-scale inference settings; V2 keeps
   sampled-layer depth output and preserves focus order. The retrained models have
   separate license terms documented in `docs/THIRD_PARTY_NOTICES.md`.
+- Ship only the three ONNX inference checkpoints in desktop bundles; retain
+  original PyTorch checkpoints and export tooling as development artifacts.
 
 ### Fixed
+- Queue original-pixel magnifier decodes through the shared processing lease,
+  preventing them from competing with an admitted render's memory budget while
+  keeping queued requests cancellable.
 - Keep the press-and-hold magnifier centred on the mouse at image edges,
   across zoom/pan, preview replacement and high-DPI displays. Sample original
   pixels through the same transform as the displayed frame; load lazy source

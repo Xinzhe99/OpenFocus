@@ -558,7 +558,7 @@ def test_suggest_duplicates_handles_keyboard_interrupt(tmp_path, capsys, monkeyp
 
 
 @pytest.mark.parametrize('enabled', [False, True])
-def test_sensor_cleanup_precedes_registration(tmp_path, monkeypatch, enabled):
+def test_registration_receives_cleaned_native_depth_pixels(tmp_path, monkeypatch, enabled):
     from core import cli, registration, multi_focus_fusion
     mask = np.zeros((16, 16), np.uint8)
     mask[8, 8] = 255
@@ -577,7 +577,7 @@ def test_sensor_cleanup_precedes_registration(tmp_path, monkeypatch, enabled):
             pass
 
         def process(self, images, **kwargs):
-            registered.append(images[0][8, 8, 0])
+            registered.append(np.array(images[0], copy=True))
             return images
 
     class Fusion:
@@ -597,7 +597,11 @@ def test_sensor_cleanup_precedes_registration(tmp_path, monkeypatch, enabled):
     monkeypatch.setattr(registration, 'ImageRegistration', Registration)
     monkeypatch.setattr(multi_focus_fusion, 'MultiFocusFusion', Fusion)
     fused = cli._fuse_stack([image, image.copy()], args)
-    assert registered[0] == pytest.approx((1000 if enabled else 50000) / 257, abs=0.01)
+    expected = image.copy()
+    if enabled:
+        expected[8, 8] = 1000
+    assert registered[0].dtype == np.uint16
+    np.testing.assert_array_equal(registered[0], expected)
     assert fused.dtype == np.uint16
     assert fused[8, 8, 0] == (1000 if enabled else 50000)
     assert image[8, 8, 0] == 50000

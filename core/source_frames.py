@@ -144,11 +144,15 @@ def _orient(image, orientation):
     return result.view(_UnavailablePreview) if isinstance(image, _UnavailablePreview) else result
 
 
-def _unavailable_preview(width, height, text='Preview unavailable'):
+def _unavailable_preview(width, height):
     factor = min(1, PREVIEW_EDGE / max(width, height))
     preview = np.full((max(1, round(height * factor)), max(1, round(width * factor)), 3), 32, np.uint8)
-    cv2.putText(preview, text, (8, min(28, preview.shape[0] - 1)),
-                cv2.FONT_HERSHEY_SIMPLEX, .5, (210, 210, 210), 1, cv2.LINE_AA)
+    h, w = preview.shape[:2]
+    left, top = w // 4, h // 4
+    right, bottom = max(left, w - left - 1), max(top, h - top - 1)
+    cv2.rectangle(preview, (left, top), (right, bottom), (120, 120, 120), 1)
+    cv2.line(preview, (left, top), (right, bottom), (210, 210, 210), 1)
+    cv2.line(preview, (left, bottom), (right, top), (210, 210, 210), 1)
     return preview.view(_UnavailablePreview)
 
 
@@ -204,7 +208,7 @@ def _raw_preview(raw, orientation, path):
             pass
     # A visibly unavailable preview is preferable to hidden full-sensor work.
     # This canvas is never used by resolve_frame, rendering or export.
-    preview = _unavailable_preview(raw.sizes.width, raw.sizes.height, 'RAW: no embedded preview')
+    preview = _unavailable_preview(raw.sizes.width, raw.sizes.height)
     logger.warning('RAW preview unavailable without sensor decode path=%s', path)
     return _orient(preview, orientation)
 

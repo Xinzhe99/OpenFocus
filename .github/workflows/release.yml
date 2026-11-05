@@ -88,7 +88,9 @@ jobs:
             --additional-hooks-dir hooks `
             --icon "assets/OpenFocus.ico" `
             --add-data "assets;assets" `
-            --add-data "weights;weights" `
+            --add-data "weights/stackmff_final.onnx;weights" `
+            --add-data "weights/stackmff_v2_final.onnx;weights" `
+            --add-data "weights/stackmff_v3_final.onnx;weights" `
             --add-data "ui;ui" `
             --add-data "docs;docs" `
             --collect-submodules PyQt6 `
@@ -380,7 +382,9 @@ jobs:
             --additional-hooks-dir hooks \
             --icon OpenFocus.icns \
             --add-data "assets:assets" \
-            --add-data "weights:weights" \
+            --add-data "weights/stackmff_final.onnx:weights" \
+            --add-data "weights/stackmff_v2_final.onnx:weights" \
+            --add-data "weights/stackmff_v3_final.onnx:weights" \
             --add-data "ui:ui" \
             --add-data "docs:docs" \
             --collect-submodules fusion_methods \

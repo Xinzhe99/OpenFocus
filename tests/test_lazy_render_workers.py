@@ -211,6 +211,29 @@ def test_queued_cancelled_decode_never_enters_native_decoder(monkeypatch):
         assert queued.wait(5000)
 
 
+def test_source_decode_waits_for_shared_processing_budget(tmp_path):
+    from core.resource_policy import heavy_job
+
+    frame, original = _source(tmp_path)
+    worker = workers.SourceDecodeWorker(frame, 'loupe')
+    started = Event()
+    results, errors = [], []
+    worker.started.connect(started.set, Qt.ConnectionType.DirectConnection)
+    worker.decoded.connect(lambda *args: results.append(args), Qt.ConnectionType.DirectConnection)
+    worker.failed.connect(lambda *args: errors.append(args), Qt.ConnectionType.DirectConnection)
+    try:
+        with heavy_job():
+            worker.start()
+            assert started.wait(5)
+            assert not worker.wait(200), 'original decode competed with an admitted render'
+        assert worker.wait(5000)
+        assert errors == [] and results[0][0] == 'loupe'
+        np.testing.assert_array_equal(results[0][1], original)
+    finally:
+        worker.cancel()
+        assert worker.wait(5000)
+
+
 def test_source_decode_failure_keeps_request_key(monkeypatch):
     def fail(frame):
         raise OSError('missing source')
