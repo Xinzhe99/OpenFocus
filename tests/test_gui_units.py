@@ -1465,3 +1465,31 @@ def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
     worker.progress.emit(3, 3)
     assert (bar.minimum(), bar.maximum()) == (0, 0)
     video_worker.finished.emit()
+
+
+def test_compare_run_skips_a_failing_method_and_reports_it(qapp, monkeypatch):
+    """One method that cannot run (e.g. not enough memory for a whole-frame
+    network) is skipped; the run goes on and lists it once at the end."""
+    from PyQt6.QtCore import QTimer
+    import controllers.render_manager as rmod
+    frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(2)]
+    w = _render_window(frames)
+    rm, _saved = _patched_render_manager(monkeypatch, w)
+    shown = []
+    monkeypatch.setattr(rmod, "show_message_box", lambda *a, **k: shown.append(a))
+    rm._compare_mode = True
+    rm._compare_total = 3
+    rm._compare_queue = ["dct"]
+    rm._compare_failures = []
+    rm._compare_current = "stackmffv2"
+    chained = []
+    monkeypatch.setattr(QTimer, "start", lambda self, ms=0: chained.append(ms))
+    rm.on_render_error("Insufficient memory: need 117708 MB of new allocations")
+    assert rm._compare_mode is True and chained          # the next method is queued
+    assert rm._compare_failures == [("stackmffv2", "Insufficient memory: need 117708 MB of new allocations")]
+    assert not shown                                      # no dialog mid-run
+    rm._compare_queue = []
+    rm._compare_current = "dct"
+    rm.on_render_error("model file missing")
+    assert rm._compare_mode is False
+    assert len(shown) == 1 and "StackMFF" in shown[0][3] and "model file missing" in shown[0][3]

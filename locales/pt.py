@@ -541,6 +541,7 @@ PACK = {
     "btn_compare_stop": "Parar",
     "msg_compare_progress": "Comparando métodos {i}/{n}: {method}",
     "msg_compare_done": "Comparação concluída: {count} resultados na lista de saída. Abra Cortina e arraste o lado B para compará-los.",
+    "msg_compare_skipped": "Foram renderizados {done} de {total} métodos. Estes não puderam ser executados e foram ignorados:",
     "welcome_title": "Bem-vindo ao OpenFocus",
     "welcome_choose_theme": "Tema:",
     "msg_demo_missing": "Pilha de demonstração não encontrada (pasta demo_stack ausente)",

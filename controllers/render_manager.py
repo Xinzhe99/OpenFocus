@@ -32,6 +32,10 @@ class RenderManager:
         self._compare_queue: List[str] = []
         self._compare_total = 0
         self._compare_current: Optional[str] = None
+        # Methods a comparison run skipped, with the reason: one method that
+        # cannot run (StackMFF V2 needs ~115 GB on a 20 MP stack) must not
+        # cancel every method after it.
+        self._compare_failures: List[tuple] = []
         self._preview_mode = False
         # What the *running* render was launched with; see start_render().
         self._render_context: Optional[dict] = None
@@ -391,6 +395,7 @@ class RenderManager:
 
         self._compare_queue = list(methods)
         self._compare_total = len(methods)
+        self._compare_failures = []
         self._compare_cancelling = False
         self._compare_mode = True
         self._set_compare_button("cancel")
@@ -1232,12 +1237,7 @@ class RenderManager:
                     self._compare_chain_timer.timeout.connect(self._start_next_compare)
                     self._compare_chain_timer.start(400)
                 else:
-                    self._compare_mode = False
-                    self._restore_ui_controls()
-                    window.statusBar().showMessage(
-                        trans.t('msg_compare_done').format(count=self._compare_total),
-                        10000)
-                    QApplication.alert(window)
+                    self._finish_compare_run()
             else:
                 # 恢复 UI 控件
                 self._restore_ui_controls()
@@ -1369,6 +1369,26 @@ class RenderManager:
             window.statusBar().showMessage(
                 f"{trans.t('render_progress')} {pct}% ({done}/{total}){eta}", 5000)
 
+    def _finish_compare_run(self) -> None:
+        """End a comparison run: unlock the UI and report skipped methods."""
+        window = self.window
+        self._compare_mode = False
+        self._restore_ui_controls()
+        failures = list(getattr(self, "_compare_failures", []))
+        done = self._compare_total - len(failures)
+        window.statusBar().showMessage(
+            trans.t('msg_compare_done').format(count=done), 10000)
+        from PyQt6.QtWidgets import QWidget
+        if isinstance(window, QWidget):
+            QApplication.alert(window)
+        if failures and getattr(self, "_render_interactive", True):
+            details = "\n".join(f"{self.algo_display_name(method)}: {reason}"
+                                 for method, reason in failures)
+            show_message_box(window, trans.t("msg_warning"),
+                             trans.t("msg_compare_skipped").format(
+                                 done=done, total=self._compare_total),
+                             details, QMessageBox.Icon.Warning)
+
     def on_render_error(self, error_message: str) -> None:
         window = self.window
         context = self._render_context or {}
@@ -1384,8 +1404,29 @@ class RenderManager:
         self._dispose_worker()
         self._hide_progress_bar()
 
+        if (getattr(self, '_compare_mode', False)
+                and not error_message.startswith("CANCELLED")):
+            # One method that cannot run (not enough memory for a whole-frame
+            # network, a missing model...) is skipped; the rest still render
+            # and the skipped ones are listed once at the end.
+            import logging
+            method = self._compare_current or "?"
+            logging.getLogger("openfocus").warning(
+                "compare run: %s failed, continuing: %s", method, error_message)
+            self._compare_failures.append((method, str(error_message)))
+            self.last_error = str(error_message)
+            self._control_progress = None
+            if self._compare_queue:
+                from PyQt6.QtCore import QObject
+                self._compare_chain_timer = QTimer(window if isinstance(window, QObject) else None)
+                self._compare_chain_timer.setSingleShot(True)
+                self._compare_chain_timer.timeout.connect(self._start_next_compare)
+                self._compare_chain_timer.start(400)
+            else:
+                self._finish_compare_run()
+            return
         if getattr(self, '_compare_mode', False):
-            # A failed method aborts the whole comparison run
+            # Cancelled: stop the whole comparison run
             self._compare_mode = False
             self._compare_queue = []
 

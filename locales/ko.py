@@ -541,6 +541,7 @@ PACK = {
     "btn_compare_stop": "중지",
     "msg_compare_progress": "방식 비교 중 {i}/{n}: {method}",
     "msg_compare_done": "비교 완료: 출력 목록에 결과 {count}개. 와이프를 열어 B 쪽을 움직여 비교하세요.",
+    "msg_compare_skipped": "{total}개 방법 중 {done}개를 렌더링했습니다. 다음 방법은 실행할 수 없어 건너뛰었습니다:",
     "welcome_title": "OpenFocus에 오신 것을 환영합니다",
     "welcome_choose_theme": "테마:",
     "msg_demo_missing": "함께 제공되는 데모 스택을 찾을 수 없습니다 (demo_stack 폴더 없음)",

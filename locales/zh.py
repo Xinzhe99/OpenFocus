@@ -537,6 +537,7 @@ ZH = {
     "btn_compare_stop": "停止",
     "msg_compare_progress": "对比渲染 {i}/{n}：{method}",
     "msg_compare_done": "对比完成：{count} 个结果已加入输出列表。打开 Wipe 并拖动 B 侧滑块即可逐一比较。",
+    "msg_compare_skipped": "已渲染 {total} 种方法中的 {done} 种。以下方法无法运行，已跳过：",
     "welcome_title": "欢迎使用 OpenFocus",
     "welcome_choose_theme": "主题：",
     "msg_demo_missing": "未找到内置示例图像栈（缺少 demo_stack 文件夹）",
