@@ -470,7 +470,25 @@ class SourceManager(QObject):
                 widget = getattr(self, name, None)
                 if widget is not None:
                     widget.hide()
+            self._start_queued_render(worker)
         worker.deleteLater()
+
+    def _start_queued_render(self, worker) -> None:
+        """Start the render the user asked for while this load was running."""
+        render = getattr(self.window, "render_manager", None)
+        if render is None or not getattr(render, "_render_after_load", False):
+            return
+        render._render_after_load = False
+        try:
+            ready = (not getattr(worker, "is_cancelled", False)
+                     and len(self.window.effective_stack()[0]) >= 2)
+        except Exception:
+            ready = False
+        if ready:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, render.start_render)
+        else:
+            self.window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
 
     def _show_load_status(self) -> None:
         from PyQt6.QtWidgets import QPushButton, QLabel, QProgressBar
@@ -510,6 +528,8 @@ class SourceManager(QObject):
         else:
             self._load_progress_bar.setRange(0, 0)
             text = f"{text} ({done})"
+        if getattr(getattr(self.window, "render_manager", None), "_render_after_load", False):
+            text = f"{text} · {trans.t('msg_render_queued_short')}"
         self._load_status_label.setText(text)
         self.window.statusBar().showMessage(text)
 

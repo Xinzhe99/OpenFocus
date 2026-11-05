@@ -458,24 +458,25 @@ _AUTO_BG_CACHE: dict = {}
 _AUTO_BG_LOCK = threading.Lock()
 
 
-def _auto_background_key(image, frames, preset, clean):
+def _auto_background_key(image, frames, preset, clean, keep_soft_parts=False):
     import hashlib
     digest = hashlib.sha256()
     for row in image:
         digest.update(memoryview(np.ascontiguousarray(row)).cast("B"))
-    return (digest.hexdigest(), image.shape, image.dtype.str, str(preset), bool(clean)), \
+    return (digest.hexdigest(), image.shape, image.dtype.str, str(preset), bool(clean),
+            bool(keep_soft_parts)), \
         tuple(frame.image for frame in frames)
 
 
-def compute_auto_background(image, frames, preset="soft", clean=True,
-                            cancelled=None, progress=None):
+def compute_auto_background(image, frames, preset="auto", clean=True,
+                            cancelled=None, progress=None, keep_soft_parts=False):
     """Run `core.background_fill.replace_background` on a retouch image.
 
     Admits the working set with the resource policy and serializes with
     other heavy jobs.  Returns a `BackgroundFillResult`."""
     from core.background_fill import replace_background
     from core.resource_policy import heavy_job, require_memory
-    key, arrays = _auto_background_key(image, frames, preset, clean)
+    key, arrays = _auto_background_key(image, frames, preset, clean, keep_soft_parts)
     with _AUTO_BG_LOCK:
         hit = _AUTO_BG_CACHE.get("entry")
         if hit is not None and hit[0] == key and len(hit[1]) == len(arrays) \
@@ -487,7 +488,8 @@ def compute_auto_background(image, frames, preset="soft", clean=True,
     with heavy_job(cancelled):
         require_memory(required)
         result = replace_background([frame.image for frame in frames], image, preset=preset,
-                                    clean=clean, progress=progress, cancelled=cancelled)
+                                    clean=clean, keep_soft_parts=keep_soft_parts,
+                                    progress=progress, cancelled=cancelled)
     with _AUTO_BG_LOCK:
         _AUTO_BG_CACHE["entry"] = (key, arrays, result)
     return result
@@ -637,8 +639,8 @@ class RetouchDocument:
             and frame.image.shape[:2] == (self.height, self.width)
             for frame in self.frames)
 
-    def auto_background(self, preset: str = "soft", clean: bool = True,
-                        cancelled=None, progress=None) -> str:
+    def auto_background(self, preset: str = "auto", clean: bool = True,
+                        cancelled=None, progress=None, keep_soft_parts: bool = False) -> str:
         """Replace the background of the current result with one source
         frame (see core.background_fill) as one history transaction.
 
@@ -661,7 +663,8 @@ class RetouchDocument:
             return "oversize"
         try:
             result = compute_auto_background(self.working, self.frames, preset, clean,
-                                             cancelled=cancelled, progress=progress)
+                                             cancelled=cancelled, progress=progress,
+                                             keep_soft_parts=keep_soft_parts)
         except (BackgroundFillCancelled, RegistrationCancelled):
             return "cancelled"
         self.background_fill = result
@@ -683,8 +686,11 @@ class RetouchDocument:
                 return "cancelled"
             status = self.history.end(cancelled=cancelled)
             if status == "committed":
-                self._record_operation({"type": "auto_background", "preset": str(preset),
-                                        "clean": bool(clean)})
+                operation = {"type": "auto_background", "preset": str(preset),
+                             "clean": bool(clean)}
+                if keep_soft_parts:
+                    operation["keep_soft_parts"] = True
+                self._record_operation(operation)
             return status
         except BaseException:
             self.history.abort()

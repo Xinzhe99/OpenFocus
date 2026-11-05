@@ -458,6 +458,20 @@ class RenderManager:
                 window.btn_render.setText(trans.t('depth_cancelling'))
                 QApplication.processEvents()
             return
+        # Frames are still loading (a render clicked right after opening a
+        # stack used to say "load at least 2 images"): queue the render and
+        # start it when the load finishes.  A second click cancels the queue.
+        source = getattr(window, "source_manager", None)
+        if getattr(source, "_load_worker", None) is not None:
+            self._start_status = "loading"
+            if interactive:
+                if getattr(self, "_render_after_load", False):
+                    self._render_after_load = False
+                    window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
+                else:
+                    self._render_after_load = True
+                    window.statusBar().showMessage(trans.t("msg_render_queued_after_load"))
+            return
         # A previous render may have aborted without clearing this; it decides
         # whether the result is treated as a throwaway draft.
         self._preview_mode = False

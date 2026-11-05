@@ -144,6 +144,11 @@ class ElidingButton(QPushButton):
         # An explicitly assigned tooltip survives setText(); None means the
         # caption itself is the tooltip and must follow language changes.
         self._explicit_tip = None
+        # Qt clips a label at the padded contents edge, and the theme's 12 px
+        # side padding took a fifth of a ~130 px panel button: "Render All
+        # Methods…" lost its last letters with room to spare.  Narrower side
+        # padding on these shared-width buttons gives the words that room.
+        self.setStyleSheet("padding-left: 5px; padding-right: 5px;")
         # Apply the elided form now: the constructor's text is full-width and
         # would otherwise influence the first layout pass (the panel splits
         # its width between up to three buttons).
@@ -185,7 +190,7 @@ def _elide_to_width(widget, text: str) -> str:
     contents = widget.style().subElementRect(
         QStyle.SubElement.SE_PushButtonContents, option, widget)
     fm = widget.fontMetrics()
-    available = contents.width() - 2
+    available = contents.width()
     if available <= 0:
         available = widget.width() - 2
     if available <= 0:
@@ -263,6 +268,7 @@ class RightPanelComponents:
     btn_select_all: QPushButton
     btn_select_none: QPushButton
     btn_review_stack: QPushButton
+    btn_retouch: QPushButton
     review_status: QLabel
     file_list: QListWidget
     output_label: QLabel
@@ -452,6 +458,10 @@ def create_right_panel() -> RightPanelComponents:
     review_status = QLabel()
     review_status.setWordWrap(True)
     review_row.addWidget(btn_review_stack)
+    btn_retouch = QPushButton(trans.t('action_retouch'))
+    btn_retouch.setObjectName("secondaryButton")
+    btn_retouch.setToolTip(trans.t('action_retouch_hint'))
+    review_row.addWidget(btn_retouch)
     review_row.addWidget(review_status, 1)
     source_list_layout.addLayout(review_row)
 
@@ -566,6 +576,7 @@ def create_right_panel() -> RightPanelComponents:
         btn_select_all=btn_all,
         btn_select_none=btn_none,
         btn_review_stack=btn_review_stack,
+        btn_retouch=btn_retouch,
         review_status=review_status,
         file_list=file_list,
         output_label=output_label,
@@ -597,6 +608,7 @@ def bind_right_panel(window, components: RightPanelComponents) -> None:
     components.btn_select_none.clicked.connect(
         lambda: _set_all_source_checks(False))
     components.btn_review_stack.clicked.connect(window.source_manager.toggle_stack_review)
+    components.btn_retouch.clicked.connect(lambda _checked=False: window.show_retouch_dialog())
 
     components.combo_fusion.currentIndexChanged.connect(
         window.refresh_algorithm_parameters)

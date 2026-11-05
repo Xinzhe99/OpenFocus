@@ -136,7 +136,7 @@ Create depth maps, calibrate physical Z, and export textured 3D surfaces.
 
 ### Source-locked retouch
 
-Paint details from contributing source frames onto the fused result.
+Paint details from contributing source frames onto the fused result. Auto background swaps a messy stacked background for one real frame and shows where no frame saw the scene clearly.
 
 </td>
 <td width="54%">

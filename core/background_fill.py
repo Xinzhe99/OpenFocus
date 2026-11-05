@@ -39,8 +39,14 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-PRESETS = ("soft", "sharp")
+PRESETS = ("auto", "soft", "sharp")
 MAX_SUBJECT_DEFAULT = 0.90
+# "auto" keeps the soft background unless more than this share of the
+# background is detail some frame recorded in focus (scene, not bokeh).
+# Measured: 0-7% where soft looked best (Panaeolus, Dendrocollybia,
+# Marthamyces), 24% on a pine-needle floor where soft smeared a log the
+# stack had recorded sharply; ground-level scenes are 70%+.
+AUTO_SHARP_SHARE = 0.15
 
 
 class BackgroundFillCancelled(Exception):
@@ -77,6 +83,8 @@ class BackgroundFillResult:
     far_end: int
     subject_fraction: float
     missing: MissingData
+    preset_used: str = "soft"       # "soft", "sharp" or "forced" (what "auto" resolved to)
+    recorded_share: float = 0.0     # share of the background recorded in focus by some frame
     stats: dict = field(default_factory=dict)
 
 
@@ -620,6 +628,66 @@ def protect_visible_detail(sub_half, G, k_bg, fused_half=None, factor=4.0, ratio
     return sub.astype(bool), float(keep.mean())
 
 
+def protect_focused_objects(sub_half, G, k_bg, fused_half, ratio=6.0, factor=4.0, keep_share=0.25,
+                            ring=22, min_area=2e-4):
+    """Keep soft objects that some frame focused on and the stack kept.
+
+    A peg's knob, a leaf or a twig just outside the depth of field is never
+    sharp enough for the fine-detail test, yet the stack shows it far more
+    clearly than the (blurriest) background frame, which turns it into a
+    smear: half a knob replaced, the end of a peg blurred.  Mid-scale
+    structure (band-pass sigma 1.5-4 half-res px) in its best frame many
+    times above the background frame's, and kept by the stack, marks such an
+    object; true bokeh and the subject's own glow stay within ~1.6x.
+
+    Only pieces that reach more than `ring` px beyond the subject and are
+    attached to it count, plus the strip joining them to it: the defocused
+    edges of every peg also carry mid-scale structure, and pieces floating
+    free are background, which the soft background is meant to soften.
+    Whether an attached piece is subject or background nearly in focus is a
+    matter of taste (kept moss behind debris looked worse on one stack,
+    blurred peg knobs looked wrong on another), so callers make it an option."""
+    def focused(s1, s2, smooth):
+        def band(g):
+            d = cv2.GaussianBlur(g, (0, 0), s1) - cv2.GaussianBlur(g, (0, 0), s2)
+            return cv2.GaussianBlur(d * d, (0, 0), smooth)
+        ref = float(np.median(G[k_bg]))
+        mb = band(G[k_bg])
+        mx = None
+        for k in range(len(G)):
+            if k == k_bg:
+                continue
+            m = band(G[k] * (ref / max(float(np.median(G[k])), 1e-6)))
+            mx = m if mx is None else np.maximum(mx, m)
+        if mx is None:
+            return np.zeros(sub_half.shape, bool)
+        return (mx > ratio * mb) & (mx > factor * np.percentile(mx, 1)) & (band(fused_half) > keep_share * mx)
+
+    keep = focused(1.5, 4.0, 4)
+    keep = cv2.morphologyEx(keep.astype(np.uint8), cv2.MORPH_CLOSE,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))) > 0
+    d_out = cv2.distanceTransform((~sub_half).astype(np.uint8), cv2.DIST_L2, 5)
+    far = (keep & (d_out > ring)).astype(np.uint8)
+    far = cv2.morphologyEx(far, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(far, 8)
+    ok = np.zeros(n, bool)
+    ok[1:] = st[1:, cv2.CC_STAT_AREA] >= min_area * far.size
+    near_subject = cv2.dilate(sub_half.astype(np.uint8),
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4 * ring + 1, 4 * ring + 1))) > 0
+    attached = np.zeros(n, bool)
+    attached[np.unique(lab[near_subject & (far > 0)])] = True
+    far = (ok & attached)[lab].astype(np.uint8)
+    bridge = cv2.dilate(far, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4 * ring + 1, 4 * ring + 1))) > 0
+    sub = (sub_half | (keep & ((far > 0) | bridge))).astype(np.uint8)
+    h, w = sub.shape
+    n, lab, st, _ = cv2.connectedComponentsWithStats(1 - sub, 4)
+    for i in range(1, n):                     # enclosed gaps belong to the subject
+        x, y, ww, hh, _ = st[i]
+        if not (x == 0 or y == 0 or x + ww == w or y + hh == h):
+            sub[lab == i] = 1
+    return sub.astype(bool)
+
+
 def object_size_cap(sub_half, shape, factor=6.0, floor=32.0):
     """Per-pixel cap (full-res px) on how far an object's glow/occlusion can
     matter: ~factor x the half-thickness of the nearest object.  A debris
@@ -1003,9 +1071,10 @@ def _u16(img: np.ndarray) -> np.ndarray:
 
 
 def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
-                       preset: str = "soft", clean: bool = True,
+                       preset: str = "auto", clean: bool = True,
                        background_frame: Optional[int] = None,
                        max_subject: float = MAX_SUBJECT_DEFAULT,
+                       keep_soft_parts: bool = False,
                        progress: Optional[Callable[[float, str], None]] = None,
                        cancelled: Optional[Callable[[], bool]] = None) -> BackgroundFillResult:
     """Replace the background of `fused` with one of `frames`.
@@ -1013,9 +1082,13 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     `frames` are the aligned frames that produced `fused`, in stack order
     (either focus direction), each the same size as `fused`.  `preset`
     "soft" takes the frame with the blurriest background, "sharp" the
-    far-focus frame; `background_frame` forces a frame index.  `clean`
+    far-focus frame, "auto" soft unless much of the background is detail
+    the stack recorded in focus; `background_frame` forces a frame index.  `clean`
     removes the stack's outline-following edge flaws within what the frames
-    recorded; False keeps them (Faithful).  When the subject covers more
+    recorded; False keeps them (Faithful).  `keep_soft_parts` also keeps
+    soft objects attached to the subject that some frame focused on (peg
+    knobs just past the depth of field), which can keep background objects
+    near the subject in the stack's own rendering too.  When the subject covers more
     than `max_subject` of the frame (a ground-level scene) the image is left
     as stacked and only the missing-data maps are computed.
     """
@@ -1067,28 +1140,47 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
         raise BackgroundFillError("no background found: the whole frame looks like subject")
     curve = background_curve(G, away)
     far_end = N - 1 if curve[-1] >= curve[0] else 0
+    # Blurriest background: least coarse-scale detail away from the
+    # subject.  Frames within 3% of that look equally blurry; of those take
+    # the one closest in focus to the subject, which carries the least
+    # subject glow.
+    tied = np.flatnonzero(curve <= curve.min() * 1.03)
+    k_subject = float(np.median(idx[sub_half])) if sub_half.any() else N / 2
+    k_soft = int(tied[np.argmin(np.abs(tied - k_subject))])
     if background_frame is not None:
         if not 0 <= background_frame < N:
             raise BackgroundFillError("background frame index out of range")
-        k_bg = int(background_frame)
+        k_bg, used = int(background_frame), "forced"
     elif preset == "sharp":
-        k_bg = far_end
+        k_bg, used = far_end, "sharp"
     else:
-        # Blurriest background: least coarse-scale detail away from the
-        # subject.  Frames within 3% of that look equally blurry; of those
-        # take the one closest in focus to the subject, which carries the
-        # least subject glow.
-        tied = np.flatnonzero(curve <= curve.min() * 1.03)
-        k_subject = float(np.median(idx[sub_half])) if sub_half.any() else N / 2
-        k_bg = int(tied[np.argmin(np.abs(tied - k_subject))])
-    log.info("background frame %d (preset %s, far end %d)", k_bg, preset, far_end)
+        k_bg, used = k_soft, "soft"
 
     step("protecting smooth subject")
     sub_half, _t, _n, _pct = protect_missed_subject(sub_half, G, far_end, min_island * sub_half.size)
-    fused_half = cv2.cvtColor(color_half, cv2.COLOR_BGR2GRAY)
-    fused_half *= np.median(G[k_bg]) / max(float(np.median(fused_half)), 1e-6)
-    sub_half, _kept = protect_visible_detail(sub_half, G, k_bg, fused_half)
-    del fused_half
+    gray_fused = cv2.cvtColor(color_half, cv2.COLOR_BGR2GRAY)
+
+    def protect(k):
+        fused_half = gray_fused * (np.median(G[k]) / max(float(np.median(gray_fused)), 1e-6))
+        return protect_visible_detail(sub_half, G, k, fused_half)[0]
+
+    protected = protect(k_bg)
+    # Share of the background that is detail some frame recorded in focus
+    # and the stack kept: scene rather than bokeh.  Blurring that away with
+    # the soft frame looks worse than the stack; the far frame keeps it.
+    free = max(1.0 - float(sub_half.mean()), 1e-6)
+    recorded_share = float(protected.mean() - sub_half.mean()) / free
+    if preset == "auto" and background_frame is None and recorded_share > AUTO_SHARP_SHARE \
+            and far_end != k_soft:
+        k_bg, used = far_end, "sharp"
+        protected = protect(k_bg)
+    fused_bg = gray_fused * (np.median(G[k_bg]) / max(float(np.median(gray_fused)), 1e-6))
+    if keep_soft_parts:
+        protected = protect_focused_objects(protected, G, k_bg, fused_bg)
+    sub_half = protected
+    del protected, gray_fused, fused_bg
+    log.info("background frame %d (preset %s -> %s, far end %d, recorded detail %.1f%% of background)",
+             k_bg, preset, used, far_end, recorded_share * 100)
 
     step("refining the outline")
     matte = refine_subject(sub_half, fused16, band=6, r=4)
@@ -1212,7 +1304,8 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     step("done")
     return BackgroundFillResult(
         image=image, changed=changed, background_frame=k_bg, far_end=far_end,
-        subject_fraction=subject_fraction, missing=missing,
+        subject_fraction=subject_fraction, missing=missing, preset_used=used,
+        recorded_share=recorded_share,
         stats={"gains": [float(g) for g in gains], "thresholds": {k: float(v) for k, v in thresh.items()}})
 
 
