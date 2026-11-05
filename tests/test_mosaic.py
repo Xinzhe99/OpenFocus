@@ -191,3 +191,224 @@ def test_workspace_imports_all_tiff_pages(qapp, tmp_path, monkeypatch):
     assert [int(frame.image[0, 0, 0]) for frame in dialog.frames] == [20, 180]
     dialog.close()
     parent.close()
+
+
+@pytest.mark.parametrize('order,direction,corner,cells', [
+    ('byrow', 'unidirectional', 'topleft', [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]),
+    ('byrow', 'zigzag', 'topright', [(0, 2), (0, 1), (0, 0), (1, 0), (1, 1), (1, 2)]),
+    ('byrow', 'zigzag', 'bottomleft', [(1, 0), (1, 1), (1, 2), (0, 2), (0, 1), (0, 0)]),
+    ('byrow', 'unidirectional', 'bottomright', [(1, 2), (1, 1), (1, 0), (0, 2), (0, 1), (0, 0)]),
+    ('bycolumn', 'unidirectional', 'topleft', [(0, 0), (1, 0), (0, 1), (1, 1), (0, 2), (1, 2)]),
+    ('bycolumn', 'zigzag', 'topright', [(0, 2), (1, 2), (1, 1), (0, 1), (0, 0), (1, 0)]),
+    ('bycolumn', 'unidirectional', 'bottomleft', [(1, 0), (0, 0), (1, 1), (0, 1), (1, 2), (0, 2)]),
+    ('bycolumn', 'zigzag', 'bottomright', [(1, 2), (0, 2), (0, 1), (1, 1), (1, 0), (0, 0)]),
+])
+def test_capture_grid_renders_in_declared_order(order, direction, corner, cells):
+    from core.mosaic import grid_transforms
+
+    frames = [make_frame(str(index), np.full((8, 10, 3), index + 1, np.uint8))
+              for index in range(6)]
+    transforms = grid_transforms(frames, 2, 3, order=order, direction=direction,
+                                 start_corner=corner, overlap_pct=0)
+    output, origin = render_mosaic(frames, transforms, feather=0)
+    assert output.shape == (16, 30, 3) and origin == (0, 0)
+    for index, (row, col) in enumerate(cells):
+        assert np.all(output[row * 8:(row + 1) * 8, col * 10:(col + 1) * 10] == index + 1)
+
+
+def test_capture_grid_uses_actual_mixed_dimensions():
+    from core.mosaic import canvas_bounds, grid_transforms
+
+    frames = [make_frame(str(index), np.zeros((height, width, 3), np.uint8))
+              for index, (height, width) in enumerate([(20, 40), (30, 60), (50, 80), (40, 30)])]
+    transforms = grid_transforms(frames, 2, 2, overlap_pct=25)
+    assert [(matrix[0, 2], matrix[1, 2]) for matrix in transforms] == [
+        (0, 0), (60, 0), (0, 22.5), (60, 22.5)]
+    assert canvas_bounds(frames, transforms) == (0, 0, 120, 73)
+    with pytest.raises(ValueError, match='exactly one cell'):
+        grid_transforms(frames, 2, 3)
+
+
+def test_workspace_grid_requires_apply_and_preserves_preview_edits(qapp):
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.mosaic import MosaicDialog
+
+    parent = QWidget()
+    dialog = MosaicDialog(parent)
+    frames = [make_frame(str(index), np.full((20, 40, 3), index * 40, np.uint8))
+              for index in range(4)]
+    try:
+        dialog._append_frames(frames)
+        dialog.list.setCurrentRow(1)
+        dialog.x_spin.setValue(123)
+        dialog.opacity.setValue(40)
+        dialog.grid_rows.setValue(2)
+        dialog.grid_order.setCurrentIndex(dialog.grid_order.findData('bycolumn'))
+        dialog.grid_direction.setCurrentIndex(dialog.grid_direction.findData('zigzag'))
+        dialog.grid_corner.setCurrentIndex(dialog.grid_corner.findData('bottomright'))
+        dialog.grid_overlap.setValue(25)
+        assert dialog._current_transforms()[1][0, 2] == 123
+        dialog.grid_apply.click()
+        assert [(matrix[0, 2], matrix[1, 2]) for matrix in dialog._current_transforms()] == [
+            (30, 15), (30, 0), (0, 0), (0, 15)]
+        assert dialog.items[1].opacity() == pytest.approx(0.4)
+        dialog.list.setCurrentRow(1)
+        dialog.x_spin.setValue(91)
+        dialog._append_frames([make_frame('extra', np.zeros((20, 40, 3), np.uint8))])
+        assert not dialog.grid_apply.isEnabled()
+        assert dialog._current_transforms()[1][0, 2] == 91
+        assert dialog.items[1].opacity() == pytest.approx(0.4)
+        dialog.list.setCurrentRow(4)
+        dialog._remove_selected()
+        assert dialog.grid_apply.isEnabled()
+        assert dialog._current_transforms()[1][0, 2] == 91
+        assert dialog.items[1].opacity() == pytest.approx(0.4)
+    finally:
+        dialog.close()
+        parent.close()
+
+
+def test_canvas_deselection_clears_remove_target_and_delete_removes_selected(qapp):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.mosaic import MosaicDialog
+
+    parent = QWidget()
+    dialog = MosaicDialog(parent)
+    try:
+        dialog._append_frames([make_frame('one', np.zeros((20, 40, 3), np.uint8)),
+                               make_frame('two', np.zeros((20, 40, 3), np.uint8))])
+        dialog.scene.clearSelection()
+        assert dialog.list.currentRow() == -1
+        assert not dialog.remove.isEnabled() and not dialog.x_spin.isEnabled()
+        QTest.keyClick(dialog.canvas.viewport(), Qt.Key.Key_Delete)
+        assert len(dialog.frames) == 2
+        dialog.items[0].setSelected(True)
+        assert dialog.list.currentRow() == 0
+        QTest.keyClick(dialog.canvas.viewport(), Qt.Key.Key_Delete)
+        assert [frame.name for frame in dialog.frames] == ['two']
+        QTest.keyClick(dialog.list, Qt.Key.Key_Delete)
+        assert not dialog.frames and not dialog.save.isEnabled()
+    finally:
+        dialog.close()
+        parent.close()
+
+
+def _workspace_drop(qapp, target, urls):
+    from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt
+    from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+
+    mime = QMimeData()
+    mime.setUrls(urls)
+    enter = QDragEnterEvent(QPoint(5, 5), Qt.DropAction.CopyAction, mime,
+                            Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    qapp.sendEvent(target, enter)
+    drop = QDropEvent(QPointF(5, 5), Qt.DropAction.CopyAction, mime,
+                     Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    qapp.sendEvent(target, drop)
+    return enter, drop
+
+
+def _wait_workspace(qapp, dialog):
+    import time
+
+    deadline = time.monotonic() + 10
+    while dialog.worker is not None and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert dialog.worker is None
+
+
+@pytest.mark.parametrize('target', ['list', 'canvas'])
+def test_workspace_viewport_import_is_async_sorted_and_deduplicated(qapp, tmp_path, monkeypatch, target):
+    import threading
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtWidgets import QMessageBox, QWidget
+    from dialogs import mosaic
+    from locales import trans
+
+    folder = tmp_path / 'tiles'
+    folder.mkdir()
+    for name, value in [('img10.png', 100), ('img2.png', 20)]:
+        assert imwrite_auto(str(folder / name), np.full((12, 16, 3), value, np.uint8))
+    (folder / 'notes.txt').write_text('skip this')
+    gui_thread = threading.get_ident()
+    threads = []
+    original = mosaic.make_frame
+
+    def prepare(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mosaic, 'make_frame', prepare)
+    errors = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: errors.append(args))
+    parent = QWidget()
+    dialog = mosaic.MosaicDialog(parent)
+    try:
+        urls = [QUrl.fromLocalFile(str(folder)), QUrl.fromLocalFile(str(folder / 'img2.png'))]
+        enter, drop = _workspace_drop(qapp, getattr(dialog, target).viewport(), urls)
+        assert enter.isAccepted() and drop.isAccepted()
+        _wait_workspace(qapp, dialog)
+        assert not errors
+        assert [frame.name for frame in dialog.frames] == ['img2.png', 'img10.png']
+        assert all(isinstance(frame.image, np.memmap) for frame in dialog.frames)
+        assert threads and all(thread != gui_thread for thread in threads)
+        assert dialog.status.text() == trans.t('mosaic_import_status').format(added=2, skipped=2, total=2)
+        _workspace_drop(qapp, getattr(dialog, target).viewport(), urls)
+        _wait_workspace(qapp, dialog)
+        assert len(dialog.frames) == 2
+        enter, drop = _workspace_drop(qapp, getattr(dialog, target).viewport(),
+                                      [QUrl('https://example.com/image.png')])
+        assert not enter.isAccepted() and not drop.isAccepted()
+        assert dialog.worker is None
+    finally:
+        dialog.close()
+        parent.close()
+
+
+def test_busy_workspace_freezes_inputs_and_cancel_preserves_positions(qapp, tmp_path):
+    import threading
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.mosaic import MosaicDialog
+
+    parent = QWidget()
+    dialog = MosaicDialog(parent)
+    release = threading.Event()
+    try:
+        dialog._append_frames([make_frame('one', np.zeros((20, 40, 3), np.uint8)),
+                               make_frame('two', np.zeros((20, 40, 3), np.uint8))])
+        dialog.list.setCurrentRow(1)
+        dialog.x_spin.setValue(71)
+        before = dialog._current_transforms()
+
+        def pending(cancel, progress):
+            release.wait(5)
+            return [make_frame('late', np.zeros((20, 40, 3), np.uint8))]
+
+        dialog._run(pending, '', dialog._append_frames)
+        worker = dialog.worker
+        dialog._remove_selected()
+        dialog._apply_grid()
+        dialog._import_paths([str(tmp_path)])
+        dialog.x_spin.setValue(100)
+        enter, drop = _workspace_drop(qapp, dialog.canvas.viewport(), [QUrl.fromLocalFile(str(tmp_path))])
+        assert not enter.isAccepted() and not drop.isAccepted()
+        assert dialog.worker is worker and len(dialog.frames) == 2
+        assert not dialog.grid_apply.isEnabled() and not dialog.save.isEnabled()
+        dialog._cancel()
+        release.set()
+        _wait_workspace(qapp, dialog)
+        assert len(dialog.frames) == 2
+        for current, previous in zip(dialog._current_transforms(), before):
+            np.testing.assert_array_equal(current, previous)
+        assert dialog.x_spin.value() == 71
+    finally:
+        release.set()
+        if dialog.worker is not None:
+            dialog._cancel()
+            _wait_workspace(qapp, dialog)
+        dialog.close()
+        parent.close()

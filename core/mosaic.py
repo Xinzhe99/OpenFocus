@@ -65,6 +65,51 @@ def initial_transforms(frames):
     return result
 
 
+def grid_transforms(frames, rows, cols, *, order='byrow',
+                    direction='unidirectional', start_corner='topleft', overlap_pct=20):
+    """Place capture-order frames in a declared grid without decoding pixels.
+
+    Each column/row uses its largest actual tile dimension. Changing a grid
+    declaration is separate from applying it, so callers retain manual edits.
+    """
+    if rows < 1 or cols < 1 or rows * cols != len(frames):
+        raise ValueError('The grid must contain exactly one cell per image')
+    if order not in ('byrow', 'bycolumn'):
+        raise ValueError('Invalid capture order')
+    if direction not in ('unidirectional', 'zigzag'):
+        raise ValueError('Invalid capture direction')
+    if start_corner not in ('topleft', 'topright', 'bottomleft', 'bottomright'):
+        raise ValueError('Invalid start corner')
+    if not math.isfinite(overlap_pct) or not 0 <= overlap_pct < 100:
+        raise ValueError('Overlap must be between 0 and 100 percent')
+    row_order = list(range(rows))
+    col_order = list(range(cols))
+    if start_corner.startswith('bottom'):
+        row_order.reverse()
+    if start_corner.endswith('right'):
+        col_order.reverse()
+    cells = []
+    major, minor = (row_order, col_order) if order == 'byrow' else (col_order, row_order)
+    for index, outer in enumerate(major):
+        inner = minor[::-1] if direction == 'zigzag' and index % 2 else minor
+        cells.extend((outer, value) if order == 'byrow' else (value, outer)
+                     for value in inner)
+    widths, heights = [0] * cols, [0] * rows
+    for frame, (row, col) in zip(frames, cells):
+        height, width = frame.image.shape[:2]
+        widths[col] = max(widths[col], width)
+        heights[row] = max(heights[row], height)
+    spacing = 1 - overlap_pct / 100
+    xs = np.cumsum([0] + widths[:-1]) * spacing
+    ys = np.cumsum([0] + heights[:-1]) * spacing
+    result = []
+    for row, col in cells:
+        matrix = np.eye(3, dtype=np.float64)
+        matrix[:2, 2] = (xs[col], ys[row])
+        result.append(matrix)
+    return result
+
+
 def _features(frame, detector):
     gray = cv2.cvtColor(frame.preview, cv2.COLOR_BGR2GRAY)
     keypoints, descriptors = detector.detectAndCompute(gray, None)

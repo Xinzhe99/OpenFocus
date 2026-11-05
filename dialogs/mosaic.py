@@ -3,22 +3,24 @@ import os
 import threading
 
 import numpy as np
-from PyQt6.QtCore import QPointF, QSignalBlocker, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QPainter, QTransform
+from PyQt6.QtCore import QEvent, QPointF, QSignalBlocker, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QIcon, QPainter, QTransform
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
-    QApplication, QAbstractItemView, QDialog, QDialogButtonBox, QDoubleSpinBox,
+    QApplication, QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFormLayout, QGraphicsItem, QGraphicsPixmapItem, QGraphicsScene,
-    QGraphicsView, QHBoxLayout, QLabel, QListWidget, QMessageBox, QProgressBar,
-    QPushButton, QSlider, QSplitter, QVBoxLayout, QWidget,
+    QGraphicsView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
+    QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget,
 )
 
-from core.mosaic import auto_align, canvas_bounds, initial_transforms, make_frame, render_mosaic
+from core.mosaic import (auto_align, canvas_bounds, grid_transforms,
+                         initial_transforms, make_frame, render_mosaic)
 from core.registration import RegistrationCancelled
 from core.resource_policy import heavy_job, require_memory
 from locales import trans
 from utils.image_utils import cv2_to_pixmap, imwrite_auto
 from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+from utils.path_identity import same_path
 
 
 class _Worker(QThread):
@@ -103,10 +105,16 @@ class MosaicDialog(QDialog):
         self.transforms = []
         self.items = []
         self.connected = []
+        self.preview_opacities = []
         self.worker = None
         self._close_pending = False
         self._updating = False
         self._build_ui()
+        self.setAcceptDrops(True)
+        for target in (self.list, self.list.viewport(), self.canvas, self.canvas.viewport()):
+            target.setAcceptDrops(True)
+            target.installEventFilter(self)
+        self.scene.selectionChanged.connect(self._scene_selection_changed)
         self._refresh_controls()
 
     def _build_ui(self):
@@ -122,6 +130,8 @@ class MosaicDialog(QDialog):
         left.setContentsMargins(0, 0, 0, 0)
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        self.list.setMinimumHeight(120)
         left.addWidget(self.list, 1)
         row = QHBoxLayout()
         self.add_files = QPushButton(trans.t('mosaic_add_files'))
@@ -131,6 +141,43 @@ class MosaicDialog(QDialog):
         left.addLayout(row)
         self.remove = QPushButton(trans.t('batch_btn_remove'))
         left.addWidget(self.remove)
+        self.add_folder = QPushButton(trans.t('action_open_folder'))
+        self.add_folder.clicked.connect(self._add_folder)
+        left.addWidget(self.add_folder)
+        self.drop_hint = QLabel(trans.t('mosaic_drop_hint'))
+        self.drop_hint.setWordWrap(True)
+        left.addWidget(self.drop_hint)
+        grid = QFormLayout()
+        self.grid_rows, self.grid_cols = QSpinBox(), QSpinBox()
+        for spin in (self.grid_rows, self.grid_cols):
+            spin.setRange(1, 10000)
+        self.grid_cols.setValue(2)
+        grid.addRow(trans.t('mosaic_grid_rows'), self.grid_rows)
+        grid.addRow(trans.t('mosaic_grid_cols'), self.grid_cols)
+        self.grid_order = QComboBox()
+        for key, value in (('mosaic_by_row', 'byrow'), ('mosaic_by_column', 'bycolumn')):
+            self.grid_order.addItem(trans.t(key), value)
+        grid.addRow(trans.t('mosaic_capture_order'), self.grid_order)
+        self.grid_direction = QComboBox()
+        for key, value in (('mosaic_unidirectional', 'unidirectional'), ('mosaic_zigzag', 'zigzag')):
+            self.grid_direction.addItem(trans.t(key), value)
+        grid.addRow(trans.t('mosaic_capture_direction'), self.grid_direction)
+        self.grid_corner = QComboBox()
+        for key, value in (('mosaic_top_left', 'topleft'), ('mosaic_top_right', 'topright'),
+                           ('mosaic_bottom_left', 'bottomleft'), ('mosaic_bottom_right', 'bottomright')):
+            self.grid_corner.addItem(trans.t(key), value)
+        grid.addRow(trans.t('mosaic_start_corner'), self.grid_corner)
+        self.grid_overlap = QDoubleSpinBox()
+        self.grid_overlap.setRange(0, 95)
+        self.grid_overlap.setSuffix(' %')
+        self.grid_overlap.setValue(20)
+        grid.addRow(trans.t('mosaic_grid_overlap'), self.grid_overlap)
+        left.addLayout(grid)
+        self.grid_apply = QPushButton(trans.t('mosaic_apply_grid'))
+        left.addWidget(self.grid_apply)
+        self.grid_hint = QLabel()
+        self.grid_hint.setWordWrap(True)
+        left.addWidget(self.grid_hint)
         position = QFormLayout()
         self.x_spin, self.y_spin = QDoubleSpinBox(), QDoubleSpinBox()
         for spin in (self.x_spin, self.y_spin):
@@ -151,7 +198,10 @@ class MosaicDialog(QDialog):
         self.size_label = QLabel('')
         self.size_label.setWordWrap(True)
         left.addWidget(self.size_label)
-        splitter.addWidget(panel)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(panel)
+        splitter.addWidget(scroll)
         self.scene = QGraphicsScene(self)
         self.canvas = _Canvas(self.scene)
         splitter.addWidget(self.canvas)
@@ -176,6 +226,9 @@ class MosaicDialog(QDialog):
         self.add_files.clicked.connect(self._add_files)
         self.add_outputs.clicked.connect(self._add_outputs)
         self.remove.clicked.connect(self._remove_selected)
+        self.grid_apply.clicked.connect(self._apply_grid)
+        for control in (self.grid_rows, self.grid_cols):
+            control.valueChanged.connect(self._refresh_controls)
         self.auto.clicked.connect(self._auto_align)
         self.fit.clicked.connect(self._fit)
         self.save.clicked.connect(self._save)
@@ -185,12 +238,26 @@ class MosaicDialog(QDialog):
         self.x_spin.valueChanged.connect(self._position_changed)
         self.y_spin.valueChanged.connect(self._position_changed)
         self.opacity.valueChanged.connect(self._opacity_changed)
+        self.opacity.setToolTip(trans.t('mosaic_preview_hint'))
+        preview_hint = QLabel(trans.t('mosaic_preview_hint'))
+        preview_hint.setWordWrap(True)
+        left.addWidget(preview_hint)
+        for button in (self.add_files, self.add_folder, self.add_outputs, self.remove, self.grid_apply,
+                       self.auto, self.fit, self.cancel, self.save, self.close_button):
+            button.setAutoDefault(False)
 
     def _refresh_controls(self):
-        busy = self.worker is not None and self.worker.isRunning()
+        busy = self.worker is not None
         selected = 0 <= self.list.currentRow() < len(self.frames)
         self.add_files.setEnabled(not busy)
         self.add_outputs.setEnabled(not busy)
+        self.add_folder.setEnabled(not busy)
+        count = self.grid_rows.value() * self.grid_cols.value()
+        self.grid_hint.setText(trans.t('mosaic_grid_hint').format(cells=count, count=len(self.frames)))
+        self.grid_apply.setEnabled(not busy and bool(self.frames) and count == len(self.frames))
+        for control in (self.grid_rows, self.grid_cols, self.grid_order, self.grid_direction,
+                        self.grid_corner, self.grid_overlap):
+            control.setEnabled(not busy)
         self.remove.setEnabled(not busy and selected)
         self.x_spin.setEnabled(not busy and selected)
         self.y_spin.setEnabled(not busy and selected)
@@ -201,17 +268,22 @@ class MosaicDialog(QDialog):
         self.list.setEnabled(not busy)
         for item in self.items:
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not busy)
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, not busy)
         self.cancel.setVisible(busy)
         self.cancel.setEnabled(busy)
         self.progress.setVisible(busy)
 
     def _run(self, operation, status, success):
+        if self.worker is not None:
+            return
         self.status.setText(status)
         self.progress.setRange(0, 0)
         worker = _Worker(operation, self)
         self.worker = worker
         worker.progress.connect(self._progress)
-        worker.result.connect(success)
+        worker.result.connect(lambda value: success(value)
+                              if self.worker is worker and not worker._stop.is_set()
+                              and not self._close_pending else None)
         worker.error.connect(self._error)
         worker.cancelled.connect(lambda: self.status.setText(trans.t('compare_cancelled')))
         worker.finished.connect(self._finished)
@@ -226,6 +298,7 @@ class MosaicDialog(QDialog):
     def _finished(self):
         self.worker = None
         self._refresh_controls()
+        self._select_row(self.list.currentRow())
         if self._close_pending:
             self.close()
 
@@ -234,24 +307,107 @@ class MosaicDialog(QDialog):
         QMessageBox.warning(self, trans.t('mosaic_title'),
                             trans.t('msg_save_failed_info_unexpected').format(error=error))
 
+    @staticmethod
+    def _drop_paths(event):
+        urls = event.mimeData().urls()
+        if not urls or any(not url.isLocalFile() or not url.toLocalFile() for url in urls):
+            return []
+        return [url.toLocalFile() for url in urls]
+
+    def dragEnterEvent(self, event):
+        if self.worker is None and self._drop_paths(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        paths = self._drop_paths(event)
+        if self.worker is not None or not paths:
+            event.ignore()
+            return
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        self._import_paths(paths)
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+            self.dragEnterEvent(event)
+            return True
+        if event.type() == QEvent.Type.Drop:
+            self.dropEvent(event)
+            return True
+        if (event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Delete
+                and event.modifiers() == Qt.KeyboardModifier.NoModifier):
+            self._remove_selected()
+            return True
+        return super().eventFilter(watched, event)
+
+    def _add_folder(self):
+        if self.worker is not None:
+            return
+        path = FileDialog.getExistingDirectory(self, trans.t('action_open_folder'),
+                                               get_last_dialog_dir())
+        if path:
+            set_last_dialog_dir(path)
+            self._import_paths([path])
+
     def _add_files(self):
+        if self.worker is not None:
+            return
         paths, _ = FileDialog.getOpenFileNames(
             self, trans.t('mosaic_add_files'), get_last_dialog_dir(),
             trans.t('batch_image_filter'))
         if not paths:
             return
         set_last_dialog_dir(paths[0])
-        existing = {os.path.normcase(os.path.abspath(frame.source_path))
-                    for frame in self.frames if frame.source_path}
-        paths = [path for path in paths if os.path.normcase(os.path.abspath(path)) not in existing]
-        if not paths:
+        self._import_paths(paths)
+
+    def _import_paths(self, sources):
+        if self.worker is not None or not sources:
             return
+        sources = tuple(sources)
+        existing = tuple(frame.source_path for frame in self.frames if frame.source_path)
 
         def load(cancel, progress):
             from core.frame_storage import store_frame
-            from core.image_loader import (count_frames, iter_decoded_sources,
+            from core.image_loader import (ImageStackLoader, count_frames, iter_decoded_sources,
                                            source_dimensions, _DecodeCancelled,
                                            _is_dng_tiff)
+            from utils.sorting import natural_sort_key
+            paths, seen, skipped = [], list(existing), 0
+
+            def include(path):
+                nonlocal skipped
+                if cancel():
+                    raise RegistrationCancelled()
+                if (os.path.splitext(path)[1].lower() not in ImageStackLoader.SUPPORTED_FORMATS
+                        or any(same_path(path, previous) for previous in seen)):
+                    skipped += 1
+                else:
+                    paths.append(path)
+                    seen.append(path)
+
+            def scan_error(error):
+                raise error
+
+            for source in sources:
+                if cancel():
+                    raise RegistrationCancelled()
+                if os.path.isdir(source):
+                    for root, directories, files in os.walk(source, onerror=scan_error):
+                        if cancel():
+                            raise RegistrationCancelled()
+                        directories.sort(key=natural_sort_key)
+                        for name in files:
+                            include(os.path.join(root, name))
+                elif os.path.isfile(source):
+                    include(source)
+                else:
+                    skipped += 1
+            paths.sort(key=natural_sort_key)
             result = []
             for index, path in enumerate(paths):
                 if cancel():
@@ -286,11 +442,19 @@ class MosaicDialog(QDialog):
                 finally:
                     decoder.close()
                 progress(index + 1, len(paths))
-            return result
+            return result, skipped
 
-        self._run(load, trans.t('msg_loading_stack'), self._append_frames)
+        def complete(result):
+            frames, skipped = result
+            self._append_frames(frames)
+            self.status.setText(trans.t('mosaic_import_status').format(
+                added=len(frames), skipped=skipped, total=len(self.frames)))
+
+        self._run(load, trans.t('msg_loading_stack'), complete)
 
     def _add_outputs(self):
+        if self.worker is not None:
+            return
         manager = getattr(self.window_main, 'output_manager', None)
         output_list = getattr(self.window_main, 'output_list', None)
         records = []
@@ -340,6 +504,7 @@ class MosaicDialog(QDialog):
         self.frames.extend(frames)
         initial = initial_transforms(self.frames)
         self.transforms = old + initial[len(old):]
+        self.preview_opacities.extend([1.0] * len(frames))
         self.connected = [False] * len(self.frames)
         self._rebuild()
         self.list.setCurrentRow(len(self.frames) - 1)
@@ -347,6 +512,8 @@ class MosaicDialog(QDialog):
         QTimer.singleShot(0, self._fit)
 
     def _remove_selected(self):
+        if self.worker is not None:
+            return
         index = self.list.currentRow()
         if not 0 <= index < len(self.frames):
             return
@@ -354,11 +521,25 @@ class MosaicDialog(QDialog):
         del self.frames[index]
         del self.transforms[index]
         del self.connected[index]
+        del self.preview_opacities[index]
         self._rebuild()
         self.list.setCurrentRow(min(index, len(self.frames) - 1))
         self.status.setText(trans.t('mosaic_manual') if self.frames else trans.t('mosaic_empty'))
 
+    def _apply_grid(self):
+        if self.worker is not None or not self.grid_apply.isEnabled():
+            return
+        self.transforms = grid_transforms(
+            self.frames, self.grid_rows.value(), self.grid_cols.value(),
+            order=self.grid_order.currentData(), direction=self.grid_direction.currentData(),
+            start_corner=self.grid_corner.currentData(), overlap_pct=self.grid_overlap.value())
+        self.connected = [False] * len(self.frames)
+        self._rebuild()
+        self.status.setText(trans.t('mosaic_grid_applied'))
+        self._fit()
+
     def _rebuild(self):
+        selected = self.list.currentRow()
         self._updating = True
         try:
             self.scene.clear()
@@ -368,8 +549,13 @@ class MosaicDialog(QDialog):
                 label = frame.name
                 if index > 0 and not self.connected[index]:
                     label += '  ' + trans.t('mosaic_unmatched_mark')
-                self.list.addItem(label)
-                item = _TileItem(index, cv2_to_pixmap(frame.preview), self._item_changed)
+                pixmap = cv2_to_pixmap(frame.preview)
+                entry = QListWidgetItem(QIcon(pixmap), label)
+                entry.setToolTip(frame.source_path or frame.name)
+                self.list.addItem(entry)
+                item = _TileItem(index, pixmap, self._item_changed)
+                item.setToolTip(frame.name)
+                item.setOpacity(self.preview_opacities[index])
                 sx = frame.image.shape[1] / frame.preview.shape[1]
                 sy = frame.image.shape[0] / frame.preview.shape[0]
                 item.setTransform(QTransform(matrix[0, 0] * sx, matrix[1, 0] * sx, 0,
@@ -382,6 +568,8 @@ class MosaicDialog(QDialog):
         finally:
             self._updating = False
         self._refresh_controls()
+        self.list.setCurrentRow(min(selected, len(self.frames) - 1))
+        self._select_row(self.list.currentRow())
 
     def _current_transforms(self):
         result = []
@@ -395,8 +583,8 @@ class MosaicDialog(QDialog):
     def _item_changed(self, item, change):
         if self._updating:
             return
-        if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged and item.isSelected():
-            self.list.setCurrentRow(item.index)
+        if self.worker is not None:
+            return
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             self.connected = [False] * len(self.frames)
             for index, frame in enumerate(self.frames):
@@ -407,19 +595,27 @@ class MosaicDialog(QDialog):
             if item.index == self.list.currentRow():
                 self._sync_position(item.index)
 
-    def _select_row(self, index):
-        if self._updating:
+    def _scene_selection_changed(self):
+        if self._updating or self.worker is not None:
             return
-        if 0 <= index < len(self.items):
-            self._updating = True
-            try:
-                self.scene.clearSelection()
+        selected = self.scene.selectedItems()
+        index = selected[0].index if selected else -1
+        self.list.setCurrentRow(index)
+        self._select_row(index)
+
+    def _select_row(self, index):
+        if self._updating or self.worker is not None:
+            return
+        self._updating = True
+        try:
+            self.scene.clearSelection()
+            if 0 <= index < len(self.items):
                 self.items[index].setSelected(True)
                 self._sync_position(index)
                 with QSignalBlocker(self.opacity):
                     self.opacity.setValue(round(self.items[index].opacity() * 100))
-            finally:
-                self._updating = False
+        finally:
+            self._updating = False
         self._refresh_controls()
 
     def _sync_position(self, index):
@@ -430,7 +626,7 @@ class MosaicDialog(QDialog):
 
     def _position_changed(self):
         index = self.list.currentRow()
-        if self._updating or not 0 <= index < len(self.items):
+        if self._updating or self.worker is not None or not 0 <= index < len(self.items):
             return
         matrix = self.transforms[index]
         self.items[index].setPos(QPointF(self.x_spin.value() - matrix[0, 2],
@@ -438,8 +634,9 @@ class MosaicDialog(QDialog):
 
     def _opacity_changed(self, value):
         index = self.list.currentRow()
-        if 0 <= index < len(self.items):
+        if self.worker is None and 0 <= index < len(self.items):
             self.items[index].setOpacity(value / 100.0)
+            self.preview_opacities[index] = value / 100.0
 
     def _update_size(self):
         if not self.frames:
@@ -458,6 +655,8 @@ class MosaicDialog(QDialog):
             self.canvas.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def _auto_align(self):
+        if self.worker is not None or len(self.frames) < 2:
+            return
         frames = tuple(self.frames)
         transforms = self._current_transforms()
 
@@ -481,6 +680,8 @@ class MosaicDialog(QDialog):
         self._run(align, trans.t('render_stage_align'), complete)
 
     def _save(self):
+        if self.worker is not None or not self.frames:
+            return
         path, _ = FileDialog.getSaveFileName(self, trans.t('mosaic_save'),
                                               get_last_dialog_dir(), trans.t('mosaic_save_filter'))
         if not path:
@@ -491,9 +692,7 @@ class MosaicDialog(QDialog):
         if ext not in ('.tif', '.tiff', '.png'):
             QMessageBox.warning(self, trans.t('mosaic_title'), trans.t('mosaic_save_type'))
             return
-        target = os.path.normcase(os.path.abspath(path))
-        if any(frame.source_path and os.path.normcase(os.path.abspath(frame.source_path)) == target
-               for frame in self.frames):
+        if any(same_path(frame.source_path, path) for frame in self.frames):
             QMessageBox.warning(self, trans.t('mosaic_title'), trans.t('mosaic_source_conflict'))
             return
         set_last_dialog_dir(path)
@@ -522,14 +721,14 @@ class MosaicDialog(QDialog):
             self.status.setText(trans.t('compare_stopping'))
 
     def reject(self):
-        if self.worker is not None and self.worker.isRunning():
+        if self.worker is not None:
             self._close_pending = True
             self._cancel()
         else:
             super().reject()
 
     def closeEvent(self, event):
-        if self.worker is not None and self.worker.isRunning():
+        if self.worker is not None:
             self._close_pending = True
             self._cancel()
             event.ignore()
