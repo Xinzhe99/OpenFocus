@@ -12,11 +12,6 @@ from widgets.magnifier_label import MAGNIFIER_MAX_SIZE, MAGNIFIER_MIN_SIZE, Magn
 
 
 @pytest.fixture
-def qapp():
-    return QApplication.instance() or QApplication([])
-
-
-@pytest.fixture
 def labels(qapp):
     result = []
     for _ in range(2):
