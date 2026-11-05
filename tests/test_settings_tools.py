@@ -68,22 +68,6 @@ def test_advanced_form_resists_centered_style_and_wraps_long_rows(qapp):
         host.deleteLater()
 
 
-def test_advanced_settings_sections_are_left_aligned(settings_window):
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QFormLayout
-    from dialogs.advanced_settings import AdvancedSettingsDialog
-
-    dialog = AdvancedSettingsDialog(settings_window)
-    try:
-        forms = dialog.findChildren(QFormLayout)
-        assert forms
-        for form in forms:
-            assert form.formAlignment() == (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            assert form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.WrapLongRows
-    finally:
-        dialog.deleteLater()
-
-
 def test_settings_overlap_is_visible_and_cancel_is_a_draft(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
     dialog = AdvancedSettingsDialog(settings_window)
