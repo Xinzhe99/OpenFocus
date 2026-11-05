@@ -1,8 +1,13 @@
-"""Sequential, source-safe still image conversion."""
+"""Source-safe conversion with bounded resource admission and atomic outputs."""
 import os
 import shutil
 import tempfile
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from io import BytesIO
+import struct
+
+from threadpoolctl import threadpool_limits
 
 import cv2
 import numpy as np
@@ -12,31 +17,42 @@ import tifffile
 from core import image_loader
 from utils.image_utils import imwrite_auto, to_display_uint8, export_exif
 from utils.memory import available_memory_bytes
+from core import resource_policy
+from utils.logging_setup import log_operation, log_action
+from locales import trans
 
 INPUT_EXTENSIONS = image_loader.RAW_FORMATS | {'.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.tif', '.tiff', '.bmp', '.webp', '.heic', '.heif'}
-OUTPUT_EXTENSIONS = {'JPEG': '.jpg', 'PNG': '.png', 'TIFF': '.tif', 'BMP': '.bmp', 'WebP': '.webp'}
+OUTPUT_EXTENSIONS = {'DNG': '.dng', 'JPEG': '.jpg', 'PNG': '.png', 'TIFF': '.tif', 'BMP': '.bmp', 'WebP': '.webp'}
 
 
+
+
+def estimate_job(path, page=0):
+    """Read headers only, including the full sensor bounds before RAW unpack."""
+    if image_loader.is_raw_source(path):
+        with image_loader.rawpy.RawPy() as raw:
+            raw.open_file(os.fspath(path))
+            width, height = raw.sizes.raw_width, raw.sizes.raw_height
+        compressed = os.path.getsize(path)
+    elif Path(path).suffix.lower() in ('.tif', '.tiff'):
+        with tifffile.TiffFile(path) as tif:
+            entry = tif.pages[page]
+            width, height = entry.imagewidth, entry.imagelength
+            compressed = sum(entry.databytecounts)
+    else:
+        width, height = image_loader.source_dimensions(path, page)
+        compressed = os.path.getsize(path)
+    if width <= 0 or height <= 0:
+        raise ValueError('Invalid image dimensions.')
+    return width * height * 64 + compressed * 2, width * height * 16 + 64 * 1024 * 1024
 
 
 def _admit(path, page, output_dir):
-    width, height = image_loader.source_dimensions(path, page)
-    if width <= 0 or height <= 0:
-        raise ValueError('Invalid image dimensions.')
-    # Decoding, orientation, color conversion, encoding and metadata can each
-    # temporarily hold a full image. Reserve room for LibRaw scratch as well.
-    ext = Path(path).suffix.lower()
-    if ext in ('.tif', '.tiff') and not image_loader._is_dng_tiff(path):
-        with tifffile.TiffFile(path) as tif:
-            # Account for this page's compressed strips, not the entire stack.
-            compressed = sum(tif.pages[page].databytecounts)
-    else:
-        compressed = os.path.getsize(path)
-    estimate = width * height * 64 + compressed * 2
+    estimate, disk = estimate_job(path, page)
     available = available_memory_bytes()
     if not available or estimate > available // 2:
         raise MemoryError('Insufficient available memory for this image.')
-    if shutil.disk_usage(output_dir).free < width * height * 16 + 64 * 1024 * 1024:
+    if shutil.disk_usage(output_dir).free < disk:
         raise OSError('Insufficient free disk space for this image.')
 
 
@@ -162,30 +178,46 @@ def _write(path, pixels, source, page, ext):
 
 def convert_one(source, output_dir, ext, page=0, pages=1, cancelled=lambda: False):
     """Write one frame, reserving a unique name without touching existing files."""
-    _admit(source, page, output_dir)
-    if cancelled():
-        raise InterruptedError()
-    pixels = _decode(source, page)
-    if cancelled():
-        raise InterruptedError()
-    stem = Path(source).stem + (f'_page_{page + 1:04d}' if pages > 1 else '')
-    destination = _reserve(output_dir, stem, ext)
-    part = None
-    try:
-        fd, part = tempfile.mkstemp(suffix=ext, dir=output_dir)
-        os.close(fd)
-        _write(part, pixels, source, page, ext)
-        if cancelled():
-            raise InterruptedError()
-        os.replace(part, destination)
-        part = None
-        return destination
-    except BaseException:
-        os.unlink(destination)
-        raise
-    finally:
-        if part and os.path.exists(part):
-            os.unlink(part)
+    with log_operation('converter.page', source=os.fspath(source), page=page + 1,
+                       pages=pages, format=ext, output_dir=os.fspath(output_dir)) as operation:
+        destination = part = None
+        try:
+            if ext not in OUTPUT_EXTENSIONS.values():
+                raise ValueError('Unsupported conversion output format')
+            if ext == '.dng' and not image_loader.is_raw_source(source):
+                raise ValueError('DNG requires camera RAW input; developed images are not sensor RAW')
+            _admit(source, page, output_dir)
+            if cancelled():
+                raise InterruptedError()
+            pixels = None if ext == '.dng' else _decode(source, page)
+            if cancelled():
+                raise InterruptedError()
+            stem = Path(source).stem + (f'_page_{page + 1:04d}' if pages > 1 else '')
+            destination = _reserve(output_dir, stem, ext)
+            fd, part = tempfile.mkstemp(suffix=ext, dir=output_dir)
+            os.close(fd)
+            if ext == '.dng':
+                from utils.linear_dng import convert_raw_to_dng
+                convert_raw_to_dng(part, source, should_cancel=cancelled)
+            else:
+                _write(part, pixels, source, page, ext)
+            if cancelled():
+                raise InterruptedError()
+            os.replace(part, destination)
+            part = None
+            log_action('converter.output', source=os.fspath(source), page=page + 1,
+                       output=destination, format=ext)
+            return destination
+        except BaseException as exc:
+            from core.registration import RegistrationCancelled
+            if isinstance(exc, (InterruptedError, RegistrationCancelled)):
+                operation.cancel()
+            if destination is not None:
+                os.unlink(destination)
+            raise
+        finally:
+            if part and os.path.exists(part):
+                os.unlink(part)
 
 
 def page_count(path):
@@ -196,3 +228,257 @@ def page_count(path):
                 raise ValueError('TIFF contains no pages.')
             return count
     return 1
+
+
+def _convert_source(index, source, directory, ext, count, cancelled, item):
+    from core.registration import RegistrationCancelled
+    outputs, errors = [], []
+    with log_operation('converter.item', source=source, format=ext, pages=count) as operation:
+        for page in range(count):
+            if cancelled():
+                operation.cancel()
+                break
+            item(index, '\n'.join(outputs + errors + [f'{page + 1}/{count} …']))
+            try:
+                outputs.append(convert_one(source, directory, ext, page, count, cancelled))
+            except (InterruptedError, RegistrationCancelled):
+                operation.cancel()
+                break
+            except Exception as exc:
+                errors.append(f'{page + 1}/{count}: {exc}')
+                operation.fail(exc)
+            state = trans.t('converter_item_state').format(completed=len(outputs), pages=count, failed=len(errors))
+            item(index, '\n'.join(outputs + errors + [state]))
+        interrupted = len(outputs) + len(errors) < count
+        if interrupted:
+            item(index, '\n'.join(outputs + errors + ['Cancelled']))
+        return not errors and not interrupted, bool(errors)
+
+
+def _serial_native_worker():
+    # OpenMP limits are thread-local on some runtimes. Set them in each pool
+    # thread too; the owner's context restores process-wide BLAS settings.
+    threadpool_limits(limits=1)
+
+
+def convert_batch(sources, directory, ext, cancelled, item, progress):
+    """One pool; lazy submissions reserve each source's largest page footprint."""
+    from core.registration import RegistrationCancelled
+    success = failed = completed = 0
+    with log_operation('converter.batch', files=len(sources), format=ext, output_dir=directory) as operation:
+        try:
+            with resource_policy.heavy_job(cancelled):
+                plan = resource_policy.plan_execution(resource_policy.Workload(
+                    fixed_bytes=0, per_worker_bytes=1, outer_tasks=max(1, len(sources))))
+                log_action('converter.resources', plan=plan.describe(), budget=plan.ram_budget,
+                           native_threads=1)
+                previous_threads = cv2.getNumThreads()
+                heif_options = None
+                if any(Path(source).suffix.lower() in ('.heic', '.heif') for source in sources):
+                    try:
+                        from pillow_heif import options as heif_options
+                    except ImportError:
+                        pass  # The affected input reports its missing codec per item.
+                previous_heif_threads = heif_options.DECODE_THREADS if heif_options is not None else None
+                try:
+                    cv2.setNumThreads(1)
+                    if heif_options is not None:
+                        heif_options.DECODE_THREADS = 1
+                    with threadpool_limits(limits=1), ThreadPoolExecutor(
+                            max_workers=plan.workers, initializer=_serial_native_worker) as pool:
+                        pending, active = None, {}
+                        sources_iter = iter(enumerate(sources))
+                        exhausted = False
+                        used_ram = used_disk = 0
+                        while active or not exhausted:
+                            if cancelled():
+                                if pending is not None:
+                                    item(pending[0], 'Cancelled')
+                                for index, _ in sources_iter:
+                                    item(index, 'Cancelled')
+                                exhausted, pending = True, None
+                                operation.cancel()
+                            while not exhausted and len(active) < plan.max_in_flight:
+                                if pending is None:
+                                    try:
+                                        index, source = next(sources_iter)
+                                    except StopIteration:
+                                        exhausted = True
+                                        break
+                                    try:
+                                        count = page_count(source)
+                                        need_ram = need_disk = 0
+                                        for page in range(count):
+                                            ram, disk = estimate_job(source, page)
+                                            need_ram, need_disk = max(need_ram, ram), max(need_disk, disk)
+                                        pending = index, source, count, need_ram, need_disk
+                                    except Exception as exc:
+                                        item(index, str(exc))
+                                        log_action('converter.admission_failed', source=source, reason=str(exc))
+                                        failed += 1
+                                        completed += 1
+                                        progress(completed)
+                                        continue
+                                index, source, count, need_ram, need_disk = pending
+                                free_ram = min(plan.ram_budget - used_ram,
+                                               resource_policy.ram_budget(resource_policy.probe_resources()))
+                                free_disk = shutil.disk_usage(directory).free - used_disk
+                                if need_ram > free_ram or need_disk > free_disk:
+                                    if active:
+                                        break
+                                    reason = ('Insufficient available memory for this image.' if need_ram > free_ram
+                                              else 'Insufficient free disk space for this image.')
+                                    item(index, reason)
+                                    log_action('converter.admission_failed', source=source, reason=reason,
+                                               need_ram=need_ram, free_ram=free_ram,
+                                               need_disk=need_disk, free_disk=free_disk)
+                                    failed += 1
+                                    completed += 1
+                                    progress(completed)
+                                    pending = None
+                                    continue
+                                if cancelled():
+                                    break
+                                log_action('converter.admitted', source=source, pages=count,
+                                           need_ram=need_ram, free_ram=free_ram,
+                                           need_disk=need_disk, free_disk=free_disk,
+                                           in_flight=len(active) + 1)
+                                future = pool.submit(_convert_source, index, source, directory, ext,
+                                                     count, cancelled, item)
+                                active[future] = index, need_ram, need_disk
+                                used_ram += need_ram
+                                used_disk += need_disk
+                                pending = None
+                            if not active:
+                                continue
+                            done, _ = wait(active, timeout=0.05, return_when=FIRST_COMPLETED)
+                            for future in done:
+                                index, need_ram, need_disk = active.pop(future)
+                                used_ram -= need_ram
+                                used_disk -= need_disk
+                                try:
+                                    ok, error = future.result()
+                                    success += int(ok)
+                                    failed += int(error)
+                                except Exception as exc:
+                                    item(index, str(exc))
+                                    failed += 1
+                                    operation.fail(exc)
+                                completed += 1
+                                progress(completed)
+                finally:
+                    cv2.setNumThreads(previous_threads)
+                    if heif_options is not None:
+                        heif_options.DECODE_THREADS = previous_heif_threads
+        except (InterruptedError, RegistrationCancelled):
+            operation.cancel()
+        except Exception as exc:
+            operation.fail(exc)
+            # Planning failures are visible for every source, never a silent
+            # successful completion with no output.
+            for index in range(len(sources)):
+                item(index, str(exc))
+            failed = len(sources)
+        if failed:
+            operation.fail()
+        return success, failed, cancelled()
+
+
+def _embedded_raw_jpeg(path):
+    """Read only bounded JPEG ranges identified by the camera container."""
+    def payload(offset, length):
+        if not (0 < length <= 32 * 1024 * 1024 and 0 <= offset <= os.path.getsize(path) - length):
+            raise ValueError('Invalid or oversized embedded JPEG range')
+        with open(path, 'rb') as stream:
+            stream.seek(offset)
+            return stream.read(length)
+
+    if Path(path).suffix.lower() == '.raf':
+        with open(path, 'rb') as stream:
+            header = stream.read(92)
+        if len(header) == 92 and header.startswith(b'FUJIFILMCCD-RAW'):
+            return payload(*struct.unpack('>II', header[84:92]))
+    try:
+        with tifffile.TiffFile(path) as tif:
+            candidates = []
+            for page in tif.pages:
+                candidates.append(page)
+                if page.pages:
+                    candidates.extend(page.pages)
+            candidates.sort(key=lambda p: p.imagewidth * p.imagelength)
+            for page in candidates:
+                offset, length = page.tags.get(513), page.tags.get(514)
+                if offset is not None and length is not None:
+                    return payload(int(offset.value), int(length.value))
+                if (page.photometric.name in ('RGB', 'YCBCR') and page.compression.value in (6, 7)
+                        and len(page.dataoffsets) == 1):
+                    return payload(page.dataoffsets[0], page.databytecounts[0])
+    except (OSError, ValueError, tifffile.TiffFileError):
+        return None
+    return None
+
+
+def thumbnail_rgb(path, size=(96, 72)):
+    """Use embedded RAW previews and JPEG decoder scaling; skip giant rasters.
+
+    A missing/unsupported preview is an honest placeholder in the dialog, not
+    an excuse to unpack a full camera sensor or a large TIFF/PNG page.
+    """
+    def render(image, orientation=None):
+        if orientation is None:
+            orientation = int(image.getexif().get(274, 1))
+        if image.format == 'JPEG':
+            image.draft('RGB', size)
+        if image.width * image.height > 4_000_000:
+            raise ValueError('No bounded image preview is available')
+        image.thumbnail(size, Image.Resampling.LANCZOS)
+        pixels = np.asarray(image.convert('RGB'))
+        transform = image_loader._EXIF_TRANSFORMS.get(orientation)
+        return np.ascontiguousarray(transform(pixels) if transform else pixels)
+
+    if image_loader.is_raw_source(path):
+        with image_loader.rawpy.RawPy() as raw:
+            raw.open_file(os.fspath(path))
+            encoded = _embedded_raw_jpeg(path)
+            if encoded is None:
+                if raw.sizes.raw_width * raw.sizes.raw_height > 4_000_000:
+                    raise ValueError('No bounded embedded JPEG preview is available')
+                thumbnail = raw.extract_thumb()
+            else:
+                thumbnail = None
+            flip = raw.sizes.flip
+        if encoded is not None or thumbnail.format == image_loader.rawpy.ThumbFormat.JPEG:
+            encoded = encoded if encoded is not None else thumbnail.data
+            if len(encoded) > 32 * 1024 * 1024:
+                raise ValueError('Embedded preview exceeds the thumbnail byte budget')
+            with Image.open(BytesIO(encoded)) as image:
+                pixels = render(image, orientation=1)
+        elif thumbnail.format == image_loader.rawpy.ThumbFormat.BITMAP:
+            if thumbnail.data.shape[0] * thumbnail.data.shape[1] > 4_000_000:
+                raise ValueError('Embedded bitmap preview exceeds the thumbnail pixel budget')
+            pixels = render(Image.fromarray(thumbnail.data), orientation=1)
+        else:
+            raise ValueError('Unsupported embedded RAW preview')
+        orientation = (1, 2, 4, 3, 5, 8, 6, 7)[flip] if flip in range(8) else 1
+        transform = image_loader._EXIF_TRANSFORMS.get(orientation)
+        return np.ascontiguousarray(transform(pixels) if transform else pixels)
+    if Path(path).suffix.lower() in ('.tif', '.tiff'):
+        with tifffile.TiffFile(path) as tif:
+            first = tif.pages[0]
+            candidates = [first] + (list(first.pages) if first.pages else [])
+            small = [p for p in candidates if p.imagewidth * p.imagelength <= 4_000_000
+                     and p.photometric.name in ('RGB', 'MINISBLACK')]
+            if not small:
+                raise ValueError('No bounded TIFF preview is available')
+            page = min(small, key=lambda p: p.imagewidth * p.imagelength)
+            pixels = page.asarray()
+            if pixels.dtype == np.uint16:
+                pixels = (pixels // 257).astype(np.uint8)
+            if pixels.dtype != np.uint8:
+                raise ValueError('Unsupported TIFF thumbnail representation')
+            image = Image.fromarray(pixels)
+            if 'Orientation' in page.tags:
+                image.getexif()[274] = int(page.tags['Orientation'].value)
+            return render(image)
+    with Image.open(path) as image:
+        return render(image)

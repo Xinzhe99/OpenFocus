@@ -37,6 +37,24 @@ _RGB_TO_XYZ = np.array([
 ], dtype=np.float64)
 
 
+def _valid_xtrans(pattern):
+    values = np.asarray(pattern, dtype=np.uint8)
+    if values.shape != (6, 6):
+        return False
+    standard = np.array([
+        [1, 2, 1, 1, 0, 1], [0, 1, 0, 2, 1, 2], [1, 2, 1, 1, 0, 1],
+        [1, 0, 1, 1, 2, 1], [2, 1, 2, 0, 1, 0], [1, 0, 1, 1, 2, 1],
+    ], dtype=np.uint8)
+    for rotation in range(4):
+        rotated = np.rot90(standard, rotation)
+        for candidate in (rotated, rotated[:, ::-1]):
+            for y in range(6):
+                for x in range(6):
+                    if np.array_equal(values, np.roll(candidate, (y, x), axis=(0, 1))):
+                        return True
+    return False
+
+
 def _validate_metadata(metadata):
     if not isinstance(metadata, LinearDNGMetadata):
         raise ValueError("Expected LinearDNGMetadata")
@@ -269,7 +287,7 @@ def _linear_dng_calibration(path):
         raw_pages = [p for p in pages if (p.photometric.value == 34892 and p.samplesperpixel == 3)
                      or (p.photometric.value == 32803 and p.samplesperpixel == 1)]
         if len(raw_pages) != 1 or 50706 not in tags:
-            raise ValueError("Unsupported DNG: expected one LinearRaw or Bayer CFA image")
+            raise ValueError("Unsupported DNG: expected one LinearRaw or CFA image")
         raw_page = raw_pages[0]
         if raw_page.photometric.value == 32803:
             raw_tags = raw_page.tags
@@ -277,12 +295,16 @@ def _linear_dng_calibration(path):
             pattern = raw_tags.get(33422)
             planes = tags.get(50710) or raw_tags.get(50710)
             layout = tags.get(50711) or raw_tags.get(50711)
-            if (dimensions is None or tuple(dimensions.value) != (2, 2)
-                    or pattern is None or tuple(pattern.value) not in (
-                        (0, 1, 1, 2), (1, 0, 2, 1), (1, 2, 0, 1), (2, 1, 1, 0))
+            dims = tuple(dimensions.value) if dimensions is not None else ()
+            values = tuple(pattern.value) if pattern is not None else ()
+            bayer = dims == (2, 2) and values in (
+                (0, 1, 1, 2), (1, 0, 2, 1), (1, 2, 0, 1), (2, 1, 1, 0))
+            xtrans = (dims == (6, 6) and len(values) == 36
+                      and _valid_xtrans(np.asarray(values).reshape(6, 6)))
+            if (not (bayer or xtrans)
                     or (planes is not None and tuple(planes.value) != (0, 1, 2))
                     or (layout is not None and layout.value != 1)):
-                raise ValueError("Unsupported DNG CFA: only 2x2 RGB Bayer mosaics are supported")
+                raise ValueError("Unsupported DNG CFA: expected RGB Bayer or X-Trans")
         version = tuple(tags[50706].value)
         if version > (1, 4, 0, 0):
             raise ValueError("Unsupported DNG version: profiles newer than 1.4 cannot be preserved")
@@ -514,6 +536,7 @@ def _write_linear_dng_atomic(path, linear_bgr, metadata, *, should_cancel=None,
     tags = [
         (271, 's', 0, metadata.camera_make, False),
         (272, 's', 0, metadata.camera_model, False),
+        (274, 'H', 1, 1, False),
         (50706, 'B', 4, (1, 4, 0, 0), False),
         (50707, 'B', 4, (1, 1, 0, 0), False),
         (50708, 's', 0, metadata.camera_model, False),
@@ -551,7 +574,7 @@ def _write_linear_dng_atomic(path, linear_bgr, metadata, *, should_cancel=None,
     try:
         tifffile.imwrite(temporary, strips(), shape=linear_bgr.shape, dtype='<u2',
                          byteorder='<', rowsperstrip=rows_per_strip,
-                         planarconfig='contig', photometric=34892, metadata=None,
+                         planarconfig='contig', photometric=34892, subfiletype=0, metadata=None,
                          resolution=resolution,
                          resolutionunit=3 if resolution is not None else None,
                          extratags=tags, software='OpenFocus', description=None)
@@ -573,3 +596,171 @@ def write_linear_dng(path, linear_bgr, metadata, *, should_cancel=None,
                         should_cancel=should_cancel,
                         linear_dng_px_size_um=px_size_um):
         raise OSError(f"Could not write linear DNG: {path}")
+
+
+def _cfa_metadata(raw, source):
+    """Describe unrotated LibRaw samples; never develop or rescale a mosaic."""
+    sizes = raw.sizes
+    if raw.raw_type != rawpy.RawType.Flat or raw.num_colors != 3:
+        raise ValueError('Unsupported RAW sensor: expected a three-color flat CFA')
+    pattern = raw.raw_pattern
+    if pattern is None or pattern.shape not in ((2, 2), (6, 6)):
+        raise ValueError('Unsupported RAW CFA layout (expected Bayer or X-Trans)')
+    if not math.isclose(float(sizes.pixel_aspect), 1.0, abs_tol=1e-6):
+        raise ValueError('Unsupported non-square or diagonal RAW sensor layout')
+    repeat = pattern.shape
+    # DNG CFA and black patterns start at ActiveArea; raw_color includes margins.
+    indices = np.array([[raw.raw_color(y + sizes.top_margin, x + sizes.left_margin)
+                         for x in range(repeat[1])]
+                        for y in range(repeat[0])], dtype=np.uint8)
+    description = raw.color_desc.decode('ascii').rstrip('\x00')
+    try:
+        colors = np.array([{'R': 0, 'G': 1, 'B': 2}[description[i]]
+                           for i in indices.flat], dtype=np.uint8).reshape(repeat)
+    except (KeyError, IndexError) as exc:
+        raise ValueError('Unsupported RAW CFA color planes') from exc
+    if (repeat == (2, 2) and tuple(colors.flat) not in (
+            (0, 1, 1, 2), (1, 0, 2, 1), (1, 2, 0, 1), (2, 1, 1, 0))
+            or repeat == (6, 6) and not _valid_xtrans(colors)):
+        raise ValueError('Unsupported RAW CFA arrangement')
+    top, left = int(sizes.top_margin), int(sizes.left_margin)
+    bottom, right = top + int(sizes.height), left + int(sizes.width)
+    if not (0 <= top < bottom <= sizes.raw_height and
+            0 <= left < right <= sizes.raw_width):
+        raise ValueError('Unsupported RAW active sensor bounds')
+    if sizes.flip not in range(8):
+        raise ValueError('Unsupported RAW orientation')
+    matrix = np.asarray(raw.rgb_xyz_matrix, dtype=np.float64)[:3, :3]
+    wb = np.asarray(raw.camera_whitebalance, dtype=np.float64)[:3]
+    if wb.shape != (3,) or not np.isfinite(wb).all() or np.any(wb <= 0):
+        raise ValueError('RAW is missing valid as-shot white balance')
+    make, model = _camera_identity(source, raw)
+    if (make, model) == ('OpenFocus', 'Linear RAW'):
+        raise ValueError('Cannot identify the RAW camera for DNG calibration')
+    metadata = LinearDNGMetadata(tuple(map(tuple, matrix)), tuple(wb[1] / wb), make, model)
+    _validate_metadata(metadata)
+    black = np.asarray(raw.black_level_per_channel, dtype=np.float64)
+    if (black.size <= int(indices.max()) or not np.isfinite(black).all()
+            or np.any(black < 0)):
+        raise ValueError('Invalid RAW per-channel black levels')
+    white = int(raw.white_level)
+    channel_white = raw.camera_white_level_per_channel
+    if channel_white is not None:
+        used = np.asarray(channel_white)[np.unique(indices)]
+        used = used[used > 0]
+        if used.size and np.any(used != white):
+            raise ValueError('Unsupported unequal channel saturation levels; CFA samples cannot be preserved exactly')
+    if not 0 < white <= 65535 or np.any(black[indices] >= white):
+        raise ValueError('Invalid RAW black/white level range')
+    crop_origin, crop_size = (0, 0), (sizes.width, sizes.height)
+    inset_width, inset_height = getattr(sizes, 'crop_width', 0), getattr(sizes, 'crop_height', 0)
+    if inset_width > 0 and inset_height > 0:
+        crop_x = int(getattr(sizes, 'crop_left_margin', left)) - left
+        crop_y = int(getattr(sizes, 'crop_top_margin', top)) - top
+        if not (0 <= crop_x < sizes.width and 0 <= crop_y < sizes.height
+                and crop_x + inset_width <= sizes.width and crop_y + inset_height <= sizes.height):
+            raise ValueError('Unsupported RAW default crop bounds')
+        crop_origin, crop_size = (crop_x, crop_y), (inset_width, inset_height)
+    orientation = (1, 2, 4, 3, 5, 8, 6, 7)[sizes.flip]
+    return [
+        (271, 's', 0, make, False), (272, 's', 0, model, False),
+        (274, 'H', 1, orientation, False),
+        (33421, 'H', 2, repeat, False),
+        (33422, 'B', colors.size, tuple(colors.flat), False),
+        (50706, 'B', 4, (1, 4, 0, 0), False),
+        (50707, 'B', 4, (1, 3, 0, 0) if repeat == (6, 6) else (1, 1, 0, 0), False),
+        (50708, 's', 0, model, False),
+        (50710, 'B', 3, (0, 1, 2), False), (50711, 'H', 1, 1, False),
+        (50713, 'H', 2, repeat, False),
+        (50714, '2I', colors.size, _rationals(black[indices].flat), False),
+        (50717, 'I', 1, white, False),
+        (50719, 'I', 2, crop_origin, False),
+        (50720, 'I', 2, crop_size, False),
+        (50721, '2i', 9, _rationals(matrix.flat, signed=True), False),
+        (50728, '2I', 3, _rationals(metadata.as_shot_neutral), False),
+        (50778, 'H', 1, 21, False),
+        (50829, 'I', 4, (0, 0, sizes.height, sizes.width), False),
+    ]
+
+
+def convert_raw_to_dng(path, source, *, should_cancel=None):
+    """Export CFA samples losslessly, or preserve an existing DNG verbatim.
+
+    Non-CFA three-color sensors use the explicit camera-linear LinearRaw
+    representation. Unsupported calibration/layouts fail before publication.
+    The caller owns destination reservation and atomic publication.
+    """
+    from utils.logging_setup import log_operation, log_action
+    from core.registration import RegistrationCancelled
+    if os.path.exists(path) and os.path.samefile(path, source):
+        raise ValueError('DNG destination must differ from its source')
+
+    def check_cancel():
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError('DNG conversion cancelled')
+
+    with log_operation('converter.dng', source=os.fspath(source), output=os.fspath(path)) as operation:
+        try:
+            check_cancel()
+            try:
+                with tifffile.TiffFile(source) as tif:
+                    existing_dng = bool(tif.is_dng)
+            except (OSError, ValueError, tifffile.TiffFileError):
+                existing_dng = False
+            if existing_dng:
+                # Preserve profiles, opcodes, linearization and private camera
+                # metadata that LibRaw's Python API cannot round-trip.
+                with rawpy.RawPy() as raw:
+                    raw.open_file(os.fspath(source))
+                    if raw.sizes.raw_width <= 0 or raw.sizes.raw_height <= 0:
+                        raise ValueError('Invalid DNG dimensions')
+                with open(source, 'rb') as incoming, open(path, 'wb') as outgoing:
+                    while True:
+                        check_cancel()
+                        chunk = incoming.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        outgoing.write(chunk)
+                log_action('converter.dng.format', format='original DNG (unchanged)')
+                check_cancel()
+                return
+            with rawpy.RawPy() as raw:
+                raw.open_file(os.fspath(source))
+                check_cancel()
+                if raw.raw_type != rawpy.RawType.Flat:
+                    linear_sensor = True
+                else:
+                    linear_sensor = False
+                    check_cancel()
+                    tags = _cfa_metadata(raw, source)
+                    # Trim only masked optical borders. This keeps odd sensor
+                    # margins from triggering LibRaw's Bayer phase rounding.
+                    pixels = raw.raw_image_visible
+                    if (pixels.dtype != np.uint16 or pixels.ndim != 2
+                            or pixels.shape != (raw.sizes.height, raw.sizes.width)):
+                        raise ValueError('Unsupported RAW sample representation')
+                    if pixels.nbytes > 2**32 - 1024 * 1024:
+                        raise ValueError('CFA DNG exceeds the standard TIFF 4 GiB limit')
+                    rows = min(128, pixels.shape[0])
+
+                    def strips():
+                        for start in range(0, pixels.shape[0], rows):
+                            check_cancel()
+                            yield np.ascontiguousarray(pixels[start:start + rows], dtype='<u2').tobytes()
+
+                    tifffile.imwrite(path, strips(), shape=pixels.shape, dtype='<u2',
+                                     byteorder='<', bigtiff=False, rowsperstrip=rows, photometric=32803,
+                                     subfiletype=0, metadata=None, description=None, software='OpenFocus',
+                                     extratags=tags)
+                    log_action('converter.dng.format', format='CFA', repeat=raw.raw_pattern.shape,
+                               width=pixels.shape[1], height=pixels.shape[0], storage_bits=16,
+                               white_level=raw.white_level)
+            if linear_sensor:
+                check_cancel()
+                pixels, metadata = load_linear_raw(source)
+                _write_linear_dng_atomic(path, pixels, metadata, should_cancel=should_cancel)
+                log_action('converter.dng.format', format='LinearRaw (camera-linear RGB)')
+            check_cancel()
+        except (InterruptedError, RegistrationCancelled):
+            operation.cancel()
+            raise

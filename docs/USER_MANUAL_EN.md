@@ -1365,9 +1365,54 @@ The batch dialog shows real-time progress. You can cancel processing at any time
 
 Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose an existing output folder and a format, then select **Convert**. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
 
-Camera RAW is developed with LibRaw using camera white balance and without automatic brightening. Available RAW support depends on the installed LibRaw version. Multipage TIFF is exported as separately numbered images. JPEG is lossy, and JPEG, BMP and WebP reduce 16-bit pixels to 8-bit; PNG and TIFF retain 16-bit pixels. Transparent images require PNG. LZW TIFF pages with alpha, unsupported TIFF color layouts and sample types are reported as errors. Existing files and inputs are never replaced: name conflicts receive numbered suffixes. Processing one image or TIFF page at a time still requires enough free memory and disk space for that image and its encoder. Safe camera EXIF and compatible RGB profiles are retained where supported; some formats or pages cannot carry all metadata.
+The fixed 96×72 thumbnail sits to the left of each row. Select multiple rows and
+press **Delete** or **Remove** to remove them. Adding/removing files and Delete
+are disabled during conversion. Thumbnails run in a separate, bounded queue and
+use JPEG decoder scaling or small raster pages. Large RAW files use bounded
+embedded JPEG ranges from TIFF-based RAW or RAF containers; a format without a
+safe preview, including some CR3 files, shows a placeholder instead of unpacking
+the sensor. Missing thumbnails do not prevent conversion.
 
-RAW conversions use the sRGB transfer curve and embed an sRGB profile where
+Choose **DNG** for RAW-to-DNG conversion without installing Adobe DNG Converter.
+Supported three-color Bayer and X-Trans sensors retain the exact active CFA
+samples, their black levels, white level, as-shot white balance, D65 camera
+matrix, crop and orientation. Masked optical borders are omitted; active pixels
+are neither resized nor developed. Samples use a 16-bit TIFF container while
+retaining the original 12/14/16-bit white level. Existing DNG files are copied
+byte-for-byte, preserving their profiles, processing opcodes and proprietary
+metadata. Non-CFA three-color sensors use **LinearRaw**, containing camera-linear
+RGB rather than a sensor mosaic. Ordinary JPEG/PNG/TIFF inputs cannot become
+camera RAW by choosing DNG and are reported as errors.
+
+LibRaw supplies the camera calibration for vendor RAW. Its Python API does not
+expose every proprietary correction, spatial black table or manufacturer profile;
+conversion does not promise identical rendering to the manufacturer's software.
+Unknown CFA layouts, four-color sensors, non-square/diagonal layouts, missing
+calibration, unequal channel saturation levels and CFA payloads exceeding standard
+TIFF's 4 GiB limit fail explicitly. No Adobe SDK or converter is required at runtime.
+Synthetic Bayer, X-Trans and LinearRaw samples are covered by independent LibRaw
+decoding tests; support for individual real cameras depends on LibRaw.
+
+The seven small synthetic files (Bayer and X-Trans at 12/14/16-bit sensor ranges,
+plus one 16-bit LinearRaw) also completed **Adobe DNG SDK 1.6 dng_validate**
+with exit code 0. That validator build disabled XMP and external lossy-JPEG
+support; the generated files contain neither. The six CFA samples emit the SDK's
+"Too little padding (possible interpolation artifacts)" warnings at their four
+edges because masked borders were removed and ActiveArea covers the stored
+pixels. Border interpolation may therefore differ between consumers. Pixels
+are not fabricated or padded to hide this warning. This is validation of these
+synthetic files, not certification of every camera or Adobe product.
+
+Parallel conversion shares the application's resource budget, reserves memory
+for each job's largest TIFF page, and bounds pending jobs to the worker count.
+Each job runs native codecs with one thread. Cancellation stops new admissions
+and checks between pages, decode/write stages and DNG strips; native codec calls
+finish cooperatively. Completed files remain available and incomplete temporary
+files are removed. Output-name reservation is atomic across concurrent jobs.
+
+For ordinary image output, camera RAW is developed with LibRaw using camera white balance and without automatic brightening. Available RAW support depends on the installed LibRaw version. Multipage TIFF is exported as separately numbered images. JPEG is lossy, and JPEG, BMP and WebP reduce 16-bit pixels to 8-bit; PNG and TIFF retain 16-bit pixels. Transparent images require PNG. LZW TIFF pages with alpha, unsupported TIFF color layouts and sample types are reported as errors. Existing files and inputs are never replaced: name conflicts receive numbered suffixes. Every image still requires enough free memory and disk space for its decoder and encoder. Safe camera EXIF and compatible RGB profiles are retained where supported; some formats or pages cannot carry all metadata.
+
+RAW conversions to ordinary image formats use the sRGB transfer curve and embed an sRGB profile where
 the output format supports it. For a multi-page TIFF, the converter preserves
 each page's own valid RGB profile independently.
 

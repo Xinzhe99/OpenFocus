@@ -1090,6 +1090,8 @@ EN = {
     "converter_add_files": "Add Files…",
     "converter_start": "Convert",
     "converter_required": "Add images and choose an existing output folder.",
-    "converter_warning": "JPEG is lossy; JPEG, BMP and WebP convert 16-bit images to 8-bit. PNG and TIFF retain 16-bit. Transparent images require PNG. Multipage TIFFs become separate numbered files. Existing files are never replaced.",
+    "converter_warning": "DNG accepts camera RAW: Bayer/X-Trans retain active sensor samples; non-CFA sensors use camera-linear LinearRaw. Existing DNG is copied unchanged. JPEG is lossy; JPEG/BMP/WebP reduce 16-bit to 8-bit. PNG/TIFF retain 16-bit. Transparent images require PNG. Multipage TIFFs become numbered files. Existing files are never replaced. Select rows and press Delete to remove them.",
     "converter_summary": "Succeeded: {success} · Failed: {failed} {cancelled}",
+    "converter_no_preview": "No bounded embedded preview is available; conversion is still available.",
+    "converter_item_state": "Completed: {completed}/{pages} · Failed: {failed}",
 }

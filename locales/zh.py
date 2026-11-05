@@ -1088,6 +1088,8 @@ ZH = {
     "converter_add_files": "添加文件…",
     "converter_start": "转换",
     "converter_required": "请添加图像并选择现有的输出文件夹。",
-    "converter_warning": "JPEG 为有损格式；JPEG、BMP 和 WebP 将 16 位图像转换为 8 位。PNG 和 TIFF 保留 16 位。透明图像请使用 PNG。多页 TIFF 将转换为单独的编号文件。不会覆盖现有文件。",
+    "converter_warning": "DNG 仅接受相机 RAW：Bayer/X-Trans 保留有效传感器样本，非 CFA 传感器使用相机线性 LinearRaw。已有 DNG 原样复制。JPEG 有损；JPEG/BMP/WebP 将 16 位转为 8 位，PNG/TIFF 保留 16 位。透明图像请使用 PNG。多页 TIFF 分别编号输出，不覆盖已有文件。可多选后按 Delete 移除。",
     "converter_summary": "成功：{success} · 失败：{failed} {cancelled}",
+    "converter_no_preview": "没有可安全读取的内嵌预览；仍可转换此文件。",
+    "converter_item_state": "已完成：{completed}/{pages} · 失败：{failed}",
 }

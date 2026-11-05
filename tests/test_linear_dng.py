@@ -47,6 +47,8 @@ def test_dng_round_trip_opens_in_libraw_and_preserves_linear_pixels(tmp_path, ca
     with tifffile.TiffFile(path) as tif:
         page = tif.pages[0]
         assert page.photometric.value == 34892
+        assert page.tags[254].value == 0
+        assert page.tags[274].value == 1
         assert page.bitspersample == 16
         assert page.tags[50714].count == 3
         assert page.tags[50714].value == (0, 1, 0, 1, 0, 1)

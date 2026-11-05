@@ -14,8 +14,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   app version and OS. Update all 12 UI languages and local/website privacy guidance.
 - Bound feedback archives to recent log tails and include a readable diagnostic
   index for tracing stages, failures and cancellation through operation IDs.
-- Add Tools → Batch Image Converter for sequential RAW and still-image conversion,
-  with numbered TIFF pages, collision-safe output names and cooperative cancellation.
+- Add Tools → Batch Image Converter with active-sample Bayer/X-Trans CFA DNG,
+  explicit camera-linear LinearRaw for non-CFA sensors, unchanged DNG copying,
+  budgeted parallel jobs, fixed background thumbnails, multi-select Delete,
+  numbered TIFF pages, atomic collision-safe names and cooperative cancellation.
 - Add a separate microscope mosaic workspace with feature-based alignment,
   manual pixel coordinates, overlap preview and 8/16-bit TIFF/PNG export.
   Large TIFF mosaics use disk-backed tiled composition and streamed writing.
@@ -59,6 +61,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   record method/checkpoint/provider, model and result hashes, shapes, resource
   plans and CPU fallback reasons in local diagnostics. Add a small real-model
   diagnostic and consumer regressions for independent V1/V3 models and caches.
+- Write the required main-image NewSubFileType=0 and orientation tags for DNG,
+  fixing strict DNG SDK readers rejecting otherwise LibRaw-readable LinearRaw.
 - Check temporary disk space for mapped frames and known stack operations, and
   release rejected imports without replacing the current stack.
 - Develop ordinary RAW inputs with the sRGB transfer curve and preserve the

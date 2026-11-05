@@ -189,3 +189,255 @@ def test_lzw_tiff_orientation(tmp_path):
     result = converter.convert_one(str(source), str(tmp_path), '.png')
     actual = cv2.imdecode(np.fromfile(result, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     np.testing.assert_array_equal(actual, np.rot90(pixels, -1))
+
+
+def test_parallel_output_reservations_never_collide(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    source = tmp_path / 'shared.png'
+    Image.new('RGB', (16, 16), 'red').save(source)
+    before = source.read_bytes()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outputs = list(pool.map(lambda _: converter.convert_one(str(source), str(tmp_path), '.jpg'), range(12)))
+    assert len(set(outputs)) == 12
+    assert source.read_bytes() == before
+    for output in outputs:
+        with Image.open(output) as image:
+            assert image.size == (16, 16)
+
+
+def test_dng_rejects_developed_input_without_creating_output(tmp_path):
+    source = tmp_path / 'developed.png'
+    Image.new('RGB', (8, 8)).save(source)
+    with pytest.raises(ValueError, match='camera RAW'):
+        converter.convert_one(str(source), str(tmp_path), '.dng')
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['developed.png']
+
+
+def test_cancelled_batch_keeps_completed_page_and_reports_unstarted(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from threading import Event
+    source = tmp_path / 'pages.tif'
+    with tifffile.TiffWriter(source) as tif:
+        for value in (1000, 2000, 3000):
+            tif.write(np.full((8, 8), value, np.uint16))
+    remaining = tmp_path / 'remaining.png'
+    Image.new('RGB', (8, 8)).save(remaining)
+    cancelled = Event()
+    real = converter.convert_one
+
+    def convert(*args, **kwargs):
+        output = real(*args, **kwargs)
+        cancelled.set()
+        return output
+
+    monkeypatch.setattr(converter, 'convert_one', convert)
+    monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=1, max_in_flight=1, ram_budget=1024**3, describe=lambda: 'test'))
+    monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 1024**3)
+    statuses, progress = {}, []
+    result = converter.convert_batch([str(source), str(remaining)], str(tmp_path), '.png',
+                                     cancelled.is_set, lambda i, text: statuses.update({i: text}), progress.append)
+    assert result == (0, 0, True)
+    assert (tmp_path / 'pages_page_0001.png').is_file()
+    assert not (tmp_path / 'pages_page_0002.png').exists()
+    assert 'Cancelled' in statuses[0] and statuses[1] == 'Cancelled'
+    assert not list(tmp_path.glob('tmp*'))
+
+
+def test_job_memory_reservation_bounds_parallel_admission(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+    from types import SimpleNamespace
+    entered, release = Event(), Event()
+    calls, lock = [], Lock()
+    monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=3, max_in_flight=3, ram_budget=150, describe=lambda: 'test'))
+    monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 150)
+    monkeypatch.setattr(converter, 'page_count', lambda *a: 1)
+    monkeypatch.setattr(converter, 'estimate_job', lambda *a: (100, 1))
+
+    def convert(index, *args):
+        with lock:
+            calls.append(index)
+        entered.set()
+        assert release.wait(5)
+        return True, False
+
+    monkeypatch.setattr(converter, '_convert_source', convert)
+    with ThreadPoolExecutor(max_workers=1) as owner:
+        future = owner.submit(converter.convert_batch, ['a', 'b', 'c'], str(tmp_path), '.png',
+                              lambda: False, lambda *a: None, lambda *a: None)
+        try:
+            assert entered.wait(5)
+            # The held job consumes 100 of 150 bytes. No second job may enter.
+            assert calls == [0]
+        finally:
+            release.set()
+        assert future.result(timeout=5) == (3, 0, False)
+
+
+def test_thumbnail_refuses_large_raster_before_loading(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    class LargeHeader:
+        format = 'PNG'
+        width = height = 100000
+        def getexif(self):
+            return {}
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def thumbnail(self, *args):
+            pytest.fail('Attempted to decode a giant raster')
+
+    monkeypatch.setattr(converter.Image, 'open', lambda *a: LargeHeader())
+    with pytest.raises(ValueError, match='bounded'):
+        converter.thumbnail_rgb(str(tmp_path / 'giant.png'))
+
+
+def test_large_raw_without_preview_never_unpacks_sensor(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    class RawHeader:
+        sizes = SimpleNamespace(raw_width=100000, raw_height=100000, flip=0)
+        def open_file(self, stream):
+            pass
+        def extract_thumb(self):
+            pytest.fail('Unbounded LibRaw bitmap thumbnail decode')
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+
+    source = tmp_path / 'giant.cr3'
+    source.write_bytes(b'header')
+    monkeypatch.setattr(converter.image_loader.rawpy, 'RawPy', RawHeader)
+    monkeypatch.setattr(converter, '_embedded_raw_jpeg', lambda *a: None)
+    with pytest.raises(ValueError, match='bounded'):
+        converter.thumbnail_rgb(str(source))
+
+
+def test_thumbnail_stale_completion_cannot_modify_readded_row(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QImage
+    from dialogs.batch_converter import BatchConverterDialog, ThumbnailWorker
+    monkeypatch.setattr(ThumbnailWorker, 'start', lambda self: None)
+    source = str(tmp_path / 'photo.png')
+    dialog = BatchConverterDialog()
+    try:
+        dialog._append([source])
+        old_token = dialog.list.item(0).data(Qt.ItemDataRole.UserRole)
+        dialog.list.item(0).setSelected(True)
+        dialog._remove()
+        dialog._append([source])
+        item = dialog.list.item(0)
+        assert item.data(Qt.ItemDataRole.UserRole) != old_token
+        before = item.icon().cacheKey()
+        image = QImage(20, 20, QImage.Format.Format_RGB888)
+        image.fill(Qt.GlobalColor.red)
+        dialog._thumbnail_ready(old_token, image, 'old failure')
+        assert item.icon().cacheKey() == before and 'old failure' not in item.toolTip()
+        assert item.sizeHint().height() == 88
+        assert dialog.list.iconSize().width() == 96
+    finally:
+        dialog.close()
+
+
+def test_thumbnail_queue_is_bounded_and_delete_is_disabled_while_busy(qapp, tmp_path, monkeypatch):
+    from dialogs.batch_converter import BatchConverterDialog, ThumbnailWorker, ConverterWorker
+    monkeypatch.setattr(ThumbnailWorker, 'start', lambda self: None)
+    monkeypatch.setattr(ConverterWorker, 'start', lambda self: None)
+    dialog = BatchConverterDialog()
+    try:
+        dialog._append([str(tmp_path / f'{index}.png') for index in range(100)])
+        assert len(dialog.thumbnail_worker._queue) == ThumbnailWorker.capacity
+        dialog.directory.setText(str(tmp_path))
+        dialog._start()
+        assert not dialog.delete_shortcut.isEnabled()
+        assert not dialog.remove.isEnabled() and not dialog.add_files.isEnabled()
+        monkeypatch.setattr(ConverterWorker, 'isRunning', lambda self: True)
+        dialog.list.item(0).setSelected(True)
+        dialog._remove()
+        assert len(dialog.sources) == 100
+    finally:
+        dialog.worker = None
+        dialog.close()
+
+
+def test_multipage_partial_failure_retains_successful_pages(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    source = tmp_path / 'partial.tif'
+    with tifffile.TiffWriter(source) as tif:
+        for value in (1000, 2000, 3000):
+            tif.write(np.full((8, 8), value, np.uint16))
+    decode = converter._decode
+
+    def fail_middle(path, page):
+        if page == 1:
+            raise ValueError('damaged middle page')
+        return decode(path, page)
+
+    monkeypatch.setattr(converter, '_decode', fail_middle)
+    monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=2, max_in_flight=2, ram_budget=1024**3, describe=lambda: 'test'))
+    monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 1024**3)
+    statuses = {}
+    result = converter.convert_batch([str(source)], str(tmp_path), '.png', lambda: False,
+                                     lambda i, text: statuses.update({i: text}), lambda *a: None)
+    assert result == (0, 1, False)
+    assert (tmp_path / 'partial_page_0001.png').is_file()
+    assert not (tmp_path / 'partial_page_0002.png').exists()
+    assert (tmp_path / 'partial_page_0003.png').is_file()
+    assert 'damaged middle page' in statuses[0]
+
+
+def test_batch_restores_global_native_codec_threads_after_failure(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    options = SimpleNamespace(DECODE_THREADS=7)
+    monkeypatch.setitem(sys.modules, 'pillow_heif', SimpleNamespace(options=options))
+    monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
+                        SimpleNamespace(workers=1, max_in_flight=1, ram_budget=1024**3, describe=lambda: 'test'))
+    monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 1024**3)
+    monkeypatch.setattr(converter, 'page_count', lambda *a: 1)
+    monkeypatch.setattr(converter, 'estimate_job', lambda *a: (100, 1))
+    original_cv = converter.cv2.getNumThreads()
+
+    def failed_job(*args):
+        assert options.DECODE_THREADS == 1
+        assert converter.cv2.getNumThreads() == 1
+        raise ValueError('codec failed')
+
+    monkeypatch.setattr(converter, '_convert_source', failed_job)
+    result = converter.convert_batch(['image.heic'], str(tmp_path), '.png', lambda: False,
+                                     lambda *a: None, lambda *a: None)
+    assert result == (0, 1, False)
+    assert options.DECODE_THREADS == 7
+    assert converter.cv2.getNumThreads() == original_cv
+
+
+def test_converter_close_waits_for_worker_and_keeps_controls_disabled(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtGui import QCloseEvent
+    from dialogs.batch_converter import BatchConverterDialog, ThumbnailWorker, ConverterWorker
+    monkeypatch.setattr(ThumbnailWorker, 'start', lambda self: None)
+    monkeypatch.setattr(ConverterWorker, 'start', lambda self: None)
+    dialog = BatchConverterDialog()
+    dialog._append([str(tmp_path / 'input.png')])
+    dialog.directory.setText(str(tmp_path))
+    dialog._start()
+    interrupted = []
+    running = [True]
+    monkeypatch.setattr(ConverterWorker, 'isRunning', lambda self: running[0])
+    monkeypatch.setattr(ConverterWorker, 'requestInterruption', lambda self: interrupted.append(True))
+    try:
+        event = QCloseEvent()
+        dialog.closeEvent(event)
+        assert not event.isAccepted() and dialog._close_pending and interrupted
+        assert not dialog.remove.isEnabled() and not dialog.delete_shortcut.isEnabled()
+        running[0] = False
+        dialog._finished()
+        assert dialog.start.isEnabled() and dialog.delete_shortcut.isEnabled()
+    finally:
+        dialog.worker = None
+        dialog.close()
