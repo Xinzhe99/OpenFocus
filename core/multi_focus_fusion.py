@@ -604,10 +604,11 @@ class MultiFocusFusion:
         spec = self.descriptor
         needs_tiles = (resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
                        if spec.tile_decider else max(h, w) > self.tile_threshold)
-        deferred_exposure = (self.algorithm == 'stackmffv3' and self.tile_enabled
+        deferred_exposure = (self.algorithm in ('stackmffv3', 'stackmffv2') and self.tile_enabled
                              and needs_tiles and isinstance(input_source, list))
 
-        streamed_directory = (isinstance(input_source, str) and spec.tile_runner
+        streamed_directory = (isinstance(input_source, str)
+                              and (spec.tile_runner or self.algorithm == 'stackmffv2')
                               and self.tile_enabled and needs_tiles)
         preparation = (0 if streamed_directory else source_allocation) + max(size for size, _ in frame_specs) * 8
         if self.exposure_match and not deferred_exposure and not streamed_directory:
@@ -655,7 +656,14 @@ class MultiFocusFusion:
 
 
         check_cancel()
-        if (self.tile_enabled and needs_tiles and
+        if self.algorithm == 'stackmffv2' and self.tile_enabled and needs_tiles:
+            result = self._fuse_stackmffv2(
+                input_source, img_resize, should_cancel=should_cancel,
+                progress_callback=progress_callback, tile_size=self.tile_block_size,
+                tile_overlap=self.tile_overlap, exposure_gains=exposure_gains_,
+                source_all_uint8=all(dtype == np.uint8 for _, dtype in frame_specs),
+                **kwargs)
+        elif (self.tile_enabled and needs_tiles and
                 (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c'))):
             # The neural scheduler chooses a grid that fits the current budget.
             kws = dict(kwargs)
@@ -866,6 +874,9 @@ class MultiFocusFusion:
             thread_count=kwargs.get('thread_count'),
             resource_preference=self.resource_preference,
             execution_plan=kwargs.get('execution_plan'),
+            tile_size=kwargs.get('tile_size'), tile_overlap=kwargs.get('tile_overlap', 0),
+            exposure_gains=kwargs.get('exposure_gains'),
+            source_all_uint8=kwargs.get('source_all_uint8'),
         )
 
     

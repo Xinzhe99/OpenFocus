@@ -45,15 +45,13 @@ def _inference_depth(planes, model, device, should_cancel=None, threads=1):
 def _sample(frames, index, should_cancel=None):
     """Reference output: copy the sampled source frame at every pixel."""
     common.cancel(should_cancel)
-    stack = np.stack(frames).astype(np.float32, copy=False)
-    if stack.ndim == 3:
-        stack = stack[..., None]
-    h, w = stack.shape[1:3]
-    rows = np.arange(h)[:, None]
-    cols = np.arange(w)[None, :]
-    out = stack[index, rows, cols]
+    out = np.empty(frames[0].shape, dtype=np.float32)
+    for layer, frame in enumerate(frames):
+        common.cancel(should_cancel)
+        mask = index == layer
+        out[mask] = frame[mask]
     common.cancel(should_cancel)
-    return out[..., 0] if out.shape[-1] == 1 else out
+    return out[..., 0] if out.ndim == 3 and out.shape[-1] == 1 else out
 
 
 def infer(frames, model_path, use_gpu, should_cancel=None,
@@ -89,15 +87,32 @@ def infer(frames, model_path, use_gpu, should_cancel=None,
 def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
                     should_cancel=None, progress_callback=None,
                     thread_count=None, resource_preference='balanced',
-                    execution_plan=None, **kwargs):
+                    execution_plan=None, tile_size=None, tile_overlap=0,
+                    exposure_gains=None, source_all_uint8=None, **kwargs):
     """Whole-stack fusion; the caller may already hold the heavy-job lease."""
     from core.resource_policy import heavy_job
 
     lease = heavy_job(should_cancel) if execution_plan is None else nullcontext()
     with lease:
         common.cancel(should_cancel)
-        frames = common.read_stack(input_source, img_resize, should_cancel,
-                                   execution_plan)
+        if tile_size is not None:
+            from fusion_methods.stackmff_v2_tiled import tiled_fusion
+            return tiled_fusion(
+                input_source, img_resize, model_path, use_gpu, should_cancel,
+                execution_plan, thread_count, resource_preference, tile_size,
+                tile_overlap, progress_callback, exposure_gains, source_all_uint8)
+        if isinstance(input_source, str):
+            from core.resource_policy import require_memory
+            from fusion_methods.stackmff_v2_tiled import _Source
+            source = _Source(input_source, img_resize, None, should_cancel)
+            first = source.get(0)
+            require_memory(len(source.items) * first.nbytes,
+                           user_limit=execution_plan.ram_budget if execution_plan else None)
+            frames = [first]
+            frames.extend(source.get(i) for i in range(1, len(source.items)))
+        else:
+            frames = common.read_stack(input_source, img_resize, should_cancel,
+                                       execution_plan)
         if len(frames) < 2:
             raise ValueError("At least two images are required for fusion")
         if progress_callback is not None:
@@ -115,11 +130,33 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
 
 def depth_positions(images, model_path, use_gpu, should_cancel=None,
                     execution_plan=None, thread_count=None,
-                    resource_preference='balanced'):
-    """Sampled layer positions in 0..N-1 for the depth-map pipeline."""
-    fused, _depth, index = infer(
-        list(images), model_path, use_gpu,
-        should_cancel=should_cancel, execution_plan=execution_plan,
-        thread_count=thread_count, resource_preference=resource_preference)
-    del fused
+                    resource_preference='balanced', tile_size=None,
+                    tile_overlap=0, progress_callback=None):
+    """Sampled layer positions, with adaptive whole-stack spatial tiling."""
+    from core.resource_policy import ResourceLimitError
+    from fusion_methods.stackmff_v2_tiled import _Source, tiled_depth
+    images = list(images)
+    if tile_size is None:
+        try:
+            _prepare_inference(images, model_path, use_gpu,
+                               thread_count=thread_count,
+                               resource_preference=resource_preference,
+                               execution_plan=execution_plan)
+        except ResourceLimitError:
+            pass
+        else:
+            if progress_callback is not None:
+                progress_callback(0, 1)
+            fused, _depth, index = infer(
+                images, model_path, use_gpu, should_cancel=should_cancel,
+                execution_plan=execution_plan, thread_count=thread_count,
+                resource_preference=resource_preference)
+            if progress_callback is not None:
+                progress_callback(1, 1)
+            return index.astype(np.float32)
+    source = _Source(images, None, None, should_cancel)
+    _depth, index = tiled_depth(
+        source, model_path, use_gpu, should_cancel, execution_plan,
+        thread_count, resource_preference, tile_size, tile_overlap,
+        progress_callback)
     return index.astype(np.float32)
