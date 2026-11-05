@@ -349,11 +349,11 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
                       user_threads: Optional[int] = None):
     """Choose a spatial tile before allocating crops or output buffers.
 
-    Accelerator allocations count against host RAM too: CoreML uses unified
-    memory and DirectML does not expose a reliable free-memory measurement.
+    CoreML allocations share host RAM. DirectML additionally requires a
+    trustworthy free-VRAM reading; without one, select CPU instead.
     The tile estimate includes crop copies, staging, inference and reduction.
     """
-    snapshot = snapshot or probe_resources()
+    snapshot = snapshot or probe_resources(device_kind)
     maximum = max(1, min(int(block_size), height, width))
     minimum = min(maximum, 64)
     pixels = height * width
@@ -369,6 +369,12 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
     if kinds[0] != 'CPU':
         kinds.append('CPU')
     for kind in kinds:
+        # A generic host-memory reading is not a discrete GPU memory budget.
+        if kind == 'DIRECTML' and (snapshot.device_kind.upper() != 'DIRECTML'
+                                   or not snapshot.vram_known):
+            continue
+        if kind not in ('CPU', 'COREML', 'DIRECTML'):
+            continue
         block = maximum
         while True:
             padded = ((block + 63) // 64) * 64
@@ -377,15 +383,20 @@ def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
             crops = frames * block * block * channels * 8
             staging = frames * tile_pixels * 4 * (2 * channels + 3)
             reduction = tile_pixels * (channels * 4 * 3 + 8)
-            required = fixed + crops + staging + reduction + estimate_inference(
-                frames, block, block, kind)
-            if required <= ceiling and ceiling > 0:
+            inference = estimate_inference(frames, block, block, kind)
+            required = fixed + crops + staging + reduction + inference
+            device_required = inference + staging + reduction
+            device_fits = (kind != 'DIRECTML' or
+                           fits_in_budget(device_required, vram_budget(snapshot)))
+            if required <= ceiling and ceiling > 0 and device_fits:
                 capacity = cpu_capacity(snapshot, preference)
                 threads = (min(capacity, int(user_threads))
                            if user_threads is not None and user_threads > 0 else capacity)
                 return block, ExecutionPlan(
                     workers=1, native_threads=max(1, threads), max_in_flight=1,
-                    ram_budget=ceiling, device_kind=kind,
+                    ram_budget=ceiling,
+                    vram_budget=vram_budget(snapshot) if kind == 'DIRECTML' else 0,
+                    device_kind=kind,
                     reasons=(f'neural tile {block}px, {kind}',))
             if block <= minimum:
                 break
