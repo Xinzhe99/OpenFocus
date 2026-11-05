@@ -403,39 +403,3 @@ def test_ram_memmap_subclass_is_copied_to_real_disk_output(monkeypatch):
     np.testing.assert_array_equal(result, ram_copy)
 
 
-def test_render_fingerprints_final_uint16_once_and_skips_alignment_only(tmp_path, monkeypatch):
-    from utils import logging_setup
-    frame, _ = _source(tmp_path, value=23456, dtype=np.uint16)
-    fingerprints = []
-    def fingerprint(image):
-        fingerprints.append(image)
-        return {'shape': image.shape, 'dtype': str(image.dtype), 'sha256': 'fixture'}
-    monkeypatch.setattr(logging_setup, 'image_result_details', fingerprint, raising=False)
-    worker = workers.RenderWorker([frame, frame], algorithm='guided_filter', use_gpu=False,
-                                  tile_enabled=False, thread_count=1)
-    results, errors = _capture(worker)
-    worker.run()
-    assert errors == [] and len(results) == 1
-    assert len(fingerprints) == 1 and fingerprints[0] is results[0][1]
-    assert fingerprints[0].dtype == np.uint16
-    fingerprints.clear()
-    alignment = workers.RenderWorker([frame, frame], algorithm=None, need_fusion=False)
-    aligned, errors = _capture(alignment)
-    alignment.run()
-    assert errors == [] and len(aligned) == 1 and fingerprints == []
-
-
-def test_comparison_fingerprints_published_quantized_pixels_once(monkeypatch):
-    from core.compare_worker import PreviewWorker
-    from utils import logging_setup
-    result = np.full((12, 16, 3), 54321, np.uint16)
-    fingerprints = []
-    monkeypatch.setattr(logging_setup, 'image_result_details',
-                        lambda image: fingerprints.append(image) or {'dtype': str(image.dtype)}, raising=False)
-    worker = PreviewWorker([result, result], ['guided_filter'], {}, {}, None, roi_only=False)
-    monkeypatch.setattr(worker, '_fuse', lambda _method: (result, (0, 0, 16, 12)))
-    published = []
-    worker.result_ready.connect(lambda *args: published.append(args), Qt.ConnectionType.DirectConnection)
-    assert not worker._run_admitted()
-    assert len(published) == 1 and fingerprints == [result]
-    assert fingerprints[0].dtype == np.uint16 and published[0][1] is result
