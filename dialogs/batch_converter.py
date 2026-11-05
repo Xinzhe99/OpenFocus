@@ -8,14 +8,15 @@ from time import perf_counter
 from core.resource_policy import heavy_job
 from threadpoolctl import threadpool_limits
 
-from PyQt6.QtCore import QThread, pyqtSignal, QSize, Qt
+from PyQt6.QtCore import QEvent, QThread, pyqtSignal, QSize, Qt
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QShortcut, QKeySequence, QPainter, QColor
 from PyQt6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel,
                              QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
                              QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from core.batch_converter import INPUT_EXTENSIONS, OUTPUT_EXTENSIONS, convert_batch, thumbnail_rgb
-from utils.file_dialogs import FileDialog
+from utils.file_dialogs import FileDialog, expand_dialog_path
+from utils.sorting import natural_sort_key
 from utils.logging_setup import get_logger
 from locales import trans
 
@@ -93,6 +94,8 @@ class BatchConverterDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(trans.t('converter_title'))
         self.resize(760, 580)
+        self.setAcceptDrops(True)
+        self._busy = False
         self.worker = None
         self.sources = []
         self._close_pending = False
@@ -121,10 +124,21 @@ class BatchConverterDialog(QDialog):
         self.list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.list.setIconSize(QSize(96, 72))
         self.list.setUniformItemSizes(True)
+        self.list.setAcceptDrops(True)
+        self.list.viewport().setAcceptDrops(True)
+        self.list.viewport().installEventFilter(self)
+        self.empty_hint = QLabel(trans.t('converter_drop_hint'), self.list.viewport())
+        self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_hint.setWordWrap(True)
+        self.empty_hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.delete_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.list)
-        self.delete_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        self.delete_shortcut.activated.connect(self._remove)
+        self.backspace_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self.list)
+        for shortcut in (self.delete_shortcut, self.backspace_shortcut):
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self._remove)
         layout.addWidget(self.list)
+        self.queue_count = QLabel()
+        layout.addWidget(self.queue_count)
         layout.addWidget(QLabel(trans.t('batch_output_location')))
         row = QHBoxLayout()
         self.directory = QLineEdit()
@@ -160,36 +174,141 @@ class BatchConverterDialog(QDialog):
         self.start.clicked.connect(self._start)
         self.cancel.clicked.connect(self._cancel)
         close.clicked.connect(self.close)
+        self.list.itemSelectionChanged.connect(self._update_controls)
+        self.directory.textChanged.connect(self._update_controls)
+        self.directory.returnPressed.connect(self._start_if_ready)
+        for button in (*self.controls[:3], self.browse, self.start, self.cancel, close):
+            button.setAutoDefault(False)
+        self._update_controls()
 
-    def _append(self, paths):
-        seen = {os.path.normcase(os.path.abspath(p)) for p in self.sources}
+    def _output_directory(self):
+        text = self.directory.text().strip()
+        return expand_dialog_path(text, os.getcwd()) if text else ''
+
+    def _update_controls(self):
+        editable = not self._busy and not self._close_pending
+        for control in self.controls:
+            control.setEnabled(editable)
+        selected = bool(self.list.selectedItems())
+        self.remove.setEnabled(editable and selected)
+        self.delete_shortcut.setEnabled(editable and selected)
+        self.backspace_shortcut.setEnabled(editable and selected)
+        valid_directory = os.path.isdir(self._output_directory())
+        self.start.setEnabled(editable and bool(self.sources) and valid_directory)
+        self.directory.setToolTip('' if valid_directory or not self.directory.text().strip()
+                                  else trans.t('converter_required'))
+        self.queue_count.setText(trans.t('converter_queue_count').format(count=len(self.sources)))
+        self.empty_hint.setVisible(not self.sources)
+        self.empty_hint.setGeometry(self.list.viewport().rect())
+
+    def _start_if_ready(self):
+        if self.start.isEnabled():
+            self._start()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._start_if_ready()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    @staticmethod
+    def _drop_paths(event):
+        mime = event.mimeData()
+        if mime is None or not mime.hasUrls():
+            return []
+        return [url.toLocalFile() for url in mime.urls()
+                if url.isLocalFile() and not url.host()]
+
+    def dragEnterEvent(self, event):
+        if not self._busy and not self._close_pending and self._drop_paths(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        paths = self._drop_paths(event)
+        if self._busy or self._close_pending or not paths:
+            event.ignore()
+            return
+        self._append(paths, skipped=len(event.mimeData().urls()) - len(paths))
+        event.acceptProposedAction()
+
+    def eventFilter(self, watched, event):
+        if watched is self.list.viewport():
+            if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                self.dragEnterEvent(event)
+                return True
+            if event.type() == QEvent.Type.Drop:
+                self.dropEvent(event)
+                return True
+            if event.type() == QEvent.Type.Resize:
+                self.empty_hint.setGeometry(self.list.viewport().rect())
+        return super().eventFilter(watched, event)
+
+    def _append(self, paths, skipped=0):
+        if self._busy or self._close_pending:
+            return
+        paths = list(paths)
+        if not paths and not skipped:
+            return
+        candidates = []
         for path in paths:
-            key = os.path.normcase(os.path.abspath(path))
-            if key not in seen and Path(path).suffix.lower() in INPUT_EXTENSIONS:
-                seen.add(key)
-                self.sources.append(path)
-                item = QListWidgetItem(path)
-                item.setSizeHint(QSize(240, 88))
-                item.setIcon(self._thumbnail_icon(QImage()))
-                item.setToolTip(path)
-                token = self._next_token
-                self._next_token += 1
-                item.setData(Qt.ItemDataRole.UserRole, token)
-                self._thumbnail_items[token] = item
-                self.list.addItem(item)
+            path = Path(path)
+            try:
+                if path.is_dir():
+                    # Match Add Folder: import the images directly inside each folder.
+                    children = list(path.iterdir())
+                    candidates.extend(children)
+                    if not children:
+                        skipped += 1
+                else:
+                    candidates.append(path)
+            except OSError:
+                skipped += 1
+        seen = {os.path.normcase(os.path.realpath(p)) for p in self.sources}
+        added = 0
+        for path in sorted(candidates, key=natural_sort_key):
+            key = os.path.normcase(os.path.realpath(path))
+            if key in seen or not path.is_file() or path.suffix.lower() not in INPUT_EXTENSIONS:
+                skipped += 1
+                continue
+            seen.add(key)
+            source = os.path.abspath(path)
+            self.sources.append(source)
+            item = QListWidgetItem(source)
+            item.setSizeHint(QSize(240, 88))
+            item.setIcon(self._thumbnail_icon(QImage()))
+            item.setToolTip(source)
+            token = self._next_token
+            self._next_token += 1
+            item.setData(Qt.ItemDataRole.UserRole, token)
+            self._thumbnail_items[token] = item
+            self.list.addItem(item)
+            added += 1
+        self.summary.setText(trans.t('converter_import_status').format(
+            added=added, skipped=skipped, total=len(self.sources)))
+        self._update_controls()
         self._pump_thumbnails()
 
     def _add_files(self):
+        if self._busy or self._close_pending:
+            return
         paths, _ = FileDialog.getOpenFileNames(self, trans.t('converter_add_files'))
         self._append(paths)
 
     def _add_folder(self):
+        if self._busy or self._close_pending:
+            return
         folder = FileDialog.getExistingDirectory(self, trans.t('batch_btn_add'))
         if folder:
-            self._append([str(p) for p in sorted(Path(folder).iterdir()) if p.is_file()])
+            self._append([folder])
 
     def _remove(self):
-        if self.worker and self.worker.isRunning():
+        if self._busy or self._close_pending:
             return
         tokens = set()
         for item in sorted(self.list.selectedItems(), key=self.list.row, reverse=True):
@@ -202,24 +321,30 @@ class BatchConverterDialog(QDialog):
             self._thumbnail_cursor = min(self._thumbnail_cursor, row)
         if self.thumbnail_worker:
             self.thumbnail_worker.discard(tokens)
+        if tokens:
+            self.summary.clear()
         self._pump_thumbnails()
+        self._update_controls()
 
     def _browse(self):
+        if self._busy or self._close_pending:
+            return
         path = FileDialog.getExistingDirectory(self, trans.t('batch_output_location'))
         if path:
             self.directory.setText(path)
 
     def _start(self):
-        directory = self.directory.text().strip()
+        if self._busy or self._close_pending:
+            return
+        directory = self._output_directory()
         if not self.sources or not os.path.isdir(directory):
             QMessageBox.warning(self, trans.t('converter_title'), trans.t('converter_required'))
             return
         for index, path in enumerate(self.sources):
             self.list.item(index).setText(path)
             self.list.item(index).setToolTip('')
-        for control in self.controls:
-            control.setEnabled(False)
-        self.delete_shortcut.setEnabled(False)
+        self._busy = True
+        self._update_controls()
         self.cancel.setEnabled(True)
         self.progress.setRange(0, len(self.sources))
         self.progress.setValue(0)
@@ -249,10 +374,9 @@ class BatchConverterDialog(QDialog):
                              cancelled=trans.t('compare_cancelled') if cancelled else ''))
 
     def _finished(self):
-        for control in self.controls:
-            control.setEnabled(True)
+        self._busy = False
+        self._update_controls()
         self.cancel.setEnabled(False)
-        self.delete_shortcut.setEnabled(True)
         if self._close_pending:
             self.close()
 
