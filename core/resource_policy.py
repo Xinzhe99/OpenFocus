@@ -341,6 +341,60 @@ def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = No
                          device_kind=snapshot.device_kind, reasons=tuple(reasons))
 
 
+def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
+                      block_size: int, device_kind: str, estimate_inference,
+                      *, directory: bool = False, itemsize: int = 1,
+                      snapshot: Optional[ResourceSnapshot] = None,
+                      preference: str = PREFERENCE_BALANCED,
+                      user_threads: Optional[int] = None):
+    """Choose a spatial tile before allocating crops or output buffers.
+
+    Accelerator allocations count against host RAM too: CoreML uses unified
+    memory and DirectML does not expose a reliable free-memory measurement.
+    The tile estimate includes crop copies, staging, inference and reduction.
+    """
+    snapshot = snapshot or probe_resources()
+    maximum = max(1, min(int(block_size), height, width))
+    minimum = min(maximum, 64)
+    pixels = height * width
+    fixed = pixels * ((channels + 1) * 4 + channels * 4)
+    if directory:
+        # One decoded source frame and decoder/input scratch stay live while
+        # the next tile stack is assembled.
+        fixed += pixels * channels * max(4, itemsize) * 2
+    ceiling = ram_ceiling(snapshot)
+    if not snapshot.ram_known:
+        raise ResourceLimitError('Available physical memory could not be determined')
+    kinds = [str(device_kind).upper()]
+    if kinds[0] != 'CPU':
+        kinds.append('CPU')
+    for kind in kinds:
+        block = maximum
+        while True:
+            padded = ((block + 63) // 64) * 64
+            tile_pixels = padded * padded
+            # Matched/normalized crops may coexist with their predecessors.
+            crops = frames * block * block * channels * 8
+            staging = frames * tile_pixels * 4 * (2 * channels + 3)
+            reduction = tile_pixels * (channels * 4 * 3 + 8)
+            required = fixed + crops + staging + reduction + estimate_inference(
+                frames, block, block, kind)
+            if required <= ceiling and ceiling > 0:
+                capacity = cpu_capacity(snapshot, preference)
+                threads = (min(capacity, int(user_threads))
+                           if user_threads is not None and user_threads > 0 else capacity)
+                return block, ExecutionPlan(
+                    workers=1, native_threads=max(1, threads), max_in_flight=1,
+                    ram_budget=ceiling, device_kind=kind,
+                    reasons=(f'neural tile {block}px, {kind}',))
+            if block <= minimum:
+                break
+            block = max(minimum, block // 2)
+    raise ResourceLimitError(
+        f'Insufficient memory for neural fusion: minimum {minimum}px tile '
+        f'and output require more than {memory.mb(ceiling):.0f} MB available')
+
+
 def fits_in_budget(required_bytes: int, budget: int) -> bool:
     """True when a stage's minimum working set can be allocated at all.
 

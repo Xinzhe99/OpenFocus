@@ -201,7 +201,7 @@ def _dtcwt_activity_bytes(frames) -> int:
 
 
 def _ai_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
-    """Keep the requested spatial grid; admission may refuse it, never shrink it.
+    """Build a spatial grid for the admitted tile size.
 
     Batch one is the validated execution path on all devices. Larger GPU
     batches require their own numerical and device-memory qualification.
@@ -614,12 +614,11 @@ class MultiFocusFusion:
                      if f.lower().endswith(exts)]
             if not names:
                 raise ValueError(f"No image files found in directory: {input_source}")
-            from core.image_loader import decode_image, _read_tiff_pages
+            from core.image_loader import decode_image
             frame_specs = []
             for name in names:
                 check_cancel()
                 path = os.path.join(input_source, name)
-                _read_tiff_pages(path)
                 frame = decode_image(path)
                 if frame is None:
                     raise RuntimeError(f"Unable to read image: {name}")
@@ -655,8 +654,10 @@ class MultiFocusFusion:
         deferred_exposure = (self.algorithm == 'stackmffv3' and self.tile_enabled
                              and needs_tiles and isinstance(input_source, list))
 
-        preparation = source_allocation + max(size for size, _ in frame_specs) * 8
-        if self.exposure_match and not deferred_exposure:
+        streamed_directory = (isinstance(input_source, str) and spec.tile_runner
+                              and self.tile_enabled and needs_tiles)
+        preparation = (0 if streamed_directory else source_allocation) + max(size for size, _ in frame_specs) * 8
+        if self.exposure_match and not deferred_exposure and not streamed_directory:
             sorted_directory = (isinstance(input_source, str) and self.sort_mode != "off"
                                 and self.descriptor.sort_frames)
             for size, dtype in frame_specs:
@@ -703,7 +704,7 @@ class MultiFocusFusion:
         check_cancel()
         if (self.tile_enabled and needs_tiles and
                 (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c'))):
-            # Memory pressure can lower concurrency, never the spatial grid.
+            # The neural scheduler chooses a grid that fits the current budget.
             kws = dict(kwargs)
             kws.pop('block_size', None)
             kws.pop('overlap', None)
@@ -711,7 +712,8 @@ class MultiFocusFusion:
                 input_source, algorithm=self.algorithm, img_resize=img_resize,
                 block_size=self.tile_block_size, overlap=self.tile_overlap,
                 should_cancel=should_cancel, progress_callback=progress_callback,
-                exposure_gains=exposure_gains_, **kws)
+                exposure_gains=exposure_gains_,
+                source_all_uint8=all(dtype == np.uint8 for _, dtype in frame_specs), **kws)
         else:
             if exposure_gains_ is not None and isinstance(input_source, str):
                 input_source = self._materialize_exposure(input_source, exposure_gains_, should_cancel)
@@ -1058,6 +1060,7 @@ class MultiFocusFusion:
                     should_cancel=None,
                     progress_callback=None,
                     exposure_gains=None,
+                    source_all_uint8=None,
                     **kwargs) -> np.ndarray:
         """
         分块（滑动窗口）融合：当单张图像尺寸过大时调用。
@@ -1109,7 +1112,8 @@ class MultiFocusFusion:
 
         # 输出位深跟随源栈：16-bit 的分块结果是 float32 (0-255)，在这里压成
         # uint8 就把调用方要还原的深度丢掉了。
-        all_uint8 = (all(frame.dtype == np.uint8 for frame in imgs)
+        all_uint8 = (source_all_uint8 if source_all_uint8 is not None else
+                     all(frame.dtype == np.uint8 for frame in imgs)
                      if imgs is not None else src_dtype == np.uint8)
         out_dtype = np.uint8 if all_uint8 else np.float32
 
@@ -1382,6 +1386,15 @@ class MultiFocusFusion:
             files = [f for f in sorted(os.listdir(img_dir), key=natural_sort_key)
                      if f.lower().endswith(exts)]
         count = len(imgs) if imgs is not None else len(files)
+        from core.resource_policy import plan_neural_tiles
+        from fusion_methods.neural_runtime import resolve_device, estimate_inference_bytes
+        requested_device = resolve_device(self.use_gpu)
+        block_size, tile_plan = plan_neural_tiles(
+            count, h, w, channels, block_size, requested_device,
+            estimate_inference_bytes, directory=imgs is None,
+            itemsize=(max(frame.dtype.itemsize for frame in imgs)
+                      if imgs is not None else np.dtype(out_dtype).itemsize),
+            preference=self.resource_preference, user_threads=thread_count)
         block_size, _, tile_coords = _ai_effective_tiling(
             count, block_size, h, w, overlap, self.ai_batch_size)
         overlap = max(0, min(int(overlap), block_size // 2))
@@ -1392,17 +1405,6 @@ class MultiFocusFusion:
             kwargs['mode'] = mode_normalizer(
                 kwargs.get('mode', self.fusion_parameters.get('mode', 'soft')))
         hard_pick = self.algorithm == 'stackmffv3' and kwargs.get('mode') == 'hard'
-        if imgs is not None and self.algorithm == 'stackmffv3' and exposure_gains is not None:
-            # The first normalized/matched crop stack is built before model
-            # admission, so account for it while the source stack is resident.
-            from core.resource_policy import require_memory
-            mixed_16 = any(frame.dtype == np.uint16 for frame in imgs)
-            elements = [block_size * block_size * (frame.shape[2] if frame.ndim == 3 else 1)
-                        for frame in imgs]
-            crop_bytes = sum(size * (4 if mixed_16 else frame.dtype.itemsize)
-                             for size, frame in zip(elements, imgs))
-            require_memory(2 * crop_bytes + max(elements) * 8,
-                           user_limit=memory_budget_bytes())
 
 
         def crop_frames(coords):
@@ -1432,8 +1434,8 @@ class MultiFocusFusion:
         check_cancel()
         crops = crop_frames(tile_coords[0])
         _, device, plan = prepare(
-            crops, model_path, self.use_gpu, thread_count=thread_count,
-            resource_preference=self.resource_preference,
+            crops, model_path, tile_plan.device_kind != 'CPU', thread_count=thread_count,
+            resource_preference=self.resource_preference, execution_plan=tile_plan,
             fixed_bytes=h * w * ((channels + 1) * 4 + channels * np.dtype(out_dtype).itemsize))
         check_cancel()
         acc = np.zeros((h, w, channels), dtype=np.float32)
