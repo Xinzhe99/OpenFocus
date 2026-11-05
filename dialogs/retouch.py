@@ -23,7 +23,7 @@ from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
+    QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
     QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget,
 )
 
@@ -354,6 +354,136 @@ class _ToneDialog(QDialog):
         elif worker.status == "record_limit":
             QMessageBox.warning(self, trans.t("msg_warning"),
                                 trans.t("retouch_checkpoint_record_limit"))
+            super().reject()
+        else:
+            super().reject()
+
+    def reject(self):
+        if self.worker is not None:
+            self.worker.requestInterruption()
+            self.cancel_button.setEnabled(False)
+            self.cancel_button.setText(trans.t("compare_stopping"))
+        else:
+            super().reject()
+
+    def closeEvent(self, event):
+        if self.worker is not None:
+            self.reject()
+            event.ignore()
+        else:
+            super().closeEvent(event)
+
+
+class _AutoBackgroundWorker(QThread):
+    progressed = pyqtSignal(float)
+
+    def __init__(self, doc, preset, clean):
+        super().__init__()
+        self.doc = doc
+        self.preset = preset
+        self.clean = clean
+        self.status = ""
+        self.error = ""
+
+    def run(self):
+        try:
+            self.status = self.doc.auto_background(
+                self.preset, self.clean, self.isInterruptionRequested,
+                lambda fraction, _message: self.progressed.emit(float(fraction)))
+        except MemoryError as exc:
+            self.error = str(exc) or trans.t("retouch_auto_bg_failed")
+        except Exception as exc:
+            self.error = str(exc)
+
+
+class _AutoBackgroundDialog(QDialog):
+    """Choose the background preset, then replace the background as one
+    history entry (core.background_fill via RetouchDocument)."""
+
+    def __init__(self, doc, parent=None):
+        super().__init__(parent)
+        from utils.settings_store import get_settings
+        self.doc = doc
+        self.worker = None
+        self.setWindowTitle(trans.t("retouch_auto_bg"))
+        self.setModal(True)
+        layout = QVBoxLayout(self)
+        note = QLabel(trans.t("retouch_auto_bg_hint"))
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        settings = get_settings()
+        self.rb_soft = QRadioButton(trans.t("retouch_auto_bg_soft"))
+        self.rb_sharp = QRadioButton(trans.t("retouch_auto_bg_sharp"))
+        group = QButtonGroup(self)
+        group.addButton(self.rb_soft)
+        group.addButton(self.rb_sharp)
+        sharp = str(settings.value("retouch/auto_bg_preset", "soft")) == "sharp"
+        (self.rb_sharp if sharp else self.rb_soft).setChecked(True)
+        layout.addWidget(self.rb_soft)
+        layout.addWidget(self.rb_sharp)
+        self.chk_clean = QCheckBox(trans.t("retouch_auto_bg_clean"))
+        self.chk_clean.setToolTip(trans.t("retouch_auto_bg_clean_hint"))
+        self.chk_clean.setChecked(str(settings.value("retouch/auto_bg_clean", "true")).lower()
+                                  not in ("false", "0"))
+        layout.addWidget(self.chk_clean)
+        clean_note = QLabel(trans.t("retouch_auto_bg_clean_hint"))
+        clean_note.setWordWrap(True)
+        clean_note.setObjectName("mutedLabel")
+        layout.addWidget(clean_note)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1000)
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+        buttons = QHBoxLayout()
+        self.run_button = QPushButton(trans.t("retouch_auto_bg_run"))
+        self.run_button.setObjectName("primaryButton")
+        self.run_button.clicked.connect(self._run)
+        self.cancel_button = QPushButton(trans.t("btn_cancel"))
+        self.cancel_button.clicked.connect(self.reject)
+        buttons.addStretch(1)
+        buttons.addWidget(self.run_button)
+        buttons.addWidget(self.cancel_button)
+        layout.addLayout(buttons)
+        self.status = ""
+        self.resize(460, self.sizeHint().height())
+
+    def _run(self):
+        if self.worker is not None:
+            return
+        from utils.settings_store import get_settings
+        preset = "sharp" if self.rb_sharp.isChecked() else "soft"
+        clean = self.chk_clean.isChecked()
+        settings = get_settings()
+        settings.setValue("retouch/auto_bg_preset", preset)
+        settings.setValue("retouch/auto_bg_clean", "true" if clean else "false")
+        for widget in (self.rb_soft, self.rb_sharp, self.chk_clean, self.run_button):
+            widget.setEnabled(False)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
+        self.worker = _AutoBackgroundWorker(self.doc, preset, clean)
+        self.worker.progressed.connect(lambda f: self.progress.setValue(int(f * 1000)))
+        self.worker.finished.connect(self._finished)
+        self.worker.start()
+
+    def _finished(self):
+        worker = self.worker
+        self.worker = None
+        self.status = worker.status
+        if worker.error:
+            QMessageBox.critical(self, trans.t("msg_error"),
+                                 trans.t("retouch_auto_bg_failed") + "\n\n" + worker.error)
+            for widget in (self.rb_soft, self.rb_sharp, self.chk_clean, self.run_button):
+                widget.setEnabled(True)
+            self.progress.setVisible(False)
+            self.cancel_button.setEnabled(True)
+            self.cancel_button.setText(trans.t("btn_cancel"))
+        elif worker.status in ("committed", "empty"):
+            self.accept()
+        elif worker.status in ("unsupported", "oversize", "record_limit"):
+            key = {"unsupported": "retouch_auto_bg_unsupported",
+                   "oversize": "retouch_auto_bg_oversize",
+                   "record_limit": "retouch_checkpoint_record_limit"}[worker.status]
+            QMessageBox.warning(self, trans.t("msg_warning"), trans.t(key))
             super().reject()
         else:
             super().reject()
@@ -833,6 +963,23 @@ class RetouchDialog(QDialog):
         self.lbl_heat_legend.setVisible(False)
         side.addWidget(self.lbl_heat_legend)
 
+        self.btn_auto_bg = QPushButton(trans.t("retouch_auto_bg") + "…")
+        self.btn_auto_bg.setToolTip(trans.t("retouch_auto_bg_hint"))
+        self.btn_auto_bg.clicked.connect(self._auto_background)
+        side.addWidget(self.btn_auto_bg)
+        self.chk_missing = QCheckBox(trans.t("retouch_missing_show"))
+        self.chk_missing.setToolTip(trans.t("retouch_missing_legend"))
+        self.chk_missing.toggled.connect(self._toggle_missing)
+        side.addWidget(self.chk_missing)
+        self.lbl_missing_legend = QLabel(trans.t("retouch_missing_legend"))
+        self.lbl_missing_legend.setWordWrap(True)
+        self.lbl_missing_legend.setObjectName("mutedLabel")
+        self.lbl_missing_legend.setVisible(False)
+        side.addWidget(self.lbl_missing_legend)
+        self.btn_save_missing = QPushButton(trans.t("retouch_missing_save"))
+        self.btn_save_missing.clicked.connect(self._save_missing)
+        self.btn_save_missing.setVisible(False)
+        side.addWidget(self.btn_save_missing)
         self.btn_tones = QPushButton(trans.t("retouch_tones_title") + "…")
         self.btn_tones.clicked.connect(self._adjust_tones)
         side.addWidget(self.btn_tones)
@@ -946,7 +1093,8 @@ class RetouchDialog(QDialog):
             self.btn_prev, self.btn_next,
             self.rb_source, self.rb_restore, self.rb_exposure, self.num_exposure, self.num_diameter,
             self.num_hardness, self.num_opacity, self.chk_sharp,
-            self.btn_restore_all, self.btn_tones, self.btn_apply, self.btn_change,
+            self.btn_restore_all, self.btn_tones, self.btn_auto_bg, self.chk_missing,
+            self.btn_save_missing, self.btn_apply, self.btn_change,
             self.btn_fullscreen,
         ]
 
@@ -1165,7 +1313,7 @@ class RetouchDialog(QDialog):
         self._before_qimage = _qimage_from_bgr(display)
 
     def _refresh_result_display(self) -> None:
-        self._result_display = self._display_image(self.doc.working)
+        self._result_display = self._tint_missing(self._display_image(self.doc.working))
         self._result_qimage = _qimage_from_bgr(self._result_display)
         self.result_canvas.update()
         self._update_status()
@@ -1179,6 +1327,7 @@ class RetouchDialog(QDialog):
         display = self._display_image(patch)
         if self._result_display.ndim == 3 and display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
+        display = self._tint_missing(display, (y0, y1, x0, x1))
         self._result_display[y0:y1, x0:x1] = display
         painter = QPainter(self._result_qimage)
         painter.drawImage(x0, y0, _qimage_from_bgr(display))
@@ -1518,6 +1667,67 @@ class RetouchDialog(QDialog):
             self._update_dirty_ui()
             self._update_controls()
 
+    def _auto_background(self) -> None:
+        if self.doc.stroke_active or self.preview_mode is not None:
+            return
+        dialog = _AutoBackgroundDialog(self.doc, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._refresh_result_display()
+            if dialog.status == "empty":
+                self._set_notice(trans.t("retouch_auto_bg_unchanged"))
+            if self.doc.history.evicted and not self._eviction_announced:
+                self._eviction_announced = True
+                self._set_notice(trans.t("retouch_history_evicted"))
+            self._update_dirty_ui()
+            self._update_controls()
+
+    def _tint_missing(self, display, region=None):
+        """Tint the missing-data classes into an 8-bit display patch."""
+        fill = self.doc.background_fill
+        if fill is None or not self.chk_missing.isChecked():
+            return display
+        y0, y1, x0, x1 = region or (0, display.shape[0], 0, display.shape[1])
+        out = display.astype(np.float32)
+        if out.ndim == 2:
+            out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+        for _name, layer, colour in fill.missing.layers():
+            amount = layer[y0:y1, x0:x1].astype(np.float32) * (0.6 / 255.0)
+            if not amount.any():
+                continue
+            out += (np.array(colour, np.float32) - out) * amount[..., None]
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+    def _toggle_missing(self, checked: bool) -> None:
+        self.lbl_missing_legend.setVisible(checked)
+        self._refresh_result_display()
+        self._update_controls()
+
+    def _save_missing(self) -> None:
+        fill = self.doc.background_fill
+        if fill is None:
+            return
+        path, _ = FileDialog.getSaveFileName(
+            self, trans.t("retouch_missing_save"), "missing-data.png", "PNG (*.png)")
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        from core.background_fill import missing_data_overlay
+        from utils.image_utils import imwrite_auto
+        # The tinted preview, plus one exact 8-bit mask per class: the masks
+        # are the record of where no frame backs the result.
+        stem = path[:-4]
+        outputs = [(path, missing_data_overlay(self.doc.working, fill.missing))]
+        outputs += [(f"{stem}-{name}.png", layer) for name, layer, _c in fill.missing.layers()]
+        try:
+            for target, image in outputs:
+                if not imwrite_auto(target, image):
+                    raise OSError(target)
+        except Exception as exc:
+            QMessageBox.critical(self, trans.t("msg_error"), str(exc))
+            return
+        self._set_notice(trans.t("retouch_missing_saved"))
+
     def _restore_all(self) -> None:
         if (self.doc.stroke_active or self.preview_mode is not None
                 or not self.doc.is_dirty):
@@ -1637,6 +1847,13 @@ class RetouchDialog(QDialog):
         self.btn_save_checkpoint.setEnabled(not blocked and not preview)
         self.btn_load_checkpoint.setEnabled(not blocked and not preview)
         self.btn_tones.setEnabled(not blocked and not preview)
+        self.btn_auto_bg.setEnabled(not blocked and not preview
+                                    and self.doc.auto_background_supported())
+        has_missing = self.doc.background_fill is not None
+        self.chk_missing.setVisible(has_missing)
+        self.chk_missing.setEnabled(has_missing and not blocked)
+        self.btn_save_missing.setVisible(has_missing and self.chk_missing.isChecked())
+        self.btn_save_missing.setEnabled(has_missing and not blocked)
         self.btn_restore_all.setEnabled(
             self.doc.is_dirty and not blocked and not preview)
         self.btn_apply.setEnabled(

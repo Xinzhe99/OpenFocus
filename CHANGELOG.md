@@ -5,6 +5,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Add Auto background to Retouch: replace the stacked background with one real
+  frame (Soft: the blurriest background; Sharp: the far-focus frame) while the
+  subject stays as stacked. Edge halos are cleaned by default, never beyond what
+  the frames recorded; turn that off to keep the stack's own edges. A
+  missing-data map shows, and can save, where no frame saw the scene cleanly.
+
 ## [1.76.0] - 2026-11-06
 
 ### Added

@@ -242,6 +242,13 @@ def _replay_checkpoint(doc, path, cancelled=None):
                 contrast = _number(op['contrast'], -1, 1)
                 if replay.adjust_tones(exposure, contrast, cancelled) != 'committed':
                     raise ValueError('Tone adjustment could not be replayed')
+            elif kind == 'auto_background':
+                preset = op['preset']
+                clean = op['clean']
+                if preset not in ('soft', 'sharp') or type(clean) is not bool:
+                    raise ValueError('Invalid auto background operation')
+                if replay.auto_background(preset, clean, cancelled) != 'committed':
+                    raise ValueError('Auto background could not be replayed')
             elif kind == 'restore_all':
                 if not replay.restore_all():
                     raise ValueError('Restore could not be replayed')
