@@ -53,6 +53,7 @@ def test_insufficient_or_unknown_device_memory_falls_back_before_inference(
 
     monkeypatch.setattr(neural_runtime, '_session',
                         lambda path, shape, device, threads: devices.append(device) or Session())
+    monkeypatch.setattr(neural_runtime, '_DEVICE', kind)
     monkeypatch.setattr(resource_policy, 'probe_resources',
                         lambda *a, **k: _snapshot(kind, free, total))
     neural_runtime.start_inference_job()
@@ -61,6 +62,7 @@ def test_insufficient_or_unknown_device_memory_falls_back_before_inference(
     assert result.shape == planes.shape
     assert devices == ['CPU']
     assert neural_runtime.actual_device() == 'CPU'
+    assert neural_runtime.cached_device() == kind
     neural_runtime.start_inference_job()
 
 

@@ -51,6 +51,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   across zoom/pan, preview replacement and high-DPI displays. Sample original
   pixels through the same transform as the displayed frame; load lazy source
   pixels asynchronously and ignore stale frame completions.
+- Separate detected GPU hardware, verified ONNX provider capability, and the
+  device actually used by a neural job. Unknown current VRAM no longer erases
+  a verified provider; each inference still falls back to CPU when its memory
+  budget cannot be admitted. Include the DirectML adapter in session identity.
+- Keep completed fusion device reports local to their fusion instance, and
+  record method/checkpoint/provider, model and result hashes, shapes, resource
+  plans and CPU fallback reasons in local diagnostics. Add a small real-model
+  diagnostic and consumer regressions for independent V1/V3 models and caches.
 - Check temporary disk space for mapped frames and known stack operations, and
   release rejected imports without replacing the current stack.
 - Develop ordinary RAW inputs with the sRGB transfer curve and preserve the

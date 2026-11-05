@@ -36,6 +36,7 @@ from typing import Union, List, Optional
 from utils.sorting import natural_sort_key as _image_sort_key
 from core.image_loader import apply_exif_orientation
 from core.frame_storage import store_frame
+from utils.logging_setup import log_action, log_operation
 
 
 
@@ -1012,6 +1013,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             raise RuntimeError("Explicit CuPy alignment backend is unavailable") from error
     else:
         print("    [Info] GPU warping disabled. Using CPU for warping.")
+    log_action('registration_warp', method='ecc',
+               provider='CuPy' if HAS_CUPY else 'OpenCV',
+               device='CUDA' if HAS_CUPY else 'CPU', shape=(target_h, target_w),
+               frames=len(images), gpu_requested=use_gpu)
 
     def warp_task(args):
         idx, img, H = args
@@ -1349,15 +1354,27 @@ class ImageRegistration:
                 outer_tasks=len(images), parallel_layer='outer'),
                 preference=resource_preference, user_threads=thread_count)
             workers = min(plan.workers, plan.max_in_flight)
+            log_action('registration_plan', method=self.method, frames=len(images),
+                       shape=images[0].shape, workers=workers,
+                       native_threads=plan.native_threads, ram_budget=plan.ram_budget,
+                       vram_budget=plan.vram_budget, gpu_requested=self.use_gpu)
             from core.algorithms import get_registration, resolve_runner
             result = images
             for step in self.steps:
                 _check_cancel(should_cancel)
                 spec = get_registration(step)
                 parameters = {item.key: self.parameters[item.key] for item in spec.parameters}
-                result = resolve_runner(spec.runner)(self, result,
-                    thread_count=workers, should_cancel=should_cancel, **parameters)
-                _check_cancel(should_cancel)
+                with log_operation('registration_stage', method=step,
+                                   parameters=parameters, provider='OpenCV',
+                                   estimation_device='CPU', frames=len(result),
+                                   shape=result[0].shape) as operation:
+                    try:
+                        result = resolve_runner(spec.runner)(self, result,
+                            thread_count=workers, should_cancel=should_cancel, **parameters)
+                        _check_cancel(should_cancel)
+                    except RegistrationCancelled:
+                        operation.cancel()
+                        raise
             _save_registration(result, output_path, filenames, should_cancel)
             return result
     

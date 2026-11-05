@@ -1,7 +1,7 @@
 """ONNX Runtime inference for the bundled dynamic StackMFF graphs."""
 from collections import OrderedDict
 import json
-import logging
+import hashlib
 import os
 import tempfile
 import uuid
@@ -10,7 +10,9 @@ import threading
 import cv2
 import numpy as np
 
-_LOG = logging.getLogger(__name__)
+from utils.logging_setup import get_logger, log_action
+
+_LOG = get_logger(__name__)
 _SESSIONS = OrderedDict()
 _PROVIDER = {'CPU': 'CPUExecutionProvider', 'DIRECTML': 'DmlExecutionProvider',
              'CUDA': 'CUDAExecutionProvider', 'ROCM': 'ROCMExecutionProvider',
@@ -21,12 +23,24 @@ _DIRECTML_ADAPTER_NAME = ''
 _LOCK = threading.RLock()
 _ACTUAL_DEVICE = None
 _FALLBACK_CPU = False
+_ACTUAL_CHECKPOINT = None
+_AVAILABLE_PROVIDERS = ()
+_HARDWARE_ADAPTERS = ()
+_PROBE_ERRORS = ()
+
+
+def device_diagnostics():
+    """Cached hardware, provider capability and job execution; never probes."""
+    return {'hardware': _HARDWARE_ADAPTERS, 'providers': _AVAILABLE_PROVIDERS,
+            'selected': _DEVICE, 'adapter': _DIRECTML_ADAPTER_NAME,
+            'actual': _ACTUAL_DEVICE, 'checkpoint': _ACTUAL_CHECKPOINT,
+            'fallback_cpu': _FALLBACK_CPU, 'probe_errors': _PROBE_ERRORS}
 
 
 def start_inference_job():
     """Reset actual-device reporting and fallback for a new serialized job."""
-    global _ACTUAL_DEVICE, _FALLBACK_CPU
-    _ACTUAL_DEVICE = None
+    global _ACTUAL_DEVICE, _FALLBACK_CPU, _ACTUAL_CHECKPOINT
+    _ACTUAL_DEVICE = _ACTUAL_CHECKPOINT = None
     _FALLBACK_CPU = False
 
 
@@ -61,18 +75,24 @@ def resolve_device(use_gpu):
     if not use_gpu:
         return 'CPU'
     global _DEVICE, _DIRECTML_ADAPTER_INDEX, _DIRECTML_ADAPTER_NAME
+    global _AVAILABLE_PROVIDERS, _HARDWARE_ADAPTERS, _PROBE_ERRORS
     with _LOCK:
         if _DEVICE is None:
             import onnxruntime as ort
             from utils.weights import weights_path
             available = ort.get_available_providers()
+            from core.resource_policy import directml_adapters
+            _AVAILABLE_PROVIDERS = tuple(available)
+            _HARDWARE_ADAPTERS = tuple(directml_adapters())
+            errors = []
+            log_action('neural_provider_probe', providers=available,
+                       hardware=_HARDWARE_ADAPTERS)
             device = 'CPU'
             for kind in ('CUDA', 'ROCM', 'DIRECTML', 'OPENVINO', 'COREML'):
                 if _PROVIDER[kind] not in available:
                     continue
                 if kind == 'DIRECTML':
-                    from core.resource_policy import directml_adapters
-                    candidates = directml_adapters()
+                    candidates = _HARDWARE_ADAPTERS or [(0, '', 0, 0)]
                 else:
                     candidates = [(0, '', 0, 0)]
                 for adapter_index, adapter_name, _vendor, _memory in candidates:
@@ -103,22 +123,22 @@ def resolve_device(use_gpu):
                         if kind == 'DIRECTML':
                             from core.resource_policy import set_directml_adapter
                             set_directml_adapter(adapter_index)
-                        if kind in ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO'):
-                            from core.resource_policy import probe_resources
-                            if not probe_resources(kind).vram_known:
-                                _LOG.warning('%s adapter %s has no reliable free-VRAM reading',
-                                             kind, adapter_index)
-                                continue
                         if kind == 'DIRECTML':
                             _DIRECTML_ADAPTER_INDEX, _DIRECTML_ADAPTER_NAME = adapter_index, adapter_name
                         device = kind
                         break
-                    except Exception:
+                    except Exception as error:
+                        errors.append(f'{kind} adapter {adapter_index}: {type(error).__name__}: {error}')
                         _LOG.warning('%s provider probe failed for adapter %s', kind,
                                      adapter_index, exc_info=True)
                 if device != 'CPU':
                     break
             _DEVICE = device
+            _PROBE_ERRORS = tuple(errors)
+            log_action('neural_provider_selected', provider=_PROVIDER[device],
+                       adapter=_DIRECTML_ADAPTER_NAME or None,
+                       adapter_index=_DIRECTML_ADAPTER_INDEX if device == 'DIRECTML' else None,
+                       fallback=device == 'CPU', probe_errors=errors)
         return _DEVICE
 
 
@@ -145,7 +165,8 @@ def _session(path, shape, device, threads):
     if not os.path.isfile(path):
         raise FileNotFoundError(f'ONNX model not found: {path}')
     stat = os.stat(path)
-    key = (path, stat.st_mtime_ns, stat.st_size, shape, device, int(threads or 1))
+    adapter = _DIRECTML_ADAPTER_INDEX if device == 'DIRECTML' else 0
+    key = (path, stat.st_mtime_ns, stat.st_size, shape, device, adapter, int(threads or 1))
     if key not in _SESSIONS:
         # Accelerators retain one session so another graph cannot keep VRAM
         # alive across scales. CPU retains both scales without ORT's arena.
@@ -168,6 +189,14 @@ def _session(path, shape, device, threads):
         session.disable_fallback()
         if device != 'CPU' and _PROVIDER[device] not in session.get_providers():
             raise RuntimeError(f'{device} provider did not initialize')
+        digest = hashlib.sha256()
+        with open(path, 'rb') as stream:
+            for block in iter(lambda: stream.read(64 * 1024), b''):
+                digest.update(block)
+        log_action('neural_session', checkpoint=os.path.basename(path),
+                   checkpoint_sha256=digest.hexdigest(), provider=_PROVIDER[device],
+                   adapter=display_name(device), adapter_index=adapter,
+                   shape=shape, threads=options.intra_op_num_threads)
         _SESSIONS[key] = session
     _SESSIONS.move_to_end(key)
     return _SESSIONS[key]
@@ -183,7 +212,7 @@ def logits(planes, path, device, threads, should_cancel=None):
         planes = np.pad(planes, ((0, 0), (0, 0), (0, ph), (0, pw)), mode=mode)
     planes = np.ascontiguousarray(planes, dtype=np.float32)
     shape = planes.shape[1:]
-    global _ACTUAL_DEVICE, _FALLBACK_CPU
+    global _ACTUAL_DEVICE, _FALLBACK_CPU, _ACTUAL_CHECKPOINT
     if _FALLBACK_CPU:
         device = 'CPU'
     if device in ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO'):
@@ -192,7 +221,9 @@ def logits(planes, path, device, threads, should_cancel=None):
         n, hp, wp = shape
         required = estimate_inference_bytes(n, hp, wp, device) + n * hp * wp * 4 * 6
         if not snapshot.vram_known or required > vram_budget(snapshot):
-            _LOG.warning('%s memory budget is unknown or insufficient; using CPU for this job', device)
+            _LOG.warning('%s checkpoint=%s shape=%s memory required=%s budget=%s known=%s; using CPU for this job',
+                         device, os.path.basename(path), shape, required,
+                         vram_budget(snapshot), snapshot.vram_known)
             _FALLBACK_CPU = True
             _SESSIONS.clear()
             device = 'CPU'
@@ -208,7 +239,8 @@ def logits(planes, path, device, threads, should_cancel=None):
             raise
         with _LOCK:
             _FALLBACK_CPU = True
-        _LOG.warning('%s inference failed; falling back to CPU for this job', device, exc_info=True)
+        _LOG.warning('%s checkpoint=%s shape=%s adapter=%s inference failed; falling back to CPU for this job',
+                     device, os.path.basename(path), shape, display_name(device), exc_info=True)
         session = None
         _SESSIONS.clear()
         from core.resource_policy import require_memory
@@ -217,6 +249,10 @@ def logits(planes, path, device, threads, should_cancel=None):
         result = session.run(['logits'], {'input': planes})[0]
         device = 'CPU'
     _ACTUAL_DEVICE = device
+    _ACTUAL_CHECKPOINT = os.path.basename(os.path.splitext(path)[0] + '.onnx')
+    _LOG.debug('Neural inference checkpoint=%s provider=%s adapter=%s shape=%s output=%s fallback=%s',
+               _ACTUAL_CHECKPOINT, _PROVIDER[device], display_name(device), shape,
+               result.shape, _FALLBACK_CPU)
     cancel(should_cancel)
     return result[..., :h, :w]
 

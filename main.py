@@ -751,27 +751,33 @@ class OpenFocus(QMainWindow):
         else:
             self.lbl_status_memory.setText(trans.t('status_ram').format('N/A'))
 
-        # GPU. Rule the user asked for: when this machine has no usable
-        # accelerator, say N/A — never "CPU", which sounds like the render
-        # fell back mid-run. "CPU*" (classical methods are CPU-only by
-        # design) is only meaningful when an accelerator actually exists.
         from core.multi_focus_fusion import (neural_device_kind,
                                              is_ai_fusion_available)
         from fusion_methods import neural_runtime
         try:
-            if not getattr(self, 'use_gpu', True) or not is_ai_fusion_available():
-                kind = 'N/A'
+            capability = neural_device_kind()
+            if capability is None and is_ai_fusion_available():
+                self._probe_device_kind_async()
+            if not self._ai_method_selected():
+                kind = 'CPU*'
+            elif not getattr(self, 'use_gpu', True):
+                kind = 'CPU'
             else:
-                kind = neural_device_kind()
-                if kind is None:
-                    self._probe_device_kind_async()
-                if not neural_runtime.is_accelerator(kind):
-                    kind = 'N/A'
-                elif not self._ai_method_selected():
-                    kind = 'CPU*'
-                else:
-                    kind = neural_runtime.display_name(kind)
+                diagnostics = neural_runtime.device_diagnostics()
+                checkpoint = os.path.basename(get_fusion(self.combo_fusion.currentData()).weights or '')
+                actual = (diagnostics['actual'] if diagnostics['checkpoint'] == checkpoint else None)
+                kind = (neural_runtime.display_name(actual or capability)
+                        if actual is not None or neural_runtime.is_accelerator(capability)
+                        else '…' if capability is None else 'N/A')
             self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind))
+            diagnostics = neural_runtime.device_diagnostics()
+            hardware = '\n'.join(f'{name} (DXGI {index})' for index, name, *_ in diagnostics['hardware'])
+            self.lbl_status_gpu.setToolTip('\n'.join(filter(None, (
+                f'Hardware: {hardware}' if hardware else '',
+                'Runtime providers: ' + ', '.join(diagnostics['providers']),
+                'Available accelerator: ' + neural_runtime.display_name(capability) if capability else '',
+                f'Task: {kind}',
+                '\n'.join(diagnostics['probe_errors'])))))
         except Exception:
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('Err'))
         self._refresh_gpu_action()

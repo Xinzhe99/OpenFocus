@@ -90,6 +90,21 @@ POSSIBILITY OF SUCH DAMAGE.
   source. V2 pads by reflection (or edge replication for very small inputs)
   before normalizing expected depth and sampling the source; its depth indices
   depend on frame order.
+- **ONNX identity**: the V1 graph SHA-256 is
+  `f7ba388afcefb988f38707b349d5609b4a56770d81c8405d881e50f605b18a19`;
+  the V3 graph SHA-256 is
+  `7b92bf31c984eac2b93d6000158b4802b7d62c23140d52e28a47676f58d5c4f7`.
+  They contain distinct learned initializers. V1's checkpoint records a 0.7
+  weight soup of the released V3 model and its retraining checkpoint; sharing
+  the backbone can produce visually similar results on some source stacks.
+  No image-independent difference between final outputs is guaranteed.
+- **Development diagnosis**: `python tools/diagnose_stackmff.py --torch`
+  compares the shipped ONNX graphs with their original PyTorch checkpoints
+  using a two-layer 64×64 tensor, and exercises whole/tiled public fusion on
+  two 64×80 colour frames. `--gpu` requests the runtime's verified accelerator
+  for those consumers, repeats V1/V3 in one process, and reports actual device,
+  output hashes and differences. `--weights-dir` can inspect a packaged build.
+  PyTorch remains optional and is not used by the product runtime.
 - **Citations**: Xie et al., *Applied Intelligence* 55:503 (2025),
   https://doi.org/10.1007/s10489-025-06383-8; Xie et al., *Engineering
   Applications of Artificial Intelligence* 162 (2025) 112667,

@@ -84,6 +84,8 @@ def ensure_neural_device_kind():
         kind = resolve_device(True)
         _NEURAL_DEVICE_KIND = kind if kind != 'CPU' else 'N/A'
     except Exception:
+        from utils.logging_setup import get_logger
+        get_logger(__name__).exception('Neural provider detection failed')
         _NEURAL_DEVICE_KIND = 'N/A'
     return _NEURAL_DEVICE_KIND
 
@@ -211,6 +213,7 @@ class MultiFocusFusion:
         self.algorithm = algorithm
         self.fusion_parameters = resolve_fusion_parameters(algorithm, fusion_parameters)
         self.use_gpu = bool(use_gpu)
+        self._actual_device = None
         # Tile (tiled fusion) related instance-level settings
         # 当图片最大边大于 tile_threshold 时，可在 tile_enabled 为 True 时启用分块融合
         self.tile_enabled = bool(tile_enabled)
@@ -536,12 +539,28 @@ class MultiFocusFusion:
              **kwargs) -> np.ndarray:
         """Fuse under one cancellable lease, including preparation and publication."""
         from core.resource_policy import heavy_job
-        with heavy_job(should_cancel):
+        from core.registration import RegistrationCancelled
+        from utils.logging_setup import log_operation, log_action, image_result_details
+        with heavy_job(should_cancel), log_operation(
+                'fusion', method=self.algorithm,
+                checkpoint=kwargs.get('model_path') or self.descriptor.weights,
+                use_gpu=self.use_gpu, tile_enabled=self.tile_enabled) as operation:
+            self._actual_device = None
             if self.descriptor.neural:
-                from fusion_methods.neural_runtime import start_inference_job
-                start_inference_job()
-            return self._fuse_under_lease(
-                input_source, img_resize, should_cancel, progress_callback, **kwargs)
+                from fusion_methods import neural_runtime
+                neural_runtime.start_inference_job()
+            try:
+                result = self._fuse_under_lease(
+                    input_source, img_resize, should_cancel, progress_callback, **kwargs)
+            except RegistrationCancelled:
+                operation.cancel()
+                raise
+            if self.descriptor.neural:
+                self._actual_device = neural_runtime.actual_device()
+            log_action('fusion_result', method=self.algorithm,
+                       checkpoint=kwargs.get('model_path') or self.descriptor.weights,
+                       device=self._actual_device or 'CPU', **image_result_details(result))
+            return result
 
     def _fuse_under_lease(self, input_source, img_resize, should_cancel,
                           progress_callback, **kwargs):
@@ -851,7 +870,7 @@ class MultiFocusFusion:
     def _fuse_stackmff(self, input_source, img_resize=None,
                        model_path=None, should_cancel=None,
                        progress_callback=None, **kwargs):
-        """StackMFF (V1): one 3D pass over the whole stack; no parameters."""
+        """StackMFF V1: independent attention weights and luma/chroma reconstruction."""
         from fusion_methods.stackmff_v1 import DEFAULT_WEIGHTS, stackmff_impl
         from utils.weights import weights_path
 
@@ -897,6 +916,7 @@ class MultiFocusFusion:
         """
         self._ensure_supported_algorithm(algorithm)
         self.algorithm = algorithm
+        self._actual_device = None
         self.fusion_parameters = resolve_fusion_parameters(algorithm)
         self._validate_environment()
 
@@ -1494,6 +1514,7 @@ class MultiFocusFusion:
             use_gpu (bool): 是否使用GPU
         """
         self.use_gpu = bool(use_gpu)
+        self._actual_device = None
         self._validate_environment()
     
     def get_info(self) -> dict:
@@ -1505,9 +1526,11 @@ class MultiFocusFusion:
         """
         if self.descriptor.neural:
             from fusion_methods import neural_runtime
-            kind = neural_runtime.actual_device()
+            kind = self._actual_device
             if kind is None:
-                kind = neural_runtime.resolve_device(self.use_gpu)
+                kind = neural_runtime.cached_device() if self.use_gpu else 'CPU'
+            if kind is None:
+                kind = 'N/A'
             device_name = neural_runtime.display_name(kind)
         else:
             device_name = 'CPU'
