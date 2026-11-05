@@ -36,6 +36,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Keep the existing GPU hardware hint while an ONNX accelerator probe is running;
   report the verified result after the probe finishes and identify neural GPU
   acceleration accurately in feedback diagnostics.
+- Preserve grayscale shape in OpenFocus directory alignment while retaining
+  16-bit samples in both OpenFocus and ECC input paths.
 - Check memory before decoding directory-based registration inputs and include
   retained ECC thumbnails when planning combined alignment.
 - Preserve coverage at fractional mosaic edges and bound streamed TIFF strip

@@ -1306,7 +1306,8 @@ class ImageRegistration:
                     require_memory(encoded_bytes)
                     width, height = source_dimensions(path)
                     require_memory(width * height * 32 + encoded_bytes)
-                    image = decode_image(path)
+                    image = (decode_image(path, preserve_grayscale=True)
+                             if self.steps == ('openfocus',) else decode_image(path))
                     if image is None:
                         raise ValueError(f"Could not decode registration frame: {path}")
                     images.append(store_frame(image))

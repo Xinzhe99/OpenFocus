@@ -144,7 +144,8 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
         return None
 
 
-def decode_image(path: str, *, allow_transparent_png: bool = False) -> Optional[np.ndarray]:
+def decode_image(path: str, *, allow_transparent_png: bool = False,
+                 preserve_grayscale: bool = False) -> Optional[np.ndarray]:
     """Decode an oriented still image, rejecting unsupported transparency."""
     ext = os.path.splitext(path)[1].lower()
     if is_raw_source(path):
@@ -168,7 +169,7 @@ def decode_image(path: str, *, allow_transparent_png: bool = False) -> Optional[
     if (unchanged is not None and unchanged.dtype in (np.uint8, np.uint16)
             and ext in ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.bmp', '.webp', '.tif', '.tiff')):
         if unchanged.ndim == 2:
-            img = cv2.cvtColor(unchanged, cv2.COLOR_GRAY2BGR)
+            img = unchanged if preserve_grayscale else cv2.cvtColor(unchanged, cv2.COLOR_GRAY2BGR)
         elif unchanged.ndim == 3 and unchanged.shape[2] == 3:
             img = unchanged
         elif unchanged.ndim == 3 and unchanged.shape[2] == 4:
