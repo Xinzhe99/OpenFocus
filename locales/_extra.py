@@ -1069,6 +1069,12 @@ EXTRA_TRANSLATIONS = {
         "linear_dng_gamut_error": "注釈の色がカメラの色域外です。別の色を選ぶか、TIFF/PNG で書き出してください。",
         "linear_raw_unknown_camera": "各 RAW フレームのカメラ機種を特定できません。不明なカメラの画像は単独でのみ読み込めます。",
         "linear_dng_export_failed": "リニア DNG を保存できませんでした。",
+        "converter_title": "画像の一括変換…",
+        "converter_add_files": "ファイルを追加…",
+        "converter_start": "変換",
+        "converter_required": "画像を追加し、既存の出力フォルダーを選択してください。",
+        "converter_warning": "JPEG は非可逆です。JPEG、BMP、WebP は 16 ビットを 8 ビットに変換します。PNG と TIFF は 16 ビットを維持します。透明画像には PNG を使用してください。複数ページ TIFF は番号付きの別ファイルになります。既存ファイルは上書きされません。",
+        "converter_summary": "成功: {success} · 失敗: {failed} {cancelled}",
     },
     "es": {
         "alignment_detail_reason": "Motivo",
@@ -2127,6 +2133,12 @@ EXTRA_TRANSLATIONS = {
         "linear_dng_annotations": "No se pudieron aplicar anotaciones al DNG lineal.",
         "linear_dng_gamut_error": "El color de la anotación está fuera de la gama de la cámara. Elija otro color o exporte como TIFF/PNG.",
         "linear_raw_unknown_camera": "No se puede identificar la cámara de cada RAW; una cámara desconocida solo puede cargarse por separado.",
-        "linear_dng_export_failed": "No se pudo guardar el DNG lineal."
+        "linear_dng_export_failed": "No se pudo guardar el DNG lineal.",
+        "converter_title": "Conversión de imágenes por lotes…",
+        "converter_add_files": "Añadir archivos…",
+        "converter_start": "Convertir",
+        "converter_required": "Añada imágenes y elija una carpeta de salida existente.",
+        "converter_warning": "JPEG tiene pérdida; JPEG, BMP y WebP convierten imágenes de 16 a 8 bits. PNG y TIFF conservan 16 bits. Use PNG para transparencia. Los TIFF de varias páginas se separan en archivos numerados. No se sobrescriben archivos existentes.",
+        "converter_summary": "Correctos: {success} · Fallidos: {failed} {cancelled}",
     },
 }

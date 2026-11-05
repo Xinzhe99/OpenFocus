@@ -1055,4 +1055,10 @@ PACK = {
     "linear_dng_gamut_error": "La couleur de l’annotation dépasse le gamut de l’appareil. Choisissez une autre couleur ou exportez en TIFF/PNG.",
     "linear_raw_unknown_camera": "Le modèle de caméra est inconnu pour certaines images RAW ; une caméra inconnue ne peut être chargée que seule.",
     "linear_dng_export_failed": "Impossible d’enregistrer le DNG linéaire.",
+    "converter_title": "Conversion d’images par lot…",
+    "converter_add_files": "Ajouter des fichiers…",
+    "converter_start": "Convertir",
+    "converter_required": "Ajoutez des images et choisissez un dossier de sortie existant.",
+    "converter_warning": "JPEG est avec perte ; JPEG, BMP et WebP convertissent les images 16 bits en 8 bits. PNG et TIFF conservent les 16 bits. Utilisez PNG pour la transparence. Les TIFF multipages deviennent des fichiers numérotés. Les fichiers existants sont préservés.",
+    "converter_summary": "Réussis : {success} · Échecs : {failed} {cancelled}",
 }

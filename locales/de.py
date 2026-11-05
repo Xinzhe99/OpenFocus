@@ -1055,4 +1055,10 @@ PACK = {
     "linear_dng_gamut_error": "Die Anmerkungsfarbe liegt außerhalb des Kamerafarbraums. Wählen Sie eine andere Farbe oder exportieren Sie als TIFF/PNG.",
     "linear_raw_unknown_camera": "Das Kameramodell ist nicht für jedes RAW-Bild bekannt; eine unbekannte Kamera kann nur einzeln geladen werden.",
     "linear_dng_export_failed": "Das lineare DNG konnte nicht gespeichert werden.",
+    "converter_title": "Bildkonverter für Stapel…",
+    "converter_add_files": "Dateien hinzufügen…",
+    "converter_start": "Konvertieren",
+    "converter_required": "Bilder hinzufügen und einen vorhandenen Ausgabeordner wählen.",
+    "converter_warning": "JPEG ist verlustbehaftet; JPEG, BMP und WebP wandeln 16 Bit in 8 Bit um. PNG und TIFF erhalten 16 Bit. Transparente Bilder benötigen PNG. Mehrseitige TIFFs werden nummerierte Einzeldateien. Vorhandene Dateien bleiben erhalten.",
+    "converter_summary": "Erfolgreich: {success} · Fehlgeschlagen: {failed} {cancelled}",
 }

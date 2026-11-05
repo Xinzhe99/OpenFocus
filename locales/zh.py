@@ -1055,4 +1055,10 @@ ZH = {
     "linear_dng_gamut_error": "标注颜色超出相机色域。请更换颜色，或导出为 TIFF/PNG。",
     "linear_raw_unknown_camera": "无法确定每个 RAW 帧的相机型号；未知相机的 RAW 只能单独加载。",
     "linear_dng_export_failed": "无法保存线性 DNG。",
+    "converter_title": "批量图像转换…",
+    "converter_add_files": "添加文件…",
+    "converter_start": "转换",
+    "converter_required": "请添加图像并选择现有的输出文件夹。",
+    "converter_warning": "JPEG 为有损格式；JPEG、BMP 和 WebP 将 16 位图像转换为 8 位。PNG 和 TIFF 保留 16 位。透明图像请使用 PNG。多页 TIFF 将转换为单独的编号文件。不会覆盖现有文件。",
+    "converter_summary": "成功：{success} · 失败：{failed} {cancelled}",
 }

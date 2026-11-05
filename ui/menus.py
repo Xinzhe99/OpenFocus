@@ -337,6 +337,17 @@ def setup_menus(window: QMainWindow) -> None:
     remove_menu.addAction(window.del_all_labels_action)
     window.ui_objs['action_del_all_labels'] = window.del_all_labels_action
 
+    def open_converter():
+        from dialogs.batch_converter import BatchConverterDialog
+        BatchConverterDialog(window).exec()
+
+    converter_action = QAction(trans.t('converter_title'), window)
+    converter_action.setProperty('trans_key', 'converter_title')
+    converter_action.triggered.connect(open_converter)
+    batch_menu.addSeparator()
+    batch_menu.addAction(converter_action)
+    window.ui_objs['converter_title'] = converter_action
+
     # --- Settings Menu ---
     settings_menu = menubar.addMenu(trans.t('menu_settings'))
     window.ui_objs['menu_settings'] = settings_menu

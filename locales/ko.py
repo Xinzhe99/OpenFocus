@@ -1055,4 +1055,10 @@ PACK = {
     "linear_dng_gamut_error": "주석 색상이 카메라 색역을 벗어났습니다. 다른 색상을 선택하거나 TIFF/PNG로 내보내세요.",
     "linear_raw_unknown_camera": "일부 RAW 프레임의 카메라 모델을 확인할 수 없습니다. 알 수 없는 카메라의 프레임은 하나만 불러올 수 있습니다.",
     "linear_dng_export_failed": "선형 DNG를 저장하지 못했습니다.",
+    "converter_title": "이미지 일괄 변환…",
+    "converter_add_files": "파일 추가…",
+    "converter_start": "변환",
+    "converter_required": "이미지를 추가하고 기존 출력 폴더를 선택하세요.",
+    "converter_warning": "JPEG는 손실 압축이며 JPEG, BMP, WebP는 16비트를 8비트로 변환합니다. PNG와 TIFF는 16비트를 유지합니다. 투명 이미지에는 PNG를 사용하세요. 여러 페이지 TIFF는 번호가 붙은 파일로 분리됩니다. 기존 파일은 덮어쓰지 않습니다.",
+    "converter_summary": "성공: {success} · 실패: {failed} {cancelled}",
 }

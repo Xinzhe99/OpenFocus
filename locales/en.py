@@ -1057,4 +1057,10 @@ EN = {
     "linear_dng_gamut_error": "Annotation color is outside the camera gamut. Choose another color or export TIFF/PNG.",
     "linear_raw_unknown_camera": "Cannot establish the camera model for every RAW frame; an unknown camera can only be loaded alone.",
     "linear_dng_export_failed": "Could not save the linear DNG.",
+    "converter_title": "Batch Image Converter…",
+    "converter_add_files": "Add Files…",
+    "converter_start": "Convert",
+    "converter_required": "Add images and choose an existing output folder.",
+    "converter_warning": "JPEG is lossy; JPEG, BMP and WebP convert 16-bit images to 8-bit. PNG and TIFF retain 16-bit. Transparent images require PNG. Multipage TIFFs become separate numbered files. Existing files are never replaced.",
+    "converter_summary": "Succeeded: {success} · Failed: {failed} {cancelled}",
 }

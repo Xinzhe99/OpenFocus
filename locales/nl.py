@@ -1055,4 +1055,10 @@ PACK = {
     "linear_dng_gamut_error": "De annotatiekleur valt buiten het kleurbereik van de camera. Kies een andere kleur of exporteer als TIFF/PNG.",
     "linear_raw_unknown_camera": "Het cameramodel is niet voor elk RAW-beeld bekend; een onbekende camera kan alleen afzonderlijk worden geladen.",
     "linear_dng_export_failed": "De lineaire DNG kon niet worden opgeslagen.",
+    "converter_title": "Afbeeldingen in batch omzetten…",
+    "converter_add_files": "Bestanden toevoegen…",
+    "converter_start": "Omzetten",
+    "converter_required": "Voeg afbeeldingen toe en kies een bestaande uitvoermap.",
+    "converter_warning": "JPEG is verlieslatend; JPEG, BMP en WebP zetten 16 bit om naar 8 bit. PNG en TIFF behouden 16 bit. Gebruik PNG voor transparantie. TIFF-pagina’s worden afzonderlijke genummerde bestanden. Bestaande bestanden blijven behouden.",
+    "converter_summary": "Geslaagd: {success} · Mislukt: {failed} {cancelled}",
 }

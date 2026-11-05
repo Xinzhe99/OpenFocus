@@ -5,6 +5,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Add Tools → Batch Image Converter for sequential RAW and still-image conversion,
+  with numbered TIFF pages, collision-safe output names and cooperative cancellation.
+
 ### Changed
 - Run StackMFF V1/V2/V3 using dynamic ONNX checkpoints and ONNX Runtime;
   production inference no longer bundles PyTorch. The current provider path

@@ -14,12 +14,19 @@
 10. [Retouching, Labels and Annotations](#10-retouching-labels-and-annotations)
 11. [Settings and Configuration](#11-settings-and-configuration)
 12. [Batch Processing](#12-batch-processing)
+   - [Batch image conversion](#batch-image-conversion)
 13. [Exporting Results](#13-exporting-results)
 14. [Command Line Interface](#14-command-line-interface)
 15. [Keyboard Shortcuts](#15-keyboard-shortcuts)
 16. [Troubleshooting](#16-troubleshooting)
 
 ---
+### Batch image conversion
+
+Open **Tools → Batch Image Converter** independently of the current stack. Add files or all supported images in a folder, choose an existing output folder and a format, then select **Convert**. The list shows output paths and errors per source; the summary reports successful and failed sources. Cancel stops between operations; already completed files remain available. Closing during conversion requests cancellation and closes the window when processing stops.
+
+Camera RAW is developed with LibRaw using camera white balance and without automatic brightening. Available RAW support depends on the installed LibRaw version. Multipage TIFF is exported as separately numbered images. JPEG is lossy, and JPEG, BMP and WebP reduce 16-bit pixels to 8-bit; PNG and TIFF retain 16-bit pixels. Transparent images require PNG. Unsupported TIFF color layouts and sample types are reported as errors. Existing files and inputs are never replaced: name conflicts receive numbered suffixes. Processing one image or TIFF page at a time still requires enough free memory and disk space for that image and its encoder. Safe camera EXIF and compatible RGB profiles are retained where supported; some formats or pages cannot carry all metadata.
+
 
 ## 1. Introduction
 

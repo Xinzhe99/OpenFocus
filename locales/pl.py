@@ -1055,4 +1055,10 @@ PACK = {
     "linear_dng_gamut_error": "Kolor adnotacji wykracza poza gamut aparatu. Wybierz inny kolor lub wyeksportuj do TIFF/PNG.",
     "linear_raw_unknown_camera": "Nie można ustalić modelu aparatu dla każdej klatki RAW; nieznany aparat można wczytać tylko osobno.",
     "linear_dng_export_failed": "Nie udało się zapisać liniowego pliku DNG.",
+    "converter_title": "Wsadowa konwersja obrazów…",
+    "converter_add_files": "Dodaj pliki…",
+    "converter_start": "Konwertuj",
+    "converter_required": "Dodaj obrazy i wybierz istniejący folder docelowy.",
+    "converter_warning": "JPEG jest stratny; JPEG, BMP i WebP zmieniają 16 bitów na 8 bitów. PNG i TIFF zachowują 16 bitów. Do przezroczystości użyj PNG. Strony TIFF są zapisywane jako osobne numerowane pliki. Istniejące pliki nie są nadpisywane.",
+    "converter_summary": "Udało się: {success} · Błędy: {failed} {cancelled}",
 }
