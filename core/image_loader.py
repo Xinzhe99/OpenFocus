@@ -42,6 +42,20 @@ RAW_FORMATS = {'.3fr', '.arw', '.bay', '.cap', '.cr2', '.cr3', '.crw',
                '.nrw', '.orf', '.pef', '.raf', '.raw', '.rdc', '.rw2',
                '.rwl', '.srf', '.sr2', '.srw', '.sti', '.x3f'}
 
+from core.frame_storage import store_frame
+
+
+def _is_dng_tiff(path):
+    """DNG may have a TIFF extension and a thumbnail as its first IFD."""
+    if os.path.splitext(path)[1].lower() not in ('.tif', '.tiff'):
+        return False
+    try:
+        import tifffile
+        with tifffile.TiffFile(path) as tif:
+            return bool(tif.is_dng)
+    except (OSError, ValueError, tifffile.TiffFileError):
+        return False
+
 
 def linear_raw_metadata_matches(first, second):
     """Whether two camera-linear sources share the same calibration."""
@@ -108,7 +122,7 @@ def _read_raw(path: str, scale_factor: float = 1.0) -> Optional[np.ndarray]:
 def decode_image(path: str, *, allow_transparent_png: bool = False) -> Optional[np.ndarray]:
     """Decode an oriented still image, rejecting unsupported transparency."""
     ext = os.path.splitext(path)[1].lower()
-    if ext in RAW_FORMATS:
+    if ext in RAW_FORMATS or _is_dng_tiff(path):
         return _read_raw(path)
     # IMREAD_IGNORE_ORIENTATION is required: modern OpenCV already rotates by
     # the EXIF Orientation tag itself, so letting apply_exif_orientation run
@@ -334,38 +348,31 @@ def _read_via_pil(path: str) -> Optional[np.ndarray]:
         return None
 
 
-def _read_tiff_pages(path: str) -> Optional[List[np.ndarray]]:
-    """Read every page of a multi-page TIFF as a list of BGR arrays.
-
-    Microscopy software (ZEN, NIS-Elements, ImageJ) exports whole Z-stacks
-    as single multi-page TIFFs; cv2.imdecode reads only page 0 and silently
-    drops the rest. Returns None for single-page files (and non-TIFFs) so
-    callers keep their normal single-image path.
-    """
-    if os.path.splitext(path)[1].lower() not in ('.tif', '.tiff'):
+def _read_tiff_pages(path: str, scale_factor=1.0, should_cancel=None) -> Optional[List[np.ndarray]]:
+    """Decode multi-page TIFF one page at a time into disk-backed frames."""
+    if os.path.splitext(path)[1].lower() not in ('.tif', '.tiff') or _is_dng_tiff(path):
         return None
-    try:
-        data = np.fromfile(path, dtype=np.uint8)
-        success, unchanged = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED)
-        if not success or len(unchanged) < 2:
-            return None
-        if any(_has_transparency(p) for p in unchanged):
+    count = count_frames(path)
+    if count < 2:
+        return None
+    data = np.fromfile(path, dtype=np.uint8)
+    pages = []
+    for index in range(count):
+        if should_cancel is not None and should_cancel():
+            raise _DecodeCancelled()
+        success, decoded = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED,
+                                            range=(index, index + 1))
+        if not success or len(decoded) != 1:
+            raise ValueError(f"Could not decode TIFF page {index + 1}: {path}")
+        page = decoded[0]
+        if _has_transparency(page):
             raise UnsupportedTransparency(f"Transparent TIFF pages are unsupported: {path}")
-        if all(p.dtype in (np.uint8, np.uint16) and
-               (p.ndim == 2 or (p.ndim == 3 and p.shape[2] in (3, 4))) for p in unchanged):
-            return [cv2.cvtColor(p, cv2.COLOR_GRAY2BGR) if p.ndim == 2 else
-                    cv2.cvtColor(p, cv2.COLOR_BGRA2BGR) if p.shape[2] == 4 else p
-                    for p in unchanged]
-        del unchanged
-        flags = cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR
-        success, pages = cv2.imdecodemulti(data, flags=flags)
-        if not success or len(pages) < 2:
-            return None
-        return list(pages)
-    except UnsupportedTransparency:
-        raise
-    except Exception:
-        return None
+        if page.ndim == 2:
+            page = cv2.cvtColor(page, cv2.COLOR_GRAY2BGR)
+        elif page.ndim == 3 and page.shape[2] == 4:
+            page = cv2.cvtColor(page, cv2.COLOR_BGRA2BGR)
+        pages.append(store_frame(_downscale_page(page, scale_factor)))
+    return pages
 
 
 def count_frames(path: str) -> int:
@@ -376,6 +383,8 @@ def count_frames(path: str) -> int:
     instead of a full decode); anything else counts as one.
     """
     if os.path.splitext(path)[1].lower() in (".tif", ".tiff"):
+        if _is_dng_tiff(path):
+            return 1
         try:
             from PIL import Image
             with Image.open(path) as im:
@@ -432,11 +441,10 @@ def _decode_one_source(path: str, scale_factor: float,
     try:
         if should_cancel is not None and should_cancel():
             raise _DecodeCancelled()
-        pages = _read_tiff_pages(path)
+        pages = _read_tiff_pages(path, scale_factor, should_cancel)
         if pages is not None:
-            return DecodedSource(path, [_downscale_page(p, scale_factor)
-                                        for p in pages])
-        if os.path.splitext(path)[1].lower() in RAW_FORMATS:
+            return DecodedSource(path, pages)
+        if os.path.splitext(path)[1].lower() in RAW_FORMATS or _is_dng_tiff(path):
             image = _read_raw(path, scale_factor)
             if image is None:
                 return DecodedSource(path, error=ValueError("decode failed"))
@@ -488,7 +496,8 @@ def _peek_source_size(path: str) -> Optional[Tuple[int, int, int, int]]:
 def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
                          thread_count: int = 0,
                          resource_preference: str = "balanced",
-                         should_cancel=None, allow_transparent_png=False):
+                         should_cancel=None, allow_transparent_png=False,
+                         disk_backed=False):
     """Yield DecodedSource objects in input order, with bounded parallelism.
 
     Plain single-frame formats decode in a window of at most the admitted
@@ -526,7 +535,7 @@ def iter_decoded_sources(sources, scale_factor: float = 1.0, *,
             height = max(s[1] for s in peeked)
             channels = max(s[2] for s in peeked)
             itemsize = max(s[3] for s in peeked)
-            fixed = sum(w * h * c * i for w, h, c, i in peeked)
+            fixed = 0 if disk_backed else sum(w * h * c * i for w, h, c, i in peeked)
             per_worker = width * height * channels * itemsize * 3
             plan = policy.plan_execution(
                 policy.Workload(
@@ -668,7 +677,7 @@ class ImageStackLoader:
                 # current full-resolution LibRaw and conversion workspace.
                 full_bytes = width * height * 3 * 2
                 scaled_bytes = max(1, int(width * scale_factor)) * max(1, int(height * scale_factor)) * 6
-                require_memory(full_bytes * 4 + scaled_bytes * (len(paths) - index))
+                require_memory(full_bytes * 4 + scaled_bytes)
 
             try:
                 image, profile = load_linear_raw(path, scale_factor=scale_factor,
@@ -688,7 +697,7 @@ class ImageStackLoader:
             # Keep the file's native unit here; source_manager divides by the
             # load scale when it publishes source_px_um for working pixels.
             px_sizes.append(detect_px_size_um(path))
-            images.append(image)
+            images.append(store_frame(image))
             if self.progress_callback is not None:
                 self.progress_callback(index + 1, len(paths))
         self.images = images
@@ -744,7 +753,8 @@ class ImageStackLoader:
             decoded = iter_decoded_sources(
                 sources, scale_factor, thread_count=thread_count,
                 resource_preference=resource_preference,
-                should_cancel=self.should_cancel, allow_transparent_png=True)
+                should_cancel=self.should_cancel, allow_transparent_png=True,
+                disk_backed=True)
             try:
                 for done, item in enumerate(decoded, start=1):
                     if self.progress_callback is not None:
@@ -766,7 +776,7 @@ class ImageStackLoader:
                     stem = os.path.splitext(names[item.path])[0]
                     multipage = len(item.pages) > 1
                     for page_no, page in enumerate(item.pages, start=1):
-                        loaded_images.append(page)
+                        loaded_images.append(page if isinstance(page, np.memmap) else store_frame(page))
                         loaded_paths.append(item.path)
                         filenames.append(f"{stem}_page_{page_no:03d}.tif"
                                          if multipage else names[item.path])
@@ -834,7 +844,7 @@ class ImageStackLoader:
                     height = int(frame.shape[0] * scale_factor)
                     frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
-                loaded_images.append(frame)
+                loaded_images.append(store_frame(frame))
                 filenames.append(f"{video_name}_frame_{frame_index:04d}.png")
                 frame_index += 1
         finally:
@@ -884,7 +894,8 @@ class ImageStackLoader:
             decoded = iter_decoded_sources(
                 sources, scale_factor, thread_count=thread_count,
                 resource_preference=resource_preference,
-                should_cancel=self.should_cancel, allow_transparent_png=True)
+                should_cancel=self.should_cancel, allow_transparent_png=True,
+                disk_backed=True)
             try:
                 for done, item in enumerate(decoded, start=len(missing) + 1):
                     if self.progress_callback is not None:
@@ -904,7 +915,7 @@ class ImageStackLoader:
                     stem = os.path.splitext(os.path.basename(item.path))[0]
                     multipage = len(item.pages) > 1
                     for page_no, page in enumerate(item.pages, start=1):
-                        loaded_images.append(page)
+                        loaded_images.append(page if isinstance(page, np.memmap) else store_frame(page))
                         loaded_paths.append(item.path)
                         filenames.append(f"{stem}_page_{page_no:03d}.tif"
                                          if multipage

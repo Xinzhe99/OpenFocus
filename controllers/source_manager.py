@@ -342,10 +342,11 @@ class SourceManager(QObject):
                     if any(_has_transparency(image) for image in images):
                         raise UnsupportedTransparency("Transparent images cannot be downsampled during loading")
                     factor = working_scale / scale
+                    from core.frame_storage import store_frame
                     load_options.working_images = [
-                        cv2.resize(image, (max(1, int(image.shape[1] * factor)),
+                        store_frame(cv2.resize(image, (max(1, int(image.shape[1] * factor)),
                                            max(1, int(image.shape[0] * factor))),
-                                   interpolation=cv2.INTER_AREA if factor < 1 else cv2.INTER_LINEAR)
+                                   interpolation=cv2.INTER_AREA if factor < 1 else cv2.INTER_LINEAR))
                         for image in images]
                 if not self._confirm_mixed_sizes(load_options.working_images):
                     if on_error is not None:

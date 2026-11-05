@@ -8,6 +8,7 @@ import numpy as np
 import imageio.v2 as imageio
 from core.registration import ImageRegistration, RegistrationCancelled
 from core.multi_focus_fusion import MultiFocusFusion
+from core.frame_storage import store_frame
 from core.resource_policy import heavy_job, require_memory
 from utils import resource_path
 from utils.image_utils import to_display_uint8
@@ -34,14 +35,14 @@ def _crop_transparent_for_gui(images, should_cancel=None):
 
 
 def _prepare_fusion_input(images, fusion):
-    """Keep V3 tiled sources resident at their original depth until cropping."""
+    """Keep tiled neural sources at their original depth until cropping."""
     from core.algorithms import resolve_runner
     from utils.image_utils import normalize_fuse_input
 
     frames = list(images)
     is_16bit = any(frame.dtype == np.uint16 for frame in frames)
     spec = fusion.descriptor
-    if (frames and fusion.algorithm == 'stackmffv3' and fusion.tile_enabled
+    if (frames and fusion.algorithm in ('stackmff', 'stackmffv3') and fusion.tile_enabled
             and resolve_runner(spec.tile_decider)(frames, fusion.tile_threshold)):
         return frames, is_16bit
     if is_16bit:
@@ -112,6 +113,7 @@ class StackLoadWorker(QThread):
         self.source_icc_profiles = {}
         self.is_cancelled = False
         self._previous_should_cancel = getattr(self.loader, 'should_cancel', None)
+        self._previous_images = getattr(self.loader, 'images', None)
         self.loader.should_cancel = lambda: self.is_cancelled
 
     def request_cancel(self):
@@ -184,6 +186,8 @@ class StackLoadWorker(QThread):
                 self.loader.should_cancel = self._previous_should_cancel
             if self.is_cancelled:
                 operation.cancel()
+                if ok and getattr(self.loader, 'images', None) is imgs:
+                    self.loader.images = self._previous_images
                 ok, msg, imgs, names = False, 'CANCELLED', [], []
             self.finished_load.emit(ok, msg, imgs, names)
 
@@ -397,9 +401,9 @@ class RenderWorker(QThread):
                                              self.sensor_denoise)
                 mask = (load_sensor_defect_mask(self.defect_mask_path, cancel_callback=lambda: self.is_cancelled)
                         if self.defect_mask_path else None)
-                processed_images = [cleanup_sensor_image(image, defect_mask_path=mask,
+                processed_images = [store_frame(cleanup_sensor_image(image, defect_mask_path=mask,
                                     sensor_denoise=self.sensor_denoise,
-                                    cancel_callback=lambda: self.is_cancelled)
+                                    cancel_callback=lambda: self.is_cancelled))
                                     for image in processed_images]
             self._cache_source_images = processed_images
             if self.preview:
@@ -407,7 +411,8 @@ class RenderWorker(QThread):
                 for image in processed_images:
                     if self.is_cancelled:
                         raise RegistrationCancelled()
-                    preview_images.append(_downscale_for_preview(image))
+                    preview = _downscale_for_preview(image)
+                    preview_images.append(image if preview is image else store_frame(preview))
                 processed_images = preview_images
             registration_performed = False
     
