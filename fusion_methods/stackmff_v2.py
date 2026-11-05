@@ -3,7 +3,6 @@
 Frame order defines depth positions. The expected layer is min-max normalised
 over the padded inference, then the nearest source frame is sampled.
 """
-import os
 from contextlib import nullcontext
 
 import numpy as np
@@ -12,52 +11,33 @@ from fusion_methods import neural_common as common
 from utils.image_utils import fuse_output_dtype
 
 PAD_ALIGN = common.ATTENTION_PAD_ALIGN
-DEFAULT_WEIGHTS = 'weights/stackmff_v2_final.pth'
+DEFAULT_WEIGHTS = 'weights/stackmff_v2_final.onnx'
 _ALGORITHM = 'stackmffv2'
-_CACHE = None
-
-
-def _model_and_device(model_path, use_gpu):
-    common.ensure_torch()
-    device = common.resolve_device(use_gpu)
-    path = os.path.abspath(model_path)
-    key = (path, common.checkpoint_digest(path), str(device))
-    global _CACHE
-    if _CACHE is None or _CACHE[0] != key:
-        from core.models.stackmff_v2.network import StackMFF_V2
-        from core.models.stackmff_v3.model_io import load_variant_checkpoint
-        model = load_variant_checkpoint(path, StackMFF_V2, 'v2_v3backbone',
-                                        device=device)
-        _CACHE = (key, model, device)
-    return _CACHE[1], _CACHE[2]
 
 
 def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
                        resource_preference='balanced', execution_plan=None,
                        result_count=1, fixed_bytes=0):
     """Admit the retrained model and its attention workspace."""
-    common.ensure_torch()
-    device = common.resolve_device(use_gpu)
+    from fusion_methods import neural_runtime
+    device = neural_runtime.resolve_device(use_gpu)
     return common.plan_attention_inference(
-        _ALGORITHM, frames, model_path, device, common.torch,
-        lambda: _model_and_device(model_path, use_gpu),
+        _ALGORITHM, frames, model_path, device,
         thread_count=thread_count, resource_preference=resource_preference,
         execution_plan=execution_plan, result_count=result_count,
         fixed_bytes=fixed_bytes)
 
 
-def _inference_depth(planes, model, device, should_cancel=None):
-    """Return the reference model's padded depth and source indices."""
-    common.cancel(should_cancel)
-    tensor = planes.to(device)
-    try:
-        with common.torch.no_grad():
-            _luma, depth, index = model(tensor)
-        common.cancel(should_cancel)
-    finally:
-        # Wait for queued kernels before releasing the heavy-job lease.
-        common.synchronize(device)
-    return depth[0, 0].cpu().numpy(), index[0].cpu().numpy()
+def _inference_depth(planes, model, device, should_cancel=None, threads=1):
+    """Return depth normalized over the complete padded inference."""
+    from fusion_methods import neural_runtime
+    probs = neural_runtime.softmax(neural_runtime.logits(planes, model, device, threads, should_cancel))
+    n = probs.shape[1]
+    depth = (probs * np.arange(1, n + 1, dtype=np.float32)[None, :, None, None]).sum(axis=1)[0]
+    lo, hi = depth.min(), depth.max()
+    depth = (depth - lo) / (hi - lo + 1e-8)
+    index = np.clip(np.rint(depth * (n - 1)), 0, n - 1).astype(np.int64)
+    return depth, index
 
 
 
@@ -82,12 +62,12 @@ def infer(frames, model_path, use_gpu, should_cancel=None,
     """Return (fused pixels, depth 0-1, index 0..N-1) for one whole tile."""
     common.cancel(should_cancel)
     out_dtype = fuse_output_dtype(frames)
-    model, device, _plan = _prepare_inference(
+    model, device, plan = _prepare_inference(
         frames, model_path, use_gpu, thread_count=thread_count,
         resource_preference=resource_preference, execution_plan=execution_plan)
     normalized = common.normalized_frames(frames)
     planes = common.stage_planes(normalized, PAD_ALIGN, should_cancel)
-    depth_full, index_full = _inference_depth(planes, model, device, should_cancel)
+    depth_full, index_full = _inference_depth(planes, model, device, should_cancel, plan.native_threads)
     del planes
     h, w = normalized[0].shape[:2]
     # The model normalises across the padded map before we crop.

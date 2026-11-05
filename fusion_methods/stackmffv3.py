@@ -14,32 +14,17 @@ input frames. Two output modes consume that distribution:
 The network sees luma only; the resulting per-pixel weights or indices are
 applied to the three colour channels, exactly as in the reference code.
 
-The architecture is vendored in ``core/models/stackmff_v3`` (MIT, see
-``docs/THIRD_PARTY_NOTICES.md``); it needs only ``torch`` and a 0.66 MB
-checkpoint shipped in ``weights/``.
+The exported attention model is shipped in ``weights/``.
 """
-torch = None
-
 import os
-import hashlib
 from contextlib import nullcontext
 import cv2
 import numpy as np
 
 from utils.image_utils import fuse_output_dtype
 from utils.sorting import natural_sort_key
-from core import torch_backend
 from fusion_methods import neural_common as common
 
-# ================= 全局缓存变量 =================
-_GLOBAL_MODEL = None
-_GLOBAL_DEVICE = None
-_GLOBAL_MODEL_PATH = None
-_GLOBAL_MODEL_KEY = None
-_GLOBAL_MODEL_STATE = None
-
-# 'CUDA' | 'ROCM' | 'XPU' | 'MPS' | 'CPU'，首次使用 torch 时由共享后端探测
-MT = None
 
 # 网络以 4x4 卷积下采样 4 倍，模型内部把输入 pad 到 64 的倍数；这里用同一
 # 对齐量预处理批内瓦片，让同批张量形状一致。
@@ -53,20 +38,9 @@ SOFT_SIGMA = 0.5
 VALID_MODES = ("soft", "hard")
 
 
-def _ensure_torch():
-    """Import torch on first use; the shared backend owns the probe."""
-    global torch, MT
-    if torch is not None:
-        if MT is None:
-            MT = torch_backend.detect_kind(torch)
-        return
-    torch = torch_backend.ensure_torch()
-    MT = torch_backend.detect_kind(torch)
-
-
 def _resolve_device(use_gpu):
-    _ensure_torch()
-    return torch_backend.resolve_device(use_gpu, torch)
+    from fusion_methods.neural_runtime import resolve_device
+    return resolve_device(use_gpu)
 
 
 def normalize_mode(mode):
@@ -75,44 +49,6 @@ def normalize_mode(mode):
     return mode if mode in VALID_MODES else 'soft'
 
 
-def _model_state(model):
-    return (model.training, tuple(getattr(model, 'ms_scales', ())),
-            tuple(getattr(model, name, None) for name in
-                  ('cur_K', 'adaptive', 'tol', 'kmax_infer')),
-            tuple((id(p), p._version, str(p.device), p.dtype)
-                  for p in model.parameters()))
-
-
-def _get_model_and_device(model_path, use_gpu):
-    """Return one immutable cached model; caller owns the heavy-job lease."""
-    _ensure_torch()
-    from core.models.stackmff_v3.model_io import load_checkpoint
-
-    device = _resolve_device(use_gpu)
-    path = os.path.abspath(model_path)
-    # Check contents, not just mtime: a replacement can preserve timestamps.
-    digest = hashlib.sha256()
-    with open(path, 'rb') as checkpoint:
-        for chunk in iter(lambda: checkpoint.read(1024 * 1024), b''):
-            digest.update(chunk)
-    key = (path, digest.digest(), str(device), torch.float32,
-           INFER_SCALES, 'baseline-fp32')
-    global _GLOBAL_MODEL, _GLOBAL_DEVICE, _GLOBAL_MODEL_PATH
-    global _GLOBAL_MODEL_KEY, _GLOBAL_MODEL_STATE
-    if (_GLOBAL_MODEL is None or _GLOBAL_MODEL_KEY != key
-            or _model_state(_GLOBAL_MODEL) != _GLOBAL_MODEL_STATE):
-        # Drop the previous cache before loading; never migrate a model that
-        # another caller may still reference to a different device in place.
-        _GLOBAL_MODEL = None
-        _GLOBAL_MODEL_KEY = _GLOBAL_MODEL_STATE = None
-        model = load_checkpoint(path, device=str(device), scales=INFER_SCALES)
-        model.eval()
-        _GLOBAL_MODEL = model
-        _GLOBAL_DEVICE = device
-        _GLOBAL_MODEL_PATH = path
-        _GLOBAL_MODEL_KEY = key
-        _GLOBAL_MODEL_STATE = _model_state(model)
-    return _GLOBAL_MODEL, device
 
 
 def _cancel(should_cancel):
@@ -129,25 +65,15 @@ def _gray01(bgr):
     return gray.astype(np.float32) / maxv
 
 
-def _forward_probabilities(batch_input, model, device, sigma, should_cancel):
-    _cancel(should_cancel)
-    try:
-        with torch.no_grad():
-            result = model.forward_probs(batch_input.to(device), sigma=sigma,
-                                         should_cancel=should_cancel)
-        _cancel(should_cancel)
-        return result
-    finally:
-        # Device calls enqueue work. Cancellation must not release the heavy
-        # lease while kernels from this invocation still use its resources.
-        torch_backend.synchronize(device, torch)
+def _forward_probabilities(batch_input, model, device, sigma, should_cancel, threads=1):
+    from fusion_methods.neural_runtime import probabilities
+    return probabilities(batch_input, model, device, threads, sigma, should_cancel)
 
 
-def _probabilities(batch_input, model, device, mode, should_cancel=None):
-    """Probability stack [B, N, Hp, Wp] for one padded batch."""
+def _probabilities(batch_input, model, device, mode, should_cancel=None, threads=1):
     return _forward_probabilities(batch_input, model, device,
                                   0.0 if mode == 'hard' else SOFT_SIGMA,
-                                  should_cancel)
+                                  should_cancel, threads)
 
 
 def _blend_tile(probs, tile_stack, mode, should_cancel=None):
@@ -194,15 +120,14 @@ def _validate_tiles(tiles_list):
 def _stage_gray(frames, should_cancel):
     h, w = frames[0].shape[:2]
     hp, wp = h + (-h) % PAD_ALIGN, w + (-w) % PAD_ALIGN
-    batch = torch.empty((1, len(frames), hp, wp), dtype=torch.float32)
+    batch = np.empty((1, len(frames), hp, wp), dtype=np.float32)
     for f, frame in enumerate(frames):
         _cancel(should_cancel)
-        batch[0, f, :h, :w] = torch.from_numpy(_gray01(frame))
+        batch[0, f, :h, :w] = _gray01(frame)
     if wp != w:
         batch[:, :, :h, w:] = batch[:, :, :h, w - 1:w]
     if hp != h:
         batch[:, :, h:, :] = batch[:, :, h - 1:h, :]
-    _cancel(should_cancel)
     return batch
 
 
@@ -212,8 +137,7 @@ def _prepare_inference(frames, model_path, use_gpu, thread_count=None,
     """Admit model loading and the attention workspace for this stack."""
     device = _resolve_device(use_gpu)
     return common.plan_attention_inference(
-        'stackmffv3', frames, model_path, device, torch,
-        lambda: _get_model_and_device(model_path, use_gpu),
+        'stackmffv3', frames, model_path, device,
         thread_count=thread_count, resource_preference=resource_preference,
         execution_plan=execution_plan, result_count=result_count,
         fixed_bytes=fixed_bytes)
@@ -237,7 +161,7 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
             return []
         _validate_tiles(tiles_list)
         mode = normalize_mode(mode)
-        model, device, _plan = _prepare_inference(
+        model, device, plan = _prepare_inference(
             tiles_list[0], model_path, use_gpu, thread_count,
             resource_preference, execution_plan, len(tiles_list))
         results = []
@@ -245,7 +169,7 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
             _cancel(should_cancel)
             frames, _is_16bit = normalize_fuse_input(tile)
             batch_input = _stage_gray(frames, should_cancel)
-            probs = _probabilities(batch_input, model, device, mode, should_cancel)
+            probs = _probabilities(batch_input, model, device, mode, should_cancel, plan.native_threads)
             del batch_input
             h, w = frames[0].shape[:2]
             # Only the probability calculation needs padding. Color mixing
@@ -254,7 +178,7 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
             grayscale = stack.ndim == 3
             if grayscale:
                 stack = stack[..., None]
-            fused = _blend_tile(probs[0, :, :h, :w].cpu().numpy(), stack,
+            fused = _blend_tile(probs[0, :, :h, :w], stack,
                                 mode, should_cancel)
             del stack, probs
             if fuse_output_dtype(frames) is np.uint8:
@@ -346,14 +270,14 @@ def model_probabilities(frames, model_path, use_gpu, sigma=0.0,
     with lease:
         _cancel(should_cancel)
         _validate_tiles([frames])
-        model, device, _plan = _prepare_inference(
+        model, device, plan = _prepare_inference(
             frames, model_path, use_gpu, thread_count,
             resource_preference, execution_plan)
         frames, _is_16bit = normalize_fuse_input(frames)
         batch = _stage_gray(frames, should_cancel)
         probabilities = _forward_probabilities(batch, model, device, sigma,
-                                               should_cancel)
+                                               should_cancel, plan.native_threads)
         h, w = frames[0].shape[:2]
-        result = probabilities[0, :, :h, :w].cpu().numpy()
+        result = probabilities[0, :, :h, :w]
         _cancel(should_cancel)
         return result

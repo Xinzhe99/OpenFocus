@@ -69,71 +69,33 @@ _TORCH_DEVICE_KIND = None  # 'CUDA' | 'ROCM' | 'XPU' | 'MPS' | 'N/A'，探测后
 
 
 def is_ai_fusion_available() -> bool:
-    """Return True when PyTorch is importable for the StackMFF-V3 fusion.
-
-    The result is cached: importing torch costs seconds on Windows, so the
-    startup probe must never pay it twice. The probe is serialized: two
-    threads importing torch at once (the startup probe thread and the
-    status bar on the UI thread) raced inside torch's operator registry
-    ("RuntimeError: operator prims::amin does not exist").
-    """
-    global _STACKMFF_AVAILABLE_CACHE, _TORCH_DEVICE_KIND
-    if _STACKMFF_AVAILABLE_CACHE is not None:
-        return _STACKMFF_AVAILABLE_CACHE
-
-    with _TORCH_PROBE_LOCK:
-        if _STACKMFF_AVAILABLE_CACHE is not None:
-            return _STACKMFF_AVAILABLE_CACHE
-        # Availability is decided WITHOUT importing torch. Importing it costs
-        # ~2.1 s and pins ~193 MB of RSS; on a machine where the user never
-        # renders with the neural method that was pure waste, and it happened
-        # on every launch just to enable a combo-box entry. find_spec answers
-        # the same question from the import machinery alone.
+    """Whether the compact inference runtime is installed."""
+    global _STACKMFF_AVAILABLE_CACHE
+    if _STACKMFF_AVAILABLE_CACHE is None:
         try:
-            found = importlib.util.find_spec("torch") is not None
+            _STACKMFF_AVAILABLE_CACHE = importlib.util.find_spec('onnxruntime') is not None
         except (ImportError, ValueError):
-            found = False
-        if not found:
-            _TORCH_DEVICE_KIND = "N/A"
             _STACKMFF_AVAILABLE_CACHE = False
-            return False
-        # torch is installed; the device kind is resolved lazily by
-        # ensure_torch_device_kind() the first time something actually needs a
-        # GPU decision.
-        _TORCH_DEVICE_KIND = None
-        _STACKMFF_AVAILABLE_CACHE = True
-        return True
+    return _STACKMFF_AVAILABLE_CACHE
 
 
-def ensure_torch_device_kind():
-    """Import torch (once) and cache 'CUDA' | 'ROCM' | 'XPU' | 'MPS' | 'N/A'.
-
-    Call this only where the accelerator genuinely matters — the render path
-    and the status bar — never at startup. Returns the cached value when a
-    previous call already resolved it.
-    """
+def ensure_neural_device_kind():
+    """Return the available ONNX Runtime accelerator, or N/A for CPU."""
     global _TORCH_DEVICE_KIND
-    if _TORCH_DEVICE_KIND is not None:
-        return _TORCH_DEVICE_KIND
-    if not is_ai_fusion_available():
-        _TORCH_DEVICE_KIND = "N/A"
-        return _TORCH_DEVICE_KIND
-    with _TORCH_PROBE_LOCK:
-        if _TORCH_DEVICE_KIND is not None:
-            return _TORCH_DEVICE_KIND
-        try:
-            kind = torch_backend.probe_kind(import_if_needed=True)
-            _TORCH_DEVICE_KIND = (kind if torch_backend.is_accelerator(kind)
-                                  else "N/A")
-        except Exception:  # broken/mismatched install
-            _TORCH_DEVICE_KIND = "N/A"
-        return _TORCH_DEVICE_KIND
-
-
-def torch_device_kind():
-    """Cached accelerator kind from the availability probe, or None while the
-    probe has not run yet (never imports torch itself — safe on the UI thread)."""
+    try:
+        from fusion_methods.neural_runtime import resolve_device
+        kind = resolve_device(True)
+        _TORCH_DEVICE_KIND = kind if kind != 'CPU' else 'N/A'
+    except Exception:
+        _TORCH_DEVICE_KIND = 'N/A'
     return _TORCH_DEVICE_KIND
+
+
+def neural_device_kind():
+    """Cached accelerator provider, or None while probing."""
+    from fusion_methods.neural_runtime import cached_device
+    kind = cached_device()
+    return ('N/A' if kind == 'CPU' else kind) if kind is not None else _TORCH_DEVICE_KIND
 
 def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
                         workers: int = 1) -> int:

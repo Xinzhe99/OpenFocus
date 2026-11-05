@@ -1,5 +1,4 @@
 """Shared staging, cancellation and resource planning for neural fusion."""
-import hashlib
 import os
 
 import cv2
@@ -7,33 +6,8 @@ import numpy as np
 
 from utils.image_utils import normalize_fuse_input
 from utils.sorting import natural_sort_key
-from core import torch_backend
-
-torch = None
-DEVICE_KIND = None
 ATTENTION_PAD_ALIGN = 64
 
-
-def ensure_torch():
-    """Import torch on first use; the backend probe is shared and cached."""
-    global torch, DEVICE_KIND
-    if torch is not None:
-        if DEVICE_KIND is None:
-            DEVICE_KIND = torch_backend.detect_kind(torch)
-        return
-    torch = torch_backend.ensure_torch()
-    DEVICE_KIND = torch_backend.detect_kind(torch)
-
-
-def resolve_device(use_gpu):
-    ensure_torch()
-    return torch_backend.resolve_device(use_gpu, torch)
-
-
-def synchronize(device):
-    """Wait for queued work before a cancellation path releases its lease."""
-    if torch is not None:
-        torch_backend.synchronize(device, torch)
 
 
 def cancel(should_cancel):
@@ -42,12 +16,6 @@ def cancel(should_cancel):
         raise RegistrationCancelled()
 
 
-def checkpoint_digest(path):
-    digest = hashlib.sha256()
-    with open(path, 'rb') as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.digest()
 
 
 def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None):
@@ -101,21 +69,16 @@ def stage_planes(frames, align, should_cancel=None):
 
     Small inputs use replicated edges, as in the released model inference.
     """
-    ensure_torch()
     h, w = frames[0].shape[:2]
     hp, wp = h + (-h) % align, w + (-w) % align
-    batch = torch.empty((1, len(frames), hp, wp), dtype=torch.float32)
+    batch = np.empty((1, len(frames), hp, wp), dtype=np.float32)
     for index, frame in enumerate(frames):
         cancel(should_cancel)
-        batch[0, index, :h, :w] = torch.from_numpy(_plane(frame))
+        batch[0, index, :h, :w] = _plane(frame)
     ph, pw = hp - h, wp - w
-    reflect = ph < h and pw < w
-    if pw:
-        batch[:, :, :h, w:] = (batch[:, :, :h, w - pw - 1:w - 1].flip(-1)
-                                if reflect else batch[:, :, :h, w - 1:w])
-    if ph:
-        batch[:, :, h:, :] = (batch[:, :, h - ph - 1:h - 1, :].flip(-2)
-                               if reflect else batch[:, :, h - 1:h, :])
+    if ph or pw:
+        mode = 'reflect' if ph < h and pw < w else 'edge'
+        batch = np.pad(batch[:, :, :h, :w], ((0, 0), (0, 0), (0, ph), (0, pw)), mode=mode)
     cancel(should_cancel)
     return batch
 
@@ -125,78 +88,33 @@ def normalized_frames(frames):
     return normalize_fuse_input(list(frames))[0]
 
 
-def plan_attention_inference(algorithm, frames, model_path, device, torch_module,
-                             load_model, thread_count=None,
+def plan_attention_inference(algorithm, frames, model_path, device,
+                             thread_count=None,
                              resource_preference='balanced', execution_plan=None,
                              result_count=1, fixed_bytes=0):
-    """Admit checkpoint loading and the actual attention-model workspace."""
-    from core.resource_policy import (ResourceLimitError, Workload,
-                                      plan_execution, probe_resources)
+    """Admit the compact runtime's working set before creating a session."""
+    from core.resource_policy import Workload, plan_execution, probe_resources
+    from fusion_methods.neural_runtime import estimate_inference_bytes
 
-    kind = torch_backend.kind_of_device(device, torch_module)
-    snapshot = probe_resources(kind)
-    cap = execution_plan.ram_budget if execution_plan is not None else None
-    if kind == torch_backend.KIND_MPS:
-        torch_backend.empty_cache(device, torch_module)
-        shared = torch_backend.mps_memory(torch_module)
-        if shared is None:
-            raise ResourceLimitError('Cannot determine the MPS working-set budget')
-        cap = min(cap if cap is not None else snapshot.available_ram,
-                  max(0, int(shared[0])))
-    vram_kind = torch_backend.has_device_memory(kind)
     if execution_plan is not None:
+        device = getattr(execution_plan, 'device_kind', device)
         thread_count = min(thread_count or execution_plan.native_threads,
                            execution_plan.native_threads)
     h, w = frames[0].shape[:2]
     n = len(frames)
     c = frames[0].shape[2] if frames[0].ndim == 3 else 1
-    model_bytes = os.path.getsize(model_path) * 4
-    base = dict(algorithm=algorithm, frames=n, height=h, width=w, channels=c,
-                itemsize=max(frame.dtype.itemsize for frame in frames),
-                parallel_layer='native')
-    load_plan = plan_execution(
-        Workload(**base, fixed_bytes=model_bytes + fixed_bytes,
-                 per_worker_bytes=0,
-                 fixed_vram_bytes=model_bytes if vram_kind else 0),
-        snapshot, preference=resource_preference,
-        user_threads=thread_count, ram_budget_override=cap)
-    torch_module.set_num_threads(load_plan.native_threads)
-    model, device = load_model()
-    backbone = getattr(model, 'backbone', model)
-    hp = h + (-h) % ATTENTION_PAD_ALIGN
-    wp = w + (-w) % ATTENTION_PAD_ALIGN
-    pixels = hp * wp
-    channels = backbone.C1 / 16 + (0 if getattr(backbone, 'single_scale', False)
-                                  else backbone.C2 / 64)
-    heads = max((getattr(m, 'heads', 1) for m in backbone.modules()), default=1)
-    expansion = max((m.fc1.out_features / m.fc1.in_features
-                     for m in backbone.modules() if hasattr(m, 'fc1')), default=2)
-    # This coefficient was measured for the bundled single-scale V3 model;
-    # other architectures and accelerators keep the larger estimate.
-    calibrated_cpu = (kind == torch_backend.KIND_CPU
-                      and getattr(backbone, 'single_scale', False)
-                      and not getattr(backbone, 'fine_head', False)
-                      and backbone.C1 == 48 and backbone.C2 == 96
-                      and backbone.window == 8 and heads == 3 and expansion == 2)
-    feature_base = 7 if calibrated_cpu else 12
-    features = int(n * pixels * channels * 4 * (feature_base + 2 * expansion))
-    if getattr(backbone, 'fine_head', False):
-        features = max(features, n * pixels * 4 * (1 + 5 * backbone.head.cf))
-    scores = int(pixels / 16 * heads * 4
-                 * (n * backbone.window ** 2 + n * n))
-    probabilities = n * pixels * 4 * 6
-    inference = features + scores + probabilities + model_bytes
-    host = (fixed_bytes + n * pixels * 4 * (2 * c + 3)
-            + result_count * h * w * c * 4)
-    if kind in (torch_backend.KIND_CPU, torch_backend.KIND_MPS):
-        host += inference
-    plan = plan_execution(
-        Workload(**base, fixed_bytes=host, per_worker_bytes=0,
-                 fixed_vram_bytes=inference if vram_kind else 0),
-        snapshot, preference=resource_preference, user_threads=thread_count,
-        ram_budget_override=cap)
-    torch_module.set_num_threads(plan.native_threads)
-    return model, device, plan
+    hp, wp = h + (-h) % 64, w + (-w) % 64
+    inference = estimate_inference_bytes(n, h, w, device)
+    host = (fixed_bytes + n * hp * wp * 4 * (2 * c + 3)
+            + result_count * h * w * c * 4 + inference)
+    workload = Workload(algorithm=algorithm, frames=n, height=h, width=w,
+                        channels=c, itemsize=max(f.dtype.itemsize for f in frames),
+                        parallel_layer='native', fixed_bytes=host, per_worker_bytes=0)
+    plan = plan_execution(workload, probe_resources(), preference=resource_preference,
+                          user_threads=thread_count,
+                          ram_budget_override=execution_plan.ram_budget if execution_plan else None)
+    from dataclasses import replace
+    return model_path, device, replace(plan, device_kind=device)
 
 
 def _ycbcr(frame):

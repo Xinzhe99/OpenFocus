@@ -10,4 +10,5 @@ tifffile==2024.8.30
 rawpy>=0.25.1
 dtcwt
 scipy
-torch
+onnxruntime-directml==1.23.0; sys_platform == 'win32' and platform_machine == 'AMD64'
+onnxruntime>=1.23,<1.24; sys_platform != 'win32' or platform_machine != 'AMD64'
