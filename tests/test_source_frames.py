@@ -294,3 +294,110 @@ def test_tiff_orientation_is_applied_once_for_previews_and_originals(tmp_path, o
         assert frame.shape == expected.shape
         np.testing.assert_array_equal(sources.display_image(frame), expected)
         np.testing.assert_array_equal(sources.resolve_frame(frame), expected)
+
+
+def _rgb16_png_with_exif(path, placement):
+    from utils.image_utils import _png_insert_exif
+    y, x = np.indices((12, 20), dtype=np.uint16)
+    pixels = np.stack((x * 1800 + y * 101 + 123,
+                       y * 2200 + x * 61 + 456,
+                       (x + y) * 900 + 789), axis=-1).astype(np.uint16)
+    ok, encoded = cv2.imencode('.png', pixels)
+    assert ok
+    png = encoded.tobytes()
+    if placement is not None:
+        exif = Image.Exif()
+        exif[274], exif[271], exif[272] = 6, 'Header-only camera', 'RGB16 PNG'
+        tiff_exif = exif.tobytes()[6:]  # PNG eXIf contains TIFF bytes, not Exif\0\0.
+        prefixed = _png_insert_exif(png, tiff_exif)
+        if placement == 'before':
+            png = prefixed
+        else:
+            assert placement == 'after' and png[-8:-4] == b'IEND'
+            chunk = prefixed[33:33 + 12 + len(tiff_exif)]
+            png = png[:-12] + chunk + png[-12:]
+    path.write_bytes(png)
+    return pixels
+
+
+@pytest.mark.parametrize('placement', [None, 'before', 'after'])
+def test_rgb16_png_metadata_never_loads_pixels_and_originals_remain_exact(tmp_path, monkeypatch, placement):
+    from PIL import PngImagePlugin
+    from utils.image_utils import read_image_exif
+    path = tmp_path / '带方向的16位.png'
+    original = _rgb16_png_with_exif(path, placement)
+    attempts = []
+    def forbidden(image, *_args, **_kwargs):
+        attempts.append(image.filename)
+        raise AssertionError('PNG metadata loaded image pixels')
+    with monkeypatch.context() as guard:
+        guard.setattr(PngImagePlugin.PngImageFile, 'load', forbidden)
+        with Image.open(path) as image:
+            position = image.fp.tell()
+            exif = read_image_exif(image)
+            assert image.fp.tell() == position
+            assert exif.get(274, 1) == (1 if placement is None else 6)
+        frame = sources.scan_source(path, header_only=True)[0]
+        metadata = image_loader._read_exif_bytes(str(path))
+        assert attempts == []
+        assert frame.dtype == np.uint16 and frame.preview is None
+        assert frame.orientation == (1 if placement is None else 6)
+        assert frame.shape == ((12, 20, 3) if placement is None else (20, 12, 3))
+        if placement is None:
+            assert metadata == b''
+        else:
+            exported = Image.Exif()
+            exported.load(metadata)
+            assert exported[271] == 'Header-only camera' and exported[272] == 'RGB16 PNG'
+    expected = original if placement is None else cv2.rotate(original, cv2.ROTATE_90_CLOCKWISE)
+    decoded = sources.resolve_frame(frame)
+    assert decoded.dtype == np.uint16
+    np.testing.assert_array_equal(decoded, expected)
+
+
+@pytest.mark.parametrize('placement', [None, 'before', 'after'])
+def test_png_stack_open_only_loads_the_first_preview_pixels(tmp_path, monkeypatch, placement):
+    from pathlib import Path
+    from PIL import PngImagePlugin
+    paths = [tmp_path / f'帧-{index}.png' for index in range(3)]
+    for path in paths:
+        _rgb16_png_with_exif(path, placement)
+    load = PngImagePlugin.PngImageFile.load
+    decoded_paths = []
+    def preview_only(image, *args, **kwargs):
+        path = Path(image.filename)
+        decoded_paths.append(path)
+        if path != paths[0]:
+            raise AssertionError('metadata decoded a non-selected PNG frame')
+        return load(image, *args, **kwargs)
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', preview_only)
+    ok, message, frames, _ = image_loader.ImageStackLoader().load_from_filepaths(
+        [str(path) for path in paths])
+    assert ok, message
+    assert len(frames) == 3 and set(decoded_paths) == {paths[0]}
+    assert sources.preview_ready(frames[0])
+    assert all(not sources.preview_ready(frame) for frame in frames[1:])
+    assert all(frame.dtype == np.uint16 for frame in frames)
+    assert all(frame.shape == ((12, 20, 3) if placement is None else (20, 12, 3)) for frame in frames)
+
+
+def test_raw_source_dimensions_are_header_only_and_unicode_safe(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    rawpy = pytest.importorskip('rawpy')
+    path = tmp_path / '原生尺寸.raf'
+    path.write_bytes(b'RAW header fixture')
+    class HeaderRaw:
+        sizes = SimpleNamespace(width=80, height=60)
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def open_file(self, filename):
+            assert isinstance(filename, str) and filename == str(path)
+        def open_buffer(self, *_args): raise AssertionError('RAW metadata read the complete encoded file')
+        def unpack(self): raise AssertionError('RAW dimensions unpacked sensor pixels')
+        def postprocess(self, **_kwargs): raise AssertionError('RAW dimensions demosaiced sensor pixels')
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('RAW dimensions used the unpacking convenience decoder')
+    monkeypatch.setattr(rawpy, 'RawPy', HeaderRaw)
+    monkeypatch.setattr(rawpy, 'imread', forbidden)
+    monkeypatch.setattr(image_loader, 'RAWPY_AVAILABLE', True)
+    assert image_loader.source_dimensions(path) == (80, 60)

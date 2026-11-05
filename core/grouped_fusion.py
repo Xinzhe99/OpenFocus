@@ -18,7 +18,7 @@ from core import resource_policy
 from core.frame_storage import storage_directory
 from core.image_loader import RAW_FORMATS, _downscale_page, decode_image
 from core.registration import RegistrationCancelled
-from utils.image_utils import get_imwrite_params, imwrite_auto
+from utils.image_utils import get_imwrite_params, imwrite_auto, read_image_exif
 
 
 def _check_cancel(should_cancel):
@@ -37,7 +37,7 @@ def _header(path):
             if 'A' in image.getbands() or 'transparency' in image.info:
                 raise ValueError(f"Grouped fusion does not support alpha-channel inputs: {path}. Remove alpha or disable grouping")
             width, height = image.size
-            if image.getexif().get(274, 1) in (5, 6, 7, 8):
+            if read_image_exif(image).get(274, 1) in (5, 6, 7, 8):
                 width, height = height, width
     except ValueError:
         raise
