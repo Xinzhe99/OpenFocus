@@ -167,3 +167,28 @@ def test_standalone_rejects_mismatched_upright_dimensions(tmp_path, extension):
     Image.fromarray(pixels).save(source, exif=exif)
     with pytest.raises(ValueError, match='dimensions'):
         load_standalone_retouch(str(result), [str(source)])
+
+
+def test_standalone_rejects_insufficient_memory_before_any_pixel_decode(tmp_path, monkeypatch):
+    from PIL import PngImagePlugin
+    from core import resource_policy
+    from utils import standalone_retouch
+
+    base = tmp_path / '原图.png'
+    source = tmp_path / '来源.png'
+    pixels = np.arange(3 * 5 * 3, dtype=np.uint16).reshape(3, 5, 3)
+    for path in (base, source):
+        _write(path, pixels)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda: resource_policy.ResourceSnapshot(
+        available_ram=1, total_ram=8 * 1024**3))
+    attempts = []
+
+    def forbidden(*_args, **_kwargs):
+        attempts.append(True)
+        raise AssertionError('Standalone retouch decoded pixels before memory admission')
+
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', forbidden)
+    monkeypatch.setattr(standalone_retouch.cv2, 'imdecode', forbidden)
+    with pytest.raises(resource_policy.ResourceLimitError):
+        load_standalone_retouch(str(base), [str(source)])
+    assert attempts == []

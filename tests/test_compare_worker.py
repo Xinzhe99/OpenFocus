@@ -127,8 +127,17 @@ def test_dct_handles_frames_thinner_than_one_transform_block(height, width, regi
     assert np.any(results[0][1])
 
 
-def test_roi_uses_context_views_and_does_not_copy_full_stack(monkeypatch):
-    frames = _stack(641, 803)
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_roi_uses_bounded_context_and_preserves_source_pixels(monkeypatch, dtype):
+    frames = _stack(641, 803, dtype)
+    snapshots = [frame.copy() for frame in frames]
+    region = (301, 257, 41, 41)
+    x, y, w, h = region
+    halo = 96
+    context = [frame[y - halo:y + h + halo, x - halo:x + w + halo]
+               for frame in frames]
+    expected = _expected(context, 'openfocus_a')[halo:halo + h, halo:halo + w]
+    expected_inputs, _ = normalize_fuse_input(context)
     observations = []
     original = MultiFocusFusion.fuse
 
@@ -136,17 +145,25 @@ def test_roi_uses_context_views_and_does_not_copy_full_stack(monkeypatch):
         observations.append(input_source)
         return original(self, input_source, *args, **kwargs)
 
-    monkeypatch.setattr(MultiFocusFusion, "fuse", observe)
-    region = (301, 257, 41, 41)
+    monkeypatch.setattr(MultiFocusFusion, 'fuse', observe)
     results, errors, _ = _run(PreviewWorker(
-        frames, ["openfocus_a"], {}, {"tile_enabled": False}, region))
+        frames, ['openfocus_a'], {}, {'tile_enabled': False}, region))
     assert errors == []
     assert len(observations) == 1
-    for source, crop in zip(frames, observations[0]):
-        assert np.shares_memory(source, crop)
-        assert crop.shape[:2] == (41 + 192, 41 + 192)
-    assert results[0][1].shape == (41, 41, 3)
-    assert results[0][1].base is None  # Do not retain the context output buffer.
+    assert len(observations[0]) == len(frames)
+    for crop, expected_input in zip(observations[0], expected_inputs):
+        assert crop.shape[:2] == (h + 2 * halo, w + 2 * halo)
+        assert crop.dtype == expected_input.dtype
+        np.testing.assert_array_equal(crop, expected_input)
+    assert results[0][2] == region
+    result = results[0][1]
+    assert result.shape == (h, w, 3)
+    assert result.dtype == dtype
+    np.testing.assert_array_equal(result, expected)
+    for frame, snapshot in zip(frames, snapshots):
+        np.testing.assert_array_equal(frame, snapshot)
+    if dtype == np.uint16:
+        assert np.any(result % 257), 'ROI lost the original 16-bit detail'
 
 
 def test_own_method_settings_and_configuration_snapshot():
@@ -306,12 +323,21 @@ def test_alignment_runs_real_registration_on_background_thread(monkeypatch):
     assert after < before * 0.5
 
 
-def test_alignment_none_keeps_frame_storage():
-    frames = _stack(dtype=np.uint16)
-    results, errors, _ = _run(AlignmentWorker(frames, "none", {}))
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_alignment_none_preserves_pixels_and_bit_depth(dtype):
+    frames = _stack(dtype=dtype)
+    snapshots = [frame.copy() for frame in frames]
+    results, errors, _ = _run(AlignmentWorker(frames, 'none', {}))
     assert errors == []
     assert isinstance(results[0], list)
-    assert all(left is right for left, right in zip(results[0], frames))
+    assert len(results[0]) == len(frames)
+    for aligned, source, snapshot in zip(results[0], frames, snapshots):
+        assert aligned.dtype == dtype
+        assert aligned.shape == snapshot.shape
+        np.testing.assert_array_equal(aligned, snapshot)
+        np.testing.assert_array_equal(source, snapshot)
+    if dtype == np.uint16:
+        assert all(np.any(frame % 257) for frame in results[0])
 
 
 def test_alignment_failure_is_reported():

@@ -10,6 +10,7 @@ import numpy as np
 from scipy.ndimage import median_filter
 
 from utils.image_utils import fuse_output_dtype
+from core.frame_storage import create_frame, store_frame
 
 ArraySource = Sequence[np.ndarray]
 
@@ -26,6 +27,8 @@ def _ensure_color_image(image: np.ndarray) -> np.ndarray:
     raise ValueError(f"Unsupported image shape: {image.shape}")
 
 def _collect_images_from_folder(source_folder: str, check_cancel=None) -> Tuple[List[np.ndarray], List[str]]:
+    from core.image_loader import admit_image_decode, decode_image
+
     extensions = ['*.jpg', '*.jpeg', '*.png', '*.tif', '*.tiff', '*.bmp']
     img_paths = []
     for ext in extensions:
@@ -36,9 +39,10 @@ def _collect_images_from_folder(source_folder: str, check_cancel=None) -> Tuple[
     for path in img_paths:
         if check_cancel is not None:
             check_cancel()
-        img = cv2.imread(path, cv2.IMREAD_ANYDEPTH | cv2.IMREAD_COLOR)
+        admit_image_decode(path)
+        img = decode_image(path)
         if img is not None:
-            images.append(img)
+            images.append(store_frame(img))
     return images, img_paths
 
 def _normalize_image_stack(images: Sequence[np.ndarray], check_cancel=None) -> Tuple[List[np.ndarray], Tuple[int, int]]:
@@ -54,10 +58,10 @@ def _normalize_image_stack(images: Sequence[np.ndarray], check_cancel=None) -> T
     for img in images:
         if check_cancel is not None:
             check_cancel()
-        img_bgr = _ensure_color_image(np.ascontiguousarray(img))
+        img_bgr = _ensure_color_image(img)
         if img_bgr.shape[:2] != (target_h, target_w):
             img_bgr = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-        normalized.append(img_bgr)
+        normalized.append(img_bgr if img_bgr is img else store_frame(img_bgr))
         
     if target_h < 8 or target_w < 8:
         raise ValueError("图像尺寸过小")
@@ -186,7 +190,8 @@ def dct_focus_stack_fusion(
 
     # --- 4. 快速重建 ---
     # 输出位深跟随输入：16-bit 栈在这里被压成 uint8 会丢掉调用方要保留的深度
-    fused_image = np.zeros((h_trim, w_trim, 3), dtype=fuse_output_dtype(normalized_images))
+    fused_image = create_frame((h_trim, w_trim, 3), fuse_output_dtype(normalized_images))
+    fused_image[...] = 0
 
     # 仅遍历用到的源图像索引进行填充
     unique_indices = np.unique(final_index_map)
@@ -209,7 +214,7 @@ def dct_focus_stack_fusion(
     check_cancel()
     if (orig_h, orig_w) != (h_trim, w_trim):
         # drop the replicated padding so the result matches the source stack
-        fused_image = fused_image[:orig_h, :orig_w].copy()
+        fused_image = fused_image[:orig_h, :orig_w]
 
     if output_path:
         from utils.image_utils import imwrite_auto

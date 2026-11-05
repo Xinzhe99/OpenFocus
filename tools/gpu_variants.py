@@ -30,6 +30,10 @@ BUILD_KEYS = {"name", "display", "python", "torch", "torch_wheel",
               "torch_sha256", "asset_suffix", "device_api", "channel",
               "build", "status"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+ROCM_DEVEL_TREES = ("include", "lib/llvm/amdgcn", "lib/llvm/lib/clang")
+ROCM_DEVEL_SENTINELS = ("include/hip/hip_runtime.h",
+                        "lib/llvm/amdgcn/bitcode/ocml.bc",
+                        "lib/llvm/lib/clang/22/include/__clang_hip_runtime_wrapper.h")
 
 
 class VariantError(ValueError):
@@ -267,6 +271,20 @@ def pyinstaller_args(name: str) -> list:
         args += ["--collect-all", "rocm_sdk",
                  "--collect-all", "_rocm_sdk_core",
                  "--collect-all", "_rocm_sdk_libraries_custom"]
+        # AMD ships these trees inside a tar that is expanded only on demand.
+        from rocm_sdk._devel import get_devel_root
+        import rocm_sdk_devel
+
+        devel = get_devel_root()
+        package = Path(rocm_sdk_devel.__file__).resolve().parent
+        # Keep the package on disk for AMD's __file__-based discovery without
+        # collecting its potentially huge _devel.tar archive.
+        args += ["--hidden-import", "rocm_sdk_devel"]
+        for filename in ("__init__.py", "_dist_info.py"):
+            args += ["--add-data", f"{package / filename};rocm_sdk_devel"]
+        args += ["--add-data", f"{devel / '__init__.py'};_rocm_sdk_devel"]
+        for relative in ROCM_DEVEL_TREES:
+            args += ["--add-data", f"{devel / relative};_rocm_sdk_devel/{relative}"]
     args.append("main.py")
     return args
 
@@ -366,6 +384,24 @@ def _compare_runtime_tree(source_dir: Path, bundled_dir: Path, label: str,
     return errors
 
 
+def _compare_devel_tree(source_dir: Path, bundled_dir: Path, label: str) -> list:
+    """Verify JIT resources, including non-DLL headers and device bitcode."""
+    files = sorted(path for path in source_dir.rglob("*") if path.is_file())
+    if not files:
+        return [f"{label}: no source files under {source_dir}"]
+    errors = []
+    for source in files:
+        relative = source.relative_to(source_dir)
+        bundled = bundled_dir / relative
+        if not bundled.is_file():
+            errors.append(f"{label}: missing {relative.as_posix()}")
+        elif source.stat().st_size != bundled.stat().st_size:
+            errors.append(f"{label}: size differs for {relative.as_posix()}")
+        elif _sha256(source) != _sha256(bundled):
+            errors.append(f"{label}: content differs for {relative.as_posix()}")
+    return errors
+
+
 def verify_bundle(name: str, bundle: str) -> None:
     _preview_variant(name)
     root = Path(bundle)
@@ -411,13 +447,39 @@ def verify_bundle(name: str, bundle: str) -> None:
                 errors.append("rocm_sdk package has no importable file")
             if not (internal / "rocm_sdk" / "__init__.py").is_file():
                 errors.append("bundle has no rocm_sdk package")
+        try:
+            from rocm_sdk._devel import get_devel_root
+            import rocm_sdk_devel
+            devel = get_devel_root()
+            package = Path(rocm_sdk_devel.__file__).resolve().parent
+            for source, bundled in (
+                (package / "__init__.py", internal / "rocm_sdk_devel" / "__init__.py"),
+                (package / "_dist_info.py", internal / "rocm_sdk_devel" / "_dist_info.py"),
+                (devel / "__init__.py", internal / "_rocm_sdk_devel" / "__init__.py"),
+            ):
+                if not source.is_file() or not bundled.is_file():
+                    errors.append(f"ROCm development package missing {bundled}")
+                elif _sha256(source) != _sha256(bundled):
+                    errors.append(f"ROCm development package content differs: {bundled}")
+            for archive in ("_devel.tar", "_devel.tar.xz"):
+                if (internal / "rocm_sdk_devel" / archive).exists():
+                    errors.append(f"unexpected bundled ROCm development archive: {archive}")
+            for relative in ROCM_DEVEL_SENTINELS:
+                if not (devel / relative).is_file():
+                    errors.append(f"_rocm_sdk_devel: missing source {relative}")
+            for relative in ROCM_DEVEL_TREES:
+                errors.extend(_compare_devel_tree(
+                    devel / relative, internal / "_rocm_sdk_devel" / relative,
+                    f"_rocm_sdk_devel/{relative}"))
+        except (ImportError, OSError) as exc:
+            errors.append(f"ROCm development resources unavailable: {exc}")
 
     if errors:
         for error in errors:
             print(f"::error::{error}", file=sys.stderr)
         raise VariantError(f"{name}: bundled runtime verification failed")
-    print(f"{name}: all source torch/accelerator DLLs are bundled with "
-          "matching sizes; key hashes match")
+    print(f"{name}: source torch/accelerator DLLs and ROCm JIT resources "
+          "where applicable are bundled and verified")
 
 
 def package(name: str, bundle: str, output_dir: str) -> None:

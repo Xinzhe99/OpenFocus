@@ -1,6 +1,5 @@
 """Offscreen GUI tests: settings persistence round-trip and the wipe widget."""
 import os
-import shutil
 import tempfile
 
 import cv2
@@ -23,21 +22,12 @@ def qapp():
 
 
 @pytest.fixture()
-def clean_settings():
-    # The cached QSettings keeps serving the previous values after a bare
-    # directory wipe (and then writes them back), so reset it around the wipe.
+def clean_settings(tmp_path, monkeypatch):
     from utils.settings_store import reset_settings_singleton
     reset_settings_singleton()
-    shutil.rmtree(TEMP_SETTINGS, ignore_errors=True)
-    os_makedirs(TEMP_SETTINGS)
+    monkeypatch.setenv("OPENFOCUS_DATA_DIR", str(tmp_path))
     yield
     reset_settings_singleton()
-    shutil.rmtree(TEMP_SETTINGS, ignore_errors=True)
-
-
-def os_makedirs(path):
-    import os
-    os.makedirs(path, exist_ok=True)
 
 
 def test_settings_round_trip(qapp, clean_settings):
@@ -332,8 +322,7 @@ def _render_window(frames):
     for code, _key, _hint in fusion_items():
         w.combo_fusion.addItem(code, code)
     # These tests exercise the classical/AI-agnostic paths; pin a classical
-    # method instead of relying on whichever entry the product defaults to
-    # (the default is now the neural one, which needs torch).
+    # method instead of relying on whichever entry the product defaults to.
     w.combo_fusion.setCurrentIndex(
         max(0, w.combo_fusion.findData("guided_filter")))
     w.combo_align = QComboBox()
@@ -1267,8 +1256,7 @@ class TestCpuAiWarning:
     """A CPU-only AI render warns once, and the opt-out sticks."""
 
     def _manager(self, algorithm="stackmffv3", use_gpu=True, dismissed=False,
-                 device="N/A", ai_available=True, answer_accept=True,
-                 check_dont_show=False):
+                 answer_accept=True, check_dont_show=False):
         from controllers.render_manager import RenderManager
         from utils.settings_store import AI_CPU_WARNING_DISMISSED_KEY
 
@@ -1295,9 +1283,6 @@ class TestCpuAiWarning:
 
         box = {"accept": answer_accept, "checked": check_dont_show}
 
-        def fake_dialog(*_a, **_k):
-            shown["dialog"] = True
-            return box["accept"]
 
         # Patch the two Qt pieces the method touches.
         import PyQt6.QtWidgets as W
@@ -1308,8 +1293,8 @@ class TestCpuAiWarning:
             ButtonRole = real_box.ButtonRole
 
             def __init__(self, *a, **k):
+                shown["dialog"] = True
                 self._clicked = None
-
             def setIcon(self, *_a): pass
             def setWindowTitle(self, *_a): pass
             def setText(self, *_a): pass
@@ -1357,22 +1342,24 @@ class TestCpuAiWarning:
     def test_warns_when_no_accelerator(self, qapp, monkeypatch):
         import core.multi_focus_fusion as mff
         monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
-        monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
+        monkeypatch.setattr(mff, "neural_device_kind", lambda: "N/A")
         result, shown = self._manager(answer_accept=True)
-        assert shown.get("dialog") is not True  # dialog lives inside the stub
+        assert shown.get("dialog") is True
         assert result is True
 
-    def test_stays_silent_with_an_accelerator(self, qapp, monkeypatch):
+    @pytest.mark.parametrize("provider", ["DIRECTML", "COREML"])
+    def test_stays_silent_with_an_accelerator(self, qapp, monkeypatch, provider):
         import core.multi_focus_fusion as mff
         monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
-        monkeypatch.setattr(mff, "torch_device_kind", lambda: "CUDA")
+        monkeypatch.setattr(mff, "neural_device_kind", lambda: provider)
         result, shown = self._manager()
         assert result is True
+        assert "dialog" not in shown
         assert "dismissed" not in shown
 
     def test_stays_silent_for_classical_methods(self, qapp, monkeypatch):
         import core.multi_focus_fusion as mff
-        monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
+        monkeypatch.setattr(mff, "neural_device_kind", lambda: "N/A")
         result, shown = self._manager(algorithm="guided_filter")
         assert result is True
         assert "dismissed" not in shown
@@ -1380,15 +1367,25 @@ class TestCpuAiWarning:
     def test_opt_out_is_remembered(self, qapp, monkeypatch):
         import core.multi_focus_fusion as mff
         monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
-        monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
+        monkeypatch.setattr(mff, "neural_device_kind", lambda: "N/A")
         result, shown = self._manager(dismissed=True)
         assert result is True
         assert "dismissed" not in shown  # never asked, never re-saved
 
+    def test_opt_out_is_saved(self, qapp, monkeypatch):
+        import core.multi_focus_fusion as mff
+        from utils.settings_store import AI_CPU_WARNING_DISMISSED_KEY
+        monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
+        monkeypatch.setattr(mff, "neural_device_kind", lambda: "N/A")
+        result, shown = self._manager(check_dont_show=True)
+        assert result is True
+        assert shown["dialog"] is True
+        assert shown["dismissed"] == (AI_CPU_WARNING_DISMISSED_KEY, True)
+
     def test_cancel_stops_the_render(self, qapp, monkeypatch):
         import core.multi_focus_fusion as mff
         monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
-        monkeypatch.setattr(mff, "torch_device_kind", lambda: "N/A")
+        monkeypatch.setattr(mff, "neural_device_kind", lambda: "N/A")
         result, _shown = self._manager(answer_accept=False)
         assert result is False
 

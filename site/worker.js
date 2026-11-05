@@ -456,6 +456,103 @@ async function r2Download(request, env, key, name) {
   return new Response(object.body, { status, headers });
 }
 
+// Analytics is optional and must never interfere with serving a download.
+function recordDownload(request, response, env, ctx, version, kind, channel, source) {
+  if (request.method !== "GET" || !env?.ANALYTICS || !ctx?.waitUntil ||
+      typeof version !== "string" || !/^v[0-9A-Za-z._+-]{1,80}$/.test(version)) return;
+  if (response.status !== 200 && response.status !== 302 &&
+      !(response.status === 206 && /^bytes 0-\d+\/\d+$/.test(response.headers.get("Content-Range") || ""))) return;
+  try {
+    const operation = Promise.resolve().then(() => env.ANALYTICS.prepare(
+      "INSERT INTO download_counts (day, version, kind, channel, source, count) VALUES (date('now'), ?, ?, ?, ?, 1) " +
+      "ON CONFLICT(day, version, kind, channel, source) DO UPDATE SET count = count + 1"
+    ).bind(version, kind, channel, source).run()).catch(() => {});
+    ctx.waitUntil(operation);
+  } catch {
+    // A missing or broken analytics binding must not break the response.
+  }
+}
+
+async function usageRequest(request, env) {
+  if (request.method !== "POST") return textResponse("Method Not Allowed", 405, { Allow: "POST" }, request.method);
+  if (!env?.ANALYTICS) return textResponse("Analytics unavailable", 503);
+  if (!/^application\/json(?:\s*;|\s*$)/i.test(request.headers.get("Content-Type") || "")) {
+    return textResponse("Expected JSON", 415);
+  }
+  const declaredLength = request.headers.get("Content-Length");
+  if (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > 1024)) {
+    return textResponse("Request too large", 413);
+  }
+  let payload;
+  try {
+    const reader = request.body?.getReader();
+    if (!reader) return textResponse("Invalid JSON", 400);
+    const chunks = [];
+    let size = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 1024) {
+        reader.cancel().catch(() => {});
+        return textResponse("Request too large", 413);
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    return textResponse("Invalid JSON", 400);
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
+      Object.keys(payload).sort().join(",") !== "installation_id,platform,version" ||
+      typeof payload.installation_id !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(payload.installation_id) ||
+      typeof payload.version !== "string" || !/^[0-9]+(?:\.[0-9]+){1,3}$/.test(payload.version) || payload.version.length > 40 ||
+      !["windows", "macos", "linux"].includes(payload.platform)) {
+    return textResponse("Invalid usage report", 400);
+  }
+  try {
+    await env.ANALYTICS.batch([
+      env.ANALYTICS.prepare("DELETE FROM active_installations WHERE day < date('now', '-89 days')"),
+      env.ANALYTICS.prepare("INSERT INTO active_installations (day, installation_id, version, platform) VALUES (date('now'), ?, ?, ?) ON CONFLICT(day, installation_id, version, platform) DO NOTHING")
+        .bind(payload.installation_id.toLowerCase(), payload.version, payload.platform),
+    ]);
+    return new Response(null, { status: 204, headers: { "Cache-Control": NO_STORE } });
+  } catch {
+    return textResponse("Analytics unavailable", 503);
+  }
+}
+
+async function adminStats(request, env) {
+  if (request.method !== "GET") return textResponse("Method Not Allowed", 405, { Allow: "GET" }, request.method);
+  if (typeof env?.ANALYTICS_ADMIN_SECRET !== "string" || !env.ANALYTICS_ADMIN_SECRET || !env.ANALYTICS) {
+    return textResponse("Analytics unavailable", 503);
+  }
+  const authorization = request.headers.get("Authorization") || "";
+  const candidate = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const encoder = new TextEncoder();
+  const [expected, actual] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(env.ANALYTICS_ADMIN_SECRET)),
+    crypto.subtle.digest("SHA-256", encoder.encode(candidate)),
+  ]);
+  const a = new Uint8Array(expected), b = new Uint8Array(actual);
+  let difference = 0;
+  for (let i = 0; i < a.length; i++) difference |= a[i] ^ b[i];
+  if (!candidate || difference !== 0) return textResponse("Unauthorized", 401, { "WWW-Authenticate": "Bearer" });
+  try {
+    const [downloads, active] = await env.ANALYTICS.batch([
+      env.ANALYTICS.prepare("SELECT day, version, kind, channel, source, count FROM download_counts ORDER BY day DESC, version, kind, channel, source"),
+      env.ANALYTICS.prepare("SELECT version, platform, COUNT(DISTINCT installation_id) AS installations FROM active_installations WHERE day >= date('now', '-29 days') AND day <= date('now') GROUP BY version, platform ORDER BY version, platform"),
+    ]);
+    return new Response(JSON.stringify({ downloads: downloads.results, active_30_days: active.results }), { headers: jsonHeaders() });
+  } catch {
+    return textResponse("Analytics unavailable", 503);
+  }
+}
+
 async function handleDownload(request, env, ctx) {
   const method = (request.method || "GET").toUpperCase();
   if (method !== "GET" && method !== "HEAD") {
@@ -499,7 +596,10 @@ async function handleDownload(request, env, ctx) {
   }
 
   const mirrored = await r2Download(request, env, name, name);
-  if (mirrored) return mirrored;
+  if (mirrored) {
+    recordDownload(request, mirrored, env, ctx, data.tag, kind, "website", "r2");
+    return mirrored;
+  }
 
   if (!remote || request.headers.get("Range")) {
     return textResponse(
@@ -511,13 +611,15 @@ async function handleDownload(request, env, ctx) {
     );
   }
 
-  return new Response(null, {
+  const response = new Response(null, {
     status: 302,
     headers: { Location: remote, "Cache-Control": NO_STORE },
   });
+  recordDownload(request, response, env, ctx, data.tag, kind, "website", "github");
+  return response;
 }
 
-async function handleVersionedDownload(request, env) {
+async function handleVersionedDownload(request, env, ctx) {
   const method = (request.method || "GET").toUpperCase();
   if (method !== "GET" && method !== "HEAD") {
     return textResponse("Method Not Allowed", 405, { Allow: "GET, HEAD" }, method);
@@ -529,10 +631,17 @@ async function handleVersionedDownload(request, env) {
   }
   const name = `OpenFocus-${tag}-${DOWNLOAD_SUFFIXES[kind]}`;
   const response = await r2Download(request, env, name, name);
+  if (response) recordDownload(request, response, env, ctx, tag, kind, "in-app", "r2");
   return response || textResponse("The download mirror is not ready; retry the download.", 503, { "Retry-After": "60" }, method);
 }
 
 export default {
+  async scheduled(_event, env, ctx) {
+    if (!env?.ANALYTICS) return;
+    ctx.waitUntil(Promise.resolve().then(() => env.ANALYTICS.prepare(
+      "DELETE FROM active_installations WHERE day < date('now', '-89 days')"
+    ).run()).catch(() => {}));
+  },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const method = (request.method || "GET").toUpperCase();
@@ -550,6 +659,9 @@ export default {
         },
       });
     }
+    if (url.pathname === "/api/usage") return usageRequest(request, env);
+    if (url.pathname === "/api/admin/stats") return adminStats(request, env);
+
 
     if (url.pathname === "/api/updates") {
       if (method !== "GET" && method !== "HEAD") {
@@ -563,7 +675,7 @@ export default {
     }
 
     if (url.pathname.startsWith(VERSIONED_DOWNLOAD_PREFIX)) {
-      return handleVersionedDownload(request, env);
+      return handleVersionedDownload(request, env, ctx);
     }
 
     if (url.pathname === "/api/latest") {

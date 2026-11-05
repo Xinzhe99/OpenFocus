@@ -117,17 +117,18 @@ _DISPLAY_ADAPTER_CLASS = (
 )
 
 
-def _torch_accelerator_present():
+def _neural_accelerator_present():
     """Return a completed backend result, or None before it is known."""
-    from core import torch_backend
-    kind = torch_backend.cached_kind()
-    return None if kind is None else torch_backend.is_accelerator(kind)
+    from core.multi_focus_fusion import neural_device_kind
+    from fusion_methods import neural_runtime
+    kind = neural_device_kind()
+    return None if kind is None else neural_runtime.is_accelerator(kind)
 
 
 def cached_compute_gpu():
     """Return a known GPU status, or None while no probe has completed."""
     try:
-        present = _torch_accelerator_present()
+        present = _neural_accelerator_present()
     except Exception:
         present = None
     return _GPU_PRESENT_CACHE if present is None else present
@@ -200,13 +201,10 @@ def _nvidia_smi_reports_gpu() -> bool:
 def has_compute_gpu() -> bool:
     """True when this machine exposes a neural-path accelerator.
 
-    This does not import torch, but an OS probe may take up to two seconds.
-    UI paths should use cached_compute_gpu() to avoid waiting for the driver.
-
-    The detected back-ends are NVIDIA CUDA, AMD ROCm (through ``torch.cuda``),
-    Intel XPU and Apple-silicon MPS. OS probes only report hardware/runtime
-    presence; the backend probe remains authoritative for whether PyTorch can
-    actually use it, so a present adapter may still fall back to CPU.
+    The operating-system probe can take up to two seconds. UI paths should
+    use cached_compute_gpu() rather than waiting for a driver. A hardware
+    hint alone does not guarantee that the neural runtime can use the device;
+    its completed backend probe takes precedence when available.
     """
     global _GPU_PRESENT_CACHE
     present = cached_compute_gpu()
@@ -216,7 +214,7 @@ def has_compute_gpu() -> bool:
     found = False
     try:
         if is_macos():
-            # Every Apple-silicon Mac has a usable MPS device.
+            # Apple-silicon Macs have an integrated GPU.
             found = platform.machine().lower() in ("arm64", "aarch64")
         elif is_windows():
             found = _nvidia_smi_reports_gpu()
@@ -234,9 +232,8 @@ def has_compute_gpu() -> bool:
                 found = True
             if not found:
                 vendors = _linux_gpu_vendors()
-                # Intel PyTorch wheels do not install xpu-smi/sycl-ls, so a
-                # vendor-id check is the only cheap way to keep an actual
-                # XPU reachable; the backend probe remains authoritative.
+                # Vendor ids are only hardware hints; the runtime probe
+                # determines whether a supported provider can actually run.
                 found = ("0x10de" in vendors or "0x1002" in vendors
                          or "0x8086" in vendors)
                 if not found:

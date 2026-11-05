@@ -1,5 +1,6 @@
 """Behavioral boundaries for settings drafts, flat fields, and feedback."""
 from types import SimpleNamespace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -34,6 +35,39 @@ def settings_window(qapp):
     window.deleteLater()
     qapp.processEvents()
 
+def test_advanced_form_resists_centered_style_and_wraps_long_rows(qapp):
+    from PyQt6.QtCore import QRect, Qt
+    from PyQt6.QtWidgets import (
+        QLabel, QLineEdit, QProxyStyle, QStyle, QStyleFactory, QVBoxLayout,
+    )
+    from dialogs.advanced_settings import _section
+
+    class CenteredFormStyle(QProxyStyle):
+        def styleHint(self, hint, option=None, widget=None, returnData=None):
+            if hint == QStyle.StyleHint.SH_FormLayoutFormAlignment:
+                return (Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop).value
+            return super().styleHint(hint, option, widget, returnData)
+
+    host = QWidget()
+    style = CenteredFormStyle(QStyleFactory.create("Fusion"))
+    style.setParent(host)
+    host.setStyle(style)
+    form = _section(QVBoxLayout(host), "Settings")
+    label = QLabel("A long translated setting")
+    label.setFixedWidth(180)
+    field = QLineEdit()
+    field.setFixedWidth(110)
+    form.addRow(label, field)
+    try:
+        form.setGeometry(QRect(0, 0, 600, 100))
+        assert label.geometry().left() < 20
+        assert label.geometry().top() <= field.geometry().bottom()
+        assert field.geometry().top() <= label.geometry().bottom()
+        form.setGeometry(QRect(0, 0, 240, 100))
+        assert field.geometry().top() > label.geometry().top()
+    finally:
+        host.deleteLater()
+
 
 def test_settings_overlap_is_visible_and_cancel_is_a_draft(settings_window):
     from dialogs.advanced_settings import AdvancedSettingsDialog
@@ -48,6 +82,99 @@ def test_settings_overlap_is_visible_and_cancel_is_a_draft(settings_window):
     assert settings_window.update_manager.auto_download
     assert not settings_window.saved
     dialog.deleteLater()
+
+
+def test_storage_directory_browse_cancel_and_save(settings_window, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from core import frame_storage
+    from dialogs import advanced_settings
+    from utils import settings_store
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    store = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_store, 'get_settings', lambda: store)
+    monkeypatch.setattr(advanced_settings.FileDialog, 'getExistingDirectory',
+                        lambda *args: str(tmp_path))
+    settings_window.persist_settings = lambda: settings_store.save_window_settings(settings_window)
+
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog._browse_storage_directory()
+    dialog.reject()
+    assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
+    assert not store.contains('rendering/storage_directory')
+
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog.storage_directory.setText(str(tmp_path))
+    dialog._apply()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    image = frame_storage.create_frame((2, 2), np.uint8)
+    assert Path(image.filename).parent == tmp_path
+    restored = SimpleNamespace()
+    settings_store.load_window_settings(restored)
+    assert restored.storage_directory == str(tmp_path)
+    del image
+
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog.storage_directory.clear()
+    dialog._apply()
+    assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
+    assert store.value('rendering/storage_directory') == ''
+
+
+def test_invalid_storage_directory_keeps_previous_settings(settings_window, tmp_path, monkeypatch):
+    from core import frame_storage
+    from dialogs import advanced_settings
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    previous = tmp_path / 'previous'
+    previous.mkdir()
+    frame_storage.configure_storage_directory(previous)
+    settings_window.storage_directory = str(previous)
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog.storage_directory.setText(str(tmp_path / 'missing'))
+    dialog.spin_block.setValue(512)
+    dialog._apply()
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert frame_storage.storage_directory() == settings_window.storage_directory == str(previous)
+    assert settings_window.tile_block_size == 1024
+    assert dialog.status.text()
+    assert not settings_window.saved
+
+
+def test_storage_directory_rolls_back_when_save_fails(settings_window, tmp_path, monkeypatch):
+    from core import frame_storage
+    from dialogs import advanced_settings
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    previous, requested = tmp_path / 'previous', tmp_path / 'requested'
+    previous.mkdir()
+    requested.mkdir()
+    frame_storage.configure_storage_directory(previous)
+    settings_window.storage_directory = str(previous)
+    def fail():
+        raise OSError('disk full')
+    settings_window.persist_settings = fail
+    dialog = advanced_settings.AdvancedSettingsDialog(settings_window)
+    dialog.storage_directory.setText(str(requested))
+    dialog._apply()
+    assert frame_storage.storage_directory() == settings_window.storage_directory == str(previous)
+    assert dialog.result() != QDialog.DialogCode.Accepted
+
+
+def test_saved_storage_directory_restores_or_reports_fallback(tmp_path, monkeypatch):
+    import main
+    from core import frame_storage
+
+    monkeypatch.setattr(frame_storage, '_storage_directory', None)
+    window = SimpleNamespace(storage_directory=str(tmp_path))
+    assert main._restore_storage_directory(window) is None
+    assert frame_storage.storage_directory() == str(tmp_path)
+    missing = str(tmp_path / 'missing')
+    window.storage_directory = missing
+    warning = main._restore_storage_directory(window)
+    assert window.storage_directory == ''
+    assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
+    assert missing in warning
 
 
 def test_settings_preserve_supported_tile_and_registration_ranges(settings_window):
@@ -431,7 +558,7 @@ def test_feedback_copy_matches_visible_log_and_export_failure_is_inline(qapp, mo
     dialog = feedback.FeedbackDialog(None)
     dialog._copy_log()
     assert qapp.clipboard().text() == dialog.log_view.toPlainText() == "session only"
-    monkeypatch.setattr(feedback.QFileDialog, "getSaveFileName", lambda *a: (str(tmp_path / "report.zip"), ""))
+    monkeypatch.setattr(feedback.FileDialog, "getSaveFileName", lambda *a: (str(tmp_path / "report.zip"), ""))
 
     def fail(_dest):
         raise OSError("disk full")
@@ -448,7 +575,7 @@ def test_feedback_cancel_does_not_write(qapp, monkeypatch, tmp_path):
     from dialogs import feedback
     monkeypatch.setattr(feedback.logging_setup, "session_log_excerpt", lambda *_a: "log")
     monkeypatch.setattr(feedback.logging_setup, "logs_dir", lambda: tmp_path)
-    monkeypatch.setattr(feedback.QFileDialog, "getSaveFileName", lambda *a: ("", ""))
+    monkeypatch.setattr(feedback.FileDialog, "getSaveFileName", lambda *a: ("", ""))
     calls = []
     monkeypatch.setattr(feedback.logging_setup, "export_feedback_package", lambda *a: calls.append(a))
     dialog = feedback.FeedbackDialog(None)
@@ -473,42 +600,37 @@ def test_feedback_failed_replace_preserves_previous_archive(monkeypatch, tmp_pat
     assert list(tmp_path.iterdir()) == [dest]
 
 
-def test_environment_missing_torch_keeps_classic_methods_available(monkeypatch):
-    import sys
-    from dialogs.about import EnvironmentInfoDialog
-    monkeypatch.setitem(sys.modules, "torch", None)
-    text = EnvironmentInfoDialog.environment_report()
-    assert "Guided Filter / GFG-FGF / OpenFocus A/B/C: CPU" in text
-    assert "StackMFF-V3: CPU" not in text
-
-
-@pytest.mark.parametrize("cuda_version", [None, "12.4"])
-def test_environment_reports_cuda_build_without_gpu(monkeypatch, cuda_version):
+def test_environment_missing_runtime_keeps_classic_methods_available(monkeypatch):
     import sys
     from dialogs.about import EnvironmentInfoDialog
     from locales import trans
-    from core import torch_backend
-    import core.multi_focus_fusion as mff
-    monkeypatch.setattr(mff, "_TORCH_DEVICE_KIND", None)
-    monkeypatch.setattr(mff, "_STACKMFF_AVAILABLE_CACHE", True)
-    monkeypatch.setattr(torch_backend, "_KIND", None)
 
-    torch = SimpleNamespace(
-        __version__="2.5.1+cu124" if cuda_version else "2.5.1+cpu",
-        version=SimpleNamespace(cuda=cuda_version),
-        cuda=SimpleNamespace(is_available=lambda: False),
-        backends=SimpleNamespace(),
-    )
-    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)
     text = EnvironmentInfoDialog.environment_report()
-    assert torch_backend.cached_kind() == torch_backend.KIND_CPU
-    assert mff.torch_device_kind() == "N/A"
-    assert trans.t('env_no_gpu') in text
-    assert trans.t('env_cpu_mode') in text
-    if cuda_version:
-        assert trans.t('env_cuda_ver').format(cuda_version) in text
+    assert "Guided Filter / GFG-FGF / OpenFocus A/B/C: CPU" in text
+    assert f"StackMFF V1/V2/V3: {trans.t('env_not_installed')}" in text
+    assert trans.t('env_stackmff_unavailable') in text
+
+
+@pytest.mark.parametrize("kind,device", [
+    ("N/A", "CPU"), ("DIRECTML", "DirectML"), ("COREML", "CoreML"),
+])
+def test_environment_reports_neural_provider(monkeypatch, kind, device):
+    import sys
+    from dialogs.about import EnvironmentInfoDialog
+    from locales import trans
+    import core.multi_focus_fusion as mff
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(__version__="1.0"))
+    monkeypatch.setattr(mff, "ensure_neural_device_kind", lambda: kind)
+    text = EnvironmentInfoDialog.environment_report()
+    assert f"StackMFF V1/V2/V3: {device}" in text
+    if kind == "N/A":
+        assert trans.t('env_no_gpu') in text
+        assert trans.t('env_cpu_mode') in text
     else:
-        assert trans.t('env_cuda_ver').format("None") not in text
+        assert trans.t('env_gpu_accel') in text
+        assert trans.t('env_no_gpu') not in text
 
 
 def test_environment_probe_does_not_block_dialog_and_copy_uses_report(qapp, monkeypatch):
@@ -564,3 +686,91 @@ def test_welcome_theme_updates_existing_hint(qapp):
     dialog._choose_theme("light")
     assert palette("light")["textMuted"] in dialog._demo_hint.styleSheet()
     dialog.deleteLater()
+
+
+@pytest.mark.parametrize("initial", [True, False])
+@pytest.mark.parametrize("dismiss", ["reject", "close", "escape"])
+def test_usage_settings_are_drafts_until_ok(settings_window, tmp_path, initial, dismiss):
+    from PyQt6.QtCore import QSettings, Qt
+    from PyQt6.QtTest import QTest
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils.usage_analytics import UsageAnalytics, ENABLED_KEY, ID_KEY
+
+    store = QSettings(str(tmp_path / 'usage.ini'), QSettings.Format.IniFormat)
+    if not initial:
+        store.setValue(ENABLED_KEY, False)
+    calls = []
+    reporter = UsageAnalytics(settings=store, sender=lambda payload: calls.append(payload) or True)
+    settings_window.usage_analytics = reporter
+    dialog = AdvancedSettingsDialog(settings_window)
+    try:
+        assert dialog.chk_usage.isChecked() is initial
+        dialog.chk_usage.setChecked(not initial)
+        if dismiss == 'escape':
+            dialog.show()
+            QTest.keyClick(dialog, Qt.Key.Key_Escape)
+        else:
+            getattr(dialog, dismiss)()
+        assert reporter.enabled() is initial
+        assert not store.contains(ID_KEY)
+        assert not calls
+    finally:
+        reporter.shutdown()
+        dialog.deleteLater()
+
+
+@pytest.mark.parametrize("initial", [True, False])
+def test_usage_ok_persists_without_consent_popup(settings_window, tmp_path, monkeypatch, initial):
+    from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import QMessageBox
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils.usage_analytics import UsageAnalytics, ENABLED_KEY, ID_KEY
+
+    store = QSettings(str(tmp_path / 'usage.ini'), QSettings.Format.IniFormat)
+    store.setValue(ENABLED_KEY, initial)
+    reporter = UsageAnalytics(settings=store, sender=lambda payload: True)
+    settings_window.usage_analytics = reporter
+    def unexpected_popup(*args):
+        pytest.fail('Advanced Settings must not request additional usage consent')
+    monkeypatch.setattr(QMessageBox, 'exec', unexpected_popup)
+    dialog = AdvancedSettingsDialog(settings_window)
+    try:
+        dialog.chk_usage.setChecked(not initial)
+        dialog._apply()
+        assert dialog.result() == QDialog.DialogCode.Accepted
+        assert reporter.enabled() is (not initial)
+        reopened = QSettings(str(tmp_path / 'usage.ini'), QSettings.Format.IniFormat)
+        assert reopened.value(ENABLED_KEY, type=bool) is (not initial)
+        assert reopened.contains(ID_KEY) is (not initial)
+        next_dialog = AdvancedSettingsDialog(settings_window)
+        assert next_dialog.chk_usage.isChecked() is (not initial)
+        next_dialog.reject()
+        next_dialog.deleteLater()
+    finally:
+        reporter.shutdown()
+        dialog.deleteLater()
+
+
+def test_failed_settings_apply_does_not_enable_reporting(settings_window, tmp_path):
+    from PyQt6.QtCore import QSettings
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from utils.usage_analytics import UsageAnalytics, ENABLED_KEY, ID_KEY
+
+    store = QSettings(str(tmp_path / 'usage.ini'), QSettings.Format.IniFormat)
+    store.setValue(ENABLED_KEY, False)
+    calls = []
+    reporter = UsageAnalytics(settings=store, sender=lambda payload: calls.append(payload) or True)
+    settings_window.usage_analytics = reporter
+    def fail_save():
+        raise OSError('settings unavailable')
+    settings_window.persist_settings = fail_save
+    dialog = AdvancedSettingsDialog(settings_window)
+    try:
+        dialog.chk_usage.setChecked(True)
+        dialog._apply()
+        assert dialog.result() != QDialog.DialogCode.Accepted
+        assert not reporter.enabled()
+        assert not store.contains(ID_KEY) and not calls
+    finally:
+        reporter.shutdown()
+        dialog.deleteLater()

@@ -57,42 +57,27 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Install the official cp310 Windows CUDA wheel first. The unpinned
-          # torch requirement then remains satisfied without fetching a CPU wheel.
-          python -m pip install "https://download.pytorch.org/whl/cu124/torch-2.5.1%2Bcu124-cp310-cp310-win_amd64.whl#sha256=6f99d8459369cfd6661c2aee14787592fe50156a33faf9ef643ba04e42d6543f"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install -r requirements.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install pyinstaller
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip check
 
-      - name: Verify CUDA-enabled PyTorch and CPU execution
-        shell: pwsh
-        run: |
-          @'
-          import torch
-          assert torch.__version__ == "2.5.1+cu124", torch.__version__
-          assert torch.version.cuda == "12.4", torch.version.cuda
-          # Unlike get_arch_list(), this works on GPU-less CI runners.
-          arch = torch._C._cuda_getArchFlags().split()
-          assert "sm_86" in arch, arch  # RTX 3090
-          assert (torch.tensor([2]) + 1).item() == 3
-          print(f"torch {torch.__version__}, CUDA {torch.version.cuda}, architectures {arch}; CPU execution OK")
-          '@ | python -
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify inference runtime
+        run: python -c "import onnxruntime as ort; assert 'CPUExecutionProvider' in ort.get_available_providers()"
 
       - name: Write Windows version resource
         run: python tools/write_version_file.py
 
-      - name: Verify the shipped AI model is present
+      - name: Verify the shipped AI models are present
         shell: pwsh
         run: |
-          $w = "weights/stackmff_v3_final.pth"
-          if (-not (Test-Path $w)) { throw "Missing $w - the release would ship without the AI model." }
-          $len = (Get-Item $w).Length
-          if ($len -lt 600000) { throw "$w is only $len bytes (expected ~658587)." }
-          Write-Output ("AI model present: {0:N0} bytes" -f $len)
+          foreach ($w in @("weights/stackmff_final.onnx", "weights/stackmff_v2_final.onnx", "weights/stackmff_v3_final.onnx")) {
+            if (-not (Test-Path $w)) { throw "Missing $w - the release would ship without an AI model." }
+            $len = (Get-Item $w).Length
+            if ($len -lt 600000) { throw "$w is only $len bytes (expected at least 600000)." }
+            Write-Output ("AI model {0}: {1:N0} bytes" -f $w, $len)
+          }
 
       - name: Build with PyInstaller
         shell: pwsh
@@ -103,7 +88,9 @@ jobs:
             --additional-hooks-dir hooks `
             --icon "assets/OpenFocus.ico" `
             --add-data "assets;assets" `
-            --add-data "weights;weights" `
+            --add-data "weights/stackmff_final.onnx;weights" `
+            --add-data "weights/stackmff_v2_final.onnx;weights" `
+            --add-data "weights/stackmff_v3_final.onnx;weights" `
             --add-data "ui;ui" `
             --add-data "docs;docs" `
             --collect-submodules PyQt6 `
@@ -121,11 +108,8 @@ jobs:
             --copy-metadata imageio `
             --collect-data dtcwt `
             --collect-all rawpy `
-            --collect-all torch `
-            --exclude-module torchvision `
-            --exclude-module torch.test `
-            --exclude-module torch.utils.tensorboard `
-            --exclude-module torch.distributed `
+            --collect-all onnxruntime `
+            --exclude-module torch `
             --exclude-module matplotlib `
             --exclude-module tkinter `
             --exclude-module IPython `
@@ -138,31 +122,6 @@ jobs:
             --exclude-module PyQt6.QtQuick `
             main.py
 
-      - name: Verify bundled PyTorch CUDA libraries
-        shell: pwsh
-        run: |
-          # Compare with the checked wheel, so a CPU-only or incomplete bundle
-          # cannot pass just because CUDA works in the build environment.
-          $torchLib = python -c "import pathlib, torch; print(pathlib.Path(torch.__file__).parent / 'lib')"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $runtimeDlls = @(Get-ChildItem -Path $torchLib -Filter '*.dll' -File)
-          if ($runtimeDlls.Count -eq 0) { throw 'PyTorch has no runtime DLLs' }
-          foreach ($source in $runtimeDlls) {
-            $bundled = Join-Path 'dist/OpenFocus/_internal/torch/lib' $source.Name
-            if (-not (Test-Path $bundled)) {
-              throw "Missing PyTorch runtime library: $($source.Name)"
-            }
-            if ($source.Length -ne (Get-Item $bundled).Length) {
-              throw "Bundled PyTorch library has the wrong size: $($source.Name)"
-            }
-          }
-          foreach ($name in @('torch_cpu.dll', 'torch_cuda.dll', 'c10_cuda.dll', 'cudart64_12.dll')) {
-            $source = Join-Path $torchLib $name
-            $bundled = Join-Path 'dist/OpenFocus/_internal/torch/lib' $name
-            if (-not (Test-Path $source) -or (Get-FileHash $source).Hash -ne (Get-FileHash $bundled).Hash) {
-              throw "Bundled PyTorch library differs from checked wheel: $name"
-            }
-          }
 
       - name: Prune build-only files from the bundle
         shell: pwsh
@@ -181,6 +140,11 @@ jobs:
             $p = Join-Path $root "_internal/$dir"
             if (Test-Path $p) { Remove-Item -Path $p -Recurse -Force }
           }
+          # Qt expects the unversioned Windows ICU API. A Conda icuuc.dll can
+          # shadow it while exporting only version-suffixed symbols, causing
+          # QtWidgets to fail at startup with STATUS_ENTRYPOINT_NOT_FOUND.
+          $icu = Join-Path $root "_internal/icuuc.dll"
+          if (Test-Path $icu) { Remove-Item -Path $icu -Force }
           $before = (Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum
           Write-Output ("bundle after prune: {0:N0} MB" -f ($before/1MB))
 
@@ -402,12 +366,14 @@ jobs:
           sips -z 1024 1024 assets/OpenFocus.png --out icon.iconset/icon_512x512@2x.png
           iconutil -c icns icon.iconset -o OpenFocus.icns
 
-      - name: Verify the shipped AI model is present
+      - name: Verify the shipped AI models are present
         run: |
-          test -f weights/stackmff_v3_final.pth || { echo "Missing weights/stackmff_v3_final.pth - the release would ship without the AI model."; exit 1; }
-          size=$(wc -c < weights/stackmff_v3_final.pth)
-          if [ "$size" -lt 600000 ]; then echo "weights file is only $size bytes"; exit 1; fi
-          echo "AI model present: $size bytes"
+          for w in weights/stackmff_final.onnx weights/stackmff_v2_final.onnx weights/stackmff_v3_final.onnx; do
+            test -f "$w" || { echo "Missing $w - the release would ship without an AI model."; exit 1; }
+            size=$(wc -c < "$w")
+            if [ "$size" -lt 600000 ]; then echo "$w is only $size bytes"; exit 1; fi
+            echo "AI model $w: $size bytes"
+          done
 
       - name: Build with PyInstaller
         run: |
@@ -416,7 +382,9 @@ jobs:
             --additional-hooks-dir hooks \
             --icon OpenFocus.icns \
             --add-data "assets:assets" \
-            --add-data "weights:weights" \
+            --add-data "weights/stackmff_final.onnx:weights" \
+            --add-data "weights/stackmff_v2_final.onnx:weights" \
+            --add-data "weights/stackmff_v3_final.onnx:weights" \
             --add-data "ui:ui" \
             --add-data "docs:docs" \
             --collect-submodules fusion_methods \
@@ -433,11 +401,8 @@ jobs:
             --copy-metadata imageio \
             --collect-data dtcwt \
             --collect-all rawpy \
-            --collect-all torch \
-            --exclude-module torchvision \
-            --exclude-module torch.test \
-            --exclude-module torch.utils.tensorboard \
-            --exclude-module torch.distributed \
+            --collect-all onnxruntime \
+            --exclude-module torch \
             --exclude-module matplotlib \
             --exclude-module tkinter \
             --exclude-module IPython \

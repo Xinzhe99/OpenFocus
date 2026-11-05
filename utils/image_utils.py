@@ -1,5 +1,6 @@
 import numbers
 import os
+from functools import lru_cache
 
 import cv2
 import numpy as np
@@ -9,6 +10,13 @@ try:  # GUI stack; the headless CLI package runs without PyQt6
     from PyQt6.QtGui import QPixmap, QImage
 except ImportError:  # pragma: no cover - headless openfocus package
     QPixmap = QImage = None
+
+
+@lru_cache(maxsize=1)
+def srgb_icc_profile() -> bytes:
+    """Return an ICC profile for pixels developed into sRGB."""
+    from PIL import ImageCms
+    return ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
 
 
 def pixmap_to_cv2(pixmap) -> Optional[np.ndarray]:
@@ -154,7 +162,7 @@ def to_display_uint8(img: np.ndarray) -> np.ndarray:
     return img.astype(np.uint8)
 
 
-def imwrite_multi_tiff(path: str, images) -> bool:
+def imwrite_multi_tiff(path: str, images, *, icc_profile: bytes = b"") -> bool:
     """Write a whole stack as ONE multi-page TIFF (uint8/uint16 preserved).
 
     cv2.imwritemulti needs an encodable filename, so non-ASCII targets are
@@ -176,6 +184,21 @@ def imwrite_multi_tiff(path: str, images) -> bool:
     except OSError:
         return False
     try:
+        if icc_profile:
+            import tifffile
+            total = sum(np.asarray(image).nbytes for image in images)
+            with tifffile.TiffWriter(part, bigtiff=total >= (2**32 - 2**25)) as writer:
+                for image in images:
+                    pixels = np.asarray(image)
+                    if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
+                        raise ValueError('RGB profile requires RGB images')
+                    code = (cv2.COLOR_BGRA2RGBA if pixels.shape[2] == 4
+                            else cv2.COLOR_BGR2RGB)
+                    writer.write(cv2.cvtColor(pixels, code), photometric='rgb',
+                                 metadata=None,
+                                 extratags=[(34675, 'B', len(icc_profile), icc_profile, False)])
+            os.replace(part, path)
+            return True
         try:
             ok = cv2.imwritemulti(part, [np.asarray(i) for i in images])
         except cv2.error:
@@ -194,7 +217,7 @@ def imwrite_multi_tiff(path: str, images) -> bool:
             return False
         os.replace(part, path)
         return True
-    except (OSError, cv2.error):
+    except (OSError, ValueError, cv2.error):
         return False
     finally:
         try:
@@ -236,11 +259,58 @@ def imwrite_float_tiff(path: str, image: np.ndarray, metadata: dict) -> bool:
 # Raw EXIF of the loaded source stack; set by the loaders, embedded into
 # lossless exports automatically. Empty bytes = no metadata to embed.
 SOURCE_EXIF = b""
+_PNG_EXIF_LIMIT = 16 * 1024 * 1024
 
 
 def set_source_exif(exif: bytes) -> None:
     global SOURCE_EXIF
     SOURCE_EXIF = exif or b""
+
+
+def read_image_exif(image):
+    """Read EXIF without PNG's getexif() forcing a full pixel decode."""
+    if getattr(image, "format", None) != "PNG":
+        return image.getexif()
+    from PIL import Image
+
+    exif = Image.Exif()
+    data = image.info.get("exif")
+    if not data:
+        import zlib
+
+        stream = getattr(image, "fp", None)
+        if stream is None:
+            return exif
+        position = stream.tell()
+        try:
+            stream.seek(0)
+            if stream.read(8) != b"\x89PNG\r\n\x1a\n":
+                raise OSError("Invalid PNG signature")
+            while True:
+                header = stream.read(8)
+                if len(header) != 8:
+                    raise OSError("Truncated PNG metadata")
+                length = int.from_bytes(header[:4], "big")
+                kind = header[4:]
+                if kind == b"IEND":
+                    return exif
+                if kind == b"eXIf":
+                    if length > _PNG_EXIF_LIMIT:
+                        raise OSError("PNG EXIF exceeds the read limit")
+                    data = stream.read(length)
+                    crc = stream.read(4)
+                    if (len(data) != length or len(crc) != 4
+                            or zlib.crc32(data, zlib.crc32(kind))
+                            != int.from_bytes(crc, "big")):
+                        raise OSError("Invalid PNG EXIF chunk")
+                    break
+                stream.seek(length + 4, 1)
+        finally:
+            stream.seek(position)
+    if len(data) > _PNG_EXIF_LIMIT:
+        raise OSError("PNG EXIF metadata exceeds the read limit")
+    exif.load(data)
+    return exif
 
 
 # IFD0 tags worth carrying into an export. Everything else in a source IFD0
@@ -299,6 +369,28 @@ def _blank(value) -> bool:
     return False
 
 
+def _sanitize_exif(src):
+    """Copy export-safe tags from an already parsed Pillow Exif object."""
+    from PIL import Image
+    _register_exif_tag_types()
+    out = Image.Exif()
+    out.endian = "<"
+    for tag in _EXPORT_IFD0_TAGS:
+        if tag in src and not _blank(src[tag]):
+            out[tag] = src[tag]
+    out[274] = 1  # Orientation
+    exif_ifd = {k: v for k, v in src.get_ifd(_EXIF_IFD).items()
+                if k not in _EXPORT_EXIF_DROP and k != 0xA005
+                and not _blank(v)}
+    if exif_ifd:
+        out[_EXIF_IFD] = exif_ifd
+    gps_ifd = {k: v for k, v in src.get_ifd(_GPS_IFD).items()
+               if not _blank(v)}
+    if 2 in gps_ifd and 4 in gps_ifd:  # cameras without a fix write stubs
+        out[_GPS_IFD] = gps_ifd
+    return out if len(out) > 1 else None  # nothing beyond Orientation
+
+
 def export_exif(exif_bytes: bytes):
     """Parse source EXIF into a PIL Exif that is safe to embed in an export.
 
@@ -310,25 +402,9 @@ def export_exif(exif_bytes: bytes):
         return None
     try:
         from PIL import Image
-        _register_exif_tag_types()
         src = Image.Exif()
         src.load(exif_bytes)
-        out = Image.Exif()
-        out.endian = "<"
-        for tag in _EXPORT_IFD0_TAGS:
-            if tag in src and not _blank(src[tag]):
-                out[tag] = src[tag]
-        out[274] = 1  # Orientation
-        exif_ifd = {k: v for k, v in src.get_ifd(_EXIF_IFD).items()
-                    if k not in _EXPORT_EXIF_DROP and k != 0xA005
-                    and not _blank(v)}
-        if exif_ifd:
-            out[_EXIF_IFD] = exif_ifd
-        gps_ifd = {k: v for k, v in src.get_ifd(_GPS_IFD).items()
-                   if not _blank(v)}
-        if 2 in gps_ifd and 4 in gps_ifd:  # cameras without a fix write stubs
-            out[_GPS_IFD] = gps_ifd
-        return out if len(out) > 1 else None  # nothing beyond Orientation
+        return _sanitize_exif(src)
     except Exception:
         return None
 
@@ -356,6 +432,16 @@ def _png_insert_icc(png: bytes, profile: bytes) -> bytes:
     chunk = (struct.pack(">I", len(data)) + b"iCCP" + data
              + struct.pack(">I", zlib.crc32(b"iCCP" + data)))
     return png[:ihdr_end] + chunk + png[ihdr_end:]
+
+
+def _jpeg_insert_exif(jpeg: bytes, exif: bytes) -> bytes:
+    """Insert a sanitized EXIF APP1 segment into an encoded JPEG."""
+    import struct
+    if jpeg[:2] != b"\xff\xd8" or not exif.startswith(b"Exif\x00\x00"):
+        raise ValueError("invalid JPEG or EXIF")
+    if len(exif) + 2 > 65535:
+        raise ValueError("EXIF is too large for JPEG")
+    return jpeg[:2] + b"\xff\xe1" + struct.pack(">H", len(exif) + 2) + exif + jpeg[2:]
 
 
 def _jpeg_insert_icc(jpeg: bytes, profile: bytes) -> bytes:
@@ -427,15 +513,69 @@ def _encode_tiff_with_exif(image: np.ndarray, exif, icc_profile: bytes = b"") ->
     return head + ifd.tobytes(8) + pixels.tobytes()
 
 
+_TIFF_STRIP_TARGET_BYTES = 4 * 1024 ** 2
+
+
+def _write_streamed_tiff(path, image, should_cancel=None):
+    """Atomically write BGR/BGRA pixels in bounded strips, using BigTIFF as needed."""
+    import tempfile
+    import tifffile
+
+    if (image.ndim != 3 or image.shape[2] not in (3, 4)
+            or image.dtype not in (np.uint8, np.uint16)):
+        raise ValueError('Streaming TIFF requires an 8- or 16-bit BGR/BGRA image')
+    from core.resource_policy import require_memory
+
+    row_bytes = image.shape[1] * image.shape[2] * image.dtype.itemsize
+    rows_per_strip = min(128, image.shape[0], max(1, _TIFF_STRIP_TARGET_BYTES // row_bytes))
+    # The RGB conversion and yielded bytes coexist; allow for writer buffering.
+    require_memory(row_bytes * rows_per_strip * 3)
+
+    def strips():
+        for start in range(0, image.shape[0], rows_per_strip):
+            if should_cancel is not None and should_cancel():
+                from core.registration import RegistrationCancelled
+                raise RegistrationCancelled()
+            strip = image[start:start + rows_per_strip]
+            if image.shape[2] == 4:
+                rgb = np.concatenate((strip[:, :, 2::-1], strip[:, :, 3:4]), axis=2)
+            else:
+                rgb = np.ascontiguousarray(strip[:, :, ::-1])
+            yield rgb.tobytes()
+
+    fd, temporary = tempfile.mkstemp(suffix='.tif', dir=os.path.dirname(os.path.abspath(path)))
+    os.close(fd)
+    try:
+        tifffile.imwrite(temporary, strips(), shape=image.shape, dtype=image.dtype,
+                         photometric='rgb', planarconfig='contig',
+                         extrasamples=('unassalpha',) if image.shape[2] == 4 else None,
+                         rowsperstrip=rows_per_strip, metadata=None,
+                         bigtiff=image.nbytes >= (2 ** 32 - 2 ** 25))
+        if should_cancel is not None and should_cancel():
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
+        os.replace(temporary, path)
+        return True
+    except OSError:
+        return False
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
                  exif: Optional[bytes] = None, icc_profile: bytes = b"",
                  linear_dng_metadata=None, should_cancel=None,
-                 linear_dng_px_size_um=None) -> bool:
+                 linear_dng_px_size_um=None, *, stream_tiff=False) -> bool:
     """Atomically write pixels, optionally embedding their RGB color profile."""
     import tempfile
 
     path = os.fspath(path)
     ext = os.path.splitext(path)[1].lower()
+    if stream_tiff:
+        if ext not in ('.tif', '.tiff') or exif not in (None, b'') or icc_profile:
+            raise ValueError('Streaming export supports TIFF without EXIF or ICC metadata')
+        return _write_streamed_tiff(path, image, should_cancel)
     if ext == '.dng':
         if linear_dng_metadata is None:
             raise ValueError("Linear DNG export requires camera metadata")
@@ -454,15 +594,15 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
     if image.dtype == np.uint16 and ext not in (".png", ".tif", ".tiff"):
         image = to_display_uint8(image)
     embed = SOURCE_EXIF if exif is None else exif
-    # PNG/TIFF get EXIF spliced in at the byte level, so 16-bit exports keep
-    # their depth (a Pillow round-trip would cut them to 8-bit).
-    meta = export_exif(embed) if ext in (".png", ".tif", ".tiff") else None
+    # Splice sanitized metadata into encoded bytes without recompressing pixels.
+    jpeg_exts = (".jpg", ".jpeg", ".jpe", ".jfif")
+    meta = export_exif(embed) if ext in (".png", ".tif", ".tiff") + jpeg_exts else None
     profile = icc_profile if (icc_profile and image.ndim == 3
                               and image.shape[2] in (3, 4)) else b""
     part = None
     try:
         encoded = None
-        if meta is not None or (profile and ext in (".tif", ".tiff")):
+        if (meta is not None and ext in (".png", ".tif", ".tiff")) or (profile and ext in (".tif", ".tiff")):
             try:
                 if ext == ".png":
                     ok, buf = cv2.imencode(ext, image, params or [])
@@ -478,6 +618,8 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
             ok, encoded = cv2.imencode(ext, image, params or [])
             if not ok:
                 return False
+        if meta is not None and ext in jpeg_exts:
+            encoded = _jpeg_insert_exif(bytes(encoded), meta.tobytes())
         if profile and ext == ".png":
             encoded = _png_insert_icc(bytes(encoded), profile)
         elif profile and ext in (".jpg", ".jpeg", ".jpe", ".jfif"):
@@ -557,6 +699,36 @@ def normalize_fuse_input(images):
         else:
             out.append(frame.astype(np.float32))
     return out, True
+
+
+def prepare_fusion_input(images, fusion, should_cancel=None):
+    """Normalize one frame at a time on disk, or defer to spatial tile crops."""
+    from core.algorithms import resolve_runner
+    from core.frame_storage import store_frame
+    from core.registration import RegistrationCancelled
+    from core.resource_policy import require_memory
+
+    frames = list(images)
+    is_16bit = any(frame.dtype == np.uint16 for frame in frames)
+    spec = fusion.descriptor
+    if frames and fusion.tile_enabled:
+        needs_tiles = (resolve_runner(spec.tile_decider)(frames, fusion.tile_threshold)
+                       if spec.tile_decider else
+                       max(frames[0].shape[:2]) > fusion.tile_threshold)
+        if needs_tiles:
+            return frames, is_16bit
+    if not is_16bit:
+        return frames, False
+    normalized = []
+    for frame in frames:
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+        require_memory(frame.size * 8)
+        converted = normalize_fuse_input([frame])[0][0]
+        if converted is frame and frame.dtype != np.float32:
+            converted = frame.astype(np.float32)
+        normalized.append(frame if converted is frame else store_frame(converted))
+    return normalized, True
 
 
 def fuse_output_dtype(images) -> type:

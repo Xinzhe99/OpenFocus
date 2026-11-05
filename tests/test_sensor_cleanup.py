@@ -207,3 +207,31 @@ def test_sensor_orientation_rejects_raw_unknown_and_cancellation(tmp_path):
         validate_sensor_source_orientation([unknown])
     with pytest.raises(SensorCleanupCancelled):
         validate_sensor_source_orientation([unknown], lambda: True)
+
+
+@pytest.mark.parametrize('orientation', [None, 1, 6])
+@pytest.mark.parametrize('animated', [False, True])
+def test_sensor_png_orientation_preflight_never_decodes_pixels(
+        tmp_path, monkeypatch, orientation, animated):
+    from PIL import PngImagePlugin
+
+    path = tmp_path / 'sensor.png'
+    exif = Image.Exif()
+    if orientation is not None:
+        exif[274] = orientation
+    options = ({'save_all': True, 'append_images': [Image.new('RGB', (5, 3), 'blue')],
+                'duration': 100} if animated else {})
+    Image.new('RGB', (5, 3), 'red').save(path, exif=exif, **options)
+    attempts = []
+
+    def forbidden(*_args, **_kwargs):
+        attempts.append(True)
+        raise AssertionError('Sensor orientation preflight decoded PNG pixels')
+
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', forbidden)
+    if orientation == 6:
+        with pytest.raises(ValueError):
+            validate_sensor_source_orientation([path])
+    else:
+        validate_sensor_source_orientation([path])
+    assert attempts == []

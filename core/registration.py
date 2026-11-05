@@ -35,6 +35,8 @@ from typing import Union, List, Optional
 
 from utils.sorting import natural_sort_key as _image_sort_key
 from core.image_loader import apply_exif_orientation
+from core.frame_storage import store_frame
+from utils.logging_setup import log_action, log_operation
 
 
 
@@ -373,7 +375,7 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
 
     with _bounded_registration_map(warp_task, zip(images, H_matrices),
                                    max_workers, should_cancel) as results:
-        aligned_images = list(results)
+        aligned_images = [store_frame(image) for image in results]
     _save_registration(aligned_images, output_path, img_filenames, should_cancel)
 
     return aligned_images
@@ -777,13 +779,13 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
         return idx, warped
 
     aligned = [None] * n
-    aligned[ref_idx] = _apply_gain(images[ref_idx], gains[ref_idx])
+    aligned[ref_idx] = store_frame(_apply_gain(images[ref_idx], gains[ref_idx]))
     warp_args = ((i, images[i], corrections[i], gains[i])
                  for i in range(n) if i != ref_idx)
     with _bounded_registration_map(_warp, warp_args, max(1, int(thread_count)),
                                    should_cancel) as results:
         for idx, warped in results:
-            aligned[idx] = warped
+            aligned[idx] = store_frame(warped)
 
     # corrections map source coordinates into the output canvas.
     top, bottom, left, right = _compute_valid_region_from_transforms(
@@ -877,7 +879,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
 
     with _bounded_registration_map(preprocess, images, max_workers,
                                    should_cancel) as results:
-        preprocessed_data = list(results)
+        preprocessed_data = [(store_frame(gray), scale) for gray, scale in results]
 
     # 所有帧同尺寸，缩放比例一致
     scale_factor = preprocessed_data[0][1]
@@ -1011,6 +1013,10 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             raise RuntimeError("Explicit CuPy alignment backend is unavailable") from error
     else:
         print("    [Info] GPU warping disabled. Using CPU for warping.")
+    log_action('registration_warp', method='ecc',
+               provider='CuPy' if HAS_CUPY else 'OpenCV',
+               device='CUDA' if HAS_CUPY else 'CPU', shape=(target_h, target_w),
+               frames=len(images), gpu_requested=use_gpu)
 
     def warp_task(args):
         idx, img, H = args
@@ -1098,7 +1104,7 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
     with _bounded_registration_map(warp_task, task_args,
                                    1 if HAS_CUPY else max_workers,
                                    should_cancel) as results:
-        aligned_images = list(results)
+        aligned_images = [store_frame(image) for image in results]
     _save_registration(aligned_images, output_path, img_filenames, should_cancel)
 
     return aligned_images
@@ -1208,7 +1214,7 @@ def _stabilisation_impl(input_source, output_path=None, filenames=None):
         frame_stabilized = cv2.warpAffine(frame, m, (w, h))
         T = cv2.getRotationMatrix2D((w / 2, h / 2), 0, 1.04)
         frame_stabilized = cv2.warpAffine(frame_stabilized, T, (w, h))
-        stabilized_images.append(frame_stabilized)
+        stabilized_images.append(store_frame(frame_stabilized))
 
         # Save results if output path is provided
         if output_path:
@@ -1284,66 +1290,33 @@ class ImageRegistration:
         Returns:
             list: 配准后的图像列表（始终返回，无论是否保存到磁盘）
         """
-        from core.resource_policy import Workload, heavy_job, plan_execution, require_memory
+        from core.resource_policy import Workload, heavy_job, plan_execution
 
         with heavy_job(should_cancel):
             _check_cancel(should_cancel)
             filenames = None
             images = input_source
             if isinstance(input_source, str):
-                # Admit the decoded stack before allocation. OpenFocus keeps
-                # the original depth and channels for its alignment output.
-                from PIL import Image
                 extensions = {'.jpg', '.jpeg', '.jpe', '.jfif', '.png',
                               '.bmp', '.tif', '.tiff', '.webp'}
                 paths = sorted((os.path.join(input_source, name)
                                 for name in os.listdir(input_source)
                                 if os.path.splitext(name)[1].lower() in extensions),
                                key=_image_sort_key)
-                decoded_bytes = 0
-                largest_frame = 0
-                for path in paths:
-                    _check_cancel(should_cancel)
-                    with Image.open(path) as header:
-                        # Bound unchanged decoding by four uint16 channels.
-                        frame_bytes = header.width * header.height * (8 if self.method == 'openfocus' else 3)
-                    decoded_bytes += frame_bytes
-                    largest_frame = max(largest_frame, frame_bytes)
-                if paths:
-                    require_memory(decoded_bytes + largest_frame * 2)
+                from core.image_loader import admit_image_decode, decode_image
                 images = []
                 for path in paths:
                     _check_cancel(should_cancel)
-                    from core.image_loader import _has_transparency, UnsupportedTransparency
-                    data = np.fromfile(path, dtype=np.uint8)
-                    multipage = False
-                    if os.path.splitext(path)[1].lower() in ('.tif', '.tiff'):
-                        with Image.open(path) as header:
-                            multipage = getattr(header, 'n_frames', 1) > 1
-                    if multipage:
-                        ok, pages = cv2.imdecodemulti(data, flags=cv2.IMREAD_UNCHANGED)
-                        if not ok or not pages:
-                            raise ValueError(f"Could not decode registration frame: {path}")
-                        if any(_has_transparency(page) for page in pages):
-                            raise UnsupportedTransparency(f"Transparent TIFF pages are unsupported: {path}")
-                        image = pages[0]
-                    else:
-                        image = cv2.imdecode(data, cv2.IMREAD_UNCHANGED) if data.size else None
-                        if image is not None and _has_transparency(image):
-                            raise UnsupportedTransparency(f"Registration of transparent images is unsupported: {path}")
-                    _check_cancel(should_cancel)
+                    admit_image_decode(path)
+                    image = (decode_image(path, preserve_grayscale=True)
+                             if self.steps == ('openfocus',) else decode_image(path))
                     if image is None:
                         raise ValueError(f"Could not decode registration frame: {path}")
-                    if self.method != 'openfocus':
-                        if image.dtype == np.uint16:
-                            image = (image >> 8).astype(np.uint8)
-                        if image.ndim == 2:
-                            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-                        elif image.shape[2] == 4:
-                            image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-                    image = apply_exif_orientation(path, image)
-                    images.append(image)
+                    images.append(store_frame(image))
                 filenames = [os.path.basename(path) for path in paths]
+            else:
+                from core.source_frames import materialize_frames
+                images = materialize_frames(input_source, should_cancel) if input_source is not None else []
             if images is not None and len(images) and 'openfocus' in self.steps and self.parameters['reference_frame'] > len(images):
                 raise ValueError(f"OpenFocus reference frame {self.parameters['reference_frame']} is outside the stack of {len(images)} frames")
 
@@ -1364,36 +1337,38 @@ class ImageRegistration:
                 return images
             height, width = images[0].shape[:2]
             channels = images[0].shape[2] if images[0].ndim == 3 else 1
-            output_bytes = sum(image.nbytes for image in images)
-            # ECC retains downsampled grayscale planes, not full-resolution
-            # planes. Its large-image path fixes the width at 1024.
-            if self.steps == ['ecc'] or self.steps == ('ecc',):
-                import math
-                downscale = 1024 if max(height, width) >= 2048 else self.downscale_width
-                gray_bytes = 0
-                for image in images:
-                    h, w = image.shape[:2]
-                    scale = min(1.0, downscale / float(w))
-                    gray_bytes += max(1, math.ceil(h * scale)) * max(1, math.ceil(w * scale)) * 4
-            else:
-                gray_bytes = sum(image.shape[0] * image.shape[1] * 4 for image in images)
+            # Grayscale caches and aligned frames are disk-backed. Charge only
+            # the active frame scratch; worker slots account for concurrent ECC.
+            gray_bytes = height * width * 4
             plan = plan_execution(Workload(
                 algorithm='registration', frames=len(images), height=height,
                 width=width, channels=channels, itemsize=images[0].dtype.itemsize,
-                fixed_bytes=output_bytes * min(2, len(self.steps)) + gray_bytes,
-                per_worker_bytes=max(image.size for image in images) * 4 * 16,
+                fixed_bytes=gray_bytes,
+                per_worker_bytes=max(image.size for image in images) * 4 * 4,
                 outer_tasks=len(images), parallel_layer='outer'),
                 preference=resource_preference, user_threads=thread_count)
             workers = min(plan.workers, plan.max_in_flight)
+            log_action('registration_plan', method=self.method, frames=len(images),
+                       shape=images[0].shape, workers=workers,
+                       native_threads=plan.native_threads, ram_budget=plan.ram_budget,
+                       vram_budget=plan.vram_budget, gpu_requested=self.use_gpu)
             from core.algorithms import get_registration, resolve_runner
             result = images
             for step in self.steps:
                 _check_cancel(should_cancel)
                 spec = get_registration(step)
                 parameters = {item.key: self.parameters[item.key] for item in spec.parameters}
-                result = resolve_runner(spec.runner)(self, result,
-                    thread_count=workers, should_cancel=should_cancel, **parameters)
-                _check_cancel(should_cancel)
+                with log_operation('registration_stage', method=step,
+                                   parameters=parameters, provider='OpenCV',
+                                   estimation_device='CPU', frames=len(result),
+                                   shape=result[0].shape) as operation:
+                    try:
+                        result = resolve_runner(spec.runner)(self, result,
+                            thread_count=workers, should_cancel=should_cancel, **parameters)
+                        _check_cancel(should_cancel)
+                    except RegistrationCancelled:
+                        operation.cancel()
+                        raise
             _save_registration(result, output_path, filenames, should_cancel)
             return result
     

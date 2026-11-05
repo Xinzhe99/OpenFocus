@@ -57,6 +57,8 @@ _DEVICE_TYPES = {
 _LOCK = threading.RLock()
 _KIND = None
 _XPU_AVAILABLE = None
+_ROCM_AVAILABLE = None
+_ROCM_PROBE_TIMEOUT = 45
 _XPU_PROBE_TIMEOUT = 45
 
 
@@ -84,6 +86,54 @@ def _available(owner) -> bool:
         return bool(owner.is_available())
     except Exception:
         return False
+
+
+def _run_rocm_probe():
+    """Check ROCm initialization and a small device operation in a child."""
+    try:
+        import torch
+        if not _safe_attr(_safe_attr(torch, "version"), "hip"):
+            return 1
+        if not _available(_safe_attr(torch, "cuda")):
+            return 1
+        values = torch.tensor([1.0, 2.0], device="cuda")
+        return 0 if (values + 1).cpu().tolist() == [2.0, 3.0] else 2
+    except Exception:
+        return 2
+
+
+def _rocm_probe_command():
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--_openfocus-rocm-probe"]
+    paths = [os.path.abspath(path) for path in sys.path if isinstance(path, str)]
+    return [sys.executable, "-c",
+            f"import sys; sys.path[:] = {paths!r}; "
+            "from core.torch_backend import _run_rocm_probe; "
+            "sys.exit(_run_rocm_probe())"]
+
+
+def _rocm_available():
+    """Keep potentially fatal ROCm initialization out of the app."""
+    global _ROCM_AVAILABLE
+    with _LOCK:
+        if _ROCM_AVAILABLE is None:
+            try:
+                result = subprocess.run(
+                    _rocm_probe_command(), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=_ROCM_PROBE_TIMEOUT,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                if result.returncode not in (0, 1):
+                    logging.getLogger("openfocus.core.torch_backend").warning(
+                        "Isolated ROCm probe exited with status %s",
+                        result.returncode)
+                _ROCM_AVAILABLE = result.returncode == 0
+            except (OSError, subprocess.TimeoutExpired) as error:
+                logging.getLogger("openfocus.core.torch_backend").warning(
+                    "Isolated ROCm probe failed: %s", error)
+                _ROCM_AVAILABLE = False
+        return _ROCM_AVAILABLE
 
 
 def _run_xpu_probe():
@@ -151,19 +201,19 @@ def detect_kind(torch_module=None):
     """Classify *torch_module*; never raises.
 
     ``torch.cuda`` is the API for both NVIDIA CUDA and AMD ROCm builds; the
-    build is identified by ``torch.version.hip`` (ROCm builds have no CUDA
-    version). XPU is probed next so a CUDA-less Intel build is not reported
-    as plain CPU, and a CUDA driver that raises is only treated as "no CUDA"
-    rather than short-circuiting the whole probe. A module that is present
-    but cannot answer is CPU: the caller only loses acceleration, never
-    correctness.
+    HIP build identity is checked first so ROCm capability can be probed in a
+    disposable process. XPU and MPS remain available as fallbacks when a
+    device probe fails. A module that cannot answer is treated as CPU.
     """
     module = loaded_torch() if torch_module is None else torch_module
     if module is None:
         return None
-    if _available(_safe_attr(module, "cuda")):
-        hip = _safe_attr(_safe_attr(module, "version"), "hip")
-        return KIND_ROCM if hip else KIND_CUDA
+    hip = _safe_attr(_safe_attr(module, "version"), "hip")
+    if hip:
+        if _rocm_available():
+            return KIND_ROCM
+    elif _available(_safe_attr(module, "cuda")):
+        return KIND_CUDA
     if _xpu_available(module):
         return KIND_XPU
     if _available(_safe_attr(_safe_attr(module, "backends"), "mps")):
@@ -216,10 +266,11 @@ def cached_kind():
 
 def reset_cache():
     """Forget the cached kind (tests, or a driver installed mid-session)."""
-    global _KIND, _XPU_AVAILABLE
+    global _KIND, _XPU_AVAILABLE, _ROCM_AVAILABLE
     with _LOCK:
         _KIND = None
         _XPU_AVAILABLE = None
+        _ROCM_AVAILABLE = None
 
 
 def is_accelerator(kind) -> bool:
@@ -305,7 +356,11 @@ def device_memory(kind, torch_module=None):
     kind = str(kind).upper()
     try:
         if kind in (KIND_CUDA, KIND_ROCM):
-            if not module.cuda.is_available():
+            hip = _safe_attr(_safe_attr(module, "version"), "hip")
+            if hip:
+                if not _rocm_available():
+                    return None
+            elif not module.cuda.is_available():
                 return None
             free, total = module.cuda.mem_get_info()
         elif kind == KIND_XPU:

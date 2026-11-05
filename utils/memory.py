@@ -238,8 +238,8 @@ def configure_opencv_memory() -> None:
     except Exception:
         pass
     try:
-        # Zero explicitly disables parallel regions and also reports one
-        # effective thread on OpenCV's macOS GCD backend.
+        # Zero explicitly disables OpenCV parallel regions; the backend's
+        # reported worker-pool capacity is not the requested thread limit.
         cv2.setNumThreads(0)
     except Exception:
         pass

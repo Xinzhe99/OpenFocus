@@ -1,6 +1,5 @@
 """Focused coverage for the disk-backed grouped fusion engine."""
 
-import tempfile
 from collections import namedtuple
 
 import cv2
@@ -8,6 +7,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from core import frame_storage
 from core import grouped_fusion as grouped
 from core import resource_policy
 from core.registration import RegistrationCancelled
@@ -32,9 +32,7 @@ def admitted(monkeypatch):
 def scratch_root(tmp_path, monkeypatch):
     root = tmp_path / 'scratch'
     root.mkdir()
-    original = tempfile.TemporaryDirectory
-    monkeypatch.setattr(grouped.tempfile, 'TemporaryDirectory',
-                        lambda **kw: original(dir=root, **kw))
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(root))
     return root
 
 
@@ -326,3 +324,42 @@ def test_projective_horizon_is_rejected_for_grouped_registration():
             _compute_valid_region_from_transforms([transform], (64, 64))
     finally:
         grouped_crop_offsets.reset(token)
+
+
+@pytest.mark.parametrize('placement', [None, 'before', 'after'])
+def test_rgb16_png_preflight_reads_exif_without_loading_pixels(tmp_path, monkeypatch, admitted, placement):
+    from PIL import PngImagePlugin
+    from utils.image_utils import _png_insert_exif
+    path = tmp_path / '分组16位.png'
+    pixels = (np.arange(12 * 20 * 3, dtype=np.uint16).reshape(12, 20, 3) * 61 + 123).astype(np.uint16)
+    ok, encoded = cv2.imencode('.png', pixels)
+    assert ok
+    png = encoded.tobytes()
+    if placement is not None:
+        exif = Image.Exif()
+        exif[274] = 6
+        tiff_exif = exif.tobytes()[6:]
+        prefixed = _png_insert_exif(png, tiff_exif)
+        if placement == 'before':
+            png = prefixed
+        else:
+            assert placement == 'after' and png[-8:-4] == b'IEND'
+            chunk = prefixed[33:33 + 12 + len(tiff_exif)]
+            png = png[:-12] + chunk + png[-12:]
+    path.write_bytes(png)
+    attempts = []
+    def forbidden(image, *_args, **_kwargs):
+        attempts.append(image.filename)
+        raise AssertionError('grouped preflight decoded PNG image pixels')
+    with monkeypatch.context() as guard:
+        guard.setattr(PngImagePlugin.PngImageFile, 'load', forbidden)
+        headers = grouped.inspect_grouped_inputs([path])
+        expected_size = (20, 12) if placement is None else (12, 20)
+        assert headers[path] == (*expected_size, path.stat().st_size)
+        assert attempts == []
+    # The same real file must still decode into oriented original 16-bit pixels
+    # after the header reader has scanned past IDAT and restored its cursor.
+    result = grouped.grouped_fuse([path], 2, 0, np.maximum.reduce)
+    expected = pixels if placement is None else cv2.rotate(pixels, cv2.ROTATE_90_CLOCKWISE)
+    assert result.dtype == np.uint16
+    np.testing.assert_array_equal(result, expected)

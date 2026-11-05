@@ -3,6 +3,7 @@
 No Qt or algorithm imports: diagnostic setup must also work in headless builds.
 """
 import datetime
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -24,6 +25,8 @@ LOG_DIR_NAME = "logs"
 MAX_BYTES = 1_000_000
 BACKUP_COUNT = 3
 RETENTION_DAYS = 14
+FEEDBACK_MAX_LOG_BYTES = 20_000_000
+FEEDBACK_MAX_LOG_FILES = 40
 
 _logger = logging.getLogger("openfocus")
 _logger.addHandler(logging.NullHandler())
@@ -220,6 +223,23 @@ def frame_details(images) -> dict:
     return details
 
 
+def image_result_details(image) -> dict:
+    """Fingerprint final pixels without allocating a second full image.
+
+    Non-contiguous views are consumed in C row order using at most one row's
+    temporary buffer. This is for local result diagnostics, never telemetry.
+    """
+    digest = hashlib.sha256()
+    if image.flags.c_contiguous:
+        digest.update(memoryview(image).cast("B"))
+    else:
+        import numpy as np
+        for row in image:
+            digest.update(memoryview(np.ascontiguousarray(row)).cast("B"))
+    return {"shape": tuple(image.shape), "dtype": str(image.dtype),
+            "sha256": digest.hexdigest()}
+
+
 class _Operation:
     def __init__(self, name):
         from uuid import uuid4
@@ -321,38 +341,68 @@ def session_log_excerpt(max_bytes: int = 60_000) -> str:
             continue
     if not parts:
         return "(log unavailable)"
-    prefix = "...(older lines trimmed; export full logs for the complete record)...\n" if trimmed else ""
+    prefix = "...(older lines trimmed; export recent log tails for more context)...\n" if trimmed else ""
     return prefix + b"".join(reversed(parts)).decode("utf-8", errors="replace")
 
 
 def export_feedback_package(dest_path, description: str = "",
                             include_all_logs: bool = True) -> Path:
-    """Atomically export current diagnostics, tolerating vanished old logs."""
+    """Atomically export bounded diagnostics, tolerating vanished old logs."""
     from utils.diagnostics import crash_log_path, system_facts
 
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    _flush()
-    facts = system_facts()
-    fd, temporary = tempfile.mkstemp(prefix=".feedback-", suffix=".zip", dir=dest.parent)
-    os.close(fd)
-    try:
-        with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("description.txt", description or "")
-            archive.writestr("system.txt", "\n".join(f"{key}: {value}" for key, value in facts.items()) + "\n")
-            archive.writestr("session_log.txt", session_log_excerpt(200_000))
-            paths = all_log_files() if include_all_logs else []
-            crash = crash_log_path()
-            if crash is not None and crash not in paths:
-                paths.append(crash)
-            for path in paths:
-                try:
-                    data = path.read_bytes()
-                except OSError:
-                    continue  # Another process may have rotated/removed an old log.
-                archive.writestr(f"logs/{path.name}", data)
-        os.replace(temporary, dest)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    with log_operation("feedback.export", path=str(dest), include_all_logs=include_all_logs):
+        _flush()
+        facts = system_facts()
+        fd, temporary = tempfile.mkstemp(prefix=".feedback-", suffix=".zip", dir=dest.parent)
+        os.close(fd)
+        try:
+            with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("description.txt", (description or "")[:60_000])
+                archive.writestr("system.txt", "\n".join(f"{key}: {value}" for key, value in facts.items()) + "\n")
+                archive.writestr("session_log.txt", session_log_excerpt(200_000))
+                paths = all_log_files() if include_all_logs else []
+                crash = crash_log_path()
+                if crash is not None:
+                    paths = [crash, *(path for path in paths if path != crash)]
+                index = [
+                    f"OpenFocus {APP_VERSION}; session {session_id()}",
+                    "Read session_log.txt for the current session, then logs/ for retained history.",
+                    "Match operation=<id> to follow a task; parent_operation_id links nested stages.",
+                    "Events end in .started, .completed, .failed or .cancelled; elapsed_ms is duration.",
+                    "Failures include tracebacks when available. DEBUG detail requires OPENFOCUS_LOG_LEVEL=DEBUG.",
+                    "These local records may contain file paths. Review before manually sharing; nothing is uploaded.",
+                    f"Log tails: at most {MAX_BYTES} bytes each, {FEEDBACK_MAX_LOG_BYTES} bytes total, {FEEDBACK_MAX_LOG_FILES} files.",
+                    "",
+                ]
+                remaining = FEEDBACK_MAX_LOG_BYTES
+                included = 0
+                if len(paths) > FEEDBACK_MAX_LOG_FILES:
+                    index.append(f"Omitted {len(paths) - FEEDBACK_MAX_LOG_FILES} older log files (file limit).")
+                for position, path in enumerate(paths[:FEEDBACK_MAX_LOG_FILES]):
+                    if remaining <= 0:
+                        index.append(f"Omitted {min(len(paths), FEEDBACK_MAX_LOG_FILES) - position} log files (byte limit).")
+                        break
+                    try:
+                        with path.open("rb") as stream:
+                            size = stream.seek(0, os.SEEK_END)
+                            count = min(size, MAX_BYTES, remaining)
+                            stream.seek(size - count)
+                            data = stream.read(count)
+                    except OSError:
+                        index.append(f"Unavailable: {path.name} (removed, rotated or unreadable).")
+                        continue
+                    archive.writestr(f"logs/{path.name}", data)
+                    remaining -= len(data)
+                    included += 1
+                    index.append(f"{path.name}: {len(data)} of {size} bytes" +
+                                 (" (older bytes trimmed)" if len(data) < size else ""))
+                archive.writestr("diagnostic_index.txt", "\n".join(index) + "\n")
+            os.replace(temporary, dest)
+            log_action("feedback.exported", log_files=included,
+                       log_bytes=FEEDBACK_MAX_LOG_BYTES - remaining)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     return dest

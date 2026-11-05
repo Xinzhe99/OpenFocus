@@ -11,9 +11,11 @@ from threading import Event
 
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
-from core.resource_policy import heavy_job, require_memory
+from core.resource_policy import heavy_job
 from core.registration import RegistrationCancelled
 from utils.logging_setup import frame_details, log_operation
+from core.frame_storage import store_frame
+from core.source_frames import materialize_frames
 
 
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
@@ -42,6 +44,7 @@ def align_frames(images, alignment, shared, should_cancel):
         raise ValueError("The image stack is empty.")
     if should_cancel():
         return None
+    frames = materialize_frames(frames, should_cancel)
     if alignment != "none":
         settings = {"method": alignment, "brightness_reference": shared.get(
             "brightness_reference", "last" if shared.get("exposure_match", False) else "first"),
@@ -112,6 +115,7 @@ class PreviewWorker(_CancellableWorker):
         self.shared = deepcopy(shared)
         self.region = tuple(region) if region is not None else None
         self.roi_only = bool(roi_only)
+        self._materialized_images = None
 
     def _settings(self, method):
         own = self.per_method.get(method, {})
@@ -163,27 +167,26 @@ class PreviewWorker(_CancellableWorker):
 
     def _fuse(self, method):
         from core.multi_focus_fusion import MultiFocusFusion
-        from utils.image_utils import normalize_fuse_input, quantize_fuse_output
+        from utils.image_utils import prepare_fusion_input, quantize_fuse_output
 
         if not self.images:
             raise ValueError("The image stack is empty.")
-        height, width = self.images[0].shape[:2]
-        if any(image.shape[:2] != (height, width) for image in self.images):
+        if self._materialized_images is None:
+            self._materialized_images = materialize_frames(self.images, self._should_cancel)
+        frames = self._materialized_images
+        height, width = frames[0].shape[:2]
+        if any(image.shape[:2] != (height, width) for image in frames):
             raise ValueError("Comparison images must have the same aligned dimensions.")
         constructor, params = self._settings(method)
         context, bounds = self._input_bounds(method, params, width, height)
         x0, y0, cw, ch = context
         if context == (0, 0, width, height):
-            inputs = list(self.images)
+            inputs = list(frames)
         else:
-            inputs = [frame[y0:y0 + ch, x0:x0 + cw] for frame in self.images]
-        # Normalize only the context; uint8 slices remain views until a backend
-        # needs contiguous storage, and uint16 never passes through uint8.
-        if any(image.dtype == np.uint16 for image in inputs):
-            require_memory(sum(image.size * 4 for image in inputs if image.dtype != np.float32)
-                           + max(image.size * 4 for image in inputs if image.dtype == np.uint16))
-        inputs, is_16bit = normalize_fuse_input(inputs)
+            inputs = [frame[y0:y0 + ch, x0:x0 + cw] for frame in frames]
+        # Normalize each context frame onto disk without retaining a float stack.
         fusion = MultiFocusFusion(**constructor)
+        inputs, is_16bit = prepare_fusion_input(inputs, fusion, self._should_cancel)
         if self._should_cancel():
             return None
         result = fusion.fuse(input_source=inputs, img_resize=None,
@@ -198,9 +201,7 @@ class PreviewWorker(_CancellableWorker):
         x, y, w, h = bounds
         if context != bounds:
             result = result[y - y0:y - y0 + h, x - x0:x - x0 + w]
-            if not is_16bit:
-                result = result.copy()
-        return quantize_fuse_output(result, is_16bit), bounds
+        return store_frame(quantize_fuse_output(result, is_16bit)), bounds
 
     def run(self):
         with log_operation("comparison_preview", methods=self.methods, parameters=self.per_method,
@@ -237,6 +238,10 @@ class PreviewWorker(_CancellableWorker):
                         return failed
                     if rendered is not None:
                         result, bounds = rendered
+                        from utils.logging_setup import image_result_details, get_logger
+                        get_logger(__name__).info(
+                            'comparison final result method=%s bounds=%s pixels=%s',
+                            method, bounds, image_result_details(result))
                         self.result_ready.emit(method, result, bounds)
                 except Exception as exc:
                     if self._should_cancel():

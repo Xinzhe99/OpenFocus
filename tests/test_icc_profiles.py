@@ -72,6 +72,34 @@ def test_invalid_rgb_profile_is_not_propagated(tmp_path):
     assert common_icc_profile([str(path)]) == b""
 
 
+def test_conversion_uses_valid_profile_of_each_tiff_page(tmp_path, rgb_profile, monkeypatch):
+    import tifffile
+    from core import batch_converter
+    from core.image_loader import _read_icc_profile
+
+    second_profile = bytearray(rgb_profile)
+    second_profile[48:52] = b'TEST'
+    second_profile = bytes(second_profile)
+    invalid_profile = bytearray(rgb_profile)
+    invalid_profile[36:40] = b'bad!'
+    profiles = (rgb_profile, second_profile, bytes(invalid_profile), None)
+    source = tmp_path / 'pages.tif'
+    with tifffile.TiffWriter(source) as tif:
+        for index, profile in enumerate(profiles):
+            tags = [(34675, 'B', len(profile), profile, False)] if profile else []
+            tif.write(np.full((16, 16, 3), 40 + 40 * index, np.uint8),
+                      photometric='rgb', extratags=tags)
+
+    assert common_icc_profile([str(source)]) == b''
+    monkeypatch.setattr(batch_converter, 'available_memory_bytes', lambda: 8 * 1024**3)
+    for index, expected in enumerate((rgb_profile, second_profile, b'', b'')):
+        assert _read_icc_profile(str(source), page=index) == expected
+        output = batch_converter.convert_one(str(source), str(tmp_path), '.png', index, 4)
+        with Image.open(output) as image:
+            assert image.info.get('icc_profile', b'') == expected
+            assert np.asarray(image).min() == 40 + 40 * index
+
+
 def test_historical_output_uses_its_own_profile(tmp_path, rgb_profile):
     pytest.importorskip("PyQt6")
     from controllers.output_manager import OutputManager, OutputRecord
@@ -88,6 +116,44 @@ def test_historical_output_uses_its_own_profile(tmp_path, rgb_profile):
     OutputManager(window)._write_record(record, str(path), labels)
     with Image.open(path) as saved:
         assert saved.info.get("icc_profile") == rgb_profile
+
+
+def test_linear_raw_tiff_embeds_srgb_profile(qapp, tmp_path):
+    from controllers.output_manager import OutputManager, OutputRecord
+    from core.render_context import build_render_context
+    from utils.image_utils import srgb_icc_profile
+    from utils.linear_dng import LinearDNGMetadata, develop_linear
+
+    image = np.full((12, 15, 3), (6000, 12000, 24000), np.uint16)
+    metadata = LinearDNGMetadata(((1., 0., 0.), (0., 1., 0.), (0., 0., 1.)),
+                                 (1., 1., 1.), 'Camera', 'Model')
+    context = build_render_context([image], image, linear_dng_metadata=metadata)
+    record = OutputRecord.create(image, 'linear', context=context)
+    window = SimpleNamespace(scale_bar_enabled=False,
+        export_manager=SimpleNamespace(_safe_export_path=lambda path: path))
+    labels = SimpleNamespace(prepare_bgr_image=lambda _target, pixels, _index, **_kw: pixels)
+    path = tmp_path / 'developed.tif'
+    OutputManager(window)._write_record(record, str(path), labels)
+    with Image.open(path) as saved:
+        assert saved.info.get('icc_profile') == srgb_icc_profile()
+    actual = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert actual.dtype == np.uint16
+    np.testing.assert_array_equal(actual, develop_linear(image, metadata))
+
+
+def test_multipage_16bit_tiff_embeds_profile_on_every_page(tmp_path, rgb_profile):
+    import tifffile
+    from utils.image_utils import imwrite_multi_tiff
+
+    pages = [np.full((8, 12, 3), (1000, 5000, 30000), np.uint16),
+             np.full((8, 12, 3), (1500, 9000, 40000), np.uint16)]
+    path = tmp_path / 'pages-色彩.tif'
+    assert imwrite_multi_tiff(str(path), pages, icc_profile=rgb_profile)
+    with tifffile.TiffFile(path) as tif:
+        assert len(tif.pages) == 2
+        for page, expected in zip(tif.pages, pages):
+            assert page.tags[34675].value == rgb_profile
+            np.testing.assert_array_equal(page.asarray(), expected[..., ::-1])
 
 
 @pytest.mark.parametrize("second", ["same", "different", "missing"])
@@ -187,3 +253,18 @@ def test_project_frame_order_uses_cached_source_profiles(qapp, tmp_path, rgb_pro
     manager._apply_load_options(options)
     assert window.image_source_paths == [str(paths[1]), str(paths[0])]
     assert stack_icc_profile(window) == rgb_profile
+
+
+def test_apng_first_frame_profile_never_decodes_animation(tmp_path, rgb_profile, monkeypatch):
+    from PIL import PngImagePlugin
+
+    path = tmp_path / 'animation.png'
+    Image.new('RGB', (8, 6), 'red').save(
+        path, save_all=True, append_images=[Image.new('RGB', (8, 6), 'blue')],
+        duration=100, icc_profile=rgb_profile)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail('Reading the imported frame profile decoded animation pixels')
+
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', forbidden)
+    assert common_icc_profile([str(path)]) == rgb_profile

@@ -18,6 +18,7 @@ policy classes. Ratios here are conservative starting points to be calibrated
 by the soak harness, not measured constants.
 """
 import math
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -106,6 +107,7 @@ class ExecutionPlan:
     vram_budget: int = 0
     device_kind: str = "CPU"
     reasons: tuple = field(default_factory=tuple)
+    tile_size: Optional[int] = None
 
     def describe(self) -> str:
         return (f"workers={self.workers}, threads={self.native_threads}, "
@@ -115,20 +117,172 @@ class ExecutionPlan:
                 f"device={self.device_kind}")
 
 
-def _gpu_memory(kind: str) -> tuple:
-    """(free, total) VRAM bytes for *kind*, else (0, 0).
+_DIRECTML_ADAPTER_INDEX = 0
 
-    Never *imports* torch: this runs on the UI thread and in the CLI, where a
-    multi-second import just to size a budget would be worse than reporting no
-    VRAM. If torch is already loaded (the render path loaded it), its runtime
-    knows the real numbers; otherwise there is no usable accelerator anyway.
-    An unavailable or unreadable figure stays zero so admission refuses the
-    job instead of treating unknown memory as unlimited.
+
+def set_directml_adapter(index):
+    """Use the same DXGI adapter for DirectML execution and its budget."""
+    global _DIRECTML_ADAPTER_INDEX
+    _DIRECTML_ADAPTER_INDEX = max(0, int(index))
+
+
+def directml_adapters():
+    """Enumerate hardware DXGI adapters, preferring discrete GPU memory."""
+    if sys.platform != 'win32':
+        return []
+    import ctypes
+    import uuid
+
+    class AdapterDesc(ctypes.Structure):
+        _fields_ = [('name', ctypes.c_wchar * 128), ('vendor', ctypes.c_uint32),
+                    ('device', ctypes.c_uint32), ('subsystem', ctypes.c_uint32),
+                    ('revision', ctypes.c_uint32), ('dedicated', ctypes.c_size_t),
+                    ('system', ctypes.c_size_t), ('shared', ctypes.c_size_t),
+                    ('luid', ctypes.c_uint64)]
+
+    def method(obj, index, restype, *argtypes):
+        table = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(table[index])
+
+    factory = ctypes.c_void_p()
+    found = []
+    try:
+        create = ctypes.WinDLL('dxgi').CreateDXGIFactory1
+        create.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+        create.restype = ctypes.c_int32
+        iid = (ctypes.c_ubyte * 16).from_buffer_copy(
+            uuid.UUID('770aae78-f26f-4dba-a829-253c83d1b387').bytes_le)
+        if create(ctypes.byref(iid), ctypes.byref(factory)) < 0 or not factory.value:
+            return []
+        enum = method(factory, 7, ctypes.c_int32, ctypes.c_uint32,
+                      ctypes.POINTER(ctypes.c_void_p))
+        for index in range(64):
+            adapter = ctypes.c_void_p()
+            if enum(factory, index, ctypes.byref(adapter)) < 0 or not adapter.value:
+                break
+            try:
+                desc = AdapterDesc()
+                get_desc = method(adapter, 8, ctypes.c_int32, ctypes.POINTER(AdapterDesc))
+                if get_desc(adapter, ctypes.byref(desc)) >= 0 and desc.vendor != 0x1414:
+                    found.append((index, desc.name, int(desc.vendor), int(desc.dedicated)))
+            finally:
+                method(adapter, 2, ctypes.c_uint32)(adapter)
+    except (OSError, AttributeError, ValueError):
+        return []
+    finally:
+        if factory.value:
+            method(factory, 2, ctypes.c_uint32)(factory)
+    return sorted(found, key=lambda item: (item[3] > 512 * 1024 ** 2,
+                                          item[2] in (0x10de, 0x1002, 0x8086),
+                                          item[3], -item[0]), reverse=True)
+
+
+def _directml_memory() -> tuple:
+    """Free and total LOCAL budget for the selected ORT DirectML adapter.
+
+    DXGI's budget and usage are process-specific and change over time. LOCAL
+    also describes the GPU-accessible pool on unified-memory adapters; host
+    admission remains necessary in both cases. Failure is an unknown budget.
     """
-    reading = torch_backend.device_memory(kind)
-    if reading is None:
+    if sys.platform != 'win32':
         return 0, 0
-    return reading
+    import ctypes
+    import uuid
+
+    class VideoMemoryInfo(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in
+                    ('budget', 'usage', 'available_reservation', 'reservation')]
+
+    def guid(value):
+        return (ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID(value).bytes_le)
+
+    def method(obj, index, restype, *argtypes):
+        table = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(table[index])
+
+    factory = ctypes.c_void_p()
+    adapter = ctypes.c_void_p()
+    adapter3 = ctypes.c_void_p()
+    try:
+        dxgi = ctypes.WinDLL('dxgi')
+        create = dxgi.CreateDXGIFactory1
+        create.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+        create.restype = ctypes.c_int32
+        factory_id = guid('770aae78-f26f-4dba-a829-253c83d1b387')
+        if create(ctypes.byref(factory_id), ctypes.byref(factory)) < 0 or not factory.value:
+            return 0, 0
+        enumerate_adapter = method(factory, 7, ctypes.c_int32, ctypes.c_uint32,
+                                   ctypes.POINTER(ctypes.c_void_p))
+        if enumerate_adapter(factory, _DIRECTML_ADAPTER_INDEX, ctypes.byref(adapter)) < 0 or not adapter.value:
+            return 0, 0
+        query_interface = method(adapter, 0, ctypes.c_int32, ctypes.c_void_p,
+                                 ctypes.POINTER(ctypes.c_void_p))
+        adapter3_id = guid('645967a4-1392-4310-a798-8053ce3e93fd')
+        if query_interface(adapter, ctypes.byref(adapter3_id), ctypes.byref(adapter3)) < 0 or not adapter3.value:
+            return 0, 0
+        query_memory = method(adapter3, 14, ctypes.c_int32, ctypes.c_uint32,
+                              ctypes.c_int32, ctypes.POINTER(VideoMemoryInfo))
+        info = VideoMemoryInfo()
+        # Node 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL.
+        if query_memory(adapter3, 0, 0, ctypes.byref(info)) < 0 or not info.budget:
+            return 0, 0
+        return max(0, int(info.budget) - int(info.usage)), int(info.budget)
+    except (OSError, AttributeError, ValueError):
+        return 0, 0
+    finally:
+        for obj in (adapter3, adapter, factory):
+            if obj.value:
+                method(obj, 2, ctypes.c_uint32)(obj)
+
+
+def _gpu_memory(kind: str) -> tuple:
+    """Return free and total bytes without importing a full ML framework."""
+    reading = torch_backend.device_memory(kind)
+    if reading is not None:
+        return reading
+    if kind not in ('CUDA', 'ROCM'):
+        return 0, 0
+    import ctypes
+
+    free, total = ctypes.c_size_t(), ctypes.c_size_t()
+    try:
+        if kind == 'ROCM':
+            library = ctypes.CDLL('amdhip64.dll' if sys.platform == 'win32' else 'libamdhip64.so')
+            previous = ctypes.c_int()
+            if library.hipInit(0) or library.hipGetDevice(ctypes.byref(previous)):
+                return 0, 0
+            if library.hipSetDevice(0):
+                return 0, 0
+            try:
+                if library.hipMemGetInfo(ctypes.byref(free), ctypes.byref(total)):
+                    return 0, 0
+            finally:
+                library.hipSetDevice(previous.value)
+        else:
+            library = ctypes.CDLL('nvcuda.dll' if sys.platform == 'win32' else 'libcuda.so.1')
+            device, context = ctypes.c_int(), ctypes.c_void_p()
+            if library.cuInit(0) or library.cuDeviceGet(ctypes.byref(device), 0):
+                return 0, 0
+            retain = library.cuDevicePrimaryCtxRetain
+            retain.argtypes = (ctypes.POINTER(ctypes.c_void_p), ctypes.c_int)
+            if retain(ctypes.byref(context), device.value):
+                return 0, 0
+            try:
+                push = library.cuCtxPushCurrent_v2
+                push.argtypes = (ctypes.c_void_p,)
+                if push(context):
+                    return 0, 0
+                try:
+                    if library.cuMemGetInfo_v2(ctypes.byref(free), ctypes.byref(total)):
+                        return 0, 0
+                finally:
+                    popped = ctypes.c_void_p()
+                    library.cuCtxPopCurrent_v2(ctypes.byref(popped))
+            finally:
+                library.cuDevicePrimaryCtxRelease_v2(device.value)
+        return int(free.value), int(total.value)
+    except (OSError, AttributeError, ValueError):
+        return 0, 0
 
 
 def probe_resources(device_kind: Optional[str] = None) -> ResourceSnapshot:
@@ -140,7 +294,9 @@ def probe_resources(device_kind: Optional[str] = None) -> ResourceSnapshot:
     rss = memory.process_rss_bytes()
     kind = str(device_kind or "CPU").upper()
     free_vram = total_vram = 0
-    if torch_backend.has_device_memory(kind):
+    if kind == 'DIRECTML':
+        free_vram, total_vram = _directml_memory()
+    elif kind in ('CUDA', 'ROCM', 'XPU', 'OPENVINO'):
         free_vram, total_vram = _gpu_memory(kind)
     return ResourceSnapshot(
         available_ram=int(available or 0),
@@ -339,6 +495,71 @@ def plan_execution(workload: Workload, snapshot: Optional[ResourceSnapshot] = No
     return ExecutionPlan(workers=workers, native_threads=native,
                          max_in_flight=workers, ram_budget=ram, vram_budget=vram,
                          device_kind=snapshot.device_kind, reasons=tuple(reasons))
+
+
+def plan_neural_tiles(frames: int, height: int, width: int, channels: int,
+                      block_size: int, device_kind: str, estimate_inference,
+                      *, directory: bool = False, itemsize: int = 1,
+                      snapshot: Optional[ResourceSnapshot] = None,
+                      preference: str = PREFERENCE_BALANCED,
+                      user_threads: Optional[int] = None):
+    """Choose a spatial tile before allocating crops or output buffers.
+
+    CoreML allocations share host RAM. DirectML additionally requires a
+    trustworthy free-VRAM reading; without one, select CPU instead.
+    The tile estimate includes crop copies, staging, inference and reduction.
+    """
+    snapshot = snapshot or probe_resources(device_kind)
+    maximum = max(1, min(int(block_size), height, width))
+    minimum = min(maximum, 64)
+    pixels = height * width
+    fixed = pixels * ((channels + 1) * 4 + channels * 4)
+    if directory:
+        # One decoded source frame and decoder/input scratch stay live while
+        # the next tile stack is assembled.
+        fixed += pixels * channels * max(4, itemsize) * 2
+    ceiling = ram_ceiling(snapshot)
+    if not snapshot.ram_known:
+        raise ResourceLimitError('Available physical memory could not be determined')
+    kinds = [str(device_kind).upper()]
+    if kinds[0] != 'CPU':
+        kinds.append('CPU')
+    for kind in kinds:
+        # Dedicated devices need the selected provider's real free VRAM.
+        dedicated = kind in ('DIRECTML', 'CUDA', 'ROCM', 'OPENVINO')
+        if dedicated and (snapshot.device_kind.upper() != kind or not snapshot.vram_known):
+            continue
+        if kind not in ('CPU', 'COREML', 'DIRECTML', 'CUDA', 'ROCM', 'OPENVINO'):
+            continue
+        block = maximum
+        while True:
+            padded = ((block + 63) // 64) * 64
+            tile_pixels = padded * padded
+            # Matched/normalized crops may coexist with their predecessors.
+            crops = frames * block * block * channels * 8
+            staging = frames * tile_pixels * 4 * (2 * channels + 3)
+            reduction = tile_pixels * (channels * 4 * 3 + 8)
+            inference = estimate_inference(frames, block, block, kind)
+            required = fixed + crops + staging + reduction + inference
+            device_required = inference + staging + reduction
+            device_fits = (not dedicated or
+                           fits_in_budget(device_required, vram_budget(snapshot)))
+            if required <= ceiling and ceiling > 0 and device_fits:
+                capacity = cpu_capacity(snapshot, preference)
+                threads = (min(capacity, int(user_threads))
+                           if user_threads is not None and user_threads > 0 else capacity)
+                return block, ExecutionPlan(
+                    workers=1, native_threads=max(1, threads), max_in_flight=1,
+                    ram_budget=ceiling,
+                    vram_budget=vram_budget(snapshot) if dedicated else 0,
+                    device_kind=kind,
+                    reasons=(f'neural tile {block}px, {kind}',))
+            if block <= minimum:
+                break
+            block = max(minimum, block // 2)
+    raise ResourceLimitError(
+        f'Insufficient memory for neural fusion: minimum {minimum}px tile '
+        f'and output require more than {memory.mb(ceiling):.0f} MB available')
 
 
 def fits_in_budget(required_bytes: int, budget: int) -> bool:

@@ -59,6 +59,8 @@ Por exemplo, o equivalente na CLI é `python main.py --input ./png-stack --outpu
 
 ### Formatos de saída compatíveis
 
+Em **Salvar como**, TIFF comum salva o resultado como uma única imagem; TIFF em camadas inclui os quadros de origem como camadas. Linear DNG aparece sempre, mas salvá-lo exige um resultado linear da câmera sem ajustes incorporados, obtido com **Abrir RAW nativo** e com calibração da câmera.
+
 - Imagens individuais: JPG, PNG, BMP, TIFF, WebP
 - Sequências de imagens: salvas como pastas
 - Animações: formato GIF
@@ -403,30 +405,32 @@ O OpenFocus oferece dez algoritmos de fusão (além de um modo somente alinhamen
 
 ### StackMFF (V1, aprendizado profundo)
 
-- **Algoritmo**: uma U-Net 3D que prediz a luminância fundida de toda a pilha em uma passada; Cb/Cr vêm do quadro de origem mais próximo dessa luminância
+- **Algoritmo**: uma rede de atenção de escala única mistura a luminância das fontes com pesos softmax; Cb/Cr vêm do quadro cuja luminância é mais próxima da luminância fundida
 - **Ideal para**: fusão neural de uma pilha de foco completa
-- **Vantagens**: sem parâmetros e cor dentro da gama; a ordem dos quadros pode afetar o resultado
-- **Nota**: 6 M de parâmetros; pilhas maiores se beneficiam da GPU
+- **Vantagens**: sem parâmetros e cor dentro da gama; a luminância fundida independe da ordem dos quadros, mas a crominância pode variar em caso de empate nas distâncias de luminância
+- **Nota**: cerca de 156.172 parâmetros; pilhas maiores se beneficiam da GPU
 
 ### StackMFF V2 (aprendizado profundo)
 
-- **Algoritmo**: estimativa de foco por camada refinada por uma camada recorrente bidirecional; a rede regride o índice do plano focal e amostra a pilha. **Os quadros devem manter sua ordem original de foco** — a inversão é desativada para este método
+- **Algoritmo**: uma rede de atenção de escala única normaliza a profundidade de foco esperada e amostra o quadro de origem mais próximo. Os índices de profundidade dependem da ordem da pilha. **Os quadros devem manter sua ordem original de foco** — a inversão é desativada para este método
 - **Mapas de profundidade**: suportados; informa a camada focal amostrada
 - **Ideal para**: varreduras de foco contínuas em que um modelo muito pequeno e rápido importa
-- **Requisitos**: PyTorch; cerca de 0,05 M de parâmetros; sem configurações
+- **Requisitos**: ONNX Runtime e o modelo ONNX incluído.
 
 ### StackMFF V3 (aprendizado profundo)
 
 É o método pré-selecionado em uma nova instalação.
 
-- **Algoritmo**: classificação de origem pixel a pixel (requer PyTorch). A rede prediz, para cada pixel, de qual imagem de entrada ele vem, e então mistura as imagens por essas probabilidades ou escolhe uma imagem
+- **Algoritmo**: classificação de origem pixel a pixel (ONNX Runtime). A rede prediz, para cada pixel, de qual imagem de entrada ele vem, e então mistura as imagens por essas probabilidades ou escolhe uma imagem
 - **Modo de saída de IA** (painel direito, apenas para este método):
   - **Mistura suave (ponderada)** — padrão; cada pixel é uma mistura das imagens ponderada por probabilidade. Transições suaves, sem emendas duras; corresponde à configuração relatada no artigo
   - **Escolha rígida (quadro único)** — cada pixel é copiado do quadro mais provável. Seleção mais nítida, sem interpolação entre quadros; uma emenda no nível do pixel pode aparecer onde dois quadros empatam
 - **Ideal para**: qualidade máxima quando há GPU disponível
-- **Vantagens**: invariante à ordem (a ordem dos quadros nunca muda o resultado), lida com qualquer comprimento de pilha, sem ajuste por método, otimização automática
-- **Requisitos**: PyTorch instalado, GPU CUDA opcional (sem torchvision)
-- **Nota**: pode ficar indisponível se o PyTorch não estiver instalado
+- **Vantagens**: invariante à ordem (a ordem dos quadros nunca muda o resultado), aceita pilhas dentro dos recursos disponíveis, sem ajuste por método, otimização automática
+- **Requisitos**: ONNX Runtime e o modelo ONNX incluído.
+
+Cada bloco neural usa todos os quadros. Quadros de origem e dados temporários de alinhamento podem usar o disco; espaço livre e memória disponível limitam o tamanho da pilha. Os blocos espaciais de V2 aproximam a inferência da imagem inteira.
+
 
 ### OpenFocus A / B / C
 
@@ -472,7 +476,7 @@ Selecione **Somente alinhamento (sem fusão)** para registrar a pilha e adiciona
 | DCT | Média | Boa | Texturas |
 | DTCWT | Média | Muito boa | Cenas complexas |
 | GFG-FGF | Rápida | Boa | Regiões de foco |
-| StackMFF (V1) | Lenta (GPU) | Não avaliada aqui | Fusão neural da pilha; a ordem pode afetar o resultado |
+| StackMFF (V1) | Lenta (GPU) | Não avaliada aqui | Luminância independente da ordem; crominância pode variar em caso de empate nas distâncias de luminância |
 | StackMFF V2 | Rápida (GPU) | Não avaliada aqui | Varreduras contínuas com um modelo minúsculo |
 | StackMFF V3 | Lenta (GPU) | Excelente | Qualidade máxima |
 | OpenFocus A | Depende da pilha | Depende da pilha | Seleção multiescala de pixels em foco |
@@ -539,7 +543,7 @@ A fusão ainda pode deixar um defeito local — um halo ao redor de uma borda de
 5. Mantenha `Tab` para ver o resultado antes desta sessão e `Alt` para espiar o quadro de origem. A referência de nitidez é opcional, cobre apenas a tela de origem e usa uma escala compartilhada por todos os quadros.
 6. `Ctrl+Z` / `Ctrl+Y` desfazem e refazem traços inteiros. **Restaurar tudo…** é uma única etapa desfazível. **Aplicar como nova saída** adiciona uma entrada chamada `<nome> · Retocado N` e a seleciona; o original permanece intacto. A nova entrada é marcada como *Não exportada* até você exportá-la pela janela principal, e o OpenFocus a protege da remoção automática do histórico e de fechar sem uma decisão.
 
-Aplique o retoque como nova saída, depois clique com o botão direito nessa saída na janela principal e escolha **Exportar TIFF em camadas** para salvá-la com seus quadros de origem. Rótulos e barras de escala ativos não são incluídos; mudanças de anotação não salvas permanecem protegidas. Geometria de origem e máscaras de validade são mantidas. O resultado e as origens devem ser imagens RGB ou em escala de cinza opacas com a mesma profundidade de 8 ou 16 bits, e cada retângulo de origem deve caber no resultado. A exportação suporta até 128 origens; nomes de origem são limitados a 255 caracteres e não podem conter NUL nem caracteres fora do Plano Multilíngue Básico, como muitos emojis. Ela recusa contextos inseguros e trabalhos estimados em mais de 512 MiB de memória de trabalho ou acima do orçamento de RAM disponível, relatando a falha em vez de escrever uma exportação incompleta. O GIMP 3.2.6 no Windows importa as camadas de 8 e 16 bits, incluindo seus deslocamentos e o preenchimento transparente de registro. O resultado fica visível e as camadas de origem ocultas; o GIMP também adiciona uma camada de fundo visível. Outros editores não foram testados.
+Aplique o retoque como nova saída, selecione-a e abra **Salvar como**. Escolha TIFF em camadas na lista de formatos para salvar o resultado com seus quadros de origem. Rótulos e barras de escala ativos não são incluídos; mudanças de anotação não salvas permanecem protegidas. Geometria de origem e máscaras de validade são mantidas. O resultado e as origens devem ser imagens RGB ou em escala de cinza opacas com a mesma profundidade de 8 ou 16 bits, e cada retângulo de origem deve caber no resultado. A exportação suporta até 128 origens; nomes de origem são limitados a 255 caracteres e não podem conter NUL nem caracteres fora do Plano Multilíngue Básico, como muitos emojis. Ela recusa contextos inseguros e trabalhos estimados em mais de 512 MiB de memória de trabalho ou acima do orçamento de RAM disponível, relatando a falha em vez de escrever uma exportação incompleta. O GIMP 3.2.6 no Windows importa as camadas de 8 e 16 bits, incluindo seus deslocamentos e o preenchimento transparente de registro. O resultado fica visível e as camadas de origem ocultas; o GIMP também adiciona uma camada de fundo visível. Outros editores não foram testados.
 
 Para uma correção tonal local, selecione **Pincel de exposição**, ajuste sua quantidade em centésimos de stop (100 dobra os valores dos pixels, -100 os divide pela metade) e pinte no resultado. A prévia é atualizada enquanto você pinta. Cada traço ajusta o resultado atual uma vez, mesmo onde as pinceladas se sobrepõem; outro traço se acumula. Use a opacidade e a dureza do pincel para controlar a mistura. Altas luzes podem estourar ao clarear. Mantenha **Antes** para comparar com o resultado como foi aberto, pressione Esc durante um traço para cancelá-lo, ou use desfazer/refazer depois do traço. São edições de pixels, não camadas ajustáveis. Aplique como nova saída e exporte a nova entrada para salvar os pixels editados; um projeto não armazena esses pixels.
 
@@ -640,7 +644,7 @@ O planejador considera núcleos físicos, afinidade e cotas de CPU, e executa um
 
 ### Aceleração por GPU
 
-O OpenFocus usa a GPU (CUDA/MPS) para os modelos neurais de IA (StackMFF V1/V2/V3); algoritmos clássicos e o registro do aplicativo rodam na CPU. O registro de baixo nível opcional com CuPy é um backend numérico separado.
+StackMFF V1/V2/V3 usam ONNX Runtime. DirectML no Windows e CoreML no macOS podem acelerar a inferência; caso contrário, usa-se a CPU. A disponibilidade do provedor não comprova execução na GPU. O suporte a outras GPUs requer validação.
 
 - Alterne em **Configurações → Aceleração por GPU**
 - Desmarcar força os métodos neurais na CPU — útil quando drivers de GPU dão problema
@@ -965,8 +969,7 @@ Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Exe
 
 #### IA indisponível
 
-- Instale o PyTorch: `pip install torch` (torchvision não é usado)
-- Para suporte a GPU, instale o PyTorch com CUDA
+- Verifique o ONNX Runtime e o modelo incluído.
 - Verifique em **Ajuda → Informações do ambiente**
 
 #### Erros de falta de memória

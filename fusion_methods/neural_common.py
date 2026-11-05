@@ -1,10 +1,4 @@
-"""Shared helpers for the neural fusion back-ends (V1, V2).
-
-V3 keeps its own implementation because its admission model is calibrated to
-that architecture; these helpers cover the parts the older StackMFF models
-share: device probing, cancellation, stack decoding and padded staging.
-"""
-import hashlib
+"""Shared staging, cancellation and resource planning for neural fusion."""
 import os
 
 import cv2
@@ -12,32 +6,8 @@ import numpy as np
 
 from utils.image_utils import normalize_fuse_input
 from utils.sorting import natural_sort_key
-from core import torch_backend
+ATTENTION_PAD_ALIGN = 64
 
-torch = None
-DEVICE_KIND = None
-
-
-def ensure_torch():
-    """Import torch on first use; the backend probe is shared and cached."""
-    global torch, DEVICE_KIND
-    if torch is not None:
-        if DEVICE_KIND is None:
-            DEVICE_KIND = torch_backend.detect_kind(torch)
-        return
-    torch = torch_backend.ensure_torch()
-    DEVICE_KIND = torch_backend.detect_kind(torch)
-
-
-def resolve_device(use_gpu):
-    ensure_torch()
-    return torch_backend.resolve_device(use_gpu, torch)
-
-
-def synchronize(device):
-    """Wait for queued work before a cancellation path releases its lease."""
-    if torch is not None:
-        torch_backend.synchronize(device, torch)
 
 
 def cancel(should_cancel):
@@ -46,12 +16,6 @@ def cancel(should_cancel):
         raise RegistrationCancelled()
 
 
-def checkpoint_digest(path):
-    digest = hashlib.sha256()
-    with open(path, 'rb') as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.digest()
 
 
 def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None):
@@ -59,6 +23,7 @@ def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None
     from core.resource_policy import probe_resources, require_memory
     cap = execution_plan.ram_budget if execution_plan is not None else None
     if isinstance(input_source, str):
+        from core.image_loader import admit_image_decode, decode_image
         snapshot = probe_resources()
         require_memory(1, snapshot, user_limit=cap)
         exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
@@ -69,7 +34,8 @@ def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None
         for name in names:
             cancel(should_cancel)
             path = os.path.join(input_source, name)
-            image = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            admit_image_decode(path, user_limit=cap)
+            image = decode_image(path, preserve_grayscale=True)
             if image is None:
                 raise ValueError(f"Failed to read image: {path}")
             if not frames:
@@ -88,6 +54,16 @@ def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None
     return frames
 
 
+def working_frame(frame, normalize_stack):
+    """Convert a single frame exactly as 16-bit stack normalization does."""
+    if not normalize_stack or frame.dtype == np.float32:
+        return frame
+    result = frame.astype(np.float32)
+    if frame.dtype == np.uint16:
+        result *= 255.0 / 65535.0
+    return result
+
+
 def _plane(frame):
     """One 0-255 luma plane as float32, independent of source bit depth."""
     if frame.ndim == 2:
@@ -97,26 +73,28 @@ def _plane(frame):
     else:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     scale = 65535.0 if gray.dtype == np.uint16 else 255.0
-    return gray.astype(np.float32) / scale
+    return gray.astype(np.float32, copy=False) / scale
 
 
 def stage_planes(frames, align, should_cancel=None):
-    """Stack luma planes to ``(1, D, Hp, Wp)`` at 0-1, edge padded.
+    """Stage a padded image grid as float32 luma at 0-1.
 
-    The reference implementations resize to a multiple of 16/32; padding
-    keeps every source pixel unchanged and the caller crops the border back.
+    Pad before native colour conversion so whole and tiled inference use the
+    same conversion grid, including scalar/SIMD rounding at image edges.
     """
-    ensure_torch()
     h, w = frames[0].shape[:2]
     hp, wp = h + (-h) % align, w + (-w) % align
-    batch = torch.empty((1, len(frames), hp, wp), dtype=torch.float32)
+    ph, pw = hp - h, wp - w
+    mode = 'reflect' if ph < h and pw < w else 'edge'
+    batch = np.empty((1, len(frames), hp, wp), dtype=np.float32)
+    normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     for index, frame in enumerate(frames):
         cancel(should_cancel)
-        batch[0, index, :h, :w] = torch.from_numpy(_plane(frame))
-    if wp != w:
-        batch[:, :, :h, w:] = batch[:, :, :h, w - 1:w]
-    if hp != h:
-        batch[:, :, h:, :] = batch[:, :, h - 1:h, :]
+        frame = working_frame(frame, normalize_stack)
+        if ph or pw:
+            padding = ((0, ph), (0, pw)) + ((0, 0),) * (frame.ndim - 2)
+            frame = np.pad(frame, padding, mode=mode)
+        batch[0, index] = _plane(frame)
     cancel(should_cancel)
     return batch
 
@@ -126,52 +104,33 @@ def normalized_frames(frames):
     return normalize_fuse_input(list(frames))[0]
 
 
-def plan_inference(algorithm, frames, model_path, use_gpu, thread_count,
-                   resource_preference, execution_plan, *, workspace_bytes,
-                   host_bytes):
-    """Admit model load plus the caller's declared workspace."""
-    from core.resource_policy import (ResourceLimitError, Workload,
-                                      plan_execution, probe_resources)
+def plan_attention_inference(algorithm, frames, model_path, device,
+                             thread_count=None,
+                             resource_preference='balanced', execution_plan=None,
+                             result_count=1, fixed_bytes=0):
+    """Admit the compact runtime's working set before creating a session."""
+    from core.resource_policy import Workload, plan_execution, probe_resources
+    from fusion_methods.neural_runtime import estimate_inference_bytes
 
-    device = resolve_device(use_gpu)
-    kind = torch_backend.kind_of_device(device, torch)
-    snapshot = probe_resources(kind)
-    cap = execution_plan.ram_budget if execution_plan is not None else None
-    if kind == torch_backend.KIND_MPS:
-        # MPS shares physical memory; there is no VRAM pool to plan against,
-        # so the reported shared-memory headroom is the admission ceiling.
-        torch_backend.empty_cache(device, torch)
-        shared = torch_backend.mps_memory(torch)
-        if shared is None:
-            raise ResourceLimitError("Cannot determine the MPS working-set budget")
-        cap = min(cap if cap is not None else snapshot.available_ram,
-                  max(0, int(shared[0])))
-    vram_kind = torch_backend.has_device_memory(kind)
     if execution_plan is not None:
+        device = getattr(execution_plan, 'device_kind', device)
         thread_count = min(thread_count or execution_plan.native_threads,
                            execution_plan.native_threads)
     h, w = frames[0].shape[:2]
-    channels = frames[0].shape[2] if frames[0].ndim == 3 else 1
-    model_bytes = os.path.getsize(model_path) * 4
-    base = dict(algorithm=algorithm, frames=len(frames), height=h, width=w,
-                channels=channels,
-                itemsize=max(frame.dtype.itemsize for frame in frames),
-                parallel_layer='native')
-    load_plan = plan_execution(
-        Workload(**base, fixed_bytes=model_bytes + host_bytes,
-                 per_worker_bytes=0,
-                 fixed_vram_bytes=model_bytes if vram_kind else 0),
-        snapshot, preference=resource_preference,
-        user_threads=thread_count, ram_budget_override=cap)
-    torch.set_num_threads(load_plan.native_threads)
-    host = host_bytes + workspace_bytes
-    plan = plan_execution(
-        Workload(**base, fixed_bytes=host, per_worker_bytes=0,
-                 fixed_vram_bytes=workspace_bytes if vram_kind else 0),
-        snapshot, preference=resource_preference, user_threads=thread_count,
-        ram_budget_override=cap)
-    torch.set_num_threads(plan.native_threads)
-    return device, plan
+    n = len(frames)
+    c = frames[0].shape[2] if frames[0].ndim == 3 else 1
+    hp, wp = h + (-h) % 64, w + (-w) % 64
+    inference = estimate_inference_bytes(n, h, w, device)
+    host = (fixed_bytes + n * hp * wp * 4 * (2 * c + 3)
+            + result_count * h * w * c * 4 + inference)
+    workload = Workload(algorithm=algorithm, frames=n, height=h, width=w,
+                        channels=c, itemsize=max(f.dtype.itemsize for f in frames),
+                        parallel_layer='native', fixed_bytes=host, per_worker_bytes=0)
+    plan = plan_execution(workload, probe_resources(), preference=resource_preference,
+                          user_threads=thread_count,
+                          ram_budget_override=execution_plan.ram_budget if execution_plan else None)
+    from dataclasses import replace
+    return model_path, device, replace(plan, device_kind=device)
 
 
 def _ycbcr(frame):
@@ -205,17 +164,19 @@ def tensor_to_bgr(fused_luma, frames, should_cancel=None):
     0-1 inputs, while every buffer here is in the project's 0-255 range.
     """
     cancel(should_cancel)
-    stack = normalized_frames(frames)
-    planes = [_ycbcr(frame) for frame in stack]
-    lumas = np.stack([plane[0] for plane in planes]).astype(np.float32, copy=False)
-    cbs = np.stack([plane[1] for plane in planes]).astype(np.float32, copy=False)
-    crs = np.stack([plane[2] for plane in planes]).astype(np.float32, copy=False)
+    normalize_stack = any(frame.dtype == np.uint16 for frame in frames)
     target = np.clip(fused_luma, 0.0, 255.0)
-    nearest = np.abs(lumas - target[None]).argmin(axis=0)
-    rows = np.arange(target.shape[0])[:, None]
-    cols = np.arange(target.shape[1])[None, :]
-    cb = cbs[nearest, rows, cols]
-    cr = crs[nearest, rows, cols]
-    del planes, lumas, cbs, crs
+    best = cb = cr = None
+    for frame in frames:
+        cancel(should_cancel)
+        luma, frame_cb, frame_cr = _ycbcr(working_frame(frame, normalize_stack))
+        distance = np.abs(luma - target)
+        if best is None:
+            best, cb, cr = distance, frame_cb, frame_cr
+            continue
+        better = (distance < best) | (np.isnan(distance) & ~np.isnan(best))
+        np.copyto(best, distance, where=better)
+        np.copyto(cb, frame_cb, where=better)
+        np.copyto(cr, frame_cr, where=better)
     cancel(should_cancel)
     return np.clip(_ycbcr_to_bgr(target, cb, cr), 0.0, 255.0)

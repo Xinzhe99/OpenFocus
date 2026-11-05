@@ -52,7 +52,7 @@ def system_facts() -> dict:
         f"{memory.total_memory_bytes() / 1024 ** 3:.1f} GB total, "
         f"{memory.available_memory_bytes() / 1024 ** 3:.1f} GB free")
     gpu = cached_compute_gpu()
-    facts["gpu (cuda/rocm/xpu/mps)"] = gpu if gpu is not None else "not checked"
+    facts["gpu (neural acceleration)"] = gpu if gpu is not None else "not checked"
     distributions = (
         ("numpy", "numpy", "__version__"),
         ("opencv-python", "cv2", "__version__"),

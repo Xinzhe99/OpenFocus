@@ -1,6 +1,7 @@
 """Controls for optional sensor-space cleanup."""
 from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtWidgets import (QCheckBox, QFileDialog, QHBoxLayout, QLabel,
+from utils.file_dialogs import FileDialog
+from PyQt6.QtWidgets import (QCheckBox, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 from locales import trans
@@ -62,7 +63,7 @@ class SensorCleanupControls(QWidget):
         self._inspect()
 
     def _browse(self):
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = FileDialog.getOpenFileName(
             self, trans.t('sensor_mask'), '',
             'Images (*.png *.tif *.tiff *.bmp)')
         if path:

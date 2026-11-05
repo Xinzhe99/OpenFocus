@@ -47,6 +47,19 @@ def test_fusion_produces_all_in_focus(two_focus_stack, algorithm, kwargs):
     assert f_right > b_right * 1.5, f"{algorithm}: right half not sharpened ({f_right:.1f} vs {b_right:.1f})"
 
 
+@pytest.mark.parametrize('algorithm', ['guided_filter', 'dct', 'dtcwt', 'gfgfgf'])
+def test_unicode_directory_matches_16bit_frame_input(tmp_path, two_focus_stack, algorithm):
+    from utils.image_utils import imwrite_auto
+
+    frames = [frame.astype(np.uint16) * 251 for frame in two_focus_stack]
+    for index, frame in enumerate(frames):
+        assert imwrite_auto(str(tmp_path / f'帧{index}.tif'), frame)
+    fusion = MultiFocusFusion(algorithm=algorithm, use_gpu=False, exposure_match=False)
+    expected = fusion.fuse(frames, thread_count=1)
+    actual = fusion.fuse(str(tmp_path), thread_count=1)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-4)
+
+
 def test_fusion_deterministic(two_focus_stack):
     fusion = MultiFocusFusion(algorithm="guided_filter", use_gpu=False)
     a = fusion.fuse(input_source=two_focus_stack, img_resize=None, kernel_size=31, thread_count=2)
@@ -406,6 +419,26 @@ def test_dtcwt_is_not_tiled_only_because_of_size(monkeypatch, two_focus_stack):
     out = fusion.fuse(input_source=two_focus_stack)
     assert out.shape[:2] == (120, 160)
     assert calls == []
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('base_frame', ['none', 'first'])
+def test_guided_tiled_exposure_matches_whole_frame_preprocessing(dtype, base_frame):
+    from utils.image_utils import apply_exposure_gain, exposure_gains
+
+    rng = np.random.default_rng(712)
+    frames = [rng.integers(5, high, (24, 28, 3), dtype=np.uint8)
+              for high in (90, 150, 220)]
+    if dtype == np.uint16:
+        frames = [frame.astype(np.uint16) * 251 + 19 for frame in frames]
+    normalized, _ = normalize_fuse_input(frames)
+    matched = [apply_exposure_gain(frame, gain)
+               for frame, gain in zip(normalized, exposure_gains(normalized))]
+    options = dict(algorithm='guided_filter', tile_enabled=True, tile_block_size=16,
+                   tile_overlap=4, tile_threshold=1, base_frame=base_frame)
+    expected = MultiFocusFusion(exposure_match=False, **options).fuse(matched, thread_count=1)
+    actual = MultiFocusFusion(exposure_match=True, **options).fuse(normalized, thread_count=1)
+    np.testing.assert_allclose(actual, expected, atol=1e-4)
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])

@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from PyQt6.QtCore import QSignalBlocker, QThread, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
+from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -19,7 +20,6 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -123,6 +123,8 @@ class DepthWorker(QThread):
 
     def _run_admitted(self):
         from core.depth_map import DepthMapCancelled, compute_focus_index
+        from core.source_frames import materialize_frames
+        self._images = materialize_frames(self._images, should_cancel=lambda: self._cancelled)
         if self.alignment != "none":
             from core.compare_worker import align_frames
             self._images = align_frames(self._images, self.alignment,
@@ -179,11 +181,13 @@ class DepthProductExportWorker(QThread):
     ok = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, path, index, frames, valid_mask, context, metadata, profile, render, parent=None):
+    def __init__(self, path, index, frames, valid_mask, context, metadata, profile, render,
+                 linear_dng_metadata=None, parent=None):
         super().__init__(parent)
         self.path, self.index, self.frames = path, index, frames
         self.valid_mask, self.context, self.metadata = valid_mask, context, metadata
         self.profile, self.render = profile, render
+        self.linear_dng_metadata = linear_dng_metadata
 
     def cancel(self):
         self.requestInterruption()
@@ -206,12 +210,22 @@ class DepthProductExportWorker(QThread):
                 full_bytes = full_height * full_width * channels * itemsize
                 # Include the index, ROI output, full canvas and the writer's
                 # contiguous pixels, encoded TIFF and intermediate byte strings.
+                development_bytes = (min(height, 128) * width * 86
+                                     if self.render and self.linear_dng_metadata is not None else 0)
                 require_memory(height * width * (2 + channels * itemsize)
-                               + 6 * full_bytes + min(height, 128) * width * (24 + 4 * channels))
+                               + 6 * full_bytes + min(height, 128) * width * (24 + 4 * channels)
+                               + development_bytes)
                 indices = estimate_indices(self.index, len(self.frames), self.valid_mask,
                                            self.isInterruptionRequested)
                 pixels = (render_indices(indices, self.frames, self.isInterruptionRequested)
                           if self.render else indices)
+                if self.render and self.linear_dng_metadata is not None:
+                    from utils.linear_dng import develop_linear
+                    for y in range(0, height, 128):
+                        if self.isInterruptionRequested():
+                            self.failed.emit("cancelled")
+                            return
+                        pixels[y:y + 128] = develop_linear(pixels[y:y + 128], self.linear_dng_metadata)
                 context = self.context
                 if context is not None and context.roi_mode == "paste":
                     frame = context.frames[0]
@@ -380,6 +394,8 @@ class _CustomSchemeDialog(QDialog):
         d = QDialog(self)
         d.setWindowTitle(trans.t("depth_edit_stop"))
         lay = QFormLayout(d)
+        lay.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        lay.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         spin = QDoubleSpinBox(d)
         spin.setRange(0.0, 1.0)
         spin.setSingleStep(0.05)
@@ -553,6 +569,7 @@ class DepthMapDialog(QDialog):
         side = QWidget()
         self._side_controls = side
         form = QFormLayout(side)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         form.setContentsMargins(8, 0, 0, 0)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
@@ -626,6 +643,7 @@ class DepthMapDialog(QDialog):
         # and checkbox is left untouched, so toggling back restores the setup.
         self.physical_panel = QWidget()
         phys_form = QFormLayout(self.physical_panel)
+        phys_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         phys_form.setContentsMargins(18, 0, 0, 0)
         phys_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         phys_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
@@ -934,7 +952,7 @@ class DepthMapDialog(QDialog):
                 full[frame.offset_y:frame.offset_y + depth.shape[0],
                      frame.offset_x:frame.offset_x + depth.shape[1]] = depth
                 depth = full
-            path, _ = QFileDialog.getSaveFileName(self, trans.t("depth_save_physical"),
+            path, _ = FileDialog.getSaveFileName(self, trans.t("depth_save_physical"),
                 self._default_path(get_last_dialog_dir(), raw=True), "TIFF (*.tif *.tiff)")
             if not path:
                 return
@@ -1547,7 +1565,7 @@ class DepthMapDialog(QDialog):
         title = trans.t("depth_save_render" if render else "depth_save_indices")
         start_dir = get_last_dialog_dir()
         default = os.path.join(start_dir, "depth_render.tif" if render else "depth_indices.tif")
-        path, _ = QFileDialog.getSaveFileName(self, title, default, "TIFF (*.tif *.tiff)")
+        path, _ = FileDialog.getSaveFileName(self, title, default, "TIFF (*.tif *.tiff)")
         if not path or not self._require_current_map():
             return
         if os.path.splitext(path)[1].lower() not in (".tif", ".tiff"):
@@ -1564,7 +1582,8 @@ class DepthMapDialog(QDialog):
                     "method": self._map_method, "domain": self._domain_metadata(),
                     "roi_mode": context.roi_mode if context is not None else "full"}
         worker = DepthProductExportWorker(path, self._index01, tuple(self._map_frames),
-            self._map_valid_mask, context, metadata, self._map_icc_profile, render, self)
+            self._map_valid_mask, context, metadata, self._map_icc_profile, render,
+            linear_dng_metadata=self._map_linear_dng_metadata, parent=self)
         self._export_worker = worker
         self._export_outcome = None
         self._cancelling = False
@@ -1588,11 +1607,11 @@ class DepthMapDialog(QDialog):
             return
         start_dir = get_last_dialog_dir()
         if colorized:
-            path, _ = QFileDialog.getSaveFileName(
+            path, _ = FileDialog.getSaveFileName(
                 self, trans.t("depth_save_color"),
                 self._default_path(start_dir), "PNG (*.png);;JPEG (*.jpg);;TIFF (*.tif *.tiff);;BMP (*.bmp)")
         else:
-            path, _ = QFileDialog.getSaveFileName(
+            path, _ = FileDialog.getSaveFileName(
                 self, trans.t("depth_save_raw"),
                 self._default_path(start_dir, raw=True), "TIFF 16-bit (*.tif *.tiff)")
         if not path:
@@ -1634,7 +1653,7 @@ class DepthMapDialog(QDialog):
         from utils.mesh_export import obj_paths
         start_dir = get_last_dialog_dir()
         default = os.path.join(start_dir, "depth_model.obj") if start_dir else "depth_model.obj"
-        path, _ = QFileDialog.getSaveFileName(
+        path, _ = FileDialog.getSaveFileName(
             self, trans.t("depth_export_3d"), default, "Wavefront OBJ (*.obj)")
         if not path:
             return

@@ -17,6 +17,8 @@ FINAL_ARGS = {'arch': 'loop', 'C1': 48, 'C2': 96, 'heads': [3, 6], 'window': 8, 
               'single_scale': True, 'fine_head': False}
 ARCH_KEYS = tuple(FINAL_ARGS) + ('rounds',)
 DEFAULT_WEIGHTS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), 'weights', 'stackmff_v3_final.pth')
+VARIANT_ARCH_KEYS = ('C1', 'C2', 'heads', 'window', 'mlp_ratio', 'inter_pool',
+                     'kmax', 'single_scale', 'layer_pos', 'share_fine', 'fine_head')
 
 
 def run_args(run_dir):
@@ -53,6 +55,30 @@ def _torch_load(path):
         return torch.load(path, map_location='cpu', weights_only=True)
     except TypeError:   # torch < 1.13
         return torch.load(path, map_location='cpu')
+
+
+def load_variant_checkpoint(path, model_class, expected_arch, device='cpu'):
+    """Load a retrained V1/V2 checkpoint or an explicit V3 initialization."""
+    checkpoint = _torch_load(path)
+    if not isinstance(checkpoint, dict):
+        raise ValueError('StackMFF checkpoint must be a state dictionary')
+    args = checkpoint.get('args', {})
+    state = checkpoint.get('model', checkpoint)
+    if not isinstance(args, dict) or not isinstance(state, dict):
+        raise ValueError('Invalid StackMFF checkpoint metadata or weights')
+    arch = args.get('arch')
+    if arch not in (None, expected_arch, 'loop'):
+        raise ValueError(f'Checkpoint architecture {arch!r} does not match {expected_arch!r}')
+    kwargs = {key: args[key] for key in VARIANT_ARCH_KEYS if key in args}
+    if 'heads' in kwargs:
+        kwargs['heads'] = tuple(kwargs['heads'])
+    model = model_class(**kwargs)
+    state = {(key[7:] if key.startswith('module.') else key): value
+             for key, value in state.items()}
+    if state and not any(key.startswith('backbone.') for key in state):
+        state = {'backbone.' + key: value for key, value in state.items()}
+    model.load_state_dict(state)
+    return model.to(device).eval()
 
 
 def load(run_dir, ckpt, device='cuda', K=None):

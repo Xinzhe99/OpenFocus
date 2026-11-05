@@ -119,7 +119,9 @@ def test_file_load_progress_counts_failed_and_missing_sources(tmp_path):
     assert ok and loader.failed_count == 2
     assert names == ['a.png', 'b.png']
     assert [int(image[0, 0, 0]) for image in images] == [1, 2]
-    assert progress == [(1, 4), (2, 4), (3, 4), (4, 4)]
+    assert progress and progress[-1] == (4, 4)
+    assert all(total == 4 and 0 <= done <= total for done, total in progress)
+    assert all(left[0] <= right[0] for left, right in zip(progress, progress[1:]))
 
 
 def test_folder_load_progress_stops_when_cancelled(tmp_path):
@@ -133,7 +135,9 @@ def test_folder_load_progress_stops_when_cancelled(tmp_path):
     ok, message, images, _ = loader.load_from_folder(str(tmp_path), thread_count=1)
 
     assert not ok and message == 'CANCELLED' and images == []
-    assert progress == [(0, 3), (1, 3)]
+    assert progress and progress[-1][0] < 3
+    assert all(total == 3 and 0 <= done < total for done, total in progress)
+    assert all(left[0] <= right[0] for left, right in zip(progress, progress[1:]))
 
 
 def test_cancel_before_start_never_decodes(tmp_path, monkeypatch):

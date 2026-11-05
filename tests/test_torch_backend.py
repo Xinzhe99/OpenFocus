@@ -100,10 +100,79 @@ def xpu_probe_usable(monkeypatch):
     backend.reset_cache()
 
 
-def test_cuda_and_rocm_are_distinguished():
+@pytest.fixture
+def rocm_probe_usable(monkeypatch):
+    backend.reset_cache()
+    monkeypatch.setattr(backend, "_rocm_probe_command",
+                        lambda: [sys.executable, "-c", "pass"])
+    yield
+    backend.reset_cache()
+
+
+def test_cuda_and_rocm_are_distinguished(rocm_probe_usable):
     assert backend.detect_kind(_torch(cuda=FakeCuda())) == backend.KIND_CUDA
     assert backend.detect_kind(_torch(cuda=FakeCuda(), hip="6.2")) == (
         backend.KIND_ROCM)
+
+
+@pytest.mark.parametrize("exit_code,expected", [
+    (0, backend.KIND_ROCM),
+    (7, backend.KIND_CPU),
+])
+def test_rocm_probe_survives_child_exit_and_is_cached(monkeypatch, exit_code, expected):
+    class UnsafeCuda(FakeCuda):
+        def is_available(self):
+            pytest.fail("ROCm availability must not run in the desktop process")
+
+    module = _torch(cuda=UnsafeCuda(), hip="6.2")
+    monkeypatch.setattr(backend, "_rocm_probe_command", lambda: [
+        sys.executable, "-c", f"import os; os._exit({exit_code})",
+    ])
+    backend.reset_cache()
+    try:
+        assert backend.detect_kind(module) == expected
+        monkeypatch.setattr(backend, "_rocm_probe_command",
+                            lambda: pytest.fail("probe should be cached"))
+        assert backend.resolve_device(True, module).type == (
+            "cuda" if expected == backend.KIND_ROCM else "cpu")
+        assert backend.device_memory(backend.KIND_ROCM, module) == (
+            module.cuda.memory if expected == backend.KIND_ROCM else None)
+    finally:
+        backend.reset_cache()
+
+
+def test_hanging_rocm_probe_falls_back_to_cpu(monkeypatch, caplog):
+    class UnsafeCuda(FakeCuda):
+        def is_available(self):
+            pytest.fail("ROCm availability must not run in the desktop process")
+
+    module = _torch(cuda=UnsafeCuda(), hip="6.2")
+    monkeypatch.setattr(backend, "_ROCM_PROBE_TIMEOUT", 0.5)
+    monkeypatch.setattr(backend, "_rocm_probe_command", lambda: [
+        sys.executable, "-c", "import time; time.sleep(30)",
+    ])
+    backend.reset_cache()
+    try:
+        assert backend.detect_kind(module) == backend.KIND_CPU
+        assert backend.resolve_device(True, module).type == "cpu"
+        assert "Isolated ROCm probe failed" in caplog.text
+    finally:
+        backend.reset_cache()
+
+
+def test_failed_rocm_probe_preserves_xpu_fallback(monkeypatch, xpu_probe_usable):
+    monkeypatch.setattr(backend, "_rocm_probe_command", lambda: [
+        sys.executable, "-c", "import os; os._exit(7)",
+    ])
+    module = _torch(cuda=BrokenCuda(), hip="6.2", xpu=FakeXpu())
+    assert backend.detect_kind(module) == backend.KIND_XPU
+
+
+def test_nvidia_cuda_does_not_spawn_rocm_probe(monkeypatch):
+    monkeypatch.setattr(backend, "_rocm_probe_command",
+                        lambda: pytest.fail("NVIDIA must not spawn a ROCm probe"))
+    assert backend.detect_kind(_torch(cuda=FakeCuda())) == backend.KIND_CUDA
+    assert backend.detect_kind(_torch(cuda=FakeCuda(available=False))) == backend.KIND_CPU
 
 
 def test_xpu_is_selected_when_cuda_is_unavailable(xpu_probe_usable):
@@ -188,7 +257,7 @@ def test_explicit_cpu_request_wins_over_an_accelerator():
     assert backend.resolve_device(False, module).type == "cpu"
 
 
-def test_rocm_and_xpu_memory_readings(xpu_probe_usable):
+def test_rocm_and_xpu_memory_readings(xpu_probe_usable, rocm_probe_usable):
     rocm = _torch(cuda=FakeCuda(memory=(3 * 1024 ** 3, 24 * 1024 ** 3)),
                   hip="6.2")
     assert backend.device_memory(backend.KIND_ROCM, rocm) == (
@@ -278,7 +347,7 @@ def test_linux_gpu_status_covers_amd_nvidia_and_intel(
     monkeypatch.setattr(platform_utils, "is_macos", lambda: False)
     monkeypatch.setattr(platform_utils, "is_windows", lambda: False)
     monkeypatch.setattr(platform_utils, "is_linux", lambda: True)
-    monkeypatch.setattr(platform_utils, "_torch_accelerator_present",
+    monkeypatch.setattr(platform_utils, "_neural_accelerator_present",
                         lambda: None)
     monkeypatch.setattr(platform_utils, "_nvidia_smi_reports_gpu",
                         lambda: False)
@@ -294,62 +363,74 @@ def test_linux_gpu_status_covers_amd_nvidia_and_intel(
         platform_utils.reset_gpu_probe_cache()
 
 
-def test_completed_xpu_probe_overrides_an_older_hardware_hint(monkeypatch, xpu_probe_usable):
+@pytest.mark.parametrize("kind,expected", [
+    ("DIRECTML", True), ("CUDA", True), ("ROCM", True),
+    ("OPENVINO", True), ("COREML", True), ("CPU", False),
+])
+def test_completed_neural_probe_overrides_an_older_hardware_hint(monkeypatch, kind, expected):
+    from fusion_methods import neural_runtime
     from utils import platform_utils
-    monkeypatch.setitem(sys.modules, "torch",
-                        _torch(cuda=FakeCuda(available=False), xpu=FakeXpu()))
-    backend.reset_cache()
-    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", False)
-    try:
-        backend.ensure_torch()
-        assert platform_utils.has_compute_gpu() is True
-    finally:
-        platform_utils.reset_gpu_probe_cache()
-        backend.reset_cache()
 
-
-def test_completed_cpu_probe_overrides_an_older_hardware_hint(monkeypatch):
-    from utils import platform_utils
-    monkeypatch.setattr(backend, "_KIND", backend.KIND_CPU)
-    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", True)
-    assert platform_utils.has_compute_gpu() is False
+    monkeypatch.setattr(neural_runtime, "_DEVICE", kind)
+    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", not expected)
+    assert platform_utils.has_compute_gpu() is expected
 
 
 def test_hardware_hint_does_not_wait_for_an_active_device_probe(monkeypatch):
+    from core import multi_focus_fusion
+    from fusion_methods import neural_runtime
     from utils import platform_utils
-    fake = _torch(cuda=FakeCuda(available=False), xpu=FakeXpu())
-    fake.version.xpu = "test"
-    monkeypatch.setitem(sys.modules, "torch", fake)
-    for name in ("is_macos", "is_windows", "is_linux"):
-        monkeypatch.setattr(platform_utils, name, lambda: False)
-    backend.reset_cache()
-    platform_utils.reset_gpu_probe_cache()
-    finished = threading.Event()
+
+    entered = threading.Event()
+    release = threading.Event()
     result = []
+    status = []
+    status_ready = threading.Event()
 
-    def query():
-        result.append(platform_utils.has_compute_gpu())
-        finished.set()
+    def blocked_options():
+        entered.set()
+        if not release.wait(5):
+            raise RuntimeError("probe was not released")
+        raise RuntimeError("provider unavailable")
 
-    thread = threading.Thread(target=query)
+    ort = types.SimpleNamespace(
+        get_available_providers=lambda: ["CUDAExecutionProvider"],
+        SessionOptions=blocked_options,
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", ort)
+    monkeypatch.setattr(neural_runtime, "_DEVICE", None)
+    monkeypatch.setattr(multi_focus_fusion, "_NEURAL_DEVICE_KIND", None)
+    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", True)
+    thread = threading.Thread(target=lambda: result.append(neural_runtime.resolve_device(True)))
+    query = threading.Thread(target=lambda: (status.append(platform_utils.cached_compute_gpu()),
+                                             status_ready.set()))
+    thread.start()
     try:
-        with backend._LOCK:
-            thread.start()
-            assert finished.wait(2), "GPU menu waited for the device probe"
-        assert result == [False]
+        assert entered.wait(5), "device probe did not start"
+        query.start()
+        assert status_ready.wait(2), "GPU status waited for the device probe"
+        assert status == [True]
     finally:
+        release.set()
         thread.join(timeout=5)
-        platform_utils.reset_gpu_probe_cache()
-        backend.reset_cache()
+        if query.ident is not None:
+            query.join(timeout=5)
+    assert not thread.is_alive()
+    assert result == ["CPU"]
+    assert platform_utils.cached_compute_gpu() is False
 
 
 @pytest.mark.parametrize("kind,label", [
-    ("ROCM", "ROCm"), ("XPU", "XPU"), ("MPS", "MPS"), ("CUDA", "CUDA"),
+    ("DIRECTML", "DirectML"), ("CUDA", "CUDA"), ("ROCM", "ROCm"),
+    ("OPENVINO", "OpenVINO GPU"), ("COREML", "CoreML"), ("CPU", "CPU"),
 ])
 def test_fusion_info_reports_the_backend_label(monkeypatch, kind, label):
     import core.multi_focus_fusion as mff
+    from fusion_methods import neural_runtime
+
     monkeypatch.setattr(mff, "is_ai_fusion_available", lambda: True)
-    monkeypatch.setattr(mff.torch_backend, "probe_kind",
-                        lambda import_if_needed=False: kind)
+    monkeypatch.setattr(neural_runtime, "_DIRECTML_ADAPTER_NAME", "")
+    monkeypatch.setattr(neural_runtime, '_DEVICE', kind)
+    monkeypatch.setattr(neural_runtime, "resolve_device", lambda use_gpu: kind)
     fusion = mff.MultiFocusFusion("stackmffv3", use_gpu=True)
     assert fusion.get_info()["device"] == label

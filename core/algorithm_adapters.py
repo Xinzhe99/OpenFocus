@@ -102,12 +102,17 @@ def depth_stackmffv2(images, progress_callback=None, should_cancel=None, **param
 
 
 def stackmffv2_needs_tiles(frames, threshold):
-    """V2 fuses the whole frame: its depth normalisation is global.
-
-    Splitting the image would normalise each tile independently and break the
-    mapping between neighbouring tiles, so admission rejects an oversized
-    whole-frame request instead of silently changing the fusion rule.
-    """
+    """Tile when geometry or the attention working set exceeds its budget."""
+    from core.multi_focus_fusion import _stack_footprint_exceeds
+    from core.resource_policy import ResourceLimitError
+    from fusion_methods.stackmff_v2 import _prepare_inference
+    h, w = frames[0].shape[:2]
+    if max(h, w) > threshold or _stack_footprint_exceeds(frames, threshold):
+        return True
+    try:
+        _prepare_inference(frames, None, False)
+    except ResourceLimitError:
+        return True
     return False
 
 

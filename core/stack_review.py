@@ -50,6 +50,8 @@ def analyze_frames(frames, cancel=None):
     results = []
     for index, frame in enumerate(frames):
         _check_cancel(cancel)
+        from core.source_frames import resolve_frame
+        frame = resolve_frame(frame)
         if previous is not None:
             difference = _difference(previous, frame, cancel)
             if difference is not None:

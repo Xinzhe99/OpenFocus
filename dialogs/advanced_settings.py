@@ -5,9 +5,10 @@ startup), not a tab book: the whole point is to see everything at once instead
 of hunting through four dialogs and a menu.
 """
 from PyQt6.QtCore import Qt
+from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
-    QLabel, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from constants import (
@@ -16,6 +17,7 @@ from constants import (
 )
 from core.algorithms import (registration_algorithms, registration_parameter_specs,
                              resolve_registration_parameters)
+from core.frame_storage import configure_storage_directory
 from locales import trans
 from utils.export_paths import prefix_output_name, valid_output_prefix
 from widgets.stepper import StepperSpinBox
@@ -34,6 +36,8 @@ def _section(parent_layout, title: str) -> QFormLayout:
     head.setFont(f)
     parent_layout.addWidget(head)
     form = QFormLayout()
+    form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
     form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
     form.setHorizontalSpacing(16)
     form.setVerticalSpacing(6)
@@ -96,6 +100,16 @@ class AdvancedSettingsDialog(QDialog):
             minimum=TILE_THRESHOLD_MIN, maximum=TILE_THRESHOLD_MAX, step=256,
             decimals=0, value=int(getattr(w, "tile_threshold", 2048)))
         perf.addRow(trans.t("advanced_tile_threshold"), self.spin_threshold)
+        storage_row = QWidget()
+        storage_layout = QHBoxLayout(storage_row)
+        storage_layout.setContentsMargins(0, 0, 0, 0)
+        self.storage_directory = QLineEdit(getattr(w, "storage_directory", ""))
+        self.storage_directory.setPlaceholderText(trans.t("advanced_storage_default"))
+        storage_layout.addWidget(self.storage_directory, 1)
+        browse = QPushButton(trans.t("advanced_storage_browse"))
+        browse.clicked.connect(self._browse_storage_directory)
+        storage_layout.addWidget(browse)
+        perf.addRow(trans.t("advanced_storage_directory"), storage_row)
         saved_threads = max(0, int(getattr(w, "thread_count", 0)))
         self.spin_threads = StepperSpinBox(
             minimum=0, maximum=max(256, saved_threads), step=1, decimals=0,
@@ -209,6 +223,15 @@ class AdvancedSettingsDialog(QDialog):
         auto_hint.setObjectName("mutedLabel")
         auto_hint.setWordWrap(True)
         other.addRow("", auto_hint)
+        self.chk_usage = QCheckBox()
+        self.chk_usage.setProperty("controlId", "chk_usage")
+        analytics = getattr(w, "usage_analytics", None)
+        self.chk_usage.setChecked(analytics.enabled() if analytics is not None else True)
+        other.addRow(trans.t("usage_enabled"), self.chk_usage)
+        usage_hint = QLabel(trans.t("usage_disclosure"))
+        usage_hint.setObjectName("mutedLabel")
+        usage_hint.setWordWrap(True)
+        other.addRow("", usage_hint)
 
         page_lay.addStretch()
         self.status = QLabel()
@@ -227,6 +250,12 @@ class AdvancedSettingsDialog(QDialog):
         buttons.accepted.connect(self._apply)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+    def _browse_storage_directory(self):
+        path = FileDialog.getExistingDirectory(
+            self, trans.t("advanced_storage_browse"), self.storage_directory.text())
+        if path:
+            self.storage_directory.setText(path)
 
     def _sync_overlap_limit(self, block: float) -> None:
         """Keep the dialog's overlap cap in step with the chosen tile size.
@@ -285,6 +314,7 @@ class AdvancedSettingsDialog(QDialog):
             "ask_load_scale": self.chk_ask_scale.isChecked(),
             "defect_mask_path": self.sensor_cleanup.path.text().strip(),
             "sensor_denoise": self.sensor_cleanup.denoise.isChecked(),
+            "storage_directory": self.storage_directory.text().strip(),
         }
         failure_policy = self.combo_align_failure.currentData()
         if failure_policy != self._initial_align_failure:
@@ -301,6 +331,13 @@ class AdvancedSettingsDialog(QDialog):
         previous = {key: getattr(w, key, None) for key in draft}
         manager = getattr(w, "update_manager", None)
         previous_auto = manager.auto_download if manager is not None else None
+        previous_storage = getattr(w, "storage_directory", "") or ""
+        try:
+            configure_storage_directory(draft["storage_directory"])
+        except OSError as exc:
+            self.status.setText(trans.t("advanced_storage_invalid").format(error=str(exc)))
+            self.storage_directory.setFocus()
+            return
         try:
             if manager is not None:
                 manager.set_auto_download(self.chk_auto_update.isChecked())
@@ -315,6 +352,7 @@ class AdvancedSettingsDialog(QDialog):
             if hasattr(w, "persist_settings"):
                 w.persist_settings()
         except Exception as exc:
+            configure_storage_directory(previous_storage)
             for key, value in previous.items():
                 setattr(w, key, value)
             if "_registration_parameters_by_method" in draft:
@@ -330,7 +368,14 @@ class AdvancedSettingsDialog(QDialog):
                 pass
             self.status.setText(str(exc))
             return
-        processing = set(draft) - {"restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report"}
+        analytics = getattr(w, "usage_analytics", None)
+        if analytics is not None and analytics.enabled() != self.chk_usage.isChecked():
+            analytics.set_enabled(self.chk_usage.isChecked())
+        from utils.logging_setup import log_action
+        log_action("settings.applied", changed=sorted(
+            key for key in draft if previous[key] != draft[key]),
+            usage_enabled=self.chk_usage.isChecked())
+        processing = set(draft) - {"restore_last_stack", "ask_load_scale", "output_name_prefix", "collect_alignment_report", "storage_directory"}
         if any(previous[key] != draft[key] for key in processing):
             mark_dirty = getattr(w, "_mark_project_dirty", None)
             if mark_dirty is not None:

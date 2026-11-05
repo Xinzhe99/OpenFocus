@@ -60,6 +60,8 @@ Das CLI-Äquivalent lautet beispielsweise `python main.py --input ./png-stack --
 
 ### Unterstützte Ausgabeformate
 
+Unter **Speichern unter** speichert gewöhnliches TIFF das Ergebnis als einzelnes Bild; TIFF mit Ebenen enthält die Quellbilder als Ebenen. Linear DNG wird immer angezeigt, kann aber nur mit einem kameralinearen Ergebnis ohne eingebrannte Bearbeitungen aus **Natives RAW öffnen** mit Kamerakalibrierung gespeichert werden.
+
 - Einzelne Bilder: JPG, PNG, BMP, TIFF, WebP
 - Bildsequenzen: als Ordner gespeichert
 - Animationen: GIF-Format
@@ -441,29 +443,31 @@ OpenFocus bietet zehn Fusionsalgorithmen plus einen reinen Ausrichtungsmodus. Ei
 
 ### StackMFF (V1, Deep Learning)
 
-- **Algorithmus**: ein 3D-U-Net, das die fusionierte Luma des gesamten Stapels in einem Durchlauf vorhersagt; Cb/Cr stammen aus dem Quellbild, das dieser Luma am nächsten liegt
+- **Algorithmus**: Ein einschaliges Attention-Netz mischt die Luma der Quellbilder mit Softmax-Gewichten; Cb/Cr stammen aus dem Quellbild, dessen Luma der fusionierten Luma am nächsten liegt
 - **Am besten für**: neuronale Fusion eines vollständigen Fokusstapels
-- **Vorteile**: keine Parameter, Farben bleiben im Gamut; die Bildreihenfolge kann das Ergebnis beeinflussen
-- **Hinweis**: 6 Mio. Parameter; große Stapel profitieren von einer GPU
+- **Vorteile**: keine Parameter, Farben bleiben im Gamut; die fusionierte Luma ist unabhängig von der Bildreihenfolge, die Chrominanz kann bei gleichem Luma-Abstand abweichen
+- **Hinweis**: etwa 156.172 Parameter; große Stapel profitieren von einer GPU
 
 ### StackMFF V2 (Deep Learning)
 
-- **Algorithmus**: Fokusschätzung pro Ebene, verfeinert durch eine bidirektionale rekurrente Schicht; das Netz regressiert den Fokusindex und tastet den Stapel ab. **Die Bilder müssen in ihrer ursprünglichen Fokusreihenfolge bleiben** – Umkehren ist deaktiviert
+- **Algorithmus**: Ein einschaliges Attention-Netz normalisiert die erwartete Fokustiefe und tastet das nächste Quellbild ab. Tiefenindizes hängen von der Stapelreihenfolge ab. **Die Bilder müssen in ihrer ursprünglichen Fokusreihenfolge bleiben** – Umkehren ist deaktiviert
 - **Tiefenkarten**: unterstützt; meldet die abgetastete Fokusebene
 - **Am besten für**: kontinuierliche Fokusserien mit sehr kleinem, schnellem Modell
-- **Voraussetzungen**: PyTorch; etwa 0,05 Mio. Parameter; keine Einstellungen
+- **Voraussetzungen**: ONNX Runtime und das mitgelieferte ONNX-Modell.
 
 ### StackMFF V3 (Deep Learning)
 
-- **Algorithmus**: pixelweise Quellklassifikation (erfordert PyTorch). Das Netzwerk sagt für jedes Pixel voraus, aus welchem Eingabebild es stammt, und mischt dann die Bilder entsprechend diesen Wahrscheinlichkeiten oder wählt ein Bild aus
+- **Algorithmus**: pixelweise Quellklassifikation (ONNX Runtime). Das Netzwerk sagt für jedes Pixel voraus, aus welchem Eingabebild es stammt, und mischt dann die Bilder entsprechend diesen Wahrscheinlichkeiten oder wählt ein Bild aus
 - **KI-Ausgabe** (rechter Bereich, nur für diese Methode):
   - **Weiche Mischung (gewichtet)** – Standard; jedes Pixel ist eine wahrscheinlichkeitsgewichtete Mischung der Bilder. Weiche Übergänge, keine harten Nähte; entspricht der im Paper beschriebenen Konfiguration
   - **Harte Auswahl (einzelnes Bild)** – jedes Pixel wird aus dem wahrscheinlichsten Bild kopiert. Schärfere Auswahl ohne Interpolation zwischen den Bildern; wo zwei Bilder gleichauf liegen, kann eine Naht auf Pixelebene entstehen
 - **Am besten für**: höchste Qualität, wenn eine GPU verfügbar ist
-- **Vorteile**: reihenfolgeunabhängig (die Bildreihenfolge ändert das Ergebnis nie), beliebige Stapellänge, keine methodenspezifische Abstimmung, automatische Optimierung
-- **Voraussetzungen**: PyTorch-Installation, optional CUDA-GPU (kein torchvision)
-- **Hinweis**: Möglicherweise nicht verfügbar, wenn PyTorch nicht installiert ist
-- **Standard**: Ohne gespeicherte Auswahl startet eine neue Sitzung mit StackMFF V3. Ist PyTorch nicht verfügbar, meldet OpenFocus das und bietet eine andere Methode an.
+- **Vorteile**: reihenfolgeunabhängig (die Bildreihenfolge ändert das Ergebnis nie), Stapellängen innerhalb der verfügbaren Ressourcen, keine methodenspezifische Abstimmung, automatische Optimierung
+- **Voraussetzungen**: ONNX Runtime und das mitgelieferte ONNX-Modell.
+
+Jede neuronale Kachel verwendet alle Bilder. Quelldaten und Ausrichtungsdaten können auf der Festplatte liegen; freier Speicherplatz und Arbeitsspeicher begrenzen die Stapelgröße. Räumliche V2-Kachelung nähert die Berechnung des Gesamtbilds an.
+
+- **Standard**: StackMFF V3.
 
 ### OpenFocus A / B / C
 
@@ -509,7 +513,7 @@ CLI: `--depth-smoothing VALUE` (B) und `--blend-smoothing VALUE` (A, C).
 | DCT | Mittel | Gut | Texturen |
 | DTCWT | Mittel | Sehr gut | Komplexe Szenen |
 | GFG-FGF | Schnell | Gut | Fokusbereiche |
-| StackMFF (V1) | Langsam (GPU) | Hier nicht bewertet | Neuronale Stapelfusion; Reihenfolge kann das Ergebnis beeinflussen |
+| StackMFF (V1) | Langsam (GPU) | Hier nicht bewertet | Luma unabhängig von der Reihenfolge; Chrominanz kann bei gleichem Luma-Abstand abweichen |
 | StackMFF V2 | Schnell (GPU) | Hier nicht bewertet | Kontinuierliche Fokusserien mit einem winzigen Modell |
 | StackMFF V3 | Langsam (GPU) | Hervorragend | Beste Qualität |
 | OpenFocus A | Abhängig vom Stapel | Abhängig vom Stapel | Mehrskalige Fokusauswahl |
@@ -576,7 +580,7 @@ Die Fusion kann örtliche Fehler hinterlassen – einen Halo an einer kontrastre
 5. **Tab** gedrückt halten, um das Ergebnis vor dieser Sitzung zu sehen, und **Alt**, um einen Blick auf das Quellbild zu werfen. Die Schärfereferenz ist optional, deckt nur die Quellleinwand ab und verwendet einen gemeinsamen Maßstab für alle Bilder.
 6. `Ctrl+Z` / `Ctrl+Y` machen ganze Striche rückgängig bzw. wiederholen sie. **Alles wiederherstellen…** ist ein rückgängig machbarer Schritt. **Als neue Ausgabe übernehmen** fügt einen Eintrag namens `<Name> · Retuschiert N` hinzu und wählt ihn aus; das Original bleibt unverändert. Der neue Eintrag ist als *Nicht exportiert* markiert, bis Sie ihn im Hauptfenster exportieren, und OpenFocus schützt ihn vor automatischer Verdrängung aus dem Verlauf und vor dem Beenden ohne Entscheidung.
 
-Die Retusche als neue Ausgabe übernehmen und dann im Hauptfenster mit der rechten Maustaste auf diese Ausgabe **TIFF mit Ebenen exportieren…** wählen, um sie zusammen mit ihren Quellbildern zu speichern. Live-Beschriftungen und Maßstabsbalken sind nicht enthalten; ungespeicherte Anmerkungsänderungen bleiben geschützt. Quellgeometrie und Gültigkeitsmasken bleiben erhalten. Ergebnis und Quellen müssen undurchsichtige RGB- oder Graustufenbilder mit übereinstimmender 8- oder 16-Bit-Tiefe sein, und jedes Quellrechteck muss in das Ergebnis passen. Der Export unterstützt bis zu 128 Quellen; Quellnamen sind auf 255 Zeichen begrenzt und dürfen weder NUL noch Zeichen außerhalb der Basic Multilingual Plane enthalten, etwa viele Emojis. Unsichere Kontexte und Aufträge, die voraussichtlich mehr als 512 MiB Arbeitsspeicher oder das verfügbare RAM-Budget überschreiten, werden abgelehnt und der Fehler gemeldet, statt einen unvollständigen Export zu schreiben. GIMP 3.2.6 unter Windows importiert die 8- und 16-Bit-Ebenen einschließlich ihrer Versätze und der transparenten Registrierungsfüllung. Das Ergebnis ist sichtbar, die Quell-Ebenen sind ausgeblendet; GIMP fügt außerdem eine sichtbare Hintergrund-Ebene hinzu. Andere Editoren wurden nicht geprüft.
+Die Retusche als neue Ausgabe übernehmen, diese auswählen und **Speichern unter** öffnen. In der Formatliste TIFF mit Ebenen wählen, um das Ergebnis zusammen mit seinen Quellbildern zu speichern. Live-Beschriftungen und Maßstabsbalken sind nicht enthalten; ungespeicherte Anmerkungsänderungen bleiben geschützt. Quellgeometrie und Gültigkeitsmasken bleiben erhalten. Ergebnis und Quellen müssen undurchsichtige RGB- oder Graustufenbilder mit übereinstimmender 8- oder 16-Bit-Tiefe sein, und jedes Quellrechteck muss in das Ergebnis passen. Der Export unterstützt bis zu 128 Quellen; Quellnamen sind auf 255 Zeichen begrenzt und dürfen weder NUL noch Zeichen außerhalb der Basic Multilingual Plane enthalten, etwa viele Emojis. Unsichere Kontexte und Aufträge, die voraussichtlich mehr als 512 MiB Arbeitsspeicher oder das verfügbare RAM-Budget überschreiten, werden abgelehnt und der Fehler gemeldet, statt einen unvollständigen Export zu schreiben. GIMP 3.2.6 unter Windows importiert die 8- und 16-Bit-Ebenen einschließlich ihrer Versätze und der transparenten Registrierungsfüllung. Das Ergebnis ist sichtbar, die Quell-Ebenen sind ausgeblendet; GIMP fügt außerdem eine sichtbare Hintergrund-Ebene hinzu. Andere Editoren wurden nicht geprüft.
 
 Für eine lokale Tonwertkorrektur **Belichtungspinsel** wählen, den Betrag in Hundertstel Blendenstufen einstellen (100 verdoppelt die Pixelwerte, −100 halbiert sie) und auf das Ergebnis malen. Die Vorschau aktualisiert sich während des Malens. Jeder Strich passt das aktuelle Ergebnis einmal an, auch wo sich seine Tupfer überlappen; ein weiterer Strich baut darauf auf. Pinseldeckkraft und -härte steuern die Mischung. Lichter können beim Aufhellen beschneiden. **Vorher** gedrückt halten, um mit dem Ergebnis beim Öffnen zu vergleichen, während eines Strichs **Esc** drücken, um ihn abzubrechen, oder nach dem Strich rückgängig machen und wiederholen. Das sind Pixelbearbeitungen, keine anpassbaren Ebenen. Als neue Ausgabe übernehmen und den neuen Eintrag exportieren, um die bearbeiteten Pixel zu speichern; ein Projekt speichert diese Pixel nicht.
 
@@ -678,7 +682,7 @@ Der Planer berücksichtigt physische Kerne, CPU-Affinität und Kontingente und f
 
 ### GPU-Beschleunigung
 
-OpenFocus nutzt die GPU (CUDA/MPS) nur für die neuronalen KI-Modelle (StackMFF V1/V2/V3); klassische Algorithmen und die Registrierung der Anwendung laufen auf der CPU. Die ausdrückliche CuPy-Registrierung auf niedriger Ebene ist ein separates numerisches Backend.
+StackMFF V1/V2/V3 nutzen ONNX Runtime. DirectML unter Windows und CoreML unter macOS können die Inferenz beschleunigen; andernfalls wird die CPU verwendet. Die Verfügbarkeit eines Providers belegt keine GPU-Ausführung. Weitere GPU-Unterstützung muss validiert werden.
 
 - Umschalten über **Einstellungen → GPU-Beschleunigung**
 - Deaktivieren zwingt die neuronalen Methoden auf die CPU – nützlich, wenn GPU-Treiber Probleme bereiten
@@ -800,7 +804,7 @@ Werden Ergebnisse aus der Ausgabeliste herausgezogen, entstehen Bilddateien im F
 - **BMP**: unkomprimiert, wandelt 16-Bit-Bilddaten in 8 Bit um
 - **TIFF**: erhält 8- und 16-Bit-Daten; der mehrseitige Export bewahrt den gesamten Stapel in einer Datei
 - **GIF**: Animation mit 8-Bit-Palette; ein Abbruch lässt ein vorhandenes Ziel unverändert
-- **TIFF mit Ebenen**: über das Kontextmenü einer retuschierten Ausgabe; speichert Ergebnis und Quellbilder mit Geometrie und Gültigkeitsmasken
+- **TIFF mit Ebenen**: in der Formatliste von **Speichern unter**; speichert Ergebnis und Quellbilder mit Geometrie und Gültigkeitsmasken
 
 ---
 
@@ -1009,8 +1013,7 @@ Exit-Codes: `0` Erfolg, `1` Verarbeitungsfehler, `2` Nutzungsfehler. Der Aufruf 
 
 #### KI nicht verfügbar
 
-- PyTorch installieren: `pip install torch` (torchvision wird nicht benötigt)
-- Für GPU-Unterstützung eine CUDA-fähige PyTorch-Version installieren
+- Prüfen Sie ONNX Runtime und das mitgelieferte Modell.
 - Über **Hilfe → Umgebungsinformationen** prüfen
 
 #### Fehler wegen zu wenig Arbeitsspeicher

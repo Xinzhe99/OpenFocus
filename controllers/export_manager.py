@@ -6,7 +6,8 @@ from typing import Any, Optional
 
 import cv2
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog, QInputDialog
+from utils.file_dialogs import FileDialog
+from PyQt6.QtWidgets import QMessageBox, QProgressDialog, QInputDialog
 
 from dialogs import DurationDialog
 from ui import styles as ui_styles
@@ -21,6 +22,8 @@ from locales import trans
 from utils.image_utils import imwrite_auto
 from utils import scalebar
 from utils.export_paths import create_stack_directory, frame_export_name, unique_path
+from core.source_frames import resolve_frame, materialize_frames
+from utils.frame_pixels import run_pixel_worker
 
 ALLOWED_EXPORT_EXTENSION_MAP = {
     ".png": ".png",
@@ -78,8 +81,13 @@ class LayeredTiffWorker(QThread):
     def run(self):
         try:
             from utils.layered_tiff import export_layered_tiff, _preflight
-            image, context = self.image, self.context
+            image = resolve_frame(self.image)
+            originals = materialize_frames((frame.image for frame in self.context.frames),
+                                           should_cancel=self._cancelled.is_set)
+            context = replace(self.context, frames=tuple(
+                replace(frame, image=pixels) for frame, pixels in zip(self.context.frames, originals)))
             metadata = getattr(context, 'linear_dng_metadata', None)
+            profile = self.icc_profile
             if metadata is not None:
                 _preflight(image, context, self.icc_profile, self._cancelled.is_set)
                 from core.resource_policy import require_memory
@@ -97,15 +105,20 @@ class LayeredTiffWorker(QThread):
                                + len(self.icc_profile) * 2 + 16 * 1024 * 1024,
                                user_limit=MAX_WORKING_BYTES)
                 from utils.linear_dng import develop_linear
+                from utils.image_utils import srgb_icc_profile
+                profile = srgb_icc_profile()
                 image = develop_linear(image, metadata)
+                developed = materialize_frames((develop_linear(frame.image, metadata)
+                                                for frame in context.frames),
+                                               should_cancel=self._cancelled.is_set)
                 context = replace(context, frames=tuple(
-                    replace(frame, image=develop_linear(frame.image, metadata))
-                    for frame in context.frames), linear_dng_metadata=None)
+                    replace(frame, image=pixels) for frame, pixels in zip(context.frames, developed)),
+                    linear_dng_metadata=None)
             export_layered_tiff(self.path, image, context,
-                                icc_profile=self.icc_profile,
+                                icc_profile=profile,
                                 cancelled=self._cancelled.is_set)
         except Exception as exc:  # Errors must reach the GUI thread.
-            if self._cancelled.is_set() and str(exc) == 'Layered export cancelled':
+            if self._cancelled.is_set():
                 self.completed.emit(False, '')
             else:
                 self.completed.emit(False, str(exc) or type(exc).__name__)
@@ -247,22 +260,13 @@ class ExportManager:
         folder = item.data(ALIGNED_DIR_ROLE)
         return folder if folder and os.path.isdir(folder) else None
 
-    def export_layered_tiff(self, item=None) -> None:
+    def export_layered_tiff(self, record, original, path) -> None:
         window = self.window
         if self.layered_worker is not None:
             return
-        if item is None:
-            item = window.output_list.currentItem()
-        record = window.output_manager.record_for_item(item)
         if record is None or not record.retouchable:
             show_warning_box(window, trans.t('action_export_layered_tiff'),
                              trans.t('layered_tiff_no_source'))
-            return
-        default = self.filename_from_label(record.label) + '.tif'
-        path, _ = QFileDialog.getSaveFileName(
-            window, trans.t('action_export_layered_tiff'), default,
-            'TIFF (*.tif *.tiff)')
-        if not path:
             return
         root, ext = os.path.splitext(path)
         if not ext:
@@ -289,7 +293,7 @@ class ExportManager:
         worker = LayeredTiffWorker(path, record.image, record.context,
                                    record.icc_profile or record.context.icc_profile)
         self.layered_worker = worker
-        self._layered_record = record
+        self._layered_record = original
         progress.canceled.connect(self._cancel_layered_tiff)
         worker.completed.connect(self._layered_tiff_completed)
         worker.finished.connect(self._layered_tiff_finished)
@@ -376,10 +380,9 @@ class ExportManager:
         if not default_filename:
             default_filename = self.generate_default_filename()
         filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;'
-                   'JPG 8-bit (*.jpg);;BMP 8-bit (*.bmp);;WebP 8-bit (*.webp)')
-        if metadata is not None:
-            filters += ';;' + trans.t('linear_dng_filter')
-        file_path, selected_filter = QFileDialog.getSaveFileName(
+                   'JPG 8-bit (*.jpg);;BMP 8-bit (*.bmp);;WebP 8-bit (*.webp);;'
+                   + trans.t('linear_dng_filter'))
+        file_path, selected_filter = FileDialog.getSaveFileName(
             window, title, default_filename, filters)
 
         if not file_path:
@@ -387,11 +390,13 @@ class ExportManager:
 
         try:
             file_path = self.normalize_export_path(file_path, selected_filter=selected_filter)
-            from utils.logging_setup import log_action
+            from utils.logging_setup import log_action, log_operation
             log_action('export_image', path=file_path)
             if os.path.splitext(file_path)[1].lower() == '.dng':
                 if metadata is None:
-                    raise ValueError(trans.t('linear_dng_export_failed'))
+                    show_warning_box(window, trans.t('linear_dng_filter'),
+                                     trans.t('linear_dng_requires_raw'))
+                    return
                 from controllers.output_manager import OutputRecord
                 record = OutputRecord.create(result_to_save, default_filename)
                 record.linear_dng_metadata = metadata
@@ -399,16 +404,28 @@ class ExportManager:
                     record, None, file_path, labels,
                     px_size_um=scalebar.effective_px_um(window))
                 return
-            if metadata is not None:
-                from utils.linear_dng import develop_linear
-                result_to_save = develop_linear(result_to_save, metadata)
-            if result_to_save.ndim == 3 and result_to_save.shape[2] == 4 and os.path.splitext(file_path)[1].lower() != '.png':
-                raise ValueError(trans.t('transparent_desktop_unsupported').format(path=file_path))
-            image_to_save = labels.prepare_bgr_image('output', result_to_save, 0)
-            ext = os.path.splitext(file_path)[1].lower()
-            params = get_imwrite_params(ext)
             profile = getattr(getattr(window, 'last_render_context', None), 'icc_profile', b'')
-            if imwrite_auto(file_path, scalebar.burn(image_to_save, cfg), params, exif=b'', icc_profile=profile):
+            def write_result():
+                image = resolve_frame(result_to_save)
+                icc = profile
+                if metadata is not None:
+                    from utils.linear_dng import develop_linear
+                    from utils.image_utils import srgb_icc_profile
+                    image = develop_linear(image, metadata)
+                    icc = srgb_icc_profile()
+                ext = os.path.splitext(file_path)[1].lower()
+                if image.ndim == 3 and image.shape[2] == 4 and ext != '.png':
+                    raise ValueError(trans.t('transparent_desktop_unsupported').format(path=file_path))
+                image = labels.prepare_bgr_image('output', image, 0)
+                with log_operation("export_image_write", path=file_path, extension=ext,
+                                   shape=image.shape, dtype=str(image.dtype)) as operation:
+                    written = imwrite_auto(file_path, scalebar.burn(image, cfg), get_imwrite_params(ext),
+                                           exif=b'', icc_profile=icc)
+                    if not written:
+                        operation.fail()
+                    return written
+            self._safe_export_path(file_path)
+            if run_pixel_worker(window, trans.t('action_save'), write_result):
                 # Non-blocking confirmation (errors still get a dialog)
                 window.statusBar().showMessage(
                     trans.t("msg_image_saved_info").format(path=file_path).replace("\n", " "),
@@ -422,6 +439,8 @@ class ExportManager:
                     QMessageBox.Icon.Critical,
                 )
         except cv2.error as exc:
+            from utils.logging_setup import get_logger
+            get_logger(__name__).exception("Image export failed: %s", file_path)
             show_message_box(
                 window,
                 trans.t("msg_save_failed_title"),
@@ -430,6 +449,8 @@ class ExportManager:
                 QMessageBox.Icon.Critical,
             )
         except Exception as exc:  # pylint: disable=broad-except
+            from utils.logging_setup import get_logger
+            get_logger(__name__).exception("Image export failed: %s", file_path)
             show_message_box(
                 window,
                 trans.t("msg_save_failed_title"),
@@ -467,9 +488,9 @@ class ExportManager:
         cfg = scalebar.export_cfg(window, target=target, record=record) if annotate else None
         base = destination
         if base is None:
-            base = QFileDialog.getExistingDirectory(
+            base = FileDialog.getExistingDirectory(
                 window, trans.t('output_save_aligned_title'),
-                getattr(window, 'current_folder_path', '') or '', QFileDialog.Option.ShowDirsOnly)
+                getattr(window, 'current_folder_path', '') or '', FileDialog.Option.ShowDirsOnly)
             if not base:
                 return None
             extension, accepted = QInputDialog.getItem(
@@ -486,42 +507,50 @@ class ExportManager:
             folder_name += '_processed'
         directory = create_stack_directory(base, self.filename_from_label(folder_name))
         failures = []
-        saved = 0
         from core.image_loader import stack_icc_profile
         exif = (b'' if baked else getattr(getattr(window, 'image_loader', None), 'source_exif', b''))
         profile = (getattr(record, 'icc_profile', b'') if record is not None else
                    stack_icc_profile(window))
         metadata = (getattr(record, 'linear_dng_metadata', None) if record is not None
                     else getattr(window, 'linear_dng_metadata', None))
-        for index, frame in enumerate(frames):
-            name = frame_export_name(filenames[index] if index < len(filenames) else '', index, extension)
-            path = unique_path(os.path.join(directory, name))
-            try:
-                if baked and not extension:
-                    import shutil
-                    shutil.copy2(frame, path)
+        if metadata is not None and not baked:
+            from utils.image_utils import srgb_icc_profile
+            profile = srgb_icc_profile()
+        def write_frames():
+            saved = 0
+            for index, frame in enumerate(frames):
+                name = frame_export_name(filenames[index] if index < len(filenames) else '', index, extension)
+                path = unique_path(os.path.join(directory, name))
+                try:
+                    if baked and not extension:
+                        import shutil
+                        shutil.copy2(frame, path)
+                        saved += 1
+                        continue
+                    image = _read_image_any(frame) if baked else resolve_frame(frame)
+                    if image is None:
+                        raise OSError(f'Cannot read {frame}')
+                    if metadata is not None and not baked:
+                        from utils.linear_dng import develop_linear
+                        image = develop_linear(image, metadata)
+                    if image.ndim == 3 and image.shape[2] == 4 and extension != 'png':
+                        raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
+                    if labels is not None:
+                        image = labels.prepare_bgr_image(target, image, index)
+                        image = scalebar.burn(image, cfg)
+                    frame_exif, frame_profile = exif, profile
+                    if baked:
+                        from core.image_loader import _read_exif_bytes, _read_icc_profile
+                        frame_exif = _read_exif_bytes(frame)
+                        frame_profile = _read_icc_profile(frame)
+                    if not imwrite_auto(path, image, get_imwrite_params('.' + extension.lower()),
+                                        exif=frame_exif, icc_profile=frame_profile):
+                        raise OSError(trans.t('msg_save_failed_info_write'))
                     saved += 1
-                    continue
-                image = _read_image_any(frame) if baked else frame
-                if image is None:
-                    raise OSError(f'Cannot read {frame}')
-                if metadata is not None and not baked:
-                    from utils.linear_dng import develop_linear
-                    image = develop_linear(image, metadata)
-                if image.ndim == 3 and image.shape[2] == 4 and extension != 'png':
-                    raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
-                if labels is not None:
-                    image = labels.prepare_bgr_image(target, image, index)
-                    image = scalebar.burn(image, cfg)
-                if baked:
-                    from core.image_loader import _read_exif_bytes, _read_icc_profile
-                    exif = _read_exif_bytes(frame)
-                    profile = _read_icc_profile(frame)
-                if not imwrite_auto(path, image, get_imwrite_params('.' + extension.lower()), exif=exif, icc_profile=profile):
-                    raise OSError(trans.t('msg_save_failed_info_write'))
-                saved += 1
-            except Exception as exc:
-                failures.append(f'{path}: {exc}')
+                except Exception as exc:
+                    failures.append(f'{path}: {exc}')
+            return saved
+        saved = run_pixel_worker(window, trans.t('action_save'), write_frames)
         if failures:
             show_message_box(window, trans.t('msg_save_failed_title'),
                              trans.t('msg_stack_saved_info').format(saved=saved, total=len(frames), folder=directory),
@@ -575,7 +604,7 @@ class ExportManager:
 
         duration_ms = duration_dialog.get_duration()
         default_filename = self.generate_default_filename() + ".gif"
-        file_path, _ = QFileDialog.getSaveFileName(
+        file_path, _ = FileDialog.getSaveFileName(
             window,
             trans.t('action_save') + ' GIF · 8-bit',
             default_filename,
@@ -684,7 +713,7 @@ class ExportManager:
             window, target='source' if label_target == 'input' else 'registered', record=record)
 
         from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
-        file_path, _ = QFileDialog.getSaveFileName(
+        file_path, _ = FileDialog.getSaveFileName(
             window, trans.t("action_save_multipage_tiff"),
             os.path.join(get_last_dialog_dir() or os.path.expanduser("~"), default_name),
             "Multi-page TIFF (*.tif *.tiff)")
@@ -698,21 +727,16 @@ class ExportManager:
             metadata = (getattr(record, 'linear_dng_metadata', None) if record is not None
                         else getattr(window, 'linear_dng_metadata', None))
             self._safe_export_path(file_path)
-            labeled = []
-            for i, img in enumerate(images):
-                if metadata is not None:
-                    from utils.linear_dng import develop_linear
-                    img = develop_linear(img, metadata)
-                if not baked:
-                    img = scalebar.burn(labels.prepare_bgr_image(label_target, img, i), cfg)
-                labeled.append(img)
-            from utils.image_utils import imwrite_multi_tiff
-            if imwrite_multi_tiff(file_path, labeled):
+            from utils.image_utils import srgb_icc_profile
+            profile = srgb_icc_profile() if metadata is not None else b''
+            if run_pixel_worker(window, trans.t('action_save_multipage_tiff'),
+                                lambda: _write_lazy_multipage_tiff(
+                                    file_path, images, labels, label_target, cfg, metadata, profile)):
                 show_success_box(
                     window, trans.t("msg_success"),
                     trans.t("msg_multipage_saved_text"),
                     trans.t("msg_multipage_saved_info").format(
-                        count=len(labeled), path=file_path))
+                        count=len(images), path=file_path))
             else:
                 show_error_box(window, trans.t("msg_save_failed_title"),
                                trans.t("msg_save_failed_text"),
@@ -727,6 +751,40 @@ class ExportManager:
             show_warning_box(window, trans.t('msg_no_images_title'), trans.t('msg_no_images_save_stack_text'))
             return
         self._save_frames_as(window.raw_images, window.image_filenames, 'input')
+
+
+def _write_lazy_multipage_tiff(path, frames, labels, target, cfg, metadata=None, profile=b''):
+    """Write one original at a time, retaining no decoded stack in memory."""
+    import tempfile
+    import tifffile
+    from core.image_loader import _has_transparency
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, temporary = tempfile.mkstemp(suffix='.tif', dir=directory)
+    os.close(fd)
+    try:
+        total = sum(frame.nbytes for frame in frames)
+        with tifffile.TiffWriter(temporary, bigtiff=total >= 2**32 - 2**25) as writer:
+            for index, frame in enumerate(frames):
+                image = resolve_frame(frame)
+                if metadata is not None:
+                    from utils.linear_dng import develop_linear
+                    image = develop_linear(image, metadata)
+                if _has_transparency(image):
+                    raise ValueError(trans.t('transparent_desktop_unsupported').format(path=path))
+                if labels is not None:
+                    image = scalebar.burn(labels.prepare_bgr_image(target, image, index), cfg)
+                rgb = image.ndim == 3 and image.shape[2] == 3
+                if rgb:
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                tags = [(34675, 'B', len(profile), profile, False)] if profile else []
+                writer.write(image, photometric='rgb' if rgb else 'minisblack',
+                             metadata=None, extratags=tags)
+                del image
+        os.replace(temporary, path)
+        return True
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _read_image_any(path: str):

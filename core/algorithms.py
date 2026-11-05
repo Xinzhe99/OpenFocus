@@ -56,7 +56,7 @@ class FusionAlgorithm:
     # Repo-relative checkpoint a neural back-end loads when the caller does not
     # pass model_path. Keeps V3 and the older StackMFF models independent.
     weights: str | None = None
-    # The stack's own focus order carries meaning (a recurrent model reads it);
+    # The stack's focus order determines positional depth semantics;
     # reverse/dir-order controls must not reorder the frames.
     order_sensitive: bool = False
     # UI grouping: 'ai', 'spatial' or 'transform'. Contributing methods declare
@@ -186,8 +186,8 @@ def register_fusion(spec):
         if (not isinstance(spec.weights, str)
                 or not spec.weights.startswith('weights/')
                 or spec.weights.count('/') != 1
-                or not spec.weights.split('/', 1)[1].endswith('.pth')):
-            raise ValueError('weights must be weights/<file>.pth')
+                or not spec.weights.split('/', 1)[1].endswith('.onnx')):
+            raise ValueError('weights must be weights/<file>.onnx')
     _path(spec.runner)
     for hook in (spec.environment, spec.resource_estimator, spec.roi, spec.tile_decider,
                  spec.tile_runner, spec.depth_planner):
@@ -322,9 +322,9 @@ _ADAPTER = 'core.algorithm_adapters:'
 _ALIGN_FAILURE = ParameterSpec('failure_policy', 'label_align_failure_policy', 'continue', choices=('continue', 'fail'), choice_labels=('align_failure_continue', 'align_failure_fail'))
 _FUSION_CLASS = 'core.multi_focus_fusion:MultiFocusFusion.'
 
-register_fusion(FusionAlgorithm('stackmffv3', 'radio_stackmff', 'StackMFF V3', 'StackMFFV3', _FUSION_CLASS + '_fuse_stackmffv3', (_MODE,), DepthSpec(_ADAPTER + 'depth_neural', (_MODE,)), hint_key='radio_stackmff_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, roi=_ADAPTER + 'roi_neural', promotes_color=True, tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_ai_batched', depth_planner='core.depth_map:_plan_neural_depth', weights='weights/stackmff_v3_final.pth', category='ai'))
-register_fusion(FusionAlgorithm('stackmffv2', 'radio_stackmff_v2', 'StackMFF V2', 'StackMFFV2', _FUSION_CLASS + '_fuse_stackmffv2', (), DepthSpec(_ADAPTER + 'depth_stackmffv2', ()), hint_key='radio_stackmff_v2_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, order_sensitive=True, promotes_color=True, tile_decider=_ADAPTER + 'stackmffv2_needs_tiles', depth_planner='core.depth_map:_plan_stackmffv2_depth', weights='weights/stackmff_v2_final.pth', category='ai'))
-register_fusion(FusionAlgorithm('stackmff', 'radio_stackmff_v1', 'StackMFF', 'StackMFF', _FUSION_CLASS + '_fuse_stackmff', (), hint_key='radio_stackmff_v1_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, promotes_color=True, tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_stackmff', weights='weights/stackmff_final.pth', category='ai'))
+register_fusion(FusionAlgorithm('stackmffv3', 'radio_stackmff', 'StackMFF V3', 'StackMFFV3', _FUSION_CLASS + '_fuse_stackmffv3', (_MODE,), DepthSpec(_ADAPTER + 'depth_neural', (_MODE,)), hint_key='radio_stackmff_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, roi=_ADAPTER + 'roi_neural', promotes_color=True, tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_ai_batched', depth_planner='core.depth_map:_plan_neural_depth', weights='weights/stackmff_v3_final.onnx', category='ai'))
+register_fusion(FusionAlgorithm('stackmffv2', 'radio_stackmff_v2', 'StackMFF V2', 'StackMFFV2', _FUSION_CLASS + '_fuse_stackmffv2', (), DepthSpec(_ADAPTER + 'depth_stackmffv2', ()), hint_key='radio_stackmff_v2_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, order_sensitive=True, promotes_color=True, tile_decider=_ADAPTER + 'stackmffv2_needs_tiles', depth_planner='core.depth_map:_plan_stackmffv2_depth', weights='weights/stackmff_v2_final.onnx', category='ai'))
+register_fusion(FusionAlgorithm('stackmff', 'radio_stackmff_v1', 'StackMFF', 'StackMFF', _FUSION_CLASS + '_fuse_stackmff', (), hint_key='radio_stackmff_v1_hint', environment=_FUSION_CLASS + '_validate_ai_environment', neural=True, promotes_color=True, tile_decider=_ADAPTER + 'neural_needs_tiles', tile_runner=_FUSION_CLASS + '_fuse_tiled_stackmff', weights='weights/stackmff_final.onnx', category='ai'))
 register_fusion(FusionAlgorithm('openfocus_a', 'radio_openfocus_a', 'OpenFocus A', 'OpenFocusA', _FUSION_CLASS + '_fuse_openfocus_a', (_K_OF, ParameterSpec('blend_smoothing', 'label_blend_smoothing', 2.0, 0, 8, .2, 1)), hint_key='radio_openfocus_a_hint', sort_frames=True, roi=_ADAPTER + 'roi_openfocus_a', default_base_correct=True, category='spatial'))
 register_fusion(FusionAlgorithm('openfocus_b', 'radio_openfocus_b', 'OpenFocus B', 'OpenFocusB', _FUSION_CLASS + '_fuse_openfocus_b', (_K_OF, _SM_B), DepthSpec(_ADAPTER + 'depth_openfocus_b', (_K_OF, _SM_B)), hint_key='radio_openfocus_b_hint', sort_frames=True, roi=_ADAPTER + 'roi_openfocus_b', default_base_correct=True, category='spatial'))
 register_fusion(FusionAlgorithm('guided_filter', 'radio_guided_filter', 'Guided Filter', 'GuidedFilter', _FUSION_CLASS + '_fuse_guided_filter', (_K_GUIDED,), hint_key='radio_guided_filter_hint', environment=_FUSION_CLASS + '_validate_spatial_environment', parallel_frames=True, roi=_ADAPTER + 'roi_guided', promotes_color=True, category='spatial'))

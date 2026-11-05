@@ -126,3 +126,28 @@ def test_last_activity_batch_is_released_before_weight_filtering(monkeypatch):
     result = module.gfgfgf_impl(frames, thread_count=2)
     assert phase["checked"]
     assert result.shape == frames[0].shape
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_zero_weight_fallback_uses_first_frame(monkeypatch, dtype):
+    from fusion_methods import gfg_fgf as module
+
+    rng = np.random.default_rng(62)
+    frames = [rng.integers(0, np.iinfo(dtype).max + 1, (17, 19, 3), dtype=dtype)
+              for _ in range(7)]
+
+    def focus(gray, *args):
+        return np.zeros_like(gray)
+
+    def zero_weights(gray, mask, *args):
+        return np.zeros_like(mask)
+
+    monkeypatch.setattr(module, "gfg_focus_map", focus)
+    monkeypatch.setattr(module, "_run_guided_filter", zero_weights)
+    result = module.gfgfgf_impl(frames, thread_count=1)
+    first = frames[0]
+    if dtype == np.uint16:
+        first = first.astype(np.float32) * (255.0 / 65535.0)
+    expected = (first.astype(np.float32) / 255.0) * 255.0
+    expected = np.clip(expected, 0, 255).astype(result.dtype)
+    np.testing.assert_array_equal(result, expected)

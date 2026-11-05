@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fusion_methods.dct import _ensure_color_image
 from utils.image_utils import fuse_output_dtype
+from core.frame_storage import create_frame, store_frame
 
 # -----------------------------------------------------------------------------
 # 全局辅助与核心算法实现
@@ -140,9 +141,10 @@ class GfgDecision:
     def update(self, i, afm):
         sob = _sobel_energy(afm)
         if self.val is None:
-            self.val = afm.astype(np.float32, copy=True)
-            self.idx = np.full(afm.shape, i, np.int32)
-            self.sob = sob
+            self.val = store_frame(afm.astype(np.float32, copy=False))
+            self.idx = create_frame(afm.shape, np.int32)
+            self.idx[...] = i
+            self.sob = store_frame(sob)
             return
         diff = afm - self.val
         win = diff > self.tie_eps
@@ -175,6 +177,8 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # 1. 图像加载与预处理
     # -------------------------------------------------------------------------
     if isinstance(input_source, str):
+        from core.image_loader import admit_image_decode, decode_image
+
         # 文件夹读取逻辑
         if not os.path.exists(input_source):
              raise ValueError(f"Path not found: {input_source}")
@@ -199,7 +203,11 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         stack_ori = []
         for path in img_paths:
             check_cancel()
-            stack_ori.append(cv2.imread(path, cv2.IMREAD_UNCHANGED))
+            admit_image_decode(path)
+            image = decode_image(path, preserve_grayscale=True)
+            if image is None:
+                raise ValueError(f"Failed to read image: {path}")
+            stack_ori.append(store_frame(image))
     else:
         # 列表输入
         stack_ori = input_source
@@ -213,44 +221,31 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
               and (stack_ori[0].shape[1], stack_ori[0].shape[0]) != img_resize)
     for img in stack_ori:
         check_cancel()
-        img = _ensure_color_image(np.ascontiguousarray(img))
+        img = _ensure_color_image(img)
         if resize:
             img = cv2.resize(img, img_resize)
-        prepared.append(img)
+        prepared.append(img if isinstance(img, np.memmap) else store_frame(img))
     stack_ori = prepared
     del prepared
 
-    # -------------------------------------------------------------------------
-    # 2. 数据准备：统一转为 Float32 (0.0 - 1.0)
-    #    这能显著减少后续多次除法运算，并利用 SIMD 优化
-    # -------------------------------------------------------------------------
+    # Retain source frames in their existing representation and convert per pass,
+    # rather than retaining a second full float32 color stack.
     num_imgs = len(stack_ori)
     h, w = stack_ori[0].shape[:2]
-
-    # imgs_f32: (N, H, W, 3) range [0, 1]
-    # 使用列表存储，避免一次性分配巨大的 numpy 数组导致内存溢出
-    # Every back-end takes 0-255 scaled input regardless of bit depth, so a
-    # plain /255 is correct for uint8 and for the float32 16-bit stacks.
     out_dtype = fuse_output_dtype(stack_ori)
-    imgs_f32 = []
-    for img in stack_ori:
-        check_cancel()
+
+    def normalized_frame(index, channel=None):
+        img = stack_ori[index]
+        if channel is not None:
+            img = img[:, :, channel]
         if img.dtype == np.uint16:
             img = img.astype(np.float32) * (255.0 / 65535.0)
-        imgs_f32.append(img.astype(np.float32) / 255.0)
-    
-    # 原始 uint8 数据不再需要，释放引用（如果外部未持有）
-    del stack_ori, img
+        return img.astype(np.float32) / 255.0
 
-    # 确定用于计算焦点的通道 (Channel Selection)
-    # 计算第一张图各通道和，取最大的通道索引
-    # 利用 sum(axis=(0,1)) 快速求和
-    ch_sum = imgs_f32[0].sum(axis=(0, 1))
-    channel_idx = int(np.argmax(ch_sum))
-
-    # 提取所有图的灰度/单通道用于引导 (N, H, W)
-    # 直接引用切片，不拷贝数据 (View)
-    grays = [img[:, :, channel_idx] for img in imgs_f32]
+    first = normalized_frame(0)
+    channel_idx = int(np.argmax(first.sum(axis=(0, 1))))
+    del first
+    del img
 
     # -------------------------------------------------------------------------
     # 3. 计算焦点值 (Focus Measure) - 阶段 1
@@ -263,7 +258,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
 
     def compute_focus_score(idx):
         check_cancel()
-        gray_img = grays[idx]
+        gray_img = normalized_frame(idx, channel_idx)
         # filter2D 内部并行优化较好，但在大量小图时 ThreadPool 仍有优势
         gx = cv2.filter2D(gray_img, cv2.CV_32F, kx, borderType=cv2.BORDER_REFLECT)
         gy = cv2.filter2D(gray_img, cv2.CV_32F, ky, borderType=cv2.BORDER_REFLECT)
@@ -314,7 +309,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
             return i, None
         # 论文完整聚焦检测：均值差分粗图 + 类高斯四邻域梯度高频 + FGF
         # （issue #5：旧实现只有均值差分，缺 GFG 算子）
-        return i, gfg_focus_map(grays[i], g_msz, g_gsz, g_eps)
+        return i, gfg_focus_map(normalized_frame(i, channel_idx), g_msz, g_gsz, g_eps)
 
     # 按帧序流式决策（并列判定依赖顺序，且不物化 N×H×W 聚焦图栈）；
     # 每批 max_workers 帧并行计算聚焦图
@@ -338,8 +333,10 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     del decision
 
     # 累加器
-    sum_fdms = np.zeros((h, w), dtype=np.float32)
-    imfu_result = np.zeros((h, w, 3), dtype=np.float32)
+    sum_fdms = create_frame((h, w), np.float32)
+    imfu_result = create_frame((h, w, 3), np.float32)
+    sum_fdms[...] = 0
+    imfu_result[...] = 0
 
     # 锁用于累加（虽然 Python GIL 存在，但 += numpy array 不是原子的，需注意线程安全）
     # 但为了性能，我们让每个线程返回结果，主线程累加，或者分配独立的 buffer
@@ -355,7 +352,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         
         # 再次导向滤波平滑权重
         # 这里的 maxfm_binary 也是 0-1，guided filter 输出也是 0-1
-        fdm = _run_guided_filter(grays[i], maxfm_binary, g_gsz, g_eps)
+        fdm = _run_guided_filter(normalized_frame(i, channel_idx), maxfm_binary, g_gsz, g_eps)
         
         return i, fdm
 
@@ -371,7 +368,7 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
                     continue
                 i, fdm_weight = res
                 sum_fdms += fdm_weight
-                imfu_result += imgs_f32[i] * fdm_weight[:, :, None]
+                imfu_result += normalized_frame(i) * fdm_weight[:, :, None]
                 del res, fdm_weight
 
     # -------------------------------------------------------------------------
@@ -379,20 +376,22 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     # -------------------------------------------------------------------------
     # 避免除以零
     # 创建掩码，只处理权重不为0的区域
-    nonzero_mask = sum_fdms > 1e-6
+    nonzero_mask = create_frame((h, w), np.bool_)
+    for start in range(0, h, 128):
+        check_cancel()
+        rows = slice(start, min(h, start + 128))
+        nonzero_mask[rows] = sum_fdms[rows] > 1e-6
     
     # 原地归一化
     # 只需对 nonzero 区域处理，其他区域保持 0
     # 由于 imfu_result 已经是 float32，直接操作
     
-    # 将 sum_fdms 扩展维度以便广播
-    sum_fdms_expanded = sum_fdms[:, :, None]
     
     # 利用 np.divide 的 where 参数或者 boolean indexing
     # Boolean indexing 在大数组下可能会产生临时拷贝，但比迭代快
     # 考虑到内存效率，逐通道处理
     
-    out = np.zeros((h, w, 3), dtype=out_dtype)
+    out = create_frame((h, w, 3), out_dtype)
     
     for c in range(3):
         check_cancel()
@@ -406,10 +405,14 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
         if not nonzero_mask.all():
             for i in np.unique(idm_map[~nonzero_mask]):
                 sel = (~nonzero_mask) & (idm_map == i)
-                ch_data[sel] = imgs_f32[i][:, :, c][sel]
+                ch_data[sel] = normalized_frame(i, c)[sel]
         # Clip 并写回源位深
-        np.clip(ch_data * 255.0, 0, 255, out=ch_data)
-        out[:, :, c] = ch_data
+        for start in range(0, h, 128):
+            check_cancel()
+            rows = slice(start, min(h, start + 128))
+            np.multiply(ch_data[rows], 255.0, out=ch_data[rows])
+            np.clip(ch_data[rows], 0, 255, out=ch_data[rows])
+            out[rows, :, c] = ch_data[rows]
 
     check_cancel()
     return out

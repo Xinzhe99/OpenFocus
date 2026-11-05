@@ -109,6 +109,89 @@ Every page and asset request therefore counts as a Worker invocation.
 - Everything else — `site/dist` with `html_handling: auto-trailing-slash`,
   `not_found_handling: 404-page`, and the headers in `dist/_headers`.
 
+### Optional private analytics
+
+The Worker can count download starts and receive desktop activity
+reports using a D1 binding named `ANALYTICS`. Without the
+binding downloads continue normally and the usage API returns `503`. Before
+enabling analytics, deploy the site with the binding absent and verify the
+privacy sections at `/#privacy` and `/zh/#privacy`. Then provision the database
+and bearer secret:
+
+```bash
+npx wrangler d1 create openfocus-analytics
+```
+
+Add the `d1_databases` binding printed by this command to an account-specific
+copy of `site/wrangler.jsonc`, set its `binding` to `ANALYTICS` and point its
+`migrations_dir` to `site/migrations`. Resolve the copy's Worker and asset paths
+relative to the copied config. Keep that config for every later deployment:
+deploying the unbound repository template removes the binding and stops
+statistics. The repository intentionally has no account-specific database ID.
+Then apply the migration and set a strong, randomly generated administrator
+secret interactively:
+
+```bash
+npx wrangler d1 migrations apply ANALYTICS --remote -c path/to/wrangler.analytics.jsonc
+npx wrangler secret put ANALYTICS_ADMIN_SECRET -c path/to/wrangler.analytics.jsonc
+```
+
+Deploy the Worker only after these steps. The existing daily cron runs retention
+cleanup; usage writes also delete old rows. D1 failures do not interrupt file
+downloads. The Worker stores daily aggregate counts by resolved release tag,
+asset kind, route (`website` or `in-app`), and source (`r2` or `github`). A
+full GET, initial byte-zero partial GET, or GitHub fallback redirect counts as
+a start. HEAD, conditional 304, invalid ranges, continuation ranges and failed
+responses do not. Retries, scanners and incomplete downloads can still count;
+these are not unique users or completed downloads.
+
+`POST /api/usage` accepts only JSON with a UUID-v4 `installation_id`, numeric
+dot-separated `version`, and `platform` of `windows`, `macos`, or `linux`.
+The app reports by default when no preference exists, preserves an explicit
+opt-out, and exposes the switch in Settings → Advanced Settings. Failed sends
+retry while it remains open. Rows are deduplicated per UTC day, installation, version and
+platform and contain no IP, user agent, hardware
+identifier, filename or image data. The generated installation ID is
+pseudonymous, not anonymous. The Worker deletes activity older than 90 UTC
+calendar days during daily cron execution and on report writes; operational
+failures can delay deletion. Opting out stops future reports and resets the
+local ID; previously received rows expire under this retention policy. The
+endpoint is public and reports can be forged; no application secret is used.
+Cloudflare's own request logging and retention are separate from these D1 rows.
+
+`GET /api/admin/stats` requires `Authorization: Bearer <secret>` and returns
+daily download aggregates plus distinct installations active during the last
+30 UTC calendar days grouped by version and platform. A single installation
+can appear in multiple groups after upgrading or changing platforms. The secret
+is server-only and must never be embedded in the app, committed, or logged.
+Missing secret or database returns `503`; an incorrect bearer returns `401`.
+For an interactive shell, avoid putting the secret in command history:
+
+```bash
+read -rs -p 'Analytics admin secret: ' ANALYTICS_SECRET; echo
+curl -fsS -H "Authorization: Bearer $ANALYTICS_SECRET" https://openfocus.top/api/admin/stats
+unset ANALYTICS_SECRET
+```
+
+On Windows PowerShell, read the secret without placing it in command history:
+
+```powershell
+$secret = Read-Host 'Analytics admin secret' -AsSecureString
+$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+try {
+  $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+  Invoke-RestMethod https://openfocus.top/api/admin/stats -Headers @{Authorization = "Bearer $plain"} | ConvertTo-Json -Depth 5
+} finally {
+  Remove-Variable plain -ErrorAction SilentlyContinue
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+}
+```
+
+The aggregate download table has no installation identifiers and is retained
+until an operator deletes it. Protect the D1 database and admin secret as
+private resources; neither the API nor the database establishes report
+authenticity.
+
 ### Page behavior
 
 - Theme defaults to **light** on a first visit; the header toggle cycles
@@ -135,8 +218,8 @@ SITE_ORIGIN=https://openfocus.top python tools/build_site.py
 # Local preview (static only: no Worker language redirect or /api)
 python -m http.server 8788 --directory site/dist
 
-# Deploy Worker + assets (from the repo root)
-npx wrangler deploy -c site/wrangler.jsonc
+# Deploy Worker + assets with the account-specific analytics binding
+npx wrangler deploy -c path/to/wrangler.analytics.jsonc
 ```
 
 `SITE_ORIGIN` defaults to `https://openfocus.top`, which is correct for

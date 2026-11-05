@@ -3,7 +3,8 @@
 
 import os
 from PyQt6.QtCore import Qt, QSize, QSignalBlocker
-from PyQt6.QtGui import QFont, QIcon, QTextOption
+from PyQt6.QtGui import QFont, QIcon, QTextOption, QShortcut, QKeySequence
+from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -22,7 +23,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QListWidget,
     QListWidgetItem,
-    QFileDialog,
     QMessageBox,
     QComboBox,
     QLineEdit,
@@ -35,7 +35,7 @@ from core.algorithms import (alignment_steps, fusion_algorithms, get_fusion,
     resolve_registration_parameters)
 from ui.algorithm_parameters import AlgorithmParameterPanel
 from locales import trans
-from utils.ui_utils import make_folder_path_editable, size_dialog_to_content
+from utils.ui_utils import size_dialog_to_content
 from widgets.stepper import StepperSpinBox
 
 
@@ -206,6 +206,12 @@ class BatchProcessingDialog(QDialog):
         self.remove_folder_btn = QPushButton(trans.t('batch_btn_remove'))
         self.remove_folder_btn.clicked.connect(self.remove_selected_folders)
         self.remove_folder_btn.setEnabled(False)
+        self._remove_shortcuts = []
+        for key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            shortcut = QShortcut(QKeySequence(key), self.folder_list)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self.remove_folder_btn.click)
+            self._remove_shortcuts.append(shortcut)
         self.folder_list.itemSelectionChanged.connect(
             lambda: self.remove_folder_btn.setEnabled(
                 bool(self.folder_list.selectedItems())))
@@ -710,37 +716,9 @@ class BatchProcessingDialog(QDialog):
             self.path_input.setToolTip(trans.t('batch_path_invalid'))
 
     def add_folders(self):
-        """Pick one or more stack folders.
-
-        The plain QFileDialog had the flaws of every unstyled directory picker:
-        nowhere to type a path, and no shortcuts to where you actually work.
-        This one adds an editable path field (Enter jumps, like Explorer) and a
-        sidebar of recent and standard locations.
-        """
-        from PyQt6.QtWidgets import (QFileDialog, QListView, QTreeView,
-                                     QAbstractItemView, QSplitter, QListWidget,
-                                     QLineEdit, QPushButton)
-
-        dialog = QFileDialog(self, trans.t('batch_pick_title'))
-        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-        dialog.setFileMode(QFileDialog.FileMode.Directory)
-        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
-
-        for view_class in (QListView, QTreeView):
-            view = dialog.findChild(view_class)
-            if view:
-                view.setSelectionMode(
-                    QAbstractItemView.SelectionMode.ExtendedSelection)
-
-        start_dir = self._last_pick_dir()
-        if start_dir:
-            dialog.setDirectory(start_dir)
-
-        # Qt already builds a place list on the left (home / Pictures /
-        # Desktop / Documents) as a QStandardItemModel. Appending to it is the
-        # supported way to add "last used"; inserting a second QListWidget into
-        # the splitter instead produced an empty column beside the real one.
-        make_folder_path_editable(dialog)
+        """Pick one or more stack folders with the shared address bar."""
+        dialog = FileDialog.for_directories(
+            self, trans.t('batch_pick_title'), self._last_pick_dir(), multiple=True)
         self._fit_picker_sidebar(dialog)
 
         # 执行对话框并获取结果
@@ -952,9 +930,8 @@ class BatchProcessingDialog(QDialog):
 
     def add_single_folder_to_list(self, folder_list):
         """添加单个文件夹到列表"""
-        from PyQt6.QtWidgets import QFileDialog
         
-        folder_path = QFileDialog.getExistingDirectory(
+        folder_path = FileDialog.getExistingDirectory(
             self, "Select Image Stack Folder", ""
         )
         
@@ -966,18 +943,17 @@ class BatchProcessingDialog(QDialog):
     
     def add_multiple_folders_to_list(self, folder_list):
         """添加多个文件夹到列表"""
-        from PyQt6.QtWidgets import QFileDialog, QMessageBox
         
         # 使用循环添加多个文件夹
         first_time = True
         while True:
             if first_time:
-                folder_path = QFileDialog.getExistingDirectory(
+                folder_path = FileDialog.getExistingDirectory(
                     self, "Select Image Stack Folders (click Cancel when done)", ""
                 )
                 first_time = False
             else:
-                folder_path = QFileDialog.getExistingDirectory(
+                folder_path = FileDialog.getExistingDirectory(
                     self, "Select Another Folder or click Cancel when done", ""
                 )
             
@@ -1098,9 +1074,8 @@ class BatchProcessingDialog(QDialog):
     
     def add_single_folder(self):
         """添加单个文件夹（自动分割）"""
-        from PyQt6.QtWidgets import QFileDialog
 
-        folder_path = QFileDialog.getExistingDirectory(
+        folder_path = FileDialog.getExistingDirectory(
             self, trans.t('batch_btn_select_split'), ""
         )
 
@@ -1152,7 +1127,7 @@ class BatchProcessingDialog(QDialog):
         return 'time_threshold', float(param_value)
     
     def _browse_flat_field(self):
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = FileDialog.getOpenFileName(
             self, trans.t('dust_browse'), '',
             trans.t('batch_image_filter'))
         if path:
@@ -1160,9 +1135,8 @@ class BatchProcessingDialog(QDialog):
 
     def browse_output_folder(self):
         """浏览输出文件夹"""
-        from PyQt6.QtWidgets import QFileDialog
         
-        folder_path = QFileDialog.getExistingDirectory(
+        folder_path = FileDialog.getExistingDirectory(
             self, trans.t('batch_out_custom'), ""
         )
         

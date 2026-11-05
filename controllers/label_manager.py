@@ -259,15 +259,19 @@ class LabelManager:
         frozen._labels = self._labels.copy()
         frozen._snapshot_frame_ids = {
             target: self.frame_ids(target) for target in ("input", "registered")}
+        frozen._snapshot_output_id = getattr(self._selected_output(), "output_id", None)
         return frozen
 
-    def _draw_for(self, image, target: str, index: int, output_id=None):
+    def _draw_for(self, image, target: str, index: int, output_id=None, source_shape=None):
         """Resolve identity and numbering once for every display/export path."""
         wanted = normalize_target(target)
         index = 0 if wanted == "output" else index
         if wanted == "output" and output_id is None:
-            record = self._selected_output()
-            output_id = getattr(record, "output_id", None)
+            if hasattr(self, "_snapshot_output_id"):
+                output_id = self._snapshot_output_id
+            else:
+                record = self._selected_output()
+                output_id = getattr(record, "output_id", None)
         identities = self.frame_ids(wanted) if wanted != "output" else []
         drawn, error = image, ""
         for label in self._labels.for_target(wanted):
@@ -283,6 +287,9 @@ class LabelManager:
                 adder.config.range = ""
             else:
                 adder.config = config
+            if source_shape is not None and source_shape[:2] != image.shape[:2]:
+                from utils.frame_pixels import preview_label_config
+                adder.config = preview_label_config(adder.config, source_shape, image.shape)
             drawn = adder.add_label_to_image(drawn, index)
             error = error or adder.last_error
         self._draw_errors[wanted] = error
@@ -294,23 +301,21 @@ class LabelManager:
         image = pixmap_to_cv2(pixmap)
         if image is None:
             return pixmap
+        source = (getattr(self.window, "raw_images", ()) or ())
+        source_shape = source[index].shape if 0 <= index < len(source) else image.shape
         if self._labels.any_enabled("input"):
             image = image.copy()
-            image, _err = self._draw_for(image, "input", index)
+            image, _err = self._draw_for(image, "input", index, source_shape=source_shape)
         if scale_cfg:
+            from utils.frame_pixels import preview_scale_config
+            scale_cfg = preview_scale_config(scale_cfg, source_shape, image.shape)
             from utils import scalebar
             image = scalebar.burn(image, scale_cfg)
         return cv2_to_pixmap(image)
 
     def apply_labels_to_registered_image(self, image, index: int):
         """BGR image with registered-stack captions applied."""
-        if not self._labels.any_enabled("registered"):
-            return image
-        if image.ndim == 3 and image.shape[2] == 4:
-            from utils.image_utils import composite_transparent_for_display
-            image = composite_transparent_for_display(image)
-        drawn, _err = self._draw_for(image.copy(), "registered", index)
-        return drawn
+        return self.display_bgr_image("registered", image, index)
 
     def prepare_bgr_image(self, target: str, image, index: int, output_id=None):
         """Copy of `image` with the captions for `target` burned in.
@@ -320,6 +325,8 @@ class LabelManager:
         to occupy in the output history; that keeps {value} stable across
         "save", "save as", "drag out" and "export all".
         """
+        from core.source_frames import resolve_frame
+        image = resolve_frame(image)
         output = image.copy()
         wanted = normalize_target(target)
         if not self._labels.any_enabled(wanted):
@@ -332,8 +339,13 @@ class LabelManager:
         return drawn
 
     def display_bgr_image(self, target: str, image, index: int,
-                          scale_cfg=None, output_id=None):
+                          scale_cfg=None, output_id=None, source_shape=None):
         """BGR image ready to be shown, copying only when something draws."""
+        from utils.frame_pixels import preview_pixels as display_image
+        from utils.frame_pixels import preview_scale_config
+        source_shape = image.shape if source_shape is None else source_shape
+        image = display_image(image)
+        scale_cfg = preview_scale_config(scale_cfg, source_shape, image.shape)
         wanted = normalize_target(target)
         if (image.ndim == 3 and image.shape[2] == 4
                 and (self._labels.any_enabled(wanted) or scale_cfg)):
@@ -341,7 +353,8 @@ class LabelManager:
             image = composite_transparent_for_display(image)
         drawn = None
         if self._labels.any_enabled(wanted):
-            drawn, _err = self._draw_for(image.copy(), wanted, index, output_id)
+            drawn, _err = self._draw_for(image.copy(), wanted, index, output_id,
+                                        source_shape=source_shape)
         if scale_cfg:
             from utils import scalebar
             return scalebar.burn(image if drawn is None else drawn, scale_cfg)
@@ -430,6 +443,7 @@ class LabelManager:
         def _group(title_key):
             box = QGroupBox(trans.t(title_key))
             lay = QFormLayout(box)
+            lay.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             lay.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
             lay.setHorizontalSpacing(12)
             lay.setVerticalSpacing(8)
@@ -880,7 +894,17 @@ class LabelManager:
                     "metadata": [metadata] * len(images)}
         if target == "registered":
             images = list(getattr(window, "registration_results", None) or [])
-            metadata = getattr(window, "linear_dng_metadata", None)
+            names = list(getattr(window, "registration_filenames", None) or names)
+            record = self._selected_output()
+            if record is not None and getattr(record, "kind", None) == "aligned":
+                metadata = getattr(record, "linear_dng_metadata", None)
+                if metadata is None:
+                    metadata = getattr(getattr(record, "context", None),
+                                       "linear_dng_metadata", None)
+                if getattr(record, "annotations_baked", False):
+                    metadata = None
+            else:
+                metadata = getattr(window, "linear_dng_metadata", None)
             if images:
                 return {"images": images, "names": names,
                         "metadata": [metadata] * len(images)}

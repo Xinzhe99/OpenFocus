@@ -62,11 +62,13 @@ Odpowiednik w CLI: `python main.py --input ./png-stack --output ./result.png --m
 
 ### Obsługiwane formaty wyjściowe
 
+W oknie **Zapisz jako** zwykły TIFF zapisuje wynik jako jeden obraz, a TIFF z warstwami zawiera klatki źródłowe jako warstwy. Linear DNG jest zawsze widoczny, ale jego zapis wymaga liniowego wyniku kamery bez utrwalonych zmian, pochodzącego z **Otwórz natywny RAW** i mającego kalibrację kamery.
+
 - Pojedyncze obrazy: JPG, PNG, BMP, TIFF, WebP
 - Sekwencje obrazów: zapisywane w folderach
 - Animacje: GIF
 - Wielostronicowy TIFF: cały stos w jednym `.tif`
-- TIFF z warstwami: wynik retuszu razem z klatkami źródłowymi (z menu kontekstowego wyniku)
+- TIFF z warstwami: wynik retuszu razem z klatkami źródłowymi (wybierany w oknie Zapisz jako)
 
 ---
 
@@ -393,28 +395,30 @@ OpenFocus oferuje dziesięć algorytmów fuzji plus tryb tylko wyrównania. W no
 
 ### StackMFF V3 (domyślnie, uczenie głębokie)
 
-- **Algorytm**: klasyfikacja źródła dla każdego piksela (wymaga PyTorch). Sieć przewiduje dla każdego piksela, z której klatki wejściowej pochodzi, a następnie albo miesza klatki według tych prawdopodobieństw, albo wybiera jedną klatkę
+- **Algorytm**: ONNX Runtime i dołączony model ONNX.
 - **Tryb wyjścia AI** (prawy panel, tylko dla tej metody):
   - **Miękkie mieszanie (ważone)** — domyślnie; każdy piksel to ważona prawdopodobieństwami mieszanka klatek. Płynne przejścia, bez twardych szwów; odpowiada konfiguracji z artykułu
   - **Twardy wybór (jedna klatka)** — każdy piksel jest kopiowany z najbardziej prawdopodobnej klatki. Ostrzejszy wybór bez interpolacji między klatkami; na granicy dwóch równie prawdopodobnych klatek może pojawić się szew
 - **Najlepsza do**: najwyższej jakości, gdy dostępny jest GPU
-- **Zalety**: niezależna od kolejności klatek, obsługuje stos o dowolnej długości, nie wymaga strojenia parametrów, optymalizuje się automatycznie
-- **Wymagania**: zainstalowany PyTorch, opcjonalny GPU CUDA (torchvision nie jest potrzebny)
-- **Uwaga**: może być niedostępna, jeśli PyTorch nie jest zainstalowany
+- **Zalety**: niezależna od kolejności klatek, obsługuje stos w granicach dostępnych zasobów, nie wymaga strojenia parametrów, optymalizuje się automatycznie
+- **Wymagania**: ONNX Runtime i dołączony model ONNX.
+
+Każdy kafelek sieci używa wszystkich klatek. Klatki źródłowe i dane tymczasowe wyrównania mogą być przechowywane na dysku; wolne miejsce i dostępna pamięć ograniczają wielkość stosu. Kafelkowanie przestrzenne V2 przybliża wnioskowanie dla całego obrazu.
+
 
 ### StackMFF V2 (uczenie głębokie)
 
-- **Algorytm**: oszacowanie ostrości warstwa po warstwie, udokładniane dwukierunkową warstwą rekurencyjną; sieć regresuje indeks płaszczyzny ogniskowej i próbkuje stos. **Klatki muszą zachować oryginalną kolejność ogniskowania** — odwrócenie jest dla tej metody wyłączone
+- **Algorytm**: jednoskalowa sieć uwagi normalizuje oczekiwaną głębię ostrości i próbkuje najbliższą klatkę źródłową. Indeksy głębi zależą od kolejności stosu. **Klatki muszą zachować oryginalną kolejność ogniskowania** — odwrócenie jest dla tej metody wyłączone
 - **Mapy głębi**: obsługiwane; podają próbkowaną warstwę ogniskową
 - **Najlepsza do**: ciągłych serii ogniskowania, gdzie liczy się bardzo mały, szybki model
-- **Wymagania**: PyTorch; około 0,05 mln parametrów; bez parametrów użytkownika
+- **Wymagania**: ONNX Runtime i dołączony model ONNX.
 
 ### StackMFF (V1, uczenie głębokie)
 
-- **Algorytm**: 3D U-Net przewiduje jasność połączonego obrazu dla całego stosu w jednym przebiegu; Cb/Cr są brane z najbliższej klatki źródłowej
+- **Algorytm**: jednoskalowa sieć uwagi miesza luminancję klatek źródłowych przy użyciu wag softmax; Cb/Cr pochodzą z klatki o luminancji najbliższej wynikowej
 - **Najlepsza do**: neuronowej fuzji całego stosu ostrości
-- **Zalety**: bez parametrów, kolor pozostaje w gamucie; kolejność klatek może wpływać na wynik
-- **Uwaga**: 6 mln parametrów; większym stosom pomaga GPU
+- **Zalety**: bez parametrów, kolor pozostaje w gamucie; wynikowa luminancja nie zależy od kolejności klatek, ale chrominancja może się różnić przy równych odległościach luminancji
+- **Uwaga**: około 156 172 parametrów; większym stosom pomaga GPU
 
 ### Filtr sterowany
 
@@ -491,7 +495,7 @@ Wybierz **Tylko wyrównanie (bez fuzji)**, aby zarejestrować stos i dodać do l
 | DCT | Średnio | Dobra | Tekstur |
 | DTCWT | Średnio | Bardzo dobra | Złożonych scen |
 | GFG-FGF | Szybko | Dobra | Obszarów ostrości |
-| StackMFF (V1) | Wolno (GPU) | Nie badano tutaj | Neuronowa fuzja stosu; kolejność może wpływać na wynik |
+| StackMFF (V1) | Wolno (GPU) | Nie badano tutaj | Luminancja niezależna od kolejności; chrominancja może się różnić przy równych odległościach luminancji |
 | StackMFF V2 | Szybko (GPU) | Nie badano tutaj | Ciągłych serii z bardzo małym modelem |
 | StackMFF V3 | Wolno (GPU) | Doskonała | Najwyższej jakości |
 | OpenFocus A | Zależy od stosu | Zależy od stosu | Wyboru ostrych pikseli według odpowiedzi wieloskalowej |
@@ -558,7 +562,7 @@ Fuzja może pozostawić lokalną wadę — obwódkę przy kontrastowej krawędzi
 5. Przytrzymaj `Tab`, aby zobaczyć wynik sprzed tej sesji, i `Alt`, aby podejrzeć klatkę źródłową. Opcjonalne odniesienie ostrości obejmuje tylko płótno źródła i używa jednej wspólnej skali dla wszystkich klatek.
 6. `Ctrl+Z` / `Ctrl+Y` cofają i ponawiają całe pociągnięcia. **Przywróć wszystko…** to jedna operacja do cofnięcia. **Zastosuj jako nowy wynik** dodaje pozycję `<nazwa> · Retusz N` i wybiera ją; oryginalny wynik pozostaje nietknięty. Nowa pozycja jest oznaczona jako *Nie wyeksportowano*, dopóki nie wyeksportujesz jej z głównego okna; OpenFocus chroni ją przed automatycznym usunięciem z historii i przed wyjściem bez decyzji.
 
-Zastosuj retusz jako nowy wynik, a następnie kliknij ten wynik prawym przyciskiem w głównym oknie i wybierz **Eksportuj TIFF z warstwami…**, aby zapisać go razem z klatkami źródłowymi. Etykiety na żywo i paski skali nie są dołączane; niezapisane zmiany adnotacji pozostają chronione. Geometria źródeł i maski ważności są zachowane. Wynik i źródła muszą być nieprzezroczystymi obrazami RGB lub w odcieniach szarości o tej samej głębi 8 lub 16 bitów, a każdy prostokąt źródła musi mieścić się w wyniku. Eksport obsługuje do 128 źródeł; nazwy źródeł są ograniczone do 255 znaków i nie mogą zawierać NUL ani znaków spoza Basic Multilingual Plane, na przykład wielu emoji. Niebezpieczne konteksty i zadania szacowane na więcej niż 512 MiB pamięci roboczej lub dostępnego budżetu RAM są odrzucane z komunikatem o błędzie zamiast zapisywania niekompletnego eksportu. GIMP 3.2.6 w systemie Windows importuje warstwy 8- i 16-bitowe, w tym ich przesunięcia i przezroczyste wypełnienie rejestracji. Wynik jest widoczny, warstwy źródeł ukryte; GIMP dodaje też widoczną warstwę Background. Inne edytory nie były testowane.
+Zastosuj retusz jako nowy wynik, zaznacz go i otwórz **Zapisz jako**. Wybierz TIFF z warstwami z listy formatów, aby zapisać wynik razem z klatkami źródłowymi. Etykiety na żywo i paski skali nie są dołączane; niezapisane zmiany adnotacji pozostają chronione. Geometria źródeł i maski ważności są zachowane. Wynik i źródła muszą być nieprzezroczystymi obrazami RGB lub w odcieniach szarości o tej samej głębi 8 lub 16 bitów, a każdy prostokąt źródła musi mieścić się w wyniku. Eksport obsługuje do 128 źródeł; nazwy źródeł są ograniczone do 255 znaków i nie mogą zawierać NUL ani znaków spoza Basic Multilingual Plane, na przykład wielu emoji. Niebezpieczne konteksty i zadania szacowane na więcej niż 512 MiB pamięci roboczej lub dostępnego budżetu RAM są odrzucane z komunikatem o błędzie zamiast zapisywania niekompletnego eksportu. GIMP 3.2.6 w systemie Windows importuje warstwy 8- i 16-bitowe, w tym ich przesunięcia i przezroczyste wypełnienie rejestracji. Wynik jest widoczny, warstwy źródeł ukryte; GIMP dodaje też widoczną warstwę Background. Inne edytory nie były testowane.
 
 Do lokalnej korekty tonalnej wybierz **Pędzel ekspozycji**, ustaw wartość w setnych stopnia (100 podwaja wartości pikseli, −100 zmniejsza je o połowę) i maluj po wyniku. Podgląd aktualizuje się podczas malowania. Każde pociągnięcie dostosowuje bieżący wynik raz, nawet gdy ślady pędzla się nakładają; kolejne pociągnięcie buduje na nim. Krycie i twardość pędzla kontrolują mieszanie. Przy rozjaśnianiu światła mogą się obciąć. Przytrzymaj **Przed**, aby porównać z wynikiem z chwili otwarcia; naciśnij Escape podczas pociągnięcia, aby je anulować, albo użyj cofania i ponawiania po pociągnięciu. To edycje pikseli, a nie regulowane warstwy. Zastosuj jako nowy wynik i wyeksportuj nową pozycję, aby zapisać edytowane piksele; projekt nie przechowuje tych pikseli.
 
@@ -660,7 +664,7 @@ Planista uwzględnia fizyczne rdzenie, powinowactwo CPU i limity oraz uruchamia 
 
 ### Akceleracja GPU
 
-OpenFocus używa GPU (CUDA/MPS) dla modeli neuronowych AI (StackMFF V1/V2/V3); algorytmy klasyczne i rejestracja aplikacji działają na CPU. Jawne niskopoziomowe wyrównanie CuPy jest osobnym backendem numerycznym.
+StackMFF V1/V2/V3 używają ONNX Runtime. DirectML w Windows i CoreML w macOS mogą przyspieszać wnioskowanie; w przeciwnym razie używany jest CPU. Dostępność dostawcy nie dowodzi wykonania na GPU. Obsługa innych GPU wymaga weryfikacji.
 
 - Przełącznik znajduje się w **Ustawienia → Akceleracja GPU**
 - Odznaczenie wymusza metody neuronowe na CPU — przydatne, gdy sterowniki GPU działają niepoprawnie
@@ -787,7 +791,7 @@ Przeciąganie wyników z listy wyników zapisuje pliki obrazów w formacie wybra
 - **TIFF**: zachowuje dane 8- i 16-bitowe; eksport wielostronicowy trzyma cały stos w jednym pliku
 - **GIF**: animacja z 8-bitową paletą; anulowanie pozostawia istniejący plik docelowy nietknięty
 
-Dla wyniku retuszu menu kontekstowe oferuje też **Eksportuj TIFF z warstwami…** z klatkami źródłowymi (patrz rozdział 10).
+Dla wyniku retuszu wybierz TIFF z warstwami z listy formatów **Zapisz jako**, aby dołączyć klatki źródłowe (patrz rozdział 10).
 
 ---
 
@@ -1015,8 +1019,7 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 
 #### AI niedostępne
 
-- Zainstaluj PyTorch: `pip install torch`
-- Dla pracy na GPU zainstaluj kompilację PyTorch z CUDA
+- Sprawdź ONNX Runtime i dołączony model.
 - Sprawdź przez **Pomoc → Informacje o środowisku**
 - StackMFF V3 nie wymaga torchvision
 

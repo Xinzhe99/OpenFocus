@@ -5,6 +5,156 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.76.0] - 2026-11-06
+
+### Added
+- Add a scannable, clickable PayPal support QR code to the English and Chinese READMEs.
+- Allow selecting a temporary data directory for new frames and processing scratch.
+- Add default-on usage statistics with pseudonymous per-installation daily reporting
+  in Settings → Advanced Settings; preserve explicit opt-outs and apply/cancel drafts
+  without onboarding choices or consent popups. Reports contain only random ID,
+  app version and OS. Update all 12 UI languages and local/website privacy guidance.
+- Bound feedback archives to recent log tails and include a readable diagnostic
+  index for tracing stages, failures and cancellation through operation IDs.
+- Add Tools → Batch Image Converter with active-sample Bayer/X-Trans CFA DNG,
+  explicit camera-linear LinearRaw for non-CFA sensors, unchanged DNG copying,
+  budgeted parallel jobs, fixed background thumbnails, multi-select Delete,
+  numbered TIFF pages, atomic collision-safe names and cooperative cancellation.
+- Add a separate microscope mosaic workspace with feature-based alignment,
+  manual pixel coordinates, overlap preview and 8/16-bit TIFF/PNG export.
+  Large TIFF mosaics use disk-backed tiled composition and streamed writing.
+- Accept local image/folder drops in the converter and experimental mosaic
+  list/canvas, with natural order, duplicate handling and visible import counts.
+- Add applied mosaic grid placement for row/column capture, zigzag direction,
+  start corner and overlap; preserve manual positions until Apply is chosen.
+
+### Changed
+- Label the microscope stitching workspace as experimental and unfinished.
+- Keep Delete/Backspace scoped to converter, batch and mosaic queues; validate
+  converter readiness before enabling Convert and retain busy state until finish.
+- Preserve mosaic preview opacity through imports/layout changes, synchronize
+  canvas/list selection and keep import error messages tied to their operation.
+- Use a shared portable picker for every open/save/folder flow, with an editable
+  address bar and Ctrl+L (also Cmd+L on macOS). Pasted quoted paths, environment
+  variables and Unicode names navigate on Enter without accepting or overwriting;
+  invalid addresses remain available for correction.
+- Open still-image stacks as source manifests with original dimensions, page identity,
+  orientation and bounded previews. The first frame is available before the remaining
+  list thumbnails; full pixels decode only when a worker needs them. Preview and
+  original-pixel caches have separate byte limits, and large previews live on disk.
+- Preserve lazy source transforms, append/reset baselines, project reopening and
+  legacy pathless result data. Export and retouch resolve original-size pixels on
+  workers; full render and registration intermediates use disk-backed frames.
+- Bound classical 16-bit preparation, guided exposure matching, ECC grayscale,
+  depth and output scratch; stream GIF and multipage TIFF exports frame by frame.
+- Sample directly mappable TIFF previews without decoding their full pages. Admit
+  other preview decoders before pixel allocation and show an unavailable-preview
+  canvas when a native decode would exceed the bounded preview budget; rendering
+  and export continue to use original pixels.
+- Keep native RAW CLI inputs and quick renders in their correct pixel domain:
+  camera-linear previews come from real linear samples, while unavailable-preview
+  canvases are display-only. Share bounded fusion preparation across CLI and GUI.
+- Preserve the bundled OpenCV path for small LZW TIFF previews without adding an
+  imagecodecs dependency; apply TIFF Orientation once. Include original-size DCT
+  coefficients when admitting progressive JPEG previews.
+- Generate missing comparison previews asynchronously with frame identity checks,
+  and restore project reset baselines with matching pixel scale and calibration.
+- Record one local shape/dtype/SHA-256 fingerprint for the final quantized fusion
+  pixels from ordinary and comparison renders without copying the full image;
+  alignment-only stacks are not traversed for result fingerprints.
+- Preserve complete Pillow GIF palette/header blocks during streamed export,
+  including repeated frames, timing and atomic cancellation behavior.
+- Use one stack-wide bit-depth promotion rule for B/C depth estimation in both
+  displayed depth maps and tiled fusion, retaining streamed disk-backed processing.
+- Validate every alpha-bearing TIFF page before publishing its container and keep
+  rejected or cancelled imports from replacing the existing workspace. TIFF alpha
+  that cannot be checked within the safe decoder budget is rejected explicitly.
+- Apply tiled Guided Filter exposure matching per tile after whole-stack gain
+  estimation, avoiding an additional full-size matched copy of the stack.
+- Reduce GFG-FGF working memory by converting frames per pass instead of
+  retaining a second float32 color stack; this can increase conversion time.
+- Resize the source and output magnifiers with Ctrl+wheel while holding the
+  left mouse button; the wheel alone still changes magnification.
+- Run StackMFF V1/V2/V3 using dynamic ONNX checkpoints and ONNX Runtime;
+  production inference no longer bundles PyTorch. DirectML and CoreML are
+  available where supported; CUDA and ROCm providers are recognized when a
+  compatible runtime and readable GPU-memory budget are present. Hardware
+  behavior across vendors still requires validation.
+- Adapt neural spatial tile sizes to available resources while retaining the
+  complete focal stack in each inference. V2 spatial tiling approximates
+  whole-image inference. Source frames and alignment scratch can be disk-backed;
+  available memory and temporary disk space still limit feasible stack sizes.
+- Replace StackMFF V1 and V2 with retrained attention-backbone models. V1
+  blends source luma using the released two-scale inference settings; V2 keeps
+  sampled-layer depth output and preserves focus order. The retrained models have
+  separate license terms documented in `docs/THIRD_PARTY_NOTICES.md`.
+- Ship only the three ONNX inference checkpoints in desktop bundles; retain
+  original PyTorch checkpoints and export tooling as development artifacts.
+
+### Fixed
+- Queue original-pixel magnifier decodes through the shared processing lease,
+  preventing them from competing with an admitted render's memory budget while
+  keeping queued requests cancellable.
+- Keep the press-and-hold magnifier centred on the mouse at image edges,
+  across zoom/pan, preview replacement and high-DPI displays. Sample original
+  pixels through the same transform as the displayed frame; load lazy source
+  pixels asynchronously and ignore stale frame completions.
+- Separate detected GPU hardware, verified ONNX provider capability, and the
+  device actually used by a neural job. Unknown current VRAM no longer erases
+  a verified provider; each inference still falls back to CPU when its memory
+  budget cannot be admitted. Include the DirectML adapter in session identity.
+- Keep completed fusion device reports local to their fusion instance, and
+  record method/checkpoint/provider, model and result hashes, shapes, resource
+  plans and CPU fallback reasons in local diagnostics. Add a small real-model
+  diagnostic and consumer regressions for independent V1/V3 models and caches.
+- Write the required main-image NewSubFileType=0 and orientation tags for DNG,
+  fixing strict DNG SDK readers rejecting otherwise LibRaw-readable LinearRaw.
+- Admit progressive JPEG thumbnail scratch using original image dimensions,
+  and make TIFF admission a single cancellable page-header traversal.
+- Translate converter item progress and unavailable-preview messages in all
+  twelve interface languages, with consistent progress placeholders.
+- Check temporary disk space for mapped frames and known stack operations, and
+  release rejected imports without replacing the current stack.
+- Develop ordinary RAW inputs with the sRGB transfer curve and preserve the
+  correct color profile for RAW conversions and individual TIFF pages.
+- Continue activity reporting while the application stays open, retry
+  unsuccessful requests, and identify the client so Cloudflare accepts reports.
+- Stop future usage reports as soon as application shutdown is accepted.
+- Prevent a Conda ICU DLL from shadowing Windows ICU in packaged builds, and
+  verify layered TIFF through the current Save As workflow during release smoke tests.
+- Admit each directory fusion input before decoding, including StackMFF's
+  direct and tiled paths, so oversized frames are rejected safely.
+- Preserve non-ASCII paths when classical methods read a source directory, and
+  include all color channels in DTCWT's directory memory estimate.
+- Keep the existing GPU hardware hint while an ONNX accelerator probe is running;
+  report the verified result after the probe finishes and identify neural GPU
+  acceleration accurately in feedback diagnostics.
+- Preserve grayscale shape in OpenFocus directory alignment while retaining
+  16-bit samples in both OpenFocus and ECC input paths.
+- Check memory before decoding directory-based registration inputs and include
+  retained ECC thumbnails when planning combined alignment.
+- Preserve coverage at fractional mosaic edges and bound streamed TIFF strip
+  buffers by output row size and a target strip size.
+- Read TIFF-based RAW EXIF through a bounded metadata stream instead of copying
+  the entire camera file into memory.
+- Read PNG orientation and EXIF through bounded chunk seeks, including metadata
+  after IDAT, without decoding image pixels during manifest or grouped preflight.
+  Keep ICC inspection on the imported frame and RAW size admission header-only.
+- Inspect sensor-mask orientation without decoding PNG pixels, and admit
+  standalone retouch inputs before either native decoder allocates pixels.
+- Pad the neural image grid before luma conversion so whole-frame and one-tile
+  V2 inference share native conversion boundaries on every CPU backend.
+- Accept TIFF-named DNG files in native RAW selection and append, while rejecting
+  ordinary TIFF in camera-linear stacks.
+- Develop camera-linear RAW pixels before exporting a depth-rendered TIFF, and
+  use each aligned history entry's own calibration in the label preview.
+- Preserve the original startup failure when the packaged desktop smoke check
+  must terminate a process holding diagnostic files open.
+- Align the website navigation download button and show Windows and macOS
+  installers together on the homepage.
+- Show Linear DNG in Save As with a clear RAW requirement, and place layered
+  TIFF alongside ordinary TIFF in the same format list.
+
 ## [1.75.4] - 2026-11-05
 
 ### Added

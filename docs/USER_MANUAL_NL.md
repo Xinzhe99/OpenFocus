@@ -60,6 +60,8 @@ Het CLI-equivalent is bijvoorbeeld `python main.py --input ./png-stack --output 
 
 ### Ondersteunde uitvoerformaten
 
+Bij **Opslaan als** bewaart gewone TIFF het resultaat als één afbeelding; TIFF met lagen bevat de bronframes als lagen. Linear DNG staat altijd in de lijst, maar opslaan vereist een camera-lineair resultaat zonder ingebakken bewerkingen uit **Native RAW openen**, met camerakalibratie.
+
 - Losse afbeeldingen: JPG, PNG, BMP, TIFF, WebP
 - Beeldreeksen: opgeslagen als mappen
 - Animaties: GIF-formaat
@@ -441,29 +443,31 @@ OpenFocus biedt tien fusiealgorithmen plus een modus met alleen uitlijning. Een 
 
 ### StackMFF (V1, deep learning)
 
-- **Algoritme**: een 3D U-Net dat de gefuseerde luma van de hele stapel in één pass voorspelt; Cb/Cr komen uit het bronframe dat het dichtst bij die luma ligt
+- **Algoritme**: een aandacht netwerk op één schaal mengt de luma van de bronframes met softmax-gewichten; Cb/Cr komen uit het bronframe waarvan de luma het dichtst bij de gefuseerde luma ligt
 - **Het beste voor**: neurale fusie van een volledige focusstapel
-- **Voordelen**: geen parameters, kleuren blijven binnen het gamut; de volgorde kan het resultaat beïnvloeden
-- **Opmerking**: 6 miljoen parameters; grotere stapels profiteren van GPU-versnelling
+- **Voordelen**: geen parameters, kleuren blijven binnen het gamut; de gefuseerde luma is onafhankelijk van de framevolgorde, maar chroma kan verschillen bij gelijke luma-afstanden
+- **Opmerking**: ongeveer 156.172 parameters; grotere stapels profiteren van GPU-versnelling
 
 ### StackMFF V2 (deep learning)
 
-- **Algoritme**: focusschatting per laag, verfijnd door een bidirectionele recurrente laag; het netwerk regresseert de focusindex en bemonstert de stapel. **De frames moeten in hun oorspronkelijke focusvolgorde blijven** — omkeren is voor deze methode uitgeschakeld
+- **Algoritme**: een aandacht netwerk op één schaal normaliseert de verwachte focusediepte en bemonstert het dichtstbijzijnde bronframe. Diepte-indices hangen af van de stapelvolgorde. **De frames moeten in hun oorspronkelijke focusvolgorde blijven** — omkeren is voor deze methode uitgeschakeld
 - **Dieptekaarten**: ondersteund; meldt de bemonsterde focuslaag
 - **Het beste voor**: continue focusreeksen waarbij een zeer klein, snel model belangrijk is
-- **Vereisten**: PyTorch; ongeveer 0,05 miljoen parameters; geen instellingen
+- **Vereisten**: ONNX Runtime en het meegeleverde ONNX-model.
 
 ### StackMFF V3 (deep learning)
 
-- **Algoritme**: pixelgewijze bronclassificatie (vereist PyTorch). Het netwerk voorspelt voor elke pixel uit welk invoerframe die komt en mengt de frames vervolgens op basis van die waarschijnlijkheden of kiest één frame
+- **Algoritme**: pixelgewijze bronclassificatie (ONNX Runtime). Het netwerk voorspelt voor elke pixel uit welk invoerframe die komt en mengt de frames vervolgens op basis van die waarschijnlijkheden of kiest één frame
 - **AI-uitvoer** (rechterpaneel, alleen voor deze methode):
   - **Zachte menging (gewogen)** — standaard; elke pixel is een waarschijnlijkheidsgewogen mix van de frames. Vloeiende overgangen, geen harde naden; komt overeen met de in het paper gerapporteerde configuratie
   - **Harde keuze (één frame)** — elke pixel wordt gekopieerd uit het waarschijnlijkste frame. Scherpere selectie zonder interpolatie tussen frames; waar twee frames gelijk staan, kan een naad op pixelniveau verschijnen
 - **Het beste voor**: hoogste kwaliteit wanneer een GPU beschikbaar is
-- **Voordelen**: volgordeonafhankelijk (de framevolgorde verandert het resultaat nooit), elke stapellengte, geen methode-specifieke afstelling, automatische optimalisatie
-- **Vereisten**: PyTorch-installatie, optionele CUDA-GPU (geen torchvision)
-- **Opmerking**: mogelijk niet beschikbaar als PyTorch niet is geïnstalleerd
-- **Standaard**: Zonder opgeslagen keuze start een nieuwe sessie met StackMFF V3. Als PyTorch niet beschikbaar is, meldt OpenFocus dat en biedt het een andere methode aan.
+- **Voordelen**: volgordeonafhankelijk (de framevolgorde verandert het resultaat nooit), stapellengtes binnen de beschikbare middelen, geen methode-specifieke afstelling, automatische optimalisatie
+- **Vereisten**: ONNX Runtime en het meegeleverde ONNX-model.
+
+Elke neurale tegel gebruikt alle frames. Bronframes en tijdelijke uitlijngegevens kunnen op schijf staan; vrije schijfruimte en beschikbaar geheugen begrenzen de stapelgrootte. Ruimtelijke V2-tegels benaderen inferentie op de volledige afbeelding.
+
+- **Standaard**: StackMFF V3.
 
 ### OpenFocus A / B / C
 
@@ -509,7 +513,7 @@ Kies **Alleen uitlijning (geen fusie)** om de stapel te registreren en één sta
 | DCT | Gemiddeld | Goed | Texturen |
 | DTCWT | Gemiddeld | Zeer goed | Complexe scènes |
 | GFG-FGF | Snel | Goed | Focusgebieden |
-| StackMFF (V1) | Langzaam (GPU) | Hier niet beoordeeld | Neurale stapelfusie; volgorde kan het resultaat beïnvloeden |
+| StackMFF (V1) | Langzaam (GPU) | Hier niet beoordeeld | Luma onafhankelijk van volgorde; chroma kan verschillen bij gelijke luma-afstanden |
 | StackMFF V2 | Snel (GPU) | Hier niet beoordeeld | Continue focusreeksen met een klein model |
 | StackMFF V3 | Langzaam (GPU) | Uitstekend | Beste kwaliteit |
 | OpenFocus A | Afhankelijk van stapel | Afhankelijk van stapel | Meerschalige focusselectie |
@@ -576,7 +580,7 @@ Fusie kan nog steeds een lokaal defect achterlaten — een halo rond een contras
 5. Houd `Tab` ingedrukt om het resultaat vóór deze sessie te zien en `Alt` om een glimp van het bronframe op te vangen. De scherptereferentie is optioneel, dekt alleen het broncanvas en gebruikt één gedeelde schaal voor elk frame.
 6. `Ctrl+Z` / `Ctrl+Y` maken hele streken ongedaan en herhalen ze. **Alles herstellen…** is één ongedaan-maakbare stap. **Toepassen als nieuwe uitvoer** voegt een item met de naam `<naam> · Geretoucheerd N` toe en selecteert het; het origineel blijft onaangetast. Het nieuwe item is gemarkeerd als *Niet geëxporteerd* tot je het vanuit het hoofdvenster exporteert, en OpenFocus beschermt het tegen automatische verdringing uit de geschiedenis en tegen afsluiten zonder beslissing.
 
-Pas de retouche toe als nieuwe uitvoer en kies daarna in het hoofdvenster met rechtsklik op die uitvoer **TIFF met lagen exporteren…** om het samen met zijn bronframes op te slaan. Live labels en schaalbalken worden niet meegenomen; niet-opgeslagen annotatiewijzigingen blijven beschermd. Brongeometrie en geldigheidsmaskers blijven behouden. Het resultaat en de bronnen moeten ondoorzichtige RGB- of grijstintenafbeeldingen met overeenkomende 8- of 16-bitdiepte zijn, en elke bronrechthoek moet binnen het resultaat passen. De export ondersteunt maximaal 128 bronnen; bronnamen zijn beperkt tot 255 tekens en mogen geen NUL of tekens buiten de Basic Multilingual Plane bevatten, zoals veel emoji. Onveilige contexten en taken die naar schatting meer dan 512 MiB werkgeheugen of het beschikbare RAM-budget overschrijden, worden geweigerd en de fout wordt gemeld in plaats van een onvolledige export te schrijven. GIMP 3.2.6 op Windows importeert de 8- en 16-bitlagen, inclusief hun offsets en transparante registratievulling. Het resultaat is zichtbaar en bronlagen zijn verborgen; GIMP voegt ook een zichtbare achtergrondlaag toe. Andere editors zijn niet getest.
+Pas de retouche toe als nieuwe uitvoer, selecteer deze en open **Opslaan als**. Kies TIFF met lagen in de indelinglijst om het resultaat met zijn bronframes op te slaan. Live labels en schaalbalken worden niet meegenomen; niet-opgeslagen annotatiewijzigingen blijven beschermd. Brongeometrie en geldigheidsmaskers blijven behouden. Het resultaat en de bronnen moeten ondoorzichtige RGB- of grijstintenafbeeldingen met overeenkomende 8- of 16-bitdiepte zijn, en elke bronrechthoek moet binnen het resultaat passen. De export ondersteunt maximaal 128 bronnen; bronnamen zijn beperkt tot 255 tekens en mogen geen NUL of tekens buiten de Basic Multilingual Plane bevatten, zoals veel emoji. Onveilige contexten en taken die naar schatting meer dan 512 MiB werkgeheugen of het beschikbare RAM-budget overschrijden, worden geweigerd en de fout wordt gemeld in plaats van een onvolledige export te schrijven. GIMP 3.2.6 op Windows importeert de 8- en 16-bitlagen, inclusief hun offsets en transparante registratievulling. Het resultaat is zichtbaar en bronlagen zijn verborgen; GIMP voegt ook een zichtbare achtergrondlaag toe. Andere editors zijn niet getest.
 
 Voor een lokale toonaanpassing kies je **Belichtingspenseel**, stel je het bedrag in honderdsten van een stop in (100 verdubbelt de pixelwaarden, −100 halveert ze) en schilder je op het resultaat. Het voorbeeld wordt tijdens het schilderen bijgewerkt. Elke streek past het huidige resultaat één keer aan, ook waar de stippen overlappen; een volgende streek bouwt daarop voort. Penseeldekking en hardheid regelen de menging. Hooglichten kunnen clipping vertonen bij het ophogen. Houd **Voor** ingedrukt om te vergelijken met het resultaat zoals geopend, druk tijdens een streek op Escape om die te annuleren, of gebruik ongedaan maken en opnieuw uitvoeren na de streek. Dit zijn pixelbewerkingen, geen aanpasbare lagen. Pas toe als nieuwe uitvoer en exporteer het nieuwe item om de bewerkte pixels op te slaan; een project bewaart die pixels niet.
 
@@ -678,7 +682,7 @@ De planner houdt rekening met fysieke cores, CPU-affiniteit en quota en voert é
 
 ### GPU-versnelling
 
-OpenFocus gebruikt de GPU (CUDA/MPS) alleen voor de neurale AI-modellen (StackMFF V1/V2/V3); klassieke algoritmen en de registratie van de toepassing draaien op de CPU. De uitdrukkelijke CuPy-registratie op laag niveau is een aparte numerieke backend.
+StackMFF V1/V2/V3 gebruiken ONNX Runtime. DirectML op Windows en CoreML op macOS kunnen inferentie versnellen; anders wordt de CPU gebruikt. Beschikbaarheid van een provider bewijst geen GPU-uitvoering. Ondersteuning voor andere GPU’s vereist validatie.
 
 - Schakel via **Instellingen → GPU-versnelling**
 - Uitschakelen dwingt de neurale methoden naar de CPU — nuttig wanneer GPU-stuurprogramma's problemen geven
@@ -800,7 +804,7 @@ Wanneer je resultaten uit de uitvoerlijst sleept, worden beeldbestanden geschrev
 - **BMP**: ongecomprimeerd, zet 16-bitbeeldgegevens om naar 8 bit
 - **TIFF**: behoudt 8- en 16-bitgegevens; meerbladige export bewaart de hele stapel in één bestand
 - **GIF**: animatie met 8-bitpalet; annuleren laat een bestaand doel ongewijzigd
-- **TIFF met lagen**: via het contextmenu van een geretoucheerde uitvoer; bewaart resultaat en bronframes met geometrie en geldigheidsmaskers
+- **TIFF met lagen**: via de indelinglijst van **Opslaan als**; bewaart resultaat en bronframes met geometrie en geldigheidsmaskers
 
 ---
 
@@ -1009,8 +1013,7 @@ Exitcodes: `0` succes, `1` verwerkingsfout, `2` gebruiksfout. `python main.py --
 
 #### AI niet beschikbaar
 
-- Installeer PyTorch: `pip install torch` (torchvision is niet nodig)
-- Installeer voor GPU-ondersteuning een CUDA-versie van PyTorch
+- Controleer ONNX Runtime en het meegeleverde model.
 - Controleer via **Help → Omgevingsinfo**
 
 #### Fouten door te weinig geheugen

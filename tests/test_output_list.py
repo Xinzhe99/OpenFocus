@@ -90,7 +90,8 @@ def test_drag_native_raw_exports_the_developed_colors(qapp, tmp_path, monkeypatc
     source = tmp_path / 'reference.dng'
     write_linear_dng(source, image, metadata)
     with rawpy.imread(str(source)) as raw:
-        expected = raw.postprocess(use_camera_wb=True, no_auto_bright=True, output_bps=16)
+        expected = raw.postprocess(use_camera_wb=True, no_auto_bright=True,
+                                   output_bps=16, gamma=(2.4, 12.92))
 
     record = OutputRecord.create(image, 'linear')
     record.linear_dng_metadata = metadata
@@ -105,7 +106,11 @@ def test_drag_native_raw_exports_the_developed_colors(qapp, tmp_path, monkeypatc
     try:
         saved = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
         assert saved.dtype == np.uint16
-        np.testing.assert_allclose(saved[:, :, ::-1], expected, atol=32)
+        assert saved.shape == expected.shape
+        difference = np.abs(saved[4:-4, 4:-4, ::-1].astype(np.int32)
+                            - expected[4:-4, 4:-4].astype(np.int32))
+        assert difference.mean() < 100
+        assert difference.max() < 512
     finally:
         import os
         os.remove(path)

@@ -311,3 +311,26 @@ def test_template_write_failure_preserves_destination(tmp_path, monkeypatch):
     with pytest.raises(OSError, match='replace failed'):
         project_file.save_template(_window(paths, str(tmp_path / 'stack')), destination)
     assert destination.read_text(encoding='utf-8') == 'original'
+
+
+@pytest.mark.parametrize("calibration", [True, 0, -1, "2", float("nan"), float("inf")])
+def test_rejects_invalid_saved_source_calibration(tmp_path, calibration):
+    paths = _make_stack(str(tmp_path / "sources"), n=1)
+    state = project_file._collect_state(_window(paths, str(tmp_path)))
+    state["source_px_um"] = calibration
+    path = tmp_path / "invalid.ofproj"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    ok, error, _ = project_file.validate_project(str(path))
+    assert not ok
+    assert error == "invalid source pixel calibration"
+
+
+def test_rejects_invalid_snapshot_physical_scale(tmp_path):
+    paths = _make_stack(str(tmp_path / "sources"), n=1)
+    state = project_file._collect_state(_window(paths, str(tmp_path)))
+    state["frame_order"][0].update(snapshot=True, snapshot_scale=0)
+    path = tmp_path / "invalid.ofproj"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    ok, error, _ = project_file.validate_project(str(path))
+    assert not ok
+    assert error == "invalid frame scale"

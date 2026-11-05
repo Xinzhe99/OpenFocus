@@ -1,174 +1,92 @@
-# -*- coding: utf-8 -*-
-"""Admission for the neural adapters on CUDA/ROCm/XPU/MPS/CPU.
-
-Uses a fake torch module so the tests pin the decision and the budget gate
-without requiring a GPU, or even torch, to be installed.
-"""
-import types
-
+"""Memory admission and device fallback for ONNX neural inference."""
 import numpy as np
 import pytest
 
-from core import resource_policy, torch_backend
-from fusion_methods import neural_common
-from fusion_methods import stackmffv3 as v3
+from core import resource_policy
+from fusion_methods import neural_runtime
+from fusion_methods import stackmff_v1 as v1, stackmff_v2 as v2, stackmffv3 as v3
 
 GiB = 1024 ** 3
 
 
-class FakeDevice:
-    def __init__(self, name):
-        self.type = name.split(":")[0]
-
-    def __str__(self):
-        return self.type
-
-
-class FakeCuda:
-    def __init__(self, available=True):
-        self.available = available
-
-    def is_available(self):
-        return self.available
-
-
-class FakeXpu(FakeCuda):
-    pass
-
-
-class FakeMps:
-    def is_available(self):
-        return True
-
-    def empty_cache(self):
-        pass
-
-
-class FakeBackends:
-    def __init__(self, mps=None):
-        self.mps = mps
-
-
-class FakeTorch:
-    def __init__(self, kind="CPU", hip=None):
-        self.version = types.SimpleNamespace(hip=hip, cuda=None)
-        self.cuda = FakeCuda(available=kind in ("CUDA", "ROCM"))
-        self.xpu = FakeXpu(available=kind == "XPU")
-        self.mps = FakeMps() if kind == "MPS" else None
-        self.backends = FakeBackends(FakeMps() if kind == "MPS" else None)
-
-    def device(self, name):
-        return FakeDevice(name)
-
-    def set_num_threads(self, count):
-        pass
-
-
-def _frames(size=(8, 8)):
-    return [np.zeros((*size, 3), np.uint8), np.ones((*size, 3), np.uint8)]
-
-
-def _model_file(tmp_path):
-    path = tmp_path / "model.pth"
-    path.write_bytes(b"weights" * 256)
-    return str(path)
-
-
-def _snapshot(kind, free_vram=0, total_vram=0):
+def _snapshot(kind='CPU', free_vram=0, total_vram=0, available_ram=8 * GiB):
     return resource_policy.ResourceSnapshot(
-        available_ram=8 * GiB, total_ram=16 * GiB,
-        physical_cores=8, logical_cpus=8,
-        device_kind=kind, free_vram=free_vram, total_vram=total_vram)
+        available_ram=available_ram, total_ram=16 * GiB,
+        physical_cores=4, logical_cpus=4, device_kind=kind,
+        free_vram=free_vram, total_vram=total_vram)
 
 
-@pytest.mark.parametrize("algorithm,kind", [
-    ("stackmff", "ROCM"),
-    ("stackmffv2", "XPU"),
-])
-def test_shared_plan_accounts_for_rocm_and_xpu_device_memory(
-        monkeypatch, tmp_path, algorithm, kind):
-    fake = FakeTorch(kind=kind, hip="6.2" if kind == "ROCM" else None)
-    monkeypatch.setattr(torch_backend, "_XPU_AVAILABLE", kind == "XPU")
-    monkeypatch.setattr(neural_common, "torch", fake)
-    monkeypatch.setattr(resource_policy, "probe_resources",
-                        lambda _kind: _snapshot(kind, 6 * GiB, 8 * GiB))
-    device, plan = neural_common.plan_inference(
-        algorithm, _frames(), _model_file(tmp_path), True, 2, "balanced",
-        None, workspace_bytes=GiB, host_bytes=1024)
-    assert device.type == ("cuda" if kind == "ROCM" else "xpu")
-    assert plan.device_kind == kind
-    assert plan.vram_budget > 0
-    assert plan.native_threads == 2
+def _frames():
+    return [np.full((8, 8, 3), value, np.uint8) for value in (10, 90, 170)]
 
 
-@pytest.mark.parametrize("algorithm", ["stackmff", "stackmffv2"])
-def test_unknown_device_memory_refuses_instead_of_running_unbounded(
-        monkeypatch, tmp_path, algorithm):
-    fake = FakeTorch(kind="XPU")
-    monkeypatch.setattr(torch_backend, "_XPU_AVAILABLE", True)
-    monkeypatch.setattr(neural_common, "torch", fake)
-    monkeypatch.setattr(resource_policy, "probe_resources",
-                        lambda _kind: _snapshot("XPU"))
-    with pytest.raises(resource_policy.ResourceLimitError,
-                       match="Insufficient or unknown"):
-        neural_common.plan_inference(
-            algorithm, _frames(), _model_file(tmp_path), True, 2, "balanced",
-            None, workspace_bytes=GiB, host_bytes=1024)
+@pytest.mark.parametrize('adapter', [v1, v2, v3])
+@pytest.mark.parametrize('device', ['CPU', 'DIRECTML', 'COREML'])
+def test_all_adapters_admit_host_memory_before_session(monkeypatch, adapter, device):
+    monkeypatch.setattr(neural_runtime, 'resolve_device', lambda _: device)
+    if adapter is v3:
+        monkeypatch.setattr(v3, '_resolve_device', lambda _: device)
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *a, **k: _snapshot())
+    _, actual_device, plan = adapter._prepare_inference(
+        _frames(), 'model.onnx', device != 'CPU', thread_count=2)
+    assert actual_device == device
+    assert plan.native_threads <= 2
+    assert plan.ram_budget > 0
+
+    monkeypatch.setattr(resource_policy, 'probe_resources',
+                        lambda *a, **k: _snapshot(available_ram=1024))
+    with pytest.raises(resource_policy.ResourceLimitError):
+        adapter._prepare_inference(_frames(), 'model.onnx', device != 'CPU')
 
 
-def test_mps_budget_uses_shared_memory_and_refuses_when_unknown(
-        monkeypatch, tmp_path):
-    fake = FakeTorch(kind="MPS")
-    monkeypatch.setattr(torch_backend, "_XPU_AVAILABLE", False)
-    monkeypatch.setattr(neural_common, "torch", fake)
-    monkeypatch.setattr(resource_policy, "probe_resources",
-                        lambda _kind: _snapshot("MPS"))
-    monkeypatch.setattr(torch_backend, "mps_memory", lambda _module: None)
-    with pytest.raises(resource_policy.ResourceLimitError,
-                       match="Cannot determine the MPS"):
-        neural_common.plan_inference(
-            "stackmffv2", _frames(), _model_file(tmp_path), True, 25,
-            "balanced", None, workspace_bytes=GiB, host_bytes=1024)
+@pytest.mark.parametrize('kind', ['DIRECTML', 'CUDA', 'ROCM', 'XPU'])
+@pytest.mark.parametrize('free,total', [(0, 0), (GiB // 2, 8 * GiB)])
+def test_insufficient_or_unknown_device_memory_falls_back_before_inference(
+        monkeypatch, kind, free, total):
+    if kind not in neural_runtime._PROVIDER:
+        pytest.skip(f'{kind} ONNX provider is not supported by this runtime')
+    devices = []
+
+    class Session:
+        def run(self, _outputs, inputs):
+            return [np.zeros_like(inputs['input'])]
+
+    monkeypatch.setattr(neural_runtime, '_session',
+                        lambda path, shape, device, threads: devices.append(device) or Session())
+    monkeypatch.setattr(neural_runtime, '_DEVICE', kind)
+    monkeypatch.setattr(resource_policy, 'probe_resources',
+                        lambda *a, **k: _snapshot(kind, free, total))
+    neural_runtime.start_inference_job()
+    planes = np.zeros((1, 3, 64, 64), np.float32)
+    result = neural_runtime.logits(planes, 'model.onnx', kind, 1)
+    assert result.shape == planes.shape
+    assert devices == ['CPU']
+    assert neural_runtime.actual_device() == 'CPU'
+    assert neural_runtime.cached_device() == kind
+    neural_runtime.start_inference_job()
 
 
-class FakeModel:
-    C1 = 48
-    C2 = 96
-    single_scale = True
-    window = 8
+def test_directml_with_sufficient_budget_uses_device(monkeypatch):
+    devices = []
 
-    def modules(self):
-        return iter(())
+    class Session:
+        def run(self, _outputs, inputs):
+            return [np.zeros_like(inputs['input'])]
 
-
-def test_v3_counts_inference_workspace_as_xpu_memory(monkeypatch, tmp_path):
-    fake = FakeTorch(kind="XPU")
-    device = FakeDevice("xpu")
-    monkeypatch.setattr(v3, "torch", fake)
-    monkeypatch.setattr(v3, "_resolve_device", lambda _use_gpu: device)
-    monkeypatch.setattr(v3, "_get_model_and_device",
-                        lambda *_args: (FakeModel(), device))
-    monkeypatch.setattr(resource_policy, "probe_resources",
-                        lambda _kind: _snapshot("XPU", 6 * GiB, 8 * GiB))
-    model, got_device, plan = v3._prepare_inference(
-        _frames((32, 32)), _model_file(tmp_path), True, thread_count=2)
-    assert got_device.type == "xpu"
-    assert plan.device_kind == "XPU"
-    assert plan.vram_budget > 0
-    assert plan.native_threads == 2
+    monkeypatch.setattr(neural_runtime, '_session',
+                        lambda path, shape, device, threads: devices.append(device) or Session())
+    monkeypatch.setattr(resource_policy, 'probe_resources',
+                        lambda *a, **k: _snapshot('DIRECTML', 8 * GiB, 8 * GiB))
+    neural_runtime.start_inference_job()
+    neural_runtime.logits(np.zeros((1, 3, 64, 64), np.float32), 'model.onnx', 'DIRECTML', 1)
+    assert devices == ['DIRECTML']
+    assert neural_runtime.actual_device() == 'DIRECTML'
+    neural_runtime.start_inference_job()
 
 
-def test_v3_refuses_an_unreadable_mps_budget_before_loading(monkeypatch, tmp_path):
-    fake = FakeTorch(kind="MPS")
-    device = FakeDevice("mps")
-    monkeypatch.setattr(v3, "torch", fake)
-    monkeypatch.setattr(v3, "_resolve_device", lambda _use_gpu: device)
-    monkeypatch.setattr(resource_policy, "probe_resources",
-                        lambda _kind: _snapshot("MPS"))
-    monkeypatch.setattr(torch_backend, "mps_memory", lambda _module: None)
-    monkeypatch.setattr(v3, "_get_model_and_device",
-                        lambda *_args: pytest.fail("model loaded without a budget"))
-    with pytest.raises(resource_policy.ResourceLimitError,
-                       match="Cannot determine the MPS"):
-        v3._prepare_inference(_frames((32, 32)), _model_file(tmp_path), True,
-                              thread_count=2)
+def test_coreml_shared_memory_requires_host_admission(monkeypatch):
+    monkeypatch.setattr(neural_runtime, 'resolve_device', lambda _: 'COREML')
+    monkeypatch.setattr(resource_policy, 'probe_resources',
+                        lambda *a, **k: _snapshot('COREML', available_ram=1024))
+    with pytest.raises(resource_policy.ResourceLimitError):
+        v2._prepare_inference(_frames(), 'model.onnx', True)

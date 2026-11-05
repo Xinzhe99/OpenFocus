@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 
 from core.registration import RegistrationCancelled
+from utils.image_utils import read_image_exif
 
 
 class SensorCleanupCancelled(RegistrationCancelled):
@@ -60,9 +61,11 @@ def validate_sensor_source_orientation(paths, cancel_callback=None):
                             image.seek(page)
                         except EOFError:
                             break
-                        orientation = image.getexif().get(274, 1)
+                        orientation = read_image_exif(image).get(274, 1)
                         if type(orientation) is not int or orientation != 1:
                             raise ValueError(f"EXIF orientation {orientation!r} on page {page + 1}")
+                        if image.format != 'TIFF':
+                            break
                         page += 1
         except SensorCleanupCancelled:
             raise
@@ -100,13 +103,15 @@ def _cleanup_temporary_bytes(image, sensor_denoise):
     return temporary
 
 
-def require_sensor_cleanup_stack(images, defect_mask_path=None, sensor_denoise=False):
-    """Admit cleaned stack copies, mask decode and peak per-image buffers."""
+def require_sensor_cleanup_stack(images, defect_mask_path=None, sensor_denoise=False,
+                                 *, disk_backed=False):
+    """Admit cleaned copies, mask decode and peak per-image buffers."""
     if not defect_mask_path and not sensor_denoise:
         return
     from core.resource_policy import require_memory
 
-    copies = sum(image.nbytes for image in images)
+    copies = (2 * max((image.nbytes for image in images), default=0) if disk_backed
+              else sum(image.nbytes for image in images))
     temporary = max((_cleanup_temporary_bytes(image, sensor_denoise)
                      + (image.nbytes if sensor_denoise else 0)
                      for image in images), default=0)

@@ -167,10 +167,15 @@ def _bundle_with_runtimes(tmp_path, monkeypatch):
     _, core_module = _fake_package(site, "_rocm_sdk_core")
     _, custom_module = _fake_package(site, "_rocm_sdk_libraries_custom")
     _, meta_module = _fake_package(site, "rocm_sdk")
+    _, devel_package = _fake_package(site, "rocm_sdk_devel")
+    devel_module = ModuleType("rocm_sdk._devel")
+    devel_module.get_devel_root = lambda: site / "_rocm_sdk_devel"
+    monkeypatch.setitem(sys.modules, "rocm_sdk._devel", devel_module)
     for name, module in (("torch", torch_module),
                          ("_rocm_sdk_core", core_module),
                          ("_rocm_sdk_libraries_custom", custom_module),
-                         ("rocm_sdk", meta_module)):
+                         ("rocm_sdk", meta_module),
+                         ("rocm_sdk_devel", devel_package)):
         monkeypatch.setitem(sys.modules, name, module)
 
     files = {
@@ -188,6 +193,17 @@ def _bundle_with_runtimes(tmp_path, monkeypatch):
             "bin/hipblas.dll": b"hipblas",
             "bin/miopen.dll": b"miopen",
         },
+        "rocm_sdk_devel": {
+            "__init__.py": b"from ._dist_info import __version__\n",
+            "_dist_info.py": b"__version__ = '7.2.1'\n",
+        },
+        "_rocm_sdk_devel": {
+            "__init__.py": b"",
+            "include/hip/hip_runtime.h": b"hip header",
+            "include/hip/amd_detail/amd_hip_runtime.h": b"nested header",
+            "lib/llvm/amdgcn/bitcode/ocml.bc": b"device bitcode",
+            "lib/llvm/lib/clang/22/include/__clang_hip_runtime_wrapper.h": b"wrapper",
+        },
     }
     for package, entries in files.items():
         source = site / package
@@ -199,9 +215,56 @@ def _bundle_with_runtimes(tmp_path, monkeypatch):
     return bundle
 
 
-def test_verify_bundle_compares_every_runtime_dll(tmp_path, monkeypatch):
+@pytest.mark.parametrize("relative", [
+    "rocm_sdk_devel/__init__.py",
+    "rocm_sdk_devel/_dist_info.py",
+    "_rocm_sdk_devel/__init__.py",
+])
+def test_verify_bundle_requires_amd_discovery_files(
+        tmp_path, monkeypatch, capsys, relative):
     bundle = _bundle_with_runtimes(tmp_path, monkeypatch)
-    gpu.verify_bundle("rocm", str(bundle))
+    (bundle / "_internal" / relative).unlink()
+    with pytest.raises(gpu.VariantError):
+        gpu.verify_bundle("rocm", str(bundle))
+    assert relative.replace("/", os.sep) in capsys.readouterr().err
+
+
+def test_verify_bundle_rejects_unexpanded_devel_archive(tmp_path, monkeypatch, capsys):
+    bundle = _bundle_with_runtimes(tmp_path, monkeypatch)
+    _write(bundle / "_internal/rocm_sdk_devel/_devel.tar")
+    with pytest.raises(gpu.VariantError):
+        gpu.verify_bundle("rocm", str(bundle))
+    assert "unexpected bundled ROCm development archive" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("relative,change", [
+    ("include/hip/amd_detail/amd_hip_runtime.h", "missing"),
+    ("lib/llvm/amdgcn/bitcode/ocml.bc", "size"),
+    ("lib/llvm/lib/clang/22/include/__clang_hip_runtime_wrapper.h", "content"),
+])
+def test_verify_bundle_rejects_missing_or_modified_jit_resources(
+        tmp_path, monkeypatch, capsys, relative, change):
+    bundle = _bundle_with_runtimes(tmp_path, monkeypatch)
+    target = bundle / "_internal" / "_rocm_sdk_devel" / relative
+    if change == "missing":
+        target.unlink()
+    elif change == "size":
+        target.write_bytes(b"short")
+    else:
+        target.write_bytes(b"x" * target.stat().st_size)
+    with pytest.raises(gpu.VariantError):
+        gpu.verify_bundle("rocm", str(bundle))
+    assert relative.split("/")[-1] in capsys.readouterr().err
+
+
+def test_verify_bundle_rejects_incomplete_source_jit_resources(
+        tmp_path, monkeypatch, capsys):
+    bundle = _bundle_with_runtimes(tmp_path, monkeypatch)
+    (tmp_path / "site" / "_rocm_sdk_devel" /
+     "include/hip/hip_runtime.h").unlink()
+    with pytest.raises(gpu.VariantError):
+        gpu.verify_bundle("rocm", str(bundle))
+    assert "missing source include/hip/hip_runtime.h" in capsys.readouterr().err
 
 
 def test_verify_bundle_rejects_missing_dlls_and_wrong_marker(

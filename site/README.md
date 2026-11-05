@@ -43,12 +43,14 @@ does not implement the Worker download/API routes or the custom 404 page.
 ## Deploy
 
 A production deploy needs an authenticated Cloudflare account that can reach
-the `openfocus.top` zone, the `openfocus-site` Worker and the
-`openfocus-downloads` R2 bucket:
+the `openfocus.top` zone, the `openfocus-site` Worker, the
+`openfocus-downloads` R2 bucket and, if enabled, the analytics D1 database.
+Use your account-specific config when analytics is enabled: deploying the
+unbound repository template would turn statistics off.
 
 ```bash
 npx wrangler login
-npx wrangler deploy -c site/wrangler.jsonc
+npx wrangler deploy -c path/to/wrangler.analytics.jsonc
 ```
 
 `site/wrangler.jsonc` binds the production custom domains and the R2 bucket,
@@ -67,6 +69,18 @@ npx wrangler deploy -c site/wrangler.jsonc --dry-run
 `openfocus.top`, `www.openfocus.top` or the existing `openfocus-downloads`
 bucket, so it is not a preview path for this configuration.
 
+## Optional analytics
+
+Download starts can be aggregated in D1, and the desktop app can send daily
+activity reports by default (disable in Settings → Advanced Settings). Existing
+explicit opt-outs are preserved. The Worker keeps downloads working if D1
+is absent or unavailable. The admin statistics API requires a server-only
+bearer secret. See [analytics operations](../docs/WEBSITE_OPERATIONS.md#optional-private-analytics)
+for database creation, binding, migrations, secret setup, privacy, retention and
+the limits of these counts. No analytics database ID or secret is in this repo.
+The English and Chinese home pages include a privacy section linked from the
+footer; publish it before enabling the analytics binding.
+
 ## Editing
 
 | File | Holds |
@@ -74,7 +88,7 @@ bucket, so it is not a preview path for this configuration.
 | `site/site_content.py` | Copy, links and download cards; static version comes from `constants.APP_VERSION` |
 | `site/template.html` | Page structure; `{{placeholders}}` resolve from the content |
 | `site/style.css` | Design tokens (light/dark), layout, responsive rules |
-| `site/app.js` | Theme, OS-aware download button, copy button, menus |
+| `site/app.js` | Theme, OS-aware navigation download, copy button, menus; the hero shows both desktop downloads |
 | `site/worker.js` | `/` language negotiation; `www` → apex; `/api/latest` and `/download/latest/*` for website downloads; mirror-only `/api/updates` and `/download/releases/<tag>/<kind>` for desktop updates |
 | `site/install.sh` | macOS app installer + Linux CLI installer (`curl … | sh`, `--dry-run`) |
 | `site/install.ps1` | Windows installer (`irm … | iex`, `OPENFOCUS_DRY_RUN=1`) |

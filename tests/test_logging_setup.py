@@ -204,16 +204,24 @@ def test_feedback_includes_current_crash_and_tolerates_vanished_history(log_fold
         assert "already_removed.log" not in archive.namelist()
 
 
-def test_feedback_export_reports_unchecked_gpu(log_folder, monkeypatch, tmp_path):
-    from core import torch_backend
+@pytest.mark.parametrize("kind,hint,expected", [
+    (None, None, "not checked"),
+    ("CPU", True, "False"),
+    ("DIRECTML", False, "True"),
+])
+def test_feedback_export_reports_neural_gpu_status(log_folder, monkeypatch, tmp_path,
+                                                   kind, hint, expected):
+    from core import multi_focus_fusion
+    from fusion_methods import neural_runtime
     from utils import platform_utils
 
-    monkeypatch.setattr(torch_backend, "cached_kind", lambda: None)
-    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", None)
+    monkeypatch.setattr(neural_runtime, "_DEVICE", kind)
+    monkeypatch.setattr(multi_focus_fusion, "_NEURAL_DEVICE_KIND", None)
+    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", hint)
     report = logs.export_feedback_package(tmp_path / "report.zip")
     with zipfile.ZipFile(report) as archive:
         facts = archive.read("system.txt").decode("utf-8")
-    assert "gpu (cuda/rocm/xpu/mps): not checked" in facts
+    assert f"gpu (neural acceleration): {expected}" in facts
 
 
 @pytest.mark.parametrize("code,outcome", [(0, "completed"), (2, "failed")])
@@ -226,3 +234,55 @@ def test_system_exit_keeps_code_without_inventing_a_cancellation(log_folder, cod
     assert f"event=command.{outcome}" in text
     assert "event=command.cancelled" not in text
     assert "Traceback" not in text
+
+
+def test_feedback_bounds_log_tails_and_explains_omissions(log_folder, monkeypatch, tmp_path):
+    from utils import diagnostics
+    monkeypatch.setattr(diagnostics, '_crash_path', None)
+    monkeypatch.setattr(logs, 'MAX_BYTES', 100)
+    monkeypatch.setattr(logs, 'FEEDBACK_MAX_LOG_BYTES', 150)
+    monkeypatch.setattr(logs, 'FEEDBACK_MAX_LOG_FILES', 2)
+    paths = [log_folder / f'history-{index}.log' for index in range(3)]
+    for index, path in enumerate(paths):
+        path.write_bytes(b'old:' + bytes([65 + index]) * 200)
+    monkeypatch.setattr(logs, 'all_log_files', lambda: paths)
+    report = logs.export_feedback_package(tmp_path / 'bounded.zip')
+    with zipfile.ZipFile(report) as archive:
+        assert archive.read('logs/history-0.log') == b'A' * 100
+        assert archive.read('logs/history-1.log') == b'B' * 50
+        assert 'logs/history-2.log' not in archive.namelist()
+        index = archive.read('diagnostic_index.txt').decode('utf-8')
+        assert 'older bytes trimmed' in index
+        assert 'Omitted 1 older log files' in index
+        assert 'operation=<id>' in index
+        assert '.cancelled' in index
+
+
+def test_feedback_file_limit_also_bounds_unavailable_index(log_folder, monkeypatch, tmp_path):
+    from utils import diagnostics
+    monkeypatch.setattr(diagnostics, '_crash_path', None)
+    monkeypatch.setattr(logs, 'FEEDBACK_MAX_LOG_FILES', 2)
+    paths = [log_folder / f'missing-{index}.log' for index in range(10)]
+    monkeypatch.setattr(logs, 'all_log_files', lambda: paths)
+    report = logs.export_feedback_package(tmp_path / 'missing.zip')
+    with zipfile.ZipFile(report) as archive:
+        index = archive.read('diagnostic_index.txt').decode('utf-8')
+        assert index.count('Unavailable:') == 2
+        assert 'Omitted 8 older log files' in index
+
+
+@pytest.mark.parametrize('view', ['contiguous', 'columns', 'reversed', 'transposed'])
+def test_image_result_fingerprint_matches_c_order_pixels(view):
+    import hashlib
+    import numpy as np
+
+    image = np.arange(7 * 9 * 3, dtype=np.uint16).reshape(7, 9, 3)
+    if view == 'columns':
+        image = image[:, ::2]
+    elif view == 'reversed':
+        image = image[::-1]
+    elif view == 'transposed':
+        image = image.transpose(1, 0, 2)
+    details = logs.image_result_details(image)
+    assert details == {'shape': image.shape, 'dtype': 'uint16',
+                       'sha256': hashlib.sha256(image.tobytes(order='C')).hexdigest()}

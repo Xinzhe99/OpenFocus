@@ -24,6 +24,14 @@ def setup_menus(window: QMainWindow) -> None:
     window.ui_objs['action_open_folder'] = open_action
 
     linear_raw_action = QAction(trans.t('linear_raw_open'), window)
+    def update_linear_raw_hint():
+        hint = trans.t('linear_raw_profile_hint')
+        linear_raw_action.setToolTip(hint)
+        linear_raw_action.setStatusTip(hint)
+
+    update_linear_raw_hint()
+    file_menu.setToolTipsVisible(True)
+    file_menu.aboutToShow.connect(update_linear_raw_hint)
     linear_raw_action.triggered.connect(window.source_manager.prompt_and_load_linear_raw)
     file_menu.addAction(linear_raw_action)
     window.ui_objs['linear_raw_open'] = linear_raw_action
@@ -243,6 +251,22 @@ def setup_menus(window: QMainWindow) -> None:
     batch_menu.addAction(compare_action)
     window.ui_objs['action_method_compare'] = compare_action
 
+    mosaic_action = QAction(trans.t('mosaic_title'), window)
+    mosaic_action.setProperty('trans_key', 'mosaic_title')
+    mosaic_action.triggered.connect(window.show_mosaic_dialog)
+    batch_menu.addAction(mosaic_action)
+    window.ui_objs['mosaic_title'] = mosaic_action
+
+    def open_converter():
+        from dialogs.batch_converter import BatchConverterDialog
+        BatchConverterDialog(window).exec()
+
+    converter_action = QAction(trans.t('converter_title'), window)
+    converter_action.setProperty('trans_key', 'converter_title')
+    converter_action.triggered.connect(open_converter)
+    batch_menu.addAction(converter_action)
+    window.ui_objs['converter_title'] = converter_action
+
     # Rendering group | analysis group | annotation group
     batch_menu.addSeparator()
 
@@ -337,6 +361,7 @@ def setup_menus(window: QMainWindow) -> None:
     remove_menu.addAction(window.del_all_labels_action)
     window.ui_objs['action_del_all_labels'] = window.del_all_labels_action
 
+
     # --- Settings Menu ---
     settings_menu = menubar.addMenu(trans.t('menu_settings'))
     window.ui_objs['menu_settings'] = settings_menu
@@ -358,12 +383,12 @@ def setup_menus(window: QMainWindow) -> None:
     # flip often enough to deserve a click instead of two.
     gpu_action = QAction(trans.t('action_gpu_accel'), window)
     gpu_action.setCheckable(True)
-    from core import torch_backend
-    from core.multi_focus_fusion import is_ai_fusion_available, torch_device_kind
-    _gpu_kind = torch_device_kind()
-    _torch_installed = is_ai_fusion_available() if _gpu_kind is None else False
-    _gpu_enabled, _gpu_checked = torch_backend.gpu_toggle_state(
-        _gpu_kind, getattr(window, 'use_gpu', True), _torch_installed)
+    from fusion_methods import neural_runtime
+    from core.multi_focus_fusion import is_ai_fusion_available, neural_device_kind
+    _gpu_kind = neural_device_kind()
+    _runtime_installed = is_ai_fusion_available() if _gpu_kind is None else False
+    _gpu_enabled, _gpu_checked = neural_runtime.gpu_toggle_state(
+        _gpu_kind, getattr(window, 'use_gpu', True), _runtime_installed)
     gpu_action.setChecked(_gpu_checked)
     gpu_action.setEnabled(_gpu_enabled)
     gpu_action.setToolTip(trans.t('msg_gpu_accel_hint') if _gpu_enabled
@@ -373,7 +398,7 @@ def setup_menus(window: QMainWindow) -> None:
     window.ui_objs['action_gpu_accel'] = gpu_action
     # Resolve the backend in the background when the user opens Settings.
     # Device probing must never delay menu construction.
-    if _gpu_kind is None and _torch_installed and hasattr(
+    if _gpu_kind is None and _runtime_installed and hasattr(
             window, '_probe_device_kind_async'):
         settings_menu.aboutToShow.connect(window._probe_device_kind_async)
 
