@@ -300,7 +300,7 @@ Questions, ideas or feedback? Join our [Discord community](https://discord.gg/af
 
 <img src="assets/readme/wechat-group.jpg" alt="QR code for the OpenFocus WeChat group" width="260">
 
-**Support OpenFocus:** If you enjoy the software, you can buy us a coffee via Alipay. Include your username in the payment note and we will permanently acknowledge it in the project as a thank-you.
+**Support OpenFocus:** If you enjoy the software, you can buy us a coffee via Alipay in China or [PayPal](https://paypal.me/openfocus) internationally. Include your username in the payment note and we will permanently acknowledge it in the project as a thank-you.
 
 <img src="assets/readme/alipay-coffee.jpg" alt="Alipay QR code to support OpenFocus" width="260">
 
