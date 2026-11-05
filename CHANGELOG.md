@@ -33,6 +33,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate license terms documented in `docs/THIRD_PARTY_NOTICES.md`.
 
 ### Fixed
+- Prevent a Conda ICU DLL from shadowing Windows ICU in packaged builds, and
+  verify layered TIFF through the current Save As workflow during release smoke tests.
 - Admit each directory fusion input before decoding, including StackMFF's
   direct and tiled paths, so oversized frames are rejected safely.
 - Preserve non-ASCII paths when classical methods read a source directory, and

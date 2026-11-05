@@ -110,8 +110,8 @@ def _exercise(executable: Path, environment: dict, root: Path,
     if not np.any(result % 257):
         raise RuntimeError("Packaged desktop export lost 16-bit precision")
 
-    # Exercise the actual output-list action so packaged lazy imports and
-    # the 16-bit Photoshop layer tag are checked on both release platforms.
+    # Exercise Save As and its layered TIFF filter so the actual output-list
+    # path and the 16-bit Photoshop layer tag are checked on both platforms.
     from locales import trans
     from psdtags import PsdKey, TiffImageSourceData
 
@@ -129,11 +129,12 @@ def _exercise(executable: Path, environment: dict, root: Path,
     else:
         raise RuntimeError("Packaged output menu did not open")
     actions = _call(executable, environment, "ui.menu").get("actions", [])
-    labels = {table.get("action_export_layered_tiff")
-              for table in trans.translations.values()}
-    action = next((entry for entry in actions if entry.get("text") in labels), None)
+    layered_filters = {table.get("action_save_as"): table.get("layered_tiff_filter")
+                       for table in trans.translations.values()
+                       if table.get("action_save_as") and table.get("layered_tiff_filter")}
+    action = next((entry for entry in actions if entry.get("text") in layered_filters), None)
     if action is None or not action.get("enabled"):
-        raise RuntimeError("Packaged layered TIFF action is unavailable")
+        raise RuntimeError("Packaged Save As action is unavailable")
     _call(executable, environment, "ui.menu", "--index", str(action["index"]))
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -143,6 +144,11 @@ def _exercise(executable: Path, environment: dict, root: Path,
         time.sleep(0.1)
     else:
         raise RuntimeError("Packaged layered TIFF file dialog did not open")
+    filters = _call(executable, environment, "ui.find", "--object-name", "fileTypeCombo").get("matches", [])
+    if len(filters) != 1:
+        raise RuntimeError(f"Packaged Save As file-type selector was not found: {filters}")
+    _call(executable, environment, "ui.set", "--path", filters[0]["path"],
+          "--value", layered_filters[action["text"]])
     layered = root / "layered.tif"
     _call(executable, environment, "dialog.file", "--path", str(layered))
     deadline = time.monotonic() + 90

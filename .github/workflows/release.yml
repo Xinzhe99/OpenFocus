@@ -138,6 +138,11 @@ jobs:
             $p = Join-Path $root "_internal/$dir"
             if (Test-Path $p) { Remove-Item -Path $p -Recurse -Force }
           }
+          # Qt expects the unversioned Windows ICU API. A Conda icuuc.dll can
+          # shadow it while exporting only version-suffixed symbols, causing
+          # QtWidgets to fail at startup with STATUS_ENTRYPOINT_NOT_FOUND.
+          $icu = Join-Path $root "_internal/icuuc.dll"
+          if (Test-Path $icu) { Remove-Item -Path $icu -Force }
           $before = (Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum
           Write-Output ("bundle after prune: {0:N0} MB" -f ($before/1MB))
 
