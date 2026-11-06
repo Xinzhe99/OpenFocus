@@ -630,6 +630,8 @@ ZH = {
     "retouch_auto_bg_clean_hint": "去除主体边缘的光晕，绝不超出各帧实际记录的范围。关闭则保留堆栈原有的边缘效果（忠实）。",
     "retouch_auto_bg_soft_parts": "保留与主体相连的柔和部分",
     "retouch_auto_bg_soft_parts_hint": "将刚好在景深之外的主体部分（如突起末端的小球）保留为堆栈结果。也可能把主体旁边的背景物体保留为堆栈的渲染。",
+    "retouch_auto_bg_from_stacked": "此图像已经修饰过，因此背景将从堆栈结果中分析。你在主体上的笔刷修饰会被保留。",
+    "retouch_from_retouched": "此结果已经修饰过。自动背景将基于堆栈结果处理，并保留你在主体上的笔刷修饰。",
     "retouch_auto_bg_run": "替换背景",
     "retouch_auto_bg_failed": "背景替换失败。",
     "retouch_auto_bg_unchanged": "画面几乎全部是主体，因此背景保持堆栈结果不变。缺失数据图可用。",

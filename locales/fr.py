@@ -649,6 +649,8 @@ PACK = {
     "retouch_auto_bg_clean_hint": "Supprime les halos le long des bords du sujet, sans jamais dépasser ce que les images ont enregistré. Désactivez pour garder l'aspect des bords de l'empilement (Fidèle).",
     "retouch_auto_bg_soft_parts": "Conserver les parties floues rattachées au sujet",
     "retouch_auto_bg_soft_parts_hint": "Conserve tels qu'empilés les éléments du sujet juste hors de la profondeur de champ (le bout arrondi d'une épine). Peut aussi conserver des objets d'arrière-plan voisins du sujet avec le rendu de l'empilement.",
+    "retouch_auto_bg_from_stacked": "Cette image a déjà été retouchée : l'arrière-plan est donc analysé à partir du résultat empilé. Vos retouches au pinceau sur le sujet sont conservées.",
+    "retouch_from_retouched": "Ce résultat a déjà été retouché. L'arrière-plan automatique partira du résultat empilé et conservera vos retouches au pinceau sur le sujet.",
     "retouch_auto_bg_run": "Remplacer l'arrière-plan",
     "retouch_auto_bg_failed": "Le remplacement de l'arrière-plan a échoué.",
     "retouch_auto_bg_unchanged": "Presque toute l'image est du sujet : l'arrière-plan a été laissé tel qu'empilé. La carte des données manquantes est disponible.",

@@ -85,3 +85,15 @@ def qapp():
 @pytest.fixture(scope="session")
 def two_focus_stack():
     return make_two_focus_stack()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _background_fill_at_tuned_scale():
+    """Synthetic Auto background scenes are a few hundred pixels and were
+    designed around the distances as tuned (scale 1); scaling to the image's
+    size has its own tests, which override this."""
+    import core.background_fill as bf
+    patch = pytest.MonkeyPatch()
+    patch.setattr(bf, "SCALE_OVERRIDE", 1.0)
+    yield
+    patch.undo()
