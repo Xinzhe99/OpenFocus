@@ -633,6 +633,8 @@ EN = {
     "retouch_auto_bg_clean_hint": "Removes halos along the subject's edges, never beyond what the frames recorded. Turn off to keep the stack's own edge look (Faithful).",
     "retouch_auto_bg_soft_parts": "Keep soft parts attached to the subject",
     "retouch_auto_bg_soft_parts_hint": "Keeps parts of the subject just outside the depth of field (a knob at the end of a peg) as stacked. Can also keep background objects next to the subject in the stack's own rendering.",
+    "retouch_auto_bg_from_stacked": "This image was already retouched, so the background is analyzed from the stacked result. Your brushing on the subject is kept.",
+    "retouch_from_retouched": "This output was already retouched. Auto background will work from the stacked result and keep your brushing on the subject.",
     "retouch_auto_bg_run": "Replace background",
     "retouch_auto_bg_failed": "Background replacement failed.",
     "retouch_auto_bg_unchanged": "Nearly the whole frame is subject, so the background was left as stacked. The missing-data map is available.",

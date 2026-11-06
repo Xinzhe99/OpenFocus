@@ -587,6 +587,12 @@ preferisci, per esempio un filo d'erba sfocato davanti al soggetto. Se il
 soggetto riempie quasi tutta l'inquadratura, come in una scena di sottobosco,
 l'immagine resta come impilata e compare una nota.
 
+Se apri il ritocco su un risultato già ritoccato, lo sfondo automatico analizza
+il risultato impilato da cui proviene e applica il nuovo sfondo sulla tua
+immagine ritoccata. I ritocchi a pennello sul soggetto vengono mantenuti e uno
+sfondo già sostituito non viene mai rianalizzato, quindi un secondo passaggio
+non accumula aloni.
+
 Dopo un'elaborazione, **Mostra dati mancanti** colora i punti che nessun
 fotogramma ha visto con chiarezza. Sono i punti da controllare o ritoccare a
 mano:
@@ -902,6 +908,11 @@ Ad esempio, aggiungi `--align openfocus --alignment-report alignment.json` a un 
 | `--scale-um` | Dimensione pixel in µm/px, che prevale sui metadati (implica `--scale-bar`) |
 | `--depth-map [path]` | Salva anche una mappa colorizzata della posizione di fuoco (predefinito `<output>_depth.png`); solo metodi compatibili con la profondità, non raggruppati né trasparenti. In modalità batch è consentito solo il percorso predefinito |
 | `--depth-colormap` | Mappa colori per `--depth-map`: turbo, viridis, jet, gray, … (turbo predefinito) |
+| `--auto-background [preset]` | Sostituisce lo sfondo dello stack con quello di un fotogramma allineato, come Sfondo automatico nel ritocco: `auto` (predefinito), `soft` (sfondo più sfocato) o `sharp` (fotogramma a fuoco più lontano). Richiede i fotogrammi allineati, quindi non con la fusione a gruppi |
+| `--background-mode` | Sfondo automatico: `clean` (predefinito) rimuove anche gli aloni sui bordi dello stack, entro quanto registrato dai fotogrammi; `faithful` li mantiene |
+| `--keep-soft-parts` | Sfondo automatico: mantiene le parti morbide attaccate al soggetto su cui un fotogramma ha messo a fuoco |
+| `--save-stacked [path]` | Con `--auto-background`, salva anche il risultato prima della sostituzione (predefinito `<output>_stacked<ext>`). In modalità batch è ammesso solo il percorso predefinito |
+| `--missing-data-map [path]` | Con `--auto-background`, salva anche la mappa dei dati mancanti e una maschera a 8 bit per classe (predefinito `<output>_missing.png`). In modalità batch è ammesso solo il percorso predefinito |
 | `--json FILE` | Scrive un riepilogo del risultato leggibile dalla macchina in FILE al termine |
 | `--json-progress` | Stampa un oggetto JSON di avanzamento per passo su stdout (NDJSON); il testo va su stderr |
 | `--dry-run` | Valida gli input e stampa il piano senza fondere |
