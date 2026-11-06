@@ -134,7 +134,7 @@ Créez une carte de profondeur et exportez une surface 3D texturée.
 
 ### Retouche liée à la source
 
-Retouchez le résultat en peignant à partir des images sources et exportez-le avec celles-ci en TIFF multicouche.
+Retouchez le résultat en peignant à partir des images sources et exportez-le avec celles-ci en TIFF multicouche. L'arrière-plan automatique remplace un arrière-plan empilé irrégulier par une vraie image.
 
 </td>
 <td width="54%">

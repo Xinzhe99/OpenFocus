@@ -2,6 +2,7 @@ import os
 import sys
 from typing import Optional
 
+from PyQt6.QtCore import QEvent, QObject
 from PyQt6.QtWidgets import QApplication, QMessageBox, QStyle
 from PyQt6.QtGui import QPixmap, QImage
 
@@ -237,7 +238,28 @@ def style_message_box(box):
         box.setStyleSheet(CURRENT_MESSAGE_BOX_STYLE)
     except Exception:
         pass
+    if isinstance(box, QObject) and getattr(box, "_button_width_guard", None) is None:
+        box._button_width_guard = _ButtonWidthGuard(box)
+        box.installEventFilter(box._button_width_guard)
     return box
+
+
+class _ButtonWidthGuard(QObject):
+    """Keep a styled message box's buttons at their full width.
+
+    QMessageBox fixes its size from the buttons' size hints before the box
+    stylesheet's wider padding is applied, then squeezes the buttons to fit:
+    "Discard changes" rendered as "iscard change".  The filter sees the Show
+    event before the box lays itself out, so pinning each button's minimum
+    width there makes the box grow instead.
+    """
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Show and isinstance(obj, QMessageBox):
+            for button in obj.buttons():
+                button.ensurePolished()
+                button.setMinimumWidth(button.sizeHint().width())
+        return False
 
 
 def show_message_box(

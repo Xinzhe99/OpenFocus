@@ -1250,6 +1250,248 @@ def test_shutdown_worker_never_terminates(monkeypatch):
     assert orphan == [worker]
 
 
+def _retouch_shutdown_window(monkeypatch, force):
+    """Exercise the real closeEvent without starting unrelated app services."""
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QMainWindow
+    import main as main_module
+    from utils import recovery
+
+    calls = {"output": 0, "project": 0, "shutdown": 0, "closed": []}
+
+    def record(name):
+        calls[name] += 1
+        return True
+
+    class Window(main_module.OpenFocus):
+        def __init__(self):
+            QMainWindow.__init__(self)
+            self._force_quit = force
+            self._project_dirty = True
+            self.output_manager = SimpleNamespace(
+                confirm_unexported_on_exit=lambda: record("output"))
+            self.usage_analytics = SimpleNamespace(shutdown=lambda: record("shutdown"))
+
+        def _confirm_discard_project_changes(self, *_args):
+            return record("project")
+
+        def _has_work_in_flight(self):
+            return False
+
+        def persist_settings(self):
+            pass
+
+        def resizeEvent(self, event):
+            QMainWindow.resizeEvent(self, event)
+
+        def closeEvent(self, event):
+            super().closeEvent(event)
+            calls["closed"].append(event.isAccepted())
+
+    monkeypatch.setattr(main_module, "save_window_layout", lambda *_: None)
+    monkeypatch.setattr(recovery, "write_snapshot", lambda *_: None)
+    monkeypatch.setattr(recovery, "mark_clean_exit", lambda: None)
+    return Window(), calls
+
+
+@pytest.mark.parametrize("operation_name", ["export", "checkpoint", "background"])
+@pytest.mark.parametrize("force", [False, True])
+def test_retouch_shutdown_retains_modal_owner_until_native_work_stops(
+        qapp, tmp_path, monkeypatch, operation_name, force):
+    import threading
+    from PyQt6 import sip
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtTest import QTest
+    from core.background_fill import MissingData
+    from dialogs.retouch import _AutoBackgroundDialog, _CheckpointDialog
+    from dialogs.retouch_export import MissingDataExportDialog
+    from tests.test_retouch import _dialog
+    from utils import image_utils
+
+    window, calls = _retouch_shutdown_window(monkeypatch, force)
+    owner, published = _dialog(qapp)
+    owner.setParent(window, owner.windowFlags())
+    owner.show()
+    entered, release = threading.Event(), threading.Event()
+    targets = []
+
+    def pause():
+        entered.set()
+        if not release.wait(8):
+            raise TimeoutError("shutdown regression did not release native work")
+
+    if operation_name == "export":
+        mask = np.zeros(owner.doc.working.shape[:2], np.uint8)
+        missing = MissingData(*(mask.copy() for _ in range(4)))
+        targets = [tmp_path / f"map-{i}.png" for i in range(5)]
+        for target in targets:
+            target.write_bytes(b"previous export")
+        writer = image_utils.imwrite_auto
+
+        def write(*args, **kwargs):
+            pause()
+            return writer(*args, **kwargs)
+
+        monkeypatch.setattr(image_utils, "imwrite_auto", write)
+        operation = MissingDataExportDialog(owner.doc.working, missing, targets, owner)
+        attribute = "_edit_dialog"
+    elif operation_name == "checkpoint":
+        def save(_path, cancelled):
+            pause()
+            if cancelled():
+                raise ValueError("Retouch checkpoint saving cancelled")
+            raise AssertionError("checkpoint was not cancelled")
+
+        monkeypatch.setattr(owner.doc, "save_checkpoint", save)
+        operation = _CheckpointDialog(owner.doc, str(tmp_path / "save.ofretouch"),
+                                      owner, operation="save")
+        attribute = "_checkpoint_dialog"
+    else:
+        def replace(_preset, _clean, cancelled, _progress, **_kwargs):
+            pause()
+            return "cancelled" if cancelled() else "committed"
+
+        monkeypatch.setattr(owner.doc, "auto_background", replace)
+        operation = _AutoBackgroundDialog(owner.doc, owner)
+        operation._run()
+        attribute = "_edit_dialog"
+
+    setattr(owner, attribute, operation)
+    observations = []
+    polling = QTimer()
+    held = QTimer()
+    held.setSingleShot(True)
+    watchdog = QTimer()
+    watchdog.setSingleShot(True)
+    watchdog.timeout.connect(release.set)
+
+    def inspect_then_release():
+        worker = operation.worker
+        observations.append((not sip.isdeleted(owner), not sip.isdeleted(worker),
+                             worker.isRunning(), worker.isInterruptionRequested(),
+                             calls["shutdown"], tuple(calls["closed"])))
+        release.set()
+
+    def request_quit():
+        if entered.is_set():
+            polling.stop()
+            window.close()
+            # Exceed the previous 1500-ms orphan timeout while processing GUI events.
+            held.start(1700)
+
+    held.timeout.connect(inspect_then_release)
+    polling.timeout.connect(request_quit)
+    polling.start(1)
+    watchdog.start(7000)
+    try:
+        if operation_name == "checkpoint":
+            operation.start()
+        else:
+            operation.exec()
+        # Match the real RetouchDialog caller's finally block after exec unwinds.
+        worker = operation.worker
+        assert not worker or not worker.isRunning()
+        setattr(owner, attribute, None)
+        operation.deleteLater()
+        for _ in range(200):
+            if calls["shutdown"]:
+                break
+            QTest.qWait(10)
+        assert len(observations) == 1
+        alive, worker_alive, running, interrupted, shutdowns, closes = observations[0]
+        assert alive and worker_alive and running and interrupted
+        assert shutdowns == 0 and closes and not any(closes)
+        assert calls["shutdown"] == 1 and calls["closed"][-1]
+        assert calls["output"] == calls["project"] == (0 if force else 1)
+        assert not published
+        assert all(target.read_bytes() == b"previous export" for target in targets)
+        assert not list(tmp_path.glob(".openfocus-map-*"))
+    finally:
+        release.set()
+        polling.stop()
+        held.stop()
+        watchdog.stop()
+        if not sip.isdeleted(operation):
+            worker = operation.worker
+            if worker is not None and not sip.isdeleted(worker):
+                worker.requestInterruption()
+                worker.wait(5000)
+        if not sip.isdeleted(owner):
+            setattr(owner, attribute, None)
+            owner._allow_close = True
+            owner.close()
+        window.deleteLater()
+
+
+
+
+def test_retouch_shutdown_cancels_export_before_startup(qapp, tmp_path, monkeypatch):
+    from PyQt6 import sip
+    from PyQt6.QtTest import QTest
+    from core.background_fill import MissingData
+    from dialogs.retouch_export import MissingDataExportDialog
+    from tests.test_retouch import _dialog
+
+    window, calls = _retouch_shutdown_window(monkeypatch, force=True)
+    owner, _ = _dialog(qapp)
+    owner.setParent(window, owner.windowFlags())
+    mask = np.zeros(owner.doc.working.shape[:2], np.uint8)
+    missing = MissingData(*(mask.copy() for _ in range(4)))
+    targets = [tmp_path / f"map-{i}.png" for i in range(5)]
+    operation = MissingDataExportDialog(owner.doc.working, missing, targets, owner)
+    owner._edit_dialog = operation
+    try:
+        assert not window.close()
+        assert operation._cancel_requested and not operation.worker.isRunning()
+        operation.exec()
+        assert not operation.worker.isRunning()
+        owner._edit_dialog = None
+        operation.deleteLater()
+        for _ in range(200):
+            if calls["shutdown"]:
+                break
+            QTest.qWait(10)
+        assert calls["shutdown"] == 1 and calls["closed"][-1]
+        assert all(not path.exists() for path in targets)
+    finally:
+        if not sip.isdeleted(owner):
+            owner._edit_dialog = None
+            owner._allow_close = True
+            owner.close()
+        window.deleteLater()
+
+
+@pytest.mark.parametrize("refused", ["output", "project"])
+def test_retouch_shutdown_discard_refusal_preserves_operation(
+        qapp, tmp_path, monkeypatch, refused):
+    from PyQt6 import sip
+    from core.background_fill import MissingData
+    from dialogs.retouch_export import MissingDataExportDialog
+    from tests.test_retouch import _dialog
+
+    window, calls = _retouch_shutdown_window(monkeypatch, force=False)
+    owner, _ = _dialog(qapp)
+    owner.setParent(window, owner.windowFlags())
+    mask = np.zeros(owner.doc.working.shape[:2], np.uint8)
+    missing = MissingData(*(mask.copy() for _ in range(4)))
+    operation = MissingDataExportDialog(
+        owner.doc.working, missing, [tmp_path / f"map-{i}.png" for i in range(5)], owner)
+    owner._edit_dialog = operation
+    if refused == "output":
+        window.output_manager.confirm_unexported_on_exit = lambda: False
+    else:
+        window._confirm_discard_project_changes = lambda *_: False
+    try:
+        assert not window.close()
+        assert owner.isEnabled() and not operation._cancel_requested
+        assert not window._shutting_down and not calls["shutdown"]
+    finally:
+        operation.reject()
+        if not sip.isdeleted(owner):
+            owner._edit_dialog = None
+            owner._allow_close = True
+            owner.close()
+        window.deleteLater()
 
 
 class TestCpuAiWarning:
@@ -1465,3 +1707,86 @@ def test_stack_load_progress_status_and_cancel(qapp, monkeypatch):
     worker.progress.emit(3, 3)
     assert (bar.minimum(), bar.maximum()) == (0, 0)
     video_worker.finished.emit()
+
+
+def test_compare_failure_after_a_stack_change_stops_the_run(qapp, monkeypatch):
+    """A failing method must not chain the next one onto a different stack."""
+    from PyQt6.QtCore import QTimer
+    frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(2)]
+    w = _render_window(frames)
+    rm, _saved = _patched_render_manager(monkeypatch, w)
+    rm._compare_mode = True
+    rm._compare_total = 3
+    rm._compare_queue = ["dct"]
+    rm._compare_failures = []
+    rm._compare_current = "stackmffv2"
+    rm._render_context = {"source_ref": object(), "included": [0, 1], "filenames": []}
+    chained = []
+    monkeypatch.setattr(QTimer, "start", lambda self, ms=0: chained.append(ms))
+    rm.on_render_error("Insufficient memory")
+    assert not chained
+    assert rm._compare_mode is False and rm._compare_queue == []
+    assert rm.last_state == "discarded"
+
+
+def test_compare_run_skips_a_failing_method_and_reports_it(qapp, monkeypatch):
+    """One method that cannot run (e.g. not enough memory for a whole-frame
+    network) is skipped; the run goes on and lists it once at the end."""
+    from PyQt6.QtCore import QTimer
+    import controllers.render_manager as rmod
+    frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(2)]
+    w = _render_window(frames)
+    rm, _saved = _patched_render_manager(monkeypatch, w)
+    shown = []
+    monkeypatch.setattr(rmod, "show_message_box", lambda *a, **k: shown.append(a))
+    rm._compare_mode = True
+    rm._compare_total = 3
+    rm._compare_queue = ["dct"]
+    rm._compare_failures = []
+    rm._compare_current = "stackmffv2"
+    chained = []
+    monkeypatch.setattr(QTimer, "start", lambda self, ms=0: chained.append(ms))
+    rm.on_render_error("Insufficient memory: need 117708 MB of new allocations")
+    assert rm._compare_mode is True and chained          # the next method is queued
+    assert rm._compare_failures == [("stackmffv2", "Insufficient memory: need 117708 MB of new allocations")]
+    assert not shown                                      # no dialog mid-run
+    rm._compare_queue = []
+    rm._compare_current = "dct"
+    rm.on_render_error("model file missing")
+    assert rm._compare_mode is False
+    assert rm.last_state == "error" and rm.last_result is None
+    assert len(shown) == 1 and "StackMFF" in shown[0][3] and "model file missing" in shown[0][3]
+
+
+def test_comparison_stops_if_stack_changes_between_methods(qapp, monkeypatch):
+    frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(2)]
+    w = _render_window(frames)
+    rm, _saved = _patched_render_manager(monkeypatch, w)
+    rm.start_compare_all()
+    rm.on_render_error("Insufficient memory")
+    assert rm._compare_mode
+    w.raw_images = list(w.raw_images)
+    rm._start_next_compare()
+    assert not rm._compare_mode and not rm._compare_queue
+    assert rm.worker is None
+    assert w.btn_render.isEnabled()
+    assert w.status.messages[-1] == trans.t("msg_render_stack_changed")
+
+
+def test_old_comparison_timer_cannot_cancel_a_restarted_run(qapp, monkeypatch):
+    frames = [np.zeros((30, 40, 3), dtype=np.uint8) for _ in range(2)]
+    w = _render_window(frames)
+    rm, _saved = _patched_render_manager(monkeypatch, w)
+    rm.start_compare_all()
+    rm.on_render_error("model unavailable")
+    old_timer = rm._compare_chain_timer
+    rm.start_compare_all()  # cancel the pending next method
+    rm.start_compare_all()  # start a new run before the old event is delivered
+    current = rm.worker
+    try:
+        old_timer.timeout.emit()
+        assert rm.worker is current and current.isRunning()
+        assert not current.is_cancelled
+        assert rm._compare_mode
+    finally:
+        rm.on_render_error("CANCELLED: test cleanup")

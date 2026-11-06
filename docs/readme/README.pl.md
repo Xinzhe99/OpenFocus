@@ -137,7 +137,7 @@ Twórz mapy głębi i eksportuj teksturowane powierzchnie 3D.
 
 ### Retusz powiązany ze źródłami
 
-Retuszuj wynik pikselami z klatek źródłowych.
+Retuszuj wynik pikselami z klatek źródłowych. Automatyczne tło zastępuje niespokojne tło ze stacku jedną prawdziwą klatką.
 
 </td>
 <td width="54%">

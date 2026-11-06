@@ -30,6 +30,7 @@ OpenFocus es una aplicación de escritorio profesional de fusión de imágenes m
 - **Fusión de imágenes multifoco**: combina varias imágenes con puntos de enfoque distintos en una sola imagen totalmente enfocada
 - **Diez algoritmos de fusión**: filtro guiado, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3, OpenFocus A/B/C, además del modo de solo alineación
 - **Registro de imágenes**: alinea secuencias desalineadas con OpenFocus (rápido), ECC, homografía o la cadena homografía → ECC
+- **Fondo automático**: sustituir un fondo apilado irregular por un fotograma real y ver dónde ningún fotograma captó la escena con claridad
 - **Vista de comparación Wipe (cortina)**: comprueba la alineación y compara resultados con un divisor A/B
 - **Archivos de proyecto**: restauran las referencias de entrada y los ajustes reproducibles; los píxeles del resultado se exportan por separado
 - **Plantillas de procesamiento**: guardan y reaplican ajustes de fusión, registro y recursos a cualquier pila cargada
@@ -553,6 +554,54 @@ La procedencia viaja con la salida: los fotogramas alineados, los desplazamiento
 
 Para un archivo de imagen existente, elige **Editar → Retocar archivos de imagen…** y después selecciona el resultado y una o varias imágenes de origen. Las fuentes ya deben estar alineadas con el resultado en la misma cuadrícula de píxeles; que las dimensiones coincidan no demuestra la alineación. Se aceptan imágenes PNG, TIFF, JPEG y BMP de una sola página con dimensiones verticales, canales y profundidad de 8 o 16 bits coincidentes; la orientación EXIF se aplica al cargar. No se admiten imágenes con alfa ni multipágina. Los fotogramas seleccionados los aporta el usuario, no son procedencia registrada del renderizado. Aplicar crea una salida separada sin exportar; guárdala desde la lista de salida. Los archivos elegidos se protegen contra sobrescritura durante esta sesión, incluidas las exportaciones de mapas de profundidad y mallas 3D. Como en otros resultados, los archivos de proyecto no almacenan estos píxeles ni el historial de pincel.
 
+### Sustituir el fondo (Fondo automático)
+
+Al apilar, el fondo se enfoca junto con el sujeto. El fondo de una imagen
+apilada suele quedar como un mosaico de desenfoques distintos, con un halo
+alrededor del sujeto. **Fondo automático…** en el espacio de retoque lo
+sustituye por un fotograma real de la misma pila. El sujeto queda tal como se
+apiló y el fondo se obtiene a partir de un fotograma y del resultado apilado. El
+procesamiento puede reconstruir, ajustar y mezclar los píxeles del fondo.
+
+1. Abre el resultado en el espacio de retoque y pulsa **Fondo automático…**.
+2. Elige el fondo:
+   - **Automático** (recomendado) usa el fondo suave, salvo que la pila haya
+     registrado enfocada gran parte del fondo. Entonces usa el nítido.
+   - **Fondo suave** usa el fotograma con el fondo más desenfocado.
+   - **Fondo nítido** usa el fotograma enfocado más lejos.
+3. Deja activado **Limpiar halos en los bordes** para quitar los halos de los
+   bordes del sujeto. Nunca va más allá de lo que registraron los fotogramas.
+   Desactívalo para conservar el borde propio de la pila.
+4. Marca **Conservar las partes suaves unidas al sujeto** cuando partes del
+   sujeto quedan justo fuera de la profundidad de campo, como el extremo
+   redondeado de una espina. También puede conservar objetos del fondo junto al
+   sujeto tal como se apilaron, así que revisa el resultado.
+5. Pulsa **Sustituir fondo**. Una pila de 15 fotogramas de 20 megapíxeles tarda
+   alrededor de un minuto y necesita unos 3,5 GB de memoria libre. **Cancelar**
+   la detiene.
+
+El cambio es un solo paso que se puede deshacer, y los trazos pintados antes
+sobre el sujeto se conservan. Usa el **Pincel de restauración** para recuperar
+los píxeles apilados donde los prefieras, por ejemplo una brizna de hierba
+desenfocada delante del sujeto. Si el sujeto ocupa casi todo el encuadre, como
+en una escena del suelo del bosque, la imagen queda tal como se apiló y aparece
+un aviso.
+
+Tras una pasada, **Mostrar datos faltantes** colorea los lugares que ningún
+fotograma vio con claridad. Son los lugares que conviene revisar o retocar a
+mano:
+
+- magenta: fondo que ningún fotograma registró sin el sujeto delante
+- cian: sujeto oculto a la cámara
+- amarillo: sujeto fuera del rango de enfoque de la pila
+- pizarra: zonas demasiado lisas para juzgar
+
+**Guardar mapa de datos faltantes…** guarda la vista coloreada y una máscara en
+blanco y negro por color. El fondo automático necesita los fotogramas que
+produjeron el resultado y no está disponible para resultados de región (ROI).
+Los nuevos puntos de control de fondo restauran exactamente la imagen, el
+historial accesible y los diagnósticos sin volver a calcular el fondo.
+
 ### Gestión de etiquetas
 
 Abre **Herramientas → Etiquetas** después de cargar imágenes o producir un resultado. Cada etiqueta tiene su propio destino: la pila de origen, la pila alineada o los resultados de salida. Las etiquetas de salida pueden aplicarse a todos los resultados o al resultado seleccionado por su nombre; renombrar o reordenar ese resultado no cambia la asociación.
@@ -895,17 +944,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # usa False para procesar
 
 ### Reproducir un punto de control de retoque
 
-La primera vez que se guarda o carga se verifican la base y las fuentes procesadas en una operación en segundo plano cancelable. Al guardar también se reproducen las ediciones registradas y se comprueban la imagen actual y el estado de deshacer/rehacer antes de publicar el punto de control. Si una fuente ha cambiado y la reproducción ya no coincide, el guardado falla y conserva tus ediciones. Cancelar un guardado o una carga también conserva tus ediciones actuales. Si la memoria no basta para la verificación o la reproducción, la operación se detiene y deja intactas tanto tus ediciones actuales como cualquier punto de control existente.
+Usa los controles de guardar/cargar puntos de control del espacio de retoque con la base original y las fuentes procesadas. Las sesiones con fondo automático, incluidos los análisis correctos sin cambios de píxeles, guardan instantáneas ZIP v2 `.ofretouch` sin pérdidas con metadatos JSON y datos NumPy: la imagen de trabajo exacta, los mosaicos accesibles de deshacer/rehacer, los estados de diagnóstico y la procedencia de las fuentes. Cargar v2 no vuelve a calcular el fondo. Las sesiones solo de pincel/tonos pueden usar JSON v1 compacto; los puntos de control de fondo antiguos en JSON v1 siguen siendo reproducibles.
+
+La verificación de fuentes se ejecuta en segundo plano y se puede cancelar. Antes de sustituir el destino, el guardado vuelve a cargar el archivo preparado y comprueba la igualdad exacta de la imagen actual, los mosaicos accesibles de deshacer/rehacer y los estados de diagnóstico. Una fuente incompatible, una verificación fallida, la cancelación o la falta de memoria dejan intactos las ediciones actuales y cualquier punto de control existente.
 
 Si el límite de registro del punto de control impide otra edición, aplica las ediciones actuales y comienza una nueva sesión de retoque para continuar.
 
 Guarda un punto de control de retoque desde el espacio de retoque y después proporciona la imagen base original y cada fotograma de origen procesado en el mismo orden que la sesión:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png frame2.png --output retouched.tif
 ```
 
-Usa los fotogramas reales empleados para el retoque, tras la alineación y cualquier recorte de ROI u otro procesamiento, con sus valores de píxel y profundidad de bits originales. El punto de control registra ediciones y huellas, no los píxeles de imagen. La reproducción reconstruye los desplazamientos de fotograma y el comportamiento de alineación registrados y verifica la base, los fotogramas ordenados y las máscaras de validez; se rechazan píxeles, geometría o máscaras incompatibles. Cada ruta debe contener una imagen. La salida debe ser PNG o TIFF y conserva la profundidad de bits de la base. El punto de control y las imágenes de entrada no pueden usarse como salida.
+Ambos formatos siguen necesitando la base original y todos los fotogramas realmente usados para el retoque, en el orden de la sesión, tras la alineación y cualquier recorte de ROI u otro procesamiento, con sus valores de píxel y profundidad de bits originales. La carga reconstruye los desplazamientos de fotograma y el comportamiento de alineación registrados y verifica la base, los fotogramas ordenados y las máscaras de validez; se rechazan píxeles, geometría o máscaras incompatibles. Cada ruta debe contener una imagen. La salida debe ser PNG o TIFF y conserva la profundidad de bits de la base. El punto de control y las imágenes de entrada no pueden usarse como salida.
 
 Códigos de salida: `0` éxito, `1` error de procesamiento, `2` error de uso. Ejecutar `python main.py --help` muestra todas las opciones; iniciar con una ruta simple (`python main.py C:\stack`) sigue abriendo la interfaz con esa carpeta cargada.
 

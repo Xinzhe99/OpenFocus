@@ -30,6 +30,7 @@ OpenFocus è un'applicazione desktop professionale per la fusione di immagini mu
 - **Fusione di immagini multifocus**: combina più immagini con punti di fuoco diversi in un'unica immagine completamente a fuoco
 - **Dieci algoritmi di fusione**: filtro guidato, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3, OpenFocus A/B/C, più la modalità solo allineamento
 - **Registrazione delle immagini**: allinea sequenze disallineate con OpenFocus (veloce), ECC, omografia o la catena omografia → ECC
+- **Sfondo automatico**: sostituire uno sfondo impilato irregolare con un fotogramma reale e vedere dove nessun fotogramma ha ripreso chiaramente la scena
 - **Vista di confronto Wipe (a tendina)**: controlla l'allineamento e confronta i risultati con un divisore A/B
 - **File di progetto**: ripristinano riferimenti di input e impostazioni riproducibili; i pixel del risultato si esportano separatamente
 - **Modelli di elaborazione**: salvano e riapplicano impostazioni di fusione, registrazione e risorse a qualsiasi stack caricato
@@ -553,6 +554,54 @@ La provenienza viaggia con l'output: i fotogrammi allineati, gli offset di ritag
 
 Per un file immagine esistente, scegli **Modifica → Ritocca file immagine…**, poi seleziona il risultato e una o più immagini sorgente. Le sorgenti devono essere già allineate al risultato sulla stessa griglia di pixel; dimensioni identiche non dimostrano l'allineamento. Sono accettate immagini PNG, TIFF, JPEG e BMP a pagina singola con dimensioni verticali, canali e profondità a 8 o 16 bit corrispondenti; l'orientamento EXIF viene applicato al caricamento. Immagini con alfa e multipagina non sono supportate. I fotogrammi selezionati sono forniti dall'utente, non sono provenienza di rendering registrata. Applica crea un output separato non esportato; salvalo dall'elenco output. I file scelti sono protetti dalla sovrascrittura durante questa sessione, incluse le esportazioni di mappe di profondità e mesh 3D. Come per altri risultati, i file di progetto non memorizzano questi pixel né la cronologia del pennello.
 
+### Sostituire lo sfondo (Sfondo automatico)
+
+Con l'impilamento lo sfondo diventa nitido insieme al soggetto. Lo sfondo di
+un'immagine impilata è spesso un mosaico di sfocature diverse, con un alone
+intorno al soggetto. **Sfondo automatico…** nell'area di ritocco lo sostituisce
+con un fotogramma reale della stessa pila. Il soggetto resta come impilato. Lo
+sfondo deriva da un fotogramma e dal risultato impilato; l'elaborazione può
+ricostruire, correggere e fondere i suoi pixel.
+
+1. Apri il risultato nell'area di ritocco e fai clic su **Sfondo automatico…**.
+2. Scegli lo sfondo:
+   - **Automatico** (consigliato) usa lo sfondo morbido, a meno che la pila
+     abbia registrato a fuoco gran parte dello sfondo. In quel caso usa quello
+     nitido.
+   - **Sfondo morbido** usa il fotogramma con lo sfondo più sfocato.
+   - **Sfondo nitido** usa il fotogramma con il fuoco più lontano.
+3. Lascia attivo **Pulisci aloni sui bordi** per togliere gli aloni lungo i
+   bordi del soggetto. Non va mai oltre ciò che i fotogrammi hanno registrato.
+   Disattivalo per mantenere l'aspetto dei bordi della pila.
+4. Seleziona **Mantieni le parti sfocate collegate al soggetto** quando parti del
+   soggetto sono appena fuori dalla profondità di campo, come la punta
+   arrotondata di una spina. Può mantenere come impilati anche oggetti di sfondo
+   accanto al soggetto, quindi controlla il risultato.
+5. Fai clic su **Sostituisci sfondo**. Una pila di 15 fotogrammi da 20 megapixel
+   richiede circa un minuto e circa 3,5 GB di memoria libera. **Annulla** la
+   interrompe.
+
+La modifica è un solo passaggio annullabile, e i tratti già dipinti sul soggetto
+restano. Usa il **Pennello di ripristino** per riportare i pixel impilati dove li
+preferisci, per esempio un filo d'erba sfocato davanti al soggetto. Se il
+soggetto riempie quasi tutta l'inquadratura, come in una scena di sottobosco,
+l'immagine resta come impilata e compare una nota.
+
+Dopo un'elaborazione, **Mostra dati mancanti** colora i punti che nessun
+fotogramma ha visto con chiarezza. Sono i punti da controllare o ritoccare a
+mano:
+
+- magenta: sfondo che nessun fotogramma ha registrato senza il soggetto davanti
+- ciano: soggetto nascosto alla fotocamera
+- giallo: soggetto fuori dall'intervallo di fuoco della pila
+- ardesia: zone troppo uniformi per giudicare
+
+**Salva mappa dei dati mancanti…** salva l'anteprima colorata e una maschera in
+bianco e nero per ogni colore. Lo sfondo automatico richiede i fotogrammi che
+hanno prodotto il risultato e non è disponibile per i risultati di area (ROI).
+I nuovi checkpoint dello sfondo ripristinano esattamente immagine, cronologia
+raggiungibile e diagnostica senza ricalcolare lo sfondo.
+
 ### Gestione delle etichette
 
 Apri **Strumenti → Etichette** dopo aver caricato immagini o prodotto un risultato. Ogni etichetta ha il proprio bersaglio: lo stack sorgente, lo stack registrato o i risultati di output. Le etichette di output possono applicarsi a tutti i risultati o al risultato selezionato per nome; rinominare o riordinare quel risultato non cambia l'associazione.
@@ -895,17 +944,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # usa False per elaborare
 
 ### Riproduzione di un punto di controllo di ritocco
 
-Il primo salvataggio o caricamento verifica la base e le sorgenti elaborate in un'operazione in background annullabile. Il salvataggio riproduce anche le modifiche registrate e controlla l'immagine corrente e lo stato annulla/ripristina prima di pubblicare il punto di controllo. Se una sorgente è cambiata e la riproduzione non corrisponde più, il salvataggio fallisce e conserva le modifiche. Annullare un salvataggio o un caricamento conserva comunque le modifiche correnti. Se la memoria non basta per verifica o riproduzione, l'operazione si ferma e lascia invariati sia le modifiche correnti sia qualsiasi punto di controllo esistente.
+Usa i comandi di salvataggio/caricamento dei checkpoint nello spazio di ritocco con la base originale e le sorgenti elaborate. Le sessioni con sfondo automatico, comprese le analisi riuscite senza cambiamenti ai pixel, salvano istantanee ZIP v2 `.ofretouch` senza perdita con metadati JSON e dati NumPy: l'immagine di lavoro esatta, i tasselli raggiungibili di annulla/ripristina, gli stati diagnostici e la provenienza delle sorgenti. Il caricamento v2 non ricalcola lo sfondo. Le sessioni con soli pennelli/toni possono usare JSON v1 compatto; i vecchi checkpoint dello sfondo in JSON v1 restano riproducibili.
+
+La verifica delle sorgenti avviene in background ed è annullabile. Prima di sostituire la destinazione, il salvataggio ricarica il file preparato e controlla l'uguaglianza esatta dell'immagine corrente, dei tasselli raggiungibili di annulla/ripristina e degli stati diagnostici. Sorgenti incompatibili, verifica fallita, annullamento o memoria insufficiente lasciano invariati le modifiche correnti e qualsiasi checkpoint esistente.
 
 Se il limite di registrazione del punto di controllo impedisce un'altra modifica, applica le modifiche correnti e avvia una nuova sessione di ritocco per continuare.
 
 Salva un punto di controllo di ritocco dallo spazio di ritocco, poi fornisci l'immagine base originale e ogni fotogramma sorgente elaborato nello stesso ordine della sessione:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png frame2.png --output retouched.tif
 ```
 
-Usa i fotogrammi effettivamente usati per il ritocco, dopo allineamento e qualsiasi ritaglio ROI o altra elaborazione, con i valori di pixel e la profondità di bit originali. Il punto di controllo registra modifiche e impronte, non i pixel. La riproduzione ricostruisce gli offset dei fotogrammi e il comportamento di allineamento registrati e verifica base, fotogrammi ordinati e maschere di validità; pixel, geometria o maschere incompatibili vengono rifiutati. Ogni percorso deve contenere un'immagine. L'output deve essere PNG o TIFF e conserva la profondità di bit della base. Il punto di controllo e le immagini di input non possono essere usati come output.
+Entrambi i formati richiedono ancora la base originale e tutti i fotogrammi effettivamente usati per il ritocco, nell'ordine della sessione, dopo allineamento e qualsiasi ritaglio ROI o altra elaborazione, con i valori di pixel e la profondità di bit originali. Il caricamento ricostruisce gli offset dei fotogrammi e il comportamento di allineamento registrati e verifica base, fotogrammi ordinati e maschere di validità; pixel, geometria o maschere incompatibili vengono rifiutati. Ogni percorso deve contenere un'immagine. L'output deve essere PNG o TIFF e conserva la profondità di bit della base. Il punto di controllo e le immagini di input non possono essere usati come output.
 
 Codici di uscita: `0` successo, `1` errore di elaborazione, `2` errore d'uso. `python main.py --help` mostra tutte le opzioni; avviare con un semplice percorso (`python main.py C:\stack`) apre comunque la GUI con quella cartella caricata.
 

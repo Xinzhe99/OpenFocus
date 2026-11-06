@@ -30,6 +30,7 @@ OpenFocus to profesjonalna aplikacja desktopowa do wieloogniskowej fuzji obrazó
 - **Wieloogniskowa fuzja obrazów**: wiele zdjęć o różnych punktach ostrości łączy się w jeden w pełni ostry obraz
 - **Dziesięć algorytmów fuzji**: StackMFF V3 (domyślnie), StackMFF V2, StackMFF, Guided Filter, DCT, DTCWT, GFG-FGF oraz OpenFocus A/B/C, a także tryb tylko wyrównania
 - **Rejestracja obrazów**: ECC, homografia, homografia → ECC i szybkie wyrównanie OpenFocus
+- **Automatyczne tło**: zastąpienie niespokojnego tła ze stacku jedną prawdziwą klatką oraz pokazanie, gdzie żadna klatka nie uchwyciła sceny wyraźnie
 - **Porównanie suwakiem**: kontrola wyrównania i wyniku za pomocą przeciąganego dzielnika A/B
 - **Porównanie metod**: kilka algorytmów renderowanych obok siebie na jednym fragmencie; zwycięzcę można przyjąć jako nowy wynik
 - **Retusz powiązany ze źródłami**: pędzel kopiuje piksele z klatek, które naprawdę utworzyły wynik; eksport TIFF z warstwami zapisuje wynik razem ze źródłami
@@ -572,6 +573,49 @@ Pochodzenie podróżuje z wynikiem: wyrównane klatki, przesunięcia przycięcia
 
 Dla istniejącego pliku obrazu wybierz **Edycja → Retuszuj pliki obrazów…**, a następnie wskaż wynik i jedną lub więcej klatek źródłowych. Źródła muszą być już wyrównane do wyniku na tej samej siatce pikseli; same pasujące wymiary nie dowodzą wyrównania. Akceptowane są jednostronicowe PNG, TIFF, JPEG i BMP o pasujących wymiarach pionowych, kanałach i głębi 8 lub 16 bitów; orientacja EXIF jest stosowana przy wczytywaniu. Kanały alfa i obrazy wielostronicowe nie są obsługiwane. Wybrane klatki są dostarczone przez użytkownika, a nie zapisanym pochodzeniem renderu. Zastosowanie tworzy osobny niewyeksportowany wynik; zapisz go z listy wyników. Wybrane pliki są chronione przed nadpisaniem w tej sesji, w tym podczas eksportu mapy głębi i siatki 3D. Jak przy innych wynikach, pliki projektów nie przechowują tych pikseli ani historii pędzla.
 
+### Zastępowanie tła (Automatyczne tło)
+
+Podczas stackowania tło wyostrza się razem z obiektem. Tło obrazu ze stacku
+bywa więc mozaiką różnych rozmyć, z aureolą wokół obiektu.
+**Automatyczne tło…** w obszarze retuszu zastępuje je jedną prawdziwą klatką z
+tego samego stacku. Obiekt pozostaje dokładnie taki jak po stackowaniu. Tło
+powstaje z klatki i wyniku stacku; przetwarzanie może rekonstruować, korygować
+i mieszać jego piksele.
+
+1. Otwórz wynik w obszarze retuszu i kliknij **Automatyczne tło…**.
+2. Wybierz tło:
+   - **Automatycznie** (zalecane) używa miękkiego tła, chyba że stack
+     zarejestrował ostro dużą część tła. Wtedy używa ostrego.
+   - **Miękkie tło** używa klatki z najbardziej rozmytym tłem.
+   - **Ostre tło** używa klatki z najdalszym ogniskowaniem.
+3. Zostaw włączone **Usuń aureole na krawędziach**, aby usunąć aureole wzdłuż
+   krawędzi obiektu. Nigdy nie wychodzi poza to, co zarejestrowały klatki.
+   Wyłącz, aby zachować krawędzie ze stacku.
+4. Zaznacz **Zachowaj miękkie części połączone z obiektem**, gdy części obiektu
+   leżą tuż poza głębią ostrości, na przykład główka na końcu kolca. Obiekty tła
+   obok obiektu też mogą wtedy zostać jak po stackowaniu, więc sprawdź wynik.
+5. Kliknij **Zastąp tło**. Stack 15 klatek po 20 megapikseli trwa około minuty i
+   potrzebuje około 3,5 GB wolnej pamięci. **Anuluj** przerywa.
+
+Zmiana to jeden krok, który można cofnąć, a pociągnięcia namalowane wcześniej na
+obiekcie zostają. **Pędzlem przywracania** przywrócisz piksele ze stacku tam,
+gdzie wolisz, na przykład nieostre źdźbło trawy przed obiektem. Gdy obiekt
+wypełnia prawie cały kadr, jak w scenie z dna lasu, obraz zostaje jak po
+stackowaniu i pojawia się komunikat.
+
+Po przebiegu **Pokaż brakujące dane** zabarwia miejsca, których żadna klatka nie
+uchwyciła wyraźnie. To miejsca do sprawdzenia lub ręcznego retuszu:
+
+- magenta: tło, którego żadna klatka nie zarejestrowała bez obiektu z przodu
+- cyjan: obiekt zasłonięty przed aparatem
+- żółty: obiekt poza zakresem ostrości stacku
+- łupkowy: miejsca zbyt gładkie, by ocenić
+
+**Zapisz mapę brakujących danych…** zapisuje zabarwiony podgląd i jedną
+czarno-białą maskę na kolor. Automatyczne tło potrzebuje klatek, z których
+powstał wynik, i nie jest dostępne dla wyników obszaru (ROI). Nowe punkty kontrolne
+tła dokładnie przywracają obraz, dostępną historię i diagnostykę bez ponownego obliczania tła.
+
 ### Zarządzanie etykietami
 
 Otwórz **Narzędzia → Etykiety** po wczytaniu obrazów lub utworzeniu wyniku. Każda etykieta ma własny cel: stos źródłowy, stos zarejestrowany lub wyniki wyjściowe. Etykiety wyników mogą dotyczyć wszystkich wyników albo wybranego wyniku według nazwy; zmiana nazwy lub kolejności tego wyniku nie zmienia powiązania.
@@ -944,17 +988,19 @@ zachowaj zainstalowane oprogramowanie oraz dane wejściowe.
 
 ### Odtwarzanie punktu kontrolnego retuszu
 
-Pierwszy zapis lub wczytanie weryfikuje bazę i przetworzone źródła w anulowalnej operacji w tle. Zapis odtwarza też zapisane edycje i sprawdza bieżący obraz oraz stan cofania/ponawiania przed opublikowaniem punktu kontrolnego. Jeśli źródło się zmieniło i odtwarzanie już nie pasuje, zapis kończy się błędem i zachowuje edycje. Anulowanie zapisu lub wczytania również pozostawia bieżące edycje dostępne. Jeśli pamięć jest niewystarczająca do weryfikacji lub odtwarzania, operacja zatrzymuje się i pozostawia bez zmian zarówno bieżące edycje, jak i istniejący punkt kontrolny.
+Użyj przycisków zapisu/wczytywania punktów kontrolnych w przestrzeni retuszu z oryginalną bazą i przetworzonymi źródłami. Sesje z automatycznym tłem, w tym udane analizy bez zmian pikseli, zapisują bezstratne migawki ZIP v2 `.ofretouch` z metadanymi JSON i danymi NumPy: dokładny obraz roboczy, dostępne kafelki cofania/ponawiania, stany diagnostyczne i pochodzenie źródeł. Wczytanie v2 nie oblicza ponownie tła. Sesje obejmujące tylko pędzel/tony mogą używać zwartego JSON v1; starsze punkty kontrolne tła w JSON v1 nadal można odtwarzać.
+
+Weryfikacja źródeł odbywa się w anulowalnej operacji w tle. Przed zastąpieniem pliku docelowego zapis ponownie wczytuje przygotowany plik i sprawdza dokładną równość bieżącego obrazu, dostępnych kafelków cofania/ponawiania i stanów diagnostycznych. Niezgodne źródło, nieudana weryfikacja, anulowanie lub brak pamięci pozostawiają bieżące edycje i istniejący punkt kontrolny bez zmian.
 
 Jeśli limit zapisu punktów kontrolnych uniemożliwia kolejną edycję, zastosuj bieżące edycje i rozpocznij nową sesję retuszu.
 
 Zapisz punkt kontrolny retuszu w przestrzeni retuszu, a następnie podaj oryginalny obraz bazowy i każdą przetworzoną klatkę źródłową w tej samej kolejności co w sesji:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png frame2.png --output retouched.tif
 ```
 
-Użyj rzeczywistych klatek używanych do retuszu, po wyrównaniu i dowolnym przycięciu ROI lub innym przetwarzaniu, z oryginalnymi wartościami pikseli i głębią. Punkt kontrolny zapisuje edycje i odciski, a nie piksele obrazów. Odtwarzanie rekonstruuje zapisane przesunięcia klatek i zachowanie wyrównania oraz weryfikuje bazę, uporządkowane klatki i maski ważności; niezgodne piksele, geometria lub maski są odrzucane. Każda ścieżka musi zawierać jeden obraz. Wyjście musi być PNG lub TIFF i zachowuje głębię bazy. Punkt kontrolny i obrazy wejściowe nie mogą być użyte jako wyjście.
+Oba formaty nadal wymagają oryginalnej bazy i wszystkich klatek rzeczywiście użytych do retuszu, w kolejności sesji, po wyrównaniu i dowolnym przycięciu ROI lub innym przetwarzaniu, z oryginalnymi wartościami pikseli i głębią bitową. Wczytanie rekonstruuje zapisane przesunięcia klatek i zachowanie wyrównania oraz weryfikuje bazę, uporządkowane klatki i maski ważności; niezgodne piksele, geometria lub maski są odrzucane. Każda ścieżka musi zawierać jeden obraz. Wyjście musi być PNG lub TIFF i zachowuje głębię bazy. Punkt kontrolny i obrazy wejściowe nie mogą być użyte jako wyjście.
 
 Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd użycia. Uruchomienie `python main.py --help` wypisuje wszystkie opcje; uruchomienie z prostą ścieżką (`python main.py C:\stack`) nadal otwiera interfejs graficzny z wczytanym folderem.
 

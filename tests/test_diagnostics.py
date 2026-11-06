@@ -224,3 +224,29 @@ assert not (source / 'out.png').exists()
     assert "event=cli.cancelled" in text
     assert "event=cli.failed" not in text
     assert "Traceback" not in text
+
+
+@pytest.mark.parametrize("claim", [False, True])
+def test_env_enabled_faulthandler_is_preserved_or_handed_back(tmp_path, claim):
+    """PYTHONFAULTHANDLER is never lost; only an owning entry point redirects it."""
+    environment = dict(os.environ, OPENFOCUS_LOG_DIR=str(tmp_path / "logs"),
+                       PYTHONPATH=str(ROOT), PYTHONIOENCODING="utf-8",
+                       PYTHONFAULTHANDLER="1")
+    code = f"""
+import faulthandler, sys
+import utils.diagnostics as d
+from utils.logging_setup import setup_logging
+assert faulthandler.is_enabled()
+setup_logging()
+d.install_exception_hooks(claim_inherited_faulthandler={claim})
+assert faulthandler.is_enabled()
+assert d._owns_faulthandler is {claim}
+d.shutdown_exception_hooks()
+assert faulthandler.is_enabled(), 'pre-install crash handling was disabled'
+print('ok')
+"""
+    result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=environment,
+                            capture_output=True, text=True, encoding="utf-8",
+                            timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"

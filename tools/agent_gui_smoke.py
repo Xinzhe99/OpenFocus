@@ -213,9 +213,11 @@ class Smoke:
 
     def retouch(self):
         self.call("dialog.open", name="retouch")
-        window = self.wait_windows(
-            lambda items: any(item["class"] == "RetouchDialog"
-                              for item in items))[0]
+        windows = self.wait_windows(
+            lambda items: len(items) == 1 and items[0]["class"] == "RetouchDialog"
+            and not items[0].get("busy"))
+        window = windows[0]
+        self.call("ui.context")
         canvas = self.call("ui.find", window=window["root"],
                            object_name="retouch_result")["matches"][0]
         geometry = canvas["geometry"]

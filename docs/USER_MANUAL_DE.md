@@ -30,6 +30,7 @@ OpenFocus ist eine professionelle Desktop-Anwendung zur Multifokus-Bildfusion f�
 - **Multifokus-Bildfusion**: Mehrere Bilder mit unterschiedlichen Fokuspunkten zu einem einzigen vollständig scharfen Bild kombinieren
 - **Zehn Fusionsverfahren**: Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF, StackMFF V2, StackMFF V3 sowie OpenFocus A, B und C; zusätzlich ein reiner Ausrichtungsmodus
 - **Bildregistrierung**: Fehlausgerichtete Bildsequenzen mit ECC, Homographie, Homographie mit anschließender ECC-Verfeinerung oder der schnellen OpenFocus-Ausrichtung ausrichten
+- **Automatischer Hintergrund**: einen unruhigen gestackten Hintergrund durch ein echtes Einzelbild ersetzen und sehen, wo kein Bild die Szene klar erfasst hat
 - **Quellengebundene Retusche**: Pixel aus den Bildern malen, die das Ergebnis tatsächlich erzeugt haben, mit Quell- und Wiederherstellungspinsel, Belichtungspinsel und Rückgängig pro Strich
 - **Wischvergleich**: Ausrichtung prüfen und Ergebnisse mit einem A/B-Trenner vergleichen
 - **Projektdateien**: reproduzierbare Einstellungen und Quellverweise in `.ofproj`-Dateien speichern; Ergebnis- und Retuschepixel werden getrennt exportiert
@@ -590,6 +591,56 @@ Die Herkunft wird mit der Ausgabe gespeichert: ausgerichtete Bilder, ROI-Zuschni
 
 Für eine vorhandene Bilddatei **Bearbeiten → Bilddateien retuschieren…** wählen und dann das Ergebnis sowie ein oder mehrere Quellbilder auswählen. Die Quellen müssen bereits auf dasselbe Pixelraster ausgerichtet sein; gleiche Abmessungen allein belegen keine Ausrichtung. Einseitige PNG-, TIFF-, JPEG- und BMP-Bilder mit übereinstimmenden aufrechten Abmessungen, Kanälen und 8- oder 16-Bit-Tiefe werden akzeptiert; die EXIF-Ausrichtung wird beim Laden angewendet. Alpha- und mehrseitige Bilder werden nicht unterstützt. Die ausgewählten Bilder sind vom Benutzer bereitgestellt und keine aufgezeichnete Rendering-Herkunft. **Übernehmen** erzeugt eine separate, nicht exportierte Ausgabe; speichern Sie sie aus der Ausgabeliste. Die gewählten Dateien sind während dieser Sitzung vor Überschreiben geschützt, einschließlich Tiefenkarten- und 3D-Modell-Exporten. Wie bei anderen Ergebnissen speichern Projektdateien diese Pixel oder den Pinselverlauf nicht.
 
+### Hintergrund ersetzen (Automatischer Hintergrund)
+
+Beim Stacken wird der Hintergrund zusammen mit dem Motiv geschärft. Der
+Hintergrund eines gestackten Bildes ist dann oft ein Flickwerk verschiedener
+Unschärfen, mit einem Halo um das Motiv. **Automatischer Hintergrund…** im
+Retusche-Arbeitsbereich ersetzt ihn durch ein echtes Einzelbild aus demselben
+Stack. Das Motiv bleibt genau wie gestackt. Der Hintergrund wird aus einem
+Einzelbild und dem gestackten Ergebnis abgeleitet; bei der Verarbeitung können
+seine Pixel rekonstruiert, angepasst und überblendet werden.
+
+1. Öffnen Sie das Ergebnis im Retusche-Arbeitsbereich und klicken Sie auf
+   **Automatischer Hintergrund…**.
+2. Wählen Sie den Hintergrund:
+   - **Automatisch** (empfohlen) nimmt den weichen Hintergrund, außer der Stack
+     hat einen Großteil des Hintergrunds scharf aufgenommen. Dann nimmt es den
+     scharfen.
+   - **Weicher Hintergrund** nimmt das Bild mit dem unschärfsten Hintergrund.
+   - **Scharfer Hintergrund** nimmt das Bild mit dem fernsten Fokus.
+3. Lassen Sie **Kantenhalos entfernen** eingeschaltet, um Halos entlang der
+   Motivkanten zu entfernen. Es geht nie über das hinaus, was die Einzelbilder
+   aufgenommen haben. Ausschalten behält den Kantenlook des Stacks.
+4. Aktivieren Sie **Weiche, mit dem Motiv verbundene Teile behalten**, wenn
+   Teile des Motivs knapp außerhalb der Schärfentiefe liegen, etwa das Köpfchen
+   am Ende eines Stachels. Dabei können auch Hintergrundobjekte neben dem Motiv
+   wie gestackt bleiben, prüfen Sie also das Ergebnis.
+5. Klicken Sie auf **Hintergrund ersetzen**. Ein Stack aus 15 Bildern mit
+   20 Megapixeln braucht etwa eine Minute und etwa 3,5 GB freien Speicher.
+   **Abbrechen** stoppt den Vorgang.
+
+Die Änderung ist ein rückgängig machbarer Schritt, und bereits gemalte Striche
+auf dem Motiv bleiben erhalten. Mit dem **Wiederherstellungspinsel** holen Sie
+gestackte Pixel überall dort zurück, wo Sie sie bevorzugen, zum Beispiel einen
+unscharfen Grashalm vor dem Motiv. Füllt das Motiv fast das ganze Bild, wie bei
+einer Waldbodenszene, bleibt das Bild wie gestackt und ein Hinweis erscheint.
+
+Nach einem Durchlauf färbt **Fehlende Daten anzeigen** die Stellen ein, die kein
+Bild sauber erfasst hat. Diese Stellen sollten Sie prüfen oder von Hand
+retuschieren:
+
+- Magenta: Hintergrund, den kein Bild ohne das Motiv davor aufgenommen hat
+- Cyan: für die Kamera verdecktes Motiv
+- Gelb: Motiv außerhalb des Fokusbereichs des Stacks
+- Schiefer: zu glatt zum Beurteilen
+
+**Karte fehlender Daten speichern…** schreibt die eingefärbte Vorschau und je
+Farbe eine Schwarz-Weiß-Maske. Der automatische Hintergrund braucht die Bilder,
+aus denen das Ergebnis entstand, und ist für Bereichsergebnisse (ROI) nicht
+verfügbar. Neue Hintergrund-Checkpoints stellen Bild, erreichbaren Verlauf und
+Diagnosedaten exakt wieder her, ohne den Hintergrund neu zu berechnen.
+
 ### Beschriftungen verwalten
 
 **Werkzeuge → Beschriftungen** nach dem Laden von Bildern oder dem Erzeugen eines Ergebnisses öffnen. Jede Beschriftung hat ihr eigenes Ziel: den Quellstapel, den registrierten Stapel oder Ausgabeergebnisse. Ausgabebeschriftungen können für alle Ergebnisse oder für das ausgewählte Ergebnis nach seinem Namen gelten; Umbenennen oder Umsortieren dieses Ergebnisses ändert die Zuordnung nicht.
@@ -939,17 +990,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # False zum Verarbeiten
 
 ### Retusche-Kontrollpunkte wiedergeben
 
-Bei jedem Speichern oder Laden werden die Basis und die verarbeiteten Quellen zuerst in einem abbrechbaren Hintergrundvorgang geprüft. Beim Speichern werden zusätzlich die aufgezeichneten Bearbeitungen wiedergegeben und das aktuelle Bild sowie der Rückgängig-/Wiederholen-Zustand geprüft, bevor der Kontrollpunkt veröffentlicht wird. Hat sich eine Quelle geändert und passt die Wiedergabe nicht mehr, schlägt das Speichern fehl und behält Ihre Bearbeitungen. Das Abbrechen eines Speicher- oder Ladevorgangs lässt Ihre aktuellen Bearbeitungen ebenfalls verfügbar. Reicht der Arbeitsspeicher für Prüfung oder Wiedergabe nicht aus, endet der Vorgang und lässt sowohl Ihre aktuellen Bearbeitungen als auch einen vorhandenen Kontrollpunkt unverändert.
+Verwenden Sie die Kontrollpunkt-Speicher- und Ladefunktionen im Retusche-Arbeitsbereich mit der ursprünglichen Basis und den verarbeiteten Quellen. Sitzungen mit automatischem Hintergrund, auch erfolgreiche Analysen ohne Pixeländerung, speichern verlustfreie v2-`.ofretouch`-ZIP-Snapshots mit JSON-Metadaten und NumPy-Daten: das exakte Arbeitsbild, erreichbare Rückgängig-/Wiederholen-Kacheln, Diagnosezustände und Quellherkunft. Beim Laden von v2 wird der Hintergrund nicht neu berechnet. Reine Pinsel-/Tonwertsitzungen können kompaktes JSON v1 verwenden; ältere Hintergrund-Checkpoints in JSON v1 bleiben abspielbar.
+
+Die Quellprüfung läuft in einem abbrechbaren Hintergrundvorgang. Vor dem Ersetzen der Zieldatei lädt das Speichern die vorbereitete Datei erneut und prüft das aktuelle Bild, erreichbare Rückgängig-/Wiederholen-Kacheln und Diagnosezustände auf exakte Gleichheit. Nicht passende Quellen, eine fehlgeschlagene Prüfung, Abbruch oder unzureichender Speicher lassen aktuelle Bearbeitungen und einen vorhandenen Kontrollpunkt unverändert.
 
 Verhindert das Aufzeichnungslimit des Kontrollpunkts eine weitere Bearbeitung, übernehmen Sie die aktuellen Bearbeitungen und beginnen Sie eine neue Retuschesitzung, um fortzufahren.
 
 Speichern Sie einen Retusche-Kontrollpunkt im Retusche-Arbeitsbereich und geben Sie anschließend das ursprüngliche Basisbild sowie jedes verarbeitete Quellbild in derselben Reihenfolge wie in der Sitzung an:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources processed1.png processed2.png --output retouched.tif
 ```
 
-Verwenden Sie die tatsächlich für die Retusche verwendeten Bilder – nach Ausrichtung und einem etwaigen ROI-Zuschnitt oder anderer Verarbeitung – mit ihren ursprünglichen Pixelwerten und ihrer Bittiefe. Der Kontrollpunkt zeichnet Bearbeitungen und Fingerabdrücke auf, nicht die Bildpixel. Die Wiedergabe rekonstruiert die aufgezeichneten Bildversätze und das Ausrichtungsverhalten und prüft Basis, geordnete Bilder und Gültigkeitsmasken; unvereinbare Pixel, Geometrie oder Masken werden abgelehnt. Jeder Pfad muss genau ein Bild enthalten. Die Ausgabe muss PNG oder TIFF sein und behält die Bittiefe der Basis. Kontrollpunkt und Eingabebilder dürfen nicht als Ausgabe dienen.
+Beide Formate benötigen weiterhin das ursprüngliche Basisbild und alle tatsächlich für die Retusche verwendeten Quellbilder in Sitzungsreihenfolge – nach Ausrichtung und einem etwaigen ROI-Zuschnitt oder anderer Verarbeitung – mit ihren ursprünglichen Pixelwerten und ihrer Bittiefe. Das Laden rekonstruiert die aufgezeichneten Bildversätze und das Ausrichtungsverhalten und prüft Basis, geordnete Bilder und Gültigkeitsmasken; unvereinbare Pixel, Geometrie oder Masken werden abgelehnt. Jeder Pfad muss genau ein Bild enthalten. Die Ausgabe muss PNG oder TIFF sein und behält die Bittiefe der Basis. Kontrollpunkt und Eingabebilder dürfen nicht als Ausgabe dienen.
 
 Exit-Codes: `0` Erfolg, `1` Verarbeitungsfehler, `2` Nutzungsfehler. Der Aufruf `python main.py --help` gibt alle Optionen aus; ein Start mit einem reinen Pfad (`python main.py C:\stack`) öffnet weiterhin die GUI mit diesem Ordner.
 

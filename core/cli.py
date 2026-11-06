@@ -1016,7 +1016,7 @@ def _run_retouch_command(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(prog="openfocus retouch")
     commands = parser.add_subparsers(dest="command", required=True)
     replay = commands.add_parser("replay", help="replay a retouch checkpoint")
-    replay.add_argument("checkpoint", help="retouch checkpoint JSON")
+    replay.add_argument("checkpoint", help="retouch checkpoint JSON or exact archive")
     replay.add_argument("--base", required=True, help="original fused base image")
     replay.add_argument("--sources", nargs="+", required=True,
                         help="processed source images in checkpoint order")
@@ -1035,12 +1035,27 @@ def _run_retouch_command(argv: List[str]) -> int:
                 raise ValueError("output must not overwrite the checkpoint or an input image")
 
         checkpoint = read_checkpoint(args.checkpoint)
+        if (not isinstance(checkpoint, dict) or type(checkpoint.get("version")) is not int
+                or checkpoint["version"] not in (1, 2)):
+            raise ValueError("unsupported retouch checkpoint version")
         records = checkpoint.get("frames") if isinstance(checkpoint, dict) else None
         if not isinstance(records, list) or len(records) != len(args.sources):
             raise ValueError("checkpoint frame count does not match --sources")
 
+        def _recorded_ndim(fingerprint):
+            shape = fingerprint.get("shape") if isinstance(fingerprint, dict) else None
+            return len(shape) if isinstance(shape, list) else None
+
+        recorded = [checkpoint.get("base"),
+                    *(r.get("image") if isinstance(r, dict) else None for r in records)]
         images = []
-        for path in [args.base, *args.sources]:
+        for path, fingerprint in zip([args.base, *args.sources], recorded):
+            if _recorded_ndim(fingerprint) == 2:
+                # Standalone retouch keeps grayscale as one channel; decode
+                # the same way so shapes and hashes match the checkpoint.
+                from utils.standalone_retouch import _read_single_image
+                images.append(_read_single_image(path))
+                continue
             decoded = _load_images([path])
             if len(decoded) != 1:
                 raise ValueError(f"expected one image in {path}")
@@ -1751,5 +1766,5 @@ def main() -> None:
     from utils.diagnostics import install_exception_hooks
     setup_logging()
     log_session_start()
-    install_exception_hooks()
+    install_exception_hooks(claim_inherited_faulthandler=True)
     sys.exit(run_cli(sys.argv[1:]))
