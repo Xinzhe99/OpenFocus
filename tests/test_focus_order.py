@@ -30,32 +30,42 @@ def test_focus_order_leaves_frames_without_metadata_alone(tmp_path):
     assert order_by_focus(paths) == (paths, None)
 
 
-def test_folder_frame_order_skips_calibration_references(tmp_path, monkeypatch):
-    """A dust map or defect mask inside the folder is not a frame: it must not
-    hide the other frames' focus steps (or be ordered as one)."""
+def test_folder_frame_order_skips_calibration_references(tmp_path):
+    """Read real maker notes while leaving calibration files out of ordering."""
+    import struct
     import core.cli as cli
-    from core import focus_order
+    from core.image_loader import ImageStackLoader
+    from utils.image_utils import imwrite_auto
 
-    for name in ("frame_1.png", "frame_2.png", "flat.png", "mask.png"):
-        assert cv2.imwrite(str(tmp_path / name), np.zeros((8, 8, 3), np.uint8))
-    seen = []
+    def focus_jpeg(name, step):
+        # Standard Exif IFD -> MakerNote -> OM FocusInfo IFD. All offsets
+        # in the maker note are relative to its own header.
+        note = (b'OM SYSTEM\0\0\0II\x04\0' + struct.pack('<H', 1)
+                + struct.pack('<HHII', 0x2050, 4, 1, 34)
+                + struct.pack('<I', 0) + struct.pack('<H', 3))
+        for tag, value in ((0x0301, step), (0x0303, 0), (0x0304, 20000)):
+            note += struct.pack('<HHIHH', tag, 3, 1, value, 0)
+        note += struct.pack('<I', 0)
+        tiff = (b'II*\0' + struct.pack('<I', 8) + struct.pack('<H', 1)
+                + struct.pack('<HHII', 0x8769, 4, 1, 26)
+                + struct.pack('<I', 0) + struct.pack('<H', 1)
+                + struct.pack('<HHII', 0x927C, 7, len(note), 44)
+                + struct.pack('<I', 0) + note)
+        exif = b'Exif\0\0' + tiff
+        ok, encoded = cv2.imencode('.jpg', np.full((8, 8, 3), 96, np.uint8))
+        assert ok
+        raw = encoded.tobytes()
+        app1 = b'\xff\xe1' + struct.pack('>H', len(exif) + 2) + exif
+        (tmp_path / name).write_bytes(raw[:2] + app1 + raw[2:])
 
-    def fake_order(paths):
-        seen.append([os.path.basename(path) for path in paths])
-        return list(reversed(paths)), "test steps"
-
-    monkeypatch.setattr(focus_order, "order_by_focus", fake_order)
-
-    class Loader:
-        SUPPORTED_FORMATS = (".png",)
-
-    args = SimpleNamespace(frame_order="auto", dust_map=str(tmp_path / "flat.png"),
-                           defect_mask_path=str(tmp_path / "mask.png"))
-    paths = cli._folder_stack_paths(str(tmp_path), Loader(), args)
-    assert seen == [["frame_1.png", "frame_2.png"]]
-    assert [os.path.basename(path) for path in paths] == ["frame_2.png", "frame_1.png"]
-
-    args.frame_order = "name"
-    paths = cli._folder_stack_paths(str(tmp_path), Loader(), args)
-    assert seen == [["frame_1.png", "frame_2.png"]]
-    assert [os.path.basename(path) for path in paths] == ["frame_1.png", "frame_2.png"]
+    focus_jpeg('frame_1.jpg', 17121)
+    focus_jpeg('frame_2.jpg', 18216)
+    for name in ('flat.jpg', 'mask.png'):
+        assert imwrite_auto(str(tmp_path / name), np.zeros((8, 8, 3), np.uint8))
+    args = SimpleNamespace(frame_order='auto', dust_map=str(tmp_path / 'flat.jpg'),
+                           defect_mask_path=str(tmp_path / 'mask.png'))
+    paths = cli._folder_stack_paths(str(tmp_path), ImageStackLoader(), args)
+    assert [os.path.basename(path) for path in paths] == ['frame_2.jpg', 'frame_1.jpg']
+    args.frame_order = 'name'
+    paths = cli._folder_stack_paths(str(tmp_path), ImageStackLoader(), args)
+    assert [os.path.basename(path) for path in paths] == ['frame_1.jpg', 'frame_2.jpg']
