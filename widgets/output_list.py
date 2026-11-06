@@ -3,11 +3,14 @@ import re
 import tempfile
 from typing import Any
 
-from PyQt6.QtCore import QMimeData, Qt, QUrl
-from PyQt6.QtGui import QDrag
+from PyQt6.QtCore import QEvent, QMimeData, QRectF, Qt, QUrl
+from PyQt6.QtGui import QDrag, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PyQt6.QtWidgets import QListWidget
 
 from utils.image_utils import get_imwrite_params
+
+
+_STACK_THUMBNAIL_ROLE = int(Qt.ItemDataRole.UserRole) + 3
 
 
 class OutputListWidget(QListWidget):
@@ -22,6 +25,48 @@ class OutputListWidget(QListWidget):
 
     def set_window(self, window: Any) -> None:
         self._window = window
+
+    def set_aligned_stack_icon(self, item, thumbnail=None) -> None:
+        # Store only the tiny display image; records and export pixels stay intact.
+        item.setData(_STACK_THUMBNAIL_ROLE, thumbnail)
+        self._paint_aligned_stack_icon(item, thumbnail)
+
+    def _paint_aligned_stack_icon(self, item, thumbnail) -> None:
+        pixmap = QPixmap(40, 40)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        outline = QPainterPath()
+        outline.moveTo(5, 12)
+        outline.lineTo(5, 9)
+        outline.lineTo(16, 9)
+        outline.lineTo(19, 12)
+        outline.lineTo(35, 12)
+        outline.lineTo(35, 34)
+        outline.lineTo(5, 34)
+        outline.closeSubpath()
+        painter.setPen(QPen(self.palette().color(QPalette.ColorRole.Text), 0.8))
+        painter.setBrush(self.palette().brush(QPalette.ColorRole.Base))
+        painter.drawPath(outline)
+        if thumbnail is not None and not thumbnail.isNull():
+            bounds = QRectF(8, 16, 24, 15)
+            fitted = thumbnail.size().scaled(24, 15, Qt.AspectRatioMode.KeepAspectRatio)
+            target = QRectF(0, 0, fitted.width(), fitted.height())
+            target.moveCenter(bounds.center())
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.drawImage(target, thumbnail)
+        painter.end()
+        item.setIcon(QIcon(pixmap))
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
+            from controllers.output_manager import OUTPUT_RECORD_ROLE
+            for row in range(self.count()):
+                item = self.item(row)
+                record = item.data(OUTPUT_RECORD_ROLE)
+                if record is not None and record.kind == 'aligned':
+                    self._paint_aligned_stack_icon(item, item.data(_STACK_THUMBNAIL_ROLE))
 
     def cleanup_temp_files(self) -> None:
         for path in self._temp_files:
