@@ -223,44 +223,6 @@ class StackLoadWorker(QThread):
             self.finished_load.emit(ok, msg, imgs, names)
 
 
-class SourceDecodeWorker(QThread):
-    """Resolve one original off the GUI thread; cancelled requests emit nothing."""
-
-    decoded = pyqtSignal(object, object)
-    failed = pyqtSignal(object, str)
-
-    def __init__(self, frame, key, parent=None, *, display=False):
-        super().__init__(parent)
-        self.frame = frame
-        self.key = key
-        self.is_cancelled = False
-        self.display = bool(display)
-
-    def cancel(self):
-        self.is_cancelled = True
-        self.requestInterruption()
-
-    def request_cancel(self):
-        self.cancel()
-
-    def run(self):
-        try:
-            with heavy_job(lambda: self.is_cancelled or self.isInterruptionRequested()):
-                if self.is_cancelled or self.isInterruptionRequested():
-                    return
-                image = resolve_frame(self.frame)
-                if self.is_cancelled or self.isInterruptionRequested():
-                    return
-                metadata = getattr(self.frame, 'linear_metadata', None)
-                if self.display and metadata is not None:
-                    from utils.linear_dng import develop_linear
-                    image = develop_linear(image, metadata)
-        except Exception as exc:
-            if not self.is_cancelled and not self.isInterruptionRequested():
-                self.failed.emit(self.key, str(exc))
-            return
-        if not self.is_cancelled and not self.isInterruptionRequested():
-            self.decoded.emit(self.key, image)
 
 
 class ROIAlignmentWorker(QThread):

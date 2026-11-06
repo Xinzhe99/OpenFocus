@@ -3,7 +3,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import QApplication
 
@@ -53,6 +53,12 @@ def pixel(pixmap, point):
 def assert_color(actual, expected, tolerance=5):
     for channel in ("red", "green", "blue"):
         assert abs(getattr(actual, channel)() - getattr(expected, channel)()) <= tolerance
+
+
+def install_loupe(view, pixmap, key, request=None):
+    request = request or view._region_requests['loupe']
+    return view.set_source_region(pixmap, (0, 0, view._source_size.width(), view._source_size.height()),
+                                  source_key=key, request=request)
 
 
 @pytest.mark.parametrize("dpr", [1.0, 1.25, 2.0])
@@ -132,17 +138,19 @@ def test_lazy_original_pixels_and_stale_completion(view, qapp):
     preview = QPixmap(106, 64)
     preview.fill(QColor("magenta"))
     requests = []
-    view.sourcePixelsRequested.connect(requests.append)
+    view.sourceRegionRequested.connect(lambda key, request: requests.append((key, request)))
     # Simulated 100MP domain, with a rounded preview aspect and no large allocation.
     view.set_display_pixmap(preview, source_size=(12500, 7500), source_key=(1, 0))
     pos = QPointF(325, 217)
     mouse(view, QMouseEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton)
-    assert requests == [(1, 0)]
+    assert requests[-1][0] == (1, 0)
+    assert requests[-1][1][0] == 'loupe'
     before = (view._zoom_factor, QPointF(view._pan_offset), view._map_to_base(pos))
     # A tiny surrogate full-pixel buffer has a different color than the preview.
     original = QPixmap(500, 300)
     original.fill(QColor("lime"))
-    assert view.set_source_pixmap(original, source_key=(1, 0))
+    original_request = view._region_requests['loupe']
+    assert install_loupe(view, original, (1, 0))
     assert (view._zoom_factor, view._pan_offset, view._map_to_base(pos)) == before
     assert_color(pixel(view.grab(), pos), QColor("lime"))
     # A portrait frame arrives while the button remains held; old worker results
@@ -150,8 +158,8 @@ def test_lazy_original_pixels_and_stale_completion(view, qapp):
     portrait = QPixmap(64, 106)
     portrait.fill(QColor("cyan"))
     view.set_display_pixmap(portrait, source_size=(7500, 12500), source_key=(1, 1))
-    assert requests[-1] == (1, 1)
-    assert not view.set_source_pixmap(original, source_key=(1, 0))
+    assert requests[-1][0] == (1, 1)
+    assert not install_loupe(view, original, (1, 0), original_request)
     assert view._source_pixmap is None
     sample, target = view._magnifier_rects()
     assert target.center() == pos
@@ -159,12 +167,13 @@ def test_lazy_original_pixels_and_stale_completion(view, qapp):
     assert view._map_from_base(sample.center()).y() == pytest.approx(pos.y())
     portrait_full = QPixmap(300, 500)
     portrait_full.fill(QColor("yellow"))
-    assert view.set_source_pixmap(portrait_full, source_key=(1, 1))
+    assert install_loupe(view, portrait_full, (1, 1))
     assert_color(pixel(view.grab(), pos), QColor("yellow"))
     view.set_display_pixmap(preview, source_size=(12500, 7500), source_key=(2, 0))
-    assert not view.set_source_pixmap(original, source_key=(1, 0))
+    latest_request = view._region_requests['loupe']
+    assert not install_loupe(view, original, (1, 0), original_request)
     view.clear()
-    assert not view.set_source_pixmap(original, source_key=(2, 0))
+    assert not install_loupe(view, original, (2, 0), latest_request)
 
 
 def test_styled_label_uses_widget_coordinates(view, qapp):
@@ -180,8 +189,8 @@ def test_original_sampling_uses_metadata_scale_in_both_axes(view, qapp):
     original = coordinate_grid(500, 300)
     preview = QPixmap(106, 64)
     preview.fill(QColor("magenta"))
-    view.set_display_pixmap(preview, source_size=(12500, 7500), source_key="frame")
-    assert view.set_source_pixmap(original, source_key="frame")
+    view.set_display_pixmap(preview, source_size=(12500, 7500), source_key="frame",
+                            source_pixmap=original)
     scale = min(view.width() / 12500, view.height() / 7500)
     # Compute the displayed point independently of the widget's mapping helpers.
     fx, fy = .62, .73
@@ -194,3 +203,56 @@ def test_original_sampling_uses_metadata_scale_in_both_axes(view, qapp):
     assert sample.center().x() == pytest.approx(fx * 12500)
     assert sample.center().y() == pytest.approx(fy * 7500)
 
+
+
+@pytest.mark.parametrize('dpr', [1.0, 1.25, 2.0])
+@pytest.mark.parametrize('source_size', [(10000, 10000), (48000, 32000), (8000, 24000)])
+def test_large_source_reaches_native_pixels_with_anchored_pan_and_roi(view, qapp, source_size, dpr):
+    view.devicePixelRatioF = lambda: dpr
+    preview = QPixmap(96, 64)
+    preview.fill(QColor('gray'))
+    view.set_display_pixmap(preview, source_size=source_size, source_key=source_size)
+    view._zoom_factor = 2
+    view.refresh_display()
+    pos = QPointF(291, 209)
+    native = view._map_to_base(pos)
+    view.set_roi_rect(QRectF(native.x() - 25, native.y() - 20, 50, 40))
+    roi = view.get_roi_rect()
+    for _ in range(100):
+        wheel(view, pos)
+    scale, _, _ = view._get_layout_params()
+    assert scale * view.devicePixelRatioF() == pytest.approx(8)
+    assert view._zoom_factor > 10
+    assert view._map_to_base(pos).x() == pytest.approx(native.x())
+    assert view._map_to_base(pos).y() == pytest.approx(native.y())
+    assert view.get_roi_rect() == roi
+    assert view._map_to_base(view._map_from_base(roi.topLeft())).x() == pytest.approx(roi.x())
+    assert view.pixmap().width() <= round(view.width() * view.devicePixelRatioF())
+    assert view.pixmap().height() <= round(view.height() * view.devicePixelRatioF())
+
+
+@pytest.mark.parametrize('dpr', [1.0, 1.25, 2.0])
+def test_large_loupe_starts_at_native_and_stale_regions_cannot_reappear(view, qapp, dpr):
+    view.devicePixelRatioF = lambda: dpr
+    preview = QPixmap(100, 100)
+    preview.fill(QColor('gray'))
+    view.set_display_pixmap(preview, source_size=(10000, 10000), source_key='large')
+    pos = QPointF(250, 170)
+    mouse(view, QMouseEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton)
+    source, target = view._magnifier_rects()
+    assert target.width() / source.width() * view.devicePixelRatioF() >= 1 - 1e-12
+    assert view._magnifier_zoom > 10
+    first = view._region_requests['loupe']
+    tile = QPixmap(32, 32)
+    tile.fill(QColor('green'))
+    mouse(view, QMouseEvent.Type.MouseMove, QPointF(270, 190))
+    assert not view.set_source_region(tile, first[2], source_key='large', request=first)
+    for _ in range(60):
+        wheel(view, QPointF(270, 190), held=True)
+    source, target = view._magnifier_rects()
+    assert target.width() / source.width() * view.devicePixelRatioF() == pytest.approx(16)
+    zoom = view._magnifier_zoom
+    wheel(view, QPointF(270, 190), control=True, held=True)
+    assert view._magnifier_zoom == zoom
+    source, target = view._magnifier_rects()
+    assert target.width() / source.width() * view.devicePixelRatioF() == pytest.approx(16)
