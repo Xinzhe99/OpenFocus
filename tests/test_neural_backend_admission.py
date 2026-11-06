@@ -70,6 +70,7 @@ def test_directml_with_sufficient_budget_uses_device(monkeypatch):
     devices = []
 
     class Session:
+        actual_device = 'DIRECTML'
         def run(self, _outputs, inputs):
             return [np.zeros_like(inputs['input'])]
 
