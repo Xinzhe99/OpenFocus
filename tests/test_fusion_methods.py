@@ -681,3 +681,33 @@ def test_area_resize_extension_keeps_reference_pixels(monkeypatch, stage_tiles):
     else:
         actual = fusion.fuse(frames, img_resize=size, thread_count=1)
     np.testing.assert_allclose(actual, expected, rtol=0, atol=2e-5)
+
+
+def test_all_ten_methods_keep_independent_results_when_switching():
+    """Exercise real runners/checkpoints and their caches on three focal planes."""
+    from core.algorithms import fusion_algorithms
+
+    pytest.importorskip('onnxruntime')
+    pytest.importorskip('dtcwt')
+    rng = np.random.default_rng(177)
+    h, w = 192, 256
+    texture = rng.integers(20, 230, (h, w, 3), dtype=np.uint8)
+    blurred = cv2.GaussianBlur(texture, (0, 0), 3)
+    x = np.indices((h, w))[1]
+    frames = [np.where(mask[:, :, None], texture, blurred) for mask in (
+        x < w // 3, (x >= w // 3) & (x < 2 * w // 3), x >= 2 * w // 3)]
+    methods = tuple(spec.id for spec in fusion_algorithms())
+    options = dict(use_gpu=False, tile_enabled=False, exposure_match=False,
+                   base_frame='none', sort_mode='off')
+    expected = {method: MultiFocusFusion(method, **options).fuse(
+        frames, thread_count=1).copy() for method in methods}
+    # This particular textured fixture discriminates the ten released paths.
+    # Uniform inputs are deliberately not required to differ between methods.
+    for index, method in enumerate(methods):
+        for other in methods[index + 1:]:
+            assert not np.array_equal(expected[method], expected[other]), (method, other)
+    fusion = MultiFocusFusion(methods[0], **options)
+    for method in reversed(methods):
+        fusion.set_algorithm(method)
+        actual = fusion.fuse(frames, thread_count=1)
+        np.testing.assert_array_equal(actual, expected[method], err_msg=method)

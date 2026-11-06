@@ -178,9 +178,9 @@ def test_streaming_workspace_depends_on_geometry_not_stack_depth(monkeypatch, me
     assert deep == small
     decider = resolve_runner(get_fusion(method).tile_decider)
     monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: small)
-    assert not decider([frame] * 1000, 2048)
+    assert not decider([frame] * 1000, mff._DEFAULT_TILE_THRESHOLD)
     monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: small - 1)
-    assert decider([frame] * 2, 2048)
+    assert bool(decider([frame] * 2, mff._DEFAULT_TILE_THRESHOLD)) == get_fusion(method).external_tiling_default
 
 
 def test_manual_openfocus_spatial_cap_is_preserved_with_roomy_ram(monkeypatch):
@@ -195,13 +195,11 @@ def test_manual_openfocus_spatial_cap_is_preserved_with_roomy_ram(monkeypatch):
 def test_frame_producers_respect_complete_per_worker_budget(monkeypatch, activity_only):
     from types import SimpleNamespace
     from core import multi_focus_fusion as mff, resource_policy as policy
-    from core.algorithm_adapters import openfocus_a_resources
     from fusion_methods.openfocus_ab import _frame_pass_workers
 
     frame = SimpleNamespace(shape=(1000, 1000, 3))
-    fixed, worker = openfocus_a_resources(1000, 1000, {}, 16)
-    if activity_only:
-        fixed = 4 * 1024 * 1024 + 1000 * 1000 * 12
+    fixed = 4 * 1024 * 1024 + 1000 * 1000 * (12 if activity_only else 16)
+    worker = 1000 * 1000 * 80
     monkeypatch.setattr(policy, 'probe_resources', lambda: policy.ResourceSnapshot(
         available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,
         physical_cores=8, logical_cpus=16))
@@ -226,18 +224,17 @@ def test_source_manifest_budget_decision_never_decodes_pixels(monkeypatch, metho
     monkeypatch.setattr(SourceFrame, 'full_resolution', unexpected_decode)
     needed = mff.estimate_peak_bytes(method, [source] * 16)
     monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: needed)
-    assert not resolve_runner(get_fusion(method).tile_decider)([source] * 16, 2048)
+    assert not resolve_runner(get_fusion(method).tile_decider)([source] * 16, mff._DEFAULT_TILE_THRESHOLD)
     assert isinstance(mff._stack_footprint_exceeds([source] * 16, 2048), bool)
 
 
 def test_downsized_frame_workers_charge_full_uint16_conversion(monkeypatch):
     from types import SimpleNamespace
     from core import multi_focus_fusion as mff, resource_policy as policy
-    from core.algorithm_adapters import openfocus_a_resources
     from fusion_methods.openfocus_ab import _frame_pass_workers
 
     source = SimpleNamespace(shape=(4000, 4000, 3), dtype=np.dtype(np.uint16))
-    fixed, _ = openfocus_a_resources(100, 100, {}, 16)
+    fixed = 4 * 1024 * 1024 + 100 * 100 * 16
     conversion = 4000 * 4000 * 3 * 8 + 100 * 100 * 3 * 4
     monkeypatch.setattr(policy, 'probe_resources', lambda: policy.ResourceSnapshot(
         available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,
