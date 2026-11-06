@@ -204,20 +204,18 @@ def test_feedback_includes_current_crash_and_tolerates_vanished_history(log_fold
         assert "already_removed.log" not in archive.namelist()
 
 
-@pytest.mark.parametrize("kind,hint,expected", [
-    (None, None, "not checked"),
-    ("CPU", True, "False"),
-    ("DIRECTML", False, "True"),
+@pytest.mark.parametrize("kind,expected", [
+    (None, "not checked"),
+    ("CPU", "False"),
+    ("DIRECTML", "True"),
 ])
 def test_feedback_export_reports_neural_gpu_status(log_folder, monkeypatch, tmp_path,
-                                                   kind, hint, expected):
+                                                   kind, expected):
     from core import multi_focus_fusion
     from fusion_methods import neural_runtime
-    from utils import platform_utils
 
     monkeypatch.setattr(neural_runtime, "_DEVICE", kind)
     monkeypatch.setattr(multi_focus_fusion, "_NEURAL_DEVICE_KIND", None)
-    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", hint)
     report = logs.export_feedback_package(tmp_path / "report.zip")
     with zipfile.ZipFile(report) as archive:
         facts = archive.read("system.txt").decode("utf-8")
