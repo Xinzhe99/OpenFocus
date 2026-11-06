@@ -393,9 +393,9 @@ class MultiFocusFusion:
                   "anchor to the other end).")
         return frames
 
-    def _exposure_gains_for_source(self, input_source, should_cancel=None):
-        """Gains for a whole stack, streaming directory input one frame at a
-        time (an exposure pass must not defeat the lazy tiled loader)."""
+    def _exposure_gains_for_source(self, input_source, should_cancel=None,
+                                   *, normalize_uint16=False):
+        """Gains for a stack, reducing each frame in cancellable row strips."""
         if isinstance(input_source, (list, tuple)):
             from utils.image_utils import _exposure_mean
             from core.registration import RegistrationCancelled
@@ -404,7 +404,8 @@ class MultiFocusFusion:
                 if should_cancel is not None and should_cancel():
                     raise RegistrationCancelled()
                 if frame is not None:
-                    means.append(_exposure_mean(frame))
+                    means.append(_exposure_mean(
+                        frame, should_cancel, normalize_uint16=normalize_uint16))
             if not means:
                 return []
             target = means[-1]
@@ -427,9 +428,9 @@ class MultiFocusFusion:
                 img = decode_image(path)
                 if img is None:
                     raise RuntimeError(f"Unable to read image: {name}")
-                color = (img[:, :, :3] if img.ndim == 3 and img.shape[2] > 3
-                         else img)
-                means.append(float(color.astype(np.float32).mean()))
+                from utils.image_utils import _exposure_mean
+                means.append(_exposure_mean(
+                    img, should_cancel, normalize_uint16=normalize_uint16))
             if not means:
                 return None
             target = means[-1]
@@ -657,8 +658,19 @@ class MultiFocusFusion:
                              and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
         # Retain prepared pixels on disk; color conversion/gain scratch is
         # bounded by rows and cancellation is checked between strips.
-        preparation = max(min(frame.shape[0], 128) * int(np.prod(frame.shape[1:]))
-                          for frame in input_source) * 16
+        normalize_sources = (not deferred_exposure
+                             and any(frame.dtype == np.uint16 for frame in input_source))
+        preparation = 0
+        for frame in input_source:
+            strip_size = min(frame.shape[0], 128) * int(np.prod(frame.shape[1:]))
+            # Statistics and normalization need one float32 strip. Applying a
+            # gain also holds the integer result while the float32 strip is
+            # live; normalized sources instead remain float32 mapped frames.
+            scratch_itemsize = 4
+            if (self.exposure_match and not deferred_exposure and not normalize_sources
+                    and frame.dtype in (np.uint8, np.uint16)):
+                scratch_itemsize += frame.dtype.itemsize
+            preparation = max(preparation, strip_size * scratch_itemsize)
         policy.require_memory(preparation, user_limit=memory_budget_bytes())
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.
@@ -667,8 +679,7 @@ class MultiFocusFusion:
         # matching and resizing. Spatial tiles may defer the same conversion to
         # crops, but whole-image neural calls must not mix 0-65535 and 0-255.
         normalized_owned = set()
-        if (not deferred_exposure
-                and any(frame.dtype == np.uint16 for frame in input_source)):
+        if normalize_sources:
             normalized_frames = []
             for frame in input_source:
                 check_cancel()
@@ -682,32 +693,15 @@ class MultiFocusFusion:
                     if frame.dtype == np.uint16:
                         strip *= 255.0 / 65535.0
                     normalized[y:y + 128] = strip
+                    del strip
                 normalized_frames.append(normalized)
                 normalized_owned.add(id(normalized))
             input_source = normalized_frames
             del normalized
         exposure_gains_ = None
         if self.exposure_match:
-            if deferred_exposure and any(frame.dtype == np.uint16 for frame in input_source):
-                # Match the former whole-stack float32 normalization exactly,
-                # but retain only one normalized frame at a time for the means.
-                from utils.image_utils import _exposure_mean
-                means = []
-                for frame in input_source:
-                    check_cancel()
-                    if frame.dtype == np.uint16:
-                        normalized = frame.astype(np.float32) * (255.0 / 65535.0)
-                    elif frame.dtype == np.float32:
-                        normalized = frame
-                    else:
-                        normalized = frame.astype(np.float32)
-                    means.append(_exposure_mean(normalized))
-                del normalized
-                target = means[-1]
-                exposure_gains_ = ([1.0] * len(means) if target <= 1e-6 else
-                                   [1.0 if mean <= 1e-6 else target / mean for mean in means])
-            else:
-                exposure_gains_ = self._exposure_gains_for_source(input_source, should_cancel)
+            exposure_gains_ = self._exposure_gains_for_source(
+                input_source, should_cancel, normalize_uint16=deferred_exposure)
             check_cancel()
             if exposure_gains_ is not None and isinstance(input_source, list) and not deferred_exposure:
                 matched = []

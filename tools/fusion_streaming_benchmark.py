@@ -242,10 +242,10 @@ def main():
             report['ram_ceiling_before_fusion'] = memory_budget_bytes()
             start = time.perf_counter()
             if args.entry == 'pipeline':
-                prepared, is_16bit = prepare_fusion_input(frames, fusion)
+                prepared, is_16bit = prepare_fusion_input(frames)
             else:
                 prepared, is_16bit = frames, any(frame.dtype == np.uint16 for frame in frames)
-            report['stages_s']['normalization'] = time.perf_counter() - start
+            report['stages_s']['source_binding'] = time.perf_counter() - start
             report['pipeline_exposure_sort_base_applied'] = args.entry == 'pipeline'
             start = time.perf_counter()
             if args.entry == 'pipeline':

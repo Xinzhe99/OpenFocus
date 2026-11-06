@@ -44,6 +44,26 @@ original float32 reductions. Progress covers transform estimation and output
 creation; cancellation waits for any current native call to return. Weak
 matching can remain expensive on low-detail or repeated textures.
 
+Exposure means use at most 128 contiguous float32 rows, including deferred
+uint16 normalization; gain application also uses row buffers. Admission covers
+the simultaneously live conversion and integer gain result before allocation.
+The logical 20000×20000 RGB exposure diagnostic peaked at 30.72 MB of traced
+allocation for uint8, normalized uint16 and float32 sources. This measures
+temporary allocations, not process RSS or the residency of mapped source pages.
+
+The 2026-11-07 same-source registration-preparation probe used 92 JPEGs at
+8192×5464. It timed low-pass brightness and estimation-image preparation,
+separately from decoding; it did not run transform search or output warping.
+
+| Registration-preparation probe | Before | After |
+|---|---:|---:|
+| Preparation | 129.54 s | 61.41 s |
+| Sampled process peak RSS | 872.06 MiB | 352.11 MiB |
+
+These single-run measurements were taken on a shared machine; decoder cache
+and competing activity affect timing. They establish the measured stage and
+resident-memory reduction, not an end-to-end alignment speed ratio.
+
 Source inspection retains one selected original on a worker and delivers
 coalesced viewport/loupe crops capped at 4096×4096. Each request has an explicit
 memory check and shares the processing lease. Source previews and aligned-stack

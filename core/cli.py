@@ -627,7 +627,7 @@ def _fuse_stack_admitted(images, args):
     if getattr(args, "tile_threshold", None) is not None:
         fusion_kwargs["tile_threshold"] = args.tile_threshold
     fusion = MultiFocusFusion(**fusion_kwargs)
-    images, is_16bit = prepare_fusion_input(images, fusion, getattr(args, "_should_cancel", None))
+    images, is_16bit = prepare_fusion_input(images, getattr(args, "_should_cancel", None))
     t0 = time.time()
     fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads)
     model_weights = _method_weights(spec)
@@ -643,7 +643,7 @@ def _fuse_stack_admitted(images, args):
     fused = quantize_fuse_output(fused, is_16bit)
     from core.transparency import restore_transparent_canvas
     fused = restore_transparent_canvas(fused, transparent)
-    # 注册/归一化后的帧留给 --depth-map 用（与融合同一输入）。帧序必须与
+    # 保留配准后的源帧供 --depth-map 使用；深度计算负责位深规范化。帧序必须与
     # 融合内部一致：--sort desc 会在 fuse() 内反转帧序，深度图若仍按原序
     # 计算，0/N-1 标签就指向相反的一端。
     if not getattr(args, "_grouped", False):

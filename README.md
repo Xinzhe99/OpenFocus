@@ -56,9 +56,9 @@
 
 > [!NOTE]
 > **v1.77.0 release candidate** — Auto background and restorable retouch sessions,
-> bounded JPEG/RAW previews and original-pixel inspection, RAM-admitted CPU
-> fusion, and clearer GPU execution status. See the changelog for supported
-> inputs and feature limitations.
+> confirmed settings reset, continuous native inspection, bounded large-stack
+> processing and TIFF conversion, plus microscope mosaic scale/rotation fixes.
+> See the changelog for supported inputs and feature limitations.
 
 Earlier releases are in the [Changelog](./CHANGELOG.md).
 

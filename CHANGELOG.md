@@ -17,7 +17,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as knobs just past the depth of field. A missing-data map shows, and can save,
   where no frame saw the scene cleanly. Scenes that are nearly all subject are
   left as stacked.
-- Add a Retouch button beside Review frames in the right panel.
+- Put Retouch in the output header and Review frames immediately left of Select
+  all in the source header. Add grouped, scrollable shortcut help to Retouch.
+- Add Settings → Restore default settings with a second confirmation. Cancel
+  changes nothing; restoring retains loaded sources, outputs and user data.
 - Add Auto background to the command line: `--auto-background [auto|soft|sharp]`
   replaces the background after fusion with the Retouch defaults, so a stack
   can be finished unattended. `--background-mode faithful` keeps the stack's
@@ -33,10 +36,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   base correction consume the descriptor instead of branching on method names.
 - CI also installs the built wheel without Qt or PyTorch and exercises real
   16-bit CLI fusion and recipe replay, including non-ASCII paths.
-- Pressing Render while frames are still loading now starts the render when
-  loading finishes; pressing it again cancels.
+- Rendering queued during loading shows a waiting-for-loading state, followed
+  by resource wait, preparation, alignment, fusion and finishing as applicable.
+  Cancelling removes the deferred start, including after its timer was queued.
 - The status bar reads "RAM used" so it is clear which number is in use.
 - Reword the retouch brush-size hint.
+- OpenFocus A/B/C use whole-image processing at the default tile threshold.
+  Explicit non-default thresholds still select the external tile path; internal
+  row/frame streaming retains global depth and reconstruction semantics.
+- Stream TIFF conversion in bounded strips without an encoded full-image copy,
+  preserving integer depth and supported EXIF/GPS/ICC metadata. Admit camera
+  TIFFs by their actual classic-header capacity near the 4-GiB boundary.
+- Bound exposure statistics, normalization and gain scratch by rows, including
+  deferred uint16 tiles and mixed-depth neural inputs; release strips before
+  allocating the next and check cancellation between them.
 - Save Auto background sessions, including successful analyses without pixel
   changes, as lossless v2 `.ofretouch` ZIP snapshots with JSON metadata and NumPy
   payloads. GUI and CLI restore exact working pixels, reachable undo/redo tiles
@@ -85,6 +98,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so when it opens on such an output.
 
 ### Fixed
+- Preserve the loupe's selected zoom across release/reopen and retain useful
+  image content while a new native region is pending.
+- Frame-number, thumbnail and slider navigation in Retouch no longer creates a
+  stray top-level window. Auto-background option indicators align with the first
+  text line, and clearing sources removes stale frame-review status.
+- Correct microscope mosaic scale and rotation with similarity geometry and
+  original-resolution refinement instead of blending misregistered detail.
+- Use the reference canvas for mapped OpenFocus affine destinations when source
+  sizes differ, preventing successful alignment from returning black pixels.
+- Keep C's ROI planning consistent with its actual pyramid reconstruction depth.
 - Checkpoint and recipe saves cannot replace their original images or correction
   references; recipe execution protects the recipe itself. Reject output paths
   that require the same name to be both a file and a directory before processing.

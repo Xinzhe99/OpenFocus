@@ -17,6 +17,15 @@ estimation and smoothing as fusion. Tiled B/C renders share a full-image depth
 map; when resizing is requested, they use whole-frame rendering so the depth
 map and output have the same dimensions.
 
+OpenFocus A/B/C use whole-image processing at the default tile threshold, even
+when the general tile option is enabled. A non-default threshold explicitly
+opts into their external tile path. Bounded row and frame passes are internal
+memory controls and retain the global depth/reconstruction domain.
+
+B and C can produce the same depth map while producing different color pixels:
+B blends source layers, whereas C reconstructs a multilevel pyramid. Similar
+depth estimates alone do not establish that the methods share their output.
+
 StackMFF V1 and V2 use retrained single-scale attention networks, each with
 about 156,172 parameters. V1 combines luminance with softmax weights and takes
 chroma from the source frame closest to the resulting luminance. Its fused

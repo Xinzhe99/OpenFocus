@@ -805,7 +805,8 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
     def _warp(args):
         idx, img, M, gain = args
         _check_cancel(should_cancel)
-        warped = create_frame(img.shape, img.dtype)
+        # OpenCV ignores dst when its shape differs from the output canvas.
+        warped = create_frame((h, w) + img.shape[2:], img.dtype)
         cv2.warpAffine(img, M[:2, :], (w, h), dst=warped,
                        flags=cv2.INTER_LANCZOS4 | cv2.WARP_FILL_OUTLIERS,
                        borderMode=cv2.BORDER_REFLECT)
