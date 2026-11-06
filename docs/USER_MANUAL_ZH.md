@@ -1346,6 +1346,7 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--base-frame` | 可选的后融合步骤：把输出低频对齐到 `last`/`first` 帧（默认 `none`） |
 | `--sharpen-output` | 融合后、量化前做轻度锐化；默认关闭 |
 | `--sort` | `openfocus_a/b/c` 的帧序：`asc`（默认，文件序）、`desc`（反转远→近扫描）、`off` |
+| `--frame-order` | 文件夹输入：`auto`（默认）在所有帧都有 EXIF 对焦步数时按由近到远排序（OM SYSTEM 焦点包围从中间深度开始），否则按文件名；`name` 始终按文件名。显式列出的文件保持原顺序 |
 | `--dust-map WHITE` | 用失焦白场照片做平场（尘点图）校正 |
 | `--defect-mask-path MASK` | 传感器坐标坏点蒙版；非零像素在配准前修复 |
 | `--sensor-denoise` | 配准前做保守的传感器降噪 |

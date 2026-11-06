@@ -18,7 +18,7 @@ _FIELDS = (
     "threads", "resource_preference", "batch_size", "cpu", "downscale",
     "tile_size", "tile_enabled", "tile_overlap", "tile_threshold",
     "scale_bar", "scale_um", "depth_map", "depth_colormap", "sharpen_output",
-    "group_size", "group_overlap",
+    "group_size", "group_overlap", "frame_order",
 )
 _PATH_FIELDS = {"dust_map", "depth_map", "defect_mask_path"}
 _INTEGER_LIMITS = {"threads": 0, "batch_size": 1, "downscale": 1, "tile_size": 64,

@@ -179,6 +179,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "(optional value: output path; default <output>_depth.png; batch requires default path)")
     parser.add_argument("--depth-colormap", default="turbo",
                         help="Colormap for --depth-map: turbo, viridis, jet, gray, ... (default turbo)")
+    parser.add_argument("--frame-order", default="auto", choices=["auto", "name"],
+                        help="Frames of an input folder: auto (default) orders them near to far by EXIF "
+                             "focus steps when every frame has them (OM SYSTEM focus bracketing starts at "
+                             "mid-depth), otherwise by name; name = always by filename. Files listed "
+                             "explicitly keep their order")
     parser.add_argument("--dry-run", action="store_true",
                         help="Validate inputs and print the plan without fusing")
     parser.add_argument("--resume", action="store_true",
@@ -252,6 +257,17 @@ def _list_folder_images(folder: str, loader) -> List[str]:
     )
 
 
+def _folder_stack_paths(folder: str, loader, args) -> List[str]:
+    """A folder's frames: by name, or near to far by EXIF focus steps."""
+    paths = _list_folder_images(folder, loader)
+    if getattr(args, "frame_order", "name") == "auto":
+        from core.focus_order import order_by_focus
+        paths, how = order_by_focus(paths)
+        if how:
+            _say(f"Frame order: near to far by {how}")
+    return paths
+
+
 def _filter_stack_paths(paths, reference):
     from utils.path_identity import same_path
     return [path for path in paths if not same_path(path, reference)]
@@ -292,7 +308,7 @@ def _resolve_stack(args, video_temp_root: str) -> Tuple[str, List[str]]:
 
     for entry in inputs:
         if os.path.isdir(entry):
-            paths.extend(_list_folder_images(entry, loader))
+            paths.extend(_folder_stack_paths(entry, loader, args))
         elif loader.is_video_file(entry):
             if getattr(args, "native_raw", False):
                 raise ValueError("Native RAW fusion does not accept video input")
@@ -862,7 +878,7 @@ def _run_batch(args, _emit_json=None) -> int:
 
         if args.dry_run:
             try:
-                paths = _filter_stack_paths(_list_folder_images(folder, loader), folder_args.dust_map)
+                paths = _filter_stack_paths(_folder_stack_paths(folder, loader, folder_args), folder_args.dust_map)
                 paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
                 _validate_sensor_sources(paths, folder_args)
                 from core.image_loader import count_frames
@@ -884,7 +900,7 @@ def _run_batch(args, _emit_json=None) -> int:
             progress(event="folder", name=name, index=i + 1,
                      total=len(folders))
         try:
-            paths = _filter_stack_paths(_list_folder_images(folder, loader), folder_args.dust_map)
+            paths = _filter_stack_paths(_folder_stack_paths(folder, loader, folder_args), folder_args.dust_map)
             paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
             _validate_sensor_sources(paths, folder_args)
             # Count frames, not files: a folder holding one multi-page TIFF

@@ -1452,6 +1452,7 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--base-frame` | 融合後の任意ステップ：出力の低周波成分を `last`/`first` フレームに合わせます（既定 `none`） |
 | `--sharpen-output` | 融合後、量子化前に軽いアンシャープマスクを適用。既定はオフ |
 | `--sort` | `openfocus_a/b/c` のフレーム順：`asc`（既定、ファイル順）、`desc`（遠→近のスイープを反転）、`off` |
+| `--frame-order` | フォルダ入力：`auto`（既定）は全フレームに EXIF のフォーカスステップがあれば近→遠の順に並べます（OM SYSTEM のフォーカスブラケットは中間の深さから始まります）。なければ名前順。`name` は常にファイル名順。明示的に指定したファイルは指定順のまま |
 | `--dust-map WHITE` | ピントを外した白場画像によるフラットフィールド（ダストマップ）補正 |
 | `--defect-mask-path MASK` | センサー座標の欠陥マスク。非ゼロ画素を位置合わせ前に修復 |
 | `--sensor-denoise` | 位置合わせ前に保守的なセンサーノイズ除去を適用 |
