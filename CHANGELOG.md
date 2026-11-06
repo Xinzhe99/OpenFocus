@@ -108,6 +108,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Use the reference canvas for mapped OpenFocus affine destinations when source
   sizes differ, preventing successful alignment from returning black pixels.
 - Keep C's ROI planning consistent with its actual pyramid reconstruction depth.
+- Move macOS packaging to the current hosted runner after the macOS 14
+  configuration became unavailable; branch builds remain preview artifacts.
 - Checkpoint and recipe saves cannot replace their original images or correction
   references; recipe execution protects the recipe itself. Reject output paths
   that require the same name to be both a file and a directory before processing.
