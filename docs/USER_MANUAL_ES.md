@@ -879,6 +879,7 @@ Por ejemplo, añade `--align openfocus --alignment-report alignment.json` a un r
 | `--exposure-match` | Iguala la media de cada fotograma a la del último antes de la fusión (activado por defecto; `--no-exposure-match` lo desactiva). Ganancias para toda la pila, así que la salida por mosaicos queda sin costuras; se aplica a todos los métodos y a la referencia de brillo del alineador OpenFocus |
 | `--base-frame` | Paso opcional posterior a la fusión: iguala las frecuencias bajas de la salida al fotograma `last`/`first` (`none` por defecto) |
 | `--sort` | Orden de fotogramas para `openfocus_a/b/c`: `asc` (predeterminado, orden de archivo), `desc` (invierte un barrido de lejos a cerca), `off` |
+| `--frame-order` | Carpeta de entrada: `auto` (predeterminado) ordena los fotogramas de cerca a lejos según los pasos de enfoque EXIF cuando todos los tienen (el bracketing de enfoque de OM SYSTEM empieza a media profundidad); si no, por nombre; `name` siempre por nombre de archivo. Los archivos indicados explícitamente conservan su orden |
 | `--sharpen-output` | Aplica una máscara de enfoque suave a la salida fusionada (desactivado por defecto) |
 | `--dust-map WHITE` | Corrección de campo plano (mapa de polvo) a partir de una toma de campo blanco desenfocada |
 | `--defect-mask-path MASK` | Máscara de defectos en coordenadas del sensor que se repara antes del registro |

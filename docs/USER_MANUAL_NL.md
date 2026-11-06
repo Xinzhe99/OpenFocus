@@ -917,6 +917,7 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 | `--exposure-match` | Het gemiddelde van elk frame vóór fusie op het laatste frame afstemmen (standaard: aan; `--no-exposure-match` schakelt uit). Versterkingen gelden voor de hele stapel, zodat getegelde uitvoer naadloos blijft; geldt voor elke methode en voor de helderheidsreferentie van de OpenFocus-uitlijner |
 | `--base-frame` | Optionele stap na fusie: de laagfrequentie van de uitvoer op het `last`/`first`-frame afstemmen (standaard `none`) |
 | `--sort` | Framevolgorde voor `openfocus_a/b/c`: `asc` (standaard, bestandsvolgorde), `desc` (keert een ver-naar-dichtbij-reeks om), `off` |
+| `--frame-order` | Map als invoer: `auto` (standaard) sorteert de beelden van dichtbij naar veraf op EXIF-focusstappen als alle beelden die hebben (OM SYSTEM-focusbracketing begint halverwege de diepte), anders op naam; `name` altijd op bestandsnaam. Expliciet opgegeven bestanden behouden hun volgorde |
 | `--dust-map WHITE` | Flat-field-correctie (stofkaart) uit een onscherpe witveldsopname |
 | `--defect-mask-path MASK` | Sensordefectmasker; waarden die niet nul zijn worden vóór registratie gerepareerd |
 | `--sensor-denoise` | Voorzichtige sensorruisonderdrukking vóór registratie |

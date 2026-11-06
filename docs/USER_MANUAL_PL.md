@@ -901,6 +901,7 @@ Na przykład dodaj `--align openfocus --alignment-report alignment.json` do poje
 | `--exposure-match` | Dopasowuje średnią każdej klatki do ostatniej klatki przed fuzją (domyślnie włączone; `--no-exposure-match` wyłącza). Wzmocnienia wspólne dla całego stosu, więc wynik kafelkowy pozostaje bezszwowy; dotyczy każdej metody i odniesienia jasności wyrównywacza OpenFocus |
 | `--base-frame` | Opcjonalny krok po fuzji: dopasowuje niskie częstotliwości wyniku do klatki `last`/`first` (domyślnie `none`) |
 | `--sort` | Kolejność klatek dla `openfocus_a/b/c`: `asc` (domyślnie, kolejność plików), `desc` (odwrócenie przemiatania od dalekich do bliskich), `off` |
+| `--frame-order` | Folder na wejściu: `auto` (domyślnie) porządkuje klatki od bliskich do dalekich według kroków ostrości z EXIF, gdy mają je wszystkie klatki (bracketing ostrości OM SYSTEM zaczyna się w połowie głębi), w przeciwnym razie według nazwy; `name` zawsze według nazwy pliku. Pliki podane jawnie zachowują swoją kolejność |
 | `--sharpen-output` | Stosuje łagodne wyostrzanie do wyniku fuzji (domyślnie wyłączone) |
 | `--dust-map WHITE` | Korekcja pola płaskiego (mapa pyłu) z rozogniskowanego zdjęcia białego pola |
 | `--defect-mask-path MASK` | Maska defektów we współrzędnych matrycy, naprawiana przed rejestracją |

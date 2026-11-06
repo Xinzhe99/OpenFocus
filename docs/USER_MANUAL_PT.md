@@ -877,6 +877,7 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--exposure-match` | Iguala a média de cada quadro à do último antes da fusão (ativado por padrão; `--no-exposure-match` desativa). Ganhos para toda a pilha, então a saída em blocos permanece sem emendas; aplica-se a todos os métodos e à referência de brilho do alinhador OpenFocus |
 | `--base-frame` | Etapa opcional pós-fusão: iguala as baixas frequências da saída ao quadro `last`/`first` (`none` padrão) |
 | `--sort` | Ordem de quadros para `openfocus_a/b/c`: `asc` (padrão, ordem de arquivo), `desc` (inverte uma varredura de longe para perto), `off` |
+| `--frame-order` | Pasta de entrada: `auto` (padrão) ordena os quadros de perto para longe pelos passos de foco EXIF quando todos os têm (o bracketing de foco da OM SYSTEM começa no meio da profundidade); senão, por nome; `name` sempre pelo nome do arquivo. Arquivos listados explicitamente mantêm sua ordem |
 | `--sharpen-output` | Aplica uma máscara de nitidez suave à saída fundida (desativada por padrão) |
 | `--dust-map WHITE` | Correção de campo plano (mapa de poeira) a partir de uma tomada de campo branco desfocada |
 | `--defect-mask-path MASK` | Máscara de defeitos em coordenadas do sensor reparada antes do registro |

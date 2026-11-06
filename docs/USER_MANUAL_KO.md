@@ -1412,6 +1412,7 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--base-frame` | 선택적 후처리 단계: 출력의 저주파를 `last`/`first` 프레임에 맞춥니다(기본값 `none`) |
 | `--sharpen-output` | 합성 후 양자화 전에 가벼운 언샤프 마스크 적용. 기본값 꺼짐 |
 | `--sort` | `openfocus_a/b/c`의 프레임 순서: `asc`(기본값, 파일 순서), `desc`(원경→근경 스윕 반전), `off` |
+| `--frame-order` | 폴더 입력: `auto`(기본값)는 모든 프레임에 EXIF 초점 단계가 있으면 가까운 곳에서 먼 곳 순으로 정렬합니다(OM SYSTEM 초점 브라케팅은 중간 깊이에서 시작). 없으면 이름순. `name`은 항상 파일 이름순. 직접 나열한 파일은 순서를 유지 |
 | `--dust-map WHITE` | 초점이 나간 화이트 필드 촬영본으로 플랫 필드(더스트 맵) 보정 |
 | `--defect-mask-path MASK` | 센서 좌표 결함 마스크. 0이 아닌 픽셀을 정합 전에 복구 |
 | `--sensor-denoise` | 정합 전에 보수적인 센서 노이즈 제거 적용 |

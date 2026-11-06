@@ -879,6 +879,7 @@ Ad esempio, aggiungi `--align openfocus --alignment-report alignment.json` a un 
 | `--exposure-match` | Abbina la media di ogni fotogramma a quella dell'ultimo prima della fusione (attivo per impostazione predefinita; `--no-exposure-match` lo disattiva). Guadagni sull'intero stack, quindi l'output a tasselli resta senza cuciture; si applica a ogni metodo e al riferimento di luminosità dell'allineatore OpenFocus |
 | `--base-frame` | Passo facoltativo post-fusione: abbina le basse frequenze dell'output al fotogramma `last`/`first` (`none` predefinito) |
 | `--sort` | Ordine fotogrammi per `openfocus_a/b/c`: `asc` (predefinito, ordine file), `desc` (inverte una scansione da lontano a vicino), `off` |
+| `--frame-order` | Cartella in ingresso: `auto` (predefinito) ordina i fotogrammi da vicino a lontano secondo i passi di messa a fuoco EXIF quando tutti li hanno (il bracketing di fuoco OM SYSTEM parte da metà profondità), altrimenti per nome; `name` ordina sempre per nome file. I file elencati esplicitamente mantengono il loro ordine |
 | `--sharpen-output` | Applica una leggera maschera di contrasto all'output fuso (disattivata per impostazione predefinita) |
 | `--dust-map WHITE` | Correzione di campo piatto (mappa polvere) da uno scatto di campo bianco sfocato |
 | `--defect-mask-path MASK` | Maschera difetti in coordinate sensore riparata prima della registrazione |

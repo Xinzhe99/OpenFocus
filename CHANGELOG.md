@@ -37,6 +37,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ROI preview no longer holds on to a replaced stack's frames. An ROI output's
   provenance keeps its own crops instead of views that pinned the full frames.
   Opening ROI mode again re-aligns.
+- The command line orders a folder's frames near to far by their EXIF focus
+  steps when every frame has them (`--frame-order auto`, the default; `name`
+  keeps filename order). OM SYSTEM focus bracketing takes its first shot at
+  mid-depth, so filename order put a mid-depth frame first.
 
 ### Fixed
 - Message-box buttons such as "Discard changes" are no longer cut off.

@@ -917,6 +917,7 @@ Für ein einzelnes Rendering lässt sich beispielsweise `--align openfocus --ali
 | `--exposure-match` | Den Mittelwert jedes Bildes vor der Fusion an das letzte Bild angleichen (Standard: an; `--no-exposure-match` deaktiviert). Verstärkungen gelten für den ganzen Stapel, sodass gekachelte Ausgaben nahtlos bleiben; wirkt bei jeder Methode und auf die Helligkeitsreferenz des OpenFocus-Ausrichters |
 | `--base-frame` | Optionaler Schritt nach der Fusion: die niedrigen Frequenzen der Ausgabe an das `last`/`first`-Bild angleichen (Standard `none`) |
 | `--sort` | Bildreihenfolge für `openfocus_a/b/c`: `asc` (Standard, Dateireihenfolge), `desc` (kehrt einen Fern-nach-Nah-Durchlauf um), `off` |
+| `--frame-order` | Ordner als Eingabe: `auto` (Standard) sortiert die Bilder von nah nach fern nach den EXIF-Fokusschritten, wenn alle Bilder sie haben (OM-SYSTEM-Fokus-Bracketing beginnt in der Mitte), sonst nach Namen; `name` immer nach Dateiname. Einzeln angegebene Dateien behalten ihre Reihenfolge |
 | `--dust-map WHITE` | Flat-Field-Korrektur (Staubkarte) aus einer defokussierten Weißfeldaufnahme |
 | `--defect-mask-path MASK` | Sensordefektmaske; Werte ungleich null werden vor der Registrierung repariert |
 | `--sensor-denoise` | Behutsame Sensorentrauschung vor der Registrierung |
