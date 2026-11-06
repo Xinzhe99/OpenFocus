@@ -42,11 +42,19 @@ def _response(frame, fine_sigma, spread_sigma, should_cancel, check_cancel):
 
 def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
                      thread_count: int = None, blend_smoothing: float = 2.0,
+                     blend_mode: str = 'hard', soft_gamma: float = 1.0,
                      should_cancel=None, progress_callback=None):
     """Select original pixels using local high-frequency energy.
 
     ``kernel_size`` controls the fine Gaussian scale (kernel/5.5, minimum 1).
     ``blend_smoothing`` controls the energy spread (smoothing/2, minimum 1).
+    ``blend_mode`` selects the fusion rule: ``hard`` (default) keeps the
+    argmax frame per pixel; ``soft`` blends all frames with log-domain
+    power-softmax weights ``exp(gamma*(log r - max log r))`` in a
+    deterministic three-pass streaming pipeline with per-pixel (H×W)
+    auxiliary memory. ``soft`` triples response computation and is an
+    experimental, unregistered path (Issue #21: content-dependent quality —
+    not shipped); ``soft_gamma`` controls hardness (higher = closer to hard).
     ``thread_count`` bounds independent response producers. Selection remains
     strict and in source order, so ties keep the first frame. RAM admission
     bounds both live producers and completed results; low RAM stays serial.
@@ -73,31 +81,104 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
                              cancelled, _check_cancel)
         return frame, response
 
+    soft = blend_mode == 'soft'
+    _soft_gamma = float(soft_gamma)
+    total_steps = len(frames) * (3 if soft else 1)
+    step = 0
+
     output = best = None
     produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
     try:
-        for index, (frame, response) in produced:
-            if index == 0:
-                output = store_frame(frame)
-                best = response
-                del frame, response
+        if soft:
+            def _log_rows(response):
+                """In-place log of a copy, rows blocked."""
+                out = np.empty_like(response)
+                for start in range(0, response.shape[0], 128):
+                    _check_cancel(should_cancel)
+                    rows = slice(start, min(response.shape[0], start + 128))
+                    np.log(np.maximum(response[rows], 1e-12, dtype=np.float32),
+                           out=out[rows])
+                return out
+
+            # pass 1: per-pixel max of log response
+            log_max = None
+            for index, (frame, response) in produced:
+                _check_cancel(should_cancel)
+                lr = _log_rows(response)
+                m = lr.max(axis=0)
+                log_max = m if log_max is None else np.maximum(log_max, m)
+                del frame, response, lr, m
+                step += 1
+                if progress_callback is not None:
+                    progress_callback(step, total_steps)
+            _check_cancel(should_cancel)
+            produced.close()
+
+            # pass 2: softmax denominator with the stabilized exponent
+            denom = None
+            produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
+            for index, (frame, response) in produced:
+                _check_cancel(should_cancel)
+                lr = _log_rows(response)
+                if denom is None:
+                    denom = np.zeros_like(lr)
+                for start in range(0, denom.shape[0], 128):
+                    _check_cancel(should_cancel)
+                    rows = slice(start, min(denom.shape[0], start + 128))
+                    denom[rows] += np.exp(_soft_gamma * (lr[rows] - log_max[rows, None]))
+                del frame, response, lr
+                step += 1
+                if progress_callback is not None:
+                    progress_callback(step, total_steps)
+            _check_cancel(should_cancel)
+            produced.close()
+
+            # pass 3: weighted accumulation
+            accumulated = None
+            produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
+            for index, (frame, response) in produced:
+                _check_cancel(should_cancel)
+                if accumulated is None:
+                    accumulated = np.zeros(frame.shape, np.float32)
+                    height, width = accumulated.shape[:2]
+                lr = _log_rows(response)
+                for start in range(0, height, 128):
+                    _check_cancel(should_cancel)
+                    rows = slice(start, min(height, start + 128))
+                    weight = np.exp(_soft_gamma * (lr[rows] - log_max[rows, None])) / \
+                        np.where(denom[rows] > 0, denom[rows], 1.0)
+                    if frame.ndim == 3:
+                        accumulated[rows] += weight[:, :, None] * frame[rows]
+                    else:
+                        accumulated[rows] += weight * frame[rows]
+                del frame, response, lr, weight
+                step += 1
+                if progress_callback is not None:
+                    progress_callback(step, total_steps)
+            output = accumulated
+        else:
+            for index, (frame, response) in produced:
+                if index == 0:
+                    output = store_frame(frame)
+                    best = response
+                    del frame, response
+                    if progress_callback is not None:
+                        progress_callback(index + 1, len(frames))
+                    _check_cancel(should_cancel)
+                    continue
+                if frame.shape != output.shape:
+                    raise ValueError("OpenFocus A requires frames with matching shapes")
+                for start in range(0, output.shape[0], 128):
+                    _check_cancel(should_cancel)
+                    rows = slice(start, min(output.shape[0], start + 128))
+                    better = response[rows] > best[rows]
+                    np.copyto(output[rows], frame[rows],
+                              where=better[:, :, None] if frame.ndim == 3 else better)
+                    np.copyto(best[rows], response[rows], where=better)
+                del frame, response, better
                 if progress_callback is not None:
                     progress_callback(index + 1, len(frames))
                 _check_cancel(should_cancel)
-                continue
-            if frame.shape != output.shape:
-                raise ValueError("OpenFocus A requires frames with matching shapes")
-            for start in range(0, output.shape[0], 128):
-                _check_cancel(should_cancel)
-                rows = slice(start, min(output.shape[0], start + 128))
-                better = response[rows] > best[rows]
-                np.copyto(output[rows], frame[rows],
-                          where=better[:, :, None] if frame.ndim == 3 else better)
-                np.copyto(best[rows], response[rows], where=better)
-            del frame, response, better
-            if progress_callback is not None:
-                progress_callback(index + 1, len(frames))
-            _check_cancel(should_cancel)
     finally:
         produced.close()
 
