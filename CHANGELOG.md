@@ -31,6 +31,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Render All Methods skips a method that cannot run (for example, when the
   memory check refuses it), renders the rest and lists the skipped methods
   at the end. Cancelling still stops the whole run.
+- Image save dialogs start in the folder where you last saved an image.
 
 ### Fixed
 - Message-box buttons such as "Discard changes" are no longer cut off.

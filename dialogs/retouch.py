@@ -1815,10 +1815,13 @@ class RetouchDialog(QDialog):
         if (fill is None or self.doc.stroke_active or self.preview_mode is not None
                 or self._edit_dialog is not None or self._checkpoint_dialog is not None):
             return
+        from utils.settings_store import image_save_default, remember_image_save
         path, _ = FileDialog.getSaveFileName(
-            self, trans.t("retouch_missing_save"), "missing-data.png", "PNG (*.png)")
+            self, trans.t("retouch_missing_save"), image_save_default("missing-data.png"),
+            "PNG (*.png)")
         if not path:
             return
+        remember_image_save(path)
         selected_path = path
         if not path.lower().endswith(".png"):
             path += ".png"

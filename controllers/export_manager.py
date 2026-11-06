@@ -382,11 +382,13 @@ class ExportManager:
         filters = ('PNG 8/16-bit (*.png);;TIFF 8/16-bit (*.tif *.tiff);;'
                    'JPG 8-bit (*.jpg);;BMP 8-bit (*.bmp);;WebP 8-bit (*.webp);;'
                    + trans.t('linear_dng_filter'))
+        from utils.settings_store import image_save_default, remember_image_save
         file_path, selected_filter = FileDialog.getSaveFileName(
-            window, title, default_filename, filters)
+            window, title, image_save_default(default_filename), filters)
 
         if not file_path:
             return
+        remember_image_save(file_path)
 
         try:
             file_path = self.normalize_export_path(file_path, selected_filter=selected_filter)
@@ -604,12 +606,15 @@ class ExportManager:
 
         duration_ms = duration_dialog.get_duration()
         default_filename = self.generate_default_filename() + ".gif"
+        from utils.settings_store import image_save_default, remember_image_save
         file_path, _ = FileDialog.getSaveFileName(
             window,
             trans.t('action_save') + ' GIF · 8-bit',
-            default_filename,
+            image_save_default(default_filename),
             "GIF Files (*.gif);;All Files (*)",
         )
+        if file_path:
+            remember_image_save(file_path)
 
         if not file_path:
             return
@@ -712,16 +717,16 @@ class ExportManager:
         cfg = None if baked else scalebar.export_cfg(
             window, target='source' if label_target == 'input' else 'registered', record=record)
 
-        from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+        from utils.settings_store import image_save_default, remember_image_save
         file_path, _ = FileDialog.getSaveFileName(
             window, trans.t("action_save_multipage_tiff"),
-            os.path.join(get_last_dialog_dir() or os.path.expanduser("~"), default_name),
+            image_save_default(default_name),
             "Multi-page TIFF (*.tif *.tiff)")
         if not file_path:
             return
         if os.path.splitext(file_path)[1].lower() not in ('.tif', '.tiff'):
             file_path = os.path.splitext(file_path)[0] + '.tif'
-        set_last_dialog_dir(file_path)
+        remember_image_save(file_path)
 
         try:
             metadata = (getattr(record, 'linear_dng_metadata', None) if record is not None

@@ -774,3 +774,23 @@ def test_failed_settings_apply_does_not_enable_reporting(settings_window, tmp_pa
     finally:
         reporter.shutdown()
         dialog.deleteLater()
+
+
+def test_image_save_dialogs_start_where_the_last_image_was_saved(tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    import utils.settings_store as store
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    monkeypatch.setattr(store, "get_settings", lambda: settings)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    assert store.image_save_dir() == str(home)
+    saved = tmp_path / "exports"
+    saved.mkdir()
+    store.remember_image_save(str(saved / "stack.tif"))
+    assert store.image_save_dir() == str(saved)
+    assert store.image_save_default("next.png") == str(saved / "next.png")
+    assert store.image_save_default("/elsewhere/next.png") == str(saved / "next.png")
+    assert store.get_last_dialog_dir() == str(saved)
+    saved.rmdir()                                       # a vanished folder is not offered
+    assert store.image_save_dir() == str(home)
