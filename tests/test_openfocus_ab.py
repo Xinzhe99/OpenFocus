@@ -72,6 +72,22 @@ class TestOpenFocusAB:
         assert np.abs(interior - sharp_i).mean() < np.abs(interior - clipped_i).mean()
         assert np.abs(interior - sharp_i).mean() < 1.0
 
+    @pytest.mark.parametrize("shape", [(1, 131), (131, 1), (129, 131)])
+    @pytest.mark.parametrize("workers", [1, 3])
+    @pytest.mark.parametrize("smoothing", [0.0, 1.2])
+    def test_b_bright_uint16_texture_beats_flat(self, shape, workers, smoothing):
+        from fusion_methods.openfocus_bc import openfocus_b_impl
+        from utils.image_utils import quantize_fuse_output
+
+        texture = ((np.indices(shape).sum(axis=0) % 2) * 32768 + 32767)
+        storage = np.empty((shape[0] * 2, shape[1] * 2), np.uint16)
+        storage[::2, ::2] = texture
+        sharp = storage[::2, ::2]
+        flat = np.full(shape, 65535, np.uint16)
+        out = openfocus_b_impl([flat, sharp], thread_count=workers,
+                              depth_smoothing=smoothing)
+        np.testing.assert_array_equal(quantize_fuse_output(out, True), sharp)
+
 
     def test_two_frames_directory_input(self, tmp_path):
         """The methods also accept a directory (lazy path)."""

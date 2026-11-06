@@ -46,6 +46,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reconstruction and first-frame ties; keep tile and frame pools separate.
   Extend mapped/strip preparation and explicit working-set estimates across
   classical backends without changing fusion pixels.
+  Compile B/C's Q12 recurrence as a GIL-free CPU kernel so independent frame
+  work can overlap without Python row-loop contention. Preserve uint32 wrap,
+  rounding and cooperative cancellation; include the compiler in all installs.
 
 ### Fixed
 - Message-box buttons such as "Discard changes" are no longer cut off.

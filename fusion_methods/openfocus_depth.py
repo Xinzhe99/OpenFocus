@@ -11,6 +11,10 @@ def _weight(radius, allow_zero=False):
 
 
 def _axis(src, guide, main, low, count, axis, cancel):
+    from fusion_methods._depth_kernel import axis_block
+
+    src = np.asarray(src)
+    guide = None if guide is None else np.asarray(guide)
     if axis:
         src = src.T
         if guide is not None:
@@ -19,49 +23,29 @@ def _axis(src, guide, main, low, count, axis, cancel):
     count = max(1, min(int(count), h))
     first = create_frame((h, w), np.uint32)
     out = create_frame((h, w), np.uint32)
+    first_pixels, out_pixels = np.asarray(first), np.asarray(out)
+    q = t = tm = tl = 0
     if guide is None:
         q = _weight(main)
         t = (4096 - q) >> 1
         acc = ((((src[:count].sum(axis=0, dtype=np.uint64) << 4) // count)
                 * (t + q)) & 0xffffffff).astype(np.uint32)
-        for y in range(h):
-            if y % 64 == 0:
-                cancel()
-            innovation = (src[y] << 4) * t
-            a = (acc + 2048 + innovation) >> 12
-            first[y] = ((a + 4) >> 4) & 65535
-            acc = a * q + innovation
-        acc = (first[-1] << 4) * (t + q)
-        for y in range(h - 1, -1, -1):
-            if y % 64 == 0:
-                cancel()
-            innovation = (src[y] << 4) * t
-            a = (acc + 2048 + innovation) >> 12
-            out[y] = ((((a + 3) >> 4) + 1 + first[y]) >> 1) & 65535
-            acc = a * q + innovation
     else:
         tm = (4096 - _weight(main, True)) >> 1
         tl = (4096 - _weight(low, True)) >> 1
         acc = (((src[:count].sum(axis=0, dtype=np.uint64) << 4) // count)
                & 0xffffffff).astype(np.uint32)
-        for y in range(h):
-            if y % 64 == 0:
-                cancel()
-            t = ((65536 - guide[y]) * tl + guide[y] * tm) >> 16
-            prev = src[max(0, y - 1)]
-            acc = ((4096 - 2 * t) * acc + 2048 +
-                   (src[y] + prev) * (t << 4)) >> 12
-            first[y] = (acc + 4) >> 4
-        acc = first[-1] << 4
-        prev = first[-1]
-        for y in range(h - 1, -1, -1):
-            if y % 64 == 0:
-                cancel()
-            t = ((65536 - guide[y]) * tl + guide[y] * tm) >> 16
-            acc = ((4096 - 2 * t) * acc + 2048 +
-                   (src[y] + prev) * (t << 4)) >> 12
-            out[y] = ((((acc + 3) >> 4) + 1 + first[y]) >> 1) & 65535
-            prev = src[y]
+    for start in range(0, h, 64):
+        cancel()
+        axis_block(src, guide, first_pixels, out_pixels, acc, q, t, tm, tl,
+                   start, min(h, start + 64), False)
+    acc = first_pixels[-1] << 4
+    if guide is None:
+        acc *= t + q
+    for stop in range(h, 0, -64):
+        cancel()
+        axis_block(src, guide, first_pixels, out_pixels, acc, q, t, tm, tl,
+                   max(0, stop - 64), stop, True)
     return out.T if axis else out
 
 

@@ -94,9 +94,10 @@ def main():
         report['opencv_native_threads'] = cv2.getNumThreads()
         implementation_paths = ('core/multi_focus_fusion.py', 'core/algorithm_adapters.py',
             'fusion_methods/openfocus_ab.py', 'fusion_methods/openfocus_a.py',
-            'fusion_methods/openfocus_bc.py', 'fusion_methods/openfocus_depth.py')
+            'fusion_methods/openfocus_bc.py', 'fusion_methods/openfocus_depth.py',
+            'fusion_methods/_depth_kernel.py')
         report['implementation_sha256'] = {path: hashlib.sha256((root / path).read_bytes()).hexdigest()
-                                           for path in implementation_paths}
+                                           for path in implementation_paths if (root / path).is_file()}
         if args.generate_dir:
             directory = args.generate_dir.resolve()
             directory.mkdir(parents=True, exist_ok=False)
