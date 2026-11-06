@@ -744,7 +744,14 @@ class RenderManager:
             # its own aligned stack, so holding both doubled the memory and
             # starved later stages (Auto background).  Re-entering ROI mode
             # simply aligns again.
+            roi_frames = window.roi_aligned_images
             window.roi_aligned_images = []
+            # After an ROI render the review/export stack is that same ROI
+            # stack; release it too, or it stays alive until this render ends.
+            reviewed = getattr(window, 'registration_results', None) or []
+            if reviewed and any(a is b for a, b in zip(reviewed, roi_frames)):
+                window.registration_results = []
+            del roi_frames, reviewed
         # None = this render neither reads nor writes the alignment cache.
         disk_cache_request = None
         if use_roi_aligned_images:
