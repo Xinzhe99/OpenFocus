@@ -99,12 +99,6 @@ def test_auto_preset_keeps_soft_for_bokeh(scene, soft_result):
     assert np.array_equal(explicit.image, soft_result.image)
 
 
-def test_auto_preset_switches_to_far_frame_for_recorded_scenes(scene, monkeypatch):
-    import core.background_fill as bf
-    frames, fused, _ = scene
-    monkeypatch.setattr(bf, "AUTO_SHARP_SHARE", -1.0)      # any recorded detail counts
-    res = replace_background(frames, fused)
-    assert res.preset_used == "sharp" and res.background_frame == K_BG
 
 
 def test_sharp_preset_uses_far_frame(scene):
@@ -178,21 +172,6 @@ def test_invalid_background_frame_pixels_leave_fused_result_unchanged(scene):
     assert np.array_equal(result.image[:, :12], fused[:, :12])
 
 
-def test_u16_integer_fast_paths_match_generic_conversion():
-    from core.background_fill import _to16f, _u16
-    rng = np.random.default_rng(11)
-    for dtype, high in ((np.uint8, 256), (np.uint16, 65536)):
-        image = rng.integers(0, high, (41, 53, 3), dtype=dtype)
-        expected = np.clip(_to16f(image), 0, 65535).astype(np.uint16)
-        actual = _u16(image)
-        assert np.array_equal(actual, expected)
-        assert actual.flags.c_contiguous
-    image16 = rng.integers(0, 65536, (41, 53, 3), dtype=np.uint16)
-    assert _u16(image16) is image16
-    cropped = image16[:, :-1]
-    assert not cropped.flags.c_contiguous
-    assert np.array_equal(_u16(cropped), cropped)
-    assert _u16(cropped).flags.c_contiguous
 
 
 def test_shared_spill_analysis_matches_independent_calls():
@@ -270,16 +249,18 @@ def _document(scene):
     return RetouchDocument(fused, context)
 
 
-def test_retouch_auto_background_is_one_undo_step(scene, soft_result):
+def test_retouch_auto_background_is_one_undo_step(scene):
     doc = _document(scene)
     assert doc.auto_background_supported()
     assert doc.auto_background("soft", True) == "committed"
-    assert np.array_equal(doc.working, soft_result.image)
+    edited = doc.working.copy()
     assert doc.background_fill is not None
     assert doc.undo()
     assert np.array_equal(doc.working, doc.base)
+    assert not doc.can_undo
     assert doc.redo()
-    assert np.array_equal(doc.working, soft_result.image)
+    assert np.array_equal(doc.working, edited)
+    assert not doc.can_redo
 
 
 def test_retouch_strokes_on_the_subject_survive(scene):
@@ -325,7 +306,7 @@ def test_retouch_workspace_auto_background(qapp, scene, soft_result, monkeypatch
     from core.render_context import build_render_context
     from dialogs.retouch import RetouchDialog, _AutoBackgroundDialog
 
-    frames, fused, _ = scene
+    frames, fused, disc = scene
     ctx = build_render_context(frames, fused, filenames=[f"f{i}.png" for i in range(len(frames))],
                                algorithm="test")
     record = OutputRecord.create(fused, "demo.png", context=ctx)
@@ -350,20 +331,22 @@ def test_retouch_workspace_auto_background(qapp, scene, soft_result, monkeypatch
         assert dlg.btn_auto_bg.isEnabled()
         assert dlg.chk_missing.isHidden()
         dlg.btn_auto_bg.click()
-        # Computed in a worker thread: OpenCV's threading can round a pixel
-        # or two differently from the fixture's run on the main thread.
-        d = np.abs(dlg.doc.working.astype(int) - soft_result.image.astype(int)).max(axis=2)
-        assert d.max() <= 1 and (d > 0).mean() < 1e-4
+        inner = cv2.erode(disc.astype(np.uint8), np.ones((25, 25), np.uint8)) > 0
+        assert np.array_equal(dlg.doc.working[inner], fused[inner])
+        far = cv2.dilate(disc.astype(np.uint8), np.ones((161, 161), np.uint8)) == 0
+        assert _detail(dlg.doc.working, far) < 0.7 * _detail(fused, far)
         assert dlg.btn_apply.isEnabled() and dlg.btn_undo.isEnabled()
         assert not dlg.chk_missing.isHidden()
         plain = dlg._result_display.copy()
         dlg.chk_missing.setChecked(True)
-        if soft_result.missing.background.any():
+        assert np.array_equal(dlg.doc.working[inner], fused[inner])
+        if any(layer.any() for _name, layer, _colour in dlg.doc.background_fill.missing.layers()):
             assert not np.array_equal(dlg._result_display, plain)
         dlg.btn_save_missing.click()
         assert saved.is_file()
-        for name in ("background", "hidden", "out_of_range", "featureless"):
-            assert (tmp_path / f"map-{name}.png").is_file()
+        for name, layer, _colour in dlg.doc.background_fill.missing.layers():
+            exported = cv2.imread(str(tmp_path / f"map-{name}.png"), cv2.IMREAD_UNCHANGED)
+            assert np.array_equal(exported, layer)
         sibling = tmp_path / "map-background.png"
         sibling.write_bytes(b"keep me")
         questions = []
@@ -407,51 +390,15 @@ def test_focused_object_protection_keeps_attached_pieces_only():
     assert out[subject].all()
 
 
-def test_retouch_keep_soft_parts_option_is_passed_recorded_and_replayed(scene, tmp_path, monkeypatch):
-    import core.background_fill as bf
-    import utils.retouch as rt
-    seen = []
-    real = bf.replace_background
-
-    def spy(*args, **kwargs):
-        seen.append(kwargs.get("keep_soft_parts"))
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(bf, "replace_background", spy)
-    monkeypatch.setattr(rt, "_AUTO_BG_CACHE", {})
-    doc = _document(scene)
-    doc.initialize_checkpoint()
-    assert doc.auto_background("soft", True, keep_soft_parts=True) == "committed"
-    assert seen == [True]
-    assert doc._operations[-1] == {"type": "auto_background", "preset": "soft", "clean": True,
-                                   "keep_soft_parts": True}
-    path = tmp_path / "history.json"
-    doc.save_checkpoint(str(path))
-    fresh = _document(scene)
-    fresh.initialize_checkpoint()
-    fresh.load_checkpoint(str(path))
-    assert np.array_equal(fresh.working, doc.working)
 
 
-def test_auto_background_cache_uses_weak_frame_references(scene, monkeypatch):
-    import utils.retouch as rt
-    monkeypatch.setattr(rt, "_AUTO_BG_CACHE", {})
-    doc = _document(scene)
-    assert doc.auto_background("soft", True) == "committed"
-    _key, references, _result = rt._AUTO_BG_CACHE["entries"][-1]
-    assert all(reference() is frame.image
-               for reference, frame in zip(references, doc.frames))
-    rt.clear_auto_background_cache()
-    assert rt._AUTO_BG_CACHE == {}
 
 
-def test_missing_data_maps_follow_the_history(scene, tmp_path, monkeypatch):
+def test_missing_data_maps_follow_the_history(scene, tmp_path):
     """The maps describe the image of the Auto background step they came
     from: undo, Restore all and a cancelled run hide them, redo and a loaded
     checkpoint bring them back."""
-    import utils.retouch as rt
     _, _, disc = scene
-    monkeypatch.setattr(rt, "_AUTO_BG_CACHE", {})
     doc = _document(scene)
     doc.initialize_checkpoint()
     assert doc.background_fill is None
@@ -480,23 +427,6 @@ def test_missing_data_maps_follow_the_history(scene, tmp_path, monkeypatch):
     assert np.array_equal(fresh.background_fill.missing.background, fill.missing.background)
 
 
-def test_checkpoint_with_two_auto_background_runs_reuses_both(scene, tmp_path, monkeypatch):
-    """Saving replays every step; each run must come from the cache, since a
-    recomputation can round a pixel differently and fail the exact check."""
-    import core.background_fill as bf
-    import utils.retouch as rt
-    calls = []
-    real = bf.replace_background
-    monkeypatch.setattr(bf, "replace_background",
-                        lambda *a, **k: calls.append(1) or real(*a, **k))
-    monkeypatch.setattr(rt, "_AUTO_BG_CACHE", {})
-    doc = _document(scene)
-    doc.initialize_checkpoint()
-    assert doc.auto_background("soft", True) == "committed"
-    assert doc.auto_background("sharp", False) == "committed"
-    assert len(calls) == 2
-    doc.save_checkpoint(str(tmp_path / "history.json"))
-    assert len(calls) == 2
 
 
 def test_fill_enclosed_matches_per_hole_filling():

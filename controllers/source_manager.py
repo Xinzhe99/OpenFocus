@@ -210,7 +210,9 @@ class SourceManager(QObject):
         busy = self._review_worker is not None
         panel.btn_review_stack.setText(trans.t(
             "stack_review_cancel" if busy else "stack_review_button"))
-        panel.btn_review_stack.setToolTip(trans.t("stack_review_hint"))
+        panel.btn_review_stack.setToolTip(trans.t(
+            "stack_review_cancel" if busy else "stack_review_button")
+            + "\n" + trans.t("stack_review_hint"))
         panel.btn_review_stack.setEnabled(busy or len(self.window.raw_images) >= 2)
         status_key = self._review_status_key
         visible = self._visible_review_results()
@@ -418,7 +420,8 @@ class SourceManager(QObject):
                 self._apply_load_options(load_options, append=append,
                                          profile_map=getattr(worker, "source_icc_profiles", {}))
                 accepted = True
-                worker._load_applied = True
+                worker._load_stack = window.raw_images
+                worker._load_revision = getattr(window, "source_revision", 0)
                 if on_success is not None:
                     on_success()
                 # Remember for the optional "restore last stack on startup"
@@ -432,6 +435,7 @@ class SourceManager(QObject):
                 from utils import recovery
                 recovery.write_snapshot(window)
                 self._show_linear_profile_notice(getattr(window, "linear_dng_metadata", None))
+                worker._load_applied = load_is_current()
             except Exception as exc:  # pylint: disable=broad-except
                 if not accepted and previous_window_state is not None:
                     for name, value in previous_window_state.items():
@@ -481,10 +485,13 @@ class SourceManager(QObject):
         request = getattr(render, "_render_after_load", None) if render is not None else None
         if request is None:
             return
-        render._render_after_load = None
         try:
-            ready = (bool(getattr(worker, "_load_applied", False))
+            ready = (request.get("load_worker") is worker
+                     and request.get("load_generation") == getattr(self, "_load_generation", 0)
+                     and bool(getattr(worker, "_load_applied", False))
                      and not getattr(worker, "is_cancelled", False)
+                     and getattr(worker, "_load_stack", None) is self.window.raw_images
+                     and getattr(worker, "_load_revision", None) == getattr(self.window, "source_revision", 0)
                      and len(self.window.effective_stack()[0]) >= 2)
         except Exception:
             ready = False
@@ -492,18 +499,38 @@ class SourceManager(QObject):
             ready = False
         if ready:
             from PyQt6.QtCore import QTimer
-            method = request.get("force_algorithm")
-            compare = bool(request.get("compare", False))
+            source_ref = self.window.raw_images
+            revision = getattr(self.window, "source_revision", 0)
+            included = list(self.window.effective_stack()[2])
 
             def start():
-                # Compare-all can be cancelled before this deferred call runs;
-                # its method must not then start as a standalone render.
-                if compare and not getattr(render, "_compare_mode", False):
+                # Keep the request cancellable until this event-loop turn;
+                # replacing the stack or starting a new load invalidates it.
+                if render._render_after_load is not request:
                     return
-                render.start_render(force_algorithm=method)
+                render._render_after_load = None
+                from PyQt6 import sip
+                current = (not (isinstance(self.window, QObject) and sip.isdeleted(self.window))
+                           and not getattr(self.window, "_shutting_down", False)
+                           and getattr(self, "_load_worker", None) is None
+                           and request["load_generation"] == getattr(self, "_load_generation", 0)
+                           and self.window.raw_images is source_ref
+                           and getattr(self.window, "source_revision", 0) == revision
+                           and list(self.window.effective_stack()[2]) == included)
+                compare = request.get("compare", False)
+                if compare:
+                    current = (current and render._compare_mode
+                               and request["compare_token"] is render._compare_token
+                               and not render._stack_changed_since(render._compare_context))
+                if not current:
+                    if compare and request["compare_token"] is render._compare_token:
+                        render._abort_compare_run()
+                    return
+                render.start_render(force_algorithm=request.get("force_algorithm"))
 
             QTimer.singleShot(0, start)
         else:
+            render._render_after_load = None
             if request.get("compare", False):
                 render._abort_compare_run()
             self.window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
@@ -553,7 +580,7 @@ class SourceManager(QObject):
 
     def cancel_load(self) -> None:
         worker = getattr(self, "_load_worker", None)
-        if worker is not None and worker.isRunning():
+        if worker is not None:
             worker.request_cancel()
             self._load_cancel_button.setEnabled(False)
             self._load_status_label.setText(trans.t("depth_cancelling"))
