@@ -274,10 +274,12 @@ Kliknij **Sprawdź klatki** pod nagłówkiem listy źródeł, aby znaleźć sąs
 
 ### Powiększanie i przesuwanie
 
-- **Powiększanie/zmniejszanie**: kółko myszy nad obrazem
-- **Dokładne powiększanie**: przytrzymaj `Ctrl` i kręć kółkiem, aby uzyskać mniejszy krok
-- **Dopasowanie do okna**: dwuklik na obrazie przełącza między dopasowaniem a widokiem 100 %
-- **Przesuwanie**: kliknij i przeciągnij, aby przesuwać obraz w panelu
+- **Powiększanie/zmniejszanie**: kółko nad źródłem lub wynikiem, również z wciśniętym `Ctrl`
+- **Lupa**: przytrzymaj lewy przycisk; kółko zmienia powiększenie, a `Ctrl` + kółko rozmiar kwadratu. Każdy panel pamięta własny rozmiar
+- **Dopasowanie do okna**: kliknij środkowym przyciskiem
+- **Przesuwanie**: przeciągnij prawym przyciskiem albo przytrzymaj Spację i przeciągnij lewym
+
+Dla dużych obrazów źródłowych lupa zaczyna od natywnego 100%; procent oznacza piksele urządzenia na piksel oryginału. Główny widok osiąga 800%. Stosy JPEG i RAW otwierają się z ograniczonymi podglądami, gdy są dostępne. Gdy potrzeba szczegółów, zadanie w tle wczytuje oryginalne piksele i przekazuje tylko widoczny obszar. Wybrany oryginał pozostaje dostępny do ponownego oglądania; zmiana lub wyczyszczenie źródła go zwalnia. Pierwsze dekodowanie nadal wymaga odpowiedniej ilości RAM i może trwać dłużej niż otwarcie podglądu.
 
 ### Nawigacja zsynchronizowana
 
@@ -1046,8 +1048,8 @@ Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd uży
 |----------|--------|
 | `Up` / `Down` (fokus na liście źródeł) | Poprzednia / następna klatka |
 | `Mouse Wheel` | Powiększ/zmniejsz |
-| `Ctrl + Wheel` | Dokładne powiększanie |
-| `Double-click` | Przełącz widok dopasowany / 100 % |
+| `Ctrl + Wheel` przy wciśniętym lewym przycisku | Zmień rozmiar lupy |
+| `Środkowy przycisk` | Dopasuj obraz do okna |
 
 ### Ogólne
 

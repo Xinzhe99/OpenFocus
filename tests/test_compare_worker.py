@@ -420,3 +420,47 @@ def test_missing_roi_capability_fuses_full_frame_before_crop(monkeypatch):
         outputs.append(image)
     assert not np.array_equal(outputs[0], outputs[1])
     assert not np.array_equal(outputs[1], outputs[2])
+
+
+def test_cold_background_depth_render_preserves_uint16():
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    import textwrap
+
+    code = textwrap.dedent('''
+        import faulthandler
+        import sys
+        import numpy as np
+        from PyQt6.QtCore import QCoreApplication, Qt
+        from core.compare_worker import PreviewWorker
+
+        faulthandler.enable(file=sys.stderr)
+        app = QCoreApplication([])
+        sharp = ((np.indices((80, 112)).sum(axis=0) % 2) * 32768
+                 + 32767).astype(np.uint16)
+        flat = np.full(sharp.shape, 65535, np.uint16)
+        results, errors = [], []
+        worker = PreviewWorker(
+            [flat, sharp], ['openfocus_b'],
+            {'openfocus_b': {'kernel_size': 5}},
+            {'tile_enabled': False, 'thread_count': 2}, None,
+            roi_only=False)
+        direct = Qt.ConnectionType.DirectConnection
+        worker.result_ready.connect(lambda *args: results.append(args), direct)
+        worker.method_failed.connect(lambda *args: errors.append(args), direct)
+        worker.start()
+        assert worker.wait(45000), 'cold background depth render did not finish'
+        assert not errors, errors
+        assert len(results) == 1, results
+        image = results[0][1]
+        assert image.dtype == np.uint16, image.dtype
+        np.testing.assert_array_equal(image, sharp)
+    ''')
+    result = subprocess.run(
+        [sys.executable, '-c', code],
+        cwd=Path(__file__).resolve().parents[1],
+        env=dict(os.environ, QT_QPA_PLATFORM='offscreen'),
+        capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr

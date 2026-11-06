@@ -761,25 +761,24 @@ class OpenFocus(QMainWindow):
             capability = neural_device_kind()
             if capability is None and is_ai_fusion_available():
                 self._probe_device_kind_async()
-            if not self._ai_method_selected():
-                kind = 'CPU*'
-            elif not getattr(self, 'use_gpu', True):
-                kind = 'CPU'
-            else:
-                diagnostics = neural_runtime.device_diagnostics()
-                checkpoint = os.path.basename(get_fusion(self.combo_fusion.currentData()).weights or '')
-                actual = (diagnostics['actual'] if diagnostics['checkpoint'] == checkpoint else None)
-                kind = (neural_runtime.display_name(actual or capability)
-                        if actual is not None or neural_runtime.is_accelerator(capability)
-                        else '…' if capability is None else 'N/A')
+            neural = self._ai_method_selected()
+            checkpoint = (get_fusion(self.combo_fusion.currentData()).weights or ''
+                          if neural else '')
+            device, state = neural_runtime.execution_status(
+                neural, getattr(self, 'use_gpu', True), checkpoint, capability)
+            kind = ('…' if state == 'pending'
+                    else trans.t('neural_provider_ready').format(neural_runtime.display_name(device))
+                    if state == 'ready' else neural_runtime.display_name(device))
             self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind))
             diagnostics = neural_runtime.device_diagnostics()
             hardware = '\n'.join(f'{name} (DXGI {index})' for index, name, *_ in diagnostics['hardware'])
             self.lbl_status_gpu.setToolTip('\n'.join(filter(None, (
-                f'Hardware: {hardware}' if hardware else '',
-                'Runtime providers: ' + ', '.join(diagnostics['providers']),
-                'Available accelerator: ' + neural_runtime.display_name(capability) if capability else '',
-                f'Task: {kind}',
+                hardware,
+                'ONNX Runtime: ' + ', '.join(diagnostics['providers']),
+                trans.t('env_gpu_accel') + ': ' + neural_runtime.display_name(capability)
+                if neural_runtime.is_accelerator(capability) else trans.t('env_no_gpu'),
+                trans.t('status_gpu').format(kind),
+                trans.t('msg_gpu_accel_hint'),
                 '\n'.join(diagnostics['probe_errors'])))))
         except Exception:
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('Err'))
@@ -1368,12 +1367,14 @@ class OpenFocus(QMainWindow):
     def _show_whats_new(self) -> None:
         """'What's new': release notes when the check fetched them, else the
         releases page (a build with no notes has nothing to show inline)."""
-        notes = getattr(self._update_manager(), "notes", "") or ""
+        manager = self._update_manager()
+        notes = getattr(manager, "notes", "") or ""
         if not notes:
             self._open_releases_page()
             return
         from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QTextBrowser, QVBoxLayout
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.setWindowTitle(trans.t('update_available_title'))
         dialog.resize(620, 460)
         # Same theme rule as the other dialogs (light strips the dark inline
@@ -1388,7 +1389,17 @@ class OpenFocus(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         buttons.accepted.connect(dialog.accept)
         layout.addWidget(buttons)
-        dialog.exec()
+        def refresh_labels():
+            dialog.setWindowTitle(trans.t('update_available_title'))
+            buttons.button(QDialogButtonBox.StandardButton.Close).setText(trans.t('btn_close'))
+
+        refresh_labels()
+        manager.notes_changed.connect(view.setPlainText)
+        trans.languageChanged.connect(refresh_labels)
+        try:
+            dialog.exec()
+        finally:
+            trans.languageChanged.disconnect(refresh_labels)
 
     def _build_update_indicator(self) -> None:
         """Status-bar widget: background download progress / "restart to update"."""
@@ -2403,6 +2414,11 @@ class OpenFocus(QMainWindow):
                 from core.source_frames import display_image
                 frame = self.raw_images[index]
                 image = display_image(frame)
+                h, w = image.shape[:2]
+                if max(h, w) > 1024:
+                    factor = 1024 / max(h, w)
+                    image = cv2.resize(image, (max(1, round(w * factor)), max(1, round(h * factor))),
+                                       interpolation=cv2.INTER_AREA)
                 if self.linear_dng_metadata is not None and not getattr(frame, 'preview_is_display', False):
                     from utils.linear_dng import develop_linear
                     image = develop_linear(image, self.linear_dng_metadata)
@@ -2462,38 +2478,49 @@ class OpenFocus(QMainWindow):
         worker.finished.connect(finished)
         worker.start()
 
-    def _request_source_pixels(self, key):
-        """Decode only the selected frame on a worker, guarded by its identity."""
-        if key != getattr(self, '_source_display_key', None):
+    def _release_source_regions(self, key):
+        worker = getattr(self, '_source_decode_workers', {}).get(key)
+        if worker is not None:
+            worker.request_cancel()
+        if key == getattr(self, '_source_display_key', None):
+            self._source_display_key = None
+
+    def _request_source_region(self, key, request):
+        """Resolve one selected original off-thread and upload only visible tiles."""
+        if (getattr(self, '_shutting_down', False)
+                or key != getattr(self, '_source_display_key', None)):
             return
         workers = self.__dict__.setdefault('_source_decode_workers', {})
-        if key in workers:
+        existing = workers.get(key)
+        if existing is not None:
+            existing.submit(request)
             return
         index = key[2]
         if not 0 <= index < len(self.raw_images) or id(self.raw_images[index]) != key[1]:
             return
-        from core.workers import SourceDecodeWorker
+        from core.source_previews import SourceRegionWorker
+        from utils import scalebar
         frame = self.raw_images[index]
-        worker = SourceDecodeWorker(frame, key, display=True)
+        worker = SourceRegionWorker(frame, key, labels=self.label_manager.snapshot(), index=index,
+                                    scale_cfg=scalebar.export_cfg(self, target='source'),
+                                    metadata=getattr(frame, 'linear_metadata', None) or self.linear_dng_metadata)
         workers[key] = worker
-        def accept(decoded_key, image):
+        def accept(decoded_key, region_request, image, rect):
             if (decoded_key != getattr(self, '_source_display_key', None)
-                    or getattr(self, '_shutting_down', False)):
+                    or getattr(self, '_shutting_down', False) or image is None):
                 return
-            pixmap = cv2_to_pixmap(image)
-            from utils import scalebar
-            pixmap = self.label_manager.apply_labels_to_source_pixmap(
-                pixmap, index, scale_cfg=scalebar.export_cfg(self, target='source'))
-            self.lbl_source_img.set_source_pixmap(pixmap, source_key=decoded_key)
+            self.lbl_source_img.set_source_region(cv2_to_pixmap(image), rect,
+                                                   source_key=decoded_key, request=region_request)
         def failed(decoded_key, message):
             if decoded_key == getattr(self, '_source_display_key', None):
                 self.statusBar().showMessage(message)
         def finished():
             workers.pop(key, None)
             worker.deleteLater()
-        worker.decoded.connect(accept)
+        worker.ready.connect(accept)
         worker.failed.connect(failed)
         worker.finished.connect(finished)
+        worker.submit(request)
         worker.start()
 
     def update_source_view(self, index):
@@ -2502,9 +2529,16 @@ class OpenFocus(QMainWindow):
             
         if 0 <= index < len(self.stack_images):
             self.current_display_index = index
+            frame = self.raw_images[index]
+            generation = getattr(self, '_source_display_generation', 0) + 1
+            self._source_display_generation = generation
+            key = (getattr(self, 'source_revision', 0), id(frame), index, generation)
+            self._source_display_key = key
+            for pending_key, worker in getattr(self, '_source_decode_workers', {}).items():
+                if pending_key != key:
+                    worker.request_cancel()
             from core.source_frames import preview_ready
             if not preview_ready(self.raw_images[index]):
-                self._source_display_key = (getattr(self, 'source_revision', 0), id(self.raw_images[index]), index)
                 self.lbl_source_img.clear()
                 self.lbl_source_img.setText(trans.t('msg_loading_stack'))
                 self.lbl_stack_info.setText(f'{index + 1} / {len(self.stack_images)}')
@@ -2519,21 +2553,12 @@ class OpenFocus(QMainWindow):
                     original_pixmap, index,
                     scale_cfg=scalebar.export_cfg(self, target="source"))
 
-                from core.source_frames import SourceFrame
-                frame = self.raw_images[index]
-                key = (getattr(self, 'source_revision', 0), id(frame), index)
-                self._source_display_key = key
-                if not getattr(self, '_source_pixels_connected', False):
-                    self.lbl_source_img.sourcePixelsRequested.connect(self._request_source_pixels)
-                    self._source_pixels_connected = True
-                for pending_key, worker in getattr(self, '_source_decode_workers', {}).items():
-                    if pending_key != key:
-                        worker.request_cancel()
-                if isinstance(frame, SourceFrame):
-                    self.lbl_source_img.set_display_pixmap(
-                        display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
-                else:
-                    self.lbl_source_img.set_display_pixmap(display_pixmap)
+                if not getattr(self, '_source_regions_connected', False):
+                    self.lbl_source_img.sourceRegionRequested.connect(self._request_source_region)
+                    self.lbl_source_img.sourceRegionsReleased.connect(self._release_source_regions)
+                    self._source_regions_connected = True
+                self.lbl_source_img.set_display_pixmap(
+                    display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
                 
                 # 更新文字
                 self.lbl_stack_info.setText(f"{index + 1} / {len(self.stack_images)}")
@@ -3579,7 +3604,7 @@ class OpenFocus(QMainWindow):
         # with its QObject parent. Retry the authorized close on the GUI loop
         # instead of waiting here or orphaning a dialog-owned worker.
         from dialogs.retouch import RetouchDialog, _SHARPNESS_WORKERS
-        retouch_running = False
+        shutdown_running = False
         for dialog in self.findChildren(RetouchDialog):
             dialog.setEnabled(False)
             dialog_busy = False
@@ -3598,14 +3623,23 @@ class OpenFocus(QMainWindow):
             if not dialog_busy:
                 dialog._allow_close = True
                 dialog_busy = not dialog.close()
-            retouch_running = retouch_running or dialog_busy
+            shutdown_running = shutdown_running or dialog_busy
         # Include detail-map workers detached by an already closed workspace.
         for worker in tuple(_SHARPNESS_WORKERS):
             if worker.isRunning():
                 worker.requestInterruption()
-                retouch_running = True
+                shutdown_running = True
+        self._source_display_key = None
+        for name in ('_source_decode_workers', '_source_preview_workers'):
+            for worker in tuple(getattr(self, name, {}).values()):
+                worker.request_cancel()
+                shutdown_running = worker.isRunning() or shutdown_running
+        output_manager = getattr(self, 'output_manager', None)
+        cancel_thumbnails = getattr(output_manager, 'cancel_stack_thumbnails', None)
+        if callable(cancel_thumbnails):
+            shutdown_running = cancel_thumbnails() or shutdown_running
         timer = getattr(self, "_retouch_shutdown_timer", None)
-        if retouch_running:
+        if shutdown_running:
             self._retouch_quit_authorized = True
             if timer is None:
                 from PyQt6.QtCore import QTimer
@@ -3623,11 +3657,6 @@ class OpenFocus(QMainWindow):
         log_action("shutdown.started", restart=bool(getattr(self, '_restart_for_update', False)))
         self.usage_analytics.shutdown()
 
-        self._source_display_key = None
-        for worker in tuple(getattr(self, '_source_decode_workers', {}).values()):
-            _shutdown_worker(worker)
-        for worker in tuple(getattr(self, '_source_preview_workers', {}).values()):
-            _shutdown_worker(worker)
         # Persist user preferences, layout and recent files for next time
         try:
             self.persist_settings()

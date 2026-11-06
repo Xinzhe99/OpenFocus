@@ -108,17 +108,26 @@ def preview_ready(frame):
     return not isinstance(frame, SourceFrame) or frame.preview is not None
 
 
-def ensure_preview(frame):
+def _check_preview_cancel(should_cancel):
+    if should_cancel is not None and should_cancel():
+        raise InterruptedError('Source preview cancelled')
+
+
+def ensure_preview(frame, should_cancel=None):
+    _check_preview_cancel(should_cancel)
     if not isinstance(frame, SourceFrame):
         return frame
     if frame.preview is None:
         if _fingerprint(frame.path) != frame.fingerprint:
             raise OSError(f'Source changed since it was opened: {frame.path}')
         loaded = scan_source(frame.path, frame.scale, linear=frame.linear_metadata is not None,
-                             page_index=frame.page)[0]
+                             page_index=frame.page, should_cancel=should_cancel)[0]
+        if loaded.fingerprint != frame.fingerprint:
+            raise OSError(f'Source changed since it was opened: {frame.path}')
         for operation in frame.transforms:
             loaded = transform_frame(loaded, operation['operation'],
                                      **{key: value for key, value in operation.items() if key != 'operation'})
+        _check_preview_cancel(should_cancel)
         object.__setattr__(frame, 'preview', loaded.preview)
         object.__setattr__(frame, 'preview_is_available', loaded.preview_is_available)
     return frame.preview.get() if isinstance(frame.preview, PreviewPixels) else frame.preview
@@ -187,28 +196,159 @@ def _pil_preview(image, *, itemsize=1, alpha=False):
     return cv2.cvtColor(np.asarray(image.convert('RGB')), cv2.COLOR_RGB2BGR)
 
 
-def _raw_preview(raw, orientation, path):
-    """Read bounded embedded JPEGs; never unpack the sensor for a preview."""
+def _raw_lzw_preview(page, should_cancel=None):
+    """Give bundled libtiff just the admitted thumbnail, not the RAW container."""
+    from PIL import TiffImagePlugin
+    from core.resource_policy import require_memory
+    encoded_bytes = sum(page.databytecounts)
+    working = (page.imagewidth * page.imagelength * max(3, page.samplesperpixel)
+               * np.dtype(page.dtype).itemsize * 4 + encoded_bytes * 4
+               + len(page.dataoffsets) * 32 + 65536)
+    if working > PREVIEW_DECODE_BUDGET or page.planarconfig != 1:
+        return _unavailable_preview(page.imagewidth, page.imagelength)
+    require_memory(working)
+    stream = page.parent.filehandle
+    def strips():
+        for offset, length in zip(page.dataoffsets, page.databytecounts):
+            _check_preview_cancel(should_cancel)
+            if offset < 0 or length < 0 or offset + length > stream.size:
+                raise ValueError('Invalid embedded TIFF preview range')
+            stream.seek(offset)
+            data = stream.read(length)
+            if len(data) != length:
+                raise ValueError('Truncated embedded TIFF preview')
+            yield data
+    # A standalone IFD references only these compressed strips/tiles. Building
+    # its small header avoids an optional LZW encoder or reading the RAW payload.
+    header = (b'II*\x00\x08\x00\x00\x00' if page.parent.byteorder == '<'
+              else b'MM\x00*\x00\x00\x00\x08')
+    ifd = TiffImagePlugin.ImageFileDirectory_v2(ifh=header)
+    for tag, value in ((256, page.imagewidth), (257, page.imagelength),
+                       (258, (np.dtype(page.dtype).itemsize * 8,) * page.samplesperpixel),
+                       (259, 5), (262, int(page.photometric)), (266, page.fillorder),
+                       (274, _tiff_orientation(page)), (277, page.samplesperpixel),
+                       (284, 1), (317, page.predictor)):
+        ifd[tag] = value
+    offsets_tag, counts_tag = (324, 325) if page.is_tiled else (273, 279)
+    if page.is_tiled:
+        ifd[322], ifd[323] = page.tilewidth, page.tilelength
+    else:
+        ifd[278] = page.rowsperstrip
+    if page.extrasamples:
+        ifd[338] = tuple(map(int, page.extrasamples))
+    ifd.tagtype[offsets_tag] = ifd.tagtype[counts_tag] = 4  # TIFF LONG
+    ifd[offsets_tag] = (0,) * len(page.dataoffsets)
+    ifd[counts_tag] = tuple(page.databytecounts)
+    # Pillow relocates StripOffsets relative to the end of the serialized IFD,
+    # while TileOffsets remain absolute. Supply each tag's required base once.
+    position = len(header) + len(ifd.tobytes(offset=8)) if page.is_tiled else 0
+    offsets = []
+    for length in page.databytecounts:
+        offsets.append(position)
+        position += length
+    ifd[offsets_tag] = tuple(offsets)
+    with BytesIO() as encoded:
+        encoded.write(header)
+        encoded.write(ifd.tobytes(offset=8))
+        for data in strips():
+            encoded.write(data)
+        _check_preview_cancel(should_cancel)
+        image = cv2.imdecode(np.frombuffer(encoded.getbuffer(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise ValueError('Unsupported embedded TIFF preview codec')
+    from core.image_loader import _has_transparency, UnsupportedTransparency
+    if _has_transparency(image):
+        raise UnsupportedTransparency('Transparent RAW previews are unsupported')
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    elif image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    return _small(image)
+
+
+def _raw_bitmap_preview(path, orientation, should_cancel=None):
+    """Decode only admitted display IFDs; never CFA/linear sensor samples."""
+    import tifffile
+    from core.batch_converter import _raw_preview_pages
+    try:
+        with tifffile.TiffFile(path) as tif:
+            candidates = [page for page in _raw_preview_pages(tif, should_cancel)
+                          if int(page.photometric) in (0, 1, 2)
+                          and (int(page.photometric) == 2 or page.is_reduced)
+                          and page.samplesperpixel in (1, 3, 4)
+                          and np.dtype(page.dtype) in (np.dtype(np.uint8), np.dtype(np.uint16))
+                          and page.imagewidth * page.imagelength <= 4_000_000
+                          # DNG LinearRaw is photometric 34892, CFA is 32803.
+                          # Neither is a display thumbnail, even in a small IFD.
+                          and not page.tags.get('CFARepeatPatternDim')]
+            candidates.sort(key=lambda p: (max(p.imagewidth, p.imagelength) < PREVIEW_EDGE,
+                                          p.imagewidth * p.imagelength if max(p.imagewidth, p.imagelength) >= PREVIEW_EDGE
+                                          else -p.imagewidth * p.imagelength))
+            for page in candidates:
+                _check_preview_cancel(should_cancel)
+                try:
+                    preview = (_raw_lzw_preview(page, should_cancel) if int(page.compression) == 5
+                               else _tiff_preview(page, should_cancel=should_cancel))
+                except InterruptedError:
+                    raise
+                except (ImportError, OSError, ValueError, MemoryError):
+                    _check_preview_cancel(should_cancel)
+                    continue
+                if isinstance(preview, _UnavailablePreview):
+                    continue
+                # The TIFF decoder has already applied the IFD orientation.
+                # Normalize that before applying the full sensor's orientation.
+                page_orientation = _tiff_orientation(page)
+                inverse = {6: 8, 8: 6}.get(page_orientation, page_orientation)
+                return _orient(_orient(preview, inverse), orientation)
+    except InterruptedError:
+        raise
+    except (OSError, ValueError, tifffile.TiffFileError):
+        pass
+    return None
+
+
+def _raw_preview(raw, orientation, path, should_cancel=None):
+    """Read bounded embedded display pixels without unpacking the sensor."""
     import rawpy
-    from core.batch_converter import _embedded_raw_jpeg
-    encoded = _embedded_raw_jpeg(path)
-    if encoded is not None:
-        with Image.open(BytesIO(encoded)) as image:
-            preview = _pil_preview(image)
-        return _orient(preview, orientation)
+    from core.batch_converter import _embedded_raw_jpegs
+    _check_preview_cancel(should_cancel)
+    for encoded in _embedded_raw_jpegs(path, should_cancel=should_cancel):
+        try:
+            with Image.open(BytesIO(encoded)) as image:
+                preview = _pil_preview(image)
+            if not isinstance(preview, _UnavailablePreview):
+                _check_preview_cancel(should_cancel)
+                return _orient(preview, orientation)
+        except InterruptedError:
+            raise
+        except (OSError, ValueError, MemoryError):
+            pass
+        finally:
+            del encoded
+            _check_preview_cancel(should_cancel)
+    preview = _raw_bitmap_preview(path, orientation, should_cancel)
+    if preview is not None:
+        return preview
+    # RawPy exposes no thumbnail geometry before extract_thumb allocates it.
+    # Retain the small-camera fallback, but large sensors need a container range
+    # or admitted TIFF IFD rather than an unbounded LibRaw allocation.
     if raw.sizes.width * raw.sizes.height <= 4_000_000:
+        from core.resource_policy import require_memory
+        require_memory(PREVIEW_DECODE_BUDGET)
+        _check_preview_cancel(should_cancel)
         try:
             thumb = raw.extract_thumb()
+            _check_preview_cancel(should_cancel)
             if thumb.format == rawpy.ThumbFormat.JPEG and len(thumb.data) <= 32 * 1024 * 1024:
                 with Image.open(BytesIO(thumb.data)) as image:
                     preview = _pil_preview(image)
                 return _orient(preview, orientation)
-            if thumb.format == rawpy.ThumbFormat.BITMAP and thumb.data.shape[0] * thumb.data.shape[1] <= 4_000_000:
+            if (thumb.format == rawpy.ThumbFormat.BITMAP and thumb.data.ndim == 3
+                    and thumb.data.shape[2] == 3 and thumb.data.nbytes * 4 <= PREVIEW_DECODE_BUDGET):
                 return _orient(_small(cv2.cvtColor(thumb.data, cv2.COLOR_RGB2BGR)), orientation)
         except (rawpy.LibRawNoThumbnailError, rawpy.LibRawUnsupportedThumbnailError):
             pass
-    # A visibly unavailable preview is preferable to hidden full-sensor work.
-    # This canvas is never used by resolve_frame, rendering or export.
     preview = _unavailable_preview(raw.sizes.width, raw.sizes.height)
     logger.warning('RAW preview unavailable without sensor decode path=%s', path)
     return _orient(preview, orientation)
@@ -451,8 +591,9 @@ def _validate_tiff_alpha(page):
             raise UnsupportedTransparency('TIFF alpha cannot be safely validated within the preview budget')
 
 
-def _tiff_preview(page):
+def _tiff_preview(page, should_cancel=None):
     """Sample mapped TIFFs or admitted strips; oversized strips stay undecoded."""
+    _check_preview_cancel(should_cancel)
     h, w = page.imagelength, page.imagewidth
     step = max(1, math.ceil(max(h, w) / PREVIEW_EDGE))
     channels = page.samplesperpixel
@@ -485,6 +626,7 @@ def _tiff_preview(page):
         small = np.zeros((math.ceil(h / step), math.ceil(w / step), channels), dtype=page.dtype)
         try:
             for segment, position, _shape in page.segments(maxworkers=1):
+                _check_preview_cancel(should_cancel)
                 if segment is None:
                     continue
                 _, _, y, x, _ = position
@@ -510,9 +652,10 @@ def _tiff_preview(page):
     return _orient(cv2.cvtColor(small, cv2.COLOR_RGB2BGR), orientation)
 
 
-def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=None):
+def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=None, should_cancel=None):
     """Read headers and bounded previews; never invoke the full image decoder."""
     from core.image_loader import is_raw_source
+    _check_preview_cancel(should_cancel)
     path = os.path.abspath(os.fspath(path))
     if not math.isfinite(scale) or not 0 < scale <= 1:
         raise ValueError('Source scale must be in (0, 1]')
@@ -530,8 +673,8 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                 height = round(height / aspect)
             elif aspect > 1:
                 width = round(width * aspect)
-            orientation = {0: 1, 3: 3, 5: 8, 6: 6}.get(sizes.flip, 1)
-            if orientation in (6, 8):
+            orientation = (1, 2, 4, 3, 5, 8, 6, 7)[sizes.flip] if sizes.flip in range(8) else 1
+            if orientation in (5, 6, 7, 8):
                 width, height = height, width
             metadata = None
             if linear:
@@ -551,7 +694,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                     make, model = _camera_identity(path, raw)
                     metadata = LinearDNGMetadata(tuple(map(tuple, matrix)), tuple(wb[1] / wb), make, model)
                 _validate_metadata(metadata)
-            preview = None if header_only else _raw_preview(raw, orientation, path)
+            preview = None if header_only else _raw_preview(raw, orientation, path, should_cancel)
         frames.append(SourceFrame(path, 0, (max(1, int(height * scale)), max(1, int(width * scale)), 3),
                                   np.dtype(np.uint16), preview, stamp, scale, orientation,
                                   linear_metadata=metadata, preview_is_display=True,
@@ -560,6 +703,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
         import tifffile
         with tifffile.TiffFile(path) as tif:
             for index, page in enumerate(tif.pages):
+                _check_preview_cancel(should_cancel)
                 if page_index is not None and index != page_index:
                     continue
                 _validate_tiff_alpha(page)
@@ -567,7 +711,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
                 h, w = page.imagelength, page.imagewidth
                 if orientation in (5, 6, 7, 8):
                     h, w = w, h
-                preview = None if header_only else _tiff_preview(page)
+                preview = None if header_only else _tiff_preview(page, should_cancel)
                 frames.append(SourceFrame(path, index, (max(1, int(h * scale)), max(1, int(w * scale)), 3),
                                           np.dtype(page.dtype), preview, stamp, scale, orientation,
                                           native_shape=(h, w, 3)))
@@ -592,6 +736,7 @@ def scan_source(path, scale=1.0, *, linear=False, header_only=False, page_index=
         frames.append(SourceFrame(path, 0, (max(1, int(height * scale)), max(1, int(width * scale)),
                                             4 if alpha else 3), dtype, preview, stamp, scale, orientation,
                                   native_shape=(height, width, 4 if alpha else 3)))
+    _check_preview_cancel(should_cancel)
     if _fingerprint(path) != stamp:
         raise OSError(f'Source changed while reading its preview: {path}')
     frames = [with_preview(replace(frame, preview_is_available=not isinstance(frame.preview, _UnavailablePreview)),

@@ -294,10 +294,12 @@ Klik onder de kop van de bronlijst op **Beelden controleren** om aangrenzende fr
 
 ### Zoomen en pannen
 
-- **In-/uitzoomen**: muiswiel boven de afbeelding
-- **Fijn zoomen**: houd `Ctrl` ingedrukt + muiswiel voor kleinere stappen
-- **Aan venster aanpassen**: dubbelklik op de afbeelding om tussen inpassen en 100 % te wisselen
-- **Pannen**: klik en sleep om de afbeelding binnen het paneel te verplaatsen
+- **In-/uitzoomen**: muiswiel boven bron of resultaat, ook met `Ctrl` ingedrukt
+- **Loep**: houd de linkermuisknop vast; het wiel wijzigt de vergroting en `Ctrl` + wiel de grootte van het vierkant. Elk paneel onthoudt zijn eigen grootte
+- **Aan venster aanpassen**: klik met de middelste muisknop
+- **Pannen**: sleep met rechts of houd Spatie vast en sleep met links
+
+Bij grote bronafbeeldingen begint de loep op de oorspronkelijke 100%; het percentage geeft apparaatpixels per originele pixel aan. De hoofdweergave bereikt 800%. JPEG- en RAW-stapels openen waar mogelijk met begrensde voorvertoningen. Voor nadere inspectie laadt een achtergrondtaak de originele pixels en levert alleen het zichtbare gebied. Het geselecteerde origineel blijft beschikbaar voor herhaald bekijken; wisselen of wissen geeft het vrij. De eerste decodering vraagt nog steeds voldoende RAM en kan langer duren dan het openen van de voorvertoning.
 
 ### Gesynchroniseerde navigatie
 
@@ -1048,8 +1050,8 @@ Exitcodes: `0` succes, `1` verwerkingsfout, `2` gebruiksfout. `python main.py --
 |----------|--------|
 | `Pijl omhoog` / `Pijl omlaag` (bronlijst gefocust) | Vorig / volgend frame |
 | `Muiswiel` | In-/uitzoomen |
-| `Ctrl + wiel` | Fijn zoomen |
-| `Dubbelklik` | Tussen inpassen en 100 % wisselen |
+| `Ctrl + wiel` met de linkermuisknop ingedrukt | Grootte van de loep wijzigen |
+| `Middelste muisknop` | Afbeelding aan het venster aanpassen |
 
 ### Algemeen
 

@@ -393,3 +393,33 @@ eagerly load torch. Relevant existing suites include `test_parameter_memory.py`,
 `test_project_file.py`, `test_cli_engineering.py`, and the algorithm integration
 suite; run the full existing suite and native Qt render/comparison/depth/batch
 paths after integration. Record only checks actually executed.
+
+## Localized in-app release notes
+
+Before tagging a stable release, add its concise user-facing release summary to
+`utils/release_notes.py` in all twelve selectable interface languages. Translate
+the actual changes in each body. The release workflow requires all twelve
+translations and publishes explicit `openfocus-notes:<language>` comment blocks
+in the GitHub release body, followed by the common download/install guidance.
+The mirror preserves these bodies, so existing mirror generation needs no
+translation service or separate publication step. Update the normal changelog
+section as well; the release workflow still requires it.
+
+The updater also accepts a release-level `body_i18n` dictionary keyed by the same
+language codes. These explicit translations take precedence over the bundled
+catalog. A legacy release without translations retains its original source text;
+it is never presented as machine-translated content. The bundled v1.76.0 summary
+covers all twelve languages even when the existing remote body is English-only.
+
+Update checks return language-neutral note entries as their seventh callback
+argument. `UpdateManager.notes` selects text using the current interface language
+when read, and `notes_changed(str)` refreshes open views after a language change.
+Keep views in plain-text mode and connect QObject-bound receivers so destroyed
+dialogs release their signal connections. The controller caches up to ten releases
+for offline/staged updates; selection rechecks the installed-to-latest version
+range, sorts newest first and limits displayed text to 12,000 characters. Existing
+Markdown source URLs and canonical per-release links remain available as text.
+
+Relevant regressions are `tests/test_localized_release_notes.py`,
+`tests/test_update_contract.py`, `tests/test_update_flow.py` and
+`tests/test_updater.py`.

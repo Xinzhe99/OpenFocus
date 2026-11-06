@@ -168,9 +168,13 @@ def test_tiled_child_plan_is_serial(monkeypatch):
     monkeypatch.setattr(module, "_dtcwt_impl", observed)
     monkeypatch.setattr(
         "core.multi_focus_fusion._dtcwt_impl", observed, raising=False)
-    # DTCWT only tiles when its whole-image activity set is too large; make
-    # that condition true for this small stack instead of allocating a huge one.
-    monkeypatch.setattr("core.multi_focus_fusion.DTCWT_ACTIVITY_BUDGET", 1)
+    # Admit a 32px tile but not a 48px whole transform. The decision must
+    # reflect the actual transform workspace, not an N-frame activity stack.
+    tile_fixed, tile_worker = module.estimate_working_set(32, 32, 4, 3)
+    full_fixed, full_worker = module.estimate_working_set(48, 48, 4, 3)
+    budget = tile_fixed + tile_worker
+    assert budget < full_fixed + full_worker
+    monkeypatch.setattr('core.multi_focus_fusion.memory_budget_bytes', lambda: budget)
     fusion = MultiFocusFusion(algorithm="dtcwt", use_gpu=False,
                               tile_enabled=True, tile_block_size=32,
                               tile_overlap=8, tile_threshold=1,

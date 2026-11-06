@@ -173,18 +173,13 @@ def test_wipe_uses_aligned_trimmed_frames_and_source_indices(qapp):
 
 
 def test_alignment_history_keeps_original_sources_and_displays_crop_independently(qapp):
-    from PyQt6.QtWidgets import QListWidgetItem
+    from tests.test_batch_export_contract import host as output_host
     from controllers.output_manager import publish_aligned_stack
     from locales import trans
 
-    published = []
-    def insert(image, label, record):
-        published.insert(0, record)
-        return QListWidgetItem(label)
-
-    publisher = SimpleNamespace(
-        registered_source_indices=[0], image_filenames=["input.png"],
-        output_manager=SimpleNamespace(_insert_output=insert))
+    publisher = output_host(qapp)
+    publisher.registered_source_indices = [0]
+    publisher.image_filenames = ['input.png']
     old_source = np.full((80, 40, 3), (0, 0, 210), np.uint8)
     old_aligned = np.full((60, 30, 3), (0, 180, 0), np.uint8)
     new_source = np.full((40, 80, 3), (200, 0, 0), np.uint8)
@@ -193,6 +188,8 @@ def test_alignment_history_keeps_original_sources_and_displays_crop_independentl
                           source_frames=[old_source], source_indices=[0])
     publish_aligned_stack(publisher, [new_aligned], filenames=["new"], icc_profile=b"",
                           source_frames=[new_source], source_indices=[0])
+    published = [publisher.output_manager.record_for_row(row)
+                 for row in range(publisher.output_list.count())]
     assert published[0].aligned_source_frames[0] is new_source
     assert published[1].aligned_source_frames[0] is old_source
 

@@ -261,10 +261,12 @@ Cliquez sur **Examiner les images** sous l'en-tête de la liste source pour trou
 
 ### Zoom et déplacement
 
-- **Zoom avant/arrière** : molette de la souris sur l'image
-- **Zoom fin** : maintenez `Ctrl` et utilisez la molette pour des incréments plus petits
-- **Ajuster à la fenêtre** : double-cliquez sur l'image pour basculer entre ajustement et vue à 100 %
-- **Déplacer** : cliquez-glissez pour déplacer l'image dans le panneau
+- **Zoom avant/arrière** : molette sur la source ou le résultat, y compris avec `Ctrl`
+- **Loupe** : maintenez le bouton gauche ; la molette change le grossissement et `Ctrl` + molette redimensionne le carré. Chaque panneau mémorise sa taille
+- **Ajuster à la fenêtre** : clic avec le bouton central
+- **Déplacer** : glissez avec le bouton droit ou maintenez Espace et glissez avec le bouton gauche
+
+Pour les grandes images source, la loupe commence à 100 % natif ; le pourcentage indique les pixels du périphérique par pixel original. La vue principale atteint 800 %. Les piles JPEG et RAW s'ouvrent avec des aperçus de taille limitée lorsqu'ils sont disponibles. Pour examiner les détails, un traitement en arrière-plan charge les pixels originaux et transmet seulement la région visible. L'original sélectionné reste disponible pour les inspections suivantes ; changer ou vider la source le libère. Le premier décodage exige toujours assez de RAM et peut prendre plus de temps que l'ouverture de l'aperçu.
 
 ### Navigation synchronisée
 
@@ -1004,8 +1006,8 @@ Codes de sortie : `0` succès, `1` erreur de traitement, `2` erreur d'utilisatio
 |----------|--------|
 | `Haut` / `Bas` (liste source active) | Image précédente / suivante |
 | `Molette` | Zoom avant/arrière |
-| `Ctrl + molette` | Zoom fin |
-| `Double-clic` | Basculer ajustement/100 % |
+| `Ctrl + molette` avec le bouton gauche maintenu | Redimensionner la loupe |
+| `Bouton central` | Ajuster l'image à la fenêtre |
 
 ### Général
 

@@ -1,5 +1,8 @@
 """Incremental bounded previews; never decode original pixels on the GUI thread."""
 import threading
+import math
+
+import numpy as np
 
 import cv2
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -43,7 +46,7 @@ class SourcePreviewWorker(QThread):
                         operation.cancel()
                         return
                     frame = self.frames[index]
-                    image = ensure_preview(frame)
+                    image = ensure_preview(frame, should_cancel=lambda: self.cancelled or self.isInterruptionRequested())
                     h, w = image.shape[:2]
                     factor = min(1, 40 / max(h, w))
                     thumb = cv2.resize(image, (max(1, round(w * factor)), max(1, round(h * factor))),
@@ -55,7 +58,189 @@ class SourcePreviewWorker(QThread):
                     if not self.cancelled:
                         self.ready.emit(self.request, index, id(frame), thumb)
                 except Exception as exc:
+                    if self.cancelled or self.isInterruptionRequested():
+                        operation.cancel()
+                        return
                     operation.fail(exc)
                     self.failed.emit(self.request, str(exc))
                 finally:
                     _PREVIEW_DECODE.release()
+
+
+DISPLAY_REGION_MAX_SIDE = 4096
+_SOURCE_DISPLAY = threading.Semaphore(1)
+
+
+def render_source_region(image, rect, size, metadata=None):
+    """Sample an original-pixel rectangle without copying its full pixel domain.
+
+    The returned rectangle includes integer edge pixels; the consumer maps it
+    back to the original domain, so fractional cursor anchors are not rounded.
+    All conversion/development buffers are bounded by the requested tile size.
+    """
+    x, y, width, height = rect
+    h, w = image.shape[:2]
+    left, top = max(0, math.floor(x)), max(0, math.floor(y))
+    right, bottom = min(w, math.ceil(x + width)), min(h, math.ceil(y + height))
+    if right <= left or bottom <= top:
+        return None, (left, top, 0, 0)
+    # Floor/ceil adds at most two edge pixels. Keep them at native sampling
+    # instead of resampling a 321-pixel crop to 320 at a fractional 100% anchor.
+    out_w = max(1, min(DISPLAY_REGION_MAX_SIDE, math.ceil(size[0]) + 2))
+    out_h = max(1, min(DISPLAY_REGION_MAX_SIDE, math.ceil(size[1]) + 2))
+    factor = min(1.0, out_w / (right - left), out_h / (bottom - top))
+    from core.resource_policy import require_memory
+    pixels = max(1, round((right - left) * factor)) * max(1, round((bottom - top) * factor))
+    # Include conversion, owned delivery pixels, annotations and Qt upload.
+    require_memory(pixels * 96 + 1024 * 1024)
+    crop = image[top:bottom, left:right]
+    if factor < 1:
+        crop = cv2.resize(crop, (max(1, round((right - left) * factor)),
+                                 max(1, round((bottom - top) * factor))),
+                          interpolation=cv2.INTER_AREA)
+    if metadata is not None:
+        from utils.linear_dng import develop_linear
+        crop = develop_linear(crop, metadata)
+    # uint8 may be a strided view of the original. Own only this bounded tile
+    # before crossing threads (never expose a view holding the whole source).
+    tile = np.array(to_display_uint8(crop), copy=True, order='C')
+    if tile.ndim == 3 and tile.shape[2] == 4:
+        from utils.image_utils import composite_transparent_for_display
+        tile = composite_transparent_for_display(
+            tile, origin=(left, top), scale=((right - left) / tile.shape[1],
+                                            (bottom - top) / tile.shape[0]))
+    return tile, (left, top, right - left, bottom - top)
+
+
+class SourceRegionWorker(QThread):
+    """One selected original, two coalesced requests (viewport and loupe).
+
+    Resolution stays off the GUI thread and uses the shared resource admission.
+    A cancelled generation must release its original before the next can decode.
+    Idle workers hold no heavy-job lease; new mouse events replace queued work.
+    """
+    ready = pyqtSignal(object, object, object, object)
+    failed = pyqtSignal(object, str)
+
+    def __init__(self, frame, key, *, labels=None, index=0, scale_cfg=None, metadata=None):
+        super().__init__()
+        self.frame = frame
+        self.key = key
+        self.labels = labels
+        self.index = index
+        self.scale_cfg = scale_cfg
+        self.metadata = getattr(frame, 'linear_metadata', None) if metadata is None else metadata
+        self._scale_mean = None
+        self.cancelled = False
+        self._condition = threading.Condition()
+        self._pending = {}
+
+    def submit(self, request):
+        with self._condition:
+            if not self.cancelled:
+                self._pending[request[0]] = request
+                self._condition.notify()
+
+    def request_cancel(self):
+        with self._condition:
+            self.cancelled = True
+            self._pending.clear()
+            self._condition.notify()
+        self.requestInterruption()
+
+    cancel = request_cancel
+
+    def _decorate(self, tile, rect, image):
+        if tile is None or (self.labels is None and not self.scale_cfg):
+            return tile
+        if tile.ndim == 2:
+            tile = cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR)
+        if self.labels is not None:
+            tile, _ = self.labels._draw_for(tile, 'input', self.index, source_rect=rect)
+        if self.scale_cfg:
+            from utils import scalebar
+            from utils.frame_pixels import preview_scale_config
+            sx, sy = tile.shape[1] / rect[2], tile.shape[0] / rect[3]
+            canvas = (max(1, round(image.shape[1] * sx)), max(1, round(image.shape[0] * sy)))
+            cfg = preview_scale_config(self.scale_cfg, image.shape, (canvas[1], canvas[0]))
+            def region_mean(sample):
+                key = (sample, sx, sy)
+                if self._scale_mean is not None and self._scale_mean[0] == key:
+                    return self._scale_mean[1]
+                x, y, width, height = sample
+                left, top = max(0, math.floor(x / sx)), max(0, math.floor(y / sy))
+                right = min(image.shape[1], math.ceil((x + width) / sx))
+                bottom = min(image.shape[0], math.ceil((y + height) / sy))
+                total = count = 0
+                for row in range(top, bottom, 128):
+                    for col in range(left, right, 1024):
+                        if self.cancelled:
+                            raise InterruptedError('Source display cancelled')
+                        subrect = (col, row, min(1024, right - col), min(128, bottom - row))
+                        pixels, sampled = render_source_region(
+                            image, subrect, (1024, 128), self.metadata)
+                        if self.labels is not None:
+                            if pixels.ndim == 2:
+                                pixels = cv2.cvtColor(pixels, cv2.COLOR_GRAY2BGR)
+                            pixels, _ = self.labels._draw_for(pixels, 'input', self.index, source_rect=sampled)
+                        total += float(pixels.sum(dtype=np.float64))
+                        count += pixels.size
+                mean = total / count if count else 128.0
+                self._scale_mean = (key, mean)
+                return mean
+            tile = scalebar.burn(tile, cfg, canvas_size=canvas,
+                                origin=(rect[0] * sx, rect[1] * sy), region_mean=region_mean)
+        return tile
+
+    def run(self):
+        from core.source_frames import resolve_frame
+        from core.resource_policy import heavy_job
+        image = None
+        acquired = False
+        try:
+            while not self.cancelled:
+                if _SOURCE_DISPLAY.acquire(timeout=.05):
+                    acquired = True
+                    break
+            if not acquired or self.cancelled:
+                return
+            with heavy_job(lambda: self.cancelled):
+                image = resolve_frame(self.frame)
+                if self.cancelled:
+                    return
+                # OpenCV silently materializes negative/column-strided inputs.
+                # Canonicalize such a source once into the existing owned disk
+                # mapping rather than copying a huge crop on every mouse event.
+                pixel_stride = image.dtype.itemsize * (image.shape[2] if image.ndim == 3 else 1)
+                if (image.strides[-1] != image.dtype.itemsize or image.strides[0] <= 0
+                        or (image.ndim == 3 and image.strides[1] != pixel_stride)):
+                    from core.frame_storage import store_frame
+                    image = store_frame(image)
+            while not self.cancelled:
+                with self._condition:
+                    while not self._pending and not self.cancelled:
+                        self._condition.wait()
+                    if self.cancelled:
+                        return
+                    kind = 'loupe' if 'loupe' in self._pending else next(iter(self._pending))
+                    request = self._pending.pop(kind)
+                _, _, rect, size = request
+                with heavy_job(lambda: self.cancelled):
+                    with self._condition:
+                        if self.cancelled or kind in self._pending:
+                            continue
+                    tile, sampled = render_source_region(
+                        image, rect, size, self.metadata)
+                    tile = self._decorate(tile, sampled, image)
+                with self._condition:
+                    stale = self.cancelled or kind in self._pending
+                if not stale:
+                    self.ready.emit(self.key, request, tile, sampled)
+                tile = None
+        except Exception as exc:
+            if not self.cancelled:
+                self.failed.emit(self.key, str(exc))
+        finally:
+            image = None
+            if acquired:
+                _SOURCE_DISPLAY.release()

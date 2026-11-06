@@ -21,6 +21,7 @@ def cancel(should_cancel):
 def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None):
     """Decode a directory or accept a frame list, preserving source depth."""
     from core.resource_policy import probe_resources, require_memory
+    from core.frame_storage import store_frame
     cap = execution_plan.ram_budget if execution_plan is not None else None
     if isinstance(input_source, str):
         from core.image_loader import admit_image_decode, decode_image
@@ -38,19 +39,22 @@ def read_stack(input_source, img_resize, should_cancel=None, execution_plan=None
             image = decode_image(path, preserve_grayscale=True)
             if image is None:
                 raise ValueError(f"Failed to read image: {path}")
-            if not frames:
-                require_memory(len(names) * image.nbytes, snapshot, user_limit=cap)
-            frames.append(image)
+            frames.append(store_frame(image))
+            del image
     else:
         frames = list(input_source)
     if not frames:
         raise ValueError("Empty image list")
     if img_resize:
         pixels = int(img_resize[0]) * int(img_resize[1])
-        require_memory(sum(pixels * (frame.shape[2] if frame.ndim == 3 else 1)
-                           * frame.dtype.itemsize for frame in frames),
-                       user_limit=cap)
-        frames = [cv2.resize(frame, img_resize) for frame in frames]
+        resized = []
+        for frame in frames:
+            cancel(should_cancel)
+            channels = frame.shape[2] if frame.ndim == 3 else 1
+            require_memory((pixels * channels + frame.size) * frame.dtype.itemsize * 2,
+                           user_limit=cap)
+            resized.append(store_frame(cv2.resize(frame, img_resize)))
+        frames = resized
     return frames
 
 
@@ -99,9 +103,19 @@ def stage_planes(frames, align, should_cancel=None):
     return batch
 
 
-def normalized_frames(frames):
-    """Project frames onto the 0-255 float32 working range once."""
-    return normalize_fuse_input(list(frames))[0]
+def normalized_frames(frames, should_cancel=None):
+    """Normalize one frame at a time without retaining a float colour stack."""
+    from core.frame_storage import store_frame
+    if not any(frame.dtype == np.uint16 for frame in frames):
+        return list(frames)
+    normalized = []
+    for frame in frames:
+        cancel(should_cancel)
+        converted = normalize_fuse_input([frame])[0][0]
+        if converted.dtype != np.float32:
+            converted = converted.astype(np.float32)
+        normalized.append(frame if converted is frame else store_frame(converted))
+    return normalized
 
 
 def plan_attention_inference(algorithm, frames, model_path, device,

@@ -302,9 +302,16 @@ Questions, ideas or feedback? Join our [Discord community](https://discord.gg/af
 
 **Support OpenFocus:** If you enjoy the software, you can buy us a coffee via Alipay in China or [PayPal](https://paypal.me/XinZEN0602) internationally. Include your username in the payment note and we will permanently acknowledge it in the project as a thank-you.
 
-<img src="assets/readme/alipay-coffee.jpg" alt="Alipay QR code to support OpenFocus" width="260">
-
-<a href="https://paypal.me/XinZEN0602"><img src="assets/readme/paypal-coffee.png" alt="Scan or click to support OpenFocus via PayPal" width="260"></a>
+<table>
+  <tr>
+    <th align="center">Alipay · China</th>
+    <th align="center">PayPal · International</th>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="assets/readme/alipay-coffee.jpg" alt="Alipay QR code to support OpenFocus" width="260"></td>
+    <td align="center" valign="top"><a href="https://paypal.me/XinZEN0602"><img src="assets/readme/paypal-coffee.png" alt="PayPal QR code with the PayPal mark; scan or click to support OpenFocus" width="260"></a><br><a href="https://paypal.me/XinZEN0602">Scan or click to donate via PayPal</a></td>
+  </tr>
+</table>
 
 <a id="license"></a>
 ## License

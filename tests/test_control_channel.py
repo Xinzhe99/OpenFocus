@@ -719,13 +719,8 @@ def test_closing_window_before_delayed_setup_does_not_raise(qapp, tmp_path, monk
 
 def test_app_info_reports_unknown_until_gpu_probe_finishes(server, monkeypatch):
     import core.multi_focus_fusion as mff
-    from utils import platform_utils
 
     monkeypatch.setattr(mff, "neural_device_kind", lambda: None)
-    monkeypatch.setattr(platform_utils, "_GPU_PRESENT_CACHE", None)
-    monkeypatch.setattr(platform_utils, "is_macos", lambda: False)
-    monkeypatch.setattr(platform_utils, "is_windows", lambda: True)
-    monkeypatch.setattr(platform_utils, "_nvidia_smi_reports_gpu", lambda: True)
     assert call(server, "app.info")["result"]["capabilities"]["gpu"] is None
 
     monkeypatch.setattr(mff, "neural_device_kind", lambda: "DIRECTML")

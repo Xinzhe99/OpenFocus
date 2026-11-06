@@ -262,7 +262,8 @@ class LabelManager:
         frozen._snapshot_output_id = getattr(self._selected_output(), "output_id", None)
         return frozen
 
-    def _draw_for(self, image, target: str, index: int, output_id=None, source_shape=None):
+    def _draw_for(self, image, target: str, index: int, output_id=None, source_shape=None,
+                  source_rect=None):
         """Resolve identity and numbering once for every display/export path."""
         wanted = normalize_target(target)
         index = 0 if wanted == "output" else index
@@ -287,7 +288,15 @@ class LabelManager:
                 adder.config.range = ""
             else:
                 adder.config = config
-            if source_shape is not None and source_shape[:2] != image.shape[:2]:
+            if source_rect is not None:
+                from copy import copy
+                from utils.frame_pixels import preview_label_config
+                x, y, width, height = source_rect
+                adder.config = copy(adder.config)
+                adder.config.x_location -= x
+                adder.config.y_location -= y
+                adder.config = preview_label_config(adder.config, (height, width), image.shape)
+            elif source_shape is not None and source_shape[:2] != image.shape[:2]:
                 from utils.frame_pixels import preview_label_config
                 adder.config = preview_label_config(adder.config, source_shape, image.shape)
             drawn = adder.add_label_to_image(drawn, index)

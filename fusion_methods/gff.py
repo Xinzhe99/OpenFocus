@@ -136,9 +136,12 @@ def gff_impl(input_source, img_resize, kernel_size=31, thread_count: int = None,
                     if best_saliency is None:
                         best_saliency = store_frame(sal)
                     else:
-                        win = sal > best_saliency
-                        best_saliency[win] = sal[win]
-                        max_indices[win] = k
+                        for row in range(0, rows, 128):
+                            check_cancel()
+                            block = slice(row, min(rows, row + 128))
+                            win = sal[block] > best_saliency[block]
+                            np.copyto(best_saliency[block], sal[block], where=win)
+                            np.copyto(max_indices[block], k, where=win)
                         del win
                     del sal
         del best_saliency

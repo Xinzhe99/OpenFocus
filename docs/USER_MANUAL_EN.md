@@ -535,6 +535,14 @@ are included; changing a checkbox updates the displayed suggestions.
 - **Fit to Window**: Middle-click the image
 - **Pan**: Right-drag or hold Space and left-drag
 
+For large source images, the magnifier starts at native 100%; its percentage
+describes device pixels per original pixel. The main view can reach 800%.
+JPEG and RAW stacks open with bounded previews when available. Original pixels
+load on a worker when closer inspection needs them, and the view receives only
+the visible region. The selected original is retained for repeated inspection;
+changing or clearing the source releases it. The first original decode still
+requires enough RAM and can take longer than opening its preview.
+
 ### Synchronized Navigation
 
 When you navigate in the source panel, the result panel shows the corresponding result frame if available.

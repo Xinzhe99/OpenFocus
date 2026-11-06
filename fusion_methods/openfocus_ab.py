@@ -56,9 +56,105 @@ def _check_cancel(should_cancel):
         raise RegistrationCancelled()
 
 
+def _frame_pass_workers(frames, img_resize, algorithm, thread_count, *, activity_only=False):
+    """Admit complete independent producers, including their retained result."""
+    if thread_count == 1 or len(frames) < 2:
+        return 1
+    from core import resource_policy as policy
+    from core.algorithms import get_fusion, resolve_runner, fusion_defaults
+    from core.multi_focus_fusion import memory_budget_bytes
+    h, w = frames[0].shape[:2]
+    if img_resize:
+        w, h = map(int, img_resize)
+    spec = get_fusion(algorithm)
+    fixed, per_worker = resolve_runner(spec.resource_estimator)(h, w, fusion_defaults(algorithm), len(frames))
+    if activity_only:
+        # Only best activity + winner are shared in FirstPass. Global depth
+        # smoothing and C's reconstruction pyramids run after producers drain.
+        # Each producer envelope includes its source, integer filter maps,
+        # row scratch and a completed activity plane waiting for reduction.
+        fixed, per_worker = 4 * 1024 * 1024 + h * w * 12, h * w * 80
+    if img_resize:
+        # _prepare_frame must convert uint16 BEFORE resizing to preserve its
+        # fractional interpolation. A small destination cannot hide multiple
+        # concurrently converted full-size sources from the worker budget.
+        for source in frames:
+            if source.dtype == np.uint16:
+                sh, sw = source.shape[:2]
+                channels = source.shape[2] if len(source.shape) == 3 else 1
+                per_worker = max(per_worker, sh * sw * channels * 8 + h * w * channels * 4)
+    budget = memory_budget_bytes()
+    # Serial mapping/strip execution remains the low-RAM path. Parallel
+    # producers are admitted only when their full resident envelopes fit.
+    if fixed + 2 * per_worker > budget:
+        return 1
+    plan = policy.plan_execution(policy.Workload(
+        algorithm=algorithm, frames=len(frames), height=h, width=w,
+        fixed_bytes=fixed, per_worker_bytes=per_worker, outer_tasks=len(frames)),
+        preference='maximum' if thread_count is not None else 'balanced', user_threads=thread_count,
+        ram_budget_override=budget)
+    return plan.workers
+
+
+def _ordered_frame_results(count, produce, workers, should_cancel):
+    """Produce a worker-sized window and yield only in source-index order.
+
+    Producers own their temporary maps. The consumer alone updates global
+    accumulators; a completed later frame never changes winner/tie ordering.
+    A consumer error or cancellation also stops running producers at their
+    next cancellable row/native boundary before their mappings are released.
+    """
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor, wait
+    from threading import Event
+    stop = Event()
+
+    def cancelled():
+        return stop.is_set() or (should_cancel is not None and should_cancel())
+
+    if workers <= 1:
+        for index in range(count):
+            _check_cancel(cancelled)
+            yield index, produce(index, cancelled)
+        return
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        window = deque()
+        next_index = 0
+        try:
+            while next_index < min(workers, count):
+                window.append(pool.submit(produce, next_index, cancelled))
+                next_index += 1
+            index = 0
+            while window:
+                _check_cancel(cancelled)
+                for pending in window:
+                    if pending.done() and pending.exception() is not None:
+                        pending.result()
+                if not window[0].done():
+                    wait((window[0],), timeout=0.05)
+                    continue
+                future = window.popleft()
+                result = future.result()
+                del future
+                _check_cancel(cancelled)
+                yield index, result
+                del result
+                index += 1
+                _check_cancel(cancelled)
+                if next_index < count:
+                    window.append(pool.submit(produce, next_index, cancelled))
+                    next_index += 1
+        finally:
+            stop.set()
+            for future in window:
+                future.cancel()
+            window.clear()
+
+
 def _prepare_frame(frame, img_resize, should_cancel):
     """Keep the baseline conversion/resize order without retaining a float stack."""
     _check_cancel(should_cancel)
+    frame = np.asarray(frame)
     if frame.dtype == np.uint16:
         frame = frame.astype(np.float32) * (255.0 / 65535.0)
     if img_resize is not None:

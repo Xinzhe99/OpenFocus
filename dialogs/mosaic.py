@@ -4,7 +4,7 @@ import threading
 
 import numpy as np
 from PyQt6.QtCore import QEvent, QPointF, QSignalBlocker, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QIcon, QPainter, QTransform
+from PyQt6.QtGui import QIcon, QPainter, QPalette, QTransform
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QApplication, QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
@@ -87,6 +87,33 @@ class _Canvas(QGraphicsView):
         event.accept()
 
 
+class _MosaicList(QListWidget):
+    """Paint the empty-state invitation without intercepting list events."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        trans.languageChanged.connect(self._refresh_hint)
+
+    def _refresh_hint(self):
+        self.viewport().update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.count():
+            return
+        painter = QPainter(self.viewport())
+        font = self.font()
+        if font.pointSizeF() > 0:
+            font.setPointSizeF(max(8.0, font.pointSizeF() - 1.0))
+        font.setBold(False)
+        painter.setFont(font)
+        painter.setPen(self.palette().color(QPalette.ColorGroup.Disabled,
+                                            QPalette.ColorRole.Text))
+        painter.drawText(self.viewport().rect().adjusted(14, 12, -14, -12),
+                         Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                         trans.t('mosaic_drop_hint'))
+
+
 class MosaicDialog(QDialog):
     """Arrange already-fused images without altering the current source stack."""
 
@@ -129,7 +156,7 @@ class MosaicDialog(QDialog):
         panel.setMinimumWidth(220)
         left = QVBoxLayout(panel)
         left.setContentsMargins(0, 0, 0, 0)
-        self.list = QListWidget()
+        self.list = _MosaicList()
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         self.list.setMinimumHeight(120)
@@ -145,9 +172,6 @@ class MosaicDialog(QDialog):
         self.add_folder = QPushButton(trans.t('action_open_folder'))
         self.add_folder.clicked.connect(self._add_folder)
         left.addWidget(self.add_folder)
-        self.drop_hint = QLabel(trans.t('mosaic_drop_hint'))
-        self.drop_hint.setWordWrap(True)
-        left.addWidget(self.drop_hint)
         grid = QFormLayout()
         self.grid_rows, self.grid_cols = QSpinBox(), QSpinBox()
         for spin in (self.grid_rows, self.grid_cols):
