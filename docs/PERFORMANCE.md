@@ -23,8 +23,12 @@ not overlap. A worker budget includes a completed result waiting for reduction
 and the original-size uint16 conversion required before resizing.
 
 B/C's Q12 recurrence runs in a lazily compiled, GIL-free Numba CPU kernel.
-Admission includes a 256-MiB compiler-startup allowance. Compilation stays in
-memory, so read-only installed/frozen modules do not need a writable JIT cache.
+A separate 256-MiB startup check covers compilation before workspace planning;
+later plans see the compiler's resident memory in the physical-RAM snapshot.
+Required layouts compile serially before the producer pool starts. Parallel
+producers use private RAM scratch only after their full resident envelopes fit;
+serial low-RAM work and global maps retain temporary mappings. Compilation stays
+in memory, so read-only installed/frozen modules need no writable JIT cache.
 The first fusion in a fresh process includes compilation time.
 
 Guided Filter, DCT, GFG-FGF, DTCWT and neural preparation use frame/strip passes
