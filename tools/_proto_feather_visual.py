@@ -83,7 +83,6 @@ if __name__ == '__main__':
         print('loaded %d frames' % len(stack))
         render(stack)
     else:
-        import cv2  # noqa: F811
         gt = cv2.imread('tests/golden/demo_guided_filter.png')
         gt = cv2.resize(gt, (gt.shape[1] // 2, gt.shape[0] // 2))
         render(gt)
