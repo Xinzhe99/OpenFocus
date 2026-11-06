@@ -638,8 +638,8 @@ retuschieren:
 **Karte fehlender Daten speichern…** schreibt die eingefärbte Vorschau und je
 Farbe eine Schwarz-Weiß-Maske. Der automatische Hintergrund braucht die Bilder,
 aus denen das Ergebnis entstand, und ist für Bereichsergebnisse (ROI) nicht
-verfügbar. Retusche-Checkpoints speichern die Wahl und berechnen sie beim Laden
-neu.
+verfügbar. Neue Hintergrund-Checkpoints stellen Bild, erreichbaren Verlauf und
+Diagnosedaten exakt wieder her, ohne den Hintergrund neu zu berechnen.
 
 ### Beschriftungen verwalten
 
@@ -990,17 +990,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # False zum Verarbeiten
 
 ### Retusche-Kontrollpunkte wiedergeben
 
-Bei jedem Speichern oder Laden werden die Basis und die verarbeiteten Quellen zuerst in einem abbrechbaren Hintergrundvorgang geprüft. Beim Speichern werden zusätzlich die aufgezeichneten Bearbeitungen wiedergegeben und das aktuelle Bild sowie der Rückgängig-/Wiederholen-Zustand geprüft, bevor der Kontrollpunkt veröffentlicht wird. Hat sich eine Quelle geändert und passt die Wiedergabe nicht mehr, schlägt das Speichern fehl und behält Ihre Bearbeitungen. Das Abbrechen eines Speicher- oder Ladevorgangs lässt Ihre aktuellen Bearbeitungen ebenfalls verfügbar. Reicht der Arbeitsspeicher für Prüfung oder Wiedergabe nicht aus, endet der Vorgang und lässt sowohl Ihre aktuellen Bearbeitungen als auch einen vorhandenen Kontrollpunkt unverändert.
+Verwenden Sie die Kontrollpunkt-Speicher- und Ladefunktionen im Retusche-Arbeitsbereich mit der ursprünglichen Basis und den verarbeiteten Quellen. Sitzungen mit automatischem Hintergrund, auch erfolgreiche Analysen ohne Pixeländerung, speichern verlustfreie v2-`.ofretouch`-ZIP-Snapshots mit JSON-Metadaten und NumPy-Daten: das exakte Arbeitsbild, erreichbare Rückgängig-/Wiederholen-Kacheln, Diagnosezustände und Quellherkunft. Beim Laden von v2 wird der Hintergrund nicht neu berechnet. Reine Pinsel-/Tonwertsitzungen können kompaktes JSON v1 verwenden; ältere Hintergrund-Checkpoints in JSON v1 bleiben abspielbar.
+
+Die Quellprüfung läuft in einem abbrechbaren Hintergrundvorgang. Vor dem Ersetzen der Zieldatei lädt das Speichern die vorbereitete Datei erneut und prüft das aktuelle Bild, erreichbare Rückgängig-/Wiederholen-Kacheln und Diagnosezustände auf exakte Gleichheit. Nicht passende Quellen, eine fehlgeschlagene Prüfung, Abbruch oder unzureichender Speicher lassen aktuelle Bearbeitungen und einen vorhandenen Kontrollpunkt unverändert.
 
 Verhindert das Aufzeichnungslimit des Kontrollpunkts eine weitere Bearbeitung, übernehmen Sie die aktuellen Bearbeitungen und beginnen Sie eine neue Retuschesitzung, um fortzufahren.
 
 Speichern Sie einen Retusche-Kontrollpunkt im Retusche-Arbeitsbereich und geben Sie anschließend das ursprüngliche Basisbild sowie jedes verarbeitete Quellbild in derselben Reihenfolge wie in der Sitzung an:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources processed1.png processed2.png --output retouched.tif
 ```
 
-Verwenden Sie die tatsächlich für die Retusche verwendeten Bilder – nach Ausrichtung und einem etwaigen ROI-Zuschnitt oder anderer Verarbeitung – mit ihren ursprünglichen Pixelwerten und ihrer Bittiefe. Der Kontrollpunkt zeichnet Bearbeitungen und Fingerabdrücke auf, nicht die Bildpixel. Die Wiedergabe rekonstruiert die aufgezeichneten Bildversätze und das Ausrichtungsverhalten und prüft Basis, geordnete Bilder und Gültigkeitsmasken; unvereinbare Pixel, Geometrie oder Masken werden abgelehnt. Jeder Pfad muss genau ein Bild enthalten. Die Ausgabe muss PNG oder TIFF sein und behält die Bittiefe der Basis. Kontrollpunkt und Eingabebilder dürfen nicht als Ausgabe dienen.
+Beide Formate benötigen weiterhin das ursprüngliche Basisbild und alle tatsächlich für die Retusche verwendeten Quellbilder in Sitzungsreihenfolge – nach Ausrichtung und einem etwaigen ROI-Zuschnitt oder anderer Verarbeitung – mit ihren ursprünglichen Pixelwerten und ihrer Bittiefe. Das Laden rekonstruiert die aufgezeichneten Bildversätze und das Ausrichtungsverhalten und prüft Basis, geordnete Bilder und Gültigkeitsmasken; unvereinbare Pixel, Geometrie oder Masken werden abgelehnt. Jeder Pfad muss genau ein Bild enthalten. Die Ausgabe muss PNG oder TIFF sein und behält die Bittiefe der Basis. Kontrollpunkt und Eingabebilder dürfen nicht als Ausgabe dienen.
 
 Exit-Codes: `0` Erfolg, `1` Verarbeitungsfehler, `2` Nutzungsfehler. Der Aufruf `python main.py --help` gibt alle Optionen aus; ein Start mit einem reinen Pfad (`python main.py C:\stack`) öffnet weiterhin die GUI mit diesem Ordner.
 

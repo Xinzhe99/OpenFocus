@@ -1057,29 +1057,26 @@ def test_diameter_shortcut_updates_the_document(qapp):
 
 
 def test_apply_is_refused_during_preview(qapp):
-    """Ctrl+Enter must obey the same condition as the visible button."""
-    from types import SimpleNamespace
+    """The actual shortcut cannot publish pixels while a preview is held."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
 
-    from dialogs.retouch import RetouchDialog
-
-    class Doc:
-        stroke_active = False
-        is_dirty = True
-
-    host = SimpleNamespace(
-        _applied=False, _applying=False, _closing=False, doc=Doc(), preview_mode="before",
-        btn_apply=None, apply_callback=lambda *a: (True, ""))
-    assert RetouchDialog._can_apply(host) is False
-
-    host.preview_mode = None
-    assert RetouchDialog._can_apply(host) is True
-
-    host.doc.stroke_active = True
-    assert RetouchDialog._can_apply(host) is False
-
-    host.doc.stroke_active = False
-    host.doc.is_dirty = False
-    assert RetouchDialog._can_apply(host) is False
+    dlg, published = _dialog(qapp)
+    try:
+        assert dlg.doc.adjust_tones(0.2, 0) == "committed"
+        expected = dlg.doc.working.copy()
+        dlg._update_controls()
+        dlg._press_preview("before")
+        QTest.keyClick(dlg, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+        assert not published and not dlg._applied
+        np.testing.assert_array_equal(dlg.doc.working, expected)
+        dlg._release_preview("before")
+        dlg.btn_apply.click()
+        assert len(published) == 1
+        np.testing.assert_array_equal(published[0][1], expected)
+    finally:
+        dlg._allow_close = True
+        dlg.close()
 
 
 def test_source_peek_never_contains_sharpness_overlay(qapp):

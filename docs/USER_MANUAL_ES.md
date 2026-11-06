@@ -599,8 +599,8 @@ mano:
 **Guardar mapa de datos faltantes…** guarda la vista coloreada y una máscara en
 blanco y negro por color. El fondo automático necesita los fotogramas que
 produjeron el resultado y no está disponible para resultados de región (ROI).
-Los puntos de control de retoque guardan la elección y la vuelven a calcular al
-cargarlos.
+Los nuevos puntos de control de fondo restauran exactamente la imagen, el
+historial accesible y los diagnósticos sin volver a calcular el fondo.
 
 ### Gestión de etiquetas
 
@@ -944,17 +944,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # usa False para procesar
 
 ### Reproducir un punto de control de retoque
 
-La primera vez que se guarda o carga se verifican la base y las fuentes procesadas en una operación en segundo plano cancelable. Al guardar también se reproducen las ediciones registradas y se comprueban la imagen actual y el estado de deshacer/rehacer antes de publicar el punto de control. Si una fuente ha cambiado y la reproducción ya no coincide, el guardado falla y conserva tus ediciones. Cancelar un guardado o una carga también conserva tus ediciones actuales. Si la memoria no basta para la verificación o la reproducción, la operación se detiene y deja intactas tanto tus ediciones actuales como cualquier punto de control existente.
+Usa los controles de guardar/cargar puntos de control del espacio de retoque con la base original y las fuentes procesadas. Las sesiones con fondo automático, incluidos los análisis correctos sin cambios de píxeles, guardan instantáneas ZIP v2 `.ofretouch` sin pérdidas con metadatos JSON y datos NumPy: la imagen de trabajo exacta, los mosaicos accesibles de deshacer/rehacer, los estados de diagnóstico y la procedencia de las fuentes. Cargar v2 no vuelve a calcular el fondo. Las sesiones solo de pincel/tonos pueden usar JSON v1 compacto; los puntos de control de fondo antiguos en JSON v1 siguen siendo reproducibles.
+
+La verificación de fuentes se ejecuta en segundo plano y se puede cancelar. Antes de sustituir el destino, el guardado vuelve a cargar el archivo preparado y comprueba la igualdad exacta de la imagen actual, los mosaicos accesibles de deshacer/rehacer y los estados de diagnóstico. Una fuente incompatible, una verificación fallida, la cancelación o la falta de memoria dejan intactos las ediciones actuales y cualquier punto de control existente.
 
 Si el límite de registro del punto de control impide otra edición, aplica las ediciones actuales y comienza una nueva sesión de retoque para continuar.
 
 Guarda un punto de control de retoque desde el espacio de retoque y después proporciona la imagen base original y cada fotograma de origen procesado en el mismo orden que la sesión:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png frame2.png --output retouched.tif
 ```
 
-Usa los fotogramas reales empleados para el retoque, tras la alineación y cualquier recorte de ROI u otro procesamiento, con sus valores de píxel y profundidad de bits originales. El punto de control registra ediciones y huellas, no los píxeles de imagen. La reproducción reconstruye los desplazamientos de fotograma y el comportamiento de alineación registrados y verifica la base, los fotogramas ordenados y las máscaras de validez; se rechazan píxeles, geometría o máscaras incompatibles. Cada ruta debe contener una imagen. La salida debe ser PNG o TIFF y conserva la profundidad de bits de la base. El punto de control y las imágenes de entrada no pueden usarse como salida.
+Ambos formatos siguen necesitando la base original y todos los fotogramas realmente usados para el retoque, en el orden de la sesión, tras la alineación y cualquier recorte de ROI u otro procesamiento, con sus valores de píxel y profundidad de bits originales. La carga reconstruye los desplazamientos de fotograma y el comportamiento de alineación registrados y verifica la base, los fotogramas ordenados y las máscaras de validez; se rechazan píxeles, geometría o máscaras incompatibles. Cada ruta debe contener una imagen. La salida debe ser PNG o TIFF y conserva la profundidad de bits de la base. El punto de control y las imágenes de entrada no pueden usarse como salida.
 
 Códigos de salida: `0` éxito, `1` error de procesamiento, `2` error de uso. Ejecutar `python main.py --help` muestra todas las opciones; iniciar con una ruta simple (`python main.py C:\stack`) sigue abriendo la interfaz con esa carpeta cargada.
 

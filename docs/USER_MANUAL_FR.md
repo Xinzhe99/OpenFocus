@@ -601,8 +601,8 @@ retoucher à la main :
 **Enregistrer la carte des données manquantes…** écrit l'aperçu coloré et un
 masque noir et blanc par couleur. L'arrière-plan automatique a besoin des images
 qui ont produit le résultat et n'est pas disponible pour les résultats de zone
-(ROI). Les points de contrôle de retouche enregistrent le choix et le
-recalculent au chargement.
+(ROI). Les nouveaux points de contrôle de fond restaurent exactement l'image,
+l'historique accessible et les diagnostics sans recalculer l'arrière-plan.
 
 ### Gestion des libellés
 
@@ -946,17 +946,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # utilisez False pour tra
 
 ### Rejouer un point de contrôle de retouche
 
-Le premier enregistrement ou chargement vérifie la base et les sources traitées dans une opération d'arrière-plan annulable. L'enregistrement rejoue aussi les modifications consignées et vérifie l'image actuelle et l'état annuler/rétablir avant de publier le point de contrôle. Si une source a changé et que le rejeu ne correspond plus, l'enregistrement échoue et conserve vos modifications. Annuler un enregistrement ou un chargement conserve aussi vos modifications actuelles. Si la mémoire est insuffisante pour la vérification ou le rejeu, l'opération s'arrête et laisse inchangés vos modifications actuelles et tout point de contrôle existant.
+Utilisez les commandes d'enregistrement et de chargement des points de contrôle de l'espace de retouche avec la base d'origine et les sources traitées. Les sessions avec arrière-plan automatique, y compris les analyses réussies sans changement de pixels, enregistrent des instantanés ZIP v2 `.ofretouch` sans perte avec métadonnées JSON et données NumPy : l'image de travail exacte, les tuiles accessibles d'annulation/rétablissement, les états de diagnostic et la provenance des sources. Le chargement v2 ne recalcule pas l'arrière-plan. Les sessions limitées au pinceau et aux tonalités peuvent utiliser le JSON v1 compact ; les anciens points de contrôle de fond en JSON v1 restent rejouables.
+
+La vérification des sources s'exécute en arrière-plan et peut être annulée. Avant de remplacer la destination, l'enregistrement recharge le fichier préparé et vérifie l'égalité exacte de l'image actuelle, des tuiles accessibles d'annulation/rétablissement et des états de diagnostic. Une source incompatible, un échec de vérification, une annulation ou un manque de mémoire laissent les modifications actuelles et tout point de contrôle existant inchangés.
 
 Si la limite d'enregistrement du point de contrôle empêche une nouvelle modification, appliquez les modifications en cours et démarrez une nouvelle session de retouche pour continuer.
 
 Enregistrez un point de contrôle de retouche depuis l'espace de retouche, puis fournissez l'image de base d'origine et chaque image source traitée dans le même ordre que la session :
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png frame2.png --output retouched.tif
 ```
 
-Utilisez les images réellement utilisées pour la retouche, après recalage et tout recadrage ROI ou autre traitement, avec leurs valeurs de pixel et profondeur de bits d'origine. Le point de contrôle consigne les modifications et les empreintes, pas les pixels. Le rejeu reconstruit les décalages d'image et le comportement d'alignement enregistrés et vérifie la base, les images ordonnées et les masques de validité ; les pixels, géométries ou masques incompatibles sont refusés. Chaque chemin doit contenir une image. La sortie doit être PNG ou TIFF et conserve la profondeur de bits de la base. Le point de contrôle et les images d'entrée ne peuvent pas servir de sortie.
+Les deux formats nécessitent toujours la base d'origine et toutes les images réellement utilisées pour la retouche, dans l'ordre de la session, après recalage et tout recadrage ROI ou autre traitement, avec leurs valeurs de pixel et profondeur de bits d'origine. Le chargement reconstruit les décalages d'image et le comportement d'alignement enregistrés et vérifie la base, les images ordonnées et les masques de validité ; les pixels, géométries ou masques incompatibles sont refusés. Chaque chemin doit contenir une image. La sortie doit être PNG ou TIFF et conserve la profondeur de bits de la base. Le point de contrôle et les images d'entrée ne peuvent pas servir de sortie.
 
 Codes de sortie : `0` succès, `1` erreur de traitement, `2` erreur d'utilisation. `python main.py --help` affiche toutes les options ; lancer avec un simple chemin (`python main.py C:\stack`) ouvre toujours l'interface avec ce dossier chargé.
 

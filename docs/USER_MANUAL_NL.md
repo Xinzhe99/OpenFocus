@@ -638,8 +638,8 @@ zag. Dit zijn de plekken om te controleren of met de hand te retoucheren:
 **Kaart met ontbrekende gegevens opslaan…** schrijft de gekleurde voorvertoning
 en per kleur één zwart-witmasker. De automatische achtergrond heeft de frames
 nodig waaruit het resultaat ontstond en is niet beschikbaar voor
-gebiedsresultaten (ROI). Retoucheercheckpoints bewaren de keuze en berekenen die
-opnieuw bij het laden.
+gebiedsresultaten (ROI). Nieuwe achtergrondcontrolepunten herstellen het exacte
+beeld, de bereikbare geschiedenis en diagnostiek zonder de achtergrond opnieuw te berekenen.
 
 ### Labels beheren
 
@@ -990,17 +990,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # False om te verwerken
 
 ### Retouchecontrolepunten afspelen
 
-Bij opslaan of laden worden de basis en de verwerkte bronnen eerst in een annuleerbare achtergrondbewerking gecontroleerd. Bij opslaan worden ook de vastgelegde bewerkingen afgespeeld en wordt het huidige beeld en de ongedaan-maak-/opnieuw-uitvoerstatus gecontroleerd voordat het controlepunt wordt gepubliceerd. Als een bron is gewijzigd en het afspelen niet meer overeenkomt, mislukt het opslaan en blijven je bewerkingen behouden. Annuleren van opslaan of laden houdt je huidige bewerkingen ook beschikbaar. Is er onvoldoende geheugen voor controle of afspelen, dan stopt de bewerking en blijven zowel je huidige bewerkingen als een bestaand controlepunt ongewijzigd.
+Gebruik de knoppen voor het opslaan en laden van controlepunten in de retouchewerkruimte met de oorspronkelijke basis en verwerkte bronnen. Sessies met automatische achtergrond, ook geslaagde analyses zonder pixelwijzigingen, bewaren verliesloze v2-`.ofretouch`-ZIP-momentopnamen met JSON-metadata en NumPy-gegevens: het exacte werkbeeld, bereikbare tegels voor ongedaan maken/opnieuw uitvoeren, diagnostische toestanden en bronherkomst. Laden van v2 berekent de achtergrond niet opnieuw. Sessies met alleen penseel-/toonbewerkingen kunnen compact JSON v1 gebruiken; oudere achtergrondcontrolepunten in JSON v1 blijven afspeelbaar.
+
+Broncontrole verloopt in een annuleerbare achtergrondbewerking. Voor het vervangen van de bestemming laadt opslaan het voorbereide bestand opnieuw en controleert het huidige beeld, bereikbare tegels voor ongedaan maken/opnieuw uitvoeren en diagnostische toestanden op exacte gelijkheid. Niet-passende bronnen, een mislukte controle, annulering of onvoldoende geheugen laten je huidige bewerkingen en een bestaand controlepunt ongewijzigd.
 
 Als de opnamelimiet van het controlepunt een volgende bewerking verhindert, pas je de huidige bewerkingen toe en begin je een nieuwe retouchesessie om verder te gaan.
 
 Sla een retouchecontrolepunt op vanuit de retouchewerkruimte en geef daarna het oorspronkelijke basisbeeld en elk verwerkt bronframe in dezelfde volgorde als de sessie op:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources processed1.png processed2.png --output retouched.tif
 ```
 
-Gebruik de frames die daadwerkelijk voor het retoucheren zijn gebruikt — na uitlijning en een eventuele ROI-bijsnijding of andere verwerking — met hun oorspronkelijke pixelwaarden en bitdiepte. Het controlepunt legt bewerkingen en vingerafdrukken vast, niet de beeldpixels. Afspelen reconstrueert de vastgelegde frame-offsets en het uitlijningsgedrag en controleert de basis, de geordende frames en geldigheidsmaskers; onverenigbare pixels, geometrie of maskers worden geweigerd. Elk pad moet één afbeelding bevatten. De uitvoer moet PNG of TIFF zijn en behoudt de bitdiepte van de basis. Het controlepunt en de invoerbeelden mogen niet als uitvoer worden gebruikt.
+Beide formaten vereisen nog steeds het oorspronkelijke basisbeeld en alle frames die daadwerkelijk voor het retoucheren zijn gebruikt, in sessievolgorde, na uitlijning en een eventuele ROI-bijsnijding of andere verwerking, met hun oorspronkelijke pixelwaarden en bitdiepte. Laden reconstrueert de vastgelegde frame-offsets en het uitlijningsgedrag en controleert de basis, de geordende frames en geldigheidsmaskers; onverenigbare pixels, geometrie of maskers worden geweigerd. Elk pad moet één afbeelding bevatten. De uitvoer moet PNG of TIFF zijn en behoudt de bitdiepte van de basis. Het controlepunt en de invoerbeelden mogen niet als uitvoer worden gebruikt.
 
 Exitcodes: `0` succes, `1` verwerkingsfout, `2` gebruiksfout. `python main.py --help` toont alle opties; starten met een gewoon pad (`python main.py C:\stack`) opent nog steeds de GUI met die map geladen.
 
