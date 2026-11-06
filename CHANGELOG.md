@@ -16,6 +16,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   where no frame saw the scene cleanly. Scenes that are nearly all subject are
   left as stacked.
 - Add a Retouch button beside Review frames in the right panel.
+- Add Auto background to the command line: `--auto-background [auto|soft|sharp]`
+  replaces the background after fusion with the Retouch defaults, so a stack
+  can be finished unattended. `--background-mode faithful` keeps the stack's
+  edges, `--keep-soft-parts` keeps soft parts attached to the subject, and
+  `--save-stacked` / `--missing-data-map` also write the stacked result and the
+  missing-data map. Batch runs and recipes accept the same options; it is
+  unavailable with grouped fusion and `--native-raw`.
 
 ### Changed
 - Pressing Render while frames are still loading now starts the render when
@@ -31,6 +38,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Render All Methods skips a method that cannot run (for example, when the
   memory check refuses it), renders the rest and lists the skipped methods
   at the end. Cancelling still stops the whole run.
+- Auto background on an output that was already retouched analyses the
+  stacked result it came from and lays the new background onto the retouched
+  image: brushing on the subject is kept, and an earlier replacement is not
+  analysed again, so running it twice no longer builds up halos. Retouch says
+  so when it opens on such an output.
 
 ### Fixed
 - Message-box buttons such as "Discard changes" are no longer cut off.
@@ -46,6 +58,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   preserve current edits and any existing checkpoint.
 - When PYTHONFAULTHANDLER or -X faulthandler is set, the GUI and CLI send
   native crash dumps to the session crash file instead of stderr.
+- Auto background no longer mistakes a dark background for a microscope's
+  field stop. Ignoring it filled the area beside the subject from lit ground
+  and the subject itself: a pale or orange smear, a lumpy outline, rings
+  around small specks and a dark band along the edge.
+- Auto background works at any image size. Its distances (blur sizes, the
+  zone rebuilt beside the subject, glow measurement, margins) were fixed pixel
+  counts tuned on 20 MP images, so a stack loaded at reduced size got a large
+  pale halo and rings, and larger sensors got zones too narrow. They now scale
+  with the image's long side; 20 MP results are unchanged.
+- Auto background no longer stops with an OpenCV error on a long stack from a
+  large sensor. The per-pixel frame index is 16-bit above 256 frames and
+  OpenCV filters that only with a 3x3 or 5x5 window, while the tuned window is
+  wider on large sensors; the wider window is now applied band by band with
+  the same edge replication and a bounded scratch buffer, and is never
+  clamped, so the smoothing extent is unchanged.
+- The command line refuses a run whose outputs would overwrite each other
+  before it writes anything. The result, `--depth-map`, `--save-stacked`,
+  `--missing-data-map` (the map and one mask per class), `--json` and
+  `--alignment-report` are checked against one another in a single run, and
+  across every batch folder (including per-folder configs) in a batch run; a
+  different name for the same file is caught too. An output may also no
+  longer replace an input the run reads -- a frame, the dust or defect
+  reference, or the config -- in a single run and in every batch folder, so a
+  result, sidecar, class mask or JSON summary is never lost to a colliding
+  path. Batch folders are listed with each folder's own config and filters
+  and nothing is created before either check passes.
 
 ## [1.76.0] - 2026-11-06
 

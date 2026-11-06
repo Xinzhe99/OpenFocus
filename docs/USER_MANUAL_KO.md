@@ -872,6 +872,8 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 
 이 변경은 한 번에 되돌릴 수 있는 한 단계이며, 먼저 피사체에 칠한 스트로크는 유지됩니다. 피사체 앞의 흐린 풀잎처럼 스택 픽셀을 되살리고 싶은 곳에는 **복원 브러시** 를 쓰세요. 숲 바닥 장면처럼 피사체가 화면을 거의 채우면 이미지는 스택 그대로 남고 안내가 표시됩니다.
 
+이미 리터치한 결과에서 리터치를 열면, 자동 배경은 그 결과의 원본인 스택 결과를 분석하고 새 배경을 리터치한 이미지 위에 입힙니다. 피사체에 칠한 브러시 작업은 유지되고, 이전에 바꾼 배경은 다시 분석하지 않으므로 두 번 실행해도 헤일로가 쌓이지 않습니다.
+
 실행 후 **누락 데이터 표시** 를 켜면 어떤 프레임도 선명하게 보지 못한 곳이 색으로 표시됩니다. 확인하거나 손으로 리터치할 곳입니다.
 
 - 마젠타: 피사체에 가리지 않고 기록한 프레임이 없는 배경
@@ -1433,6 +1435,11 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--scale-bar` | 스케일 바 그리기(TIFF 메타데이터에서 보정 자동 감지) |
 | `--depth-map [path]` | 색상 깊이(초점 위치) 맵도 저장(기본값: `<output>_depth.png`). 지원 방식 전용, 그룹/투명 입력 거부. 배치에서는 기본 경로만 허용 |
 | `--depth-colormap` | `--depth-map`의 색상 맵: turbo, viridis, jet, gray 등(기본값 turbo) |
+| `--auto-background [preset]` | 리터치의 자동 배경처럼 스택된 배경을 정렬된 프레임의 배경으로 바꿉니다: `auto`(기본값), `soft`(가장 흐린 배경), `sharp`(가장 먼 곳에 초점을 맞춘 프레임). 정렬된 프레임이 필요하므로 그룹 합성과 함께 쓸 수 없습니다 |
+| `--background-mode` | 자동 배경: `clean`(기본값)은 프레임이 기록한 범위 안에서 스택의 가장자리 헤일로도 제거합니다. `faithful`은 그대로 둡니다 |
+| `--keep-soft-parts` | 자동 배경: 어느 프레임에서든 초점이 맞았던, 피사체에 붙은 부드러운 부분을 유지합니다 |
+| `--save-stacked [path]` | `--auto-background`와 함께 교체 전 결과도 저장(기본값: `<output>_stacked<ext>`). 배치에서는 기본 경로만 허용 |
+| `--missing-data-map [path]` | `--auto-background`와 함께 누락 데이터 맵과 클래스별 8비트 마스크도 저장(기본값: `<output>_missing.png`). 배치에서는 기본 경로만 허용 |
 | `--scale-um` | 픽셀 크기를 µm/px로 지정해 메타데이터를 덮어씀(`--scale-bar`를 포함함) |
 | `--dry-run` | 매개변수와 입력만 확인하고 결과 파일을 쓰지 않음 |
 | `--resume` | 배치의 완료되지 않은 작업 재개 |

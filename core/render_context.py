@@ -23,7 +23,6 @@ import cv2
 import numpy as np
 from core.algorithms import alignment_steps
 from core.source_frames import SourceFrame as LazySourceFrame, resolve_frame, store_preview
-from utils.frame_pixels import preview_pixels as display_image
 
 
 @dataclass(frozen=True, eq=False)
@@ -34,6 +33,21 @@ class _SourceRegion(LazySourceFrame):
     def full_resolution(self):
         x, y, width, height = self.region
         return resolve_frame(self.source)[y:y + height, x:x + width]
+
+
+def display_image(image):
+    """Bounded display pixels for a lazy frame.
+
+    The GUI generates a missing preview on a worker thread (utils.frame_pixels,
+    which needs Qt); a headless install without PyQt6 builds it directly.
+    Imported here, not at module level, so the CLI's --auto-background and
+    `retouch replay` keep working without PyQt6."""
+    try:
+        from utils.frame_pixels import preview_pixels
+    except ImportError:
+        from core.source_frames import display_image as direct
+        return direct(image)
+    return preview_pixels(image)
 
 
 def _source_region(image, x, y, width, height):
