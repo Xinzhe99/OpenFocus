@@ -37,20 +37,26 @@ def roi_openfocus_c(parameters, width, height):
     return max(96, ceil((8 + 4 * parameters['blend_smoothing']) * grid)), grid
 
 
-# The OpenFocus passes retain a fixed set of maps/pyramids and prepare one
-# source frame at a time. Charge their live planes, not N float colour frames.
+# OpenFocus retains fixed global maps/pyramids and a bounded set of independent
+# source producers. Charge their live planes, not N float colour frames.
 # These envelopes include mapped planes: fitting them in RAM avoids relying on
 # paging for the preferred whole-image path. The fallback still uses mappings.
 def openfocus_a_resources(height, width, parameters, frames):
-    return 4 * 1024 * 1024, height * width * 96
+    pixels = height * width
+    # Shared output/best planes (16 B/px), independent frame/response producer
+    # and completed result (80 B/px). Sum preserves the serial envelope.
+    return 4 * 1024 * 1024 + pixels * 16, pixels * 80
 
 
 def openfocus_b_resources(height, width, parameters, frames):
-    return 4 * 1024 * 1024, height * width * 240
+    pixels = height * width
+    # Global selection/smoothing/reconstruction plus independent activity work.
+    return 4 * 1024 * 1024 + pixels * 160, pixels * 80
 
 
 def openfocus_c_resources(height, width, parameters, frames):
-    return 4 * 1024 * 1024, height * width * 384
+    pixels = height * width
+    return 4 * 1024 * 1024 + pixels * 304, pixels * 80
 
 
 def guided_resources(height, width, parameters, frames):

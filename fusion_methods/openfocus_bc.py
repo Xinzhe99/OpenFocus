@@ -2,6 +2,9 @@
 
 B merges neighboring frames at the estimated depth. C merges their multiscale
 residuals using a separately reduced depth map at each scale.
+Independent per-frame depth activities may run concurrently in an admitted
+window. Global winner selection, depth smoothing and pyramid collapse remain
+ordered stages separated by a producer barrier.
 """
 import numpy as np
 
@@ -69,9 +72,10 @@ def _output(image, frames):
     return output
 
 def _depth(frames, shape, img_resize, kernel_size, smoothing, should_cancel,
-           depth_override):
+           depth_override, thread_count):
     if depth_override is None:
-        return depth_map(frames, img_resize, kernel_size, smoothing, should_cancel)
+        return depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
+                         thread_count=thread_count)
     depth = np.asarray(depth_override, dtype=np.float32)
     if depth.shape != shape[:2]:
         raise ValueError("depth_override must match the source height and width")
@@ -86,7 +90,7 @@ def openfocus_b_impl(input_source, img_resize=None, kernel_size: int = 11,
     frames, shape = _inputs(input_source, img_resize, should_cancel)
     smoothing = 1.2 if depth_smoothing is None else float(depth_smoothing)
     depth = _depth(frames, shape, img_resize, kernel_size,
-                   smoothing * (5.0 / 1.2), should_cancel, depth_override)
+                   smoothing * (5.0 / 1.2), should_cancel, depth_override, thread_count)
     result = create_frame(shape, np.float32)
     result[...] = 0
     for index, source in enumerate(frames):
@@ -114,7 +118,7 @@ def openfocus_c_impl(input_source, img_resize=None, kernel_size: int = 7,
     smoothing = 3.0 if blend_smoothing is None else float(blend_smoothing)
     # Method C exposes smoothing only; use the default radius internally.
     depth = _depth(frames, shape, img_resize, 11,
-                   smoothing * (5.0 / 3.0), should_cancel, depth_override)
+                   smoothing * (5.0 / 3.0), should_cancel, depth_override, thread_count)
     depth_code = create_frame(depth.shape, np.int32)
     for start in range(0, depth.shape[0], 128):
         _check_cancel(should_cancel)

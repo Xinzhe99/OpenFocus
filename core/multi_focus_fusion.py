@@ -118,7 +118,7 @@ def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
     workload = Workload(
         algorithm=algorithm, frames=len(frames), height=h, width=w,
         channels=min(3, first.shape[2]) if first.ndim == 3 else 1,
-        itemsize=first.itemsize, block_size=block_size, **estimates,
+        itemsize=np.dtype(first.dtype).itemsize, block_size=block_size, **estimates,
     )
     fixed, per_worker = estimate_working_set(workload)
     return fixed + max(1, int(workers)) * per_worker
@@ -146,7 +146,8 @@ def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
     if not frames:
         return False
     first = frames[0]
-    bytes_per_frame = first.itemsize * int(np.prod(first.shape)) if first.ndim else first.itemsize
+    itemsize = np.dtype(first.dtype).itemsize
+    bytes_per_frame = itemsize * int(np.prod(first.shape)) if first.ndim else itemsize
     total_bytes = len(frames) * bytes_per_frame
     return total_bytes > (tile_threshold ** 2) * 3
 
@@ -696,12 +697,16 @@ class MultiFocusFusion:
                     estimates = {'fixed_bytes': fixed, 'per_worker_bytes': per_worker}
                 plan = policy.plan_execution(
                     policy.Workload(algorithm=self.algorithm, frames=count,
-                        height=height, width=width, channels=3, itemsize=first.itemsize,
+                        height=height, width=width, channels=3, itemsize=np.dtype(first.dtype).itemsize,
                         outer_tasks=count if spec.parallel_frames else 1, **estimates),
                     preference=self.resource_preference,
                     user_threads=kwargs.get('thread_count'),
                     ram_budget_override=memory_budget_bytes())
-                kwargs['thread_count'] = plan.workers
+                # OpenFocus admits the whole serial reconstruction here, then
+                # admits its independent FirstPass producers separately. Its
+                # global smoothing/pyramid maps are not live per producer.
+                kwargs['thread_count'] = (plan.native_threads if self.algorithm in
+                    ('openfocus_a', 'openfocus_b', 'openfocus_c') else plan.workers)
                 if spec.ordered_plan:
                     kwargs['execution_plan'] = plan
             kwargs['should_cancel'] = should_cancel
@@ -1175,7 +1180,11 @@ class MultiFocusFusion:
                 kernel = 11
                 smoothing = kwargs.get('blend_smoothing')
                 smoothing = (3.0 if smoothing is None else smoothing) * (5.0 / 3.0)
-            global_depth = depth_map(depth_images, None, kernel, smoothing, should_cancel)
+            depth_threads = policy.cpu_capacity(policy.probe_resources(), self.resource_preference)
+            if thread_count is not None and thread_count > 0:
+                depth_threads = min(depth_threads, thread_count)
+            global_depth = depth_map(depth_images, None, kernel, smoothing, should_cancel,
+                                     thread_count=depth_threads)
             del depth_images
 
         if get_fusion(algorithm).resource_estimator:
