@@ -61,6 +61,46 @@ reported historical OpenFocus 82.1-s adapter run and HF9 approximately 15-s
 workflow used different generated stacks and stage boundaries, so they do not
 establish a same-input speed ratio. Avoid simultaneous benchmarks or tests.
 
+### Same-input OpenFocus B measurement
+
+Fresh Windows processes measured the same sixteen 4000×4000 uint16 TIFFs,
+in lexical filename order, with no alignment and thread limits of one or eight.
+The loader expands each grayscale frame to three channels (1.536 GB of decoded
+pixels). OpenCV native threads stayed at one. The baseline is `78942fb`; the
+final adapter measurement is `27e3c4a`, whose fusion implementation hashes are
+identical to the integrated `e6ca3aa` used for both pipeline measurements.
+The compiled runs used Python 3.10.19, NumPy 2.2.6, OpenCV 5.0.0, Numba 0.68.1
+and llvmlite 0.50.0. Each compiled run includes its first-use compilation.
+
+| Entry | Thread limit / active producers | First pass | Fusion | Measured stages total | Peak RSS |
+|---|---:|---:|---:|---:|---:|
+| Baseline adapter | 1 / 1 | not instrumented | 70.71 s | 75.93 s | 2.07 GiB |
+| Final adapter | 8 / 6 | 13.39 s | 33.04 s | 40.09 s | 3.59 GiB |
+| Final pipeline | 1 / 1 | 36.89 s | 98.98 s | 137.42 s | 4.02 GiB |
+| Final pipeline | 8 / 6 | 12.07 s | 75.00 s | 114.34 s | 6.01 GiB |
+
+The adapter's fusion stage is 2.14× faster than the baseline. In the final
+pipeline, admitting six producers instead of one makes the first pass 3.06×
+faster and the measured end-to-end stages 1.20× faster, at the higher resident
+memory shown above. Normalization and global reconstruction still contribute
+most of the pipeline time. These are single-run observations on one machine;
+available RAM can admit fewer producers.
+
+Both float32 working-pixel and uint16 exported-pixel SHA-256 hashes match
+exactly within each comparison pair. Adapter and pipeline outputs differ
+because only the latter applies pipeline exposure, sorting and base preparation.
+Totals cover the instrumented stages, including image writing, and exclude
+Python startup and the subsequent pixel-hash calculation.
+RSS is the harness's sampled peak.
+
+For a serial/parallel pipeline comparison, run the benchmark in separate
+processes against one unchanged source folder:
+
+```bash
+python tools/fusion_streaming_benchmark.py --source-dir STACK --method openfocus_b --entry pipeline --load-mode loader --threads 1 --output serial.tif --json-output serial.json
+python tools/fusion_streaming_benchmark.py --source-dir STACK --method openfocus_b --entry pipeline --load-mode loader --threads 8 --output parallel.tif --json-output parallel.json
+```
+
 ## Historical throughput (PyTorch CPU)
 
 | Case | Frames | Resolution | Path | Time | Notes |
