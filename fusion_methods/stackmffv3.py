@@ -16,13 +16,11 @@ applied to the three colour channels, exactly as in the reference code.
 
 The exported attention model is shipped in ``weights/``.
 """
-import os
 from contextlib import nullcontext
 import cv2
 import numpy as np
 
 from utils.image_utils import fuse_output_dtype
-from utils.sorting import natural_sort_key
 from fusion_methods import neural_common as common
 
 
@@ -192,46 +190,8 @@ def _stackmffv3_batch_impl(tiles_list, model_path, use_gpu, mode='soft',
 
 
 def _read_stack(input_source, img_resize, should_cancel=None, execution_plan=None):
-    """Load a directory or list into BGR frames, preserving the source depth."""
-    from core.resource_policy import probe_resources, require_memory
-    cap = execution_plan.ram_budget if execution_plan is not None else None
-    if isinstance(input_source, str):
-        from core.image_loader import admit_image_decode, decode_image
-        snapshot = probe_resources()
-        require_memory(1, snapshot, user_limit=cap)
-        exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
-                '.tif', '.tiff', '.bmp')
-        names = sorted(
-            (f for f in os.listdir(input_source)
-             if f.lower().endswith(exts)),
-            key=natural_sort_key)
-        frames = []
-        for name in names:
-            _cancel(should_cancel)
-            if frames:
-                require_memory(frames[0].nbytes, user_limit=cap)
-            path = os.path.join(input_source, name)
-            admit_image_decode(path, user_limit=cap)
-            img = decode_image(path, preserve_grayscale=True)
-            if img is None:
-                raise ValueError(f"Failed to read image: {path}")
-            if not frames:
-                require_memory(len(names) * img.nbytes, snapshot, user_limit=cap)
-            frames.append(img)
-    else:
-        frames = list(input_source)
-    if not frames:
-        raise ValueError("Empty image list")
-    if img_resize:
-        pixels = int(img_resize[0]) * int(img_resize[1])
-        require_memory(sum(pixels * (f.shape[2] if f.ndim == 3 else 1)
-                           * f.dtype.itemsize for f in frames), user_limit=cap)
-        resized = []
-        for frame in frames:
-            _cancel(should_cancel)
-            resized.append(cv2.resize(frame, img_resize))
-        frames = resized
-    return frames
+    """Load original pixels using the shared, frame-at-a-time mapped staging."""
+    return common.read_stack(input_source, img_resize, should_cancel, execution_plan)
 
 
 def _stackmffv3_impl(input_source, img_resize, model_path, use_gpu,

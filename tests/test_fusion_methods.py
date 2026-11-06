@@ -488,3 +488,77 @@ def test_v3_tiled_exposure_budget_excludes_full_stack_copy(monkeypatch):
     fusion.fuse(frames)
     full_copy = sum(frame.size * 4 for frame in frames)
     assert admitted and max(admitted) < full_copy
+
+
+@pytest.mark.parametrize('backend', ['shared', 'v3'])
+def test_neural_directory_resize_stages_one_frame_under_small_budget(tmp_path, backend):
+    from core.resource_policy import ExecutionPlan
+    from fusion_methods.neural_common import read_stack
+    if backend == 'v3':
+        from fusion_methods.stackmffv3 import _read_stack as read_stack
+
+    directory = tmp_path / '输入栈'
+    directory.mkdir()
+    expected = []
+    for index in range(8):
+        image = np.full((128, 128, 3), index * 257 + 5, np.uint16)
+        # imencode/tofile also works with non-ASCII Windows paths.
+        ok, encoded = cv2.imencode('.png', image)
+        assert ok
+        encoded.tofile(str(directory / f'frame{index}.png'))
+        expected.append(cv2.resize(image, (192, 192)))
+    # One source/resize workspace fits; all eight resized frames do not.
+    plan = ExecutionPlan(ram_budget=768 * 1024)
+    actual = read_stack(str(directory), (192, 192), execution_plan=plan)
+    assert len(actual) == len(expected)
+    for frame, reference in zip(actual, expected):
+        assert isinstance(frame, np.memmap)
+        np.testing.assert_array_equal(frame, reference)
+
+
+def test_dct_strip_reconstruction_keeps_mixed_source_assignment_casting():
+    from fusion_methods.dct import dct_focus_stack_fusion
+
+    # Every 8x8 block chooses the second (sharp) frame. A mixed direct backend
+    # call historically assigns its normalized float pixels into uint8 output;
+    # strip copying must preserve NumPy's assignment conversion, including the
+    # bottom/right block padding.
+    yy, xx = np.indices((257, 193))
+    pixels = np.where((yy + xx) % 2, 223, 27).astype(np.uint16) * 257 + 5
+    sharp = np.repeat(pixels[:, :, None], 3, axis=2)
+    blank = np.zeros(sharp.shape, np.uint8)
+    actual = dct_focus_stack_fusion([blank, sharp], kernel_size=1)
+    expected = (sharp.astype(np.float32) * (255.0 / 65535.0)).astype(np.uint8)
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('grayscale', [False, True])
+def test_v2_mapped_source_sampling_crosses_row_strip_boundary(grayscale):
+    from fusion_methods.stackmff_v2 import _sample
+
+    rng = np.random.default_rng(78)
+    shape = (257, 17) if grayscale else (257, 17, 3)
+    frames = [rng.uniform(0, 255, shape).astype(np.float32) for _ in range(3)]
+    index = rng.integers(0, len(frames), shape[:2], dtype=np.int64)
+    expected = np.empty(shape, np.float32)
+    for layer, frame in enumerate(frames):
+        expected[index == layer] = frame[index == layer]
+    actual = _sample(frames, index)
+    assert isinstance(actual, np.memmap)
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_neural_mapped_normalization_preserves_mixed_stack_precision():
+    from fusion_methods.neural_common import normalized_frames
+    from utils.image_utils import normalize_fuse_input
+
+    rng = np.random.default_rng(42)
+    frames = [rng.integers(0, 256, (129, 17, 3), np.uint8),
+              rng.integers(0, 65536, (129, 17, 3), np.uint16),
+              rng.uniform(0, 255, (129, 17, 3)).astype(np.float32)]
+    expected, _ = normalize_fuse_input(frames)
+    actual = normalized_frames(frames)
+    for mapped, reference in zip(actual, expected):
+        np.testing.assert_array_equal(mapped, reference)
+    assert isinstance(actual[0], np.memmap) and isinstance(actual[1], np.memmap)
+    assert actual[2] is frames[2]

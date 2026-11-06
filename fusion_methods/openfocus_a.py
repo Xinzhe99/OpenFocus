@@ -80,9 +80,14 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
         if frame.shape != output.shape:
             raise ValueError("OpenFocus A requires frames with matching shapes")
         response = _response(frame, levels, sigma, should_cancel, _check_cancel)
-        better = response > best
-        output[better] = frame[better]
-        best[better] = response[better]
+        for start in range(0, output.shape[0], 128):
+            _check_cancel(should_cancel)
+            rows = slice(start, min(output.shape[0], start + 128))
+            better = response[rows] > best[rows]
+            np.copyto(output[rows], frame[rows],
+                      where=better[:, :, None] if frame.ndim == 3 else better)
+            np.copyto(best[rows], response[rows], where=better)
+        del frame, response, better
 
     _check_cancel(should_cancel)
     np.clip(output, 0, 255, out=output)

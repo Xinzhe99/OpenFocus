@@ -108,10 +108,17 @@ def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
     if getattr(first, "ndim", 0) < 2:
         return 0
     h, w = first.shape[:2]
+    spec = get_fusion(algorithm)
+    estimates = {}
+    if spec.resource_estimator:
+        fixed, per_worker = resolve_runner(spec.resource_estimator)(
+            block_size or h, block_size or w,
+            resolve_fusion_parameters(algorithm), len(frames))
+        estimates = {'fixed_bytes': fixed, 'per_worker_bytes': per_worker}
     workload = Workload(
         algorithm=algorithm, frames=len(frames), height=h, width=w,
         channels=min(3, first.shape[2]) if first.ndim == 3 else 1,
-        itemsize=first.itemsize, block_size=block_size,
+        itemsize=first.itemsize, block_size=block_size, **estimates,
     )
     fixed, per_worker = estimate_working_set(workload)
     return fixed + max(1, int(workers)) * per_worker
@@ -144,22 +151,6 @@ def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
     return total_bytes > (tile_threshold ** 2) * 3
 
 
-# DTCWT keeps one float32 activity map per frame and level (a geometric
-# series summing to ~4/3 * H*W per frame). Splitting the image into tiles
-# changes each tile's transform boundary, which leaves a visible seam at the
-# block grid; tile only when the whole-image activity set would be large.
-DTCWT_ACTIVITY_BUDGET = 1200 * 1024 * 1024
-
-
-def _dtcwt_activity_bytes(frames) -> int:
-    if not frames:
-        return 0
-    first = frames[0]
-    if getattr(first, "ndim", 0) < 2:
-        return 0
-    h, w = first.shape[:2]
-    per_frame = h * w * (4.0 / 3.0) * np.dtype(np.float32).itemsize
-    return int(len(frames) * per_frame)
 
 
 def _ai_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
@@ -216,7 +207,8 @@ class MultiFocusFusion:
         self.use_gpu = bool(use_gpu)
         self._actual_device = None
         # Tile (tiled fusion) related instance-level settings
-        # 当图片最大边大于 tile_threshold 时，可在 tile_enabled 为 True 时启用分块融合
+        # OpenFocus A/B/C choose whole-image streaming by available RAM;
+        # an explicitly changed threshold remains a spatial cap.
         self.tile_enabled = bool(tile_enabled)
         self.tile_block_size = int(tile_block_size)
         self.tile_overlap = int(tile_overlap)
@@ -492,7 +484,7 @@ class MultiFocusFusion:
     def _validate_spatial_environment(self) -> None:
         """验证空间域融合依赖"""
         if self.use_gpu:
-            print("Note: Guided-filter fusion runs on CPU only; switching to CPU mode.")
+            print(f"Note: {self.descriptor.display_name} fusion runs on CPU only; switching to CPU mode.")
             self.use_gpu = False
 
     def _validate_ai_environment(self) -> None:
@@ -607,8 +599,18 @@ class MultiFocusFusion:
 
         h, w = first.shape[:2]
         spec = self.descriptor
+        height = max(h, img_resize[1]) if img_resize else h
+        width = max(w, img_resize[0]) if img_resize else w
         needs_tiles = (resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
-                       if spec.tile_decider else max(h, w) > self.tile_threshold)
+                       if spec.tile_decider else max(height, width) > self.tile_threshold)
+        if self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c') and img_resize:
+            fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
+            needs_tiles = needs_tiles or fixed + per_worker > memory_budget_bytes()
+        if self.algorithm == 'dtcwt':
+            # Activity selection is incremental; stack depth no longer makes
+            # an N-plane activity set. Respect the requested transform levels.
+            fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
+            needs_tiles = fixed + per_worker > memory_budget_bytes()
         deferred_exposure = (self.tile_enabled and needs_tiles
                              and isinstance(input_source, list)
                              and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
@@ -914,7 +916,9 @@ class MultiFocusFusion:
         Args:
             block_size: 分块大小（像素）
             overlap: 重叠大小（像素）
-            threshold: 启用分块判断的边长阈值（像素）
+            threshold: 边长阈值（像素）。OpenFocus A/B/C 的默认 2048
+                使用 RAM 预算自动选择整图；其他值额外限制整图边长。
+                DTCWT 始终按变换工作集预算选择，避免不必要的边界接缝。
         """
         if block_size is not None:
             self.tile_block_size = max(1, int(block_size))
@@ -1144,12 +1148,12 @@ class MultiFocusFusion:
             from core import resource_policy as policy
             from fusion_methods.openfocus_depth import depth_map
             from fusion_methods.openfocus_ab import _collect_images
-            # Retained source/depth planes use disk mappings.
-            source_bytes = 0
-            fixed, per_worker = policy.estimate_working_set(policy.Workload(
-                algorithm=algorithm, frames=num_images, height=h, width=w,
-                channels=channels, itemsize=np.dtype(src_dtype).itemsize))
-            policy.require_memory(source_bytes + fixed + per_worker,
+            # Global recurrences use mapped planes and bounded row scratch.
+            # Spatially tiling depth would alter the algorithm's context.
+            # Admit one prepared source and row scratch, rather than charging
+            # the full resident reconstruction envelope of method C here.
+            row_scratch = min(h, 128) * w * 256 + 4 * 1024 * 1024
+            policy.require_memory(h * w * channels * 8 + row_scratch,
                                   user_limit=memory_budget_bytes())
             directory_depth = imgs is None
             if directory_depth:
@@ -1175,21 +1179,20 @@ class MultiFocusFusion:
             del depth_images
 
         if get_fusion(algorithm).resource_estimator:
-            # Each tile is fused with a serial inner plan, so the parent's
-            # concurrency cost is one tile's DTCWT working set — not the whole
-            # image's. The parent already holds the lease; admission here only
-            # decides how many tiles may run at once.
+            # Each serial tile owns both the backend's fixed maps and worker
+            # scratch. Charge their sum per concurrent tile; none of those
+            # backend-local accumulators is shared between tile calls.
             from core import resource_policy as policy
             fixed, per_worker = resolve_runner(get_fusion(algorithm).resource_estimator)(
                 block_size, block_size, kwargs, num_images)
-            acc_bytes = 0  # Full output accumulators are disk-backed.
+            # Full-image output accumulators are disk-backed and reduced in strips.
             plan = policy.plan_execution(
                 policy.Workload(
                     algorithm=algorithm, frames=num_images, height=h, width=w,
                     channels=channels, block_size=block_size,
                     itemsize=np.dtype(src_dtype).itemsize,
-                    fixed_bytes=fixed + acc_bytes + 2 * acc_bytes,
-                    per_worker_bytes=per_worker,
+                    fixed_bytes=0,
+                    per_worker_bytes=fixed + per_worker,
                     outer_tasks=len(tile_coords)),
                 preference=self.resource_preference,
                 user_threads=thread_count,
