@@ -244,3 +244,53 @@ def test_downsized_frame_workers_charge_full_uint16_conversion(monkeypatch):
         physical_cores=8, logical_cpus=16))
     monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: fixed + 2 * conversion)
     assert _frame_pass_workers([source] * 16, (100, 100), 'openfocus_a', 8) == 2
+
+
+@pytest.mark.parametrize('method', ['guided_filter', 'gfgfgf', 'dct',
+                                   'openfocus_a', 'openfocus_b', 'openfocus_c'])
+def test_opaque_bgra_tiles_do_not_retain_a_heap_colour_stack(monkeypatch, method):
+    import cv2
+    import weakref
+    from core import multi_focus_fusion as mff
+
+    rng = np.random.default_rng(623)
+    rgba = [np.concatenate((rng.integers(0, 256, (33, 41, 3), np.uint8),
+                            np.full((33, 41, 1), 255, np.uint8)), axis=2) for _ in range(12)]
+    bgr = [frame[:, :, :3].copy() for frame in rgba]
+    original = cv2.cvtColor
+    results = []
+    peak_heap = conversions = 0
+
+    def convert(image, code, *args, **kwargs):
+        nonlocal peak_heap, conversions
+        result = original(image, code, *args, **kwargs)
+        if code == cv2.COLOR_BGRA2BGR and image.shape[2] == 4:
+            conversions += 1
+            results.append(weakref.ref(result))
+            peak_heap = max(peak_heap, sum(
+                ref() is not None and not isinstance(ref(), np.memmap) for ref in results))
+        return result
+
+    monkeypatch.setattr(cv2, 'cvtColor', convert)
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 8 * 1024 ** 2)
+    options = dict(algorithm=method, tile_threshold=16, tile_block_size=32,
+                   tile_overlap=8, exposure_match=False)
+    actual = mff.MultiFocusFusion(**options).fuse(rgba, thread_count=1)
+    expected = mff.MultiFocusFusion(**options).fuse(bgr, thread_count=1)
+    assert conversions >= len(rgba)
+    assert peak_heap <= 1
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('method', ['guided_filter', 'gfgfgf'])
+def test_resized_tile_sources_are_admitted_before_resize(monkeypatch, method):
+    import cv2
+    from core import multi_focus_fusion as mff, resource_policy as policy
+
+    frames = [np.full((33, 47, 3), value, np.uint16) for value in (18000, 32000)]
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 1024 * 1024)
+    def unexpected_resize(*args, **kwargs):
+        raise AssertionError('Full resized allocation preceded admission')
+    monkeypatch.setattr(cv2, 'resize', unexpected_resize)
+    with pytest.raises(policy.ResourceLimitError):
+        mff.MultiFocusFusion(method).fuse(frames, img_resize=(2052, 129), thread_count=1)
