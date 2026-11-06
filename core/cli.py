@@ -26,6 +26,7 @@ import numpy as np
 from typing import List, Optional, Tuple
 
 from utils.sorting import natural_sort_key
+from utils.path_identity import file_identity, path_key
 from core.resource_policy import heavy_job, require_memory
 
 from core.algorithms import (fusion_algorithms, registration_algorithms, get_fusion,
@@ -791,19 +792,135 @@ def _extra_out_path(value, fused_out: str, suffix: str, ext: Optional[str] = Non
     return stem + suffix + (fused_ext if ext is None else ext)
 
 
-def _background_out_paths(args, fused_out: str) -> List[str]:
-    """Every extra file --auto-background will write for `fused_out`."""
-    paths = []
+def _background_outputs(args, fused_out: str):
+    """(flag, path) for every extra file --auto-background writes for `fused_out`."""
+    outputs = []
     if getattr(args, "save_stacked", None):
-        paths.append(_extra_out_path(args.save_stacked, fused_out, "_stacked"))
+        outputs.append(("--save-stacked",
+                        _extra_out_path(args.save_stacked, fused_out, "_stacked")))
     if getattr(args, "missing_data_map", None):
         overlay = _extra_out_path(args.missing_data_map, fused_out, "_missing", ".png")
         import dataclasses
         from core.background_fill import MissingData
         stem = overlay[:-4]
-        paths += [overlay] + [f"{stem}-{field.name}.png"
-                              for field in dataclasses.fields(MissingData)]
-    return paths
+        outputs.append(("--missing-data-map", overlay))
+        outputs += [(f"--missing-data-map ({field.name} mask)", f"{stem}-{field.name}.png")
+                    for field in dataclasses.fields(MissingData)]
+    return outputs
+
+
+def _background_out_paths(args, fused_out: str) -> List[str]:
+    """Every extra file --auto-background will write for `fused_out`."""
+    return [path for _flag, path in _background_outputs(args, fused_out)]
+
+
+def _result_outputs(args, fused_out: str):
+    """(flag, path) for every file one result run writes for `fused_out`."""
+    outputs = [("--output", fused_out)]
+    if getattr(args, "depth_map", None):
+        outputs.append(("--depth-map", _depth_out_path(args, fused_out)))
+    if getattr(args, "auto_background", None):
+        outputs += _background_outputs(args, fused_out)
+    return outputs
+
+
+def _run_outputs(args, fused_out: str):
+    """`_result_outputs` plus the run-wide JSON summary and alignment report."""
+    outputs = _result_outputs(args, fused_out)
+    for flag, path in (("--json", getattr(args, "json", None)),
+                       ("--alignment-report", getattr(args, "alignment_report", None))):
+        if path:
+            outputs.append((flag, path))
+    return outputs
+
+
+def _first_duplicate(outputs):
+    """The first (path, flag, earlier flag) whose file an earlier entry claims.
+
+    Two names for one file (a hard link, a symlinked directory, Windows
+    case/8.3 aliases) count as one destination, as in
+    `utils.path_identity.same_path`."""
+    seen_paths, seen_files = {}, {}
+    for flag, path in outputs:
+        if not path:
+            continue
+        key = path_key(path)
+        if key in seen_paths:
+            return path, flag, seen_paths[key][0]
+        seen_paths[key] = (flag, path)
+        identity = file_identity(path)
+        if identity is None:
+            continue
+        if identity in seen_files:
+            return path, flag, seen_files[identity][0]
+        seen_files[identity] = (flag, path)
+    return None
+
+
+def _input_key_sets(candidates):
+    """(path keys, file identities) for inputs no output may overwrite."""
+    keys, identities = set(), set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        keys.add(path_key(candidate))
+        identity = file_identity(candidate)
+        if identity is not None:
+            identities.add(identity)
+    return keys, identities
+
+
+def _first_input_overlap(outputs, keys, identities):
+    """The first (flag, path) planned output that would overwrite an input."""
+    for flag, path in outputs:
+        if not path:
+            continue
+        if path_key(path) in keys or file_identity(path) in identities:
+            return flag, path
+    return None
+
+
+def _output_over_inputs(args, fused_out: str, paths):
+    """The first (flag, path) planned output that would overwrite an input."""
+    entries = [entry for entry in (getattr(args, "input", None) or ())
+               if isinstance(entry, str) and os.path.isfile(entry)]
+    keys, identities = _input_key_sets([
+        *paths,
+        getattr(args, "dust_map", None),
+        getattr(args, "defect_mask_path", None),
+        getattr(args, "config", None),
+        *entries,
+    ])
+    return _first_input_overlap(_run_outputs(args, fused_out), keys, identities)
+
+
+def _batch_inputs(args, folders, loader):
+    """(path keys, file identities) for every file a batch run reads.
+
+    Listing reads directory entries only -- no pixel decode -- and applies
+    each folder's own --config and dust/defect filters, exactly as the run
+    will, so the keys cover the frames that are actually loaded."""
+    candidates = [getattr(args, "config", None)]
+    for folder in folders:
+        name = os.path.basename(folder.rstrip("/\\")) or "stack"
+        folder_args, _override = _folder_run_args(args, folder, name)
+        paths = _filter_stack_paths(_list_folder_images(folder, loader), folder_args.dust_map)
+        paths = _filter_stack_paths(paths, getattr(folder_args, "defect_mask_path", None))
+        candidates += paths
+        candidates.append(getattr(folder_args, "dust_map", None))
+        candidates.append(getattr(folder_args, "defect_mask_path", None))
+    candidates += [entry for entry in (getattr(args, "input", None) or ())
+                   if isinstance(entry, str) and os.path.isfile(entry)]
+    return _input_key_sets(candidates)
+
+
+def _folder_run_args(args, folder: str, name: str):
+    """The namespace one batch folder runs with (per-folder --config merge)."""
+    overrides = getattr(args, "_folder_overrides", None) or {}
+    override = overrides.get(name) or overrides.get(folder)
+    if not override:
+        return args, None
+    return argparse.Namespace(**{**vars(args), **override}), override
 
 
 def _auto_background(args, fused):
@@ -926,7 +1043,6 @@ def _save(path: str, fused, scale_cfg=None, icc_profile=b"") -> None:
 
 def _run_batch(args, _emit_json=None) -> int:
     """Batch mode: fuse every input folder into --output-dir."""
-    import argparse
     from core.image_loader import ImageStackLoader
 
     loader = ImageStackLoader()
@@ -940,16 +1056,43 @@ def _run_batch(args, _emit_json=None) -> int:
     if args.output:
         print(f"warning: --output is ignored in batch mode (using --output-dir)", file=sys.stderr)
 
-    # Duplicate basenames would silently overwrite each other
-    seen, duplicates = set(), False
+    # Every file the batch will write -- each folder's result, depth map and
+    # background extras (one mask per missing-data class included), plus the
+    # run-wide JSON summary -- planned before the first write.  Folder names
+    # only decide the main path, so one folder's sidecar can land on another
+    # folder's result, and a config can change which sidecars a folder writes.
+    planned = []
     for folder in folders:
         name = os.path.basename(folder.rstrip("/\\")) or "stack"
-        if name in seen:
-            duplicates = True
-            print(f"error: duplicate folder name '{name}' would overwrite results; "
-                  f"rename the folders or fuse them individually", file=sys.stderr)
-        seen.add(name)
-    if duplicates:
+        folder_args, _override = _folder_run_args(args, folder, name)
+        out_path = os.path.join(args.output_dir, f"{name}{args._batch_ext}")
+        planned += _result_outputs(folder_args, out_path)
+    for flag, path in (("--json", args.json), ("--alignment-report", args.alignment_report)):
+        if path:
+            planned.append((flag, path))
+    duplicate = _first_duplicate(planned)
+    if duplicate is not None:
+        path, flag, earlier = duplicate
+        if flag == earlier:
+            print(f"error: two folders would write to {path}; "
+                  f"rename one of them or choose another --output-dir", file=sys.stderr)
+        else:
+            print(f"error: {path} would be written twice ({earlier} and {flag}); "
+                  f"rename the folder or choose another --output-dir", file=sys.stderr)
+        return EXIT_USAGE
+    # An output may not replace a frame, the dust or defect reference, or the
+    # config in any folder.  Nothing is written (not even the output dir)
+    # until this holds; if the inputs cannot be listed, refuse the run rather
+    # than write without the guarantee.
+    try:
+        input_keys, input_files = _batch_inputs(args, folders, loader)
+    except Exception as exc:  # noqa: BLE001 - refuse rather than write blind
+        print(f"error: cannot list the batch inputs: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    overlap = _first_input_overlap(planned, input_keys, input_files)
+    if overlap is not None:
+        flag, path = overlap
+        print(f"error: {flag} would overwrite an input image: {path}", file=sys.stderr)
         return EXIT_USAGE
     if not args.dry_run:
         os.makedirs(args.output_dir, exist_ok=True)
@@ -960,10 +1103,14 @@ def _run_batch(args, _emit_json=None) -> int:
     for i, folder in enumerate(folders):
         name = os.path.basename(folder.rstrip("/\\")) or "stack"
         out_path = os.path.join(args.output_dir, f"{name}{args._batch_ext}")
-        if (folder_args_mask_conflict(args, out_path) or
-                (args.depth_map and folder_args_mask_conflict(args, _depth_out_path(args, out_path)))
-                or (args.auto_background and any(folder_args_mask_conflict(args, path)
-                                                 for path in _background_out_paths(args, out_path)))):
+        # Per-folder overrides from --config, keyed by folder name or path.
+        folder_args, override = _folder_run_args(args, folder, name)
+        if (folder_args_mask_conflict(folder_args, out_path) or
+                (folder_args.depth_map and folder_args_mask_conflict(
+                    folder_args, _depth_out_path(folder_args, out_path)))
+                or (folder_args.auto_background and any(
+                    folder_args_mask_conflict(folder_args, path)
+                    for path in _background_out_paths(folder_args, out_path)))):
             print(f"error: output would overwrite defect mask: {out_path}", file=sys.stderr)
             failures.append(name)
             continue
@@ -977,12 +1124,7 @@ def _run_batch(args, _emit_json=None) -> int:
             ok_count += 1
             continue
 
-        # Per-folder overrides from --config, keyed by folder name or path.
-        folder_args = args
-        override = (args._folder_overrides or {}).get(name) \
-            or (args._folder_overrides or {}).get(folder)
         if override:
-            folder_args = argparse.Namespace(**{**vars(args), **override})
             applied = ", ".join(f"{k}={v}" for k, v in override.items())
             _say(f"config override: {applied}")
 
@@ -1383,15 +1525,18 @@ def _run_cli_admitted(argv: List[str]) -> int:
             print(f"error: --save-stacked: unsupported extension; expected one of "
                   f"{', '.join(VALID_FORMATS)}", file=sys.stderr)
             return EXIT_USAGE
-        if args.output and not args.output_dir:
-            extra = _background_out_paths(args, args.output)
-            for index, path in enumerate(extra):
-                same = [other for other in [args.output, *extra[:index]]
-                        if os.path.normcase(os.path.abspath(other))
-                        == os.path.normcase(os.path.abspath(path))]
-                if same:
-                    print(f"error: two outputs would be written to {path}", file=sys.stderr)
-                    return EXIT_USAGE
+
+    if args.output and not args.output_dir:
+        # One single-stack run writes the result, its depth map, the background
+        # extras (one mask per missing-data class included), the JSON summary
+        # and the alignment report.  Two of those may not share a path: the
+        # later write would silently replace the earlier one.
+        duplicate = _first_duplicate(_run_outputs(args, args.output))
+        if duplicate is not None:
+            path, flag, earlier = duplicate
+            print(f"error: {path} would be written twice ({earlier} and {flag}); "
+                  f"choose different paths", file=sys.stderr)
+            return EXIT_USAGE
 
     # Per-folder overrides (--config) are batch-only; load once here so a bad
     # file is a usage error instead of a mid-run failure.
@@ -1538,6 +1683,14 @@ def _run_cli_admitted(argv: List[str]) -> int:
         # Video inputs are unpacked to a temp dir that is always cleaned up
         with tempfile.TemporaryDirectory(prefix="openfocus_video_", dir=storage_directory()) as video_temp:
             _src, paths = _resolve_stack(args, video_temp)
+            # No output may replace one of the frames it is made from (or the
+            # dust/defect inputs); checked before load, fusion and any write.
+            overlap = _output_over_inputs(args, args.output, paths)
+            if overlap is not None:
+                flag, path = overlap
+                print(f"error: {flag} would overwrite an input image: {path}",
+                      file=sys.stderr)
+                return EXIT_USAGE
             if args.alignment_report:
                 _validate_alignment_report_path(args, paths)
             _say(f"Loaded {len(paths)} image(s) from {_src}")
