@@ -39,6 +39,39 @@ def _capture(worker):
     return results, errors
 
 
+@pytest.mark.parametrize('cancel_waiter', [False, True])
+def test_render_reports_waiting_until_lease_and_never_prepares_after_cancel(monkeypatch, cancel_waiter):
+    from core.resource_policy import heavy_job
+
+    worker = _render(_frames())
+    waiting, admitted, finished = Event(), Event(), Event()
+    stages = []
+
+    def stage(value):
+        stages.append(value)
+        if value == 'waiting':
+            waiting.set()
+
+    worker.stage_signal.connect(stage, Qt.ConnectionType.DirectConnection)
+    worker.finished.connect(finished.set, Qt.ConnectionType.DirectConnection)
+    monkeypatch.setattr(worker, '_run_admitted', admitted.set)
+    try:
+        with heavy_job():
+            worker.start()
+            assert waiting.wait(5)
+            assert stages == ['waiting'] and not admitted.is_set()
+            if cancel_waiter:
+                worker.cancel()
+                assert finished.wait(5)
+        assert finished.wait(5)
+        assert worker.wait(5000)
+    finally:
+        worker.cancel()
+        worker.wait(5000)
+    assert stages == (['waiting'] if cancel_waiter else ['waiting', 'prepare'])
+    assert admitted.is_set() is (not cancel_waiter)
+
+
 @pytest.mark.parametrize("cancel_waiter", [False, True])
 def test_stack_load_waits_for_active_render_and_can_cancel(tmp_path, cancel_waiter):
     from core.image_loader import ImageStackLoader

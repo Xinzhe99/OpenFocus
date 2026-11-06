@@ -45,6 +45,28 @@ def test_switching_directories_preserves_existing_mapping(tmp_path):
     assert frame_storage.storage_directory() == frame_storage.tempfile.gettempdir()
 
 
+@pytest.mark.parametrize('layout', ['crop', 'transpose', 'reverse'])
+def test_stored_frame_preserves_strides_pixels_and_live_views(tmp_path, layout):
+    frame_storage.configure_storage_directory(tmp_path)
+    source = np.arange(21 * 27 * 3, dtype=np.uint16).reshape(21, 27, 3)
+    pixels = {'crop': source[2:-2, 3:-3],
+              'transpose': source.transpose(1, 0, 2),
+              'reverse': source[::-1, ::-1]}[layout]
+    mapped = frame_storage.store_frame(pixels)
+    path = mapped.filename
+    np.testing.assert_array_equal(mapped, pixels)
+    assert mapped.dtype == pixels.dtype
+    view = mapped[1:-1, 1:-1]
+    expected = pixels[1:-1, 1:-1].copy()
+    del mapped
+    gc.collect()
+    assert os.path.exists(path)
+    np.testing.assert_array_equal(view, expected)
+    del view
+    gc.collect()
+    assert not os.path.exists(path)
+
+
 def test_invalid_directory_keeps_previous_configuration(monkeypatch, tmp_path):
     frame_storage.configure_storage_directory(tmp_path)
     with pytest.raises(OSError):
