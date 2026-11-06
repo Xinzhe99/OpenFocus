@@ -744,8 +744,11 @@ class ImageStackLoader:
                 return False, trans.t("linear_raw_invalid"), [], []
 
             try:
-                image = scan_source(path, scale_factor, linear=True, header_only=True)[0]
+                image = scan_source(path, scale_factor, linear=True, header_only=True,
+                                    should_cancel=self.should_cancel)[0]
                 profile = image.linear_metadata
+            except InterruptedError:
+                return False, 'CANCELLED', [], []
             except MemoryError:
                 raise
             except Exception as exc:
@@ -764,7 +767,10 @@ class ImageStackLoader:
             images.append(image)
             if self.progress_callback is not None:
                 self.progress_callback(index + 1, len(paths))
-        ensure_preview(images[0])
+        try:
+            ensure_preview(images[0], should_cancel=self.should_cancel)
+        except InterruptedError:
+            return False, 'CANCELLED', [], []
         if self.should_cancel():
             return False, 'CANCELLED', [], []
         self.images = images
@@ -888,7 +894,8 @@ class ImageStackLoader:
             if self.should_cancel():
                 raise _DecodeCancelled()
             try:
-                return scan_source(path, scale_factor, header_only=True), None
+                return scan_source(path, scale_factor, header_only=True,
+                                   should_cancel=self.should_cancel), None
             except Exception as exc:
                 return [], exc
         if self.progress_callback is not None:
@@ -903,6 +910,8 @@ class ImageStackLoader:
                             raise _DecodeCancelled()
                         frames, error = result
                         if error is not None:
+                            if isinstance(error, InterruptedError):
+                                return False, 'CANCELLED', [], []
                             if isinstance(error, UnsupportedTransparency):
                                 from locales import trans
                                 return False, trans.t('transparent_desktop_unsupported').format(path=path), [], []
@@ -928,7 +937,9 @@ class ImageStackLoader:
         if self.should_cancel():
             return False, 'CANCELLED', [], []
         try:
-            ensure_preview(images[0])
+            ensure_preview(images[0], should_cancel=self.should_cancel)
+        except InterruptedError:
+            return False, 'CANCELLED', [], []
         except UnsupportedTransparency:
             from locales import trans
             return False, trans.t('transparent_desktop_unsupported').format(path=images[0].path), [], []
