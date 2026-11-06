@@ -9,6 +9,7 @@ import sys
 import threading
 import urllib.request
 from typing import Callable, Optional, Tuple
+from utils.release_notes import LANGUAGES, RELEASE_NOTES, localized_bodies
 
 RELEASES_API_URL = "https://openfocus.top/api/updates"
 RELEASES_PAGE_URL = "https://openfocus.top/#download"
@@ -121,7 +122,7 @@ def _md_to_plain(md: str) -> str:
             continue
         line = re.sub(r"^\s{0,3}#{1,6}\s*", "", line)   # ATX headings
         line = re.sub(r"`{1,3}([^`]*)`{1,3}", r"\1", line)  # inline code
-        line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)  # links
+        line = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", r"\1 (\2)", line)
         line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)        # bold
         line = re.sub(r"__([^_]+)__", r"\1", line)            # bold (alt)
         line = re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)", r"\1", line)  # italic
@@ -144,43 +145,94 @@ def _api_get(url: str, timeout: int = REQUEST_TIMEOUT_S) -> Optional[dict]:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _note_version(tag: str) -> tuple:
+    version = parse_version(tag) or ()
+    while len(version) > 1 and version[-1] == 0:
+        version = version[:-1]
+    return version
+
+
+def release_note_entries(current_version: str, latest_tag: str, releases,
+                         max_releases: int = 10) -> list:
+    """Keep bounded, sorted language-neutral notes for later UI selection.
+
+    The mirror may contain explicit ``body_i18n`` dictionaries or GitHub
+    language blocks. Bundled translations cover the current shipped release
+    even when an older mirror still has only its English GitHub body.
+    """
+    if not parse_version(latest_tag) or max_releases <= 0:
+        return []
+    candidates = {}
+    bundled_by_version = {_note_version(version): bodies
+                          for version, bodies in RELEASE_NOTES.items()}
+    for item in releases if isinstance(releases, list) else []:
+        if not isinstance(item, dict):
+            continue
+        tag = item.get("tag_name")
+        if not isinstance(tag, str) or not re.fullmatch(r"[vV]?[0-9]+(?:\.[0-9]+)*", tag):
+            continue
+        if ((parse_version(current_version) and not is_newer(tag, current_version))
+                or is_newer(tag, latest_tag)):
+            continue
+        body = item.get("body", "")
+        body = body if isinstance(body, str) else ""
+        translations = localized_bodies(body)
+        supplied = item.get("body_i18n")
+        if isinstance(supplied, dict):
+            translations.update({lang: text.strip() for lang, text in supplied.items()
+                                 if lang in LANGUAGES and isinstance(text, str)
+                                 and text.strip()})
+        bundled = bundled_by_version.get(_note_version(tag), {})
+        translations = {**bundled, **translations}
+        # Never expose other languages' blocks as the legacy fallback body.
+        if localized_bodies(body):
+            body = translations.get("en", "")
+        entry = {"tag_name": tag, "body": body.strip()[:12000],
+                 "body_i18n": {lang: text[:12000]
+                               for lang, text in translations.items()}}
+        key = _note_version(tag)
+        if entry["body"] or entry["body_i18n"]:
+            candidates.setdefault(key, entry)
+    for version, translations in RELEASE_NOTES.items():
+        if ((parse_version(current_version) and not is_newer(version, current_version))
+                or is_newer(version, latest_tag)):
+            continue
+        key = _note_version(version)
+        candidates.setdefault(key, {"tag_name": "v" + version, "body": "",
+                                    "body_i18n": dict(translations)})
+    return [candidates[key] for key in sorted(candidates, reverse=True)
+            if candidates[key]["body"] or candidates[key]["body_i18n"]][:max_releases]
+
+
+def format_release_notes(current_version: str, latest_tag: str, releases,
+                         language: str = "en", max_releases: int = 10) -> str:
+    """Render retained release data without network access or Qt imports."""
+    language = str(language).lower().replace("-", "_").split("_")[0]
+    blocks = []
+    for item in release_note_entries(current_version, latest_tag, releases, max_releases):
+        bodies = item["body_i18n"]
+        body = bodies.get(language) or bodies.get("en") or item["body"]
+        if body:
+            source = "https://github.com/Xinzhe99/OpenFocus/releases/tag/v" + item["tag_name"].lstrip("vV")
+            blocks.append(item["tag_name"].lstrip("vV") + "\n" + source
+                          + "\n\n" + _md_to_plain(body))
+    return "\n\n".join(blocks)[:12000]
+
+
 def fetch_release_notes(current_version: str, latest_tag: str,
                         max_releases: int = 10, timeout: int = 3,
-                        releases=None) -> str:
-    """Format notes newer than the installed version, through ``latest_tag``.
-
-    A caller with the mirror manifest passes its releases to avoid a second
-    network request; standalone callers can fetch them with a bounded timeout.
-    """
-    latest = parse_version(latest_tag) or ()
-    if not latest:
+                        releases=None, language: str = "en") -> str:
+    """Fetch if necessary, then select actual text in the requested language."""
+    if not parse_version(latest_tag) or max_releases <= 0:
         return ""
-    current = parse_version(current_version) or ()
     if releases is None:
         try:
             data = _api_get(RELEASES_API_URL, timeout)
         except Exception:
             return ""
         releases = data.get("releases", []) if isinstance(data, dict) else []
-    blocks = []
-    for item in releases if isinstance(releases, list) else []:
-        if not isinstance(item, dict):
-            continue
-        tag = str(item.get("tag_name", "")).strip()
-        ver = parse_version(tag)
-        if not tag or not ver:
-            continue
-        if current and ver <= current:
-            continue
-        if latest and ver > latest:
-            continue
-        body = str(item.get("body", "") or "").strip()
-        if not body:
-            continue
-        blocks.append("## " + tag.lstrip("vV") + "\n\n" + _md_to_plain(body))
-        if len(blocks) >= max_releases:
-            break
-    return ("\n\n".join(blocks))[:12000]
+    return format_release_notes(current_version, latest_tag, releases,
+                                language, max_releases)
 
 
 class DownloadCancelled(Exception):
@@ -307,7 +359,7 @@ def check_async(current_version: str, on_result: Callable[..., None], quiet: boo
     something to install).
 
     For an update the callback also receives the mirror ZIP and installer
-    URLs, the ZIP's SHA-256 digest, and the notes between installed and latest.
+    URLs, the ZIP's SHA-256 digest, and language-neutral release-note entries.
     """
 
     def worker():
@@ -319,11 +371,7 @@ def check_async(current_version: str, on_result: Callable[..., None], quiet: boo
             zip_url = (portable_zip or {}).get("url", "")
             zip_digest = (portable_zip or {}).get("digest", "")
             if ok and is_newer(tag, current_version):
-                notes = ""
-                try:
-                    notes = fetch_release_notes(current_version, tag, releases=releases)
-                except Exception:
-                    notes = ""
+                notes = release_note_entries(current_version, tag, releases)
                 on_result("update", tag, url, zip_url, setup_url, zip_digest,
                           notes)
             elif not quiet:

@@ -15,6 +15,7 @@ Behaviour (modelled on the update flow of modern desktop tools):
   and restarts the app, which restores the project ([utils.recovery]).
 """
 import os
+import json
 import sys
 
 from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal, pyqtSlot
@@ -39,6 +40,7 @@ STATE_CANCELLED = "cancelled"
 AUTO_DOWNLOAD_KEY = "updates/auto_download"
 LATEST_TAG_KEY = "updates/latest_tag"
 LATEST_URL_KEY = "updates/latest_zip_url"
+NOTES_CACHE_KEY = "updates/release_notes"
 CHECK_INTERVAL_S = 24 * 3600
 IDLE_DELAY_MS = 6000      # first idle download attempt after startup
 IDLE_RETRY_MS = 30000     # ... and how often to retry while the app is busy
@@ -116,13 +118,14 @@ class UpdateManager(QObject):
     state_changed = pyqtSignal(str, str, int)
     # state, tag, page_url, zip_url, setup_url  (state follows updater.check_async)
     check_finished = pyqtSignal(str, str, str, str, str)
+    notes_changed = pyqtSignal(str)
     # title, message — already localized; only for user-initiated actions
     error = pyqtSignal(str, str)
     # the install directory needs elevation: send the user to the releases page
     manual_download_needed = pyqtSignal()
     # the swap script is running: the window closes and the new build starts
     restart_requested = pyqtSignal()
-    _check_result = pyqtSignal(str, str, str, str, str, str, str)
+    _check_result = pyqtSignal(str, str, str, str, str, str, object)
 
     def __init__(self, window):
         # Duck-typed hosts (tests bind the update helpers onto a bare widget
@@ -136,8 +139,9 @@ class UpdateManager(QObject):
         self.zip_url = ""
         self.setup_url = ""
         self.zip_digest = ""
-        # plain-text release notes for every version between installed and latest
-        self.notes = ""
+        # Retain language-neutral data, never text frozen to the fetch language.
+        self._note_entries = []
+        self._notes_tag = ""
         self._download = None
         self._stage = None
         self._manual = False
@@ -151,6 +155,9 @@ class UpdateManager(QObject):
         self._idle_timer.setSingleShot(True)
         self._idle_timer.timeout.connect(self._maybe_idle_download)
         self._load_settings()
+        self._load_note_cache()
+        from locales import trans
+        trans.languageChanged.connect(self._emit_notes_changed)
 
     def _fail(self, message_key: str, detail: str = "") -> None:
         from locales import trans
@@ -196,6 +203,37 @@ class UpdateManager(QObject):
     def manual_check(self) -> bool:
         """True when the user (not the startup timer) asked for the check."""
         return self._manual
+
+    @property
+    def notes(self) -> str:
+        """Select the current UI language at display time, including offline."""
+        from constants import APP_VERSION
+        from locales import trans
+        from utils.updater import format_release_notes
+        return format_release_notes(APP_VERSION, self._notes_tag,
+                                    self._note_entries, trans.current_lang)
+
+    def _emit_notes_changed(self) -> None:
+        self.notes_changed.emit(self.notes)
+
+    def _load_note_cache(self) -> None:
+        try:
+            from constants import APP_VERSION
+            from utils.settings_store import get_settings
+            from utils.updater import release_note_entries
+            raw = get_settings().value(NOTES_CACHE_KEY, "")
+            if not isinstance(raw, str) or len(raw) > 2_000_000:
+                return
+            cached = json.loads(raw)
+            if not isinstance(cached, dict) or not isinstance(cached.get("tag"), str):
+                return
+            self._note_entries = release_note_entries(
+                APP_VERSION, cached["tag"], cached.get("releases", []))
+            self._notes_tag = cached["tag"]
+        except Exception:
+            # Missing/corrupt cached notes must never prevent an offline update.
+            pass
+
 
     def is_busy(self) -> bool:
         for thread in (self._download, self._stage):
@@ -342,16 +380,16 @@ class UpdateManager(QObject):
                 self._set_state(STATE_CHECKING, self.tag, 0)
 
         def done(state, tag, url, zip_url="", setup_url="", zip_digest="",
-                 notes=""):
+                 notes=None):
             self._check_result.emit(state, tag, url, zip_url, setup_url,
                                     zip_digest, notes)
 
         self._checking = True
         updater.check_async(APP_VERSION, done, quiet=False)
 
-    @pyqtSlot(str, str, str, str, str, str, str)
+    @pyqtSlot(str, str, str, str, str, str, object)
     def _on_check_result(self, state, tag, page_url, zip_url="", setup_url="",
-                         zip_digest="", notes=""):
+                         zip_digest="", notes=None):
         self._checking = False
         if (getattr(self, "_shutting_down", False)
                 or getattr(self._window, "_shutting_down", False)):
@@ -369,12 +407,18 @@ class UpdateManager(QObject):
         self.zip_url = zip_url
         self.setup_url = setup_url
         self.tag = tag
-        self.notes = notes
+        from constants import APP_VERSION
+        from utils.updater import release_note_entries
+        self._note_entries = release_note_entries(APP_VERSION, tag, notes)
+        self._notes_tag = tag
+        self._emit_notes_changed()
         self.zip_digest = zip_digest
         try:
             from utils.settings_store import get_settings
             settings = get_settings()
             settings.setValue(LATEST_TAG_KEY, tag)
+            settings.setValue(NOTES_CACHE_KEY, json.dumps(
+                {"tag": tag, "releases": self._note_entries}, ensure_ascii=False))
             if self.zip_url:
                 settings.setValue(LATEST_URL_KEY, self.zip_url)
         except Exception:

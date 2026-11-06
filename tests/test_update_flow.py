@@ -181,10 +181,9 @@ class TestReleaseNotes:
 
         def fake_latest():
             return True, "v1.49", "http://page", None, {
-                "url": "http://zip", "digest": "sha256:ab"}, []
+                "url": "http://zip", "digest": "sha256:ab"}, [
+                    {"tag_name": "v1.49", "body": "NOTES-TEXT"}]
         monkeypatch.setattr(updater, "fetch_latest_release", fake_latest)
-        monkeypatch.setattr(updater, "fetch_release_notes",
-                            lambda cur, latest, **kwargs: "NOTES-TEXT")
         updater.check_async("1.47",
                             lambda *a: seen.__setitem__("r", a))
         for _ in range(200):
@@ -192,7 +191,7 @@ class TestReleaseNotes:
                 break
             threading.Event().wait(0.01)
         assert seen["r"][0] == "update"
-        assert seen["r"][-1] == "NOTES-TEXT"
+        assert "NOTES-TEXT" in updater.format_release_notes("1.47", "v1.49", seen["r"][-1])
 
 
 class TestStagedReuse:

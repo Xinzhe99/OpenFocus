@@ -127,7 +127,7 @@ def test_update_check_uses_notes_from_the_same_manifest(monkeypatch):
     check_async("9.0", lambda *args: seen.append(args))
     _wait_for(seen)
     assert seen[0][0] == "update"
-    assert "Improved output" in seen[0][6]
+    assert "Improved output" in updater.format_release_notes("9.0", "v9.9", seen[0][6])
     assert calls == [updater.RELEASES_API_URL]
 
 
@@ -142,17 +142,17 @@ class TestCheckAsyncContract:
         monkeypatch.setattr(
             "utils.updater.fetch_latest_release",
             lambda: (True, "v9.9", "https://x/releases/tag/v9.9",
-                     {"url": "https://x/Setup.exe"}, {"url": "https://x/p.zip"}, []))
-        # the notes fetch must never hit the network from a unit test
-        monkeypatch.setattr("utils.updater.fetch_release_notes",
-                            lambda *a, **k: "NOTES")
+                     {"url": "https://x/Setup.exe"}, {"url": "https://x/p.zip"},
+                     [{"tag_name": "v9.9", "body_i18n": {"en": "NOTES", "fr": "NOUVEAUTÉS"}}]))
         seen = []
         check_async("1.0", lambda *args: seen.append(args))
         _wait_for(seen)
         assert seen[0][0] == "update"
         assert seen[0][3] == "https://x/p.zip"
         assert seen[0][4] == "https://x/Setup.exe"
-        assert seen[0][6] == "NOTES"
+        from utils.updater import format_release_notes
+        assert "NOTES" in format_release_notes("1.0", "v9.9", seen[0][6], "en")
+        assert "NOUVEAUTÉS" in format_release_notes("1.0", "v9.9", seen[0][6], "fr")
 
     def test_latest_state_reports_page_not_asset(self, monkeypatch):
         monkeypatch.setattr(
