@@ -267,6 +267,13 @@ def build_render_context(
                 source = _source_region(source, 0, 0, source.shape[1], max(1, result_h - oy))
         if source.size == 0:
             return None
+        if (roi is not None and isinstance(source, np.ndarray)
+                and not isinstance(source, np.memmap)):
+            # An independent copy of an in-memory crop: a view would keep the
+            # whole full-size aligned frame alive for as long as this output
+            # stays in the history, long after the ROI stack was released.
+            # Lazy and disk-backed frames stay as they are (no decode, no RAM).
+            source = source.copy()
         frames.append(SourceFrame(
             frame_id=(str(frame_ids[index]) if frame_ids is not None
                       and index < len(frame_ids)

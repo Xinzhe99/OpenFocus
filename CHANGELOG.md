@@ -32,6 +32,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   memory check refuses it), renders the rest and lists the skipped methods
   at the end. Cancelling still stops the whole run.
 - Image save dialogs start in the folder where you last saved an image.
+- A full render releases the region (ROI) preview's aligned frames, a second
+  full-resolution copy of the stack that was kept after ROI mode ended, and the
+  ROI preview no longer holds on to a replaced stack's frames. An ROI output's
+  provenance keeps its own crops instead of views that pinned the full frames.
+  Opening ROI mode again re-aligns.
 
 ### Fixed
 - Message-box buttons such as "Discard changes" are no longer cut off.
