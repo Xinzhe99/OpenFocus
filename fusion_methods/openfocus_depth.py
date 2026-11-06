@@ -10,7 +10,7 @@ def _weight(radius, allow_zero=False):
     return max(0 if allow_zero else 2, min(w, 4096))
 
 
-def _axis(src, guide, main, low, count, axis, cancel):
+def _axis(src, guide, main, low, count, axis, cancel, allocate):
     from fusion_methods._depth_kernel import axis_block
 
     src = np.asarray(src)
@@ -21,8 +21,8 @@ def _axis(src, guide, main, low, count, axis, cancel):
             guide = guide.T
     h, w = src.shape
     count = max(1, min(int(count), h))
-    first = create_frame((h, w), np.uint32)
-    out = create_frame((h, w), np.uint32)
+    first = allocate((h, w), np.uint32)
+    out = allocate((h, w), np.uint32)
     first_pixels, out_pixels = np.asarray(first), np.asarray(out)
     q = t = tm = tl = 0
     if guide is None:
@@ -55,24 +55,25 @@ def _rows(image, cancel):
         yield slice(start, min(image.shape[0], start + 128))
 
 
-def _mapped_cast(image, dtype, cancel):
+def _mapped_cast(image, dtype, cancel, allocate):
     if image.dtype == dtype:
         return image
-    result = create_frame(image.shape, dtype)
+    result = allocate(image.shape, dtype)
     for rows in _rows(image, cancel):
         result[rows] = image[rows]
     return result
 
 
-def _filter(src, radius, cancel, guide=None, low=None):
+def _filter(src, radius, cancel, guide=None, low=None, *, allocate=None):
     low = radius if low is None else low
+    allocate = create_frame if allocate is None else allocate
     # Arithmetic in each recurrence wraps at 32 bits. Narrowing the work
     # arrays preserves that wrap while halving their memory bandwidth.
-    result = _mapped_cast(src, np.uint32, cancel)
-    guide = None if guide is None else _mapped_cast(guide, np.uint32, cancel)
+    result = _mapped_cast(src, np.uint32, cancel, allocate)
+    guide = None if guide is None else _mapped_cast(guide, np.uint32, cancel, allocate)
     for axis in (0, 1):
-        result = _axis(result, guide, radius, low, radius, axis, cancel)
-    return _mapped_cast(result, np.int64, cancel)
+        result = _axis(result, guide, radius, low, radius, axis, cancel, allocate)
+    return _mapped_cast(result, np.int64, cancel, allocate)
 
 
 def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
@@ -98,9 +99,13 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
         def cancel():
             _check_cancel(cancelled)
 
+        # Multi-producer admission includes complete resident envelopes. Keep
+        # their private planes in RAM; serial low-RAM work keeps the mappings.
+        allocate = np.empty if workers > 1 else create_frame
+
         source = frames[index]
         frame = _prepare_frame(source, img_resize, cancelled)
-        gray = create_frame(frame.shape[:2], np.int64)
+        gray = allocate(frame.shape[:2], np.int64)
         for rows in _rows(gray, cancel):
             pixels = frame[rows]
             value = (pixels[:, :, :min(pixels.shape[2], 3)].mean(axis=2)
@@ -113,14 +118,16 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
         del frame, pixels, value
         radius = max(1, int(kernel_size or 11) // 2)
         extent = max(gray.shape)
-        fine = _filter(gray, extent * radius * 0.0375 / 100.0, cancel)
-        diff = create_frame(gray.shape, np.int64)
+        fine = _filter(gray, extent * radius * 0.0375 / 100.0, cancel,
+                       allocate=allocate)
+        diff = allocate(gray.shape, np.int64)
         for rows in _rows(gray, cancel):
             g, f = gray[rows], fine[rows]
             diff[rows] = np.minimum(65535, 110 * np.abs(g - f) //
                                    (np.maximum(g, f) * 100 // 65535 + 10))
         del gray, fine, g, f
-        return _filter(diff, extent * radius * 0.15 / 100.0, cancel)
+        return _filter(diff, extent * radius * 0.15 / 100.0, cancel,
+                       allocate=allocate)
 
     best = winner = None
     produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
