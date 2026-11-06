@@ -22,7 +22,7 @@ from PyQt6.QtGui import (QBrush, QColor, QIcon, QImage, QPainter, QPainterPath, 
 from utils.file_dialogs import FileDialog
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox, QDialog,
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
     QSlider, QSpinBox, QSplitter, QStyle, QVBoxLayout, QWidget,
 )
@@ -45,6 +45,18 @@ def _add_wrapped_option(layout, option):
     label = _OptionLabel(option)
     label.setText(text)
     label.setToolTip(option.toolTip())
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    # Theme padding gives an empty native control a taller sizeHint than a
+    # text line. Bound it to the first line so its indicator shares the label's
+    # centre even when the translated label wraps onto several lines.
+    option.setStyleSheet('QCheckBox, QRadioButton { padding: 0; margin: 0; spacing: 0; }')
+    style = option.style()
+    radio = isinstance(option, QRadioButton)
+    width = style.pixelMetric(QStyle.PixelMetric.PM_ExclusiveIndicatorWidth if radio
+                              else QStyle.PixelMetric.PM_IndicatorWidth)
+    height = style.pixelMetric(QStyle.PixelMetric.PM_ExclusiveIndicatorHeight if radio
+                               else QStyle.PixelMetric.PM_IndicatorHeight)
+    option.setFixedSize(width, max(height, label.fontMetrics().height()))
     row = QWidget()
     row_layout = QHBoxLayout(row)
     row_layout.setContentsMargins(0, 0, 0, 0)
@@ -760,6 +772,41 @@ class RetouchDialog(QDialog):
 
     def __init__(self, window_main, *, record, apply_callback, parent=None,
                  input_paths=()):
+        self.cursor_pos = None
+        self.space_down = False
+        self.preview_mode = None
+        self._preview_owner = None
+        self._applied = False
+        self._applying = False
+        self._allow_close = False
+        self._closing = False
+        self.change_requested = False
+        self._syncing_frames = False
+        self._syncing_tools = False
+        self._source_ready = False
+        self._source_request = 0
+        self._source_loading = False
+        self._source_qimage = None
+        self._pure_source_qimage = None
+        self._source_display = None
+        self._before_qimage = None
+        self._result_display = None
+        self._result_qimage = None
+        self._sharpness_maps = {}
+        self._sharpness_worker = None
+        self._sharpness_started = False
+        self._sharpness_request = 0
+        self._notice = ""
+        self._notice_timer = None
+        self._eviction_announced = False
+        self._layout_user_choice = False
+        self._responsive_focus = False
+        self._was_maximized = False
+        self._normal_geometry = None
+        self._stroke_lock_widgets = []
+        self._checkpoint_dialog = None
+        self._edit_dialog = None
+        self._ui_ready = False
         super().__init__(parent or window_main)
         self.window_main = window_main
         self.record = record
@@ -782,46 +829,14 @@ class RetouchDialog(QDialog):
         self.view = _ViewState()
         self.view.center = QPointF(self.doc.width / 2.0, self.doc.height / 2.0)
 
-        self.cursor_pos = None
-        self.space_down = False
-        self.preview_mode = None
-        self._preview_owner = None
-        self._applied = False
-        self._applying = False
-        self._allow_close = False
-        self._closing = False
-        self.change_requested = False
-        self._syncing_frames = False
-        self._syncing_tools = False
-        self._source_ready = False
-        self._source_request = 0
-        self._source_qimage = None
-        self._pure_source_qimage = None
-        self._source_display = None
-        self._before_qimage = None
-        self._result_display = None
-        self._result_qimage = None
-        self._sharpness_maps = {}
-        self._sharpness_worker = None
-        self._sharpness_started = False
-        self._sharpness_request = 0
-        self._notice = ""
-        self._notice_timer = None
-        self._eviction_announced = False
-        self._layout_user_choice = False
-        self._responsive_focus = False
-        self._was_maximized = False
-        self._normal_geometry = None
-        self._stroke_lock_widgets = []
 
         self.setWindowTitle(trans.t("retouch_title"))
-        self._checkpoint_dialog = None
-        self._edit_dialog = None
         self.setModal(True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.setMinimumSize(900, 600)
         self.resize(1280, 820)
         self._build_ui()
+        self._ui_ready = True
         for _attribute, _control in (
                 ("btn_change", "retouch_change"),
                 ("btn_fullscreen", "retouch_fullscreen"),
@@ -1001,7 +1016,7 @@ class RetouchDialog(QDialog):
         side.addWidget(self.lbl_help)
         # The full key list is reachable as a visible entry, not only by
         # hovering the help paragraph.
-        self.btn_shortcuts = ElidingButton(trans.t("retouch_shortcuts_help"))
+        self.btn_shortcuts = ElidingButton(trans.t("retouch_open_shortcuts"))
         self.btn_shortcuts.setAutoDefault(False)
         self.btn_shortcuts.clicked.connect(self._show_shortcuts)
         side.addWidget(self.btn_shortcuts)
@@ -1343,11 +1358,12 @@ class RetouchDialog(QDialog):
             0, lambda: self._finish_source_request(request, index))
 
     def _finish_source_request(self, request: int, index: int) -> None:
-        if self._closing or request != self._source_request:
+        if self._closing or request != self._source_request or self._source_ready:
             return
         if index != self.doc.frame_index or self.doc.stroke_active:
             return
-        self._refresh_source_display()
+        if not self._refresh_source_display():
+            return
         self._source_ready = True
         frame = self.doc.frames[index]
         self.lbl_source_header.setText(trans.t("retouch_frame").format(
@@ -1378,19 +1394,42 @@ class RetouchDialog(QDialog):
         self._select_frame(self.doc.frame_index + 1)
 
     # ------------------------------------------------------------- display
-    def _display_image(self, image):
-        metadata = getattr(self.record.context, "linear_dng_metadata", None)
+    def _display_image(self, image, metadata=...):
+        if metadata is ...:
+            metadata = getattr(self.record.context, 'linear_dng_metadata', None)
         if metadata is not None:
             from utils.linear_dng import develop_linear
             image = develop_linear(image, metadata)
         return to_display_uint8(image)
 
-    def _refresh_source_display(self) -> None:
+    def _refresh_source_display(self) -> bool:
+        if self._source_loading or self._closing:
+            return False
         frame = self.doc.active_frame
         index = self.doc.frame_index
-        display, valid = run_pixel_worker(
-            self, trans.t("retouch_title"),
-            lambda: (self._display_image(frame.image), self.doc.mask_for(index)))
+        request = self._source_request
+        doc = self.doc
+        metadata = getattr(self.record.context, 'linear_dng_metadata', None)
+        self._source_loading = True
+        self._update_controls()
+        try:
+            display, valid = run_pixel_worker(
+                self, trans.t("retouch_title"),
+                lambda: (self._display_image(frame.image, metadata), doc.mask_for(index)),
+                show_progress=False)
+        except Exception as exc:
+            if not self._closing and request == self._source_request:
+                self._set_notice(trans.t('retouch_source_failed').format(error=str(exc)))
+            return False
+        finally:
+            self._source_loading = False
+            if not self._closing:
+                self._update_controls()
+            if not self._closing and request != self._source_request:
+                latest, selected = self._source_request, self.doc.frame_index
+                QTimer.singleShot(0, lambda: self._finish_source_request(latest, selected))
+        if self._closing or request != self._source_request:
+            return False
         if display.ndim == 2:
             display = cv2.cvtColor(display, cv2.COLOR_GRAY2BGR)
         self._pure_source_qimage = _qimage_from_bgr(display)
@@ -1408,6 +1447,7 @@ class RetouchDialog(QDialog):
         self.source_canvas.update()
         if self.preview_mode == "source":
             self.result_canvas.update()
+        return True
 
     def _refresh_before_display(self) -> None:
         display = self._display_image(self.doc.base)
@@ -1516,6 +1556,8 @@ class RetouchDialog(QDialog):
         self._update_status()
 
     def canvas_resized(self) -> None:
+        if not self._ui_ready:
+            return
         if self.view.fit:
             self._fit()
         else:
@@ -1523,6 +1565,8 @@ class RetouchDialog(QDialog):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        if not self._ui_ready:
+            return
         self._elide_title()
         QTimer.singleShot(0, self._elide_title)
         if not self._layout_user_choice:
@@ -1537,6 +1581,8 @@ class RetouchDialog(QDialog):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        if not self._ui_ready:
+            return
         QTimer.singleShot(0, self._fit)
 
     # -------------------------------------------------------------- cursor
@@ -1616,10 +1662,63 @@ class RetouchDialog(QDialog):
         self._update_controls()
 
     def _show_shortcuts(self) -> None:
-        from utils.ui_utils import show_message_box
-        show_message_box(
-            self, trans.t("retouch_shortcuts_help"),
-            trans.t("retouch_shortcuts") + "\n" + trans.t("retouch_brush_wheel_hint"))
+        dialog = QDialog(self)
+        dialog.setWindowTitle(trans.t('retouch_shortcuts_help'))
+        dialog.setProperty('controlId', 'retouch_shortcuts_dialog')
+        root = QVBoxLayout(dialog)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page = QWidget()
+        content = QVBoxLayout(page)
+        note = QLabel(trans.t('retouch_shortcut_scope'))
+        note.setWordWrap(True)
+        content.addWidget(note)
+        groups = (
+            ('retouch_shortcut_navigation', (
+                ('F', 'retouch_fit'), ('1', 'retouch_zoom_100'),
+                ('+ / −', 'retouch_shortcut_zoom'),
+                (', / .', 'retouch_shortcut_frames'),
+                ('F11', 'compare_fullscreen'))),
+            ('retouch_tools', (
+                ('B', 'retouch_tool_source'), ('E', 'retouch_tool_restore'),
+                ('[ / ]', 'retouch_diameter'),
+                (trans.t('retouch_shortcut_ctrl_wheel'), 'retouch_diameter'),
+                (trans.t('retouch_shortcut_left_drag'), 'retouch_shortcut_paint'))),
+            ('retouch_shortcut_preview', (
+                ('Tab', 'retouch_shortcut_before'), ('Alt', 'retouch_shortcut_source'),
+                (trans.t('retouch_shortcut_wheel'), 'retouch_shortcut_zoom'),
+                (trans.t('retouch_shortcut_pan_keys'), 'retouch_shortcut_pan'))),
+            ('retouch_shortcut_actions', (
+                ('Ctrl+Z', 'retouch_undo'), ('Ctrl+Y / Ctrl+Shift+Z', 'retouch_redo'),
+                ('Ctrl+Enter', 'retouch_apply'), ('Esc', 'retouch_shortcut_escape'))),
+        )
+        for title, entries in groups:
+            heading = QLabel(trans.t(title))
+            font = heading.font()
+            font.setBold(True)
+            heading.setFont(font)
+            content.addWidget(heading)
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(20)
+            grid.setVerticalSpacing(8)
+            grid.setColumnStretch(1, 1)
+            for row, (keys, key) in enumerate(entries):
+                shortcut, description = QLabel(keys), QLabel(trans.t(key))
+                shortcut.setTextFormat(Qt.TextFormat.PlainText)
+                description.setWordWrap(True)
+                grid.addWidget(shortcut, row, 0, Qt.AlignmentFlag.AlignTop)
+                grid.addWidget(description, row, 1)
+            content.addLayout(grid)
+        content.addStretch()
+        scroll.setWidget(page)
+        root.addWidget(scroll, 1)
+        close = QPushButton(trans.t('dialog_close'))
+        close.clicked.connect(dialog.accept)
+        root.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        dialog.resize(680, 650)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _refresh_help_text(self) -> None:
         """The help line follows the active tool (it used to stay on source)."""
@@ -1679,7 +1778,7 @@ class RetouchDialog(QDialog):
 
     # ------------------------------------------------------------- strokes
     def begin_stroke(self, x: float, y: float) -> bool:
-        if (not self._source_ready or self.preview_mode is not None
+        if (not self._source_ready or self._source_loading or self.preview_mode is not None
                 or self.doc.stroke_active or self._edit_dialog is not None
                 or self._checkpoint_dialog is not None):
             return False
@@ -1998,7 +2097,7 @@ class RetouchDialog(QDialog):
                                  and self.preview_mode is None)
 
     def _update_controls(self) -> None:
-        blocked = self.doc.stroke_active
+        blocked = self.doc.stroke_active or self._source_loading
         preview = self.preview_mode is not None
         self._sync_tool_buttons()
         self.btn_undo.setEnabled(self.doc.can_undo and not blocked and not preview)
@@ -2035,7 +2134,7 @@ class RetouchDialog(QDialog):
         self.num_diameter.setEnabled(not blocked)
         self.num_hardness.setEnabled(not blocked)
         self.num_opacity.setEnabled(not blocked)
-        frame_enabled = not blocked and not preview
+        frame_enabled = not self.doc.stroke_active and not preview
         self.frame_list.setEnabled(frame_enabled)
         self.frame_spin.setEnabled(frame_enabled)
         self.frame_slider.setEnabled(frame_enabled)
@@ -2245,7 +2344,7 @@ class RetouchDialog(QDialog):
         visible Apply button was disabled during preview.
         """
         return (not self._applied and not self._applying and not self._closing
-                and not self.doc.stroke_active and self.preview_mode is None
+                and not self._source_loading and not self.doc.stroke_active and self.preview_mode is None
                 and self._edit_dialog is None and self._checkpoint_dialog is None
                 and self.doc.is_dirty)
 
@@ -2356,6 +2455,9 @@ class RetouchDialog(QDialog):
             self._closing = event.isAccepted()
 
     def changeEvent(self, event) -> None:
+        if not self._ui_ready:
+            super().changeEvent(event)
+            return
         if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
             if self.doc.stroke_active:
                 self.end_stroke()
@@ -2415,6 +2517,12 @@ class RetouchDialog(QDialog):
             return True
         if key == Qt.Key.Key_F11:
             self._toggle_fullscreen()
+            return True
+        if self._source_loading:
+            if not ctrl and key == Qt.Key.Key_Comma:
+                self._prev_frame()
+            elif not ctrl and key == Qt.Key.Key_Period:
+                self._next_frame()
             return True
         if ctrl and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._apply()

@@ -234,3 +234,55 @@ def test_replaced_load_cannot_satisfy_an_older_render_request(qapp, monkeypatch)
     _apply_and_finish_load(source)
     assert deferred == []
     assert render._render_after_load is None
+
+
+def test_waiting_caption_survives_refresh_and_cancel_stops_deferred_start(qapp, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QPushButton, QStatusBar
+    from locales import trans
+    window, render, source = _setup(qapp, frames=3)
+    window._bar = QStatusBar()
+    window.btn_render = QPushButton()
+    deferred = []
+    monkeypatch.setattr(QTimer, 'singleShot', lambda _ms, callback: deferred.append(callback))
+    assert render.start_render() == 'loading'
+    assert render.worker is None and render.last_state == 'queued'
+    assert render._status_bar_label.text() == trans.t('render_stage_loading')
+    assert not render._status_bar_label.isHidden()
+    assert window.btn_render.text() == trans.t('btn_cancel_render')
+    render.refresh_action_labels()
+    assert window.btn_render.text() == trans.t('btn_cancel_render')
+    _apply_and_finish_load(source)
+    assert len(deferred) == 1
+    assert render.start_render() == 'cancelled'
+    assert render._status_bar_label.isHidden()
+    assert window.btn_render.text() == trans.t('btn_render')
+    called = []
+    render.start_render = lambda **kwargs: called.append(kwargs)
+    deferred[0]()
+    assert called == [] and render.last_state == 'cancelled'
+    window._bar.deleteLater()
+    window.btn_render.deleteLater()
+
+
+def test_resource_wait_preparation_fusion_and_late_cancel_stages_are_truthful(qapp):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QStatusBar
+    from locales import trans
+    window, render, _source = _setup(qapp)
+    window._bar = QStatusBar()
+    render.worker = SimpleNamespace(is_cancelled=False)
+    for stage, key in [('waiting', 'render_stage_waiting'),
+                       ('prepare', 'render_stage_prepare'),
+                       ('align', 'render_stage_align'),
+                       ('fuse', 'render_stage_fuse'),
+                       ('finish', 'render_stage_finish')]:
+        render.on_render_stage(stage)
+        assert render._status_bar_label.text() == trans.t(key)
+        assert window.statusBar().currentMessage() == trans.t(key)
+    render.worker.is_cancelled = True
+    render.on_render_stage('fuse')
+    render.on_render_progress(1, 10)
+    assert render._status_bar_label.text() == trans.t('depth_cancelling')
+    assert window.statusBar().currentMessage() == trans.t('depth_cancelling')
+    window._bar.deleteLater()
