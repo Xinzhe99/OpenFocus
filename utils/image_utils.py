@@ -462,100 +462,130 @@ def _jpeg_insert_icc(jpeg: bytes, profile: bytes) -> bytes:
     return jpeg[:2] + b"".join(segments) + jpeg[2:]
 
 
-def _encode_tiff_with_exif(image: np.ndarray, exif, icc_profile: bytes = b"") -> bytes:
-    """Uncompressed TIFF (uint8/uint16, gray or BGR) with an EXIF sub-IFD.
-
-    Pillow cannot hold 16-bit RGB, so the file is assembled directly: an
-    IFD0 serialised by Pillow's TIFF writer (which also lays out the Exif
-    and GPS sub-IFDs) followed by the raw strips.
-    """
+def _tiff_header(image, exif, icc_profile, rows_per_strip):
+    """Serialize a classic TIFF header without touching the image pixels."""
     from PIL import TiffImagePlugin, TiffTags
-    if image.ndim == 3 and image.shape[2] == 3:
-        pixels = np.ascontiguousarray(image[:, :, ::-1])  # BGR -> RGB
-        samples, photometric = 3, 2
-    elif image.ndim == 3 and image.shape[2] == 4:
-        pixels = np.ascontiguousarray(image[:, :, [2, 1, 0, 3]])
-        samples, photometric = 4, 2
+
+    if image.ndim == 3 and image.shape[2] in (3, 4):
+        samples, photometric = image.shape[2], 2
     elif image.ndim == 2:
-        pixels = np.ascontiguousarray(image)
         samples, photometric = 1, 1
     else:
-        raise ValueError("unsupported channel layout for EXIF TIFF")
-    pixels = pixels.astype(pixels.dtype.newbyteorder("<"), copy=False)
-    height, width = pixels.shape[:2]
-    bits = pixels.dtype.itemsize * 8
-    row_bytes = width * samples * pixels.dtype.itemsize
-    rows_per_strip = max(1, min(height, (1 << 20) // row_bytes))
+        raise ValueError('Unsupported channel layout for EXIF TIFF')
+    if image.dtype not in (np.uint8, np.uint16):
+        raise ValueError('EXIF TIFF requires 8- or 16-bit pixels')
+    height, width = image.shape[:2]
+    if height < 1 or width < 1 or rows_per_strip < 1:
+        raise ValueError('TIFF dimensions and strip height must be positive')
+    bits = image.dtype.itemsize * 8
+    row_bytes = width * samples * image.dtype.itemsize
     strip_offsets, strip_counts = [], []
     for row in range(0, height, rows_per_strip):
         strip_offsets.append(row * row_bytes)
         strip_counts.append(min(rows_per_strip, height - row) * row_bytes)
 
-    head = b"II*\x00" + (8).to_bytes(4, "little")
+    head = b'II*\x00' + (8).to_bytes(4, 'little')
     ifd = TiffImagePlugin.ImageFileDirectory_v2(ifh=head)
     for tag, value in (exif or {}).items():
-        ifd[tag] = value  # sub-IFDs are plain dicts (see export_exif)
+        ifd[tag] = value
     if icc_profile:
         ifd[34675] = icc_profile
     ifd[256] = width
     ifd[257] = height
     ifd[258] = (bits,) * samples
-    ifd[259] = 1  # no compression
+    ifd[259] = 1
     ifd[262] = photometric
     ifd[277] = samples
     ifd[278] = rows_per_strip
     if samples == 4:
-        ifd[338] = (2,)  # unassociated alpha
-    ifd[284] = 1  # chunky
-    # Strip offsets/counts are LONG regardless of magnitude; Pillow's writer
-    # rebases StripOffsets onto the end of the IFD, where the strips go.
+        ifd[338] = (2,)
+    ifd[284] = 1
+    # Pillow rebases these relative strip offsets after all nested IFDs.
     ifd.tagtype[273] = ifd.tagtype[279] = TiffTags.LONG
     ifd[273] = tuple(strip_offsets)
     ifd[279] = tuple(strip_counts)
-    return head + ifd.tobytes(8) + pixels.tobytes()
+    header = head + ifd.tobytes(8)
+    if len(header) + image.nbytes >= 2 ** 32:
+        raise ValueError('EXIF metadata requires a classic TIFF below 4 GiB')
+    return header
+
+
+def _encode_tiff_with_exif(image: np.ndarray, exif, icc_profile: bytes = b'') -> bytes:
+    """Encode small 8/16-bit TIFFs using the same safe nested-IFD layout."""
+    samples = image.shape[2] if image.ndim == 3 else 1
+    row_bytes = image.shape[1] * samples * image.dtype.itemsize
+    rows_per_strip = max(1, min(image.shape[0], (1 << 20) // max(1, row_bytes)))
+    header = _tiff_header(image, exif, icc_profile, rows_per_strip)
+    if samples == 3:
+        pixels = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    elif samples == 4:
+        pixels = cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)
+    else:
+        pixels = np.ascontiguousarray(image)
+    pixels = pixels.astype(pixels.dtype.newbyteorder('<'), copy=False)
+    return header + pixels.tobytes()
 
 
 _TIFF_STRIP_TARGET_BYTES = 4 * 1024 ** 2
 
 
-def _write_streamed_tiff(path, image, should_cancel=None):
-    """Atomically write BGR/BGRA pixels in bounded strips, using BigTIFF as needed."""
+def _write_streamed_tiff(path, image, should_cancel=None, exif=None, icc_profile=b''):
+    """Atomically write bounded strips, retaining safe EXIF/GPS and ICC tags."""
     import tempfile
     import tifffile
 
-    if (image.ndim != 3 or image.shape[2] not in (3, 4)
-            or image.dtype not in (np.uint8, np.uint16)):
-        raise ValueError('Streaming TIFF requires an 8- or 16-bit BGR/BGRA image')
+    if (image.ndim not in (2, 3)
+            or image.ndim == 3 and image.shape[2] not in (3, 4)
+            or image.dtype not in (np.uint8, np.uint16)
+            or min(image.shape[:2]) < 1):
+        raise ValueError('Streaming TIFF requires 8/16-bit gray, BGR or BGRA pixels')
     from core.resource_policy import require_memory
 
-    row_bytes = image.shape[1] * image.shape[2] * image.dtype.itemsize
+    samples = image.shape[2] if image.ndim == 3 else 1
+    row_bytes = image.shape[1] * samples * image.dtype.itemsize
     rows_per_strip = min(128, image.shape[0], max(1, _TIFF_STRIP_TARGET_BYTES // row_bytes))
-    # The RGB conversion and yielded bytes coexist; allow for writer buffering.
     require_memory(row_bytes * rows_per_strip * 3)
+    bigtiff = image.nbytes >= (2 ** 32 - 2 ** 25)
+    if bigtiff and exif is not None:
+        raise ValueError('Streaming BigTIFF does not support nested EXIF metadata')
+    header = (_tiff_header(image, exif, icc_profile, rows_per_strip)
+              if not bigtiff and (exif is not None or icc_profile) else None)
 
-    def strips():
-        for start in range(0, image.shape[0], rows_per_strip):
-            if should_cancel is not None and should_cancel():
-                from core.registration import RegistrationCancelled
-                raise RegistrationCancelled()
-            strip = image[start:start + rows_per_strip]
-            if image.shape[2] == 4:
-                rgb = np.concatenate((strip[:, :, 2::-1], strip[:, :, 3:4]), axis=2)
-            else:
-                rgb = np.ascontiguousarray(strip[:, :, ::-1])
-            yield rgb.tobytes()
-
-    fd, temporary = tempfile.mkstemp(suffix='.tif', dir=os.path.dirname(os.path.abspath(path)))
-    os.close(fd)
-    try:
-        tifffile.imwrite(temporary, strips(), shape=image.shape, dtype=image.dtype,
-                         photometric='rgb', planarconfig='contig',
-                         extrasamples=('unassalpha',) if image.shape[2] == 4 else None,
-                         rowsperstrip=rows_per_strip, metadata=None,
-                         bigtiff=image.nbytes >= (2 ** 32 - 2 ** 25))
+    def check_cancelled():
         if should_cancel is not None and should_cancel():
             from core.registration import RegistrationCancelled
             raise RegistrationCancelled()
+
+    def strips():
+        for start in range(0, image.shape[0], rows_per_strip):
+            check_cancelled()
+            strip = image[start:start + rows_per_strip]
+            if samples == 4:
+                pixels = cv2.cvtColor(strip, cv2.COLOR_BGRA2RGBA)
+            elif samples == 3:
+                pixels = cv2.cvtColor(strip, cv2.COLOR_BGR2RGB)
+            else:
+                pixels = np.ascontiguousarray(strip)
+            yield pixels.astype(pixels.dtype.newbyteorder('<'), copy=False)
+
+    check_cancelled()
+    fd, temporary = tempfile.mkstemp(suffix='.tif', dir=os.path.dirname(os.path.abspath(path)))
+    os.close(fd)
+    try:
+        if header is not None:
+            with open(temporary, 'wb') as handle:
+                handle.write(header)
+                for strip in strips():
+                    handle.write(memoryview(strip).cast('B'))
+        else:
+            tifffile.imwrite(temporary, (strip.tobytes() for strip in strips()),
+                             shape=image.shape, dtype=image.dtype,
+                             photometric='rgb' if samples > 1 else 'minisblack',
+                             planarconfig='contig' if samples > 1 else None,
+                             extrasamples=('unassalpha',) if samples == 4 else None,
+                             iccprofile=icc_profile or None,
+                             rowsperstrip=rows_per_strip, metadata=None, bigtiff=bigtiff)
+        check_cancelled()
         os.replace(temporary, path)
         return True
     except OSError:
@@ -575,9 +605,12 @@ def imwrite_auto(path: str, image: np.ndarray, params: Optional[list] = None,
     path = os.fspath(path)
     ext = os.path.splitext(path)[1].lower()
     if stream_tiff:
-        if ext not in ('.tif', '.tiff') or exif not in (None, b'') or icc_profile:
-            raise ValueError('Streaming export supports TIFF without EXIF or ICC metadata')
-        return _write_streamed_tiff(path, image, should_cancel)
+        if ext not in ('.tif', '.tiff'):
+            raise ValueError('Streaming export requires TIFF')
+        meta = export_exif(exif) if exif else None
+        profile = icc_profile if (icc_profile and image.ndim == 3
+                                  and image.shape[2] in (3, 4)) else b''
+        return _write_streamed_tiff(path, image, should_cancel, meta, profile)
     if ext == '.dng':
         if linear_dng_metadata is None:
             raise ValueError("Linear DNG export requires camera metadata")
@@ -704,7 +737,7 @@ def normalize_fuse_input(images):
 
 
 def prepare_fusion_input(images, fusion, should_cancel=None):
-    """Normalize one frame at a time on disk, or defer to spatial tile crops."""
+    """Let classical fusion normalize under its lease; prepare neural ranges here."""
     from core.algorithms import resolve_runner
     from core.frame_storage import store_frame
     from core.registration import RegistrationCancelled
@@ -713,6 +746,10 @@ def prepare_fusion_input(images, fusion, should_cancel=None):
     frames = list(images)
     is_16bit = any(frame.dtype == np.uint16 for frame in frames)
     spec = fusion.descriptor
+    if not spec.neural:
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
+        return frames, is_16bit
     if frames and fusion.tile_enabled:
         needs_tiles = (resolve_runner(spec.tile_decider)(frames, fusion.tile_threshold)
                        if spec.tile_decider else
