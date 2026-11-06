@@ -562,3 +562,51 @@ def test_neural_mapped_normalization_preserves_mixed_stack_precision():
         np.testing.assert_array_equal(mapped, reference)
     assert isinstance(actual[0], np.memmap) and isinstance(actual[1], np.memmap)
     assert actual[2] is frames[2]
+
+
+@pytest.mark.parametrize('method', ['guided_filter', 'gfgfgf'])
+@pytest.mark.parametrize('source_kind', ['uint8', 'mixed', 'gray16'])
+@pytest.mark.parametrize('match_exposure', [False, True])
+def test_upscaled_tiling_matches_resize_after_normalization_and_exposure(method, source_kind, match_exposure):
+    from fusion_methods.dct import _ensure_color_image
+    from utils.image_utils import exposure_gains, apply_exposure_gain
+
+    rng = np.random.default_rng(522)
+    frames = [rng.integers(20, 200, (33, 47, 3), np.uint8) for _ in range(2)]
+    if source_kind == 'mixed':
+        frames[1] = frames[1].astype(np.uint16) * 256 + 5
+    elif source_kind == 'gray16':
+        frames = [frame[:, :, 0].astype(np.uint16) * 256 + 5 for frame in frames]
+    prepared, _ = normalize_fuse_input(frames)
+    if match_exposure:
+        prepared = [apply_exposure_gain(frame, gain)
+                    for frame, gain in zip(prepared, exposure_gains(prepared))]
+    size = (2052, 129)  # Exceeds the default cutoff without a large allocation.
+    resized = [cv2.resize(_ensure_color_image(frame), size) for frame in prepared]
+    options = dict(algorithm=method, tile_block_size=256, tile_overlap=32,
+                   fusion_parameters={'kernel_size': 5}, base_frame='none')
+    expected = MultiFocusFusion(**options, exposure_match=False).fuse(resized, thread_count=1)
+    actual = MultiFocusFusion(**options, exposure_match=match_exposure).fuse(
+        frames, img_resize=size, thread_count=1)
+    assert actual.shape == (size[1], size[0], 3)
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('method', ['stackmff', 'stackmffv2', 'stackmffv3'])
+def test_resized_neural_tiles_apply_normalized_exposure_once(method):
+    pytest.importorskip('onnxruntime')
+    from utils.image_utils import exposure_gains, apply_exposure_gain
+
+    rng = np.random.default_rng(824)
+    frames = [rng.integers(20, 200, (33, 47, 3), np.uint8) for _ in range(2)]
+    frames[1] = frames[1].astype(np.uint16) * 256 + 5
+    normalized, _ = normalize_fuse_input(frames)
+    prepared = [apply_exposure_gain(frame, gain)
+                for frame, gain in zip(normalized, exposure_gains(normalized))]
+    size = (96, 97)
+    resized = [cv2.resize(frame, size) for frame in prepared]
+    options = dict(algorithm=method, tile_threshold=16, tile_block_size=64, tile_overlap=16)
+    expected = MultiFocusFusion(**options, exposure_match=False).fuse(resized, thread_count=1)
+    actual = MultiFocusFusion(**options, exposure_match=True).fuse(frames, img_resize=size, thread_count=1)
+    assert actual.shape[:2] == (size[1], size[0])
+    np.testing.assert_array_equal(actual, expected)

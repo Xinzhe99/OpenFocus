@@ -612,8 +612,11 @@ class MultiFocusFusion:
             # an N-plane activity set. Respect the requested transform levels.
             fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
             needs_tiles = fixed + per_worker > memory_budget_bytes()
+        resize_for_tiles = (self.tile_enabled and needs_tiles and img_resize is not None
+                            and self.algorithm in ('guided_filter', 'gfgfgf', 'openfocus_a',
+                                                   'dtcwt', 'stackmff', 'stackmffv2', 'stackmffv3'))
         deferred_exposure = (self.tile_enabled and needs_tiles
-                             and isinstance(input_source, list)
+                             and isinstance(input_source, list) and not resize_for_tiles
                              and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
         # Preparation converts only one frame at a time; the retained stack
         # and exposure-matched frames live in temporary mappings.
@@ -622,7 +625,11 @@ class MultiFocusFusion:
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.
         input_source = self._maybe_sort_input(input_source, should_cancel)
-        if (not spec.neural and not deferred_exposure
+        # Neural tiles historically normalize mixed/16-bit pixels before
+        # applying their global gains. Preserve that order when gains and the
+        # full-frame resize are staged ahead of tile construction.
+        normalize_before_resize = resize_for_tiles and spec.neural and self.exposure_match
+        if ((not spec.neural or normalize_before_resize) and not deferred_exposure
                 and any(frame.dtype == np.uint16 for frame in input_source)):
             normalized_frames = []
             for frame in input_source:
@@ -664,27 +671,37 @@ class MultiFocusFusion:
                     matched.append(frame if adjusted is frame else store_frame(adjusted))
                 input_source = matched
                 del adjusted
+        tile_source, tile_resize = input_source, img_resize
+        if resize_for_tiles:
+            # Match the whole backend: normalize/sort/exposure above, then
+            # resize each complete source once before constructing its grid.
+            # Keep the original prepared stack as the base-correction source.
+            tile_source = self._resize_tile_sources(input_source, img_resize, should_cancel)
+            tile_resize = None
+
 
 
         check_cancel()
         if self.algorithm == 'stackmffv2' and self.tile_enabled and needs_tiles:
             result = self._fuse_stackmffv2(
-                input_source, img_resize, should_cancel=should_cancel,
+                tile_source, tile_resize, should_cancel=should_cancel,
                 progress_callback=progress_callback, tile_size=self.tile_block_size,
-                tile_overlap=self.tile_overlap, exposure_gains=exposure_gains_,
+                tile_overlap=self.tile_overlap,
+                exposure_gains=exposure_gains_ if deferred_exposure else None,
                 source_all_uint8=all(dtype == np.uint8 for _, dtype in frame_specs),
                 **kwargs)
         elif (self.tile_enabled and needs_tiles and
-                (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c'))):
+                (tile_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c'))):
             # The neural scheduler chooses a grid that fits the current budget.
             kws = dict(kwargs)
             kws.pop('block_size', None)
             kws.pop('overlap', None)
             result = self._fuse_tiled(
-                input_source, algorithm=self.algorithm, img_resize=img_resize,
+                tile_source, algorithm=self.algorithm, img_resize=tile_resize,
                 block_size=self.tile_block_size, overlap=self.tile_overlap,
                 should_cancel=should_cancel, progress_callback=progress_callback,
-                exposure_gains=exposure_gains_, deferred_exposure=deferred_exposure,
+                exposure_gains=exposure_gains_ if deferred_exposure else None,
+                deferred_exposure=deferred_exposure,
                 source_all_uint8=all(dtype == np.uint8 for _, dtype in frame_specs), **kws)
         else:
             check_cancel()
@@ -1030,6 +1047,35 @@ class MultiFocusFusion:
 
         return np.outer(wy, wx).astype(np.float32)
 
+    def _resize_tile_sources(self, frames, target_size, should_cancel):
+        """Stage full resized sources in backend order without a dense stack."""
+        import cv2
+        from core.resource_policy import require_memory
+        from fusion_methods.dct import _ensure_color_image
+
+        if self.algorithm == 'openfocus_a':
+            target_size = tuple(map(int, target_size))
+        width, height = map(int, target_size)
+        interpolation = cv2.INTER_AREA if self.algorithm == 'openfocus_a' else cv2.INTER_LINEAR
+        resized = []
+        for frame in frames:
+            if should_cancel is not None and should_cancel():
+                from core.registration import RegistrationCancelled
+                raise RegistrationCancelled()
+            channels = frame.shape[2] if frame.ndim == 3 else 1
+            if self.algorithm in ('guided_filter', 'gfgfgf'):
+                channels = 3
+            require_memory(frame.nbytes * 4 + width * height * channels * frame.dtype.itemsize * 2,
+                           user_limit=memory_budget_bytes())
+            # Guided Filter makes its input contiguous before colour promotion;
+            # GFG promotes before resize. Other backends retain native channels.
+            prepared = (np.ascontiguousarray(frame) if self.algorithm == 'guided_filter' else frame)
+            if self.algorithm in ('guided_filter', 'gfgfgf'):
+                prepared = _ensure_color_image(prepared)
+            resized.append(store_frame(cv2.resize(prepared, target_size, interpolation=interpolation)))
+            del prepared
+        return resized
+
     def _fuse_tiled(self,
                     input_source: Union[List[np.ndarray], str],
                     algorithm: str,
@@ -1270,7 +1316,16 @@ class MultiFocusFusion:
             # The back-ends normalise BGRA to BGR themselves, so the accumulator
             # (sized from the source channel count) would reject their output.
             if crops and crops[0].ndim == 3 and crops[0].shape[2] == 4:
-                crops = [cv2.cvtColor(c, cv2.COLOR_BGRA2BGR) for c in crops]
+                import cv2
+                converted = []
+                for crop in crops:
+                    _check_cancel()
+                    # Retaining N ordinary cvtColor results would make a deep
+                    # stack consume N colour tiles of heap per tile worker.
+                    color = create_frame(crop.shape[:2] + (3,), crop.dtype)
+                    cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR, dst=color)
+                    converted.append(color)
+                crops = converted
             return crops
 
         def process_single_tile(coords):
