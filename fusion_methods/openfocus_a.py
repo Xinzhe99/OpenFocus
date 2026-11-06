@@ -43,6 +43,7 @@ def _response(frame, fine_sigma, spread_sigma, should_cancel, check_cancel):
 def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
                      thread_count: int = None, blend_smoothing: float = 2.0,
                      blend_mode: str = 'hard', soft_gamma: float = 1.0,
+                     feather_theta: float = 0.9,
                      should_cancel=None, progress_callback=None):
     """Select original pixels using local high-frequency energy.
 
@@ -55,6 +56,10 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
     auxiliary memory. ``soft`` triples response computation and is an
     experimental, unregistered path (Issue #21: content-dependent quality —
     not shipped); ``soft_gamma`` controls hardness (higher = closer to hard).
+    ``feather`` keeps hard selection everywhere except pixels where the
+    second-best response is within ``feather_theta`` of the best (r2/r1 >=
+    theta), which are blended 50/50 between the top-2 frames — the depth
+    transitions where halos form. Two-pass streaming, H×W auxiliary memory.
     ``thread_count`` bounds independent response producers. Selection remains
     strict and in source order, so ties keep the first frame. RAM admission
     bounds both live producers and completed results; low RAM stays serial.
@@ -82,14 +87,77 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
         return frame, response
 
     soft = blend_mode == 'soft'
+    feather = blend_mode == 'feather'
     _soft_gamma = float(soft_gamma)
-    total_steps = len(frames) * (3 if soft else 1)
+    total_steps = len(frames) * (3 if soft else 2 if feather else 1)
     step = 0
 
     output = best = None
     produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
     try:
-        if soft:
+        if feather:
+            # pass 1: streaming top-2 (value + index) per pixel
+            i1 = i2 = None
+            v1 = v2 = None
+            for index, (frame, response) in produced:
+                _check_cancel(should_cancel)
+                if i1 is None:
+                    i1 = np.full(response.shape, index, np.int32)
+                    v1 = response.copy()
+                    i2 = i1.copy()
+                    v2 = np.full_like(response, -np.inf)
+                else:
+                    for start in range(0, response.shape[0], 128):
+                        _check_cancel(should_cancel)
+                        rows = slice(start, min(response.shape[0], start + 128))
+                        a, b = v1[rows], v2[rows]
+                        ia, ib = i1[rows], i2[rows]
+                        r = response[rows]
+                        # new top-1: old top-1 becomes top-2
+                        take1 = r > a
+                        np.copyto(v2[rows], a, where=take1)
+                        np.copyto(i2[rows], ia, where=take1)
+                        np.copyto(v1[rows], r, where=take1)
+                        np.copyto(i1[rows], np.full(r.shape, index, np.int32), where=take1)
+                        # new top-2 only: between old top-2 and response
+                        take2 = (~take1) & (r > b)
+                        np.copyto(v2[rows], r, where=take2)
+                        np.copyto(i2[rows], np.full(r.shape, index, np.int32), where=take2)
+                del frame, response
+                step += 1
+                if progress_callback is not None:
+                    progress_callback(step, total_steps)
+            _check_cancel(should_cancel)
+            produced.close()
+
+            w2 = np.where(v1 > 0, v2 / np.where(v1 > 0, v1, 1.0), 0.0)
+            blend2 = w2 >= float(feather_theta)
+
+            # pass 2: weighted accumulation over top-2 picks
+            accumulated = None
+            produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
+            for index, (frame, response) in produced:
+                _check_cancel(should_cancel)
+                if accumulated is None:
+                    accumulated = np.zeros(frame.shape, np.float32)
+                    height, width = accumulated.shape[:2]
+                for start in range(0, height, 128):
+                    _check_cancel(should_cancel)
+                    rows = slice(start, min(height, start + 128))
+                    is1 = i1[rows] == index
+                    is2 = blend2[rows] & (i2[rows] == index)
+                    if frame.ndim == 3:
+                        accumulated[rows] += np.where(is1[:, :, None], 1.0 - 0.5 * blend2[rows][:, :, None], 0.0) * frame[rows]
+                        accumulated[rows] += np.where(is2[:, :, None], 0.5, 0.0) * frame[rows]
+                    else:
+                        accumulated[rows] += np.where(is1, 1.0 - 0.5 * blend2[rows], 0.0) * frame[rows]
+                        accumulated[rows] += np.where(is2, 0.5, 0.0) * frame[rows]
+                del frame, response
+                step += 1
+                if progress_callback is not None:
+                    progress_callback(step, total_steps)
+            output = accumulated
+        elif soft:
             def _log_rows(response):
                 """In-place log of a copy, rows blocked."""
                 out = np.empty_like(response)
