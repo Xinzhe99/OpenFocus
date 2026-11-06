@@ -84,11 +84,14 @@ def test_sessions_isolate_checkpoint_shape_and_directml_adapter(monkeypatch, tmp
     assert calls[-1][1][0] == ('DmlExecutionProvider', {'device_id': 2})
 
 
-def test_unknown_vram_does_not_erase_verified_provider_capability(monkeypatch, tmp_path):
+@pytest.mark.parametrize('hardware', [
+    [(2, 'Discrete adapter', 0x10de, 8 * 1024 ** 3)],
+    [(0, 'Intel UHD integrated adapter', 0x8086, 0)],
+])
+def test_unknown_vram_does_not_erase_verified_provider_capability(monkeypatch, tmp_path, hardware):
     from core import resource_policy
     profile = tmp_path / 'profile.json'
     profile.write_text(json.dumps([{'args': {'provider': 'DmlExecutionProvider'}}]))
-    hardware = [(2, 'Discrete adapter', 0x10de, 8 * 1024 ** 3)]
 
     class Options:
         def add_free_dimension_override_by_name(self, *args):
@@ -127,6 +130,7 @@ def test_unknown_vram_does_not_erase_verified_provider_capability(monkeypatch, t
     assert diagnostics['selected'] == 'DIRECTML'
     assert diagnostics['actual'] is None
     assert 'DmlExecutionProvider' in diagnostics['providers']
+    assert neural_runtime._DIRECTML_ADAPTER_INDEX == hardware[0][0]
 
 
 def test_fusion_info_does_not_borrow_another_jobs_actual_device(monkeypatch):
@@ -199,3 +203,160 @@ def test_probabilities_use_both_released_scales_and_smooth_after_averaging(monke
     raw = neural_runtime.probabilities(planes, 'v1.onnx', 'CPU', 1, 0)
     np.testing.assert_allclose(smooth.sum(axis=1), 1, atol=1e-6)
     assert smooth.max() < raw.max()
+
+
+def test_explicit_cpu_mode_does_not_probe_or_erase_accelerator_capability(monkeypatch):
+    def unexpected_probe():
+        raise AssertionError('explicit CPU mode must not probe a provider')
+
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        get_available_providers=unexpected_probe))
+    monkeypatch.setattr(neural_runtime, '_DEVICE', 'DIRECTML')
+    assert neural_runtime.resolve_device(False) == 'CPU'
+    assert neural_runtime.cached_device() == 'DIRECTML'
+
+
+def test_registered_provider_and_discrete_adapter_failure_do_not_hide_usable_igpu(monkeypatch, tmp_path):
+    from core import resource_policy
+    tried = []
+    selected = []
+
+    class Options:
+        def add_free_dimension_override_by_name(self, *args):
+            pass
+
+    class Session:
+        def __init__(self, path, sess_options, providers):
+            self.provider, self.options = providers[0]
+            self.profile = tmp_path / f'probe-{len(tried)}.json'
+            tried.append((self.provider, self.options['device_id']))
+
+        def disable_fallback(self):
+            pass
+
+        def run(self, outputs, inputs):
+            if self.provider == 'DmlExecutionProvider' and self.options['device_id'] == 0:
+                raise RuntimeError('discrete driver cannot execute graph')
+            return [np.zeros_like(inputs['input'])]
+
+        def end_profiling(self):
+            # CUDA registered successfully but placed all nodes on CPU.
+            provider = ('CPUExecutionProvider' if self.provider == 'CUDAExecutionProvider'
+                        else self.provider)
+            self.profile.write_text(json.dumps([{'args': {'provider': provider}}]))
+            return str(self.profile)
+
+    monkeypatch.setitem(sys.modules, 'onnxruntime', SimpleNamespace(
+        get_available_providers=lambda: ['CUDAExecutionProvider', 'DmlExecutionProvider',
+                                         'CPUExecutionProvider'],
+        SessionOptions=Options, InferenceSession=Session,
+        ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL=0)))
+    monkeypatch.setattr(neural_runtime, '_DEVICE', None)
+    monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_INDEX', 0)
+    monkeypatch.setattr(neural_runtime, '_DIRECTML_ADAPTER_NAME', '')
+    for name in ('_AVAILABLE_PROVIDERS', '_HARDWARE_ADAPTERS', '_PROBE_ERRORS'):
+        monkeypatch.setattr(neural_runtime, name, ())
+    monkeypatch.setattr(resource_policy, 'directml_adapters', lambda: [
+        (0, 'Discrete adapter', 0x10de, 8 * 1024 ** 3),
+        (1, 'Intel UHD integrated adapter', 0x8086, 0)])
+    monkeypatch.setattr(resource_policy, 'set_directml_adapter', selected.append)
+    assert neural_runtime.resolve_device(True) == 'DIRECTML'
+    assert tried == [('CUDAExecutionProvider', 0), ('DmlExecutionProvider', 0),
+                     ('DmlExecutionProvider', 1)]
+    assert selected == [1]
+    assert 'Intel UHD' in neural_runtime.display_name('DIRECTML')
+    assert len(neural_runtime.device_diagnostics()['probe_errors']) == 2
+    assert not list(tmp_path.glob('probe-*.json'))
+
+
+@pytest.mark.parametrize('placement,expected,requests', [
+    ('DmlExecutionProvider', 'DIRECTML', ['DIRECTML', 'DIRECTML']),
+    ('CPUExecutionProvider', 'CPU', ['DIRECTML', 'CPU']),
+    ('failure', 'CPU', ['DIRECTML', 'CPU', 'CPU']),
+    ('unverified', 'CPU', ['DIRECTML', 'CPU', 'CPU']),
+])
+def test_real_session_placement_is_profiled_once_and_cpu_placement_sticks(
+        monkeypatch, tmp_path, placement, expected, requests):
+    from core import resource_policy
+    requested = []
+    profile = tmp_path / 'inference.json'
+    ended = []
+
+    class Session:
+        def __init__(self, accelerated=False):
+            self.accelerated = accelerated
+
+        def run(self, outputs, inputs):
+            if self.accelerated and placement == 'failure':
+                raise RuntimeError('driver failed during inference')
+            return [inputs['input'] + np.float32(1)]
+
+        def end_profiling(self):
+            ended.append(True)
+            events = [] if placement == 'unverified' else [{'args': {'provider': placement}}]
+            profile.write_text(json.dumps(events))
+            return str(profile)
+
+    profiled = neural_runtime._ProfiledSession(Session(accelerated=True), 'DIRECTML')
+    def session(path, shape, device, threads):
+        requested.append(device)
+        return profiled if device == 'DIRECTML' else Session()
+
+    monkeypatch.setattr(neural_runtime, '_session', session)
+    monkeypatch.setattr(neural_runtime, '_DEVICE', 'DIRECTML')
+    monkeypatch.setattr(neural_runtime, '_SESSIONS', OrderedDict())
+    monkeypatch.setattr(resource_policy, 'probe_resources', lambda *_: resource_policy.ResourceSnapshot(
+        available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,
+        free_vram=8 * 1024 ** 3, total_vram=8 * 1024 ** 3))
+    monkeypatch.setattr(resource_policy, 'require_memory', lambda *_: None)
+    neural_runtime.start_inference_job()
+    try:
+        planes = np.zeros((1, 2, 64, 64), np.float32)
+        first = neural_runtime.logits(planes, 'model.onnx', 'DIRECTML', 1)
+        second = neural_runtime.logits(planes, 'model.onnx', 'DIRECTML', 1)
+        np.testing.assert_array_equal(first, planes + 1)
+        np.testing.assert_array_equal(second, first)
+        assert requested == requests
+        assert neural_runtime.actual_device() == expected
+        assert neural_runtime.cached_device() == 'DIRECTML'
+        assert neural_runtime.device_diagnostics()['fallback_cpu'] == (expected == 'CPU')
+        assert ended == [True]
+        assert not profile.exists()
+    finally:
+        neural_runtime.start_inference_job()
+
+
+def test_failed_inference_removes_its_profile(monkeypatch, tmp_path):
+    profile = tmp_path / 'failed.json'
+
+    class Session:
+        def run(self, outputs, inputs):
+            raise RuntimeError('driver failed during inference')
+
+        def end_profiling(self):
+            profile.write_text('[]')
+            return str(profile)
+
+    session = neural_runtime._ProfiledSession(Session(), 'DIRECTML')
+    with pytest.raises(RuntimeError, match='driver failed'):
+        session.run(['logits'], {'input': np.zeros((1, 2, 64, 64), np.float32)})
+    assert session.actual_device is None
+    assert not profile.exists()
+
+
+@pytest.mark.parametrize('neural,use_gpu,checkpoint,capability,actual,actual_model,expected', [
+    (False, True, 'v3.onnx', 'DIRECTML', 'DIRECTML', 'v3.onnx', ('CPU', 'selected')),
+    (True, False, 'v3.onnx', 'DIRECTML', 'DIRECTML', 'v3.onnx', ('CPU', 'selected')),
+    (True, True, 'v3.onnx', None, None, None, (None, 'pending')),
+    (True, True, 'v3.onnx', 'DIRECTML', None, None, ('DIRECTML', 'ready')),
+    (True, True, 'v3.onnx', 'N/A', None, None, ('CPU', 'selected')),
+    (True, True, 'v3.onnx', 'DIRECTML', 'CPU', 'v3.onnx', ('CPU', 'actual')),
+    (True, True, 'v1.onnx', 'DIRECTML', 'CPU', 'v3.onnx', ('DIRECTML', 'ready')),
+    (True, True, 'v3.pth', 'DIRECTML', 'DIRECTML', 'v3.onnx', ('DIRECTML', 'actual')),
+    (True, True, 'v3.onnx', 'CUDA', 'DIRECTML', 'v3.onnx', ('CUDA', 'ready')),
+])
+def test_execution_status_separates_capability_preference_and_actual_model(
+        monkeypatch, neural, use_gpu, checkpoint, capability, actual, actual_model, expected):
+    monkeypatch.setattr(neural_runtime, '_ACTUAL_DEVICE', actual)
+    monkeypatch.setattr(neural_runtime, '_ACTUAL_CHECKPOINT', actual_model)
+    assert neural_runtime.execution_status(neural, use_gpu, checkpoint, capability) == expected

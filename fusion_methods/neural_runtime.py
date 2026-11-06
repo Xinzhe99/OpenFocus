@@ -71,6 +71,68 @@ def gpu_toggle_state(kind, use_gpu, available):
     return enabled, bool(enabled and use_gpu)
 
 
+def execution_status(neural, use_gpu, checkpoint, capability):
+    """Return (device, state) without probing or claiming planned work ran.
+
+    Capability is the completed background probe; actual placement belongs to
+    the last inference of the selected checkpoint. Explicit CPU and classical
+    methods always describe CPU mode, even after an earlier accelerated job.
+    """
+    if not neural or not use_gpu:
+        return 'CPU', 'selected'
+    checkpoint = os.path.basename(os.path.splitext(checkpoint or '')[0] + '.onnx')
+    if (_ACTUAL_DEVICE is not None and _ACTUAL_CHECKPOINT == checkpoint
+            and (_ACTUAL_DEVICE == 'CPU' or _ACTUAL_DEVICE == capability)):
+        return _ACTUAL_DEVICE, 'actual'
+    if capability is None:
+        return None, 'pending'
+    if is_accelerator(capability):
+        return capability, 'ready'
+    return 'CPU', 'selected'
+
+
+class _ProfiledSession:
+    """Inspect placement once per model/shape session, then reuse it normally."""
+
+    def __init__(self, session, device):
+        self.session = session
+        self.device = device
+        self.actual_device = None
+        self._profiling = True
+
+    def _finish_profile(self, inspect):
+        self._profiling = False
+        profile = self.session.end_profiling()
+        try:
+            if not inspect:
+                return
+            with open(profile, encoding='utf-8') as stream:
+                events = json.load(stream)
+            providers = {event.get('args', {}).get('provider') for event in events}
+            if _PROVIDER[self.device] in providers:
+                return self.device
+            if _PROVIDER['CPU'] in providers:
+                return 'CPU'
+            raise RuntimeError('ONNX profile contains no verified execution provider')
+        finally:
+            if profile:
+                os.remove(profile)
+
+    def run(self, outputs, inputs):
+        try:
+            result = self.session.run(outputs, inputs)
+        except Exception:
+            if self._profiling:
+                try:
+                    self._finish_profile(False)
+                except Exception:
+                    _LOG.warning('Could not remove failed inference profile', exc_info=True)
+            raise
+        if self._profiling:
+            self.actual_device = self._finish_profile(True)
+        return result
+
+
 def resolve_device(use_gpu):
     if not use_gpu:
         return 'CPU'
@@ -110,16 +172,10 @@ def resolve_device(use_gpu):
                         session = ort.InferenceSession(weights_path('stackmff_v3_final.onnx'),
                             sess_options=options, providers=[provider, 'CPUExecutionProvider'])
                         session.disable_fallback()
+                        session = _ProfiledSession(session, kind)
                         session.run(['logits'], {'input': np.zeros((1, 2, 64, 64), dtype=np.float32)})
-                        profile = session.end_profiling()
-                        try:
-                            with open(profile, encoding='utf-8') as stream:
-                                events = json.load(stream)
-                            if not any(event.get('args', {}).get('provider') == _PROVIDER[kind]
-                                       for event in events):
-                                raise RuntimeError(f'{kind} did not execute any model nodes')
-                        finally:
-                            os.remove(profile)
+                        if session.actual_device != kind:
+                            raise RuntimeError(f'{kind} did not execute any model nodes')
                         if kind == 'DIRECTML':
                             from core.resource_policy import set_directml_adapter
                             set_directml_adapter(adapter_index)
@@ -176,6 +232,10 @@ def _session(path, shape, device, threads):
         options = ort.SessionOptions()
         options.intra_op_num_threads = max(1, int(threads or 1))
         options.enable_cpu_mem_arena = False
+        if device != 'CPU':
+            options.enable_profiling = True
+            options.profile_file_prefix = os.path.join(
+                tempfile.gettempdir(), 'openfocus-ort-' + uuid.uuid4().hex)
         # DirectML needs concrete dimensions for attention MatMul.
         for name, value in zip(('layers', 'height', 'width'), shape):
             options.add_free_dimension_override_by_name(name, int(value))
@@ -188,7 +248,10 @@ def _session(path, shape, device, threads):
                                        if device != 'CPU' else ['CPUExecutionProvider'])
         session.disable_fallback()
         if device != 'CPU' and _PROVIDER[device] not in session.get_providers():
-            raise RuntimeError(f'{device} provider did not initialize')
+            try:
+                _ProfiledSession(session, device)._finish_profile(False)
+            finally:
+                raise RuntimeError(f'{device} provider did not initialize')
         digest = hashlib.sha256()
         with open(path, 'rb') as stream:
             for block in iter(lambda: stream.read(64 * 1024), b''):
@@ -197,6 +260,8 @@ def _session(path, shape, device, threads):
                    checkpoint_sha256=digest.hexdigest(), provider=_PROVIDER[device],
                    adapter=display_name(device), adapter_index=adapter,
                    shape=shape, threads=options.intra_op_num_threads)
+        if device != 'CPU':
+            session = _ProfiledSession(session, device)
         _SESSIONS[key] = session
     _SESSIONS.move_to_end(key)
     return _SESSIONS[key]
@@ -234,6 +299,13 @@ def logits(planes, path, device, threads, should_cancel=None):
     try:
         session = _session(path, shape, device, threads)
         result = session.run(['logits'], {'input': planes})[0]
+        if device != 'CPU':
+            device = session.actual_device
+            if device == 'CPU':
+                # ORT can initialize a provider yet place this graph entirely
+                # on CPU. Reuse its valid output and keep later scales on CPU.
+                _FALLBACK_CPU = True
+                _SESSIONS.clear()
     except Exception:
         if device == 'CPU':
             raise
