@@ -144,14 +144,14 @@ class ElidingButton(QPushButton):
         # An explicitly assigned tooltip survives setText(); None means the
         # caption itself is the tooltip and must follow language changes.
         self._explicit_tip = None
+        self.setSizePolicy(QSizePolicy.Policy.Preferred,
+                           QSizePolicy.Policy.Fixed)
         # Qt clips a label at the padded contents edge, and the theme's 12 px
         # side padding took a fifth of a ~130 px panel button: "Render All
         # Methods…" lost its last letters with room to spare.  Narrower side
         # padding on these shared-width buttons gives the words that room.
         self.setStyleSheet("padding-left: 5px; padding-right: 5px;")
-        # Apply the elided form now: the constructor's text is full-width and
-        # would otherwise influence the first layout pass (the panel splits
-        # its width between up to three buttons).
+        # Only painting uses the elided caption; layout keeps the full width.
         self.setText(text)
 
     def setText(self, text: str) -> None:  # noqa: N802 (Qt casing)
@@ -160,6 +160,7 @@ class ElidingButton(QPushButton):
         super().setToolTip(
             self._explicit_tip if self._explicit_tip is not None
             else self._full_text)
+        self.updateGeometry()
 
     def setToolTip(self, text: str) -> None:  # noqa: N802 (Qt casing)
         self._explicit_tip = text or ""
@@ -167,6 +168,20 @@ class ElidingButton(QPushButton):
 
     def full_text(self) -> str:
         return self._full_text
+
+    def sizeHint(self):  # noqa: N802 (Qt casing)
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.text = self._full_text
+        contents = self.fontMetrics().size(
+            Qt.TextFlag.TextShowMnemonic, self._full_text)
+        return self.style().sizeFromContents(
+            QStyle.ContentsType.CT_PushButton, option, contents, self)
+
+    def minimumSizeHint(self):  # noqa: N802 (Qt casing)
+        hint = self.sizeHint()
+        hint.setWidth(0)
+        return hint
 
     def resizeEvent(self, event):  # noqa: N802 (Qt casing)
         super().resizeEvent(event)

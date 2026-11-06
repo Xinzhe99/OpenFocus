@@ -103,6 +103,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Frame-number, thumbnail and slider navigation in Retouch no longer creates a
   stray top-level window. Auto-background option indicators align with the first
   text line, and clearing sources removes stale frame-review status.
+  Source-header buttons retain their full preferred caption width after a
+  temporary squeeze, so an idle action does not collapse to a lone ellipsis.
 - Correct microscope mosaic scale and rotation with similarity geometry and
   original-resolution refinement instead of blending misregistered detail.
 - Use the reference canvas for mapped OpenFocus affine destinations when source
