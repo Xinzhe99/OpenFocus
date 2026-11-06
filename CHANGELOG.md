@@ -16,6 +16,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   where no frame saw the scene cleanly. Scenes that are nearly all subject are
   left as stacked.
 - Add a Retouch button beside Review frames in the right panel.
+- Add Auto background to the command line: `--auto-background [auto|soft|sharp]`
+  replaces the background after fusion with the Retouch defaults, so a stack
+  can be finished unattended. `--background-mode faithful` keeps the stack's
+  edges, `--keep-soft-parts` keeps soft parts attached to the subject, and
+  `--save-stacked` / `--missing-data-map` also write the stacked result and the
+  missing-data map. Batch runs and recipes accept the same options; it is
+  unavailable with grouped fusion and `--native-raw`.
 
 ### Changed
 - Pressing Render while frames are still loading now starts the render when
@@ -49,6 +56,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Compile B/C's Q12 recurrence as a GIL-free CPU kernel so independent frame
   work can overlap without Python row-loop contention. Preserve uint32 wrap,
   rounding and cooperative cancellation; include the compiler in all installs.
+- Image save dialogs start in the folder where you last saved an image.
+- A full render releases the region (ROI) preview's aligned frames, a second
+  full-resolution copy of the stack that was kept after ROI mode ended, and the
+  ROI preview no longer holds on to a replaced stack's frames. An ROI output's
+  provenance keeps its own crops instead of views that pinned the full frames:
+  in-memory crops are copied and mapped crops are stored as their own temporary
+  mapping. Opening ROI mode again re-aligns.
+- The command line orders a folder's frames near to far by their EXIF focus
+  steps when every frame has them (`--frame-order auto`, the default; `name`
+  keeps filename order). OM SYSTEM focus bracketing takes its first shot at
+  mid-depth, so filename order put a mid-depth frame first. The selected dust
+  map and defect mask are not frames, so they never hide the other frames'
+  focus steps, and recipes captured before this option keep their recorded
+  filename order.
+- Auto background on an output that was already retouched analyses the
+  stacked result it came from and lays the new background onto the retouched
+  image: brushing on the subject is kept, and an earlier replacement is not
+  analysed again, so running it twice no longer builds up halos. Retouch says
+  so when it opens on such an output.
 
 ### Fixed
 - Message-box buttons such as "Discard changes" are no longer cut off.
@@ -76,6 +102,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Bound per-tile BGRA conversion storage with disk mappings and stage complete
   resized inputs before constructing a target-size tile grid. Requested resize
   geometry, source preparation order and neural exposure handling are preserved.
+- Auto background no longer mistakes a dark background for a microscope's
+  field stop. Ignoring it filled the area beside the subject from lit ground
+  and the subject itself: a pale or orange smear, a lumpy outline, rings
+  around small specks and a dark band along the edge.
+- Auto background works at any image size. Its distances (blur sizes, the
+  zone rebuilt beside the subject, glow measurement, margins) were fixed pixel
+  counts tuned on 20 MP images, so a stack loaded at reduced size got a large
+  pale halo and rings, and larger sensors got zones too narrow. They now scale
+  with the image's long side; 20 MP results are unchanged.
+- Auto background no longer stops with an OpenCV error on a long stack from a
+  large sensor. The per-pixel frame index is 16-bit above 256 frames and
+  OpenCV filters that only with a 3x3 or 5x5 window, while the tuned window is
+  wider on large sensors; the wider window is now applied band by band with
+  the same edge replication and a bounded scratch buffer, and is never
+  clamped, so the smoothing extent is unchanged.
+- The command line refuses a run whose outputs would overwrite each other
+  before it writes anything. The result, `--depth-map`, `--save-stacked`,
+  `--missing-data-map` (the map and one mask per class), `--json` and
+  `--alignment-report` are checked against one another in a single run, and
+  across every batch folder (including per-folder configs) in a batch run; a
+  different name for the same file is caught too. An output may also no
+  longer replace an input the run reads -- a frame, the dust or defect
+  reference, or the config -- in a single run and in every batch folder, so a
+  result, sidecar, class mask or JSON summary is never lost to a colliding
+  path. Batch folders are listed with each folder's own config and filters
+  and nothing is created before either check passes.
 
 ## [1.76.0] - 2026-11-06
 

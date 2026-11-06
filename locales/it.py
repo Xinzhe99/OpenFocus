@@ -649,6 +649,8 @@ PACK = {
     "retouch_auto_bg_clean_hint": "Rimuove gli aloni lungo i bordi del soggetto, mai oltre ciò che i fotogrammi hanno registrato. Disattiva per mantenere l'aspetto dei bordi dell'impilamento (Fedele).",
     "retouch_auto_bg_soft_parts": "Mantieni le parti sfocate collegate al soggetto",
     "retouch_auto_bg_soft_parts_hint": "Mantiene come impilate le parti del soggetto appena fuori dalla profondità di campo (la punta arrotondata di una spina). Può anche mantenere oggetti di sfondo accanto al soggetto con la resa dell'impilamento.",
+    "retouch_auto_bg_from_stacked": "Questa immagine è già stata ritoccata, quindi lo sfondo viene analizzato dal risultato impilato. I ritocchi a pennello sul soggetto vengono mantenuti.",
+    "retouch_from_retouched": "Questo risultato è già stato ritoccato. Lo sfondo automatico partirà dal risultato impilato e manterrà i ritocchi a pennello sul soggetto.",
     "retouch_auto_bg_run": "Sostituisci sfondo",
     "retouch_auto_bg_failed": "Sostituzione dello sfondo non riuscita.",
     "retouch_auto_bg_unchanged": "Quasi tutta l'inquadratura è soggetto, quindi lo sfondo è stato lasciato come impilato. La mappa dei dati mancanti è disponibile.",

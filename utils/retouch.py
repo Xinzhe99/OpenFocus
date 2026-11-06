@@ -453,11 +453,15 @@ class TileHistory:
 
 
 def compute_auto_background(image, frames, preset="auto", clean=True,
-                            cancelled=None, progress=None, keep_soft_parts=False):
+                            cancelled=None, progress=None, keep_soft_parts=False,
+                            stacked=None):
     """Run `core.background_fill.replace_background` on a retouch image.
 
-    Admits the working set with the resource policy and serializes with
-    other heavy jobs.  Returns a `BackgroundFillResult`."""
+    With `stacked` (the stacked result `image` was retouched from), the
+    background is analysed from `stacked` and laid onto `image`, so edits
+    on the subject survive and an earlier replacement is not analysed
+    again.  Admits the working set with the resource policy and serializes
+    with other heavy jobs.  Returns a `BackgroundFillResult`."""
     from core.background_fill import replace_background, background_working_set_bytes
     from core.resource_policy import heavy_job, require_memory
     h, w = image.shape[:2]
@@ -471,8 +475,10 @@ def compute_auto_background(image, frames, preset="auto", clean=True,
     with heavy_job(cancelled):
         require_memory(required)
         valid_masks = [frame.valid_mask() for frame in frames]
-        result = replace_background([frame.image for frame in frames], image, preset=preset,
+        result = replace_background([frame.image for frame in frames],
+                                    image if stacked is None else stacked, preset=preset,
                                     valid_masks=valid_masks,
+                                    composite_onto=None if stacked is None else image,
                                     clean=clean, keep_soft_parts=keep_soft_parts,
                                     progress=progress, cancelled=cancelled)
     return result
@@ -527,6 +533,10 @@ class RetouchDocument:
         # retains its final reachable diagnostics without charging old edits
         # a budget that their original recording did not include.
         self._checkpoint_background_states = None
+        # The stacked result this image was retouched from, when the session
+        # starts on an already retouched output: Auto background analyses it
+        # instead of a background that may already have been replaced.
+        self.stacked_image = None
 
     @property
     def checkpoint_ready(self):
@@ -650,10 +660,14 @@ class RetouchDocument:
             return "record_limit"
         if not self.auto_background_supported():
             return "unsupported"
+        stacked = self.stacked_image
+        if stacked is not None and stacked.shape != self.working.shape:
+            stacked = None
         try:
             result = compute_auto_background(self.working, self.frames, preset, clean,
                                              cancelled=cancelled, progress=progress,
-                                             keep_soft_parts=keep_soft_parts)
+                                             keep_soft_parts=keep_soft_parts,
+                                             stacked=stacked)
         except (BackgroundFillCancelled, RegistrationCancelled):
             return "cancelled"
         image = result.image
@@ -694,6 +708,8 @@ class RetouchDocument:
                              "clean": bool(clean)}
                 if keep_soft_parts:
                     operation["keep_soft_parts"] = True
+                if stacked is not None:
+                    operation["from_stacked"] = True
                 if status == "committed":
                     self._record_operation(operation)
                 else:

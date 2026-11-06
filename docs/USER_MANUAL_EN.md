@@ -1045,6 +1045,12 @@ prefer them, for example an out-of-focus grass blade in front of the subject.
 When the subject fills nearly the whole frame, as in a ground-level forest
 scene, the image is left as stacked and a note says so.
 
+If you open Retouch on an output that was already retouched, Auto background
+analyzes the stacked result it came from and lays the new background onto your
+retouched image. Brushing on the subject is kept, and an earlier background
+replacement is never analyzed again, so running it twice does not build up
+halos.
+
 After a run, **Show missing data** tints the places no frame saw cleanly. These
 are the places to check or retouch by hand:
 
@@ -1057,6 +1063,12 @@ are the places to check or retouch by hand:
 mask per colour. Auto background needs the frames that made the result and is
 not available for region (ROI) results. New background checkpoints restore the
 exact image, reachable history and diagnostics without recomputing the background.
+
+The command line does the same without the GUI: add `--auto-background` to a
+fusion run (see [Command Line Interface](#14-command-line-interface)). It uses
+the same defaults (Automatic, edge halos cleaned, soft parts not kept), and
+`--save-stacked` and `--missing-data-map` also write the stacked result and the
+missing-data map.
 
 ### Managing Labels
 
@@ -1589,6 +1601,10 @@ python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 # Single multi-page TIFF Z-stack with a metadata-calibrated scale bar
 python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 
+# Unattended: align, stack, replace the background, and keep the stacked
+# result and the missing-data map for review
+python main.py -i ./burst -o result.tif -a ecc --auto-background --save-stacked --missing-data-map
+
 # Inspect adjacent similar frames without fusing or changing the input
 python main.py -i ./stack_folder --suggest-duplicates
 ```
@@ -1629,6 +1645,7 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--exposure-match` | Match every frame's mean to the last frame before fusion (default: on; `--no-exposure-match` disables). Whole-stack gains, so tiled output stays seamless; applies to every method and to the OpenFocus aligner's brightness reference |
 | `--base-frame` | Optional post-fusion step: match the output's low frequencies to the `last`/`first` frame (`none` default) |
 | `--sort` | Frame order for `openfocus_a/b/c`: `asc` (default, file order), `desc` (reverse a far-to-near sweep), `off` |
+| `--frame-order` | Folder input: `auto` (default) orders frames near to far by EXIF focus steps when every frame has them (OM SYSTEM focus bracketing starts mid-depth), otherwise by name; `name` always sorts by filename. Explicit file lists keep their order |
 | `--sharpen-output` | Apply mild unsharp masking to the fused output (off by default) |
 | `--dust-map WHITE` | Flat-field (dust map) correction from a defocused white-field shot |
 | `--defect-mask-path MASK` | Sensor-coordinate defect mask repaired before registration |
@@ -1652,6 +1669,11 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--scale-um` | Pixel size in µm/px, overriding metadata (implies `--scale-bar`) |
 | `--depth-map [path]` | Also save a colorized focus-position map (default `<output>_depth.png`); depth-capable methods only, not grouped or transparent. In batch mode only the default path is allowed |
 | `--depth-colormap` | Colormap for `--depth-map`: turbo, viridis, jet, gray, … (default turbo) |
+| `--auto-background [preset]` | Replace the stacked background with an aligned frame's, as Retouch's Auto background does: `auto` (default), `soft` (blurriest background) or `sharp` (far-focus frame). Needs the aligned frames, so not with grouped fusion |
+| `--background-mode` | Auto background: `clean` (default) also removes the stack's edge halos, within what the frames recorded; `faithful` keeps them |
+| `--keep-soft-parts` | Auto background: keep soft parts attached to the subject that some frame focused on |
+| `--save-stacked [path]` | With `--auto-background`, also save the result before the replacement (default `<output>_stacked<ext>`). In batch mode only the default path is allowed |
+| `--missing-data-map [path]` | With `--auto-background`, also save the missing-data map and one 8-bit mask per class (default `<output>_missing.png`). In batch mode only the default path is allowed |
 | `--json FILE` | Write a machine-readable result summary to FILE when done |
 | `--json-progress` | Print one JSON progress object per step to stdout (NDJSON); prose goes to stderr |
 | `--dry-run` | Validate inputs and print the plan without fusing |
