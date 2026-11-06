@@ -654,6 +654,9 @@ def test_default_streaming_preserves_whole_frame_context_above_2048(monkeypatch,
     if dtype == np.uint16:
         frames = [frame.astype(np.uint16) * 257 + 3 for frame in frames]
     monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 64 * 1024 ** 2)
+    # The default must preserve global maps even when the old peak estimate
+    # would request independent crops; row/mapped execution controls memory.
+    monkeypatch.setattr(mff, 'estimate_peak_bytes', lambda *args, **kwargs: 128 * 1024 ** 2)
     options = dict(algorithm=method, exposure_match=True, sort_mode='desc', base_frame='first')
     whole = mff.MultiFocusFusion(tile_enabled=False, **options).fuse(frames, thread_count=1)
     automatic = mff.MultiFocusFusion(**options).fuse(frames, thread_count=1)
@@ -763,3 +766,119 @@ def test_closing_frame_production_cancels_and_joins_running_workers():
     assert next(iterator) == (0, 0)
     iterator.close()
     assert active == 0
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('grayscale', [False, True])
+def test_b_interpolates_only_the_two_neighboring_depth_layers(dtype, grayscale):
+    from fusion_methods.openfocus_bc import openfocus_b_impl
+
+    ramp = np.arange(81, dtype=np.uint16).reshape(9, 9)
+    frames = [((ramp + offset) % 256).astype(np.uint8) for offset in (10, 70, 150)]
+    if not grayscale:
+        frames = [np.repeat(frame[:, :, None], 3, axis=2) for frame in frames]
+    if dtype == np.uint16:
+        frames = [frame.astype(np.uint16) * 256 + 7 for frame in frames]
+    depth = np.broadcast_to(np.arange(9, dtype=np.float32) / 4, (9, 9))
+    expected = np.empty(frames[0].shape, np.float32)
+    for col in range(9):
+        lower = min(col // 4, 2)
+        fraction = (col % 4) / 4
+        a = frames[lower][:, col].astype(np.float32)
+        b = frames[min(lower + 1, 2)][:, col].astype(np.float32)
+        if dtype == np.uint16:
+            a *= np.float32(255 / 65535)
+            b *= np.float32(255 / 65535)
+        expected[:, col] = a * (1 - fraction) + b * fraction
+    actual = openfocus_b_impl(frames, depth_override=depth, thread_count=1)
+    if dtype == np.uint8:
+        np.testing.assert_array_equal(actual, expected.astype(np.uint8))
+    else:
+        assert actual.dtype == np.float32
+        np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=0)
+        assert np.any(actual % 1), '16-bit precision must survive fusion'
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('grayscale', [False, True])
+def test_c_reconstructs_multiscale_transition_from_the_same_depth_as_b(dtype, grayscale):
+    from fusion_methods.openfocus_bc import openfocus_b_impl, openfocus_c_impl
+
+    shape = (65, 97) if grayscale else (65, 97, 3)
+    frames = [np.full(shape, value, np.uint8) for value in (20, 220)]
+    if dtype == np.uint16:
+        frames = [frame.astype(np.uint16) * 257 + 7 for frame in frames]
+    depth = np.zeros(shape[:2], np.float32)
+    depth[:, 48:] = 1
+    b = openfocus_b_impl(frames, depth_override=depth, thread_count=1)
+    c = openfocus_c_impl(frames, depth_override=depth, levels=3, thread_count=1)
+    normalized = [frame.astype(np.float32) * (255 / 65535)
+                  if dtype == np.uint16 else frame for frame in frames]
+    np.testing.assert_allclose(b[:, :48], normalized[0][:, :48], atol=2e-5)
+    np.testing.assert_allclose(b[:, 48:], normalized[1][:, 48:], atol=2e-5)
+    np.testing.assert_allclose(c[:, :8], normalized[0][:, :8], atol=.005)
+    np.testing.assert_allclose(c[:, -8:], normalized[1][:, -8:], atol=.005)
+    assert np.abs(c.astype(np.float32) - b.astype(np.float32)).mean() > 1
+    # With no source detail, only C's expanded coarsest plane can form these
+    # intermediate boundary values; pixel interpolation at full depth cannot.
+    assert np.all((c[:, 47:49] > 20.1) & (c[:, 47:49] < 219.9))
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_c_constant_depth_reconstructs_the_selected_source_without_forced_deltas(dtype):
+    from fusion_methods.openfocus_bc import openfocus_b_impl, openfocus_c_impl
+
+    rng = np.random.default_rng(8177)
+    frames = [rng.integers(20, 230, (131, 97, 3), dtype=np.uint8) for _ in range(3)]
+    if dtype == np.uint16:
+        frames = [frame.astype(np.uint16) * 256 + 7 for frame in frames]
+    depth = np.ones(frames[0].shape[:2], np.float32)
+    b = openfocus_b_impl(frames, depth_override=depth, thread_count=1)
+    c = openfocus_c_impl(frames, depth_override=depth, levels=3, thread_count=1)
+    np.testing.assert_allclose(c, b, atol=1e-4)
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+def test_whole_frame_progress_can_cancel_before_publication(method):
+    from core.multi_focus_fusion import MultiFocusFusion
+    from core.registration import RegistrationCancelled
+
+    frames = make_two_focus_stack((65, 97))
+    updates = []
+    cancelled = False
+    def progress(done, total):
+        nonlocal cancelled
+        updates.append((done, total))
+        cancelled = done == total
+    with pytest.raises(RegistrationCancelled):
+        MultiFocusFusion(method, exposure_match=False, tile_enabled=False).fuse(
+            frames, thread_count=1, progress_callback=progress,
+            should_cancel=lambda: cancelled)
+    assert updates and updates[0][0] == 0
+    assert updates[-1][0] == updates[-1][1]
+    assert [done for done, _total in updates] == sorted(done for done, _total in updates)
+
+
+@pytest.mark.parametrize('guided', [False, True])
+def test_depth_recurrence_carries_state_across_forward_and_reverse_strips(monkeypatch, guided):
+    from fusion_methods import openfocus_depth as depth, _depth_kernel as kernel
+
+    rng = np.random.default_rng(1791)
+    source = rng.integers(0, 65536, (131, 257), dtype=np.int64)
+    guide = rng.integers(0, 65536, source.shape, dtype=np.int64) if guided else None
+    expected = depth._filter(source, 2.4, lambda: None, guide, 153.6)
+    original = kernel.axis_block
+    def narrow_strips(src, guidance, first, output, acc, q, t, tm, tl, start, stop, backward):
+        if backward:
+            for end in range(stop, start, -7):
+                original(src, guidance, first, output, acc, q, t, tm, tl,
+                         max(start, end - 7), end, backward)
+        else:
+            for begin in range(start, stop, 7):
+                original(src, guidance, first, output, acc, q, t, tm, tl,
+                         begin, min(stop, begin + 7), backward)
+    monkeypatch.setattr(kernel, 'axis_block', narrow_strips)
+    actual = depth._filter(source, 2.4, lambda: None, guide, 153.6)
+    np.testing.assert_array_equal(actual, expected)
+
+

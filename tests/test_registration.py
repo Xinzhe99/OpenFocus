@@ -162,6 +162,40 @@ def test_openfocus_recovers_rotation_scale_and_translation_together():
     aligned_error = np.abs(aligned[0].astype(np.float32) - aligned[1]).mean()
     assert aligned_error < raw_error * 0.15
 
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+@pytest.mark.parametrize("channels", [1, 3])
+def test_openfocus_different_size_frame_uses_mapped_output_canvas(dtype, channels):
+    from core.registration import _align_openfocus_impl, alignment_report
+
+    rng = np.random.default_rng(177)
+    height, width = 240, 320
+    gray = cv2.resize(rng.integers(20, 220, (20, 27), dtype=np.uint8),
+                      (width, height), interpolation=cv2.INTER_CUBIC)
+    base = (gray if channels == 1 else
+            np.stack((gray, np.flip(gray, axis=1), np.flip(gray, axis=0)), axis=2))
+    if dtype == np.uint16:
+        base = base.astype(np.uint16) * 251 + 19
+    # Both estimation images are identical after bounded downsampling, while
+    # the native source shape differs from the first frame's output canvas.
+    current = np.repeat(np.repeat(base, 2, axis=0), 2, axis=1)
+    report = []
+    token = alignment_report.set(report)
+    try:
+        aligned = _align_openfocus_impl(
+            [base, current], equalize_brightness=False, thread_count=1,
+            failure_policy="fail")
+    finally:
+        alignment_report.reset(token)
+
+    assert [entry["status"] for entry in report] == ["reference", "aligned"]
+    np.testing.assert_array_equal(report[1]["transform"], np.eye(3))
+    np.testing.assert_array_equal(aligned[0], base[2:-2, 2:-2])
+    assert isinstance(aligned[1], np.memmap)
+    assert aligned[1].dtype == dtype
+    assert aligned[1].shape == aligned[0].shape
+    np.testing.assert_array_equal(aligned[1], current[2:height - 2, 2:width - 2])
+
+
 @pytest.mark.parametrize("reference", [2, 3])
 def test_openfocus_selected_reference_aligns_both_sides_without_reordering(reference):
     from core.registration import _align_openfocus_impl
@@ -545,3 +579,35 @@ def test_openfocus_detector_retains_motion_under_strong_defocus():
     assert result[0] > 0.1
     assert result[3] == pytest.approx(16, abs=1.5)
     assert result[4] == pytest.approx(-7, abs=1.5)
+
+
+@pytest.mark.parametrize('input_scale', [1.0, 255.0])
+def test_homography_normalized_float_frames_match_uint8_geometry(input_scale):
+    frames, _ = _shifted_stack(dx=5, dy=3, size=(240, 320))
+    registration = ImageRegistration('homography', parameters={'failure_policy': 'fail'})
+    expected = registration.process(frames, thread_count=1)
+    actual = registration.process([frame.astype(np.float32) / input_scale for frame in frames],
+                                  thread_count=1)
+    for result, reference in zip(actual, expected):
+        assert result.dtype == np.float32
+        assert result.shape == reference.shape
+        np.testing.assert_allclose(np.clip(result * input_scale, 0, 255), reference,
+                                   rtol=0, atol=1)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('singleton_axis', [False, True])
+def test_ecc_grayscale_matches_repeated_color_geometry(dtype, singleton_axis):
+    frames, _ = _shifted_stack(dx=3, dy=2, size=(140, 180))
+    gray = [frame[:, :, 0] for frame in frames]
+    if dtype == np.uint16:
+        gray = [frame.astype(np.uint16) * 251 + 19 for frame in gray]
+    bgr = [cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) for frame in gray]
+    registration = ImageRegistration('ecc', parameters={'failure_policy': 'fail'})
+    expected = registration.process(bgr, thread_count=1)
+    inputs = [frame[:, :, None] for frame in gray] if singleton_axis else gray
+    actual = registration.process(inputs, thread_count=1)
+    for result, reference in zip(actual, expected):
+        assert result.ndim == 2
+        assert result.dtype == dtype
+        np.testing.assert_array_equal(result, reference[:, :, 0])

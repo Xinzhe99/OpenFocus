@@ -499,7 +499,6 @@ def test_grouped_batch_real_registration_keeps_singleton_coordinates(qapp, tmp_p
         assert cv2.imwrite(str(source / f'{index}.png'), frame)
     monkeypatch.setattr(registration, '_of_estimate_similarity',
                         lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
-    monkeypatch.setattr(BatchWorker, '_fuse_one_stack', lambda self, fusion, method, images, params: images[0])
     settings = {'format': 'png', 'fusion_method': 'openfocus_a', 'alignment': 'openfocus',
                 'group_size': 2, 'group_overlap': 0}
     worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'), settings, use_gpu=False)
@@ -576,3 +575,135 @@ def test_grouped_batch_cancellation_is_reported(qapp, tmp_path, monkeypatch):
     worker.run()
     assert result['cancelled'] and result['counts']['cancelled'] == 1
     assert not result['outputs']
+
+
+@pytest.mark.parametrize('keep_history', [False, True])
+def test_stack_change_discards_draft_and_preserves_only_history(qapp, monkeypatch, keep_history):
+    from PyQt6.QtGui import QAction
+    from controllers.transform_manager import TransformManager
+    import controllers.export_manager as exporter
+
+    window = host(qapp)
+    window.lbl_result_img = QLabel(window)
+    window.lbl_result_img.set_roi_rect = lambda _rect: None
+    window.add_label_action = QAction(window)
+    window.resize_action = QAction(window)
+    full = np.full((12, 16, 3), 40000, np.uint16)
+    if keep_history:
+        record = OutputRecord.create(full, 'full')
+        window.output_manager._insert_output(full, record.label, record)
+    draft = np.full((6, 8, 3), 1000, np.uint16)
+    window.fusion_result = draft
+    window._wipe_preview_record = OutputRecord.create(draft, 'draft')
+
+    TransformManager(window).invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
+
+    assert window._wipe_preview_record is None
+    assert window.fusion_result is (full if keep_history else None)
+    assert window.output_list.count() == int(keep_history)
+    if not keep_history:
+        warnings = []
+        monkeypatch.setattr(exporter, 'show_warning_box', lambda *args: warnings.append(args))
+        monkeypatch.setattr(exporter.FileDialog, 'getSaveFileName',
+                            lambda *args: pytest.fail('offered to export a discarded preview'))
+        window.export_manager.save_result()
+        assert len(warnings) == 1
+
+
+def test_aligned_history_remains_navigable_after_stack_change(qapp):
+    from PyQt6.QtGui import QAction
+    from controllers.label_manager import LabelManager
+    from controllers.transform_manager import TransformManager
+    from utils.image_utils import to_display_uint8
+
+    window = host(qapp)
+    window.lbl_result_img = QLabel(window)
+    window.lbl_result_img.set_display_pixmap = window.lbl_result_img.setPixmap
+    window.lbl_result_img.set_roi_rect = lambda _rect: None
+    window.add_label_action = QAction(window)
+    window.resize_action = QAction(window)
+    window.label_manager = LabelManager(window)
+    frames = tuple(np.full((12, 16, 3), value, np.uint16) for value in (1000, 60000))
+    record = OutputRecord.create(None, 'aligned', kind='aligned')
+    record.aligned_frames = frames
+    record.aligned_names = ('first.tif', 'second.tif')
+    item = window.output_manager._insert_output(None, record.label, record)
+    window.result_slider.valueChanged.connect(window.output_manager.show_registration_result)
+
+    TransformManager(window).invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
+    assert not window.result_slider.isEnabled()
+    window.output_manager.display_output_image_in_result_view(item)
+
+    assert window.result_slider.isEnabled()
+    window.result_slider.setValue(1)
+    assert window.current_result_index == 1
+    assert window.lbl_result_info.text() == '2 / 2'
+    color = window.lbl_result_img.pixmap().toImage().pixelColor(0, 0)
+    expected = int(to_display_uint8(frames[1])[0, 0, 0])
+    assert color.red() == color.green() == color.blue() == expected
+
+
+@pytest.mark.parametrize('running', [False, True])
+def test_stack_reset_releases_completed_sources_and_keeps_inflight_sources(qapp, running):
+    import gc
+    import weakref
+    from PyQt6.QtGui import QAction
+    from controllers.transform_manager import TransformManager
+    from core.render_context import build_render_context
+
+    window = host(qapp)
+    window.lbl_result_img = QLabel(window)
+    window.lbl_result_img.set_roi_rect = lambda _rect: None
+    window.add_label_action = QAction(window)
+    window.resize_action = QAction(window)
+
+    def completed_source():
+        source = np.full((12, 16, 3), 40000, np.uint16)
+        result = np.full_like(source, 1000)
+        window.last_render_context = build_render_context([source], result)
+        window.render_manager = SimpleNamespace(
+            worker=object() if running else None,
+            _render_context={'source': [source]})
+        return weakref.ref(source)
+
+    captured = completed_source()
+    TransformManager(window).invalidate_processing_results(clear_output_view=True)
+    gc.collect()
+
+    assert (captured() is not None) is running
+
+
+def test_retouch_child_keeps_original_sources_after_replacement_and_parent_removal(qapp):
+    from PyQt6.QtGui import QAction
+    from controllers.label_manager import LabelManager
+    from controllers.transform_manager import TransformManager
+    from core.render_context import build_render_context
+    from utils.retouch import RetouchDocument
+
+    window = host(qapp)
+    window.lbl_result_img = QLabel(window)
+    window.lbl_result_img.set_display_pixmap = window.lbl_result_img.setPixmap
+    window.lbl_result_img.set_roi_rect = lambda _rect: None
+    window.add_label_action = QAction(window)
+    window.resize_action = QAction(window)
+    window.label_manager = LabelManager(window)
+    source = np.full((12, 16, 3), 40000, np.uint16)
+    fused = np.full_like(source, 1000)
+    context = build_render_context([source], fused, filenames=['original.tif'])
+    base = OutputRecord.create(fused, 'stack', context=context)
+    parent = window.output_manager._insert_output(fused, base.label, base)
+    child = window.output_manager.add_retouched_output(base, np.full_like(source, 2000))
+    window.output_manager._remove_row(window.output_list.row(parent))
+    window.raw_images = [np.full_like(source, 60000)]
+
+    TransformManager(window).invalidate_processing_results(clear_output_view=True, preserve_outputs=True)
+
+    assert window.output_manager.stacked_source(child) is None
+    assert child.retouchable
+    document = RetouchDocument(child.image, child.context)
+    document.diameter = 4
+    document.hardness = 1.0
+    assert document.begin_stroke(8, 6)
+    assert document.end_stroke() == 'committed'
+    np.testing.assert_array_equal(document.working[6, 8], source[6, 8])
+    assert int(child.image[6, 8, 0]) == 2000

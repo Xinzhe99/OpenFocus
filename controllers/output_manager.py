@@ -1231,6 +1231,7 @@ class OutputManager:
                 window.registration_results = list(images)
                 window.registration_filenames = list(record.aligned_names)
                 window.result_slider.setRange(0, max(0, len(images) - 1))
+                window.result_slider.setEnabled(bool(images))
                 window.result_control_bar.setVisible(bool(images))
                 self.show_registration_result(0)
             except Exception as exc:

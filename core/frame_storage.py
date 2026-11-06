@@ -76,7 +76,18 @@ def store_frame(image):
     The mapping, including any derived views, owns the file. It is removed
     after the last view is released, including on cancellation or exceptions.
     """
-    mapped = create_frame(image.shape, image.dtype)
-    mapped[...] = image
-    mapped.flush()
-    return mapped
+    directory = storage_directory()
+    require_disk_space(image.nbytes, directory)
+    fd, path = tempfile.mkstemp(prefix="openfocus-frame-", suffix=".bin", dir=directory)
+    try:
+        # Write through the file descriptor before mapping it. Filling a writable
+        # mapping faults every source-stack page into this process even though
+        # the caller only needs one frame/strip at a time afterward.
+        with os.fdopen(fd, "wb") as stream:
+            np.asarray(image).tofile(stream)
+        mapped = np.memmap(path, dtype=image.dtype, mode="r+", shape=image.shape)
+        weakref.finalize(mapped, _release, mapped._mmap, path)
+        return mapped
+    except BaseException:
+        _remove(path)
+        raise

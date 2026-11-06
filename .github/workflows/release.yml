@@ -336,7 +336,7 @@ jobs:
   build-macos:
     name: Build macOS (Apple Silicon)
     needs: prepare
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
 

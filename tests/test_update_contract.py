@@ -255,6 +255,50 @@ def test_mac_missing_executable_is_not_ready(tmp_path, monkeypatch):
     assert not self_update.verify_staged_app(str(tmp_path))
 
 
+@pytest.mark.skipif(self_update.sys.platform != "darwin", reason="uses the macOS ditto command")
+def test_mac_retry_discards_files_from_interrupted_copy(tmp_path, monkeypatch):
+    import platform
+    import plistlib
+    import struct
+    import subprocess
+
+    install = tmp_path / "OpenFocus.app"
+    install.mkdir()
+    (install / "old-version").write_text("old", encoding="utf-8")
+    leftover = tmp_path / "OpenFocus.app.new"
+    leftover.mkdir()
+    (leftover / "obsolete-library").write_text("partial earlier copy", encoding="utf-8")
+    stage = tmp_path / "stage"
+    bundle = stage / "OpenFocus.app"
+    contents = bundle / "Contents"
+    (contents / "MacOS").mkdir(parents=True)
+    with (contents / "Info.plist").open("wb") as stream:
+        plistlib.dump({"CFBundleExecutable": "OpenFocus"}, stream)
+    cpu = 0x0100000C if platform.machine().lower() in ("arm64", "aarch64") else 0x01000007
+    executable = contents / "MacOS" / "OpenFocus"
+    executable.write_bytes(b"\xcf\xfa\xed\xfe" + struct.pack("<I", cpu))
+    executable.chmod(0o755)
+    # Execute the real copy/swap commands only inside this temporary tree.
+    # Suppress the external GUI launch after the disposable bundle is copied.
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    opener = commands / "open"
+    opener.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    opener.chmod(0o755)
+    monkeypatch.setattr(self_update.tempfile, "gettempdir", lambda: str(tmp_path))
+    script = self_update.write_apply_script_macos(str(install), str(bundle), "v999",
+                                                staging_root=str(stage))
+    result = subprocess.run(["/bin/bash", script], env={**os.environ,
+                            "PATH": str(commands) + os.pathsep + os.environ["PATH"]},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert (install / "Contents" / "MacOS" / "OpenFocus").is_file()
+    assert not (install / "obsolete-library").exists()
+    assert not (install / "old-version").exists()
+    assert not leftover.exists()
+    assert self_update.consume_results() == [("v999", True, "")]
+
+
 def test_windows_script_preserves_install_mode_and_user_data(tmp_path, monkeypatch):
     monkeypatch.setattr(self_update.sys, "platform", "win32")
     stage = tmp_path / "stage"

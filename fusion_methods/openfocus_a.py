@@ -1,64 +1,52 @@
-"""Multiscale focus-response selection for OpenFocus A."""
+"""High-frequency energy selection for OpenFocus A."""
 
 import cv2
 import numpy as np
 from core.frame_storage import create_frame, store_frame
 
 
-def _down2(image):
-    """Average 2x2 blocks, replicating an incomplete bottom or right edge."""
-    height, width = image.shape
-    padded = np.pad(image, ((0, height % 2), (0, width % 2)), mode="edge")
-    return (padded[0::2, 0::2] + padded[0::2, 1::2]
-            + padded[1::2, 0::2] + padded[1::2, 1::2]) * np.float32(0.25)
-
-
-def _response(frame, levels, sigma, should_cancel, check_cancel):
-    """Accumulate absolute Laplacian bands on the full-resolution grid."""
-    if frame.ndim == 2:
-        gray = frame
-    elif frame.shape[2] == 1:
-        gray = frame[:, :, 0]
-    else:
-        # Use the equal-channel mean, excluding alpha.
-        gray = np.mean(frame[:, :, :3], axis=2, dtype=np.float32)
-
-    height, width = gray.shape
-    response = create_frame((height, width), np.float32)
-    response[...] = 0
-    current = gray
-    for level in range(levels):
+def _response(frame, fine_sigma, spread_sigma, should_cancel, check_cancel):
+    """Measure high-frequency energy with globally aligned, mapped row passes."""
+    height, width = frame.shape[:2]
+    gray = create_frame((height, width), np.float32)
+    for start in range(0, height, 128):
         check_cancel(should_cancel)
-        smaller = _down2(current)
-        # Expand by exactly two before cropping, preserving the half-pixel
-        # phase on odd-sized images (a direct resize to current.shape does not).
-        expanded = cv2.resize(smaller, (smaller.shape[1] * 2, smaller.shape[0] * 2),
-                              interpolation=cv2.INTER_LINEAR)
-        detail = np.abs(current - expanded[:current.shape[0], :current.shape[1]])
-        if level:
-            scale = 1 << level
-            detail = np.repeat(detail, min(scale, height), axis=0)[:height]
-            detail = np.repeat(detail, min(scale, width), axis=1)[:, :width]
-        response += detail[:height, :width]
-        current = smaller
-        if current.shape == (1, 1):
-            break
-    # Clip the response to the fixed-point range in the 0-255 input domain.
-    np.minimum(response, np.float32(65535.0 / 256.0), out=response)
-    if sigma > 1e-3:
-        response = store_frame(cv2.GaussianBlur(response, (0, 0), sigmaX=sigma,
-                                               borderType=cv2.BORDER_REPLICATE))
+        rows = slice(start, min(height, start + 128))
+        pixels = frame[rows]
+        gray[rows] = (pixels if frame.ndim == 2 else pixels[:, :, 0]
+                      if frame.shape[2] == 1 else
+                      np.mean(pixels[:, :, :3], axis=2, dtype=np.float32))
+    energy = create_frame((height, width), np.float32)
+    halo = int(np.ceil(4 * fine_sigma)) + 2
+    for start in range(0, height, 128):
+        check_cancel(should_cancel)
+        stop = min(height, start + 128)
+        top, bottom = max(0, start - halo), min(height, stop + halo)
+        blurred = cv2.GaussianBlur(gray[top:bottom], (0, 0), sigmaX=fine_sigma,
+                                    borderType=cv2.BORDER_REPLICATE)
+        rows = slice(start, stop)
+        np.subtract(gray[rows], blurred[start - top:stop - top], out=energy[rows])
+        np.square(energy[rows], out=energy[rows])
+    del gray, pixels, blurred
+    response = create_frame((height, width), np.float32)
+    halo = int(np.ceil(4 * spread_sigma)) + 2
+    for start in range(0, height, 128):
+        check_cancel(should_cancel)
+        stop = min(height, start + 128)
+        top, bottom = max(0, start - halo), min(height, stop + halo)
+        blurred = cv2.GaussianBlur(energy[top:bottom], (0, 0), sigmaX=spread_sigma,
+                                    borderType=cv2.BORDER_REPLICATE)
+        response[start:stop] = blurred[start - top:stop - top]
     return response
 
 
 def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
                      thread_count: int = None, blend_smoothing: float = 2.0,
-                     should_cancel=None):
-    """Select pixels using a multiscale Laplacian response.
+                     should_cancel=None, progress_callback=None):
+    """Select original pixels using local high-frequency energy.
 
-    ``kernel_size`` is a window diameter; half its value is the radius R,
-    with pyramid depth floor(log2(R))+3. ``blend_smoothing`` is the Gaussian
-    sigma applied to each response before selection; zero disables smoothing.
+    ``kernel_size`` controls the fine Gaussian scale (kernel/5.5, minimum 1).
+    ``blend_smoothing`` controls the energy spread (smoothing/2, minimum 1).
     ``thread_count`` bounds independent response producers. Selection remains
     strict and in source order, so ties keep the first frame. RAM admission
     bounds both live producers and completed results; low RAM stays serial.
@@ -71,14 +59,18 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
         _frame_pass_workers, _ordered_frame_results)
 
     frames = _collect_images(input_source, normalize=False, should_cancel=should_cancel)
-    radius = max(1, int(kernel_size) // 2) if kernel_size else 3
-    levels = int(np.floor(np.log2(radius))) + 3
-    sigma = max(0.0, float(2.0 if blend_smoothing is None else blend_smoothing))
+    fine_sigma = max(1.0, float(kernel_size) / 5.5)
+    spread_sigma = max(1.0, float(
+        2.0 if blend_smoothing is None else blend_smoothing) / 2.0)
     workers = _frame_pass_workers(frames, img_resize, 'openfocus_a', thread_count)
+    if progress_callback is not None:
+        progress_callback(0, len(frames))
+    _check_cancel(should_cancel)
 
     def produce(index, cancelled):
         frame = _prepare_frame(frames[index], img_resize, cancelled)
-        response = _response(frame, levels, sigma, cancelled, _check_cancel)
+        response = _response(frame, fine_sigma, spread_sigma,
+                             cancelled, _check_cancel)
         return frame, response
 
     output = best = None
@@ -89,6 +81,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
                 output = store_frame(frame)
                 best = response
                 del frame, response
+                if progress_callback is not None:
+                    progress_callback(index + 1, len(frames))
+                _check_cancel(should_cancel)
                 continue
             if frame.shape != output.shape:
                 raise ValueError("OpenFocus A requires frames with matching shapes")
@@ -100,6 +95,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
                           where=better[:, :, None] if frame.ndim == 3 else better)
                 np.copyto(best[rows], response[rows], where=better)
             del frame, response, better
+            if progress_callback is not None:
+                progress_callback(index + 1, len(frames))
+            _check_cancel(should_cancel)
     finally:
         produced.close()
 
@@ -107,6 +105,9 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
     np.clip(output, 0, 255, out=output)
     if all(frame.dtype == np.uint8 for frame in frames):
         result = create_frame(output.shape, np.uint8)
-        result[...] = output
+        for start in range(0, output.shape[0], 128):
+            _check_cancel(should_cancel)
+            rows = slice(start, min(output.shape[0], start + 128))
+            result[rows] = output[rows]
         return result
     return output

@@ -104,6 +104,36 @@ def test_eliding_button_reserves_its_painted_padding(qapp):
         button.deleteLater()
 
 
+def test_button_caption_recovers_after_temporary_width_constraint(qapp):
+    from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
+    from ui.right_panel import ElidingButton
+
+    host = QWidget()
+    layout = QHBoxLayout(host)
+    layout.addWidget(QLabel('Sources'), 1)
+    caption = 'Review frames'
+    button = ElidingButton(caption)
+    button.setStyleSheet('QPushButton { padding: 6px 12px; }')
+    layout.addWidget(button)
+    host.resize(480, 80)
+    host.show()
+    qapp.processEvents()
+    try:
+        button.setMaximumWidth(18)
+        qapp.processEvents()
+        assert button.text() != caption
+
+        button.setMaximumWidth(host.width())
+        button.setText(caption)
+        button.setEnabled(False)
+        layout.activate()
+        qapp.processEvents()
+        assert button.text() == caption
+    finally:
+        host.close()
+        host.deleteLater()
+
+
 def test_main_selector_explains_missing_dtcwt(qapp, monkeypatch):
     from types import SimpleNamespace
     from PyQt6.QtCore import Qt

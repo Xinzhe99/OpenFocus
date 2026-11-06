@@ -256,3 +256,56 @@ def test_large_loupe_starts_at_native_and_stale_regions_cannot_reappear(view, qa
     assert view._magnifier_zoom == zoom
     source, target = view._magnifier_rects()
     assert target.width() / source.width() * view.devicePixelRatioF() == pytest.approx(16)
+
+
+def test_pending_native_crop_keeps_useful_pixels_and_bounded_region_memory(view, qapp):
+    preview = QPixmap(100, 100)
+    preview.fill(QColor('magenta'))
+    view.set_display_pixmap(preview, source_size=(10000, 10000), source_key='continuous')
+    view.set_magnifier_settings(size=120)
+    pos = QPointF(250, 180)
+    mouse(view, QMouseEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton)
+    assert_color(pixel(view.grab(), pos), QColor('magenta'))
+    first = view._region_requests['loupe']
+    native = QPixmap(120, 120)
+    native.fill(QColor('lime'))
+    assert view.set_source_region(native, first[2], source_key='continuous', request=first)
+    assert_color(pixel(view.grab(), pos), QColor('lime'))
+    near = pos + QPointF(1, 1)
+    mouse(view, QMouseEvent.Type.MouseMove, near)
+    assert_color(pixel(view.grab(), near), QColor('lime'))
+    # The old crop no longer covers this source point. The correct preview
+    # fills it while the native request remains outstanding.
+    far = QPointF(390, 270)
+    mouse(view, QMouseEvent.Type.MouseMove, far)
+    assert_color(pixel(view.grab(), far), QColor('magenta'))
+    assert not view.set_source_region(native, first[2], source_key='continuous', request=first)
+    for step in range(40):
+        mouse(view, QMouseEvent.Type.MouseMove, QPointF(250 + step, 180))
+    assert set(view._source_regions) <= {'view', 'loupe'}
+    assert len(view._region_requests) <= 2
+    assert view._source_pixmap is None
+    view.clear()
+    assert not view._source_regions and not view._region_requests
+
+
+def test_user_loupe_zoom_survives_release_and_reopen(view, qapp):
+    preview = QPixmap(100, 100)
+    preview.fill(QColor('gray'))
+    view.set_display_pixmap(preview, source_size=(10000, 10000), source_key='zoom-memory')
+    pos = QPointF(250, 180)
+    mouse(view, QMouseEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton)
+    original = view._magnifier_zoom
+    for _ in range(4):
+        event = QWheelEvent(pos, view.mapToGlobal(pos), QPoint(), QPoint(0, -120),
+                            Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                            Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(view, event)
+    chosen = view._magnifier_zoom
+    assert chosen < original
+    mouse(view, QMouseEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.LeftButton)
+    mouse(view, QMouseEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton)
+    assert view._magnifier_zoom == chosen
+    assert view._magnifier_active
+    assert view._magnifier_rects()[1].center() == pos
+    mouse(view, QMouseEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.LeftButton)

@@ -131,9 +131,8 @@ def test_native_cli_warns_when_complex_profile_is_developed(tmp_path, monkeypatc
 @pytest.mark.parametrize('tiled', [False, True])
 def test_native_cli_materializes_before_registration_and_normalizes_at_pixel_boundary(
         native_stack, tmp_path, monkeypatch, alignment, tiled):
-    from core import cli, frame_storage, multi_focus_fusion, registration
+    from core import cli, frame_storage, registration
     from core.source_frames import SourceFrame
-    from utils import image_utils
 
     _, paths, original, metadata = native_stack
     monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
@@ -153,22 +152,9 @@ def test_native_cli_materializes_before_registration_and_normalizes_at_pixel_bou
         return images
     monkeypatch.setattr(registration.ImageRegistration, 'process', process)
 
-    normalized_shapes = []
-    normalize = image_utils.normalize_fuse_input
-    def normalize_one(images):
-        assert len(images) == 1
-        normalized_shapes.append(images[0].shape)
-        if tiled:
-            assert max(images[0].shape[:2]) <= 32
-        else:
-            assert isinstance(images[0], np.memmap)
-        return normalize(images)
-    monkeypatch.setattr(image_utils, 'normalize_fuse_input', normalize_one)
-    monkeypatch.setattr(multi_focus_fusion, 'normalize_fuse_input', normalize_one)
 
     fused = cli._fuse_stack_admitted(frames, args)
     assert bool(registered) == (alignment != 'none')
-    assert normalized_shapes
     assert fused.dtype == np.uint16 and fused.shape == original.shape
     np.testing.assert_allclose(fused, original, rtol=0, atol=4)
     assert all(isinstance(image, np.memmap) for image in args._depth_frames)

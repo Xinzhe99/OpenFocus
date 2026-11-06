@@ -559,7 +559,7 @@ def test_suggest_duplicates_handles_keyboard_interrupt(tmp_path, capsys, monkeyp
 
 @pytest.mark.parametrize('enabled', [False, True])
 def test_registration_receives_cleaned_native_depth_pixels(tmp_path, monkeypatch, enabled):
-    from core import cli, registration, multi_focus_fusion
+    from core import cli, registration
     mask = np.zeros((16, 16), np.uint8)
     mask[8, 8] = 255
     mask_path = tmp_path / 'mask.png'
@@ -580,22 +580,8 @@ def test_registration_receives_cleaned_native_depth_pixels(tmp_path, monkeypatch
             registered.append(np.array(images[0], copy=True))
             return images
 
-    class Fusion:
-        def __init__(self, **kwargs):
-            from constants import TILE_THRESHOLD
-            from core.algorithms import get_fusion
-            self.descriptor = get_fusion(kwargs['algorithm'])
-            self.tile_enabled = kwargs.get('tile_enabled', True)
-            self.tile_threshold = kwargs.get('tile_threshold', TILE_THRESHOLD)
-
-        def get_info(self):
-            return {'device': 'CPU'}
-
-        def fuse(self, input_source, **kwargs):
-            return input_source[0]
 
     monkeypatch.setattr(registration, 'ImageRegistration', Registration)
-    monkeypatch.setattr(multi_focus_fusion, 'MultiFocusFusion', Fusion)
     fused = cli._fuse_stack([image, image.copy()], args)
     expected = image.copy()
     if enabled:
@@ -728,3 +714,23 @@ def test_cli_rejects_video_before_materializing_masked_frames(tmp_path, capsys):
     assert run_cli(['-i', str(video), '-o', str(tmp_path / 'out.png'),
                     '--defect-mask-path', str(mask)]) != 0
     assert 'video' in capsys.readouterr().err.lower()
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("summary_is_parent", [False, True])
+def test_cli_rejects_output_file_used_as_a_directory(tmp_path, batch, summary_is_parent):
+    folder, _, _ = _make_stacks(tmp_path)
+    output = tmp_path / "result.png"
+    summary = output / "summary.json"
+    if batch:
+        output = tmp_path / "out" / "stackA.png"
+        summary = output / "summary.json"
+    if summary_is_parent:
+        summary = tmp_path / "summary.json"
+        output = summary / "stackA.png" if batch else summary / "result.png"
+    destination = ["-d", str(output.parent)] if batch else ["-o", str(output)]
+    assert run_cli(["-i", folder, *destination, "-m", "dct", "--json", str(summary)]) == 2
+    assert not output.exists()
+    assert not summary.exists()
+    if batch or summary_is_parent:
+        assert not output.parent.exists()

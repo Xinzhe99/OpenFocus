@@ -131,8 +131,6 @@ class SourceManager(QObject):
             window.btn_wipe.setChecked(False)
         if hasattr(window, "_wipe_source_cache"):
             window._wipe_source_cache = None
-        if hasattr(window, "_wipe_preview_record"):
-            window._wipe_preview_record = None
         window.transform_manager.invalidate_processing_results(clear_output_view=True)
         window.label_manager.reset_labels()
         self._clear_history()
@@ -170,13 +168,17 @@ class SourceManager(QObject):
         self._review_status_key = "stack_review_working"
         worker = StackReviewWorker(frames)
         self._review_worker = worker
-        worker.finished.connect(self._finish_stack_review)
+        worker.finished.connect(lambda: self._finish_stack_review(worker))
         self.decorate_source_items()
         worker.start()
 
-    def _finish_stack_review(self):
-        worker = self._review_worker
+    def _finish_stack_review(self, worker=None):
+        worker = worker if worker is not None else self._review_worker
         if worker is None:
+            return
+        if worker is not self._review_worker:
+            self._retiring_review_workers.discard(worker)
+            worker.deleteLater()
             return
         self._review_worker = None
         if not self._review_matches_stack(worker.frames):
@@ -229,6 +231,19 @@ class SourceManager(QObject):
             self._review_frames = ()
             self._review_results = []
             self._review_status_key = "stack_review_stale"
+
+    def _clear_review(self):
+        worker = self._review_worker
+        if worker is not None:
+            worker.cancel()
+            retired = self.__dict__.setdefault('_retiring_review_workers', set())
+            retired.add(worker)
+            self._review_worker = None
+        self._review_frames = ()
+        self._review_results = []
+        self._review_status_key = None
+        self._review_error = ''
+        self.refresh_review_text()
 
     # ------------------------------------------------------------------
     # UI helpers
@@ -510,8 +525,11 @@ class SourceManager(QObject):
                     return
                 render._render_after_load = None
                 from PyQt6 import sip
-                current = (not (isinstance(self.window, QObject) and sip.isdeleted(self.window))
-                           and not getattr(self.window, "_shutting_down", False)
+                if isinstance(self.window, QObject) and sip.isdeleted(self.window):
+                    return
+                render._hide_progress_bar()
+                render.refresh_action_labels()
+                current = (not getattr(self.window, '_shutting_down', False)
                            and getattr(self, "_load_worker", None) is None
                            and request["load_generation"] == getattr(self, "_load_generation", 0)
                            and self.window.raw_images is source_ref
@@ -525,12 +543,18 @@ class SourceManager(QObject):
                 if not current:
                     if compare and request["compare_token"] is render._compare_token:
                         render._abort_compare_run()
+                    render.last_state = 'cancelled'
+                    self.window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
                     return
                 render.start_render(force_algorithm=request.get("force_algorithm"))
 
             QTimer.singleShot(0, start)
+            render.refresh_action_labels()
         else:
             render._render_after_load = None
+            render.last_state = 'cancelled'
+            render._hide_progress_bar()
+            render.refresh_action_labels()
             if request.get("compare", False):
                 render._abort_compare_run()
             self.window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
@@ -937,6 +961,8 @@ class SourceManager(QObject):
             preserve_outputs=True,
         )
         window.transform_manager.reload_image_stack(initial_index=initial_index)
+        if getattr(window, "project_path", None):
+            window._mark_project_dirty()
 
     def _confirm_append_dimensions(self, new_images: list[Any]) -> bool:
         window = self.window
@@ -969,11 +995,24 @@ class SourceManager(QObject):
 
     def clear_image_stack(self) -> None:
         window = self.window
+        worker = getattr(self, "_load_worker", None)
+        if worker is not None:
+            worker.request_cancel()
+        render = getattr(window, 'render_manager', None)
+        if render is not None and render._render_after_load is not None:
+            render._render_after_load = None
+            render.last_state = 'cancelled'
+            render._abort_compare_run()
+            render._hide_progress_bar()
+            render.refresh_action_labels()
+        # A cancelled load can still roll its own loader back after this call.
+        # Give the empty workspace a fresh loader so neither that rollback nor
+        # the last decoded stack can keep cleared source frames alive here.
+        from core.image_loader import ImageStackLoader
+        window.image_loader = ImageStackLoader()
         self._stack_baseline = None
         if hasattr(window, "_wipe_source_cache"):
             window._wipe_source_cache = None
-        if hasattr(window, "_wipe_preview_record"):
-            window._wipe_preview_record = None
 
         # Also drops the ROI stack, rect and tool button (see reset_roi_selection)
         window.transform_manager.invalidate_processing_results(clear_output_view=True)
@@ -992,6 +1031,7 @@ class SourceManager(QObject):
         self._load_generation = getattr(self, "_load_generation", 0) + 1
         window.base_scale_factor = 1.0
         window.current_display_index = -1
+        self._clear_review()
 
         if getattr(window, "scale_bar_enabled", False):
             window.scale_bar_enabled = False
@@ -1007,6 +1047,10 @@ class SourceManager(QObject):
             curve.clear()
 
         window.transform_manager.reload_image_stack(initial_index=None)
+        if getattr(window, "project_path", None):
+            window._mark_project_dirty()
+        from utils import recovery
+        recovery.write_snapshot(window)
 
         # No source frames left to compare against: exit wipe mode cleanly
         if getattr(window, "wipe_active", False) and hasattr(window, "btn_wipe"):

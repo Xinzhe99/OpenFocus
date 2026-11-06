@@ -30,6 +30,7 @@ class MagnifierLabel(QLabel):
         self._magnifier_pos = QPointF()
         self._magnifier_size = 320  # 2x of original 160
         self._magnifier_zoom = 2.0
+        self._loupe_zoom_initialized = False
         self._is_panning = False
         self._pan_offset = QPointF(0, 0)
         self._last_mouse_pos = QPointF()
@@ -159,6 +160,7 @@ class MagnifierLabel(QLabel):
             self._magnifier_size = max(MAGNIFIER_MIN_SIZE, min(size, MAGNIFIER_MAX_SIZE))
         if zoom is not None and zoom > 0:
             self._magnifier_zoom = zoom
+            self._loupe_zoom_initialized = True
         if min_zoom is not None and min_zoom > 0:
             self._magnifier_min_zoom = min_zoom
         if max_zoom is not None and max_zoom > 0:
@@ -223,9 +225,12 @@ class MagnifierLabel(QLabel):
         return max(self._magnifier_max_zoom, 16.0 / (scale * self.devicePixelRatioF()))
 
     def _ensure_native_loupe(self):
+        if self._loupe_zoom_initialized:
+            return
         scale, _, _ = self._get_layout_params()
         native_zoom = 1.0 / (scale * self.devicePixelRatioF())
         self._magnifier_zoom = min(max(self._magnifier_zoom, native_zoom), self._loupe_max_zoom())
+        self._loupe_zoom_initialized = True
 
     def _request_region(self, kind, rect, size):
         geometry = (rect.x(), rect.y(), rect.width(), rect.height())
@@ -236,7 +241,6 @@ class MagnifierLabel(QLabel):
         self._region_serial += 1
         request = (kind, self._region_serial, geometry, size)
         self._region_requests[kind] = request
-        self._source_regions.pop(kind, None)
         self.sourceRegionRequested.emit(self._source_key, request)
 
     def _request_source_regions(self):
@@ -731,28 +735,30 @@ class MagnifierLabel(QLabel):
         if self._magnifier_active:
             source, target = self._magnifier_rects()
             painter.fillRect(target, QColor(24, 24, 24))
-            pixels = self._source_pixmap
             region = QRectF(0, 0, self._source_size.width(), self._source_size.height())
-            if pixels is None:
-                cached = self._source_regions.get('loupe')
-                if cached is not None:
-                    pixels, region = cached
-            if pixels is not None and not pixels.isNull():
-                clipped = source.intersected(region)
-                if not clipped.isEmpty():
-                    native_scale = target.width() / source.width()
-                    drawn = QRectF(target.x() + (clipped.x() - source.x()) * native_scale,
-                                   target.y() + (clipped.y() - source.y()) * native_scale,
-                                   clipped.width() * native_scale, clipped.height() * native_scale)
-                    sx, sy = pixels.width() / region.width(), pixels.height() / region.height()
-                    sample = QRectF((clipped.x() - region.x()) * sx, (clipped.y() - region.y()) * sy,
-                                    clipped.width() * sx, clipped.height() * sy)
-                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
-                                          native_scale * self.devicePixelRatioF() < 1)
-                    painter.drawPixmap(drawn, pixels, sample)
-            else:
-                painter.setPen(Qt.GlobalColor.white)
-                painter.drawText(target, Qt.AlignmentFlag.AlignCenter, trans.t("msg_loading_stack"))
+
+            def draw_region(pixels, domain):
+                clipped = source.intersected(domain)
+                if pixels is None or pixels.isNull() or clipped.isEmpty():
+                    return
+                native_scale = target.width() / source.width()
+                drawn = QRectF(target.x() + (clipped.x() - source.x()) * native_scale,
+                               target.y() + (clipped.y() - source.y()) * native_scale,
+                               clipped.width() * native_scale, clipped.height() * native_scale)
+                sx, sy = pixels.width() / domain.width(), pixels.height() / domain.height()
+                sample = QRectF((clipped.x() - domain.x()) * sx, (clipped.y() - domain.y()) * sy,
+                                clipped.width() * sx, clipped.height() * sy)
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
+                                      native_scale * self.devicePixelRatioF() < 1)
+                painter.drawPixmap(drawn, pixels, sample)
+
+            # The bounded preview fills newly exposed pixels while the most
+            # recent native crop continues to cover its original coordinates.
+            draw_region(self._base_pixmap, region)
+            if self._source_pixmap is not None:
+                draw_region(self._source_pixmap, region)
+            elif (cached := self._source_regions.get('loupe')) is not None:
+                draw_region(*cached)
             painter.setPen(QPen(QColor(255, 255, 255, 220), 2))
             painter.drawRect(target)
             text_bg_rect = QRectF(target.x() + 4, target.y() + 4, 130, 18)

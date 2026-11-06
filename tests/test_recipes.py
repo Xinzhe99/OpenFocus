@@ -267,3 +267,96 @@ def test_project_recipe_keeps_filename_order(tmp_path):
     capture_project_recipe(recipe, project, ["-i", str(tmp_path / "new"),
                                              "-o", str(tmp_path / "out.png")])
     assert load_recipe(recipe)["options"]["frame_order"] == "name"
+
+
+@pytest.mark.parametrize("extension", ["dng", "tiff", "png"])
+def test_native_recipe_preserves_processing_mode(tmp_path, extension):
+    path = tmp_path / "recipe.json"
+    capture_recipe(path, ["-i", str(tmp_path / "frame.dng"),
+                          "-o", str(tmp_path / f"result.{extension}"), "--native-raw"])
+    restored = build_parser().parse_args(validate_recipe(load_recipe(path), path))
+    assert restored.native_raw is True
+    assert restored.output == str(tmp_path / f"result.{extension}")
+
+
+@pytest.mark.parametrize("format", ["dng", "tiff", "png"])
+def test_native_batch_recipe_preserves_export_format(tmp_path, format):
+    path = tmp_path / "recipe.json"
+    capture_recipe(path, ["-i", str(tmp_path / "stack"), "-d", str(tmp_path / "results"),
+                          "--native-raw", "--native-batch-format", format])
+    restored = build_parser().parse_args(validate_recipe(load_recipe(path), path))
+    assert restored.native_raw is True
+    assert restored.native_batch_format == format
+
+
+@pytest.mark.parametrize("extra", [["--suggest-duplicates"], ["--alignment-report", "report.json"]])
+def test_recipe_rejects_unsaved_execution_controls(tmp_path, extra):
+    path = tmp_path / "recipe.json"
+    with pytest.raises(ValueError, match="transient"):
+        capture_recipe(path, ["-i", "stack", "-o", "result.png", *extra])
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("selection", ["file", "folder", "dust", "mask"])
+@pytest.mark.parametrize("alias", [False, True])
+def test_recipe_creation_never_overwrites_sources(tmp_path, selection, alias):
+    folder = tmp_path / "stack"
+    _stack(folder)
+    source = folder / "0.png"
+    destination = source
+    if alias:
+        destination = tmp_path / "recipe.json"
+        try:
+            destination.hardlink_to(source)
+        except OSError:
+            pytest.skip("hard links unavailable")
+    original = source.read_bytes()
+    inputs = [str(folder)] if selection == "folder" else [str(source)]
+    if selection in ("dust", "mask"):
+        inputs = [str(folder / "1.png")]
+    flags = {"dust": ["--dust-map", str(source)], "mask": ["--defect-mask-path", str(source)]}
+    with pytest.raises(ValueError, match="destination"):
+        capture_recipe(destination, ["-i", *inputs, "-o", str(tmp_path / "out.png"),
+                                     "-m", "dct", *flags.get(selection, [])])
+    assert source.read_bytes() == original
+
+
+def test_recipe_cannot_become_a_new_stack_image(tmp_path):
+    folder = tmp_path / "stack"
+    _stack(folder)
+    path = folder / "recipe.png"
+    with pytest.raises(ValueError, match="input image"):
+        capture_recipe(path, ["-i", str(folder), "-o", str(tmp_path / "out.png"), "-m", "dct"])
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("sidecar", ["result", "depth", "stacked", "missing", "mask", "batch"])
+def test_recipe_execution_never_overwrites_itself(tmp_path, sidecar):
+    folder = tmp_path / "stack"
+    _stack(folder)
+    options = {"method": "openfocus_b"}
+    recipe = {"version": 1, "input": ["stack"], "output": "out.png", "options": options}
+    if sidecar == "batch":
+        del recipe["output"]
+        recipe["output_dir"] = "results"
+        path = tmp_path / "results" / "stack.png"
+        recipe["input"] = ["../stack"]
+        recipe["output_dir"] = "."
+    elif sidecar == "depth":
+        path = tmp_path / "out_depth.png"
+        options["depth_map"] = True
+    elif sidecar in ("stacked", "missing", "mask"):
+        options["auto_background"] = "auto"
+        options["save_stacked" if sidecar == "stacked" else "missing_data_map"] = True
+        path = tmp_path / {"stacked": "out_stacked.png", "missing": "out_missing.png",
+                           "mask": "out_missing-hidden.png"}[sidecar]
+    else:
+        path = tmp_path / "out.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(recipe), encoding="utf-8")
+    original = path.read_bytes()
+    with pytest.raises(ValueError, match="recipe file"):
+        run_recipe(path)
+    assert path.read_bytes() == original
+    if sidecar != "result":
+        assert not (tmp_path / "out.png").exists()

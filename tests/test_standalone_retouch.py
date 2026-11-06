@@ -192,3 +192,20 @@ def test_standalone_rejects_insufficient_memory_before_any_pixel_decode(tmp_path
     with pytest.raises(resource_policy.ResourceLimitError):
         load_standalone_retouch(str(base), [str(source)])
     assert attempts == []
+
+
+@pytest.mark.parametrize('target', ['result', 'source'])
+def test_checkpoint_cannot_replace_standalone_input_files(tmp_path, target):
+    result = tmp_path / '结果.png'
+    source = tmp_path / '来源.png'
+    _write(result, np.full((32, 32, 3), 12001, np.uint16))
+    _write(source, np.full((32, 32, 3), 40001, np.uint16))
+    original = {path: path.read_bytes() for path in (result, source)}
+    base, context = load_standalone_retouch(result, [source])
+    doc = RetouchDocument(base, context)
+    doc.initialize_checkpoint()
+    destination = result if target == 'result' else source
+    with pytest.raises(ValueError, match='Cannot overwrite a source image'):
+        doc.save_checkpoint(destination)
+    assert all(path.read_bytes() == pixels for path, pixels in original.items())
+    assert not list(tmp_path.glob('.retouch-*'))

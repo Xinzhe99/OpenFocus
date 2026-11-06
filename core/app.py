@@ -107,7 +107,8 @@ class OpenFocusApplication(QApplication):
             self._process([normalized])
 
     def _process(self, paths: List[str]):
-        if not self._ready or not self.main_window:
+        if (not self._ready or not self.main_window
+                or getattr(self.main_window, '_shutting_down', False)):
             return
         if not hasattr(self.main_window, 'source_manager'):
             return
@@ -144,7 +145,8 @@ def process_command_line_args(main_window, args: List[str]):
         return
 
     def _delayed():
-        if not hasattr(main_window, 'source_manager'):
+        if (getattr(main_window, '_shutting_down', False)
+                or not hasattr(main_window, 'source_manager')):
             return
         c = PlatformFileHandler.classify(file_paths)
         src = main_window.source_manager

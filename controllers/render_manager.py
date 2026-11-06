@@ -155,6 +155,11 @@ class RenderManager:
             window.current_alignment_method())
         values["exposure_match"] = window.brightness_option_for("exposure_match", method)
         values["base_correct"] = window.brightness_option_for("base_correct", method)
+        from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
+        if method != 'none':
+            values['tile_enabled'] = bool(values['tile_enabled'] and (
+                get_fusion(method).external_tiling_default
+                or values['tile_threshold'] != _DEFAULT_TILE_THRESHOLD))
         values["sharpen_output"] = bool(getattr(window, "sharpen_output", False))
         values["defect_mask_path"] = getattr(window, "defect_mask_path", "")
         values["sensor_denoise"] = bool(getattr(window, "sensor_denoise", False))
@@ -291,7 +296,13 @@ class RenderManager:
         window = self.window
         render = getattr(window, "btn_render", None)
         busy = self.worker is not None and self.worker.isRunning()
-        if getattr(self, '_compare_cancelling', False):
+        if self._render_after_load is not None:
+            self._show_progress_bar(trans.t('render_stage_loading'))
+            if render is not None:
+                render.setEnabled(True)
+                render.setText(trans.t('btn_cancel_render'))
+            self._set_compare_button('cancel' if self._compare_mode else 'disabled')
+        elif getattr(self, '_compare_cancelling', False):
             if render is not None:
                 render.setEnabled(False)
                 render.setText(trans.t('depth_cancelling'))
@@ -399,6 +410,8 @@ class RenderManager:
             queued = self._render_after_load
             if queued is not None and queued.get("compare", False):
                 self._render_after_load = None
+                self.last_state = 'cancelled'
+                self._hide_progress_bar()
             running = self.worker is not None and self.worker.isRunning()
             if running:
                 # Keep the truth visible until the worker acknowledges the
@@ -415,7 +428,8 @@ class RenderManager:
             return
 
         if getattr(self, "_render_pending", False) or self._render_after_load is not None:
-            window.statusBar().showMessage(trans.t('btn_render_processing'), 3000)
+            key = 'msg_render_queued_after_load' if self._render_after_load is not None else 'btn_render_processing'
+            window.statusBar().showMessage(trans.t(key), 3000)
             return
 
         if self.worker is not None and self.worker.isRunning():
@@ -509,6 +523,8 @@ class RenderManager:
                 self.worker.is_cancelled = True
                 window.btn_render.setEnabled(False)
                 window.btn_render.setText(trans.t('depth_cancelling'))
+                self._show_progress_bar(trans.t('depth_cancelling'))
+                window.statusBar().showMessage(trans.t('depth_cancelling'))
                 QApplication.processEvents()
             return
         if self._render_after_load is not None:
@@ -517,6 +533,9 @@ class RenderManager:
                 return
             queued = self._render_after_load
             self._render_after_load = None
+            self.last_state = 'cancelled'
+            self._hide_progress_bar()
+            self.refresh_action_labels()
             if queued.get("compare", False):
                 self._abort_compare_run()
             self._start_status = "loading" if getattr(
@@ -537,6 +556,8 @@ class RenderManager:
                     "load_worker": source._load_worker,
                     "load_generation": getattr(source, "_load_generation", 0),
                 }
+                self.last_state = 'queued'
+                self.refresh_action_labels()
                 window.statusBar().showMessage(trans.t("msg_render_queued_after_load"))
             return
         # A previous render may have aborted without clearing this; it decides
@@ -949,7 +970,7 @@ class RenderManager:
         self.worker.progress_signal.connect(self.on_render_progress)
         self.worker.stage_signal.connect(self.on_render_stage)
         window.statusBar().clearMessage()  # stale "loading…" etc.
-        self._show_progress_bar(trans.t('render_progress'))
+        self._show_progress_bar(trans.t('render_stage_waiting'))
         self.worker.start()
 
     def _stack_changed_since(self, context) -> bool:
@@ -1425,15 +1446,24 @@ class RenderManager:
 
 
     def on_render_stage(self, stage: str) -> None:
-        key = {"align": "render_stage_align", "fuse": "render_stage_fuse"}.get(stage, "render_progress")
-        text = trans.t(key)
+        if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
+            text = trans.t('depth_cancelling')
+        else:
+            key = {'waiting': 'render_stage_waiting', 'prepare': 'render_stage_prepare',
+                   'align': 'render_stage_align', 'fuse': 'render_stage_fuse',
+                   'finish': 'render_stage_finish'}.get(stage, 'render_progress')
+            text = trans.t(key)
         self._progress_first_t = None
         self._show_progress_bar(text)
+        self.window.statusBar().showMessage(text)
 
     def on_render_progress(self, done: int, total: int) -> None:
         """Surface tiled-fusion progress in the status bar with an ETA."""
         import time as _time
         window = self.window
+        if self.worker is not None and getattr(self.worker, 'is_cancelled', False):
+            self.on_render_stage('cancelling')
+            return
         bar = getattr(self, "_status_bar_progress", None)
         if bar is not None and total > 0:
             # Range first, then value: Qt clamps a value outside the current

@@ -109,12 +109,16 @@ def test_tiled_depth_is_admitted_before_computation(monkeypatch, method):
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
-def test_exposure_match_admits_actual_matched_dtype(monkeypatch, dtype):
+@pytest.mark.parametrize("count", [2, 5, 40])
+def test_exposure_match_admits_actual_matched_dtype(monkeypatch, dtype, count):
     from core import multi_focus_fusion as mff, resource_policy as policy
 
-    frames = [np.full((40, 50, 3), value, dtype) for value in (10, 20, 30, 40, 50)]
-    size = frames[0].size
-    budget = size * (8 + len(frames) * np.dtype(dtype).itemsize)
+    frames = [np.full((40, 50, 3), 10 * (index % 4 + 1) if index < count - 1 else 50, dtype)
+              for index in range(count)]
+    # Preparation allocates serial strips and disk-backed results. A budget
+    # for two float32 strips must suffice regardless of source/stack bytes;
+    # the backend receives its own separate admission after preparation.
+    budget = frames[0].size * np.dtype(np.float32).itemsize * 2
     monkeypatch.setattr(policy, "probe_resources", lambda: policy.ResourceSnapshot(
         available_ram=8 * 1024 ** 3, total_ram=8 * 1024 ** 3))
     limits = iter((budget, 8 * 1024 ** 3))
@@ -141,6 +145,87 @@ def test_exposure_match_refuses_larger_mixed_frames_before_copy(monkeypatch):
     monkeypatch.setattr(fusion, "_exposure_gains_for_source", unexpected_gain)
     with pytest.raises(policy.ResourceLimitError):
         fusion.fuse(frames)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16, np.float32])
+def test_exposure_statistics_stream_mapped_source(monkeypatch, tmp_path, dtype):
+    from utils import image_utils
+    from core import multi_focus_fusion as mff
+
+    shape = (259, 53, 4)
+    frame = np.memmap(tmp_path / 'exposure.bin', dtype=dtype, mode='w+', shape=shape)
+    frame[:] = np.arange(shape[0], dtype=dtype)[:, None, None] % 181
+    frame[:, :, 3] = 0  # Alpha must not enter the mean.
+    before = frame.copy()
+    reference = np.full(shape[:2] + (3,), 170, np.float32)
+    color = frame[:, :, :3].astype(np.float32)
+    if dtype == np.uint16:
+        color *= 255.0 / 65535.0
+    expected_gain = 170.0 / color.mean(dtype=np.float64)
+    original = np.ascontiguousarray
+    converted = []
+
+    def contiguous(values, dtype=None, *args, **kwargs):
+        result = original(values, dtype, *args, **kwargs)
+        if dtype == np.float32 and np.shares_memory(values, frame):
+            converted.append(result.shape[0])
+            assert result.shape[0] <= 128
+        return result
+
+    monkeypatch.setattr(image_utils.np, 'ascontiguousarray', contiguous)
+    gains = mff.MultiFocusFusion('dct')._exposure_gains_for_source(
+        [frame, reference], normalize_uint16=True)
+    np.testing.assert_allclose(gains, [expected_gain, 1.0], rtol=1e-12)
+    assert converted and sum(converted) == shape[0]
+    np.testing.assert_array_equal(frame, before)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_exposure_statistics_cancel_between_source_strips(monkeypatch, dtype):
+    from utils import image_utils
+    from core.multi_focus_fusion import MultiFocusFusion
+    from core.registration import RegistrationCancelled
+
+    frame = np.full((1025, 31, 3), 120, dtype)
+    original = np.ascontiguousarray
+    converted = []
+
+    def contiguous(values, *args, **kwargs):
+        result = original(values, *args, **kwargs)
+        converted.append(result.shape[0])
+        return result
+
+    monkeypatch.setattr(image_utils.np, 'ascontiguousarray', contiguous)
+    with pytest.raises(RegistrationCancelled):
+        MultiFocusFusion('dct')._exposure_gains_for_source(
+            [frame], lambda: bool(converted), normalize_uint16=True)
+    assert converted == [128]
+    assert np.all(frame == 120)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_exposure_strip_is_admitted_before_conversion(monkeypatch, tmp_path, dtype):
+    from utils import image_utils
+    from core import multi_focus_fusion as mff, resource_policy as policy
+
+    frame = np.memmap(tmp_path / 'source.bin', mode='w+', dtype=dtype,
+                      shape=(1025, 31, 3))
+    frame[:] = 120
+    # This is below the storage of even one float32 statistics strip. The
+    # mapped source is already resident and must not be charged again.
+    strip_bytes = 128 * frame.shape[1] * 3 * np.dtype(np.float32).itemsize
+    monkeypatch.setattr(policy, 'probe_resources', lambda: policy.ResourceSnapshot(
+        available_ram=8 * 1024 ** 3, total_ram=8 * 1024 ** 3))
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: strip_bytes - 1)
+    fusion = mff.MultiFocusFusion('guided_filter', exposure_match=True,
+                                  tile_threshold=1, tile_block_size=64, tile_overlap=16)
+
+    def unexpected_conversion(*args, **kwargs):
+        raise AssertionError('Statistics strip converted before memory admission')
+
+    monkeypatch.setattr(image_utils.np, 'ascontiguousarray', unexpected_conversion)
+    with pytest.raises(policy.ResourceLimitError):
+        fusion.fuse([frame, frame])
 
 
 def test_directory_exposure_match_admits_mixed_bit_depths(monkeypatch, tmp_path):
@@ -178,9 +263,9 @@ def test_streaming_workspace_depends_on_geometry_not_stack_depth(monkeypatch, me
     assert deep == small
     decider = resolve_runner(get_fusion(method).tile_decider)
     monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: small)
-    assert not decider([frame] * 1000, 2048)
+    assert not decider([frame] * 1000, mff._DEFAULT_TILE_THRESHOLD)
     monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: small - 1)
-    assert decider([frame] * 2, 2048)
+    assert bool(decider([frame] * 2, mff._DEFAULT_TILE_THRESHOLD)) == get_fusion(method).external_tiling_default
 
 
 def test_manual_openfocus_spatial_cap_is_preserved_with_roomy_ram(monkeypatch):
@@ -195,13 +280,11 @@ def test_manual_openfocus_spatial_cap_is_preserved_with_roomy_ram(monkeypatch):
 def test_frame_producers_respect_complete_per_worker_budget(monkeypatch, activity_only):
     from types import SimpleNamespace
     from core import multi_focus_fusion as mff, resource_policy as policy
-    from core.algorithm_adapters import openfocus_a_resources
     from fusion_methods.openfocus_ab import _frame_pass_workers
 
     frame = SimpleNamespace(shape=(1000, 1000, 3))
-    fixed, worker = openfocus_a_resources(1000, 1000, {}, 16)
-    if activity_only:
-        fixed = 4 * 1024 * 1024 + 1000 * 1000 * 12
+    fixed = 4 * 1024 * 1024 + 1000 * 1000 * (12 if activity_only else 16)
+    worker = 1000 * 1000 * 80
     monkeypatch.setattr(policy, 'probe_resources', lambda: policy.ResourceSnapshot(
         available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,
         physical_cores=8, logical_cpus=16))
@@ -226,18 +309,17 @@ def test_source_manifest_budget_decision_never_decodes_pixels(monkeypatch, metho
     monkeypatch.setattr(SourceFrame, 'full_resolution', unexpected_decode)
     needed = mff.estimate_peak_bytes(method, [source] * 16)
     monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: needed)
-    assert not resolve_runner(get_fusion(method).tile_decider)([source] * 16, 2048)
+    assert not resolve_runner(get_fusion(method).tile_decider)([source] * 16, mff._DEFAULT_TILE_THRESHOLD)
     assert isinstance(mff._stack_footprint_exceeds([source] * 16, 2048), bool)
 
 
 def test_downsized_frame_workers_charge_full_uint16_conversion(monkeypatch):
     from types import SimpleNamespace
     from core import multi_focus_fusion as mff, resource_policy as policy
-    from core.algorithm_adapters import openfocus_a_resources
     from fusion_methods.openfocus_ab import _frame_pass_workers
 
     source = SimpleNamespace(shape=(4000, 4000, 3), dtype=np.dtype(np.uint16))
-    fixed, _ = openfocus_a_resources(100, 100, {}, 16)
+    fixed = 4 * 1024 * 1024 + 100 * 100 * 16
     conversion = 4000 * 4000 * 3 * 8 + 100 * 100 * 3 * 4
     monkeypatch.setattr(policy, 'probe_resources', lambda: policy.ResourceSnapshot(
         available_ram=8 * 1024 ** 3, total_ram=16 * 1024 ** 3,

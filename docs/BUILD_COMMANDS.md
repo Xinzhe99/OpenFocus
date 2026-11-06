@@ -4,6 +4,10 @@ The authoritative release build commands are in [release.yml](../.github/workflo
 
 For a local build, use a supported Python environment, install the requirements and PyInstaller, and adapt the corresponding release job to the target platform. The package must collect `onnxruntime`, place the three `.onnx` inference checkpoints in `weights`, and exclude `torch` from the frozen application. The Windows x64 requirements select ONNX Runtime DirectML; the other declared platforms use ONNX Runtime. A provider being installed or available does not establish that a real inference ran on a GPU; see [GPU support](GPU_SUPPORT.md).
 
+The macOS job uses `macos-latest`, matching the test matrix. The former
+`macos-14` hosted configuration is no longer available; preview builds exercise
+the current runner before any tag can publish a release.
+
 The CPU depth kernel also requires Numba and llvmlite. Keep
 `--additional-hooks-dir hooks`: the kernel hook copies their package metadata,
 including the original compiler and LLVM redistribution notices. The packaged

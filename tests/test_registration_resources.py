@@ -295,3 +295,47 @@ def test_combined_alignment_admits_disk_backed_stack_by_active_working_set(
     assert fixed + per_worker * (execution.workers + 1) > execution.ram_budget
     assert dispatched == [1, 1]
 
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16, np.float32])
+@pytest.mark.parametrize('shape', [(1, 9, 3), (37, 41, 3), (259, 311, 3)])
+def test_strip_brightness_preserves_gaussian_border_calibration(dtype, shape):
+    rng = np.random.default_rng(177)
+    image = rng.integers(0, 256, shape, dtype=np.uint16).astype(dtype)
+    if dtype == np.uint16:
+        image *= 257
+    # Concentrated light at an edge exposes a plain unweighted mean shortcut.
+    image[:, :3] = 65535 if dtype == np.uint16 else 255
+    gray = cv2.transform(image.astype(np.float32),
+                         np.array([[0.114, 0.587, 0.299]], np.float32))
+    expected = float(cv2.GaussianBlur(gray, (0, 0), 32.0).mean())
+    assert registration._of_lowpass_mean(image) == pytest.approx(expected, rel=2e-6, abs=2e-5)
+    np.testing.assert_array_equal(registration._of_gray_float(image), gray)
+
+
+def test_grayscale_preparation_cancels_between_rows():
+    calls = 0
+
+    def cancelled():
+        nonlocal calls
+        calls += 1
+        return calls == 3
+
+    with pytest.raises(registration.RegistrationCancelled):
+        registration._of_gray_est(np.zeros((513, 97, 3), np.uint16), 320, cancelled)
+    assert calls == 3
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_openfocus_direct_mapped_warp_preserves_gain_pixels(monkeypatch, dtype):
+    first = np.full((267, 289, 3), 80, dtype)
+    second = np.full_like(first, 50)
+    if dtype == np.uint16:
+        first *= 257
+        second *= 257
+    monkeypatch.setattr(registration, '_of_estimate_similarity',
+                        lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
+    output = registration._align_openfocus_impl([first, second], thread_count=1)
+    assert output[0].dtype == dtype and output[1].dtype == dtype
+    # Floating gain followed by integer truncation can differ by one code value.
+    np.testing.assert_allclose(output[0], output[1], rtol=0, atol=1)
+    assert np.all(output[0] == first[0, 0, 0])

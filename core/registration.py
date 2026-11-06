@@ -35,7 +35,7 @@ from typing import Union, List, Optional
 
 from utils.sorting import natural_sort_key as _image_sort_key
 from core.image_loader import apply_exif_orientation
-from core.frame_storage import store_frame
+from core.frame_storage import create_frame, store_frame
 from utils.logging_setup import log_action, log_operation
 
 
@@ -259,7 +259,11 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
             if img_small.dtype == np.uint16:
                 divisor = 65535.0
             elif np.issubdtype(img_small.dtype, np.floating):
-                divisor = float(np.max(img_small)) if float(np.max(img_small)) > 255.0 else 1.0
+                maximum = float(np.max(img_small))
+                # Keep legacy 0-1 float inputs scaled to the SIFT byte domain.
+                # Floats already in 0-255 need no additional gain.
+                divisor = (maximum if maximum > 255.0 else
+                           1.0 if maximum <= 1.0 else 255.0)
             else:
                 divisor = 1.0
             img_small = (img_small.astype(np.float32) / divisor * 255.0).round().clip(0, 255).astype(np.uint8)
@@ -486,7 +490,58 @@ _OF_MAX_ROTATION_DEG = 8.0
 _OF_MAX_SCALE_DELTA = 0.05
 
 
-def _of_gray_est(img, est_width):
+def _of_gray_float(img, should_cancel=None, *, average_two=False):
+    """Preserve fractional luminance without a full RGB float allocation."""
+    gray = np.empty(img.shape[:2], dtype=np.float32)
+    take = min(img.shape[2], 3) if img.ndim == 3 else 1
+    weights = np.array([0.114, 0.587, 0.299], np.float32)[:take]
+    if take == 2 and average_two:
+        weights[:] = 0.5
+    for y in range(0, img.shape[0], 128):
+        _check_cancel(should_cancel)
+        strip = img[y:y + 128]
+        if img.ndim == 2:
+            gray[y:y + 128] = strip
+        elif take == 1:
+            gray[y:y + 128] = strip[:, :, 0]
+        else:
+            converted = cv2.transform(strip[:, :, :take].astype(np.float32),
+                                      weights.reshape(1, -1))
+            gray[y:y + 128] = converted.reshape(strip.shape[:2])
+    return gray
+
+
+def _of_lowpass_mean(img, should_cancel=None):
+    """Mean of the sigma-32 low-pass, without constructing a blurred frame.
+
+    A separable Gaussian's spatial mean is a weighted sum of the input. The
+    reflected borders contribute unequal weights; retaining them preserves
+    calibration even when bright objects touch a frame edge.
+    """
+    sigma = 32.0
+    radius = round(sigma * 4)
+    kernel = cv2.getGaussianKernel(radius * 2 + 1, sigma, cv2.CV_64F)[:, 0]
+
+    def weights(length):
+        indices = np.pad(np.arange(length), radius,
+                         mode='reflect' if length > 1 else 'edge')
+        result = np.zeros(length, np.float64)
+        for offset, coefficient in enumerate(kernel):
+            _check_cancel(should_cancel)
+            np.add.at(result, indices[offset:offset + length], coefficient / length)
+        return result
+
+    wy, wx = weights(img.shape[0]), weights(img.shape[1])
+    total = 0.0
+    for y in range(0, img.shape[0], 128):
+        _check_cancel(should_cancel)
+        gray = _of_gray_float(img[y:y + 128], should_cancel, average_two=True)
+        rows = np.sum(gray * wx, axis=1, dtype=np.float64)
+        total += float(np.sum(rows * wy[y:y + 128], dtype=np.float64))
+    return total
+
+
+def _of_gray_est(img, est_width, should_cancel=None):
     """灰度 + 降采样到估计分辨率（估计分辨率以长边计）。
 
     这里曾额外减去 σ2.5 低通（函数旧名 `_of_gray_hp`）。高通会丢掉
@@ -494,17 +549,7 @@ def _of_gray_est(img, est_width):
     高通输入把 16 px 位移估成误差 22 px，普通灰度误差 0.27 px。旋转/
     缩放的判别评分同样不依赖高频。
     """
-    if img.ndim == 2:
-        g = img.astype(np.float32)
-    else:
-        take = min(img.shape[2], 3)
-        if take == 1:
-            g = img[:, :, 0].astype(np.float32)
-        else:
-            weights = np.array([0.114, 0.587, 0.299], np.float32)[:take]
-            g = cv2.transform(img[:, :, :take].astype(np.float32),
-                              weights.reshape(1, -1))
-            g = g if g.ndim == 2 else g[:, :, 0]
+    g = _of_gray_float(img, should_cancel)
     h, w = g.shape[:2]
     if max(h, w) > est_width:
         s = est_width / float(max(h, w))
@@ -570,34 +615,15 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
     max_shift = (w * max_shift_ratio, h * max_shift_ratio)
     est_width = min(_OF_EST_WIDTH, max(320, w))
 
-    def _gray_float(img):
-        if img.ndim == 2:
-            g = img
-        else:
-            take = min(img.shape[2], 3)
-            if take == 1:
-                g = img[:, :, 0]
-            elif take == 2:
-                g = img[:, :, :2].astype(np.float32).mean(axis=2)
-            else:
-                m = np.array([0.114, 0.587, 0.299], np.float32)
-                g = cv2.transform(img[:, :, :take].astype(np.float32),
-                                  m.reshape(1, -1))
-                g = g if g.ndim == 2 else g[:, :, 0]
-        return g.astype(np.float32)
-
     # Brightness and geometry have independent reference frames.
     ref_idx = reference_frame - 1
     ref_low_mean = 1.0
     if equalize_brightness:
-        bright_gray = (_gray_float(images[-1])
-                       if brightness_reference == "last" else _gray_float(images[0]))
-        ref_low = cv2.GaussianBlur(bright_gray, (0, 0), 32.0)
-        ref_low_mean = float(ref_low.mean()) or 1.0
-        del bright_gray, ref_low
+        bright_frame = images[-1] if brightness_reference == "last" else images[0]
+        ref_low_mean = _of_lowpass_mean(bright_frame, should_cancel) or 1.0
     gains = [1.0] * n
 
-    ref_est = _of_gray_est(images[ref_idx], est_width)
+    ref_est = _of_gray_est(images[ref_idx], est_width, should_cancel)
     eh, ew = ref_est.shape[:2]
 
     def _prepare(i):
@@ -610,12 +636,10 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
         """
         gain = 1.0
         if equalize_brightness:
-            cur_gray = _gray_float(images[i])
-            cur_low = cv2.GaussianBlur(cur_gray, (0, 0), 32.0)
-            cur_mean = float(cur_low.mean())
+            cur_mean = _of_lowpass_mean(images[i], should_cancel)
             if cur_mean > 1e-3:
                 gain = float(np.clip(ref_low_mean / cur_mean, 0.5, 2.0))
-        return i, gain, _of_gray_est(images[i], est_width)
+        return i, gain, _of_gray_est(images[i], est_width, should_cancel)
 
     def _compose_full(ncc_pack):
         """估计分辨率下的校正参数 → 全分辨率 3x3（warpAffine 直接可用）。
@@ -758,36 +782,45 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
                                      " (DROPPED: low detector quality)" if ncc < min_ncc else ""))
     flush_report()
 
-    def _apply_gain(img, gain):
+    def _apply_gain(img, gain, *, inplace=False):
         if gain == 1.0:
             return img
+        result = img if inplace else create_frame(img.shape, img.dtype)
         limit = 65535 if img.dtype == np.uint16 else 255
-        if img.ndim == 3 and img.shape[2] == 4:
-            result = img.copy()
-            result[:, :, :3] = np.clip(img[:, :, :3].astype(np.float32) * gain,
-                                        0, limit).astype(img.dtype)
-            return result
-        return np.clip(img.astype(np.float32) * gain, 0, limit).astype(img.dtype)
+        for y in range(0, img.shape[0], 128):
+            _check_cancel(should_cancel)
+            strip = img[y:y + 128]
+            if img.ndim == 3 and img.shape[2] == 4:
+                result[y:y + 128, :, 3] = strip[:, :, 3]
+                target = result[y:y + 128, :, :3]
+                strip = strip[:, :, :3]
+            else:
+                target = result[y:y + 128]
+            color = strip.astype(np.float32)
+            color *= gain
+            np.clip(color, 0, limit, out=color)
+            target[...] = color
+        return result
 
     def _warp(args):
         idx, img, M, gain = args
-        warped = cv2.warpAffine(img, M[:2, :], (w, h),
-                                flags=cv2.INTER_LANCZOS4
-                                | cv2.WARP_FILL_OUTLIERS,
-                                borderMode=cv2.BORDER_REFLECT)
-        if img.ndim == 3 and img.shape[2] == 1 and warped.ndim == 2:
-            warped = warped[:, :, None]
-        warped = _apply_gain(warped, gain)
-        return idx, warped
+        _check_cancel(should_cancel)
+        # OpenCV ignores dst when its shape differs from the output canvas.
+        warped = create_frame((h, w) + img.shape[2:], img.dtype)
+        cv2.warpAffine(img, M[:2, :], (w, h), dst=warped,
+                       flags=cv2.INTER_LANCZOS4 | cv2.WARP_FILL_OUTLIERS,
+                       borderMode=cv2.BORDER_REFLECT)
+        _check_cancel(should_cancel)
+        return idx, _apply_gain(warped, gain, inplace=True)
 
     aligned = [None] * n
-    aligned[ref_idx] = store_frame(_apply_gain(images[ref_idx], gains[ref_idx]))
+    aligned[ref_idx] = _apply_gain(images[ref_idx], gains[ref_idx])
     warp_args = ((i, images[i], corrections[i], gains[i])
                  for i in range(n) if i != ref_idx)
     with _bounded_registration_map(_warp, warp_args, max(1, int(thread_count)),
                                    should_cancel) as results:
         for idx, warped in results:
-            aligned[idx] = store_frame(warped)
+            aligned[idx] = warped
 
     # corrections map source coordinates into the output canvas.
     top, bottom, left, right = _compute_valid_region_from_transforms(
@@ -863,7 +896,12 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         else:
             small_img = img # 引用即可，无需拷贝
 
-        gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
+        if small_img.ndim == 2:
+            gray = small_img
+        elif small_img.shape[2] == 1:
+            gray = small_img[:, :, 0]
+        else:
+            gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
         # findTransformECC 的数值稳定性依赖归一化的浮点输入：uint8 的
         # 大幅值梯度会让优化步长过大，常见于小位移场景直接不收敛
@@ -1072,11 +1110,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             
             # 对每个通道进行插值
             channels = []
-            for c in range(img.shape[2]):
+            planes = ((img_gpu,) if img.ndim == 2 else
+                      (img_gpu[:, :, c] for c in range(img.shape[2])))
+            for plane in planes:
                 # order=1 (linear) 速度最快, order=3 (cubic) 质量更好
                 # 这里使用 order=1 以获得最大加速，如果追求质量可用 order=3
                 channel_out = cupyx.scipy.ndimage.map_coordinates(
-                    img_gpu[:, :, c], 
+                    plane,
                     cp.stack([src_y, src_x]), 
                     order=1, 
                     mode='constant', 
@@ -1084,7 +1124,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 )
                 channels.append(channel_out)
             
-            aligned_img_gpu = cp.stack(channels, axis=2)
+            aligned_img_gpu = (channels[0] if len(channels) == 1 else
+                               cp.stack(channels, axis=2))
             
             # 传回 CPU
             aligned_img = cp.asnumpy(aligned_img_gpu).astype(img.dtype)

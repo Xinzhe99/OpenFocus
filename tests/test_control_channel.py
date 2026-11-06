@@ -147,6 +147,15 @@ def test_protocol_rejects_bad_lines_and_tokens(server):
     assert missing["error"]["code"] == "invalid_argument"
 
 
+@pytest.mark.parametrize("index", [0.5, -0.5, float("nan"), float("inf")])
+def test_output_delete_rejects_nonintegral_indices_without_removing_rows(server, index):
+    server.window.output_list.addItem("keep this output")
+    response = call(server, "output.delete", index=index, force=True)
+    assert response["error"]["code"] == "invalid_argument"
+    assert server.window.output_list.count() == 1
+    assert server.window.output_list.item(0).text() == "keep this output"
+
+
 def test_socket_round_trip_and_discovery(server):
     from core.control.client import request
 
@@ -325,12 +334,21 @@ runpy.run_path(sys.argv[0], run_name="__main__")
         assert forwarded.returncode == 0, forwarded.stderr
         assert gui.poll() is None
         script = '''
+import time
 from core.control.client import Session, request
 assert request("ping", token="incorrect", timeout=10)["error"]["code"] == "unauthorized"
 session = Session(timeout=10)
 try:
     assert session.call("ping")["pong"] is True
-    assert session.call("ui.context")["level"] in ("main", "dialog", "modal", "popup")
+    deadline = time.monotonic() + 10
+    context = session.call("ui.context")
+    while not any(dialog["class"] == "WelcomeDialog"
+                  and dialog["visible"] and dialog["modal"]
+                  for dialog in context["dialogs"]):
+        assert time.monotonic() < deadline, context
+        time.sleep(0.05)
+        context = session.call("ui.context")
+    assert context["level"] == "modal"
     assert session.call("ping")["pong"] is True
     assert session.call("app.quit", {"force": True})["quitting"] is True
 finally:

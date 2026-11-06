@@ -281,6 +281,12 @@ class TransformManager:
         SOURCE_CACHE.clear()
         PREVIEW_CACHE.clear()
         window.alignment_request_key = None
+        window._wipe_preview_record = None
+        window.last_render_context = None
+        render = getattr(window, "render_manager", None)
+        if (render is not None and getattr(render, "worker", None) is None
+                and not getattr(render, "_render_pending", False)):
+            render._render_context = None
 
         window.aligned_images = []
         window.is_images_aligned = False
@@ -307,8 +313,7 @@ class TransformManager:
         window.lbl_result_info.setText("-- / --")
 
         if preserve_outputs:
-            if window.fusion_results:
-                window.fusion_result = window.fusion_results[0]
+            window.fusion_result = window.fusion_results[0] if window.fusion_results else None
             if hasattr(window, "output_manager"):
                 window.output_manager.update_output_count()
         else:

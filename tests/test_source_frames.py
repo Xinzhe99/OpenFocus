@@ -671,3 +671,71 @@ def test_raw_jpeg_fallback_cancels_before_reading_next_preview(tmp_path, monkeyp
     with pytest.raises(InterruptedError, match='cancelled'):
         sources.ensure_preview(frame, should_cancel=lambda: cancelled)
     assert frame.preview is None and attempts == [(1024, 768)]
+
+
+@pytest.mark.parametrize('replace_at', ['before_decode', 'after_decode'])
+def test_original_rejects_source_replaced_during_decode(tmp_path, monkeypatch, replace_at):
+    import os
+    path = tmp_path / '替换中的原图.png'
+    Image.new('RGB', (40, 30), (20, 40, 60)).save(path)
+    frame = sources.scan_source(path, header_only=True)[0]
+    cache = sources.FrameCache()
+    monkeypatch.setattr(sources, 'SOURCE_CACHE', cache)
+    decode = image_loader.decode_image
+
+    def replace_source():
+        Image.new('RGB', (40, 30), (160, 180, 200)).save(path)
+        os.utime(path, ns=(frame.fingerprint[1] + 1_000_000_000,
+                           frame.fingerprint[1] + 1_000_000_000))
+
+    def decode_during_replacement(filename, **kwargs):
+        if replace_at == 'before_decode':
+            replace_source()
+        pixels = decode(filename, **kwargs)
+        if replace_at == 'after_decode':
+            replace_source()
+        return pixels
+
+    monkeypatch.setattr(image_loader, 'decode_image', decode_during_replacement)
+    with pytest.raises(OSError, match='Source changed'):
+        sources.resolve_frame(frame)
+    assert cache.bytes == 0
+    monkeypatch.setattr(image_loader, 'decode_image', decode)
+    reopened = sources.scan_source(path, header_only=True)[0]
+    np.testing.assert_array_equal(sources.resolve_frame(reopened),
+                                  np.full((30, 40, 3), (200, 180, 160), np.uint8))
+
+
+@pytest.mark.parametrize('cancel_at', ['decode', 'store'])
+def test_materialization_discards_last_frame_after_cancellation(tmp_path, monkeypatch, cancel_at):
+    import gc
+    from core import frame_storage
+    from core.registration import RegistrationCancelled
+    path = _jpeg(tmp_path, shape=(30, 40))
+    frame = sources.scan_source(path, header_only=True)[0]
+    monkeypatch.setattr(frame_storage, '_storage_directory', str(tmp_path))
+    monkeypatch.setattr(sources, 'SOURCE_CACHE', sources.FrameCache())
+    cancelled = False
+    decode, store = image_loader.decode_image, sources.store_frame
+
+    def decode_and_cancel(filename, **kwargs):
+        nonlocal cancelled
+        pixels = decode(filename, **kwargs)
+        cancelled = cancel_at == 'decode'
+        return pixels
+
+    def store_and_cancel(image):
+        nonlocal cancelled
+        mapped = store(image)
+        cancelled = True
+        return mapped
+
+    monkeypatch.setattr(image_loader, 'decode_image', decode_and_cancel)
+    monkeypatch.setattr(sources, 'store_frame', store_and_cancel)
+    with pytest.raises(RegistrationCancelled):
+        sources.materialize_frames([frame], should_cancel=lambda: cancelled)
+    gc.collect()
+    assert not list(tmp_path.glob('openfocus-frame-*.bin'))
+    monkeypatch.setattr(sources, 'store_frame', store)
+    mapped = sources.materialize_frames([frame])[0]
+    np.testing.assert_array_equal(mapped, decode(path))

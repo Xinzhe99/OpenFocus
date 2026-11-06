@@ -451,3 +451,52 @@ def test_sensor_controls_inspect_mask_and_reject_source_frame(qapp, tmp_path):
     window.current_scale_factor = 0.5
     assert controls.validate(window) == trans.t('sensor_mask_size_error')
     controls.close()
+
+
+def test_roi_startup_rejects_replacement_dispatched_before_worker_completion(qapp, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QPushButton, QSlider, QWidget
+    import main
+    from tests.test_gui_units import _StubSignal
+
+    class Worker:
+        def __init__(self, frames, **kwargs):
+            self.frames = list(frames)
+            self.finished_signal = _StubSignal()
+            self.error_signal = _StubSignal()
+            self.finished = _StubSignal()
+        def isRunning(self): return False
+        def start(self): pass
+
+    monkeypatch.setattr(main, 'ROIAlignmentWorker', Worker)
+    monkeypatch.setattr(main, 'show_message_box', lambda *args: None)
+    original = [np.full((12, 16, 3), 1000, np.uint16) for _ in range(2)]
+    replacement = [np.full((12, 16, 3), 60000, np.uint16) for _ in range(2)]
+    window = SimpleNamespace(
+        raw_images=original, image_filenames=['first.tif', 'second.tif'],
+        source_revision=0, roi_aligned_images=[], roi_mode_active=False,
+        reg_downscale_width=1024, thread_count=1, resource_preference='balanced',
+        result_slider=QSlider(), result_control_bar=QWidget(),
+        btn_preview_roi=QPushButton(), label_manager=SimpleNamespace(
+            frame_ids=lambda target: ['first', 'second']))
+    window.effective_stack = lambda: (list(window.raw_images), list(window.image_filenames), [0, 1])
+    displayed = []
+    window._display_roi_aligned_image = displayed.append
+    window._show_status_message = lambda *args: None
+    window._on_roi_alignment_finished = main.OpenFocus._on_roi_alignment_finished.__get__(window)
+    window._on_roi_alignment_error = main.OpenFocus._on_roi_alignment_error.__get__(window)
+    window._release_roi_worker = main.OpenFocus._release_roi_worker.__get__(window)
+
+    def replace():
+        window.raw_images = replacement
+        window.source_revision += 1
+
+    QTimer.singleShot(0, replace)
+    main.OpenFocus.toggle_roi_mode(window, True)
+    qapp.processEvents()
+    window._on_roi_alignment_finished(window.roi_alignment_worker.frames, 0.1)
+
+    assert window.raw_images is replacement
+    assert not window.roi_mode_active
+    assert window.roi_aligned_images == []
+    assert displayed == []

@@ -516,7 +516,7 @@ To remove all loaded images, go to **File → Clear Stack** or press `Ctrl+W`.
 
 ### Reviewing similar frames
 
-Click **Review frames** below the source list header to find adjacent frames
+Click **Review frames** in the source header, immediately left of **Select all**, to find adjacent frames
 whose pixels are nearly identical. The button changes to **Cancel review**
 while analysis runs. Each suggested row names its reference frame and difference;
 inspect both before using the source checkbox to exclude a frame from fusion.
@@ -525,6 +525,8 @@ comparison can miss similar frames; changes confined to a small focused region
 are not averaged away. Results are discarded if the stack changes.
 Suggestions are shown only when both the suggested frame and its reference
 are included; changing a checkbox updates the displayed suggestions.
+
+Clearing the stack removes review status and disables the review button.
 
 ### Zooming and Panning
 
@@ -782,23 +784,23 @@ Each neural tile uses every frame. Source frames and alignment scratch can be di
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: smooths its multiscale focus-response map, then selects focused pixels.
+- **OpenFocus A**: smooths squared high-pass energy, then selects complete original pixels; first-frame ties and 16-bit precision are preserved.
 - **OpenFocus B**: blends neighboring frames guided by a smoothed depth map.
 - **OpenFocus C**: reconstructs multiscale bands guided by a smoothed depth map.
-- **Parameters**: A and B use the kernel slider to control focus-response scale;
-  C has no radius. All three have a smoothing parameter controlling transition strength.
+- **Parameters**: A uses the kernel slider for high-pass scale (`sigma = max(1, kernel / 5.5)`); B uses it for focus-response scale. C has no radius. A smooths energy before source selection; B and C smooth depth maps.
 
 **Smoothing**: one spin box under the kernel slider, with the meaning of the
 selected method (range 0–8, step 0.2):
 
 | Method | Label | Default | Effect |
 |---|---|---|---|
-| OpenFocus A | Blend smoothing | 2.0 | Controls smoothing of the focus-response map before pixels are selected |
+| OpenFocus A | Blend smoothing | 2.0 | Spreads squared high-pass energy with `sigma = max(1, smoothing / 2)`; 0 retains the minimum spread |
 | OpenFocus B | Depth smoothing | 1.2 | Controls smoothing of the depth map that guides blending |
 | OpenFocus C | Blend smoothing | 3.0 | Controls smoothing of the depth map that guides multiscale reconstruction |
 
-Higher values increase transition smoothing. Each method remembers its own value
-across sessions, and batch processing uses the same rule.
+For A, values from 0 through 2 use the same minimum spread; higher values spread
+energy farther. For B and C, larger values increase depth-map smoothing. Each
+method remembers its own value across sessions; batch processing uses the same rule.
 
 C has no Radius parameter, so its kernel slider is hidden.
 
@@ -848,7 +850,7 @@ filename stems are retained, with the extension of the format you select.
 | StackMFF (V1) | Slow (GPU) | Not benchmarked here | Luma is order-invariant; chroma may differ on luma-distance ties |
 | StackMFF V2 | Fast (GPU) | Not benchmarked here | Continuous sweeps with a tiny model |
 | StackMFF V3 | Slow (GPU) | Excellent | Best quality |
-| OpenFocus A | Depends on stack | Depends on stack | Multiscale focused-pixel selection |
+| OpenFocus A | Depends on stack | Depends on stack | High-frequency energy source-pixel selection |
 | OpenFocus B | Depends on stack | Depends on stack | Depth-guided blending of neighboring frames |
 | OpenFocus C | Depends on stack | Depends on stack | Depth-guided multiscale reconstruction |
 
@@ -936,9 +938,9 @@ Fusion can still leave a local defect — a halo around a high-contrast edge,
 a bristle taken from the wrong frame, noise in a flat area. The workspace
 copies pixels from the exact frames that produced the selected result:
 
-1. Select one output in the output list (right-click → *Retouch Result…*
-   works too) and press `Ctrl+T`. With no selection, a chooser lists every
-   result and marks which ones have recorded source frames.
+1. Select one output and click **Retouch Result…** in the output header, or press
+   `Ctrl+T`. The output context menu offers the same action. With no selection,
+   a chooser lists every result and marks which ones have recorded source frames.
 2. The source frame is on the left, the result on the right. Both share zoom
    and position: wheel zooms, right/middle-drag (or Space+drag) pans, `F`
    fits, `1` shows 100 %.
@@ -959,6 +961,9 @@ copies pixels from the exact frames that produced the selected result:
    new entry is marked *Not exported* until you export it from the main
    window, and OpenFocus protects it from automatic history eviction and
    from quitting without a decision.
+
+**Open shortcut help** lists navigation, frame selection, brush and editing
+shortcuts in separate groups with one action per row.
 
 Apply the retouch as a new output, then select it and choose **Save As**. Select layered TIFF in the format list to save the result with its source frames.
 Live labels and scale bars are not included; unsaved annotation changes remain
@@ -1215,7 +1220,10 @@ removed. For detailed support logs, set `OPENFOCUS_LOG_LEVEL=DEBUG` before launc
 
 ### Tile Settings (Memory Optimization)
 
-For large images, OpenFocus uses tile-based processing to avoid memory issues.
+Methods supporting external tiles can use them above the configured threshold.
+OpenFocus A/B/C process the whole image at the default threshold; changing the
+threshold explicitly enables their external tile path. Their bounded row/frame
+passes still reduce working memory while retaining global depth and reconstruction.
 
 Access via **Settings → Advanced Settings → Performance**:
 
@@ -1354,6 +1362,14 @@ Switch anytime via **Settings → Language**, which lists all twelve packs
 (English, 中文, 日本語, Español, Deutsch, Français, Русский, 한국어, Português,
 Italiano, Nederlands, Polski). The change applies immediately and is remembered
 for future sessions.
+
+### Restore default settings
+
+Choose **Settings → Restore default settings…** and confirm the change. The
+confirmation defaults to **Cancel**; cancelling preserves every preference.
+Restoring resets processing and interface preferences while retaining loaded
+sources, outputs, the current project, recent files, language and export folders.
+Finish running jobs and close dialogs before restoring.
 
 ### Automatic Update Check
 

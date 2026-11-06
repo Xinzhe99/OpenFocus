@@ -208,10 +208,8 @@ def test_tile_controls_and_diagnostics_are_drafts(settings_window):
     assert dialog.spin_block.isHidden()
     assert dialog.spin_overlap.isHidden()
     assert dialog.spin_threshold.isHidden()
-    assert dialog.tile_note.isHidden()
     dialog.chk_tile.setChecked(True)
     assert not dialog.spin_block.isHidden()
-    assert not dialog.tile_note.isHidden()
     dialog.chk_collect_alignment_report.setChecked(True)
     dialog.reject()
     assert not getattr(settings_window, 'collect_alignment_report', False)
@@ -795,3 +793,120 @@ def test_image_save_dialogs_start_where_the_last_image_was_saved(tmp_path, monke
     assert store.get_last_dialog_dir() == str(saved)
     saved.rmdir()                                       # a vanished folder is not offered
     assert store.image_save_dir() == str(home)
+
+
+def test_restore_preferences_keeps_workspace_and_user_data(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QSettings
+    from utils import settings_store as store
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(store, 'get_settings', lambda: settings)
+    source, output = object(), object()
+    window = SimpleNamespace(
+        raw_images=[source], fusion_results=[output], project_path='session.ofproj',
+        recent_files=['source.tif'], recent_projects=['session.ofproj'],
+        thread_count=13, tile_enabled=False, storage_directory=str(tmp_path),
+        _fusion_parameters_by_method={'stackmffv3': {'mode': 'soft'}},
+        _registration_parameters_by_method={}, _brightness_by_method={})
+    store.save_window_settings(window)
+    settings.setValue('retouch/auto_bg_mode', 'sharp')
+    settings.setValue('depthmap/custom_schemes', 'my palette')
+    settings.setValue('ui/last_image_save_dir', str(tmp_path))
+    settings.setValue('usage/enabled', False)
+    settings.setValue('updates/auto_download', False)
+    settings.setValue('rendering/ai_cpu_warning_dismissed', True)
+    previous_language = settings.value(store.LANGUAGE_KEY)
+    store.restore_default_settings(window)
+    assert window.thread_count == 0 and window.tile_enabled
+    assert window.storage_directory == ''
+    assert window._fusion_parameters_by_method == {}
+    assert window._registration_parameters_by_method == {}
+    assert window._brightness_by_method == {}
+    assert window.raw_images == [source] and window.raw_images[0] is source
+    assert window.fusion_results == [output] and window.fusion_results[0] is output
+    assert window.project_path == 'session.ofproj'
+    assert settings.value('depthmap/custom_schemes') == 'my palette'
+    assert settings.value('ui/last_image_save_dir') == str(tmp_path)
+    assert not settings.value('usage/enabled', type=bool)
+    assert not settings.value('updates/auto_download', type=bool)
+    assert settings.value(store.LANGUAGE_KEY) == previous_language
+    assert not settings.contains('retouch/auto_bg_mode')
+    assert not settings.contains('rendering/ai_cpu_warning_dismissed')
+    restored = SimpleNamespace()
+    store.load_window_settings(restored)
+    assert restored.thread_count == 0 and restored.tile_enabled
+    assert restored.recent_files == ['source.tif']
+    assert restored.recent_projects == ['session.ofproj']
+
+
+@pytest.mark.parametrize('decision', ['cancel', 'escape', 'busy', 'busy_after_confirmation'])
+def test_restore_confirmation_rejection_never_writes(qapp, tmp_path, monkeypatch, decision):
+    from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import QMainWindow, QMessageBox
+    import main as main_module
+    from utils import settings_store as store
+    settings = QSettings(str(tmp_path / 'settings.ini'), QSettings.Format.IniFormat)
+    monkeypatch.setattr(store, 'get_settings', lambda: settings)
+    settings.setValue('rendering/thread_count', 17)
+    settings.sync()
+    before = (tmp_path / 'settings.ini').read_bytes()
+    window = QMainWindow()
+    window.thread_count = 17
+    source, output = object(), object()
+    window.raw_images, window.fusion_results = [source], [output]
+    checks = iter([decision == 'busy', decision == 'busy_after_confirmation'])
+    window._settings_reset_busy = lambda: next(checks)
+    warnings, confirmations = [], []
+    monkeypatch.setattr(main_module, 'show_warning_box', lambda *args: warnings.append(args))
+
+    def confirm(box):
+        confirmations.append(box)
+        assert box.buttonRole(box.defaultButton()) == QMessageBox.ButtonRole.RejectRole
+        assert box.escapeButton() is box.defaultButton()
+        if decision == 'busy_after_confirmation':
+            next(button for button in box.buttons()
+                 if box.buttonRole(button) == QMessageBox.ButtonRole.DestructiveRole).click()
+        elif decision == 'cancel':
+            box.defaultButton().click()
+        else:
+            box.reject()
+        return box.result()
+
+    monkeypatch.setattr(QMessageBox, 'exec', confirm)
+    try:
+        main_module.OpenFocus.restore_default_settings(window)
+        settings.sync()
+        assert (tmp_path / 'settings.ini').read_bytes() == before
+        assert window.thread_count == 17
+        assert window.raw_images[0] is source and window.fusion_results[0] is output
+        assert bool(warnings) == decision.startswith('busy')
+        assert len(confirmations) == (0 if decision == 'busy' else 1)
+    finally:
+        window.deleteLater()
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+def test_default_full_frame_policy_and_explicit_threshold_are_visible(settings_window, method):
+    from core.algorithms import get_fusion
+    from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
+    from dialogs.advanced_settings import AdvancedSettingsDialog
+    from locales import trans
+    settings_window.current_fusion_method = lambda: method
+    settings_window.tile_threshold = _DEFAULT_TILE_THRESHOLD
+    dialog = AdvancedSettingsDialog(settings_window)
+    try:
+        assert dialog.chk_tile.isChecked()
+        assert not dialog.spin_threshold.isHidden()
+        assert dialog.spin_block.isHidden() and dialog.spin_overlap.isHidden()
+        assert dialog.tile_status.text() == trans.t('advanced_tile_full_frame_status').format(
+            method=get_fusion(method).display_name)
+        full_frame_status = dialog.tile_status.text()
+        dialog.spin_threshold.setValue(_DEFAULT_TILE_THRESHOLD + 256)
+        assert not dialog.spin_block.isHidden() and not dialog.spin_overlap.isHidden()
+        assert dialog.tile_status.text() != full_frame_status
+        dialog.chk_tile.setChecked(False)
+        assert dialog.spin_threshold.isHidden() and dialog.spin_block.isHidden()
+        assert dialog.tile_status.text() == full_frame_status
+        dialog.reject()
+        assert settings_window.tile_threshold == _DEFAULT_TILE_THRESHOLD
+    finally:
+        dialog.deleteLater()
