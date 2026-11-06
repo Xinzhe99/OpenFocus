@@ -444,6 +444,13 @@ def setup_menus(window: QMainWindow) -> None:
         lang_group.addAction(act)
         lang_menu.addAction(act)
         window.ui_objs[f'action_lang_{code}'] = act
+    settings_menu.addSeparator()
+    restore_action = QAction(trans.t('action_restore_defaults'), window)
+    restore_action.setProperty('trans_key', 'action_restore_defaults')
+    restore_action.triggered.connect(window.restore_default_settings)
+    settings_menu.addAction(restore_action)
+    window.ui_objs['action_restore_defaults'] = restore_action
+
 
     # --- Help Menu ---
     help_menu = menubar.addMenu(trans.t('menu_help'))

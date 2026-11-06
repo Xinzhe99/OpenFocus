@@ -373,6 +373,51 @@ def save_window_settings(window) -> None:
     if settings.status() != QSettings.Status.NoError:
         raise OSError("Could not write OpenFocus settings")
 
+def restore_default_settings(window) -> None:
+    """Reset preferences without touching files, outputs or location history.
+
+    Use the same defaults as a fresh settings store. User-created colour
+    schemes, recent paths, update state and installation identity are data,
+    so they are deliberately outside this preference reset.
+    """
+    settings = get_settings()
+    keys = {key for key, _default, _kind in _PERSISTED_FIELDS.values()}
+    keys.update((BRIGHTNESS_BY_METHOD_KEY, METHOD_PARAMETERS_KEY,
+                 REGISTRATION_PARAMETERS_KEY, SMOOTHING_BY_METHOD_KEY,
+                 KERNEL_BY_MODE_KEY, DRAG_FORMAT_KEY, AI_CPU_WARNING_DISMISSED_KEY,
+                 'fusion/ai_mode', 'fusion/dtcwt_levels',
+                 'fusion/ofb_depth_smoothing', 'fusion/of_blend_smoothing',
+                 'retouch/auto_bg_mode', 'retouch/auto_bg_clean',
+                 'retouch/auto_bg_soft_parts', 'compare/preview_size',
+                 'depthmap/colormap', 'depthmap/gamma', 'depthmap/smooth',
+                 'depthmap/invert', 'depthmap/relief'))
+    previous = {key: settings.value(key) for key in keys if settings.contains(key)}
+    attributes = {attr: getattr(window, attr, default)
+                  for attr, (_key, default, _kind) in _PERSISTED_FIELDS.items()}
+    memories = {name: getattr(window, name, {}) for name in (
+        '_brightness_by_method', '_fusion_parameters_by_method',
+        '_registration_parameters_by_method')}
+    try:
+        for key in keys:
+            settings.remove(key)
+        for attr, (_key, default, _kind) in _PERSISTED_FIELDS.items():
+            setattr(window, attr, default)
+        for name in memories:
+            setattr(window, name, {})
+        save_window_settings(window)
+    except Exception:
+        for attr, value in attributes.items():
+            setattr(window, attr, value)
+        for name, value in memories.items():
+            setattr(window, name, value)
+        for key in keys:
+            settings.remove(key)
+        for key, value in previous.items():
+            settings.setValue(key, value)
+        settings.sync()
+        raise
+
+
 
 def _supported_languages():
     """Codes the running build can actually render.

@@ -2300,6 +2300,61 @@ class OpenFocus(QMainWindow):
         from dialogs.advanced_settings import AdvancedSettingsDialog
         AdvancedSettingsDialog(self).exec()
 
+    def _settings_reset_busy(self) -> bool:
+        render = self.render_manager
+        return (self._has_work_in_flight() or self.source_manager._reset_busy()
+                or self.source_manager._review_worker is not None
+                or bool(getattr(render, '_render_pending', False))
+                or render._render_after_load is not None or render._compare_mode
+                or self.update_manager.is_busy()
+                or QApplication.activeModalWidget() is not None
+                or any(dialog.isVisible() for dialog in self.findChildren(QDialog)))
+
+    def restore_default_settings(self) -> None:
+        """Confirm before changing preferences; an open workspace remains intact."""
+        if self._settings_reset_busy():
+            show_warning_box(self, trans.t('action_restore_defaults'),
+                             trans.t('restore_defaults_busy'))
+            return
+        box = QMessageBox(self)
+        style_message_box(box)
+        box.setWindowTitle(trans.t('action_restore_defaults'))
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(trans.t('restore_defaults_confirm'))
+        restore = box.addButton(trans.t('restore_defaults_button'),
+                                QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(trans.t('btn_cancel'), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        accepted = box.clickedButton() is restore
+        box.deleteLater()
+        if not accepted:
+            return
+        # A timer/control request may start work during the confirmation.
+        if self._settings_reset_busy():
+            show_warning_box(self, trans.t('action_restore_defaults'),
+                             trans.t('restore_defaults_busy'))
+            return
+        from utils.settings_store import restore_default_settings
+        try:
+            with self._restore_scope():
+                restore_default_settings(self)
+                configure_storage_directory(self.storage_directory)
+                self.drag_export_format = '.jpg'
+                self.chk_quick_preview.setChecked(False)
+                self.reset_to_default()
+                self.apply_theme(self.ui_theme)
+                self.set_use_gpu(self.use_gpu)
+            self.persist_settings()
+        except Exception as exc:
+            show_message_box(self, trans.t('msg_error'), trans.t('msg_save_failed_text'),
+                             str(exc), QMessageBox.Icon.Critical)
+            return
+        self.update_ui_text()
+        self.statusBar().showMessage(trans.t('restore_defaults_done'), 5000)
+
+
     def show_compare_dialog(self) -> None:
         """Side-by-side comparison of several fusion methods on this stack."""
         if not self.raw_images or len(self.raw_images) < 2:
@@ -3540,6 +3595,12 @@ class OpenFocus(QMainWindow):
         load_worker = getattr(source_manager, '_load_worker', None) if source_manager else None
         if load_worker is not None:
             running.append(load_worker.isRunning())
+        if source_manager is not None:
+            review = getattr(source_manager, '_review_worker', None)
+            if review is not None:
+                running.append(review.isRunning())
+            running.extend(worker.isRunning() for worker in
+                           getattr(source_manager, '_retiring_review_workers', ()))
         # 深度图对话框关闭后仍在跑的 worker（AI 可达数分钟）也要算数，
         # 否则退出时模块级集合随解释器清理，QThread 运行中被析构 -> abort
         try:
@@ -3678,6 +3739,8 @@ class OpenFocus(QMainWindow):
         if hasattr(self, 'source_manager'):
             _shutdown_worker(getattr(self.source_manager, '_load_worker', None))
             _shutdown_worker(getattr(self.source_manager, '_review_worker', None))
+            for worker in tuple(getattr(self.source_manager, '_retiring_review_workers', ())):
+                _shutdown_worker(worker)
             self.source_manager._load_worker = None
 
         # Stop update download/stage workers if running. The background
