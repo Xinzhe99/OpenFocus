@@ -39,13 +39,15 @@ def pixmap_to_cv2(pixmap) -> Optional[np.ndarray]:
         return None
 
 
-def composite_transparent_for_display(image: np.ndarray) -> np.ndarray:
+def composite_transparent_for_display(image: np.ndarray, *, origin=(0, 0), scale=(1, 1)) -> np.ndarray:
     """Composite straight-alpha pixels on a checkerboard for display only."""
     image = to_display_uint8(image)
     if image.ndim != 3 or image.shape[2] != 4:
         return image
     h, w = image.shape[:2]
-    checker = (((np.arange(h)[:, None] // 12 + np.arange(w)[None, :] // 12) % 2) * 48 + 160).astype(np.uint16)
+    rows = np.floor((origin[1] + np.arange(h) * scale[1]) / 12).astype(np.int64)
+    cols = np.floor((origin[0] + np.arange(w) * scale[0]) / 12).astype(np.int64)
+    checker = (((rows[:, None] + cols[None, :]) % 2) * 48 + 160).astype(np.uint16)
     alpha = image[:, :, 3].astype(np.uint16)
     out = np.empty((h, w, 3), dtype=np.uint8)
     for channel in range(3):
