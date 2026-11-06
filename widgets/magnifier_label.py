@@ -236,7 +236,6 @@ class MagnifierLabel(QLabel):
         self._region_serial += 1
         request = (kind, self._region_serial, geometry, size)
         self._region_requests[kind] = request
-        self._source_regions.pop(kind, None)
         self.sourceRegionRequested.emit(self._source_key, request)
 
     def _request_source_regions(self):

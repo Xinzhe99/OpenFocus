@@ -176,6 +176,22 @@ def test_lazy_original_pixels_and_stale_completion(view, qapp):
     assert not install_loupe(view, original, (2, 0), latest_request)
 
 
+def test_native_tile_remains_visible_while_replacement_is_pending(view, qapp):
+    preview = QPixmap(100, 100)
+    preview.fill(QColor("magenta"))
+    view.set_display_pixmap(preview, source_size=(10000, 10000), source_key="large")
+    first = view._region_requests["view"]
+    tile = QPixmap(200, 200)
+    tile.fill(QColor("lime"))
+    assert view.set_source_region(tile, first[2], source_key="large", request=first)
+
+    cached = view._source_regions["view"]
+    view._request_region("view", QRectF(500, 700, 1200, 900), (300, 225))
+
+    assert view._region_requests["view"] != first
+    assert view._source_regions["view"] == cached
+
+
 def test_styled_label_uses_widget_coordinates(view, qapp):
     view.setStyleSheet("border: 3px solid black; padding: 7px")
     view.set_display_pixmap(coordinate_grid())
