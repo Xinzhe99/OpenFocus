@@ -197,19 +197,20 @@ def dct_focus_stack_fusion(
     unique_indices = np.unique(final_index_map)
     
     for idx in unique_indices:
-        # 生成掩膜：哪里需要这张图，哪里就是 True
-        # 放大"每个索引的掩膜"而不是索引图本身：把索引图 resize 成 uint8 会把
-        # 第 256 张之后的帧截断成错误的小索引（长栈会取错源图）。
-        block_mask = (final_index_map == idx).astype(np.uint8)
-        mask = cv2.resize(block_mask, (w_trim, h_trim),
-                          interpolation=cv2.INTER_NEAREST).astype(bool)
-        
-        # 即使这里是 Python 循环，也是针对整张图的掩膜操作，速度很快
-        # 裁剪源图像以匹配尺寸
         source_layer = padded_frame(idx)[:h_trim, :w_trim]
-        
-        # 赋值
-        fused_image[mask] = source_layer[mask]
+        # Nearest expansion of an integer block grid is exact replication.
+        # Bound masks and selected colour pixels to a strip instead of making
+        # a full-resolution mask and a potentially full-frame indexed copy.
+        block_rows = max(1, 128 // block_size)
+        for start in range(0, map_h, block_rows):
+            check_cancel()
+            stop = min(map_h, start + block_rows)
+            rows = slice(start * block_size, stop * block_size)
+            mask = np.repeat(np.repeat(final_index_map[start:stop] == idx,
+                                       block_size, axis=0), block_size, axis=1)
+            np.copyto(fused_image[rows], source_layer[rows],
+                      where=mask[:, :, None], casting='unsafe')
+        del source_layer, mask
 
     check_cancel()
     if (orig_h, orig_w) != (h_trim, w_trim):
