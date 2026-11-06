@@ -34,12 +34,15 @@ def test_check_deduplicates_and_hops_to_gui_before_notification(manager, qapp, m
     assert manager.manual_check
     observed = []
     manager.check_finished.connect(lambda *args: observed.append((manager.tag, manager.notes, QThread.currentThread())))
-    worker = threading.Thread(target=lambda: callbacks[0]("update", "v999", "page", "zip", "setup", "digest", "notes"))
+    entries = [{"tag_name": "v999", "body": "notes"}]
+    worker = threading.Thread(target=lambda: callbacks[0]("update", "v999", "page", "zip", "setup", "digest", entries))
     worker.start()
     worker.join()
     assert not observed
     qapp.processEvents()
-    assert observed == [("v999", "notes", qapp.thread())]
+    assert len(observed) == 1
+    assert observed[0][0] == "v999" and "notes" in observed[0][1]
+    assert observed[0][2] == qapp.thread()
     assert not manager._checking
 
 
@@ -112,7 +115,8 @@ def test_check_result_respects_manual_intent(manager, qapp, monkeypatch, state, 
 def test_check_result_cannot_rebind_active_download(manager):
     manager.tag, manager.zip_url, manager.zip_digest = "v999", "old.zip", "old-digest"
     manager.state = um.STATE_DOWNLOADING
-    manager._on_check_result("update", "v1000", "page", "new.zip", "", "new-digest", "new")
+    manager._on_check_result("update", "v1000", "page", "new.zip", "", "new-digest",
+                             [{"tag_name": "v1000", "body": "new"}])
     assert (manager.tag, manager.zip_url, manager.zip_digest) == ("v999", "old.zip", "old-digest")
     assert manager.state == um.STATE_DOWNLOADING
 
@@ -304,3 +308,75 @@ def test_stage_retry_reuses_downloaded_zip(manager, monkeypatch, tmp_path):
     assert manager.download(manager.tag, manager.zip_url)
     assert prepared[0][0] == str(package)
     assert manager._download is None
+
+
+def test_notes_follow_language_changed_during_and_after_background_check(manager, qapp, monkeypatch):
+    from locales import trans
+    from utils.release_notes import LANGUAGES, RELEASE_NOTES
+    import constants
+
+    monkeypatch.setattr(constants, "APP_VERSION", "1.75")
+    monkeypatch.setattr(trans, "current_lang", "en")
+    monkeypatch.setattr(manager, "can_self_update", lambda: False)
+    callbacks = []
+    monkeypatch.setattr(updater, "check_async", lambda version, callback, quiet: callbacks.append(callback))
+    manager.check(quiet=True)
+    worker = threading.Thread(target=lambda: callbacks[0](
+        "update", "v1.76.0", updater.RELEASES_PAGE_URL, "", "", "",
+        [{"tag_name": "v1.76.0", "body": "Old English mirror body"}]))
+    worker.start()
+    worker.join()
+    trans.set_language("fr")
+    qapp.processEvents()
+    assert "Choisissez" in manager.notes
+    assert "Old English mirror body" not in manager.notes
+    observed = []
+    manager.notes_changed.connect(observed.append)
+    for language in LANGUAGES:
+        trans.set_language(language)
+        expected = RELEASE_NOTES["1.76.0"][language].splitlines()[0][2:]
+        assert expected in manager.notes
+        assert observed[-1] == manager.notes
+
+
+def test_staged_notes_restore_offline_and_reselect_language(manager, monkeypatch):
+    from locales import trans
+    from utils import settings_store
+    import constants
+
+    monkeypatch.setattr(constants, "APP_VERSION", "1.75")
+    monkeypatch.setattr(trans, "current_lang", "en")
+    monkeypatch.setattr(manager, "can_self_update", lambda: False)
+    manager._on_check_result("update", "v1.76.0", updater.RELEASES_PAGE_URL,
+                             notes=[{"tag_name": "v1.76.0", "body": "legacy"}])
+    settings_store.get_settings().sync()
+    restored = um.UpdateManager(manager._window)
+    try:
+        monkeypatch.setattr(restored, "can_self_update", lambda: True)
+        monkeypatch.setattr(self_update, "staged_ready", lambda tag: True)
+        assert restored._restore_staged_state()
+        assert restored.state == um.STATE_READY
+        restored._on_check_result("error", "", "")
+        trans.set_language("ja")
+        assert "読み込んだフレーム" in restored.notes
+        trans.set_language("pl")
+        assert "Wybierz katalog tymczasowy" in restored.notes
+        assert "https://github.com/Xinzhe99/OpenFocus/releases/tag/v1.76.0" in restored.notes
+        # An external installation of this release makes old cached notes obsolete.
+        monkeypatch.setattr(constants, "APP_VERSION", "1.76.0")
+        assert restored.notes == ""
+    finally:
+        restored._idle_timer.stop()
+        restored.deleteLater()
+
+
+@pytest.mark.parametrize("raw", ["not json", "[]", '{"tag": 7}', '{"tag": "bad", "releases": [null]}'])
+def test_corrupt_note_cache_does_not_break_update_startup(manager, monkeypatch, raw):
+    from utils import settings_store
+    settings_store.get_settings().setValue(um.NOTES_CACHE_KEY, raw)
+    restored = um.UpdateManager(manager._window)
+    try:
+        assert restored.notes == ""
+    finally:
+        restored._idle_timer.stop()
+        restored.deleteLater()
