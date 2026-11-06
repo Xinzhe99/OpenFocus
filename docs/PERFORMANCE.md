@@ -22,6 +22,11 @@ Spatial tile workers keep their child frame pass serial, so the two pools do
 not overlap. A worker budget includes a completed result waiting for reduction
 and the original-size uint16 conversion required before resizing.
 
+B/C's Q12 recurrence runs in a lazily compiled, GIL-free Numba CPU kernel.
+Admission includes a 256-MiB compiler-startup allowance. Compilation stays in
+memory, so read-only installed/frozen modules do not need a writable JIT cache.
+The first fusion in a fresh process includes compilation time.
+
 Guided Filter, DCT, GFG-FGF, DTCWT and neural preparation use frame/strip passes
 and mapped intermediates where applicable. Full outputs, decision maps,
 reconstruction buffers and native decoder work still need admission; temporary

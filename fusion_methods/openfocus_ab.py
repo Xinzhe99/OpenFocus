@@ -73,7 +73,9 @@ def _frame_pass_workers(frames, img_resize, algorithm, thread_count, *, activity
         # smoothing and C's reconstruction pyramids run after producers drain.
         # Each producer envelope includes its source, integer filter maps,
         # row scratch and a completed activity plane waiting for reduction.
-        fixed, per_worker = 4 * 1024 * 1024 + h * w * 12, h * w * 80
+        from core.algorithm_adapters import DEPTH_KERNEL_STARTUP_BYTES
+        fixed = DEPTH_KERNEL_STARTUP_BYTES + 4 * 1024 * 1024 + h * w * 12
+        per_worker = h * w * 80
     if img_resize:
         # _prepare_frame must convert uint16 BEFORE resizing to preserve its
         # fractional interpolation. A small destination cannot hide multiple

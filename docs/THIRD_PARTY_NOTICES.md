@@ -3,6 +3,17 @@
 OpenFocus ships code and model weights from other projects. This file records
 the origin, the license, and the changes made here.
 
+## Numba and llvmlite — CPU depth-filter compilation
+
+- **Upstream**: https://github.com/numba/numba and
+  https://github.com/numba/llvmlite
+- **Versions**: Numba 0.61.2 or later with its compatible llvmlite runtime.
+- **Copyright**: Numba (c) 2012, Anaconda, Inc.; llvmlite (c) 2014, Anaconda Inc.
+- **License**: BSD 2-Clause; used without modification to compile the Q12
+  integer recurrence on the CPU. The frozen build retains the complete original
+  `numba-*.dist-info` and `llvmlite-*.dist-info` license files, including their
+  third-party and LLVM notices.
+
 ## threadpoolctl — native thread limits
 
 - **Upstream**: https://github.com/joblib/threadpoolctl
