@@ -37,14 +37,69 @@ def roi_openfocus_c(parameters, width, height):
     return max(96, ceil((8 + 4 * parameters['blend_smoothing']) * grid)), grid
 
 
+# The OpenFocus passes retain a fixed set of maps/pyramids and prepare one
+# source frame at a time. Charge their live planes, not N float colour frames.
+# These envelopes include mapped planes: fitting them in RAM avoids relying on
+# paging for the preferred whole-image path. The fallback still uses mappings.
+def openfocus_a_resources(height, width, parameters, frames):
+    return 4 * 1024 * 1024, height * width * 96
+
+
+def openfocus_b_resources(height, width, parameters, frames):
+    return 4 * 1024 * 1024, height * width * 240
+
+
+def openfocus_c_resources(height, width, parameters, frames):
+    return 4 * 1024 * 1024, height * width * 384
+
+
+def guided_resources(height, width, parameters, frames):
+    # Four retained accumulators plus the decision map; one guided-filter
+    # worker, including its ordered result, has a bounded float workspace.
+    return height * width * 40, height * width * 192
+
+
+def gfg_resources(height, width, parameters, frames):
+    return height * width * 40, height * width * 128
+
+
+def dct_resources(height, width, parameters, frames):
+    # Include block padding and median-filter scratch at the coarser grid.
+    return 4 * 1024 * 1024, (height + 8) * (width + 8) * 64
+
+
+def _openfocus_needs_tiles(algorithm, frames, threshold):
+    from core.multi_focus_fusion import (
+        _DEFAULT_TILE_THRESHOLD, estimate_peak_bytes, memory_budget_bytes)
+    if not frames:
+        return False
+    # A non-default threshold remains an explicit spatial cap (also useful for
+    # reproducible tiled renders). The default chooses by actual RAM headroom.
+    forced = threshold != _DEFAULT_TILE_THRESHOLD and max(frames[0].shape[:2]) > threshold
+    return forced or estimate_peak_bytes(algorithm, frames) > memory_budget_bytes()
+
+
+def openfocus_a_needs_tiles(frames, threshold):
+    return _openfocus_needs_tiles('openfocus_a', frames, threshold)
+
+
+def openfocus_b_needs_tiles(frames, threshold):
+    return _openfocus_needs_tiles('openfocus_b', frames, threshold)
+
+
+def openfocus_c_needs_tiles(frames, threshold):
+    return _openfocus_needs_tiles('openfocus_c', frames, threshold)
+
+
 def dtcwt_resources(height, width, parameters, frames):
     from fusion_methods.dtcwt import estimate_working_set
     return estimate_working_set(height, width, parameters['N'], frames)
 
 
 def dtcwt_needs_tiles(frames, threshold):
-    from core.multi_focus_fusion import _dtcwt_activity_bytes, DTCWT_ACTIVITY_BUDGET
-    return _dtcwt_activity_bytes(frames) > DTCWT_ACTIVITY_BUDGET
+    from core.multi_focus_fusion import estimate_peak_bytes, memory_budget_bytes
+    # Prefer whole transforms to avoid introducing tile-boundary wavelets.
+    return estimate_peak_bytes('dtcwt', frames) > memory_budget_bytes()
 
 
 def neural_needs_tiles(frames, threshold):

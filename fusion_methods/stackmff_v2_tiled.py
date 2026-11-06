@@ -12,6 +12,7 @@ import numpy as np
 from fusion_methods import neural_common as common
 from utils.image_utils import apply_exposure_gain
 from utils.sorting import natural_sort_key
+from core.frame_storage import create_frame
 
 
 class _Source:
@@ -145,8 +146,10 @@ def tiled_depth(source, model_path, use_gpu, should_cancel=None,
     ys = sorted({min(y, h - block) for y in range(0, h, step)})
     xs = sorted({min(x, w - block) for x in range(0, w, step)})
     total = len(xs) * len(ys)
-    expected = np.zeros((h, w), dtype=np.float32)
-    weight = np.zeros((h, w), dtype=np.float32)
+    expected = create_frame((h, w), np.float32)
+    weight = create_frame((h, w), np.float32)
+    expected[...] = 0
+    weight[...] = 0
     if progress_callback is not None:
         progress_callback(0, total)
     done = 0
@@ -175,12 +178,19 @@ def tiled_depth(source, model_path, use_gpu, should_cancel=None,
             if progress_callback is not None:
                 progress_callback(done, total)
     common.cancel(should_cancel)
-    np.divide(expected, weight, out=expected, where=weight != 0)
+    for start in range(0, h, 128):
+        common.cancel(should_cancel)
+        rows = slice(start, min(h, start + 128))
+        np.divide(expected[rows], weight[rows], out=expected[rows], where=weight[rows] != 0)
     del weight
     lo, hi = expected.min(), expected.max()
     expected -= lo
     expected /= hi - lo + 1e-8
-    index = np.clip(np.rint(expected * (count - 1)), 0, count - 1).astype(np.int64)
+    index = create_frame((h, w), np.int64)
+    for start in range(0, h, 128):
+        common.cancel(should_cancel)
+        rows = slice(start, min(h, start + 128))
+        index[rows] = np.clip(np.rint(expected[rows] * (count - 1)), 0, count - 1).astype(np.int64)
     return expected[:source_h, :source_w], index[:source_h, :source_w]
 
 
@@ -197,12 +207,17 @@ def tiled_fusion(input_source, img_resize, model_path, use_gpu,
     first = _normalized(source.get(0))
     if source_all_uint8 is None:
         source_all_uint8 = all(item.dtype == np.uint8 for item in source.items) if not source.directory else first.dtype == np.uint8
-    output = np.empty(first.shape, dtype=np.uint8 if source_all_uint8 else np.float32)
+    output = create_frame(first.shape, np.uint8 if source_all_uint8 else np.float32)
     for i in range(len(source.items)):
         common.cancel(should_cancel)
         frame = first if i == 0 else _normalized(source.get(i))
-        mask = index == i
-        output[mask] = frame[mask]
+        for start in range(0, output.shape[0], 128):
+            common.cancel(should_cancel)
+            rows = slice(start, min(output.shape[0], start + 128))
+            mask = index[rows] == i
+            np.copyto(output[rows], frame[rows],
+                      where=mask[:, :, None] if frame.ndim == 3 else mask,
+                      casting='unsafe')
     if output.dtype != np.uint8:
         np.clip(output, 0, 255, out=output)
     common.cancel(should_cancel)
