@@ -162,3 +162,30 @@ def test_directory_exposure_match_admits_mixed_bit_depths(monkeypatch, tmp_path)
     unrestricted = mff.MultiFocusFusion(
         "dct", exposure_match=True, tile_enabled=False).fuse(str(tmp_path))
     np.testing.assert_array_equal(result, unrestricted)
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c', 'dtcwt'])
+def test_streaming_workspace_depends_on_geometry_not_stack_depth(monkeypatch, method):
+    from types import SimpleNamespace
+    from core import multi_focus_fusion as mff
+    from core.algorithms import get_fusion, resolve_runner
+
+    # Header-only stand-ins make a realistic 100MP budget boundary test without
+    # allocating or decoding 100MP pixels (or a thousand-frame source stack).
+    frame = SimpleNamespace(shape=(10000, 10000, 3), ndim=3, itemsize=2)
+    small = mff.estimate_peak_bytes(method, [frame] * 2)
+    deep = mff.estimate_peak_bytes(method, [frame] * 1000)
+    assert deep == small
+    decider = resolve_runner(get_fusion(method).tile_decider)
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: small)
+    assert not decider([frame] * 1000, 2048)
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: small - 1)
+    assert decider([frame] * 2, 2048)
+
+
+def test_manual_openfocus_spatial_cap_is_preserved_with_roomy_ram(monkeypatch):
+    from core import multi_focus_fusion as mff
+    from core.algorithm_adapters import openfocus_a_needs_tiles
+    frames = [np.zeros((64, 96, 3), np.uint8)] * 2
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 64 * 1024 ** 3)
+    assert openfocus_a_needs_tiles(frames, 32)

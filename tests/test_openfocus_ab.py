@@ -624,3 +624,42 @@ def test_tiled_render_uses_displayed_depth(monkeypatch, method, source_format, f
     from utils.image_utils import normalize_fuse_input
     normalized, _ = normalize_fuse_input(frames)
     np.testing.assert_array_equal(displayed, compute_focus_index(normalized, method))
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_default_streaming_preserves_whole_frame_context_above_2048(monkeypatch, method, dtype):
+    from core import multi_focus_fusion as mff
+
+    # Long, narrow images exceed the former spatial cutoff while requiring
+    # little workspace. Their whole-frame response/depth must stay intact.
+    rng = np.random.default_rng(712)
+    frames = [rng.integers(0, 256, (2051, 17), dtype=np.uint8) for _ in range(3)]
+    if dtype == np.uint16:
+        frames = [frame.astype(np.uint16) * 257 + 3 for frame in frames]
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 64 * 1024 ** 2)
+    options = dict(algorithm=method, exposure_match=True, sort_mode='desc', base_frame='first')
+    whole = mff.MultiFocusFusion(tile_enabled=False, **options).fuse(frames, thread_count=1)
+    automatic = mff.MultiFocusFusion(**options).fuse(frames, thread_count=1)
+    assert automatic.shape == frames[0].shape
+    np.testing.assert_array_equal(automatic, whole)
+
+
+@pytest.mark.parametrize('mixed', [False, True])
+def test_global_depth_is_independent_of_row_scratch_partition(monkeypatch, mixed):
+    from fusion_methods import openfocus_depth as depth
+
+    rng = np.random.default_rng(91)
+    frames = [rng.integers(0, 256, (257, 33, 3), dtype=np.uint8) for _ in range(3)]
+    if mixed:
+        frames[1] = frames[1].astype(np.uint16) * 257 + 7
+    expected = depth.depth_map(frames, None, 11, 5, None)
+
+    def narrow_rows(image, cancel):
+        for start in range(0, image.shape[0], 7):
+            cancel()
+            yield slice(start, min(image.shape[0], start + 7))
+
+    monkeypatch.setattr(depth, '_rows', narrow_rows)
+    actual = depth.depth_map(frames, None, 11, 5, None)
+    np.testing.assert_array_equal(actual, expected)

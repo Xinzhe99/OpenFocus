@@ -407,7 +407,15 @@ def _dtcwt_impl_planned(input_source, img_resize, N, thread_count,
         _check_cancel()
 
         def prepare_channel(index, _channel=c):
-            return prepare_frame(index)[:, :, _channel]
+            _check_cancel()
+            image = images[index]
+            # BGR->RGB is a channel permutation. Select the plane before
+            # float conversion so a view cannot pin a full RGB float frame.
+            plane = (image if image.ndim == 2 else
+                     _ensure_color_image(image)[:, :, 2 - _channel])
+            if plane.dtype == np.uint16:
+                plane = plane.astype(np.float32) * (255.0 / 65535.0)
+            return plane.astype(np.float32) / 255.0
 
         channel_pyramids = _iter_forward(
             transform, range(n_frames), N, workers=channel_workers,

@@ -234,8 +234,8 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
     h, w = stack_ori[0].shape[:2]
     out_dtype = fuse_output_dtype(stack_ori)
 
-    def normalized_frame(index, channel=None):
-        img = stack_ori[index]
+    def normalized_frame(index, channel=None, rows=None):
+        img = stack_ori[index] if rows is None else stack_ori[index][rows]
         if channel is not None:
             img = img[:, :, channel]
         if img.dtype == np.uint16:
@@ -368,7 +368,10 @@ def gfgfgf_impl(input_source, img_resize=None, kernel_size=7, thread_count: int 
                     continue
                 i, fdm_weight = res
                 sum_fdms += fdm_weight
-                imfu_result += normalized_frame(i) * fdm_weight[:, :, None]
+                for start in range(0, h, 128):
+                    check_cancel()
+                    rows = slice(start, min(h, start + 128))
+                    imfu_result[rows] += normalized_frame(i, rows=rows) * fdm_weight[rows, :, None]
                 del res, fdm_weight
 
     # -------------------------------------------------------------------------
