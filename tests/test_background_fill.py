@@ -445,3 +445,31 @@ def test_fill_enclosed_matches_per_hole_filling():
     out = _fill_enclosed(sub)
     assert np.array_equal(out, expected) and out[45, 55] == 1
     assert sub[45, 55] == 0                                 # the input is not modified
+
+
+# ------------------------------------------------------- dark backgrounds
+def test_field_stop_mask_needs_a_black_core():
+    from core.background_fill import field_stop_mask
+    lum = np.full((200, 200), 100.0, np.float32)
+    lum[:, 140:] = 30.0                        # an ordinary dark background
+    assert not field_stop_mask(lum, 100.0, 30).any()
+    lum[:, :20] = 2.0                          # a microscope's field stop...
+    lum[:, 20:40] = 25.0                       # ...and its dim, blurred rim
+    stop = field_stop_mask(lum, 100.0, 30)
+    assert stop[:, :40].all()
+    assert not stop[:, 40:].any()              # the dark background stays usable
+
+
+def test_halo_zone_beside_a_dark_background_is_rebuilt_from_that_background():
+    """A dark gap beside the subject (a fifth of the lit ground's level) was
+    taken for a field stop and refilled from the lit ground: a pale smear."""
+    from core.background_fill import fill_halo_zone
+    size = 256
+    yy, xx = np.mgrid[:size, :size]
+    bg = np.full((size, size, 3), 200 * 257, np.float32)
+    bg[:, 160:] = 40 * 257
+    sub = (xx - 128) ** 2 + (yy - 128) ** 2 < 30 ** 2
+    dist = cv2.distanceTransform((~sub).astype(np.uint8), cv2.DIST_L2, 5)
+    out, _est = fill_halo_zone(bg.copy(), dist, sub, np.float32(24))
+    zone = (~sub) & (dist < 24) & (xx > 170)
+    assert out[zone].mean() < 1.25 * 40 * 257
