@@ -25,6 +25,18 @@ class MosaicAlignment:
     matches: tuple
 
 
+@dataclass(frozen=True)
+class _ControlPoints:
+    transform: np.ndarray
+    source: np.ndarray
+    target: np.ndarray
+    tolerance: float
+
+
+def _project(matrix, points):
+    return points @ matrix[:2, :2].T + matrix[:2, 2]
+
+
 def _cancel(should_cancel):
     if should_cancel is not None and should_cancel():
         from core.registration import RegistrationCancelled
@@ -128,38 +140,112 @@ def _pair_match(first, second, first_features, second_features):
     points_b, descriptors_b, scale_b = second_features
     matcher = cv2.BFMatcher(cv2.NORM_L2)
     neighbors = matcher.knnMatch(descriptors_b, descriptors_a, k=2)
-    good = [pair[0] for pair in neighbors if len(pair) == 2
-            and pair[0].distance < 0.75 * pair[1].distance]
-    if len(good) < 6:
+    forward = [pair[0] for pair in neighbors if len(pair) == 2
+               and pair[0].distance < 0.75 * pair[1].distance]
+    if len(forward) < 12:
         return None
-    source = np.float32([points_b[item.queryIdx] for item in good])
-    target = np.float32([points_a[item.trainIdx] for item in good])
-    threshold = max(3.0, 3.0 * max(scale_a, scale_b))
+    # Only forward candidates need a reciprocal query. Searching every
+    # descriptor again was the dominant cost on the real microscope sample.
+    candidates = sorted({match.trainIdx for match in forward})
+    reverse = matcher.knnMatch(descriptors_a[candidates], descriptors_b, k=2)
+    reciprocal = {candidates[pair[0].queryIdx]: pair[0].trainIdx for pair in reverse
+                  if len(pair) == 2 and pair[0].distance < 0.75 * pair[1].distance}
+    good = [match for match in forward if reciprocal.get(match.trainIdx) == match.queryIdx]
+    if len(good) < 12:
+        return None
+    source = np.float64([points_b[item.queryIdx] for item in good])
+    target = np.float64([points_a[item.trainIdx] for item in good])
+    threshold = max(2.0, 2.0 * max(scale_a, scale_b))
     affine, mask = cv2.estimateAffinePartial2D(
         source, target, method=cv2.RANSAC, ransacReprojThreshold=threshold,
-        maxIters=4000, confidence=0.995, refineIters=10)
+        maxIters=6000, confidence=0.999, refineIters=20)
     if affine is None or mask is None:
         return None
     selected = mask.ravel().astype(bool)
-    count = int(selected.sum())
-    if count < 6 or count / len(good) < 0.3:
+    if selected.sum() < 12 or selected.mean() < 0.3:
         return None
     scale = math.hypot(float(affine[0, 0]), float(affine[1, 0]))
     if not 0.5 <= scale <= 2.0:
         return None
-    predicted = source[selected] @ affine[:, :2].T + affine[:, 2]
-    residual = float(np.median(np.linalg.norm(predicted - target[selected], axis=1)))
-    # A handful of points in one tiny patch is not enough to establish a tile.
-    spread = np.ptp(source[selected], axis=0)
-    if max(spread) < max(8.0, min(second.image.shape[:2]) * 0.02):
-        return None
+    source, target = source[selected], target[selected]
+    # Require support across both axes: a few points along an edge cannot
+    # determine magnification reliably outside that edge.
+    for points, frame in ((source, second), (target, first)):
+        if np.any(np.ptp(points, axis=0) < max(8.0, min(frame.image.shape[:2]) * 0.02)):
+            return None
+    # Keep the graph small even for large, highly textured stacks. Spatial
+    # ordering avoids retaining only the strongest features in one patch.
+    if len(source) > 512:
+        order = np.lexsort((source[:, 0], source[:, 1]))
+        keep = order[np.linspace(0, len(order) - 1, 512, dtype=int)]
+        source, target = source[keep], target[keep]
     transform = np.eye(3, dtype=np.float64)
     transform[:2] = affine
-    return transform, count, residual
+    return _ControlPoints(transform, source, target, max(scale_a, scale_b))
+
+
+def _optimize_component(frames, result, nodes, edges, should_cancel):
+    """Joint robust control-point fit, with one exact anchor per component.
+
+    Similarities retain isotropic magnification and rotation without the
+    unconstrained perspective extrapolation of a homography fit to a thin
+    microscope overlap. All graph edges participate, including loop closures.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.linalg import lsmr
+
+    root = nodes[0]
+    slots = {node: index * 4 for index, node in enumerate(nodes[1:])}
+    unit = float(max(max(frames[node].image.shape[:2]) for node in nodes))
+    rows, cols, values, targets, tolerances = [], [], [], [], []
+    row = 0
+    for i, j, controls in edges:
+        if i not in slots and i != root:
+            continue
+        target, source = controls.target / unit, controls.source / unit
+        fixed = np.zeros((len(source), 2), np.float64)
+        for node, points, sign in ((i, target, 1), (j, source, -1)):
+            if node == root:
+                fixed += sign * (_project(result[root], points * unit) / unit)
+                continue
+            offset = slots[node]
+            for axis in (0, 1):
+                coefficients = (points[:, 0], -points[:, 1], np.ones(len(points))) if axis == 0 else (
+                    points[:, 1], points[:, 0], np.ones(len(points)))
+                for column, coefficient in zip((offset, offset + 1, offset + 2 + axis), coefficients):
+                    rows.append(row + np.arange(len(points), dtype=np.int32) * 2 + axis)
+                    cols.append(np.full(len(points), column, dtype=np.int32))
+                    values.append(sign * coefficient)
+        targets.append((-fixed).ravel())
+        tolerances.append(np.full(len(source), max(1.0, controls.tolerance)))
+        row += len(source) * 2
+    if not row:
+        return
+    design = coo_matrix((np.concatenate(values), (np.concatenate(rows), np.concatenate(cols))),
+                        shape=(row, 4 * len(slots))).tocsr()
+    target = np.concatenate(targets)
+    tolerance = np.concatenate(tolerances)
+    current = np.concatenate([np.array([result[node][0, 0], result[node][1, 0],
+                                        result[node][0, 2] / unit, result[node][1, 2] / unit])
+                              for node in nodes[1:]])
+    for _iteration in range(12):
+        _cancel(should_cancel)
+        error = target - design @ current
+        distance = np.linalg.norm(error.reshape(-1, 2), axis=1) * unit
+        weight = np.repeat((1 + (distance / tolerance) ** 2) ** -0.25, 2)
+        weighted = design.multiply(weight[:, None]).tocsr()
+        delta = lsmr(weighted, error * weight, atol=1e-11, btol=1e-11,
+                     maxiter=max(100, 8 * len(current)))[0]
+        current += delta
+        if np.max(np.abs(delta)) < 1e-9:
+            break
+    for node, offset in slots.items():
+        a, b, x, y = current[offset:offset + 4]
+        result[node] = np.array([[a, -b, x * unit], [b, a, y * unit], [0, 0, 1]])
 
 
 def auto_align(frames, transforms=None, should_cancel=None, progress=None):
-    """Fit similarity transforms from shared features; leave disconnected tiles editable."""
+    """Register microscope texture and jointly fit scale/rotation/placement."""
     frames = list(frames)
     if not frames:
         return MosaicAlignment((), (), ())
@@ -167,9 +253,16 @@ def auto_align(frames, transforms=None, should_cancel=None, progress=None):
                 (transforms if transforms is not None else initial_transforms(frames))]
     if len(original) != len(frames):
         raise ValueError('Each mosaic image needs one placement')
-    detector = cv2.SIFT_create(nfeatures=6000)
+    # Descriptors and capped control points are retained; SIFT's image
+    # pyramid is temporary and bounded by the largest thumbnail, not TIFF size.
+    pairs = len(frames) * (len(frames) - 1) // 2
+    require_memory(len(frames) * 12000 * 520 + pairs * 512 * 512
+                   + max(frame.preview.shape[0] * frame.preview.shape[1] for frame in frames) * 128)
+    # The photographic SIFT default (.04) discards the faint surface texture
+    # in microscope TIFFs, leaving outline points and disconnected images.
+    detector = cv2.SIFT_create(nfeatures=12000, contrastThreshold=0.008)
     features = []
-    total = len(frames) + len(frames) * (len(frames) - 1) // 2
+    total = len(frames) + pairs + 1
     done = 0
     if progress is not None:
         progress(done, total)
@@ -185,35 +278,42 @@ def auto_align(frames, transforms=None, should_cancel=None, progress=None):
             _cancel(should_cancel)
             match = _pair_match(frames[i], frames[j], features[i], features[j])
             if match is not None:
-                matrix, inliers, residual = match
-                edges.append((i, j, matrix, inliers, residual))
+                edges.append((i, j, match))
             done += 1
             if progress is not None:
                 progress(done, total)
-    edges.sort(key=lambda item: (-item[3], item[4], item[0], item[1]))
+    edges.sort(key=lambda item: (-len(item[2].source), item[0], item[1]))
     result = [None] * len(frames)
     connected = [False] * len(frames)
     for root in range(len(frames)):
         if result[root] is not None:
             continue
         result[root] = original[root]
-        connected[root] = root == 0
+        nodes = [root]
         changed = True
         while changed:
+            _cancel(should_cancel)
             changed = False
-            for i, j, matrix, _inliers, _residual in edges:
+            for i, j, controls in edges:
                 if result[i] is not None and result[j] is None:
-                    result[j] = result[i] @ matrix
-                    connected[j] = connected[i]
+                    result[j] = result[i] @ controls.transform
+                    nodes.append(j)
                     changed = True
                 elif result[j] is not None and result[i] is None:
-                    result[i] = result[j] @ np.linalg.inv(matrix)
-                    connected[i] = connected[j]
+                    result[i] = result[j] @ np.linalg.inv(controls.transform)
+                    nodes.append(i)
                     changed = True
+        for node in nodes:
+            connected[node] = root == 0
+        if len(nodes) > 1:
+            _optimize_component(frames, result, nodes, edges, should_cancel)
     _cancel(should_cancel)
-    return MosaicAlignment(tuple(result), tuple(connected),
-                           tuple((i, j, inliers, residual)
-                                 for i, j, _matrix, inliers, residual in edges))
+    if progress is not None:
+        progress(total, total)
+    matches = tuple((i, j, len(controls.source), float(np.median(np.linalg.norm(
+        _project(result[j], controls.source) - _project(result[i], controls.target), axis=1))))
+        for i, j, controls in edges)
+    return MosaicAlignment(tuple(result), tuple(connected), matches)
 
 
 def _bounds(frame, transform):
@@ -267,7 +367,8 @@ def render_mosaic(frames, transforms, *, feather=64, tile_size=512,
         for x in xs:
             _cancel(should_cancel)
             th, tw = min(tile_size, height - y), min(tile_size, width - x)
-            yy, xx = np.mgrid[top + y:top + y + th, left + x:left + x + tw].astype(np.float32)
+            xx = np.arange(left + x, left + x + tw, dtype=np.float64)[None, :]
+            yy = np.arange(top + y, top + y + th, dtype=np.float64)[:, None]
             acc = np.zeros((th, tw, 3), np.float32)
             weights = np.zeros((th, tw), np.float32)
             coverage = np.zeros((th, tw), np.float32) if has_alpha else None
@@ -305,12 +406,15 @@ def render_mosaic(frames, transforms, *, feather=64, tile_size=512,
                 colors = sample[:, :, :3].astype(np.float32)
                 if dtype == np.uint16 and source.dtype == np.uint8:
                     colors *= 257.0
-                acc += colors * weight[:, :, None]
+                colors *= weight[:, :, None]
+                acc += colors
                 weights += weight
                 if coverage is not None:
                     coverage += (1.0 - coverage) * alpha
             np.divide(acc, weights[:, :, None], out=acc, where=weights[:, :, None] > 0)
-            result[y:y + th, x:x + tw, :3] = np.rint(np.clip(acc, 0, np.iinfo(dtype).max)).astype(dtype)
+            np.clip(acc, 0, np.iinfo(dtype).max, out=acc)
+            np.rint(acc, out=acc)
+            result[y:y + th, x:x + tw, :3] = acc
             if coverage is not None:
                 result[y:y + th, x:x + tw, 3] = np.rint(coverage * np.iinfo(dtype).max).astype(dtype)
             done += 1
