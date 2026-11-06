@@ -559,7 +559,7 @@ def test_suggest_duplicates_handles_keyboard_interrupt(tmp_path, capsys, monkeyp
 
 @pytest.mark.parametrize('enabled', [False, True])
 def test_registration_receives_cleaned_native_depth_pixels(tmp_path, monkeypatch, enabled):
-    from core import cli, registration, multi_focus_fusion
+    from core import cli, registration
     mask = np.zeros((16, 16), np.uint8)
     mask[8, 8] = 255
     mask_path = tmp_path / 'mask.png'
@@ -580,22 +580,8 @@ def test_registration_receives_cleaned_native_depth_pixels(tmp_path, monkeypatch
             registered.append(np.array(images[0], copy=True))
             return images
 
-    class Fusion:
-        def __init__(self, **kwargs):
-            from constants import TILE_THRESHOLD
-            from core.algorithms import get_fusion
-            self.descriptor = get_fusion(kwargs['algorithm'])
-            self.tile_enabled = kwargs.get('tile_enabled', True)
-            self.tile_threshold = kwargs.get('tile_threshold', TILE_THRESHOLD)
-
-        def get_info(self):
-            return {'device': 'CPU'}
-
-        def fuse(self, input_source, **kwargs):
-            return input_source[0]
 
     monkeypatch.setattr(registration, 'ImageRegistration', Registration)
-    monkeypatch.setattr(multi_focus_fusion, 'MultiFocusFusion', Fusion)
     fused = cli._fuse_stack([image, image.copy()], args)
     expected = image.copy()
     if enabled:

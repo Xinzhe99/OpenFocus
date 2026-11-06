@@ -545,7 +545,9 @@ def _write_streamed_tiff(path, image, should_cancel=None, exif=None, icc_profile
     row_bytes = image.shape[1] * samples * image.dtype.itemsize
     rows_per_strip = min(128, image.shape[0], max(1, _TIFF_STRIP_TARGET_BYTES // row_bytes))
     require_memory(row_bytes * rows_per_strip * 3)
-    bigtiff = image.nbytes >= (2 ** 32 - 2 ** 25)
+    # Metadata-bearing TIFFs use the actual serialized header limit below.
+    bigtiff = (image.nbytes >= (2 ** 32 - 2 ** 25)
+               and (exif is None or image.nbytes >= 2 ** 32))
     if bigtiff and exif is not None:
         raise ValueError('Streaming BigTIFF does not support nested EXIF metadata')
     header = (_tiff_header(image, exif, icc_profile, rows_per_strip)
@@ -736,38 +738,18 @@ def normalize_fuse_input(images):
     return out, True
 
 
-def prepare_fusion_input(images, fusion, should_cancel=None):
-    """Let classical fusion normalize under its lease; prepare neural ranges here."""
-    from core.algorithms import resolve_runner
-    from core.frame_storage import store_frame
+def prepare_fusion_input(images, should_cancel=None):
+    """Capture source references and output depth; fusion owns normalization."""
     from core.registration import RegistrationCancelled
-    from core.resource_policy import require_memory
 
-    frames = list(images)
-    is_16bit = any(frame.dtype == np.uint16 for frame in frames)
-    spec = fusion.descriptor
-    if not spec.neural:
+    frames = []
+    is_16bit = False
+    for frame in images:
         if should_cancel is not None and should_cancel():
             raise RegistrationCancelled()
-        return frames, is_16bit
-    if frames and fusion.tile_enabled:
-        needs_tiles = (resolve_runner(spec.tile_decider)(frames, fusion.tile_threshold)
-                       if spec.tile_decider else
-                       max(frames[0].shape[:2]) > fusion.tile_threshold)
-        if needs_tiles:
-            return frames, is_16bit
-    if not is_16bit:
-        return frames, False
-    normalized = []
-    for frame in frames:
-        if should_cancel is not None and should_cancel():
-            raise RegistrationCancelled()
-        require_memory(frame.size * 8)
-        converted = normalize_fuse_input([frame])[0][0]
-        if converted is frame and frame.dtype != np.float32:
-            converted = frame.astype(np.float32)
-        normalized.append(frame if converted is frame else store_frame(converted))
-    return normalized, True
+        frames.append(frame)
+        is_16bit = is_16bit or frame.dtype == np.uint16
+    return frames, is_16bit
 
 
 def fuse_output_dtype(images) -> type:
@@ -798,12 +780,31 @@ def quantize_fuse_output(result, is_16bit: bool):
 # ---------------------------------------------------------------------------
 # Exposure matching (pipeline-level, before fusion)
 # ---------------------------------------------------------------------------
-def _exposure_mean(frame):
-    """Mean of the color channels (alpha is not exposure)."""
-    arr = frame
-    if arr.ndim == 3 and arr.shape[2] > 3:
-        arr = arr[:, :, :3]
-    return float(np.asarray(arr, dtype=np.float32).mean())
+def _exposure_mean(frame, should_cancel=None, *, normalize_uint16=False):
+    """Mean of color channels, using at most 128 rows of float32 scratch.
+
+    Deferred tiled input uses the same per-pixel uint16 normalization as the
+    whole-frame preparation pass. Accumulate in float64 so strip boundaries
+    and stack depth do not amplify float32 reduction error.
+    """
+    total = 0.0
+    count = 0
+    for y in range(0, frame.shape[0], 128):
+        if should_cancel is not None and should_cancel():
+            from core.registration import RegistrationCancelled
+            raise RegistrationCancelled()
+        strip = frame[y:y + 128]
+        if strip.ndim == 3 and strip.shape[2] > 3:
+            strip = strip[:, :, :3]
+        strip = np.ascontiguousarray(strip, dtype=np.float32)
+        if normalize_uint16 and frame.dtype == np.uint16:
+            strip *= 255.0 / 65535.0
+        # Contiguous float32 input lets OpenCV accumulate into doubles without
+        # another layout copy or NumPy's buffered float64 casting workspace.
+        total += sum(cv2.sumElems(strip))
+        count += strip.size
+        del strip
+    return total / count if count else float('nan')
 
 
 def exposure_gains(frames):
@@ -836,9 +837,9 @@ def apply_exposure_gain(frame, gain):
     limit = 65535.0 if dtype == np.uint16 else 255.0
     out = frame.astype(np.float32)
     if out.ndim == 3 and out.shape[2] == 4:
-        color = out[:, :, :3] * float(gain)
+        color = out[:, :, :3]
+        color *= float(gain)
         np.clip(color, 0.0, limit, out=color)
-        out[:, :, :3] = color
     else:
         out *= float(gain)
         np.clip(out, 0.0, limit, out=out)

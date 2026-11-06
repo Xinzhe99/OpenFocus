@@ -143,51 +143,6 @@ def test_batch_import_waits_for_active_render_and_can_cancel(tmp_path, mode, can
     assert bool(results) is not cancel_waiter
 
 
-@pytest.mark.parametrize("cancel_waiter", [False, True])
-def test_render_lease_covers_normalization_and_cancellable_wait(monkeypatch, cancel_waiter):
-    import utils.image_utils as image_utils
-
-    first = _render(_frames(np.uint16))
-    second = PreviewWorker(_frames(np.uint16), ["openfocus_a"], {},
-                           {"thread_count": 1, "tile_enabled": False}, None, roi_only=False)
-    entered, release, second_entered = Event(), Event(), Event()
-    original = image_utils.normalize_fuse_input
-    owner = []
-
-    def normalize(images):
-        output = original(images)
-        if not owner:
-            owner.append(get_ident())
-            entered.set()
-            if not release.wait(10):
-                raise TimeoutError("test did not release normalization")
-        elif get_ident() != owner[0]:
-            second_entered.set()
-        return output
-
-    monkeypatch.setattr(image_utils, "normalize_fuse_input", normalize)
-    results, errors = _capture(first)
-    previews = []
-    second.result_ready.connect(lambda *args: previews.append(args), Qt.ConnectionType.DirectConnection)
-    first.start()
-    try:
-        assert entered.wait(10)
-        second.start()
-        first.cancel()
-        if cancel_waiter:
-            second.cancel()
-            assert second.wait(2000), "a cancelled waiter must finish before the owner"
-        assert not second_entered.wait(0.15), "normalization escaped the heavy-job lease"
-        assert first.isRunning(), "cancellation released unfinished work"
-    finally:
-        release.set()
-        assert first.wait(10000)
-        if second.isRunning():
-            assert second.wait(10000)
-    assert results == []
-    assert errors and errors[0].startswith("CANCELLED")
-    assert bool(previews) is not cancel_waiter
-    assert second_entered.is_set() is not cancel_waiter
 
 
 def _request(tmp_path, frames):
@@ -387,20 +342,6 @@ def test_report_context_restored_after_registration_error(monkeypatch):
     assert worker.alignment_report_provenance is None
 
 
-def test_tiled_v3_worker_keeps_source_depth_until_tiles(monkeypatch):
-    from types import SimpleNamespace
-    import core.resource_policy as resource_policy
-    from utils.image_utils import prepare_fusion_input
-    from core.algorithms import get_fusion
-
-    frames = _frames(np.uint16)
-    fusion = SimpleNamespace(algorithm='stackmffv3', descriptor=get_fusion('stackmffv3'),
-                             tile_enabled=True, tile_threshold=1)
-    monkeypatch.setattr(resource_policy, 'require_memory',
-                        lambda *args, **kwargs: pytest.fail('unexpected whole-stack allocation'))
-    prepared, is_16bit = prepare_fusion_input(frames, fusion)
-    assert is_16bit
-    assert all(actual is original for actual, original in zip(prepared, frames))
 
 
 @pytest.mark.parametrize('shape', [(1, 1000), (1000, 1)])

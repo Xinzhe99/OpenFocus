@@ -162,6 +162,40 @@ def test_openfocus_recovers_rotation_scale_and_translation_together():
     aligned_error = np.abs(aligned[0].astype(np.float32) - aligned[1]).mean()
     assert aligned_error < raw_error * 0.15
 
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+@pytest.mark.parametrize("channels", [1, 3])
+def test_openfocus_different_size_frame_uses_mapped_output_canvas(dtype, channels):
+    from core.registration import _align_openfocus_impl, alignment_report
+
+    rng = np.random.default_rng(177)
+    height, width = 240, 320
+    gray = cv2.resize(rng.integers(20, 220, (20, 27), dtype=np.uint8),
+                      (width, height), interpolation=cv2.INTER_CUBIC)
+    base = (gray if channels == 1 else
+            np.stack((gray, np.flip(gray, axis=1), np.flip(gray, axis=0)), axis=2))
+    if dtype == np.uint16:
+        base = base.astype(np.uint16) * 251 + 19
+    # Both estimation images are identical after bounded downsampling, while
+    # the native source shape differs from the first frame's output canvas.
+    current = np.repeat(np.repeat(base, 2, axis=0), 2, axis=1)
+    report = []
+    token = alignment_report.set(report)
+    try:
+        aligned = _align_openfocus_impl(
+            [base, current], equalize_brightness=False, thread_count=1,
+            failure_policy="fail")
+    finally:
+        alignment_report.reset(token)
+
+    assert [entry["status"] for entry in report] == ["reference", "aligned"]
+    np.testing.assert_array_equal(report[1]["transform"], np.eye(3))
+    np.testing.assert_array_equal(aligned[0], base[2:-2, 2:-2])
+    assert isinstance(aligned[1], np.memmap)
+    assert aligned[1].dtype == dtype
+    assert aligned[1].shape == aligned[0].shape
+    np.testing.assert_array_equal(aligned[1], current[2:height - 2, 2:width - 2])
+
+
 @pytest.mark.parametrize("reference", [2, 3])
 def test_openfocus_selected_reference_aligns_both_sides_without_reordering(reference):
     from core.registration import _align_openfocus_impl

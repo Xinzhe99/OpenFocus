@@ -499,7 +499,6 @@ def test_grouped_batch_real_registration_keeps_singleton_coordinates(qapp, tmp_p
         assert cv2.imwrite(str(source / f'{index}.png'), frame)
     monkeypatch.setattr(registration, '_of_estimate_similarity',
                         lambda *args, **kwargs: (1.0, 0.0, 1.0, 0.0, 0.0))
-    monkeypatch.setattr(BatchWorker, '_fuse_one_stack', lambda self, fusion, method, images, params: images[0])
     settings = {'format': 'png', 'fusion_method': 'openfocus_a', 'alignment': 'openfocus',
                 'group_size': 2, 'group_overlap': 0}
     worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'), settings, use_gpu=False)

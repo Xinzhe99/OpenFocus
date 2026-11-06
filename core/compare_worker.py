@@ -184,9 +184,9 @@ class PreviewWorker(_CancellableWorker):
             inputs = list(frames)
         else:
             inputs = [frame[y0:y0 + ch, x0:x0 + cw] for frame in frames]
-        # Normalize each context frame onto disk without retaining a float stack.
+        # Fusion owns normalization under its processing lease.
         fusion = MultiFocusFusion(**constructor)
-        inputs, is_16bit = prepare_fusion_input(inputs, fusion, self._should_cancel)
+        inputs, is_16bit = prepare_fusion_input(inputs, self._should_cancel)
         if self._should_cancel():
             return None
         result = fusion.fuse(input_source=inputs, img_resize=None,

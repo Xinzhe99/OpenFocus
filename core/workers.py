@@ -716,7 +716,7 @@ class RenderWorker(QThread):
             ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
             sort_mode=self.sort_mode, exposure_match=self.exposure_match,
             resource_preference=self.resource_preference)
-        images, is_16bit = prepare_fusion_input(images, fusion, should_cancel)
+        images, is_16bit = prepare_fusion_input(images, should_cancel)
         result = fusion.fuse(images, thread_count=self.thread_count,
             should_cancel=should_cancel, progress_callback=progress_callback)
         if self.sharpen_output and result is not None:
@@ -1236,7 +1236,7 @@ class BatchWorker(QThread):
                         base_frame=runtime.get('base_frame', 'none'),
                         sort_mode=runtime.get('sort_mode', 'asc'),
                         exposure_match=self.exposure_match, **tile_kwargs)
-                    fusion_input, is_16bit = prepare_fusion_input(color_frames, fusion, lambda: self.is_cancelled)
+                    fusion_input, is_16bit = prepare_fusion_input(color_frames, lambda: self.is_cancelled)
                     if aligned_for_export is None:
                         del aligned_images
                     result = self._fuse_one_stack(fusion, fusion_method, fusion_input, fusion_params)
@@ -1412,7 +1412,7 @@ class BatchWorker(QThread):
                     brightness_reference='last' if self.exposure_match else 'first', use_gpu=False)
                 images = registration.process(images, thread_count=self.thread_count,
                     resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled)
-            fusion_input, is_16bit = prepare_fusion_input(images, fusion)
+            fusion_input, is_16bit = prepare_fusion_input(images)
             result = self._fuse_one_stack(fusion, method, fusion_input, params)
             return quantize_fuse_output(result, is_16bit)
 
