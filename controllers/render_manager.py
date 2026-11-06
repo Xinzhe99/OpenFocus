@@ -36,6 +36,8 @@ class RenderManager:
         # cannot run (StackMFF V2 needs ~115 GB on a 20 MP stack) must not
         # cancel every method after it.
         self._compare_failures: List[tuple] = []
+        self._compare_token = object()
+        self._compare_context = None
         self._preview_mode = False
         # What the *running* render was launched with; see start_render().
         self._render_context: Optional[dict] = None
@@ -310,8 +312,29 @@ class RenderManager:
                 render.setText(trans.t('btn_render'))
             self._set_compare_button("idle")
 
+    def _stop_compare_timer(self) -> None:
+        timer = getattr(self, "_compare_chain_timer", None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+            self._compare_chain_timer = None
+
+    def _queue_next_compare(self) -> None:
+        self._stop_compare_timer()
+        token = self._compare_token
+        from PyQt6.QtCore import QObject
+        timer = self._compare_chain_timer = QTimer(
+            self.window if isinstance(self.window, QObject) else None)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self._start_next_compare()
+                              if token is self._compare_token else None)
+        timer.start(400)
+
     def _abort_compare_run(self) -> None:
         """Abort a chained comparison whose next render failed to start."""
+        self._stop_compare_timer()
+        self._compare_token = object()
+        self._compare_context = None
         if getattr(self, '_compare_mode', False):
             self._compare_mode = False
             self._compare_queue = []
@@ -370,6 +393,9 @@ class RenderManager:
             self._compare_mode = False
             self._compare_queue = []
             self._compare_current = None
+            self._stop_compare_timer()
+            self._compare_token = object()
+            self._compare_context = None
             queued = self._render_after_load
             if queued is not None and queued.get("compare", False):
                 self._render_after_load = None
@@ -388,6 +414,10 @@ class RenderManager:
                 'depth_cancelling' if running else 'msg_render_cancelled'), 0)
             return
 
+        if getattr(self, "_render_pending", False) or self._render_after_load is not None:
+            window.statusBar().showMessage(trans.t('btn_render_processing'), 3000)
+            return
+
         if self.worker is not None and self.worker.isRunning():
             # A single render owns the pipeline. The button is disabled in
             # that state, but keep the programmatic path truthful too.
@@ -404,20 +434,27 @@ class RenderManager:
         self._compare_queue = list(methods)
         self._compare_total = len(methods)
         self._compare_failures = []
+        self._stop_compare_timer()
+        self._compare_token = object()
+        self._compare_context = None
         self._compare_cancelling = False
         self._compare_mode = True
         self._set_compare_button("cancel")
         self._start_next_compare()
 
     def _start_next_compare(self) -> None:
-        if not self._compare_queue:
+        if not self._compare_mode or not self._compare_queue:
+            return
+        if self._stack_changed_since(self._compare_context):
+            self._abort_compare_run()
+            self.window.statusBar().showMessage(trans.t('msg_render_stack_changed'), 8000)
             return
         method = self._compare_queue.pop(0)
         self._compare_current = method
         window = self.window
         window.statusBar().showMessage(
             trans.t("msg_compare_progress").format(
-                i=self._compare_total - len(self._compare_queue) + 1,
+                i=self._compare_total - len(self._compare_queue),
                 n=self._compare_total,
                 method=self.algo_display_name(method)),
             5000)
@@ -437,6 +474,9 @@ class RenderManager:
         # 被 C++ 析构，QThread 直接 qFatal abort。守卫必须在任何
         # processEvents 之前设置。
         if getattr(self, "_render_pending", False):
+            return "busy"
+        if (self._compare_mode and self._render_after_load is None
+                and force_algorithm != self._compare_current):
             return "busy"
         self._render_pending = True
         try:
@@ -471,6 +511,18 @@ class RenderManager:
                 window.btn_render.setText(trans.t('depth_cancelling'))
                 QApplication.processEvents()
             return
+        if self._render_after_load is not None:
+            if not interactive:
+                self._start_status = "loading"
+                return
+            queued = self._render_after_load
+            self._render_after_load = None
+            if queued.get("compare", False):
+                self._abort_compare_run()
+            self._start_status = "loading" if getattr(
+                getattr(window, "source_manager", None), "_load_worker", None) is not None else "cancelled"
+            window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
+            return
         # Frames are still loading (a render clicked right after opening a
         # stack used to say "load at least 2 images"): queue the render and
         # start it when the load finishes.  A second click cancels the queue.
@@ -478,31 +530,24 @@ class RenderManager:
         if getattr(source, "_load_worker", None) is not None:
             self._start_status = "loading"
             if interactive:
-                if self._render_after_load is not None:
-                    queued = self._render_after_load
-                    self._render_after_load = None
-                    if queued.get("compare", False):
-                        # The queued request was the comparison's next method:
-                        # without it nothing would ever advance the run.
-                        self._abort_compare_run()
-                    window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
-                else:
-                    self._render_after_load = {
-                        "force_algorithm": force_algorithm,
-                        "compare": bool(self._compare_mode),
-                    }
-                    window.statusBar().showMessage(trans.t("msg_render_queued_after_load"))
+                self._render_after_load = {
+                    "force_algorithm": force_algorithm,
+                    "compare": bool(self._compare_mode),
+                    "compare_token": self._compare_token,
+                    "load_worker": source._load_worker,
+                    "load_generation": getattr(source, "_load_generation", 0),
+                }
+                window.statusBar().showMessage(trans.t("msg_render_queued_after_load"))
             return
         # A previous render may have aborted without clearing this; it decides
         # whether the result is treated as a throwaway draft.
         self._preview_mode = False
 
-        timer = getattr(self, "_compare_chain_timer", None)
-        if timer is not None:
-            timer.stop()
-            timer.deleteLater()
-            self._compare_chain_timer = None
+        self._stop_compare_timer()
 
+        source_ref = window.raw_images
+        source_revision = getattr(window, "source_revision", 0)
+        compare_token = self._compare_token
         stack_images, stack_filenames, included_idx = window.effective_stack()
         if len(stack_images) < 2:
             if interactive:
@@ -555,7 +600,8 @@ class RenderManager:
         else:
             window.btn_render.setEnabled(True)
             window.btn_render.setText(trans.t('btn_cancel_render'))
-        QApplication.processEvents()
+        # Preparation stays on this event-loop turn; modal choices below can
+        # still dispatch cancellation or a source replacement.
 
         for name in ("fusion_parameter_panel", "registration_parameter_panel",
                      "combo_fusion", "combo_align", "btn_reset"):
@@ -765,11 +811,20 @@ class RenderManager:
                 "registration_steps": list(requested_steps),
                 "registration_parameters": registration_parameters,
             }
-            source_ref = window.raw_images
             revision = getattr(window, "source_revision", 0)
             disk_cache_request["is_current"] = lambda: (
                 window.raw_images is source_ref
                 and getattr(window, "source_revision", 0) == revision)
+
+        if (window.raw_images is not source_ref
+                or getattr(window, "source_revision", 0) != source_revision
+                or window.included_indices() != included_idx
+                or getattr(getattr(window, "source_manager", None), "_load_worker", None) is not None
+                or (compare_token is not self._compare_token)):
+            self._start_status = "stack_changed"
+            self._abort_compare_run()
+            self._restore_ui_controls()
+            return
 
         # Record exactly what THIS render was launched with. on_render_finished
         # must not read self.worker (a newer render may already have replaced
@@ -809,6 +864,8 @@ class RenderManager:
             "source_paths": tuple(getattr(window, "image_source_paths", ()) or ()),
             "parameters": self._processing_parameters(force_algorithm or fusion_method),
         }
+        if compare:
+            self._compare_context = self._render_context
         from utils.scalebar import effective_px_um
         frame_ids = getattr(getattr(window, "label_manager", None), "frame_ids", None)
         if callable(frame_ids):
@@ -938,10 +995,7 @@ class RenderManager:
             # queue is only advanced from the normal completion path), so an
             # untouched compare run left the render button disabled forever
             # with a stale "-1/0" progress label.
-            if getattr(self, "_compare_mode", False):
-                self._compare_mode = False
-                self._compare_queue = []
-                self._compare_current = None
+            self._abort_compare_run()
             self._render_context = None
             self._dispose_worker()
             self._restore_ui_controls()
@@ -1253,11 +1307,7 @@ class RenderManager:
                     # timer is tracked so cancelling the run can stop it —
                     # an untracked one fired into a restarted run and
                     # cancelled its in-flight render.
-                    compare_continues = True
-                    self._compare_chain_timer = QTimer(self.window)
-                    self._compare_chain_timer.setSingleShot(True)
-                    self._compare_chain_timer.timeout.connect(self._start_next_compare)
-                    self._compare_chain_timer.start(400)
+                    self._queue_next_compare()
                 else:
                     self._finish_compare_run()
             else:
@@ -1395,6 +1445,10 @@ class RenderManager:
         """End a comparison run: unlock the UI and report skipped methods."""
         window = self.window
         self._compare_mode = False
+        self._stop_compare_timer()
+        self._compare_token = object()
+        self._compare_context = None
+        self._compare_current = None
         self._restore_ui_controls()
         failures = list(getattr(self, "_compare_failures", []))
         done = self._compare_total - len(failures)
@@ -1413,6 +1467,9 @@ class RenderManager:
 
     def on_render_error(self, error_message: str) -> None:
         window = self.window
+        if (getattr(self, "_compare_cancelling", False)
+                or bool(getattr(self.worker, "is_cancelled", False))):
+            error_message = "CANCELLED: render cancelled"
         try:
             stack_changed = self._stack_changed_since(self._render_context)
         except Exception:      # a partial window (tests, early startup): cannot tell
@@ -1434,9 +1491,7 @@ class RenderManager:
                 and not error_message.startswith("CANCELLED") and stack_changed):
             # The stack changed under the run: the remaining methods would
             # render a different stack than the results already published.
-            self._compare_mode = False
-            self._compare_queue = []
-            self._compare_current = None
+            self._abort_compare_run()
             self.last_state = "discarded"
             self.last_error = trans.t('msg_render_stack_changed')
             self.last_result = None
@@ -1457,11 +1512,7 @@ class RenderManager:
             self.last_error = str(error_message)
             self._control_progress = None
             if self._compare_queue:
-                from PyQt6.QtCore import QObject
-                self._compare_chain_timer = QTimer(window if isinstance(window, QObject) else None)
-                self._compare_chain_timer.setSingleShot(True)
-                self._compare_chain_timer.timeout.connect(self._start_next_compare)
-                self._compare_chain_timer.start(400)
+                self._queue_next_compare()
             else:
                 self.last_state = "error"
                 self.last_result = None
@@ -1471,6 +1522,10 @@ class RenderManager:
             # Cancelled: stop the whole comparison run
             self._compare_mode = False
             self._compare_queue = []
+            self._stop_compare_timer()
+            self._compare_token = object()
+            self._compare_context = None
+            self._compare_current = None
 
         self._restore_ui_controls()
 
