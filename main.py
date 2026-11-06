@@ -758,25 +758,24 @@ class OpenFocus(QMainWindow):
             capability = neural_device_kind()
             if capability is None and is_ai_fusion_available():
                 self._probe_device_kind_async()
-            if not self._ai_method_selected():
-                kind = 'CPU*'
-            elif not getattr(self, 'use_gpu', True):
-                kind = 'CPU'
-            else:
-                diagnostics = neural_runtime.device_diagnostics()
-                checkpoint = os.path.basename(get_fusion(self.combo_fusion.currentData()).weights or '')
-                actual = (diagnostics['actual'] if diagnostics['checkpoint'] == checkpoint else None)
-                kind = (neural_runtime.display_name(actual or capability)
-                        if actual is not None or neural_runtime.is_accelerator(capability)
-                        else '…' if capability is None else 'N/A')
+            neural = self._ai_method_selected()
+            checkpoint = (get_fusion(self.combo_fusion.currentData()).weights or ''
+                          if neural else '')
+            device, state = neural_runtime.execution_status(
+                neural, getattr(self, 'use_gpu', True), checkpoint, capability)
+            kind = ('…' if state == 'pending'
+                    else trans.t('neural_provider_ready').format(neural_runtime.display_name(device))
+                    if state == 'ready' else neural_runtime.display_name(device))
             self.lbl_status_gpu.setText(trans.t('status_gpu').format(kind))
             diagnostics = neural_runtime.device_diagnostics()
             hardware = '\n'.join(f'{name} (DXGI {index})' for index, name, *_ in diagnostics['hardware'])
             self.lbl_status_gpu.setToolTip('\n'.join(filter(None, (
-                f'Hardware: {hardware}' if hardware else '',
-                'Runtime providers: ' + ', '.join(diagnostics['providers']),
-                'Available accelerator: ' + neural_runtime.display_name(capability) if capability else '',
-                f'Task: {kind}',
+                hardware,
+                'ONNX Runtime: ' + ', '.join(diagnostics['providers']),
+                trans.t('env_gpu_accel') + ': ' + neural_runtime.display_name(capability)
+                if neural_runtime.is_accelerator(capability) else trans.t('env_no_gpu'),
+                trans.t('status_gpu').format(kind),
+                trans.t('msg_gpu_accel_hint'),
                 '\n'.join(diagnostics['probe_errors'])))))
         except Exception:
             self.lbl_status_gpu.setText(trans.t('status_gpu').format('Err'))
@@ -1365,12 +1364,14 @@ class OpenFocus(QMainWindow):
     def _show_whats_new(self) -> None:
         """'What's new': release notes when the check fetched them, else the
         releases page (a build with no notes has nothing to show inline)."""
-        notes = getattr(self._update_manager(), "notes", "") or ""
+        manager = self._update_manager()
+        notes = getattr(manager, "notes", "") or ""
         if not notes:
             self._open_releases_page()
             return
         from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QTextBrowser, QVBoxLayout
         dialog = QDialog(self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.setWindowTitle(trans.t('update_available_title'))
         dialog.resize(620, 460)
         # Same theme rule as the other dialogs (light strips the dark inline
@@ -1385,7 +1386,17 @@ class OpenFocus(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         buttons.accepted.connect(dialog.accept)
         layout.addWidget(buttons)
-        dialog.exec()
+        def refresh_labels():
+            dialog.setWindowTitle(trans.t('update_available_title'))
+            buttons.button(QDialogButtonBox.StandardButton.Close).setText(trans.t('btn_close'))
+
+        refresh_labels()
+        manager.notes_changed.connect(view.setPlainText)
+        trans.languageChanged.connect(refresh_labels)
+        try:
+            dialog.exec()
+        finally:
+            trans.languageChanged.disconnect(refresh_labels)
 
     def _build_update_indicator(self) -> None:
         """Status-bar widget: background download progress / "restart to update"."""
