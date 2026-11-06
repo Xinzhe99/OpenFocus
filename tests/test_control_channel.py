@@ -334,12 +334,21 @@ runpy.run_path(sys.argv[0], run_name="__main__")
         assert forwarded.returncode == 0, forwarded.stderr
         assert gui.poll() is None
         script = '''
+import time
 from core.control.client import Session, request
 assert request("ping", token="incorrect", timeout=10)["error"]["code"] == "unauthorized"
 session = Session(timeout=10)
 try:
     assert session.call("ping")["pong"] is True
-    assert session.call("ui.context")["level"] in ("main", "dialog", "modal", "popup")
+    deadline = time.monotonic() + 10
+    context = session.call("ui.context")
+    while not any(dialog["class"] == "WelcomeDialog"
+                  and dialog["visible"] and dialog["modal"]
+                  for dialog in context["dialogs"]):
+        assert time.monotonic() < deadline, context
+        time.sleep(0.05)
+        context = session.call("ui.context")
+    assert context["level"] == "modal"
     assert session.call("ping")["pong"] is True
     assert session.call("app.quit", {"force": True})["quitting"] is True
 finally:

@@ -44,6 +44,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - OpenFocus A/B/C use whole-image processing at the default tile threshold.
   Explicit non-default thresholds still select the external tile path; internal
   row/frame streaming retains global depth and reconstruction semantics.
+- OpenFocus A selects original pixels by local high-frequency energy. The
+  kernel controls high-pass scale and smoothing controls energy spread;
+  mapped row processing and bounded frame concurrency preserve source-order
+  selection and 16-bit precision.
 - Stream TIFF conversion in bounded strips without an encoded full-image copy,
   preserving integer depth and supported EXIF/GPS/ICC metadata. Admit camera
   TIFFs by their actual classic-header capacity near the 4-GiB boundary.
@@ -98,6 +102,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so when it opens on such an output.
 
 ### Fixed
+- Ignore delayed startup dialogs, restores, file opens and backend probes once
+  shutdown begins, so an overdue first-run guide cannot reopen after closing.
 - Preserve the loupe's selected zoom across release/reopen and retain useful
   image content while a new native region is pending.
 - Frame-number, thumbnail and slider navigation in Retouch no longer creates a

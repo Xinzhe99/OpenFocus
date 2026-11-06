@@ -882,32 +882,3 @@ def test_depth_recurrence_carries_state_across_forward_and_reverse_strips(monkey
     np.testing.assert_array_equal(actual, expected)
 
 
-@pytest.mark.parametrize('shape', [(259, 37, 3), (1, 4097), (4097, 1)])
-def test_a_row_streaming_matches_dense_global_pyramid_and_gaussian(shape):
-    from fusion_methods.openfocus_a import _response
-    from fusion_methods.openfocus_ab import _check_cancel
-
-    rng = np.random.default_rng(3177)
-    frame = rng.uniform(0, 255, shape).astype(np.float32)
-    gray = frame.mean(axis=2, dtype=np.float32) if frame.ndim == 3 else frame
-    h, w = gray.shape
-    expected = np.zeros((h, w), np.float32)
-    current = gray
-    for level in range(5):
-        ch, cw = current.shape
-        padded = np.pad(current, ((0, ch % 2), (0, cw % 2)), mode='edge')
-        smaller = (padded[::2, ::2] + padded[::2, 1::2]
-                   + padded[1::2, ::2] + padded[1::2, 1::2]) * np.float32(.25)
-        expanded = cv2.resize(smaller, (2 * smaller.shape[1], 2 * smaller.shape[0]),
-                              interpolation=cv2.INTER_LINEAR)
-        detail = np.abs(current - expanded[:ch, :cw])
-        expected += np.repeat(np.repeat(detail, min(1 << level, h), axis=0),
-                              min(1 << level, w), axis=1)[:h, :w]
-        current = smaller
-        if current.shape == (1, 1):
-            break
-    np.minimum(expected, np.float32(65535 / 256), out=expected)
-    expected = cv2.GaussianBlur(expected, (0, 0), sigmaX=2,
-                                borderType=cv2.BORDER_REPLICATE)
-    actual = _response(frame, 5, 2, None, _check_cancel)
-    np.testing.assert_array_equal(actual, expected)

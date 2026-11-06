@@ -276,7 +276,7 @@ class MultiFocusFusion:
                           img_resize: Optional[Tuple[int, int]] = None,
                           kernel_size: int = 11,
                           **kwargs) -> np.ndarray:
-        """OpenFocus A: multiscale focus-response selection."""
+        """OpenFocus A: high-frequency energy source selection."""
         from fusion_methods.openfocus_a import openfocus_a_impl
         return openfocus_a_impl(input_source, img_resize,
                                 kernel_size=kernel_size,

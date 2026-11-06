@@ -784,23 +784,23 @@ Each neural tile uses every frame. Source frames and alignment scratch can be di
 
 ### OpenFocus A / B / C
 
-- **OpenFocus A**: smooths its multiscale focus-response map, then selects focused pixels.
+- **OpenFocus A**: smooths squared high-pass energy, then selects complete original pixels; first-frame ties and 16-bit precision are preserved.
 - **OpenFocus B**: blends neighboring frames guided by a smoothed depth map.
 - **OpenFocus C**: reconstructs multiscale bands guided by a smoothed depth map.
-- **Parameters**: A and B use the kernel slider to control focus-response scale;
-  C has no radius. All three have a smoothing parameter controlling transition strength.
+- **Parameters**: A uses the kernel slider for high-pass scale (`sigma = max(1, kernel / 5.5)`); B uses it for focus-response scale. C has no radius. A smooths energy before source selection; B and C smooth depth maps.
 
 **Smoothing**: one spin box under the kernel slider, with the meaning of the
 selected method (range 0–8, step 0.2):
 
 | Method | Label | Default | Effect |
 |---|---|---|---|
-| OpenFocus A | Blend smoothing | 2.0 | Controls smoothing of the focus-response map before pixels are selected |
+| OpenFocus A | Blend smoothing | 2.0 | Spreads squared high-pass energy with `sigma = max(1, smoothing / 2)`; 0 retains the minimum spread |
 | OpenFocus B | Depth smoothing | 1.2 | Controls smoothing of the depth map that guides blending |
 | OpenFocus C | Blend smoothing | 3.0 | Controls smoothing of the depth map that guides multiscale reconstruction |
 
-Higher values increase transition smoothing. Each method remembers its own value
-across sessions, and batch processing uses the same rule.
+For A, values from 0 through 2 use the same minimum spread; higher values spread
+energy farther. For B and C, larger values increase depth-map smoothing. Each
+method remembers its own value across sessions; batch processing uses the same rule.
 
 C has no Radius parameter, so its kernel slider is hidden.
 
@@ -850,7 +850,7 @@ filename stems are retained, with the extension of the format you select.
 | StackMFF (V1) | Slow (GPU) | Not benchmarked here | Luma is order-invariant; chroma may differ on luma-distance ties |
 | StackMFF V2 | Fast (GPU) | Not benchmarked here | Continuous sweeps with a tiny model |
 | StackMFF V3 | Slow (GPU) | Excellent | Best quality |
-| OpenFocus A | Depends on stack | Depends on stack | Multiscale focused-pixel selection |
+| OpenFocus A | Depends on stack | Depends on stack | High-frequency energy source-pixel selection |
 | OpenFocus B | Depends on stack | Depends on stack | Depth-guided blending of neighboring frames |
 | OpenFocus C | Depends on stack | Depends on stack | Depth-guided multiscale reconstruction |
 
