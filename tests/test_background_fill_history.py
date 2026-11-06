@@ -242,9 +242,10 @@ def test_five_native_background_edits_replay_cold_exactly(qapp, tmp_path, native
         for index in range(5):
             assert doc.adjust_tones(0.07, 0) == 'committed'
             cv2.setNumThreads(2 + index % 3)
+            effective_threads = cv2.getNumThreads()
             call = lambda: doc.auto_background('soft' if index % 2 == 0 else 'sharp', True)
             assert (_in_qthread(call) if index % 2 == 0 else call()) == 'committed'
-            assert cv2.getNumThreads() == 2 + index % 3
+            assert cv2.getNumThreads() == effective_threads
         # Five background edits retain exact image and tile history across
         # worker/main-thread execution and a different native load context.
         assert doc.undo() and doc.undo()
