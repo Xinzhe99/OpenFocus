@@ -6,8 +6,11 @@ pipeline therefore records a `RenderContext` when it publishes an output:
 the frames actually fused (aligned, ROI-cropped, DCT-trimmed), their stable
 identifiers, and the mapping back into the result's pixel coordinates.
 
-Nothing here is UI code and nothing takes a copy of a full frame: the
-context holds references to the arrays the render already produced.  Masks
+Nothing here is UI code and nothing copies a full frame: the context holds
+references to the arrays the render already produced, except ROI crops.
+Those are stored independently (in memory, or as their own mapped file for
+mapped aligned frames) so releasing the full aligned frames really frees
+them while an output that was made from them stays in the history.  Masks
 for registration fill are computed on demand by `SourceFrame.valid_mask`
 and cached by the caller, so opening the retouch dialog does not allocate
 one full-size mask per frame.
@@ -22,6 +25,7 @@ from typing import Iterable, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 from core.algorithms import alignment_steps
+from core.frame_storage import store_frame
 from core.source_frames import SourceFrame as LazySourceFrame, resolve_frame, store_preview
 
 
@@ -281,6 +285,19 @@ def build_render_context(
                 source = _source_region(source, 0, 0, source.shape[1], max(1, result_h - oy))
         if source.size == 0:
             return None
+        if roi is not None:
+            if isinstance(source, np.memmap):
+                # A crop of a mapped aligned frame is still a view: it pins
+                # the whole mapping and its temporary file for as long as this
+                # output stays in the history.  Store just the crop as its own
+                # mapping so releasing the full frames really frees them.
+                source = store_frame(source)
+            elif isinstance(source, np.ndarray):
+                # In-memory crop: own it so the full aligned frame can be
+                # freed; copy() preserves the dtype (8/16-bit).
+                source = source.copy()
+            # Lazy source-frame crops stay lazy: their preview is bounded and
+            # resolving them here would decode full pixels on this thread.
         frames.append(SourceFrame(
             frame_id=(str(frame_ids[index]) if frame_ids is not None
                       and index < len(frame_ids)

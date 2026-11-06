@@ -19,7 +19,8 @@ from core.registration import RegistrationCancelled
 from core.resource_policy import heavy_job, require_memory
 from locales import trans
 from utils.image_utils import cv2_to_pixmap, imwrite_auto
-from utils.settings_store import get_last_dialog_dir, set_last_dialog_dir
+from utils.settings_store import (get_last_dialog_dir, image_save_dir, remember_image_save,
+                                  set_last_dialog_dir)
 from utils.path_identity import same_path
 
 
@@ -683,7 +684,7 @@ class MosaicDialog(QDialog):
         if self.worker is not None or not self.frames:
             return
         path, _ = FileDialog.getSaveFileName(self, trans.t('mosaic_save'),
-                                              get_last_dialog_dir(), trans.t('mosaic_save_filter'))
+                                              image_save_dir(), trans.t('mosaic_save_filter'))
         if not path:
             return
         if not os.path.splitext(path)[1]:
@@ -695,7 +696,7 @@ class MosaicDialog(QDialog):
         if any(same_path(frame.source_path, path) for frame in self.frames):
             QMessageBox.warning(self, trans.t('mosaic_title'), trans.t('mosaic_source_conflict'))
             return
-        set_last_dialog_dir(path)
+        remember_image_save(path)
         frames = tuple(self.frames)
         transforms = self._current_transforms()
 

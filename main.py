@@ -3161,6 +3161,10 @@ class OpenFocus(QMainWindow):
 
     def _on_roi_alignment_finished(self, aligned_images, alignment_time):
         """ROI配准完成的回调"""
+        # The snapshot only fed the worker; holding it after the run kept a
+        # replaced stack's raw frames alive.
+        snapshot_count = len(getattr(self, "_roi_align_snapshot", None) or ())
+        self._roi_align_snapshot = []
         # Discard the result if the stack changed while ECC ran.
         _images, names, indices = self.effective_stack()
         context_now = (getattr(self, "source_revision", 0), tuple(indices), tuple(names),
@@ -3173,7 +3177,7 @@ class OpenFocus(QMainWindow):
             return
 
         self.roi_aligned_images = aligned_images
-        self.roi_aligned_raw_count = len(self._roi_align_snapshot)  # 对齐时快照的帧数
+        self.roi_aligned_raw_count = snapshot_count  # 对齐时快照的帧数
         self.roi_source_revision = context_now[0]
         self.roi_reg_downscale_width = context_now[3]
         self.roi_included_indices = tuple(indices)
@@ -3211,6 +3215,7 @@ class OpenFocus(QMainWindow):
 
     def _on_roi_alignment_error(self, error_message):
         """ROI配准错误的回调"""
+        self._roi_align_snapshot = []
         self.btn_preview_roi.setEnabled(True)
         self.btn_preview_roi.setText(trans.t("btn_roi"))
         self.btn_preview_roi.blockSignals(True)

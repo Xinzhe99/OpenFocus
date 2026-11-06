@@ -735,6 +735,23 @@ class RenderManager:
             and not use_roi_aligned_images
             and not compare
         )
+        if (not use_roi_aligned_images and not self._preview_mode
+                and not getattr(window, 'roi_mode_active', False)
+                and getattr(window, 'roi_aligned_images', None)):
+            # The ROI preview's aligned stack is a second full-resolution
+            # copy of every frame (1.8 GB for 15 x 20 MP), kept only to make
+            # re-entering ROI mode instant.  A full render builds or reuses
+            # its own aligned stack, so holding both doubled the memory and
+            # starved later stages (Auto background).  Re-entering ROI mode
+            # simply aligns again.
+            roi_frames = window.roi_aligned_images
+            window.roi_aligned_images = []
+            # After an ROI render the review/export stack is that same ROI
+            # stack; release it too, or it stays alive until this render ends.
+            reviewed = getattr(window, 'registration_results', None) or []
+            if reviewed and any(a is b for a, b in zip(reviewed, roi_frames)):
+                window.registration_results = []
+            del roi_frames, reviewed
         # None = this render neither reads nor writes the alignment cache.
         disk_cache_request = None
         if use_roi_aligned_images:
