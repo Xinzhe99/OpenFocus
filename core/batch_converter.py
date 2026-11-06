@@ -4,7 +4,6 @@ import shutil
 import tempfile
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from io import BytesIO
 import struct
 
 from threadpoolctl import threadpool_limits
@@ -424,14 +423,45 @@ def convert_batch(sources, directory, ext, cancelled, item, progress):
         return success, failed, cancelled()
 
 
-def _embedded_raw_jpeg(path):
-    """Read only bounded JPEG ranges identified by the camera container."""
+def _raw_preview_pages(tif, should_cancel=None):
+    """Visit bounded TIFF preview/pyramid headers without touching pixel data."""
+    pending = [(iter(tif.pages), 0)]
+    seen = set()
+    visited = 0
+    while pending and visited < 256:
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError('Source preview cancelled')
+        entries, depth = pending[-1]
+        try:
+            page = next(entries)
+        except StopIteration:
+            pending.pop()
+            continue
+        visited += 1
+        offset = page.offset
+        if offset in seen:
+            continue
+        seen.add(offset)
+        yield page
+        if depth < 8 and page.pages:
+            pending.append((iter(page.pages), depth + 1))
+
+
+def _embedded_raw_jpeg(path, should_cancel=None):
+    """Read only bounded, self-contained JPEG ranges named by the container."""
     def payload(offset, length):
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError('Source preview cancelled')
         if not (0 < length <= 32 * 1024 * 1024 and 0 <= offset <= os.path.getsize(path) - length):
-            raise ValueError('Invalid or oversized embedded JPEG range')
+            return None
         with open(path, 'rb') as stream:
             stream.seek(offset)
-            return stream.read(length)
+            if stream.read(2) != b'\xff\xd8':
+                return None
+            resource_policy.require_memory(length * 2)
+            stream.seek(offset)
+            encoded = stream.read(length)
+        return encoded if len(encoded) == length else None
 
     if Path(path).suffix.lower() == '.raf':
         with open(path, 'rb') as stream:
@@ -440,19 +470,24 @@ def _embedded_raw_jpeg(path):
             return payload(*struct.unpack('>II', header[84:92]))
     try:
         with tifffile.TiffFile(path) as tif:
-            candidates = []
-            for page in tif.pages:
-                candidates.append(page)
-                if page.pages:
-                    candidates.extend(page.pages)
-            candidates.sort(key=lambda p: p.imagewidth * p.imagelength)
+            candidates = list(_raw_preview_pages(tif, should_cancel))
+            # Prefer a preview large enough for the workspace, then the largest
+            # smaller thumbnail. Do not select a tiny IFD ahead of a real preview.
+            candidates.sort(key=lambda p: (max(p.imagewidth, p.imagelength) < 768,
+                                          p.imagewidth * p.imagelength if max(p.imagewidth, p.imagelength) >= 768
+                                          else -p.imagewidth * p.imagelength))
             for page in candidates:
                 offset, length = page.tags.get(513), page.tags.get(514)
+                encoded = None
                 if offset is not None and length is not None:
-                    return payload(int(offset.value), int(length.value))
-                if (page.photometric.name in ('RGB', 'YCBCR') and page.compression.value in (6, 7)
-                        and len(page.dataoffsets) == 1):
-                    return payload(page.dataoffsets[0], page.databytecounts[0])
+                    encoded = payload(int(offset.value), int(length.value))
+                if (encoded is None and page.photometric.name in ('RGB', 'YCBCR')
+                        and page.compression.value in (6, 7) and len(page.dataoffsets) == 1):
+                    encoded = payload(page.dataoffsets[0], page.databytecounts[0])
+                if encoded is not None:
+                    return encoded
+    except InterruptedError:
+        raise
     except (OSError, ValueError, tifffile.TiffFileError):
         return None
     return None
@@ -488,31 +523,16 @@ def thumbnail_rgb(path, size=(96, 72)):
         return np.ascontiguousarray(transform(pixels) if transform else pixels)
 
     if image_loader.is_raw_source(path):
+        from core.source_frames import _raw_preview, _UnavailablePreview
         with image_loader.rawpy.RawPy() as raw:
             raw.open_file(os.fspath(path))
-            encoded = _embedded_raw_jpeg(path)
-            if encoded is None:
-                if raw.sizes.raw_width * raw.sizes.raw_height > 4_000_000:
-                    raise ValueError('No bounded embedded JPEG preview is available')
-                thumbnail = raw.extract_thumb()
-            else:
-                thumbnail = None
             flip = raw.sizes.flip
-        if encoded is not None or thumbnail.format == image_loader.rawpy.ThumbFormat.JPEG:
-            encoded = encoded if encoded is not None else thumbnail.data
-            if len(encoded) > 32 * 1024 * 1024:
-                raise ValueError('Embedded preview exceeds the thumbnail byte budget')
-            with Image.open(BytesIO(encoded)) as image:
-                pixels = render(image, orientation=1)
-        elif thumbnail.format == image_loader.rawpy.ThumbFormat.BITMAP:
-            if thumbnail.data.shape[0] * thumbnail.data.shape[1] > 4_000_000:
-                raise ValueError('Embedded bitmap preview exceeds the thumbnail pixel budget')
-            pixels = render(Image.fromarray(thumbnail.data), orientation=1)
-        else:
-            raise ValueError('Unsupported embedded RAW preview')
-        orientation = (1, 2, 4, 3, 5, 8, 6, 7)[flip] if flip in range(8) else 1
-        transform = image_loader._EXIF_TRANSFORMS.get(orientation)
-        return np.ascontiguousarray(transform(pixels) if transform else pixels)
+            orientation = (1, 2, 4, 3, 5, 8, 6, 7)[flip] if flip in range(8) else 1
+            pixels = _raw_preview(raw, orientation, path)
+        if isinstance(pixels, _UnavailablePreview):
+            raise ValueError('No bounded embedded RAW preview is available')
+        pixels = to_display_uint8(pixels)
+        return render(Image.fromarray(cv2.cvtColor(pixels, cv2.COLOR_BGR2RGB)), orientation=1)
     if Path(path).suffix.lower() in ('.tif', '.tiff'):
         with tifffile.TiffFile(path) as tif:
             first = tif.pages[0]
