@@ -167,9 +167,9 @@ def _exercise(executable: Path, environment: dict, root: Path,
             or len(layers.layers) != 3):
         raise RuntimeError("Packaged layered TIFF lost its composite or source layers")
 
-    # Exercise each bundled checkpoint on CPU even when the torch build also
-    # supports an accelerator; V2 must additionally export its depth map.
-    for method in ("stackmff", "stackmffv2", "stackmffv3"):
+    # Compile the fixed-point CPU kernel in the frozen process, then exercise
+    # each bundled neural checkpoint. V2 must also export its depth map.
+    for method in ("openfocus_b", "stackmff", "stackmffv2", "stackmffv3"):
         ai_output = root / f"{method}.tif"
         command = [str(executable), "-i", str(root / "stack"), "-o", str(ai_output),
                    "--method", method, "--cpu", "--threads", "1",

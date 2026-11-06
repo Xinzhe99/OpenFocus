@@ -9,6 +9,7 @@ tifffile==2024.8.30
 # Official wheels bundle LibRaw 0.21.4+; prefer newer compatible wheels.
 rawpy>=0.25.1
 threadpoolctl>=3.5
+numba>=0.61.2
 dtcwt
 scipy
 onnxruntime-directml==1.23.0; sys_platform == 'win32' and platform_machine == 'AMD64'

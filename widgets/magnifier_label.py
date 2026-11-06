@@ -19,7 +19,8 @@ class MagnifierLabel(QLabel):
     roiChanged = pyqtSignal(QRectF)  # Emits normalized ROI (0-1) or base coords? Let's use base coords (pixels)
     roiDeleted = pyqtSignal()
     roiModeExitRequested = pyqtSignal()  # 请求退出ROI模式（点击X按钮或右键）
-    sourcePixelsRequested = pyqtSignal(object)
+    sourceRegionRequested = pyqtSignal(object, object)  # generation key, bounded region request
+    sourceRegionsReleased = pyqtSignal(object)
 
     def __init__(self, text: Optional[str] = "", parent=None):
         super().__init__(parent)
@@ -39,6 +40,9 @@ class MagnifierLabel(QLabel):
         self._source_pixmap: Optional[QPixmap] = None
         self._source_size = QSizeF()
         self._source_key = None
+        self._source_regions = {}
+        self._region_requests = {}
+        self._region_serial = 0
         self._zoom_factor = 1.0
         self._min_zoom = 0.2
         self._max_zoom = 5.0
@@ -164,10 +168,15 @@ class MagnifierLabel(QLabel):
                            source_key=None, source_pixmap=None):
         """Set a frame's preview and its original pixel domain.
 
-        A preview with source_size requires original pixels supplied separately;
-        sourcePixelsRequested lets the owner decode them away from the GUI thread.
+        A preview with source_size requires original regions supplied separately;
+        sourceRegionRequested lets the owner sample them away from the GUI thread.
         The key must identify the frame AND generation to reject stale completions.
         """
+        changed_source = source_key != self._source_key
+        if self._source_key is not None and (changed_source or pixmap is None or pixmap.isNull()):
+            self.sourceRegionsReleased.emit(self._source_key)
+        self._source_regions.clear()
+        self._region_requests.clear()
         self._base_pixmap = pixmap
         self._source_key = source_key
         self._composite_key = None
@@ -181,22 +190,72 @@ class MagnifierLabel(QLabel):
         self._source_size = QSizeF(*source_size) if source_size is not None else QSizeF(pixmap.size())
         self._source_pixmap = source_pixmap if source_size is not None else pixmap
         self.setText("")
+        if changed_source and self._magnifier_active:
+            self._ensure_native_loupe()
         self._update_scaled_pixmap()
-        self._request_source_pixels()
+        self._request_source_regions()
 
-    def set_source_pixmap(self, pixmap: QPixmap, *, source_key) -> bool:
-        """Install asynchronously decoded pixels without changing view geometry."""
-        if source_key != self._source_key or self._base_pixmap is None:
+    def set_source_region(self, pixmap, rect, *, source_key, request) -> bool:
+        """Accept only the latest region of the current source generation."""
+        kind = request[0]
+        if (source_key != self._source_key or self._base_pixmap is None
+                or self._region_requests.get(kind) != request):
             return False
         if pixmap is None or pixmap.isNull():
             return False
-        self._source_pixmap = pixmap
+        self._source_regions[kind] = (pixmap, QRectF(*rect))
+        self._composite_key = None
         self.update()
         return True
 
-    def _request_source_pixels(self):
-        if self._magnifier_active and self._source_pixmap is None:
-            self.sourcePixelsRequested.emit(self._source_key)
+    def _fit_scale(self):
+        if self._source_size.isEmpty():
+            return 1.0
+        return min(max(1, self.width()) / self._source_size.width(),
+                   max(1, self.height()) / self._source_size.height())
+
+    def _view_max_zoom(self):
+        # Reach eight device pixels per native source pixel at any screen DPI.
+        return max(self._max_zoom, 8.0 / (self._fit_scale() * self.devicePixelRatioF()))
+
+    def _loupe_max_zoom(self):
+        scale, _, _ = self._get_layout_params()
+        return max(self._magnifier_max_zoom, 16.0 / (scale * self.devicePixelRatioF()))
+
+    def _ensure_native_loupe(self):
+        scale, _, _ = self._get_layout_params()
+        native_zoom = 1.0 / (scale * self.devicePixelRatioF())
+        self._magnifier_zoom = min(max(self._magnifier_zoom, native_zoom), self._loupe_max_zoom())
+
+    def _request_region(self, kind, rect, size):
+        geometry = (rect.x(), rect.y(), rect.width(), rect.height())
+        size = (max(1, round(size[0])), max(1, round(size[1])))
+        old = self._region_requests.get(kind)
+        if old is not None and old[2:] == (geometry, size):
+            return
+        self._region_serial += 1
+        request = (kind, self._region_serial, geometry, size)
+        self._region_requests[kind] = request
+        self._source_regions.pop(kind, None)
+        self.sourceRegionRequested.emit(self._source_key, request)
+
+    def _request_source_regions(self):
+        if self._source_pixmap is not None or self._base_pixmap is None:
+            return
+        scale, x, y = self._get_layout_params()
+        dpr = self.devicePixelRatioF()
+        # A fit preview suffices until its actual pixels would be enlarged.
+        preview_scale = min(self._base_pixmap.width() / self._source_size.width(),
+                            self._base_pixmap.height() / self._source_size.height())
+        if scale * dpr > preview_scale:
+            visible = QRectF(x, y, *self._display_size()).intersected(QRectF(self.rect()))
+            if not visible.isEmpty():
+                rect = QRectF((visible.x() - x) / scale, (visible.y() - y) / scale,
+                              visible.width() / scale, visible.height() / scale)
+                self._request_region('view', rect, (visible.width() * dpr, visible.height() * dpr))
+        if self._magnifier_active:
+            source, target = self._magnifier_rects()
+            self._request_region('loupe', source, (target.width() * dpr, target.height() * dpr))
 
     def refresh_display(self):
         self._update_scaled_pixmap()
@@ -213,10 +272,14 @@ class MagnifierLabel(QLabel):
         self._update_scaled_pixmap()
 
     def clear(self):
+        if self._source_key is not None:
+            self.sourceRegionsReleased.emit(self._source_key)
         self._base_pixmap = None
         self._source_pixmap = None
         self._source_size = QSizeF()
         self._source_key = None
+        self._source_regions.clear()
+        self._region_requests.clear()
         self._composite_key = None
         self._zoom_factor = 1.0
         self._pan_offset = QPointF(0, 0)
@@ -245,9 +308,10 @@ class MagnifierLabel(QLabel):
             else:
                 step = 1.2
                 if delta > 0:
-                    self._magnifier_zoom = min(self._magnifier_zoom * step, self._magnifier_max_zoom)
+                    self._magnifier_zoom = min(self._magnifier_zoom * step, self._loupe_max_zoom())
                 else:
                     self._magnifier_zoom = max(self._magnifier_zoom / step, self._magnifier_min_zoom)
+            self._request_source_regions()
             self.update()
             event.accept()
             return
@@ -266,7 +330,7 @@ class MagnifierLabel(QLabel):
         new_zoom = self._zoom_factor
         
         if delta > 0:
-            new_zoom = min(old_zoom * step, self._max_zoom)
+            new_zoom = min(old_zoom * step, self._view_max_zoom())
         else:
             new_zoom = max(old_zoom / step, self._min_zoom)
 
@@ -464,7 +528,8 @@ class MagnifierLabel(QLabel):
             else:
                 self._magnifier_active = True
                 self._magnifier_pos = event.position()
-                self._request_source_pixels()
+                self._ensure_native_loupe()
+                self._request_source_regions()
                 self.setCursor(Qt.CursorShape.CrossCursor)
             self.update()
         super().mousePressEvent(event)
@@ -571,6 +636,7 @@ class MagnifierLabel(QLabel):
 
         if self._magnifier_active:
             self._magnifier_pos = event.position()
+            self._request_source_regions()
             self.update()
         super().mouseMoveEvent(event)
 
@@ -660,33 +726,44 @@ class MagnifierLabel(QLabel):
         self._update_scaled_pixmap(clamp=False)
         painter = QPainter(self)
         painter.drawPixmap(QPointF(0, 0), self.pixmap())
+        self._request_source_regions()
 
         if self._magnifier_active:
             source, target = self._magnifier_rects()
             painter.fillRect(target, QColor(24, 24, 24))
             pixels = self._source_pixmap
+            region = QRectF(0, 0, self._source_size.width(), self._source_size.height())
+            if pixels is None:
+                cached = self._source_regions.get('loupe')
+                if cached is not None:
+                    pixels, region = cached
             if pixels is not None and not pixels.isNull():
-                # Source rectangles use physical image pixels even when the
-                # QPixmap carries a screen DPR. Preview rounding is independent
-                # in x/y; convert the original domain to actual decoded pixels.
-                sx = pixels.width() / self._source_size.width()
-                sy = pixels.height() / self._source_size.height()
-                sample = QRectF(source.x() * sx, source.y() * sy,
-                                source.width() * sx, source.height() * sy)
-                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-                painter.drawPixmap(target, pixels, sample)
+                clipped = source.intersected(region)
+                if not clipped.isEmpty():
+                    native_scale = target.width() / source.width()
+                    drawn = QRectF(target.x() + (clipped.x() - source.x()) * native_scale,
+                                   target.y() + (clipped.y() - source.y()) * native_scale,
+                                   clipped.width() * native_scale, clipped.height() * native_scale)
+                    sx, sy = pixels.width() / region.width(), pixels.height() / region.height()
+                    sample = QRectF((clipped.x() - region.x()) * sx, (clipped.y() - region.y()) * sy,
+                                    clipped.width() * sx, clipped.height() * sy)
+                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,
+                                          native_scale * self.devicePixelRatioF() < 1)
+                    painter.drawPixmap(drawn, pixels, sample)
             else:
                 painter.setPen(Qt.GlobalColor.white)
                 painter.drawText(target, Qt.AlignmentFlag.AlignCenter, trans.t("msg_loading_stack"))
             painter.setPen(QPen(QColor(255, 255, 255, 220), 2))
             painter.drawRect(target)
-            text_bg_rect = QRectF(target.x() + 4, target.y() + 4, 50, 18)
+            text_bg_rect = QRectF(target.x() + 4, target.y() + 4, 130, 18)
             painter.fillRect(text_bg_rect, QColor(0, 0, 0, 180))
             font = QFont()
             font.setPointSize(9)
             painter.setFont(font)
             painter.setPen(QColor(255, 255, 255))
-            painter.drawText(text_bg_rect, Qt.AlignmentFlag.AlignCenter, f"{self._magnifier_zoom:.1f}x")
+            scale, _, _ = self._get_layout_params()
+            painter.drawText(text_bg_rect, Qt.AlignmentFlag.AlignCenter,
+                             f"{scale * self._magnifier_zoom * self.devicePixelRatioF() * 100:.0f}% ({self._magnifier_zoom:.1f}x)")
 
         if self._roi_mode and self._base_pixmap is not None and not self._base_pixmap.isNull():
             overlay_color = QColor(0, 0, 0, 150)
@@ -793,7 +870,8 @@ class MagnifierLabel(QLabel):
         center_x = self.width() / 2
         center_y = self.height() / 2
 
-        text = f"{self._zoom_factor:.2f}x"
+        scale, _, _ = self._get_layout_params()
+        text = f"{scale * self.devicePixelRatioF() * 100:.0f}% ({self._zoom_factor:.2f}x)"
         font = QFont()
         font.setPointSize(14)
         font.setBold(True)
@@ -839,8 +917,12 @@ class MagnifierLabel(QLabel):
         _, x, y = self._get_layout_params()
         scaled_w, scaled_h = self._display_size()
         dpr = self.devicePixelRatioF()
+        self._request_source_regions()
         key = (x, y, scaled_w, scaled_h, self.width(), self.height(), dpr,
-               self._base_pixmap.cacheKey())
+               self._base_pixmap.cacheKey(),
+               self._source_regions.get('view', (None,))[0].cacheKey()
+               if 'view' in self._source_regions else None,
+               self._source_pixmap.cacheKey() if self._source_pixmap is not None else None)
         if self._composite_key == key:
             return
 
@@ -860,6 +942,21 @@ class MagnifierLabel(QLabel):
             source = QRectF((visible.x() - x) * sx, (visible.y() - y) * sy,
                             visible.width() * sx, visible.height() * sy)
             painter.drawPixmap(visible, self._base_pixmap, source)
+            pixels = self._source_pixmap
+            region = QRectF(0, 0, self._source_size.width(), self._source_size.height())
+            if pixels is None and 'view' in self._source_regions:
+                pixels, region = self._source_regions['view']
+            if pixels is not None:
+                scale = scaled_w / self._source_size.width()
+                tile_target = QRectF(x + region.x() * scale, y + region.y() * scale,
+                                     region.width() * scale, region.height() * scale)
+                drawn = tile_target.intersected(visible)
+                if not drawn.isEmpty():
+                    sx, sy = pixels.width() / tile_target.width(), pixels.height() / tile_target.height()
+                    sample = QRectF((drawn.x() - tile_target.x()) * sx, (drawn.y() - tile_target.y()) * sy,
+                                    drawn.width() * sx, drawn.height() * sy)
+                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, scale * dpr < 1)
+                    painter.drawPixmap(drawn, pixels, sample)
         painter.end()
         self._composite_key = key
         super().setPixmap(result)

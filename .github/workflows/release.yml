@@ -547,11 +547,11 @@ jobs:
 
           See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
           EOF
-          # "What's new" = this tag's CHANGELOG section, placed first: the
-          # in-app update dialog shows release bodies as per-version notes,
-          # and a body of install boilerplate told users nothing.
+          # Keep a translated summary before the common download instructions.
+          # Language blocks survive mirroring for in-app selection after fetch.
           python3 - "${{ github.ref_name }}" <<'PY'
           import os, re, sys
+          from utils.release_notes import release_notes_markdown
           tag = sys.argv[1]
           version = tag[1:] if tag.startswith('v') else tag
           text = open("CHANGELOG.md", encoding="utf-8").read()
@@ -566,7 +566,8 @@ jobs:
                   "may still warn until reputation accumulates); macOS builds are not "
                   "notarized:",
               )
-          notes = "## What's new\n" + m.group(1).strip() + "\n\n" + notes
+          # Publishing requires actual notes in every selectable UI language.
+          notes = release_notes_markdown(tag) + "\n\n" + notes
           open("release_notes.md", "w", encoding="utf-8").write(notes)
           PY
 

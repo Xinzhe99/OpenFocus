@@ -12,6 +12,8 @@ from PyQt6.QtCore import Qt
 
 from core import workers
 from core.source_frames import SourceFrame, scan_source
+from core import source_frames
+from core.source_previews import SourceRegionWorker
 from utils.image_utils import prepare_fusion_input
 
 
@@ -142,15 +144,15 @@ def test_roi_alignment_receives_original_mappings(tmp_path, monkeypatch):
 @pytest.mark.parametrize('fail', [False, True])
 def test_source_decode_cancellation_discards_native_completion(tmp_path, monkeypatch, fail):
     frame, original = _source(tmp_path)
-    worker = workers.SourceDecodeWorker(frame, ('raw', 12))
+    worker = SourceRegionWorker(frame, ('raw', 12))
     def resolve(_frame):
         worker.cancel()
         if fail:
             raise OSError('decode failed after cancellation')
         return original
-    monkeypatch.setattr(workers, 'resolve_frame', resolve)
+    monkeypatch.setattr(source_frames, 'resolve_frame', resolve)
     decoded, errors = [], []
-    worker.decoded.connect(lambda *args: decoded.append(args))
+    worker.ready.connect(lambda *args: decoded.append(args))
     worker.failed.connect(lambda *args: errors.append(args))
     worker.run()
     assert decoded == [] and errors == []
@@ -168,16 +170,22 @@ def test_source_decode_emits_key_and_worker_developed_original(tmp_path, monkeyp
         threads.append(get_ident())
         return image + 1
     monkeypatch.setattr(linear_dng, 'develop_linear', develop)
-    monkeypatch.setattr(workers, 'resolve_frame', lambda frame: original)
-    worker = workers.SourceDecodeWorker(frame, ('raw', 5), display=True)
+    monkeypatch.setattr(source_frames, 'resolve_frame', lambda frame: original)
+    worker = SourceRegionWorker(frame, ('raw', 5))
+    request = ('loupe', 1, (0, 0, 56, 40), (56, 40))
+    worker.submit(request)
     results, errors = [], []
-    worker.decoded.connect(lambda *args: results.append(args), Qt.ConnectionType.DirectConnection)
+    def accept(*args):
+        results.append(args)
+        worker.cancel()
+    worker.ready.connect(accept, Qt.ConnectionType.DirectConnection)
     worker.failed.connect(lambda *args: errors.append(args), Qt.ConnectionType.DirectConnection)
     worker.start()
     assert worker.wait(5000)
     assert errors == [] and results[0][0] == ('raw', 5)
     assert threads and threads[0] != caller
-    np.testing.assert_array_equal(results[0][1], original + 1)
+    assert results[0][1] == request
+    np.testing.assert_array_equal(results[0][2], original + 1)
 
 
 def test_queued_cancelled_decode_never_enters_native_decoder(monkeypatch):
@@ -190,9 +198,9 @@ def test_queued_cancelled_decode_never_enters_native_decoder(monkeypatch):
             entered.set()
             assert release.wait(5)
         return image
-    monkeypatch.setattr(workers, 'resolve_frame', resolve)
-    first = workers.SourceDecodeWorker('first', 1)
-    queued = workers.SourceDecodeWorker('queued', 2)
+    monkeypatch.setattr(source_frames, 'resolve_frame', resolve)
+    first = SourceRegionWorker('first', 1)
+    queued = SourceRegionWorker('queued', 2)
     started = Event()
     queued.started.connect(started.set, Qt.ConnectionType.DirectConnection)
     first.start()
@@ -215,11 +223,15 @@ def test_source_decode_waits_for_shared_processing_budget(tmp_path):
     from core.resource_policy import heavy_job
 
     frame, original = _source(tmp_path)
-    worker = workers.SourceDecodeWorker(frame, 'loupe')
+    worker = SourceRegionWorker(frame, 'loupe')
+    worker.submit(('loupe', 1, (0, 0, 56, 40), (56, 40)))
     started = Event()
     results, errors = [], []
     worker.started.connect(started.set, Qt.ConnectionType.DirectConnection)
-    worker.decoded.connect(lambda *args: results.append(args), Qt.ConnectionType.DirectConnection)
+    def accept(*args):
+        results.append(args)
+        worker.cancel()
+    worker.ready.connect(accept, Qt.ConnectionType.DirectConnection)
     worker.failed.connect(lambda *args: errors.append(args), Qt.ConnectionType.DirectConnection)
     try:
         with heavy_job():
@@ -228,7 +240,7 @@ def test_source_decode_waits_for_shared_processing_budget(tmp_path):
             assert not worker.wait(200), 'original decode competed with an admitted render'
         assert worker.wait(5000)
         assert errors == [] and results[0][0] == 'loupe'
-        np.testing.assert_array_equal(results[0][1], original)
+        np.testing.assert_array_equal(results[0][2], original)
     finally:
         worker.cancel()
         assert worker.wait(5000)
@@ -237,8 +249,8 @@ def test_source_decode_waits_for_shared_processing_budget(tmp_path):
 def test_source_decode_failure_keeps_request_key(monkeypatch):
     def fail(frame):
         raise OSError('missing source')
-    monkeypatch.setattr(workers, 'resolve_frame', fail)
-    worker = workers.SourceDecodeWorker(object(), ('registered', 7))
+    monkeypatch.setattr(source_frames, 'resolve_frame', fail)
+    worker = SourceRegionWorker(object(), ('registered', 7))
     errors = []
     worker.failed.connect(lambda *args: errors.append(args))
     worker.run()

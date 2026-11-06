@@ -72,6 +72,22 @@ class TestOpenFocusAB:
         assert np.abs(interior - sharp_i).mean() < np.abs(interior - clipped_i).mean()
         assert np.abs(interior - sharp_i).mean() < 1.0
 
+    @pytest.mark.parametrize("shape", [(1, 131), (131, 1), (129, 131)])
+    @pytest.mark.parametrize("workers", [1, 3])
+    @pytest.mark.parametrize("smoothing", [0.0, 1.2])
+    def test_b_bright_uint16_texture_beats_flat(self, shape, workers, smoothing):
+        from fusion_methods.openfocus_bc import openfocus_b_impl
+        from utils.image_utils import quantize_fuse_output
+
+        texture = ((np.indices(shape).sum(axis=0) % 2) * 32768 + 32767)
+        storage = np.empty((shape[0] * 2, shape[1] * 2), np.uint16)
+        storage[::2, ::2] = texture
+        sharp = storage[::2, ::2]
+        flat = np.full(shape, 65535, np.uint16)
+        out = openfocus_b_impl([flat, sharp], thread_count=workers,
+                              depth_smoothing=smoothing)
+        np.testing.assert_array_equal(quantize_fuse_output(out, True), sharp)
+
 
     def test_two_frames_directory_input(self, tmp_path):
         """The methods also accept a directory (lazy path)."""
@@ -624,3 +640,126 @@ def test_tiled_render_uses_displayed_depth(monkeypatch, method, source_format, f
     from utils.image_utils import normalize_fuse_input
     normalized, _ = normalize_fuse_input(frames)
     np.testing.assert_array_equal(displayed, compute_focus_index(normalized, method))
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_default_streaming_preserves_whole_frame_context_above_2048(monkeypatch, method, dtype):
+    from core import multi_focus_fusion as mff
+
+    # Long, narrow images exceed the former spatial cutoff while requiring
+    # little workspace. Their whole-frame response/depth must stay intact.
+    rng = np.random.default_rng(712)
+    frames = [rng.integers(0, 256, (2051, 17), dtype=np.uint8) for _ in range(3)]
+    if dtype == np.uint16:
+        frames = [frame.astype(np.uint16) * 257 + 3 for frame in frames]
+    monkeypatch.setattr(mff, 'memory_budget_bytes', lambda: 64 * 1024 ** 2)
+    options = dict(algorithm=method, exposure_match=True, sort_mode='desc', base_frame='first')
+    whole = mff.MultiFocusFusion(tile_enabled=False, **options).fuse(frames, thread_count=1)
+    automatic = mff.MultiFocusFusion(**options).fuse(frames, thread_count=1)
+    assert automatic.shape == frames[0].shape
+    np.testing.assert_array_equal(automatic, whole)
+
+
+@pytest.mark.parametrize('mixed', [False, True])
+def test_global_depth_is_independent_of_row_scratch_partition(monkeypatch, mixed):
+    from fusion_methods import openfocus_depth as depth
+
+    rng = np.random.default_rng(91)
+    frames = [rng.integers(0, 256, (257, 33, 3), dtype=np.uint8) for _ in range(3)]
+    if mixed:
+        frames[1] = frames[1].astype(np.uint16) * 257 + 7
+    expected = depth.depth_map(frames, None, 11, 5, None)
+
+    def narrow_rows(image, cancel):
+        for start in range(0, image.shape[0], 7):
+            cancel()
+            yield slice(start, min(image.shape[0], start + 7))
+
+    monkeypatch.setattr(depth, '_rows', narrow_rows)
+    actual = depth.depth_map(frames, None, 11, 5, None)
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+@pytest.mark.parametrize('source_kind', ['uint8', 'mixed', 'gray16'])
+def test_parallel_firstpass_preserves_serial_pixels(method, source_kind):
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    rng = np.random.default_rng(519)
+    frames = [rng.integers(0, 256, (257, 33, 3), np.uint8) for _ in range(4)]
+    if source_kind == 'mixed':
+        frames[1] = frames[1].astype(np.uint16) * 256 + 5
+    elif source_kind == 'gray16':
+        frames = [frame[:, :, 0].astype(np.uint16) * 256 + 5 for frame in frames]
+    options = dict(algorithm=method, exposure_match=True, sort_mode='desc',
+                   base_frame='first', tile_enabled=False)
+    serial = MultiFocusFusion(**options).fuse(frames, thread_count=1)
+    parallel = MultiFocusFusion(**options).fuse(frames, thread_count=4)
+    np.testing.assert_array_equal(parallel, serial)
+
+
+def test_ordered_producer_window_bounds_completed_results():
+    from threading import Event, Lock
+    from fusion_methods.openfocus_ab import _ordered_frame_results
+
+    release_first = Event()
+    lock = Lock()
+    outstanding = peak = later = 0
+
+    def produce(index, cancelled):
+        nonlocal outstanding, peak, later
+        if index == 0:
+            assert release_first.wait(5)
+        with lock:
+            outstanding += 1
+            peak = max(peak, outstanding)
+            if index in (1, 2):
+                later += 1
+                if later == 2:
+                    release_first.set()
+        return index
+
+    iterator = _ordered_frame_results(9, produce, 3, None)
+    consumed = []
+    try:
+        for index, value in iterator:
+            consumed.append((index, value))
+            with lock:
+                outstanding -= 1
+    finally:
+        release_first.set()
+        iterator.close()
+    assert consumed == [(index, index) for index in range(9)]
+    assert peak <= 3
+
+
+def test_closing_frame_production_cancels_and_joins_running_workers():
+    from threading import Event, Lock
+    from core.registration import RegistrationCancelled
+    from fusion_methods.openfocus_ab import _ordered_frame_results
+
+    started = Event()
+    lock = Lock()
+    active = 0
+
+    def produce(index, cancelled):
+        nonlocal active
+        with lock:
+            active += 1
+        try:
+            if index == 0:
+                assert started.wait(5)
+                return index
+            started.set()
+            while not cancelled():
+                Event().wait(0.001)
+            raise RegistrationCancelled()
+        finally:
+            with lock:
+                active -= 1
+
+    iterator = _ordered_frame_results(8, produce, 3, None)
+    assert next(iterator) == (0, 0)
+    iterator.close()
+    assert active == 0

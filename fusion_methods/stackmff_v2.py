@@ -45,11 +45,17 @@ def _inference_depth(planes, model, device, should_cancel=None, threads=1):
 def _sample(frames, index, should_cancel=None):
     """Reference output: copy the sampled source frame at every pixel."""
     common.cancel(should_cancel)
-    out = np.empty(frames[0].shape, dtype=np.float32)
+    from core.frame_storage import create_frame
+    out = create_frame(frames[0].shape, np.float32)
     for layer, frame in enumerate(frames):
         common.cancel(should_cancel)
-        mask = index == layer
-        out[mask] = frame[mask]
+        for start in range(0, out.shape[0], 128):
+            common.cancel(should_cancel)
+            rows = slice(start, min(out.shape[0], start + 128))
+            mask = index[rows] == layer
+            np.copyto(out[rows], frame[rows],
+                      where=mask[:, :, None] if frame.ndim == 3 else mask,
+                      casting='unsafe')
     common.cancel(should_cancel)
     return out[..., 0] if out.ndim == 3 and out.shape[-1] == 1 else out
 
@@ -66,7 +72,7 @@ def infer(frames, model_path, use_gpu, should_cancel=None,
     model, device, plan = _prepare_inference(
         frames, model_path, use_gpu, thread_count=thread_count,
         resource_preference=resource_preference, execution_plan=execution_plan)
-    normalized = common.normalized_frames(frames)
+    normalized = common.normalized_frames(frames, should_cancel)
     planes = common.stage_planes(normalized, PAD_ALIGN, should_cancel)
     depth_full, index_full = _inference_depth(planes, model, device, should_cancel, plan.native_threads)
     del planes
@@ -102,14 +108,13 @@ def stackmffv2_impl(input_source, img_resize, model_path, use_gpu,
                 execution_plan, thread_count, resource_preference, tile_size,
                 tile_overlap, progress_callback, exposure_gains, source_all_uint8)
         if isinstance(input_source, str):
-            from core.resource_policy import require_memory
+            from core.frame_storage import store_frame
             from fusion_methods.stackmff_v2_tiled import _Source
             source = _Source(input_source, img_resize, None, should_cancel)
-            first = source.get(0)
-            require_memory(len(source.items) * first.nbytes,
-                           user_limit=execution_plan.ram_budget if execution_plan else None)
-            frames = [first]
-            frames.extend(source.get(i) for i in range(1, len(source.items)))
+            frames = []
+            for index in range(len(source.items)):
+                common.cancel(should_cancel)
+                frames.append(store_frame(source.get(index)))
         else:
             frames = common.read_stack(input_source, img_resize, should_cancel,
                                        execution_plan)

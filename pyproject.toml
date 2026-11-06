@@ -44,6 +44,7 @@ dependencies = [
     # 0.25.1 bundles LibRaw 0.21.4 and still provides Intel macOS wheels.
     "rawpy>=0.25.1",
     "threadpoolctl>=3.5",
+    "numba>=0.61.2",
 ]
 dynamic = ["version"]
 

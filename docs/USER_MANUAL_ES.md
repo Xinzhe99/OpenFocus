@@ -261,10 +261,12 @@ Haz clic en **Revisar fotogramas** bajo el encabezado de la lista de origen para
 
 ### Zoom y desplazamiento
 
-- **Acercar/Alejar**: rueda del ratón sobre la imagen
-- **Zoom fino**: mantén `Ctrl` y usa la rueda del ratón para incrementos más pequeños
-- **Ajustar a la ventana**: haz doble clic en la imagen para alternar entre ajustar y la vista al 100 %
-- **Desplazar**: haz clic y arrastra para mover la imagen dentro del panel
+- **Acercar/Alejar**: rueda sobre la imagen de origen o resultado, también manteniendo `Ctrl`
+- **Lupa**: mantén pulsado el botón izquierdo; la rueda cambia el aumento y `Ctrl` + rueda cambia el tamaño del cuadrado. Cada panel recuerda su tamaño
+- **Ajustar a la ventana**: clic con el botón central
+- **Desplazar**: arrastra con el botón derecho o mantén Espacio y arrastra con el izquierdo
+
+En imágenes de origen grandes, la lupa empieza al 100 % nativo; el porcentaje indica píxeles del dispositivo por píxel original. La vista principal alcanza el 800 %. Las pilas JPEG y RAW se abren con vistas previas limitadas cuando están disponibles. Para inspeccionar detalles, un trabajador carga los píxeles originales y entrega solo la región visible. El original seleccionado se conserva para inspecciones sucesivas y se libera al cambiar o vaciar la fuente. La primera decodificación sigue necesitando RAM suficiente y puede tardar más que abrir la vista previa.
 
 ### Navegación sincronizada
 
@@ -1002,8 +1004,8 @@ Códigos de salida: `0` éxito, `1` error de procesamiento, `2` error de uso. Ej
 |----------|--------|
 | `Arriba` / `Abajo` (lista de origen enfocada) | Fotograma anterior / siguiente |
 | `Rueda del ratón` | Acercar/alejar |
-| `Ctrl + rueda` | Zoom fino |
-| `Doble clic` | Alternar ajuste/100 % |
+| `Ctrl + rueda` con el botón izquierdo pulsado | Cambiar el tamaño de la lupa |
+| `Botón central` | Ajustar la imagen a la ventana |
 
 ### General
 

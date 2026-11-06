@@ -59,30 +59,49 @@ def openfocus_a_impl(input_source, img_resize=None, kernel_size: int = 11,
     ``kernel_size`` is a window diameter; half its value is the radius R,
     with pyramid depth floor(log2(R))+3. ``blend_smoothing`` is the Gaussian
     sigma applied to each response before selection; zero disables smoothing.
-    ``thread_count`` is retained for API compatibility. Selection is strict,
-    so ties keep the first frame.
+    ``thread_count`` bounds independent response producers. Selection remains
+    strict and in source order, so ties keep the first frame. RAM admission
+    bounds both live producers and completed results; low RAM stays serial.
 
-    Frames are prepared one at a time in the application's float32 0-255
-    domain. Float results retain the precision needed by 16-bit export.
+    Frames use the application's float32 0-255 domain. Float results retain
+    the precision needed by 16-bit export.
     """
-    from fusion_methods.openfocus_ab import _check_cancel, _collect_images, _prepare_frame
+    from fusion_methods.openfocus_ab import (
+        _check_cancel, _collect_images, _prepare_frame,
+        _frame_pass_workers, _ordered_frame_results)
 
     frames = _collect_images(input_source, normalize=False, should_cancel=should_cancel)
     radius = max(1, int(kernel_size) // 2) if kernel_size else 3
     levels = int(np.floor(np.log2(radius))) + 3
     sigma = max(0.0, float(2.0 if blend_smoothing is None else blend_smoothing))
-    output = store_frame(_prepare_frame(frames[0], img_resize, should_cancel))
-    best = _response(output, levels, sigma, should_cancel, _check_cancel)
+    workers = _frame_pass_workers(frames, img_resize, 'openfocus_a', thread_count)
 
-    for source in frames[1:]:
-        _check_cancel(should_cancel)
-        frame = _prepare_frame(source, img_resize, should_cancel)
-        if frame.shape != output.shape:
-            raise ValueError("OpenFocus A requires frames with matching shapes")
-        response = _response(frame, levels, sigma, should_cancel, _check_cancel)
-        better = response > best
-        output[better] = frame[better]
-        best[better] = response[better]
+    def produce(index, cancelled):
+        frame = _prepare_frame(frames[index], img_resize, cancelled)
+        response = _response(frame, levels, sigma, cancelled, _check_cancel)
+        return frame, response
+
+    output = best = None
+    produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
+    try:
+        for index, (frame, response) in produced:
+            if index == 0:
+                output = store_frame(frame)
+                best = response
+                del frame, response
+                continue
+            if frame.shape != output.shape:
+                raise ValueError("OpenFocus A requires frames with matching shapes")
+            for start in range(0, output.shape[0], 128):
+                _check_cancel(should_cancel)
+                rows = slice(start, min(output.shape[0], start + 128))
+                better = response[rows] > best[rows]
+                np.copyto(output[rows], frame[rows],
+                          where=better[:, :, None] if frame.ndim == 3 else better)
+                np.copyto(best[rows], response[rows], where=better)
+            del frame, response, better
+    finally:
+        produced.close()
 
     _check_cancel(should_cancel)
     np.clip(output, 0, 255, out=output)

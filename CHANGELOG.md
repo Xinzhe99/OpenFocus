@@ -38,6 +38,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Render All Methods skips a method that cannot run (for example, when the
   memory check refuses it), renders the rest and lists the skipped methods
   at the end. Cancelling still stops the whole run.
+- Show a subtle, translated drop invitation in an empty mosaic input list, and
+  use compact aligned-stack folder icons with an asynchronously loaded real frame.
+- Keep selected original pixels on a worker for native magnifier and viewport
+  regions. Large sources start at native 100%, the view reaches 800%, and
+  bounded region delivery preserves original coordinates, annotations and alpha.
+- Retain language-neutral update notes and select all twelve translations at
+  display time, including offline cache reads and an already-open notes dialog.
+- Distinguish verified accelerator capability from actual model execution.
+  Preserve usable integrated GPUs, explicit CPU preference and provider fallback.
+  Hardware names alone no longer imply that inference can use an accelerator.
+- Run independent OpenFocus A responses and B/C activity passes in a bounded,
+  RAM-admitted frame window with source-order reduction. Preserve global depth,
+  reconstruction and first-frame ties; keep tile and frame pools separate.
+  Extend mapped/strip preparation and explicit working-set estimates across
+  classical backends without changing fusion pixels.
+  Compile B/C's Q12 recurrence as a GIL-free CPU kernel so independent frame
+  work can overlap without Python row-loop contention. Preserve uint32 wrap,
+  rounding and cooperative cancellation; include the compiler in all installs.
 - Image save dialogs start in the folder where you last saved an image.
 - A full render releases the region (ROI) preview's aligned frames, a second
   full-resolution copy of the stack that was kept after ROI mode ended, and the
@@ -72,6 +90,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   preserve current edits and any existing checkpoint.
 - When PYTHONFAULTHANDLER or -X faulthandler is set, the GUI and CLI send
   native crash dumps to the session crash file instead of stderr.
+- Read bounded JPEG/RAW display previews without unpacking the sensor. Try other
+  embedded JPEG or bitmap candidates after a corrupt or inadmissible preview;
+  preserve cancellation and keep unavailable display pixels out of processing.
+- Admit each original-region request and serialize region/thumbnail work with
+  processing. Closing waits cooperatively for source and thumbnail workers while
+  the GUI event loop remains responsive.
+- Report OpenFocus alignment estimation and output progress, bound Gaussian/gain
+  scratch, and avoid interpolating candidates with insufficient overlap without
+  changing alignment decisions or exposure arithmetic.
+- Bound per-tile BGRA conversion storage with disk mappings and stage complete
+  resized inputs before constructing a target-size tile grid. Requested resize
+  geometry, source preparation order and neural exposure handling are preserved.
 - Auto background no longer mistakes a dark background for a microscope's
   field stop. Ignoring it filled the area beside the subject from lit ground
   and the subject itself: a pale or orange smear, a lumpy outline, rings

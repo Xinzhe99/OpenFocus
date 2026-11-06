@@ -32,6 +32,59 @@ ALIGNED_DIR_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 OUTPUT_RECORD_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 
 _ACTIVE_LINEAR_DNG_WORKERS = set()
+_ACTIVE_STACK_THUMBNAIL_WORKERS = set()
+
+
+class _StackThumbnailWorker(QThread):
+    """Read one known frame off Qt, retaining only a tiny display image."""
+
+    def __init__(self, source, metadata):
+        super().__init__()
+        self.source = source
+        self.metadata = metadata
+        self.thumbnail = None
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+        self.requestInterruption()
+
+    def run(self):
+        from core.resource_policy import heavy_job
+        from core.source_frames import SourceFrame, ensure_preview, scan_source
+        should_cancel = lambda: self._cancelled or self.isInterruptionRequested()
+        try:
+            with heavy_job(should_cancel):
+                if should_cancel():
+                    return
+                source = self.source
+                if isinstance(source, (str, os.PathLike)):
+                    source = scan_source(source, page_index=0, should_cancel=should_cancel)[0]
+                pixels = (ensure_preview(source, should_cancel=should_cancel)
+                          if isinstance(source, SourceFrame) else source_display_image(source))
+                if should_cancel() or not getattr(source, 'preview_is_available', True):
+                    return
+                h, w = pixels.shape[:2]
+                factor = min(1.0, 40 / max(h, w))
+                if factor < 1:
+                    pixels = cv2.resize(pixels, (max(1, round(w * factor)),
+                                                 max(1, round(h * factor))),
+                                        interpolation=cv2.INTER_AREA)
+                if self.metadata is not None and not getattr(source, 'preview_is_display', False):
+                    from utils.linear_dng import develop_linear
+                    pixels = develop_linear(pixels, self.metadata)
+                if should_cancel():
+                    return
+                rgb = cv2.cvtColor(_thumbnail_bgr(pixels, 40), cv2.COLOR_BGR2RGB)
+                self.thumbnail = QImage(rgb.data, rgb.shape[1], rgb.shape[0],
+                                       rgb.strides[0], QImage.Format.Format_RGB888).copy()
+        except Exception:
+            # Missing or unreadable previews leave an honest folder outline.
+            self.thumbnail = None
+        finally:
+            self.source = None
+            self.metadata = None
+
 
 def _linear_dng_annotated_image(record, labels, state, should_cancel=None):
     """Render annotations in display space, then map only changed pixels back.
@@ -223,10 +276,58 @@ class OutputManager:
         self.window = window
         self.linear_dng_worker = None
         self.linear_dng_progress = None
+        self._stack_thumbnail_worker = None
+        self._stack_thumbnail_queue = []
 
     # ------------------------------------------------------------------
     # UI helpers
     # ------------------------------------------------------------------
+    def _queue_stack_thumbnail(self, record, source) -> None:
+        self._stack_thumbnail_queue.append((record.output_id, source, record.linear_dng_metadata))
+        self._stack_thumbnail_queue = self._stack_thumbnail_queue[-self.MAX_HISTORY:]
+        if self._stack_thumbnail_worker is None:
+            self._start_stack_thumbnail()
+
+    def _start_stack_thumbnail(self) -> None:
+        from PyQt6 import sip
+        if sip.isdeleted(self.window) or getattr(self.window, '_shutting_down', False):
+            self._stack_thumbnail_queue.clear()
+            return
+        while self._stack_thumbnail_queue:
+            output_id, source, metadata = self._stack_thumbnail_queue.pop(0)
+            if not any((record := self.record_for_row(row)) is not None
+                       and record.output_id == output_id
+                       for row in range(self.window.output_list.count())):
+                continue
+            worker = _StackThumbnailWorker(source, metadata)
+            self._stack_thumbnail_worker = worker
+            _ACTIVE_STACK_THUMBNAIL_WORKERS.add(worker)
+
+            def complete():
+                self._stack_thumbnail_worker = None
+                if not sip.isdeleted(self.window) and not getattr(self.window, '_shutting_down', False):
+                    for row in range(self.window.output_list.count()):
+                        item = self.window.output_list.item(row)
+                        record = self.record_for_item(item)
+                        if record is not None and record.output_id == output_id:
+                            self.window.output_list.set_aligned_stack_icon(item, worker.thumbnail)
+                            break
+                _ACTIVE_STACK_THUMBNAIL_WORKERS.discard(worker)
+                worker.deleteLater()
+                self._start_stack_thumbnail()
+
+            worker.finished.connect(complete)
+            worker.start()
+            return
+
+    def cancel_stack_thumbnails(self) -> bool:
+        self._stack_thumbnail_queue.clear()
+        worker = self._stack_thumbnail_worker
+        if worker is None:
+            return False
+        worker.cancel()
+        return worker.isRunning()
+
     def update_output_count(self) -> None:
         count = self.window.output_list.count()
         self.window.output_label.setText(trans.t("label_output").format(count))
@@ -486,7 +587,9 @@ class OutputManager:
             record.export_path = folder
             item = self._insert_output(None, label, record, tooltip=folder)
             item.setData(ALIGNED_DIR_ROLE, folder)
-            item.setIcon(QIcon.fromTheme("folder"))
+            self.window.output_list.set_aligned_stack_icon(item)
+            if names:
+                self._queue_stack_thumbnail(record, os.path.join(folder, names[0]))
             added += 1
         return added
 
@@ -1212,7 +1315,8 @@ def publish_aligned_stack(window, frames, *, filenames=None, icc_profile=None,
     from core.image_loader import stack_icc_profile
     record.icc_profile = stack_icc_profile(window, indices) if icc_profile is None else icc_profile
     item = window.output_manager._insert_output(None, label, record)
-    item.setIcon(QIcon.fromTheme("folder"))
+    window.output_list.set_aligned_stack_icon(item)
+    window.output_manager._queue_stack_thumbnail(record, frames[0])
     window.aligned_stack_dir = None
 
 

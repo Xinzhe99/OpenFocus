@@ -247,11 +247,14 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
                    text_align: str = "auto",
                    custom_x: float = None,
                    custom_y: float = None,
-                   _info: Optional[dict] = None) -> np.ndarray:
+                   _info: Optional[dict] = None, *, canvas_size=None,
+                   origin=(0, 0), region_mean=None) -> np.ndarray:
     """Return a copy of ``img`` (BGR) with a scale bar burned into a corner.
 
     No-op (same array) when calibration is missing or implausible. Drawing
     happens in RGB via PIL so the label can use a real font with a stroke.
+    ``canvas_size`` and ``origin`` locate a bounded display tile inside the
+    full canvas. Geometry stays global while raster allocation stays tile-sized.
     """
     if img is None or not px_um or not math.isfinite(px_um) or px_um <= 0:
         return img
@@ -276,7 +279,8 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
             img8, px_um, position, color, font_family=font_family,
             font_size=font_size,
             font_bold=font_bold, text_align=text_align,
-            custom_x=custom_x, custom_y=custom_y, _info=_info)
+            custom_x=custom_x, custom_y=custom_y, _info=_info,
+            canvas_size=canvas_size, origin=origin, region_mean=region_mean)
         if drawn is img8:
             return img
         mask = np.any(drawn != img8, axis=2)
@@ -287,7 +291,7 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
             out[mask] = drawn[mask].astype(img.dtype)
         return out
 
-    h, w = img.shape[:2]
+    h, w = img.shape[:2] if canvas_size is None else (canvas_size[1], canvas_size[0])
     thickness = max(2, int(round(h * 0.004)))
     margin = max(10, int(round(min(h, w) * 0.02)))
     # Very small frames made the "tight frame" fallback below push bar_y1
@@ -423,22 +427,31 @@ def draw_scale_bar(img: np.ndarray, px_um: float,
     bar_y1 += shift
     bar_y2 += shift
 
+    # Clamp in the full canvas, then translate into this tile. PIL clips the
+    # motif at the tile edge; it must never migrate to the crop's corner.
+    text_x = max(stroke_w, min(int(text_x), w - text_w - stroke_w))
     if color == "auto":
-        mean = _region_mean(img, bar_x1 - margin, bar_y1 - margin,
-                             bar_x2 + margin, bar_y2 + margin)
+        if region_mean is not None:
+            mean = region_mean((bar_x1 - margin, bar_y1 - margin,
+                                bar_px + 2 * margin, thickness + 2 * margin))
+        else:
+            mean = _region_mean(img, round(bar_x1 - margin - origin[0]),
+                                round(bar_y1 - margin - origin[1]),
+                                round(bar_x2 + margin - origin[0]),
+                                round(bar_y2 + margin - origin[1]))
         bar_rgb = (255, 255, 255) if mean < 128 else (0, 0, 0)
     else:
         bar_rgb = (255, 255, 255) if color == "white" else (0, 0, 0)
     edge_rgb = (0, 0, 0) if bar_rgb == (255, 255, 255) else (255, 255, 255)
+    bar_x1, bar_x2 = round(bar_x1 - origin[0]), round(bar_x2 - origin[0])
+    bar_y1, bar_y2 = round(bar_y1 - origin[1]), round(bar_y2 - origin[1])
+    text_x, text_y = round(text_x - origin[0]), round(text_y - origin[1])
 
     # Outline pass then fill keeps the bar visible on same-color regions
     draw.rectangle((bar_x1 - stroke, bar_y1 - stroke,
                     bar_x2 + stroke, bar_y2 + stroke), fill=edge_rgb)
     draw.rectangle((bar_x1, bar_y1, bar_x2 - 1, bar_y2 - 1), fill=bar_rgb)
 
-    # Keep the label inside the canvas: PIL clips silently, but a label cut
-    # in half is worse than a nudged one.
-    text_x = max(stroke_w, min(int(text_x), w - text_w - stroke_w))
 
     if font is not None:
         draw.text((text_x - left, text_y - top), label, font=font, fill=bar_rgb,
@@ -586,7 +599,7 @@ def export_cfg(window, target: str = "output", *, record=None) -> Optional[dict]
     return cfg
 
 
-def burn(img: np.ndarray, cfg: Optional[dict]) -> np.ndarray:
+def burn(img: np.ndarray, cfg: Optional[dict], **region) -> np.ndarray:
     """Apply draw_scale_bar from an export_cfg dict; passthrough on None."""
     if not cfg:
         return img
@@ -599,4 +612,4 @@ def burn(img: np.ndarray, cfg: Optional[dict]) -> np.ndarray:
         font_bold=cfg.get("font_bold", False),
         text_align=cfg.get("text_align", "auto"),
         custom_x=cfg.get("custom_x"),
-        custom_y=cfg.get("custom_y"))
+        custom_y=cfg.get("custom_y"), **region)

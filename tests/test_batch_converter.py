@@ -494,7 +494,8 @@ def test_large_raw_without_preview_never_unpacks_sensor(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     class RawHeader:
-        sizes = SimpleNamespace(raw_width=100000, raw_height=100000, flip=0)
+        sizes = SimpleNamespace(raw_width=100000, raw_height=100000,
+                                width=100000, height=100000, flip=0)
         def open_file(self, stream):
             pass
         def extract_thumb(self):
@@ -507,7 +508,7 @@ def test_large_raw_without_preview_never_unpacks_sensor(tmp_path, monkeypatch):
     source = tmp_path / 'giant.cr3'
     source.write_bytes(b'header')
     monkeypatch.setattr(converter.image_loader.rawpy, 'RawPy', RawHeader)
-    monkeypatch.setattr(converter, '_embedded_raw_jpeg', lambda *a: None)
+    monkeypatch.setattr(converter, '_embedded_raw_jpegs', lambda *a, **kw: iter(()))
     with pytest.raises(ValueError, match='bounded'):
         converter.thumbnail_rgb(str(source))
 

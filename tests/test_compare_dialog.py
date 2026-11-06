@@ -732,11 +732,11 @@ def test_missing_source_preview_decodes_off_gui_and_close_cancels(dialog, qapp, 
     original = source_previews.ensure_preview
     threads = []
 
-    def held_preview(source):
+    def held_preview(source, should_cancel=None):
         threads.append(QThread.currentThread() is qapp.thread())
         entered.set()
         assert release.wait(5), "test did not release preview decode"
-        return original(source)
+        return original(source, should_cancel=should_cancel)
 
     monkeypatch.setattr(source_previews, "ensure_preview", held_preview)
     dialog._frames = [frame]

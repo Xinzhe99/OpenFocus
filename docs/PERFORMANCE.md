@@ -1,9 +1,9 @@
 # OpenFocus Performance & Large-Stack Reference
 
-The measurements and implementation notes below describe earlier PyTorch-based
-revisions and are historical, not measurements or a specification of the current
-ONNX Runtime implementation. They must not be used as evidence of current GPU
-support, throughput, memory use or image quality.
+Throughput tables marked historical describe earlier PyTorch-based revisions.
+They are not measurements or a specification of the current ONNX Runtime
+implementation and must not establish current GPU support, throughput, memory
+use or image quality. The current execution changes are described separately.
 
 Current neural inference chooses a spatial tile size using available resources
 and keeps all focal frames in each tile. V2 tiled results approximate whole-image
@@ -12,7 +12,96 @@ model workspaces and full-size outputs still require available RAM and temporary
 data requires free disk space. A stack can be rejected if its working set cannot
 fit. See [GPU support](GPU_SUPPORT.md) for provider and validation limitations.
 
-## Measured throughput (CPU-only)
+## Current bounded execution (unreleased)
+
+OpenFocus A computes independent frame responses in a RAM-admitted window;
+B/C compute independent activity planes in the same way. Source-order reduction
+preserves strict first-frame ties and the previous accumulation order. B/C
+finish all activity producers before global depth smoothing and reconstruction.
+Spatial tile workers keep their child frame pass serial, so the two pools do
+not overlap. A worker budget includes a completed result waiting for reduction
+and the original-size uint16 conversion required before resizing.
+
+B/C's Q12 recurrence runs in a lazily compiled, GIL-free Numba CPU kernel.
+A separate 256-MiB startup check covers compilation before workspace planning;
+later plans see the compiler's resident memory in the physical-RAM snapshot.
+Required layouts compile serially before the producer pool starts. Parallel
+producers use private RAM scratch only after their full resident envelopes fit;
+serial low-RAM work and global maps retain temporary mappings. Compilation stays
+in memory, so read-only installed/frozen modules need no writable JIT cache.
+The first fusion in a fresh process includes compilation time.
+
+Guided Filter, DCT, GFG-FGF, DTCWT and neural preparation use frame/strip passes
+and mapped intermediates where applicable. Full outputs, decision maps,
+reconstruction buffers and native decoder work still need admission; temporary
+mappings need disk space. BGRA tile conversion writes into mappings, and a
+resize-capable tiled method stages one full resized source at a time before
+building its target-coordinate tile grid. DCT still requires a fixed grid.
+
+OpenFocus alignment reuses reference preparation and writes full-resolution
+Gaussian, gain and warp scratch to mappings. Gaussian strips preserve the
+original float32 reductions. Progress covers transform estimation and output
+creation; cancellation waits for any current native call to return. Weak
+matching can remain expensive on low-detail or repeated textures.
+
+Source inspection retains one selected original on a worker and delivers
+coalesced viewport/loupe crops capped at 4096×4096. Each request has an explicit
+memory check and shares the processing lease. Source previews and aligned-stack
+thumbnails also cancel cooperatively; the main window defers final close on the
+Qt event loop until their native work finishes. A native 10000×10000 grayscale
+smoke exercised loupe zoom, view zoom, sizing, pan and clear with a 125-MiB RSS
+increase on the measured machine, below its 384-MiB probe limit. This is a
+single-run observation, not a universal decoder or Qt allocation bound.
+
+Use `tools/fusion_streaming_benchmark.py` in fresh processes for stage timings,
+input order, implementation hashes, working/export pixel hashes, producer
+concurrency and RSS. Compare identical sources and options; the direct adapter
+entry excludes pipeline normalization/exposure/sorting/base preparation. The
+reported historical OpenFocus 82.1-s adapter run and HF9 approximately 15-s
+workflow used different generated stacks and stage boundaries, so they do not
+establish a same-input speed ratio. Avoid simultaneous benchmarks or tests.
+
+### Same-input OpenFocus B measurement
+
+Fresh Windows processes measured the same sixteen 4000×4000 uint16 TIFFs,
+in lexical filename order, with no alignment and thread limits of one or eight.
+The loader expands each grayscale frame to three channels (1.536 GB of decoded
+pixels). OpenCV native threads stayed at one. The baseline is `78942fb`; the
+final adapter measurement is `27e3c4a`, whose fusion implementation hashes are
+identical to the integrated `e6ca3aa` used for both pipeline measurements.
+The compiled runs used Python 3.10.19, NumPy 2.2.6, OpenCV 5.0.0, Numba 0.68.1
+and llvmlite 0.50.0. Each compiled run includes its first-use compilation.
+
+| Entry | Thread limit / active producers | First pass | Fusion | Measured stages total | Peak RSS |
+|---|---:|---:|---:|---:|---:|
+| Baseline adapter | 1 / 1 | not instrumented | 70.71 s | 75.93 s | 2.07 GiB |
+| Final adapter | 8 / 6 | 13.39 s | 33.04 s | 40.09 s | 3.59 GiB |
+| Final pipeline | 1 / 1 | 36.89 s | 98.98 s | 137.42 s | 4.02 GiB |
+| Final pipeline | 8 / 6 | 12.07 s | 75.00 s | 114.34 s | 6.01 GiB |
+
+The adapter's fusion stage is 2.14× faster than the baseline. In the final
+pipeline, admitting six producers instead of one makes the first pass 3.06×
+faster and the measured end-to-end stages 1.20× faster, at the higher resident
+memory shown above. Normalization and global reconstruction still contribute
+most of the pipeline time. These are single-run observations on one machine;
+available RAM can admit fewer producers.
+
+Both float32 working-pixel and uint16 exported-pixel SHA-256 hashes match
+exactly within each comparison pair. Adapter and pipeline outputs differ
+because only the latter applies pipeline exposure, sorting and base preparation.
+Totals cover the instrumented stages, including image writing, and exclude
+Python startup and the subsequent pixel-hash calculation.
+RSS is the harness's sampled peak.
+
+For a serial/parallel pipeline comparison, run the benchmark in separate
+processes against one unchanged source folder:
+
+```bash
+python tools/fusion_streaming_benchmark.py --source-dir STACK --method openfocus_b --entry pipeline --load-mode loader --threads 1 --output serial.tif --json-output serial.json
+python tools/fusion_streaming_benchmark.py --source-dir STACK --method openfocus_b --entry pipeline --load-mode loader --threads 8 --output parallel.tif --json-output parallel.json
+```
+
+## Historical throughput (PyTorch CPU)
 
 | Case | Frames | Resolution | Path | Time | Notes |
 |------|--------|-----------|------|------|-------|
@@ -235,7 +324,7 @@ Sections A–C need real photo stacks. Point `OPENFOCUS_SOAK_DIR` at a folder
 containing `hetao_aligned_stabled/` and `Samples1/` to run them; without it
 those sections are skipped with a notice (the synthetic sections still run).
 
-## Interactive latency (the UI, not the fusion)
+## Historical interactive latency
 
 The soak above measures fusion throughput. Interaction lag is a different
 budget, measured by `tools/ui_perf_probe.py` (offscreen, synthetic stack, no

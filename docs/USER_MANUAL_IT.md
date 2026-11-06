@@ -261,10 +261,12 @@ Fai clic su **Esamina fotogrammi** sotto l'intestazione dell'elenco sorgente per
 
 ### Zoom e spostamento
 
-- **Zoom avanti/indietro**: rotella del mouse sull'immagine
-- **Zoom fine**: tieni premuto `Ctrl` e usa la rotella per incrementi più piccoli
-- **Adatta alla finestra**: doppio clic sull'immagine per alternare adattamento e vista al 100%
-- **Spostamento**: fai clic e trascina per muovere l'immagine nel pannello
+- **Zoom avanti/indietro**: rotella sulla sorgente o sul risultato, anche tenendo premuto `Ctrl`
+- **Lente**: tieni premuto il pulsante sinistro; la rotella cambia l'ingrandimento e `Ctrl` + rotella ridimensiona il quadrato. Ogni pannello ricorda la propria dimensione
+- **Adatta alla finestra**: clic con il pulsante centrale
+- **Spostamento**: trascina con il pulsante destro oppure tieni premuto Spazio e trascina con il sinistro
+
+Per sorgenti grandi, la lente parte dal 100% nativo; la percentuale indica i pixel del dispositivo per pixel originale. La vista principale raggiunge l'800%. Gli stack JPEG e RAW si aprono con anteprime limitate, quando disponibili. Per esaminare i dettagli, un processo in background carica i pixel originali e invia solo la regione visibile. L'originale selezionato resta disponibile per altre ispezioni e viene liberato cambiando o svuotando la sorgente. La prima decodifica richiede comunque RAM sufficiente e può essere più lenta dell'apertura dell'anteprima.
 
 ### Navigazione sincronizzata
 
@@ -1002,8 +1004,8 @@ Codici di uscita: `0` successo, `1` errore di elaborazione, `2` errore d'uso. `p
 |----------|--------|
 | `Su` / `Giù` (elenco sorgente attivo) | Fotogramma precedente / successivo |
 | `Rotella mouse` | Zoom avanti/indietro |
-| `Ctrl + rotella` | Zoom fine |
-| `Doppio clic` | Alterna adattamento/100% |
+| `Ctrl + rotella` tenendo premuto il pulsante sinistro | Ridimensiona la lente |
+| `Pulsante centrale` | Adatta l'immagine alla finestra |
 
 ### Generali
 

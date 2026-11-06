@@ -261,10 +261,12 @@ Clique em **Revisar quadros** abaixo do cabeçalho da lista de origem para encon
 
 ### Zoom e deslocamento
 
-- **Aumentar/Diminuir zoom**: roda do mouse sobre a imagem
-- **Zoom fino**: mantenha `Ctrl` e use a roda para incrementos menores
-- **Ajustar à janela**: clique duas vezes na imagem para alternar entre ajuste e visualização em 100%
-- **Deslocar**: clique e arraste para mover a imagem dentro do painel
+- **Aumentar/Diminuir zoom**: roda sobre a origem ou o resultado, também com `Ctrl` pressionado
+- **Lupa**: mantenha o botão esquerdo pressionado; a roda muda a ampliação e `Ctrl` + roda muda o tamanho do quadrado. Cada painel memoriza seu tamanho
+- **Ajustar à janela**: clique com o botão central
+- **Deslocar**: arraste com o botão direito ou mantenha Espaço e arraste com o esquerdo
+
+Em originais grandes, a lupa começa em 100% nativo; a porcentagem indica pixels do dispositivo por pixel original. A visualização principal chega a 800%. Pilhas JPEG e RAW abrem com prévias limitadas quando disponíveis. Para examinar detalhes, uma tarefa em segundo plano carrega os pixels originais e entrega apenas a região visível. O original selecionado permanece disponível para novas inspeções; trocar ou limpar a origem o libera. A primeira decodificação ainda exige RAM suficiente e pode demorar mais que abrir a prévia.
 
 ### Navegação sincronizada
 
@@ -999,8 +1001,8 @@ Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Exe
 |----------|--------|
 | `Cima` / `Baixo` (lista de origem em foco) | Quadro anterior / seguinte |
 | `Roda do mouse` | Aumentar/diminuir zoom |
-| `Ctrl + roda` | Zoom fino |
-| `Clique duplo` | Alternar ajuste/100% |
+| `Ctrl + roda` com o botão esquerdo pressionado | Mudar o tamanho da lupa |
+| `Botão central` | Ajustar a imagem à janela |
 
 ### Geral
 

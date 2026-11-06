@@ -108,10 +108,17 @@ def estimate_peak_bytes(algorithm: str, frames, block_size: int = None,
     if getattr(first, "ndim", 0) < 2:
         return 0
     h, w = first.shape[:2]
+    spec = get_fusion(algorithm)
+    estimates = {}
+    if spec.resource_estimator:
+        fixed, per_worker = resolve_runner(spec.resource_estimator)(
+            block_size or h, block_size or w,
+            resolve_fusion_parameters(algorithm), len(frames))
+        estimates = {'fixed_bytes': fixed, 'per_worker_bytes': per_worker}
     workload = Workload(
         algorithm=algorithm, frames=len(frames), height=h, width=w,
         channels=min(3, first.shape[2]) if first.ndim == 3 else 1,
-        itemsize=first.itemsize, block_size=block_size,
+        itemsize=np.dtype(first.dtype).itemsize, block_size=block_size, **estimates,
     )
     fixed, per_worker = estimate_working_set(workload)
     return fixed + max(1, int(workers)) * per_worker
@@ -139,27 +146,12 @@ def _stack_footprint_exceeds(frames, tile_threshold: int) -> bool:
     if not frames:
         return False
     first = frames[0]
-    bytes_per_frame = first.itemsize * int(np.prod(first.shape)) if first.ndim else first.itemsize
+    itemsize = np.dtype(first.dtype).itemsize
+    bytes_per_frame = itemsize * int(np.prod(first.shape)) if first.ndim else itemsize
     total_bytes = len(frames) * bytes_per_frame
     return total_bytes > (tile_threshold ** 2) * 3
 
 
-# DTCWT keeps one float32 activity map per frame and level (a geometric
-# series summing to ~4/3 * H*W per frame). Splitting the image into tiles
-# changes each tile's transform boundary, which leaves a visible seam at the
-# block grid; tile only when the whole-image activity set would be large.
-DTCWT_ACTIVITY_BUDGET = 1200 * 1024 * 1024
-
-
-def _dtcwt_activity_bytes(frames) -> int:
-    if not frames:
-        return 0
-    first = frames[0]
-    if getattr(first, "ndim", 0) < 2:
-        return 0
-    h, w = first.shape[:2]
-    per_frame = h * w * (4.0 / 3.0) * np.dtype(np.float32).itemsize
-    return int(len(frames) * per_frame)
 
 
 def _ai_effective_tiling(n_frames, block_size, h, w, overlap, batch_pref):
@@ -216,7 +208,8 @@ class MultiFocusFusion:
         self.use_gpu = bool(use_gpu)
         self._actual_device = None
         # Tile (tiled fusion) related instance-level settings
-        # 当图片最大边大于 tile_threshold 时，可在 tile_enabled 为 True 时启用分块融合
+        # OpenFocus A/B/C choose whole-image streaming by available RAM;
+        # an explicitly changed threshold remains a spatial cap.
         self.tile_enabled = bool(tile_enabled)
         self.tile_block_size = int(tile_block_size)
         self.tile_overlap = int(tile_overlap)
@@ -492,7 +485,7 @@ class MultiFocusFusion:
     def _validate_spatial_environment(self) -> None:
         """验证空间域融合依赖"""
         if self.use_gpu:
-            print("Note: Guided-filter fusion runs on CPU only; switching to CPU mode.")
+            print(f"Note: {self.descriptor.display_name} fusion runs on CPU only; switching to CPU mode.")
             self.use_gpu = False
 
     def _validate_ai_environment(self) -> None:
@@ -605,12 +598,33 @@ class MultiFocusFusion:
         else:
             raise ValueError("Fusion requires a non-empty image stack or directory")
 
+        if self.algorithm in ('openfocus_b', 'openfocus_c'):
+            from fusion_methods._depth_kernel import prepare_depth_kernel
+            smoothing_key = ('depth_smoothing' if self.algorithm == 'openfocus_b'
+                             else 'blend_smoothing')
+            smoothing = kwargs[smoothing_key]
+            prepare_depth_kernel(guided=smoothing is None or smoothing > 0,
+                                 should_cancel=should_cancel)
+
         h, w = first.shape[:2]
         spec = self.descriptor
+        height = max(h, img_resize[1]) if img_resize else h
+        width = max(w, img_resize[0]) if img_resize else w
         needs_tiles = (resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
-                       if spec.tile_decider else max(h, w) > self.tile_threshold)
+                       if spec.tile_decider else max(height, width) > self.tile_threshold)
+        if self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c') and img_resize:
+            fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
+            needs_tiles = needs_tiles or fixed + per_worker > memory_budget_bytes()
+        if self.algorithm == 'dtcwt':
+            # Activity selection is incremental; stack depth no longer makes
+            # an N-plane activity set. Respect the requested transform levels.
+            fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
+            needs_tiles = fixed + per_worker > memory_budget_bytes()
+        resize_for_tiles = (self.tile_enabled and needs_tiles and img_resize is not None
+                            and self.algorithm in ('guided_filter', 'gfgfgf', 'openfocus_a',
+                                                   'dtcwt', 'stackmff', 'stackmffv2', 'stackmffv3'))
         deferred_exposure = (self.tile_enabled and needs_tiles
-                             and isinstance(input_source, list)
+                             and isinstance(input_source, list) and not resize_for_tiles
                              and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
         # Preparation converts only one frame at a time; the retained stack
         # and exposure-matched frames live in temporary mappings.
@@ -619,7 +633,11 @@ class MultiFocusFusion:
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.
         input_source = self._maybe_sort_input(input_source, should_cancel)
-        if (not spec.neural and not deferred_exposure
+        # Neural tiles historically normalize mixed/16-bit pixels before
+        # applying their global gains. Preserve that order when gains and the
+        # full-frame resize are staged ahead of tile construction.
+        normalize_before_resize = resize_for_tiles and spec.neural and self.exposure_match
+        if ((not spec.neural or normalize_before_resize) and not deferred_exposure
                 and any(frame.dtype == np.uint16 for frame in input_source)):
             normalized_frames = []
             for frame in input_source:
@@ -661,27 +679,37 @@ class MultiFocusFusion:
                     matched.append(frame if adjusted is frame else store_frame(adjusted))
                 input_source = matched
                 del adjusted
+        tile_source, tile_resize = input_source, img_resize
+        if resize_for_tiles:
+            # Match the whole backend: normalize/sort/exposure above, then
+            # resize each complete source once before constructing its grid.
+            # Keep the original prepared stack as the base-correction source.
+            tile_source = self._resize_tile_sources(input_source, img_resize, should_cancel)
+            tile_resize = None
+
 
 
         check_cancel()
         if self.algorithm == 'stackmffv2' and self.tile_enabled and needs_tiles:
             result = self._fuse_stackmffv2(
-                input_source, img_resize, should_cancel=should_cancel,
+                tile_source, tile_resize, should_cancel=should_cancel,
                 progress_callback=progress_callback, tile_size=self.tile_block_size,
-                tile_overlap=self.tile_overlap, exposure_gains=exposure_gains_,
+                tile_overlap=self.tile_overlap,
+                exposure_gains=exposure_gains_ if deferred_exposure else None,
                 source_all_uint8=all(dtype == np.uint8 for _, dtype in frame_specs),
                 **kwargs)
         elif (self.tile_enabled and needs_tiles and
-                (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c'))):
+                (tile_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c'))):
             # The neural scheduler chooses a grid that fits the current budget.
             kws = dict(kwargs)
             kws.pop('block_size', None)
             kws.pop('overlap', None)
             result = self._fuse_tiled(
-                input_source, algorithm=self.algorithm, img_resize=img_resize,
+                tile_source, algorithm=self.algorithm, img_resize=tile_resize,
                 block_size=self.tile_block_size, overlap=self.tile_overlap,
                 should_cancel=should_cancel, progress_callback=progress_callback,
-                exposure_gains=exposure_gains_, deferred_exposure=deferred_exposure,
+                exposure_gains=exposure_gains_ if deferred_exposure else None,
+                deferred_exposure=deferred_exposure,
                 source_all_uint8=all(dtype == np.uint8 for _, dtype in frame_specs), **kws)
         else:
             check_cancel()
@@ -694,12 +722,16 @@ class MultiFocusFusion:
                     estimates = {'fixed_bytes': fixed, 'per_worker_bytes': per_worker}
                 plan = policy.plan_execution(
                     policy.Workload(algorithm=self.algorithm, frames=count,
-                        height=height, width=width, channels=3, itemsize=first.itemsize,
+                        height=height, width=width, channels=3, itemsize=np.dtype(first.dtype).itemsize,
                         outer_tasks=count if spec.parallel_frames else 1, **estimates),
                     preference=self.resource_preference,
                     user_threads=kwargs.get('thread_count'),
                     ram_budget_override=memory_budget_bytes())
-                kwargs['thread_count'] = plan.workers
+                # OpenFocus admits the whole serial reconstruction here, then
+                # admits its independent FirstPass producers separately. Its
+                # global smoothing/pyramid maps are not live per producer.
+                kwargs['thread_count'] = (plan.native_threads if self.algorithm in
+                    ('openfocus_a', 'openfocus_b', 'openfocus_c') else plan.workers)
                 if spec.ordered_plan:
                     kwargs['execution_plan'] = plan
             kwargs['should_cancel'] = should_cancel
@@ -914,7 +946,9 @@ class MultiFocusFusion:
         Args:
             block_size: 分块大小（像素）
             overlap: 重叠大小（像素）
-            threshold: 启用分块判断的边长阈值（像素）
+            threshold: 边长阈值（像素）。OpenFocus A/B/C 的默认 2048
+                使用 RAM 预算自动选择整图；其他值额外限制整图边长。
+                DTCWT 始终按变换工作集预算选择，避免不必要的边界接缝。
         """
         if block_size is not None:
             self.tile_block_size = max(1, int(block_size))
@@ -1020,6 +1054,35 @@ class MultiFocusFusion:
                 wy = np.minimum(wy, wy_bottom)
 
         return np.outer(wy, wx).astype(np.float32)
+
+    def _resize_tile_sources(self, frames, target_size, should_cancel):
+        """Stage full resized sources in backend order without a dense stack."""
+        import cv2
+        from core.resource_policy import require_memory
+        from fusion_methods.dct import _ensure_color_image
+
+        if self.algorithm == 'openfocus_a':
+            target_size = tuple(map(int, target_size))
+        width, height = map(int, target_size)
+        interpolation = cv2.INTER_AREA if self.algorithm == 'openfocus_a' else cv2.INTER_LINEAR
+        resized = []
+        for frame in frames:
+            if should_cancel is not None and should_cancel():
+                from core.registration import RegistrationCancelled
+                raise RegistrationCancelled()
+            channels = frame.shape[2] if frame.ndim == 3 else 1
+            if self.algorithm in ('guided_filter', 'gfgfgf'):
+                channels = 3
+            require_memory(frame.nbytes * 4 + width * height * channels * frame.dtype.itemsize * 2,
+                           user_limit=memory_budget_bytes())
+            # Guided Filter makes its input contiguous before colour promotion;
+            # GFG promotes before resize. Other backends retain native channels.
+            prepared = (np.ascontiguousarray(frame) if self.algorithm == 'guided_filter' else frame)
+            if self.algorithm in ('guided_filter', 'gfgfgf'):
+                prepared = _ensure_color_image(prepared)
+            resized.append(store_frame(cv2.resize(prepared, target_size, interpolation=interpolation)))
+            del prepared
+        return resized
 
     def _fuse_tiled(self,
                     input_source: Union[List[np.ndarray], str],
@@ -1144,12 +1207,12 @@ class MultiFocusFusion:
             from core import resource_policy as policy
             from fusion_methods.openfocus_depth import depth_map
             from fusion_methods.openfocus_ab import _collect_images
-            # Retained source/depth planes use disk mappings.
-            source_bytes = 0
-            fixed, per_worker = policy.estimate_working_set(policy.Workload(
-                algorithm=algorithm, frames=num_images, height=h, width=w,
-                channels=channels, itemsize=np.dtype(src_dtype).itemsize))
-            policy.require_memory(source_bytes + fixed + per_worker,
+            # Global recurrences use mapped planes and bounded row scratch.
+            # Spatially tiling depth would alter the algorithm's context.
+            # Admit one prepared source and row scratch, rather than charging
+            # the full resident reconstruction envelope of method C here.
+            row_scratch = min(h, 128) * w * 256 + 4 * 1024 * 1024
+            policy.require_memory(h * w * channels * 8 + row_scratch,
                                   user_limit=memory_budget_bytes())
             directory_depth = imgs is None
             if directory_depth:
@@ -1171,25 +1234,28 @@ class MultiFocusFusion:
                 kernel = 11
                 smoothing = kwargs.get('blend_smoothing')
                 smoothing = (3.0 if smoothing is None else smoothing) * (5.0 / 3.0)
-            global_depth = depth_map(depth_images, None, kernel, smoothing, should_cancel)
+            depth_threads = policy.cpu_capacity(policy.probe_resources(), self.resource_preference)
+            if thread_count is not None and thread_count > 0:
+                depth_threads = min(depth_threads, thread_count)
+            global_depth = depth_map(depth_images, None, kernel, smoothing, should_cancel,
+                                     thread_count=depth_threads)
             del depth_images
 
         if get_fusion(algorithm).resource_estimator:
-            # Each tile is fused with a serial inner plan, so the parent's
-            # concurrency cost is one tile's DTCWT working set — not the whole
-            # image's. The parent already holds the lease; admission here only
-            # decides how many tiles may run at once.
+            # Each serial tile owns both the backend's fixed maps and worker
+            # scratch. Charge their sum per concurrent tile; none of those
+            # backend-local accumulators is shared between tile calls.
             from core import resource_policy as policy
             fixed, per_worker = resolve_runner(get_fusion(algorithm).resource_estimator)(
                 block_size, block_size, kwargs, num_images)
-            acc_bytes = 0  # Full output accumulators are disk-backed.
+            # Full-image output accumulators are disk-backed and reduced in strips.
             plan = policy.plan_execution(
                 policy.Workload(
                     algorithm=algorithm, frames=num_images, height=h, width=w,
                     channels=channels, block_size=block_size,
                     itemsize=np.dtype(src_dtype).itemsize,
-                    fixed_bytes=fixed + acc_bytes + 2 * acc_bytes,
-                    per_worker_bytes=per_worker,
+                    fixed_bytes=0,
+                    per_worker_bytes=fixed + per_worker,
                     outer_tasks=len(tile_coords)),
                 preference=self.resource_preference,
                 user_threads=thread_count,
@@ -1258,7 +1324,16 @@ class MultiFocusFusion:
             # The back-ends normalise BGRA to BGR themselves, so the accumulator
             # (sized from the source channel count) would reject their output.
             if crops and crops[0].ndim == 3 and crops[0].shape[2] == 4:
-                crops = [cv2.cvtColor(c, cv2.COLOR_BGRA2BGR) for c in crops]
+                import cv2
+                converted = []
+                for crop in crops:
+                    _check_cancel()
+                    # Retaining N ordinary cvtColor results would make a deep
+                    # stack consume N colour tiles of heap per tile worker.
+                    color = create_frame(crop.shape[:2] + (3,), crop.dtype)
+                    cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR, dst=color)
+                    converted.append(color)
+                crops = converted
             return crops
 
         def process_single_tile(coords):

@@ -450,7 +450,8 @@ def test_deep_stack_depth_index_is_preserved(monkeypatch, smoothing, winner):
 
     calls = 0
 
-    def fake_filter(src, radius, cancel, guide=None, low=None):
+    def fake_filter(src, radius, cancel, guide=None, low=None, *,
+                    allocate=None):
         nonlocal calls
         if guide is not None:
             return src.astype(np.int64)
@@ -472,7 +473,8 @@ def test_depth_guide_expands_range_from_lower_percentile(monkeypatch):
     guides = []
     calls = 0
 
-    def fake_filter(src, radius, cancel, guide=None, low=None):
+    def fake_filter(src, radius, cancel, guide=None, low=None, *,
+                    allocate=None):
         nonlocal calls
         if guide is not None:
             guides.append(guide.copy())

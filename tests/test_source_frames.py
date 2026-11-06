@@ -183,7 +183,7 @@ def test_raw_manifest_does_not_unpack_sensor_or_postprocess(tmp_path, monkeypatc
 def test_large_raw_missing_preview_never_unpacks_sensor(monkeypatch):
     from types import SimpleNamespace
     from core import batch_converter
-    monkeypatch.setattr(batch_converter, '_embedded_raw_jpeg', lambda _path: None, raising=False)
+    monkeypatch.setattr(batch_converter, '_embedded_raw_jpegs', lambda _path, **_kwargs: iter(()))
     class LargeRaw:
         sizes = SimpleNamespace(width=8000, height=6000)
         def extract_thumb(self): raise AssertionError('large native thumbnail decode')
@@ -401,3 +401,273 @@ def test_raw_source_dimensions_are_header_only_and_unicode_safe(tmp_path, monkey
     monkeypatch.setattr(rawpy, 'imread', forbidden)
     monkeypatch.setattr(image_loader, 'RAWPY_AVAILABLE', True)
     assert image_loader.source_dimensions(path) == (80, 60)
+
+
+def _dng_preview_fixture(tmp_path, monkeypatch, *, bitmap=True, orientation=1,
+                         compression=None, previews=None):
+    """A real TIFF/DNG preview IFD beside a header-only 48MP CFA sensor."""
+    from types import SimpleNamespace
+    import tifffile
+    rawpy = pytest.importorskip('rawpy')
+    path = tmp_path / '大传感器预览.dng'
+    rgb = np.arange(24 * 32 * 3, dtype=np.uint16).reshape(24, 32, 3) * 23
+    previews = [rgb] if previews is None else previews
+    with tifffile.TiffWriter(path) as writer:
+        writer.write(np.zeros((8, 8), np.uint16), photometric=32803, subifds=len(previews),
+                     extratags=[(50706, 'B', 4, (1, 4, 0, 0), False)])
+        for preview in previews:
+            writer.write(preview if bitmap else np.zeros(preview.shape[:2], np.uint16),
+                         photometric='rgb' if bitmap else 32803, subfiletype=1,
+                         compression=compression, rowsperstrip=4,
+                         extratags=[(274, 'H', 1, orientation, False)])
+    # Inflate only the sensor header. Preview data stay real and small; attempting
+    # to decode the CFA strip would fail rather than allocate a giant fixture.
+    with tifffile.TiffFile(path, mode='r+b') as tif:
+        tif.pages[0].tags['ImageWidth'].overwrite(8000)
+        tif.pages[0].tags['ImageLength'].overwrite(6000)
+    class HeaderRaw:
+        sizes = SimpleNamespace(width=8000, height=6000, pixel_aspect=1.0, flip=6)
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def open_file(self, filename): assert filename == str(path)
+        def unpack(self): raise AssertionError('preview unpacked sensor')
+        def postprocess(self, **_kwargs): raise AssertionError('preview demosaiced sensor')
+        def extract_thumb(self): raise AssertionError('preview allocated unadmitted LibRaw thumbnail')
+    monkeypatch.setattr(rawpy, 'RawPy', HeaderRaw)
+    return path, rgb
+
+
+def test_raw_bitmap_preview_uses_smaller_admitted_ifd(tmp_path, monkeypatch):
+    from core import resource_policy
+    large = np.full((512, 768, 3), (1000, 2000, 3000), np.uint16)
+    small = np.arange(120 * 160 * 3, dtype=np.uint16).reshape(120, 160, 3)
+    path, _ = _dng_preview_fixture(tmp_path, monkeypatch, previews=[large, small])
+    def admit(required, **_kwargs):
+        if required > 1024 * 1024:
+            raise resource_policy.ResourceLimitError('preview admission')
+        return 1024 * 1024
+    monkeypatch.setattr(resource_policy, 'require_memory', admit)
+    frame = sources.scan_source(path)[0]
+    assert frame.preview_is_available and frame.shape == (8000, 6000, 3)
+    expected = cv2.rotate(np.ascontiguousarray(small[:, :, ::-1]), cv2.ROTATE_90_CLOCKWISE)
+    np.testing.assert_array_equal(sources.display_image(frame), expected)
+
+
+@pytest.mark.parametrize('orientation', [1, 3, 6, 8])
+def test_large_dng_bitmap_subifd_is_real_oriented_display_only(tmp_path, monkeypatch, orientation):
+    path, rgb = _dng_preview_fixture(tmp_path, monkeypatch, orientation=orientation)
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('preview invoked full-resolution decoder')
+    monkeypatch.setattr(image_loader, 'decode_image', forbidden)
+    frame = sources.scan_source(path)[0]
+    assert frame.shape == (8000, 6000, 3) and frame.dtype == np.uint16
+    assert frame.preview_is_available and frame.preview_is_display
+    assert frame.fingerprint == sources._fingerprint(path)
+    expected = cv2.rotate(np.ascontiguousarray(rgb[:, :, ::-1]), cv2.ROTATE_90_CLOCKWISE)
+    np.testing.assert_array_equal(sources.display_image(frame), expected)
+    from core import resource_policy
+    with monkeypatch.context() as guard:
+        guard.setattr(resource_policy, 'require_memory', lambda *_args, **_kwargs: None)
+        with pytest.raises(AssertionError, match='full-resolution'):
+            sources.resolve_frame(frame)
+
+
+def test_dng_cfa_pyramid_never_masquerades_as_display_pixels(tmp_path, monkeypatch):
+    path, _ = _dng_preview_fixture(tmp_path, monkeypatch, bitmap=False)
+    frame = sources.scan_source(path)[0]
+    assert not frame.preview_is_available
+    assert max(sources.display_image(frame).shape[:2]) <= sources.PREVIEW_EDGE
+
+
+def test_dng_preview_cancellation_does_not_publish_partial_pixels(tmp_path, monkeypatch):
+    import tifffile
+    path, _ = _dng_preview_fixture(tmp_path, monkeypatch, compression='deflate')
+    frame = sources.scan_source(path, header_only=True)[0]
+    cancelled = False
+    segments = tifffile.TiffPage.segments
+    def cancel_between_segments(page, **kwargs):
+        nonlocal cancelled
+        for segment in segments(page, **kwargs):
+            cancelled = True
+            yield segment
+    monkeypatch.setattr(tifffile.TiffPage, 'segments', cancel_between_segments)
+    with pytest.raises(InterruptedError, match='cancelled'):
+        sources.ensure_preview(frame, should_cancel=lambda: cancelled)
+    assert frame.preview is None
+
+
+def test_preview_rejects_source_replaced_between_identity_check_and_scan(tmp_path, monkeypatch):
+    from dataclasses import replace
+    path = _jpeg(tmp_path, shape=(30, 40))
+    frame = sources.scan_source(path, header_only=True)[0]
+    replacement = replace(sources.scan_source(path)[0], fingerprint=(1, 2))
+    monkeypatch.setattr(sources, 'scan_source', lambda *_args, **_kwargs: [replacement])
+    with pytest.raises(OSError, match='Source changed'):
+        sources.ensure_preview(frame)
+    assert frame.preview is None
+
+
+def test_large_raf_embedded_jpeg_is_admitted_without_libraw_thumbnail(tmp_path):
+    from io import BytesIO
+    from types import SimpleNamespace
+    import struct
+    pytest.importorskip('rawpy')
+    encoded = BytesIO()
+    Image.new('RGB', (96, 64), (20, 80, 160)).save(encoded, format='JPEG')
+    payload = encoded.getvalue()
+    header = bytearray(92)
+    header[:16] = b'FUJIFILMCCD-RAW '
+    struct.pack_into('>II', header, 84, len(header), len(payload))
+    path = tmp_path / '大传感器.raf'
+    path.write_bytes(header + payload)
+    class LargeRaw:
+        sizes = SimpleNamespace(width=10000, height=10000)
+        def extract_thumb(self): raise AssertionError('unadmitted LibRaw thumbnail')
+    preview = sources._raw_preview(LargeRaw(), 6, path)
+    with Image.open(BytesIO(payload)) as image:
+        expected = cv2.rotate(np.asarray(image)[:, :, ::-1].copy(), cv2.ROTATE_90_CLOCKWISE)
+    np.testing.assert_array_equal(preview, expected)
+
+
+@pytest.mark.parametrize('rows_per_strip', [1, 24])
+def test_large_raw_lzw_thumbnail_uses_only_its_encoded_ranges(tmp_path, monkeypatch, rows_per_strip):
+    import tifffile
+    path = tmp_path / '大容器小缩略图.tif'
+    expected = np.arange(24 * 32 * 3, dtype=np.uint16).reshape(24, 32, 3) * 19
+    ok, encoded = cv2.imencode('.tiff', expected, [cv2.IMWRITE_TIFF_COMPRESSION, 5,
+                                               cv2.IMWRITE_TIFF_ROWSPERSTRIP, rows_per_strip])
+    assert ok
+    path.write_bytes(encoded.tobytes())
+    # A full-container admission would reject this file even though the real
+    # compressed preview is tiny. Truncation extends without a giant allocation.
+    with path.open('r+b') as stream:
+        stream.truncate(sources.PREVIEW_DECODE_BUDGET)
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('LZW thumbnail required optional tifffile codec')
+    monkeypatch.setattr(tifffile.TiffPage, 'segments', forbidden)
+    with tifffile.TiffFile(path) as tif:
+        actual = sources._raw_lzw_preview(tif.pages[0])
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_camera_linear_processing_never_uses_embedded_display_samples(tmp_path, monkeypatch):
+    from dataclasses import replace
+    path, _ = _dng_preview_fixture(tmp_path, monkeypatch)
+    display = sources.scan_source(path)[0]
+    linear = replace(display, linear_metadata=object())
+    calibrated = np.full((24, 32, 3), (123, 456, 789), np.uint16)
+    calls = []
+    def resolve(frame):
+        calls.append(frame)
+        return calibrated
+    monkeypatch.setattr(sources, 'resolve_frame', resolve)
+    np.testing.assert_array_equal(sources.processing_preview(linear), calibrated)
+    assert calls == [linear]
+    assert not np.array_equal(sources.display_image(linear), calibrated)
+
+
+@pytest.mark.parametrize('offset,length', [(92, 33 * 1024 * 1024), (2**31, 100), (92, 0)])
+def test_raf_preview_rejects_unbounded_or_invalid_encoded_range(tmp_path, monkeypatch, offset, length):
+    import struct
+    from core import batch_converter
+    header = bytearray(92)
+    header[:16] = b'FUJIFILMCCD-RAW '
+    struct.pack_into('>II', header, 84, offset, length)
+    path = tmp_path / 'invalid.raf'
+    path.write_bytes(header)
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError('invalid JPEG payload was admitted')
+    monkeypatch.setattr(batch_converter.resource_policy, 'require_memory', forbidden)
+    assert list(batch_converter._embedded_raw_jpegs(path)) == []
+
+
+def _multiple_raw_jpegs(tmp_path, monkeypatch):
+    """Real progressive and baseline JPEG strips in a RAW TIFF container."""
+    from io import BytesIO
+    from types import SimpleNamespace
+    import tifffile
+    rawpy = pytest.importorskip('rawpy')
+    path = tmp_path / '多预览.dng'
+    specs = [((1024, 768), True), ((160, 120), False)]
+    payloads = []
+    for size, progressive in specs:
+        with BytesIO() as output:
+            Image.new('RGB', size, (11, 41, 211)).save(output, format='JPEG', progressive=progressive)
+            payloads.append(output.getvalue())
+    # Start with ordinary tiny IFDs, then point their strips at the independently
+    # encoded JPEGs. This creates real YCbCr JPEG pages without imagecodecs.
+    with tifffile.TiffWriter(path) as writer:
+        for _ in specs:
+            writer.write(np.zeros((1, 1, 3), np.uint8), photometric='rgb')
+    ranges = []
+    with path.open('ab') as stream:
+        for payload in payloads:
+            ranges.append((stream.tell(), len(payload)))
+            stream.write(payload)
+    with tifffile.TiffFile(path, mode='r+b') as tif:
+        for page, (size, _), (offset, length) in zip(tif.pages, specs, ranges):
+            for name, value in (('ImageWidth', size[0]), ('ImageLength', size[1]),
+                                ('Compression', 7), ('PhotometricInterpretation', 6),
+                                ('StripOffsets', offset), ('StripByteCounts', length),
+                                ('RowsPerStrip', size[1])):
+                page.tags[name].overwrite(value)
+    class HeaderRaw:
+        sizes = SimpleNamespace(width=8000, height=6000, pixel_aspect=1.0, flip=6)
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def open_file(self, filename): assert filename == str(path)
+        def unpack(self): raise AssertionError('JPEG preview unpacked sensor')
+        def postprocess(self, **_kwargs): raise AssertionError('JPEG preview demosaiced sensor')
+        def extract_thumb(self): raise AssertionError('JPEG preview used unadmitted LibRaw extraction')
+    monkeypatch.setattr(rawpy, 'RawPy', HeaderRaw)
+    # Exercise the same coefficient-admission boundary with a smaller real
+    # progressive image, avoiding a 144MB encoder allocation in the regression.
+    monkeypatch.setattr(sources, 'PREVIEW_DECODE_BUDGET', 2 * 1024 * 1024)
+    return path, payloads
+
+
+@pytest.mark.parametrize('consumer', ['source', 'converter'])
+def test_raw_consumers_try_smaller_jpeg_after_progressive_admission_refusal(tmp_path, monkeypatch, consumer):
+    from io import BytesIO
+    from PIL import JpegImagePlugin
+    from core import batch_converter
+    path, payloads = _multiple_raw_jpegs(tmp_path, monkeypatch)
+    with Image.open(BytesIO(payloads[1])) as image:
+        expected = image.transpose(Image.Transpose.ROTATE_270)
+        if consumer == 'converter':
+            expected.thumbnail((96, 72), Image.Resampling.LANCZOS)
+        expected = np.asarray(expected).copy()
+    loads = []
+    original_load = JpegImagePlugin.JpegImageFile.load
+    def admitted_only(image, *args, **kwargs):
+        assert image.size != (1024, 768), 'rejected progressive JPEG decoded pixels'
+        loads.append(image.size)
+        return original_load(image, *args, **kwargs)
+    monkeypatch.setattr(JpegImagePlugin.JpegImageFile, 'load', admitted_only)
+    if consumer == 'source':
+        frame = sources.scan_source(path)[0]
+        assert frame.preview_is_available and frame.shape == (8000, 6000, 3)
+        assert frame.fingerprint == sources._fingerprint(path)
+        actual = sources.display_image(frame)[:, :, ::-1]
+    else:
+        actual = batch_converter.thumbnail_rgb(str(path))
+    np.testing.assert_array_equal(actual, expected)
+    assert (160, 120) in loads
+
+
+def test_raw_jpeg_fallback_cancels_before_reading_next_preview(tmp_path, monkeypatch):
+    path, _ = _multiple_raw_jpegs(tmp_path, monkeypatch)
+    frame = sources.scan_source(path, header_only=True)[0]
+    cancelled = False
+    original = sources._pil_preview
+    attempts = []
+    def cancel_after_admission(image, **kwargs):
+        nonlocal cancelled
+        attempts.append(image.size)
+        result = original(image, **kwargs)
+        cancelled = True
+        return result
+    monkeypatch.setattr(sources, '_pil_preview', cancel_after_admission)
+    with pytest.raises(InterruptedError, match='cancelled'):
+        sources.ensure_preview(frame, should_cancel=lambda: cancelled)
+    assert frame.preview is None and attempts == [(1024, 768)]

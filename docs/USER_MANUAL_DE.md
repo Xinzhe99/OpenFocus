@@ -294,10 +294,12 @@ Klicken Sie unter der Kopfzeile der Quellenliste auf **Bilder prüfen**, um bena
 
 ### Zoomen und Verschieben
 
-- **Hinein-/Herauszoomen**: Mausrad über dem Bild
-- **Feinzoomen**: `Ctrl` + Mausrad für kleinere Schritte
-- **An Fenster anpassen**: Doppelklick auf das Bild schaltet zwischen Einpassen und 100 %
-- **Verschieben**: Klicken und ziehen, um das Bild im Bereich zu bewegen
+- **Hinein-/Herauszoomen**: Mausrad über Quelle oder Ergebnis, auch mit gedrückter `Ctrl`-Taste
+- **Lupe**: linke Maustaste gedrückt halten; das Mausrad ändert die Vergrößerung, `Ctrl` + Mausrad die Größe des Quadrats. Beide Bereiche merken sich ihre Größe getrennt
+- **An Fenster anpassen**: mit der mittleren Maustaste klicken
+- **Verschieben**: mit der rechten Maustaste ziehen oder die Leertaste halten und mit links ziehen
+
+Bei großen Quellbildern beginnt die Lupe bei nativen 100 %; die Prozentangabe beschreibt Gerätepixel pro Originalpixel. Die Hauptansicht erreicht 800 %. JPEG- und RAW-Stapel öffnen mit begrenzten Vorschauen, sofern verfügbar. Für genauere Prüfung lädt ein Hintergrundthread die Originalpixel und übergibt nur den sichtbaren Bereich an die Ansicht. Das ausgewählte Original bleibt für weitere Prüfungen erhalten; Wechseln oder Leeren gibt es frei. Die erste Originaldekodierung benötigt weiterhin genügend RAM und kann länger dauern als das Öffnen der Vorschau.
 
 ### Synchronisierte Navigation
 
@@ -1048,8 +1050,8 @@ Exit-Codes: `0` Erfolg, `1` Verarbeitungsfehler, `2` Nutzungsfehler. Der Aufruf 
 |----------|--------|
 | `Pfeil oben` / `Pfeil unten` (Quellenliste fokussiert) | Vorheriges / nächstes Bild |
 | `Mausrad` | Hinein-/Herauszoomen |
-| `Ctrl + Mausrad` | Feinzoomen |
-| `Doppelklick` | Zwischen Einpassen und 100-%-Ansicht wechseln |
+| `Ctrl + Mausrad` bei gedrückter linker Maustaste | Größe der Lupe ändern |
+| `Mittlere Maustaste` | Bild an das Fenster anpassen |
 
 ### Allgemein
 
