@@ -114,13 +114,14 @@ def test_batch_admits_cleanup_before_mask_decode(qapp, tmp_path, monkeypatch):
     assert outcome['success'] == 0
 
 
-def _oriented_jpegs(folder, orientations=(1, 6)):
+def _oriented_jpegs(folder, orientations=(1, 6), values=None):
     from PIL import Image
     folder.mkdir()
     paths = []
     for index, orientation in enumerate(orientations):
         path = folder / f'{index}.jpg'
-        image = Image.fromarray(np.full((16, 16, 3), 80 + index, dtype=np.uint8))
+        value = 80 + index if values is None else values[index]
+        image = Image.fromarray(np.full((16, 16, 3), value, dtype=np.uint8))
         exif = image.getexif()
         exif[274] = orientation
         image.save(path, exif=exif)
@@ -155,7 +156,7 @@ def test_excluded_rotated_source_does_not_block_masked_gui_render(qapp, tmp_path
     from core.workers import RenderWorker
     from tests.test_gui_units import _render_window, _patched_render_manager
 
-    paths = _oriented_jpegs(tmp_path / 'source', (1, 6, 1))
+    paths = _oriented_jpegs(tmp_path / 'source', (1, 6, 1), (80, 240, 80))
     mask, _ = _inputs(tmp_path)
     frames = [decode_image(path) for path in paths]
     window = _render_window(frames)
