@@ -784,6 +784,7 @@ def test_image_save_dialogs_start_where_the_last_image_was_saved(tmp_path, monke
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))   # Windows home is USERPROFILE
     assert store.image_save_dir() == str(home)
     saved = tmp_path / "exports"
     saved.mkdir()

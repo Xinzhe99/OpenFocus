@@ -258,8 +258,16 @@ def _list_folder_images(folder: str, loader) -> List[str]:
 
 
 def _folder_stack_paths(folder: str, loader, args) -> List[str]:
-    """A folder's frames: by name, or near to far by EXIF focus steps."""
+    """A folder's frames: by name, or near to far by EXIF focus steps.
+
+    Calibration files selected from the same folder (dust map, defect mask)
+    are not stack frames.  Remove them before reading EXIF, otherwise their
+    missing focus metadata silently disables the ordering for every frame.
+    """
     paths = _list_folder_images(folder, loader)
+    for reference in (getattr(args, "dust_map", None),
+                      getattr(args, "defect_mask_path", None)):
+        paths = _filter_stack_paths(paths, reference)
     if getattr(args, "frame_order", "name") == "auto":
         from core.focus_order import order_by_focus
         paths, how = order_by_focus(paths)

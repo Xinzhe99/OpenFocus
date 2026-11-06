@@ -1,4 +1,7 @@
 """Folder input ordered near to far by EXIF focus steps."""
+import os
+from types import SimpleNamespace
+
 import cv2
 import numpy as np
 
@@ -25,3 +28,34 @@ def test_focus_order_leaves_frames_without_metadata_alone(tmp_path):
         assert cv2.imwrite(str(path), np.full((16, 16, 3), 40 * i, np.uint8))
         paths.append(str(path))
     assert order_by_focus(paths) == (paths, None)
+
+
+def test_folder_frame_order_skips_calibration_references(tmp_path, monkeypatch):
+    """A dust map or defect mask inside the folder is not a frame: it must not
+    hide the other frames' focus steps (or be ordered as one)."""
+    import core.cli as cli
+    from core import focus_order
+
+    for name in ("frame_1.png", "frame_2.png", "flat.png", "mask.png"):
+        assert cv2.imwrite(str(tmp_path / name), np.zeros((8, 8, 3), np.uint8))
+    seen = []
+
+    def fake_order(paths):
+        seen.append([os.path.basename(path) for path in paths])
+        return list(reversed(paths)), "test steps"
+
+    monkeypatch.setattr(focus_order, "order_by_focus", fake_order)
+
+    class Loader:
+        SUPPORTED_FORMATS = (".png",)
+
+    args = SimpleNamespace(frame_order="auto", dust_map=str(tmp_path / "flat.png"),
+                           defect_mask_path=str(tmp_path / "mask.png"))
+    paths = cli._folder_stack_paths(str(tmp_path), Loader(), args)
+    assert seen == [["frame_1.png", "frame_2.png"]]
+    assert [os.path.basename(path) for path in paths] == ["frame_2.png", "frame_1.png"]
+
+    args.frame_order = "name"
+    paths = cli._folder_stack_paths(str(tmp_path), Loader(), args)
+    assert seen == [["frame_1.png", "frame_2.png"]]
+    assert [os.path.basename(path) for path in paths] == ["frame_1.png", "frame_2.png"]
