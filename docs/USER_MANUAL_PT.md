@@ -597,8 +597,8 @@ quadro mostrou com nitidez. São os locais que devem ser verificados ou retocado
 **Salvar mapa de dados ausentes…** grava a prévia colorida e uma
 máscara em preto e branco por cor. O fundo automático precisa dos quadros que
 produziram o resultado e não está disponível para resultados de região (ROI).
-Os pontos de controle de retoque salvam a escolha e voltam a calculá-la ao
-carregar.
+Os novos pontos de controle de fundo restauram exatamente a imagem, o histórico
+acessível e os diagnósticos sem recalcular o fundo.
 
 ### Gerenciamento de rótulos
 
@@ -942,17 +942,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # use False para processa
 
 ### Reproduzir um checkpoint de retoque
 
-O primeiro salvamento ou carregamento verifica a base e as origens processadas em uma operação em segundo plano cancelável. Salvar também reproduz as edições registradas e confere a imagem atual e o estado de desfazer/refazer antes de publicar o checkpoint. Se uma origem mudou e a reprodução não corresponde mais, o salvamento falha e mantém suas edições. Cancelar um salvamento ou carregamento também mantém suas edições atuais. Se a memória for insuficiente para verificação ou reprodução, a operação para e mantém inalteradas tanto suas edições atuais quanto qualquer checkpoint existente.
+Use os controles de salvar/carregar pontos de controle do espaço de retoque com a base original e as origens processadas. Sessões com fundo automático, incluindo análises bem-sucedidas sem mudanças nos pixels, salvam instantâneos ZIP v2 `.ofretouch` sem perdas com metadados JSON e dados NumPy: a imagem de trabalho exata, os blocos acessíveis de desfazer/refazer, os estados de diagnóstico e a procedência das origens. Carregar v2 não recalcula o fundo. Sessões apenas de pincel/tons podem usar JSON v1 compacto; pontos de controle de fundo antigos em JSON v1 continuam reproduzíveis.
+
+A verificação das origens ocorre em segundo plano e pode ser cancelada. Antes de substituir o destino, o salvamento recarrega o arquivo preparado e confere a igualdade exata da imagem atual, dos blocos acessíveis de desfazer/refazer e dos estados de diagnóstico. Origem incompatível, falha de verificação, cancelamento ou memória insuficiente mantêm as edições atuais e qualquer ponto de controle existente inalterados.
 
 Se o limite de registro do checkpoint impedir outra edição, aplique as edições atuais e inicie uma nova sessão de retoque para continuar.
 
 Salve um checkpoint de retoque no espaço de retoque, depois forneça a imagem base original e cada quadro de origem processado na mesma ordem da sessão:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png frame2.png --output retouched.tif
 ```
 
-Use os quadros realmente usados para o retoque, após alinhamento e qualquer corte de ROI ou outro processamento, com seus valores de pixel e profundidade de bits originais. O checkpoint registra edições e impressões digitais, não os pixels. A reprodução reconstrói os deslocamentos de quadro e o comportamento de alinhamento registrados e verifica a base, os quadros ordenados e as máscaras de validade; pixels, geometrias ou máscaras incompatíveis são rejeitados. Cada caminho deve conter uma imagem. A saída deve ser PNG ou TIFF e preserva a profundidade de bits da base. O checkpoint e as imagens de entrada não podem ser usados como saída.
+Ambos os formatos ainda exigem a base original e todos os quadros realmente usados para o retoque, na ordem da sessão, após alinhamento e qualquer corte de ROI ou outro processamento, com seus valores de pixel e profundidade de bits originais. O carregamento reconstrói os deslocamentos de quadro e o comportamento de alinhamento registrados e verifica a base, os quadros ordenados e as máscaras de validade; pixels, geometrias ou máscaras incompatíveis são rejeitados. Cada caminho deve conter uma imagem. A saída deve ser PNG ou TIFF e preserva a profundidade de bits da base. O ponto de controle e as imagens de entrada não podem ser usados como saída.
 
 Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Executar `python main.py --help` mostra todas as opções; iniciar com um caminho simples (`python main.py C:\stack`) ainda abre a interface com essa pasta carregada.
 

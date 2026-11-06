@@ -1,4 +1,5 @@
 """Render clicked while a stack is still loading starts when the load finishes."""
+import pytest
 
 
 class _StatusBar:
@@ -24,13 +25,18 @@ class _Window:
     def __init__(self, frames=0):
         self._bar = _StatusBar()
         self.frames = frames
+        self.raw_images = [object() for _ in range(frames)]
+        self.source_revision = 0
+        self.excluded_frames = set()
         self.btn_render = _Button()
 
     def statusBar(self):
         return self._bar
 
     def effective_stack(self):
-        return [object()] * self.frames, [], list(range(self.frames))
+        included = [index for index in range(len(self.raw_images))
+                    if index not in self.excluded_frames]
+        return [self.raw_images[index] for index in included], [], included
 
 
 class _Worker:
@@ -47,12 +53,20 @@ def _setup(qapp, frames=0):
     from controllers.source_manager import SourceManager
     window = _Window(frames)
     render = RenderManager(window)
-    source = SourceManager.__new__(SourceManager)
-    source.window = window
+    source = SourceManager(window)
     source._load_worker = _Worker()
     window.source_manager = source
     window.render_manager = render
     return window, render, source
+
+
+def _apply_and_finish_load(source):
+    worker = source._load_worker
+    worker._load_applied = True
+    worker._load_stack = source.window.raw_images
+    worker._load_revision = source.window.source_revision
+    source._load_worker = None
+    source._start_queued_render(worker)
 
 
 def test_render_during_load_is_queued_and_cancellable(qapp):
@@ -70,15 +84,15 @@ def test_queued_render_starts_when_frames_arrive(qapp, monkeypatch):
     from PyQt6.QtCore import QTimer
     window, render, source = _setup(qapp, frames=3)
     render.start_render()
-    source._load_worker._load_applied = True
     started = []
     monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: started.append(fn))
-    source._start_queued_render(source._load_worker)
-    assert len(started) == 1 and render._render_after_load is None
+    _apply_and_finish_load(source)
+    assert len(started) == 1
     called = []
     render.start_render = lambda force_algorithm=None: called.append(force_algorithm)
     started[0]()
     assert called == [None]
+    assert render._render_after_load is None
 
 
 def test_queued_render_is_dropped_when_the_load_fails(qapp, monkeypatch):
@@ -105,13 +119,11 @@ def test_compare_request_keeps_method_and_is_cancelled_with_run(qapp, monkeypatc
     from PyQt6.QtCore import QTimer
     _window, render, source = _setup(qapp, frames=3)
     render._compare_mode = True
+    render._compare_current = "dct"
     render.start_render(force_algorithm="dct")
-    assert render._render_after_load == {"force_algorithm": "dct", "compare": True}
-
-    source._load_worker._load_applied = True
     started = []
     monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: started.append(fn))
-    source._start_queued_render(source._load_worker)
+    _apply_and_finish_load(source)
     called = []
     render.start_render = lambda force_algorithm=None: called.append(force_algorithm)
     started[0]()
@@ -128,9 +140,9 @@ def test_render_click_cancelling_a_queued_compare_request_ends_the_run(qapp):
     _window, render, _source = _setup(qapp, frames=3)
     render._compare_mode = True
     render._compare_queue = ["openfocus_a"]
+    render._compare_current = "dct"
     render._compare_total = 2
     render.start_render(force_algorithm="dct")
-    assert render._render_after_load == {"force_algorithm": "dct", "compare": True}
     render.start_render()                                   # the Render button cancels it
     assert render._render_after_load is None
     assert not render._compare_mode and render._compare_queue == []
@@ -140,13 +152,85 @@ def test_deferred_compare_render_does_not_run_after_the_compare_is_cancelled(qap
     from PyQt6.QtCore import QTimer
     _window, render, source = _setup(qapp, frames=3)
     render._compare_mode = True
+    render._compare_current = "dct"
     render.start_render(force_algorithm="dct")
-    source._load_worker._load_applied = True
     started = []
     monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: started.append(fn))
-    source._start_queued_render(source._load_worker)
+    _apply_and_finish_load(source)
     render._compare_mode = False                            # cancelled before the timer fired
     called = []
     render.start_render = lambda force_algorithm=None: called.append(force_algorithm)
     started[0]()
     assert called == []
+
+
+@pytest.mark.parametrize("change", ["cancel", "source", "revision", "selection", "load", "shutdown"])
+def test_deferred_render_does_not_outlive_its_loaded_stack(qapp, monkeypatch, change):
+    from PyQt6.QtCore import QTimer
+    window, render, source = _setup(qapp, frames=3)
+    render.start_render()
+    deferred = []
+    monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: deferred.append(fn))
+    _apply_and_finish_load(source)
+    assert len(deferred) == 1
+    if change == "cancel":
+        assert render.start_render() == "cancelled"
+    elif change == "source":
+        window.raw_images = list(window.raw_images)
+    elif change == "revision":
+        window.source_revision += 1
+    elif change == "selection":
+        window.excluded_frames.add(0)
+    elif change == "load":
+        source._load_worker = _Worker()
+        source._load_generation = 1
+    else:
+        window._shutting_down = True
+    called = []
+    render.start_render = lambda **kwargs: called.append(kwargs)
+    deferred[0]()
+    assert called == []
+    assert render._render_after_load is None
+
+
+def test_control_poll_does_not_cancel_a_deferred_render(qapp, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    _window, render, source = _setup(qapp, frames=3)
+    render.start_render()
+    deferred = []
+    monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: deferred.append(fn))
+    _apply_and_finish_load(source)
+    assert render.start_render(interactive=False) == "loading"
+    called = []
+    render.start_render = lambda **kwargs: called.append(kwargs)
+    deferred[0]()
+    assert called == [{"force_algorithm": None}]
+
+
+def test_deferred_compare_cannot_join_a_restarted_comparison(qapp, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    _window, render, source = _setup(qapp, frames=3)
+    render._compare_mode = True
+    render._compare_current = "dct"
+    render.start_render(force_algorithm="dct")
+    deferred = []
+    monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: deferred.append(fn))
+    _apply_and_finish_load(source)
+    render._compare_token = object()
+    called = []
+    render.start_render = lambda **kwargs: called.append(kwargs)
+    deferred[0]()
+    assert called == []
+    assert render._compare_mode  # the new run owns this state
+
+
+def test_replaced_load_cannot_satisfy_an_older_render_request(qapp, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    _window, render, source = _setup(qapp, frames=3)
+    render.start_render()
+    source._load_worker = _Worker()
+    deferred = []
+    monkeypatch.setattr(QTimer, "singleShot", lambda _ms, fn: deferred.append(fn))
+    _apply_and_finish_load(source)
+    assert deferred == []
+    assert render._render_after_load is None

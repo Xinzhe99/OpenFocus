@@ -114,11 +114,11 @@ def test_batch_admits_cleanup_before_mask_decode(qapp, tmp_path, monkeypatch):
     assert outcome['success'] == 0
 
 
-def _oriented_jpegs(folder):
+def _oriented_jpegs(folder, orientations=(1, 6)):
     from PIL import Image
     folder.mkdir()
     paths = []
-    for index, orientation in enumerate((1, 6)):
+    for index, orientation in enumerate(orientations):
         path = folder / f'{index}.jpg'
         image = Image.fromarray(np.full((16, 16, 3), 80 + index, dtype=np.uint8))
         exif = image.getexif()
@@ -150,17 +150,29 @@ def test_gui_render_passes_included_sources_and_reports_orientation(qapp, tmp_pa
     assert errors == [trans.t('sensor_source_orientation').format(path=paths[1])]
 
 
-def test_gui_render_passes_only_included_source_paths(qapp, monkeypatch):
+def test_excluded_rotated_source_does_not_block_masked_gui_render(qapp, tmp_path, monkeypatch):
+    from core.image_loader import decode_image
+    from core.workers import RenderWorker
     from tests.test_gui_units import _render_window, _patched_render_manager
 
-    frames = [np.zeros((16, 16, 3), np.uint8) for _ in range(3)]
+    paths = _oriented_jpegs(tmp_path / 'source', (1, 6, 1))
+    mask, _ = _inputs(tmp_path)
+    frames = [decode_image(path) for path in paths]
     window = _render_window(frames)
-    window.image_source_paths = ['first.jpg', 'excluded.jpg', 'last.jpg']
+    window.defect_mask_path = str(mask)
+    window.image_source_paths = paths
+    window.excluded_frames = {1}
     window.effective_stack = lambda: ([frames[0], frames[2]],
                                       [window.image_filenames[0], window.image_filenames[2]], [0, 2])
     manager, _ = _patched_render_manager(monkeypatch, window)
-    manager.start_render()
-    assert manager.worker.kwargs['source_paths'] == ['first.jpg', 'last.jpg']
+    manager.start_render(force_algorithm='dct')
+    worker = RenderWorker(*manager.worker.args, **manager.worker.kwargs)
+    errors, results = [], []
+    worker.error_signal.connect(errors.append)
+    worker.finished_signal.connect(lambda _frames, result, *_: results.append(result))
+    worker.run()
+    assert errors == []
+    np.testing.assert_array_equal(results[0], np.full((16, 16, 3), 80, np.uint8))
 
 
 @pytest.mark.parametrize('source_paths', [[], ['missing.jpg', 'missing.jpg'], ['video.mp4', 'video.mp4']])

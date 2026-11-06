@@ -1016,7 +1016,7 @@ def _run_retouch_command(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(prog="openfocus retouch")
     commands = parser.add_subparsers(dest="command", required=True)
     replay = commands.add_parser("replay", help="replay a retouch checkpoint")
-    replay.add_argument("checkpoint", help="retouch checkpoint JSON")
+    replay.add_argument("checkpoint", help="retouch checkpoint JSON or exact archive")
     replay.add_argument("--base", required=True, help="original fused base image")
     replay.add_argument("--sources", nargs="+", required=True,
                         help="processed source images in checkpoint order")
@@ -1035,6 +1035,9 @@ def _run_retouch_command(argv: List[str]) -> int:
                 raise ValueError("output must not overwrite the checkpoint or an input image")
 
         checkpoint = read_checkpoint(args.checkpoint)
+        if (not isinstance(checkpoint, dict) or type(checkpoint.get("version")) is not int
+                or checkpoint["version"] not in (1, 2)):
+            raise ValueError("unsupported retouch checkpoint version")
         records = checkpoint.get("frames") if isinstance(checkpoint, dict) else None
         if not isinstance(records, list) or len(records) != len(args.sources):
             raise ValueError("checkpoint frame count does not match --sources")

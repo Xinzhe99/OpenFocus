@@ -22,6 +22,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   loading finishes; pressing it again cancels.
 - The status bar reads "RAM used" so it is clear which number is in use.
 - Reword the retouch brush-size hint.
+- Save Auto background sessions, including successful analyses without pixel
+  changes, as lossless v2 `.ofretouch` ZIP snapshots with JSON metadata and NumPy
+  payloads. GUI and CLI restore exact working pixels, reachable undo/redo tiles
+  and diagnostics without rerunning the background algorithm, while still
+  verifying the original base and ordered processed sources. Ordinary edits can
+  retain JSON v1; legacy background JSON v1 checkpoints remain replayable.
 - Render All Methods skips a method that cannot run (for example, when the
   memory check refuses it), renders the rest and lists the skipped methods
   at the end. Cancelling still stops the whole run.
@@ -30,6 +36,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Message-box buttons such as "Discard changes" are no longer cut off.
 - Replaying a checkpoint from a grayscale standalone retouch session keeps
   the grayscale layout, so its fingerprints match.
+- Keep successful background diagnostics even when the image is unchanged,
+  without adding a fake edit. Undo, redo and Restore all track the appropriate
+  diagnostics; unreachable maps are discarded and retained maps share the
+  history byte limit. Check peak analysis memory before allocating its buffers.
+- Stream and validate checkpoint payloads within geometry and memory limits.
+  Saving checks exact image, reachable undo/redo and diagnostic equality before
+  atomic replacement; failed validation, cancellation or insufficient memory
+  preserve current edits and any existing checkpoint.
 - When PYTHONFAULTHANDLER or -X faulthandler is set, the GUI and CLI send
   native crash dumps to the session crash file instead of stderr.
 

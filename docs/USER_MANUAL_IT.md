@@ -599,7 +599,8 @@ mano:
 **Salva mappa dei dati mancanti…** salva l'anteprima colorata e una maschera in
 bianco e nero per ogni colore. Lo sfondo automatico richiede i fotogrammi che
 hanno prodotto il risultato e non è disponibile per i risultati di area (ROI).
-I checkpoint di ritocco salvano la scelta e la ricalcolano al caricamento.
+I nuovi checkpoint dello sfondo ripristinano esattamente immagine, cronologia
+raggiungibile e diagnostica senza ricalcolare lo sfondo.
 
 ### Gestione delle etichette
 
@@ -943,17 +944,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # usa False per elaborare
 
 ### Riproduzione di un punto di controllo di ritocco
 
-Il primo salvataggio o caricamento verifica la base e le sorgenti elaborate in un'operazione in background annullabile. Il salvataggio riproduce anche le modifiche registrate e controlla l'immagine corrente e lo stato annulla/ripristina prima di pubblicare il punto di controllo. Se una sorgente è cambiata e la riproduzione non corrisponde più, il salvataggio fallisce e conserva le modifiche. Annullare un salvataggio o un caricamento conserva comunque le modifiche correnti. Se la memoria non basta per verifica o riproduzione, l'operazione si ferma e lascia invariati sia le modifiche correnti sia qualsiasi punto di controllo esistente.
+Usa i comandi di salvataggio/caricamento dei checkpoint nello spazio di ritocco con la base originale e le sorgenti elaborate. Le sessioni con sfondo automatico, comprese le analisi riuscite senza cambiamenti ai pixel, salvano istantanee ZIP v2 `.ofretouch` senza perdita con metadati JSON e dati NumPy: l'immagine di lavoro esatta, i tasselli raggiungibili di annulla/ripristina, gli stati diagnostici e la provenienza delle sorgenti. Il caricamento v2 non ricalcola lo sfondo. Le sessioni con soli pennelli/toni possono usare JSON v1 compatto; i vecchi checkpoint dello sfondo in JSON v1 restano riproducibili.
+
+La verifica delle sorgenti avviene in background ed è annullabile. Prima di sostituire la destinazione, il salvataggio ricarica il file preparato e controlla l'uguaglianza esatta dell'immagine corrente, dei tasselli raggiungibili di annulla/ripristina e degli stati diagnostici. Sorgenti incompatibili, verifica fallita, annullamento o memoria insufficiente lasciano invariati le modifiche correnti e qualsiasi checkpoint esistente.
 
 Se il limite di registrazione del punto di controllo impedisce un'altra modifica, applica le modifiche correnti e avvia una nuova sessione di ritocco per continuare.
 
 Salva un punto di controllo di ritocco dallo spazio di ritocco, poi fornisci l'immagine base originale e ogni fotogramma sorgente elaborato nello stesso ordine della sessione:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png frame2.png --output retouched.tif
 ```
 
-Usa i fotogrammi effettivamente usati per il ritocco, dopo allineamento e qualsiasi ritaglio ROI o altra elaborazione, con i valori di pixel e la profondità di bit originali. Il punto di controllo registra modifiche e impronte, non i pixel. La riproduzione ricostruisce gli offset dei fotogrammi e il comportamento di allineamento registrati e verifica base, fotogrammi ordinati e maschere di validità; pixel, geometria o maschere incompatibili vengono rifiutati. Ogni percorso deve contenere un'immagine. L'output deve essere PNG o TIFF e conserva la profondità di bit della base. Il punto di controllo e le immagini di input non possono essere usati come output.
+Entrambi i formati richiedono ancora la base originale e tutti i fotogrammi effettivamente usati per il ritocco, nell'ordine della sessione, dopo allineamento e qualsiasi ritaglio ROI o altra elaborazione, con i valori di pixel e la profondità di bit originali. Il caricamento ricostruisce gli offset dei fotogrammi e il comportamento di allineamento registrati e verifica base, fotogrammi ordinati e maschere di validità; pixel, geometria o maschere incompatibili vengono rifiutati. Ogni percorso deve contenere un'immagine. L'output deve essere PNG o TIFF e conserva la profondità di bit della base. Il punto di controllo e le immagini di input non possono essere usati come output.
 
 Codici di uscita: `0` successo, `1` errore di elaborazione, `2` errore d'uso. `python main.py --help` mostra tutte le opzioni; avviare con un semplice percorso (`python main.py C:\stack`) apre comunque la GUI con quella cartella caricata.
 

@@ -613,8 +613,8 @@ uchwyciła wyraźnie. To miejsca do sprawdzenia lub ręcznego retuszu:
 
 **Zapisz mapę brakujących danych…** zapisuje zabarwiony podgląd i jedną
 czarno-białą maskę na kolor. Automatyczne tło potrzebuje klatek, z których
-powstał wynik, i nie jest dostępne dla wyników obszaru (ROI). Punkty kontrolne
-retuszu zapisują wybór i obliczają go ponownie przy wczytaniu.
+powstał wynik, i nie jest dostępne dla wyników obszaru (ROI). Nowe punkty kontrolne
+tła dokładnie przywracają obraz, dostępną historię i diagnostykę bez ponownego obliczania tła.
 
 ### Zarządzanie etykietami
 
@@ -988,17 +988,19 @@ zachowaj zainstalowane oprogramowanie oraz dane wejściowe.
 
 ### Odtwarzanie punktu kontrolnego retuszu
 
-Pierwszy zapis lub wczytanie weryfikuje bazę i przetworzone źródła w anulowalnej operacji w tle. Zapis odtwarza też zapisane edycje i sprawdza bieżący obraz oraz stan cofania/ponawiania przed opublikowaniem punktu kontrolnego. Jeśli źródło się zmieniło i odtwarzanie już nie pasuje, zapis kończy się błędem i zachowuje edycje. Anulowanie zapisu lub wczytania również pozostawia bieżące edycje dostępne. Jeśli pamięć jest niewystarczająca do weryfikacji lub odtwarzania, operacja zatrzymuje się i pozostawia bez zmian zarówno bieżące edycje, jak i istniejący punkt kontrolny.
+Użyj przycisków zapisu/wczytywania punktów kontrolnych w przestrzeni retuszu z oryginalną bazą i przetworzonymi źródłami. Sesje z automatycznym tłem, w tym udane analizy bez zmian pikseli, zapisują bezstratne migawki ZIP v2 `.ofretouch` z metadanymi JSON i danymi NumPy: dokładny obraz roboczy, dostępne kafelki cofania/ponawiania, stany diagnostyczne i pochodzenie źródeł. Wczytanie v2 nie oblicza ponownie tła. Sesje obejmujące tylko pędzel/tony mogą używać zwartego JSON v1; starsze punkty kontrolne tła w JSON v1 nadal można odtwarzać.
+
+Weryfikacja źródeł odbywa się w anulowalnej operacji w tle. Przed zastąpieniem pliku docelowego zapis ponownie wczytuje przygotowany plik i sprawdza dokładną równość bieżącego obrazu, dostępnych kafelków cofania/ponawiania i stanów diagnostycznych. Niezgodne źródło, nieudana weryfikacja, anulowanie lub brak pamięci pozostawiają bieżące edycje i istniejący punkt kontrolny bez zmian.
 
 Jeśli limit zapisu punktów kontrolnych uniemożliwia kolejną edycję, zastosuj bieżące edycje i rozpocznij nową sesję retuszu.
 
 Zapisz punkt kontrolny retuszu w przestrzeni retuszu, a następnie podaj oryginalny obraz bazowy i każdą przetworzoną klatkę źródłową w tej samej kolejności co w sesji:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png frame2.png --output retouched.tif
 ```
 
-Użyj rzeczywistych klatek używanych do retuszu, po wyrównaniu i dowolnym przycięciu ROI lub innym przetwarzaniu, z oryginalnymi wartościami pikseli i głębią. Punkt kontrolny zapisuje edycje i odciski, a nie piksele obrazów. Odtwarzanie rekonstruuje zapisane przesunięcia klatek i zachowanie wyrównania oraz weryfikuje bazę, uporządkowane klatki i maski ważności; niezgodne piksele, geometria lub maski są odrzucane. Każda ścieżka musi zawierać jeden obraz. Wyjście musi być PNG lub TIFF i zachowuje głębię bazy. Punkt kontrolny i obrazy wejściowe nie mogą być użyte jako wyjście.
+Oba formaty nadal wymagają oryginalnej bazy i wszystkich klatek rzeczywiście użytych do retuszu, w kolejności sesji, po wyrównaniu i dowolnym przycięciu ROI lub innym przetwarzaniu, z oryginalnymi wartościami pikseli i głębią bitową. Wczytanie rekonstruuje zapisane przesunięcia klatek i zachowanie wyrównania oraz weryfikuje bazę, uporządkowane klatki i maski ważności; niezgodne piksele, geometria lub maski są odrzucane. Każda ścieżka musi zawierać jeden obraz. Wyjście musi być PNG lub TIFF i zachowuje głębię bazy. Punkt kontrolny i obrazy wejściowe nie mogą być użyte jako wyjście.
 
 Kody wyjścia: `0` — sukces, `1` — błąd przetwarzania, `2` — błąd użycia. Uruchomienie `python main.py --help` wypisuje wszystkie opcje; uruchomienie z prostą ścieżką (`python main.py C:\stack`) nadal otwiera interfejs graficzny z wczytanym folderem.
 
