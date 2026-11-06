@@ -551,6 +551,80 @@ def test_composite_onto_keeps_edits_and_analyses_the_stacked_result(scene, soft_
         replace_background(frames, fused, composite_onto=edited[:-1])
 
 
+@pytest.mark.parametrize('kind', ['gray16', 'float32', 'gray_float32'])
+def test_composite_onto_keeps_untouched_native_subject_pixels(scene, kind):
+    frames, fused, disc = scene
+    if kind == 'gray16':
+        convert = lambda image: cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.uint16) * 257
+    elif kind == 'gray_float32':
+        convert = lambda image: cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) + 0.12345
+    else:
+        convert = lambda image: image.astype(np.float32) + 0.12345
+    frames, fused = [convert(frame) for frame in frames], convert(fused)
+    edited = fused.copy()
+    ys, xs = np.nonzero(disc)
+    cy, cx = int(ys.mean()), int(xs.mean())
+    patch = edited[cy - 10:cy + 10, cx - 10:cx + 10]
+    values = np.arange(patch.size).reshape(patch.shape)
+    patch[...] = values + 12001 if kind == 'gray16' else values % 100 + 40.12345
+    result = replace_background(frames, fused, composite_onto=edited)
+    assert result.changed
+    np.testing.assert_array_equal(result.image[cy - 10:cy + 10, cx - 10:cx + 10], patch)
+
+
+def test_repeated_background_uses_original_analysis_after_edits(scene, tmp_path):
+    doc = _document(scene)
+    doc.initialize_checkpoint()
+    assert doc.auto_background('soft') == 'committed'
+    assert doc.adjust_tones(0.2, 0.1) == 'committed'
+    before = doc.working.copy()
+    frames = [frame.image for frame in doc.frames]
+    expected = replace_background(frames, doc.base, preset='sharp', composite_onto=before)
+    assert doc.auto_background('sharp') == 'committed'
+    np.testing.assert_array_equal(doc.working, expected.image)
+    for (_name, actual, _colour), (_name2, wanted, _colour2) in zip(
+            doc.background_fill.missing.layers(), expected.missing.layers()):
+        np.testing.assert_array_equal(actual, wanted)
+    assert doc.undo()
+    np.testing.assert_array_equal(doc.working, before)
+    path = tmp_path / 'repeated.ofretouch'
+    doc.save_checkpoint(path)
+    restored = _document(scene)
+    restored.initialize_checkpoint()
+    restored.load_checkpoint(path)
+    assert restored.redo()
+    np.testing.assert_array_equal(restored.working, expected.image)
+
+
+def test_legacy_v1_background_replays_the_recorded_current_image(scene, tmp_path):
+    import json
+    from utils.retouch import adjust_tones
+    from utils.retouch_checkpoint import provenance
+
+    frames, fused, _disc = scene
+    doc = _document(scene)
+    doc.initialize_checkpoint()
+    operation = {'type': 'auto_background', 'preset': 'soft', 'clean': True}
+    expected = replace_background(frames, adjust_tones(fused, 0.2, 0.1), preset='soft')
+    record = {'version': 1, **provenance(doc),
+              'operations': [{'type': 'tones', 'exposure': 0.2, 'contrast': 0.1}, operation],
+              'cursor': 2, 'undo_count': 2, 'redo_count': 0,
+              'max_strokes': 100, 'max_bytes': doc.history.max_bytes}
+    path = tmp_path / 'legacy-current.ofretouch'
+    path.write_text(json.dumps(record), encoding='utf-8')
+    doc.load_checkpoint(path)
+    np.testing.assert_array_equal(doc.working, expected.image)
+    assert doc.undo()
+    np.testing.assert_array_equal(doc.working, adjust_tones(fused, 0.2, 0.1))
+    migrated = tmp_path / 'legacy-current-migrated.ofretouch'
+    doc.save_checkpoint(migrated)
+    restored = _document(scene)
+    restored.initialize_checkpoint()
+    restored.load_checkpoint(migrated)
+    assert restored.redo()
+    np.testing.assert_array_equal(restored.working, expected.image)
+
+
 def _retouched_document(scene):
     """A retouched output (brushing on the subject) linked to its stack."""
     from core.render_context import build_render_context

@@ -645,9 +645,10 @@ class RetouchDocument:
         """Replace the background of the current result with one source
         frame (see core.background_fill) as one history transaction.
 
-        Strokes already painted on the subject survive; the background is
-        rebuilt from the frames.  Returns "committed", "empty" (nothing to
-        replace, e.g. a ground-level scene), "cancelled", "busy",
+        Strokes already painted on the subject survive; analysis always uses
+        the session base (or its original stacked result), so a replaced
+        background never feeds back into the next analysis. Returns "committed",
+        "empty" (nothing to replace, e.g. a ground-level scene), "cancelled", "busy",
         "unsupported", "oversize" or "record_limit".  Input problems raise
         `core.background_fill.BackgroundFillError`.
         """
@@ -661,13 +662,14 @@ class RetouchDocument:
         if not self.auto_background_supported():
             return "unsupported"
         stacked = self.stacked_image
-        if stacked is not None and stacked.shape != self.working.shape:
-            stacked = None
+        if stacked is None or stacked.shape != self.working.shape:
+            stacked = self.base
         try:
             result = compute_auto_background(self.working, self.frames, preset, clean,
                                              cancelled=cancelled, progress=progress,
                                              keep_soft_parts=keep_soft_parts,
-                                             stacked=stacked)
+                                             stacked=(None if stacked is self.base and not self.is_dirty
+                                                      else stacked))
         except (BackgroundFillCancelled, RegistrationCancelled):
             return "cancelled"
         image = result.image
@@ -708,8 +710,7 @@ class RetouchDocument:
                              "clean": bool(clean)}
                 if keep_soft_parts:
                     operation["keep_soft_parts"] = True
-                if stacked is not None:
-                    operation["from_stacked"] = True
+                operation["from_stacked" if stacked is self.stacked_image else "from_base"] = True
                 if status == "committed":
                     self._record_operation(operation)
                 else:
@@ -826,13 +827,21 @@ class RetouchDocument:
         self._stroke["last"] = (float(x), float(y))
         return dirty
 
-    def end_stroke(self) -> str:
+    def end_stroke(self, *, _preserve_empty: bool = False) -> str:
         if self._stroke is None:
             return "idle"
         if self._record_overflow:
             self.history.abort()
             status = "record_limit"
             self._record_overflow = False
+        elif not _preserve_empty and all(
+                np.array_equal(self.working[self.history._tile_slice(key)], before)
+                for key, before in self.history._current.items()):
+            # A dab can remember tiles without changing their pixels. Such a
+            # stroke must not discard the redo branch. V1 replay retains the
+            # historical empty entries that old checkpoints counted as edits.
+            self.history.abort()
+            status = "empty"
         else:
             status = self.history.end()
         if status == "committed":

@@ -545,3 +545,35 @@ def test_openfocus_detector_retains_motion_under_strong_defocus():
     assert result[0] > 0.1
     assert result[3] == pytest.approx(16, abs=1.5)
     assert result[4] == pytest.approx(-7, abs=1.5)
+
+
+@pytest.mark.parametrize('input_scale', [1.0, 255.0])
+def test_homography_normalized_float_frames_match_uint8_geometry(input_scale):
+    frames, _ = _shifted_stack(dx=5, dy=3, size=(240, 320))
+    registration = ImageRegistration('homography', parameters={'failure_policy': 'fail'})
+    expected = registration.process(frames, thread_count=1)
+    actual = registration.process([frame.astype(np.float32) / input_scale for frame in frames],
+                                  thread_count=1)
+    for result, reference in zip(actual, expected):
+        assert result.dtype == np.float32
+        assert result.shape == reference.shape
+        np.testing.assert_allclose(np.clip(result * input_scale, 0, 255), reference,
+                                   rtol=0, atol=1)
+
+
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+@pytest.mark.parametrize('singleton_axis', [False, True])
+def test_ecc_grayscale_matches_repeated_color_geometry(dtype, singleton_axis):
+    frames, _ = _shifted_stack(dx=3, dy=2, size=(140, 180))
+    gray = [frame[:, :, 0] for frame in frames]
+    if dtype == np.uint16:
+        gray = [frame.astype(np.uint16) * 251 + 19 for frame in gray]
+    bgr = [cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) for frame in gray]
+    registration = ImageRegistration('ecc', parameters={'failure_policy': 'fail'})
+    expected = registration.process(bgr, thread_count=1)
+    inputs = [frame[:, :, None] for frame in gray] if singleton_axis else gray
+    actual = registration.process(inputs, thread_count=1)
+    for result, reference in zip(actual, expected):
+        assert result.ndim == 2
+        assert result.dtype == dtype
+        np.testing.assert_array_equal(result, reference[:, :, 0])

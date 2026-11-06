@@ -97,11 +97,11 @@ def save_checkpoint(doc, path, cancelled=None):
         raise ValueError('Checkpoint initialization is unavailable; start a new session')
     _check_provenance(doc, doc._provenance, cancelled)
     destination = os.path.abspath(os.fspath(path))
-    for frame in doc.frames:
-        name = frame.name
-        if name and os.path.isfile(name) and (os.path.normcase(os.path.abspath(name)) == os.path.normcase(destination)
-                or (os.path.exists(destination) and os.path.samefile(name, destination))):
-            raise ValueError('Cannot overwrite a source image')
+    from utils.path_identity import same_path
+    sources = [frame.name for frame in doc.frames]
+    sources.extend(doc.context.source_paths)
+    if any(same_path(destination, source) for source in sources):
+        raise ValueError('Cannot overwrite a source image')
     # Reserve for JSON text and its UTF-8 encoding before materializing both.
     from core.resource_policy import require_memory
     record_bytes = (4096 + 96 * doc._point_count + 256 * len(doc._operations)
@@ -262,6 +262,7 @@ def _replay_checkpoint(doc, path, cancelled=None):
         from utils.retouch import RetouchDocument
         replay = RetouchDocument(doc.base, doc.context, max_strokes=max_strokes, max_bytes=max_bytes)
         replay._provenance = doc._provenance
+        replay.stacked_image = doc.stacked_image
         replay._checkpoint_background_states = legacy_states
         points_count = 0
         for state, op in enumerate(operations):
@@ -303,7 +304,7 @@ def _replay_checkpoint(doc, path, cancelled=None):
                     if cancelled is not None and cancelled():
                         raise ValueError('Retouch replay cancelled')
                     replay.stroke_to(*point)
-                if replay.end_stroke() != 'committed':
+                if replay.end_stroke(_preserve_empty=True) != 'committed':
                     raise ValueError('Stroke could not be replayed')
             elif kind == 'tones':
                 exposure = _number(op['exposure'], -2, 2)
@@ -365,24 +366,33 @@ def _legacy_background_states(operations, analyses, first):
 
 
 def _replay_background(replay, operation, cancelled, expected_status):
-    preset = operation['preset']
-    clean = operation['clean']
-    soft_parts = operation.get('keep_soft_parts', False)
-    if (preset not in ('auto', 'soft', 'sharp') or type(clean) is not bool
-            or type(soft_parts) is not bool):
-        raise ValueError('Invalid auto background operation')
-    status = replay.auto_background(preset, clean, cancelled,
-                                    keep_soft_parts=soft_parts)
+    _validate_background_operation(operation)
+    stacked = replay.stacked_image
+    # Older v1 records analysed the then-current pixels. New operations name
+    # their immutable analysis source explicitly; snapshots never recompute it.
+    if not operation.get('from_stacked'):
+        replay.stacked_image = replay.base if operation.get('from_base') else replay.working
+    try:
+        status = replay.auto_background(
+            operation['preset'], operation['clean'], cancelled,
+            keep_soft_parts=operation.get('keep_soft_parts', False))
+    finally:
+        replay.stacked_image = stacked
     if status == 'cancelled':
         raise ValueError('Retouch replay cancelled')
     if status != expected_status:
         raise ValueError('Auto background could not be replayed')
+    if status == 'committed':
+        replay._operations[-1] = dict(operation)
+    else:
+        replay._background_analyses[replay._cursor] = dict(operation)
 
 
 def load_checkpoint(doc, path, cancelled=None):
     replay = _replay_checkpoint(doc, path, cancelled)
     doc.working = replay.working
     doc.history = replay.history
+    doc.history.base = doc.base
     doc._operations = replay._operations
     doc._cursor = replay._cursor
     # The replayed Auto background steps carry their missing-data maps; maps
@@ -608,7 +618,10 @@ def _validate_background_operation(operation):
     if (not isinstance(operation, dict) or operation.get('type') != 'auto_background'
             or operation.get('preset') not in ('auto', 'soft', 'sharp')
             or type(operation.get('clean')) is not bool
-            or type(operation.get('keep_soft_parts', False)) is not bool):
+            or type(operation.get('keep_soft_parts', False)) is not bool
+            or type(operation.get('from_base', False)) is not bool
+            or type(operation.get('from_stacked', False)) is not bool
+            or (operation.get('from_base') and operation.get('from_stacked'))):
         raise ValueError('Invalid auto background operation')
 
 

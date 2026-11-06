@@ -120,11 +120,21 @@ def test_composite_cancellation_stops_before_next_runner(extension, monkeypatch)
 
 @pytest.mark.parametrize('values', [
     {'missing': 1}, {'fraction': True}, {'fraction': float('nan')},
-    {'fraction': float('inf')}, {'fraction': 2}, {'direction': 'sideways'},
+    {'fraction': float('inf')}, {'fraction': 10**400},
+    {'fraction': 2}, {'direction': 'sideways'},
 ])
 def test_invalid_fusion_parameters_fail_explicitly(extension, values):
     with pytest.raises(ValueError):
         algorithms.resolve_fusion_parameters('extension', values)
+
+
+def test_unrepresentable_numeric_schema_is_rejected(extension):
+    invalid = replace(extension, id='invalid_numeric_schema', parameters=(
+        replace(extension.parameters[0], step=10**400),))
+    with pytest.raises(ValueError):
+        algorithms.register_fusion(invalid)
+    with pytest.raises(ValueError):
+        algorithms.get_fusion(invalid.id)
 
 
 def test_invalid_registration_parameters_and_duplicate_descriptors_fail(extension):

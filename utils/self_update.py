@@ -526,7 +526,7 @@ def write_apply_script_macos(app_bundle: str, staged_bundle: str, tag: str,
         "done\n"
         f"if [ {pid} -gt 0 ] && kill -0 {pid} 2>/dev/null; then exit 1; fi\n"
         "ok=0\n"
-        f"if ditto {q(staged_bundle)} {q(app_bundle + '.new')}; then\n"
+        f"if rm -rf {q(app_bundle + '.new')} && ditto {q(staged_bundle)} {q(app_bundle + '.new')}; then\n"
         f"  rm -rf {q(app_bundle + '.old')}\n"
         f"  if mv {q(app_bundle)} {q(app_bundle + '.old')}; then\n"
         f"    if mv {q(app_bundle + '.new')} {q(app_bundle)}; then\n"

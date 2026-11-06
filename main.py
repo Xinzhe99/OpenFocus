@@ -3142,7 +3142,6 @@ class OpenFocus(QMainWindow):
             # 需要重新对齐，禁用按钮，显示处理中状态
             self.btn_preview_roi.setEnabled(False)
             self.btn_preview_roi.setText(trans.t("roi_aligning"))
-            QApplication.processEvents()
             
             # 启动ECC配准线程
             # Snapshot the list (mid-run frame deletes mutate the live list)

@@ -259,7 +259,11 @@ def _align_homography_impl(input_source, output_path=None, img_filenames=None, d
             if img_small.dtype == np.uint16:
                 divisor = 65535.0
             elif np.issubdtype(img_small.dtype, np.floating):
-                divisor = float(np.max(img_small)) if float(np.max(img_small)) > 255.0 else 1.0
+                maximum = float(np.max(img_small))
+                # Keep legacy 0-1 float inputs scaled to the SIFT byte domain.
+                # Floats already in 0-255 need no additional gain.
+                divisor = (maximum if maximum > 255.0 else
+                           1.0 if maximum <= 1.0 else 255.0)
             else:
                 divisor = 1.0
             img_small = (img_small.astype(np.float32) / divisor * 255.0).round().clip(0, 255).astype(np.uint8)
@@ -863,7 +867,12 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
         else:
             small_img = img # 引用即可，无需拷贝
 
-        gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
+        if small_img.ndim == 2:
+            gray = small_img
+        elif small_img.shape[2] == 1:
+            gray = small_img[:, :, 0]
+        else:
+            gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
         # findTransformECC 的数值稳定性依赖归一化的浮点输入：uint8 的
         # 大幅值梯度会让优化步长过大，常见于小位移场景直接不收敛
@@ -1072,11 +1081,13 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
             
             # 对每个通道进行插值
             channels = []
-            for c in range(img.shape[2]):
+            planes = ((img_gpu,) if img.ndim == 2 else
+                      (img_gpu[:, :, c] for c in range(img.shape[2])))
+            for plane in planes:
                 # order=1 (linear) 速度最快, order=3 (cubic) 质量更好
                 # 这里使用 order=1 以获得最大加速，如果追求质量可用 order=3
                 channel_out = cupyx.scipy.ndimage.map_coordinates(
-                    img_gpu[:, :, c], 
+                    plane,
                     cp.stack([src_y, src_x]), 
                     order=1, 
                     mode='constant', 
@@ -1084,7 +1095,8 @@ def _align_ecc_impl(input_source, output_path=None, img_filenames=None, downscal
                 )
                 channels.append(channel_out)
             
-            aligned_img_gpu = cp.stack(channels, axis=2)
+            aligned_img_gpu = (channels[0] if len(channels) == 1 else
+                               cp.stack(channels, axis=2))
             
             # 传回 CPU
             aligned_img = cp.asnumpy(aligned_img_gpu).astype(img.dtype)

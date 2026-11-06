@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.77.0] - 2026-11-06
+
 ### Added
 - Add Auto background to Retouch: replace the stacked background with one real
   frame while the subject stays as stacked. Automatic (the default) picks the
@@ -25,6 +27,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unavailable with grouped fusion and `--native-raw`.
 
 ### Changed
+- Local development and CI use the same test dependency file, including the
+  timeout plugin and the Python 3.10 TOML parser used by packaging checks.
+- Algorithms declare source resize interpolation once; tiled preparation and
+  base correction consume the descriptor instead of branching on method names.
+- CI also installs the built wheel without Qt or PyTorch and exercises real
+  16-bit CLI fusion and recipe replay, including non-ASCII paths.
 - Pressing Render while frames are still loading now starts the render when
   loading finishes; pressing it again cancels.
 - The status bar reads "RAM used" so it is clear which number is in use.
@@ -77,6 +85,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so when it opens on such an output.
 
 ### Fixed
+- Checkpoint and recipe saves cannot replace their original images or correction
+  references; recipe execution protects the recipe itself. Reject output paths
+  that require the same name to be both a file and a directory before processing.
+- Unchanged brush strokes retain redo edits. Repeated background replacement
+  analyzes the original session base while preserving current edits and exact
+  untouched floating-point pixels. Loading a checkpoint releases its redundant
+  base buffer, and DCT-trimmed retouch sources own their cropped storage.
+- Correct base-frame brightness after resizing and grayscale/BGRA promotion.
+  Homography accepts both normalized and 0-255 floating-point inputs without
+  changing integer preprocessing; ECC accepts grayscale and singleton channels.
+- Detect source files replaced during decoding and reject late-cancelled
+  materialization. Failed or cancelled video imports preserve the previous stack
+  and metadata; thin-image previews keep their one-pixel short edge.
+- Batch exports retain each stack's EXIF and physical calibration. Grouped
+  outputs draw a scale bar only when their contributing calibrations agree.
+- Source changes discard stale preview drafts and invalidate ROI work safely.
+  Clearing sources releases idle loaders and removes obsolete recovery data;
+  saved projects become dirty when source membership changes. Aligned history
+  remains navigable after replacing the active stack.
+- Recipes retain native RAW mode and batch format, and reject transient report
+  flags during capture. Fractional control indices cannot mutate another output.
+- macOS update retries discard an interrupted temporary bundle before copying,
+  preventing obsolete files from surviving into the next installed build.
+- Oversized numeric parameters and extension metadata now produce regular
+  validation errors instead of an uncaught numeric-conversion overflow.
 - Message-box buttons such as "Discard changes" are no longer cut off.
 - Replaying a checkpoint from a grayscale standalone retouch session keeps
   the grayscale layout, so its fingerprints match.

@@ -131,8 +131,6 @@ class SourceManager(QObject):
             window.btn_wipe.setChecked(False)
         if hasattr(window, "_wipe_source_cache"):
             window._wipe_source_cache = None
-        if hasattr(window, "_wipe_preview_record"):
-            window._wipe_preview_record = None
         window.transform_manager.invalidate_processing_results(clear_output_view=True)
         window.label_manager.reset_labels()
         self._clear_history()
@@ -937,6 +935,8 @@ class SourceManager(QObject):
             preserve_outputs=True,
         )
         window.transform_manager.reload_image_stack(initial_index=initial_index)
+        if getattr(window, "project_path", None):
+            window._mark_project_dirty()
 
     def _confirm_append_dimensions(self, new_images: list[Any]) -> bool:
         window = self.window
@@ -969,11 +969,17 @@ class SourceManager(QObject):
 
     def clear_image_stack(self) -> None:
         window = self.window
+        worker = getattr(self, "_load_worker", None)
+        if worker is not None:
+            worker.request_cancel()
+        # A cancelled load can still roll its own loader back after this call.
+        # Give the empty workspace a fresh loader so neither that rollback nor
+        # the last decoded stack can keep cleared source frames alive here.
+        from core.image_loader import ImageStackLoader
+        window.image_loader = ImageStackLoader()
         self._stack_baseline = None
         if hasattr(window, "_wipe_source_cache"):
             window._wipe_source_cache = None
-        if hasattr(window, "_wipe_preview_record"):
-            window._wipe_preview_record = None
 
         # Also drops the ROI stack, rect and tool button (see reset_roi_selection)
         window.transform_manager.invalidate_processing_results(clear_output_view=True)
@@ -1007,6 +1013,10 @@ class SourceManager(QObject):
             curve.clear()
 
         window.transform_manager.reload_image_stack(initial_index=None)
+        if getattr(window, "project_path", None):
+            window._mark_project_dirty()
+        from utils import recovery
+        recovery.write_snapshot(window)
 
         # No source frames left to compare against: exit wipe mode cleanly
         if getattr(window, "wipe_active", False) and hasattr(window, "btn_wipe"):

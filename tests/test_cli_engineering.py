@@ -728,3 +728,23 @@ def test_cli_rejects_video_before_materializing_masked_frames(tmp_path, capsys):
     assert run_cli(['-i', str(video), '-o', str(tmp_path / 'out.png'),
                     '--defect-mask-path', str(mask)]) != 0
     assert 'video' in capsys.readouterr().err.lower()
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("summary_is_parent", [False, True])
+def test_cli_rejects_output_file_used_as_a_directory(tmp_path, batch, summary_is_parent):
+    folder, _, _ = _make_stacks(tmp_path)
+    output = tmp_path / "result.png"
+    summary = output / "summary.json"
+    if batch:
+        output = tmp_path / "out" / "stackA.png"
+        summary = output / "summary.json"
+    if summary_is_parent:
+        summary = tmp_path / "summary.json"
+        output = summary / "stackA.png" if batch else summary / "result.png"
+    destination = ["-d", str(output.parent)] if batch else ["-o", str(output)]
+    assert run_cli(["-i", folder, *destination, "-m", "dct", "--json", str(summary)]) == 2
+    assert not output.exists()
+    assert not summary.exists()
+    if batch or summary_is_parent:
+        assert not output.parent.exists()

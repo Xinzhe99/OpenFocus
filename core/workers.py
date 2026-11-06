@@ -67,7 +67,7 @@ def _downscale_for_preview(img):
     if target >= longest:
         return img
     scale = target / float(longest)
-    width, height = int(round(w * scale)), int(round(h * scale))
+    width, height = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
     require_memory(width * height * (img.size // (h * w)) * img.dtype.itemsize)
     return cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
 
@@ -1015,11 +1015,6 @@ class BatchWorker(QThread):
                     source = os.path.dirname(stacks[0][0][0]) if stacks and stacks[0] else ''
                     tasks = [(f'{os.path.basename(source)}_{i + 1:03d}', stack)
                              for i, stack in enumerate(stacks)]
-                    from core.image_loader import _read_exif_bytes
-                    first = stacks[0][0][0] if stacks and stacks[0] else None
-                    self._source_exif = _read_exif_bytes(first) if first else b''
-                    from utils.scalebar import detect_px_size_um
-                    self.image_loader.px_size_um = detect_px_size_um(first) if first else None
                 else:
                     tasks = [(os.path.basename(os.path.normpath(path)), path)
                              for path in self.folder_paths]
@@ -1038,8 +1033,14 @@ class BatchWorker(QThread):
                         try:
                             with heavy_job(lambda: self.is_cancelled):
                                 if split:
-                                    from core.image_loader import common_icc_profile
-                                    self._source_icc_profile = common_icc_profile(item[0] for item in data)
+                                    from core.image_loader import (_read_exif_bytes, common_icc_profile,
+                                                                   _consistent_px_size_um)
+                                    from utils.scalebar import detect_px_size_um
+                                    paths = list(dict.fromkeys(item[0] for item in data))
+                                    self._source_exif = _read_exif_bytes(paths[0]) if paths else b''
+                                    self._source_icc_profile = common_icc_profile(paths)
+                                    self.image_loader.px_size_um = _consistent_px_size_um(
+                                        [detect_px_size_um(path) for path in paths])
                                     self._process_single_stack(data, self._get_output_path_for_single_folder(source), name, index)
                                 else:
                                     self.process_single_folder(data)
@@ -1314,7 +1315,8 @@ class BatchWorker(QThread):
 
     def _process_grouped_folder(self, folder_path):
         from core.grouped_fusion import grouped_fuse
-        from core.image_loader import _read_exif_bytes, common_icc_profile
+        from core.image_loader import (_read_exif_bytes, common_icc_profile,
+                                       _consistent_px_size_um)
         from utils.image_utils import normalize_fuse_input, quantize_fuse_output
         from utils.scalebar import detect_px_size_um
         from utils.sorting import natural_sort_key
@@ -1351,7 +1353,8 @@ class BatchWorker(QThread):
             _validate_sensor_sources_for_gui(paths, lambda: self.is_cancelled)
         self._source_exif = _read_exif_bytes(paths[0])
         self._source_icc_profile = common_icc_profile(paths)
-        self.image_loader.px_size_um = detect_px_size_um(paths[0])
+        self.image_loader.px_size_um = _consistent_px_size_um(
+            [detect_px_size_um(path) for path in paths])
         sort_mode = runtime.get('sort_mode', 'asc')
         if sort_mode == 'desc' and get_fusion(method).sort_frames:
             paths.reverse()

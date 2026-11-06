@@ -440,14 +440,30 @@ class MultiFocusFusion:
         require_memory(fused.size * 4 * 6, user_limit=memory_budget_bytes())
         which = self.base_frame
         base = self._base_frame_image(input_source, which, exposure_gains, deferred_exposure)
-        if base is None or base.shape[:2] != fused.shape[:2]:
+        if base is None:
             return fused
         import cv2
+        if self.descriptor.promotes_color:
+            from fusion_methods.dct import _ensure_color_image
+            base = _ensure_color_image(base)
+        elif base.ndim == 3 and fused.ndim == 3:
+            base = base[:, :, :fused.shape[2]]
+        if base.shape[:2] != fused.shape[:2]:
+            interpolation = getattr(cv2, f'INTER_{self.descriptor.resize_interpolation.upper()}')
+            base = cv2.resize(base, (fused.shape[1], fused.shape[0]),
+                              interpolation=interpolation)
+        # OpenCV drops singleton channel axes during GaussianBlur.
+        if base.ndim == 3 and base.shape[2] == 1:
+            base = base[:, :, 0]
         out = fused if fused.dtype == np.float32 else fused.astype(np.float32)
         sigma = self.BASE_CORRECTION_SIGMA
         low_out = cv2.GaussianBlur(out, (0, 0), sigma)
         low_base = cv2.GaussianBlur(base, (0, 0), sigma)
-        corrected = out + (low_base - low_out)
+        if low_base.ndim == 2 and low_out.ndim == 3:
+            low_base = low_base[:, :, None]
+        elif low_base.ndim == 3 and low_out.ndim == 2:
+            low_base = low_base[:, :, 0]
+        corrected = out + (low_base - low_out).reshape(out.shape)
         return np.clip(corrected, 0, 255).astype(fused.dtype)
 
     def _validate_dct_environment(self) -> None:
@@ -1061,10 +1077,10 @@ class MultiFocusFusion:
         from core.resource_policy import require_memory
         from fusion_methods.dct import _ensure_color_image
 
-        if self.algorithm == 'openfocus_a':
+        if self.descriptor.resize_interpolation == 'area':
             target_size = tuple(map(int, target_size))
         width, height = map(int, target_size)
-        interpolation = cv2.INTER_AREA if self.algorithm == 'openfocus_a' else cv2.INTER_LINEAR
+        interpolation = getattr(cv2, f'INTER_{self.descriptor.resize_interpolation.upper()}')
         resized = []
         for frame in frames:
             if should_cancel is not None and should_cancel():

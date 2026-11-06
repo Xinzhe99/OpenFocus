@@ -1627,7 +1627,8 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     subject_fraction = float(sub.mean())
     changed = subject_fraction <= max_subject
     if changed:
-        base = fz if composite_onto is None else _u16(composite_onto).astype(np.float32)
+        base = (fz if composite_onto is None or composite_onto is fused
+                else _u16(composite_onto).astype(np.float32))
         comp = base * (1 - alpha[..., None]) + bgf * alpha[..., None]
         if shift is not None:
             # The blend strip at the edge keeps stacked pixels; correct their
@@ -1636,14 +1637,15 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
             comp += shift * ((1 - alpha) * shift_region)[..., None]
         # The analysis uses uint16 colour, but untouched source pixels must
         # bypass that conversion (especially fractional floats and grayscale).
-        unchanged = np.all(comp == fz, axis=2)
+        unchanged = np.all(comp == base, axis=2)
         if np.issubdtype(fused.dtype, np.floating):
             image = _from16f(comp, fused)
         else:
             out16 = np.clip(comp, 0, 65535).astype(np.uint16)
             image = out16 if fused.dtype == np.uint16 and fused.ndim == 3 and fused.shape[2] == 3 \
                 else _from16f(out16.astype(np.float32), fused)
-        image[unchanged] = fused[unchanged]
+        original = fused if composite_onto is None else composite_onto
+        image[unchanged] = original[unchanged]
         del comp
     else:
         # A ground-level scene: nearly everything is scene the stack

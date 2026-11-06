@@ -241,6 +241,35 @@ def test_dirty_compares_against_base_not_history_presence():
     assert doc.history.end() == "idle"
 
 
+def test_unchanged_brush_strokes_preserve_redo_and_checkpoint(tmp_path):
+    for tool in ('source', 'restore', 'exposure'):
+        base = np.full((64, 64, 3), 255, np.uint8)
+        frames = [base.copy(), np.full_like(base, 80)]
+        doc = _document(frames=frames, result=base)
+        doc.initialize_checkpoint()
+        doc.set_frame(1)
+        doc.set_brush(diameter=8, hardness=1.0, opacity=1.0)
+        assert doc.begin_stroke(16, 16)
+        assert doc.end_stroke() == 'committed'
+        painted = doc.working.copy()
+        assert doc.undo()
+        doc.set_frame(0)
+        doc.set_tool(tool)
+        doc.exposure = 1.0  # saturated white stays unchanged
+        assert doc.begin_stroke(40, 40)
+        doc.stroke_to(45, 40)
+        assert doc.end_stroke() == 'empty'
+        assert not doc.can_undo and doc.can_redo and not doc.is_dirty
+        np.testing.assert_array_equal(doc.working, base)
+        path = tmp_path / f'unchanged-{tool}.ofretouch'
+        doc.save_checkpoint(path)
+        restored = _document(frames=frames, result=base)
+        restored.initialize_checkpoint()
+        restored.load_checkpoint(path)
+        assert restored.redo()
+        np.testing.assert_array_equal(restored.working, painted)
+
+
 def test_restore_all_is_a_single_undoable_step():
     doc = _document()
     doc.set_brush(diameter=12, hardness=1.0, opacity=1.0)

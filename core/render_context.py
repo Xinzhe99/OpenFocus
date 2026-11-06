@@ -7,10 +7,10 @@ the frames actually fused (aligned, ROI-cropped, DCT-trimmed), their stable
 identifiers, and the mapping back into the result's pixel coordinates.
 
 Nothing here is UI code and nothing copies a full frame: the context holds
-references to the arrays the render already produced, except ROI crops.
+references to the arrays the render already produced, except crops and trims.
 Those are stored independently (in memory, or as their own mapped file for
 mapped aligned frames) so releasing the full aligned frames really frees
-them while an output that was made from them stays in the history.  Masks
+them while an output that was made from them stays in the history. Masks
 for registration fill are computed on demand by `SourceFrame.valid_mask`
 and cached by the caller, so opening the retouch dialog does not allocate
 one full-size mask per frame.
@@ -285,7 +285,7 @@ def build_render_context(
                 source = _source_region(source, 0, 0, source.shape[1], max(1, result_h - oy))
         if source.size == 0:
             return None
-        if roi is not None:
+        if source is not image:
             if isinstance(source, np.memmap):
                 # A crop of a mapped aligned frame is still a view: it pins
                 # the whole mapping and its temporary file for as long as this
