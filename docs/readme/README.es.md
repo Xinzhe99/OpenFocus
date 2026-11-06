@@ -134,7 +134,7 @@ Crea un mapa de profundidad y exporta una superficie 3D texturizada.
 
 ### Retoque ligado a la fuente
 
-Retoca el resultado pintando desde los fotogramas de origen y expórtalo con ellos en un TIFF por capas.
+Retoca el resultado pintando desde los fotogramas de origen y expórtalo con ellos en un TIFF por capas. El fondo automático sustituye un fondo apilado irregular por un fotograma real.
 
 </td>
 <td width="54%">

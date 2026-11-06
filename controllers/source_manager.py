@@ -210,7 +210,9 @@ class SourceManager(QObject):
         busy = self._review_worker is not None
         panel.btn_review_stack.setText(trans.t(
             "stack_review_cancel" if busy else "stack_review_button"))
-        panel.btn_review_stack.setToolTip(trans.t("stack_review_hint"))
+        panel.btn_review_stack.setToolTip(trans.t(
+            "stack_review_cancel" if busy else "stack_review_button")
+            + "\n" + trans.t("stack_review_hint"))
         panel.btn_review_stack.setEnabled(busy or len(self.window.raw_images) >= 2)
         status_key = self._review_status_key
         visible = self._visible_review_results()
@@ -332,6 +334,7 @@ class SourceManager(QObject):
             linear_raw=linear_raw,
             expected_metadata=current_metadata if append and window.raw_images else None,
         )
+        self._load_worker._load_applied = False
         self._load_accept_event = accept_event
         # Remembered so the frames just decoded can be traced back to the files
         # they came from (project files need that to round-trip).
@@ -417,6 +420,8 @@ class SourceManager(QObject):
                 self._apply_load_options(load_options, append=append,
                                          profile_map=getattr(worker, "source_icc_profiles", {}))
                 accepted = True
+                worker._load_stack = window.raw_images
+                worker._load_revision = getattr(window, "source_revision", 0)
                 if on_success is not None:
                     on_success()
                 # Remember for the optional "restore last stack on startup"
@@ -430,6 +435,7 @@ class SourceManager(QObject):
                 from utils import recovery
                 recovery.write_snapshot(window)
                 self._show_linear_profile_notice(getattr(window, "linear_dng_metadata", None))
+                worker._load_applied = load_is_current()
             except Exception as exc:  # pylint: disable=broad-except
                 if not accepted and previous_window_state is not None:
                     for name, value in previous_window_state.items():
@@ -470,7 +476,64 @@ class SourceManager(QObject):
                 widget = getattr(self, name, None)
                 if widget is not None:
                     widget.hide()
+            self._start_queued_render(worker)
         worker.deleteLater()
+
+    def _start_queued_render(self, worker) -> None:
+        """Start the render the user asked for while this load was running."""
+        render = getattr(self.window, "render_manager", None)
+        request = getattr(render, "_render_after_load", None) if render is not None else None
+        if request is None:
+            return
+        try:
+            ready = (request.get("load_worker") is worker
+                     and request.get("load_generation") == getattr(self, "_load_generation", 0)
+                     and bool(getattr(worker, "_load_applied", False))
+                     and not getattr(worker, "is_cancelled", False)
+                     and getattr(worker, "_load_stack", None) is self.window.raw_images
+                     and getattr(worker, "_load_revision", None) == getattr(self.window, "source_revision", 0)
+                     and len(self.window.effective_stack()[0]) >= 2)
+        except Exception:
+            ready = False
+        if request.get("compare", False) and not getattr(render, "_compare_mode", False):
+            ready = False
+        if ready:
+            from PyQt6.QtCore import QTimer
+            source_ref = self.window.raw_images
+            revision = getattr(self.window, "source_revision", 0)
+            included = list(self.window.effective_stack()[2])
+
+            def start():
+                # Keep the request cancellable until this event-loop turn;
+                # replacing the stack or starting a new load invalidates it.
+                if render._render_after_load is not request:
+                    return
+                render._render_after_load = None
+                from PyQt6 import sip
+                current = (not (isinstance(self.window, QObject) and sip.isdeleted(self.window))
+                           and not getattr(self.window, "_shutting_down", False)
+                           and getattr(self, "_load_worker", None) is None
+                           and request["load_generation"] == getattr(self, "_load_generation", 0)
+                           and self.window.raw_images is source_ref
+                           and getattr(self.window, "source_revision", 0) == revision
+                           and list(self.window.effective_stack()[2]) == included)
+                compare = request.get("compare", False)
+                if compare:
+                    current = (current and render._compare_mode
+                               and request["compare_token"] is render._compare_token
+                               and not render._stack_changed_since(render._compare_context))
+                if not current:
+                    if compare and request["compare_token"] is render._compare_token:
+                        render._abort_compare_run()
+                    return
+                render.start_render(force_algorithm=request.get("force_algorithm"))
+
+            QTimer.singleShot(0, start)
+        else:
+            render._render_after_load = None
+            if request.get("compare", False):
+                render._abort_compare_run()
+            self.window.statusBar().showMessage(trans.t("msg_render_queue_cancelled"), 5000)
 
     def _show_load_status(self) -> None:
         from PyQt6.QtWidgets import QPushButton, QLabel, QProgressBar
@@ -510,12 +573,14 @@ class SourceManager(QObject):
         else:
             self._load_progress_bar.setRange(0, 0)
             text = f"{text} ({done})"
+        if getattr(getattr(self.window, "render_manager", None), "_render_after_load", False):
+            text = f"{text} · {trans.t('msg_render_queued_short')}"
         self._load_status_label.setText(text)
         self.window.statusBar().showMessage(text)
 
     def cancel_load(self) -> None:
         worker = getattr(self, "_load_worker", None)
-        if worker is not None and worker.isRunning():
+        if worker is not None:
             worker.request_cancel()
             self._load_cancel_button.setEnabled(False)
             self._load_status_label.setText(trans.t("depth_cancelling"))

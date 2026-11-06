@@ -30,6 +30,7 @@ O OpenFocus é um aplicativo desktop profissional de fusão de imagens multifoco
 - **Fusão de imagens multifoco**: combina várias imagens com pontos de foco diferentes em uma única imagem totalmente focada
 - **Dez algoritmos de fusão**: filtro guiado, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3, OpenFocus A/B/C, além do modo somente alinhamento
 - **Registro de imagens**: alinha sequências desalinhadas com OpenFocus (rápido), ECC, homografia ou a cadeia homografia → ECC
+- **Fundo automático**: substituir um fundo empilhado irregular por um fotograma real e ver onde nenhum fotograma captou a cena com nitidez
 - **Visualização de comparação cortina**: verifica o alinhamento e compara resultados com um divisor A/B
 - **Arquivos de projeto**: restauram referências de entrada e configurações reproduzíveis; os pixels do resultado são exportados separadamente
 - **Modelos de processamento**: salvam e reaplicam configurações de fusão, registro e recursos a qualquer pilha carregada
@@ -553,6 +554,52 @@ A proveniência viaja com a saída: os quadros alinhados, os deslocamentos de co
 
 Para um arquivo de imagem existente, escolha **Editar → Retocar arquivos de imagem…**, depois selecione o resultado e uma ou mais imagens de origem. As origens já devem estar alinhadas ao resultado na mesma grade de pixels; dimensões iguais não provam alinhamento. São aceitas imagens PNG, TIFF, JPEG e BMP de página única com dimensões verticais, canais e profundidade de 8 ou 16 bits correspondentes; a orientação EXIF é aplicada ao carregar. Imagens com alfa e multipágina não são suportadas. Os quadros selecionados são fornecidos pelo usuário, não são proveniência registrada de renderização. Aplicar cria uma saída separada não exportada; salve-a na lista de saídas. Os arquivos escolhidos são protegidos contra sobrescrita durante esta sessão, incluindo exportações de mapas de profundidade e malhas 3D. Como em outros resultados, arquivos de projeto não armazenam esses pixels nem o histórico do pincel.
 
+### Substituir o fundo (Fundo automático)
+
+Ao empilhar, o fundo fica nítido juntamente com o motivo. O fundo de uma imagem
+empilhada costuma ficar um mosaico de desfoques diferentes, com um halo ao redor
+do motivo. **Fundo automático…** na área de retoque o substitui por um quadro
+real da mesma pilha. O motivo permanece como foi empilhado. O fundo é derivado
+de um quadro e do resultado empilhado; o processamento pode reconstruir, ajustar
+e mesclar seus pixels.
+
+1. Abra o resultado na área de retoque e clique em **Fundo automático…**.
+2. Escolha o fundo:
+   - **Automático** (recomendado) usa o fundo suave, salvo se a pilha registrou
+     focada grande parte do fundo. Nesse caso usa o nítido.
+   - **Fundo suave** usa o quadro com o fundo mais desfocado.
+   - **Fundo nítido** usa o quadro focado mais longe.
+3. Deixe **Limpar halos nas bordas** ligado para remover halos ao longo das
+   bordas do motivo. Nunca vai além do que os quadros registraram. Desligue
+   para manter o aspecto das bordas da pilha.
+4. Marque **Manter as partes suaves ligadas ao motivo** quando partes do motivo
+   ficam logo fora da profundidade de campo, como a ponta arredondada de um
+   espinho. Também pode manter objetos de fundo junto ao motivo tal como foram
+   empilhados, por isso verifique o resultado.
+5. Clique em **Substituir fundo**. Uma pilha de 15 quadros de 20 megapixels
+   demora cerca de um minuto e precisa de cerca de 3,5 GB de memória livre.
+   **Cancelar** interrompe.
+
+A alteração é um único passo que pode ser anulado, e os traços já pintados no
+motivo são mantidos. Use o **Pincel de restauração** para recuperar os pixels
+empilhados onde os preferir, por exemplo uma folha de erva desfocada à frente do
+motivo. Quando o motivo ocupa quase todo o enquadramento, como numa cena do chão
+da floresta, a imagem fica tal como foi empilhada e aparece um aviso.
+
+Após uma execução, **Mostrar dados ausentes** colore os locais que nenhum
+quadro mostrou com nitidez. São os locais que devem ser verificados ou retocados à mão:
+
+- magenta: fundo que nenhum quadro registrou sem o motivo à frente
+- ciano: motivo escondido da câmera
+- amarelo: motivo fora do intervalo de foco da pilha
+- ardósia: áreas lisas demais para avaliar
+
+**Salvar mapa de dados ausentes…** grava a prévia colorida e uma
+máscara em preto e branco por cor. O fundo automático precisa dos quadros que
+produziram o resultado e não está disponível para resultados de região (ROI).
+Os novos pontos de controle de fundo restauram exatamente a imagem, o histórico
+acessível e os diagnósticos sem recalcular o fundo.
+
 ### Gerenciamento de rótulos
 
 Abra **Ferramentas → Rótulos** após carregar imagens ou produzir um resultado. Cada rótulo tem seu próprio destino: a pilha de origem, a pilha alinhada ou os resultados de saída. Rótulos de saída podem se aplicar a todos os resultados ou ao resultado selecionado pelo nome; renomear ou reordenar esse resultado não altera a associação.
@@ -895,17 +942,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # use False para processa
 
 ### Reproduzir um checkpoint de retoque
 
-O primeiro salvamento ou carregamento verifica a base e as origens processadas em uma operação em segundo plano cancelável. Salvar também reproduz as edições registradas e confere a imagem atual e o estado de desfazer/refazer antes de publicar o checkpoint. Se uma origem mudou e a reprodução não corresponde mais, o salvamento falha e mantém suas edições. Cancelar um salvamento ou carregamento também mantém suas edições atuais. Se a memória for insuficiente para verificação ou reprodução, a operação para e mantém inalteradas tanto suas edições atuais quanto qualquer checkpoint existente.
+Use os controles de salvar/carregar pontos de controle do espaço de retoque com a base original e as origens processadas. Sessões com fundo automático, incluindo análises bem-sucedidas sem mudanças nos pixels, salvam instantâneos ZIP v2 `.ofretouch` sem perdas com metadados JSON e dados NumPy: a imagem de trabalho exata, os blocos acessíveis de desfazer/refazer, os estados de diagnóstico e a procedência das origens. Carregar v2 não recalcula o fundo. Sessões apenas de pincel/tons podem usar JSON v1 compacto; pontos de controle de fundo antigos em JSON v1 continuam reproduzíveis.
+
+A verificação das origens ocorre em segundo plano e pode ser cancelada. Antes de substituir o destino, o salvamento recarrega o arquivo preparado e confere a igualdade exata da imagem atual, dos blocos acessíveis de desfazer/refazer e dos estados de diagnóstico. Origem incompatível, falha de verificação, cancelamento ou memória insuficiente mantêm as edições atuais e qualquer ponto de controle existente inalterados.
 
 Se o limite de registro do checkpoint impedir outra edição, aplique as edições atuais e inicie uma nova sessão de retoque para continuar.
 
 Salve um checkpoint de retoque no espaço de retoque, depois forneça a imagem base original e cada quadro de origem processado na mesma ordem da sessão:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png frame2.png --output retouched.tif
 ```
 
-Use os quadros realmente usados para o retoque, após alinhamento e qualquer corte de ROI ou outro processamento, com seus valores de pixel e profundidade de bits originais. O checkpoint registra edições e impressões digitais, não os pixels. A reprodução reconstrói os deslocamentos de quadro e o comportamento de alinhamento registrados e verifica a base, os quadros ordenados e as máscaras de validade; pixels, geometrias ou máscaras incompatíveis são rejeitados. Cada caminho deve conter uma imagem. A saída deve ser PNG ou TIFF e preserva a profundidade de bits da base. O checkpoint e as imagens de entrada não podem ser usados como saída.
+Ambos os formatos ainda exigem a base original e todos os quadros realmente usados para o retoque, na ordem da sessão, após alinhamento e qualquer corte de ROI ou outro processamento, com seus valores de pixel e profundidade de bits originais. O carregamento reconstrói os deslocamentos de quadro e o comportamento de alinhamento registrados e verifica a base, os quadros ordenados e as máscaras de validade; pixels, geometrias ou máscaras incompatíveis são rejeitados. Cada caminho deve conter uma imagem. A saída deve ser PNG ou TIFF e preserva a profundidade de bits da base. O ponto de controle e as imagens de entrada não podem ser usados como saída.
 
 Códigos de saída: `0` sucesso, `1` erro de processamento, `2` erro de uso. Executar `python main.py --help` mostra todas as opções; iniciar com um caminho simples (`python main.py C:\stack`) ainda abre a interface com essa pasta carregada.
 

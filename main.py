@@ -79,7 +79,7 @@ if __name__ == "__main__":
     from utils.diagnostics import install_exception_hooks
     setup_logging()
     log_session_start()
-    install_exception_hooks()
+    install_exception_hooks(claim_inherited_faulthandler=True)
     log_action("startup", args=sys.argv[1:])
     _log = get_logger(__name__)
     # The updater's restore flag belongs to the GUI, never to argparse.
@@ -243,6 +243,9 @@ def _shutdown_worker(worker, timeout_ms=1500):
     """
     if worker is None:
         return
+    interrupt = getattr(worker, "requestInterruption", None)
+    if callable(interrupt):
+        interrupt()
     cancel = getattr(worker, "cancel", None)
     if callable(cancel):
         try:
@@ -3522,7 +3525,8 @@ class OpenFocus(QMainWindow):
         # Nothing new may start once we are on the way out (update downloads
         # check this flag before they begin).
         self._shutting_down = True
-        force_quit = bool(getattr(self, "_force_quit", False))
+        force_quit = bool(getattr(self, "_force_quit", False)
+                          or getattr(self, "_retouch_quit_authorized", False))
         # A retouched output lives in memory until exported; exiting must not
         # silently throw those pixels away.
         if (not force_quit
@@ -3564,6 +3568,49 @@ class OpenFocus(QMainWindow):
                 self._shutting_down = False
                 event.ignore()
                 return
+
+        # Keep modal owners and their documents alive while native work stops.
+        # A Python reference to a QThread cannot protect it from destruction
+        # with its QObject parent. Retry the authorized close on the GUI loop
+        # instead of waiting here or orphaning a dialog-owned worker.
+        from dialogs.retouch import RetouchDialog, _SHARPNESS_WORKERS
+        retouch_running = False
+        for dialog in self.findChildren(RetouchDialog):
+            dialog.setEnabled(False)
+            dialog_busy = False
+            for name in ("_edit_dialog", "_checkpoint_dialog"):
+                operation = getattr(dialog, name, None)
+                if operation is not None:
+                    # reject() also cancels exports before their startup timer.
+                    operation.reject()
+                    # Let the enclosing exec() caller clear the operation on
+                    # a later event-loop turn before closing its workspace.
+                    dialog_busy = True
+            worker = getattr(dialog, "_sharpness_worker", None)
+            if worker is not None and worker.isRunning():
+                worker.requestInterruption()
+                dialog_busy = True
+            if not dialog_busy:
+                dialog._allow_close = True
+                dialog_busy = not dialog.close()
+            retouch_running = retouch_running or dialog_busy
+        # Include detail-map workers detached by an already closed workspace.
+        for worker in tuple(_SHARPNESS_WORKERS):
+            if worker.isRunning():
+                worker.requestInterruption()
+                retouch_running = True
+        timer = getattr(self, "_retouch_shutdown_timer", None)
+        if retouch_running:
+            self._retouch_quit_authorized = True
+            if timer is None:
+                from PyQt6.QtCore import QTimer
+                timer = self._retouch_shutdown_timer = QTimer(self)
+                timer.timeout.connect(self.close)
+            timer.start(50)
+            event.ignore()
+            return
+        if timer is not None:
+            timer.stop()
 
         from time import perf_counter
         from utils.logging_setup import log_action, get_logger
@@ -3940,6 +3987,9 @@ class OpenFocus(QMainWindow):
         # Panel titles are QLabels built once at startup; without this they
         # kept the language the app was launched in ("Source Stack"/"Output"
         # stayed English after switching to Polish).
+        if getattr(c, 'btn_retouch', None) is not None:
+            c.btn_retouch.setText(trans.t('action_retouch'))
+            c.btn_retouch.setToolTip(trans.t('action_retouch') + "\n" + trans.t('action_retouch_hint'))
         if hasattr(self, 'lbl_source_title'):
             self.lbl_source_title.setText(' ' + trans.t('panel_source_stack'))
         if hasattr(self, 'lbl_result_title'):

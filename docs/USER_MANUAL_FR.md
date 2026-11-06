@@ -30,6 +30,7 @@ OpenFocus est une application de bureau professionnelle de fusion d'images multi
 - **Fusion d'images multifocus** : combine plusieurs images mises au point à des distances différentes en une seule image entièrement nette
 - **Dix algorithmes de fusion** : filtre guidé, DCT, DTCWT, GFG-FGF, StackMFF V1/V2/V3, OpenFocus A/B/C, plus le mode alignement seul
 - **Recalage d'images** : aligne les séquences désalignées avec OpenFocus (rapide), ECC, l'homographie ou l'enchaînement homographie → ECC
+- **Arrière-plan automatique** : remplacer un arrière-plan empilé irrégulier par une vraie image et voir où aucune image n'a vu la scène nettement
 - **Vue de comparaison par balayage** : vérifie l'alignement et compare les résultats avec un séparateur A/B
 - **Fichiers de projet** : restaurent les références d'entrée et les réglages reproductibles ; les pixels du résultat s'exportent séparément
 - **Modèles de traitement** : enregistrent et réappliquent les réglages de fusion, de recalage et de ressources sur toute pile chargée
@@ -553,6 +554,56 @@ La provenance voyage avec la sortie : les images alignées, les décalages de re
 
 Pour un fichier image existant, choisissez **Édition → Retoucher des fichiers image…**, puis sélectionnez le résultat et une ou plusieurs images sources. Les sources doivent déjà être alignées sur le résultat dans la même grille de pixels ; des dimensions identiques ne prouvent pas l'alignement. Les images PNG, TIFF, JPEG et BMP d'une seule page, de dimensions verticales, canaux et profondeur 8 ou 16 bits identiques, sont acceptées ; l'orientation EXIF est appliquée au chargement. Les images avec alpha et multipage ne sont pas prises en charge. Les images sélectionnées sont fournies par l'utilisateur, pas issues d'une provenance de rendu enregistrée. Appliquer crée une sortie séparée non exportée ; enregistrez-la depuis la liste des sorties. Les fichiers choisis sont protégés contre l'écrasement pendant cette session, y compris les exports de cartes de profondeur et de maillages 3D. Comme pour les autres résultats, les fichiers de projet ne stockent ni ces pixels ni l'historique du pinceau.
 
+### Remplacer l'arrière-plan (Arrière-plan automatique)
+
+L'empilement rend l'arrière-plan net en même temps que le sujet. L'arrière-plan
+d'une image empilée devient alors souvent un patchwork de flous différents, avec
+un halo autour du sujet. **Arrière-plan automatique…** dans l'espace de retouche
+le remplace par une vraie image de la même pile. Le sujet reste tel qu'empilé.
+L'arrière-plan est dérivé d'une image et du résultat empilé ; le traitement peut
+reconstruire, ajuster et mélanger ses pixels.
+
+1. Ouvrez le résultat dans l'espace de retouche et cliquez sur
+   **Arrière-plan automatique…**.
+2. Choisissez l'arrière-plan :
+   - **Automatique** (recommandé) utilise l'arrière-plan doux, sauf si la pile
+     a enregistré une grande partie de l'arrière-plan nette. Il utilise alors
+     l'arrière-plan net.
+   - **Arrière-plan doux** utilise l'image où l'arrière-plan est le plus flou.
+   - **Arrière-plan net** utilise l'image dont la mise au point est la plus
+     lointaine.
+3. Laissez **Nettoyer les halos des bords** activé pour retirer les halos le
+   long des bords du sujet. Il ne dépasse jamais ce que les images ont
+   enregistré. Désactivez-le pour garder le rendu des bords de la pile.
+4. Cochez **Conserver les parties floues rattachées au sujet** quand des parties
+   du sujet sont juste hors de la profondeur de champ, comme le bout arrondi
+   d'une épine. Des objets d'arrière-plan voisins du sujet peuvent aussi rester
+   tels qu'empilés, vérifiez donc le résultat.
+5. Cliquez sur **Remplacer l'arrière-plan**. Une pile de 15 images de
+   20 mégapixels prend environ une minute et demande environ 3,5 Go de mémoire
+   libre. **Annuler** l'arrête.
+
+La modification est une seule étape annulable, et les traits déjà peints sur le
+sujet sont conservés. Utilisez le **Pinceau de restauration** pour retrouver les
+pixels empilés là où vous les préférez, par exemple un brin d'herbe flou devant
+le sujet. Si le sujet remplit presque toute l'image, comme une scène de sol
+forestier, l'image reste telle qu'empilée et une note l'indique.
+
+Après un passage, **Afficher les données manquantes** colore les endroits
+qu'aucune image n'a vus nettement. Ce sont les endroits à vérifier ou à
+retoucher à la main :
+
+- magenta : arrière-plan qu'aucune image n'a enregistré sans le sujet devant
+- cyan : sujet caché à l'appareil
+- jaune : sujet hors de la plage de mise au point de la pile
+- ardoise : zones trop lisses pour juger
+
+**Enregistrer la carte des données manquantes…** écrit l'aperçu coloré et un
+masque noir et blanc par couleur. L'arrière-plan automatique a besoin des images
+qui ont produit le résultat et n'est pas disponible pour les résultats de zone
+(ROI). Les nouveaux points de contrôle de fond restaurent exactement l'image,
+l'historique accessible et les diagnostics sans recalculer l'arrière-plan.
+
 ### Gestion des libellés
 
 Ouvrez **Outils → Libellés** après avoir chargé des images ou produit un résultat. Chaque libellé a sa propre cible : la pile source, la pile recalée ou les résultats de sortie. Les libellés de sortie peuvent s'appliquer à tous les résultats ou au résultat sélectionné par son nom ; renommer ou réordonner ce résultat ne change pas l'association.
@@ -895,17 +946,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # utilisez False pour tra
 
 ### Rejouer un point de contrôle de retouche
 
-Le premier enregistrement ou chargement vérifie la base et les sources traitées dans une opération d'arrière-plan annulable. L'enregistrement rejoue aussi les modifications consignées et vérifie l'image actuelle et l'état annuler/rétablir avant de publier le point de contrôle. Si une source a changé et que le rejeu ne correspond plus, l'enregistrement échoue et conserve vos modifications. Annuler un enregistrement ou un chargement conserve aussi vos modifications actuelles. Si la mémoire est insuffisante pour la vérification ou le rejeu, l'opération s'arrête et laisse inchangés vos modifications actuelles et tout point de contrôle existant.
+Utilisez les commandes d'enregistrement et de chargement des points de contrôle de l'espace de retouche avec la base d'origine et les sources traitées. Les sessions avec arrière-plan automatique, y compris les analyses réussies sans changement de pixels, enregistrent des instantanés ZIP v2 `.ofretouch` sans perte avec métadonnées JSON et données NumPy : l'image de travail exacte, les tuiles accessibles d'annulation/rétablissement, les états de diagnostic et la provenance des sources. Le chargement v2 ne recalcule pas l'arrière-plan. Les sessions limitées au pinceau et aux tonalités peuvent utiliser le JSON v1 compact ; les anciens points de contrôle de fond en JSON v1 restent rejouables.
+
+La vérification des sources s'exécute en arrière-plan et peut être annulée. Avant de remplacer la destination, l'enregistrement recharge le fichier préparé et vérifie l'égalité exacte de l'image actuelle, des tuiles accessibles d'annulation/rétablissement et des états de diagnostic. Une source incompatible, un échec de vérification, une annulation ou un manque de mémoire laissent les modifications actuelles et tout point de contrôle existant inchangés.
 
 Si la limite d'enregistrement du point de contrôle empêche une nouvelle modification, appliquez les modifications en cours et démarrez une nouvelle session de retouche pour continuer.
 
 Enregistrez un point de contrôle de retouche depuis l'espace de retouche, puis fournissez l'image de base d'origine et chaque image source traitée dans le même ordre que la session :
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources frame1.png frame2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png frame2.png --output retouched.tif
 ```
 
-Utilisez les images réellement utilisées pour la retouche, après recalage et tout recadrage ROI ou autre traitement, avec leurs valeurs de pixel et profondeur de bits d'origine. Le point de contrôle consigne les modifications et les empreintes, pas les pixels. Le rejeu reconstruit les décalages d'image et le comportement d'alignement enregistrés et vérifie la base, les images ordonnées et les masques de validité ; les pixels, géométries ou masques incompatibles sont refusés. Chaque chemin doit contenir une image. La sortie doit être PNG ou TIFF et conserve la profondeur de bits de la base. Le point de contrôle et les images d'entrée ne peuvent pas servir de sortie.
+Les deux formats nécessitent toujours la base d'origine et toutes les images réellement utilisées pour la retouche, dans l'ordre de la session, après recalage et tout recadrage ROI ou autre traitement, avec leurs valeurs de pixel et profondeur de bits d'origine. Le chargement reconstruit les décalages d'image et le comportement d'alignement enregistrés et vérifie la base, les images ordonnées et les masques de validité ; les pixels, géométries ou masques incompatibles sont refusés. Chaque chemin doit contenir une image. La sortie doit être PNG ou TIFF et conserve la profondeur de bits de la base. Le point de contrôle et les images d'entrée ne peuvent pas servir de sortie.
 
 Codes de sortie : `0` succès, `1` erreur de traitement, `2` erreur d'utilisation. `python main.py --help` affiche toutes les options ; lancer avec un simple chemin (`python main.py C:\stack`) ouvre toujours l'interface avec ce dossier chargé.
 

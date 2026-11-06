@@ -30,6 +30,7 @@ OpenFocus is een professionele desktoptoepassing voor multifocus-beeldfusie, bed
 - **Multifocus-beeldfusie**: meerdere afbeeldingen met verschillende scherpstelpunten combineren tot één volledig scherp beeld
 - **Tien fusiemethoden**: Guided Filter, DCT, DTCWT, GFG-FGF, StackMFF, StackMFF V2, StackMFF V3 en OpenFocus A, B en C; daarnaast een modus met alleen uitlijning
 - **Beeldregistratie**: verschoven beeldreeksen uitlijnen met ECC, homografie, homografie met daaropvolgende ECC-verfijning of de snelle OpenFocus-uitlijning
+- **Automatische achtergrond**: een onrustige gestapelde achtergrond vervangen door één echt frame, en zien waar geen frame de scène scherp zag
 - **Bronvaste retouche**: pixels schilderen vanuit de frames die het resultaat echt hebben gemaakt, met bron- en herstelpenseel, belichtingspenseel en ongedaan maken per streek
 - **Veegvergelijking**: de uitlijning controleren en resultaten vergelijken met een A/B-scheiding
 - **Projectbestanden**: reproduceerbare instellingen en bronverwijzingen opslaan in `.ofproj`-bestanden; resultaat- en retouchepixels worden apart geëxporteerd
@@ -590,6 +591,56 @@ Herkomst wordt met de uitvoer opgeslagen: de uitgelijnde frames, ROI-bijsnijding
 
 Voor een bestaand afbeeldingsbestand kies je **Bewerken → Afbeeldingsbestanden retoucheren…** en selecteer je het resultaat en een of meer bronafbeeldingen. De bronnen moeten al op hetzelfde pixelraster als het resultaat zijn uitgelijnd; gelijke afmetingen alleen bewijzen geen uitlijning. Enkelbladige PNG-, TIFF-, JPEG- en BMP-afbeeldingen met overeenkomende rechtopstaande afmetingen, kanalen en 8- of 16-bitdiepte worden geaccepteerd; EXIF-oriëntatie wordt bij het laden toegepast. Alpha- en meerbladige afbeeldingen worden niet ondersteund. De geselecteerde frames zijn door de gebruiker aangeleverd, geen vastgelegde renderherkomst. **Toepassen** maakt een aparte, niet-geëxporteerde uitvoer; sla die op vanuit de uitvoerlijst. De gekozen bestanden zijn tijdens deze sessie beschermd tegen overschrijven, inclusief export van dieptekaarten en 3D-meshes. Zoals bij andere resultaten bewaren projectbestanden deze pixels of penseelgeschiedenis niet.
 
+### De achtergrond vervangen (Automatische achtergrond)
+
+Bij stapelen wordt de achtergrond samen met het onderwerp scherp gemaakt. De
+achtergrond van een gestapeld beeld is dan vaak een lappendeken van
+verschillende onscherptes, met een halo rond het onderwerp.
+**Automatische achtergrond…** in de retoucheerwerkruimte vervangt die door één
+echt frame uit dezelfde stapel. Het onderwerp blijft precies zoals gestapeld.
+De achtergrond wordt afgeleid van een frame en het gestapelde resultaat; de
+verwerking kan de pixels reconstrueren, aanpassen en mengen.
+
+1. Open het resultaat in de retoucheerwerkruimte en klik op
+   **Automatische achtergrond…**.
+2. Kies de achtergrond:
+   - **Automatisch** (aanbevolen) gebruikt de zachte achtergrond, tenzij de
+     stapel een groot deel van de achtergrond scherp heeft vastgelegd. Dan
+     gebruikt het de scherpe.
+   - **Zachte achtergrond** gebruikt het frame met de onscherpste achtergrond.
+   - **Scherpe achtergrond** gebruikt het frame met de verste focus.
+3. Laat **Randhalo's opschonen** aan om halo's langs de randen van het onderwerp
+   weg te halen. Het gaat nooit verder dan wat de frames vastlegden. Zet het uit
+   om de randen van de stapel te behouden.
+4. Vink **Zachte delen die aan het onderwerp vastzitten behouden** aan wanneer
+   delen van het onderwerp net buiten de scherptediepte vallen, zoals het
+   knopje aan het eind van een stekel. Ook achtergrondobjecten naast het
+   onderwerp kunnen dan zoals gestapeld blijven, dus controleer het resultaat.
+5. Klik op **Achtergrond vervangen**. Een stapel van 15 frames van 20 megapixel
+   duurt ongeveer een minuut en vraagt ongeveer 3,5 GB vrij geheugen.
+   **Annuleren** stopt het.
+
+De wijziging is één stap die u ongedaan kunt maken, en penseelstreken die u al
+op het onderwerp hebt gezet blijven staan. Met de **Herstelkwast** haalt u
+gestapelde pixels terug waar u die liever hebt, bijvoorbeeld een onscherp
+grassprietje vóór het onderwerp. Vult het onderwerp bijna het hele beeld, zoals
+bij een bosbodemscène, dan blijft het beeld zoals gestapeld en ziet u een
+melding.
+
+Na een run kleurt **Ontbrekende gegevens tonen** de plekken die geen frame scherp
+zag. Dit zijn de plekken om te controleren of met de hand te retoucheren:
+
+- magenta: achtergrond die geen frame zonder het onderwerp ervoor vastlegde
+- cyaan: onderwerp dat voor de camera verborgen was
+- geel: onderwerp buiten het focusbereik van de stapel
+- leisteen: te glad om te beoordelen
+
+**Kaart met ontbrekende gegevens opslaan…** schrijft de gekleurde voorvertoning
+en per kleur één zwart-witmasker. De automatische achtergrond heeft de frames
+nodig waaruit het resultaat ontstond en is niet beschikbaar voor
+gebiedsresultaten (ROI). Nieuwe achtergrondcontrolepunten herstellen het exacte
+beeld, de bereikbare geschiedenis en diagnostiek zonder de achtergrond opnieuw te berekenen.
+
 ### Labels beheren
 
 Open **Extra → Labels** nadat je afbeeldingen hebt geladen of een resultaat hebt geproduceerd. Elk label heeft zijn eigen doel: de bronstapel, de uitgelijnde stapel of uitvoerresultaten. Uitvoerlabels kunnen voor alle resultaten gelden of voor het geselecteerde resultaat op naam; hernoemen of herordenen van dat resultaat verandert de koppeling niet.
@@ -939,17 +990,19 @@ exit_code = run_recipe("workflow.json", dry_run=True)  # False om te verwerken
 
 ### Retouchecontrolepunten afspelen
 
-Bij opslaan of laden worden de basis en de verwerkte bronnen eerst in een annuleerbare achtergrondbewerking gecontroleerd. Bij opslaan worden ook de vastgelegde bewerkingen afgespeeld en wordt het huidige beeld en de ongedaan-maak-/opnieuw-uitvoerstatus gecontroleerd voordat het controlepunt wordt gepubliceerd. Als een bron is gewijzigd en het afspelen niet meer overeenkomt, mislukt het opslaan en blijven je bewerkingen behouden. Annuleren van opslaan of laden houdt je huidige bewerkingen ook beschikbaar. Is er onvoldoende geheugen voor controle of afspelen, dan stopt de bewerking en blijven zowel je huidige bewerkingen als een bestaand controlepunt ongewijzigd.
+Gebruik de knoppen voor het opslaan en laden van controlepunten in de retouchewerkruimte met de oorspronkelijke basis en verwerkte bronnen. Sessies met automatische achtergrond, ook geslaagde analyses zonder pixelwijzigingen, bewaren verliesloze v2-`.ofretouch`-ZIP-momentopnamen met JSON-metadata en NumPy-gegevens: het exacte werkbeeld, bereikbare tegels voor ongedaan maken/opnieuw uitvoeren, diagnostische toestanden en bronherkomst. Laden van v2 berekent de achtergrond niet opnieuw. Sessies met alleen penseel-/toonbewerkingen kunnen compact JSON v1 gebruiken; oudere achtergrondcontrolepunten in JSON v1 blijven afspeelbaar.
+
+Broncontrole verloopt in een annuleerbare achtergrondbewerking. Voor het vervangen van de bestemming laadt opslaan het voorbereide bestand opnieuw en controleert het huidige beeld, bereikbare tegels voor ongedaan maken/opnieuw uitvoeren en diagnostische toestanden op exacte gelijkheid. Niet-passende bronnen, een mislukte controle, annulering of onvoldoende geheugen laten je huidige bewerkingen en een bestaand controlepunt ongewijzigd.
 
 Als de opnamelimiet van het controlepunt een volgende bewerking verhindert, pas je de huidige bewerkingen toe en begin je een nieuwe retouchesessie om verder te gaan.
 
 Sla een retouchecontrolepunt op vanuit de retouchewerkruimte en geef daarna het oorspronkelijke basisbeeld en elk verwerkt bronframe in dezelfde volgorde als de sessie op:
 
 ```bash
-openfocus retouch replay edits.json --base fused.png --sources processed1.png processed2.png --output retouched.tif
+openfocus retouch replay edits.ofretouch --base fused.png --sources processed1.png processed2.png --output retouched.tif
 ```
 
-Gebruik de frames die daadwerkelijk voor het retoucheren zijn gebruikt — na uitlijning en een eventuele ROI-bijsnijding of andere verwerking — met hun oorspronkelijke pixelwaarden en bitdiepte. Het controlepunt legt bewerkingen en vingerafdrukken vast, niet de beeldpixels. Afspelen reconstrueert de vastgelegde frame-offsets en het uitlijningsgedrag en controleert de basis, de geordende frames en geldigheidsmaskers; onverenigbare pixels, geometrie of maskers worden geweigerd. Elk pad moet één afbeelding bevatten. De uitvoer moet PNG of TIFF zijn en behoudt de bitdiepte van de basis. Het controlepunt en de invoerbeelden mogen niet als uitvoer worden gebruikt.
+Beide formaten vereisen nog steeds het oorspronkelijke basisbeeld en alle frames die daadwerkelijk voor het retoucheren zijn gebruikt, in sessievolgorde, na uitlijning en een eventuele ROI-bijsnijding of andere verwerking, met hun oorspronkelijke pixelwaarden en bitdiepte. Laden reconstrueert de vastgelegde frame-offsets en het uitlijningsgedrag en controleert de basis, de geordende frames en geldigheidsmaskers; onverenigbare pixels, geometrie of maskers worden geweigerd. Elk pad moet één afbeelding bevatten. De uitvoer moet PNG of TIFF zijn en behoudt de bitdiepte van de basis. Het controlepunt en de invoerbeelden mogen niet als uitvoer worden gebruikt.
 
 Exitcodes: `0` succes, `1` verwerkingsfout, `2` gebruiksfout. `python main.py --help` toont alle opties; starten met een gewoon pad (`python main.py C:\stack`) opent nog steeds de GUI met die map geladen.
 
