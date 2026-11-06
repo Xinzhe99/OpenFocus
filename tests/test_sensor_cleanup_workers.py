@@ -46,9 +46,10 @@ def test_batch_excludes_and_applies_mask_before_processing(qapp, tmp_path, monke
                 'defect_mask_path': str(path), 'group_size': 2 if grouped else 0}
     worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'), settings, use_gpu=False)
     seen = []
+    fuse_one_stack = worker._fuse_one_stack
     def fuse(fusion, method, images, params):
         seen.append([frame.copy() for frame in images])
-        return images[0]
+        return fuse_one_stack(fusion, method, images, params)
     monkeypatch.setattr(worker, '_fuse_one_stack', fuse)
     outcome = {}
     worker.finished.connect(outcome.update)
@@ -56,8 +57,10 @@ def test_batch_excludes_and_applies_mask_before_processing(qapp, tmp_path, monke
     assert outcome['success'] == 1
     assert len(seen[0]) == 2
     for frame in seen[0]:
-        assert frame.dtype == np.float32
-        np.testing.assert_allclose(frame, 10001.0 / 257.0, rtol=1e-6)
+        np.testing.assert_array_equal(frame, np.full_like(image, 10001))
+    saved = cv2.imread(outcome['outputs'][0], cv2.IMREAD_UNCHANGED)
+    assert saved.dtype == np.uint16
+    np.testing.assert_array_equal(saved, np.full_like(image, 10001))
 
 
 def test_render_admits_full_cleanup_stack_before_mask_or_processing(qapp, tmp_path, monkeypatch):

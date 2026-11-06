@@ -111,3 +111,23 @@ def test_directory_rejects_oversized_frame_before_decode(tmp_path, monkeypatch, 
         else:
             stackmffv3._read_stack(str(tmp_path), None)
     assert decoded == [str(tmp_path / 'first.png')]
+
+
+@pytest.mark.parametrize('method', ['stackmff', 'stackmffv2', 'stackmffv3'])
+@pytest.mark.parametrize('exposure_match', [False, True])
+def test_direct_neural_mixed_depth_matches_normalized_consumer(method, exposure_match):
+    pytest.importorskip('onnxruntime')
+    from core.multi_focus_fusion import MultiFocusFusion
+    from utils.image_utils import quantize_fuse_output
+
+    frames = _mixed_frames()
+    originals = [frame.copy() for frame in frames]
+    normalized, is_16bit = normalize_fuse_input(frames)
+    outputs = []
+    for inputs in (normalized, frames):
+        fusion = MultiFocusFusion(method, use_gpu=False, tile_enabled=False,
+                                  exposure_match=exposure_match)
+        outputs.append(quantize_fuse_output(fusion.fuse(inputs, thread_count=1), is_16bit))
+    np.testing.assert_array_equal(outputs[0], outputs[1])
+    for frame, original in zip(frames, originals):
+        np.testing.assert_array_equal(frame, original)

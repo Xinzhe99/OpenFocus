@@ -539,8 +539,8 @@ class _DecodeCancelled(Exception):
 
 def _downscale_page(image: np.ndarray, scale_factor: float) -> np.ndarray:
     if scale_factor != 1.0 and 0 < scale_factor < 1.0:
-        width = int(image.shape[1] * scale_factor)
-        height = int(image.shape[0] * scale_factor)
+        width = max(1, int(image.shape[1] * scale_factor))
+        height = max(1, int(image.shape[0] * scale_factor))
         return cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
     return image
 
@@ -816,11 +816,6 @@ class ImageStackLoader:
         return result
 
     def load_from_video(self, video_path: str, scale_factor: float = 1.0) -> Tuple[bool, str, List[np.ndarray], List[str]]:
-        self.source_exif = b""
-        self.source_icc_profile = b""
-        self.source_icc_profiles = {}
-        self.px_size_um = None
-        self.image_paths = []
         if not os.path.isfile(video_path):
             return False, "Video file does not exist", [], []
 
@@ -847,10 +842,7 @@ class ImageStackLoader:
                 if not ret:
                     break
 
-                if scale_factor != 1.0 and 0 < scale_factor < 1.0:
-                    width = int(frame.shape[1] * scale_factor)
-                    height = int(frame.shape[0] * scale_factor)
-                    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+                frame = _downscale_page(frame, scale_factor)
 
                 loaded_images.append(store_frame(frame))
                 filenames.append(f"{video_name}_frame_{frame_index:04d}.png")
@@ -858,11 +850,20 @@ class ImageStackLoader:
         finally:
             cap.release()
 
+        if self.should_cancel():
+            return False, 'CANCELLED', [], []
+
         if not loaded_images:
             return False, "No frames could be extracted from the video", [], []
 
         self.images = loaded_images
         self.image_paths = [video_path] * len(loaded_images)
+        self.source_exif = b""
+        self.source_icc_profile = b""
+        self.source_icc_profiles = {}
+        self.px_size_um = None
+        self.linear_dng_metadata = None
+        self.failed_count = 0
 
         message = f"Loaded {len(loaded_images)} frame(s) from video"
         if total_frames > 0 and len(loaded_images) < total_frames:
@@ -980,8 +981,8 @@ class ImageStackLoader:
             if h <= 0 or w <= 0:
                 raise ValueError(f"Invalid image dimensions: {w}x{h}")
             scale = thumb_size / max(h, w)
-            new_w = int(w * scale)
-            new_h = int(h * scale)
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
 
             resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
             pixmap = self._cv_to_pixmap(to_display_uint8(resized), (thumb_size, thumb_size))
@@ -1004,8 +1005,8 @@ class ImageStackLoader:
 
             scale = min(max_w / w, max_h / h)
             if scale < 1.0:
-                new_w = int(w * scale)
-                new_h = int(h * scale)
+                new_w = max(1, int(w * scale))
+                new_h = max(1, int(h * scale))
                 cv_img = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
         return cv2_to_pixmap(cv_img)

@@ -627,7 +627,7 @@ def _fuse_stack_admitted(images, args):
     if getattr(args, "tile_threshold", None) is not None:
         fusion_kwargs["tile_threshold"] = args.tile_threshold
     fusion = MultiFocusFusion(**fusion_kwargs)
-    images, is_16bit = prepare_fusion_input(images, fusion, getattr(args, "_should_cancel", None))
+    images, is_16bit = prepare_fusion_input(images, getattr(args, "_should_cancel", None))
     t0 = time.time()
     fuse_kwargs = dict(input_source=images, img_resize=None, thread_count=args.threads)
     model_weights = _method_weights(spec)
@@ -643,7 +643,7 @@ def _fuse_stack_admitted(images, args):
     fused = quantize_fuse_output(fused, is_16bit)
     from core.transparency import restore_transparent_canvas
     fused = restore_transparent_canvas(fused, transparent)
-    # 注册/归一化后的帧留给 --depth-map 用（与融合同一输入）。帧序必须与
+    # 保留配准后的源帧供 --depth-map 使用；深度计算负责位深规范化。帧序必须与
     # 融合内部一致：--sort desc 会在 fuse() 内反转帧序，深度图若仍按原序
     # 计算，0/N-1 标签就指向相反的一端。
     if not getattr(args, "_grouped", False):
@@ -859,18 +859,30 @@ def _run_outputs(args, fused_out: str):
 
 
 def _first_duplicate(outputs):
-    """The first (path, flag, earlier flag) whose file an earlier entry claims.
+    """The first (path, flag, earlier flag) whose destination conflicts.
 
     Two names for one file (a hard link, a symlinked directory, Windows
-    case/8.3 aliases) count as one destination, as in
-    `utils.path_identity.same_path`."""
-    seen_paths, seen_files = {}, {}
+    case/8.3 aliases) count as one destination. A file also cannot serve as
+    another output's parent directory.
+    """
+    seen_paths, seen_files, seen_parents = {}, {}, {}
     for flag, path in outputs:
         if not path:
             continue
         key = path_key(path)
         if key in seen_paths:
             return path, flag, seen_paths[key][0]
+        if key in seen_parents:
+            return path, flag, seen_parents[key]
+        parent = os.path.dirname(key)
+        while parent != key:
+            if parent in seen_paths:
+                return path, flag, seen_paths[parent][0]
+            seen_parents.setdefault(parent, flag)
+            key_parent = os.path.dirname(parent)
+            if key_parent == parent:
+                break
+            parent = key_parent
         seen_paths[key] = (flag, path)
         identity = file_identity(path)
         if identity is None:

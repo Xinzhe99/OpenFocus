@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from utils.sorting import natural_sort_key
-from core.frame_storage import store_frame
+from core.frame_storage import create_frame, store_frame
 
 
 def _collect_images(input_source, *, normalize=True, should_cancel=None) -> List[np.ndarray]:
@@ -61,19 +61,14 @@ def _frame_pass_workers(frames, img_resize, algorithm, thread_count, *, activity
     if thread_count == 1 or len(frames) < 2:
         return 1
     from core import resource_policy as policy
-    from core.algorithms import get_fusion, resolve_runner, fusion_defaults
     from core.multi_focus_fusion import memory_budget_bytes
     h, w = frames[0].shape[:2]
     if img_resize:
         w, h = map(int, img_resize)
-    spec = get_fusion(algorithm)
-    fixed, per_worker = resolve_runner(spec.resource_estimator)(h, w, fusion_defaults(algorithm), len(frames))
-    if activity_only:
-        # Only best activity + winner are shared in FirstPass. Global depth
-        # smoothing and C's reconstruction pyramids run after producers drain.
-        # Each producer envelope includes its source, integer filter maps,
-        # row scratch and a completed activity plane waiting for reduction.
-        fixed, per_worker = 4 * 1024 * 1024 + h * w * 12, h * w * 80
+    # Parallel producers must fit as complete resident planes. The public
+    # estimator admits serial mappings/row scratch and cannot size this window.
+    fixed = 4 * 1024 * 1024 + h * w * (12 if activity_only else 16)
+    per_worker = h * w * 80
     if img_resize:
         # _prepare_frame must convert uint16 BEFORE resizing to preserve its
         # fractional interpolation. A small destination cannot hide multiple
@@ -152,14 +147,25 @@ def _ordered_frame_results(count, produce, workers, should_cancel):
 
 
 def _prepare_frame(frame, img_resize, should_cancel):
-    """Keep the baseline conversion/resize order without retaining a float stack."""
+    """Convert one frame in rows; retain conversion-before-resize semantics."""
     _check_cancel(should_cancel)
     frame = np.asarray(frame)
+    if img_resize is None:
+        if frame.dtype == np.float32:
+            return frame
+        result = create_frame(frame.shape, np.float32)
+        for start in range(0, frame.shape[0], 128):
+            _check_cancel(should_cancel)
+            rows = slice(start, min(frame.shape[0], start + 128))
+            if frame.dtype == np.uint16:
+                result[rows] = frame[rows].astype(np.float32) * (255.0 / 65535.0)
+            else:
+                result[rows] = frame[rows]
+        return result
     if frame.dtype == np.uint16:
-        frame = frame.astype(np.float32) * (255.0 / 65535.0)
-    if img_resize is not None:
-        w, h = img_resize
-        frame = cv2.resize(frame, (int(w), int(h)), interpolation=cv2.INTER_AREA)
+        frame = _prepare_frame(frame, None, should_cancel)
+    w, h = img_resize
+    frame = cv2.resize(frame, (int(w), int(h)), interpolation=cv2.INTER_AREA)
     return frame if frame.dtype == np.float32 else frame.astype(np.float32)
 
 

@@ -55,7 +55,7 @@
 ## 📢 Actualités
 
 > [!NOTE]
-> **v1.75.0** — Fusion groupée, flux de traitement réutilisables, piles PNG transparentes, diagnostics de recalage, exports de profondeur enrichis et flux de bureau remanié. Consultez le journal des modifications pour les entrées prises en charge et les limitations.
+> **v1.77.0, version candidate** — Arrière-plan automatique et sessions de retouche restaurables, aperçus JPEG/RAW à mémoire limitée et inspection des pixels d’origine, fusion CPU selon le budget RAM et état d’exécution GPU plus clair. Consultez le journal des modifications pour les entrées prises en charge et les limitations.
 
 Les versions précédentes figurent dans le [journal des modifications](../../CHANGELOG.md).
 

@@ -410,3 +410,96 @@ def test_busy_workspace_freezes_inputs_and_cancel_preserves_positions(qapp, tmp_
             _wait_workspace(qapp, dialog)
         dialog.close()
         parent.close()
+
+
+def test_low_contrast_microscope_texture_recovers_magnification_and_rotation():
+    rng = np.random.default_rng(771)
+    texture = cv2.GaussianBlur(rng.normal(0, 1, (700, 1200)).astype(np.float32), (0, 0), 1.2)
+    scene = np.uint8(np.clip(110 + texture * 35, 0, 255))
+    a, b = 1.035 * np.cos(0.025), 1.035 * np.sin(0.025)
+    expected = np.array([[a, -b, 380], [b, a, -12], [0, 0, 1.]])
+    second = cv2.warpAffine(scene, np.linalg.inv(expected)[:2], (760, 640))
+    frames = [make_frame('anchor', scene[:, :800]), make_frame('magnified', second)]
+    alignment = auto_align(frames)
+    assert alignment.connected == (True, True)
+    corners = np.array([[0, 0, 1], [759, 0, 1], [0, 639, 1], [759, 639, 1]]).T
+    np.testing.assert_allclose(alignment.transforms[1] @ corners, expected @ corners, atol=1.5)
+    assert np.hypot(*alignment.transforms[1][:2, 0]) == pytest.approx(1.035, abs=0.002)
+
+
+def test_global_registration_uses_loop_controls_and_rejects_control_outliers(monkeypatch):
+    from core import mosaic
+
+    rng = np.random.default_rng(521)
+    frames = [make_frame(str(i), np.zeros((400, 500, 3), np.uint8)) for i in range(4)]
+    expected = [np.array([[1., 0, 120 * i], [0, 1., 30 * i], [0, 0, 1.]]) for i in range(3)]
+    edges = {}
+    for i, j in ((0, 1), (1, 2), (0, 2)):
+        source = rng.uniform((40, 40), (350, 300), (100, 2))
+        relative = np.linalg.inv(expected[i]) @ expected[j]
+        target = mosaic._project(relative, source) + rng.normal(0, 0.1, source.shape)
+        target[:5] += (25, -30)
+        # Biased pair estimates seed a drifting spanning tree; the joint fit
+        # must use the underlying controls and the third edge to correct it.
+        initial = relative.copy()
+        initial[:2, 2] += (4, -3)
+        edges[i, j] = mosaic._ControlPoints(initial, source, target, 1.0)
+    monkeypatch.setattr(mosaic, '_features', lambda *_: None)
+    monkeypatch.setattr(mosaic, '_pair_match', lambda first, second, *_: edges.get((int(first.name), int(second.name))))
+    placements = mosaic.initial_transforms(frames)
+    placements[0][:2, 2] = (23, -17)
+    placements[3][:2, 2] = (-100, 72)
+    alignment = auto_align(frames, placements)
+    assert alignment.connected == (True, True, True, False)
+    np.testing.assert_array_equal(alignment.transforms[0], placements[0])
+    np.testing.assert_array_equal(alignment.transforms[3], placements[3])
+    for node in (1, 2):
+        np.testing.assert_allclose(alignment.transforms[node], placements[0] @ expected[node], atol=0.2)
+    assert max(match[3] for match in alignment.matches) < 0.3
+
+
+def test_global_fit_can_be_cancelled_before_changing_placements(monkeypatch):
+    from core import mosaic
+
+    frame = make_frame('one', np.zeros((80, 96, 3), np.uint8))
+    original = [np.eye(3), np.array([[1., 0, 50], [0, 1., 0], [0, 0, 1.]])]
+    points = np.array([[10., 10], [60, 10], [10, 50], [60, 50]])
+    controls = mosaic._ControlPoints(original[1], points, points + (50, 0), 1.)
+    with pytest.raises(RegistrationCancelled):
+        mosaic._optimize_component([frame, frame], original, [0, 1], [(0, 1, controls)], lambda: True)
+    np.testing.assert_array_equal(original[1], controls.transform)
+
+
+def test_workspace_manual_scale_and_rotation_keep_dragged_position(qapp):
+    from PyQt6.QtCore import QPointF
+    from PyQt6.QtWidgets import QWidget
+    from dialogs.mosaic import MosaicDialog
+
+    parent = QWidget()
+    dialog = MosaicDialog(parent)
+    try:
+        dialog._append_frames([make_frame('one', np.full((80, 96, 3), 100, np.uint16))])
+        dialog.list.setCurrentRow(0)
+        dialog.items[0].setPos(QPointF(31, -14))
+        dialog.scale_spin.setValue(103.5)
+        dialog.rotation_spin.setValue(1.25)
+        matrix = dialog._current_transforms()[0]
+        np.testing.assert_allclose(matrix[:2, 2], (31, -14))
+        assert np.hypot(*matrix[:2, 0]) == pytest.approx(1.035)
+        assert np.degrees(np.arctan2(matrix[1, 0], matrix[0, 0])) == pytest.approx(1.25)
+        output, _ = render_mosaic(dialog.frames, dialog._current_transforms())
+        assert output.dtype == np.uint16
+        assert output.shape[1] > 96
+        assert np.max(output) == 100
+    finally:
+        dialog.close()
+        parent.close()
+
+
+def test_large_manual_canvas_coordinates_preserve_native_pixels():
+    image = np.arange(48 * 70 * 3, dtype=np.uint16).reshape(48, 70, 3)
+    frame = make_frame('far from origin', image)
+    matrix = np.array([[1., 0, 1000000000], [0, 1., -1000000000], [0, 0, 1.]])
+    output, origin = render_mosaic([frame], [matrix], tile_size=32)
+    assert origin == (1000000000, -1000000000)
+    np.testing.assert_array_equal(output, image)

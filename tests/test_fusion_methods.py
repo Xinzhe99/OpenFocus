@@ -427,18 +427,21 @@ def test_guided_tiled_exposure_matches_whole_frame_preprocessing(dtype, base_fra
     from utils.image_utils import apply_exposure_gain, exposure_gains
 
     rng = np.random.default_rng(712)
-    frames = [rng.integers(5, high, (24, 28, 3), dtype=np.uint8)
+    frames = [rng.integers(5, high, (259, 28, 3), dtype=np.uint8)
               for high in (90, 150, 220)]
     if dtype == np.uint16:
         frames = [frame.astype(np.uint16) * 251 + 19 for frame in frames]
+    originals = [frame.copy() for frame in frames]
     normalized, _ = normalize_fuse_input(frames)
     matched = [apply_exposure_gain(frame, gain)
                for frame, gain in zip(normalized, exposure_gains(normalized))]
     options = dict(algorithm='guided_filter', tile_enabled=True, tile_block_size=16,
                    tile_overlap=4, tile_threshold=1, base_frame=base_frame)
     expected = MultiFocusFusion(exposure_match=False, **options).fuse(matched, thread_count=1)
-    actual = MultiFocusFusion(exposure_match=True, **options).fuse(normalized, thread_count=1)
+    actual = MultiFocusFusion(exposure_match=True, **options).fuse(frames, thread_count=1)
     np.testing.assert_allclose(actual, expected, atol=1e-4)
+    for frame, original in zip(frames, originals):
+        np.testing.assert_array_equal(frame, original)
 
 
 @pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
@@ -611,3 +614,103 @@ def test_resized_neural_tiles_apply_normalized_exposure_once(method):
     actual = MultiFocusFusion(**options, exposure_match=True).fuse(frames, img_resize=size, thread_count=1)
     assert actual.shape[:2] == (size[1], size[0])
     np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('method', ['guided_filter', 'dct', 'gfgfgf'])
+@pytest.mark.parametrize('source_kind', ['gray', 'bgra'])
+@pytest.mark.parametrize('tiled', [False, True])
+@pytest.mark.parametrize('dtype', [np.uint8, np.uint16])
+def test_base_correction_matches_backend_color_promotion(method, source_kind, tiled, dtype):
+    rng = np.random.default_rng(916)
+    gray = [rng.integers(10, 220, (24, 32), np.uint8) for _ in range(2)]
+    if dtype == np.uint16:
+        gray = [frame.astype(np.uint16) * 251 + 19 for frame in gray]
+    bgr = [cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) for frame in gray]
+    frames = gray if source_kind == 'gray' else [
+        cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA) for frame in bgr]
+    options = dict(algorithm=method, exposure_match=False, base_frame='first',
+                   tile_enabled=tiled, tile_threshold=8, tile_block_size=16,
+                   tile_overlap=4)
+    expected = MultiFocusFusion(**options).fuse(bgr, thread_count=1)
+    actual = MultiFocusFusion(**options).fuse(frames, thread_count=1)
+    assert actual.shape == (24, 32, 3)
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('method', ['guided_filter', 'openfocus_a'])
+@pytest.mark.parametrize('tiled', [False, True])
+@pytest.mark.parametrize('base_frame', ['first', 'last'])
+def test_resized_base_correction_anchors_selected_reference(method, tiled, base_frame):
+    rng = np.random.default_rng(726)
+    frames = [rng.uniform(20, 80, (32, 40, 3)).astype(np.float32),
+              rng.uniform(120, 200, (32, 40, 3)).astype(np.float32)]
+    size = (24, 20)
+    options = dict(algorithm=method, exposure_match=False, tile_enabled=tiled,
+                   tile_threshold=8, tile_block_size=16, tile_overlap=4)
+    uncorrected = MultiFocusFusion(**options).fuse(frames, img_resize=size, thread_count=1)
+    reference = frames[0 if base_frame == 'first' else -1]
+    reference = cv2.resize(reference, size, interpolation=(
+        cv2.INTER_AREA if method == 'openfocus_a' else cv2.INTER_LINEAR))
+    sigma = MultiFocusFusion.BASE_CORRECTION_SIGMA
+    expected = np.clip(uncorrected + (cv2.GaussianBlur(reference, (0, 0), sigma)
+                        - cv2.GaussianBlur(uncorrected, (0, 0), sigma)), 0, 255)
+    actual = MultiFocusFusion(**options, base_frame=base_frame).fuse(
+        frames, img_resize=size, thread_count=1)
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=2e-5)
+
+
+@pytest.mark.parametrize('stage_tiles', [False, True])
+def test_area_resize_extension_keeps_reference_pixels(monkeypatch, stage_tiles):
+    from dataclasses import replace
+    from core import algorithms
+
+    monkeypatch.setattr(algorithms, '_FUSION', dict(algorithms._FUSION))
+    algorithms.register_fusion(replace(
+        algorithms.get_fusion('openfocus_a'), id='area_extension',
+        tile_decider=None, resize_interpolation='area'))
+    rng = np.random.default_rng(3196)
+    frames = [rng.uniform(low, high, (35, 43, 3)).astype(np.float32)
+              for low, high in ((20, 80), (120, 200))]
+    size = (21, 17)
+    resized = [cv2.resize(frame, size, interpolation=cv2.INTER_AREA) for frame in frames]
+    options = dict(exposure_match=False, tile_enabled=False, base_frame='first')
+    expected = MultiFocusFusion('openfocus_a', **options).fuse(resized, thread_count=1)
+    fusion = MultiFocusFusion('area_extension', **options)
+    if stage_tiles:
+        staged = fusion._resize_tile_sources(frames, size, None)
+        for result, reference in zip(staged, resized):
+            np.testing.assert_array_equal(result, reference)
+        actual = fusion.fuse(staged, thread_count=1)
+    else:
+        actual = fusion.fuse(frames, img_resize=size, thread_count=1)
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=2e-5)
+
+
+def test_all_ten_methods_keep_independent_results_when_switching():
+    """Exercise real runners/checkpoints and their caches on three focal planes."""
+    from core.algorithms import fusion_algorithms
+
+    pytest.importorskip('onnxruntime')
+    pytest.importorskip('dtcwt')
+    rng = np.random.default_rng(177)
+    h, w = 192, 256
+    texture = rng.integers(20, 230, (h, w, 3), dtype=np.uint8)
+    blurred = cv2.GaussianBlur(texture, (0, 0), 3)
+    x = np.indices((h, w))[1]
+    frames = [np.where(mask[:, :, None], texture, blurred) for mask in (
+        x < w // 3, (x >= w // 3) & (x < 2 * w // 3), x >= 2 * w // 3)]
+    methods = tuple(spec.id for spec in fusion_algorithms())
+    options = dict(use_gpu=False, tile_enabled=False, exposure_match=False,
+                   base_frame='none', sort_mode='off')
+    expected = {method: MultiFocusFusion(method, **options).fuse(
+        frames, thread_count=1).copy() for method in methods}
+    # This particular textured fixture discriminates the ten released paths.
+    # Uniform inputs are deliberately not required to differ between methods.
+    for index, method in enumerate(methods):
+        for other in methods[index + 1:]:
+            assert not np.array_equal(expected[method], expected[other]), (method, other)
+    fusion = MultiFocusFusion(methods[0], **options)
+    for method in reversed(methods):
+        fusion.set_algorithm(method)
+        actual = fusion.fuse(frames, thread_count=1)
+        np.testing.assert_array_equal(actual, expected[method], err_msg=method)

@@ -13,6 +13,7 @@ VERSION = 1
 # The recipe deliberately excludes transient CLI controls (progress, resume,
 # summaries and per-folder override files).
 _FIELDS = (
+    "native_raw", "native_batch_format",
     "method", "align", "base_frame", "exposure_match", "sort", "dust_map",
     "defect_mask_path", "sensor_denoise",
     "threads", "resource_preference", "batch_size", "cpu", "downscale",
@@ -39,7 +40,8 @@ def _mask_fingerprint(path):
 def _relative(path, base):
     if not isinstance(path, str) or not path or "\0" in path:
         raise ValueError("paths must be non-empty strings")
-    if os.path.isabs(path) or ntpath.isabs(path) or ntpath.splitdrive(path)[0] or "\\" in path:
+    if (path.startswith("/") or os.path.isabs(path) or ntpath.isabs(path)
+            or ntpath.splitdrive(path)[0] or "\\" in path):
         raise ValueError(f"recipe paths must be relative and use forward slashes: {path!r}")
     return os.path.abspath(os.path.join(base, path))
 
@@ -90,8 +92,6 @@ def validate_recipe(recipe, recipe_path):
             from utils.path_identity import same_path
             if output_key == 'output' and same_path(source, output):
                 raise ValueError('Recipe output would overwrite an explicitly selected source')
-    if output_key == "output" and os.path.splitext(output)[1].lower() not in VALID_FORMATS:
-        raise ValueError("unsupported output extension")
     options = recipe.get("options", {})
     _object(options, "options", (*_FIELDS, "fusion_parameters", "registration_parameters", "defect_mask_sha256"))
     parser = build_parser()
@@ -121,8 +121,10 @@ def validate_recipe(recipe, recipe_path):
                 raise ValueError("scale_um must be a positive finite number")
         elif key == "auto_background" and value is None:
             continue
+        elif key == "native_batch_format" and value is None:
+            continue
         elif key in ("cpu", "scale_bar", "exposure_match", "tile_enabled", "sharpen_output",
-                     "sensor_denoise", "keep_soft_parts"):
+                     "sensor_denoise", "keep_soft_parts", "native_raw"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
             if key in ("exposure_match", "tile_enabled"):
@@ -175,6 +177,35 @@ def validate_recipe(recipe, recipe_path):
             if same_path(mask, depth_output):
                 raise ValueError("depth_map would overwrite the defect mask")
     args = parser.parse_args(argv)
+    formats = (".dng", ".tif", ".tiff", ".png") if args.native_raw else VALID_FORMATS
+    if output_key == "output" and os.path.splitext(output)[1].lower() not in formats:
+        raise ValueError("unsupported output extension")
+    if args.native_batch_format and (not args.native_raw or not args.output_dir):
+        raise ValueError("native_batch_format requires native_raw and output_dir")
+    from core.cli import _list_folder_images, _result_outputs
+    from core.image_loader import ImageStackLoader
+    from utils.path_identity import same_path
+
+    sources = [args.dust_map, args.defect_mask_path]
+    destinations = []
+    for source in paths:
+        if os.path.isdir(source):
+            sources.extend(_list_folder_images(source, ImageStackLoader))
+            if (same_path(os.path.dirname(os.path.abspath(recipe_path)), source)
+                    and str(recipe_path).lower().endswith(tuple(ImageStackLoader.SUPPORTED_FORMATS))):
+                raise ValueError("Recipe destination must not become an input image")
+            if output_key == "output_dir":
+                extension = "." + (args.native_batch_format or "dng") if args.native_raw else ".png"
+                name = os.path.basename(source.rstrip("/\\")) or "stack"
+                destinations.extend(_result_outputs(args, os.path.join(output, name + extension)))
+        else:
+            sources.append(source)
+    if any(same_path(recipe_path, source) for source in sources if source):
+        raise ValueError("Recipe destination must not overwrite an input image or reference")
+    if output_key == "output":
+        destinations.extend(_result_outputs(args, output))
+    if any(same_path(recipe_path, destination) for _flag, destination in destinations):
+        raise ValueError("Recipe output must not overwrite the recipe file")
     if args.tile_overlap is not None and args.tile_size is not None and args.tile_overlap >= args.tile_size:
         raise ValueError("tile_overlap must be smaller than tile_size")
     if args.group_size == 1 or (args.group_size and args.group_overlap > args.group_size - 2):
@@ -247,7 +278,8 @@ def _capture_recipe_data(path, argv):
     from core.cli import build_parser, _resolve_algorithm_arguments
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.dry_run or args.resume or args.json or args.json_progress or args.config:
+    if (args.dry_run or args.resume or args.json or args.json_progress or args.config
+            or args.alignment_report or args.suggest_duplicates):
         raise ValueError("transient CLI controls cannot be saved in a recipe")
     if bool(args.output) == bool(args.output_dir):
         raise ValueError("exactly one of --output and --output-dir is required")

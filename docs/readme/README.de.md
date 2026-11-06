@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.75.0** — Gruppenfusion, wiederverwendbare Verarbeitungsvorlagen, transparente PNG-Stapel, Ausrichtungsdiagnose, erweiterte Tiefenexporte und ein überarbeiteter Desktop-Workflow. Unterstützte Eingaben und Einschränkungen stehen im Änderungsprotokoll.
+> **v1.77.0 Release Candidate** — Automatischer Hintergrund und wiederherstellbare Retuschesitzungen, begrenzte JPEG/RAW-Vorschauen und Prüfung der Originalpixel, CPU-Fusion nach RAM-Budget und ein klarerer GPU-Ausführungsstatus. Unterstützte Eingaben und Einschränkungen stehen im Änderungsprotokoll.
 
 Ältere Versionen stehen im [Änderungsprotokoll](../../CHANGELOG.md).
 

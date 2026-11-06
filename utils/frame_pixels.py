@@ -1,7 +1,7 @@
 """Bounded preview geometry and background pixel work for lazy consumers."""
 from copy import copy
 
-from PyQt6.QtCore import QThread, QTimer, Qt
+from PyQt6.QtCore import QEventLoop, QThread, QTimer, Qt
 from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QVBoxLayout, QWidget
 
 
@@ -54,28 +54,34 @@ class _PixelProgress(QDialog):
         event.ignore()
 
 
-def run_pixel_worker(parent, title, operation):
+def run_pixel_worker(parent, title, operation, *, show_progress=True):
     """Keep Qt responsive while a synchronous caller awaits pixel I/O.
 
-    Callers must capture settings before entering this function; operations
-    never access Qt widgets. The modal dialog keeps source state stable.
+    Operations never access Qt widgets. The default modal dialog keeps source
+    state stable. Windowless callers must guard reentry and reject stale results
+    because their own widgets remain interactive during the nested event loop.
     """
     application = QApplication.instance()
     if application is None or QThread.currentThread() is not application.thread():
         return operation()
-    dialog = _PixelProgress(parent if isinstance(parent, QWidget) else None)
-    dialog.setWindowTitle(title)
-    dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
-    layout = QVBoxLayout(dialog)
-    layout.addWidget(QLabel(title))
+    dialog = None
+    if show_progress:
+        dialog = _PixelProgress(parent if isinstance(parent, QWidget) else None)
+        dialog.setWindowTitle(title)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(title))
+        waiter = dialog
+    else:
+        waiter = QEventLoop()
     worker = _PixelWorker(operation)
-    worker.finished.connect(dialog.accept)
+    worker.finished.connect(dialog.accept if dialog is not None else waiter.quit)
     QTimer.singleShot(0, worker.start)
-    dialog.exec()
+    waiter.exec()
     worker.wait()
     result, error = worker.result, worker.error
     worker.deleteLater()
-    dialog.deleteLater()
+    waiter.deleteLater()
     if error is not None:
         raise error
     return result

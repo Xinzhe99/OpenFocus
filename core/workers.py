@@ -67,7 +67,7 @@ def _downscale_for_preview(img):
     if target >= longest:
         return img
     scale = target / float(longest)
-    width, height = int(round(w * scale)), int(round(h * scale))
+    width, height = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
     require_memory(width * height * (img.size // (h * w)) * img.dtype.itemsize)
     return cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
 
@@ -295,7 +295,7 @@ class RenderWorker(QThread):
 
     finished_signal = pyqtSignal(object, object, bool, float, float, str)
     progress_signal = pyqtSignal(int, int)  # done, total (tiled fusion)
-    stage_signal = pyqtSignal(str)  # "align" | "fuse"
+    stage_signal = pyqtSignal(str)  # waiting | prepare | align | fuse | finish
     error_signal = pyqtSignal(str)
 
     def __init__(self, raw_images, aligned_images=None, is_images_aligned=False,
@@ -375,8 +375,10 @@ class RenderWorker(QThread):
                            sort_mode=self.sort_mode, exposure_match=self.exposure_match,
                            **frame_details(self.raw_images)) as operation:
             try:
+                self.stage_signal.emit("waiting")
                 with heavy_job(lambda: self.is_cancelled):
                     try:
+                        self.stage_signal.emit("prepare")
                         self._run_admitted()
                     except RegistrationCancelled:
                         operation.cancel()
@@ -714,7 +716,7 @@ class RenderWorker(QThread):
             ai_batch_size=self.ai_batch_size, base_frame=self.base_frame,
             sort_mode=self.sort_mode, exposure_match=self.exposure_match,
             resource_preference=self.resource_preference)
-        images, is_16bit = prepare_fusion_input(images, fusion, should_cancel)
+        images, is_16bit = prepare_fusion_input(images, should_cancel)
         result = fusion.fuse(images, thread_count=self.thread_count,
             should_cancel=should_cancel, progress_callback=progress_callback)
         if self.sharpen_output and result is not None:
@@ -1015,11 +1017,6 @@ class BatchWorker(QThread):
                     source = os.path.dirname(stacks[0][0][0]) if stacks and stacks[0] else ''
                     tasks = [(f'{os.path.basename(source)}_{i + 1:03d}', stack)
                              for i, stack in enumerate(stacks)]
-                    from core.image_loader import _read_exif_bytes
-                    first = stacks[0][0][0] if stacks and stacks[0] else None
-                    self._source_exif = _read_exif_bytes(first) if first else b''
-                    from utils.scalebar import detect_px_size_um
-                    self.image_loader.px_size_um = detect_px_size_um(first) if first else None
                 else:
                     tasks = [(os.path.basename(os.path.normpath(path)), path)
                              for path in self.folder_paths]
@@ -1038,8 +1035,14 @@ class BatchWorker(QThread):
                         try:
                             with heavy_job(lambda: self.is_cancelled):
                                 if split:
-                                    from core.image_loader import common_icc_profile
-                                    self._source_icc_profile = common_icc_profile(item[0] for item in data)
+                                    from core.image_loader import (_read_exif_bytes, common_icc_profile,
+                                                                   _consistent_px_size_um)
+                                    from utils.scalebar import detect_px_size_um
+                                    paths = list(dict.fromkeys(item[0] for item in data))
+                                    self._source_exif = _read_exif_bytes(paths[0]) if paths else b''
+                                    self._source_icc_profile = common_icc_profile(paths)
+                                    self.image_loader.px_size_um = _consistent_px_size_um(
+                                        [detect_px_size_um(path) for path in paths])
                                     self._process_single_stack(data, self._get_output_path_for_single_folder(source), name, index)
                                 else:
                                     self.process_single_folder(data)
@@ -1233,7 +1236,7 @@ class BatchWorker(QThread):
                         base_frame=runtime.get('base_frame', 'none'),
                         sort_mode=runtime.get('sort_mode', 'asc'),
                         exposure_match=self.exposure_match, **tile_kwargs)
-                    fusion_input, is_16bit = prepare_fusion_input(color_frames, fusion, lambda: self.is_cancelled)
+                    fusion_input, is_16bit = prepare_fusion_input(color_frames, lambda: self.is_cancelled)
                     if aligned_for_export is None:
                         del aligned_images
                     result = self._fuse_one_stack(fusion, fusion_method, fusion_input, fusion_params)
@@ -1314,7 +1317,8 @@ class BatchWorker(QThread):
 
     def _process_grouped_folder(self, folder_path):
         from core.grouped_fusion import grouped_fuse
-        from core.image_loader import _read_exif_bytes, common_icc_profile
+        from core.image_loader import (_read_exif_bytes, common_icc_profile,
+                                       _consistent_px_size_um)
         from utils.image_utils import normalize_fuse_input, quantize_fuse_output
         from utils.scalebar import detect_px_size_um
         from utils.sorting import natural_sort_key
@@ -1351,7 +1355,8 @@ class BatchWorker(QThread):
             _validate_sensor_sources_for_gui(paths, lambda: self.is_cancelled)
         self._source_exif = _read_exif_bytes(paths[0])
         self._source_icc_profile = common_icc_profile(paths)
-        self.image_loader.px_size_um = detect_px_size_um(paths[0])
+        self.image_loader.px_size_um = _consistent_px_size_um(
+            [detect_px_size_um(path) for path in paths])
         sort_mode = runtime.get('sort_mode', 'asc')
         if sort_mode == 'desc' and get_fusion(method).sort_frames:
             paths.reverse()
@@ -1407,7 +1412,7 @@ class BatchWorker(QThread):
                     brightness_reference='last' if self.exposure_match else 'first', use_gpu=False)
                 images = registration.process(images, thread_count=self.thread_count,
                     resource_preference=self.resource_preference, should_cancel=lambda: self.is_cancelled)
-            fusion_input, is_16bit = prepare_fusion_input(images, fusion)
+            fusion_input, is_16bit = prepare_fusion_input(images)
             result = self._fuse_one_stack(fusion, method, fusion_input, params)
             return quantize_fuse_output(result, is_16bit)
 

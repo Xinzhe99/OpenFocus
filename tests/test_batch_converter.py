@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
@@ -420,7 +422,8 @@ def test_cancelled_batch_keeps_completed_page_and_reports_unstarted(tmp_path, mo
 
     monkeypatch.setattr(converter, 'convert_one', convert)
     monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
-                        SimpleNamespace(workers=1, max_in_flight=1, ram_budget=1024**3, describe=lambda: 'test'))
+                        SimpleNamespace(workers=1, native_threads=1, max_in_flight=1,
+                                        ram_budget=1024**3, describe=lambda: 'test'))
     monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 1024**3)
     statuses, progress = {}, []
     result = converter.convert_batch([str(source), str(remaining)], str(tmp_path), '.png',
@@ -597,15 +600,16 @@ def test_batch_restores_global_native_codec_threads_after_failure(tmp_path, monk
     options = SimpleNamespace(DECODE_THREADS=7)
     monkeypatch.setitem(sys.modules, 'pillow_heif', SimpleNamespace(options=options))
     monkeypatch.setattr(converter.resource_policy, 'plan_execution', lambda *a, **k:
-                        SimpleNamespace(workers=1, max_in_flight=1, ram_budget=1024**3, describe=lambda: 'test'))
+                        SimpleNamespace(workers=1, native_threads=3, max_in_flight=1,
+                                        ram_budget=1024**3, describe=lambda: 'test'))
     monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 1024**3)
     monkeypatch.setattr(converter, 'page_count', lambda *a: 1)
     monkeypatch.setattr(converter, 'estimate_job', lambda *a: (100, 1))
     original_cv = converter.cv2.getNumThreads()
 
     def failed_job(*args):
-        assert options.DECODE_THREADS == 1
-        assert converter.cv2.getNumThreads() == 1
+        assert options.DECODE_THREADS == 3
+        assert converter.cv2.getNumThreads() == 3
         raise ValueError('codec failed')
 
     monkeypatch.setattr(converter, '_convert_source', failed_job)
@@ -767,7 +771,7 @@ def test_cancelled_preflight_drains_active_job_without_reporting_failure(tmp_pat
                         SimpleNamespace(workers=2, max_in_flight=2, ram_budget=150, describe=lambda: 'test'))
     monkeypatch.setattr(converter.resource_policy, 'ram_budget', lambda *a: 150)
 
-    def estimate(source, should_cancel):
+    def estimate(source, should_cancel, ext=None):
         estimated.append(source)
         if source == 'second':
             cancelled.set()
@@ -821,3 +825,79 @@ def test_png_thumbnail_reads_exif_after_idat_before_pixel_admission(tmp_path, mo
     monkeypatch.setattr(PngImagePlugin.PngImageFile, 'load', load)
     pixels = converter.thumbnail_rgb(str(source))
     np.testing.assert_array_equal(pixels, np.rot90(original, -1))
+
+
+def test_mapped_rgb16_tiff_preserves_channels_orientation_and_profile(tmp_path):
+    from utils.image_utils import srgb_icc_profile
+    source = tmp_path / 'sensor.tif'
+    rgb = (np.arange(11 * 17 * 3, dtype=np.uint16).reshape(11, 17, 3) * 101)
+    profile = srgb_icc_profile()
+    tifffile.imwrite(source, rgb, photometric='rgb', metadata=None,
+                     extratags=[(274, 'H', 1, 6, False),
+                                (271, 's', 0, 'Camera', False),
+                                (34675, 'B', len(profile), profile, False)])
+    output = converter.convert_one(str(source), str(tmp_path), '.tif')
+    with tifffile.TiffFile(output) as tif:
+        page = tif.pages[0]
+        np.testing.assert_array_equal(page.asarray(), np.rot90(rgb, -1))
+        assert page.bitspersample == 16
+        assert page.tags[274].value == 1
+        assert page.tags[271].value == 'Camera'
+        assert page.tags[34675].value == profile
+
+
+def test_existing_dng_copy_fits_small_budget_without_sensor_unpack(tmp_path, monkeypatch):
+    from utils.linear_dng import LinearDNGMetadata, write_linear_dng
+    source = tmp_path / 'large-sensor.dng'
+    pixels = np.full((128, 128, 3), (1000, 5000, 12000), np.uint16)
+    matrix = ((0.8293, -0.1611, -0.1132), (-0.4759, 1.2711, 0.2275),
+              (-0.1013, 0.2415, 0.5509))
+    write_linear_dng(source, pixels, LinearDNGMetadata(matrix, (0.5, 1., 0.7),
+                                                     'Camera', 'Camera Model'))
+    monkeypatch.setattr(converter, 'available_memory_bytes', lambda: 256 * 1024**2)
+    real_rawpy = converter.image_loader.rawpy.RawPy
+
+    class HeaderOnly:
+        def __enter__(self):
+            from types import SimpleNamespace
+            self.raw = real_rawpy()
+            self.sizes = SimpleNamespace(raw_width=24000, raw_height=18000)
+            return self
+
+        def open_file(self, path):
+            self.raw.open_file(path)
+
+        def __exit__(self, *args):
+            self.raw.close()
+
+    # Missing unpack/postprocess methods make accidental sensor development
+    # fail, while the copied DNG remains a real independently readable file.
+    monkeypatch.setattr(converter.image_loader.rawpy, 'RawPy', HeaderOnly)
+    output = converter.convert_one(str(source), str(tmp_path), '.dng')
+    assert source.read_bytes() == Path(output).read_bytes()
+    assert converter.estimate_job(source)[0] > 20 * 1024**3
+    assert converter.estimate_job(source, ext='.dng')[0] <= 64 * 1024**2
+
+
+def test_cancelled_metadata_tiff_retains_original_and_existing_output(tmp_path):
+    from core.registration import RegistrationCancelled
+    source = tmp_path / 'sensor.tif'
+    rgb = np.full((300, 11, 3), (1000, 9000, 50000), np.uint16)
+    tifffile.imwrite(source, rgb, photometric='rgb', metadata=None,
+                     extratags=[(271, 's', 0, 'Camera', False)])
+    directory = tmp_path / 'output'
+    directory.mkdir()
+    existing = directory / source.name
+    existing.write_bytes(b'keep existing output')
+    checks = 0
+
+    def cancelled():
+        nonlocal checks
+        checks += 1
+        return checks >= 4
+
+    with pytest.raises((InterruptedError, RegistrationCancelled)):
+        converter.convert_one(str(source), str(directory), '.tif', cancelled=cancelled)
+    assert list(directory.iterdir()) == [existing]
+    assert existing.read_bytes() == b'keep existing output'
+    np.testing.assert_array_equal(tifffile.imread(source), rgb)

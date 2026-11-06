@@ -257,24 +257,6 @@ def test_source_decode_failure_keeps_request_key(monkeypatch):
     assert errors == [(('registered', 7), 'missing source')]
 
 
-def test_uint16_preparation_normalizes_one_frame_at_a_time(monkeypatch):
-    from core.algorithms import get_fusion
-    import utils.image_utils as image_utils
-    frames = [np.full((7, 9, 3), 258, np.uint16), np.full((7, 9, 3), 7, np.uint8)]
-    normalize = image_utils.normalize_fuse_input
-    seen = []
-    def one_frame(images):
-        assert len(images) == 1
-        seen.append(images[0].dtype)
-        return normalize(images)
-    monkeypatch.setattr(image_utils, 'normalize_fuse_input', one_frame)
-    fusion = SimpleNamespace(descriptor=get_fusion('guided_filter'), tile_enabled=False)
-    actual, is_16bit = prepare_fusion_input(frames, fusion)
-    expected = normalize(frames)[0]
-    assert is_16bit and seen == [np.dtype(np.uint16), np.dtype(np.uint8)]
-    assert all(isinstance(image, np.memmap) for image in actual)
-    for image, reference in zip(actual, expected):
-        np.testing.assert_array_equal(image, reference)
 
 
 def test_ecc_retained_gray_planes_are_mappings(monkeypatch):
@@ -478,12 +460,11 @@ def test_tiled_exposure_and_base_correction_match_materialized_pipeline(algorith
 
 def test_guided_uint16_normalizes_only_spatial_crops(monkeypatch):
     from core import multi_focus_fusion
-    from core.algorithms import get_fusion
     frames = [np.full((32, 40, 3), value, np.uint16) for value in (258, 591, 712)]
     fusion = multi_focus_fusion.MultiFocusFusion(algorithm='guided_filter', use_gpu=False,
         tile_enabled=True, tile_block_size=16, tile_overlap=4, tile_threshold=16,
         exposure_match=True, base_frame='none')
-    prepared, is_16bit = prepare_fusion_input(frames, fusion)
+    prepared, is_16bit = prepare_fusion_input(frames)
     assert is_16bit and all(a is b for a, b in zip(prepared, frames))
     normalize = multi_focus_fusion.normalize_fuse_input
     calls = []
@@ -495,7 +476,8 @@ def test_guided_uint16_normalizes_only_spatial_crops(monkeypatch):
     monkeypatch.setattr(multi_focus_fusion, 'normalize_fuse_input', crop_only)
     output = fusion.fuse(prepared, thread_count=1)
     assert calls and output.shape == frames[0].shape
-    assert output.dtype == np.float32 and get_fusion('guided_filter').neural is False
+    assert output.dtype == np.float32
+    np.testing.assert_allclose(output, 712 * (255.0 / 65535.0), rtol=0, atol=1e-5)
 
 
 @pytest.mark.parametrize('algorithm', ['openfocus_b', 'openfocus_c'])

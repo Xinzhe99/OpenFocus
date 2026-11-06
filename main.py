@@ -412,10 +412,12 @@ class OpenFocus(QMainWindow):
         self.init_ui()
         self.apply_dark_theme()
         if storage_warning is not None:
+            def show_storage_warning():
+                if not getattr(self, "_shutting_down", False):
+                    QMessageBox.warning(self, trans.t("msg_warning"), storage_warning)
             self._storage_warning_timer = _QTimer(self)
             self._storage_warning_timer.setSingleShot(True)
-            self._storage_warning_timer.timeout.connect(
-                lambda: QMessageBox.warning(self, trans.t("msg_warning"), storage_warning))
+            self._storage_warning_timer.timeout.connect(show_storage_warning)
             self._storage_warning_timer.start(0)
 
         # Install global event filter to handle Space key for panning
@@ -432,8 +434,10 @@ class OpenFocus(QMainWindow):
 
         # Optionally re-load the last opened stack a moment after launch
         if getattr(self, "restore_last_stack", False):
-            from PyQt6.QtCore import QTimer as _QTimer
-            _QTimer.singleShot(1500, lambda: self.source_manager.restore_last_stack())
+            def restore_last_stack():
+                if not getattr(self, "_shutting_down", False):
+                    self.source_manager.restore_last_stack()
+            _QTimer.singleShot(1500, restore_last_stack)
 
         # Set initial text for drag hint if needed (it is set in image_panels or loaded later, 
         # but let's Ensure it matches current lang if empty)
@@ -1100,9 +1104,10 @@ class OpenFocus(QMainWindow):
         The worker touches no QObject; a window-owned QTimer polls the cache,
         so closing the window cannot leave a signal aimed at a deleted object.
         """
-        import threading
-        if getattr(self, "_device_probe_started", False):
+        if (getattr(self, "_shutting_down", False)
+                or getattr(self, "_device_probe_started", False)):
             return
+        import threading
         from core.multi_focus_fusion import neural_device_kind
         cached = neural_device_kind()
         if cached is not None:
@@ -1136,6 +1141,8 @@ class OpenFocus(QMainWindow):
 
     def _poll_device_probe(self) -> None:
         """UI-thread poll for the worker's cached backend decision."""
+        if getattr(self, "_shutting_down", False):
+            return
         from core.multi_focus_fusion import neural_device_kind
         kind = neural_device_kind()
         if kind is None:
@@ -1154,9 +1161,10 @@ class OpenFocus(QMainWindow):
         by the window polls a plain threading.Event, so a window destroyed
         mid-probe cannot be reached from the background thread.
         """
-        import threading
-        if getattr(self, "_stackmff_probe_started", False):
+        if (getattr(self, "_shutting_down", False)
+                or getattr(self, "_stackmff_probe_started", False)):
             return
+        import threading
         self._stackmff_probe_started = True
 
         done = threading.Event()
@@ -1188,6 +1196,8 @@ class OpenFocus(QMainWindow):
 
     def _poll_stackmff_probe(self) -> None:
         """UI-thread poll; applies the cached availability once warm."""
+        if getattr(self, "_shutting_down", False):
+            return
         event = getattr(self, "_stackmff_probe_event", None)
         if event is None or not event.is_set():
             return
@@ -1510,6 +1520,8 @@ class OpenFocus(QMainWindow):
         to READY, before any state_changed listener existed, so the banner is
         raised here explicitly.
         """
+        if getattr(self, "_shutting_down", False):
+            return
         self.update_manager.start_idle()
         staged = self.update_manager.staged_tag()
         if staged:
@@ -2299,6 +2311,61 @@ class OpenFocus(QMainWindow):
         """One page for tiling, registration, AI and the convenience toggles."""
         from dialogs.advanced_settings import AdvancedSettingsDialog
         AdvancedSettingsDialog(self).exec()
+
+    def _settings_reset_busy(self) -> bool:
+        render = self.render_manager
+        return (self._has_work_in_flight() or self.source_manager._reset_busy()
+                or self.source_manager._review_worker is not None
+                or bool(getattr(render, '_render_pending', False))
+                or render._render_after_load is not None or render._compare_mode
+                or self.update_manager.is_busy()
+                or QApplication.activeModalWidget() is not None
+                or any(dialog.isVisible() for dialog in self.findChildren(QDialog)))
+
+    def restore_default_settings(self) -> None:
+        """Confirm before changing preferences; an open workspace remains intact."""
+        if self._settings_reset_busy():
+            show_warning_box(self, trans.t('action_restore_defaults'),
+                             trans.t('restore_defaults_busy'))
+            return
+        box = QMessageBox(self)
+        style_message_box(box)
+        box.setWindowTitle(trans.t('action_restore_defaults'))
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(trans.t('restore_defaults_confirm'))
+        restore = box.addButton(trans.t('restore_defaults_button'),
+                                QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(trans.t('btn_cancel'), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        accepted = box.clickedButton() is restore
+        box.deleteLater()
+        if not accepted:
+            return
+        # A timer/control request may start work during the confirmation.
+        if self._settings_reset_busy():
+            show_warning_box(self, trans.t('action_restore_defaults'),
+                             trans.t('restore_defaults_busy'))
+            return
+        from utils.settings_store import restore_default_settings
+        try:
+            with self._restore_scope():
+                restore_default_settings(self)
+                configure_storage_directory(self.storage_directory)
+                self.drag_export_format = '.jpg'
+                self.chk_quick_preview.setChecked(False)
+                self.reset_to_default()
+                self.apply_theme(self.ui_theme)
+                self.set_use_gpu(self.use_gpu)
+            self.persist_settings()
+        except Exception as exc:
+            show_message_box(self, trans.t('msg_error'), trans.t('msg_save_failed_text'),
+                             str(exc), QMessageBox.Icon.Critical)
+            return
+        self.update_ui_text()
+        self.statusBar().showMessage(trans.t('restore_defaults_done'), 5000)
+
 
     def show_compare_dialog(self) -> None:
         """Side-by-side comparison of several fusion methods on this stack."""
@@ -3142,7 +3209,6 @@ class OpenFocus(QMainWindow):
             # 需要重新对齐，禁用按钮，显示处理中状态
             self.btn_preview_roi.setEnabled(False)
             self.btn_preview_roi.setText(trans.t("roi_aligning"))
-            QApplication.processEvents()
             
             # 启动ECC配准线程
             # Snapshot the list (mid-run frame deletes mutate the live list)
@@ -3541,6 +3607,12 @@ class OpenFocus(QMainWindow):
         load_worker = getattr(source_manager, '_load_worker', None) if source_manager else None
         if load_worker is not None:
             running.append(load_worker.isRunning())
+        if source_manager is not None:
+            review = getattr(source_manager, '_review_worker', None)
+            if review is not None:
+                running.append(review.isRunning())
+            running.extend(worker.isRunning() for worker in
+                           getattr(source_manager, '_retiring_review_workers', ()))
         # 深度图对话框关闭后仍在跑的 worker（AI 可达数分钟）也要算数，
         # 否则退出时模块级集合随解释器清理，QThread 运行中被析构 -> abort
         try:
@@ -3679,6 +3751,8 @@ class OpenFocus(QMainWindow):
         if hasattr(self, 'source_manager'):
             _shutdown_worker(getattr(self.source_manager, '_load_worker', None))
             _shutdown_worker(getattr(self.source_manager, '_review_worker', None))
+            for worker in tuple(getattr(self.source_manager, '_retiring_review_workers', ())):
+                _shutdown_worker(worker)
             self.source_manager._load_worker = None
 
         # Stop update download/stage workers if running. The background
@@ -4140,6 +4214,8 @@ if __name__ == "__main__":
         _log.exception("Could not start the control channel")
 
     def _on_second_instance(paths_json: str) -> None:
+        if getattr(window, "_shutting_down", False):
+            return
         try:
             paths = _json.loads(paths_json)
         except ValueError:
@@ -4267,6 +4343,10 @@ if __name__ == "__main__":
     from utils.settings_store import get_settings
     if str(get_settings().value("ui/first_run_done", "") or "") != "1":
         def _show_welcome():
+            # A slow cooperative close can make this timer overdue. Entering
+            # exec() now would consume Qt's posted last-window Quit event.
+            if getattr(window, "_shutting_down", False):
+                return
             from dialogs.welcome import WelcomeDialog
             dlg = WelcomeDialog(window, main_window=window)
             dlg.exec()

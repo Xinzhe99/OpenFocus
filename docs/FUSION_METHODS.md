@@ -5,7 +5,7 @@ these approaches:
 
 | Method | Approach | Main controls |
 |---|---|---|
-| A | Estimates a multiscale focus response and selects source pixels. | Kernel radius and blend smoothing (`--kernel`, `--blend-smoothing`) |
+| A | Selects original source pixels using smoothed high-frequency energy. | High-pass scale and energy spread (`--kernel`, `--blend-smoothing`) |
 | B | Blends neighboring frames according to a smoothed depth map. | Kernel radius and depth smoothing (`--kernel`, `--depth-smoothing`) |
 | C | Uses a depth estimate to merge and reconstruct a fixed-point pyramid. | Blend smoothing (`--blend-smoothing`); no radius control |
 
@@ -16,6 +16,26 @@ supports 8-bit and 16-bit output. The depth-map dialog uses the same B/C depth
 estimation and smoothing as fusion. Tiled B/C renders share a full-image depth
 map; when resizing is requested, they use whole-frame rendering so the depth
 map and output have the same dimensions.
+
+OpenFocus A/B/C use whole-image processing at the default tile threshold, even
+when the general tile option is enabled. A non-default threshold explicitly
+opts into their external tile path. Bounded row and frame passes are internal
+memory controls and retain the global depth/reconstruction domain.
+
+A computes float32 grayscale as the equal-channel mean, excluding alpha. With
+`fine_sigma = max(1.0, kernel_size / 5.5)`, it subtracts a Gaussian-blurred
+grayscale image to obtain a high-pass response. Its score is the Gaussian blur
+of that response squared, using
+`spread_sigma = max(1.0, (2.0 if blend_smoothing is None else blend_smoothing) / 2.0)`.
+Both Gaussian passes replicate border pixels. The kernel controls high-pass
+scale. Smoothing 0 uses a spread sigma of 1.0.
+A compares scores strictly in source order, retaining the first frame on ties,
+and copies the winning complete original pixel, preserving 16-bit precision and
+alpha. Thread settings and low-memory processing retain this selection rule.
+
+B and C can produce the same depth map while producing different color pixels:
+B blends source layers, whereas C reconstructs a multilevel pyramid. Similar
+depth estimates alone do not establish that the methods share their output.
 
 StackMFF V1 and V2 use retrained single-scale attention networks, each with
 about 156,172 parameters. V1 combines luminance with softmax weights and takes
@@ -78,16 +98,12 @@ constant.
 
 ## Performance and quality observations
 
-On one machine (Windows, CPU, `python tools/synthetic_benchmark.py -m
-openfocus_a openfocus_b openfocus_c --frames 5 --scene small`), the
-five-frame small synthetic scene produced PSNR values of 22.22 dB for A,
-22.18 dB for B and 22.19 dB for C; the oracle per-pixel pick scored 22.24 dB.
-The corresponding run times were 0.4, 5.1 and 19.9 seconds. A single scene
-does not establish a universal quality or speed ranking; the benchmark renders
-a scene through a known depth map and measures results against the ground
-truth. Scene content, stack length, parameters and hardware affect the
-results, so treat these as one-machine observations rather than general
-expectations.
+Historical measurements from earlier A implementations do not establish the
+quality or speed of the current high-frequency energy selector. Use
+`tools/synthetic_benchmark.py` to compare methods against synthetic ground truth
+for the scene and parameters of interest. Scene content, stack length,
+parameters and hardware affect the results; no universal quality or speed
+ranking is implied.
 
 See [Performance](PERFORMANCE.md) for resource management and historical
 measurements. See the [user manual](USER_MANUAL_EN.md) for controls, workflow,

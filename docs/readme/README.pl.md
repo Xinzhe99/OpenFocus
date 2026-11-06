@@ -55,10 +55,10 @@
 ## 📢 Aktualności
 
 > [!NOTE]
-> **v1.75.0** — Fuzja grupowa, wielokrotnego użytku przepływy przetwarzania,
-> przezroczyste stosy PNG, diagnostyka wyrównania, rozszerzone eksporty głębi
-> i odświeżony przepływ pracy na pulpicie. Obsługiwane dane wejściowe i
-> ograniczenia opisuje historia zmian.
+> **v1.77.0 — kandydat do wydania** — Automatyczne tło i odtwarzalne sesje retuszu,
+> podglądy JPEG/RAW z ograniczonym zużyciem pamięci i kontrola oryginalnych pikseli,
+> fuzja CPU w ramach budżetu RAM oraz czytelniejszy stan wykonania GPU.
+> Obsługiwane dane wejściowe i ograniczenia opisuje historia zmian.
 
 Wcześniejsze wydania opisuje [historia zmian](../../CHANGELOG.md).
 

@@ -233,3 +233,94 @@ def test_unknown_ram_does_not_assume_a_budget(monkeypatch, tmp_path):
                         lambda *a, **k: no_ram())
     with pytest.raises(resource_policy.ResourceLimitError):
         list(iter_decoded_sources(paths, thread_count=4))
+
+
+@pytest.mark.parametrize('outcome', ['missing', 'empty', 'cancelled', 'error', 'success'])
+def test_video_load_commits_pixels_and_provenance_together(tmp_path, monkeypatch, outcome):
+    previous_path = _write(tmp_path, 'previous.png', 41)
+    loader = ImageStackLoader()
+    assert loader.load_from_filepaths([previous_path])[0]
+    loader.source_exif = b'previous EXIF'
+    loader.source_icc_profile = b'previous ICC'
+    loader.source_icc_profiles = {previous_path: b'previous ICC'}
+    loader.px_size_um = 2.5
+    loader.linear_dng_metadata = object()
+    loader.failed_count = 3
+    fields = ('images', 'image_paths', 'source_exif', 'source_icc_profile',
+              'source_icc_profiles', 'px_size_um', 'linear_dng_metadata', 'failed_count')
+    previous = {name: getattr(loader, name) for name in fields}
+    cancelled = False
+    loader.should_cancel = lambda: cancelled
+    path = tmp_path / 'clip.mp4'
+    pixels = np.full((8, 10, 3), 173, np.uint8)
+    released = []
+
+    class Capture:
+        def __init__(self, _path):
+            self.reads = 0
+        def isOpened(self):
+            return True
+        def get(self, _prop):
+            return 1
+        def read(self):
+            nonlocal cancelled
+            if outcome == 'error':
+                raise OSError('video decode failed')
+            if outcome == 'empty':
+                return False, None
+            self.reads += 1
+            if self.reads == 1:
+                return True, pixels
+            cancelled = outcome == 'cancelled'
+            return False, None
+        def release(self):
+            released.append(True)
+
+    if outcome != 'missing':
+        path.touch()
+        monkeypatch.setattr(cv2, 'VideoCapture', Capture)
+    if outcome == 'error':
+        with pytest.raises(OSError, match='video decode failed'):
+            loader.load_from_video(str(path))
+    else:
+        ok, message, images, names = loader.load_from_video(str(path))
+        assert ok == (outcome == 'success')
+        if outcome == 'success':
+            assert len(images) == len(names) == 1
+            np.testing.assert_array_equal(images[0], pixels)
+            assert loader.images is images and loader.image_paths == [str(path)]
+            assert loader.source_exif == loader.source_icc_profile == b''
+            assert loader.source_icc_profiles == {} and loader.px_size_um is None
+            assert loader.linear_dng_metadata is None and loader.failed_count == 0
+        else:
+            assert images == names == []
+            if outcome == 'cancelled':
+                assert message == 'CANCELLED'
+    if outcome != 'success':
+        assert all(getattr(loader, name) is value for name, value in previous.items())
+    assert bool(released) == (outcome != 'missing')
+
+
+@pytest.mark.parametrize('shape', [(1, 1000), (1000, 1)])
+@pytest.mark.parametrize('extension', ['.png', '.tif'])
+def test_scaled_thin_sources_keep_a_nonempty_short_edge(tmp_path, shape, extension):
+    path = _write(tmp_path, 'thin' + extension, 40000, size=shape, dtype=np.uint16)
+    decoded = list(iter_decoded_sources([path], scale_factor=.5, thread_count=1))
+    assert len(decoded) == 1 and decoded[0].error is None
+    expected_size = (max(1, int(shape[1] * .5)), max(1, int(shape[0] * .5)))
+    expected = cv2.resize(loader_module.decode_image(path), expected_size, interpolation=cv2.INTER_AREA)
+    np.testing.assert_array_equal(decoded[0].pages[0], expected)
+
+
+@pytest.mark.parametrize('shape', [(1, 1000), (1000, 1)])
+def test_thin_sources_have_valid_thumbnails_and_pixmaps(qapp, shape):
+    image = np.full(shape + (3,), 40000, np.uint16)
+    loader = ImageStackLoader()
+    thumbnail = loader.create_thumbnails([image], thumb_size=40)[0]
+    assert not thumbnail.isNull()
+    assert max(thumbnail.width(), thumbnail.height()) == 40
+    assert min(thumbnail.width(), thumbnail.height()) == 1
+    pixmap = loader.create_pixmaps([image], max_size=(100, 100))[0]
+    assert not pixmap.isNull()
+    assert max(pixmap.width(), pixmap.height()) == 100
+    assert min(pixmap.width(), pixmap.height()) == 1

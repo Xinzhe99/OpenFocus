@@ -59,7 +59,7 @@ def _menu_window(qapp):
             "show_compare_dialog", "show_mosaic_dialog", "show_depth_map_dialog",
             "show_dust_map_dialog", "show_scale_bar_dialog",
             "remove_scale_bar", "show_advanced_settings_dialog",
-            "set_use_gpu", "apply_theme", "set_language",
+            'restore_default_settings', 'set_use_gpu', 'apply_theme', 'set_language',
             "check_for_updates", "install_update_now", "open_logs_folder",
             "show_quick_start", "show_environment_info", "show_feedback_dialog",
             "show_contact_info"):

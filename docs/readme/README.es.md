@@ -55,7 +55,7 @@
 ## 📢 Novedades
 
 > [!NOTE]
-> **v1.75.0** — Fusión agrupada, flujos de trabajo reutilizables, pilas PNG transparentes, diagnóstico de alineación, exportaciones de profundidad mejoradas y un flujo de escritorio renovado. Consulta el registro de cambios para ver las entradas admitidas y las limitaciones.
+> **v1.77.0, versión candidata** — Fondo automático y sesiones de retoque recuperables, vistas previas JPEG/RAW con memoria limitada e inspección de píxeles originales, fusión CPU según la RAM disponible y un estado de ejecución GPU más claro. Consulta el registro de cambios para las entradas admitidas y las limitaciones.
 
 Las versiones anteriores están en el [registro de cambios](../../CHANGELOG.md).
 

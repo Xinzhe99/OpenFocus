@@ -8,8 +8,7 @@ from fusion_methods.gff import gff_impl
 from fusion_methods.stackmffv3 import _stackmffv3_impl, normalize_mode
 from fusion_methods.dtcwt import _dtcwt_impl
 from utils import memory, resource_path
-from utils.image_utils import (apply_exposure_gain, exposure_gains,
-                               normalize_fuse_input)
+from utils.image_utils import apply_exposure_gain, normalize_fuse_input
 from utils.sorting import natural_sort_key
 from core.algorithms import get_fusion, resolve_fusion_parameters, resolve_runner
 from core.frame_storage import create_frame, store_frame
@@ -208,8 +207,8 @@ class MultiFocusFusion:
         self.use_gpu = bool(use_gpu)
         self._actual_device = None
         # Tile (tiled fusion) related instance-level settings
-        # OpenFocus A/B/C choose whole-image streaming by available RAM;
-        # an explicitly changed threshold remains a spatial cap.
+        # Descriptor policy keeps whole-image methods out of automatic spatial
+        # tiling; a nondefault threshold is an explicit spatial cap.
         self.tile_enabled = bool(tile_enabled)
         self.tile_block_size = int(tile_block_size)
         self.tile_overlap = int(tile_overlap)
@@ -277,13 +276,14 @@ class MultiFocusFusion:
                           img_resize: Optional[Tuple[int, int]] = None,
                           kernel_size: int = 11,
                           **kwargs) -> np.ndarray:
-        """OpenFocus A: multiscale focus-response selection."""
+        """OpenFocus A: high-frequency energy source selection."""
         from fusion_methods.openfocus_a import openfocus_a_impl
         return openfocus_a_impl(input_source, img_resize,
                                 kernel_size=kernel_size,
                                 thread_count=kwargs.get('thread_count', None),
                                 blend_smoothing=kwargs.get('blend_smoothing', None),
-                                should_cancel=kwargs.get('should_cancel'))
+                                should_cancel=kwargs.get('should_cancel'),
+                                progress_callback=kwargs.get('progress_callback'))
 
     def _fuse_openfocus_b(self,
                           input_source: Union[str, List[np.ndarray]],
@@ -297,7 +297,8 @@ class MultiFocusFusion:
                                 thread_count=kwargs.get('thread_count', None),
                                 depth_smoothing=kwargs.get('depth_smoothing', None),
                                 should_cancel=kwargs.get('should_cancel'),
-                                depth_override=kwargs.get('depth_override'))
+                                depth_override=kwargs.get('depth_override'),
+                                progress_callback=kwargs.get('progress_callback'))
 
     def _fuse_openfocus_c(self,
                           input_source: Union[str, List[np.ndarray]],
@@ -309,7 +310,8 @@ class MultiFocusFusion:
                                 thread_count=kwargs.get('thread_count', None),
                                 blend_smoothing=kwargs.get('blend_smoothing', None),
                                 should_cancel=kwargs.get('should_cancel'),
-                                depth_override=kwargs.get('depth_override'))
+                                depth_override=kwargs.get('depth_override'),
+                                progress_callback=kwargs.get('progress_callback'))
 
     # ------------------------------------------------------------------
     # 基底校正（消除亮度漂移）
@@ -391,12 +393,24 @@ class MultiFocusFusion:
                   "anchor to the other end).")
         return frames
 
-    def _exposure_gains_for_source(self, input_source, should_cancel=None):
-        """Gains for a whole stack, streaming directory input one frame at a
-        time (an exposure pass must not defeat the lazy tiled loader)."""
+    def _exposure_gains_for_source(self, input_source, should_cancel=None,
+                                   *, normalize_uint16=False):
+        """Gains for a stack, reducing each frame in cancellable row strips."""
         if isinstance(input_source, (list, tuple)):
-            frames = [f for f in input_source if f is not None]
-            return exposure_gains(frames)
+            from utils.image_utils import _exposure_mean
+            from core.registration import RegistrationCancelled
+            means = []
+            for frame in input_source:
+                if should_cancel is not None and should_cancel():
+                    raise RegistrationCancelled()
+                if frame is not None:
+                    means.append(_exposure_mean(
+                        frame, should_cancel, normalize_uint16=normalize_uint16))
+            if not means:
+                return []
+            target = means[-1]
+            return ([1.0] * len(means) if target <= 1e-6 else
+                    [1.0 if mean <= 1e-6 else target / mean for mean in means])
         if isinstance(input_source, str) and os.path.isdir(input_source):
             from core.image_loader import admit_image_decode, decode_image
             exts = ('.png', '.jpg', '.jpeg', '.jpe', '.jfif', '.webp',
@@ -414,9 +428,9 @@ class MultiFocusFusion:
                 img = decode_image(path)
                 if img is None:
                     raise RuntimeError(f"Unable to read image: {name}")
-                color = (img[:, :, :3] if img.ndim == 3 and img.shape[2] > 3
-                         else img)
-                means.append(float(color.astype(np.float32).mean()))
+                from utils.image_utils import _exposure_mean
+                means.append(_exposure_mean(
+                    img, should_cancel, normalize_uint16=normalize_uint16))
             if not means:
                 return None
             target = means[-1]
@@ -440,14 +454,30 @@ class MultiFocusFusion:
         require_memory(fused.size * 4 * 6, user_limit=memory_budget_bytes())
         which = self.base_frame
         base = self._base_frame_image(input_source, which, exposure_gains, deferred_exposure)
-        if base is None or base.shape[:2] != fused.shape[:2]:
+        if base is None:
             return fused
         import cv2
+        if self.descriptor.promotes_color:
+            from fusion_methods.dct import _ensure_color_image
+            base = _ensure_color_image(base)
+        elif base.ndim == 3 and fused.ndim == 3:
+            base = base[:, :, :fused.shape[2]]
+        if base.shape[:2] != fused.shape[:2]:
+            interpolation = getattr(cv2, f'INTER_{self.descriptor.resize_interpolation.upper()}')
+            base = cv2.resize(base, (fused.shape[1], fused.shape[0]),
+                              interpolation=interpolation)
+        # OpenCV drops singleton channel axes during GaussianBlur.
+        if base.ndim == 3 and base.shape[2] == 1:
+            base = base[:, :, 0]
         out = fused if fused.dtype == np.float32 else fused.astype(np.float32)
         sigma = self.BASE_CORRECTION_SIGMA
         low_out = cv2.GaussianBlur(out, (0, 0), sigma)
         low_base = cv2.GaussianBlur(base, (0, 0), sigma)
-        corrected = out + (low_base - low_out)
+        if low_base.ndim == 2 and low_out.ndim == 3:
+            low_base = low_base[:, :, None]
+        elif low_base.ndim == 3 and low_out.ndim == 2:
+            low_base = low_base[:, :, 0]
+        corrected = out + (low_base - low_out).reshape(out.shape)
         return np.clip(corrected, 0, 255).astype(fused.dtype)
 
     def _validate_dct_environment(self) -> None:
@@ -610,11 +640,11 @@ class MultiFocusFusion:
         spec = self.descriptor
         height = max(h, img_resize[1]) if img_resize else h
         width = max(w, img_resize[0]) if img_resize else w
-        needs_tiles = (resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
-                       if spec.tile_decider else max(height, width) > self.tile_threshold)
-        if self.algorithm in ('openfocus_a', 'openfocus_b', 'openfocus_c') and img_resize:
-            fixed, per_worker = resolve_runner(spec.resource_estimator)(height, width, kwargs, count)
-            needs_tiles = needs_tiles or fixed + per_worker > memory_budget_bytes()
+        allow_spatial_tiles = (spec.external_tiling_default
+                               or self.tile_threshold != _DEFAULT_TILE_THRESHOLD)
+        needs_tiles = allow_spatial_tiles and (
+            resolve_runner(spec.tile_decider)([first] * count, self.tile_threshold)
+            if spec.tile_decider else max(height, width) > self.tile_threshold)
         if self.algorithm == 'dtcwt':
             # Activity selection is incremental; stack depth no longer makes
             # an N-plane activity set. Respect the requested transform levels.
@@ -626,59 +656,69 @@ class MultiFocusFusion:
         deferred_exposure = (self.tile_enabled and needs_tiles
                              and isinstance(input_source, list) and not resize_for_tiles
                              and (img_resize is None or self.algorithm not in ('openfocus_b', 'openfocus_c')))
-        # Preparation converts only one frame at a time; the retained stack
-        # and exposure-matched frames live in temporary mappings.
-        preparation = max(size for size, _ in frame_specs) * 8
+        # Retain prepared pixels on disk; color conversion/gain scratch is
+        # bounded by rows and cancellation is checked between strips.
+        normalize_sources = (not deferred_exposure
+                             and any(frame.dtype == np.uint16 for frame in input_source))
+        preparation = 0
+        for frame in input_source:
+            strip_size = min(frame.shape[0], 128) * int(np.prod(frame.shape[1:]))
+            # Statistics and normalization need one float32 strip. Applying a
+            # gain also holds the integer result while the float32 strip is
+            # live; normalized sources instead remain float32 mapped frames.
+            scratch_itemsize = 4
+            if (self.exposure_match and not deferred_exposure and not normalize_sources
+                    and frame.dtype in (np.uint8, np.uint16)):
+                scratch_itemsize += frame.dtype.itemsize
+            preparation = max(preparation, strip_size * scratch_itemsize)
         policy.require_memory(preparation, user_limit=memory_budget_bytes())
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.
         input_source = self._maybe_sort_input(input_source, should_cancel)
-        # Neural tiles historically normalize mixed/16-bit pixels before
-        # applying their global gains. Preserve that order when gains and the
-        # full-frame resize are staged ahead of tile construction.
-        normalize_before_resize = resize_for_tiles and spec.neural and self.exposure_match
-        if ((not spec.neural or normalize_before_resize) and not deferred_exposure
-                and any(frame.dtype == np.uint16 for frame in input_source)):
+        # Every backend receives one common intensity domain before exposure
+        # matching and resizing. Spatial tiles may defer the same conversion to
+        # crops, but whole-image neural calls must not mix 0-65535 and 0-255.
+        normalized_owned = set()
+        if normalize_sources:
             normalized_frames = []
             for frame in input_source:
                 check_cancel()
-                normalized = normalize_fuse_input([frame])[0][0]
-                if normalized.dtype != np.float32:
-                    normalized = normalized.astype(np.float32)
-                normalized_frames.append(frame if normalized is frame else store_frame(normalized))
+                if frame.dtype == np.float32:
+                    normalized_frames.append(frame)
+                    continue
+                normalized = create_frame(frame.shape, np.float32)
+                for y in range(0, frame.shape[0], 128):
+                    check_cancel()
+                    strip = frame[y:y + 128].astype(np.float32)
+                    if frame.dtype == np.uint16:
+                        strip *= 255.0 / 65535.0
+                    normalized[y:y + 128] = strip
+                    del strip
+                normalized_frames.append(normalized)
+                normalized_owned.add(id(normalized))
             input_source = normalized_frames
             del normalized
         exposure_gains_ = None
         if self.exposure_match:
-            if deferred_exposure and any(frame.dtype == np.uint16 for frame in input_source):
-                # Match the former whole-stack float32 normalization exactly,
-                # but retain only one normalized frame at a time for the means.
-                from utils.image_utils import _exposure_mean
-                means = []
-                for frame in input_source:
-                    check_cancel()
-                    if frame.dtype == np.uint16:
-                        normalized = frame.astype(np.float32) * (255.0 / 65535.0)
-                    elif frame.dtype == np.float32:
-                        normalized = frame
-                    else:
-                        normalized = frame.astype(np.float32)
-                    means.append(_exposure_mean(normalized))
-                del normalized
-                target = means[-1]
-                exposure_gains_ = ([1.0] * len(means) if target <= 1e-6 else
-                                   [1.0 if mean <= 1e-6 else target / mean for mean in means])
-            else:
-                exposure_gains_ = self._exposure_gains_for_source(input_source, should_cancel)
+            exposure_gains_ = self._exposure_gains_for_source(
+                input_source, should_cancel, normalize_uint16=deferred_exposure)
             check_cancel()
             if exposure_gains_ is not None and isinstance(input_source, list) and not deferred_exposure:
                 matched = []
                 for frame, gain in zip(input_source, exposure_gains_):
                     check_cancel()
-                    adjusted = apply_exposure_gain(frame, gain)
-                    matched.append(frame if adjusted is frame else store_frame(adjusted))
+                    if gain == 1.0:
+                        matched.append(frame)
+                        continue
+                    # Only newly normalized maps belong exclusively to this
+                    # render. Borrowed sources must remain unchanged for retouch.
+                    adjusted = (frame if id(frame) in normalized_owned
+                                else create_frame(frame.shape, frame.dtype))
+                    for y in range(0, frame.shape[0], 128):
+                        check_cancel()
+                        adjusted[y:y + 128] = apply_exposure_gain(frame[y:y + 128], gain)
+                    matched.append(adjusted)
                 input_source = matched
-                del adjusted
         tile_source, tile_resize = input_source, img_resize
         if resize_for_tiles:
             # Match the whole backend: normalize/sort/exposure above, then
@@ -735,8 +775,7 @@ class MultiFocusFusion:
                 if spec.ordered_plan:
                     kwargs['execution_plan'] = plan
             kwargs['should_cancel'] = should_cancel
-            if spec.neural:
-                kwargs['progress_callback'] = progress_callback
+            kwargs['progress_callback'] = progress_callback
             result = resolve_runner(spec.runner)(self, input_source, img_resize, **kwargs)
 
         check_cancel()
@@ -1061,10 +1100,10 @@ class MultiFocusFusion:
         from core.resource_policy import require_memory
         from fusion_methods.dct import _ensure_color_image
 
-        if self.algorithm == 'openfocus_a':
+        if self.descriptor.resize_interpolation == 'area':
             target_size = tuple(map(int, target_size))
         width, height = map(int, target_size)
-        interpolation = cv2.INTER_AREA if self.algorithm == 'openfocus_a' else cv2.INTER_LINEAR
+        interpolation = getattr(cv2, f'INTER_{self.descriptor.resize_interpolation.upper()}')
         resized = []
         for frame in frames:
             if should_cancel is not None and should_cancel():

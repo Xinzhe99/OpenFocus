@@ -15,8 +15,9 @@ from constants import (
     TILE_BLOCK_MAX, TILE_BLOCK_MIN, TILE_OVERLAP_MAX, TILE_THRESHOLD_MAX,
     TILE_THRESHOLD_MIN,
 )
-from core.algorithms import (registration_algorithms, registration_parameter_specs,
+from core.algorithms import (get_fusion, registration_algorithms, registration_parameter_specs,
                              resolve_registration_parameters)
+from core.multi_focus_fusion import _DEFAULT_TILE_THRESHOLD
 from core.frame_storage import configure_storage_directory
 from locales import trans
 from utils.export_paths import prefix_output_name, valid_output_prefix
@@ -84,8 +85,8 @@ class AdvancedSettingsDialog(QDialog):
         perf = _section(page_lay, trans.t("advanced_tab_performance"))
         self.chk_tile = QCheckBox()
         self.chk_tile.setChecked(bool(getattr(w, "tile_enabled", True)))
-        self.chk_tile.setToolTip(trans.t("advanced_tile_enabled_hint"))
-        perf.addRow(trans.t("advanced_tile_enabled"), self.chk_tile)
+        self.chk_tile.setToolTip(trans.t('advanced_tile_policy_hint'))
+        perf.addRow(trans.t('advanced_tile_policy'), self.chk_tile)
         self.spin_block = StepperSpinBox(
             minimum=TILE_BLOCK_MIN, maximum=TILE_BLOCK_MAX, step=128,
             decimals=0, value=int(getattr(w, "tile_block_size", 1024)))
@@ -98,7 +99,7 @@ class AdvancedSettingsDialog(QDialog):
         self._sync_overlap_limit(self.spin_block.value())
         self.spin_threshold = StepperSpinBox(
             minimum=TILE_THRESHOLD_MIN, maximum=TILE_THRESHOLD_MAX, step=256,
-            decimals=0, value=int(getattr(w, "tile_threshold", 2048)))
+            decimals=0, value=int(getattr(w, 'tile_threshold', _DEFAULT_TILE_THRESHOLD)))
         perf.addRow(trans.t("advanced_tile_threshold"), self.spin_threshold)
         storage_row = QWidget()
         storage_layout = QHBoxLayout(storage_row)
@@ -125,13 +126,32 @@ class AdvancedSettingsDialog(QDialog):
         self.combo_resources.setToolTip(
             trans.t("advanced_resource_hint"))
         perf.addRow(trans.t("advanced_resource_mode"), self.combo_resources)
-        self.tile_note = _note(page_lay, trans.t("advanced_tile_note"))
-        def show_tile_controls(enabled):
-            for control in (self.spin_block, self.spin_overlap, self.spin_threshold):
-                perf.setRowVisible(control, enabled)
-            self.tile_note.setVisible(enabled)
+        self.tile_status = _note(page_lay, '')
+        self.tile_status.setProperty('controlId', 'effective_tiling_status')
+        self.tile_note = _note(page_lay, trans.t('advanced_tile_streaming_hint'))
+        method = getattr(w, 'current_fusion_method', lambda: 'stackmffv3')()
+        spec = None if method == 'none' else get_fusion(method)
+
+        def show_tile_controls(*_args):
+            enabled = self.chk_tile.isChecked() and spec is not None
+            explicit = int(self.spin_threshold.value()) != _DEFAULT_TILE_THRESHOLD
+            spatial = enabled and (spec.external_tiling_default or explicit)
+            perf.setRowVisible(self.spin_threshold, enabled)
+            for control in (self.spin_block, self.spin_overlap):
+                perf.setRowVisible(control, spatial)
+            if spec is None:
+                key = 'advanced_tile_alignment_only'
+            elif not enabled or not spatial:
+                key = 'advanced_tile_full_frame_status'
+            else:
+                key = 'advanced_tile_threshold_status'
+            self.tile_status.setText(trans.t(key).format(
+                method=spec.display_name if spec is not None else '',
+                threshold=int(self.spin_threshold.value())))
+
         self.chk_tile.toggled.connect(show_tile_controls)
-        show_tile_controls(self.chk_tile.isChecked())
+        self.spin_threshold.valueChanged.connect(show_tile_controls)
+        show_tile_controls()
 
         # ---- Registration ------------------------------------------------
         reg = _section(page_lay, trans.t("advanced_tab_registration"))
@@ -302,7 +322,7 @@ class AdvancedSettingsDialog(QDialog):
             "tile_overlap": (int(self.spin_overlap.value()) if self.chk_tile.isChecked()
                              else getattr(w, "tile_overlap", 256)),
             "tile_threshold": (int(self.spin_threshold.value()) if self.chk_tile.isChecked()
-                               else getattr(w, "tile_threshold", 2048)),
+                               else getattr(w, 'tile_threshold', _DEFAULT_TILE_THRESHOLD)),
             "thread_count": max(0, int(self.spin_threads.value())),
             "resource_preference": self.combo_resources.currentData(),
             "reg_downscale_width": int(self.spin_reg_width.value()),

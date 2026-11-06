@@ -234,3 +234,62 @@ def test_review_text_is_available_in_every_locale(qapp):
                 reference=1, difference=0.0)
     finally:
         trans.set_language(previous)
+
+
+@pytest.mark.parametrize('during_review', [False, True])
+def test_clear_stack_resets_review_even_after_a_late_completion(qapp, monkeypatch, during_review):
+    import core.stack_review
+    from utils import recovery
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(recovery, 'write_snapshot', lambda _window: None)
+
+    def analyze(frames, cancel):
+        entered.set()
+        assert release.wait(5)
+        return [{'index': 1, 'reference_index': 0, 'difference': 0.0}]
+
+    window, manager, panel = _window()
+    if during_review:
+        monkeypatch.setattr(core.stack_review, 'analyze_frames', analyze)
+    panel.btn_review_stack.click()
+    worker = manager._review_worker
+    try:
+        if during_review:
+            assert entered.wait(5)
+        else:
+            _finish(qapp, manager)
+            assert panel.review_status.text()
+        manager.clear_image_stack()
+        assert manager._review_worker is None
+        assert panel.btn_review_stack.text() == trans.t('stack_review_button')
+        assert not panel.btn_review_stack.isEnabled()
+        assert not panel.review_status.text()
+        assert not manager._review_results and not manager._review_frames
+    finally:
+        release.set()
+        if during_review:
+            assert worker.wait(5000)
+            qapp.processEvents()
+    assert not panel.review_status.text()
+    assert not panel.btn_review_stack.isEnabled()
+    assert manager._review_status_key is None
+
+
+def test_review_precedes_select_all_and_retouch_belongs_to_outputs(qapp):
+    panel = create_right_panel()
+    panel.widget.resize(500, 1100)
+    panel.widget.show()
+    qapp.processEvents()
+    try:
+        review = panel.btn_review_stack
+        select_all = panel.btn_select_all
+        assert review.parentWidget() is select_all.parentWidget()
+        assert review.geometry().right() <= select_all.geometry().left()
+        assert abs(review.geometry().center().y() - select_all.geometry().center().y()) <= 2
+        assert panel.btn_retouch.parentWidget() is panel.output_label.parentWidget()
+        assert panel.btn_retouch.parentWidget() is not review.parentWidget()
+        assert abs(panel.btn_retouch.geometry().center().y()
+                   - panel.output_label.geometry().center().y()) <= 2
+    finally:
+        panel.widget.close()
+        panel.widget.deleteLater()

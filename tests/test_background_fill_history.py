@@ -35,9 +35,12 @@ def controlled_background(monkeypatch):
     """Exercise document state transitions with known changed/no-op results."""
     def replace(frames, fused, *, preset='auto', **kwargs):
         value = {'auto': 80, 'soft': 100, 'sharp': 140}[preset]
-        image = fused.copy() if preset == 'auto' else np.full_like(fused, value)
+        current = kwargs.get('composite_onto')
+        if current is None:
+            current = fused
+        image = current.copy() if preset == 'auto' else np.full_like(fused, value)
         layer = np.full(fused.shape[:2], value, np.uint8)
-        return BackgroundFillResult(image, not np.array_equal(image, fused), 0, 1,
+        return BackgroundFillResult(image, not np.array_equal(image, current), 0, 1,
                                     0.25, MissingData(*(layer.copy() for _ in range(4))))
     monkeypatch.setattr('core.background_fill.replace_background', replace)
     return replace

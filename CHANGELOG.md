@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.77.0] - 2026-11-06
+
 ### Added
 - Add Auto background to Retouch: replace the stacked background with one real
   frame while the subject stays as stacked. Automatic (the default) picks the
@@ -15,7 +17,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as knobs just past the depth of field. A missing-data map shows, and can save,
   where no frame saw the scene cleanly. Scenes that are nearly all subject are
   left as stacked.
-- Add a Retouch button beside Review frames in the right panel.
+- Put Retouch in the output header and Review frames immediately left of Select
+  all in the source header. Add grouped, scrollable shortcut help to Retouch.
+- Add Settings → Restore default settings with a second confirmation. Cancel
+  changes nothing; restoring retains loaded sources, outputs and user data.
 - Add Auto background to the command line: `--auto-background [auto|soft|sharp]`
   replaces the background after fusion with the Retouch defaults, so a stack
   can be finished unattended. `--background-mode faithful` keeps the stack's
@@ -25,10 +30,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unavailable with grouped fusion and `--native-raw`.
 
 ### Changed
-- Pressing Render while frames are still loading now starts the render when
-  loading finishes; pressing it again cancels.
+- Local development and CI use the same test dependency file, including the
+  timeout plugin and the Python 3.10 TOML parser used by packaging checks.
+- Algorithms declare source resize interpolation once; tiled preparation and
+  base correction consume the descriptor instead of branching on method names.
+- CI also installs the built wheel without Qt or PyTorch and exercises real
+  16-bit CLI fusion and recipe replay, including non-ASCII paths.
+- Rendering queued during loading shows a waiting-for-loading state, followed
+  by resource wait, preparation, alignment, fusion and finishing as applicable.
+  Cancelling removes the deferred start, including after its timer was queued.
 - The status bar reads "RAM used" so it is clear which number is in use.
 - Reword the retouch brush-size hint.
+- OpenFocus A/B/C use whole-image processing at the default tile threshold.
+  Explicit non-default thresholds still select the external tile path; internal
+  row/frame streaming retains global depth and reconstruction semantics.
+- OpenFocus A selects original pixels by local high-frequency energy. The
+  kernel controls high-pass scale and smoothing controls energy spread;
+  mapped row processing and bounded frame concurrency preserve source-order
+  selection and 16-bit precision.
+- Stream TIFF conversion in bounded strips without an encoded full-image copy,
+  preserving integer depth and supported EXIF/GPS/ICC metadata. Admit camera
+  TIFFs by their actual classic-header capacity near the 4-GiB boundary.
+- Bound exposure statistics, normalization and gain scratch by rows, including
+  deferred uint16 tiles and mixed-depth neural inputs; release strips before
+  allocating the next and check cancellation between them.
 - Save Auto background sessions, including successful analyses without pixel
   changes, as lossless v2 `.ofretouch` ZIP snapshots with JSON metadata and NumPy
   payloads. GUI and CLI restore exact working pixels, reachable undo/redo tiles
@@ -77,6 +102,49 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so when it opens on such an output.
 
 ### Fixed
+- Ignore delayed startup dialogs, restores, file opens and backend probes once
+  shutdown begins, so an overdue first-run guide cannot reopen after closing.
+- Reject leading-slash absolute paths in portable recipes on Windows Python
+  3.13 and later, using the same check for inputs, outputs and mask paths.
+- Preserve the loupe's selected zoom across release/reopen and retain useful
+  image content while a new native region is pending.
+- Frame-number, thumbnail and slider navigation in Retouch no longer creates a
+  stray top-level window. Auto-background option indicators align with the first
+  text line, and clearing sources removes stale frame-review status.
+  Source-header buttons retain their full preferred caption width after a
+  temporary squeeze, so an idle action does not collapse to a lone ellipsis.
+- Correct microscope mosaic scale and rotation with similarity geometry and
+  original-resolution refinement instead of blending misregistered detail.
+- Use the reference canvas for mapped OpenFocus affine destinations when source
+  sizes differ, preventing successful alignment from returning black pixels.
+- Keep C's ROI planning consistent with its actual pyramid reconstruction depth.
+- Move macOS packaging to the current hosted runner after the macOS 14
+  configuration became unavailable; branch builds remain preview artifacts.
+- Checkpoint and recipe saves cannot replace their original images or correction
+  references; recipe execution protects the recipe itself. Reject output paths
+  that require the same name to be both a file and a directory before processing.
+- Unchanged brush strokes retain redo edits. Repeated background replacement
+  analyzes the original session base while preserving current edits and exact
+  untouched floating-point pixels. Loading a checkpoint releases its redundant
+  base buffer, and DCT-trimmed retouch sources own their cropped storage.
+- Correct base-frame brightness after resizing and grayscale/BGRA promotion.
+  Homography accepts both normalized and 0-255 floating-point inputs without
+  changing integer preprocessing; ECC accepts grayscale and singleton channels.
+- Detect source files replaced during decoding and reject late-cancelled
+  materialization. Failed or cancelled video imports preserve the previous stack
+  and metadata; thin-image previews keep their one-pixel short edge.
+- Batch exports retain each stack's EXIF and physical calibration. Grouped
+  outputs draw a scale bar only when their contributing calibrations agree.
+- Source changes discard stale preview drafts and invalidate ROI work safely.
+  Clearing sources releases idle loaders and removes obsolete recovery data;
+  saved projects become dirty when source membership changes. Aligned history
+  remains navigable after replacing the active stack.
+- Recipes retain native RAW mode and batch format, and reject transient report
+  flags during capture. Fractional control indices cannot mutate another output.
+- macOS update retries discard an interrupted temporary bundle before copying,
+  preventing obsolete files from surviving into the next installed build.
+- Oversized numeric parameters and extension metadata now produce regular
+  validation errors instead of an uncaught numeric-conversion overflow.
 - Message-box buttons such as "Discard changes" are no longer cut off.
 - Replaying a checkpoint from a grayscale standalone retouch session keeps
   the grayscale layout, so its fingerprints match.

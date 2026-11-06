@@ -39,6 +39,39 @@ def _capture(worker):
     return results, errors
 
 
+@pytest.mark.parametrize('cancel_waiter', [False, True])
+def test_render_reports_waiting_until_lease_and_never_prepares_after_cancel(monkeypatch, cancel_waiter):
+    from core.resource_policy import heavy_job
+
+    worker = _render(_frames())
+    waiting, admitted, finished = Event(), Event(), Event()
+    stages = []
+
+    def stage(value):
+        stages.append(value)
+        if value == 'waiting':
+            waiting.set()
+
+    worker.stage_signal.connect(stage, Qt.ConnectionType.DirectConnection)
+    worker.finished.connect(finished.set, Qt.ConnectionType.DirectConnection)
+    monkeypatch.setattr(worker, '_run_admitted', admitted.set)
+    try:
+        with heavy_job():
+            worker.start()
+            assert waiting.wait(5)
+            assert stages == ['waiting'] and not admitted.is_set()
+            if cancel_waiter:
+                worker.cancel()
+                assert finished.wait(5)
+        assert finished.wait(5)
+        assert worker.wait(5000)
+    finally:
+        worker.cancel()
+        worker.wait(5000)
+    assert stages == (['waiting'] if cancel_waiter else ['waiting', 'prepare'])
+    assert admitted.is_set() is (not cancel_waiter)
+
+
 @pytest.mark.parametrize("cancel_waiter", [False, True])
 def test_stack_load_waits_for_active_render_and_can_cancel(tmp_path, cancel_waiter):
     from core.image_loader import ImageStackLoader
@@ -110,51 +143,6 @@ def test_batch_import_waits_for_active_render_and_can_cancel(tmp_path, mode, can
     assert bool(results) is not cancel_waiter
 
 
-@pytest.mark.parametrize("cancel_waiter", [False, True])
-def test_render_lease_covers_normalization_and_cancellable_wait(monkeypatch, cancel_waiter):
-    import utils.image_utils as image_utils
-
-    first = _render(_frames(np.uint16))
-    second = PreviewWorker(_frames(np.uint16), ["openfocus_a"], {},
-                           {"thread_count": 1, "tile_enabled": False}, None, roi_only=False)
-    entered, release, second_entered = Event(), Event(), Event()
-    original = image_utils.normalize_fuse_input
-    owner = []
-
-    def normalize(images):
-        output = original(images)
-        if not owner:
-            owner.append(get_ident())
-            entered.set()
-            if not release.wait(10):
-                raise TimeoutError("test did not release normalization")
-        elif get_ident() != owner[0]:
-            second_entered.set()
-        return output
-
-    monkeypatch.setattr(image_utils, "normalize_fuse_input", normalize)
-    results, errors = _capture(first)
-    previews = []
-    second.result_ready.connect(lambda *args: previews.append(args), Qt.ConnectionType.DirectConnection)
-    first.start()
-    try:
-        assert entered.wait(10)
-        second.start()
-        first.cancel()
-        if cancel_waiter:
-            second.cancel()
-            assert second.wait(2000), "a cancelled waiter must finish before the owner"
-        assert not second_entered.wait(0.15), "normalization escaped the heavy-job lease"
-        assert first.isRunning(), "cancellation released unfinished work"
-    finally:
-        release.set()
-        assert first.wait(10000)
-        if second.isRunning():
-            assert second.wait(10000)
-    assert results == []
-    assert errors and errors[0].startswith("CANCELLED")
-    assert bool(previews) is not cancel_waiter
-    assert second_entered.is_set() is not cancel_waiter
 
 
 def _request(tmp_path, frames):
@@ -354,17 +342,92 @@ def test_report_context_restored_after_registration_error(monkeypatch):
     assert worker.alignment_report_provenance is None
 
 
-def test_tiled_v3_worker_keeps_source_depth_until_tiles(monkeypatch):
-    from types import SimpleNamespace
-    import core.resource_policy as resource_policy
-    from utils.image_utils import prepare_fusion_input
-    from core.algorithms import get_fusion
 
-    frames = _frames(np.uint16)
-    fusion = SimpleNamespace(algorithm='stackmffv3', descriptor=get_fusion('stackmffv3'),
-                             tile_enabled=True, tile_threshold=1)
-    monkeypatch.setattr(resource_policy, 'require_memory',
-                        lambda *args, **kwargs: pytest.fail('unexpected whole-stack allocation'))
-    prepared, is_16bit = prepare_fusion_input(frames, fusion)
-    assert is_16bit
-    assert all(actual is original for actual, original in zip(prepared, frames))
+
+@pytest.mark.parametrize('shape', [(1, 1000), (1000, 1)])
+def test_quick_preview_retains_thin_frame_pixels(shape):
+    pixels = np.full(shape + (3,), 40000, np.uint16)
+    worker = RenderWorker([pixels], algorithm=None, need_fusion=False, preview=True)
+    results, errors = _capture(worker)
+    worker.run()
+    assert not errors and len(results) == 1
+    actual = results[0][0][0]
+    expected_size = (max(1, round(shape[1] * .5)), max(1, round(shape[0] * .5)))
+    expected = cv2.resize(pixels, expected_size, interpolation=cv2.INTER_AREA)
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('calibrations', [(0.5, 2.0), (0.5, None)])
+def test_split_batch_exports_each_stacks_camera_and_calibration(tmp_path, calibrations):
+    import tifffile
+    from PIL import Image
+    from core.image_loader import ImageStackLoader
+    from core.workers import BatchWorker
+    from utils.scalebar import burn
+
+    source = tmp_path / 'split'
+    source.mkdir()
+    pixels = np.full((96, 128, 3), 90, np.uint8)
+    for index, px_um in enumerate(calibrations):
+        desc = '' if px_um is None else f'<OME><Pixels PhysicalSizeX="{px_um}"/></OME>'
+        tifffile.imwrite(source / f'{index}.tif', pixels, photometric='rgb',
+                         description=desc, metadata=None,
+                         extratags=[(271, 's', 0, 'Camera maker', False),
+                                    (272, 's', 0, f'Model {index}', False)])
+    loader = ImageStackLoader()
+    ok, message, entries, _ = loader.load_images_with_timestamps(str(source))
+    assert ok, message
+    style = {'position': 'bottom-right', 'color': 'white',
+             'font_family': None, 'font_size': 0.0, 'font_bold': False,
+             'text_align': 'auto', 'custom_x': None, 'custom_y': None}
+    settings = {'format': 'tiff', 'fusion_method': 'none',
+                'scale_bar': {'target': 'registered', **style}}
+    worker = BatchWorker([], 'custom', str(tmp_path / 'out'), settings,
+                         import_mode='single_folder', split_method='count', split_param=1,
+                         single_folder_images_with_times=entries, thread_count=1)
+    results, errors = {}, []
+    worker.finished.connect(results.update)
+    worker.error.connect(errors.append)
+    worker.run()
+    assert not errors and results['counts']['success'] == 2
+    for index, (stack, px_um) in enumerate(zip(results['aligned_stacks'], calibrations)):
+        assert len(stack['files']) == 1
+        path = stack['files'][0]
+        with Image.open(path) as exported:
+            assert exported.getexif()[272] == f'Model {index}'
+        actual = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_UNCHANGED)
+        expected = burn(pixels, {'px_um': px_um, **style}) if px_um else pixels
+        np.testing.assert_array_equal(actual, expected)
+        assert stack['annotations_baked'] == (px_um is not None)
+
+
+@pytest.mark.parametrize('calibrations', [(0.5, 0.5, 0.5), (0.5, 2.0, 0.5), (0.5, None, 0.5)])
+def test_grouped_batch_only_draws_a_shared_physical_calibration(tmp_path, calibrations):
+    import tifffile
+    from core.workers import BatchWorker
+    from utils.scalebar import burn
+
+    source = tmp_path / 'grouped'
+    source.mkdir()
+    pixels = np.full((96, 128, 3), 90, np.uint8)
+    for index, px_um in enumerate(calibrations):
+        desc = '' if px_um is None else f'<OME><Pixels PhysicalSizeX="{px_um}"/></OME>'
+        tifffile.imwrite(source / f'{index}.tif', pixels, photometric='rgb',
+                         description=desc, metadata=None)
+    style = {'position': 'bottom-right', 'color': 'white',
+             'font_family': None, 'font_size': 0.0, 'font_bold': False,
+             'text_align': 'auto', 'custom_x': None, 'custom_y': None}
+    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'),
+                         {'format': 'png', 'fusion_method': 'openfocus_a', 'group_size': 2,
+                          'fusion_params': {'kernel_size': 3},
+                          'scale_bar': {'target': 'output', **style}},
+                         thread_count=1, use_gpu=False, tile_enabled=False)
+    results, errors = {}, []
+    worker.finished.connect(results.update)
+    worker.error.connect(errors.append)
+    worker.run()
+    assert not errors and results['counts']['success'] == 1, results
+    actual = cv2.imdecode(np.fromfile(results['outputs'][0], np.uint8), cv2.IMREAD_UNCHANGED)
+    expected = (burn(pixels, {'px_um': .5, **style})
+                if all(value == .5 for value in calibrations) else pixels)
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=1)

@@ -67,10 +67,27 @@ def load(w, frames, names, paths, scale=1.0, append=False):
                                          profile_map={p: p.encode() for p in paths})
 
 
-def test_cancel_then_confirm_restores_frames_and_clears_session(monkeypatch):
+def test_cancel_then_confirm_restores_frames_and_clears_session(qapp, monkeypatch):
+    from PyQt6.QtGui import QAction
+    from PyQt6.QtWidgets import QLabel, QListWidget, QSlider, QWidget
+    from controllers.transform_manager import TransformManager
+    from widgets.magnifier_label import MagnifierLabel
     w, snapshots = host(monkeypatch)
     frames = [np.full((4, 5), x, np.uint16) for x in (500, 65000, 42)]
     load(w, frames, ["a", "b", "c"], ["a", "b", "c"])
+    w.transform_manager = TransformManager(w)
+    monkeypatch.setattr(w.transform_manager, "reload_image_stack", lambda **kwargs: None)
+    w.add_label_action = QAction()
+    w.resize_action = QAction()
+    w.result_slider = QSlider()
+    w.result_control_bar = QWidget()
+    w.lbl_result_info = QLabel()
+    w.lbl_result_img = MagnifierLabel()
+    w.output_list = QListWidget()
+    w.output_list.addItem("result")
+    w.fusion_results = [frames[0]]
+    w.fusion_result = frames[0]
+    preview = w._wipe_preview_record = object()
     w.raw_images = [np.rot90(frames[2]).copy(), np.rot90(frames[0]).copy()]
     w.image_filenames = ["c", "a"]
     w.excluded_frames = {1}
@@ -78,12 +95,15 @@ def test_cancel_then_confirm_restores_frames_and_clears_session(monkeypatch):
     w.current_scale_factor = 0.5
     w.source_px_um = 4.0
     w.labels[:] = ["input", "output", "registered"]
-    w.outputs[:] = ["result"]
+    w.roi_aligned_images = [frames[0]]
+    w.roi_mode_active = True
     w._undo_stack[:] = [1]
     w._redo_stack[:] = [2]
     w.source_manager.reset_current_stack()
     assert Box.default == Box.StandardButton.Cancel
-    assert w.image_filenames == ["c", "a"] and w.outputs == ["result"]
+    assert w.image_filenames == ["c", "a"]
+    assert w.fusion_results[0] is frames[0] and w.output_list.count() == 1
+    assert w._wipe_preview_record is preview and w.roi_mode_active
     Box.result = Box.StandardButton.Yes
     w.source_manager.reset_current_stack()
     assert all(actual is original for actual, original in zip(w.raw_images, frames))
@@ -93,7 +113,9 @@ def test_cancel_then_confirm_restores_frames_and_clears_session(monkeypatch):
     assert w.image_icc_profiles == [b"a", b"b", b"c"]
     assert w.current_scale_factor == 1.0 and w.source_px_um == 2.0
     assert not w.excluded_frames and not w.source_transforms
-    assert not w.labels and not w.outputs and not w.scale_bar_enabled
+    assert not w.labels and not w.fusion_results and not w.scale_bar_enabled
+    assert w.fusion_result is None and w.output_list.count() == 0
+    assert not w.roi_aligned_images and not w.roi_mode_active
     assert w.scale_um_per_px_manual == 3.0
     assert not w._undo_stack and not w._redo_stack and w._wipe_source_cache is None
     assert w._wipe_preview_record is None
@@ -215,6 +237,28 @@ def test_undo_after_stack_replacement_restores_original_baseline(monkeypatch, re
     assert w.raw_images[0] is first and w.image_filenames == ["first"]
 
 
+@pytest.mark.parametrize("change", ["load", "append", "clear"])
+def test_source_membership_changes_mark_saved_project_dirty(monkeypatch, change):
+    import main
+    w, _ = host(monkeypatch)
+    frame = np.zeros((4, 4, 3), np.uint8)
+    load(w, [frame], ["first.png"], ["first.png"])
+    w.project_path = "saved.ofproj"
+    w._project_dirty = False
+    titles = []
+    w.setWindowTitle = titles.append
+    w._update_project_title = main.OpenFocus._update_project_title.__get__(w)
+    w._mark_project_dirty = main.OpenFocus._mark_project_dirty.__get__(w)
+
+    if change == "clear":
+        w.source_manager.clear_image_stack()
+    else:
+        load(w, [frame.copy()], ["second.png"], ["second.png"], append=change == "append")
+
+    assert w._project_dirty
+    assert titles[-1] == "OpenFocus — saved.ofproj*"
+
+
 def test_undo_redo_restore_displayed_frame(monkeypatch):
     import main
     w, _ = host(monkeypatch)
@@ -256,6 +300,9 @@ class LoadWorker:
 
     def start(self): pass
 
+    def request_cancel(self):
+        self.is_cancelled = True
+
 
 def test_old_load_completion_after_clear_is_ignored(monkeypatch):
     w, _ = host(monkeypatch)
@@ -267,6 +314,50 @@ def test_old_load_completion_after_clear_is_ignored(monkeypatch):
     manager.clear_image_stack()
     worker.finished_load.callback(True, "", [np.ones((3, 3), np.uint8)], ["old"])
     assert not w.raw_images and manager._stack_baseline is None
+
+
+def test_clear_releases_loader_sources_without_dropping_existing_undo(monkeypatch):
+    import gc
+    import weakref
+    from core.image_loader import ImageStackLoader
+
+    w, _ = host(monkeypatch)
+    w.image_loader = ImageStackLoader()
+
+    def load_source():
+        frame = np.full((12, 16, 3), 40000, np.uint16)
+        load(w, [frame], ["first.tif"], ["first.tif"])
+        w.image_loader.images = list(w.raw_images)
+        return weakref.ref(frame)
+
+    original = load_source()
+    history = list(w._undo_stack)
+    w.source_manager.clear_image_stack()
+    gc.collect()
+
+    assert original() is None
+    assert not w.image_loader.images and not w.image_loader.image_paths
+    assert w._undo_stack == history
+
+
+def test_clear_detaches_late_loader_rollback(qapp, monkeypatch):
+    from core.image_loader import ImageStackLoader
+    from core.workers import StackLoadWorker
+
+    w, _ = host(monkeypatch)
+    loader = w.image_loader = ImageStackLoader()
+    loader.images = [np.zeros((4, 4, 3), np.uint16)]
+    loader.image_paths = ["old.tif"]
+    worker = w.source_manager._load_worker = StackLoadWorker(loader, filepaths=[])
+    decoded = [np.ones((4, 4, 3), np.uint16)]
+    loader.images = decoded
+
+    w.source_manager.clear_image_stack()
+    worker.restore_loader_state(decoded)
+
+    assert worker.is_cancelled
+    assert not w.raw_images
+    assert not w.image_loader.images and not w.image_loader.image_paths
 
 
 def test_append_decodes_at_baseline_scale_and_displays_at_working_scale(monkeypatch):

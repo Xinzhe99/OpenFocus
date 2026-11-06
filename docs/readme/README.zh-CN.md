@@ -55,7 +55,7 @@
 ## 📢 最新动态
 
 > [!NOTE]
-> **v1.75.0** — 分组融合、可复用的处理工作流、透明 PNG 图像栈、对齐诊断、增强的深度导出，以及刷新的桌面工作流。支持的输入与功能限制见更新日志。
+> **v1.77.0 候选版** — 自动背景与可恢复的修图会话、二次确认的设置重置、连续原始像素检查、有界大栈处理与 TIFF 转换，以及显微拼接倍率/旋转修复。支持的输入与功能限制见更新日志。
 
 更早的版本见 [更新日志](../../CHANGELOG.md)。
 
@@ -207,14 +207,22 @@ StackMFF V3 使用 AI 合并各帧的清晰部分，生成景深合成图像。
 
 **另外还有：**
 
-- **完整景深合成流程**——图像栈浏览、清晰度曲线、快速预览、ROI 渲染，逐方法设置跨重启保留。
+- **完整景深合成流程**——图像栈浏览、清晰度曲线、原始像素缩放与放大镜、ROI 渲染，逐方法设置跨重启保留。
 - **显微就绪**——端到端 16 位、TIFF µm/px、平场校正、传感器坏点校正、多页 TIFF Z 栈、带纹理的 OBJ 导出。
 - **色彩配置文件**——单张 PNG、TIFF、JPEG 和 WebP 导出保留所有源帧共有的 RGB ICC 配置；混合或未标记的图像栈不附加配置，也不转换像素颜色。
 - **透明 PNG**——具有相同矩形等透明度蒙版的图像栈可按原尺寸融合并保存为 PNG，限制见用户手册。
-- **无界面 CLI**——与 GUI 同一管线，提供 `openfocus` 命令、批处理、`--dry-run`、`--resume` 与 JSON 输出。
+- **无界面 CLI**——与 GUI 共用管线，支持批处理、配方、EXIF 对焦步数排序、自动背景、`--dry-run`、`--resume` 与 JSON 输出。
 - **工程与恢复**——`.ofproj` 会话、崩溃自动恢复、图像栈编辑与标注的撤销/重做。
 - **十二种界面语言**——按系统区域自动检测，可通过 `locales/<code>.py` 添加语言。
-- **省内存**——仅在使用 AI 方法时加载神经网络权重。
+- **内存管理**——按 RAM 预算限制帧或分块并发，使用磁盘中间存储，并仅在选用 AI 方法时加载模型。
+
+StackMFF V1/V2/V3 使用 ONNX Runtime；Windows 可使用 DirectML，macOS 可使用
+CoreML，无法使用相应执行提供程序时回退到 CPU。设备被识别并不代表模型已在
+GPU 上执行，以界面中的实际执行状态为准。详见[GPU 支持](../GPU_SUPPORT.md)。
+
+JPEG/RAW 显示预览优先读取可用的内嵌图像；正式处理和原始像素检查会独立读取
+源数据，预览图不会替代融合输入。请为所选原图、处理工作区和完整结果保留足够的
+内存与临时磁盘空间。
 
 <a id="install"></a>
 ## ⬇️ 安装
@@ -259,6 +267,17 @@ curl.exe -fL https://openfocus.top/download/latest/windows-setup -o OpenFocus-se
 pip install openfocus
 openfocus -i ./stack_folder -o ./result/fused.png
 ```
+
+自动背景可同时保留融合原图和缺失数据图：
+
+```bash
+openfocus -i ./stack_folder -o ./result/fused.tif --auto-background auto --save-stacked --missing-data-map
+```
+
+文件夹中的帧在都有 EXIF 对焦步数时按近到远排序，否则使用自然文件名顺序；
+`--frame-order name` 可强制按文件名排序。显式列出的文件保持传入顺序。
+配方会保留原生 RAW 转换模式和批量输出格式；临时的重复帧检查与对齐报告应通过
+直接 CLI 命令运行。
 
 详见[命令行手册](../USER_MANUAL_ZH.md#14-命令行界面)。
 
@@ -308,6 +327,21 @@ conda activate openfocus
 pip install -r requirements.txt
 python main.py
 ```
+
+安装与 CI 共用的开发依赖，再运行回归测试：
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q --timeout=90 --timeout-method=thread
+```
+
+无显示环境应设置 `QT_QPA_PLATFORM=offscreen`。处理、取消或界面状态的改动还需
+实际运行 CLI 或桌面程序，打包后的程序也需单独验证。
+
+算法描述统一放在 `core/algorithms.py`，共享处理逻辑放在 `core` / `utils`，
+控制器负责捕获界面状态和组织对话框。新增算法只声明一次参数、资源估算与能力，
+各处选择器自动读取同一描述；保持位深、源帧顺序、协作取消和线程/RAM 预算。
+接入流程见[贡献指南](../../CONTRIBUTING.md)。
 
 使用 PyInstaller 打包见 [docs/BUILD_COMMANDS.md](../../docs/BUILD_COMMANDS.md)。
 

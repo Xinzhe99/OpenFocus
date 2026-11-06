@@ -143,3 +143,26 @@ class TestRecovery:
         # sources vanish (USB stick removed): recovery must not be offered
         shutil.rmtree(stack)
         assert rec.pending_recovery() is None
+
+
+    def test_cleared_workspace_is_not_offered_after_crash(self, tmp_path, recovery_mod):
+        from types import SimpleNamespace
+        from controllers.source_manager import SourceManager
+
+        rec = recovery_mod
+        stack = str(tmp_path / "stack")
+        os.makedirs(stack)
+        window = self._fake_window(stack)
+        window.transform_manager = SimpleNamespace(
+            invalidate_processing_results=lambda **kwargs: None,
+            reload_image_stack=lambda **kwargs: None)
+        window.label_manager.reset_labels = lambda: None
+        assert rec.write_snapshot(window)
+        rec.init_lock()
+        assert rec.snapshot_frame_count(rec.pending_recovery()) == 2
+
+        SourceManager(window).clear_image_stack()
+
+        assert window.raw_images == []
+        assert rec.pending_recovery() is None
+        assert not os.path.exists(rec.session_path())

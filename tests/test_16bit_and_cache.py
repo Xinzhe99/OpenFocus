@@ -47,6 +47,23 @@ class TestImwriteAuto:
         assert back.dtype == np.uint8
         assert abs(int(back[5, 5, 0]) - 157) <= 4  # 40000/257
 
+    def test_large_camera_tiff_cancels_without_rejecting_classic_size(self, tmp_path):
+        from PIL import Image
+        from core.registration import RegistrationCancelled
+
+        image = np.broadcast_to(np.zeros((1, 1, 3), np.uint16), (27000, 26400, 3))
+        metadata = Image.Exif()
+        metadata[271] = 'Camera'
+        target = tmp_path / 'existing.tif'
+        previous = b'preserve previous export'
+        target.write_bytes(previous)
+
+        with pytest.raises(RegistrationCancelled):
+            imwrite_auto(target, image, exif=metadata.tobytes(), stream_tiff=True,
+                         should_cancel=lambda: True)
+
+        assert target.read_bytes() == previous
+
 
 class TestFuseBitDepth:
     def test_uint16_roundtrip(self):
