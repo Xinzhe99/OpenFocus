@@ -588,11 +588,13 @@ def _align_openfocus_impl(input_source, output_path=None, img_filenames=None,
 
     # Brightness and geometry have independent reference frames.
     ref_idx = reference_frame - 1
-    bright_gray = (_gray_float(images[-1])
-                   if brightness_reference == "last" else _gray_float(images[0]))
-    ref_low = cv2.GaussianBlur(bright_gray, (0, 0), 32.0)
-    ref_low_mean = float(ref_low.mean()) or 1.0
-    del bright_gray, ref_low
+    ref_low_mean = 1.0
+    if equalize_brightness:
+        bright_gray = (_gray_float(images[-1])
+                       if brightness_reference == "last" else _gray_float(images[0]))
+        ref_low = cv2.GaussianBlur(bright_gray, (0, 0), 32.0)
+        ref_low_mean = float(ref_low.mean()) or 1.0
+        del bright_gray, ref_low
     gains = [1.0] * n
 
     ref_est = _of_gray_est(images[ref_idx], est_width)
