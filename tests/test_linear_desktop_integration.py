@@ -18,8 +18,9 @@ def test_linear_stack_load_is_atomic_and_checks_calibration(monkeypatch):
     import utils.linear_dng as linear
 
     calls = []
-    def inspect(path, scale, *, linear, header_only):
+    def inspect(path, scale, *, linear, header_only, should_cancel=None):
         assert linear and header_only
+        assert callable(should_cancel) and not should_cancel()
         calls.append(path)
         return [SimpleNamespace(linear_metadata=_metadata(neutral=(0.5 + (len(calls) - 1) * .1, 1.0, 0.7)))]
     monkeypatch.setattr(source_frames, 'scan_source', inspect)
@@ -46,8 +47,9 @@ def test_linear_stack_cancel_does_not_replace_previous_stack(monkeypatch):
     loader.images = [old]
     cancelled, calls = [False], []
     loader.should_cancel = lambda: cancelled[0]
-    def inspect(path, scale, *, linear, header_only):
+    def inspect(path, scale, *, linear, header_only, should_cancel=None):
         assert linear and header_only
+        assert should_cancel is loader.should_cancel and not should_cancel()
         calls.append(path)
         cancelled[0] = True
         return [SimpleNamespace(linear_metadata=_metadata())]

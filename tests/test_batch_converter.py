@@ -508,7 +508,7 @@ def test_large_raw_without_preview_never_unpacks_sensor(tmp_path, monkeypatch):
     source = tmp_path / 'giant.cr3'
     source.write_bytes(b'header')
     monkeypatch.setattr(converter.image_loader.rawpy, 'RawPy', RawHeader)
-    monkeypatch.setattr(converter, '_embedded_raw_jpeg', lambda *a, **kw: None)
+    monkeypatch.setattr(converter, '_embedded_raw_jpegs', lambda *a, **kw: iter(()))
     with pytest.raises(ValueError, match='bounded'):
         converter.thumbnail_rgb(str(source))
 

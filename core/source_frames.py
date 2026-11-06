@@ -239,7 +239,9 @@ def _raw_lzw_preview(page, should_cancel=None):
     ifd.tagtype[offsets_tag] = ifd.tagtype[counts_tag] = 4  # TIFF LONG
     ifd[offsets_tag] = (0,) * len(page.dataoffsets)
     ifd[counts_tag] = tuple(page.databytecounts)
-    position = len(header) + len(ifd.tobytes(offset=8))
+    # Pillow relocates StripOffsets relative to the end of the serialized IFD,
+    # while TileOffsets remain absolute. Supply each tag's required base once.
+    position = len(header) + len(ifd.tobytes(offset=8)) if page.is_tiled else 0
     offsets = []
     for length in page.databytecounts:
         offsets.append(position)
@@ -309,10 +311,9 @@ def _raw_bitmap_preview(path, orientation, should_cancel=None):
 def _raw_preview(raw, orientation, path, should_cancel=None):
     """Read bounded embedded display pixels without unpacking the sensor."""
     import rawpy
-    from core.batch_converter import _embedded_raw_jpeg
+    from core.batch_converter import _embedded_raw_jpegs
     _check_preview_cancel(should_cancel)
-    encoded = _embedded_raw_jpeg(path, should_cancel=should_cancel)
-    if encoded is not None:
+    for encoded in _embedded_raw_jpegs(path, should_cancel=should_cancel):
         try:
             with Image.open(BytesIO(encoded)) as image:
                 preview = _pil_preview(image)
@@ -321,8 +322,11 @@ def _raw_preview(raw, orientation, path, should_cancel=None):
                 return _orient(preview, orientation)
         except InterruptedError:
             raise
-        except (OSError, ValueError):
+        except (OSError, ValueError, MemoryError):
             pass
+        finally:
+            del encoded
+            _check_preview_cancel(should_cancel)
     preview = _raw_bitmap_preview(path, orientation, should_cancel)
     if preview is not None:
         return preview

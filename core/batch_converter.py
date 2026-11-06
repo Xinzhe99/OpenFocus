@@ -447,8 +447,8 @@ def _raw_preview_pages(tif, should_cancel=None):
             pending.append((iter(page.pages), depth + 1))
 
 
-def _embedded_raw_jpeg(path, should_cancel=None):
-    """Read only bounded, self-contained JPEG ranges named by the container."""
+def _embedded_raw_jpegs(path, should_cancel=None):
+    """Yield bounded JPEG ranges in display order, one encoded image at a time."""
     def payload(offset, length):
         if should_cancel is not None and should_cancel():
             raise InterruptedError('Source preview cancelled')
@@ -458,7 +458,10 @@ def _embedded_raw_jpeg(path, should_cancel=None):
             stream.seek(offset)
             if stream.read(2) != b'\xff\xd8':
                 return None
-            resource_policy.require_memory(length * 2)
+            try:
+                resource_policy.require_memory(length * 2)
+            except MemoryError:
+                return None
             stream.seek(offset)
             encoded = stream.read(length)
         return encoded if len(encoded) == length else None
@@ -467,7 +470,10 @@ def _embedded_raw_jpeg(path, should_cancel=None):
         with open(path, 'rb') as stream:
             header = stream.read(92)
         if len(header) == 92 and header.startswith(b'FUJIFILMCCD-RAW'):
-            return payload(*struct.unpack('>II', header[84:92]))
+            encoded = payload(*struct.unpack('>II', header[84:92]))
+            if encoded is not None:
+                yield encoded
+            return
     try:
         with tifffile.TiffFile(path) as tif:
             candidates = list(_raw_preview_pages(tif, should_cancel))
@@ -476,21 +482,27 @@ def _embedded_raw_jpeg(path, should_cancel=None):
             candidates.sort(key=lambda p: (max(p.imagewidth, p.imagelength) < 768,
                                           p.imagewidth * p.imagelength if max(p.imagewidth, p.imagelength) >= 768
                                           else -p.imagewidth * p.imagelength))
+            seen = set()
             for page in candidates:
                 offset, length = page.tags.get(513), page.tags.get(514)
-                encoded = None
+                ranges = []
                 if offset is not None and length is not None:
-                    encoded = payload(int(offset.value), int(length.value))
-                if (encoded is None and page.photometric.name in ('RGB', 'YCBCR')
+                    ranges.append((int(offset.value), int(length.value)))
+                if (page.photometric.name in ('RGB', 'YCBCR')
                         and page.compression.value in (6, 7) and len(page.dataoffsets) == 1):
-                    encoded = payload(page.dataoffsets[0], page.databytecounts[0])
-                if encoded is not None:
-                    return encoded
+                    ranges.append((page.dataoffsets[0], page.databytecounts[0]))
+                for offset, length in ranges:
+                    if (offset, length) in seen:
+                        continue
+                    seen.add((offset, length))
+                    encoded = payload(offset, length)
+                    if encoded is not None:
+                        yield encoded
+                        encoded = None
     except InterruptedError:
         raise
     except (OSError, ValueError, tifffile.TiffFileError):
-        return None
-    return None
+        return
 
 
 def thumbnail_rgb(path, size=(96, 72)):
