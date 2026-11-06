@@ -626,6 +626,12 @@ gestackte Pixel überall dort zurück, wo Sie sie bevorzugen, zum Beispiel einen
 unscharfen Grashalm vor dem Motiv. Füllt das Motiv fast das ganze Bild, wie bei
 einer Waldbodenszene, bleibt das Bild wie gestackt und ein Hinweis erscheint.
 
+Wenn Sie die Retusche auf einem bereits retuschierten Ergebnis öffnen,
+analysiert Automatischer Hintergrund das gestackte Ergebnis, aus dem es stammt,
+und legt den neuen Hintergrund auf Ihr retuschiertes Bild. Pinselarbeit am Motiv
+bleibt erhalten, und ein früher ersetzter Hintergrund wird nie erneut
+analysiert. Ein zweiter Durchlauf baut daher keine Säume auf.
+
 Nach einem Durchlauf färbt **Fehlende Daten anzeigen** die Stellen ein, die kein
 Bild sauber erfasst hat. Diese Stellen sollten Sie prüfen oder von Hand
 retuschieren:

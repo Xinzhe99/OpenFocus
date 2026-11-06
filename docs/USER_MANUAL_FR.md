@@ -589,6 +589,12 @@ pixels empilés là où vous les préférez, par exemple un brin d'herbe flou de
 le sujet. Si le sujet remplit presque toute l'image, comme une scène de sol
 forestier, l'image reste telle qu'empilée et une note l'indique.
 
+Si vous ouvrez la retouche sur un résultat déjà retouché, l'arrière-plan
+automatique analyse le résultat empilé dont il provient et pose le nouvel
+arrière-plan sur votre image retouchée. Les retouches au pinceau sur le sujet
+sont conservées, et un arrière-plan déjà remplacé n'est jamais réanalysé : un
+second passage n'accumule donc pas de halos.
+
 Après un passage, **Afficher les données manquantes** colore les endroits
 qu'aucune image n'a vus nettement. Ce sont les endroits à vérifier ou à
 retoucher à la main :

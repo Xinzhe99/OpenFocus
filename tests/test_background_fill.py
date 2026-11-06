@@ -533,3 +533,109 @@ def test_fine_outline_band_and_ring_stay_a_pixel_wide_on_tiny_images():
         bf._SCALE.reset(token)
     assert band >= 1.0
     assert inner < 1.0 < outer          # distances of 1 px fall inside the ring
+def test_composite_onto_keeps_edits_and_analyses_the_stacked_result(scene, soft_result):
+    frames, fused, disc = scene
+    edited = fused.copy()
+    ys, xs = np.nonzero(disc)
+    cy, cx = int(ys.mean()), int(xs.mean())
+    edited[cy - 10:cy + 10, cx - 10:cx + 10] = (0, 0, 255)     # brushing on the subject
+    again = replace_background(frames, fused, composite_onto=edited)
+    np.testing.assert_array_equal(again.image[cy - 10:cy + 10, cx - 10:cx + 10],
+                                  edited[cy - 10:cy + 10, cx - 10:cx + 10])
+    # Away from the subject the background is the clean run's (the blend
+    # weight can sit a hair under 1, so allow one level of rounding).
+    far = cv2.distanceTransform((~disc).astype(np.uint8), cv2.DIST_L2, 5) > 40
+    diff = np.abs(again.image[far].astype(int) - soft_result.image[far].astype(int))
+    assert diff.max() <= 1 and (diff > 0).mean() < 1e-4
+    with pytest.raises(BackgroundFillError):
+        replace_background(frames, fused, composite_onto=edited[:-1])
+
+
+def _retouched_document(scene):
+    """A retouched output (brushing on the subject) linked to its stack."""
+    from core.render_context import build_render_context
+    from utils.retouch import RetouchDocument
+    frames, fused, disc = scene
+    context = build_render_context(frames, fused, filenames=[f"f{i}.png" for i in range(len(frames))],
+                                   algorithm="test")
+    edited = fused.copy()
+    ys, xs = np.nonzero(disc)
+    cy, cx = int(ys.mean()), int(xs.mean())
+    edited[cy - 10:cy + 10, cx - 10:cx + 10] = (0, 0, 255)
+    doc = RetouchDocument(edited, context)
+    doc.stacked_image = fused
+    return doc, (cy, cx)
+
+
+def test_retouch_from_a_retouched_output_uses_the_stacked_result(scene, soft_result, tmp_path, monkeypatch):
+    _frames, _fused, disc = scene
+    doc, (cy, cx) = _retouched_document(scene)
+    doc.initialize_checkpoint()
+    assert doc.auto_background() == "committed"
+    assert doc._operations[-1]["from_stacked"] is True
+    assert (doc.working[cy, cx] == (0, 0, 255)).all()
+    far = cv2.distanceTransform((~disc).astype(np.uint8), cv2.DIST_L2, 5) > 40
+    diff = np.abs(doc.working[far].astype(int) - soft_result.image[far].astype(int))
+    assert diff.max() <= 1 and (diff > 0).mean() < 1e-4
+
+
+
+def test_stacked_source_follows_retouches_back_to_the_stack():
+    from types import SimpleNamespace
+    from controllers.output_manager import OutputManager, OutputRecord
+    frames = (SimpleNamespace(image=np.zeros((4, 4, 3), np.uint8)),)
+    context = SimpleNamespace(frames=frames)
+    image = np.zeros((8, 8, 3), np.uint16)
+    stack = OutputRecord.create(image, "stack", context=context)
+    first = OutputRecord.create(image.copy(), "stack · Retouched 1", context=context,
+                                kind="retouch", parent_id=stack.output_id)
+    second = OutputRecord.create(image.copy(), "stack · Retouched 2", context=context,
+                                 kind="retouch", parent_id=first.output_id)
+    other = OutputRecord.create(image.copy(), "other", context=SimpleNamespace(
+        frames=(SimpleNamespace(image=np.zeros((4, 4, 3), np.uint8)),)), kind="retouch",
+        parent_id=stack.output_id)
+    records = [second, first, stack, other]
+    manager = OutputManager.__new__(OutputManager)
+    manager.window = SimpleNamespace(output_list=SimpleNamespace(count=lambda: len(records)))
+    manager.record_for_row = lambda row: records[row]
+    assert manager.stacked_source(second) is stack
+    assert manager.stacked_source(first) is stack
+    assert manager.stacked_source(stack) is None          # already the stacked result
+    assert manager.stacked_source(other) is None          # different frames
+    orphan = OutputRecord.create(image.copy(), "x", context=context, kind="retouch", parent_id="gone")
+    assert manager.stacked_source(orphan) is None
+
+
+def test_retouch_dialog_on_a_retouched_output_links_the_stacked_result(qapp, scene):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QApplication, QLabel, QWidget
+    from controllers.output_manager import OutputRecord
+    from core.render_context import build_render_context
+    from dialogs.retouch import RetouchDialog, _AutoBackgroundDialog
+    from locales import trans
+
+    frames, fused, _ = scene
+    ctx = build_render_context(frames, fused, filenames=[f"f{i}.png" for i in range(len(frames))],
+                               algorithm="test")
+    stack = OutputRecord.create(fused, "demo.png", context=ctx)
+    retouched = OutputRecord.create(fused.copy(), "demo.png · Retouched 1", context=ctx,
+                                    kind="retouch", parent_id=stack.output_id)
+    window = QWidget()
+    window.output_manager = SimpleNamespace(
+        stacked_source=lambda record: stack if record is retouched else None)
+    plain = RetouchDialog(window, record=stack, apply_callback=lambda *_: (True, ""))
+    assert plain.doc.stacked_image is None
+    dlg = RetouchDialog(window, record=retouched, apply_callback=lambda *_: (True, ""))
+    try:
+        assert dlg.doc.stacked_image is fused
+        assert dlg._notice == trans.t("retouch_from_retouched")
+        auto = _AutoBackgroundDialog(dlg.doc, dlg)
+        texts = [label.text() for label in auto.findChildren(QLabel)]
+        assert trans.t("retouch_auto_bg_from_stacked") in texts
+        auto.deleteLater()
+    finally:
+        for d in (plain, dlg):
+            d._allow_close = True
+            d.close()
+        QApplication.processEvents()
+        window.deleteLater()

@@ -586,6 +586,11 @@ empilhados onde os preferir, por exemplo uma folha de erva desfocada à frente d
 motivo. Quando o motivo ocupa quase todo o enquadramento, como numa cena do chão
 da floresta, a imagem fica tal como foi empilhada e aparece um aviso.
 
+Se abrir o retoque num resultado que já foi retocado, o fundo automático analisa
+o resultado empilhado de onde ele veio e aplica o novo fundo sobre a sua imagem
+retocada. Os retoques a pincel no motivo são mantidos e um fundo já substituído
+nunca volta a ser analisado, por isso uma segunda execução não acumula halos.
+
 Após uma execução, **Mostrar dados ausentes** colore os locais que nenhum
 quadro mostrou com nitidez. São os locais que devem ser verificados ou retocados à mão:
 

@@ -31,6 +31,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Render All Methods skips a method that cannot run (for example, when the
   memory check refuses it), renders the rest and lists the skipped methods
   at the end. Cancelling still stops the whole run.
+- Auto background on an output that was already retouched analyses the
+  stacked result it came from and lays the new background onto the retouched
+  image: brushing on the subject is kept, and an earlier replacement is not
+  analysed again, so running it twice no longer builds up halos. Retouch says
+  so when it opens on such an output.
 
 ### Fixed
 - Message-box buttons such as "Discard changes" are no longer cut off.

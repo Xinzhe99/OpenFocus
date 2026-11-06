@@ -547,6 +547,36 @@ class OutputManager:
         if view is not None and hasattr(view, 'set_display_pixmap'):
             view.set_display_pixmap(pixmap)
 
+    def stacked_source(self, record: OutputRecord) -> Optional[OutputRecord]:
+        """The stacked result a retouched output was made from, or None.
+
+        Follows each retouch back to its parent; only a stack of the same
+        size rendered from the same frames counts."""
+        if record is None or record.kind != "retouch":
+            return None
+        by_id = {}
+        for row in range(self.window.output_list.count()):
+            other = self.record_for_row(row)
+            if other is not None:
+                by_id[other.output_id] = other
+        current, seen = record, set()
+        while current is not None and current.kind == "retouch":
+            parent = current.parent_id
+            if not parent or parent in seen:
+                return None
+            seen.add(parent)
+            current = by_id.get(parent)
+        if (current is None or current.image is None or record.image is None
+                or current.image.shape != record.image.shape
+                or current.image.dtype != record.image.dtype):
+            return None
+        frames = getattr(current.context, "frames", None)
+        mine = getattr(record.context, "frames", None)
+        if (not frames or not mine or len(frames) != len(mine)
+                or any(a.image is not b.image for a, b in zip(frames, mine))):
+            return None
+        return current
+
     def add_retouched_output(self, base_record: OutputRecord,
                              image) -> OutputRecord:
         """Publish a retouch buffer as a new output, leaving the base intact."""

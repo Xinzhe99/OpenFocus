@@ -1037,6 +1037,12 @@ prefer them, for example an out-of-focus grass blade in front of the subject.
 When the subject fills nearly the whole frame, as in a ground-level forest
 scene, the image is left as stacked and a note says so.
 
+If you open Retouch on an output that was already retouched, Auto background
+analyzes the stacked result it came from and lays the new background onto your
+retouched image. Brushing on the subject is kept, and an earlier background
+replacement is never analyzed again, so running it twice does not build up
+halos.
+
 After a run, **Show missing data** tints the places no frame saw cleanly. These
 are the places to check or retouch by hand:
 

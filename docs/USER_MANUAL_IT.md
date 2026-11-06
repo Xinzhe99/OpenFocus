@@ -587,6 +587,12 @@ preferisci, per esempio un filo d'erba sfocato davanti al soggetto. Se il
 soggetto riempie quasi tutta l'inquadratura, come in una scena di sottobosco,
 l'immagine resta come impilata e compare una nota.
 
+Se apri il ritocco su un risultato già ritoccato, lo sfondo automatico analizza
+il risultato impilato da cui proviene e applica il nuovo sfondo sulla tua
+immagine ritoccata. I ritocchi a pennello sul soggetto vengono mantenuti e uno
+sfondo già sostituito non viene mai rianalizzato, quindi un secondo passaggio
+non accumula aloni.
+
 Dopo un'elaborazione, **Mostra dati mancanti** colora i punti che nessun
 fotogramma ha visto con chiarezza. Sono i punti da controllare o ritoccare a
 mano:

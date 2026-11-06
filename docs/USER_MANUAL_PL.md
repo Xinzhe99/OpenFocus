@@ -603,6 +603,12 @@ gdzie wolisz, na przykład nieostre źdźbło trawy przed obiektem. Gdy obiekt
 wypełnia prawie cały kadr, jak w scenie z dna lasu, obraz zostaje jak po
 stackowaniu i pojawia się komunikat.
 
+Jeśli otworzysz retusz na wyniku, który był już retuszowany, automatyczne tło
+analizuje wynik stacku, z którego pochodzi, i nakłada nowe tło na Twój
+retuszowany obraz. Poprawki pędzlem na obiekcie zostają zachowane, a wcześniej
+zastąpione tło nigdy nie jest analizowane ponownie, więc drugie uruchomienie nie
+nawarstwia aureoli.
+
 Po przebiegu **Pokaż brakujące dane** zabarwia miejsca, których żadna klatka nie
 uchwyciła wyraźnie. To miejsca do sprawdzenia lub ręcznego retuszu:
 
