@@ -64,6 +64,7 @@ def test_selected_source_decode_coalesces_requests_and_never_runs_on_gui(qapp, m
     monkeypatch.setattr(source_frames, 'resolve_frame', resolve)
     worker = SourceRegionWorker(object(), 'generation')
     received = QSignalSpy(worker.ready)
+    failed = QSignalSpy(worker.failed)
     worker.submit(('loupe', 0, (10, 10, 32, 24), (100, 100)))
     worker.start()
     try:
@@ -73,7 +74,9 @@ def test_selected_source_decode_coalesces_requests_and_never_runs_on_gui(qapp, m
         latest = ('loupe', 40, (40, 10, 32, 24), (100, 100))
         worker.submit(latest)
         release.set()
-        assert received or received.wait(2000)
+        if not received:
+            received.wait(2000)
+        assert received, list(failed)
         assert len(received) == 1
         assert received[0][0] == 'generation'
         assert received[0][1] == latest
@@ -176,3 +179,57 @@ def test_uncacheable_selected_original_is_resolved_once_across_requests(qapp, tm
     finally:
         worker.request_cancel()
         assert worker.wait(2000)
+
+
+def test_region_memory_rejection_preserves_original_pixels(monkeypatch):
+    from core import resource_policy
+    image = np.full((96, 128, 3), 43000, np.uint16)
+    before = image.copy()
+    def reject(_required, **_kwargs):
+        raise MemoryError('display budget')
+    monkeypatch.setattr(resource_policy, 'require_memory', reject)
+    with pytest.raises(MemoryError, match='display budget'):
+        render_source_region(image, (0, 0, 128, 96), (128, 96))
+    np.testing.assert_array_equal(image, before)
+
+
+def test_active_region_waits_for_render_and_coalesces_queued_view(qapp):
+    from PyQt6.QtCore import Qt
+    from core.resource_policy import heavy_job
+    image = np.arange(80 * 100, dtype=np.uint16).reshape(80, 100)
+    worker = SourceRegionWorker(image, 'lease')
+    received, held, release = threading.Event(), threading.Event(), threading.Event()
+    results = []
+    def receive(_key, request, pixels, _rect):
+        results.append((request, pixels, held.is_set()))
+        received.set()
+    worker.ready.connect(receive, Qt.ConnectionType.DirectConnection)
+    worker.submit(('view', 1, (0, 0, 20, 20), (20, 20)))
+    worker.start()
+    owner = None
+    try:
+        assert received.wait(2)
+        received.clear()
+        def render():
+            with heavy_job():
+                held.set()
+                release.wait(3)
+                held.clear()
+        owner = threading.Thread(target=render)
+        owner.start()
+        assert held.wait(2)
+        worker.submit(('view', 2, (10, 10, 20, 20), (20, 20)))
+        assert not received.wait(.1)
+        latest = ('view', 3, (30, 30, 20, 20), (20, 20))
+        worker.submit(latest)
+        release.set()
+        assert received.wait(2)
+        assert results[-1][0] == latest
+        np.testing.assert_array_equal(results[-1][1], to_display_uint8(image[30:50, 30:50]))
+        assert not any(result[2] for result in results)
+    finally:
+        release.set()
+        worker.request_cancel()
+        assert worker.wait(2000)
+        if owner is not None:
+            owner.join(2)

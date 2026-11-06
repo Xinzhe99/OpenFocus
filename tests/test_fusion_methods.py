@@ -523,7 +523,8 @@ def test_dct_strip_reconstruction_keeps_mixed_source_assignment_casting():
     # call historically assigns its normalized float pixels into uint8 output;
     # strip copying must preserve NumPy's assignment conversion, including the
     # bottom/right block padding.
-    yy, xx = np.indices((257, 193))
+    # Two real columns remain in the last block, so padding retains contrast.
+    yy, xx = np.indices((257, 194))
     pixels = np.where((yy + xx) % 2, 223, 27).astype(np.uint16) * 257 + 5
     sharp = np.repeat(pixels[:, :, None], 3, axis=2)
     blank = np.zeros(sharp.shape, np.uint8)

@@ -5,13 +5,14 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 import pytest
-from PyQt6.QtWidgets import QLabel, QListWidget, QSlider, QWidget
+from PyQt6.QtWidgets import QLabel, QSlider, QWidget
 
 from controllers.export_manager import ExportManager, _read_image_any
 from controllers.output_manager import OutputManager, OutputRecord, publish_aligned_stack
 from core.image_loader import ImageStackLoader
 from core.workers import BatchWorker, GifSaverWorker
 from utils.image_utils import imwrite_auto, imwrite_multi_tiff
+from widgets.output_list import OutputListWidget
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +40,8 @@ class Status:
 
 def host(qapp):
     window = QWidget()
-    window.output_list = QListWidget(window)
+    window.output_list = OutputListWidget(window)
+    window.output_list.set_window(window)
     window.output_label = QLabel(window)
     window.lbl_result_info = QLabel(window)
     window.result_slider = QSlider(window)

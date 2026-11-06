@@ -291,7 +291,7 @@ def _raw_bitmap_preview(path, orientation, should_cancel=None):
                                else _tiff_preview(page, should_cancel=should_cancel))
                 except InterruptedError:
                     raise
-                except (ImportError, OSError, ValueError):
+                except (ImportError, OSError, ValueError, MemoryError):
                     _check_preview_cancel(should_cancel)
                     continue
                 if isinstance(preview, _UnavailablePreview):

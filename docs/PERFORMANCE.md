@@ -1,9 +1,9 @@
 # OpenFocus Performance & Large-Stack Reference
 
-The measurements and implementation notes below describe earlier PyTorch-based
-revisions and are historical, not measurements or a specification of the current
-ONNX Runtime implementation. They must not be used as evidence of current GPU
-support, throughput, memory use or image quality.
+Throughput tables marked historical describe earlier PyTorch-based revisions.
+They are not measurements or a specification of the current ONNX Runtime
+implementation and must not establish current GPU support, throughput, memory
+use or image quality. The current execution changes are described separately.
 
 Current neural inference chooses a spatial tile size using available resources
 and keeps all focal frames in each tile. V2 tiled results approximate whole-image
@@ -12,7 +12,47 @@ model workspaces and full-size outputs still require available RAM and temporary
 data requires free disk space. A stack can be rejected if its working set cannot
 fit. See [GPU support](GPU_SUPPORT.md) for provider and validation limitations.
 
-## Measured throughput (CPU-only)
+## Current bounded execution (unreleased)
+
+OpenFocus A computes independent frame responses in a RAM-admitted window;
+B/C compute independent activity planes in the same way. Source-order reduction
+preserves strict first-frame ties and the previous accumulation order. B/C
+finish all activity producers before global depth smoothing and reconstruction.
+Spatial tile workers keep their child frame pass serial, so the two pools do
+not overlap. A worker budget includes a completed result waiting for reduction
+and the original-size uint16 conversion required before resizing.
+
+Guided Filter, DCT, GFG-FGF, DTCWT and neural preparation use frame/strip passes
+and mapped intermediates where applicable. Full outputs, decision maps,
+reconstruction buffers and native decoder work still need admission; temporary
+mappings need disk space. BGRA tile conversion writes into mappings, and a
+resize-capable tiled method stages one full resized source at a time before
+building its target-coordinate tile grid. DCT still requires a fixed grid.
+
+OpenFocus alignment reuses reference preparation and writes full-resolution
+Gaussian, gain and warp scratch to mappings. Gaussian strips preserve the
+original float32 reductions. Progress covers transform estimation and output
+creation; cancellation waits for any current native call to return. Weak
+matching can remain expensive on low-detail or repeated textures.
+
+Source inspection retains one selected original on a worker and delivers
+coalesced viewport/loupe crops capped at 4096×4096. Each request has an explicit
+memory check and shares the processing lease. Source previews and aligned-stack
+thumbnails also cancel cooperatively; the main window defers final close on the
+Qt event loop until their native work finishes. A native 10000×10000 grayscale
+smoke exercised loupe zoom, view zoom, sizing, pan and clear with a 125-MiB RSS
+increase on the measured machine, below its 384-MiB probe limit. This is a
+single-run observation, not a universal decoder or Qt allocation bound.
+
+Use `tools/fusion_streaming_benchmark.py` in fresh processes for stage timings,
+input order, implementation hashes, working/export pixel hashes, producer
+concurrency and RSS. Compare identical sources and options; the direct adapter
+entry excludes pipeline normalization/exposure/sorting/base preparation. The
+reported historical OpenFocus 82.1-s adapter run and HF9 approximately 15-s
+workflow used different generated stacks and stage boundaries, so they do not
+establish a same-input speed ratio. Avoid simultaneous benchmarks or tests.
+
+## Historical throughput (PyTorch CPU)
 
 | Case | Frames | Resolution | Path | Time | Notes |
 |------|--------|-----------|------|------|-------|
@@ -235,7 +275,7 @@ Sections A–C need real photo stacks. Point `OPENFOCUS_SOAK_DIR` at a folder
 containing `hetao_aligned_stabled/` and `Samples1/` to run them; without it
 those sections are skipped with a notice (the synthetic sections still run).
 
-## Interactive latency (the UI, not the fusion)
+## Historical interactive latency
 
 The soak above measures fusion throughput. Interaction lag is a different
 budget, measured by `tools/ui_perf_probe.py` (offscreen, synthetic stack, no

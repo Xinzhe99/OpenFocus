@@ -403,20 +403,23 @@ def test_raw_source_dimensions_are_header_only_and_unicode_safe(tmp_path, monkey
     assert image_loader.source_dimensions(path) == (80, 60)
 
 
-def _dng_preview_fixture(tmp_path, monkeypatch, *, bitmap=True, orientation=1, compression=None):
+def _dng_preview_fixture(tmp_path, monkeypatch, *, bitmap=True, orientation=1,
+                         compression=None, previews=None):
     """A real TIFF/DNG preview IFD beside a header-only 48MP CFA sensor."""
     from types import SimpleNamespace
     import tifffile
     rawpy = pytest.importorskip('rawpy')
     path = tmp_path / '大传感器预览.dng'
     rgb = np.arange(24 * 32 * 3, dtype=np.uint16).reshape(24, 32, 3) * 23
+    previews = [rgb] if previews is None else previews
     with tifffile.TiffWriter(path) as writer:
-        writer.write(np.zeros((8, 8), np.uint16), photometric=32803, subifds=1,
+        writer.write(np.zeros((8, 8), np.uint16), photometric=32803, subifds=len(previews),
                      extratags=[(50706, 'B', 4, (1, 4, 0, 0), False)])
-        writer.write(rgb if bitmap else np.zeros((24, 32), np.uint16),
-                     photometric='rgb' if bitmap else 32803, subfiletype=1,
-                     compression=compression, rowsperstrip=4,
-                     extratags=[(274, 'H', 1, orientation, False)])
+        for preview in previews:
+            writer.write(preview if bitmap else np.zeros(preview.shape[:2], np.uint16),
+                         photometric='rgb' if bitmap else 32803, subfiletype=1,
+                         compression=compression, rowsperstrip=4,
+                         extratags=[(274, 'H', 1, orientation, False)])
     # Inflate only the sensor header. Preview data stay real and small; attempting
     # to decode the CFA strip would fail rather than allocate a giant fixture.
     with tifffile.TiffFile(path, mode='r+b') as tif:
@@ -432,6 +435,22 @@ def _dng_preview_fixture(tmp_path, monkeypatch, *, bitmap=True, orientation=1, c
         def extract_thumb(self): raise AssertionError('preview allocated unadmitted LibRaw thumbnail')
     monkeypatch.setattr(rawpy, 'RawPy', HeaderRaw)
     return path, rgb
+
+
+def test_raw_bitmap_preview_uses_smaller_admitted_ifd(tmp_path, monkeypatch):
+    from core import resource_policy
+    large = np.full((512, 768, 3), (1000, 2000, 3000), np.uint16)
+    small = np.arange(120 * 160 * 3, dtype=np.uint16).reshape(120, 160, 3)
+    path, _ = _dng_preview_fixture(tmp_path, monkeypatch, previews=[large, small])
+    def admit(required, **_kwargs):
+        if required > 1024 * 1024:
+            raise resource_policy.ResourceLimitError('preview admission')
+        return 1024 * 1024
+    monkeypatch.setattr(resource_policy, 'require_memory', admit)
+    frame = sources.scan_source(path)[0]
+    assert frame.preview_is_available and frame.shape == (8000, 6000, 3)
+    expected = cv2.rotate(np.ascontiguousarray(small[:, :, ::-1]), cv2.ROTATE_90_CLOCKWISE)
+    np.testing.assert_array_equal(sources.display_image(frame), expected)
 
 
 @pytest.mark.parametrize('orientation', [1, 3, 6, 8])
