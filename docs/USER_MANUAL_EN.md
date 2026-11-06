@@ -1056,6 +1056,12 @@ mask per colour. Auto background needs the frames that made the result and is
 not available for region (ROI) results. New background checkpoints restore the
 exact image, reachable history and diagnostics without recomputing the background.
 
+The command line does the same without the GUI: add `--auto-background` to a
+fusion run (see [Command Line Interface](#14-command-line-interface)). It uses
+the same defaults (Automatic, edge halos cleaned, soft parts not kept), and
+`--save-stacked` and `--missing-data-map` also write the stacked result and the
+missing-data map.
+
 ### Managing Labels
 
 Open **Tools → Labels** after loading images or producing a result. Each label
@@ -1587,6 +1593,10 @@ python main.py -i img1.jpg img2.jpg img3.jpg -o fused.png -m gfgfgf
 # Single multi-page TIFF Z-stack with a metadata-calibrated scale bar
 python main.py -i ./zstack.tif -o fused.png -m dtcwt --scale-bar
 
+# Unattended: align, stack, replace the background, and keep the stacked
+# result and the missing-data map for review
+python main.py -i ./burst -o result.tif -a ecc --auto-background --save-stacked --missing-data-map
+
 # Inspect adjacent similar frames without fusing or changing the input
 python main.py -i ./stack_folder --suggest-duplicates
 ```
@@ -1650,6 +1660,11 @@ an input or another output. Batch, grouped and dry-run modes reject this option.
 | `--scale-um` | Pixel size in µm/px, overriding metadata (implies `--scale-bar`) |
 | `--depth-map [path]` | Also save a colorized focus-position map (default `<output>_depth.png`); depth-capable methods only, not grouped or transparent. In batch mode only the default path is allowed |
 | `--depth-colormap` | Colormap for `--depth-map`: turbo, viridis, jet, gray, … (default turbo) |
+| `--auto-background [preset]` | Replace the stacked background with an aligned frame's, as Retouch's Auto background does: `auto` (default), `soft` (blurriest background) or `sharp` (far-focus frame). Needs the aligned frames, so not with grouped fusion |
+| `--background-mode` | Auto background: `clean` (default) also removes the stack's edge halos, within what the frames recorded; `faithful` keeps them |
+| `--keep-soft-parts` | Auto background: keep soft parts attached to the subject that some frame focused on |
+| `--save-stacked [path]` | With `--auto-background`, also save the result before the replacement (default `<output>_stacked<ext>`). In batch mode only the default path is allowed |
+| `--missing-data-map [path]` | With `--auto-background`, also save the missing-data map and one 8-bit mask per class (default `<output>_missing.png`). In batch mode only the default path is allowed |
 | `--json FILE` | Write a machine-readable result summary to FILE when done |
 | `--json-progress` | Print one JSON progress object per step to stdout (NDJSON); prose goes to stderr |
 | `--dry-run` | Validate inputs and print the plan without fusing |

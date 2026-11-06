@@ -908,6 +908,11 @@ Por ejemplo, añade `--align openfocus --alignment-report alignment.json` a un r
 | `--scale-um` | Tamaño de píxel en µm/px, que anula los metadatos (implica `--scale-bar`) |
 | `--depth-map [path]` | Guarda además un mapa de posición de enfoque coloreado (predeterminado `<output>_depth.png`); solo métodos con capacidad de profundidad, no agrupados ni transparentes. En modo por lotes solo se permite la ruta predeterminada |
 | `--depth-colormap` | Mapa de color para `--depth-map`: turbo, viridis, jet, gray, … (turbo por defecto) |
+| `--auto-background [preset]` | Sustituye el fondo apilado por el de un fotograma alineado, como Fondo automático en el retoque: `auto` (predeterminado), `soft` (fondo más desenfocado) o `sharp` (fotograma enfocado más lejos). Necesita los fotogramas alineados, así que no funciona con la fusión por grupos |
+| `--background-mode` | Fondo automático: `clean` (predeterminado) también elimina los halos de borde del apilado, dentro de lo que registraron los fotogramas; `faithful` los conserva |
+| `--keep-soft-parts` | Fondo automático: conserva las partes suaves unidas al sujeto que algún fotograma enfocó |
+| `--save-stacked [path]` | Con `--auto-background`, guarda también el resultado antes de la sustitución (predeterminado `<output>_stacked<ext>`). En modo por lotes solo se admite la ruta predeterminada |
+| `--missing-data-map [path]` | Con `--auto-background`, guarda también el mapa de datos faltantes y una máscara de 8 bits por clase (predeterminado `<output>_missing.png`). En modo por lotes solo se admite la ruta predeterminada |
 | `--json FILE` | Escribe un resumen de resultado legible por máquina en FILE al terminar |
 | `--json-progress` | Imprime un objeto JSON de progreso por paso en stdout (NDJSON); la prosa va a stderr |
 | `--dry-run` | Valida las entradas e imprime el plan sin fusionar |

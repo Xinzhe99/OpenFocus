@@ -1475,6 +1475,11 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--scale-bar` | スケールバーを描画します（較正は TIFF メタデータから自動検出） |
 | `--depth-map [path]` | カラー化したフォーカス位置（深度）マップも保存します（既定：`<output>_depth.png`）。対応手法のみ、グループ／透明入力では拒否。バッチでは既定パスのみ |
 | `--depth-colormap` | `--depth-map` のカラーマップ：turbo、viridis、jet、gray など（既定 turbo） |
+| `--auto-background [preset]` | レタッチの自動背景と同様に、スタックした背景を位置合わせ済みフレームの背景に置き換えます：`auto`（既定）、`soft`（最もぼけた背景）、`sharp`（最も遠くにピントが合ったフレーム）。位置合わせ済みフレームが必要なため、グループ合成では使えません |
+| `--background-mode` | 自動背景：`clean`（既定）はフレームが記録した範囲内でスタックの輪郭のハロも取り除きます。`faithful` は残します |
+| `--keep-soft-parts` | 自動背景：いずれかのフレームでピントが合った、被写体につながる柔らかい部分を残します |
+| `--save-stacked [path]` | `--auto-background` と併用し、置き換え前の結果も保存します（既定：`<output>_stacked<ext>`）。バッチでは既定パスのみ |
+| `--missing-data-map [path]` | `--auto-background` と併用し、欠損データマップとクラスごとの 8 ビットマスクも保存します（既定：`<output>_missing.png`）。バッチでは既定パスのみ |
 | `--scale-um` | µm/px 単位のピクセルサイズ。メタデータより優先されます（`--scale-bar` を暗黙に有効化） |
 | `--dry-run` | パラメータと入力を確認するだけで、結果を書きません |
 | `--resume` | バッチの未完了タスクを再開 |

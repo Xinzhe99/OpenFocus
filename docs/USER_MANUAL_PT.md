@@ -905,6 +905,11 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--scale-um` | Tamanho do pixel em µm/px, substituindo metadados (implica `--scale-bar`) |
 | `--depth-map [path]` | Também salva um mapa colorido de posição de foco (padrão `<output>_depth.png`); apenas métodos com capacidade de profundidade, não agrupados nem transparentes. No modo lote, apenas o caminho padrão é permitido |
 | `--depth-colormap` | Mapa de cores para `--depth-map`: turbo, viridis, jet, gray, … (turbo padrão) |
+| `--auto-background [preset]` | Substitui o fundo empilhado pelo de um quadro alinhado, como o Fundo automático no retoque: `auto` (padrão), `soft` (fundo mais desfocado) ou `sharp` (quadro focado mais longe). Precisa dos quadros alinhados, portanto não funciona com fusão em grupos |
+| `--background-mode` | Fundo automático: `clean` (padrão) também remove os halos de borda do empilhamento, dentro do que os quadros registraram; `faithful` os mantém |
+| `--keep-soft-parts` | Fundo automático: mantém as partes suaves presas ao objeto em que algum quadro focou |
+| `--save-stacked [path]` | Com `--auto-background`, também salva o resultado antes da substituição (padrão `<output>_stacked<ext>`). No modo em lote só o caminho padrão é permitido |
+| `--missing-data-map [path]` | Com `--auto-background`, também salva o mapa de dados ausentes e uma máscara de 8 bits por classe (padrão `<output>_missing.png`). No modo em lote só o caminho padrão é permitido |
 | `--json FILE` | Grava um resumo de resultado legível por máquina em FILE ao terminar |
 | `--json-progress` | Imprime um objeto JSON de progresso por etapa em stdout (NDJSON); o texto vai para stderr |
 | `--dry-run` | Valida as entradas e imprime o plano sem fundir |

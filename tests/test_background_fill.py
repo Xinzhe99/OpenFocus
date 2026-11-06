@@ -639,3 +639,51 @@ def test_retouch_dialog_on_a_retouched_output_links_the_stacked_result(qapp, sce
             d.close()
         QApplication.processEvents()
         window.deleteLater()
+
+
+# ------------------------------------------------------------------ headless CLI
+def _write_stack(folder, frames):
+    folder.mkdir()
+    for k, frame in enumerate(frames):
+        assert cv2.imwrite(str(folder / f"frame_{k:02d}.png"), frame)
+
+
+def test_cli_auto_background_writes_result_stacked_and_maps(scene, tmp_path):
+    import json
+    from core.cli import run_cli
+    frames, _fused, disc = scene
+    _write_stack(tmp_path / "stack", frames)
+    out = tmp_path / "out" / "result.png"
+    summary = tmp_path / "summary.json"
+    rc = run_cli(["-i", str(tmp_path / "stack"), "-o", str(out), "--method", "guided_filter",
+                  "--cpu", "--threads", "2", "--auto-background", "soft", "--save-stacked",
+                  "--missing-data-map", "--json", str(summary)])
+    assert rc == 0
+    result = cv2.imread(str(out), cv2.IMREAD_UNCHANGED)
+    stacked = cv2.imread(str(tmp_path / "out" / "result_stacked.png"), cv2.IMREAD_UNCHANGED)
+    assert result.shape == stacked.shape == frames[0].shape
+    inner = cv2.erode(disc.astype(np.uint8), np.ones((25, 25), np.uint8)) > 0
+    far_bg = cv2.erode((~disc).astype(np.uint8), np.ones((61, 61), np.uint8)) > 0
+    assert np.array_equal(result[inner], stacked[inner])           # subject kept
+    assert np.abs(result[far_bg].astype(int) - stacked[far_bg]).mean() > 1.0   # background replaced
+    for name in ("", "-background", "-hidden", "-out_of_range", "-featureless"):
+        assert (tmp_path / "out" / f"result_missing{name}.png").is_file()
+    report = json.loads(summary.read_text())
+    assert report["auto_background"]["preset"] == "soft"
+    assert report["auto_background"]["changed"] is True
+    assert len(report["outputs"]) == 7
+
+
+@pytest.mark.parametrize("argv", [
+    ["--save-stacked"],
+    ["--keep-soft-parts"],
+    ["--background-mode", "faithful"],
+    ["--auto-background", "--group-size", "3"],
+    ["--auto-background", "--missing-data-map", "maps.jpg"],
+    ["--auto-background", "--save-stacked", "x.txt"],
+])
+def test_cli_auto_background_usage_errors(tmp_path, argv):
+    from core.cli import EXIT_USAGE, run_cli
+    folder = tmp_path / "stack"
+    folder.mkdir()
+    assert run_cli(["-i", str(folder), "-o", str(tmp_path / "out.png"), *argv]) == EXIT_USAGE

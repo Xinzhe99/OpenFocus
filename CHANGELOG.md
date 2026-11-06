@@ -16,6 +16,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   where no frame saw the scene cleanly. Scenes that are nearly all subject are
   left as stacked.
 - Add a Retouch button beside Review frames in the right panel.
+- Add Auto background to the command line: `--auto-background [auto|soft|sharp]`
+  replaces the background after fusion with the Retouch defaults, so a stack
+  can be finished unattended. `--background-mode faithful` keeps the stack's
+  edges, `--keep-soft-parts` keeps soft parts attached to the subject, and
+  `--save-stacked` / `--missing-data-map` also write the stacked result and the
+  missing-data map. Batch runs and recipes accept the same options; it is
+  unavailable with grouped fusion and `--native-raw`.
 
 ### Changed
 - Pressing Render while frames are still loading now starts the render when

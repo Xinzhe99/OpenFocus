@@ -1369,6 +1369,11 @@ openfocus retouch replay edits.ofretouch --base fused.png --sources frame1.png f
 | `--scale-bar` | 绘制比例尺（标定从 TIFF/DNG 显微元数据自动检测） |
 | `--depth-map [路径]` | 同时保存伪彩焦点位置（深度）图（默认 `<输出名>_depth.png`）；仅支持支持深度图的方法，分组或透明输入会被拒绝；批处理只允许默认路径 |
 | `--depth-colormap` | 深度图配色：turbo、viridis、jet、gray 等（默认 turbo） |
+| `--auto-background [预设]` | 与修图中的自动背景相同，用一张对齐帧的背景替换堆栈背景：`auto`（默认）、`soft`（背景最模糊）或 `sharp`（对焦最远的帧）。需要对齐后的帧，因此不能与分组融合同用 |
+| `--background-mode` | 自动背景：`clean`（默认）还会在各帧记录的范围内去除堆栈的边缘光晕；`faithful` 保留它们 |
+| `--keep-soft-parts` | 自动背景：保留某一帧对上焦、与主体相连的柔和部分 |
+| `--save-stacked [路径]` | 配合 `--auto-background`，同时保存替换前的结果（默认 `<输出名>_stacked<扩展名>`）；批处理只允许默认路径 |
+| `--missing-data-map [路径]` | 配合 `--auto-background`，同时保存缺失数据图及每类一张 8 位蒙版（默认 `<输出名>_missing.png`）；批处理只允许默认路径 |
 | `--scale-um` | 手动指定像素大小 µm/px，覆盖元数据（隐含 `--scale-bar`） |
 | `--dry-run` | 只检查参数和输入，不写结果 |
 | `--resume` | 续跑批处理中尚未完成的任务 |
