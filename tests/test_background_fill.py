@@ -473,3 +473,63 @@ def test_halo_zone_beside_a_dark_background_is_rebuilt_from_that_background():
     out, _est = fill_halo_zone(bg.copy(), dist, sub, np.float32(24))
     zone = (~sub) & (dist < 24) & (xx > 170)
     assert out[zone].mean() < 1.25 * 40 * 257
+
+
+def test_distances_scale_with_the_image_size(monkeypatch):
+    """Distances are written for 20 MP (5216 px long side) and follow the
+    image's size during a run; at the reference size they are unchanged."""
+    import core.background_fill as bf
+    monkeypatch.setattr(bf, "SCALE_OVERRIDE", None)
+    seen = []
+    real = bf._replace_background
+
+    def spy(frames, fused, **kwargs):
+        seen.append((bf._px(32.0), bf._ksize(49), bf._area(10000), bf._sigma(1.0)))
+        raise bf.BackgroundFillCancelled()
+
+    monkeypatch.setattr(bf, "_replace_background", spy)
+    for long_side in (5216, 2608, 7824):
+        img = np.zeros((long_side * 3 // 4, long_side, 3), np.uint16)
+        with pytest.raises(bf.BackgroundFillCancelled):
+            bf.replace_background([img, img], img)
+    assert seen[0] == (32.0, 49, 10000, 1.0)                 # exactly as tuned
+    assert seen[1] == (16.0, 25, 2500, 0.5)
+    assert seen[2] == (48.0, 75, 22500, 1.5)
+    assert bf._px(32.0) == 32.0                              # back to 1 after the run
+    monkeypatch.setattr(bf, "_replace_background", real)
+
+
+def test_the_same_scene_twice_as_large_gets_zones_twice_as_wide(scene, monkeypatch):
+    """Scale follows the image: the scene enlarged 2x gets a rebuild zone about
+    twice as wide in pixels, i.e. the same relative to the scene."""
+    import core.background_fill as bf
+    frames, fused, _disc = scene
+    widths = []
+    real = bf.fill_halo_zone
+
+    def spy(bg, dist, sub, width, scale=4):
+        widths.append(float(np.median(width)))
+        return real(bg, dist, sub, width, scale)
+
+    monkeypatch.setattr(bf, "fill_halo_zone", spy)
+    big = lambda img: cv2.resize(img, (img.shape[1] * 2, img.shape[0] * 2), interpolation=cv2.INTER_CUBIC)
+    # Scales 1 and 2 (the synthetic scene is too small for the reference
+    # size itself): what matters is that doubling the image doubles them.
+    monkeypatch.setattr(bf, "SCALE_OVERRIDE", 1.0)
+    small_run = bf.replace_background(frames, fused, preset="soft")
+    monkeypatch.setattr(bf, "SCALE_OVERRIDE", 2.0)
+    large_run = bf.replace_background([big(f) for f in frames], big(fused), preset="soft")
+    assert small_run.changed and large_run.changed
+    assert 1.6 < widths[1] / widths[0] < 2.4
+
+
+def test_fine_outline_band_and_ring_stay_a_pixel_wide_on_tiny_images():
+    import core.background_fill as bf
+    assert bf._outline_band_and_ring() == (20, (3, 15))           # as tuned at 20 MP
+    token = bf._SCALE.set(64 / bf.REFERENCE_LONG_SIDE)            # the smallest accepted image
+    try:
+        band, (inner, outer) = bf._outline_band_and_ring()
+    finally:
+        bf._SCALE.reset(token)
+    assert band >= 1.0
+    assert inner < 1.0 < outer          # distances of 1 px fall inside the ring
