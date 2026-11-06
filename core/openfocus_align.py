@@ -1,8 +1,22 @@
 """Bounded similarity registration using a sampled difference detector."""
+from collections import OrderedDict
+import hashlib
 import itertools
+from threading import Lock
 
 import cv2
 import numpy as np
+
+# Results contain only five scalars, never source pixels or source lifetimes.
+_TRANSFORMS = OrderedDict()
+_TRANSFORM_LOCK = Lock()
+_TRANSFORM_LIMIT = 128
+
+
+def _identity(image):
+    image = np.ascontiguousarray(image)
+    return (image.shape, image.dtype.str,
+            hashlib.sha256(memoryview(image).cast('B')).digest())
 
 
 def _samples(image, x, y):
@@ -11,20 +25,68 @@ def _samples(image, x, y):
     x = np.clip(x, 0, max(0, w - 1.001)).astype(np.float32)
     y = np.clip(y, 0, max(0, h - 1.001)).astype(np.float32)
     ix, iy = x.astype(np.int32), y.astype(np.int32)
-    fx = ((x - ix) * 256).astype(np.int64)
-    fy = ((y - iy) * 256).astype(np.int64)
+    fx = ((x - ix) * 256).astype(np.uint32)
+    fy = ((y - iy) * 256).astype(np.uint32)
     jx, jy = np.minimum(ix + 1, w - 1), np.minimum(iy + 1, h - 1)
-    a = image[iy, ix].astype(np.int64)
-    b = image[iy, jx].astype(np.int64)
-    c = image[jy, ix].astype(np.int64)
-    d = image[jy, jx].astype(np.int64)
+    # The convex fixed-point sum is at most 65535 * 65536, so uint32
+    # preserves every detector bit while halving interpolation scratch.
+    a = image[iy, ix].astype(np.uint32)
+    b = image[iy, jx].astype(np.uint32)
+    c = image[jy, ix].astype(np.uint32)
+    d = image[jy, jx].astype(np.uint32)
     value = ((a * (256 - fx) + b * fx) * (256 - fy)
              + (c * (256 - fx) + d * fx) * fy) >> 16
     return value, valid
 
 
+def _native_proposal(a, b, check_cancel):
+    """Propose a similarity with native ECC; the detector decides acceptance."""
+    check_cancel()
+    warp = np.eye(2, 3, dtype=np.float32)
+    try:
+        # ECC is exposure invariant. Only the small estimation images enter
+        # its affine fit; shear is removed before any detector evaluation.
+        cv2.findTransformECC(a.astype(np.float32) / 65535.0,
+                             b.astype(np.float32) / 65535.0, warp,
+                             cv2.MOTION_AFFINE,
+                             (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS,
+                              40, 1e-4), None, 5)
+        correction = cv2.invertAffineTransform(warp).astype(np.float64)
+    except cv2.error:
+        return None
+    check_cancel()
+    aa = (correction[0, 0] + correction[1, 1]) / 2
+    bb = (correction[0, 1] - correction[1, 0]) / 2
+    center = np.array([a.shape[1] / 2, a.shape[0] / 2])
+    shift = correction[:, :2] @ center + correction[:, 2] - center
+    return np.array([*shift, np.hypot(aa, bb) - 1,
+                     np.degrees(np.arctan2(bb, aa))])
+
+
 def estimate(ref, cur, shift_ratio, rot_bound, scale_range, check_cancel):
     """Return quality, rotation, scale and residual shift in thumbnail pixels."""
+    check_cancel()
+    key = (_identity(ref), _identity(cur), float(shift_ratio),
+           float(rot_bound), tuple(scale_range))
+    check_cancel()
+    with _TRANSFORM_LOCK:
+        cached = _TRANSFORMS.get(key)
+        if cached is not None:
+            _TRANSFORMS.move_to_end(key)
+    if cached is not None:
+        check_cancel()
+        return cached
+    result = _estimate(ref, cur, shift_ratio, rot_bound, scale_range, check_cancel)
+    check_cancel()
+    with _TRANSFORM_LOCK:
+        _TRANSFORMS[key] = result
+        _TRANSFORMS.move_to_end(key)
+        while len(_TRANSFORMS) > _TRANSFORM_LIMIT:
+            _TRANSFORMS.popitem(last=False)
+    return result
+
+
+def _estimate(ref, cur, shift_ratio, rot_bound, scale_range, check_cancel):
     h, w = ref.shape
     if h < 2 or w < 2:
         return -1.0, 0.0, 1.0, 0.0, 0.0
@@ -72,6 +134,27 @@ def estimate(ref, cur, shift_ratio, rot_bound, scale_range, check_cancel):
     best = np.zeros(4, dtype=np.float64)  # forward dx, dy, scale-1, degrees
     radius = bounds.copy()
     quality = -1.0
+    proposal = _native_proposal(a, b, check_cancel)
+    # A native proposal is only a seed. Keep the exhaustive pyramid whenever
+    # its full-resolution sampled difference cannot establish a strong match.
+    fast = False
+    if (proposal is not None and np.all(np.isfinite(proposal))
+            and np.all(proposal >= lower) and np.all(proposal <= upper)):
+        step = max(1, int(np.sqrt(h * w / 1024.0)))
+        yy, xx = np.mgrid[0:h:step, 0:w:step].astype(np.float32)
+        angle = np.deg2rad(proposal[3])
+        cos, sin = np.cos(angle) / (1 + proposal[2]), np.sin(angle) / (1 + proposal[2])
+        x, y = xx - w / 2 - proposal[0], yy - h / 2 - proposal[1]
+        sampled, valid = _samples(b, cos * x - sin * y + w / 2,
+                                 sin * x + cos * y + h / 2)
+        reference = (a[::step, ::step].astype(np.int64) * gain_q10) >> 10
+        delta = reference[valid] - sampled[valid].astype(np.int64)
+        fast = (valid.sum() >= reference.size * 0.75 and delta.size > 0
+                and float(delta.std()) <= 0.1 * max(float(reference.std()), 1.0))
+        if fast:
+            best = proposal
+            pyramid = pyramid[:1]
+            radius = np.minimum(bounds, [2.0, 2.0, 0.01, 0.5])
     for level, (aa, bb) in enumerate(reversed(pyramid)):
         hh, ww = aa.shape
         sx, sy = ww / w, hh / h
@@ -94,8 +177,11 @@ def estimate(ref, cur, shift_ratio, rot_bound, scale_range, check_cancel):
                 # refinement reaches the correct translation basin. Sample
                 # translation more densely at the coarsest level; later grids
                 # still refine all four parameters within the same bounds.
-                points = 17 if level == 0 and iteration == 0 and k < 2 else 5
-                axes.append(np.linspace(lo, hi, points) if hi > lo + 1e-12 else np.array([lo]))
+                points = 17 if not fast and level == 0 and iteration == 0 and k < 2 else 5
+                axis = np.linspace(lo, hi, points) if hi > lo + 1e-12 else np.array([lo])
+                # Near a bound the grid is asymmetric. Retain the validated
+                # seed so refinement can never replace it with a worse fit.
+                axes.append(np.unique(np.append(axis, best[k])) if fast else axis)
             # Prefer the smallest normalized motion when costs are equal.
             candidates = np.array([tuple(reversed(v)) for v in itertools.product(*axes[::-1])])
             best_cost, best_motion, winner = float('inf'), float('inf'), None
