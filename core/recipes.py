@@ -18,7 +18,7 @@ _FIELDS = (
     "threads", "resource_preference", "batch_size", "cpu", "downscale",
     "tile_size", "tile_enabled", "tile_overlap", "tile_threshold",
     "scale_bar", "scale_um", "depth_map", "depth_colormap", "sharpen_output",
-    "group_size", "group_overlap",
+    "group_size", "group_overlap", "frame_order",
     "auto_background", "background_mode", "keep_soft_parts", "save_stacked", "missing_data_map",
 )
 _PATH_FIELDS = {"dust_map", "depth_map", "defect_mask_path", "save_stacked", "missing_data_map"}
@@ -149,6 +149,11 @@ def validate_recipe(recipe, recipe_path):
         if actions[key].choices is not None and value not in actions[key].choices:
             raise ValueError(f"invalid {key}: {value!r}")
         argv.extend(("--" + key.replace("_", "-"), str(value)))
+    if "frame_order" not in options:
+        # Recipes written before --frame-order existed recorded filename
+        # order implicitly.  Keep that order instead of inheriting the new
+        # CLI default, which could reorder the stack a saved setting uses.
+        argv.extend(("--frame-order", "name"))
     mask = options.get("defect_mask_path")
     fingerprint = options.get("defect_mask_sha256")
     if mask:
@@ -307,7 +312,10 @@ def capture_project_recipe(path, project_path, argv):
                   "--method", method, "--align", alignment,
                   "--base-frame", "last" if base else "none",
                   "--sort", "desc" if settings.get("stack_reverse_order", False) else "asc",
-                  "--exposure-match" if exposure else "--no-exposure-match"]
+                  "--exposure-match" if exposure else "--no-exposure-match",
+                  # The desktop app loads folders in filename order; a recipe
+                  # captured from a project must reproduce that order.
+                  "--frame-order", "name"]
     project_settings = state.get("settings", {})
     if project_settings.get("sensor_denoise", False):
         processing.append("--sensor-denoise")

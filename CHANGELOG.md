@@ -38,6 +38,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Render All Methods skips a method that cannot run (for example, when the
   memory check refuses it), renders the rest and lists the skipped methods
   at the end. Cancelling still stops the whole run.
+- Image save dialogs start in the folder where you last saved an image.
+- A full render releases the region (ROI) preview's aligned frames, a second
+  full-resolution copy of the stack that was kept after ROI mode ended, and the
+  ROI preview no longer holds on to a replaced stack's frames. An ROI output's
+  provenance keeps its own crops instead of views that pinned the full frames:
+  in-memory crops are copied and mapped crops are stored as their own temporary
+  mapping. Opening ROI mode again re-aligns.
+- The command line orders a folder's frames near to far by their EXIF focus
+  steps when every frame has them (`--frame-order auto`, the default; `name`
+  keeps filename order). OM SYSTEM focus bracketing takes its first shot at
+  mid-depth, so filename order put a mid-depth frame first. The selected dust
+  map and defect mask are not frames, so they never hide the other frames'
+  focus steps, and recipes captured before this option keep their recorded
+  filename order.
 - Auto background on an output that was already retouched analyses the
   stacked result it came from and lays the new background onto the retouched
   image: brushing on the subject is kept, and an earlier replacement is not

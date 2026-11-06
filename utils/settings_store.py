@@ -39,6 +39,7 @@ LAST_UPDATE_CHECK_KEY = "updates/last_check_epoch"
 UPDATE_BANNER_DISMISSED_KEY = "updates/banner_dismissed_tag"
 LAST_STACK_FOLDER_KEY = "ui/last_stack_folder"
 LAST_DIALOG_DIR_KEY = "ui/last_dialog_dir"
+LAST_IMAGE_SAVE_DIR_KEY = "ui/last_image_save_dir"
 # The "AI runs on the CPU" warning is informational and repeat-per-launch
 # annoying; once the user says "don't show again" it must stay gone.
 AI_CPU_WARNING_DISMISSED_KEY = "rendering/ai_cpu_warning_dismissed"
@@ -484,6 +485,30 @@ def set_last_dialog_dir(path: str) -> None:
     folder = os.path.dirname(path) if os.path.isfile(path) else path
     if folder and os.path.isdir(folder):
         get_settings().setValue(LAST_DIALOG_DIR_KEY, folder)
+
+
+def image_save_dir() -> str:
+    """Folder an image save dialog starts in: where the last image was saved,
+    else the last dialog folder, else the home folder."""
+    value = str(get_settings().value(LAST_IMAGE_SAVE_DIR_KEY, "") or "")
+    if value and os.path.isdir(value):
+        return value
+    return get_last_dialog_dir() or os.path.expanduser("~")
+
+
+def image_save_default(filename: str) -> str:
+    """`filename` placed in `image_save_dir()`, for a save dialog's default."""
+    return os.path.join(image_save_dir(), os.path.basename(filename or ""))
+
+
+def remember_image_save(path: str) -> None:
+    """Remember the folder an image was just saved to."""
+    if not path:
+        return
+    folder = os.path.dirname(os.path.abspath(path))
+    if os.path.isdir(folder):
+        get_settings().setValue(LAST_IMAGE_SAVE_DIR_KEY, folder)
+        set_last_dialog_dir(folder)
 
 
 def load_drag_export_format(window) -> None:
