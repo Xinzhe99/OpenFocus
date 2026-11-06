@@ -649,6 +649,8 @@ PACK = {
     "retouch_auto_bg_clean_hint": "Remove halos ao longo das bordas do motivo, nunca além do que os quadros registraram. Desative para manter o aspecto original das bordas (Fiel).",
     "retouch_auto_bg_soft_parts": "Manter as partes suaves ligadas ao motivo",
     "retouch_auto_bg_soft_parts_hint": "Mantém como empilhadas as partes do motivo logo fora da profundidade de campo (a ponta arredondada de um espinho). Também pode manter objetos de fundo junto ao motivo com o aspecto do empilhamento.",
+    "retouch_auto_bg_from_stacked": "Esta imagem já foi retocada, por isso o fundo é analisado a partir do resultado empilhado. Os seus retoques a pincel no motivo são mantidos.",
+    "retouch_from_retouched": "Este resultado já foi retocado. O fundo automático vai partir do resultado empilhado e manter os seus retoques a pincel no motivo.",
     "retouch_auto_bg_run": "Substituir fundo",
     "retouch_auto_bg_failed": "A substituição do fundo falhou.",
     "retouch_auto_bg_unchanged": "Quase todo o enquadramento é motivo, por isso o fundo ficou como foi empilhado. O mapa de dados em falta está disponível.",

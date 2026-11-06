@@ -589,6 +589,12 @@ pixels empilés là où vous les préférez, par exemple un brin d'herbe flou de
 le sujet. Si le sujet remplit presque toute l'image, comme une scène de sol
 forestier, l'image reste telle qu'empilée et une note l'indique.
 
+Si vous ouvrez la retouche sur un résultat déjà retouché, l'arrière-plan
+automatique analyse le résultat empilé dont il provient et pose le nouvel
+arrière-plan sur votre image retouchée. Les retouches au pinceau sur le sujet
+sont conservées, et un arrière-plan déjà remplacé n'est jamais réanalysé : un
+second passage n'accumule donc pas de halos.
+
 Après un passage, **Afficher les données manquantes** colore les endroits
 qu'aucune image n'a vus nettement. Ce sont les endroits à vérifier ou à
 retoucher à la main :
@@ -905,6 +911,11 @@ Par exemple, ajoutez `--align openfocus --alignment-report alignment.json` à un
 | `--scale-um` | Taille de pixel en µm/px, prioritaire sur les métadonnées (implique `--scale-bar`) |
 | `--depth-map [path]` | Enregistre aussi une carte de position de mise au point colorisée (défaut `<output>_depth.png`) ; méthodes compatibles avec la profondeur uniquement, ni groupées ni transparentes. En mode lot, seul le chemin par défaut est autorisé |
 | `--depth-colormap` | Palette pour `--depth-map` : turbo, viridis, jet, gray, … (turbo par défaut) |
+| `--auto-background [preset]` | Remplace l'arrière-plan empilé par celui d'une image alignée, comme Arrière-plan auto dans la retouche : `auto` (défaut), `soft` (arrière-plan le plus flou) ou `sharp` (image mise au point au plus loin). Nécessite les images alignées, donc pas avec la fusion par groupes |
+| `--background-mode` | Arrière-plan auto : `clean` (défaut) supprime aussi les halos de bord de l'empilement, dans la limite de ce que les images ont enregistré ; `faithful` les conserve |
+| `--keep-soft-parts` | Arrière-plan auto : conserve les parties floues rattachées au sujet sur lesquelles une image a fait la mise au point |
+| `--save-stacked [path]` | Avec `--auto-background`, enregistre aussi le résultat avant le remplacement (défaut `<output>_stacked<ext>`). En mode lot, seul le chemin par défaut est accepté |
+| `--missing-data-map [path]` | Avec `--auto-background`, enregistre aussi la carte des données manquantes et un masque 8 bits par classe (défaut `<output>_missing.png`). En mode lot, seul le chemin par défaut est accepté |
 | `--json FILE` | Écrit un résumé de résultat lisible par machine dans FILE à la fin |
 | `--json-progress` | Imprime un objet JSON de progression par étape sur stdout (NDJSON) ; la prose va sur stderr |
 | `--dry-run` | Valide les entrées et imprime le plan sans fusionner |
