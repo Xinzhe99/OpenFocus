@@ -35,12 +35,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A full render releases the region (ROI) preview's aligned frames, a second
   full-resolution copy of the stack that was kept after ROI mode ended, and the
   ROI preview no longer holds on to a replaced stack's frames. An ROI output's
-  provenance keeps its own crops instead of views that pinned the full frames.
-  Opening ROI mode again re-aligns.
+  provenance keeps its own crops instead of views that pinned the full frames:
+  in-memory crops are copied and mapped crops are stored as their own temporary
+  mapping. Opening ROI mode again re-aligns.
 - The command line orders a folder's frames near to far by their EXIF focus
   steps when every frame has them (`--frame-order auto`, the default; `name`
   keeps filename order). OM SYSTEM focus bracketing takes its first shot at
-  mid-depth, so filename order put a mid-depth frame first.
+  mid-depth, so filename order put a mid-depth frame first. The selected dust
+  map and defect mask are not frames, so they never hide the other frames'
+  focus steps, and recipes captured before this option keep their recorded
+  filename order.
 
 ### Fixed
 - Message-box buttons such as "Discard changes" are no longer cut off.

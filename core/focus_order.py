@@ -12,8 +12,9 @@ known.  Focus distance alone is too coarse to order frames (0.395-0.42 m
 across a whole OM burst), so it is used only to tell the step direction.
 Otherwise the caller's order is returned unchanged.
 
-Adapted from faststack's ``faststack/io/focus_order.py`` (MIT, Alan
-Rockefeller).
+Adapted from faststack's ``faststack/io/focus_order.py`` (MIT,
+Copyright (c) 2025 Alan Rockefeller); its permission notice is in
+docs/THIRD_PARTY_NOTICES.md.
 """
 from __future__ import annotations
 

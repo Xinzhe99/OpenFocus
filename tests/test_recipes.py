@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import pytest
 
-from core.cli import run_cli
+from core.cli import build_parser, run_cli
 from core.recipes import capture_recipe, load_recipe, run_recipe, save_recipe, validate_recipe
 
 
@@ -238,3 +238,32 @@ def test_sensor_recipe_defaults_are_disabled(tmp_path):
     assert saved['options']['defect_mask_path'] is None
     assert saved['options']['sensor_denoise'] is False
     assert 'defect_mask_sha256' not in saved['options']
+
+
+def test_recipe_without_frame_order_keeps_filename_order(tmp_path):
+    """Recipes written before --frame-order existed must not inherit auto."""
+    argv = validate_recipe({"version": 1, "input": ["stack"], "output": "out.png"},
+                           tmp_path / "recipe.json")
+    assert build_parser().parse_args(argv).frame_order == "name"
+
+
+def test_new_capture_persists_the_chosen_frame_order(tmp_path):
+    _stack(tmp_path / "stack")
+    path = tmp_path / "recipe.json"
+    base = ["-i", str(tmp_path / "stack"), "-o", str(tmp_path / "out.png"), "-m", "dct"]
+    assert capture_recipe(path, base + ["--frame-order", "auto"])["options"]["frame_order"] == "auto"
+    assert capture_recipe(path, base + ["--frame-order", "name"])["options"]["frame_order"] == "name"
+
+
+def test_project_recipe_keeps_filename_order(tmp_path):
+    """The desktop app loads folders by name; a project-derived recipe must
+    replay the same order instead of the CLI's auto default."""
+    from core.recipes import capture_project_recipe
+    project = tmp_path / "source.ofproj"
+    project.write_text(json.dumps({"openfocus_project": 3,
+                                   "sources": [str(tmp_path / "gone.png")],
+                                   "settings": {"fusion_method": "dct"}}), encoding="utf-8")
+    recipe = tmp_path / "recipe.json"
+    capture_project_recipe(recipe, project, ["-i", str(tmp_path / "new"),
+                                             "-o", str(tmp_path / "out.png")])
+    assert load_recipe(recipe)["options"]["frame_order"] == "name"
