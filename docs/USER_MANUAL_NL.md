@@ -946,6 +946,11 @@ Voeg voor één rendering bijvoorbeeld `--align openfocus --alignment-report ali
 | `--scale-um` | Pixelgrootte in µm/px, overschrijft metadata (impliceert `--scale-bar`) |
 | `--depth-map [pad]` | Ook een gekleurde dieptekaart (focuspositie) opslaan (standaard `<output>_depth.png`); alleen dieptegeschikte methoden, niet gegroepeerd of transparant. In batchmodus is alleen het standaardpad toegestaan |
 | `--depth-colormap` | Kleurenschaal voor `--depth-map`: turbo, viridis, jet, gray, … (standaard turbo) |
+| `--auto-background [preset]` | De gestapelde achtergrond vervangen door die van een uitgelijnd beeld, zoals Automatische achtergrond bij retoucheren: `auto` (standaard), `soft` (meest onscherpe achtergrond) of `sharp` (verst scherpgestelde beeld). Heeft de uitgelijnde beelden nodig, dus niet met gegroepeerde fusie |
+| `--background-mode` | Automatische achtergrond: `clean` (standaard) verwijdert ook de randhalo's van de stapel, binnen wat de beelden hebben vastgelegd; `faithful` behoudt ze |
+| `--keep-soft-parts` | Automatische achtergrond: zachte delen aan het onderwerp behouden waarop een beeld heeft scherpgesteld |
+| `--save-stacked [pad]` | Met `--auto-background` ook het resultaat vóór de vervanging opslaan (standaard `<output>_stacked<ext>`). In batchmodus alleen het standaardpad |
+| `--missing-data-map [pad]` | Met `--auto-background` ook de kaart met ontbrekende gegevens en per klasse een 8-bit masker opslaan (standaard `<output>_missing.png`). In batchmodus alleen het standaardpad |
 | `--dry-run` | Invoer controleren en het plan tonen zonder te fuseren |
 | `--resume` | Batchmodus: mappen overslaan waarvan het uitvoerbestand al bestaat |
 | `--json FILE` | Een machineleesbare resultaatsamenvatting naar FILE schrijven |
