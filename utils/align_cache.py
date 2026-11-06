@@ -19,7 +19,7 @@ import numpy as np
 from utils.image_utils import imwrite_auto
 
 CACHE_DIR_NAME = ".openfocus_cache"
-CACHE_FORMAT_VERSION = 4  # Fast-alignment geometry changed.
+CACHE_FORMAT_VERSION = 5  # Native-seeded fast-alignment refinement changed.
 DEFAULT_CACHE_BYTES = 2 * 1024 ** 3
 _cache_lock = threading.RLock()
 
@@ -146,9 +146,9 @@ def _prune(root, keep, max_bytes):
                 meta = json.load(handle)
             if meta.get("signature") != name:
                 continue
-            if meta.get("version") in (3, CACHE_FORMAT_VERSION):
-                # Version 3 uses the same generation manifest; it is stale
-                # for lookup but still counts toward the disk limit.
+            if meta.get("version") in (3, 4, CACHE_FORMAT_VERSION):
+                # These versions share the generation manifest; stale lookup
+                # entries still count toward the encoded disk limit.
                 size = int(meta["encoded_bytes"])
             elif len(name) == 16 and isinstance(meta.get("count"), int):
                 # Previous formats also contain reconstructible aligned PNGs.

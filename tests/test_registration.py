@@ -458,3 +458,90 @@ def test_composite_reports_each_stage_and_actual_ecc_transform(monkeypatch):
         ('ecc', 0, 'reference'), ('ecc', 1, 'aligned')]
     assert report[-1]['quality'] == 0.9
     assert report[-1]['transform'][0][2] == pytest.approx(-2)
+
+
+def test_detector_interpolation_preserves_full_uint16_fixed_point_range():
+    from core.openfocus_align import _samples
+
+    image = np.array([[65535, 0, 43000], [0, 65535, 65535],
+                      [65535, 65535, 65535]], dtype=np.uint16)
+    x = np.array([[-1, 0, 0.25, 0.999, 1.5, 2.5]], np.float32)
+    y = np.array([[0, 0, 0.75, 1.25, 1.5, 3]], np.float32)
+    actual, valid = _samples(image, x, y)
+    cx, cy = np.clip(x, 0, 1.999), np.clip(y, 0, 1.999)
+    ix, iy = cx.astype(np.int32), cy.astype(np.int32)
+    fx, fy = ((cx - ix) * 256).astype(np.int64), ((cy - iy) * 256).astype(np.int64)
+    pixels = image.astype(np.int64)
+    expected = ((pixels[iy, ix] * (256 - fx) + pixels[iy, ix + 1] * fx) * (256 - fy)
+                + (pixels[iy + 1, ix] * (256 - fx) + pixels[iy + 1, ix + 1] * fx) * fy) >> 16
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(valid, [[False, True, True, True, True, False]])
+
+
+def test_native_seed_failure_retains_pyramid_motion_recovery(monkeypatch):
+    from core import openfocus_align
+
+    def no_native_fit(*args, **kwargs):
+        raise cv2.error('flat local ECC basin')
+
+    monkeypatch.setattr(cv2, 'findTransformECC', no_native_fit)
+    frames, _ = _shifted_stack(dx=5, dy=3, size=(140, 180))
+    ref, cur = [cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                for image in frames]
+    result = openfocus_align.estimate(ref, cur, 0.08, 8.0, (0.95, 1.05), lambda: None)
+    assert result[0] > 0.9
+    assert result[3] == pytest.approx(5, abs=0.4)
+    assert result[4] == pytest.approx(3, abs=0.4)
+
+
+def test_thumbnail_transform_reuse_tracks_pixels_reference_and_bounds():
+    from core.openfocus_align import estimate
+
+    frames, _ = _shifted_stack(dx=4, dy=2, size=(120, 160))
+    ref, cur = [cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                for image in frames]
+    first = estimate(ref, cur, 0.08, 8.0, (0.95, 1.05), lambda: None)
+    repeated = estimate(ref.copy(), cur.copy(), 0.08, 8.0, (0.95, 1.05), lambda: None)
+    assert repeated == first
+    reversed_anchor = estimate(cur, ref, 0.08, 8.0, (0.95, 1.05), lambda: None)
+    assert first[3] == pytest.approx(4, abs=0.4)
+    assert reversed_anchor[3] == pytest.approx(-4, abs=0.4)
+    fixed = estimate(ref, cur, 0.0, 0.0, (1.0, 1.0), lambda: None)
+    assert fixed[1:] == (0.0, 1.0, 0.0, 0.0)
+    cur[:] = ref
+    changed_pixels = estimate(ref, cur, 0.08, 8.0, (0.95, 1.05), lambda: None)
+    assert changed_pixels[3:] == pytest.approx((0, 0), abs=0.15)
+
+
+def test_cached_detector_still_honors_cancellation():
+    from core.openfocus_align import estimate
+    from core.registration import RegistrationCancelled
+
+    rng = np.random.default_rng(901)
+    ref = cv2.GaussianBlur(rng.integers(0, 65535, (80, 96), dtype=np.uint16), (5, 5), 0)
+    estimate(ref, ref, 0.08, 8.0, (0.95, 1.05), lambda: None)
+    checks = 0
+
+    def cancel_after_identity():
+        nonlocal checks
+        checks += 1
+        if checks >= 2:
+            raise RegistrationCancelled()
+
+    with pytest.raises(RegistrationCancelled):
+        estimate(ref, ref, 0.08, 8.0, (0.95, 1.05), cancel_after_identity)
+
+
+def test_openfocus_detector_retains_motion_under_strong_defocus():
+    from core.registration import _of_estimate_similarity
+
+    rng = np.random.default_rng(42)
+    ref = cv2.resize(rng.integers(15, 240, (20, 27), dtype=np.uint8),
+                     (320, 240), interpolation=cv2.INTER_CUBIC).astype(np.float32)
+    cur = cv2.GaussianBlur(ref, (0, 0), 11.0)
+    cur = cv2.warpAffine(cur, np.float32([[1, 0, 16], [0, 1, -7]]),
+                         (320, 240), borderMode=cv2.BORDER_REFLECT)
+    result = _of_estimate_similarity(ref, cur)
+    assert result[0] > 0.1
+    assert result[3] == pytest.approx(16, abs=1.5)
+    assert result[4] == pytest.approx(-7, abs=1.5)
