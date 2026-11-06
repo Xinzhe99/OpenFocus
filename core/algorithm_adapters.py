@@ -55,12 +55,12 @@ def openfocus_a_resources(height, width, parameters, frames):
 def openfocus_b_resources(height, width, parameters, frames):
     pixels = height * width
     # Global selection/smoothing/reconstruction plus independent activity work.
-    return DEPTH_KERNEL_STARTUP_BYTES + 4 * 1024 * 1024 + pixels * 160, pixels * 80
+    return 4 * 1024 * 1024 + pixels * 160, pixels * 80
 
 
 def openfocus_c_resources(height, width, parameters, frames):
     pixels = height * width
-    return DEPTH_KERNEL_STARTUP_BYTES + 4 * 1024 * 1024 + pixels * 304, pixels * 80
+    return 4 * 1024 * 1024 + pixels * 304, pixels * 80
 
 
 def guided_resources(height, width, parameters, frames):
