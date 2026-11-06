@@ -649,6 +649,8 @@ PACK = {
     "retouch_auto_bg_clean_hint": "Verwijdert halo's langs de randen van het onderwerp, nooit verder dan wat de frames vastlegden. Uitschakelen om de randen van de stapel te behouden (Getrouw).",
     "retouch_auto_bg_soft_parts": "Zachte delen die aan het onderwerp vastzitten behouden",
     "retouch_auto_bg_soft_parts_hint": "Behoudt delen van het onderwerp net buiten de scherptediepte (het knopje aan het eind van een stekel) zoals gestapeld. Kan ook achtergrondobjecten naast het onderwerp in de weergave van de stapel behouden.",
+    "retouch_auto_bg_from_stacked": "Deze afbeelding is al geretoucheerd, dus de achtergrond wordt geanalyseerd vanuit het gestapelde resultaat. Je penseelwerk op het onderwerp blijft behouden.",
+    "retouch_from_retouched": "Dit resultaat is al geretoucheerd. Automatische achtergrond werkt vanuit het gestapelde resultaat en behoudt je penseelwerk op het onderwerp.",
     "retouch_auto_bg_run": "Achtergrond vervangen",
     "retouch_auto_bg_failed": "Vervangen van de achtergrond is mislukt.",
     "retouch_auto_bg_unchanged": "Bijna het hele beeld is onderwerp, dus de achtergrond is gelaten zoals gestapeld. De kaart met ontbrekende gegevens is beschikbaar.",

@@ -649,6 +649,8 @@ PACK = {
     "retouch_auto_bg_clean_hint": "Entfernt Halos entlang der Motivkanten, nie über das hinaus, was die Einzelbilder aufgezeichnet haben. Ausschalten, um den Kantenlook des Stacks zu behalten (Originalgetreu).",
     "retouch_auto_bg_soft_parts": "Weiche, mit dem Motiv verbundene Teile behalten",
     "retouch_auto_bg_soft_parts_hint": "Behält Teile des Motivs knapp außerhalb der Schärfentiefe (etwa das Köpfchen am Ende eines Stachels) wie gestackt. Kann auch Hintergrundobjekte neben dem Motiv in der Darstellung des Stacks behalten.",
+    "retouch_auto_bg_from_stacked": "Dieses Bild wurde bereits retuschiert, daher wird der Hintergrund aus dem gestackten Ergebnis analysiert. Ihre Pinselarbeit am Motiv bleibt erhalten.",
+    "retouch_from_retouched": "Dieses Ergebnis wurde bereits retuschiert. Automatischer Hintergrund arbeitet mit dem gestackten Ergebnis und behält Ihre Pinselarbeit am Motiv.",
     "retouch_auto_bg_run": "Hintergrund ersetzen",
     "retouch_auto_bg_failed": "Das Ersetzen des Hintergrunds ist fehlgeschlagen.",
     "retouch_auto_bg_unchanged": "Fast das ganze Bild ist Motiv, daher blieb der Hintergrund wie gestackt. Die Karte fehlender Daten ist verfügbar.",

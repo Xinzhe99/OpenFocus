@@ -18,9 +18,10 @@ _FIELDS = (
     "threads", "resource_preference", "batch_size", "cpu", "downscale",
     "tile_size", "tile_enabled", "tile_overlap", "tile_threshold",
     "scale_bar", "scale_um", "depth_map", "depth_colormap", "sharpen_output",
-    "group_size", "group_overlap",
+    "group_size", "group_overlap", "frame_order",
+    "auto_background", "background_mode", "keep_soft_parts", "save_stacked", "missing_data_map",
 )
-_PATH_FIELDS = {"dust_map", "depth_map", "defect_mask_path"}
+_PATH_FIELDS = {"dust_map", "depth_map", "defect_mask_path", "save_stacked", "missing_data_map"}
 _INTEGER_LIMITS = {"threads": 0, "batch_size": 1, "downscale": 1, "tile_size": 64,
                    "tile_overlap": 0, "tile_threshold": 1,
                    "group_size": 0, "group_overlap": 0}
@@ -118,7 +119,10 @@ def validate_recipe(recipe, recipe_path):
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError("scale_um must be a positive finite number")
-        elif key in ("cpu", "scale_bar", "exposure_match", "tile_enabled", "sharpen_output", "sensor_denoise"):
+        elif key == "auto_background" and value is None:
+            continue
+        elif key in ("cpu", "scale_bar", "exposure_match", "tile_enabled", "sharpen_output",
+                     "sensor_denoise", "keep_soft_parts"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be boolean")
             if key in ("exposure_match", "tile_enabled"):
@@ -127,15 +131,15 @@ def validate_recipe(recipe, recipe_path):
             elif value:
                 argv.append("--" + key.replace("_", "-"))
             continue
-        elif key == "depth_map":
+        elif key in ("depth_map", "save_stacked", "missing_data_map"):
             if value is None or value is False:
                 continue
             if value is True:
-                argv.append("--depth-map")
+                argv.append("--" + key.replace("_", "-"))
                 continue
             value = _relative(value, base)
             if output_key == "output_dir":
-                raise ValueError("explicit depth_map path cannot be used with output_dir")
+                raise ValueError(f"explicit {key} path cannot be used with output_dir")
         elif key in ("dust_map", "defect_mask_path"):
             if value is None:
                 continue
@@ -145,6 +149,11 @@ def validate_recipe(recipe, recipe_path):
         if actions[key].choices is not None and value not in actions[key].choices:
             raise ValueError(f"invalid {key}: {value!r}")
         argv.extend(("--" + key.replace("_", "-"), str(value)))
+    if "frame_order" not in options:
+        # Recipes written before --frame-order existed recorded filename
+        # order implicitly.  Keep that order instead of inheriting the new
+        # CLI default, which could reorder the stack a saved setting uses.
+        argv.extend(("--frame-order", "name"))
     mask = options.get("defect_mask_path")
     fingerprint = options.get("defect_mask_sha256")
     if mask:
@@ -303,7 +312,10 @@ def capture_project_recipe(path, project_path, argv):
                   "--method", method, "--align", alignment,
                   "--base-frame", "last" if base else "none",
                   "--sort", "desc" if settings.get("stack_reverse_order", False) else "asc",
-                  "--exposure-match" if exposure else "--no-exposure-match"]
+                  "--exposure-match" if exposure else "--no-exposure-match",
+                  # The desktop app loads folders in filename order; a recipe
+                  # captured from a project must reproduce that order.
+                  "--frame-order", "name"]
     project_settings = state.get("settings", {})
     if project_settings.get("sensor_denoise", False):
         processing.append("--sensor-denoise")

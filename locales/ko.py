@@ -649,6 +649,8 @@ PACK = {
     "retouch_auto_bg_clean_hint": "피사체 가장자리의 헤일로를 제거하되, 프레임이 기록한 범위를 절대 넘지 않습니다. 끄면 스택 본래의 가장자리를 유지합니다(충실).",
     "retouch_auto_bg_soft_parts": "피사체에 붙은 흐린 부분 유지",
     "retouch_auto_bg_soft_parts_hint": "피사계 심도 바로 밖에 있는 피사체 부분(돌기 끝의 둥근 부분 등)을 스택 결과대로 유지합니다. 피사체 옆의 배경 물체도 스택의 표현대로 남을 수 있습니다.",
+    "retouch_auto_bg_from_stacked": "이 이미지는 이미 리터치되었으므로 배경을 스택 결과에서 분석합니다. 피사체에 칠한 브러시 작업은 유지됩니다.",
+    "retouch_from_retouched": "이 결과는 이미 리터치되었습니다. 자동 배경은 스택 결과를 기준으로 작업하며 피사체에 칠한 브러시 작업은 유지됩니다.",
     "retouch_auto_bg_run": "배경 바꾸기",
     "retouch_auto_bg_failed": "배경 바꾸기에 실패했습니다.",
     "retouch_auto_bg_unchanged": "화면 거의 전체가 피사체라서 배경을 스택 결과 그대로 두었습니다. 누락 데이터 맵은 사용할 수 있습니다.",

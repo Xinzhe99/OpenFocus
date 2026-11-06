@@ -605,6 +605,12 @@ gdzie wolisz, na przykład nieostre źdźbło trawy przed obiektem. Gdy obiekt
 wypełnia prawie cały kadr, jak w scenie z dna lasu, obraz zostaje jak po
 stackowaniu i pojawia się komunikat.
 
+Jeśli otworzysz retusz na wyniku, który był już retuszowany, automatyczne tło
+analizuje wynik stacku, z którego pochodzi, i nakłada nowe tło na Twój
+retuszowany obraz. Poprawki pędzlem na obiekcie zostają zachowane, a wcześniej
+zastąpione tło nigdy nie jest analizowane ponownie, więc drugie uruchomienie nie
+nawarstwia aureoli.
+
 Po przebiegu **Pokaż brakujące dane** zabarwia miejsca, których żadna klatka nie
 uchwyciła wyraźnie. To miejsca do sprawdzenia lub ręcznego retuszu:
 
@@ -903,6 +909,7 @@ Na przykład dodaj `--align openfocus --alignment-report alignment.json` do poje
 | `--exposure-match` | Dopasowuje średnią każdej klatki do ostatniej klatki przed fuzją (domyślnie włączone; `--no-exposure-match` wyłącza). Wzmocnienia wspólne dla całego stosu, więc wynik kafelkowy pozostaje bezszwowy; dotyczy każdej metody i odniesienia jasności wyrównywacza OpenFocus |
 | `--base-frame` | Opcjonalny krok po fuzji: dopasowuje niskie częstotliwości wyniku do klatki `last`/`first` (domyślnie `none`) |
 | `--sort` | Kolejność klatek dla `openfocus_a/b/c`: `asc` (domyślnie, kolejność plików), `desc` (odwrócenie przemiatania od dalekich do bliskich), `off` |
+| `--frame-order` | Folder na wejściu: `auto` (domyślnie) porządkuje klatki od bliskich do dalekich według kroków ostrości z EXIF, gdy mają je wszystkie klatki (bracketing ostrości OM SYSTEM zaczyna się w połowie głębi), w przeciwnym razie według nazwy; `name` zawsze według nazwy pliku. Pliki podane jawnie zachowują swoją kolejność |
 | `--sharpen-output` | Stosuje łagodne wyostrzanie do wyniku fuzji (domyślnie wyłączone) |
 | `--dust-map WHITE` | Korekcja pola płaskiego (mapa pyłu) z rozogniskowanego zdjęcia białego pola |
 | `--defect-mask-path MASK` | Maska defektów we współrzędnych matrycy, naprawiana przed rejestracją |
@@ -926,6 +933,11 @@ Na przykład dodaj `--align openfocus --alignment-report alignment.json` do poje
 | `--scale-um` | Rozmiar piksela w µm/px, ważniejszy od metadanych (implikuje `--scale-bar`) |
 | `--depth-map [path]` | Dodatkowo zapisuje kolorową mapę położenia ostrości (domyślnie `<output>_depth.png`); tylko dla metod z mapą głębi, nie dla wejścia grupowego lub przezroczystego. W trybie wsadowym dozwolona jest tylko ścieżka domyślna |
 | `--depth-colormap` | Mapa kolorów dla `--depth-map`: turbo, viridis, jet, gray, … (domyślnie turbo) |
+| `--auto-background [preset]` | Zastępuje tło stosu tłem wyrównanej klatki, tak jak Automatyczne tło w retuszu: `auto` (domyślnie), `soft` (najbardziej rozmyte tło) lub `sharp` (klatka ostrzona najdalej). Wymaga wyrównanych klatek, więc nie działa z fuzją grupową |
+| `--background-mode` | Automatyczne tło: `clean` (domyślnie) usuwa też obwódki na krawędziach stosu, w granicach tego, co zarejestrowały klatki; `faithful` je zachowuje |
+| `--keep-soft-parts` | Automatyczne tło: zachowuje miękkie części połączone z obiektem, na które ostrzyła któraś klatka |
+| `--save-stacked [path]` | Z `--auto-background` zapisuje też wynik sprzed zastąpienia (domyślnie `<output>_stacked<ext>`). W trybie wsadowym tylko ścieżka domyślna |
+| `--missing-data-map [path]` | Z `--auto-background` zapisuje też mapę brakujących danych i jedną 8-bitową maskę na klasę (domyślnie `<output>_missing.png`). W trybie wsadowym tylko ścieżka domyślna |
 | `--json FILE` | Zapisuje czytelny maszynowo raport wyników do FILE po zakończeniu |
 | `--json-progress` | Wypisuje jeden obiekt JSON postępu na krok do stdout (NDJSON); komunikaty tekstowe trafiają do stderr |
 | `--dry-run` | Sprawdza wejście i wypisuje plan bez wykonywania fuzji |

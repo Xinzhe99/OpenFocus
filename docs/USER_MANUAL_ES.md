@@ -589,6 +589,12 @@ desenfocada delante del sujeto. Si el sujeto ocupa casi todo el encuadre, como
 en una escena del suelo del bosque, la imagen queda tal como se apiló y aparece
 un aviso.
 
+Si abres el retoque sobre un resultado que ya se retocó, el fondo automático
+analiza el resultado apilado del que procede y coloca el nuevo fondo sobre tu
+imagen retocada. Los retoques con pincel sobre el sujeto se conservan y un fondo
+ya reemplazado nunca se vuelve a analizar, así que ejecutarlo dos veces no
+acumula halos.
+
 Tras una pasada, **Mostrar datos faltantes** colorea los lugares que ningún
 fotograma vio con claridad. Son los lugares que conviene revisar o retocar a
 mano:
@@ -881,6 +887,7 @@ Por ejemplo, añade `--align openfocus --alignment-report alignment.json` a un r
 | `--exposure-match` | Iguala la media de cada fotograma a la del último antes de la fusión (activado por defecto; `--no-exposure-match` lo desactiva). Ganancias para toda la pila, así que la salida por mosaicos queda sin costuras; se aplica a todos los métodos y a la referencia de brillo del alineador OpenFocus |
 | `--base-frame` | Paso opcional posterior a la fusión: iguala las frecuencias bajas de la salida al fotograma `last`/`first` (`none` por defecto) |
 | `--sort` | Orden de fotogramas para `openfocus_a/b/c`: `asc` (predeterminado, orden de archivo), `desc` (invierte un barrido de lejos a cerca), `off` |
+| `--frame-order` | Carpeta de entrada: `auto` (predeterminado) ordena los fotogramas de cerca a lejos según los pasos de enfoque EXIF cuando todos los tienen (el bracketing de enfoque de OM SYSTEM empieza a media profundidad); si no, por nombre; `name` siempre por nombre de archivo. Los archivos indicados explícitamente conservan su orden |
 | `--sharpen-output` | Aplica una máscara de enfoque suave a la salida fusionada (desactivado por defecto) |
 | `--dust-map WHITE` | Corrección de campo plano (mapa de polvo) a partir de una toma de campo blanco desenfocada |
 | `--defect-mask-path MASK` | Máscara de defectos en coordenadas del sensor que se repara antes del registro |
@@ -904,6 +911,11 @@ Por ejemplo, añade `--align openfocus --alignment-report alignment.json` a un r
 | `--scale-um` | Tamaño de píxel en µm/px, que anula los metadatos (implica `--scale-bar`) |
 | `--depth-map [path]` | Guarda además un mapa de posición de enfoque coloreado (predeterminado `<output>_depth.png`); solo métodos con capacidad de profundidad, no agrupados ni transparentes. En modo por lotes solo se permite la ruta predeterminada |
 | `--depth-colormap` | Mapa de color para `--depth-map`: turbo, viridis, jet, gray, … (turbo por defecto) |
+| `--auto-background [preset]` | Sustituye el fondo apilado por el de un fotograma alineado, como Fondo automático en el retoque: `auto` (predeterminado), `soft` (fondo más desenfocado) o `sharp` (fotograma enfocado más lejos). Necesita los fotogramas alineados, así que no funciona con la fusión por grupos |
+| `--background-mode` | Fondo automático: `clean` (predeterminado) también elimina los halos de borde del apilado, dentro de lo que registraron los fotogramas; `faithful` los conserva |
+| `--keep-soft-parts` | Fondo automático: conserva las partes suaves unidas al sujeto que algún fotograma enfocó |
+| `--save-stacked [path]` | Con `--auto-background`, guarda también el resultado antes de la sustitución (predeterminado `<output>_stacked<ext>`). En modo por lotes solo se admite la ruta predeterminada |
+| `--missing-data-map [path]` | Con `--auto-background`, guarda también el mapa de datos faltantes y una máscara de 8 bits por clase (predeterminado `<output>_missing.png`). En modo por lotes solo se admite la ruta predeterminada |
 | `--json FILE` | Escribe un resumen de resultado legible por máquina en FILE al terminar |
 | `--json-progress` | Imprime un objeto JSON de progreso por paso en stdout (NDJSON); la prosa va a stderr |
 | `--dry-run` | Valida las entradas e imprime el plan sin fusionar |

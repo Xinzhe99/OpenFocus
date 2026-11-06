@@ -445,3 +445,460 @@ def test_fill_enclosed_matches_per_hole_filling():
     out = _fill_enclosed(sub)
     assert np.array_equal(out, expected) and out[45, 55] == 1
     assert sub[45, 55] == 0                                 # the input is not modified
+
+
+# ------------------------------------------------------- dark backgrounds
+def test_field_stop_mask_needs_a_black_core():
+    from core.background_fill import field_stop_mask
+    lum = np.full((200, 200), 100.0, np.float32)
+    lum[:, 140:] = 30.0                        # an ordinary dark background
+    assert not field_stop_mask(lum, 100.0, 30).any()
+    lum[:, :20] = 2.0                          # a microscope's field stop...
+    lum[:, 20:40] = 25.0                       # ...and its dim, blurred rim
+    stop = field_stop_mask(lum, 100.0, 30)
+    assert stop[:, :40].all()
+    assert not stop[:, 40:].any()              # the dark background stays usable
+
+
+def test_halo_zone_beside_a_dark_background_is_rebuilt_from_that_background():
+    """A dark gap beside the subject (a fifth of the lit ground's level) was
+    taken for a field stop and refilled from the lit ground: a pale smear."""
+    from core.background_fill import fill_halo_zone
+    size = 256
+    yy, xx = np.mgrid[:size, :size]
+    bg = np.full((size, size, 3), 200 * 257, np.float32)
+    bg[:, 160:] = 40 * 257
+    sub = (xx - 128) ** 2 + (yy - 128) ** 2 < 30 ** 2
+    dist = cv2.distanceTransform((~sub).astype(np.uint8), cv2.DIST_L2, 5)
+    out, _est = fill_halo_zone(bg.copy(), dist, sub, np.float32(24))
+    zone = (~sub) & (dist < 24) & (xx > 170)
+    assert out[zone].mean() < 1.25 * 40 * 257
+
+
+def test_distances_scale_with_the_image_size(monkeypatch):
+    """Distances are written for 20 MP (5216 px long side) and follow the
+    image's size during a run; at the reference size they are unchanged."""
+    import core.background_fill as bf
+    monkeypatch.setattr(bf, "SCALE_OVERRIDE", None)
+    seen = []
+    real = bf._replace_background
+
+    def spy(frames, fused, **kwargs):
+        seen.append((bf._px(32.0), bf._ksize(49), bf._area(10000), bf._sigma(1.0)))
+        raise bf.BackgroundFillCancelled()
+
+    monkeypatch.setattr(bf, "_replace_background", spy)
+    for long_side in (5216, 2608, 7824):
+        img = np.zeros((long_side * 3 // 4, long_side, 3), np.uint16)
+        with pytest.raises(bf.BackgroundFillCancelled):
+            bf.replace_background([img, img], img)
+    assert seen[0] == (32.0, 49, 10000, 1.0)                 # exactly as tuned
+    assert seen[1] == (16.0, 25, 2500, 0.5)
+    assert seen[2] == (48.0, 75, 22500, 1.5)
+    assert bf._px(32.0) == 32.0                              # back to 1 after the run
+    monkeypatch.setattr(bf, "_replace_background", real)
+
+
+def test_the_same_scene_twice_as_large_gets_zones_twice_as_wide(scene, monkeypatch):
+    """Scale follows the image: the scene enlarged 2x gets a rebuild zone about
+    twice as wide in pixels, i.e. the same relative to the scene."""
+    import core.background_fill as bf
+    frames, fused, _disc = scene
+    widths = []
+    real = bf.fill_halo_zone
+
+    def spy(bg, dist, sub, width, scale=4):
+        widths.append(float(np.median(width)))
+        return real(bg, dist, sub, width, scale)
+
+    monkeypatch.setattr(bf, "fill_halo_zone", spy)
+    big = lambda img: cv2.resize(img, (img.shape[1] * 2, img.shape[0] * 2), interpolation=cv2.INTER_CUBIC)
+    # Scales 1 and 2 (the synthetic scene is too small for the reference
+    # size itself): what matters is that doubling the image doubles them.
+    monkeypatch.setattr(bf, "SCALE_OVERRIDE", 1.0)
+    small_run = bf.replace_background(frames, fused, preset="soft")
+    monkeypatch.setattr(bf, "SCALE_OVERRIDE", 2.0)
+    large_run = bf.replace_background([big(f) for f in frames], big(fused), preset="soft")
+    assert small_run.changed and large_run.changed
+    assert 1.6 < widths[1] / widths[0] < 2.4
+
+
+def test_fine_outline_band_and_ring_stay_a_pixel_wide_on_tiny_images():
+    import core.background_fill as bf
+    assert bf._outline_band_and_ring() == (20, (3, 15))           # as tuned at 20 MP
+    token = bf._SCALE.set(64 / bf.REFERENCE_LONG_SIDE)            # the smallest accepted image
+    try:
+        band, (inner, outer) = bf._outline_band_and_ring()
+    finally:
+        bf._SCALE.reset(token)
+    assert band >= 1.0
+    assert inner < 1.0 < outer          # distances of 1 px fall inside the ring
+def test_composite_onto_keeps_edits_and_analyses_the_stacked_result(scene, soft_result):
+    frames, fused, disc = scene
+    edited = fused.copy()
+    ys, xs = np.nonzero(disc)
+    cy, cx = int(ys.mean()), int(xs.mean())
+    edited[cy - 10:cy + 10, cx - 10:cx + 10] = (0, 0, 255)     # brushing on the subject
+    again = replace_background(frames, fused, composite_onto=edited)
+    np.testing.assert_array_equal(again.image[cy - 10:cy + 10, cx - 10:cx + 10],
+                                  edited[cy - 10:cy + 10, cx - 10:cx + 10])
+    # Away from the subject the background is the clean run's (the blend
+    # weight can sit a hair under 1, so allow one level of rounding).
+    far = cv2.distanceTransform((~disc).astype(np.uint8), cv2.DIST_L2, 5) > 40
+    diff = np.abs(again.image[far].astype(int) - soft_result.image[far].astype(int))
+    assert diff.max() <= 1 and (diff > 0).mean() < 1e-4
+    with pytest.raises(BackgroundFillError):
+        replace_background(frames, fused, composite_onto=edited[:-1])
+
+
+def _retouched_document(scene):
+    """A retouched output (brushing on the subject) linked to its stack."""
+    from core.render_context import build_render_context
+    from utils.retouch import RetouchDocument
+    frames, fused, disc = scene
+    context = build_render_context(frames, fused, filenames=[f"f{i}.png" for i in range(len(frames))],
+                                   algorithm="test")
+    edited = fused.copy()
+    ys, xs = np.nonzero(disc)
+    cy, cx = int(ys.mean()), int(xs.mean())
+    edited[cy - 10:cy + 10, cx - 10:cx + 10] = (0, 0, 255)
+    doc = RetouchDocument(edited, context)
+    doc.stacked_image = fused
+    return doc, (cy, cx)
+
+
+def test_retouch_from_a_retouched_output_uses_the_stacked_result(scene, soft_result, tmp_path, monkeypatch):
+    _frames, _fused, disc = scene
+    doc, (cy, cx) = _retouched_document(scene)
+    doc.initialize_checkpoint()
+    assert doc.auto_background() == "committed"
+    assert doc._operations[-1]["from_stacked"] is True
+    assert (doc.working[cy, cx] == (0, 0, 255)).all()
+    far = cv2.distanceTransform((~disc).astype(np.uint8), cv2.DIST_L2, 5) > 40
+    diff = np.abs(doc.working[far].astype(int) - soft_result.image[far].astype(int))
+    assert diff.max() <= 1 and (diff > 0).mean() < 1e-4
+
+
+
+def test_stacked_source_follows_retouches_back_to_the_stack():
+    from types import SimpleNamespace
+    from controllers.output_manager import OutputManager, OutputRecord
+    frames = (SimpleNamespace(image=np.zeros((4, 4, 3), np.uint8)),)
+    context = SimpleNamespace(frames=frames)
+    image = np.zeros((8, 8, 3), np.uint16)
+    stack = OutputRecord.create(image, "stack", context=context)
+    first = OutputRecord.create(image.copy(), "stack · Retouched 1", context=context,
+                                kind="retouch", parent_id=stack.output_id)
+    second = OutputRecord.create(image.copy(), "stack · Retouched 2", context=context,
+                                 kind="retouch", parent_id=first.output_id)
+    other = OutputRecord.create(image.copy(), "other", context=SimpleNamespace(
+        frames=(SimpleNamespace(image=np.zeros((4, 4, 3), np.uint8)),)), kind="retouch",
+        parent_id=stack.output_id)
+    records = [second, first, stack, other]
+    manager = OutputManager.__new__(OutputManager)
+    manager.window = SimpleNamespace(output_list=SimpleNamespace(count=lambda: len(records)))
+    manager.record_for_row = lambda row: records[row]
+    assert manager.stacked_source(second) is stack
+    assert manager.stacked_source(first) is stack
+    assert manager.stacked_source(stack) is None          # already the stacked result
+    assert manager.stacked_source(other) is None          # different frames
+    orphan = OutputRecord.create(image.copy(), "x", context=context, kind="retouch", parent_id="gone")
+    assert manager.stacked_source(orphan) is None
+
+
+def test_retouch_dialog_on_a_retouched_output_links_the_stacked_result(qapp, scene):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QApplication, QLabel, QWidget
+    from controllers.output_manager import OutputRecord
+    from core.render_context import build_render_context
+    from dialogs.retouch import RetouchDialog, _AutoBackgroundDialog
+    from locales import trans
+
+    frames, fused, _ = scene
+    ctx = build_render_context(frames, fused, filenames=[f"f{i}.png" for i in range(len(frames))],
+                               algorithm="test")
+    stack = OutputRecord.create(fused, "demo.png", context=ctx)
+    retouched = OutputRecord.create(fused.copy(), "demo.png · Retouched 1", context=ctx,
+                                    kind="retouch", parent_id=stack.output_id)
+    window = QWidget()
+    window.output_manager = SimpleNamespace(
+        stacked_source=lambda record: stack if record is retouched else None)
+    plain = RetouchDialog(window, record=stack, apply_callback=lambda *_: (True, ""))
+    assert plain.doc.stacked_image is None
+    dlg = RetouchDialog(window, record=retouched, apply_callback=lambda *_: (True, ""))
+    try:
+        assert dlg.doc.stacked_image is fused
+        assert dlg._notice == trans.t("retouch_from_retouched")
+        auto = _AutoBackgroundDialog(dlg.doc, dlg)
+        texts = [label.text() for label in auto.findChildren(QLabel)]
+        assert trans.t("retouch_auto_bg_from_stacked") in texts
+        auto.deleteLater()
+    finally:
+        for d in (plain, dlg):
+            d._allow_close = True
+            d.close()
+        QApplication.processEvents()
+        window.deleteLater()
+
+
+# ------------------------------------------------------------------ headless CLI
+def _write_stack(folder, frames):
+    folder.mkdir()
+    for k, frame in enumerate(frames):
+        assert cv2.imwrite(str(folder / f"frame_{k:02d}.png"), frame)
+
+
+def test_cli_auto_background_writes_result_stacked_and_maps(scene, tmp_path):
+    import json
+    from core.cli import run_cli
+    frames, _fused, disc = scene
+    _write_stack(tmp_path / "stack", frames)
+    out = tmp_path / "out" / "result.png"
+    summary = tmp_path / "summary.json"
+    rc = run_cli(["-i", str(tmp_path / "stack"), "-o", str(out), "--method", "guided_filter",
+                  "--cpu", "--threads", "2", "--auto-background", "soft", "--save-stacked",
+                  "--missing-data-map", "--json", str(summary)])
+    assert rc == 0
+    result = cv2.imread(str(out), cv2.IMREAD_UNCHANGED)
+    stacked = cv2.imread(str(tmp_path / "out" / "result_stacked.png"), cv2.IMREAD_UNCHANGED)
+    assert result.shape == stacked.shape == frames[0].shape
+    inner = cv2.erode(disc.astype(np.uint8), np.ones((25, 25), np.uint8)) > 0
+    far_bg = cv2.erode((~disc).astype(np.uint8), np.ones((61, 61), np.uint8)) > 0
+    assert np.array_equal(result[inner], stacked[inner])           # subject kept
+    assert np.abs(result[far_bg].astype(int) - stacked[far_bg]).mean() > 1.0   # background replaced
+    for name in ("", "-background", "-hidden", "-out_of_range", "-featureless"):
+        assert (tmp_path / "out" / f"result_missing{name}.png").is_file()
+    report = json.loads(summary.read_text())
+    assert report["auto_background"]["preset"] == "soft"
+    assert report["auto_background"]["changed"] is True
+    assert len(report["outputs"]) == 7
+
+
+@pytest.mark.parametrize("argv", [
+    ["--save-stacked"],
+    ["--keep-soft-parts"],
+    ["--background-mode", "faithful"],
+    ["--auto-background", "--group-size", "3"],
+    ["--auto-background", "--missing-data-map", "maps.jpg"],
+    ["--auto-background", "--save-stacked", "x.txt"],
+])
+def test_cli_auto_background_usage_errors(tmp_path, argv):
+    from core.cli import EXIT_USAGE, run_cli
+    folder = tmp_path / "stack"
+    folder.mkdir()
+    assert run_cli(["-i", str(folder), "-o", str(tmp_path / "out.png"), *argv]) == EXIT_USAGE
+
+
+def test_headless_paths_import_without_pyqt6():
+    """`pip install openfocus` has no PyQt6: the CLI's --auto-background and
+    retouch replay import these modules and must not need Qt."""
+    import subprocess
+    import sys
+    code = ("import sys; sys.modules['PyQt6'] = None\n"
+            "import core.render_context, core.background_fill, core.cli, utils.retouch, "
+            "utils.retouch_checkpoint\n")
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+
+
+# ------------------------------------------------------- scaled index median
+def test_the_scaled_index_median_keeps_the_window_on_uint16_maps():
+    """More than 256 frames give a uint16 frame-index map, and the window
+    scales past OpenCV's 16-bit limit (>5) on large sensors.  The window must
+    not be clamped: the map is filtered with the whole scaled window."""
+    import core.background_fill as bf
+    from scipy.ndimage import median_filter
+
+    rng = np.random.default_rng(11)
+    idx = rng.integers(0, 400, size=(23, 19)).astype(np.uint16)
+    token = bf._SCALE.set(8192 / bf.REFERENCE_LONG_SIDE)      # 45 MP long side
+    try:
+        size = bf._ksize(5)
+        assert size == 9                                      # not clamped to 5
+        got = bf._median_blur_index(idx, size)
+    finally:
+        bf._SCALE.reset(token)
+    assert got.dtype == np.uint16
+    np.testing.assert_array_equal(
+        got, median_filter(idx, size=(size, size), mode="nearest"))
+
+
+def test_the_banded_index_median_matches_a_whole_image_filter(monkeypatch):
+    """The wide-window fallback filters bands of rows with a half-window halo,
+    so it is identical to one whole-image filter with edge replication."""
+    import core.background_fill as bf
+    from scipy.ndimage import median_filter
+
+    rng = np.random.default_rng(3)
+    idx = rng.integers(0, 500, size=(41, 27)).astype(np.uint16)
+    monkeypatch.setattr(bf, "INDEX_MEDIAN_BAND_BYTES", 27 * 2 * 9)   # 3 rows a band
+    got = bf._median_blur_index(idx, 7)
+    np.testing.assert_array_equal(
+        got, median_filter(idx, size=(7, 7), mode="nearest"))
+
+
+def test_the_banded_index_median_honours_cancellation(monkeypatch):
+    import core.background_fill as bf
+
+    idx = np.zeros((32, 32), np.uint16)
+    monkeypatch.setattr(bf, "INDEX_MEDIAN_BAND_BYTES", 32 * 2)       # one row a band
+    with pytest.raises(BackgroundFillCancelled):
+        bf._median_blur_index(idx, 7, cancelled=lambda: True)
+
+
+def test_edge_frame_map_filters_a_uint16_index_map_with_a_wide_window():
+    """The consumer that raised OpenCV's 16-bit assertion on large, long
+    stacks; the labels must come from the whole scaled window."""
+    import core.background_fill as bf
+
+    sub = np.zeros((24, 24), bool)
+    sub[6:18, 6:18] = True
+    idx = (np.arange(24, dtype=np.uint16)[None, :] * 8).repeat(24, axis=0)
+    token = bf._SCALE.set(2.0)
+    try:
+        size = bf._ksize(5)
+        assert size > 5
+        edge = bf.edge_frame_map(sub, idx, inner=(2, 10))
+        filtered = bf._median_blur_index(idx, size)
+    finally:
+        bf._SCALE.reset(token)
+    assert edge.shape == sub.shape
+    assert set(np.unique(edge)).issubset(set(np.unique(filtered)))
+
+
+# ------------------------------------------------- preflight destination loss
+def test_cli_rejects_a_sidecar_aimed_at_the_depth_map(scene, tmp_path):
+    """--save-stacked on the depth map's path wrote the stacked result and then
+    overwrote it with the depth map: one of the two files was lost silently."""
+    from core.cli import EXIT_USAGE, run_cli
+
+    frames, _fused, _disc = scene
+    _write_stack(tmp_path / "stack", frames)
+    out = tmp_path / "out" / "result.png"
+    clash = tmp_path / "out" / "result_depth.png"
+    rc = run_cli(["-i", str(tmp_path / "stack"), "-o", str(out),
+                  "--auto-background", "--save-stacked", str(clash),
+                  "--depth-map", str(clash)])
+    assert rc == EXIT_USAGE
+    assert not out.parent.exists()
+
+
+def test_cli_rejects_an_output_that_would_overwrite_an_input_frame(scene, tmp_path, capsys):
+    from core.cli import EXIT_USAGE, run_cli
+
+    frames, _fused, _disc = scene
+    _write_stack(tmp_path / "stack", frames)
+    frame = tmp_path / "stack" / "frame_01.png"
+    before = frame.read_bytes()
+    assert run_cli(["-i", str(tmp_path / "stack"), "-o", str(frame),
+                    "--method", "guided_filter", "--cpu", "--threads", "2"]) == EXIT_USAGE
+    assert "overwrite an input image" in capsys.readouterr().err
+    assert frame.read_bytes() == before
+
+
+def test_cli_rejects_a_json_summary_that_would_overwrite_an_input_frame(scene, tmp_path, capsys):
+    """The error path writes the summary too, so the check has to come first."""
+    from core.cli import EXIT_USAGE, run_cli
+
+    frames, _fused, _disc = scene
+    _write_stack(tmp_path / "stack", frames)
+    frame = tmp_path / "stack" / "frame_02.png"
+    before = frame.read_bytes()
+    assert run_cli(["-i", str(tmp_path / "stack"), "-o", str(tmp_path / "out.png"),
+                    "--json", str(frame), "--method", "guided_filter",
+                    "--cpu", "--threads", "2"]) == EXIT_USAGE
+    assert "overwrite an input image" in capsys.readouterr().err
+    assert frame.read_bytes() == before
+
+
+@pytest.mark.parametrize("flag, folder", [
+    ("--save-stacked", "stack_stacked"),
+    ("--missing-data-map", "stack_missing"),
+])
+def test_batch_rejects_sidecars_that_would_overwrite_another_folder(
+        scene, tmp_path, flag, folder):
+    """Folder names only decide the main path, so one folder's sidecar can be
+    another folder's result; the batch used to report both as succeeded."""
+    from core.cli import EXIT_USAGE, run_cli
+
+    frames, _fused, _disc = scene
+    _write_stack(tmp_path / "stack", frames)
+    _write_stack(tmp_path / folder, frames)
+    out = tmp_path / "out"
+    rc = run_cli(["-i", str(tmp_path / "stack"), str(tmp_path / folder),
+                  "-d", str(out), "--auto-background", flag])
+    assert rc == EXIT_USAGE
+    assert not out.exists()
+
+
+def test_batch_plan_follows_a_per_folder_config_that_disables_the_background(
+        scene, tmp_path):
+    """Only the folder that still writes sidecars claims those paths."""
+    import json
+    from core.cli import run_cli
+
+    frames, _fused, _disc = scene
+    _write_stack(tmp_path / "stack", frames)
+    _write_stack(tmp_path / "stack_stacked", frames)
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"stack": {"auto_background": None}}), encoding="utf-8")
+    out = tmp_path / "out"
+    assert run_cli(["-i", str(tmp_path / "stack"), str(tmp_path / "stack_stacked"),
+                    "-d", str(out), "--dry-run", "--auto-background", "--save-stacked",
+                    "--config", str(config)]) == 0
+
+
+def test_batch_rejects_a_summary_that_would_overwrite_an_input_frame(
+        scene, tmp_path, capsys):
+    """The batch summary is written after every folder, so a --json path that
+    names a frame would replace it at the end of a successful run."""
+    from core.cli import EXIT_USAGE, run_cli
+
+    frames, _fused, _disc = scene
+    _write_stack(tmp_path / "stack", frames)
+    frame = tmp_path / "stack" / "frame_03.png"
+    before = frame.read_bytes()
+    out = tmp_path / "out"
+    assert run_cli(["-i", str(tmp_path / "stack"), "-d", str(out),
+                    "--json", str(frame), "--method", "guided_filter",
+                    "--cpu", "--threads", "2"]) == EXIT_USAGE
+    assert "overwrite an input image" in capsys.readouterr().err
+    assert frame.read_bytes() == before
+    assert not out.exists()
+
+
+def test_batch_rejects_a_result_that_would_overwrite_an_input_frame(
+        scene, tmp_path, capsys):
+    """A folder named like one of its own frames: the result path would be a
+    frame.  Listing the inputs with the run's own rules catches it first."""
+    from core.cli import EXIT_USAGE, run_cli
+
+    frames, _fused, _disc = scene
+    folder = tmp_path / "stack"
+    _write_stack(folder, frames)
+    assert cv2.imwrite(str(folder / "stack.png"), frames[0])
+    before = {path.name: path.read_bytes() for path in folder.iterdir()}
+    assert run_cli(["-i", str(folder), "-d", str(folder),
+                    "--method", "guided_filter", "--cpu", "--threads", "2"]) == EXIT_USAGE
+    assert "overwrite an input image" in capsys.readouterr().err
+    assert {path.name: path.read_bytes() for path in folder.iterdir()} == before
+
+
+def test_batch_plan_stays_unique_when_resume_would_skip_a_folder(scene, tmp_path):
+    """--resume skips folders that already have a result, but a skipped
+    folder's sidecar can still land on another folder's result, so the plan
+    keeps every folder in the preflight."""
+    from core.cli import EXIT_USAGE, run_cli
+
+    frames, _fused, _disc = scene
+    _write_stack(tmp_path / "stack", frames)
+    _write_stack(tmp_path / "stack_stacked", frames)
+    out = tmp_path / "out"
+    out.mkdir()
+    previous = b"previous result"
+    (out / "stack.png").write_bytes(previous)          # --resume would skip it
+    assert run_cli(["-i", str(tmp_path / "stack"), str(tmp_path / "stack_stacked"),
+                    "-d", str(out), "--resume", "--auto-background",
+                    "--save-stacked"]) == EXIT_USAGE
+    assert (out / "stack.png").read_bytes() == previous
+    assert sorted(path.name for path in out.iterdir()) == ["stack.png"]

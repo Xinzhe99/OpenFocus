@@ -588,6 +588,11 @@ empilhados onde os preferir, por exemplo uma folha de erva desfocada à frente d
 motivo. Quando o motivo ocupa quase todo o enquadramento, como numa cena do chão
 da floresta, a imagem fica tal como foi empilhada e aparece um aviso.
 
+Se abrir o retoque num resultado que já foi retocado, o fundo automático analisa
+o resultado empilhado de onde ele veio e aplica o novo fundo sobre a sua imagem
+retocada. Os retoques a pincel no motivo são mantidos e um fundo já substituído
+nunca volta a ser analisado, por isso uma segunda execução não acumula halos.
+
 Após uma execução, **Mostrar dados ausentes** colore os locais que nenhum
 quadro mostrou com nitidez. São os locais que devem ser verificados ou retocados à mão:
 
@@ -879,6 +884,7 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--exposure-match` | Iguala a média de cada quadro à do último antes da fusão (ativado por padrão; `--no-exposure-match` desativa). Ganhos para toda a pilha, então a saída em blocos permanece sem emendas; aplica-se a todos os métodos e à referência de brilho do alinhador OpenFocus |
 | `--base-frame` | Etapa opcional pós-fusão: iguala as baixas frequências da saída ao quadro `last`/`first` (`none` padrão) |
 | `--sort` | Ordem de quadros para `openfocus_a/b/c`: `asc` (padrão, ordem de arquivo), `desc` (inverte uma varredura de longe para perto), `off` |
+| `--frame-order` | Pasta de entrada: `auto` (padrão) ordena os quadros de perto para longe pelos passos de foco EXIF quando todos os têm (o bracketing de foco da OM SYSTEM começa no meio da profundidade); senão, por nome; `name` sempre pelo nome do arquivo. Arquivos listados explicitamente mantêm sua ordem |
 | `--sharpen-output` | Aplica uma máscara de nitidez suave à saída fundida (desativada por padrão) |
 | `--dust-map WHITE` | Correção de campo plano (mapa de poeira) a partir de uma tomada de campo branco desfocada |
 | `--defect-mask-path MASK` | Máscara de defeitos em coordenadas do sensor reparada antes do registro |
@@ -902,6 +908,11 @@ Por exemplo, adicione `--align openfocus --alignment-report alignment.json` a um
 | `--scale-um` | Tamanho do pixel em µm/px, substituindo metadados (implica `--scale-bar`) |
 | `--depth-map [path]` | Também salva um mapa colorido de posição de foco (padrão `<output>_depth.png`); apenas métodos com capacidade de profundidade, não agrupados nem transparentes. No modo lote, apenas o caminho padrão é permitido |
 | `--depth-colormap` | Mapa de cores para `--depth-map`: turbo, viridis, jet, gray, … (turbo padrão) |
+| `--auto-background [preset]` | Substitui o fundo empilhado pelo de um quadro alinhado, como o Fundo automático no retoque: `auto` (padrão), `soft` (fundo mais desfocado) ou `sharp` (quadro focado mais longe). Precisa dos quadros alinhados, portanto não funciona com fusão em grupos |
+| `--background-mode` | Fundo automático: `clean` (padrão) também remove os halos de borda do empilhamento, dentro do que os quadros registraram; `faithful` os mantém |
+| `--keep-soft-parts` | Fundo automático: mantém as partes suaves presas ao objeto em que algum quadro focou |
+| `--save-stacked [path]` | Com `--auto-background`, também salva o resultado antes da substituição (padrão `<output>_stacked<ext>`). No modo em lote só o caminho padrão é permitido |
+| `--missing-data-map [path]` | Com `--auto-background`, também salva o mapa de dados ausentes e uma máscara de 8 bits por classe (padrão `<output>_missing.png`). No modo em lote só o caminho padrão é permitido |
 | `--json FILE` | Grava um resumo de resultado legível por máquina em FILE ao terminar |
 | `--json-progress` | Imprime um objeto JSON de progresso por etapa em stdout (NDJSON); o texto vai para stderr |
 | `--dry-run` | Valida as entradas e imprime o plano sem fundir |
