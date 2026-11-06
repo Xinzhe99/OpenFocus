@@ -587,6 +587,12 @@ desenfocada delante del sujeto. Si el sujeto ocupa casi todo el encuadre, como
 en una escena del suelo del bosque, la imagen queda tal como se apiló y aparece
 un aviso.
 
+Si abres el retoque sobre un resultado que ya se retocó, el fondo automático
+analiza el resultado apilado del que procede y coloca el nuevo fondo sobre tu
+imagen retocada. Los retoques con pincel sobre el sujeto se conservan y un fondo
+ya reemplazado nunca se vuelve a analizar, así que ejecutarlo dos veces no
+acumula halos.
+
 Tras una pasada, **Mostrar datos faltantes** colorea los lugares que ningún
 fotograma vio con claridad. Son los lugares que conviene revisar o retocar a
 mano:

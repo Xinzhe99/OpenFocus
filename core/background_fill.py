@@ -1321,6 +1321,7 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
                        max_subject: float = MAX_SUBJECT_DEFAULT,
                        keep_soft_parts: bool = False,
                        valid_masks: Optional[Sequence[Optional[np.ndarray]]] = None,
+                       composite_onto: Optional[np.ndarray] = None,
                        progress: Optional[Callable[[float, str], None]] = None,
                        cancelled: Optional[Callable[[], bool]] = None) -> BackgroundFillResult:
     """Replace the background of `fused` with one of `frames`.
@@ -1339,6 +1340,10 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     as stacked and only the missing-data maps are computed.  `valid_masks`
     optionally marks registration-valid pixels for each frame; invalid warp
     fill is excluded from matching and never composited into the result.
+    `composite_onto` (same shape and dtype as `fused`) is the image the new
+    background is laid onto; everything is still analysed from `fused`.  A
+    retouched copy of the stacked result keeps its subject edits this way,
+    while an earlier replacement in it is never analysed again.
     """
     if preset not in PRESETS:
         raise BackgroundFillError(f"unknown preset {preset!r}")
@@ -1346,6 +1351,9 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     if N < 2:
         raise BackgroundFillError("background replacement needs at least two frames")
     H, W = fused.shape[:2]
+    if composite_onto is not None and (composite_onto.shape != fused.shape
+                                       or composite_onto.dtype != fused.dtype):
+        raise BackgroundFillError("composite_onto must match the stacked image's shape and type")
     if H < 64 or W < 64:
         raise BackgroundFillError("image too small for background replacement")
     for f in frames:
@@ -1573,7 +1581,8 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     subject_fraction = float(sub.mean())
     changed = subject_fraction <= max_subject
     if changed:
-        comp = fz * (1 - alpha[..., None]) + bgf * alpha[..., None]
+        base = fz if composite_onto is None else _u16(composite_onto).astype(np.float32)
+        comp = base * (1 - alpha[..., None]) + bgf * alpha[..., None]
         if shift is not None:
             # The blend strip at the edge keeps stacked pixels; correct their
             # background side too, or a thin line is left along the edge.
@@ -1595,7 +1604,7 @@ def _replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
         # recorded, and the few percent left are far-range objects the
         # background frame would only blur.
         log.info("subject covers %.1f%% of the frame: background left as stacked", subject_fraction * 100)
-        image = fused.copy()
+        image = (fused if composite_onto is None else composite_onto).copy()
     step("done")
     return BackgroundFillResult(
         image=image, changed=changed, background_frame=k_bg, far_end=far_end,

@@ -649,6 +649,8 @@ PACK = {
     "retouch_auto_bg_clean_hint": "Usuwa aureole wzdłuż krawędzi obiektu, nigdy poza to, co zarejestrowały klatki. Wyłącz, aby zachować krawędzie ze stacku (Wierny).",
     "retouch_auto_bg_soft_parts": "Zachowaj miękkie części połączone z obiektem",
     "retouch_auto_bg_soft_parts_hint": "Zachowuje jak po stackowaniu części obiektu tuż poza głębią ostrości (główkę na końcu kolca). Może też zachować obiekty tła obok obiektu w wyglądzie ze stacku.",
+    "retouch_auto_bg_from_stacked": "Ten obraz był już retuszowany, więc tło jest analizowane z wyniku stacku. Twoje poprawki pędzlem na obiekcie zostają zachowane.",
+    "retouch_from_retouched": "Ten wynik był już retuszowany. Automatyczne tło będzie pracować na wyniku stacku i zachowa Twoje poprawki pędzlem na obiekcie.",
     "retouch_auto_bg_run": "Zastąp tło",
     "retouch_auto_bg_failed": "Nie udało się zastąpić tła.",
     "retouch_auto_bg_unchanged": "Prawie cały kadr to obiekt, więc tło pozostawiono jak po stackowaniu. Mapa brakujących danych jest dostępna.",
