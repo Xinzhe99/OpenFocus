@@ -412,10 +412,12 @@ class OpenFocus(QMainWindow):
         self.init_ui()
         self.apply_dark_theme()
         if storage_warning is not None:
+            def show_storage_warning():
+                if not getattr(self, "_shutting_down", False):
+                    QMessageBox.warning(self, trans.t("msg_warning"), storage_warning)
             self._storage_warning_timer = _QTimer(self)
             self._storage_warning_timer.setSingleShot(True)
-            self._storage_warning_timer.timeout.connect(
-                lambda: QMessageBox.warning(self, trans.t("msg_warning"), storage_warning))
+            self._storage_warning_timer.timeout.connect(show_storage_warning)
             self._storage_warning_timer.start(0)
 
         # Install global event filter to handle Space key for panning
@@ -432,8 +434,10 @@ class OpenFocus(QMainWindow):
 
         # Optionally re-load the last opened stack a moment after launch
         if getattr(self, "restore_last_stack", False):
-            from PyQt6.QtCore import QTimer as _QTimer
-            _QTimer.singleShot(1500, lambda: self.source_manager.restore_last_stack())
+            def restore_last_stack():
+                if not getattr(self, "_shutting_down", False):
+                    self.source_manager.restore_last_stack()
+            _QTimer.singleShot(1500, restore_last_stack)
 
         # Set initial text for drag hint if needed (it is set in image_panels or loaded later, 
         # but let's Ensure it matches current lang if empty)
@@ -1100,9 +1104,10 @@ class OpenFocus(QMainWindow):
         The worker touches no QObject; a window-owned QTimer polls the cache,
         so closing the window cannot leave a signal aimed at a deleted object.
         """
-        import threading
-        if getattr(self, "_device_probe_started", False):
+        if (getattr(self, "_shutting_down", False)
+                or getattr(self, "_device_probe_started", False)):
             return
+        import threading
         from core.multi_focus_fusion import neural_device_kind
         cached = neural_device_kind()
         if cached is not None:
@@ -1136,6 +1141,8 @@ class OpenFocus(QMainWindow):
 
     def _poll_device_probe(self) -> None:
         """UI-thread poll for the worker's cached backend decision."""
+        if getattr(self, "_shutting_down", False):
+            return
         from core.multi_focus_fusion import neural_device_kind
         kind = neural_device_kind()
         if kind is None:
@@ -1154,9 +1161,10 @@ class OpenFocus(QMainWindow):
         by the window polls a plain threading.Event, so a window destroyed
         mid-probe cannot be reached from the background thread.
         """
-        import threading
-        if getattr(self, "_stackmff_probe_started", False):
+        if (getattr(self, "_shutting_down", False)
+                or getattr(self, "_stackmff_probe_started", False)):
             return
+        import threading
         self._stackmff_probe_started = True
 
         done = threading.Event()
@@ -1188,6 +1196,8 @@ class OpenFocus(QMainWindow):
 
     def _poll_stackmff_probe(self) -> None:
         """UI-thread poll; applies the cached availability once warm."""
+        if getattr(self, "_shutting_down", False):
+            return
         event = getattr(self, "_stackmff_probe_event", None)
         if event is None or not event.is_set():
             return
@@ -1510,6 +1520,8 @@ class OpenFocus(QMainWindow):
         to READY, before any state_changed listener existed, so the banner is
         raised here explicitly.
         """
+        if getattr(self, "_shutting_down", False):
+            return
         self.update_manager.start_idle()
         staged = self.update_manager.staged_tag()
         if staged:
@@ -4202,6 +4214,8 @@ if __name__ == "__main__":
         _log.exception("Could not start the control channel")
 
     def _on_second_instance(paths_json: str) -> None:
+        if getattr(window, "_shutting_down", False):
+            return
         try:
             paths = _json.loads(paths_json)
         except ValueError:
@@ -4329,6 +4343,10 @@ if __name__ == "__main__":
     from utils.settings_store import get_settings
     if str(get_settings().value("ui/first_run_done", "") or "") != "1":
         def _show_welcome():
+            # A slow cooperative close can make this timer overdue. Entering
+            # exec() now would consume Qt's posted last-window Quit event.
+            if getattr(window, "_shutting_down", False):
+                return
             from dialogs.welcome import WelcomeDialog
             dlg = WelcomeDialog(window, main_window=window)
             dlg.exec()
