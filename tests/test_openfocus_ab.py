@@ -663,3 +663,87 @@ def test_global_depth_is_independent_of_row_scratch_partition(monkeypatch, mixed
     monkeypatch.setattr(depth, '_rows', narrow_rows)
     actual = depth.depth_map(frames, None, 11, 5, None)
     np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('method', ['openfocus_a', 'openfocus_b', 'openfocus_c'])
+@pytest.mark.parametrize('source_kind', ['uint8', 'mixed', 'gray16'])
+def test_parallel_firstpass_preserves_serial_pixels(method, source_kind):
+    from core.multi_focus_fusion import MultiFocusFusion
+
+    rng = np.random.default_rng(519)
+    frames = [rng.integers(0, 256, (257, 33, 3), np.uint8) for _ in range(4)]
+    if source_kind == 'mixed':
+        frames[1] = frames[1].astype(np.uint16) * 256 + 5
+    elif source_kind == 'gray16':
+        frames = [frame[:, :, 0].astype(np.uint16) * 256 + 5 for frame in frames]
+    options = dict(algorithm=method, exposure_match=True, sort_mode='desc',
+                   base_frame='first', tile_enabled=False)
+    serial = MultiFocusFusion(**options).fuse(frames, thread_count=1)
+    parallel = MultiFocusFusion(**options).fuse(frames, thread_count=4)
+    np.testing.assert_array_equal(parallel, serial)
+
+
+def test_ordered_producer_window_bounds_completed_results():
+    from threading import Event, Lock
+    from fusion_methods.openfocus_ab import _ordered_frame_results
+
+    release_first = Event()
+    lock = Lock()
+    outstanding = peak = later = 0
+
+    def produce(index, cancelled):
+        nonlocal outstanding, peak, later
+        if index == 0:
+            assert release_first.wait(5)
+        with lock:
+            outstanding += 1
+            peak = max(peak, outstanding)
+            if index in (1, 2):
+                later += 1
+                if later == 2:
+                    release_first.set()
+        return index
+
+    iterator = _ordered_frame_results(9, produce, 3, None)
+    consumed = []
+    try:
+        for index, value in iterator:
+            consumed.append((index, value))
+            with lock:
+                outstanding -= 1
+    finally:
+        release_first.set()
+        iterator.close()
+    assert consumed == [(index, index) for index in range(9)]
+    assert peak <= 3
+
+
+def test_closing_frame_production_cancels_and_joins_running_workers():
+    from threading import Event, Lock
+    from core.registration import RegistrationCancelled
+    from fusion_methods.openfocus_ab import _ordered_frame_results
+
+    started = Event()
+    lock = Lock()
+    active = 0
+
+    def produce(index, cancelled):
+        nonlocal active
+        with lock:
+            active += 1
+        try:
+            if index == 0:
+                assert started.wait(5)
+                return index
+            started.set()
+            while not cancelled():
+                Event().wait(0.001)
+            raise RegistrationCancelled()
+        finally:
+            with lock:
+                active -= 1
+
+    iterator = _ordered_frame_results(8, produce, 3, None)
+    assert next(iterator) == (0, 0)
+    iterator.close()
+    assert active == 0

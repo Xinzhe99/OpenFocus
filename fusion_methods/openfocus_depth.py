@@ -92,27 +92,26 @@ def _filter(src, radius, cancel, guide=None, low=None):
 
 
 def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
-              progress_callback=None):
-    """Return a continuous index map, using only one frame's activity at a time."""
-    from fusion_methods.openfocus_ab import _check_cancel, _prepare_frame
+              progress_callback=None, thread_count=1):
+    """Estimate independent activities in a bounded window; reduce globally."""
+    from fusion_methods.openfocus_ab import (
+        _check_cancel, _prepare_frame, _frame_pass_workers, _ordered_frame_results)
 
     def cancel():
         _check_cancel(should_cancel)
 
-    # Fusion promotes every frame to float32 when any source is uint16.
-    # Apply that same stack-wide rule before the integer activity conversion:
-    # a uint8 member of a mixed stack must retain its fractional channel mean
-    # and use 65535/255, just like its already-normalized tiled counterpart.
+    # Mixed stacks must retain the same fractional channel means and scaling
+    # as already-normalized/tiled inputs, independently of producer ordering.
     normalize_16bit = any(source.dtype == np.uint16 for source in frames)
-    best = winner = None
-    for index, source in enumerate(frames):
-        if progress_callback is not None:
-            cancel()
-            try:
-                progress_callback(index, len(frames))
-            except Exception:
-                pass
-        frame = _prepare_frame(source, img_resize, should_cancel)
+    workers = _frame_pass_workers(frames, img_resize, 'openfocus_b', thread_count,
+                                  activity_only=True)
+
+    def produce(index, cancelled):
+        def cancel():
+            _check_cancel(cancelled)
+
+        source = frames[index]
+        frame = _prepare_frame(source, img_resize, cancelled)
         gray = create_frame(frame.shape[:2], np.int64)
         for rows in _rows(gray, cancel):
             pixels = frame[rows]
@@ -124,8 +123,6 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
                 value = value * (65535.0 / 255.0)
             gray[rows] = np.clip(value, 0, 65535).astype(np.int64)
         del frame, pixels, value
-        # The kernel is a diameter. Scale the two filter radii by 0.0375R
-        # and 0.15R percent of the longer image dimension.
         radius = max(1, int(kernel_size or 11) // 2)
         extent = max(gray.shape)
         fine = _filter(gray, extent * radius * 0.0375 / 100.0, cancel)
@@ -135,19 +132,31 @@ def depth_map(frames, img_resize, kernel_size, smoothing, should_cancel,
             diff[rows] = np.minimum(65535, 110 * np.abs(g - f) //
                                    (np.maximum(g, f) * 100 // 65535 + 10))
         del gray, fine, g, f
-        activity = _filter(diff, extent * radius * 0.15 / 100.0, cancel)
-        del diff
-        if best is None:
-            best = activity
-            winner = create_frame(activity.shape, np.int32)
-            winner[...] = 0
-        else:
-            for rows in _rows(activity, cancel):
-                selected = activity[rows] > best[rows]
-                np.copyto(best[rows], activity[rows], where=selected)
-                np.copyto(winner[rows], index, where=selected)
-            del selected
-        del activity
+        return _filter(diff, extent * radius * 0.15 / 100.0, cancel)
+
+    best = winner = None
+    produced = _ordered_frame_results(len(frames), produce, workers, should_cancel)
+    try:
+        for index, activity in produced:
+            if progress_callback is not None:
+                cancel()
+                try:
+                    progress_callback(index, len(frames))
+                except Exception:
+                    pass
+            if best is None:
+                best = activity
+                winner = create_frame(activity.shape, np.int32)
+                winner[...] = 0
+            else:
+                for rows in _rows(activity, cancel):
+                    selected = activity[rows] > best[rows]
+                    np.copyto(best[rows], activity[rows], where=selected)
+                    np.copyto(winner[rows], index, where=selected)
+                del selected
+            del activity
+    finally:
+        produced.close()
     cancel()
     sigma = max(0.0, float(smoothing))
     if sigma == 0:
