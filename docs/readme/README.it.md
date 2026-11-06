@@ -55,7 +55,7 @@
 ## 📢 Novità
 
 > [!NOTE]
-> **v1.75.0** — Fusione raggruppata, flussi di elaborazione riutilizzabili, stack PNG trasparenti, diagnostica di allineamento, esportazioni di profondità migliorate e flusso desktop rinnovato. Consulta il registro delle modifiche per input supportati e limitazioni.
+> **v1.77.0 candidata al rilascio** — Sfondo automatico e sessioni di ritocco ripristinabili, anteprime JPEG/RAW con memoria limitata e ispezione dei pixel originali, fusione CPU in base alla RAM e stato di esecuzione GPU più chiaro. Consulta il registro delle modifiche per input supportati e limitazioni.
 
 Le versioni precedenti sono nel [registro delle modifiche](../../CHANGELOG.md).
 

@@ -250,6 +250,9 @@ only for an odd-valued integer parameter, with an odd default and suitable step.
 Defaults, bounds and enum choices are validated when registering; values are
 validated again at every execution boundary. Unknown keys, booleans supplied as
 numbers, NaN, infinity, illegal choices and out-of-range numbers are errors.
+Invalid values and numeric descriptors raise `ValueError`, including integers
+too large for the numeric runtime. Callers can handle one validation contract
+when restoring settings, reading CLI parameters or registering an extension.
 
 Depth parameters are declared independently. A fusion can expose no depth runner,
 or use a different parameter tuple for depth. The runner returns raw frame
@@ -266,6 +269,11 @@ execution options without interpreting them as persistent algorithm parameters.
 The same runner handles a full image and a tile. Preserve source order and avoid
 mutating caller-owned input frames. Poll cancellation between frames and expensive
 phases, and before returning a result. Never publish a partial output after cancel.
+
+Set `resize_interpolation` to `"linear"` (the default) or `"area"` to match the
+backend's source resizing. Shared tile preparation and base-frame correction
+consume this descriptor field, including for newly registered methods and
+aliases; do not add algorithm-id branches to those consumers.
 
 `resource_estimator(height, width, parameters, frames)` returns
 `(fixed_bytes, per_worker_bytes)`. Include retained results, workspace and large

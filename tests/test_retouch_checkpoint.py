@@ -245,3 +245,28 @@ def test_low_memory_preserves_checkpoint_and_current_edits(tmp_path, monkeypatch
         doc.load_checkpoint(path)
     np.testing.assert_array_equal(doc.working, before)
     assert doc.can_undo
+
+
+def test_legacy_empty_stroke_retains_its_history_through_migration(tmp_path):
+    from utils.retouch_checkpoint import provenance
+
+    doc = document(np.uint16)
+    operation = {'type': 'stroke', 'frame': 0, 'tool': 'restore',
+                 'diameter': 9, 'hardness': 0.6, 'opacity': 0.7,
+                 'exposure': 0.5, 'points': [[10, 10], [12, 12]]}
+    record = {'version': 1, **provenance(doc), 'operations': [operation],
+              'cursor': 1, 'undo_count': 1, 'redo_count': 0,
+              'max_strokes': 100, 'max_bytes': doc.history.max_bytes}
+    path = tmp_path / 'legacy-empty.ofretouch'
+    path.write_text(json.dumps(record), encoding='utf-8')
+    doc.load_checkpoint(path)
+    np.testing.assert_array_equal(doc.working, doc.base)
+    assert doc.can_undo and not doc.can_redo and not doc.is_dirty
+    assert doc.undo()
+    migrated = tmp_path / 'migrated-empty.ofretouch'
+    doc.save_checkpoint(migrated)
+    restored = document(np.uint16)
+    restored.load_checkpoint(migrated)
+    assert not restored.can_undo and restored.can_redo
+    assert restored.redo() and restored.can_undo
+    np.testing.assert_array_equal(restored.working, doc.base)

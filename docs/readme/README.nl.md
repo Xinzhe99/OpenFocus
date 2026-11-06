@@ -55,7 +55,7 @@
 ## 📢 News
 
 > [!NOTE]
-> **v1.75.0** — Groepsfusie, herbruikbare verwerkingsworkflows, transparante PNG-stapels, uitlijningsdiagnose, uitgebreidere diepte-exports en een vernieuwde desktopworkflow. Zie het wijzigingslogboek voor ondersteunde invoer en beperkingen.
+> **v1.77.0 releasekandidaat** — Automatische achtergrond en herstelbare retoucheersessies, JPEG/RAW-voorbeelden met begrensd geheugengebruik en inspectie van originele pixels, CPU-fusie binnen het RAM-budget en een duidelijkere GPU-uitvoeringsstatus. Zie het wijzigingslogboek voor ondersteunde invoer en beperkingen.
 
 Oudere versies staan in het [wijzigingslogboek](../../CHANGELOG.md).
 

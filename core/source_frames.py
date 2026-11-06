@@ -448,6 +448,8 @@ class SourceFrame:
             if image.shape != self.shape or image.dtype != self.dtype:
                 raise ValueError(f'Source header does not match decoded pixels: {self.path}: '
                                  f'{image.shape}/{image.dtype}, expected {self.shape}/{self.dtype}')
+            if _fingerprint(self.path) != self.fingerprint:
+                raise OSError(f'Source changed while decoding; reopen the stack: {self.path}')
             SOURCE_CACHE.put(key, image)
             return image
 
@@ -488,9 +490,13 @@ def materialize_frames(frames, should_cancel=None):
         if should_cancel is not None and should_cancel():
             raise RegistrationCancelled()
         image = resolve_frame(frame)
+        if should_cancel is not None and should_cancel():
+            raise RegistrationCancelled()
         mapped = isinstance(image, np.memmap) and getattr(image, 'filename', None) is not None
         result.append(image if mapped else store_frame(image))
         del image
+    if should_cancel is not None and should_cancel():
+        raise RegistrationCancelled()
     return result
 
 

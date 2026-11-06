@@ -61,7 +61,8 @@ def _integer(args, key, required=False, default=None, minimum=None):
         if required:
             raise ControlError("invalid_argument", f"{key} is required")
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or isinstance(value, float) and not value.is_integer()):
         raise ControlError("invalid_argument", f"{key} must be an integer")
     value = int(value)
     if minimum is not None and value < minimum:

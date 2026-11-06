@@ -110,5 +110,7 @@ def load_standalone_retouch(result_path, source_paths, *, progress=None):
                             alignment_steps=(), width=base.shape[1], height=base.shape[0],
                             dtype=base.dtype, frames=tuple(frames),
                             icc_profile=common_icc_profile([result_path, *source_paths]),
+                            source_paths=tuple(os.path.abspath(os.fspath(path))
+                                               for path in (result_path, *source_paths)),
                             parameters={"selected_retouch_sources": True})
     return base, context

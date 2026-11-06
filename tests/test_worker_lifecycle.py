@@ -368,3 +368,92 @@ def test_tiled_v3_worker_keeps_source_depth_until_tiles(monkeypatch):
     prepared, is_16bit = prepare_fusion_input(frames, fusion)
     assert is_16bit
     assert all(actual is original for actual, original in zip(prepared, frames))
+
+
+@pytest.mark.parametrize('shape', [(1, 1000), (1000, 1)])
+def test_quick_preview_retains_thin_frame_pixels(shape):
+    pixels = np.full(shape + (3,), 40000, np.uint16)
+    worker = RenderWorker([pixels], algorithm=None, need_fusion=False, preview=True)
+    results, errors = _capture(worker)
+    worker.run()
+    assert not errors and len(results) == 1
+    actual = results[0][0][0]
+    expected_size = (max(1, round(shape[1] * .5)), max(1, round(shape[0] * .5)))
+    expected = cv2.resize(pixels, expected_size, interpolation=cv2.INTER_AREA)
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize('calibrations', [(0.5, 2.0), (0.5, None)])
+def test_split_batch_exports_each_stacks_camera_and_calibration(tmp_path, calibrations):
+    import tifffile
+    from PIL import Image
+    from core.image_loader import ImageStackLoader
+    from core.workers import BatchWorker
+    from utils.scalebar import burn
+
+    source = tmp_path / 'split'
+    source.mkdir()
+    pixels = np.full((96, 128, 3), 90, np.uint8)
+    for index, px_um in enumerate(calibrations):
+        desc = '' if px_um is None else f'<OME><Pixels PhysicalSizeX="{px_um}"/></OME>'
+        tifffile.imwrite(source / f'{index}.tif', pixels, photometric='rgb',
+                         description=desc, metadata=None,
+                         extratags=[(271, 's', 0, 'Camera maker', False),
+                                    (272, 's', 0, f'Model {index}', False)])
+    loader = ImageStackLoader()
+    ok, message, entries, _ = loader.load_images_with_timestamps(str(source))
+    assert ok, message
+    style = {'position': 'bottom-right', 'color': 'white',
+             'font_family': None, 'font_size': 0.0, 'font_bold': False,
+             'text_align': 'auto', 'custom_x': None, 'custom_y': None}
+    settings = {'format': 'tiff', 'fusion_method': 'none',
+                'scale_bar': {'target': 'registered', **style}}
+    worker = BatchWorker([], 'custom', str(tmp_path / 'out'), settings,
+                         import_mode='single_folder', split_method='count', split_param=1,
+                         single_folder_images_with_times=entries, thread_count=1)
+    results, errors = {}, []
+    worker.finished.connect(results.update)
+    worker.error.connect(errors.append)
+    worker.run()
+    assert not errors and results['counts']['success'] == 2
+    for index, (stack, px_um) in enumerate(zip(results['aligned_stacks'], calibrations)):
+        assert len(stack['files']) == 1
+        path = stack['files'][0]
+        with Image.open(path) as exported:
+            assert exported.getexif()[272] == f'Model {index}'
+        actual = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_UNCHANGED)
+        expected = burn(pixels, {'px_um': px_um, **style}) if px_um else pixels
+        np.testing.assert_array_equal(actual, expected)
+        assert stack['annotations_baked'] == (px_um is not None)
+
+
+@pytest.mark.parametrize('calibrations', [(0.5, 0.5, 0.5), (0.5, 2.0, 0.5), (0.5, None, 0.5)])
+def test_grouped_batch_only_draws_a_shared_physical_calibration(tmp_path, calibrations):
+    import tifffile
+    from core.workers import BatchWorker
+    from utils.scalebar import burn
+
+    source = tmp_path / 'grouped'
+    source.mkdir()
+    pixels = np.full((96, 128, 3), 90, np.uint8)
+    for index, px_um in enumerate(calibrations):
+        desc = '' if px_um is None else f'<OME><Pixels PhysicalSizeX="{px_um}"/></OME>'
+        tifffile.imwrite(source / f'{index}.tif', pixels, photometric='rgb',
+                         description=desc, metadata=None)
+    style = {'position': 'bottom-right', 'color': 'white',
+             'font_family': None, 'font_size': 0.0, 'font_bold': False,
+             'text_align': 'auto', 'custom_x': None, 'custom_y': None}
+    worker = BatchWorker([str(source)], 'custom', str(tmp_path / 'out'),
+                         {'format': 'png', 'fusion_method': 'openfocus_a', 'group_size': 2,
+                          'fusion_params': {'kernel_size': 3},
+                          'scale_bar': {'target': 'output', **style}},
+                         thread_count=1, use_gpu=False, tile_enabled=False)
+    results, errors = {}, []
+    worker.finished.connect(results.update)
+    worker.error.connect(errors.append)
+    worker.run()
+    assert not errors and results['counts']['success'] == 1, results
+    actual = cv2.imdecode(np.fromfile(results['outputs'][0], np.uint8), cv2.IMREAD_UNCHANGED)
+    expected = (burn(pixels, {'px_um': .5, **style})
+                if all(value == .5 for value in calibrations) else pixels)
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=1)

@@ -1,8 +1,10 @@
-"""ROI outputs keep their own crops, not views that pin the full frames."""
+"""Cropped and trimmed outputs own pixels without pinning the full frames."""
 import gc
 import os
+import weakref
 
 import numpy as np
+import pytest
 
 from core.frame_storage import create_frame
 from core.render_context import build_render_context
@@ -45,3 +47,22 @@ def test_roi_render_context_owns_mapped_crops_and_releases_the_full_frames():
     del full, frame, source
     gc.collect()
     assert not any(os.path.exists(path) for path in paths)
+
+
+@pytest.mark.parametrize('mapped', [False, True])
+def test_trimmed_context_releases_full_source_storage(mapped):
+    shape = (200, 300, 3)
+    source = create_frame(shape, np.uint16) if mapped else np.empty(shape, np.uint16)
+    source[...] = np.arange(shape[1], dtype=np.uint16)[None, :, None] + 12001
+    expected = source[:192, :288].copy()
+    path = source.filename if mapped else None
+    reference = weakref.ref(source)
+    context = build_render_context([source], expected.copy(), algorithm='dct')
+    assert context is not None
+    np.testing.assert_array_equal(context.frames[0].image, expected)
+    del source
+    gc.collect()
+    assert reference() is None
+    if mapped:
+        assert not os.path.exists(path)
+    np.testing.assert_array_equal(context.frames[0].image, expected)

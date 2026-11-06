@@ -859,18 +859,30 @@ def _run_outputs(args, fused_out: str):
 
 
 def _first_duplicate(outputs):
-    """The first (path, flag, earlier flag) whose file an earlier entry claims.
+    """The first (path, flag, earlier flag) whose destination conflicts.
 
     Two names for one file (a hard link, a symlinked directory, Windows
-    case/8.3 aliases) count as one destination, as in
-    `utils.path_identity.same_path`."""
-    seen_paths, seen_files = {}, {}
+    case/8.3 aliases) count as one destination. A file also cannot serve as
+    another output's parent directory.
+    """
+    seen_paths, seen_files, seen_parents = {}, {}, {}
     for flag, path in outputs:
         if not path:
             continue
         key = path_key(path)
         if key in seen_paths:
             return path, flag, seen_paths[key][0]
+        if key in seen_parents:
+            return path, flag, seen_parents[key]
+        parent = os.path.dirname(key)
+        while parent != key:
+            if parent in seen_paths:
+                return path, flag, seen_paths[parent][0]
+            seen_parents.setdefault(parent, flag)
+            key_parent = os.path.dirname(parent)
+            if key_parent == parent:
+                break
+            parent = key_parent
         seen_paths[key] = (flag, path)
         identity = file_identity(path)
         if identity is None:
