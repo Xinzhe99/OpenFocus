@@ -157,11 +157,11 @@ class EnvironmentInfoDialog(QDialog):
                                    else "CPU")
             info_lines.append(f"  ✓ {trans.t('env_installed').format(onnxruntime.__version__)}")
             diagnostics = neural_runtime.device_diagnostics()
-            info_lines.append('  Runtime providers: ' + ', '.join(diagnostics['providers']))
+            info_lines.append('  Registered runtime providers: ' + ', '.join(diagnostics['providers']))
             for index, name, _vendor, _memory in diagnostics['hardware']:
                 info_lines.append(f'  Hardware DXGI {index}: {name}')
             if diagnostics['actual'] is not None:
-                info_lines.append(f"  Last neural task: {neural_runtime.display_name(diagnostics['actual'])} "
+                info_lines.append(f"  Last successful neural inference: {neural_runtime.display_name(diagnostics['actual'])} "
                                   f"({diagnostics['checkpoint']})")
             for error in diagnostics['probe_errors']:
                 info_lines.append('  Provider probe: ' + error)
@@ -170,6 +170,7 @@ class EnvironmentInfoDialog(QDialog):
             else:
                 info_lines.append(f"  ⚠ {trans.t('env_no_gpu')}")
                 info_lines.append(f"  ✓ {trans.t('env_cpu_mode')}")
+            info_lines.append('  ' + trans.t('msg_gpu_accel_hint'))
         except Exception as exc:
             available["onnxruntime"] = False
             info_lines.append(f"  {trans.t('env_not_installed')}: {exc}")

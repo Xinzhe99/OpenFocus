@@ -109,16 +109,8 @@ __all__ = [
 ]
 
 
-_GPU_PRESENT_CACHE = None
-
-_DISPLAY_ADAPTER_CLASS = (
-    r"SYSTEM\CurrentControlSet\Control\Class"
-    r"\{4d36e968-e325-11ce-bfc1-08002be10318}"
-)
-
-
 def _neural_accelerator_present():
-    """Return a completed backend result, or None before it is known."""
+    """Return verified AI-provider capability, or None before probing."""
     from core.multi_focus_fusion import neural_device_kind
     from fusion_methods import neural_runtime
     kind = neural_device_kind()
@@ -126,129 +118,31 @@ def _neural_accelerator_present():
 
 
 def cached_compute_gpu():
-    """Return a known GPU status, or None while no probe has completed."""
+    """Nonblocking verified AI capability; hardware presence is independent.
+
+    A display adapter, vendor tool or installed execution provider does not
+    prove that the bundled model can run on that provider. In particular,
+    integrated and discrete adapters must pass the same inference probe.
+    """
     try:
-        present = _neural_accelerator_present()
+        return _neural_accelerator_present()
     except Exception:
-        present = None
-    return _GPU_PRESENT_CACHE if present is None else present
-
-
-def _windows_display_adapters() -> tuple:
-    """Driver descriptions from the display-adapter class, without a process."""
-    try:
-        import winreg
-    except ImportError:
-        return ()
-    names = []
-    try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                            _DISPLAY_ADAPTER_CLASS) as root:
-            for index in range(64):
-                try:
-                    subkey = winreg.EnumKey(root, index)
-                except OSError:
-                    break
-                if not subkey.isdigit():
-                    continue
-                try:
-                    with winreg.OpenKey(root, subkey) as adapter:
-                        name = winreg.QueryValueEx(adapter, "DriverDesc")[0]
-                except OSError:
-                    continue
-                if isinstance(name, str):
-                    names.append(name.lower())
-    except OSError:
-        return ()
-    return tuple(names)
-
-
-def _linux_gpu_vendors() -> frozenset:
-    """PCI vendor ids of DRM cards: 0x1002 AMD, 0x8086 Intel, 0x10de NVIDIA."""
-    import glob
-    vendors = set()
-    for path in glob.glob("/sys/class/drm/card[0-9]*/device/vendor"):
-        try:
-            with open(path, encoding="ascii") as handle:
-                vendors.add(handle.read().strip().lower())
-        except OSError:
-            continue
-    return frozenset(vendors)
-
-
-def _vendor_tool_present(*names) -> bool:
-    import shutil
-    return any(shutil.which(name) for name in names)
-
-
-def _nvidia_smi_reports_gpu() -> bool:
-    import shutil
-    import subprocess
-    exe = shutil.which("nvidia-smi")
-    if not exe:
-        return False
-    try:
-        out = subprocess.run(
-            [exe, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=2.0,
-            creationflags=(0x08000000 if is_windows() else 0),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return out.returncode == 0 and bool(out.stdout.strip())
+        return None
 
 
 def has_compute_gpu() -> bool:
-    """True when this machine exposes a neural-path accelerator.
+    """Probe supported AI execution when necessary; never use GPU-name hints.
 
-    The operating-system probe can take up to two seconds. UI paths should
-    use cached_compute_gpu() rather than waiting for a driver. A hardware
-    hint alone does not guarantee that the neural runtime can use the device;
-    its completed backend probe takes precedence when available.
+    This can initialize a driver and run a small ONNX model. UI and diagnostic
+    paths must use cached_compute_gpu() and the existing background probe.
+    True describes provider capability, not execution of the current task.
     """
-    global _GPU_PRESENT_CACHE
     present = cached_compute_gpu()
     if present is not None:
         return present
-
-    found = False
-    try:
-        if is_macos():
-            # Apple-silicon Macs have an integrated GPU.
-            found = platform.machine().lower() in ("arm64", "aarch64")
-        elif is_windows():
-            found = _nvidia_smi_reports_gpu()
-            if not found:
-                adapters = _windows_display_adapters()
-                found = any(
-                    "nvidia" in name or "amd" in name or "radeon" in name
-                    or ("intel" in name and ("arc" in name
-                                             or "data center gpu" in name))
-                    for name in adapters)
-        elif is_linux():
-            found = _nvidia_smi_reports_gpu()
-            # /dev/kfd exists only with the ROCm-capable amdgpu stack.
-            if not found and os.path.exists("/dev/kfd"):
-                found = True
-            if not found:
-                vendors = _linux_gpu_vendors()
-                # Vendor ids are only hardware hints; the runtime probe
-                # determines whether a supported provider can actually run.
-                found = ("0x10de" in vendors or "0x1002" in vendors
-                         or "0x8086" in vendors)
-                if not found:
-                    found = _vendor_tool_present("rocm-smi", "rocminfo")
-    except Exception:
-        found = False
-
-    _GPU_PRESENT_CACHE = found
-    return found
-
-
-def reset_gpu_probe_cache() -> None:
-    """Forget the cached operating-system hardware hint."""
-    global _GPU_PRESENT_CACHE
-    _GPU_PRESENT_CACHE = None
+    from core.multi_focus_fusion import ensure_neural_device_kind
+    from fusion_methods import neural_runtime
+    return neural_runtime.is_accelerator(ensure_neural_device_kind())
 
 
 def _windows_physical_cores() -> int:
