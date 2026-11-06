@@ -46,6 +46,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   preserve current edits and any existing checkpoint.
 - When PYTHONFAULTHANDLER or -X faulthandler is set, the GUI and CLI send
   native crash dumps to the session crash file instead of stderr.
+- Auto background no longer mistakes a dark background for a microscope's
+  field stop. Ignoring it filled the area beside the subject from lit ground
+  and the subject itself: a pale or orange smear, a lumpy outline, rings
+  around small specks and a dark band along the edge.
 
 ## [1.76.0] - 2026-11-06
 

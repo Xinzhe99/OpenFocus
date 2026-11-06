@@ -400,6 +400,25 @@ def edge_frame_map(sub_half, idx_half, inner=(3, 20)):
     return vals[labels - 1]
 
 
+FIELD_STOP_CORE = 0.08     # x typical background: a field stop's near-black core
+FIELD_STOP_DIM = 0.35      # ... and the dim rim around that core
+
+
+def field_stop_mask(lum, ref, rim):
+    """Pixels to treat as a microscope's field stop or its blurred rim.
+
+    A field stop has a near-black core.  Only dim pixels within `rim` px of
+    such a core count.  An ordinary dark background (a dark gap beside the
+    subject, a third as bright as the lit ground next to it) has no such
+    core and stays usable: dropping it filled the gap from the lit ground
+    and the subject instead, which drew a pale smear and rings."""
+    core = lum < FIELD_STOP_CORE * ref
+    if not core.any():
+        return np.zeros(lum.shape, bool)
+    near = cv2.distanceTransform((~core).astype(np.uint8), cv2.DIST_L2, 5) < rim
+    return near & (lum < FIELD_STOP_DIM * ref)
+
+
 def fill_halo_zone(bg, dist, sub, width, scale=4):
     """Rebuild the background within `width` px of the subject.
 
@@ -417,7 +436,11 @@ def fill_halo_zone(bg, dist, sub, width, scale=4):
     width = np.asarray(width, np.float32)
     ws = cv2.resize(width, (w, h), interpolation=cv2.INTER_LINEAR) if width.ndim else width
     lum_s = bs.mean(axis=2)
-    usable = lum_s > 0.35 * np.median(lum_s[ds > ws]) if (ds > ws).any() else np.ones_like(lum_s, bool)
+    if (ds > ws).any():
+        ref = float(np.median(lum_s[ds > ws]))
+        usable = ~field_stop_mask(lum_s, ref, max(4.0 * float(np.median(ws)), 32.0))
+    else:
+        usable = np.ones_like(lum_s, bool)
     # Not the field stop, nor its blurred rim: the rim is above the darkness
     # cutoff but still far darker/bluer than the glass, and filled in from
     # there it drew light lines across the Marthamyces corner.
@@ -1358,7 +1381,11 @@ def replace_background(frames: Sequence[np.ndarray], fused: np.ndarray, *,
     band = (dist > max(64, 2 * halo_fill)) & (dist < 600)
     lum_f = fz.mean(axis=2)
     if (~sub).any():
-        band &= lum_f > 0.35 * float(np.median(lum_f[~sub]))   # not a microscope's field stop
+        ref = float(np.median(lum_f[~sub]))
+        small = cv2.resize(lum_f, (W // 4, H // 4), interpolation=cv2.INTER_AREA)
+        stop = field_stop_mask(small, ref, max(8.0, halo_fill))   # not a microscope's field stop
+        band &= ~cv2.resize(stop.astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST).astype(bool)
+        del small, stop
     del lum_f
     if band.sum() < 10000:
         band = dist > margin + feather
