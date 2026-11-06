@@ -104,6 +104,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Ignore delayed startup dialogs, restores, file opens and backend probes once
   shutdown begins, so an overdue first-run guide cannot reopen after closing.
+- Reject leading-slash absolute paths in portable recipes on Windows Python
+  3.13 and later, using the same check for inputs, outputs and mask paths.
 - Preserve the loupe's selected zoom across release/reopen and retain useful
   image content while a new native region is pending.
 - Frame-number, thumbnail and slider navigation in Retouch no longer creates a

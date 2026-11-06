@@ -40,7 +40,8 @@ def _mask_fingerprint(path):
 def _relative(path, base):
     if not isinstance(path, str) or not path or "\0" in path:
         raise ValueError("paths must be non-empty strings")
-    if os.path.isabs(path) or ntpath.isabs(path) or ntpath.splitdrive(path)[0] or "\\" in path:
+    if (path.startswith("/") or os.path.isabs(path) or ntpath.isabs(path)
+            or ntpath.splitdrive(path)[0] or "\\" in path):
         raise ValueError(f"recipe paths must be relative and use forward slashes: {path!r}")
     return os.path.abspath(os.path.join(base, path))
 
