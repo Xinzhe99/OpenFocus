@@ -3599,7 +3599,7 @@ class OpenFocus(QMainWindow):
         # with its QObject parent. Retry the authorized close on the GUI loop
         # instead of waiting here or orphaning a dialog-owned worker.
         from dialogs.retouch import RetouchDialog, _SHARPNESS_WORKERS
-        retouch_running = False
+        shutdown_running = False
         for dialog in self.findChildren(RetouchDialog):
             dialog.setEnabled(False)
             dialog_busy = False
@@ -3618,14 +3618,23 @@ class OpenFocus(QMainWindow):
             if not dialog_busy:
                 dialog._allow_close = True
                 dialog_busy = not dialog.close()
-            retouch_running = retouch_running or dialog_busy
+            shutdown_running = shutdown_running or dialog_busy
         # Include detail-map workers detached by an already closed workspace.
         for worker in tuple(_SHARPNESS_WORKERS):
             if worker.isRunning():
                 worker.requestInterruption()
-                retouch_running = True
+                shutdown_running = True
+        self._source_display_key = None
+        for name in ('_source_decode_workers', '_source_preview_workers'):
+            for worker in tuple(getattr(self, name, {}).values()):
+                worker.request_cancel()
+                shutdown_running = worker.isRunning() or shutdown_running
+        output_manager = getattr(self, 'output_manager', None)
+        cancel_thumbnails = getattr(output_manager, 'cancel_stack_thumbnails', None)
+        if callable(cancel_thumbnails):
+            shutdown_running = cancel_thumbnails() or shutdown_running
         timer = getattr(self, "_retouch_shutdown_timer", None)
-        if retouch_running:
+        if shutdown_running:
             self._retouch_quit_authorized = True
             if timer is None:
                 from PyQt6.QtCore import QTimer
@@ -3643,11 +3652,6 @@ class OpenFocus(QMainWindow):
         log_action("shutdown.started", restart=bool(getattr(self, '_restart_for_update', False)))
         self.usage_analytics.shutdown()
 
-        self._source_display_key = None
-        for worker in tuple(getattr(self, '_source_decode_workers', {}).values()):
-            _shutdown_worker(worker)
-        for worker in tuple(getattr(self, '_source_preview_workers', {}).values()):
-            _shutdown_worker(worker)
         # Persist user preferences, layout and recent files for next time
         try:
             self.persist_settings()

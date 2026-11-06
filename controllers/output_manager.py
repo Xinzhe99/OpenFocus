@@ -43,28 +43,41 @@ class _StackThumbnailWorker(QThread):
         self.source = source
         self.metadata = metadata
         self.thumbnail = None
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+        self.requestInterruption()
 
     def run(self):
+        from core.resource_policy import heavy_job
+        from core.source_frames import SourceFrame, ensure_preview, scan_source
+        should_cancel = lambda: self._cancelled or self.isInterruptionRequested()
         try:
-            source = self.source
-            if isinstance(source, (str, os.PathLike)):
-                from core.source_frames import scan_source
-                source = scan_source(source, page_index=0)[0]
-            pixels = source_display_image(source)
-            if not getattr(source, 'preview_is_available', True):
-                return
-            h, w = pixels.shape[:2]
-            factor = min(1.0, 40 / max(h, w))
-            if factor < 1:
-                pixels = cv2.resize(pixels, (max(1, round(w * factor)),
-                                             max(1, round(h * factor))),
-                                    interpolation=cv2.INTER_AREA)
-            if self.metadata is not None and not getattr(source, 'preview_is_display', False):
-                from utils.linear_dng import develop_linear
-                pixels = develop_linear(pixels, self.metadata)
-            rgb = cv2.cvtColor(_thumbnail_bgr(pixels, 40), cv2.COLOR_BGR2RGB)
-            self.thumbnail = QImage(rgb.data, rgb.shape[1], rgb.shape[0],
-                                    rgb.strides[0], QImage.Format.Format_RGB888).copy()
+            with heavy_job(should_cancel):
+                if should_cancel():
+                    return
+                source = self.source
+                if isinstance(source, (str, os.PathLike)):
+                    source = scan_source(source, page_index=0, should_cancel=should_cancel)[0]
+                pixels = (ensure_preview(source, should_cancel=should_cancel)
+                          if isinstance(source, SourceFrame) else source_display_image(source))
+                if should_cancel() or not getattr(source, 'preview_is_available', True):
+                    return
+                h, w = pixels.shape[:2]
+                factor = min(1.0, 40 / max(h, w))
+                if factor < 1:
+                    pixels = cv2.resize(pixels, (max(1, round(w * factor)),
+                                                 max(1, round(h * factor))),
+                                        interpolation=cv2.INTER_AREA)
+                if self.metadata is not None and not getattr(source, 'preview_is_display', False):
+                    from utils.linear_dng import develop_linear
+                    pixels = develop_linear(pixels, self.metadata)
+                if should_cancel():
+                    return
+                rgb = cv2.cvtColor(_thumbnail_bgr(pixels, 40), cv2.COLOR_BGR2RGB)
+                self.thumbnail = QImage(rgb.data, rgb.shape[1], rgb.shape[0],
+                                       rgb.strides[0], QImage.Format.Format_RGB888).copy()
         except Exception:
             # Missing or unreadable previews leave an honest folder outline.
             self.thumbnail = None
@@ -277,7 +290,7 @@ class OutputManager:
 
     def _start_stack_thumbnail(self) -> None:
         from PyQt6 import sip
-        if sip.isdeleted(self.window):
+        if sip.isdeleted(self.window) or getattr(self.window, '_shutting_down', False):
             self._stack_thumbnail_queue.clear()
             return
         while self._stack_thumbnail_queue:
@@ -292,7 +305,7 @@ class OutputManager:
 
             def complete():
                 self._stack_thumbnail_worker = None
-                if not sip.isdeleted(self.window):
+                if not sip.isdeleted(self.window) and not getattr(self.window, '_shutting_down', False):
                     for row in range(self.window.output_list.count()):
                         item = self.window.output_list.item(row)
                         record = self.record_for_item(item)
@@ -306,6 +319,14 @@ class OutputManager:
             worker.finished.connect(complete)
             worker.start()
             return
+
+    def cancel_stack_thumbnails(self) -> bool:
+        self._stack_thumbnail_queue.clear()
+        worker = self._stack_thumbnail_worker
+        if worker is None:
+            return False
+        worker.cancel()
+        return worker.isRunning()
 
     def update_output_count(self) -> None:
         count = self.window.output_list.count()

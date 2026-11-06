@@ -89,6 +89,10 @@ def render_source_region(image, rect, size, metadata=None):
     out_w = max(1, min(DISPLAY_REGION_MAX_SIDE, math.ceil(size[0]) + 2))
     out_h = max(1, min(DISPLAY_REGION_MAX_SIDE, math.ceil(size[1]) + 2))
     factor = min(1.0, out_w / (right - left), out_h / (bottom - top))
+    from core.resource_policy import require_memory
+    pixels = max(1, round((right - left) * factor)) * max(1, round((bottom - top) * factor))
+    # Include conversion, owned delivery pixels, annotations and Qt upload.
+    require_memory(pixels * 96 + 1024 * 1024)
     crop = image[top:bottom, left:right]
     if factor < 1:
         crop = cv2.resize(crop, (max(1, round((right - left) * factor)),
@@ -221,13 +225,18 @@ class SourceRegionWorker(QThread):
                     kind = 'loupe' if 'loupe' in self._pending else next(iter(self._pending))
                     request = self._pending.pop(kind)
                 _, _, rect, size = request
-                tile, sampled = render_source_region(
-                    image, rect, size, self.metadata)
-                tile = self._decorate(tile, sampled, image)
+                with heavy_job(lambda: self.cancelled):
+                    with self._condition:
+                        if self.cancelled or kind in self._pending:
+                            continue
+                    tile, sampled = render_source_region(
+                        image, rect, size, self.metadata)
+                    tile = self._decorate(tile, sampled, image)
                 with self._condition:
                     stale = self.cancelled or kind in self._pending
                 if not stale:
                     self.ready.emit(self.key, request, tile, sampled)
+                tile = None
         except Exception as exc:
             if not self.cancelled:
                 self.failed.emit(self.key, str(exc))
