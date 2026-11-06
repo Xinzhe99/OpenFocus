@@ -663,12 +663,11 @@ class MultiFocusFusion:
         check_cancel()
         # Sorting fixes the reference end before exposure and tile dispatch.
         input_source = self._maybe_sort_input(input_source, should_cancel)
-        # Neural tiles historically normalize mixed/16-bit pixels before
-        # applying their global gains. Preserve that order when gains and the
-        # full-frame resize are staged ahead of tile construction.
-        normalize_before_resize = resize_for_tiles and spec.neural and self.exposure_match
+        # Every backend receives one common intensity domain before exposure
+        # matching and resizing. Spatial tiles may defer the same conversion to
+        # crops, but whole-image neural calls must not mix 0-65535 and 0-255.
         normalized_owned = set()
-        if ((not spec.neural or normalize_before_resize) and not deferred_exposure
+        if (not deferred_exposure
                 and any(frame.dtype == np.uint16 for frame in input_source)):
             normalized_frames = []
             for frame in input_source:
