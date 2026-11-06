@@ -550,3 +550,44 @@ def test_quick_clear_removes_only_its_target_and_restores_with_undo(
     manager.import_state(manager.window.undo[0])
     assert manager.export_state() == before
     assert all(getattr(manager.window, name).isEnabled() for name in actions.values())
+
+
+@pytest.mark.parametrize('transparent', [True, False])
+@pytest.mark.parametrize('rect', [(45, 45, 45, 38), (65, 50, 90, 50), (0, 0, 40, 40)])
+def test_source_caption_tiles_match_full_native_render(manager, transparent, rect):
+    label = caption(text='Frame {n}')
+    label.config.x_location = 50
+    label.config.y_location = 80
+    label.config.font_size = 28
+    label.config.transparent_bg = transparent
+    label.config.frame_ids = [manager.frame_ids('input')[1]]
+    manager.labels.add(label)
+    image = np.full((180, 240, 3), 17000, np.uint16)
+    full, _ = manager._draw_for(image, 'input', 1)
+    x, y, width, height = rect
+    tile, _ = manager.snapshot()._draw_for(image[y:y + height, x:x + width], 'input', 1,
+                                          source_rect=rect)
+    np.testing.assert_array_equal(tile, full[y:y + height, x:x + width])
+
+
+@pytest.mark.parametrize('rect', [(100, 100, 140, 80), (150, 145, 60, 30), (0, 0, 70, 60)])
+@pytest.mark.parametrize('color', ['white', 'auto'])
+def test_source_region_worker_preserves_caption_and_scale_calibration(manager, rect, color):
+    from core.source_previews import SourceRegionWorker, render_source_region
+    from utils.image_utils import to_display_uint8
+    from utils import scalebar
+    label = caption(text='Source')
+    label.config.x_location = 145
+    label.config.y_location = 150
+    manager.labels.add(label)
+    # A gradient makes auto-color sample the full source motif, not each crop.
+    image = np.repeat(np.linspace(0, 65535, 240, dtype=np.uint16)[None, :, None], 180, axis=0)
+    image = np.repeat(image, 3, axis=2)
+    cfg = {'px_um': 0.5, 'position': 'bottom-right', 'color': color, 'font_size': 12}
+    full, _ = manager._draw_for(to_display_uint8(image), 'input', 1)
+    full = scalebar.burn(full, cfg)
+    worker = SourceRegionWorker(image, 'source', labels=manager.snapshot(), index=1, scale_cfg=cfg)
+    tile, sampled = render_source_region(image, rect, (rect[2], rect[3]))
+    actual = worker._decorate(tile, sampled, image)
+    x, y, width, height = rect
+    np.testing.assert_array_equal(actual, full[y:y + height, x:x + width])

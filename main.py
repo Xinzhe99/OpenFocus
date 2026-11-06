@@ -2411,6 +2411,11 @@ class OpenFocus(QMainWindow):
                 from core.source_frames import display_image
                 frame = self.raw_images[index]
                 image = display_image(frame)
+                h, w = image.shape[:2]
+                if max(h, w) > 1024:
+                    factor = 1024 / max(h, w)
+                    image = cv2.resize(image, (max(1, round(w * factor)), max(1, round(h * factor))),
+                                       interpolation=cv2.INTER_AREA)
                 if self.linear_dng_metadata is not None and not getattr(frame, 'preview_is_display', False):
                     from utils.linear_dng import develop_linear
                     image = develop_linear(image, self.linear_dng_metadata)
@@ -2470,38 +2475,49 @@ class OpenFocus(QMainWindow):
         worker.finished.connect(finished)
         worker.start()
 
-    def _request_source_pixels(self, key):
-        """Decode only the selected frame on a worker, guarded by its identity."""
-        if key != getattr(self, '_source_display_key', None):
+    def _release_source_regions(self, key):
+        worker = getattr(self, '_source_decode_workers', {}).get(key)
+        if worker is not None:
+            worker.request_cancel()
+        if key == getattr(self, '_source_display_key', None):
+            self._source_display_key = None
+
+    def _request_source_region(self, key, request):
+        """Resolve one selected original off-thread and upload only visible tiles."""
+        if (getattr(self, '_shutting_down', False)
+                or key != getattr(self, '_source_display_key', None)):
             return
         workers = self.__dict__.setdefault('_source_decode_workers', {})
-        if key in workers:
+        existing = workers.get(key)
+        if existing is not None:
+            existing.submit(request)
             return
         index = key[2]
         if not 0 <= index < len(self.raw_images) or id(self.raw_images[index]) != key[1]:
             return
-        from core.workers import SourceDecodeWorker
+        from core.source_previews import SourceRegionWorker
+        from utils import scalebar
         frame = self.raw_images[index]
-        worker = SourceDecodeWorker(frame, key, display=True)
+        worker = SourceRegionWorker(frame, key, labels=self.label_manager.snapshot(), index=index,
+                                    scale_cfg=scalebar.export_cfg(self, target='source'),
+                                    metadata=getattr(frame, 'linear_metadata', None) or self.linear_dng_metadata)
         workers[key] = worker
-        def accept(decoded_key, image):
+        def accept(decoded_key, region_request, image, rect):
             if (decoded_key != getattr(self, '_source_display_key', None)
-                    or getattr(self, '_shutting_down', False)):
+                    or getattr(self, '_shutting_down', False) or image is None):
                 return
-            pixmap = cv2_to_pixmap(image)
-            from utils import scalebar
-            pixmap = self.label_manager.apply_labels_to_source_pixmap(
-                pixmap, index, scale_cfg=scalebar.export_cfg(self, target='source'))
-            self.lbl_source_img.set_source_pixmap(pixmap, source_key=decoded_key)
+            self.lbl_source_img.set_source_region(cv2_to_pixmap(image), rect,
+                                                   source_key=decoded_key, request=region_request)
         def failed(decoded_key, message):
             if decoded_key == getattr(self, '_source_display_key', None):
                 self.statusBar().showMessage(message)
         def finished():
             workers.pop(key, None)
             worker.deleteLater()
-        worker.decoded.connect(accept)
+        worker.ready.connect(accept)
         worker.failed.connect(failed)
         worker.finished.connect(finished)
+        worker.submit(request)
         worker.start()
 
     def update_source_view(self, index):
@@ -2510,9 +2526,16 @@ class OpenFocus(QMainWindow):
             
         if 0 <= index < len(self.stack_images):
             self.current_display_index = index
+            frame = self.raw_images[index]
+            generation = getattr(self, '_source_display_generation', 0) + 1
+            self._source_display_generation = generation
+            key = (getattr(self, 'source_revision', 0), id(frame), index, generation)
+            self._source_display_key = key
+            for pending_key, worker in getattr(self, '_source_decode_workers', {}).items():
+                if pending_key != key:
+                    worker.request_cancel()
             from core.source_frames import preview_ready
             if not preview_ready(self.raw_images[index]):
-                self._source_display_key = (getattr(self, 'source_revision', 0), id(self.raw_images[index]), index)
                 self.lbl_source_img.clear()
                 self.lbl_source_img.setText(trans.t('msg_loading_stack'))
                 self.lbl_stack_info.setText(f'{index + 1} / {len(self.stack_images)}')
@@ -2527,21 +2550,12 @@ class OpenFocus(QMainWindow):
                     original_pixmap, index,
                     scale_cfg=scalebar.export_cfg(self, target="source"))
 
-                from core.source_frames import SourceFrame
-                frame = self.raw_images[index]
-                key = (getattr(self, 'source_revision', 0), id(frame), index)
-                self._source_display_key = key
-                if not getattr(self, '_source_pixels_connected', False):
-                    self.lbl_source_img.sourcePixelsRequested.connect(self._request_source_pixels)
-                    self._source_pixels_connected = True
-                for pending_key, worker in getattr(self, '_source_decode_workers', {}).items():
-                    if pending_key != key:
-                        worker.request_cancel()
-                if isinstance(frame, SourceFrame):
-                    self.lbl_source_img.set_display_pixmap(
-                        display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
-                else:
-                    self.lbl_source_img.set_display_pixmap(display_pixmap)
+                if not getattr(self, '_source_regions_connected', False):
+                    self.lbl_source_img.sourceRegionRequested.connect(self._request_source_region)
+                    self.lbl_source_img.sourceRegionsReleased.connect(self._release_source_regions)
+                    self._source_regions_connected = True
+                self.lbl_source_img.set_display_pixmap(
+                    display_pixmap, source_size=(frame.shape[1], frame.shape[0]), source_key=key)
                 
                 # 更新文字
                 self.lbl_stack_info.setText(f"{index + 1} / {len(self.stack_images)}")
